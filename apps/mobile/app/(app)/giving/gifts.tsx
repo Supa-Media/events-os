@@ -44,10 +44,17 @@ import {
   EmptyState,
   FilterSelect,
   type FilterSelectOption,
+  FULL_WIDTH,
+  GridCell,
+  GridContainer,
+  GridCountLabel,
+  GridHeaderRow,
+  GridRow,
   Icon,
   Narrow,
   Screen,
   Select,
+  SortableHeaderCell,
   TextField,
 } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
@@ -97,6 +104,18 @@ const EXTERNAL_SOURCES = new Set([
 ]);
 const DEFAULT_SOURCE = "cash";
 const MAX_RECEIPTS = 10;
+
+const NUM = { fontVariant: ["tabular-nums" as const] };
+
+// Fixed column widths (px) — the grid scrolls horizontally on narrow web
+// while columns stay put, mirroring the Reconcile / Donors / Backers grids.
+const COLS = {
+  date: 100,
+  donor: 220,
+  amount: 120,
+  source: 230,
+  book: 140,
+} as const;
 
 type LedgerGift = {
   _id: Id<"gifts">;
@@ -186,9 +205,25 @@ function GiftsBody({
     );
   }, [data, search]);
 
+  const searching = search.trim().length > 0;
+  const width = isAllScopes
+    ? COLS.date + COLS.donor + COLS.amount + COLS.source + COLS.book
+    : COLS.date + COLS.donor + COLS.amount + COLS.source;
+
   return (
-    <Screen>
+    <Screen maxWidth={FULL_WIDTH}>
       <Narrow>
+        <View className="mb-3 flex-row items-center justify-between">
+          {data === undefined ? (
+            <View />
+          ) : searching ? (
+            <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+              {filtered.length} of {data.gifts.length}
+            </Text>
+          ) : (
+            <GridCountLabel label="Gifts" count={data.gifts.length} />
+          )}
+        </View>
         <View className="mb-3 flex-row flex-wrap items-center gap-2">
           {isCentral ? (
             <FilterSelect
@@ -231,19 +266,31 @@ function GiftsBody({
                 : "Add a gift, or bring in history from the Import tab."
             }
           />
-        ) : (
-          <View className="gap-2">
-            {filtered.map((g) => (
-              <GiftLedgerRow
-                key={g._id}
-                gift={g}
-                showBook={isAllScopes}
-                onPress={() => setOpenGiftId(g._id)}
-              />
-            ))}
-          </View>
-        )}
+        ) : null}
       </Narrow>
+
+      {data !== undefined && filtered.length > 0 ? (
+        <GridContainer width={width}>
+          <GridHeaderRow>
+            <SortableHeaderCell label="Date" width={COLS.date} />
+            <SortableHeaderCell label="Donor" width={COLS.donor} />
+            <SortableHeaderCell label="Amount" width={COLS.amount} align="right" />
+            <SortableHeaderCell label="Method / Source" width={COLS.source} />
+            {isAllScopes ? (
+              <SortableHeaderCell label="Book" width={COLS.book} />
+            ) : null}
+          </GridHeaderRow>
+          {filtered.map((g, i) => (
+            <GiftLedgerRow
+              key={g._id}
+              gift={g}
+              showBook={isAllScopes}
+              isLast={i === filtered.length - 1}
+              onPress={() => setOpenGiftId(g._id)}
+            />
+          ))}
+        </GridContainer>
+      ) : null}
 
       {openGiftId ? (
         <GiftDetailSheet
@@ -266,52 +313,65 @@ function GiftsBody({
   );
 }
 
-/** One ledger row: date · source, donor, book tag (all-scopes), amount. */
+/** One ledger row: Date · Donor · Amount · Method/Source (+ note/receipt/
+ *  edited flags folded in as a subtitle line) · Book tag (all-scopes only). */
 function GiftLedgerRow({
   gift,
   showBook,
+  isLast,
   onPress,
 }: {
   gift: LedgerGift;
   showBook: boolean;
+  isLast: boolean;
   onPress: () => void;
 }) {
+  const flags = [
+    gift.hasReceipts ? "📎" : null,
+    gift.edited ? "edited" : null,
+    gift.note,
+  ].filter(Boolean) as string[];
+
   return (
-    <Pressable
-      onPress={onPress}
-      className="flex-row items-center justify-between rounded-lg border border-border bg-raised p-3 active:opacity-70"
-    >
-      <View className="flex-1 pr-3">
-        <View className="flex-row items-center gap-2">
-          <Text className="text-base font-semibold text-ink" numberOfLines={1}>
-            {gift.donorName}
+    <GridRow onPress={onPress} isLast={isLast} accessibilityLabel={`Open gift from ${gift.donorName}`}>
+      <GridCell width={COLS.date}>
+        <Text className="flex-1 px-2 py-1.5 text-sm text-muted" style={NUM}>
+          {new Date(gift.receivedAt).toLocaleDateString()}
+        </Text>
+      </GridCell>
+      <GridCell width={COLS.donor}>
+        <Text className="flex-1 px-2 py-1.5 text-sm font-medium text-ink" numberOfLines={1}>
+          {gift.donorName}
+        </Text>
+      </GridCell>
+      <GridCell width={COLS.amount}>
+        <Text
+          className="flex-1 px-2 py-1.5 text-right text-sm font-semibold text-ink"
+          style={NUM}
+        >
+          {formatCents(gift.amountCents)}
+        </Text>
+      </GridCell>
+      <GridCell width={COLS.source}>
+        <View className="flex-1 px-2 py-1.5">
+          <Text className="text-sm text-ink" numberOfLines={1}>
+            {sourceLabel(gift.method)}
           </Text>
-          {showBook ? (
-            <View className="rounded-pill bg-sunken px-1.5 py-0.5">
-              <Text
-                className="text-2xs font-semibold text-muted"
-                numberOfLines={1}
-              >
-                {gift.bookLabel}
-              </Text>
-            </View>
+          {flags.length > 0 ? (
+            <Text className="text-2xs text-muted" numberOfLines={1}>
+              {flags.join(" · ")}
+            </Text>
           ) : null}
         </View>
-        <Text className="mt-0.5 text-xs text-muted" numberOfLines={1}>
-          {new Date(gift.receivedAt).toLocaleDateString()} ·{" "}
-          {sourceLabel(gift.method)}
-          {gift.hasReceipts ? " · 📎" : ""}
-          {gift.edited ? " · edited" : ""}
-          {gift.note ? ` · ${gift.note}` : ""}
-        </Text>
-      </View>
-      <Text
-        className="text-base font-semibold text-ink"
-        style={{ fontVariant: ["tabular-nums"] }}
-      >
-        {formatCents(gift.amountCents)}
-      </Text>
-    </Pressable>
+      </GridCell>
+      {showBook ? (
+        <GridCell width={COLS.book}>
+          <Text className="flex-1 px-2 py-1.5 text-sm text-muted" numberOfLines={1}>
+            {gift.bookLabel}
+          </Text>
+        </GridCell>
+      ) : null}
+    </GridRow>
   );
 }
 

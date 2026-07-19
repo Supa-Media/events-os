@@ -41,3 +41,12 @@ export {
   SelectCell,
   type SelectOption,
 } from "./EditableTable";
+export {
+  GridContainer,
+  GridHeaderRow,
+  SortableHeaderCell,
+  GridCell,
+  GridRow,
+  GridCountLabel,
+  type SortDirection,
+} from "./DataGrid";
