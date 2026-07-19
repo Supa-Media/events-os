@@ -81,6 +81,23 @@ export const GIFT_METHODS = [
 const givingScope = v.union(v.id("chapters"), v.literal("central"));
 
 /**
+ * A donor's optional MAILING ADDRESS — for postal outreach (year-end letters,
+ * thank-you cards, tax statements). Every field is optional so a partial
+ * address (just a city/state, or a country only) is a legal record; the whole
+ * object is optional on the donor. Populated by manual edit (`upsertDonor`) and
+ * by the canonical import when an export row carries an address (donor creation
+ * + fill-if-blank on match — never overwrites an address already on file).
+ */
+export const donorAddressValidator = v.object({
+  line1: v.optional(v.string()),
+  line2: v.optional(v.string()),
+  city: v.optional(v.string()),
+  state: v.optional(v.string()),
+  postalCode: v.optional(v.string()),
+  country: v.optional(v.string()),
+});
+
+/**
  * A recurring pledge's lifecycle, tracking the Stripe subscription behind it
  * (PRD §2):
  *  - `incomplete` — created, awaiting the donor's first successful checkout;
@@ -118,6 +135,9 @@ export const donors = defineTable({
   name: v.string(),
   email: v.optional(v.string()), // normalized lowercase (the dedup key)
   phone: v.optional(v.string()),
+  // Optional mailing address for postal outreach (see `donorAddressValidator`).
+  // Set by manual edit or the canonical import (fill-if-blank on match).
+  address: v.optional(donorAddressValidator),
   status: v.union(...DONOR_STATUSES.map((s) => v.literal(s))),
   // Relationship owner (AJ's "owners") — a roster person, not an auth user.
   ownerPersonId: v.optional(v.id("people")),
