@@ -170,6 +170,84 @@ describe("listGifts", () => {
       s.as.query(api.givingPlatform.listGifts, { scope: s.chapterId }),
     ).rejects.toThrow();
   });
+
+  // Giving CRM v2 (owner request #2): `from`/`to` narrow the SAME
+  // `by_scope_and_received` index read server-side, both single-scope and
+  // all-scopes.
+  test("from/to narrow the single-scope ledger to the inclusive range", async () => {
+    const s = await devDirectorSetup();
+    const now = Date.now();
+    await s.as.mutation(api.givingPlatform.addGift, {
+      scope: "central",
+      name: "Old Gift",
+      amountCents: 1000,
+      method: "cash",
+      receivedAt: now - 10_000,
+    });
+    await s.as.mutation(api.givingPlatform.addGift, {
+      scope: "central",
+      name: "Mid Gift",
+      amountCents: 2000,
+      method: "cash",
+      receivedAt: now - 5000,
+    });
+    await s.as.mutation(api.givingPlatform.addGift, {
+      scope: "central",
+      name: "New Gift",
+      amountCents: 3000,
+      method: "cash",
+      receivedAt: now,
+    });
+
+    const ranged = await s.as.query(api.givingPlatform.listGifts, {
+      scope: "central",
+      from: now - 6000,
+      to: now - 1,
+    });
+    expect(ranged.gifts.map((g) => g.amountCents)).toEqual([2000]);
+
+    // Bounds are inclusive.
+    const inclusive = await s.as.query(api.givingPlatform.listGifts, {
+      scope: "central",
+      from: now - 5000,
+      to: now,
+    });
+    expect(inclusive.gifts.map((g) => g.amountCents).sort()).toEqual([2000, 3000]);
+
+    // Open range (`from` only) still respects the lower bound.
+    const openEnd = await s.as.query(api.givingPlatform.listGifts, {
+      scope: "central",
+      from: now - 4000,
+    });
+    expect(openEnd.gifts.map((g) => g.amountCents)).toEqual([3000]);
+  });
+
+  test("from/to narrow the all-scopes merged ledger the same way", async () => {
+    const s = await devDirectorSetup();
+    const other = await secondChapter(s, "Boston");
+    const now = Date.now();
+    await s.as.mutation(api.givingPlatform.addGift, {
+      scope: "central",
+      name: "Central Old",
+      amountCents: 1000,
+      method: "wire",
+      receivedAt: now - 10_000,
+    });
+    await s.as.mutation(api.givingPlatform.addGift, {
+      scope: other,
+      name: "Boston New",
+      amountCents: 5000,
+      method: "zelle",
+      receivedAt: now,
+    });
+
+    const all = await s.as.query(api.givingPlatform.listGifts, {
+      scope: "central",
+      allScopes: true,
+      from: now - 1000,
+    });
+    expect(all.gifts.map((g) => g.amountCents)).toEqual([5000]);
+  });
 });
 
 // ── Add gift (manual / external) ──────────────────────────────────────────────

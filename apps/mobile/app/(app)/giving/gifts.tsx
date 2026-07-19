@@ -3,14 +3,25 @@
  * gift in the book, NEWEST-FIRST: "no view where I can just see the donations
  * as they come in." This is where the giving desk lives during data cleanup.
  *
- *  - A CENTRAL holder gets a scope dropdown (All chapters / Central / each
- *    chapter). "All chapters" tags each row with its book (`listGifts` all-scopes
- *    merge). A chapter-only viewer stays locked to their own book.
+ *  - A CENTRAL holder gets a scope/book dropdown (All chapters / Central /
+ *    each chapter). "All chapters" tags each row with its book (`listGifts`
+ *    all-scopes merge). A chapter-only viewer stays locked to their own book.
  *  - A client-side search box filters the loaded rows by donor / note / book /
  *    source (server search comes later).
+ *  - Giving CRM v2 (owner feedback, robust filtering): a DATE-RANGE filter
+ *    (presets — last 30/90 days, this year, all time — plus a custom
+ *    start/end) is the one filter that's genuinely cheap to push server-side
+ *    (`listGifts`'s new `from`/`to` args, same `by_scope_and_received` index
+ *    read); it's resolved by the pure, unit-tested
+ *    `components/giving/dashboard/giftDateRange.ts`. Method/source and an
+ *    amount-band filter stay CLIENT-side over the already-loaded page —
+ *    `listGifts` has no method/amount index to narrow against cheaply, and
+ *    the ledger's bound (`GIFT_LEDGER_LIMIT`) is already generous.
  *  - "Add gift" (manage) records a manual / external gift — the wires, Zelle,
  *    Cash App, on-behalf-of purchases — with a past date, a source, receipts,
  *    and (central) a book choice (owner request #3).
+ *  - "Export" (owner request #3) serializes exactly the rows on screen — the
+ *    post-filter/post-search `filtered` array — to CSV.
  *  - Tapping a row opens the detail sheet: edit (amount / date / source / note /
  *    receipts), MOVE BOOK (central-manage, owner #4a), REASSIGN DONOR (owner #2),
  *    and the AUDIT TRAIL — the "breadcrumb trail of me showing I updated this"
@@ -61,6 +72,13 @@ import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
 import { useGivingScope } from "../../../lib/useGivingScope";
 import { ALL_SCOPES_VALUE } from "../../../components/giving/dashboard/donorFilters";
+import { toCsv } from "../../../components/giving/csv";
+import { exportCsv } from "../../../components/giving/exportCsv";
+import {
+  GIFT_DATE_PRESET_OPTIONS,
+  resolveGiftDateRange,
+  type GiftDatePreset,
+} from "../../../components/giving/dashboard/giftDateRange";
 
 type GivingScope = "central" | Id<"chapters">;
 
@@ -104,6 +122,30 @@ const EXTERNAL_SOURCES = new Set([
 ]);
 const DEFAULT_SOURCE = "cash";
 const MAX_RECEIPTS = 10;
+
+// ── CRM v2 filters (robust filtering, owner feedback) ─────────────────────────
+// Method/source dropdown for the ledger's own filter row — "All sources" plus
+// the same `SOURCE_OPTIONS` vocabulary the Add/Edit forms already use.
+const METHOD_FILTERS: FilterSelectOption[] = [
+  { value: "all", label: "All sources" },
+  ...SOURCE_OPTIONS,
+];
+
+// Amount bands (dollars) — mirrors the Donors grid's own lifetime-band
+// convention (`donorFilters.LIFETIME_BAND_CENTS`): a floor only, applied
+// client-side over the already-loaded page.
+const AMOUNT_BAND_CENTS: Record<string, number | undefined> = {
+  all: undefined,
+  "100": 100_00,
+  "500": 500_00,
+  "1000": 1_000_00,
+};
+const AMOUNT_BANDS: FilterSelectOption[] = [
+  { value: "all", label: "Any amount" },
+  { value: "100", label: "$100+" },
+  { value: "500", label: "$500+" },
+  { value: "1000", label: "$1k+" },
+];
 
 const NUM = { fontVariant: ["tabular-nums" as const] };
 
@@ -174,14 +216,28 @@ function GiftsBody({
   const [search, setSearch] = useState("");
   const [openGiftId, setOpenGiftId] = useState<Id<"gifts"> | null>(null);
   const [addOpen, setAddOpen] = useState(false);
+  // Robust filtering (giving CRM v2, owner feedback): date-range preset (the
+  // one filter cheap enough to push server-side — see `listGifts`'s new
+  // `from`/`to` args) + client-side method/source + amount band.
+  const [datePreset, setDatePreset] = useState<GiftDatePreset>("all");
+  const [customFrom, setCustomFrom] = useState<number | undefined>(undefined);
+  const [customTo, setCustomTo] = useState<number | undefined>(undefined);
+  const [methodFilter, setMethodFilter] = useState("all");
+  const [amountBand, setAmountBand] = useState("all");
 
   const isAllScopes = isCentral && scopeSel === ALL_SCOPES_VALUE;
   const queryScope: GivingScope = isAllScopes
     ? "central"
     : (scopeSel as GivingScope);
+  const dateRange = resolveGiftDateRange(datePreset, Date.now(), {
+    from: customFrom,
+    to: customTo,
+  });
   const data = useQuery(api.givingPlatform.listGifts, {
     scope: queryScope,
     allScopes: isAllScopes,
+    from: dateRange.from,
+    to: dateRange.to,
   });
 
   // Central holders pick a book; chapter viewers stay on their lens.
@@ -193,22 +249,49 @@ function GiftsBody({
     })),
   ];
 
+  const minAmountCents = AMOUNT_BAND_CENTS[amountBand];
   const filtered = useMemo(() => {
     const gifts = (data?.gifts ?? []) as LedgerGift[];
     const q = search.trim().toLowerCase();
-    if (!q) return gifts;
-    return gifts.filter((g) =>
-      [g.donorName, g.note ?? "", g.bookLabel, sourceLabel(g.method)]
+    return gifts.filter((g) => {
+      if (methodFilter !== "all" && g.method !== methodFilter) return false;
+      if (minAmountCents !== undefined && g.amountCents < minAmountCents) return false;
+      if (!q) return true;
+      return [g.donorName, g.note ?? "", g.bookLabel, sourceLabel(g.method)]
         .join(" ")
         .toLowerCase()
-        .includes(q),
-    );
-  }, [data, search]);
+        .includes(q);
+    });
+  }, [data, search, methodFilter, minAmountCents]);
 
+  const filtersActive =
+    datePreset !== "all" || methodFilter !== "all" || amountBand !== "all";
   const searching = search.trim().length > 0;
   const width = isAllScopes
     ? COLS.date + COLS.donor + COLS.amount + COLS.source + COLS.book
     : COLS.date + COLS.donor + COLS.amount + COLS.source;
+
+  // Export (owner request #3) — exactly the CURRENT view: post date-range,
+  // post method/amount filters, post search `filtered` rows, in ledger order.
+  async function exportGifts() {
+    const headers = [
+      "Date",
+      "Donor",
+      "Amount",
+      "Method",
+      "Note",
+      ...(isAllScopes ? ["Book"] : []),
+    ];
+    const rows = filtered.map((g) => [
+      new Date(g.receivedAt).toLocaleDateString(),
+      g.donorName,
+      (g.amountCents / 100).toFixed(2),
+      sourceLabel(g.method),
+      g.note ?? "",
+      ...(isAllScopes ? [g.bookLabel] : []),
+    ]);
+    await exportCsv(`gifts-${Date.now()}.csv`, toCsv(headers, rows));
+  }
 
   return (
     <Screen maxWidth={FULL_WIDTH}>
@@ -216,13 +299,20 @@ function GiftsBody({
         <View className="mb-3 flex-row items-center justify-between">
           {data === undefined ? (
             <View />
-          ) : searching ? (
+          ) : searching || methodFilter !== "all" || amountBand !== "all" ? (
             <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
               {filtered.length} of {data.gifts.length}
             </Text>
           ) : (
             <GridCountLabel label="Gifts" count={data.gifts.length} />
           )}
+          <Button
+            title="Export"
+            icon="download"
+            size="sm"
+            variant="secondary"
+            onPress={() => void exportGifts()}
+          />
         </View>
         <View className="mb-3 flex-row flex-wrap items-center gap-2">
           {isCentral ? (
@@ -234,6 +324,42 @@ function GiftsBody({
               minWidth={200}
             />
           ) : null}
+          <FilterSelect
+            label="Date"
+            value={datePreset}
+            options={GIFT_DATE_PRESET_OPTIONS}
+            onChange={(v) => setDatePreset(v as GiftDatePreset)}
+            minWidth={170}
+          />
+          {datePreset === "custom" ? (
+            <>
+              <View>
+                <Text className="mb-1 text-2xs font-bold uppercase tracking-wider text-faint">
+                  From
+                </Text>
+                <DateTimeField value={customFrom ?? Date.now()} onChange={setCustomFrom} />
+              </View>
+              <View>
+                <Text className="mb-1 text-2xs font-bold uppercase tracking-wider text-faint">
+                  To
+                </Text>
+                <DateTimeField value={customTo ?? Date.now()} onChange={setCustomTo} />
+              </View>
+            </>
+          ) : null}
+          <FilterSelect
+            label="Method"
+            value={methodFilter}
+            options={METHOD_FILTERS}
+            onChange={setMethodFilter}
+            minWidth={200}
+          />
+          <FilterSelect
+            label="Amount"
+            value={amountBand}
+            options={AMOUNT_BANDS}
+            onChange={setAmountBand}
+          />
           <View className="min-w-[160px] flex-1">
             <TextField
               value={search}
@@ -259,11 +385,19 @@ function GiftsBody({
         ) : filtered.length === 0 ? (
           <EmptyState
             icon="gift"
-            title={search ? "No gifts match that search" : "No gifts yet"}
+            title={
+              search
+                ? "No gifts match that search"
+                : filtersActive
+                  ? "No gifts match those filters"
+                  : "No gifts yet"
+            }
             message={
               search
                 ? "Try a different search term."
-                : "Add a gift, or bring in history from the Import tab."
+                : filtersActive
+                  ? "Try widening a filter above."
+                  : "Add a gift, or bring in history from the Import tab."
             }
           />
         ) : null}
