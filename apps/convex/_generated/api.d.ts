@@ -183,6 +183,7 @@ import type * as templates from "../templates.js";
 import type * as territories from "../territories.js";
 import type * as ticketing from "../ticketing.js";
 import type * as ticketingEmails from "../ticketingEmails.js";
+import type * as ticketingSms from "../ticketingSms.js";
 import type * as ticketingVerification from "../ticketingVerification.js";
 import type * as transfers from "../transfers.js";
 import type * as webhooks from "../webhooks.js";
@@ -370,6 +371,7 @@ declare const fullApi: ApiFromModules<{
   territories: typeof territories;
   ticketing: typeof ticketing;
   ticketingEmails: typeof ticketingEmails;
+  ticketingSms: typeof ticketingSms;
   ticketingVerification: typeof ticketingVerification;
   transfers: typeof transfers;
   webhooks: typeof webhooks;

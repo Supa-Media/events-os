@@ -121,6 +121,50 @@ export function registerTicketApiRoutes(http: HttpRouter): void {
     ),
   });
 
+  // Phone verification (Attendance F) — the SMS mirror of verify-email /
+  // resend-code, plus begin-phone (phone verification has no public submission
+  // entry yet, so a phone guest starts the flow explicitly).
+  http.route({
+    path: "/api/tickets/begin-phone",
+    method: "POST",
+    handler: jsonPost((ctx, body) =>
+      ctx.runMutation(api.ticketingVerification.beginRsvpPhoneVerification, {
+        slug: String(body.slug ?? ""),
+        token: String(body.token ?? ""),
+      }),
+    ),
+  });
+
+  http.route({
+    path: "/api/tickets/verify-phone",
+    method: "POST",
+    handler: jsonPost(async (ctx, body) => {
+      const result = await ctx.runMutation(
+        api.ticketingVerification.verifyRsvpPhone,
+        {
+          slug: String(body.slug ?? ""),
+          token: String(body.token ?? ""),
+          code: String(body.code ?? ""),
+        },
+      );
+      // A wrong code is a soft failure (so the attempt count persists);
+      // surface it as the same 400 shape as thrown errors.
+      if (!result.ok) throw new ConvexError({ message: result.error });
+      return result;
+    }),
+  });
+
+  http.route({
+    path: "/api/tickets/resend-phone-code",
+    method: "POST",
+    handler: jsonPost((ctx, body) =>
+      ctx.runMutation(api.ticketingVerification.resendRsvpPhoneCode, {
+        slug: String(body.slug ?? ""),
+        token: String(body.token ?? ""),
+      }),
+    ),
+  });
+
   http.route({
     path: "/api/tickets/comment",
     method: "POST",

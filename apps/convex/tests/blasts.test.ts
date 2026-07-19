@@ -130,18 +130,28 @@ describe("blast audience resolution", () => {
 });
 
 describe("sendBlast guardrails", () => {
-  test("rejects the SMS channel until Twilio is connected", async () => {
-    const t = newT();
-    const s = await setupChapter(t);
-    const eventId = await seedEventWithGuests(s);
-    await expect(
-      s.as.mutation(api.blasts.sendBlast, {
+  test("accepts the SMS channel now (Attendance F); delivery records the outcome", async () => {
+    // The old SMS_NOT_CONNECTED refusal is gone — an unconfigured Twilio is a
+    // recorded delivery error, not a rejected send. (Detailed SMS delivery
+    // behavior is covered in twilio.test.ts.)
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      const eventId = await seedEventWithGuests(s);
+      await s.as.mutation(api.blasts.sendBlast, {
         eventId,
         channel: "sms",
         body: "hi",
         audience: "everyone",
-      }),
-    ).rejects.toThrow(ConvexError);
+      });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      const history = await s.as.query(api.blasts.listBlasts, { eventId });
+      expect(history).toHaveLength(1);
+      expect(history[0].channel).toBe("sms");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("rejects an empty body", async () => {

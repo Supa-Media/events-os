@@ -1,7 +1,9 @@
 /**
  * Blasts — compose an announcement to an audience segment and review past
- * sends. Email delivers today; SMS is visible-but-disabled until Twilio is
- * connected (the backend refuses `channel: "sms"` with SMS_NOT_CONNECTED).
+ * sends. Email and SMS both deliver (Attendance F). The SMS channel enables
+ * only when Twilio is connected (previewBlastAudience.smsConfigured); when it
+ * isn't, the chip stays selectable but the composer shows a hint pointing at
+ * Profile → Integrations. Each channel shows its own live recipient count.
  */
 import { useState } from "react";
 import { Text, View } from "react-native";
@@ -14,6 +16,7 @@ import type { ActionRunner } from "../../../lib/useActionToast";
 import { confirmAction } from "./helpers";
 
 type Audience = "everyone" | "going" | "maybe" | "ticket_holders";
+type Channel = "email" | "sms";
 
 const AUDIENCES: Array<{ value: Audience; label: string }> = [
   { value: "everyone", label: "Everyone" },
@@ -44,15 +47,27 @@ export function BlastComposerCard({
   const sendBlast = useMutation(api.blasts.sendBlast);
 
   const [audience, setAudience] = useState<Audience>("everyone");
+  const [channel, setChannel] = useState<Channel>("email");
   const [subject, setSubject] = useState("");
   const [body, setBody] = useState("");
   const [sending, setSending] = useState(false);
 
+  const preview = useQuery(api.blasts.previewBlastAudience, { eventId, audience });
+  const smsConfigured = preview?.smsConfigured ?? false;
+  const recipientCount =
+    preview === undefined
+      ? null
+      : channel === "sms"
+        ? preview.smsRecipients
+        : preview.emailRecipients;
+  const smsBlocked = channel === "sms" && !smsConfigured;
+
   function handleSend() {
-    if (!body.trim()) return;
+    if (!body.trim() || smsBlocked) return;
+    const verb = channel === "sms" ? "texts" : "emails";
     confirmAction({
       title: "Send blast?",
-      message: `This emails "${audienceLabelFor(audience)}" right away.`,
+      message: `This ${verb} "${audienceLabelFor(audience)}" right away.`,
       confirmLabel: "Send",
       onConfirm: () => {
         setSending(true);
@@ -60,8 +75,9 @@ export function BlastComposerCard({
           () =>
             sendBlast({
               eventId,
-              channel: "email",
-              subject: subject.trim() || undefined,
+              channel,
+              subject:
+                channel === "email" ? subject.trim() || undefined : undefined,
               body: body.trim(),
               audience,
             }),
@@ -94,19 +110,39 @@ export function BlastComposerCard({
 
       <Field label="Channel">
         <View className="flex-row items-center gap-2">
-          <Pill label="Email" selected onPress={() => {}} />
-          {/* SMS ships once Twilio is connected — static (disabled) chip. */}
-          <Pill label="SMS" />
-          <Text className="text-xs text-faint">Twilio soon</Text>
+          <Pill
+            label="Email"
+            selected={channel === "email"}
+            onPress={() => setChannel("email")}
+          />
+          <Pill
+            label="SMS"
+            selected={channel === "sms"}
+            onPress={() => setChannel("sms")}
+          />
+          {recipientCount !== null ? (
+            <Text className="text-xs text-muted">
+              {recipientCount} recipient{recipientCount === 1 ? "" : "s"}
+            </Text>
+          ) : null}
         </View>
       </Field>
 
-      <TextField
-        label="Subject"
-        value={subject}
-        onChangeText={setSubject}
-        placeholder="An update on the event (optional)"
-      />
+      {smsBlocked ? (
+        <Text className="mb-2 text-xs text-danger">
+          Twilio isn’t connected — a super admin can set it up in Profile →
+          Integrations.
+        </Text>
+      ) : null}
+
+      {channel === "email" ? (
+        <TextField
+          label="Subject"
+          value={subject}
+          onChangeText={setSubject}
+          placeholder="An update on the event (optional)"
+        />
+      ) : null}
       <TextField
         label="Message"
         value={body}
@@ -116,12 +152,17 @@ export function BlastComposerCard({
         numberOfLines={5}
         style={{ minHeight: 110, textAlignVertical: "top" }}
       />
+      {channel === "sms" ? (
+        <Text className="mb-2 text-xs text-muted">
+          A “Reply STOP to opt out” line is appended automatically.
+        </Text>
+      ) : null}
       <View className="flex-row justify-end">
         <Button
           title="Send blast"
           icon="send"
           loading={sending}
-          disabled={body.trim() === ""}
+          disabled={body.trim() === "" || smsBlocked}
           onPress={handleSend}
         />
       </View>
