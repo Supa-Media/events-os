@@ -51,6 +51,7 @@ import {
   DONOR_SOURCES,
   DONOR_STATUSES,
   GIFT_METHODS,
+  donorAddressValidator,
 } from "./schema/givingPlatform";
 
 // ── Validators ────────────────────────────────────────────────────────────────
@@ -324,6 +325,8 @@ export const upsertDonor = mutation({
     ownerPersonId: v.optional(v.id("people")),
     notes: v.optional(v.string()),
     source: v.optional(donorSourceValidator),
+    // Optional mailing address for postal outreach (F-6 donor address).
+    address: v.optional(donorAddressValidator),
   },
   returns: v.id("donors"),
   handler: async (ctx, args) => {
@@ -350,6 +353,7 @@ export const upsertDonor = mutation({
         : {}),
       ...(args.notes !== undefined ? { notes: args.notes.trim() || undefined } : {}),
       ...(args.source !== undefined ? { source: args.source } : {}),
+      ...(args.address !== undefined ? { address: args.address } : {}),
     };
 
     if (args.donorId) {

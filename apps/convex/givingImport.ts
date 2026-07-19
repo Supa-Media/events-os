@@ -63,7 +63,11 @@ import { chapterRoster } from "./lib/org";
 import { requireGivingManage, type GivingScope } from "./lib/givingAccess";
 import { matchOrCreateDonor, recordGiftForDonor } from "./lib/givingDonors";
 import { findDonorInScope, hasPersonIdentifier } from "./lib/givingDonors";
-import { DONOR_KINDS, GIFT_METHODS } from "./schema/givingPlatform";
+import {
+  DONOR_KINDS,
+  GIFT_METHODS,
+  donorAddressValidator,
+} from "./schema/givingPlatform";
 import { PLEDGE_FLOOR_CENTS } from "./givingPledges";
 
 // ── Constants ──────────────────────────────────────────────────────────────
@@ -87,11 +91,11 @@ const TICKET_ORDER_SCAN_LIMIT = 500;
 
 /** Bounded `by_donor` read for the suspected-duplicate heuristic (a donor's
  *  gift count is far smaller than this in practice). */
-const GIFT_HISTORY_SCAN_LIMIT = 50;
+export const GIFT_HISTORY_SCAN_LIMIT = 50;
 
 /** Bounded `by_donor` read for a recurring row's externalRef dedup — mirrors
  *  `givingPledges.ts`'s own `DONOR_PLEDGE_LIMIT`. */
-const DONOR_PLEDGE_SCAN_LIMIT = 50;
+export const DONOR_PLEDGE_SCAN_LIMIT = 50;
 
 /** The suspected-duplicate heuristic's "within 24h" window. */
 const SUSPECTED_DUP_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -106,7 +110,7 @@ const CANONICAL_ROW_TYPES = ["gift", "ticket", "contact", "recurring"] as const;
 
 /** The one canonical row shape every import (paste/CSV, any source) parses
  *  into client-side before calling `previewImport`/`importCanonical`. */
-const canonicalImportRowValidator = v.object({
+export const canonicalImportRowValidator = v.object({
   rowType: v.union(...CANONICAL_ROW_TYPES.map((t) => v.literal(t))),
   name: v.string(),
   email: v.optional(v.string()),
@@ -119,8 +123,13 @@ const canonicalImportRowValidator = v.object({
   note: v.optional(v.string()), // gift rows
   recurringMonthlyCents: v.optional(v.number()), // recurring rows
   eventHint: v.optional(v.string()), // ticket rows — event name/slug/date hint
+  // Optional mailing address on a gift/recurring row — flows to the donor on
+  // creation, and fills a matched donor's address only if it's still blank
+  // (`fillDonorAddressIfBlank`, never overwrites). Ignored for ticket/contact
+  // rows (those never touch `donors`).
+  address: v.optional(donorAddressValidator),
 });
-type CanonicalImportRow = Infer<typeof canonicalImportRowValidator>;
+export type CanonicalImportRow = Infer<typeof canonicalImportRowValidator>;
 
 /** Reused across every row type: how the row's identity (email/phone/name)
  *  resolved against an existing donor/person, or "n/a" when no resolution was
@@ -229,7 +238,7 @@ const commitResultValidator = v.object({
 // ── Shared pure helpers ────────────────────────────────────────────────────
 
 /** True iff two timestamps are within the suspected-duplicate window. */
-function withinSuspectedWindow(a: number, b: number): boolean {
+export function withinSuspectedWindow(a: number, b: number): boolean {
   return Math.abs(a - b) <= SUSPECTED_DUP_WINDOW_MS;
 }
 
@@ -247,7 +256,7 @@ function bump(counts: Record<string, number>, key: string): void {
   counts[key] = (counts[key] ?? 0) + 1;
 }
 
-type IdentityLike = { name: string; email?: string; phone?: string };
+export type IdentityLike = { name: string; email?: string; phone?: string };
 
 /**
  * Match `opts` against `pool` in email → phone → name priority — the SAME
@@ -255,7 +264,7 @@ type IdentityLike = { name: string; email?: string; phone?: string };
  * linking (territories P5), reused here for every row type's identity
  * resolution (donor OR people, the shape is identical either way).
  */
-function matchIdentity<T extends IdentityLike>(
+export function matchIdentity<T extends IdentityLike>(
   pool: readonly T[],
   opts: { email?: string; phone?: string; name?: string },
 ): { match: T | null; via: Exclude<DonorMatch, "new" | "n/a"> | null } {
@@ -288,7 +297,7 @@ function matchIdentity<T extends IdentityLike>(
  * as a bare "Worship Night"). Returns `null` on no match — the row simply
  * falls back to `history-only`, never a hard failure.
  */
-async function findEventByHint(
+export async function findEventByHint(
   ctx: QueryCtx,
   chapterId: Id<"chapters">,
   eventHint: string,
@@ -319,7 +328,7 @@ async function findEventByHint(
  * RSVP identity), then a bounded `by_event` scan of `ticketOrders` matched to
  * that RSVP id in memory.
  */
-async function findPaidTicketOrder(
+export async function findPaidTicketOrder(
   ctx: QueryCtx,
   eventId: Id<"events">,
   email: string,
@@ -795,7 +804,7 @@ type CommitCounters = {
  * from Giving") so the row reads as import-originated. Never touches
  * `donors` — a contact/ticket row creates no donor, ever.
  */
-async function matchOrCreatePersonContact(
+export async function matchOrCreatePersonContact(
   ctx: MutationCtx,
   chapterId: Id<"chapters">,
   args: { name: string; email?: string; phone?: string },
@@ -830,7 +839,7 @@ async function matchOrCreatePersonContact(
  * if this exact note is already present (a re-run of the same import file),
  * nothing is written, so re-committing never grows the field unboundedly.
  */
-async function appendPersonNote(
+export async function appendPersonNote(
   ctx: MutationCtx,
   personId: Id<"people">,
   note: string,
@@ -840,6 +849,25 @@ async function appendPersonNote(
   const existing = person.notes?.trim();
   if (existing && existing.includes(note)) return;
   await ctx.db.patch(personId, { notes: existing ? `${existing}\n${note}` : note });
+}
+
+/**
+ * Fill a donor's mailing `address` from an import row ONLY if the donor has
+ * none yet — a matched donor's existing address is authoritative and never
+ * overwritten (fill-if-blank). A no-op when the row carries no address. Shared
+ * by the canonical import's gift/recurring commit and the historical backfill,
+ * so both plumb address identically.
+ */
+export async function fillDonorAddressIfBlank(
+  ctx: MutationCtx,
+  donorId: Id<"donors">,
+  address: CanonicalImportRow["address"],
+): Promise<void> {
+  if (!address) return;
+  const donor = await ctx.db.get(donorId);
+  if (donor && donor.address === undefined) {
+    await ctx.db.patch(donorId, { address });
+  }
 }
 
 async function commitGiftRow(
@@ -874,6 +902,7 @@ async function commitGiftRow(
     kind: row.kind,
     source: "givebutter-import",
   });
+  await fillDonorAddressIfBlank(ctx, donorId, row.address);
 
   if (!row.externalRef) {
     const history = await ctx.db
@@ -922,6 +951,7 @@ async function commitRecurringRow(
     kind: row.kind,
     source: "givebutter-import",
   });
+  await fillDonorAddressIfBlank(ctx, donorId, row.address);
   if (row.externalRef) {
     const donorPledges = await ctx.db
       .query("pledges")

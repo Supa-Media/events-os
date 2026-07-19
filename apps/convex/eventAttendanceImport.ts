@@ -74,7 +74,7 @@ export const attendanceRowValidator = v.object({
   note: v.optional(v.string()),
   plusOneOf: v.optional(v.string()),
 });
-type AttendanceRow = Infer<typeof attendanceRowValidator>;
+export type AttendanceRow = Infer<typeof attendanceRowValidator>;
 
 const dispositionValidator = v.union(
   v.literal("new"),
@@ -193,7 +193,7 @@ function matchSnapshot(
 }
 
 /** Load the event's page (needed for chapterId + counters), or throw NO_PAGE. */
-async function requireEventPage(
+export async function requireEventPage(
   ctx: QueryCtx,
   eventId: Id<"events">,
 ): Promise<Doc<"eventPages">> {
@@ -214,22 +214,22 @@ async function requireEventPage(
 // PREVIEW — read-only; simulates the commit (incl. in-batch dedup), no writes.
 // ═══════════════════════════════════════════════════════════════════════════
 
-export const previewAttendanceImport = query({
-  args: { eventId: v.id("events"), rows: v.array(attendanceRowValidator) },
-  returns: v.object({
-    rows: v.array(previewRowValidator),
-    summary: summaryValidator,
-  }),
-  handler: async (ctx, { eventId, rows }) => {
-    await requireEvent(ctx, eventId);
-    await requireEventPage(ctx, eventId);
-    if (rows.length > MAX_IMPORT_ROWS) {
-      throw new ConvexError({
-        code: "INVALID_INPUT",
-        message: `At most ${MAX_IMPORT_ROWS} rows per call.`,
-      });
-    }
-
+/**
+ * Classify a bounded set of attendance rows against an event's existing
+ * `rsvps` WITHOUT writing anything: the per-row disposition + summary a commit
+ * WOULD produce (in-batch dedup simulated, incl. the reads-your-writes email
+ * effect). Reused by the public `previewAttendanceImport` query and the
+ * historical backfill's dry run, so a dry run predicts a commit exactly.
+ */
+export async function classifyAttendanceRows(
+  ctx: QueryCtx,
+  eventId: Id<"events">,
+  rows: AttendanceRow[],
+): Promise<{
+  rows: Infer<typeof previewRowValidator>[];
+  summary: Infer<typeof summaryValidator>;
+}> {
+  {
     const snapshot = await ctx.db
       .query("rsvps")
       .withIndex("by_event", (q) => q.eq("eventId", eventId))
@@ -355,6 +355,25 @@ export const previewAttendanceImport = query({
         emaillessCount,
       },
     };
+  }
+}
+
+export const previewAttendanceImport = query({
+  args: { eventId: v.id("events"), rows: v.array(attendanceRowValidator) },
+  returns: v.object({
+    rows: v.array(previewRowValidator),
+    summary: summaryValidator,
+  }),
+  handler: async (ctx, { eventId, rows }) => {
+    await requireEvent(ctx, eventId);
+    await requireEventPage(ctx, eventId);
+    if (rows.length > MAX_IMPORT_ROWS) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: `At most ${MAX_IMPORT_ROWS} rows per call.`,
+      });
+    }
+    return await classifyAttendanceRows(ctx, eventId, rows);
   },
 });
 
@@ -373,18 +392,20 @@ type CommitCounters = {
 type StatusDelta = { going: number; maybe: number; not_going: number };
 
 /**
- * Commit ONE batch (≤ `IMPORT_BATCH_SIZE`), self-scheduling the remainder as
- * `commitAttendanceImportRest`. Applies the whole batch's counter deltas in a
- * single `eventPages` patch. Shared by the gated public entry + the internal
- * continuation.
+ * Apply a bounded set of attendance rows to one event's `rsvps` in a SINGLE
+ * transaction: the match/insert/update loop plus the whole-set counter delta
+ * folded into ONE `eventPages` patch. Does NOT slice or self-reschedule — the
+ * caller is responsible for keeping `rows` within a safe per-transaction size
+ * (`commitBatch` slices to `IMPORT_BATCH_SIZE`; the historical backfill pages
+ * with its own window). Reused verbatim by both so their write behavior — the
+ * dedup cascade, the counter math, idempotency — is identical.
  */
-async function commitBatch(
+export async function applyAttendanceRows(
   ctx: MutationCtx,
   eventId: Id<"events">,
   page: Doc<"eventPages">,
   rows: AttendanceRow[],
-): Promise<Infer<typeof commitResultValidator>> {
-  const slice = rows.slice(0, IMPORT_BATCH_SIZE);
+): Promise<CommitCounters> {
   const counters: CommitCounters = {
     inserted: 0,
     updated: 0,
@@ -393,7 +414,7 @@ async function commitBatch(
   };
   const delta: StatusDelta = { going: 0, maybe: 0, not_going: 0 };
 
-  // ONE bounded snapshot per batch for phone/name dedup. In-batch inserts are
+  // ONE bounded snapshot per call for phone/name dedup. In-batch inserts are
   // NOT in this captured array, so two same-name rows both insert (distinct
   // people); a re-run's snapshot DOES contain the prior inserts, so each row
   // re-matches its own — zero deltas.
@@ -404,7 +425,7 @@ async function commitBatch(
   const claimed = new Set<Id<"rsvps">>();
   const now = Date.now();
 
-  for (const row of slice) {
+  for (const row of rows) {
     if (isInvalid(row)) {
       counters.skippedInvalid++;
       continue;
@@ -475,7 +496,7 @@ async function commitBatch(
     counters.inserted++;
   }
 
-  // ONE counter patch for the whole batch (never per-row bumpRsvpCounters).
+  // ONE counter patch for the whole set (never per-row bumpRsvpCounters).
   if (delta.going !== 0 || delta.maybe !== 0 || delta.not_going !== 0) {
     const fresh = await ctx.db.get(page._id);
     if (fresh) {
@@ -486,6 +507,24 @@ async function commitBatch(
       });
     }
   }
+
+  return counters;
+}
+
+/**
+ * Commit ONE batch (≤ `IMPORT_BATCH_SIZE`) via `applyAttendanceRows`, then
+ * self-schedule the remainder as `commitAttendanceImportRest` (the house
+ * pattern `givingImport.ts` established). Shared by the gated public entry +
+ * the internal continuation.
+ */
+async function commitBatch(
+  ctx: MutationCtx,
+  eventId: Id<"events">,
+  page: Doc<"eventPages">,
+  rows: AttendanceRow[],
+): Promise<Infer<typeof commitResultValidator>> {
+  const slice = rows.slice(0, IMPORT_BATCH_SIZE);
+  const counters = await applyAttendanceRows(ctx, eventId, page, slice);
 
   const remaining = rows.slice(IMPORT_BATCH_SIZE);
   if (remaining.length > 0) {

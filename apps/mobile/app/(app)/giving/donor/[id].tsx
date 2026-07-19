@@ -178,6 +178,8 @@ export default function DonorDetailScreen() {
           />
         </View>
 
+        <MailingAddress address={donor.address} />
+
         {donor.notes ? (
           <View className="mb-4">
             <SectionHeader title="Notes" />
@@ -725,6 +727,49 @@ function EditGiftSheet({
         </View>
       </View>
     </Modal>
+  );
+}
+
+/** Read-only mailing address block (for postal outreach). Renders nothing when
+ *  the donor has no address on file. `getDonor` returns the raw donor doc, so
+ *  `address` is the optional `{line1,line2,city,state,postalCode,country}`. */
+function MailingAddress({
+  address,
+}: {
+  address?: {
+    line1?: string;
+    line2?: string;
+    city?: string;
+    state?: string;
+    postalCode?: string;
+    country?: string;
+  };
+}) {
+  if (!address) return null;
+  const cityLine = [
+    address.city,
+    [address.state, address.postalCode].filter(Boolean).join(" "),
+  ]
+    .filter((part) => part && part.length > 0)
+    .join(", ");
+  const lines = [
+    address.line1,
+    address.line2,
+    cityLine || undefined,
+    address.country,
+  ].filter((line): line is string => !!line && line.length > 0);
+  if (lines.length === 0) return null;
+  return (
+    <View className="mb-4">
+      <SectionHeader title="Mailing address" />
+      <Card>
+        {lines.map((line, i) => (
+          <Text key={i} className="text-sm text-ink">
+            {line}
+          </Text>
+        ))}
+      </Card>
+    </View>
   );
 }
 
