@@ -19,6 +19,18 @@
  * pull. The manual button has NO date gate, so pointing an old campaign id at a
  * past event simply backfills it; the cron alone stops polling dead campaigns.
  *
+ * ── NO CAMPAIGN-SCOPED TICKETS ENDPOINT ──────────────────────────────────────
+ * Givebutter's v1 API has NO `GET /v1/campaigns/{id}/tickets` — that endpoint
+ * 404s for every campaign (it was the production bug this file used to have).
+ * `GET /v1/tickets` lists ALL sold tickets account-wide (Laravel-paginated) and
+ * carries no campaign reference at all — only `transaction_id`. Campaign
+ * ownership lives on the TRANSACTION (`GET /v1/transactions`, also
+ * account-wide, has `campaign_id`). So a campaign sync is a TWO-SWEEP JOIN:
+ * sweep `/v1/transactions` to build the set of transaction ids belonging to
+ * this campaign, then sweep `/v1/tickets` and keep only tickets whose
+ * `transaction_id` is in that set. `/v1/campaigns/{campaign}/items/tickets`
+ * exists but describes ticket TYPES (tiers), not sold tickets — not used here.
+ *
  * ── MONEY INVARIANT ──────────────────────────────────────────────────────────
  * A synced Givebutter order is DISPLAY ATTRIBUTION ONLY. It touches EXACTLY three
  * things: `eventPages` rollups (`ticketsSoldCount` / `revenueCents` / RSVP
@@ -29,14 +41,18 @@
  * they are marked `externalProvider:"givebutter"` + `externalRef` instead.
  *
  * ── REFUNDS (v1 limitation) ──────────────────────────────────────────────────
- * Givebutter exposes NO refund webhook or refund flag on the ticket object, so a
- * refunded/voided ticket is NOT reflected here: the mirror order stays `paid` and
- * the rollups stay counted. This is a documented v1 gap. The forward-compat fix
- * is a full-list RECONCILIATION pass — re-list the campaign's tickets, diff
- * against our `by_external_ref` mirror rows, and void/refund the orders whose
- * Givebutter ticket has disappeared or gone refunded — but that requires a
- * reliable "this ticket was refunded" signal Givebutter does not expose today.
- * See the stub note on `applyGivebutterTickets`.
+ * The transaction sweep now skips transactions Givebutter has marked refunded
+ * (`refunded === true` or the string `"true"` — the spec types the field as a
+ * string, so we're conservative about which encodings count as refunded) —
+ * newly-refunded transactions are excluded from the join BEFORE import, so
+ * their tickets are never applied. But there is still no refund signal on the
+ * ticket object itself and no webhook, so a transaction that gets refunded
+ * AFTER its tickets have already been synced is NOT reflected: the mirror
+ * order stays `paid` and the rollups stay counted. This is a documented v1
+ * gap. The forward-compat fix is a full-list RECONCILIATION pass — re-sweep
+ * transactions/tickets, diff against our `by_external_ref` mirror rows, and
+ * void/refund the orders whose transaction has since gone refunded. See the
+ * stub note on `applyGivebutterTickets`.
  */
 import {
   internalAction,
@@ -474,9 +490,12 @@ export const applyGivebutterTickets = internalMutation({
 
 // ── Fetch + normalize (the network side, no "use node") ──────────────────────
 
-/** Raw Givebutter ticket object (the fields we read). */
+/** Raw Givebutter ticket object (the fields we read). NO campaign reference —
+ *  only `transaction_id`, which is how a ticket is joined back to a campaign
+ *  (via the transaction sweep — see the file-header note). */
 interface GivebutterTicketRaw {
   id?: number | string;
+  transaction_id?: number | string;
   name?: string;
   first_name?: string;
   last_name?: string;
@@ -492,6 +511,19 @@ interface GivebutterTicketsPage {
   data?: GivebutterTicketRaw[];
   links?: { next?: string | null };
   meta?: { current_page?: number; last_page?: number };
+}
+
+/** Raw Givebutter transaction object (the fields we read). Carries the
+ *  `campaign_id` a ticket lacks — this is the join key. */
+interface GivebutterTransactionRaw {
+  id?: number | string;
+  campaign_id?: number | string | null;
+  refunded?: boolean | string | null;
+}
+
+interface GivebutterTransactionsPage {
+  data?: GivebutterTransactionRaw[];
+  links?: { next?: string | null };
 }
 
 /** Raw Givebutter campaign object (the fields we match against). */
@@ -570,6 +602,76 @@ async function resolveCampaignId(
 }
 
 /**
+ * Validate a numeric configured value against `GET /v1/campaigns/{id}`. 200 →
+ * the value IS the numeric campaign id, used as-is (fast path, unchanged for
+ * every admin who entered the id correctly). 404 → the value only LOOKS
+ * numeric but is actually a campaign CODE or slug (e.g. "686283" could be a
+ * code) — the caller falls through to `resolveCampaignId`. Any other non-ok
+ * status is a hard failure.
+ */
+async function validateNumericCampaignId(
+  key: string,
+  value: string,
+): Promise<"ok" | "not_found"> {
+  const res = await fetch(
+    `${GIVEBUTTER_API_BASE}/campaigns/${encodeURIComponent(value)}`,
+    {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        Accept: "application/json",
+      },
+    },
+  );
+  if (res.status === 404) return "not_found";
+  if (!res.ok) {
+    throw new Error(
+      `HTTP ${res.status} looking up Givebutter campaign "${value}".`,
+    );
+  }
+  // 200 alone means "use as-is" — no field off the body is needed.
+  return "ok";
+}
+
+/**
+ * Sweep `GET /v1/transactions` (Laravel-paginated, follows `links.next`,
+ * capped at `GIVEBUTTER_MAX_PAGES`) and return the set of `String(id)` for
+ * transactions belonging to `campaignId` — the join key a ticket lacks (see
+ * the file-header note). Skips transactions Givebutter has marked refunded
+ * (`refunded === true` or the string `"true"` only — the spec types the field
+ * as a string, so any other encoding is treated as NOT refunded to avoid
+ * dropping valid transactions on an unexpected shape).
+ */
+async function sweepCampaignTransactionIds(
+  key: string,
+  campaignId: string,
+): Promise<Set<string>> {
+  const ids = new Set<string>();
+  let url: string | null = `${GIVEBUTTER_API_BASE}/transactions`;
+  for (let page = 0; page < GIVEBUTTER_MAX_PAGES && url; page++) {
+    const res = await fetch(url, {
+      method: "GET",
+      headers: {
+        Authorization: `Bearer ${key}`,
+        Accept: "application/json",
+      },
+    });
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status} fetching Givebutter transactions.`);
+    }
+    const body = (await res.json()) as GivebutterTransactionsPage;
+    for (const txn of body.data ?? []) {
+      if (txn.id === undefined || txn.id === null || txn.id === "") continue;
+      if (String(txn.campaign_id) !== campaignId) continue;
+      if (txn.refunded === true || txn.refunded === "true") continue;
+      ids.add(String(txn.id));
+    }
+    url = body.links?.next ?? null;
+  }
+  return ids;
+}
+
+/**
  * Resolve the Givebutter API key for a sync run: the in-app superuser setting
  * (`integrationSettings.readGivebutterApiKey`, PR E) takes precedence, else
  * the deployment env var, else `null` (the caller degrades to a no-op).
@@ -632,12 +734,22 @@ function normalizeTicket(raw: GivebutterTicketRaw): GbTicket | null {
  *
  * CAMPAIGN VALUE RESOLUTION: the configured value is often not the numeric id
  * — the UI hint says "found in your Givebutter campaign URL", which yields a
- * SLUG (e.g. `public-worship-field-day-um8he0`), and Givebutter also exposes
- * a short CODE. Only the numeric id works against the tickets endpoint, so a
- * non-numeric value is resolved via `/v1/campaigns` first (see
+ * SLUG (e.g. `public-worship-field-day-um8he0`), and Givebutter also exposes a
+ * short CODE, which can itself be all-digits (e.g. "686283"). So a numeric
+ * value is first VALIDATED against `GET /v1/campaigns/{id}`
+ * (`validateNumericCampaignId`): 200 → use as-is; 404 → it wasn't really the
+ * id, fall through to the code/slug lookup below. A non-numeric value (or a
+ * numeric one that 404'd) is resolved via `/v1/campaigns` (see
  * `resolveCampaignId`); on a match the resolved id is used for this run AND
  * persisted back onto the page (self-heal, one-time — see
- * `setResolvedCampaignId`), so every later sync skips the lookup entirely.
+ * `setResolvedCampaignId`), so every later sync skips both lookups entirely.
+ *
+ * TICKET FETCH: there is no campaign-scoped tickets endpoint (see the
+ * file-header note), so this is a TWO-SWEEP JOIN — sweep `/v1/transactions`
+ * for this campaign's (non-refunded) transaction ids, then sweep
+ * `/v1/tickets` and keep only tickets whose `transaction_id` is in that set.
+ * If the transaction sweep comes back empty, the ticket sweep is skipped
+ * entirely (nothing could match).
  */
 async function syncOneCampaign(
   ctx: ActionCtx,
@@ -658,53 +770,67 @@ async function syncOneCampaign(
 
   let errorMessage: string | null = null;
   try {
-    let campaignId = config.campaignId;
-    if (!isNumericCampaignId(campaignId)) {
-      const resolved = await resolveCampaignId(key, campaignId);
-      if (!resolved) {
+    let campaignId = config.campaignId.trim();
+    let resolved = false;
+    if (isNumericCampaignId(campaignId)) {
+      const status = await validateNumericCampaignId(key, campaignId);
+      resolved = status === "ok";
+    }
+    if (!resolved) {
+      const lookedUp = await resolveCampaignId(key, campaignId);
+      if (!lookedUp) {
         throw new Error(
           "Campaign not found — enter the numeric ID, code, or slug from Givebutter.",
         );
       }
-      campaignId = resolved;
-      // Self-heal: persist the numeric id so future syncs (manual + cron)
-      // skip this lookup entirely.
-      await ctx.runMutation(internal.givebutterSync.setResolvedCampaignId, {
-        eventId,
-        campaignId: resolved,
-      });
-    }
-
-    let url: string | null = `${GIVEBUTTER_API_BASE}/campaigns/${encodeURIComponent(
-      campaignId,
-    )}/tickets`;
-    for (let page = 0; page < GIVEBUTTER_MAX_PAGES && url; page++) {
-      const res = await fetch(url, {
-        method: "GET",
-        headers: {
-          Authorization: `Bearer ${key}`,
-          Accept: "application/json",
-        },
-      });
-      if (!res.ok) {
-        throw new Error(
-          `HTTP ${res.status} fetching Givebutter tickets — check the campaign ID.`,
-        );
-      }
-      const body = (await res.json()) as GivebutterTicketsPage;
-      const rows = body.data ?? [];
-      const normalized: GbTicket[] = [];
-      for (const row of rows) {
-        const t = normalizeTicket(row);
-        if (t) normalized.push(t);
-      }
-      if (normalized.length > 0) {
-        await ctx.runMutation(internal.givebutterSync.applyGivebutterTickets, {
+      if (lookedUp !== campaignId) {
+        // Self-heal: persist the numeric id so future syncs (manual + cron)
+        // skip both lookups entirely.
+        await ctx.runMutation(internal.givebutterSync.setResolvedCampaignId, {
           eventId,
-          tickets: normalized,
+          campaignId: lookedUp,
         });
       }
-      url = body.links?.next ?? null;
+      campaignId = lookedUp;
+    }
+
+    const transactionIds = await sweepCampaignTransactionIds(key, campaignId);
+    if (transactionIds.size > 0) {
+      let url: string | null = `${GIVEBUTTER_API_BASE}/tickets`;
+      for (let page = 0; page < GIVEBUTTER_MAX_PAGES && url; page++) {
+        const res = await fetch(url, {
+          method: "GET",
+          headers: {
+            Authorization: `Bearer ${key}`,
+            Accept: "application/json",
+          },
+        });
+        if (!res.ok) {
+          throw new Error(`HTTP ${res.status} fetching Givebutter tickets.`);
+        }
+        const body = (await res.json()) as GivebutterTicketsPage;
+        const rows = body.data ?? [];
+        const normalized: GbTicket[] = [];
+        for (const row of rows) {
+          if (
+            row.transaction_id === undefined ||
+            row.transaction_id === null ||
+            row.transaction_id === ""
+          ) {
+            continue;
+          }
+          if (!transactionIds.has(String(row.transaction_id))) continue;
+          const t = normalizeTicket(row);
+          if (t) normalized.push(t);
+        }
+        if (normalized.length > 0) {
+          await ctx.runMutation(
+            internal.givebutterSync.applyGivebutterTickets,
+            { eventId, tickets: normalized },
+          );
+        }
+        url = body.links?.next ?? null;
+      }
     }
   } catch (err) {
     errorMessage =

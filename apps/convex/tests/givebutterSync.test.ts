@@ -8,7 +8,9 @@ import type { Doc, Id } from "../_generated/dataModel";
  * mirror ticket-type synthesis, order/ticket/RSVP creation, idempotent re-apply,
  * check-in reconciliation, batched rollup math, and the money invariant (only
  * rollups + soldCount + rsvps ever move). Plus the throttle, the cron date gate,
- * and the action's no-key no-op.
+ * the action's no-key no-op, campaign id/code/slug resolution, and the
+ * transactions→tickets two-sweep join (there is no campaign-scoped tickets
+ * endpoint — see the file header on `givebutterSync.ts`).
  */
 
 type GbTicket = {
@@ -517,10 +519,9 @@ describe("campaign id/code/slug resolution", () => {
     expect(page?.givebutterCampaignId).toBe("686283");
     expect(page?.givebutterLastSyncError).toBeUndefined();
 
-    // The tickets fetch used the RESOLVED numeric id, not the raw slug.
-    expect(
-      calledUrls.some((u) => u.includes("/campaigns/686283/tickets")),
-    ).toBe(true);
+    // The transaction sweep used the RESOLVED numeric id, not the raw slug
+    // (there is no campaign-scoped tickets endpoint to hit directly).
+    expect(calledUrls.some((u) => u.includes("/transactions"))).toBe(true);
   });
 
   test("case-insensitive match against a campaign's code", async () => {
@@ -584,7 +585,7 @@ describe("campaign id/code/slug resolution", () => {
     expect(page?.givebutterCampaignId).toBe("nonexistent-slug");
   });
 
-  test("a numeric campaign id skips the /v1/campaigns lookup entirely", async () => {
+  test("a numeric campaign id validates via GET /v1/campaigns/{id} and skips the list lookup", async () => {
     process.env.GIVEBUTTER_API_KEY = "test_key";
     const t = newT();
     const s = await setupChapter(t);
@@ -594,6 +595,15 @@ describe("campaign id/code/slug resolution", () => {
     const calledUrls: string[] = [];
     globalThis.fetch = (async (url: string) => {
       calledUrls.push(url);
+      if (url.endsWith("/campaigns/686283")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data: { id: 686283 } }),
+          text: async () => "{}",
+        };
+      }
+      // Transactions come back empty → the ticket sweep is skipped entirely.
       return {
         ok: true,
         status: 200,
@@ -606,9 +616,396 @@ describe("campaign id/code/slug resolution", () => {
       t.action(internal.givebutterSync.syncGivebutterCampaign, { eventId }),
     ).resolves.toBeNull();
 
-    expect(calledUrls).toHaveLength(1);
-    expect(calledUrls[0]).toContain("/campaigns/686283/tickets");
+    expect(calledUrls.some((u) => u.endsWith("/campaigns/686283"))).toBe(true);
     expect(calledUrls.some((u) => u.endsWith("/v1/campaigns"))).toBe(false);
+    expect(calledUrls.some((u) => u.includes("/transactions"))).toBe(true);
+    // No matching transactions → no reason to ever hit /v1/tickets.
+    expect(calledUrls.some((u) => u.includes("/tickets"))).toBe(false);
     expect((await pageRow(s, eventId))?.givebutterCampaignId).toBe("686283");
+  });
+
+  test("numeric value 404s on GET /v1/campaigns/{id} but matches a campaign CODE via the list — resolves and self-heals", async () => {
+    process.env.GIVEBUTTER_API_KEY = "test_key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    // "686283" LOOKS numeric but is actually this campaign's CODE, not its id
+    // (an all-digit code is legal per Givebutter).
+    await seedPage(s, eventId, "686283");
+
+    const calledUrls: string[] = [];
+    globalThis.fetch = (async (url: string) => {
+      calledUrls.push(url);
+      if (url.endsWith("/campaigns/686283")) {
+        return {
+          ok: true,
+          status: 404,
+          json: async () => ({}),
+          text: async () => "{}",
+        };
+      }
+      if (url.endsWith("/v1/campaigns")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            data: [{ id: 999111, code: "686283", slug: "some-other-slug" }],
+            links: { next: null },
+          }),
+          text: async () => "{}",
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [], links: { next: null } }),
+        text: async () => "{}",
+      };
+    }) as unknown as typeof fetch;
+
+    await expect(
+      t.action(internal.givebutterSync.syncGivebutterCampaign, { eventId }),
+    ).resolves.toBeNull();
+
+    const page = await pageRow(s, eventId);
+    expect(page?.givebutterCampaignId).toBe("999111");
+    expect(page?.givebutterLastSyncError).toBeUndefined();
+    expect(calledUrls.some((u) => u.endsWith("/campaigns/686283"))).toBe(true);
+    expect(calledUrls.some((u) => u.endsWith("/v1/campaigns"))).toBe(true);
+    expect(calledUrls.some((u) => u.includes("/transactions"))).toBe(true);
+  });
+
+  test("HTTP error looking up /v1/campaigns/{id} (not a 404) surfaces the status", async () => {
+    process.env.GIVEBUTTER_API_KEY = "test_key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId, "686283");
+
+    globalThis.fetch = (async () => ({
+      ok: false,
+      status: 500,
+      json: async () => ({}),
+      text: async () => "server error",
+    })) as unknown as typeof fetch;
+
+    await expect(
+      t.action(internal.givebutterSync.syncGivebutterCampaign, { eventId }),
+    ).resolves.toBeNull();
+
+    const page = await pageRow(s, eventId);
+    expect(page?.givebutterLastSyncError).toBe(
+      'HTTP 500 looking up Givebutter campaign "686283".',
+    );
+  });
+});
+
+// ── Transactions → tickets two-sweep join (no campaign-scoped tickets
+// endpoint exists — see the file header on `givebutterSync.ts`) ─────────────
+describe("transactions to tickets join", () => {
+  const realFetch = globalThis.fetch;
+  const originalKey = process.env.GIVEBUTTER_API_KEY;
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    if (originalKey === undefined) delete process.env.GIVEBUTTER_API_KEY;
+    else process.env.GIVEBUTTER_API_KEY = originalKey;
+  });
+
+  test("sweeps transactions then tickets, skipping refunded and other-campaign transactions", async () => {
+    process.env.GIVEBUTTER_API_KEY = "test_key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId, "686283");
+
+    const calledUrls: string[] = [];
+    globalThis.fetch = (async (url: string) => {
+      calledUrls.push(url);
+      if (url.endsWith("/campaigns/686283")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data: { id: 686283 } }),
+          text: async () => "{}",
+        };
+      }
+      if (url.includes("/transactions")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            data: [
+              { id: "t1", campaign_id: 686283, refunded: false },
+              { id: "t2", campaign_id: "686283", refunded: "false" },
+              { id: "t3", campaign_id: 999999, refunded: false }, // other campaign
+              { id: "t4", campaign_id: 686283, refunded: true }, // refunded
+            ],
+            links: { next: null },
+          }),
+          text: async () => "{}",
+        };
+      }
+      if (url.includes("/tickets")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            data: [
+              {
+                id: 101,
+                transaction_id: "t1",
+                email: "one@x.com",
+                price: 25,
+                title: "GA",
+                created_at: new Date().toISOString(),
+              },
+              {
+                id: 102,
+                transaction_id: "t2",
+                email: "two@x.com",
+                price: 25,
+                title: "GA",
+                created_at: new Date().toISOString(),
+              },
+              {
+                // Belongs to a transaction from ANOTHER campaign — must be excluded.
+                id: 103,
+                transaction_id: "t3",
+                email: "three@x.com",
+                price: 25,
+                title: "GA",
+                created_at: new Date().toISOString(),
+              },
+              {
+                // Belongs to a REFUNDED transaction — must be excluded.
+                id: 104,
+                transaction_id: "t4",
+                email: "four@x.com",
+                price: 25,
+                title: "GA",
+                created_at: new Date().toISOString(),
+              },
+            ],
+            links: { next: null },
+          }),
+          text: async () => "{}",
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [], links: { next: null } }),
+        text: async () => "{}",
+      };
+    }) as unknown as typeof fetch;
+
+    await expect(
+      t.action(internal.givebutterSync.syncGivebutterCampaign, { eventId }),
+    ).resolves.toBeNull();
+
+    const orders = await rows(s, "ticketOrders", eventId);
+    expect(orders).toHaveLength(2);
+    expect(orders.map((o) => o.externalRef).sort()).toEqual([
+      "gb:ticket:101",
+      "gb:ticket:102",
+    ]);
+    expect(await rows(s, "tickets", eventId)).toHaveLength(2);
+    expect(await rows(s, "rsvps", eventId)).toHaveLength(2);
+
+    const page = await pageRow(s, eventId);
+    expect(page).toMatchObject({
+      ticketsSoldCount: 2,
+      revenueCents: 5000,
+      goingCount: 2,
+    });
+    expect(page?.givebutterLastSyncError).toBeUndefined();
+
+    expect(calledUrls.some((u) => u.includes("/transactions"))).toBe(true);
+    expect(calledUrls.some((u) => u.includes("/tickets"))).toBe(true);
+  });
+
+  test("HTTP error on /v1/transactions is recorded on the page", async () => {
+    process.env.GIVEBUTTER_API_KEY = "test_key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId, "686283");
+
+    globalThis.fetch = (async (url: string) => {
+      if (url.endsWith("/campaigns/686283")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data: { id: 686283 } }),
+          text: async () => "{}",
+        };
+      }
+      if (url.includes("/transactions")) {
+        return {
+          ok: false,
+          status: 500,
+          json: async () => ({}),
+          text: async () => "server error",
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [], links: { next: null } }),
+        text: async () => "{}",
+      };
+    }) as unknown as typeof fetch;
+
+    await expect(
+      t.action(internal.givebutterSync.syncGivebutterCampaign, { eventId }),
+    ).resolves.toBeNull();
+
+    const page = await pageRow(s, eventId);
+    expect(page?.givebutterLastSyncError).toBe(
+      "HTTP 500 fetching Givebutter transactions.",
+    );
+  });
+
+  test("HTTP error on /v1/tickets is recorded on the page (no misleading campaign-id hint)", async () => {
+    process.env.GIVEBUTTER_API_KEY = "test_key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId, "686283");
+
+    globalThis.fetch = (async (url: string) => {
+      if (url.endsWith("/campaigns/686283")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data: { id: 686283 } }),
+          text: async () => "{}",
+        };
+      }
+      if (url.includes("/transactions")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            data: [{ id: "t1", campaign_id: 686283, refunded: false }],
+            links: { next: null },
+          }),
+          text: async () => "{}",
+        };
+      }
+      if (url.includes("/tickets")) {
+        return {
+          ok: false,
+          status: 503,
+          json: async () => ({}),
+          text: async () => "unavailable",
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [], links: { next: null } }),
+        text: async () => "{}",
+      };
+    }) as unknown as typeof fetch;
+
+    await expect(
+      t.action(internal.givebutterSync.syncGivebutterCampaign, { eventId }),
+    ).resolves.toBeNull();
+
+    const page = await pageRow(s, eventId);
+    expect(page?.givebutterLastSyncError).toBe(
+      "HTTP 503 fetching Givebutter tickets.",
+    );
+  });
+
+  test("ticket pagination via links.next is followed — both pages applied", async () => {
+    process.env.GIVEBUTTER_API_KEY = "test_key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId, "686283");
+
+    const ticketsPage2Url = "https://api.givebutter.com/v1/tickets?page=2";
+    globalThis.fetch = (async (url: string) => {
+      if (url.endsWith("/campaigns/686283")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data: { id: 686283 } }),
+          text: async () => "{}",
+        };
+      }
+      if (url.includes("/transactions")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            data: [
+              { id: "t1", campaign_id: 686283, refunded: false },
+              { id: "t2", campaign_id: 686283, refunded: false },
+            ],
+            links: { next: null },
+          }),
+          text: async () => "{}",
+        };
+      }
+      if (url === ticketsPage2Url) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            data: [
+              {
+                id: 202,
+                transaction_id: "t2",
+                email: "two@x.com",
+                price: 10,
+                title: "GA",
+                created_at: new Date().toISOString(),
+              },
+            ],
+            links: { next: null },
+          }),
+          text: async () => "{}",
+        };
+      }
+      if (url.includes("/tickets")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            data: [
+              {
+                id: 201,
+                transaction_id: "t1",
+                email: "one@x.com",
+                price: 10,
+                title: "GA",
+                created_at: new Date().toISOString(),
+              },
+            ],
+            links: { next: ticketsPage2Url },
+          }),
+          text: async () => "{}",
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [], links: { next: null } }),
+        text: async () => "{}",
+      };
+    }) as unknown as typeof fetch;
+
+    await expect(
+      t.action(internal.givebutterSync.syncGivebutterCampaign, { eventId }),
+    ).resolves.toBeNull();
+
+    const orders = await rows(s, "ticketOrders", eventId);
+    expect(orders).toHaveLength(2);
+    const page = await pageRow(s, eventId);
+    expect(page).toMatchObject({ ticketsSoldCount: 2, revenueCents: 2000 });
   });
 });
