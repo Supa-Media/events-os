@@ -549,6 +549,35 @@ describe("attachGiftToEvent", () => {
     expect((await eventPageRow(s, pageId))?.externalGiftsCount).toBe(0);
   });
 
+  test("editing the amount of an attached gift keeps externalGiftsCents in lockstep", async () => {
+    const s = await devDirectorSetup();
+    const { eventId, pageId } = await seedEventWithPage(s);
+    const donorId = (await s.as.mutation(api.givingPlatform.upsertDonor, {
+      scope: "central",
+      name: "Amount-Edit Donor",
+    })) as Id<"donors">;
+    const giftId = (await s.as.mutation(api.givingPlatform.recordGift, {
+      donorId,
+      amountCents: 7500,
+      method: "wire",
+    })) as Id<"gifts">;
+    await s.as.mutation(api.givingPlatform.attachGiftToEvent, { giftId, eventId });
+    expect((await eventPageRow(s, pageId))?.externalGiftsCents).toBe(7500);
+
+    // Correcting the amount UP must move the event rollup with it...
+    await s.as.mutation(api.givingPlatform.editGift, { giftId, amountCents: 15000 });
+    expect((await eventPageRow(s, pageId))?.externalGiftsCents).toBe(15000);
+    // ...and DOWN.
+    await s.as.mutation(api.givingPlatform.editGift, { giftId, amountCents: 5000 });
+    expect((await eventPageRow(s, pageId))?.externalGiftsCents).toBe(5000);
+    expect((await eventPageRow(s, pageId))?.externalGiftsCount).toBe(1);
+
+    // Detaching now reverses the CURRENT amount exactly, back to zero.
+    await s.as.mutation(api.givingPlatform.attachGiftToEvent, { giftId, eventId: null });
+    expect((await eventPageRow(s, pageId))?.externalGiftsCents).toBe(0);
+    expect((await eventPageRow(s, pageId))?.externalGiftsCount).toBe(0);
+  });
+
   test("a donation-linked gift is refused with GIFT_HAS_EVENT_SOURCE (double-count guard)", async () => {
     const s = await devDirectorSetup();
     const { eventId } = await seedEventWithPage(s);

@@ -657,6 +657,15 @@ export async function editGiftRow(
     if (gift.countedInLaunchFund) {
       await applyLaunchFundDelta(ctx, gift.scope, delta);
     }
+    // An event-attached external gift's amount also feeds the event's
+    // `externalGiftsCents` fundraiser rollup — keep it in lockstep so the public
+    // "raised" total doesn't drift (and a later detach reverses the right
+    // amount). Count is unchanged (still one gift). A `donationId` gift is
+    // system-written and can't reach this branch (blocked above), so the only
+    // gifts here that carry `eventId` are manually-attached external ones.
+    if (gift.eventId && gift.donationId === undefined) {
+      await bumpEventExternalGifts(ctx, gift.eventId, delta, 0);
+    }
     changed = true;
   }
 
