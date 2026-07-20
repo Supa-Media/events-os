@@ -335,6 +335,15 @@ export const applyGivebutterTickets = internalMutation({
       if (nativeMatch) {
         // Native tier absorbs the synced sale as-is — never flip its
         // `isActive`, never mint a mirror alongside it.
+        //
+        // Intentionally NOT capacity-checked: the sale already happened on
+        // Givebutter (the external system of record for it), so we must record
+        // it here — dropping it would leave a real, paid attendee unable to be
+        // scanned in at the door. `capacity` caps NATIVE checkout only (see
+        // `remainingFor` in ticketing.ts); a matched native tier can therefore
+        // read `soldCount > capacity` after a sync burst, which is truthful
+        // (that many people really are coming) — the native page just shows
+        // "0 left" and stops selling natively.
         mirrorTypeId = nativeMatch._id;
       } else {
         let mirror = siblings.find(
