@@ -190,6 +190,8 @@ http.route({
       endDate: e.endDate,
       href: rsvpPath(e.slug),
       coverUrl: e.hasCover ? rsvpPath(e.slug, "cover") : null,
+      coverFocalX: e.coverFocalX,
+      coverFocalY: e.coverFocalY,
     }));
     return new Response(JSON.stringify(body), {
       status: 200,

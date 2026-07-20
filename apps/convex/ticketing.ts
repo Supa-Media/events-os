@@ -708,6 +708,36 @@ export const getPublicPage = query({
       ? null
       : await buildActivity(ctx, page.eventId, viewer);
 
+    // The signed-in guest's own issued tickets — `code` backs both the QR and
+    // the human check-in code shown on the page. Bounded (a guest holds few
+    // orders/tickets); empty when not signed in.
+    const myTickets: Array<{
+      code: string;
+      ticketTypeName: string;
+      status: Doc<"tickets">["status"];
+      checkedInAt: number | null;
+    }> = [];
+    if (viewer) {
+      const myOrders = await ctx.db
+        .query("ticketOrders")
+        .withIndex("by_rsvp", (q) => q.eq("rsvpId", viewer._id))
+        .take(50);
+      for (const order of myOrders) {
+        const ts = await ctx.db
+          .query("tickets")
+          .withIndex("by_order", (q) => q.eq("orderId", order._id))
+          .take(50);
+        for (const t of ts) {
+          myTickets.push({
+            code: t.code,
+            ticketTypeName: t.ticketTypeName,
+            status: t.status,
+            checkedInAt: t.checkedInAt ?? null,
+          });
+        }
+      }
+    }
+
     return {
       isPreview,
       slug: page.slug,
@@ -803,6 +833,8 @@ export const listPublishedUpcoming = query({
       tagline: string | null;
       venueName: string | null;
       hasCover: boolean;
+      coverFocalX: number;
+      coverFocalY: number;
     }> = [];
     for (const page of pages) {
       const event = await ctx.db.get(page.eventId);
@@ -818,6 +850,10 @@ export const listPublishedUpcoming = query({
         tagline: page.tagline ?? null,
         venueName: page.venueName ?? null,
         hasCover: !!page.coverImage,
+        // Cover crop focal point (percent) so marketing surfaces (the
+        // "Important Links" card) crop the same way the landing page does.
+        coverFocalX: page.coverFocalX ?? 50,
+        coverFocalY: page.coverFocalY ?? 50,
       });
     }
     upcoming.sort((a, b) => a.startDate - b.startDate);

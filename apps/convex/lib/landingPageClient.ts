@@ -21,6 +21,9 @@ var openPicker=null,openReply=null;
 var donateActive=false,donateContinue=null; // checkout donation-upsell step state
 var phoneReq=false; // identity sheet is collecting a (required) phone number
 var upsellAmount=0; // selected donation-upsell amount (cents)
+var signinCtx=null; // {method,contact} while the "sign in to see my tickets" sheet
+  // is open; routes the shared #sheetgo/#resendcode handlers, mirroring donateActive
+var signinMethod='email'; // sign-in step 1 toggle: 'email' or 'phone'
 var UPSELL_AMOUNTS=[0,2000,2500,5000,10000]; // $0(skip)/$20/$25/$50/$100
 var EMOJIS=['🔥','❤️','🙌','😂','👀','🎉'];
 var PASTELS=['#F5E5C7','#A8D9C4','#C9A8E0','#D6E5F2','#F5D3D0'];
@@ -57,7 +60,9 @@ function openSheet(title,sub,cta,action,opts){
   pending=action;
   phoneReq=!!(opts&&opts.phone);
   donateActive=false;donateContinue=null;
+  signinCtx=null;
   var df=$('donatefields');if(df)df.style.display='none';
+  var sf=$('signinfields');if(sf)sf.style.display='none';
   setSheetMode('id');
   $('sheettitle').textContent=title;
   $('sheetsub').textContent=sub;
@@ -69,7 +74,7 @@ function openSheet(title,sub,cta,action,opts){
   $('overlay').classList.add('open');
   setTimeout(function(){$('f_name').focus();},100);
 }
-function closeSheet(){$('overlay').classList.remove('open');pending=null;donateActive=false;donateContinue=null;}
+function closeSheet(){$('overlay').classList.remove('open');pending=null;donateActive=false;donateContinue=null;signinCtx=null;}
 $('sheetclose').onclick=closeSheet;
 $('overlay').addEventListener('click',function(e){if(e.target===$('overlay'))closeSheet();});
 $('sheetgo').onclick=function(){
@@ -78,6 +83,10 @@ $('sheetgo').onclick=function(){
     var cont=donateContinue;
     donateActive=false;donateContinue=null;
     if(cont)cont(amt);
+    return;
+  }
+  if(signinCtx){
+    if(sheetMode==='code')submitSigninCode();else submitSigninStart();
     return;
   }
   if(sheetMode==='code'){submitVerify();return;}
@@ -106,6 +115,136 @@ if(doncustomInit){
   };
 }
 ${VERIFY_JS}
+
+/* ── sign in (restore identity on a new device / cleared storage) ── */
+var origResendClick=$('resendcode').onclick;
+$('resendcode').onclick=function(){
+  if(signinCtx){
+    $('sheeterr').textContent='';
+    api('/api/tickets/signin-start',{slug:SLUG,method:signinCtx.method,contact:signinCtx.contact})
+      .then(function(){toast('New code sent 📬');})
+      .catch(function(e){$('sheeterr').textContent=e.message;});
+    return;
+  }
+  if(origResendClick)origResendClick();
+};
+function renderSigninMethod(){
+  var em=$('signin_m_email'),ph=$('signin_m_phone'),inp=$('f_signin');
+  if(!em||!ph||!inp)return;
+  em.classList.toggle('sel',signinMethod==='email');
+  ph.classList.toggle('sel',signinMethod==='phone');
+  if(signinMethod==='email'){inp.type='email';inp.placeholder='you@example.com';inp.autocomplete='email';}
+  else{inp.type='tel';inp.placeholder='(555) 123-4567';inp.autocomplete='tel';}
+}
+$('signin_m_email').onclick=function(){signinMethod='email';renderSigninMethod();};
+$('signin_m_phone').onclick=function(){signinMethod='phone';renderSigninMethod();};
+function openSignIn(){
+  pending=null;
+  donateActive=false;donateContinue=null;
+  signinCtx={method:signinMethod,contact:''};
+  var df=$('donatefields');if(df)df.style.display='none';
+  setSheetMode('id'); // resets the shared sheetMode var, shows idfields/hides codefields
+  $('idfields').style.display='none';
+  $('signinfields').style.display='block';
+  renderSigninMethod();
+  $('sheettitle').textContent='Sign in to your tickets';
+  $('sheetsub').textContent='Enter the email or phone you used to RSVP or buy tickets — we will send a 6-digit code.';
+  $('sheetgo').textContent='Send code';
+  $('sheetgo').disabled=false;
+  $('sheeterr').textContent='';
+  var inp=$('f_signin');inp.value='';
+  $('overlay').classList.add('open');
+  setTimeout(function(){inp.focus();},100);
+}
+function submitSigninStart(){
+  var contact=$('f_signin').value.trim();
+  if(signinMethod==='email'){
+    if(contact.indexOf('@')<0){$('sheeterr').textContent='Enter a valid email address';return;}
+  }else{
+    if(!validPhone(contact)){$('sheeterr').textContent='Enter a valid phone number';return;}
+  }
+  signinCtx={method:signinMethod,contact:contact};
+  $('sheeterr').textContent='';
+  $('sheetgo').disabled=true;
+  api('/api/tickets/signin-start',{slug:SLUG,method:signinMethod,contact:contact})
+    .then(function(){$('sheetgo').disabled=false;openSigninCodeStep();})
+    .catch(function(e){$('sheetgo').disabled=false;$('sheeterr').textContent=e.message;});
+}
+function openSigninCodeStep(){
+  $('signinfields').style.display='none';
+  setSheetMode('code');
+  $('sheettitle').textContent='Enter your code';
+  $('sheetsub').textContent='We sent a 6-digit code to '+signinCtx.contact;
+  $('sheetgo').textContent='Sign in';
+  $('sheetgo').disabled=false;
+  $('sheeterr').textContent='';
+  $('f_code').value='';
+  setTimeout(function(){$('f_code').focus();},100);
+}
+function submitSigninCode(){
+  var code=$('f_code').value.trim();
+  if(!/^[0-9]{6}$/.test(code)){$('sheeterr').textContent='Enter the 6-digit code';return;}
+  $('sheetgo').disabled=true;
+  api('/api/tickets/signin-verify',{slug:SLUG,method:signinCtx.method,contact:signinCtx.contact,code:code})
+    .then(function(res){
+      $('sheetgo').disabled=false;
+      saveToken(res.token);
+      closeSheet();
+      toast('Signed in ✓');
+      refresh();
+    })
+    .catch(function(e){$('sheetgo').disabled=false;$('sheeterr').textContent=e.message;});
+}
+function doSignOut(){
+  try{localStorage.removeItem(KEY);}catch(e){}
+  TOKEN='';
+  toast('Signed out');
+  refresh();
+}
+function renderSigninBar(){
+  var box=$('signinbar');
+  if(!box)return;
+  box.innerHTML='';
+  if(D.viewer){box.style.display='none';return;}
+  box.style.display='block';
+  var btn=el('button','signinbtn','🎟 Have a ticket or already RSVP’d? Sign in');
+  btn.onclick=function(){openSignIn();};
+  box.appendChild(btn);
+}
+function renderMyTickets(){
+  var box=$('myticketscard');
+  if(!box)return;
+  box.innerHTML='';
+  var tix=D.myTickets||[];
+  if(!D.viewer||tix.length===0){box.style.display='none';return;}
+  box.style.display='block';
+  var head=el('div','mytix-head');
+  head.appendChild(el('div','cardtitle serif','Your tickets'));
+  var signout=el('button','signoutlink','Sign out');
+  signout.onclick=function(){doSignOut();};
+  head.appendChild(signout);
+  box.appendChild(head);
+  var statusLabel={valid:'Valid',checked_in:'Checked in',void:'Void'};
+  tix.forEach(function(t){
+    var row=el('div','mytix');
+    var qr=el('div','mytix-qr');
+    if(typeof qrcode==='function'){
+      try{
+        var q=qrcode(0,'M');
+        q.addData(t.code);
+        q.make();
+        qr.innerHTML=q.createImgTag(3,4);
+      }catch(e){}
+    }
+    row.appendChild(qr);
+    var inf=el('div','mytix-inf');
+    inf.appendChild(el('div','nm',t.ticketTypeName));
+    inf.appendChild(el('div','code',t.code));
+    inf.appendChild(el('span','statuschip st-'+t.status,statusLabel[t.status]||t.status));
+    row.appendChild(inf);
+    box.appendChild(row);
+  });
+}
 
 /* ── rsvp ── */
 function doRsvp(status,name,email){
@@ -524,6 +663,11 @@ function renderActivity(){
       else scrollToCard(D.ticketsEnabled?'ticketscard':'givingcard');
     };
     veil.appendChild(btn);
+    if(!D.viewer){
+      var si=el('button','signinlink','Already have a ticket or RSVP’d? Sign in instead');
+      si.onclick=function(){openSignIn();};
+      veil.appendChild(si);
+    }
     lock.appendChild(veil);
     box.appendChild(lock);
     return;
@@ -549,6 +693,8 @@ function renderActivity(){
 }
 
 function renderAll(){
+  renderSigninBar();
+  renderMyTickets();
   renderTickets();
   renderGiving();
   renderRsvp();

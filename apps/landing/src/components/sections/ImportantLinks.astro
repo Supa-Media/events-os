@@ -97,6 +97,8 @@ const delayFor = (i: number) => `--delay: ${i * 60}ms`;
     endDate: number | null;
     href: string;
     coverUrl: string | null;
+    coverFocalX?: number | null;
+    coverFocalY?: number | null;
   };
 
   const CARD_CLASS =
@@ -130,6 +132,11 @@ const delayFor = (i: number) => `--delay: ${i * 60}ms`;
       img.loading = "lazy";
       img.decoding = "async";
       img.className = "absolute inset-0 h-full w-full object-cover";
+      // Honor the host's chosen crop focal point (percent) so this card frames
+      // the cover the same way the event landing page does. Default centered.
+      const fx = typeof ev.coverFocalX === "number" ? ev.coverFocalX : 50;
+      const fy = typeof ev.coverFocalY === "number" ? ev.coverFocalY : 50;
+      img.style.objectPosition = `${fx}% ${fy}%`;
       a.appendChild(img);
     } else {
       // Text card: title + date, mirroring LinkCard.astro's no-image branch.

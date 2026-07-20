@@ -17,6 +17,7 @@ import {
   hashEmailCode,
   pendingCodeFor,
   resendEmailCode,
+  sendSignInEmailCode,
 } from "./lib/emailCodes";
 import {
   MAX_CODE_ATTEMPTS as MAX_PHONE_ATTEMPTS,
@@ -24,8 +25,44 @@ import {
   hashPhoneCode,
   pendingPhoneCodeFor,
   resendPhoneCode,
+  sendSignInPhoneCode,
 } from "./lib/phoneCodes";
+import { normalizeEmail } from "./lib/access";
+import { normalizePhone } from "./lib/twilio";
+import type { Id } from "./_generated/dataModel";
 import { getPublishedPage, getViewerRsvp } from "./ticketing";
+
+/** A generic wrong-code message — reused everywhere so a bad code, an unknown
+ *  guest, and a mismatched contact are indistinguishable (no enumeration). */
+const BAD_CODE = "That code doesn't match — double-check and try again.";
+
+/** Resolve a guest by the contact they're signing in with (email or E.164
+ *  phone), scoped to the event. Returns null on an unparseable/absent match. */
+async function findGuestByContact(
+  ctx: MutationCtx,
+  eventId: Id<"events">,
+  method: "email" | "phone",
+  contact: string,
+): Promise<Doc<"rsvps"> | null> {
+  if (method === "email") {
+    const email = normalizeEmail(contact);
+    if (!email || !email.includes("@")) return null;
+    return await ctx.db
+      .query("rsvps")
+      .withIndex("by_event_email", (q) =>
+        q.eq("eventId", eventId).eq("email", email),
+      )
+      .first();
+  }
+  const phone = normalizePhone(contact);
+  if (!phone) return null;
+  return await ctx.db
+    .query("rsvps")
+    .withIndex("by_event_phone", (q) =>
+      q.eq("eventId", eventId).eq("phone", phone),
+    )
+    .first();
+}
 
 /** Resolve the viewer's RSVP from slug + guest token, or throw friendly. */
 async function requireViewer(
@@ -218,5 +255,75 @@ export const resendRsvpPhoneCode = mutation({
     }
     await resendPhoneCode(ctx, { _id: viewer._id, phone });
     return { ok: true as const };
+  },
+});
+
+// ── PUBLIC guest sign-in ─────────────────────────────────────────────────────
+// Restore a guest's identity on a fresh device: they enter the email or phone
+// on their RSVP/ticket, we text/email a code, and verifying returns their guest
+// `token` (the one thing every other public flow already requires). This is the
+// only public path that resolves a guest WITHOUT a token — hence the deliberate
+// no-enumeration posture (start always succeeds; verify uses one generic error).
+
+const signInMethod = v.union(v.literal("email"), v.literal("phone"));
+
+/** Send a sign-in code to the email/phone if it matches a guest of this event.
+ *  Always resolves `{ ok: true }` — never reveals whether the contact matched. */
+export const startGuestSignIn = mutation({
+  args: { slug: v.string(), method: signInMethod, contact: v.string() },
+  handler: async (ctx, { slug, method, contact }) => {
+    const page = await getPublishedPage(ctx, slug);
+    if (!page) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "RSVP page not found." });
+    }
+    const rsvp = await findGuestByContact(ctx, page.eventId, method, contact);
+    if (rsvp) {
+      if (method === "email" && rsvp.email) {
+        await sendSignInEmailCode(ctx, { _id: rsvp._id, email: rsvp.email });
+      } else if (method === "phone" && rsvp.phone) {
+        await sendSignInPhoneCode(ctx, { _id: rsvp._id, phone: rsvp.phone });
+      }
+    }
+    return { ok: true as const };
+  },
+});
+
+/** Confirm the code and hand back the guest token so the browser signs in.
+ *  A wrong code / unknown contact both return the same generic `{ ok: false }`. */
+export const verifyGuestSignIn = mutation({
+  args: {
+    slug: v.string(),
+    method: signInMethod,
+    contact: v.string(),
+    code: v.string(),
+  },
+  handler: async (ctx, { slug, method, contact, code }) => {
+    const page = await getPublishedPage(ctx, slug);
+    if (!page) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "RSVP page not found." });
+    }
+    const rsvp = await findGuestByContact(ctx, page.eventId, method, contact);
+    if (!rsvp) return { ok: false as const, error: BAD_CODE };
+
+    if (method === "email") {
+      const pending = await requireUsableCode(ctx, rsvp);
+      if (hashEmailCode(code) !== pending.codeHash) {
+        await ctx.db.patch(pending._id, { attempts: pending.attempts + 1 });
+        return { ok: false as const, error: BAD_CODE };
+      }
+      await ctx.db.patch(rsvp._id, { emailVerified: true, updatedAt: Date.now() });
+      await ctx.db.delete(pending._id);
+    } else {
+      const pending = await requireUsablePhoneCode(ctx, rsvp);
+      if (hashPhoneCode(code) !== pending.codeHash) {
+        await ctx.db.patch(pending._id, { attempts: pending.attempts + 1 });
+        return { ok: false as const, error: BAD_CODE };
+      }
+      await ctx.db.patch(rsvp._id, { phoneVerified: true, updatedAt: Date.now() });
+      await ctx.db.delete(pending._id);
+    }
+    // The token is the guest's identity — the browser stores it and is now
+    // signed in (activity unlocks, "your tickets" appears).
+    return { ok: true as const, token: rsvp.token };
   },
 });

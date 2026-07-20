@@ -173,6 +173,8 @@ export const rsvps = defineTable({
 })
   .index("by_event", ["eventId"])
   .index("by_event_email", ["eventId", "email"])
+  // Guest sign-in by phone (E.164) — the SMS counterpart of by_event_email.
+  .index("by_event_phone", ["eventId", "phone"])
   .index("by_event_status", ["eventId", "status"])
   .index("by_token", ["token"]);
 
@@ -249,7 +251,9 @@ export const ticketOrders = defineTable({
 })
   .index("by_event", ["eventId"])
   .index("by_stripe_session", ["stripeCheckoutSessionId"])
-  .index("by_external_ref", ["externalRef"]);
+  .index("by_external_ref", ["externalRef"])
+  // A guest's own orders — powers the signed-in "your tickets" list.
+  .index("by_rsvp", ["rsvpId"]);
 
 /**
  * A donation to an event — the money flow the schema couldn't record before

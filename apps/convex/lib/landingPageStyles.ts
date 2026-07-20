@@ -55,8 +55,13 @@ main{max-width:1080px;margin:0 auto;padding:20px 20px 96px;position:relative}
 .previewbar{display:flex;justify-content:center;padding-top:10px}
 .previewpill{display:inline-flex;align-items:center;gap:6px;background:var(--warn);color:#fff;
   font-size:12px;font-weight:700;letter-spacing:.02em;border-radius:999px;padding:6px 14px;box-shadow:var(--shadow)}
-.topbar{display:flex;justify-content:center;padding:10px 0 26px}
+.topbar{display:flex;justify-content:center;align-items:center;position:relative;padding:10px 0 26px}
 .wordmark{font-weight:700;font-size:12px;letter-spacing:.22em;color:var(--accent)}
+#signinbar{position:absolute;right:0;top:50%;transform:translateY(-50%)}
+.signinbtn{display:inline-flex;align-items:center;gap:6px;background:var(--raised);
+  border:1px solid var(--border);border-radius:999px;padding:7px 14px;
+  font-size:12.5px;font-weight:600;color:var(--accent);box-shadow:var(--shadow);white-space:nowrap}
+.signinbtn:hover{background:var(--accent-soft)}
 .grid{display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:52px;align-items:start}
 @media(max-width:880px){
   .grid{grid-template-columns:1fr;gap:28px}
@@ -124,6 +129,8 @@ section{margin-top:36px}
   align-items:center;justify-content:center;text-align:center;padding:20px}
 .locked .veil .lk{font-size:26px}
 .locked .veil p{font-size:14.5px;color:var(--muted);max-width:260px}
+.signinlink{background:none;border:none;color:var(--accent);font-size:13px;font-weight:600;
+  text-decoration:underline;margin-top:2px;padding:4px 8px}
 .composer{display:flex;gap:10px;margin-bottom:18px}
 .composer input{flex:1;background:var(--raised);border:1.5px solid var(--border);
   border-radius:999px;padding:11px 18px;outline:none;transition:border .15s}
@@ -209,6 +216,24 @@ section{margin-top:36px}
   font-size:15.5px;border-radius:999px;padding:14px;transition:background .15s;box-shadow:0 6px 18px rgba(210,59,58,.35)}
 .buybtn:hover{background:var(--accent-hover)}
 .buybtn:disabled{background:var(--border-strong);box-shadow:none;pointer-events:none}
+/* my tickets */
+.mytix-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.mytix-head .cardtitle{margin-bottom:0}
+.signoutlink{font-size:12.5px;font-weight:600;color:var(--muted);text-decoration:underline}
+.signoutlink:hover{color:var(--accent)}
+.mytix{display:flex;gap:14px;align-items:center;padding:14px 0;border-bottom:1px solid var(--border)}
+.mytix:last-child{border-bottom:0}
+.mytix-qr{width:64px;height:64px;flex-shrink:0;display:flex;align-items:center;justify-content:center}
+.mytix-qr img{width:100%;height:100%;border-radius:8px;display:block}
+.mytix-inf{flex:1;min-width:0}
+.mytix-inf .nm{font-weight:600;font-size:14.5px}
+.mytix-inf .code{font-family:'SF Mono',Menlo,Consolas,monospace;font-size:13px;color:var(--muted);
+  letter-spacing:.03em;margin-top:2px;word-break:break-all}
+.statuschip{display:inline-block;margin-top:6px;border-radius:999px;padding:2.5px 10px;
+  font-size:11.5px;font-weight:700}
+.statuschip.st-valid{background:#EAF6F0;color:var(--success)}
+.statuschip.st-checked_in{background:var(--sky);color:#2C4A86}
+.statuschip.st-void{background:var(--accent-soft);color:var(--accent)}
 /* giving */
 .giveprompt{font-size:13.5px;color:var(--muted);line-height:1.5;margin-bottom:12px}
 .raised{background:var(--sunken);border-radius:14px;padding:10px 14px;font-size:14px;
@@ -237,6 +262,12 @@ section{margin-top:36px}
 .sheet .sub{font-size:13.5px;color:var(--muted);margin-bottom:18px}
 .sheet .x{position:absolute;top:18px;right:18px;width:32px;height:32px;border-radius:50%;
   background:var(--sunken);color:var(--muted);font-size:15px;display:flex;align-items:center;justify-content:center}
+.signintoggle{display:flex;gap:8px;margin-bottom:14px}
+.signinmethod{flex:1;border:1.5px solid var(--border-strong);border-radius:14px;padding:10px 4px;
+  font-weight:700;font-size:14px;color:var(--muted);transition:all .12s}
+.signinmethod:hover{border-color:var(--accent);color:var(--accent)}
+.signinmethod.sel{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);
+  box-shadow:0 0 0 3px rgba(210,59,58,.14)}
 .fld{margin-bottom:12px}
 .fld label{display:block;font-size:12.5px;font-weight:600;color:var(--muted);margin-bottom:5px}
 .fld input{width:100%;background:var(--raised);border:1.5px solid var(--border);
