@@ -77,7 +77,10 @@ export const eventPages = defineTable({
 })
   .index("by_event", ["eventId"])
   .index("by_slug", ["slug"])
-  .index("by_chapter", ["chapterId"]);
+  .index("by_chapter", ["chapterId"])
+  // Public marketing feed (GET /api/events/upcoming): read only published
+  // pages, newest-created first, without scanning drafts.
+  .index("by_published", ["published"]);
 
 /** A purchasable (or free/claimable) ticket tier for an event. */
 export const ticketTypes = defineTable({

@@ -48,7 +48,7 @@ import {
   renderProjectActionResult,
 } from "./lib/projectActionPage";
 import { EMAIL_ACTION_STATUSES, type EmailActionStatus } from "./projectActions";
-import { appUrl, siteUrl } from "./lib/siteUrl";
+import { appUrl, eventPath, siteUrl } from "./lib/siteUrl";
 import { verifyStripeSignature } from "./stripe";
 import { verifyIncreaseSignature } from "./increase";
 
@@ -148,6 +148,43 @@ http.route({
       : null;
     if (!ticket) return html(renderNotFound(), 404);
     return html(renderTicketPage(ticket, siteUrl()));
+  }),
+});
+
+// ── Public upcoming-events feed: GET /api/events/upcoming ────────────────────
+// Same-origin JSON the marketing site's "Important Links" section (apps/landing)
+// fetches at runtime to auto-list published RSVP pages — so publishing an event
+// in the OS surfaces it on publicworship.life with no rebuild, and it drops off
+// once the event is over. Read-only, no PII; a short cache keeps it fresh
+// without hammering the backend on every homepage view.
+
+http.route({
+  path: "/api/events/upcoming",
+  method: "GET",
+  handler: httpAction(async (ctx, req) => {
+    const url = new URL(req.url);
+    const limitParam = Number(url.searchParams.get("limit"));
+    const events = await ctx.runQuery(api.ticketing.listPublishedUpcoming, {
+      ...(Number.isFinite(limitParam) && limitParam > 0
+        ? { limit: Math.floor(limitParam) }
+        : {}),
+    });
+    const body = events.map((e) => ({
+      title: e.eventName,
+      tagline: e.tagline,
+      venueName: e.venueName,
+      startDate: e.startDate,
+      endDate: e.endDate,
+      href: eventPath(e.slug),
+      coverUrl: e.hasCover ? eventPath(e.slug, "cover") : null,
+    }));
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "public, max-age=60",
+      },
+    });
   }),
 });
 

@@ -14,6 +14,9 @@ const links = defineCollection({
     copy: z.string().optional(),
     align: z.enum(["center", "topLeft"]).default("center"),
     featured: z.boolean().default(false),
+    // "lead" cards render before the auto-inserted event cards; "trail" (the
+    // default) after. See ImportantLinks.astro / links.yaml header.
+    slot: z.enum(["lead", "trail"]).default("trail"),
   }),
 });
 
