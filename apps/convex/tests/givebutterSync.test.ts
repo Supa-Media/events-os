@@ -382,6 +382,36 @@ describe("applyGivebutterTickets", () => {
     expect(out.result).toBe("ok");
     expect((await rows(s, "tickets", eventId))[0].status).toBe("checked_in");
   });
+
+  test("listRsvpsAdmin reports ticketCount 2 for a buyer with two applied tickets, 0 for a plain RSVP", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const pageId = await seedPage(s, eventId);
+    await s.as.mutation(api.ticketing.updatePage, {
+      pageId,
+      patch: { published: true },
+    });
+
+    // Same buyer, two admissions synced from Givebutter (two externalIds).
+    await apply(s, eventId, [
+      gbTicket({ externalId: "multi-1", email: "pair@example.com" }),
+      gbTicket({ externalId: "multi-2", email: "pair@example.com" }),
+    ]);
+    // A guest who just RSVP'd, no tickets at all.
+    await s.as.mutation(api.ticketing.submitRsvp, {
+      slug: (await pageRow(s, eventId))!.slug,
+      name: "Plain Rsvp",
+      email: "plain@example.com",
+      status: "going",
+    });
+
+    const admin = await s.as.query(api.ticketing.listRsvpsAdmin, { eventId });
+    const buyer = admin.find((r) => r.email === "pair@example.com");
+    const plain = admin.find((r) => r.email === "plain@example.com");
+    expect(buyer?.ticketCount).toBe(2);
+    expect(plain?.ticketCount).toBe(0);
+  });
 });
 
 describe("requestGivebutterSync", () => {
