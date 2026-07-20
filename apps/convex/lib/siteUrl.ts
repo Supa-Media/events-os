@@ -11,25 +11,26 @@ export function siteUrl(): string {
 }
 
 /**
- * URL path segment for public event pages. Was "e"; now "event" for branding
- * (e.g. publicworship.life/event/<slug>). The old "/e/" prefix is kept
- * as an alias in http.ts so already-shared links never break.
+ * URL path segment for public RSVP pages — the guest-facing event page, renamed
+ * to the "RSVP page" (Events-director vocabulary). Now "rsvp" (e.g.
+ * publicworship.life/rsvp/<slug>). The older "/event/" and "/e/" prefixes are
+ * kept as aliases in http.ts so already-shared links never break.
  */
-export const EVENT_PATH = "event";
+export const RSVP_PATH = "rsvp";
 
 /**
- * Relative path of a public event page (or a sub-resource like "cover" /
+ * Relative path of a public RSVP page (or a sub-resource like "cover" /
  * "calendar.ics"). For pure renderers (e.g. landingPage.ts) that receive the
  * base URL as a parameter and can't call `siteUrl()` themselves — they compose
- * `${siteUrl}${eventPath(slug, sub)}`.
+ * `${siteUrl}${rsvpPath(slug, sub)}`.
  */
-export function eventPath(slug: string, sub?: string): string {
-  return `/${EVENT_PATH}/${slug}${sub ? `/${sub}` : ""}`;
+export function rsvpPath(slug: string, sub?: string): string {
+  return `/${RSVP_PATH}/${slug}${sub ? `/${sub}` : ""}`;
 }
 
-/** Absolute URL of a public event page (or a sub-resource). */
-export function eventPageUrl(slug: string, sub?: string): string {
-  return `${siteUrl()}${eventPath(slug, sub)}`;
+/** Absolute URL of a public RSVP page (or a sub-resource). */
+export function rsvpPageUrl(slug: string, sub?: string): string {
+  return `${siteUrl()}${rsvpPath(slug, sub)}`;
 }
 
 /**

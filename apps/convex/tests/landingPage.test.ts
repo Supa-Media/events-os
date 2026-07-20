@@ -57,8 +57,8 @@ describe("renderLandingPage", () => {
   test("emits OG + Twitter tags with the cover image for link previews", () => {
     const html = renderLandingPage(samplePage() as never, SITE);
     expect(html).toContain('<meta property="og:title" content="Summer Worship Night">');
-    expect(html).toContain(`<meta property="og:url" content="${SITE}/event/summer-night">`);
-    expect(html).toContain(`content="${SITE}/event/summer-night/cover"`);
+    expect(html).toContain(`<meta property="og:url" content="${SITE}/rsvp/summer-night">`);
+    expect(html).toContain(`content="${SITE}/rsvp/summer-night/cover"`);
     expect(html).toContain('name="twitter:card" content="summary_large_image"');
   });
 

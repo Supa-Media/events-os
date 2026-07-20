@@ -13,7 +13,7 @@
 import { action } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
-import { eventPageUrl } from "./lib/siteUrl";
+import { rsvpPageUrl } from "./lib/siteUrl";
 
 const STRIPE_API = "https://api.stripe.com/v1";
 
@@ -74,9 +74,9 @@ export const createCheckout = action({
     body.set("customer_email", args.email.trim().toLowerCase());
     body.set(
       "success_url",
-      `${eventPageUrl(args.slug)}?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
+      `${rsvpPageUrl(args.slug)}?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
     );
-    body.set("cancel_url", `${eventPageUrl(args.slug)}?checkout=canceled`);
+    body.set("cancel_url", `${rsvpPageUrl(args.slug)}?checkout=canceled`);
     body.set("metadata[orderId]", String(prepared.orderId));
     prepared.lines.forEach((line, i) => {
       body.set(`line_items[${i}][quantity]`, String(line.quantity));
@@ -154,8 +154,8 @@ export const createDonationCheckout = action({
     const body = new URLSearchParams();
     body.set("mode", "payment");
     body.set("customer_email", args.email.trim().toLowerCase());
-    body.set("success_url", `${eventPageUrl(args.slug)}?donated=1`);
-    body.set("cancel_url", eventPageUrl(args.slug));
+    body.set("success_url", `${rsvpPageUrl(args.slug)}?donated=1`);
+    body.set("cancel_url", rsvpPageUrl(args.slug));
     body.set("metadata[donationId]", String(prepared.donationId));
     body.set("line_items[0][quantity]", "1");
     body.set("line_items[0][price_data][currency]", "usd");

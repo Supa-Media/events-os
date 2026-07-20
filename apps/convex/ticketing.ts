@@ -4,8 +4,9 @@
  * Three surfaces:
  *   - ADMIN (requireAccess via chapter helpers): page setup, ticket types,
  *     guest list, orders, check-in. Used by the Tickets tab in the app.
- *   - PUBLIC, no-auth: everything the landing page (/event/<slug>, served from
- *     http.ts — the legacy /e/<slug> alias still resolves) needs. Guests are
+ *   - PUBLIC, no-auth: everything the RSVP page (/rsvp/<slug>, served from
+ *     http.ts — the older /event/<slug> and legacy /e/<slug> aliases still
+ *     resolve) needs. Guests are
  *     identified by their RSVP row's secret
  *     `token` — never by auth. Mirrors `setlists.publicBoard`.
  *   - INTERNAL: order preparation/fulfillment shared by the Stripe checkout
@@ -1327,7 +1328,7 @@ export const getOrderEmailPayload = internalQuery({
   },
 });
 
-/** Resolve a published page's cover image for the public /event/<slug>/cover route. */
+/** Resolve a published page's cover image for the public /rsvp/<slug>/cover route. */
 export const getCoverStorageId = internalQuery({
   args: { slug: v.string() },
   handler: async (ctx, { slug }) => {

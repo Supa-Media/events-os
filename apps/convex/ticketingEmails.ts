@@ -8,7 +8,7 @@
 import { internalAction } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import { eventPageUrl, siteUrl } from "./lib/siteUrl";
+import { rsvpPageUrl, siteUrl } from "./lib/siteUrl";
 
 const ACCENT = "#D23B3A";
 const INK = "#210909";
@@ -103,7 +103,7 @@ export const sendRsvpEmail = internalAction({
     status: v.union(v.literal("going"), v.literal("maybe")),
   },
   handler: async (_ctx, { slug, name, email, status }) => {
-    const url = eventPageUrl(slug);
+    const url = rsvpPageUrl(slug);
     const firstName = name.split(/\s+/)[0];
     const heading =
       status === "going" ? `You're going, ${firstName} 🎉` : `Saved your maybe, ${firstName}`;
@@ -160,7 +160,7 @@ export const sendTicketsEmail = internalAction({
         ${tickets.length} ticket${tickets.length === 1 ? "" : "s"} · ${total}
       </p>
       ${ticketRows}
-      <p style="margin:16px 0 0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;line-height:1.6;color:${MUTED}">Tap a ticket to open it — each has a QR code for the door. ${slug ? `Event details: <a href="${eventPageUrl(slug)}" style="color:${ACCENT}">${eventPageUrl(slug)}</a>` : ""}</p>`),
+      <p style="margin:16px 0 0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;line-height:1.6;color:${MUTED}">Tap a ticket to open it — each has a QR code for the door. ${slug ? `Event details: <a href="${rsvpPageUrl(slug)}" style="color:${ACCENT}">${rsvpPageUrl(slug)}</a>` : ""}</p>`),
     );
     return null;
   },
@@ -185,7 +185,7 @@ export const sendDonationReceiptEmail = internalAction({
       <h1 style="margin:0 0 12px;font-size:26px;line-height:1.2">Thank you, ${firstName} 🙏</h1>
       <p style="margin:0 0 20px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:${MUTED}">Your gift of <b>${amount}</b> to <b>${eventName}</b> came through. It means the world — thank you for supporting the work.</p>
       <div style="background:#fff;border:1px dashed #E4CFCB;border-radius:14px;padding:18px;text-align:center;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:28px;font-weight:700;color:${ACCENT}">${amount}</div>
-      ${slug ? `<p style="margin:16px 0 0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;line-height:1.6;color:${MUTED}">Event details: <a href="${eventPageUrl(slug)}" style="color:${ACCENT}">${eventPageUrl(slug)}</a></p>` : ""}`),
+      ${slug ? `<p style="margin:16px 0 0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;line-height:1.6;color:${MUTED}">Event details: <a href="${rsvpPageUrl(slug)}" style="color:${ACCENT}">${rsvpPageUrl(slug)}</a></p>` : ""}`),
     );
     return null;
   },
