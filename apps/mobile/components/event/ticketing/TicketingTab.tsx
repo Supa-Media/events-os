@@ -1,5 +1,5 @@
 /**
- * Admin "Event page" tab — the whole shareable-event-page control panel, framed
+ * Admin "RSVP page" tab — the whole shareable-RSVP-page control panel, framed
  * as a four-phase LAUNCH FLOW instead of one long scroll of equal cards:
  *
  *   Design → Publish → Grow → Run
@@ -40,7 +40,7 @@ import {
   defaultOpenPhase,
   type LaunchPhaseKey,
 } from "./launchPhases";
-import { eventPageUrl, formatMoney } from "./helpers";
+import { rsvpPageUrl, formatMoney } from "./helpers";
 
 export default function TicketingTab({ eventId }: { eventId: Id<"events"> }) {
   const { run, toast, dismiss } = useActionRunner();
@@ -62,7 +62,7 @@ export default function TicketingTab({ eventId }: { eventId: Id<"events"> }) {
   if (data === undefined) {
     return (
       <View className="py-10">
-        <Text className="text-base text-muted">Loading event page…</Text>
+        <Text className="text-base text-muted">Loading RSVP page…</Text>
       </View>
     );
   }
@@ -75,10 +75,10 @@ export default function TicketingTab({ eventId }: { eventId: Id<"events"> }) {
         <EmptyState
           icon="globe"
           title="Put this event on the map"
-          message="Create a shareable event page with RSVPs, tickets & a guest feed — one link your whole audience can open."
+          message="Create a shareable RSVP page with RSVPs, tickets & a guest feed — one link your whole audience can open."
           action={
             <Button
-              title="Create event page"
+              title="Create RSVP page"
               icon="plus"
               loading={creating}
               onPress={() => {
@@ -264,7 +264,7 @@ function PublishShareCard({
   const updatePage = useMutation(api.ticketing.updatePage);
   const [slugInput, setSlugInput] = useState<string | null>(null);
   const slugValue = slugInput !== null ? slugInput : page.slug;
-  const link = eventPageUrl(page.slug);
+  const link = rsvpPageUrl(page.slug);
 
   async function saveSlug() {
     const next = slugValue.trim();

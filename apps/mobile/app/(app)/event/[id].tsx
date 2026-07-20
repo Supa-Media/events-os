@@ -319,7 +319,7 @@ export default function EventDetailScreen() {
   // tab). Selecting a section drills in to `?tab=<key>`; unknown/missing/legacy
   // (`?tab=overview`) keys fall back to the overview.
   const PLAN = "plan";
-  // Tickets (the public event page) and Money (the ONE money surface for
+  // Tickets (the public RSVP page) and Money (the ONE money surface for
   // this event, retiring the old separate Budget tab) are operational TOOLS,
   // not areas — they open from the overview tools row but live at
   // `?tab=tickets|money` so deep links and back/forward keep working.
@@ -343,7 +343,7 @@ export default function EventDetailScreen() {
   // Label shown on a drilled-in section's back bar.
   const activeSectionLabel =
     activeTab === "tickets"
-      ? "Event page"
+      ? "RSVP page"
       : activeTab === "money"
         ? "Money"
         : (tabs.find((t) => t.key === activeTab)?.label ?? "Section");

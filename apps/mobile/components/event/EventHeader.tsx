@@ -1353,7 +1353,7 @@ export function EventTools({
         accessibilityRole="button"
         accessibilityLabel={
           ticketsActive
-            ? "More tools (Event page open)"
+            ? "More tools (RSVP page open)"
             : moneyActive
               ? "More tools (Money open)"
               : "More tools"
@@ -1373,7 +1373,7 @@ export function EventTools({
       <Popover visible={visible} anchor={anchor} width={210} onClose={closeMenu}>
         <ToolsMenuRow
           icon="tag"
-          label="Event page"
+          label="RSVP page"
           active={ticketsActive}
           onPress={() => {
             closeMenu();

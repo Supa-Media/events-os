@@ -86,7 +86,7 @@ export const sendVerificationEmail = internalAction({
       `${code} is your verification code`,
       emailShell(`
       <h1 style="margin:0 0 12px;font-size:26px;line-height:1.2">Confirm your email</h1>
-      <p style="margin:0 0 20px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:${MUTED}">Enter this code on the event page so the host knows this address is really yours. It expires in 15 minutes.</p>
+      <p style="margin:0 0 20px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:${MUTED}">Enter this code on the RSVP page so the host knows this address is really yours. It expires in 15 minutes.</p>
       <div style="background:#fff;border:1px dashed #E4CFCB;border-radius:14px;padding:18px;text-align:center;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:32px;font-weight:700;letter-spacing:0.28em;color:${ACCENT}">${code}</div>
       <p style="margin:16px 0 0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;line-height:1.6;color:${MUTED}">Didn't RSVP to a Public Worship event? You can safely ignore this email.</p>`),
     );
@@ -109,15 +109,15 @@ export const sendRsvpEmail = internalAction({
       status === "going" ? `You're going, ${firstName} 🎉` : `Saved your maybe, ${firstName}`;
     const line =
       status === "going"
-        ? "We can't wait to see you. The details live on the event page — check back for updates from the host."
-        : "No pressure — you can change your RSVP any time on the event page.";
+        ? "We can't wait to see you. The details live on the RSVP page — check back for updates from the host."
+        : "No pressure — you can change your RSVP any time on the RSVP page.";
     await sendEmail(
       email,
       status === "going" ? "You're on the list 🎉" : "Got your RSVP",
       emailShell(`
       <h1 style="margin:0 0 12px;font-size:26px;line-height:1.2">${heading}</h1>
       <p style="margin:0 0 20px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:${MUTED}">${line}</p>
-      <a href="${url}" style="display:inline-block;background:${ACCENT};color:#fff;text-decoration:none;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-weight:600;font-size:14px;padding:12px 24px;border-radius:999px">Open the event page</a>`),
+      <a href="${url}" style="display:inline-block;background:${ACCENT};color:#fff;text-decoration:none;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-weight:600;font-size:14px;padding:12px 24px;border-radius:999px">Open the RSVP page</a>`),
     );
     return null;
   },

@@ -35,7 +35,7 @@ async function requireViewer(
 ): Promise<Doc<"rsvps">> {
   const page = await getPublishedPage(ctx, slug);
   if (!page) {
-    throw new ConvexError({ code: "NOT_FOUND", message: "Event page not found." });
+    throw new ConvexError({ code: "NOT_FOUND", message: "RSVP page not found." });
   }
   const viewer = await getViewerRsvp(ctx, page.eventId, token);
   if (!viewer) {

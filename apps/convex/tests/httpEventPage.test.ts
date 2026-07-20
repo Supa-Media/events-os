@@ -13,10 +13,10 @@ import type { Id } from "../_generated/dataModel";
 /**
  * HTTP integration for the public RSVP page routes. The page (the guest-facing
  * event page, renamed to the "RSVP page") is served under the branded "/rsvp/"
- * prefix; the older "/event/" and legacy "/e/" prefixes are kept as aliases so
- * already-shared links (and OG-cached cover URLs) never break. All three
- * prefixes hit the same handler, so these tests pin that they resolve
- * identically and that unpublished/garbage slugs 404.
+ * prefix, with "/r/" (short) plus the pre-rename "/event/" and "/e/" prefixes
+ * all kept as aliases so already-shared links (and OG-cached cover URLs) never
+ * break. All four prefixes hit the same handler, so these tests pin that they
+ * resolve identically and that unpublished/garbage slugs 404.
  */
 
 async function seedEvent(s: ChapterSetup): Promise<Id<"events">> {
@@ -78,7 +78,7 @@ async function seedPublishedPage(withCover = false): Promise<{
 }
 
 describe("public RSVP page routes", () => {
-  for (const prefix of ["/rsvp", "/event", "/e"] as const) {
+  for (const prefix of ["/rsvp", "/r", "/event", "/e"] as const) {
     test(`${prefix}/<slug> serves the landing page HTML`, async () => {
       const { t, slug } = await seedPublishedPage();
       const res = await t.fetch(`${prefix}/${slug}`, {});
@@ -117,6 +117,7 @@ describe("public RSVP page routes", () => {
     const t = newT();
     await setupChapter(t);
     expect((await t.fetch("/rsvp/nope-nope", {})).status).toBe(404);
+    expect((await t.fetch("/r/nope-nope", {})).status).toBe(404);
     expect((await t.fetch("/event/nope-nope", {})).status).toBe(404);
     expect((await t.fetch("/e/nope-nope", {})).status).toBe(404);
   });

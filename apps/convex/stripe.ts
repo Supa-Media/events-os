@@ -1,7 +1,7 @@
 /**
  * Stripe integration — Checkout Sessions over Stripe's REST API via `fetch`
  * (default Convex runtime; no SDK, no "use node"). Card details never touch
- * our code: buyers pay on Stripe-hosted Checkout and return to the event page.
+ * our code: buyers pay on Stripe-hosted Checkout and return to the RSVP page.
  *
  * Flow: landing page → `createCheckout` (validates cart, pending order) →
  * Stripe-hosted payment → `checkout.session.completed` webhook (http.ts) →

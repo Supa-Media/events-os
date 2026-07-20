@@ -7,9 +7,10 @@ import { Alert, Platform } from "react-native";
 
 /** Production Convex deployment (see reference_convex-prod-deploy-target). */
 const PROD_CONVEX_DEPLOYMENT = "vivid-rhinoceros-688";
-/** Branded consolidated domain fronting prod's public event pages (Convex
- *  serves /event, /e, /t, /give, /p, /reimburse, /api, /stripe, /increase
- *  behind the Cloudflare Worker at the apex — see docs/plans/url-consolidation.md). */
+/** Branded consolidated domain fronting prod's public RSVP pages (Convex
+ *  serves /rsvp, /r, /event, /e, /t, /give, /p, /reimburse, /api, /stripe,
+ *  /increase behind the Cloudflare Worker at the apex — see
+ *  docs/plans/url-consolidation.md). */
 const PROD_SITE_URL = "https://publicworship.life";
 
 /**
@@ -50,12 +51,13 @@ export function publicSiteUrl(): string {
 }
 
 /**
- * Absolute URL of an event's public page on the branded domain (or the Convex
- * fallback). The path segment is `/event/`; the old `/e/` prefix is kept as an
- * alias server-side for backward compatibility with already-shared links.
+ * Absolute URL of an event's public RSVP page on the branded domain (or the
+ * Convex fallback). The canonical path segment is `/rsvp/`; the `/r/` short
+ * form and the pre-rename `/event/` + `/e/` prefixes are kept as aliases
+ * server-side so already-shared links never break.
  */
-export function eventPageUrl(slug: string): string {
-  return `${publicSiteUrl()}/event/${slug}`;
+export function rsvpPageUrl(slug: string): string {
+  return `${publicSiteUrl()}/rsvp/${slug}`;
 }
 
 /** Integer cents → "$12" / "$12.50". */

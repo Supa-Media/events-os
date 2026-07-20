@@ -1,5 +1,5 @@
 /**
- * A live, guest's-eye preview of the public event page, shown at the top of the
+ * A live, guest's-eye preview of the public RSVP page, shown at the top of the
  * Design phase. It reframes the whole phase: you're shaping a page people will
  * see, not filling in a form. Cover, title, tagline and venue bind to the edit
  * buffers as you type, so every change lands somewhere visible.

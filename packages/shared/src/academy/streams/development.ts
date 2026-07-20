@@ -97,7 +97,7 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
           "Only Stripe payments count",
           "Only recurring monthly pledges count",
           "Any mission giving with nothing given back — through any channel — counts; a ticket purchase does NOT, because the buyer got a seat in return",
-          "Only donations made through an event page count",
+          "Only donations made through an RSVP page count",
         ],
         answerIndex: 2,
         explanation:

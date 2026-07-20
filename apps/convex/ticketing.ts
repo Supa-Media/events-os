@@ -1,5 +1,5 @@
 /**
- * Ticketing — public event pages, RSVPs, ticket sales, comments & reactions.
+ * Ticketing — public RSVP pages, RSVPs, ticket sales, comments & reactions.
  *
  * Three surfaces:
  *   - ADMIN (requireAccess via chapter helpers): page setup, ticket types,
@@ -273,7 +273,7 @@ export const updatePage = mutation({
       if (clash && clash._id !== pageId) {
         throw new ConvexError({
           code: "SLUG_TAKEN",
-          message: `"${slug}" is already used by another event page.`,
+          message: `"${slug}" is already used by another RSVP page.`,
         });
       }
       patch.slug = slug;
@@ -758,7 +758,7 @@ export const submitRsvp = mutation({
   handler: async (ctx, args) => {
     const page = await getPublishedPage(ctx, args.slug);
     if (!page) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Event page not found." });
+      throw new ConvexError({ code: "NOT_FOUND", message: "RSVP page not found." });
     }
     if (page.rsvpEnabled === false) {
       throw new ConvexError({ code: "RSVP_CLOSED", message: "RSVPs are closed." });
@@ -857,7 +857,7 @@ export const addComment = mutation({
   handler: async (ctx, args) => {
     const page = await getPublishedPage(ctx, args.slug);
     if (!page) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Event page not found." });
+      throw new ConvexError({ code: "NOT_FOUND", message: "RSVP page not found." });
     }
     const viewer = await getViewerRsvp(ctx, page.eventId, args.token);
     if (!viewer) {
@@ -909,7 +909,7 @@ export const toggleReaction = mutation({
   handler: async (ctx, args) => {
     const page = await getPublishedPage(ctx, args.slug);
     if (!page) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Event page not found." });
+      throw new ConvexError({ code: "NOT_FOUND", message: "RSVP page not found." });
     }
     const viewer = await getViewerRsvp(ctx, page.eventId, args.token);
     if (!viewer) {

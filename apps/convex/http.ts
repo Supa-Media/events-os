@@ -86,7 +86,7 @@ function html(body: string, status = 200): Response {
 
 const publicRsvpPage = httpAction(async (ctx, req) => {
     const url = new URL(req.url);
-    const segments = url.pathname.split("/").filter(Boolean); // ["rsvp"|"event"|"e", slug, ...]
+    const segments = url.pathname.split("/").filter(Boolean); // ["rsvp"|"r"|"event"|"e", slug, ...]
     const slug = decodeURIComponent(segments[1] ?? "");
     const sub = segments[2] ?? null;
     if (!slug) return html(renderNotFound(), 404);
@@ -135,9 +135,11 @@ const publicRsvpPage = httpAction(async (ctx, req) => {
 });
 
 http.route({ pathPrefix: "/rsvp/", method: "GET", handler: publicRsvpPage });
-// Back-compat aliases (same handler) for links shared before the
-// "/event/" -> "/rsvp/" rename, plus the older "/e/" short prefix. Canonical
-// URLs (OG tags, emails, ICS, Stripe returns) now point at "/rsvp/".
+// Aliases (same handler) so every prefix resolves identically: "/r/" is the
+// short form of "/rsvp/"; "/event/" and its short "/e/" are the pre-rename
+// prefixes, kept so already-shared/emailed links never break. Canonical URLs
+// (OG tags, emails, ICS, Stripe returns) point at "/rsvp/".
+http.route({ pathPrefix: "/r/", method: "GET", handler: publicRsvpPage });
 http.route({ pathPrefix: "/event/", method: "GET", handler: publicRsvpPage });
 http.route({ pathPrefix: "/e/", method: "GET", handler: publicRsvpPage });
 

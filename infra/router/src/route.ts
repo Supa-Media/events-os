@@ -38,8 +38,9 @@ const EVENTS_HOST = "events.publicworship.life";
 const RSVP_HOST = "rsvp.publicworship.life";
 
 // Kept in sync with apps/convex/http.ts's public route table: the
-// server-rendered public pages (/rsvp/ — the guest RSVP page — with /event/
-// and the older /e/ kept as back-compat aliases, /t/, /p/, /reimburse/), the
+// server-rendered public pages (/rsvp/ — the guest RSVP page — with its short
+// /r/ alias and the pre-rename /event/ + /e/ prefixes all serving it, /t/, /p/,
+// /reimburse/), the
 // client-script JSON APIs (/api/tickets/*, /api/reimburse/*, /api/give/*,
 // /api/auth/*, all under /api/), and the two payment-provider webhooks
 // (/stripe/webhook, /increase/webhook). /give is handled separately below
@@ -48,6 +49,7 @@ const RSVP_HOST = "rsvp.publicworship.life";
 // against apps/convex/http.ts's literals.
 export const CONVEX_PREFIXES = [
   "/rsvp/",
+  "/r/",
   "/event/",
   "/e/",
   "/t/",
