@@ -148,7 +148,7 @@ export const MANAGEMENT_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "tip",
-        text: "Before the 1:1, open their workload page — events, roles, duties, projects in one view. Two minutes of reading turns \"so, what are you up to?\" into \"let's talk about the two things that look stuck.\"",
+        text: "Before the 1:1, open their workload page — events, roles, duties, projects in one view, with each event row flagging their **overdue tasks** in red (tap one to jump straight to it on the event). Two minutes of reading turns \"so, what are you up to?\" into \"let's talk about the two things that look stuck.\"",
       },
     ],
     quiz: [

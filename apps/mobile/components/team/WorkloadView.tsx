@@ -18,10 +18,12 @@ import type { Doc, Id } from "@events-os/convex/_generated/dataModel";
 import {
   EVENT_STATUS_LABELS,
   CHECKIN_ACTION_LABELS,
+  MODULE_LABELS,
   responsibilityAppliesTo,
   responsibilityDueForReview,
   isPastEvent,
   type EventStatus,
+  type ModuleKey,
 } from "@events-os/shared";
 import {
   Screen,
@@ -36,6 +38,7 @@ import {
   statusTone,
 } from "../ui";
 import { ProjectCard, buildProjectTree, type ProjectDoc } from "./ProjectCard";
+import { ProjectRootList } from "./ProjectRootList";
 import { CourseBadgeChips } from "../academy/CourseBadgeChips";
 import { CheckInModal } from "./CheckInModal";
 import { AddResponsibilityModal } from "./AddResponsibilityModal";
@@ -53,6 +56,25 @@ type Responsibility = FunctionReturnType<
 type CheckInRow = NonNullable<
   FunctionReturnType<typeof api.checkIns.listForSubtree>
 >["entries"][number];
+
+/**
+ * Overdue task summary — landing on `org.workload`'s event/role rows
+ * (backend contract, in flight alongside this UI). Typed locally and
+ * accessed defensively (`?? []`) so the page works whether or not the
+ * server has shipped the field yet.
+ */
+type WorkloadOverdueTask = {
+  itemId: string;
+  title: string;
+  module: string;
+  dueDate: number;
+};
+type WorkloadEvent = Member["events"][number] & {
+  overdueTasks?: WorkloadOverdueTask[];
+};
+type WorkloadRole = Member["roles"][number] & {
+  overdueTasks?: WorkloadOverdueTask[];
+};
 
 export function WorkloadView({
   personId,
@@ -427,20 +449,14 @@ export function WorkloadView({
             work.
           </Text>
         ) : (
-          <View style={{ gap: spacing.sm }}>
-            {ownRoots.map((p) => (
-              <ProjectCard
-                key={p._id}
-                project={p}
-                childrenOf={projectTree}
-                peopleById={peopleById}
-                showOwner={showOwner}
-                canManage={canManageThis}
-                showOpenPage
-                partOf={partOfFor(p)}
-              />
-            ))}
-          </View>
+          <ProjectRootList
+            roots={ownRoots}
+            projectTree={projectTree}
+            peopleById={peopleById}
+            showOwner={showOwner}
+            canManage={canManageThis}
+            partOfFor={partOfFor}
+          />
         )}
 
         {/* Their responsibilities (recurring duties). Managers always get the
@@ -784,18 +800,16 @@ function TeamMemberBlock({
         <Text className="text-sm text-faint">Nothing tracked yet.</Text>
       ) : (
         <View style={{ gap: spacing.sm }}>
-          {roots.map((p) => (
-            <ProjectCard
-              key={p._id}
-              project={p}
-              childrenOf={projectTree}
+          {roots.length > 0 ? (
+            <ProjectRootList
+              roots={roots}
+              projectTree={projectTree}
               peopleById={peopleById}
               showOwner={showOwner}
               canManage={canManage}
-              showOpenPage
-              partOf={partOfFor(p)}
+              partOfFor={partOfFor}
             />
-          ))}
+          ) : null}
           {responsibilities.length > 0 ? (
             <DutyRows
               items={responsibilities}
@@ -1095,58 +1109,112 @@ function CheckInHistoryModal({
 
 /** Compact rows for the event data we already have: owned events + roles.
  *  Past events (date + 2-week grace behind us) fold into a collapsed section
- *  so the list leads with what's still live. */
+ *  so the list leads with what's still live. Current rows also surface any
+ *  overdue tasks (server-computed, `overdueTasks`): a red count pill on the
+ *  row for the bird's-eye scan, plus an indented tap-through list straight to
+ *  the module the task lives in. Past events stay clean — no task list, no
+ *  pill, since they're not actionable anymore. */
 function EventsAndRoles({ member }: { member: Member }) {
   const router = useRouter();
   const [showPast, setShowPast] = useState(false);
   const now = Date.now();
+  const DAY_MS = 24 * 60 * 60 * 1000;
 
-  const eventRow = (e: Member["events"][number]) => (
+  // volunteer_expectations has no tab of its own on the event screen — it's
+  // merged into the "Crew & Duties" tab (see event/[id].tsx's tab-building
+  // comment; PlanGrid.tsx:846 is the existing precedent for this deep link).
+  // Every other module key doubles as its own tab key.
+  const tabForModule = (moduleKey: string) =>
+    moduleKey === "volunteer_expectations" ? "crew" : moduleKey;
+
+  const overdueRow = (task: WorkloadOverdueTask, eventId: string) => (
     <Pressable
-      key={e._id}
-      onPress={() => router.push(`/event/${e._id}` as any)}
-      className="flex-row items-center gap-2 rounded-md border border-border bg-raised px-3 py-2 active:bg-sunken web:hover:bg-sunken"
+      key={task.itemId}
+      onPress={() =>
+        router.push(`/event/${eventId}?tab=${tabForModule(task.module)}` as any)
+      }
+      className="ml-6 flex-row items-center gap-1.5 py-0.5 active:opacity-70"
     >
-      <Icon name="calendar" size={14} color={colors.muted} />
-      <Text className="flex-1 text-sm font-medium text-ink" numberOfLines={1}>
-        {e.name}
+      <Icon name="alert-triangle" size={12} color={colors.danger} />
+      <Text className="flex-1 text-xs text-ink" numberOfLines={1}>
+        <Text className="font-medium">{task.title}</Text>
+        <Text className="text-muted">
+          {" "}
+          · {MODULE_LABELS[task.module as ModuleKey] ?? task.module} ·{" "}
+          {Math.max(0, Math.floor((now - task.dueDate) / DAY_MS))}d overdue
+        </Text>
       </Text>
-      <Text className="text-xs text-muted">{formatDate(e.eventDate)}</Text>
-      <Badge
-        label={EVENT_STATUS_LABELS[e.status as EventStatus]}
-        tone={statusTone(e.status as EventStatus)}
-      />
-    </Pressable>
-  );
-  const roleRow = (r: Member["roles"][number], i: number) => (
-    <Pressable
-      key={`${r.eventId}-${i}`}
-      onPress={() => router.push(`/event/${r.eventId}` as any)}
-      className="flex-row items-center gap-2 rounded-md border border-border bg-raised px-3 py-2 active:bg-sunken web:hover:bg-sunken"
-    >
-      <Icon name="tag" size={14} color={colors.muted} />
-      <Text className="flex-1 text-sm text-ink" numberOfLines={1}>
-        <Text className="font-medium">{r.roleLabel}</Text>
-        <Text className="text-muted"> · {r.eventName}</Text>
-      </Text>
-      <Text className="text-xs text-muted">{formatDate(r.eventDate)}</Text>
     </Pressable>
   );
 
-  const currentEvents = member.events.filter(
-    (e) => !isPastEvent(e.eventDate, now),
-  );
-  const pastEvents = member.events.filter((e) => isPastEvent(e.eventDate, now));
-  const currentRoles = member.roles.filter(
-    (r) => !isPastEvent(r.eventDate, now),
-  );
-  const pastRoles = member.roles.filter((r) => isPastEvent(r.eventDate, now));
+  const eventRow = (e: WorkloadEvent, showOverdue: boolean) => {
+    const overdueTasks = showOverdue ? (e.overdueTasks ?? []) : [];
+    return (
+      <View key={e._id} style={{ gap: 2 }}>
+        <Pressable
+          onPress={() => router.push(`/event/${e._id}` as any)}
+          className="flex-row items-center gap-2 rounded-md border border-border bg-raised px-3 py-2 active:bg-sunken web:hover:bg-sunken"
+        >
+          <Icon name="calendar" size={14} color={colors.muted} />
+          <Text className="flex-1 text-sm font-medium text-ink" numberOfLines={1}>
+            {e.name}
+          </Text>
+          <Text className="text-xs text-muted">{formatDate(e.eventDate)}</Text>
+          {overdueTasks.length > 0 ? (
+            <Badge
+              label={`${overdueTasks.length} overdue`}
+              tone="danger"
+              icon="alert-triangle"
+            />
+          ) : null}
+          <Badge
+            label={EVENT_STATUS_LABELS[e.status as EventStatus]}
+            tone={statusTone(e.status as EventStatus)}
+          />
+        </Pressable>
+        {overdueTasks.map((t) => overdueRow(t, e._id))}
+      </View>
+    );
+  };
+  const roleRow = (r: WorkloadRole, i: number, showOverdue: boolean) => {
+    const overdueTasks = showOverdue ? (r.overdueTasks ?? []) : [];
+    return (
+      <View key={`${r.eventId}-${i}`} style={{ gap: 2 }}>
+        <Pressable
+          onPress={() => router.push(`/event/${r.eventId}` as any)}
+          className="flex-row items-center gap-2 rounded-md border border-border bg-raised px-3 py-2 active:bg-sunken web:hover:bg-sunken"
+        >
+          <Icon name="tag" size={14} color={colors.muted} />
+          <Text className="flex-1 text-sm text-ink" numberOfLines={1}>
+            <Text className="font-medium">{r.roleLabel}</Text>
+            <Text className="text-muted"> · {r.eventName}</Text>
+          </Text>
+          <Text className="text-xs text-muted">{formatDate(r.eventDate)}</Text>
+          {overdueTasks.length > 0 ? (
+            <Badge
+              label={`${overdueTasks.length} overdue`}
+              tone="danger"
+              icon="alert-triangle"
+            />
+          ) : null}
+        </Pressable>
+        {overdueTasks.map((t) => overdueRow(t, r.eventId))}
+      </View>
+    );
+  };
+
+  const events = member.events as WorkloadEvent[];
+  const roles = member.roles as WorkloadRole[];
+  const currentEvents = events.filter((e) => !isPastEvent(e.eventDate, now));
+  const pastEvents = events.filter((e) => isPastEvent(e.eventDate, now));
+  const currentRoles = roles.filter((r) => !isPastEvent(r.eventDate, now));
+  const pastRoles = roles.filter((r) => isPastEvent(r.eventDate, now));
   const pastCount = pastEvents.length + pastRoles.length;
 
   return (
     <View style={{ gap: spacing.xs }}>
-      {currentEvents.map((e) => eventRow(e))}
-      {currentRoles.map((r, i) => roleRow(r, i))}
+      {currentEvents.map((e) => eventRow(e, true))}
+      {currentRoles.map((r, i) => roleRow(r, i, true))}
       {pastCount > 0 ? (
         <View style={{ gap: spacing.xs }}>
           <Pressable
@@ -1167,8 +1235,8 @@ function EventsAndRoles({ member }: { member: Member }) {
           </Pressable>
           {showPast ? (
             <View style={{ gap: spacing.xs }}>
-              {pastEvents.map((e) => eventRow(e))}
-              {pastRoles.map((r, i) => roleRow(r, i))}
+              {pastEvents.map((e) => eventRow(e, false))}
+              {pastRoles.map((r, i) => roleRow(r, i, false))}
             </View>
           ) : null}
         </View>

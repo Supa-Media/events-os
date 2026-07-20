@@ -156,56 +156,73 @@ export function ProjectCard({
             if (t.trim()) update({ projectId: id, name: t.trim() });
           }}
         />
-        {partOf ? (
-          <Pressable
-            onPress={partOf.onPress}
-            hitSlop={4}
-            accessibilityLabel={`Open full project: ${partOf.name}`}
-            style={{ maxWidth: 160 }}
-            className="flex-row items-center gap-1 rounded px-1 py-0.5 active:bg-sunken web:hover:bg-sunken"
-          >
-            <Icon name="corner-left-up" size={12} color={colors.accent} />
-            <Text
-              className="text-xs font-medium text-accent"
-              numberOfLines={1}
+        {/* Everything from here to the status cell is the row's "whitespace":
+            press it to open the project's own page. The chips inside stay
+            independently tappable — RN's responder system lets a nested
+            Pressable (or the DeadlineCell/owner triggers below) claim its own
+            touch before it reaches this wrapper, on native AND web. The one
+            thing that pattern doesn't cover is a raw TextInput (the name
+            field above), which is why that's a sibling kept OUTSIDE this
+            Pressable rather than nested inside it — nesting it would double-
+            fire (focus the input AND navigate) on web. */}
+        <Pressable
+          onPress={() => router.push(`/project/${id}` as any)}
+          className="flex-1 flex-row flex-wrap items-center gap-1.5"
+          accessibilityLabel={`Open ${project.name || "project"}`}
+        >
+          {partOf ? (
+            <Pressable
+              onPress={partOf.onPress}
+              hitSlop={4}
+              accessibilityLabel={`Open full project: ${partOf.name}`}
+              style={{ maxWidth: 160 }}
+              className="flex-row items-center gap-1 rounded px-1 py-0.5 active:bg-sunken web:hover:bg-sunken"
             >
-              {partOf.name}
-            </Text>
-          </Pressable>
-        ) : null}
-        {!expanded ? (
-          <>
-            {project.blocker ? (
-              <Icon name="alert-triangle" size={13} color={colors.danger} />
-            ) : null}
-            {children.length > 0 ? (
-              <Text className="text-2xs font-semibold text-faint">
-                {children.length} sub{children.length === 1 ? "" : "s"}
+              <Icon name="corner-left-up" size={12} color={colors.accent} />
+              <Text
+                className="text-xs font-medium text-accent"
+                numberOfLines={1}
+              >
+                {partOf.name}
               </Text>
-            ) : null}
-            {project.deadline != null ? (
-              <View className="flex-row items-center gap-1">
-                <Icon
-                  name="flag"
-                  size={12}
-                  color={overdue ? colors.danger : colors.muted}
-                />
-                <Text
-                  className={`text-xs ${
-                    overdue ? "font-medium text-danger" : "text-muted"
-                  }`}
-                >
-                  {formatDate(project.deadline)}
+            </Pressable>
+          ) : null}
+          {!expanded ? (
+            <>
+              {project.blocker ? (
+                <Icon name="alert-triangle" size={13} color={colors.danger} />
+              ) : null}
+              {children.length > 0 ? (
+                <Text className="text-2xs font-semibold text-faint">
+                  {children.length} sub{children.length === 1 ? "" : "s"}
                 </Text>
-              </View>
-            ) : null}
-            {showOwner && ownerName ? (
-              <Text className="text-xs text-muted" numberOfLines={1}>
-                {ownerName}
-              </Text>
-            ) : null}
-          </>
-        ) : null}
+              ) : null}
+              <DeadlineCell
+                compact
+                value={project.deadline}
+                overdue={overdue}
+                onChange={(v) => update({ projectId: id, deadline: v })}
+              />
+              {showOwner ? (
+                <Pressable
+                  onPress={() => setOwnerPickerOpen(true)}
+                  hitSlop={4}
+                  accessibilityLabel={
+                    ownerName ? `Owner: ${ownerName}` : "Assign owner"
+                  }
+                  className="rounded px-1 py-0.5 active:bg-sunken web:hover:bg-sunken"
+                >
+                  <Text
+                    className={`text-xs ${ownerName ? "text-muted" : "text-faint"}`}
+                    numberOfLines={1}
+                  >
+                    {ownerName ?? "—"}
+                  </Text>
+                </Pressable>
+              ) : null}
+            </>
+          ) : null}
+        </Pressable>
         <View style={{ width: 112 }}>
           <SelectCell
             value={project.status}
@@ -213,6 +230,14 @@ export function ProjectCard({
             onChange={(status) => update({ projectId: id, status })}
           />
         </View>
+        <Pressable
+          onPress={() => router.push(`/project/${id}` as any)}
+          hitSlop={4}
+          accessibilityLabel="Open project page"
+          className="rounded p-1 active:bg-sunken web:hover:bg-sunken"
+        >
+          <Icon name="external-link" size={13} color={colors.faint} />
+        </Pressable>
         {canManage ? (
           <Pressable
             onPress={() =>
@@ -470,12 +495,19 @@ function DeadlineCell({
   value,
   overdue,
   onChange,
+  compact = false,
 }: {
   value: number | null | undefined;
   overdue: boolean;
   onChange: (v: number | null) => void;
+  /** The condensed row's flag+date chip: smaller glyph/text, no "Due"/"Set
+   *  deadline" copy, and — like the row's other at-a-glance chips — rendered
+   *  only once a deadline exists. Same trigger mechanics (Popover + Calendar)
+   *  as the full meta-row cell; only the trigger's chrome differs. */
+  compact?: boolean;
 }) {
   const { ref, anchor, visible, open, close } = useAnchor();
+  if (compact && value == null) return null;
   return (
     <>
       <Pressable
@@ -484,24 +516,36 @@ function DeadlineCell({
         accessibilityLabel={
           value != null ? `Deadline: ${formatDate(value)}` : "Set deadline"
         }
-        className="flex-row items-center gap-1.5 py-1 active:opacity-70 web:hover:opacity-90"
+        className={
+          compact
+            ? "flex-row items-center gap-1 active:opacity-70 web:hover:opacity-90"
+            : "flex-row items-center gap-1.5 py-1 active:opacity-70 web:hover:opacity-90"
+        }
       >
         <Icon
           name="flag"
-          size={13}
+          size={compact ? 12 : 13}
           color={overdue ? colors.danger : colors.muted}
         />
         <Text
-          className={`text-sm ${
-            value != null
-              ? overdue
-                ? "font-medium text-danger"
-                : "text-ink"
-              : "text-faint"
-          }`}
+          className={
+            compact
+              ? `text-xs ${overdue ? "font-medium text-danger" : "text-muted"}`
+              : `text-sm ${
+                  value != null
+                    ? overdue
+                      ? "font-medium text-danger"
+                      : "text-ink"
+                    : "text-faint"
+                }`
+          }
           numberOfLines={1}
         >
-          {value != null ? `Due ${formatDate(value)}` : "Set deadline"}
+          {compact
+            ? formatDate(value as number)
+            : value != null
+              ? `Due ${formatDate(value)}`
+              : "Set deadline"}
         </Text>
       </Pressable>
 

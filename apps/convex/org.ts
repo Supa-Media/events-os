@@ -12,9 +12,14 @@
  * `workload` answers "what is everyone under this person working on?" in one
  * query: the person's manager(s) + direct reports, plus every member of their
  * subtree (themselves included) with the events they own and the event roles
- * they hold. Manual projects ride along via `api.projects.list` on the client
- * so both stay independently reactive. Access is scoped like `overview`:
- * admins can inspect anyone; everyone else only people in their own subtree.
+ * they hold. Each owned event and held role also carries that member's
+ * `overdueTasks` (event items overdue by the digest's own reckoning — see
+ * `reminders.ts#collectOverdueEventTasksByChapter`), deduped so a task never
+ * appears twice for one member: an event a member both owns and holds a role
+ * on puts its overdue tasks on the events row only. Manual projects ride
+ * along via `api.projects.list` on the client so both stay independently
+ * reactive. Access is scoped like `overview`: admins can inspect anyone;
+ * everyone else only people in their own subtree.
  *
  * Manager/report relationships (`nav`'s `canManage`, `overview`'s
  * `hasReports`/`canManage`/`people[].effectiveManagerIds`, `workload`'s
@@ -32,6 +37,7 @@ import { v } from "convex/values";
 import { isOperationalEvent, responsibilityAppliesTo } from "@events-os/shared";
 import { getChapterIdOrNull } from "./lib/context";
 import { orgWideCatalog } from "./responsibilities";
+import { collectOverdueEventTasksByChapter } from "./reminders";
 import {
   isChapterAdmin,
   viewerPerson,
@@ -422,6 +428,33 @@ export const workload = query({
       return roleCache.get(roleId) ?? null;
     };
 
+    // Every subtree member's OVERDUE event tasks, one item scan for the
+    // whole chapter (not per member) — reuses the digest's exact
+    // attribution/completion rules (see reminders.ts) so what's "overdue"
+    // here matches what's overdue in the Sunday digest. Hands in the
+    // roster + events this query already read above instead of paying for
+    // `collectOverdueEventTasksByChapter`'s own two `by_chapter` scans of
+    // the same tables — see its doc comment for why the (filtered) roster
+    // and (isOperationalEvent-filtered) events are safe to reuse as-is.
+    const overdueByPerson = await collectOverdueEventTasksByChapter(
+      ctx,
+      person.chapterId,
+      Date.now(),
+      { people: roster, events },
+    );
+    const overdueTasksFor = (
+      personId: Id<"people">,
+      eventId: Id<"events">,
+    ) =>
+      (overdueByPerson.get(personId) ?? [])
+        .filter((t) => t.eventId === eventId)
+        .map((t) => ({
+          itemId: t.itemId,
+          title: t.title,
+          module: t.module,
+          dueDate: t.dueDate,
+        }));
+
     const members = await Promise.all(
       subtreeNodes(childrenOf, person).map(async ({ person: p, depth }) => {
         const ownedEvents = events
@@ -432,13 +465,28 @@ export const workload = query({
             name: e.name,
             eventDate: e.eventDate,
             status: e.status,
+            overdueTasks: overdueTasksFor(p._id, e._id),
           }));
+        // A member who OWNS an event carries that event's overdue tasks on
+        // the events row — the matching role row (if any) never repeats them.
+        const ownedEventIds = new Set(ownedEvents.map((e) => e._id));
 
         // Event roles this person holds (module leadership lives here).
         const assignments = await ctx.db
           .query("roleAssignments")
           .withIndex("by_person", (q) => q.eq("personId", p._id))
           .collect();
+        // Two roles on the SAME event (e.g. Event Lead + Comms Lead) must
+        // never both carry that event's overdue tasks — only the FIRST role
+        // row for a given event does; every later role row on that same
+        // event gets `[]`, same as an owned event's role row already does.
+        // `Promise.all` preserves `assignments`' own order in its output
+        // regardless of which `getRole` resolves first, so seeding this off
+        // the resolved (pre-sort) array is deterministic. An owned event's
+        // role rows are unaffected — they're always `[]` via `ownedEventIds`
+        // and never mark `seenRoleEventIds`, so they can't suppress a
+        // legitimate first role row on a DIFFERENT (non-owned) event.
+        const seenRoleEventIds = new Set<Id<"events">>();
         const roles = (
           await Promise.all(
             assignments.map(async (a) => {
@@ -455,6 +503,16 @@ export const workload = query({
           )
         )
           .filter((r): r is NonNullable<typeof r> => r !== null)
+          .map((r) => {
+            const owned = ownedEventIds.has(r.eventId);
+            const alreadySeen = !owned && seenRoleEventIds.has(r.eventId);
+            if (!owned) seenRoleEventIds.add(r.eventId);
+            return {
+              ...r,
+              overdueTasks:
+                owned || alreadySeen ? [] : overdueTasksFor(p._id, r.eventId),
+            };
+          })
           .sort((a, b) => b.eventDate - a.eventDate);
 
         return {
