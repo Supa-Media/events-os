@@ -8,7 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Text, View } from "react-native";
 import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
-import type { Id } from "@events-os/convex/_generated/dataModel";
+import type { Doc, Id } from "@events-os/convex/_generated/dataModel";
 import { Badge, Card, Pill, TextField, type BadgeTone } from "../../ui";
 
 const STATUS_META: Record<string, { label: string; tone: BadgeTone }> = {
@@ -29,9 +29,15 @@ const FILTERS: Array<{ value: GuestFilter; label: string }> = [
 
 export function GuestListCard({
   eventId,
+  page,
   initialFilter,
 }: {
   eventId: Id<"events">;
+  /** The page row, when available — used only to pick the DEFAULT filter:
+   *  a tickets-only event (`rsvpEnabled === false`) opens on "Ticket
+   *  holders" since that's the only guest source that mode's public page
+   *  shows, mirroring `getPublicPage`'s own ticket-only guest filtering. */
+  page?: Doc<"eventPages"> | null;
   /** Deep-link request from a parent (e.g. tapping a pulse-strip stat). A
    *  wrapper object, not a bare string: the parent mints a fresh object per
    *  tap, so re-tapping the SAME stat still re-applies the filter after the
@@ -42,7 +48,7 @@ export function GuestListCard({
   const rsvps = useQuery(api.ticketing.listRsvpsAdmin, { eventId });
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<GuestFilter>(
-    initialFilter?.value ?? "all",
+    initialFilter?.value ?? (page?.rsvpEnabled === false ? "ticket" : "all"),
   );
 
   // Re-apply the deep-linked filter on every new request object, leaving the
