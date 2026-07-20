@@ -433,6 +433,31 @@ export const listRsvpsAdmin = query({
       .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .order("desc")
       .take(1000);
+
+    // A buyer holding multiple admissions (e.g. a Givebutter sync of a 2-pack)
+    // gets one ticketOrders/tickets row per admission, all sharing the buyer's
+    // rsvpId — so counting per-guest tickets means joining through orderId.
+    // Bounded reads mirror this file's other admin lists (by_event, take).
+    const orders = await ctx.db
+      .query("ticketOrders")
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
+      .take(500);
+    const rsvpIdByOrderId = new Map<Id<"ticketOrders">, Id<"rsvps">>();
+    for (const o of orders) {
+      if (o.rsvpId) rsvpIdByOrderId.set(o._id, o.rsvpId);
+    }
+    const tickets = await ctx.db
+      .query("tickets")
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
+      .take(1000);
+    const ticketCountByRsvpId = new Map<Id<"rsvps">, number>();
+    for (const t of tickets) {
+      if (t.status === "void") continue;
+      const rsvpId = rsvpIdByOrderId.get(t.orderId);
+      if (!rsvpId) continue;
+      ticketCountByRsvpId.set(rsvpId, (ticketCountByRsvpId.get(rsvpId) ?? 0) + 1);
+    }
+
     return rows.map((r) => ({
       id: r._id,
       name: r.name,
@@ -443,6 +468,7 @@ export const listRsvpsAdmin = query({
       status: r.status,
       source: r.source ?? "rsvp",
       createdAt: r.createdAt,
+      ticketCount: ticketCountByRsvpId.get(r._id) ?? 0,
     }));
   },
 });

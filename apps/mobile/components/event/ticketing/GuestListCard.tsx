@@ -1,7 +1,8 @@
 /**
  * Guest list — everyone who RSVP'd or bought tickets, with client-side
  * search plus a status/ticket-holder filter chip row. Ticket buyers get a
- * small 🎟 marker next to their name.
+ * small 🎟 marker next to their name, with a "×N" suffix when a single guest
+ * holds multiple admissions (e.g. a multi-ticket Givebutter buyer).
  */
 import { useEffect, useMemo, useState } from "react";
 import { Text, View } from "react-native";
@@ -54,7 +55,11 @@ export function GuestListCard({
     const rows = rsvps ?? [];
     const q = search.trim().toLowerCase();
     return rows.filter((r) => {
-      if (filter === "ticket" ? r.source !== "ticket" : filter !== "all" && r.status !== filter) {
+      if (
+        filter === "ticket"
+          ? !(r.source === "ticket" || r.ticketCount > 0)
+          : filter !== "all" && r.status !== filter
+      ) {
         return false;
       }
       if (!q) return true;
@@ -132,7 +137,11 @@ export function GuestListCard({
             >
               <View className="flex-1">
                 <Text className="text-base font-medium text-ink" numberOfLines={1}>
-                  {r.source === "ticket" ? "🎟 " : ""}
+                  {r.source === "ticket" || r.ticketCount > 0
+                    ? r.ticketCount > 1
+                      ? `🎟 ×${r.ticketCount} `
+                      : "🎟 "
+                    : ""}
                   {r.name}
                 </Text>
                 {/* Email if we have one, else phone, else nothing — an
