@@ -36,6 +36,10 @@ export const createCheckout = action({
     items: v.array(
       v.object({ ticketTypeId: v.id("ticketTypes"), quantity: v.number() }),
     ),
+    // Optional add-on gift bundled into this SAME checkout (the "also want
+    // to donate?" upsell) — one card charge, split on fulfillment into ticket
+    // revenue + a gift. Absent/0 = tickets only (today's behavior).
+    donationCents: v.optional(v.number()),
   },
   handler: async (ctx, args): Promise<CheckoutResult> => {
     const prepared = await ctx.runMutation(internal.ticketing.prepareOrder, {
@@ -44,11 +48,12 @@ export const createCheckout = action({
       email: args.email,
       token: args.token,
       items: args.items,
+      donationCents: args.donationCents,
     });
 
-    // Free cart → issue tickets immediately, no Stripe round-trip. No payment
-    // proves the email, so the client may still prompt for the code.
-    if (prepared.totalCents === 0) {
+    // Free path only when there's truly nothing to charge — a $0 cart with an
+    // add-on donation still needs a real Stripe charge for the donation.
+    if (prepared.totalCents === 0 && prepared.donationCents === 0) {
       await ctx.runMutation(internal.ticketing.fulfillOrder, {
         orderId: prepared.orderId,
       });
@@ -90,6 +95,22 @@ export const createCheckout = action({
         `${prepared.eventName} — ${line.name}`,
       );
     });
+    // Add-on donation: ONE extra line item in the SAME session, same shape as
+    // `createDonationCheckout`'s line — kept split so the buyer sees exactly
+    // what they're paying for even though it settles as one card charge.
+    if (prepared.donationCents > 0) {
+      const i = prepared.lines.length;
+      body.set(`line_items[${i}][quantity]`, "1");
+      body.set(`line_items[${i}][price_data][currency]`, "usd");
+      body.set(
+        `line_items[${i}][price_data][unit_amount]`,
+        String(prepared.donationCents),
+      );
+      body.set(
+        `line_items[${i}][price_data][product_data][name]`,
+        `Donation — ${prepared.eventName}`,
+      );
+    }
 
     const response = await fetch(`${STRIPE_API}/checkout/sessions`, {
       method: "POST",

@@ -28,6 +28,7 @@ import { Doc, Id } from "./_generated/dataModel";
 import { normalizeEmail } from "./lib/access";
 import { requireEvent, requireOwned, requireUserId } from "./lib/context";
 import { beginEmailVerification, clearEmailCode } from "./lib/emailCodes";
+import { createPaidDonationForOrder } from "./giving";
 import { RSVP_STATUSES } from "./schema/ticketing";
 
 // ── Small helpers ────────────────────────────────────────────────────────────
@@ -1191,6 +1192,10 @@ export const prepareOrder = internalMutation({
     items: v.array(
       v.object({ ticketTypeId: v.id("ticketTypes"), quantity: v.number() }),
     ),
+    // Optional add-on gift bundled into the SAME checkout (the "also
+    // donate?" upsell) — stashed on the pending order so the webhook can
+    // split the one Stripe charge. Absent/0 = tickets only.
+    donationCents: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     const page = await getPublishedPage(ctx, args.slug);
@@ -1207,6 +1212,13 @@ export const prepareOrder = internalMutation({
     }
     if (args.items.length === 0 || args.items.length > 10) {
       throw new ConvexError({ code: "INVALID_CART", message: "Pick some tickets first." });
+    }
+    const donationCents = args.donationCents ?? 0;
+    if (!Number.isInteger(donationCents) || donationCents < 0) {
+      throw new ConvexError({
+        code: "INVALID_AMOUNT",
+        message: "Donation amount must be a whole number of cents.",
+      });
     }
 
     const now = Date.now();
@@ -1299,6 +1311,7 @@ export const prepareOrder = internalMutation({
       email,
       items: lines,
       totalCents,
+      ...(donationCents > 0 ? { donationCents } : {}),
       currency: "usd",
       status: "pending",
       createdAt: now,
@@ -1309,6 +1322,7 @@ export const prepareOrder = internalMutation({
     return {
       orderId,
       totalCents,
+      donationCents,
       guestToken,
       needsEmailVerification,
       eventName: event?.name ?? "Event",
@@ -1426,6 +1440,22 @@ async function fulfill(
         await clearEmailCode(ctx, rsvp._id);
       }
     }
+  }
+
+  // Combined checkout add-on: the SAME Stripe charge included an optional
+  // "also donate?" gift. Split it out now — ticket money already landed on
+  // revenueCents above; this only ever touches donationsCents/gifts (money
+  // invariant). Guarded by the `order.status === "paid"` early-return above,
+  // so a webhook redelivery never double-creates this donation.
+  if (order.donationCents && order.donationCents > 0) {
+    await createPaidDonationForOrder(ctx, {
+      eventId: order.eventId,
+      chapterId: order.chapterId,
+      rsvpId: order.rsvpId,
+      name: order.name,
+      email: order.email,
+      amountCents: order.donationCents,
+    });
   }
 
   await ctx.scheduler.runAfter(0, internal.ticketingEmails.sendTicketsEmail, {

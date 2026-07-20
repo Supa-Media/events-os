@@ -173,6 +173,107 @@ describe("applyGivebutterTickets", () => {
     });
   });
 
+  test("an existing ACTIVE native tier of the same name absorbs the synced sale (no mirror minted)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId);
+    const nativeId = (await s.as.mutation(api.ticketing.createTicketType, {
+      eventId,
+      name: "General Admission",
+      priceCents: 2500,
+    })) as Id<"ticketTypes">;
+
+    const res = await apply(s, eventId, [
+      gbTicket({
+        externalId: "1",
+        ticketTypeName: "general admission", // normalized match, different case
+        attendeeName: "Ada Guest",
+        email: "ada@example.com",
+        priceCents: 2500,
+      }),
+    ]);
+    expect(res).toMatchObject({ inserted: 1, reconciled: 0, skipped: 0 });
+
+    // No mirror minted — exactly the one native type, untouched isActive.
+    const types = await rows(s, "ticketTypes", eventId);
+    expect(types).toHaveLength(1);
+    expect(types[0]).toMatchObject({
+      _id: nativeId,
+      isActive: true,
+      soldCount: 1,
+    });
+    expect(types[0].externalProvider).toBeUndefined();
+
+    const orders = await rows(s, "ticketOrders", eventId);
+    expect(orders[0].items[0].ticketTypeId).toBe(nativeId);
+    const tickets = await rows(s, "tickets", eventId);
+    expect(tickets[0].ticketTypeId).toBe(nativeId);
+  });
+
+  test("an INACTIVE native tier of the same name is NOT matched — falls back to a mirror", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId);
+    await s.as.mutation(api.ticketing.createTicketType, {
+      eventId,
+      name: "General Admission",
+      priceCents: 2500,
+    });
+    const [offType] = await rows(s, "ticketTypes", eventId);
+    await run(s.t, (ctx) =>
+      ctx.db.patch(offType._id, { isActive: false, updatedAt: Date.now() }),
+    );
+
+    await apply(s, eventId, [
+      gbTicket({
+        externalId: "1",
+        ticketTypeName: "General Admission",
+        priceCents: 2500,
+      }),
+    ]);
+
+    const types = await rows(s, "ticketTypes", eventId);
+    expect(types).toHaveLength(2); // the off native tier + a fresh mirror
+    const mirror = types.find((tt) => tt.externalProvider === "givebutter");
+    expect(mirror).toMatchObject({ isActive: false });
+    const orders = await rows(s, "ticketOrders", eventId);
+    expect(orders[0].items[0].ticketTypeId).toBe(mirror!._id);
+  });
+
+  test("promoting an old mirror via setTicketTypeSellable makes it the native match for later syncs", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId);
+
+    // First sync: no native tier yet → mints a mirror.
+    await apply(s, eventId, [
+      gbTicket({ externalId: "1", ticketTypeName: "GA", priceCents: 2500 }),
+    ]);
+    const [mirror] = await rows(s, "ticketTypes", eventId);
+    expect(mirror.externalProvider).toBe("givebutter");
+
+    // Admin promotes it to sellable.
+    await s.as.mutation(api.ticketing.setTicketTypeSellable, {
+      ticketTypeId: mirror._id,
+    });
+
+    // A later sync now matches the promoted tier natively — no second mirror.
+    await apply(s, eventId, [
+      gbTicket({ externalId: "2", ticketTypeName: "GA", priceCents: 2500 }),
+    ]);
+    const types = await rows(s, "ticketTypes", eventId);
+    expect(types).toHaveLength(1);
+    expect(types[0]).toMatchObject({
+      _id: mirror._id,
+      isActive: true,
+      soldCount: 2,
+    });
+    expect(types[0].externalProvider).toBeUndefined();
+  });
+
   test("re-applying the same ticket id is a pure no-op (no duplicate rows)", async () => {
     const t = newT();
     const s = await setupChapter(t);

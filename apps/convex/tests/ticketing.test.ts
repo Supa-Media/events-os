@@ -351,6 +351,99 @@ describe("stripe webhook fulfillment", () => {
     ).toHaveLength(2);
   });
 
+  test("combined checkout: paid order with an add-on donation splits revenue vs. giving on fulfillment", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const { slug, paidId } = await paidSetup(s, eventId);
+
+    const prepared = await t.mutation(internal.ticketing.prepareOrder, {
+      slug,
+      name: "Ben Buyer",
+      email: "ben@example.com",
+      items: [{ ticketTypeId: paidId, quantity: 1 }],
+      donationCents: 1500,
+    });
+    expect(prepared.totalCents).toBe(2500);
+    expect(prepared.donationCents).toBe(1500);
+
+    await t.mutation(internal.ticketing.attachStripeSession, {
+      orderId: prepared.orderId,
+      sessionId: "cs_test_combined",
+    });
+    await t.mutation(internal.ticketing.markSessionPaid, {
+      sessionId: "cs_test_combined",
+      paymentIntentId: "pi_combined",
+    });
+
+    // Ticket revenue and the donation rollup land in their own buckets — the
+    // money invariant never mixes them.
+    const admin = await s.as.query(api.ticketing.getAdminPage, { eventId });
+    expect(admin.page?.revenueCents).toBe(2500);
+    expect(admin.page?.donationsCents).toBe(1500);
+    expect(admin.page?.donationsCount).toBe(1);
+
+    const donations = await s.as.query(api.giving.listDonationsAdmin, {
+      eventId,
+    });
+    expect(donations).toHaveLength(1);
+    expect(donations[0]).toMatchObject({
+      amountCents: 1500,
+      status: "paid",
+      method: "card",
+      email: "ben@example.com",
+    });
+
+    // Dual-written into the donor CRM (gifts ledger), not hand-rolled.
+    const gift = await run(t, async (ctx) =>
+      ctx.db
+        .query("gifts")
+        .withIndex("by_donation", (q) => q.eq("donationId", donations[0]._id))
+        .first(),
+    );
+    expect(gift?.amountCents).toBe(1500);
+
+    // A duplicate webhook delivery must not double-create the donation (the
+    // order's own `status === "paid"` guard short-circuits `fulfill`).
+    await t.mutation(internal.ticketing.markSessionPaid, {
+      sessionId: "cs_test_combined",
+      paymentIntentId: "pi_combined",
+    });
+    expect(
+      await s.as.query(api.giving.listDonationsAdmin, { eventId }),
+    ).toHaveLength(1);
+    const adminAfter = await s.as.query(api.ticketing.getAdminPage, {
+      eventId,
+    });
+    expect(adminAfter.page?.donationsCents).toBe(1500);
+  });
+
+  test("prepareOrder rejects a negative or fractional donationCents", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const { slug, paidId } = await paidSetup(s, eventId);
+
+    await expect(
+      t.mutation(internal.ticketing.prepareOrder, {
+        slug,
+        name: "Ben Buyer",
+        email: "ben@example.com",
+        items: [{ ticketTypeId: paidId, quantity: 1 }],
+        donationCents: -100,
+      }),
+    ).rejects.toThrow();
+    await expect(
+      t.mutation(internal.ticketing.prepareOrder, {
+        slug,
+        name: "Ben Buyer",
+        email: "ben@example.com",
+        items: [{ ticketTypeId: paidId, quantity: 1 }],
+        donationCents: 12.5,
+      }),
+    ).rejects.toThrow();
+  });
+
   test("cancelPendingOrder expires an unpaid order without issuing tickets", async () => {
     const t = newT();
     const s = await setupChapter(t);
