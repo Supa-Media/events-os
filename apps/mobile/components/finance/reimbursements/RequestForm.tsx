@@ -66,14 +66,11 @@ import { Calendar } from "../../ui/Calendar";
 import { Popover } from "../../ui/Popover";
 import { useAnchor } from "../../ui/useAnchor";
 
-// ── Backend contract types (extended locally — the backend for this contract
-// is landing concurrently on a sibling branch). These widen the generated
-// `api.reimbursements.*` references with the fields this form now REQUIRES
+// ── Backend contract types. These mirror the `api.reimbursements.*` shapes
 // (`purpose`, per-line `transactionDate`, `externalAccountId`, `budgetId`,
-// and the widened `newRequestOptions`/`linkBankAccount` shapes) so this file
-// typechecks against the agreed contract today. Once the real backend lands
-// with a matching shape these casts become no-ops; if it lands with a
-// DIFFERENT shape, only the casts below need to change. */
+// the widened `newRequestOptions`/`linkBankAccount`) — the generated types
+// lag until `convex dev` regenerates, so the casts below keep this file
+// honest against the real validators in apps/convex/reimbursements.ts.
 type ForOptionRow = { id: string; label: string };
 type BudgetOptionRow = { id: string; label: string; cadence: BudgetCadence };
 
@@ -129,6 +126,7 @@ type SubmitReimbursementArgs = {
   projectId?: Id<"projects">;
   budgetId?: Id<"budgets">;
   externalAccountId: string;
+  bankAccountLast4?: string;
   lines: SubmitLineArg[];
 };
 type SubmitReimbursementResult = {
@@ -428,6 +426,9 @@ export function ReimbursementRequestForm({
           projectId: forIds.projectId,
           budgetId: forIds.budgetId,
           externalAccountId,
+          // Display-only last-4, known at link time (the public flow passes it
+          // the same way) — so the queue shows "····1234" for in-app requests.
+          bankAccountLast4: linked.last4,
           lines: usable.map((l) => ({
             description: l.description.trim(),
             amountCents: lineAmountCents(l),

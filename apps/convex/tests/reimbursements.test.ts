@@ -966,6 +966,12 @@ describe("in-app queue never leaks the token", () => {
     expect(detail as Record<string, unknown>).not.toHaveProperty("token");
     expect(detail.lines.length).toBe(2);
     expect(detail.hasExternalAccount).toBe(true);
+    // The required transactionDate must flow through to the approver's view —
+    // it's how spend timing reaches review (regression: it was stored but
+    // dropped from this payload).
+    for (const line of detail.lines) {
+      expect(typeof line.transactionDate).toBe("number");
+    }
   });
 
   test("list status filter works", async () => {

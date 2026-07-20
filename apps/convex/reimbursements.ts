@@ -1581,6 +1581,9 @@ export const get = query({
           _id: l._id,
           description: l.description,
           amountCents: l.amountCents,
+          // When the purchase happened (required at intake since the owner
+          // mandate; null on legacy rows) — approvers read spend timing here.
+          transactionDate: l.transactionDate ?? null,
           category: await categoryName(ctx, l.categoryId),
           fund: await fundName(ctx, l.fundId),
           hasReceipt: !!l.receiptStorageId,
