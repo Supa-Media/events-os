@@ -129,6 +129,37 @@ describe("blast audience resolution", () => {
   });
 });
 
+describe("email audience excludes emailSuppressions (campaigns integration)", () => {
+  test("a suppressed address is dropped from the email audience and reported separately", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEventWithGuests(s);
+    // "ann@example.com" is on the guest list (seedEventWithGuests) — suppress
+    // it as if she'd unsubscribed from an email campaign.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("emailSuppressions", {
+        email: "ann@example.com",
+        reason: "unsubscribe",
+        createdAt: Date.now(),
+      }),
+    );
+    const blastId = await insertBlast(s, eventId, "everyone");
+    const payload = await s.t.query(internal.blasts.getBlastPayload, { blastId });
+    expect(payload?.emails.sort()).toEqual([
+      "ben@example.com",
+      "cat@example.com",
+      "dan@example.com",
+    ]);
+
+    const preview = await s.as.query(api.blasts.previewBlastAudience, {
+      eventId,
+      audience: "everyone",
+    });
+    expect(preview.emailRecipients).toBe(3);
+    expect(preview.emailSuppressed).toBe(1);
+  });
+});
+
 describe("sendBlast guardrails", () => {
   test("accepts the SMS channel now (Attendance F); delivery records the outcome", async () => {
     // The old SMS_NOT_CONNECTED refusal is gone — an unconfigured Twilio is a

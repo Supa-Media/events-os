@@ -910,13 +910,15 @@ export const specializedRoles = defineTable({
 // ── Webhook events (deployment-wide inbound dedup) ───────────────────────────
 /** Shared inbound webhook dedup ledger. NOT chapter-scoped on purpose: a
  *  webhook is deduped on the provider's `event.id` BEFORE any chapter can be
- *  resolved from its payload. Used by the Stripe, Increase, and Twilio
- *  (`/twilio/webhook`, keyed on `MessageSid`) handlers. */
+ *  resolved from its payload. Used by the Stripe, Increase, Twilio
+ *  (`/twilio/webhook`, keyed on `MessageSid`), and Resend
+ *  (`/resend/webhook`, keyed on the Svix `svix-id` header) handlers. */
 export const webhookEvents = defineTable({
   provider: v.union(
     v.literal("stripe"),
     v.literal("increase"),
     v.literal("twilio"),
+    v.literal("resend"),
   ),
   // The provider's unique event id (idempotent handling key).
   eventId: v.string(),

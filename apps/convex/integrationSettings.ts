@@ -102,6 +102,17 @@ export const getIntegrationsStatus = query({
       fromAddress: v.union(v.string(), v.null()),
       updatedAt: v.union(v.number(), v.null()),
     }),
+    // Email campaigns (`campaigns.ts`, `/resend/webhook`) — see
+    // `schema/integrationSettings.ts`'s module doc. `resendWebhookConfigured`
+    // is boolean-only (the Svix secret is write-only, same discipline as
+    // every other secret here); the inbound domain + mailing address are NOT
+    // secret and are returned in full.
+    campaigns: v.object({
+      resendWebhookConfigured: v.boolean(),
+      resendInboundDomain: v.union(v.string(), v.null()),
+      orgMailingAddress: v.union(v.string(), v.null()),
+      updatedAt: v.union(v.number(), v.null()),
+    }),
   }),
   handler: async (ctx) => {
     await requireSuperuser(ctx);
@@ -129,6 +140,12 @@ export const getIntegrationsStatus = query({
         configured: !!resendKey,
         last4: resendKey ? last4(resendKey) : null,
         fromAddress: settings?.resendFromAddress ?? null,
+        updatedAt: settings?.updatedAt ?? null,
+      },
+      campaigns: {
+        resendWebhookConfigured: !!settings?.resendWebhookSecret,
+        resendInboundDomain: settings?.resendInboundDomain ?? null,
+        orgMailingAddress: settings?.orgMailingAddress ?? null,
         updatedAt: settings?.updatedAt ?? null,
       },
     };
@@ -388,5 +405,115 @@ export const readResendSettings = internalQuery({
     const apiKey = settings?.resendApiKey;
     if (!apiKey) return null;
     return { apiKey, fromAddress: settings?.resendFromAddress ?? null };
+  },
+});
+
+/**
+ * Set or clear the email-campaigns Resend-webhook secret / inbound domain /
+ * org mailing address. SUPERUSER-ONLY. Each field is INDEPENDENTLY settable —
+ * unlike the Twilio trio, these don't need to move together (a deployment can
+ * turn on the webhook secret before it has an inbound domain, etc.):
+ * `undefined` leaves a field unchanged, `null` clears it, a non-null string
+ * sets it (trimmed; empty-after-trim is rejected as a no-op-looking mistake
+ * rather than silently clearing). At least one field must be provided.
+ */
+export const setEmailCampaignSettings = mutation({
+  args: {
+    resendWebhookSecret: v.optional(v.union(v.string(), v.null())),
+    resendInboundDomain: v.optional(v.union(v.string(), v.null())),
+    orgMailingAddress: v.optional(v.union(v.string(), v.null())),
+  },
+  returns: v.null(),
+  handler: async (ctx, { resendWebhookSecret, resendInboundDomain, orgMailingAddress }) => {
+    await requireSuperuser(ctx);
+    const updatedBy = (await requireUserId(ctx)) as Id<"users">;
+
+    if (
+      resendWebhookSecret === undefined &&
+      resendInboundDomain === undefined &&
+      orgMailingAddress === undefined
+    ) {
+      throw new ConvexError({
+        code: "INVALID_ARGUMENT",
+        message: "Provide at least one field to update.",
+      });
+    }
+
+    function resolveField(
+      value: string | null | undefined,
+      existing: string | undefined,
+      label: string,
+    ): string | undefined {
+      if (value === undefined) return existing;
+      if (value === null) return undefined;
+      const trimmed = value.trim();
+      if (!trimmed) {
+        throw new ConvexError({
+          code: "INVALID_ARGUMENT",
+          message: `${label} can't be empty.`,
+        });
+      }
+      return trimmed;
+    }
+
+    const existing = await getSettings(ctx);
+    const fields = {
+      resendWebhookSecret: resolveField(
+        resendWebhookSecret,
+        existing?.resendWebhookSecret,
+        "Webhook secret",
+      ),
+      resendInboundDomain: resolveField(
+        resendInboundDomain,
+        existing?.resendInboundDomain,
+        "Inbound domain",
+      ),
+      orgMailingAddress: resolveField(
+        orgMailingAddress,
+        existing?.orgMailingAddress,
+        "Mailing address",
+      ),
+      updatedBy,
+      updatedAt: Date.now(),
+    };
+    if (existing) {
+      await ctx.db.patch(existing._id, fields);
+    } else {
+      await ctx.db.insert("integrationSettings", fields);
+    }
+    return null;
+  },
+});
+
+/** Action-facing read of the raw Resend webhook secret (or `null`) — the only
+ *  path it ever leaves the table through. Consulted by `http.ts`'s
+ *  `/resend/webhook` route to verify the Svix signature. NEVER exposed as a
+ *  public function. */
+export const readResendWebhookSecret = internalQuery({
+  args: {},
+  returns: v.union(v.string(), v.null()),
+  handler: async (ctx) => {
+    const settings = await getSettings(ctx);
+    return settings?.resendWebhookSecret ?? null;
+  },
+});
+
+/** Action-facing read of the non-secret campaign mail settings (inbound
+ *  domain + org mailing address) — consulted by `campaigns.ts`'s delivery
+ *  action to build each recipient's reply-to address and CAN-SPAM footer.
+ *  NEVER exposed as a public function (use `getIntegrationsStatus` for the
+ *  client-facing projection). */
+export const readCampaignsMailSettings = internalQuery({
+  args: {},
+  returns: v.object({
+    resendInboundDomain: v.union(v.string(), v.null()),
+    orgMailingAddress: v.union(v.string(), v.null()),
+  }),
+  handler: async (ctx) => {
+    const settings = await getSettings(ctx);
+    return {
+      resendInboundDomain: settings?.resendInboundDomain ?? null,
+      orgMailingAddress: settings?.orgMailingAddress ?? null,
+    };
   },
 });

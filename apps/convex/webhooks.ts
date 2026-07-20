@@ -28,6 +28,7 @@ export const recordWebhookEvent = internalMutation({
       v.literal("stripe"),
       v.literal("increase"),
       v.literal("twilio"),
+      v.literal("resend"),
     ),
     eventId: v.string(),
     summary: v.optional(v.string()),

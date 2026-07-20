@@ -34,6 +34,7 @@ import {
   sendSms,
 } from "./lib/twilio";
 import { optedOutPhoneSet } from "./smsOptOuts";
+import { suppressedEmailSet } from "./emailSuppressions";
 import { estimateSegments, SMS_SEGMENT_PRICE_USD_MICROS } from "@events-os/shared";
 
 const audienceValidator = v.union(
@@ -129,13 +130,33 @@ async function audienceRsvps(
  * The email recipient set for an audience: rows with an email that didn't fail
  * to verify (undefined = legacy = verified), de-duped by address (an attendee
  * can RSVP + buy). Email-less imported rows drop out here — SMS reclaims them.
+ *
+ * `suppressed` (normalized lowercase → suppressed, see `emailSuppressions.ts`)
+ * excludes any address that unsubscribed from (or bounced/complained on) an
+ * email campaign — a person who opted out of campaign mail shouldn't still
+ * get event blasts. Reported separately in `suppressedCount` so callers (the
+ * composer preview) can disclose it rather than silently shrinking the count,
+ * mirroring `phoneRecipients`' `optedOutCount`.
  */
-function emailRecipients(rows: Doc<"rsvps">[]): string[] {
+function emailRecipients(
+  rows: Doc<"rsvps">[],
+  suppressed: Set<string> = new Set(),
+): { recipients: string[]; suppressedCount: number } {
   const filtered = rows.filter(
     (r): r is Doc<"rsvps"> & { email: string } =>
       !!r.email && r.emailVerified !== false,
   );
-  return [...new Set(filtered.map((r) => r.email))];
+  const deduped = [...new Set(filtered.map((r) => r.email))];
+  const recipients: string[] = [];
+  let suppressedCount = 0;
+  for (const email of deduped) {
+    if (suppressed.has(email.toLowerCase())) {
+      suppressedCount++;
+    } else {
+      recipients.push(email);
+    }
+  }
+  return { recipients, suppressedCount };
 }
 
 /**
@@ -186,9 +207,10 @@ export const getBlastPayload = internalQuery({
 
     const rows = await audienceRsvps(ctx, blast.eventId, blast.audience);
     const optedOut = await optedOutPhoneSet(ctx);
+    const suppressed = await suppressedEmailSet(ctx);
     return {
       blast,
-      emails: emailRecipients(rows),
+      emails: emailRecipients(rows, suppressed).recipients,
       phones: phoneRecipients(rows, optedOut).recipients,
       eventName: event?.name ?? "Event",
       slug: page?.slug ?? null,
@@ -236,6 +258,7 @@ export const previewBlastAudience = query({
   },
   returns: v.object({
     emailRecipients: v.number(),
+    emailSuppressed: v.number(),
     smsRecipients: v.number(),
     smsConfigured: v.boolean(),
     smsOptedOut: v.number(),
@@ -248,11 +271,14 @@ export const previewBlastAudience = query({
     const settings = await ctx.db.query("integrationSettings").first();
     const optedOut = await optedOutPhoneSet(ctx);
     const sms = phoneRecipients(rows, optedOut);
+    const suppressed = await suppressedEmailSet(ctx);
+    const email = emailRecipients(rows, suppressed);
     // Mirror deliverSmsBlast's exact wire body so the estimate matches reality.
     const draftWithSuffix = `${body ?? ""}\n\nReply STOP to opt out.`;
     const estimatedSegments = body ? estimateSegments(draftWithSuffix) : 0;
     return {
-      emailRecipients: emailRecipients(rows).length,
+      emailRecipients: email.recipients.length,
+      emailSuppressed: email.suppressedCount,
       smsRecipients: sms.recipients.length,
       smsConfigured: smsConfigured(settings),
       smsOptedOut: sms.optedOutCount,

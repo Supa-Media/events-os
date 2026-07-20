@@ -102,6 +102,13 @@ import { schemaMigrations } from "./schema/migrations";
 import { integrationSettings } from "./schema/integrationSettings";
 import { smsOptOuts } from "./schema/smsOptOuts";
 import { smsUsageEvents } from "./schema/smsUsage";
+import {
+  audiences,
+  campaigns,
+  campaignRecipients,
+  emailSuppressions,
+  emailReplies,
+} from "./schema/campaigns";
 
 /**
  * Database schema for Chapter OS.
@@ -362,6 +369,20 @@ const schema = defineSchema({
   // verification code), the Twilio analog of `aiUsageEvents`. See
   // schema/smsUsage.ts + smsUsage.ts.
   smsUsageEvents,
+
+  // Email campaigns — the in-app newsletter/announcement composer (central-
+  // only). `audiences` are saved recipient definitions; `campaigns` are the
+  // composed sends against one; `campaignRecipients` is the per-address
+  // delivery ledger; `emailSuppressions` is the deployment-wide do-not-email
+  // list (unsubscribe/bounce/complaint); `emailReplies` mirrors inbound mail
+  // matched back to a campaign. See schema/campaigns.ts + audiences.ts +
+  // campaigns.ts + emailSuppressions.ts + the /unsubscribe and /resend/webhook
+  // routes in http.ts.
+  audiences,
+  campaigns,
+  campaignRecipients,
+  emailSuppressions,
+  emailReplies,
 });
 
 export default schema;

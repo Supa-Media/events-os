@@ -1963,3 +1963,12 @@ export * from "./seats";
 
 // ── SMS segment estimation + pricing (Attendance F cost preview/ledger) ──────
 export * from "./sms";
+
+// ── Name-formatting helpers (firstName salutations, display-name fallback) ───
+export * from "./names";
+
+// ── Email-campaign block document model (designer contract) ──────────────────
+export * from "./emailBlocks";
+
+// ── Email-campaign block renderer (HTML + plaintext) ──────────────────────────
+export * from "./emailRender";

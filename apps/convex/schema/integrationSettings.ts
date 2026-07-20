@@ -25,6 +25,22 @@ import { v } from "convex/values";
  * `readResendSettings` internalQueries, reachable solely from the sending
  * actions. The Resend FROM ADDRESS is not secret (it's the sender line every
  * recipient already sees) — it's returned in full by `getIntegrationsStatus`.
+ *
+ * Email campaigns (`campaigns.ts`, `http.ts`'s `/resend/webhook`) add three
+ * more fields, all Resend-adjacent but independently settable from the
+ * send-path key/from-address above:
+ *  - `resendWebhookSecret` — the Svix `whsec_...` signing secret for Resend's
+ *    OUTBOUND webhook (bounce/complaint/inbound-reply events), verified in
+ *    `lib/resend.ts#verifyResendWebhookSignature`. WRITE-ONLY, same secret
+ *    discipline as the API key — never returned by `getIntegrationsStatus`,
+ *    readable only through `readResendWebhookSecret`.
+ *  - `resendInboundDomain` — NOT secret (e.g. "reply.publicworship.life"), the
+ *    domain `campaigns.ts` builds each campaign's unique
+ *    `campaign+<id>@<domain>` reply-to address from, so an inbound reply can
+ *    be matched back to the campaign that sent it.
+ *  - `orgMailingAddress` — NOT secret, the CAN-SPAM-required physical mailing
+ *    address rendered in every campaign email's footer
+ *    (`@events-os/shared`'s `renderCampaignEmail`).
  */
 export const integrationSettings = defineTable({
   givebutterApiKey: v.optional(v.string()),
@@ -43,6 +59,12 @@ export const integrationSettings = defineTable({
   // is shown in full so a superuser can confirm what recipients will see.
   resendApiKey: v.optional(v.string()),
   resendFromAddress: v.optional(v.string()),
+  // Email campaigns — see the module doc above. Independently settable from
+  // the send-path key/from-address (a deployment can send campaigns without
+  // inbound/webhook wiring configured yet, and vice versa).
+  resendWebhookSecret: v.optional(v.string()),
+  resendInboundDomain: v.optional(v.string()),
+  orgMailingAddress: v.optional(v.string()),
   updatedAt: v.number(),
   updatedBy: v.id("users"),
 });

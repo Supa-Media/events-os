@@ -22,6 +22,7 @@
 import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { api, internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import { auth } from "./auth";
 import {
   renderIcs,
@@ -56,6 +57,12 @@ import {
   resolveTwilioCredentials,
   validateTwilioSignature,
 } from "./lib/twilio";
+import { verifyResendWebhookSignature } from "./lib/resend";
+import {
+  renderUnsubscribeConfirm,
+  renderUnsubscribeDone,
+  renderUnsubscribeNotFound,
+} from "./lib/unsubscribePage";
 
 const http = httpRouter();
 
@@ -619,6 +626,141 @@ http.route({
         : html(renderReimburseNotFound(), 404);
     }
     return html(renderReimburseForm(chapter));
+  }),
+});
+
+// ── Email campaigns: /unsubscribe/<token> ────────────────────────────────────
+// Where a campaign email's unsubscribe link (and its `List-Unsubscribe`
+// header) lands. GET is read-only (mail scanners prefetch links); the actual
+// suppression write only happens on POST — either the page's own confirm
+// button, or a mail client's automatic RFC 8058 one-click
+// `List-Unsubscribe-Post: List-Unsubscribe=One-Click` POST (same handler,
+// same immediate effect — no separate confirmation step for either).
+
+http.route({
+  pathPrefix: "/unsubscribe/",
+  method: "GET",
+  handler: httpAction(async (ctx, req) => {
+    const url = new URL(req.url);
+    const segments = url.pathname.split("/").filter(Boolean); // ["unsubscribe", token]
+    const token = decodeURIComponent(segments[1] ?? "");
+    if (!token || segments.length > 2) return html(renderUnsubscribeNotFound(), 404);
+    const recipient = await ctx.runQuery(internal.campaigns.getRecipientByToken, { token });
+    if (!recipient) return html(renderUnsubscribeNotFound(), 404);
+    return html(renderUnsubscribeConfirm(recipient.email, token));
+  }),
+});
+
+http.route({
+  pathPrefix: "/unsubscribe/",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    const url = new URL(req.url);
+    const segments = url.pathname.split("/").filter(Boolean); // ["unsubscribe", token]
+    const token = decodeURIComponent(segments[1] ?? "");
+    if (!token || segments.length > 2) return html(renderUnsubscribeNotFound(), 404);
+    const result = await ctx.runMutation(internal.campaigns.unsubscribeByToken, { token });
+    if (!result) return html(renderUnsubscribeNotFound(), 404);
+    return html(renderUnsubscribeDone(result.email));
+  }),
+});
+
+// ── Resend webhook (bounces/complaints/inbound replies) ─────────────────────
+// Verified via Svix (`lib/resend.ts#verifyResendWebhookSignature`) against
+// the stored `resendWebhookSecret` (superuser-set,
+// `integrationSettings.setEmailCampaignSettings`) — unverifiable (no secret
+// on file) is a 401, never a silent accept. Deduped on the `svix-id` header
+// through the shared `webhookEvents` ledger.
+
+type ResendWebhookPayload = {
+  type?: string;
+  data?: {
+    to?: string[] | string;
+    from?: string;
+    subject?: string;
+    text?: string;
+    html?: string;
+  };
+};
+
+/** "Name <email>" → { name, email }; a bare address → { name: null, email }. */
+function parseFromHeader(raw: string): { name: string | null; email: string } {
+  const match = /^(.*)<(.+)>$/.exec(raw.trim());
+  if (match) {
+    const name = match[1].trim().replace(/^"|"$/g, "");
+    return { name: name || null, email: match[2].trim() };
+  }
+  return { name: null, email: raw.trim() };
+}
+
+function toAddressList(to: string[] | string | undefined): string[] {
+  if (!to) return [];
+  return Array.isArray(to) ? to : [to];
+}
+
+http.route({
+  path: "/resend/webhook",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    const secret = await ctx.runQuery(internal.integrationSettings.readResendWebhookSecret, {});
+    if (!secret) {
+      console.error("[resend] webhook received but resendWebhookSecret isn't set");
+      return new Response("Not configured", { status: 401 });
+    }
+    const payload = await req.text();
+    const valid = await verifyResendWebhookSignature(payload, {
+      svixId: req.headers.get("svix-id"),
+      svixTimestamp: req.headers.get("svix-timestamp"),
+      svixSignature: req.headers.get("svix-signature"),
+    }, secret);
+    if (!valid) return new Response("Invalid signature", { status: 401 });
+
+    const svixId = req.headers.get("svix-id") ?? "";
+    if (svixId) {
+      const { isNew } = await ctx.runMutation(internal.webhooks.recordWebhookEvent, {
+        provider: "resend",
+        eventId: svixId,
+      });
+      if (!isNew) return new Response("ok", { status: 200 });
+    }
+
+    const event = JSON.parse(payload) as ResendWebhookPayload;
+    const type = event.type ?? "";
+    const toList = toAddressList(event.data?.to);
+
+    if (type === "email.bounced" || type === "email.complained") {
+      const reason = type === "email.bounced" ? "bounce" : "complaint";
+      for (const address of toList) {
+        await ctx.runMutation(internal.emailSuppressions.recordSuppression, {
+          email: address,
+          reason,
+        });
+      }
+    } else if (type.includes("receiv") || type === "inbound" || type.startsWith("inbound.")) {
+      // Inbound reply — match the campaign via the `campaign+<id>@<domain>`
+      // plus-address the send set as reply-to (whichever `to` entry carries
+      // it; an inbound message may be addressed to more than one recipient).
+      let campaignId: Id<"campaigns"> | null = null;
+      for (const address of toList) {
+        campaignId = await ctx.runQuery(internal.campaigns.findCampaignByPlusAddress, {
+          address,
+        });
+        if (campaignId) break;
+      }
+      const from = parseFromHeader(event.data?.from ?? "");
+      await ctx.runMutation(internal.campaigns.recordInboundReply, {
+        campaignId: campaignId ?? undefined,
+        fromEmail: from.email,
+        fromName: from.name ?? undefined,
+        subject: event.data?.subject,
+        textBody: event.data?.text,
+        htmlBody: event.data?.html,
+      });
+    }
+    // Unknown event types (delivery, open/click tracking if ever enabled…)
+    // are a silent no-op — this route only cares about deliverability
+    // signals and inbound replies.
+    return new Response("ok", { status: 200 });
   }),
 });
 
