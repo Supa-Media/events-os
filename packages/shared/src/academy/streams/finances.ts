@@ -20,6 +20,19 @@
  * corrected — the Giving page is shipped, not future. Every other Finances
  * teaching in this file is unchanged; see `streams/development.ts` for the
  * full backer-model lesson this touch-up points to.
+ *
+ * Auto-ACH + submission-email touch-up (reimbursement flow shipped three
+ * changes at once): `finance-reimbursements-and-flags` now teaches that
+ * approval itself fires the ACH payout automatically (no separate manual
+ * send step), and that submitting a request already emails every finance
+ * approver in the chapter — the old "there's no notification, call your
+ * Treasurer" tip was rewritten so the direct nudge is framed as making an
+ * already-notified approver move faster, not as the only signal that
+ * exists. `finance-monthly-close`'s "queue triaged" bullet got one clause
+ * noting the email is a nudge, not a substitute for clearing the queue.
+ * No quiz answers changed truth value — none of the existing questions
+ * asserted "no notification" or "manual payout" as fact. Titles, minutes,
+ * and quiz lengths are unchanged, so the snapshot test needed no updates.
  */
 
 import type {
@@ -270,7 +283,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "bullets",
         items: [
-          "**Reimbursement — Public Worship owes you:** submit the request in-app with a short note on WHY it was needed, a transaction date on every line, and a receipt for every line — none of that is optional, the app blocks submission until all three are there. Your full bank details (routing + account, not just a last-4) are captured up front too, so approval pays you directly by ACH — there's no manual last-4 fallback anymore. It then moves through submitted → approved → paying → paid. Someone else — never you — has to approve it.",
+          "**Reimbursement — Public Worship owes you:** submit the request in-app with a short note on WHY it was needed, a transaction date on every line, and a receipt for every line — none of that is optional, the app blocks submission until all three are there. Your full bank details (routing + account, not just a last-4) are captured up front too, so the moment someone approves it, the ACH payout fires automatically from the chapter's Increase account — no one has to separately go send it. It then moves through submitted → approved → paying → paid. Someone else — never you — has to approve it.",
           "**Personal-charge flag — you owe Public Worship:** flag your own charge as personal on My Transactions, or a manager flags it for you. It opens an owed balance, tracked the same way, just pointed the other direction.",
           "**Both directions live in one place:** the Reimbursements tab shows \"Public Worship owes you\" and \"you owe Public Worship\" side by side, so nothing nets out silently.",
           "**Don't recognize a charge at all?** That's different from a personal charge you remember making — flagging it \"personal\" says YOU made it. If a charge on the Public Worship card is a genuine mystery, freeze the card yourself right away (instant, self-serve, reversible), then tell your Treasurer or the Financial Manager immediately so they can look into it. Don't guess by flagging an unrecognized charge as personal.",
@@ -283,7 +296,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "tip",
-        text: "**Something time-sensitive?** There's no in-app \"urgent\" flag or fast lane — a request sits in the same queue whether it's due in an hour or next month. Submit it the moment you know, then reach your Treasurer (or the Financial Manager, if they're the one who'd have to approve it) directly — a call or a text — and ask them to check the queue. The app keeps the record; a direct nudge to the person who can actually approve it is what makes it fast.",
+        text: "**Something time-sensitive?** There's no in-app \"urgent\" flag or fast lane — a request sits in the same queue whether it's due in an hour or next month. Submitting already emails every approver who could act on it — your chapter's Treasurer(s) and the central Financial Manager(s) — so nobody has to be checking the queue on faith. If it's genuinely urgent, that email is your baseline, not your whole plan: also reach your Treasurer (or the Financial Manager, if they're the one who'd have to approve it) directly — a call or a text — and ask them to check the queue now. A direct nudge to the person who can actually approve it is what turns \"they'll see it eventually\" into \"they saw it today.\"",
       },
       {
         kind: "try_status",
@@ -597,7 +610,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "bullets",
         items: [
           "**Reconcile at Ready:** every charge has a receipt, a category, and a budget link — the Ready filter's count climbs toward all of them.",
-          "**Reimbursement queue triaged:** nothing sitting unreviewed that's actually yours to act on.",
+          "**Reimbursement queue triaged:** nothing sitting unreviewed that's actually yours to act on — the submission email is a nudge, not a substitute for actually clearing the queue.",
           "**Report up:** the central Financial Manager should be able to open your chapter's numbers and trust them without a conversation — that trust IS the north-star metric this whole system is built around.",
         ],
       },

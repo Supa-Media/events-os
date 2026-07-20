@@ -11,11 +11,11 @@ const STEPS: Step[] = [
   },
   {
     title: "Finance manager approves",
-    detail: "They check it lands in an approved budget line before any money moves.",
+    detail: "They review each receipt and check it lands in an approved budget line before any money moves.",
   },
   {
     title: "ACH payout",
-    detail: "Paid from the chapter's Increase account straight to your bank.",
+    detail: "Approval auto-sends the ACH from the chapter's Increase account straight to your bank.",
   },
 ];
 
