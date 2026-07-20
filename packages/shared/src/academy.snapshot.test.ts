@@ -101,6 +101,20 @@
  * its snapshotted title/minutes are unchanged. `dev-backer-floor-and-ladder`'s
  * reveal added paused as a second non-counting reason (prose only — no snapshot
  * change). No slugs, titles, minutes, or order moved beyond those two quiz bumps.
+ *
+ * Supplies ⇄ Inventory unification (docs/plans/inventory-supplies-unification.md,
+ * the linking UI shipping): `tab-supplies` was rewritten for the provenance
+ * Source model, the auto-derived Status (packed → Have it; "Event X ·
+ * Container" for cross-event holds; override + back-to-auto), and the
+ * "Keep in inventory" promotion — two quiz questions swapped in (the rings
+ * and battery questions retired; both are taught elsewhere), so quiz length
+ * stays 5 and its title, minutes, and placement are unchanged. A NEW section
+ * `keeping-inventory`
+ * (4 min, 4-quiz) was inserted after it, teaching the chapter gear registry:
+ * reservations as a byproduct of supply rows, computed availability,
+ * consumables/low-stock, and what belongs in the registry. The
+ * `logistics-lead` course gained the new module (its description finally
+ * cashes the "gains a keeping-inventory module" promise). Total: 98 sections.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -127,6 +141,7 @@ const EXPECTED_SECTION_SLUGS: string[] = [
   "tab-run-of-show",
   "tab-crew-duties",
   "tab-supplies",
+  "keeping-inventory",
   "tab-permits",
   "tab-debrief",
   "using-the-assistant",
@@ -373,6 +388,14 @@ const EXPECTED_SECTIONS: {
     title: "Supplies & Logistics",
     minutes: 4,
     quizLength: 5,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "keeping-inventory",
+    title: "Keeping inventory",
+    minutes: 4,
+    quizLength: 4,
     optional: false,
     capstoneKind: null,
   },
@@ -1028,7 +1051,7 @@ const EXPECTED_COURSES: {
   {
     slug: "logistics-lead",
     themeKey: "events",
-    moduleSlugs: ["tab-supplies", "capstone-logistics-lead"],
+    moduleSlugs: ["tab-supplies", "keeping-inventory", "capstone-logistics-lead"],
   },
   {
     slug: "owning-an-event",

@@ -21,10 +21,12 @@ import {
   computeReadiness,
   isCompleteStatus,
   deriveSupplyStatus,
+  isInventoryBackedSource,
   DAY_OFFSET_MODULES,
   type ModuleKey,
   type LinkedAssetState,
 } from "@events-os/shared";
+import { assertNonNegInt, insertAsset } from "./lib/assets";
 import {
   requireChapterId,
   requireEvent,
@@ -172,10 +174,9 @@ async function reconcileSupplyReservation(
 ): Promise<void> {
   if (item.module !== "supplies") return;
   const fields = item.fields ?? {};
-  const linked =
-    fields.source === "chapter_storage"
-      ? (fields.linkedAssetId as Id<"assets"> | undefined)
-      : undefined;
+  const linked = isInventoryBackedSource(fields.source)
+    ? (fields.linkedAssetId as Id<"assets"> | undefined)
+    : undefined;
 
   if (prevLinkedAssetId && prevLinkedAssetId !== linked) {
     await releaseReservation(ctx, prevLinkedAssetId, event._id);
@@ -220,9 +221,11 @@ async function linkedAssetStateFor(
   item: Doc<"eventItems">,
   liveEventIds: Set<string>,
   eventName: Map<string, string>,
-): Promise<LinkedAssetState | null> {
+): Promise<
+  (LinkedAssetState & { assetId: Id<"assets">; assetName: string }) | null
+> {
   const fields = item.fields ?? {};
-  if (fields.source !== "chapter_storage") return null;
+  if (!isInventoryBackedSource(fields.source)) return null;
   const linkedId = fields.linkedAssetId as Id<"assets"> | undefined;
   if (!linkedId) return null;
   const asset = await ctx.db.get(linkedId);
@@ -238,6 +241,8 @@ async function linkedAssetStateFor(
   const reservedElsewhere = others.reduce((s, r) => s + r.quantity, 0);
   const holder = others.sort((a, b) => a.createdAt - b.createdAt)[0];
   return {
+    assetId: asset._id,
+    assetName: asset.name,
     onHand: asset.quantity,
     available: Math.max(0, asset.quantity - reservedElsewhere),
     consumable: asset.consumable ?? false,
@@ -513,6 +518,17 @@ export const listForEventModule = query({
             status: derived.value,
             statusDetail: derived.detail ?? null,
             statusIsDerived: !derived.isOverride,
+            // The linked asset's identity + live availability, so the grid can
+            // render the link chip without a second query.
+            linkedAsset: asset
+              ? {
+                  _id: asset.assetId,
+                  name: asset.assetName,
+                  available: asset.available,
+                  onHand: asset.onHand,
+                  consumable: asset.consumable,
+                }
+              : null,
           };
         }),
       );
@@ -627,6 +643,18 @@ export const updateEventItem = mutation({
     if (isSupply && patch.status !== undefined) {
       bagPatch = { ...(bagPatch ?? {}), statusOverride: patch.status ?? null };
     }
+    // Supplies: switching Source off Chapter Storage (or clearing it) drops the
+    // asset link too — otherwise the stale id would silently re-reserve the old
+    // asset if the row ever switched back.
+    if (
+      isSupply &&
+      bagPatch &&
+      "source" in bagPatch &&
+      !isInventoryBackedSource(bagPatch.source) &&
+      prevLinkedAssetId
+    ) {
+      bagPatch = { ...bagPatch, linkedAssetId: null };
+    }
     if (bagPatch !== undefined)
       fields.fields = mergeFields(item.fields, bagPatch);
     if (patch.offsetDays !== undefined) {
@@ -666,6 +694,123 @@ export const setStatus = mutation({
     }
     await ctx.db.patch(itemId, { status: status ?? undefined });
     return itemId;
+  },
+});
+
+/**
+ * Link a supply row to a chapter inventory asset (null = unlink). Linking makes
+ * the row inventory-backed: its Source becomes Chapter Storage (unless the row
+ * already carries an inventory-backed value, incl. the legacy "storage") and
+ * the reservation reconciles immediately. See the bridge notes above.
+ */
+export const linkSupplyToAsset = mutation({
+  args: {
+    itemId: v.id("eventItems"),
+    assetId: v.union(v.id("assets"), v.null()),
+  },
+  handler: async (ctx, { itemId, assetId }) => {
+    const item = await ctx.db.get(itemId);
+    if (!item) return itemId;
+    const event = await requireEvent(ctx, item.eventId);
+    if (item.module !== "supplies") {
+      throw new ConvexError({
+        code: "NOT_SUPPLY",
+        message: "Only supplies rows can link inventory assets.",
+      });
+    }
+    if (assetId) {
+      const asset = await ctx.db.get(assetId);
+      if (!asset || asset.chapterId !== event.chapterId) {
+        throw new ConvexError({
+          code: "NOT_FOUND",
+          message: "Asset not found in your chapter.",
+        });
+      }
+    }
+    const prevLinkedAssetId = item.fields?.linkedAssetId as
+      | Id<"assets">
+      | undefined;
+    const bagPatch: Record<string, any> = { linkedAssetId: assetId ?? null };
+    if (assetId && !isInventoryBackedSource(item.fields?.source)) {
+      bagPatch.source = "chapter_storage";
+    }
+    await ctx.db.patch(itemId, { fields: mergeFields(item.fields, bagPatch) });
+    const updated = await ctx.db.get(itemId);
+    if (updated)
+      await reconcileSupplyReservation(ctx, event, updated, prevLinkedAssetId);
+    return itemId;
+  },
+});
+
+/**
+ * Create a chapter inventory asset FROM a supply row and link the row to it.
+ * Serves both the picker's "Create in Inventory" and the explicit "Keep in
+ * inventory" promotion of an acquired (buy/order) row — per the PRD, promotion
+ * is always a deliberate human action, never automatic. Name/quantity default
+ * from the row; the row's photo carries over when it's a storage id (legacy
+ * http URLs stay behind — the registry only stores uploads).
+ */
+export const createAssetFromSupply = mutation({
+  args: {
+    itemId: v.id("eventItems"),
+    name: v.optional(v.string()),
+    quantity: v.optional(v.number()),
+    tags: v.optional(v.array(v.string())),
+    consumable: v.optional(v.boolean()),
+  },
+  handler: async (ctx, args) => {
+    const item = await ctx.db.get(args.itemId);
+    if (!item) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Supply row not found.",
+      });
+    }
+    const event = await requireEvent(ctx, item.eventId);
+    if (item.module !== "supplies") {
+      throw new ConvexError({
+        code: "NOT_SUPPLY",
+        message: "Only supplies rows can be kept in inventory.",
+      });
+    }
+    const userId = await requireUserId(ctx);
+    const name = (args.name ?? item.title).trim();
+    if (!name) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "An asset needs a name.",
+      });
+    }
+    const quantity = args.quantity ?? supplyQty(item.fields);
+    assertNonNegInt(quantity);
+    const photo = item.fields?.photo;
+    const photoStorageId =
+      typeof photo === "string" && photo && !/^https?:\/\//i.test(photo)
+        ? (photo as Id<"_storage">)
+        : undefined;
+    const assetId = await insertAsset(ctx, {
+      chapterId: event.chapterId,
+      userId: userId as Id<"users">,
+      name,
+      tags: args.tags,
+      quantity,
+      consumable: args.consumable ?? false,
+      photoStorageId,
+    });
+    const prevLinkedAssetId = item.fields?.linkedAssetId as
+      | Id<"assets">
+      | undefined;
+    const bagPatch: Record<string, any> = { linkedAssetId: assetId };
+    if (!isInventoryBackedSource(item.fields?.source)) {
+      bagPatch.source = "chapter_storage";
+    }
+    await ctx.db.patch(args.itemId, {
+      fields: mergeFields(item.fields, bagPatch),
+    });
+    const updated = await ctx.db.get(args.itemId);
+    if (updated)
+      await reconcileSupplyReservation(ctx, event, updated, prevLinkedAssetId);
+    return { assetId };
   },
 });
 

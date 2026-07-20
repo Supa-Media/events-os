@@ -12,6 +12,15 @@ Convex agent skills for common tasks can be installed by running
 
 <!-- convex-ai-end -->
 
+## Agent Delivery Workflow
+
+When asked to work on something, ship it end to end — don't park a branch:
+develop on a feature branch → open a PR → review the diff (act only on
+confirmed findings) → wait for CI → **squash-merge on green**. Merging to
+`main` deploys the Convex backend to production, so never merge on red or
+skip CI. This is the standing expectation; don't wait to be asked to PR or
+merge.
+
 ## Supa Framework
 
 This repo is the first consumer of **Supa-Media/supa-framework** (`@supa-media/*`

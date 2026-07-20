@@ -1118,9 +1118,9 @@ export const EVENTS_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "table",
         headers: ["Column", "The question it answers"],
         rows: [
-          ["**Status**", "How close is it to in-hand? Pull from storage / need to order / need to buy / ordered → **Have it**"],
+          ["**Status**", "How close is it to in-hand? **Auto-derived** from Source, Packed-in, and the Inventory registry → ends at **Have it**"],
           ["**Timing / Due**", "When must you HAVE it? Orders need shipping time — set it weeks out, not T-1"],
-          ["**Source**", "Where does it come from — and once you have it, where does it LIVE now?"],
+          ["**Source**", "Where does it come from, and where does it return? **Chapter Storage** links (and reserves) an Inventory asset; Borrowed/Rented come back to a person or vendor; Buy/Order are acquired"],
           ["**Packed in**", 'Which container? "Green luggage" beats "somewhere"'],
           ["**Qty · Cost · Link**", "How many, what it costs (feeds the budget), where to re-order it"],
           ["**Owner**", "Who's bringing it. Blank = the Logistics Lead"],
@@ -1147,6 +1147,15 @@ export const EVENTS_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "rule",
         title: "Packing is a checklist, not a status",
         text: "Whether something is packed is tracked in ONE place: the Packing checklist, where items group by container and get checked in (and back out at strike). Status stops at Have it — a status can claim \"packed\" while the trunk says otherwise, which is exactly why we don't track it there.",
+      },
+      { kind: "heading", text: "Status works itself out" },
+      {
+        kind: "p",
+        text: "You rarely pick a status by hand — it's **derived** from the facts you already recorded. Packed into a real container → **Have it**, full stop. A **Chapter Storage** row watches its linked Inventory asset: available → *Pull from storage*; a consumable that's out of stock → *Need to buy*. Borrowed → *Need to pick up*; Rented → *Need to rent*; an online order walks *Need to order* → *Ordered*. When reality disagrees, hand-pick a status — the row marks it overridden, and one tap goes **back to auto**.",
+      },
+      {
+        kind: "p",
+        text: "**Source is the spine.** Setting Source to **Chapter Storage** links the row to an Inventory asset — pick an existing one or create it from the row — and that link *reserves* the asset for this event. Another event that lists the same speaker sees **Event X · Green luggage** on its own row: who has it, and which container it's physically in. Double-booking dies in planning, not on load-in day. A bought item worth keeping gets promoted with **Keep in inventory** — an explicit action, never automatic, so the registry holds durable gear rather than every bag of ice.",
       },
       {
         kind: "p",
@@ -1183,30 +1192,6 @@ export const EVENTS_SECTIONS: Omit<AcademySection, "order">[] = [
           "Have it answers \"do we have it?\" — Source answers \"WHERE is it?\" The packer may not be the person who fetched it, so the row carries the location.",
       },
       {
-        prompt: "Which ring does each half of a supply row feed?",
-        options: [
-          "Everything supplies feeds Day-of",
-          "Getting it (order/buy) feeds Planning; packing it feeds Day-of",
-          "Both feed Planning until the event starts",
-          "Supplies don't affect the rings",
-        ],
-        answerIndex: 1,
-        explanation:
-          "Buying and ordering are prep on a real-world clock — Planning. Packing is what makes the day run — Day-of, even if you pack early. That's why the Timing column matters: orders have lead times.",
-      },
-      {
-        prompt: "Why does the battery row deserve special paranoia?",
-        options: [
-          "Batteries are expensive",
-          "It must leave storage early enough to charge at home — there's no charger in storage",
-          "It's the heaviest item",
-          "The venue provides batteries anyway",
-        ],
-        answerIndex: 1,
-        explanation:
-          "A battery pulled from storage the night before arrives flat. This exact failure is why the original checklist marked it VERY IMPORTANT.",
-      },
-      {
         prompt: "What is the site map?",
         options: [
           "A photo of the venue from Google Maps",
@@ -1217,6 +1202,125 @@ export const EVENTS_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 1,
         explanation:
           "The site map lives with Supplies & Logistics because it's the spatial view of the same area: everything the grid tracks, placed where it goes.",
+      },
+      {
+        prompt:
+          "Your row for the shared speaker shows \"Worship Night · Green luggage\" instead of Pull from storage. Why?",
+        options: [
+          "It's a display bug — refresh",
+          "The speaker's Inventory asset is reserved by Worship Night — the row shows who has it and where it's packed",
+          "Someone typed that in as a custom status",
+          "The speaker was deleted from Inventory",
+        ],
+        answerIndex: 1,
+        explanation:
+          "A Chapter Storage row reserves its linked asset. When another live event holds it, your row derives to the real-time signal — which event, which container — so the double-booking surprise happens in planning, not on load-in day.",
+      },
+      {
+        prompt:
+          "You bought a folding table the chapter should keep. How does it get into Inventory?",
+        options: [
+          "Every bought supply row is added automatically",
+          "Promote it with \"Keep in inventory\" — creating the asset from the row is an explicit action",
+          "Ask an admin to re-type it on the Inventory tab",
+          "It can't — Inventory only holds storage items",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Most supply rows are consumables; auto-creating assets would flood the registry with junk. Durable gear is promoted deliberately — the row's name, quantity, and photo carry across, and the row links to the new asset.",
+      },
+    ],
+  },
+
+  // ── 11b · Keeping inventory ─────────────────────────────────────────────────
+  {
+    slug: "keeping-inventory",
+    title: "Keeping inventory",
+    subtitle: "The chapter's gear registry — and how events borrow from it",
+    minutes: 4,
+    blocks: [
+      {
+        kind: "p",
+        text: "The **Inventory** tab is the chapter's gear registry: every durable thing the chapter owns, as one row — name, **tags** (audio, power, signage…), how many you own, a photo, and its condition. It's the answer to \"do we already have one of those?\" before anyone spends money.",
+      },
+      {
+        kind: "rule",
+        title: "Inventory holds durable, chapter-owned gear — nothing else",
+        text: "Consumables you'll buy again (ice, wristbands), borrowed favors, and rentals stay on the event's supply list and never enter the registry. A bought item earns its row only when a human promotes it with \"Keep in inventory\" — deliberately, never automatically — so the registry stays a list of real gear, not a junk drawer.",
+      },
+      { kind: "heading", text: "Events reserve; the registry keeps score" },
+      {
+        kind: "p",
+        text: "An event claims gear from its own supplies grid: a row with **Source = Chapter Storage** links an asset, and the link *reserves* that many for the event. The registry computes, live: **available = owned − reserved by live events**. When the event completes, its hold releases on its own — nobody files a return. Two overlapping events can't both have the one battery, and the second event's row says exactly who has it and which container it's packed in.",
+      },
+      {
+        kind: "p",
+        text: "**Consumables** owned by the chapter (gaffer tape, zip ties) work differently: they get used up, not returned. Mark the asset consumable and give it a low-stock threshold — the registry badges **Low stock** and **Out of stock**, and every event row linked to an empty consumable derives straight to *Need to buy*. \"We're out of tape\" propagates to every plan that needs tape, without anyone checking.",
+      },
+      {
+        kind: "p",
+        text: "Keep **condition** honest: a broken speaker marked *needs attention* with a note (\"crackles above half volume\") saves the next event a load-in surprise. The registry is only as trustworthy as its worst row.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "Two Saturday events both list the chapter's one ALTO speaker. Event A linked it Tuesday; Event B adds its row Thursday. What does Event B see?",
+        answer:
+          "Event B's row derives to the real-time signal — **Event A · {container}** — the moment it links the asset. Nobody has to notice the clash: the registry computes availability from live reservations, and Event B finds out on Thursday in planning, not Saturday at load-in. They can borrow, rent, or talk to Event A — with two days to do it.",
+      },
+      {
+        kind: "tip",
+        text: "Tags drive the filter pills above the grid — a consistent vocabulary (audio, power, lighting, staging, cabling, signage, transport) keeps \"show me all the sound gear\" one tap away.",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "How does an event reserve chapter gear?",
+        options: [
+          "Email the Logistics Lead",
+          "A supplies row with Source = Chapter Storage, linked to the asset — listing the need IS the reservation",
+          "Edit the asset's quantity down on the Inventory tab",
+          "Reservations aren't tracked",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Reserving is a byproduct of planning: the supply row's link claims the asset for the event, and the registry's availability updates live for everyone else.",
+      },
+      {
+        prompt: "An event that reserved the speaker just completed. Who returns the reservation?",
+        options: [
+          "The Logistics Lead files a return",
+          "Nobody — availability is computed from LIVE events, so the hold releases automatically",
+          "An admin resets the registry weekly",
+          "The next event's lead clears it",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Available = owned − reserved by live events. A completed or cancelled event drops out of the sum on its own — the registry can't drift out of date the way a manual log would.",
+      },
+      {
+        prompt: "What belongs in the Inventory registry?",
+        options: [
+          "Every supply any event ever listed",
+          "Durable chapter-owned gear — consumables, borrowed, and rented items stay on event supply lists",
+          "Only items worth more than $100",
+          "Whatever the assistant adds automatically",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The registry answers \"what do we own?\" Auto-adding every bought supply would bury the real gear; promotion via Keep in inventory is a deliberate human call.",
+      },
+      {
+        prompt: "The chapter's gaffer tape (consumable) hits zero. What happens on events that listed it?",
+        options: [
+          "Nothing until someone notices",
+          "Their linked rows derive to Need to buy — the shortage propagates to every plan that needs it",
+          "Their events are cancelled",
+          "The rows silently unlink",
+        ],
+        answerIndex: 1,
+        explanation:
+          "That's the point of linking supplies to the registry: stock truth lives in one place, and every event's derived status reads from it in real time.",
       },
     ],
   },
@@ -1807,11 +1911,10 @@ export const EVENTS_COURSES: Course[] = [
     level: "intermediate",
     audience: "role",
     description:
-      "The Logistics Lead's remit: supplies & logistics, capped by a " +
-      "hands-on capstone. Gains a keeping-inventory module when the typed " +
-      "Inventory feature ships.",
+      "The Logistics Lead's remit: supplies & logistics and the chapter " +
+      "gear registry, capped by a hands-on capstone.",
     icon: "package",
-    moduleSlugs: ["tab-supplies", "capstone-logistics-lead"],
+    moduleSlugs: ["tab-supplies", "keeping-inventory", "capstone-logistics-lead"],
   },
   {
     slug: "owning-an-event",

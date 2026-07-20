@@ -38,41 +38,14 @@ import {
   optionLabel,
 } from "@events-os/shared";
 
+import { assertNonNegInt, cleanTags, insertAsset } from "./lib/assets";
+
 // ── Validators / guards ───────────────────────────────────────────────────────
 
 /** Condition validator, derived from the single source of truth in `shared`. */
 const conditionValidator = v.union(
   ...ASSET_CONDITIONS.map((c) => v.literal(c)),
 );
-
-/** Normalize a tags array: trim, drop empties, de-dupe, cap length. */
-function cleanTags(tags: string[] | undefined): string[] {
-  if (!tags) return [];
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const raw of tags) {
-    const t = raw.trim();
-    if (t && !seen.has(t.toLowerCase())) {
-      seen.add(t.toLowerCase());
-      out.push(t);
-    }
-  }
-  return out.slice(0, 24);
-}
-
-/**
- * Guard: an asset's owned quantity is a whole number that is NOT negative. 0 IS
- * allowed — a Chapter-Kit item you're targeting but don't own yet sits at 0.
- * Mirrors budget's `assertNonNegativeCents`.
- */
-function assertNonNegInt(quantity: number): void {
-  if (quantity < 0 || !Number.isInteger(quantity)) {
-    throw new ConvexError({
-      code: "INVALID_QUANTITY",
-      message: "Quantity must be a whole number (zero or more).",
-    });
-  }
-}
 
 /**
  * Guard: a reservation's quantity is a whole number that is at least 1 — you
@@ -115,31 +88,18 @@ export const addAsset = mutation({
       });
     }
 
-    // Append: order = current count. Bounded read (a chapter's gear list is a
-    // handful of rows, never unbounded).
-    const existing = await ctx.db
-      .query("assets")
-      .withIndex("by_chapter", (q) =>
-        q.eq("chapterId", chapterId as Id<"chapters">),
-      )
-      .collect();
-
-    const now = Date.now();
-    return await ctx.db.insert("assets", {
+    return await insertAsset(ctx, {
       chapterId: chapterId as Id<"chapters">,
+      userId: userId as Id<"users">,
       name,
-      tags: cleanTags(args.tags),
+      tags: args.tags,
       quantity: args.quantity,
-      acquired: args.acquired ?? true,
+      acquired: args.acquired,
       consumable: args.consumable,
       lowStockThreshold: args.lowStockThreshold,
       condition: args.condition,
       stateNote: args.stateNote?.trim() || undefined,
       note: args.note?.trim() || undefined,
-      order: existing.length,
-      createdBy: userId as Id<"users">,
-      createdAt: now,
-      updatedAt: now,
     });
   },
 });
@@ -511,23 +471,11 @@ export const addAssetRow = mutation({
   handler: async (ctx): Promise<Id<"assets">> => {
     const chapterId = await requireChapterId(ctx);
     const userId = await requireUserId(ctx);
-    const existing = await ctx.db
-      .query("assets")
-      .withIndex("by_chapter", (q) =>
-        q.eq("chapterId", chapterId as Id<"chapters">),
-      )
-      .collect();
-    const now = Date.now();
-    return await ctx.db.insert("assets", {
+    return await insertAsset(ctx, {
       chapterId: chapterId as Id<"chapters">,
+      userId: userId as Id<"users">,
       name: "New item",
-      tags: [],
       quantity: 1,
-      acquired: true,
-      order: existing.length,
-      createdBy: userId as Id<"users">,
-      createdAt: now,
-      updatedAt: now,
     });
   },
 });

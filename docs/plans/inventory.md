@@ -139,14 +139,11 @@ split.
   add/edit like the Budget/People grids; photo via a `CoverPhotoPicker`-style
   storage flow.
 
-### 2. Event "Gear" tool — event tools menu + `?tab=gear`
+### 2. Event "Gear" tool — REMOVED
 
-- `RESERVED_TAB_KEYS += "gear"` (`packages/shared`), route `?tab=gear` →
-  `<GearTab>` in `event/[id].tsx`, a "Gear" row in `EventHeader`'s `EventTools`
-  (mirror the Budget wiring exactly).
-- `GearTab`: this event's reservations (asset name + qty claimed + note, inline
-  edit/remove) and an "Add gear" picker over the chapter's assets showing each
-  asset's current `available`, warning inline if claiming more than available.
+The event Gear tab has been removed. Asset reservations now occur through the event's
+**Supplies grid** when a supply row's Source is set to `Chapter Storage`. This consolidates
+asset reservations with the broader supplies/logistics workflow (see `inventory-supplies-unification.md` §3 & §5).
 
 ## Verification
 

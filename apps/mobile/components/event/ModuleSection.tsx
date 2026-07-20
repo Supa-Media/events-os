@@ -15,6 +15,7 @@ import {
   defaultCalendarView,
 } from "./moduleCalendar/config";
 import { SiteMapSubsection } from "./SiteMapSubsection";
+import { SupplyLinkBanner } from "./supplies/SupplyLinkBanner";
 import { type ModuleOwnerInfo } from "./EventModuleRollup";
 import { GuideLink } from "./GuideLink";
 
@@ -152,6 +153,9 @@ export function ModuleSection({
           }
         />
       )}
+
+      {/* Supplies: nudge to connect pre-bridge storage rows to Inventory. */}
+      {module.key === "supplies" ? <SupplyLinkBanner eventId={eventId} /> : null}
 
       {hasCalendar && view === "calendar" ? (
         <ModuleCalendar

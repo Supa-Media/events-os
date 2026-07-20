@@ -1,6 +1,6 @@
 # PRD — Inventory ⇄ Supplies unification
 
-**Status:** Draft · **Owner:** Logistics/Platform · **Supersedes/extends:**
+**Status:** Shipped · **Owner:** Logistics/Platform · **Supersedes/extends:**
 [`inventory.md`](./inventory.md)
 
 > This PRD defines the relationship between the chapter **Inventory** (the `assets`
@@ -97,7 +97,7 @@ buys, or borrowed/rented gear. Auto-creating an asset for each would flood the r
 with junk that never comes back. Inventory should hold **durable chapter-owned gear**, and
 nothing else, unless a human deliberately promotes an acquired item.
 
-Mechanics:
+**Mechanics (Shipped):**
 - Setting a row's Source to `chapter_storage` prompts to **link an existing asset or create
   one** (name prefilled from the row title). The link is stored as `fields.linkedAssetId`.
 - A `buy_in_store` / `order_online` row can be **promoted** to an asset later ("Keep in
@@ -205,9 +205,8 @@ anyone checking manually.
 - **Inventory becomes the same `EditableGrid` database view as Supplies** — identical
   toolbar (Group / Columns), cells, and feel — plus a **tags filter pill bar** and an
   on-page **AI assistant** (see the implementation plan for the how).
-- The event **Gear tab** and the **Supplies grid** converge: reserving chapter gear is just
-  a supply row with `Source = Chapter Storage`. (Gear-tab deprecation is a follow-up; the
-  reservation bridge in §5 makes them equivalent first.)
+- The event **Gear tab has been removed.** Reserving chapter gear now happens via supply
+  rows with `Source = Chapter Storage`, consolidating the two reservation flows.
 - **Tags replace categories** on assets: the single `category` enum is dropped in favor of
   free-form multi-value `tags`; filter pills derive from tags in use. (Suggested vocabulary
   seeds from the old category list: audio, power, lighting, staging, cabling, signage,
