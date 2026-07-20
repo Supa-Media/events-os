@@ -31,18 +31,23 @@ export function GuestListCard({
   initialFilter,
 }: {
   eventId: Id<"events">;
-  /** Lets a parent deep-link into a filter (e.g. tapping a pulse-strip stat). */
-  initialFilter?: GuestFilter;
+  /** Deep-link request from a parent (e.g. tapping a pulse-strip stat). A
+   *  wrapper object, not a bare string: the parent mints a fresh object per
+   *  tap, so re-tapping the SAME stat still re-applies the filter after the
+   *  user has tapped other chips (an equal string would bail out of setState
+   *  and the effect below would never re-fire). */
+  initialFilter?: { value: GuestFilter };
 }) {
   const rsvps = useQuery(api.ticketing.listRsvpsAdmin, { eventId });
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<GuestFilter>(initialFilter ?? "all");
+  const [filter, setFilter] = useState<GuestFilter>(
+    initialFilter?.value ?? "all",
+  );
 
-  // Re-apply the deep-linked filter whenever the parent changes it, but leave
-  // the user free to tap other chips afterwards (no effect re-run until the
-  // prop itself changes again).
+  // Re-apply the deep-linked filter on every new request object, leaving the
+  // user free to tap other chips in between.
   useEffect(() => {
-    if (initialFilter !== undefined) setFilter(initialFilter);
+    if (initialFilter !== undefined) setFilter(initialFilter.value);
   }, [initialFilter]);
 
   const filtered = useMemo(() => {
@@ -107,8 +112,12 @@ export function GuestListCard({
         </Text>
       ) : filtered.length === 0 ? (
         <Text className="py-2 text-base text-muted">
+          {/* Keep the typed query visible even when a chip is active, so the
+              admin can tell a search typo from a filter miss. */}
           {filterActive
-            ? "No guests match this filter."
+            ? search.trim()
+              ? `No guests match "${search.trim()}" with this filter.`
+              : "No guests match this filter."
             : `No guests match "${search.trim()}".`}
         </Text>
       ) : (

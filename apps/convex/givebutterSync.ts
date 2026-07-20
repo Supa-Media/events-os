@@ -570,13 +570,7 @@ async function resolveCampaignId(
     page < GIVEBUTTER_CAMPAIGN_LOOKUP_MAX_PAGES && url;
     page++
   ) {
-    const res = await fetch(url, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        Accept: "application/json",
-      },
-    });
+    const res = await gbGet(key, url);
     if (!res.ok) {
       throw new Error(
         `HTTP ${res.status} while looking up Givebutter campaign "${value}".`,
@@ -601,6 +595,18 @@ async function resolveCampaignId(
   return null;
 }
 
+/** GET a Givebutter API URL with bearer auth — the one fetch shape every
+ *  endpoint here uses (campaign show/list, transactions, tickets). */
+function gbGet(key: string, url: string): Promise<Response> {
+  return fetch(url, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${key}`,
+      Accept: "application/json",
+    },
+  });
+}
+
 /**
  * Validate a numeric configured value against `GET /v1/campaigns/{id}`. 200 →
  * the value IS the numeric campaign id, used as-is (fast path, unchanged for
@@ -613,15 +619,9 @@ async function validateNumericCampaignId(
   key: string,
   value: string,
 ): Promise<"ok" | "not_found"> {
-  const res = await fetch(
+  const res = await gbGet(
+    key,
     `${GIVEBUTTER_API_BASE}/campaigns/${encodeURIComponent(value)}`,
-    {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        Accept: "application/json",
-      },
-    },
   );
   if (res.status === 404) return "not_found";
   if (!res.ok) {
@@ -641,21 +641,20 @@ async function validateNumericCampaignId(
  * (`refunded === true` or the string `"true"` only — the spec types the field
  * as a string, so any other encoding is treated as NOT refunded to avoid
  * dropping valid transactions on an unexpected shape).
+ *
+ * `truncated` is true when the cap was hit with more pages remaining — the
+ * caller surfaces that as a warning, since a capped ACCOUNT-WIDE sweep means
+ * this campaign's rows past the cap were silently missed (unlike the old
+ * campaign-scoped endpoint, the cap no longer bounds just this campaign).
  */
 async function sweepCampaignTransactionIds(
   key: string,
   campaignId: string,
-): Promise<Set<string>> {
+): Promise<{ ids: Set<string>; truncated: boolean }> {
   const ids = new Set<string>();
   let url: string | null = `${GIVEBUTTER_API_BASE}/transactions`;
   for (let page = 0; page < GIVEBUTTER_MAX_PAGES && url; page++) {
-    const res = await fetch(url, {
-      method: "GET",
-      headers: {
-        Authorization: `Bearer ${key}`,
-        Accept: "application/json",
-      },
-    });
+    const res = await gbGet(key, url);
     if (!res.ok) {
       throw new Error(`HTTP ${res.status} fetching Givebutter transactions.`);
     }
@@ -668,7 +667,7 @@ async function sweepCampaignTransactionIds(
     }
     url = body.links?.next ?? null;
   }
-  return ids;
+  return { ids, truncated: url !== null };
 }
 
 /**
@@ -794,17 +793,13 @@ async function syncOneCampaign(
       campaignId = lookedUp;
     }
 
-    const transactionIds = await sweepCampaignTransactionIds(key, campaignId);
+    const { ids: transactionIds, truncated: txnTruncated } =
+      await sweepCampaignTransactionIds(key, campaignId);
+    let ticketsTruncated = false;
     if (transactionIds.size > 0) {
       let url: string | null = `${GIVEBUTTER_API_BASE}/tickets`;
       for (let page = 0; page < GIVEBUTTER_MAX_PAGES && url; page++) {
-        const res = await fetch(url, {
-          method: "GET",
-          headers: {
-            Authorization: `Bearer ${key}`,
-            Accept: "application/json",
-          },
-        });
+        const res = await gbGet(key, url);
         if (!res.ok) {
           throw new Error(`HTTP ${res.status} fetching Givebutter tickets.`);
         }
@@ -831,6 +826,16 @@ async function syncOneCampaign(
         }
         url = body.links?.next ?? null;
       }
+      ticketsTruncated = url !== null;
+    }
+    // A capped ACCOUNT-WIDE sweep means rows past the cap were silently
+    // missed — surface it as a sync warning instead of reporting clean
+    // success with under-counted rollups. (Everything swept so far IS
+    // applied; a later re-sync after Givebutter trims/reorders can catch up.)
+    if (txnTruncated || ticketsTruncated) {
+      errorMessage = `Givebutter returned more than ${GIVEBUTTER_MAX_PAGES} pages of ${
+        txnTruncated ? "transactions" : "tickets"
+      } — synced what was swept, but counts may be incomplete.`;
     }
   } catch (err) {
     errorMessage =

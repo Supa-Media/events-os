@@ -52,10 +52,12 @@ export default function TicketingTab({ eventId }: { eventId: Id<"events"> }) {
   const [openPhase, setOpenPhase] = useState<
     LaunchPhaseKey | null | undefined
   >(undefined);
-  // Deep-links a pulse-strip tap into the guest list's filter chips.
-  const [guestFilter, setGuestFilter] = useState<GuestFilter | undefined>(
-    undefined,
-  );
+  // Deep-links a pulse-strip tap into the guest list's filter chips. A fresh
+  // wrapper object per tap (never a bare string) so re-tapping the same stat
+  // re-applies the filter even after the user tapped other chips.
+  const [guestFilter, setGuestFilter] = useState<
+    { value: GuestFilter } | undefined
+  >(undefined);
 
   if (data === undefined) {
     return (
@@ -109,7 +111,7 @@ export default function TicketingTab({ eventId }: { eventId: Id<"events"> }) {
   // Tapping a pulse-strip stat jumps to Grow and pre-filters the guest list.
   const goToGuestFilter = (filter: GuestFilter) => {
     setOpenPhase("grow");
-    setGuestFilter(filter);
+    setGuestFilter({ value: filter });
   };
 
   const dateLabel = ev?.eventDate ? formatDateTime(ev.eventDate) : null;

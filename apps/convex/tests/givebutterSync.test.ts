@@ -1008,4 +1008,51 @@ describe("transactions to tickets join", () => {
     const page = await pageRow(s, eventId);
     expect(page).toMatchObject({ ticketsSoldCount: 2, revenueCents: 2000 });
   });
+
+  test("an account-wide transaction sweep that hits the page cap records a truncation warning", async () => {
+    process.env.GIVEBUTTER_API_KEY = "test_key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId, "686283");
+
+    // Transactions ALWAYS advertise another page — the sweep must stop at the
+    // cap and the sync must surface "counts may be incomplete" instead of
+    // reporting clean success with silently under-counted rollups.
+    globalThis.fetch = (async (url: string) => {
+      if (url.endsWith("/campaigns/686283")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data: { id: 686283 } }),
+          text: async () => "{}",
+        };
+      }
+      if (url.includes("/transactions")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            data: [{ id: `t-${url}`, campaign_id: 686283, refunded: false }],
+            links: { next: `${url.split("?")[0]}?page=next` },
+          }),
+          text: async () => "{}",
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [], links: { next: null } }),
+        text: async () => "{}",
+      };
+    }) as unknown as typeof fetch;
+
+    await expect(
+      t.action(internal.givebutterSync.syncGivebutterCampaign, { eventId }),
+    ).resolves.toBeNull();
+
+    const page = await pageRow(s, eventId);
+    expect(page?.givebutterLastSyncError).toContain("counts may be incomplete");
+    expect(page?.givebutterLastSyncError).toContain("transactions");
+  });
 });
