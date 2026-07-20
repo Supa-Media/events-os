@@ -305,6 +305,7 @@ describe("checkout and verification", () => {
       slug,
       name: "Ben Buyer",
       email: "ben@example.com",
+      phone: "5551234567",
       items: [{ ticketTypeId: paidId, quantity: 1 }],
     });
     expect(prepared.needsEmailVerification).toBe(true);
@@ -340,6 +341,7 @@ describe("checkout and verification", () => {
       slug,
       name: "Cara Claim",
       email: "cara@example.com",
+      phone: "5551234567",
       items: [{ ticketTypeId: freeId, quantity: 1 }],
     });
     expect(prepared.needsEmailVerification).toBe(true);

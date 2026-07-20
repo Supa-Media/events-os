@@ -201,6 +201,7 @@ export function registerTicketApiRoutes(http: HttpRouter): void {
         slug: String(body.slug ?? ""),
         name: String(body.name ?? ""),
         email: String(body.email ?? ""),
+        phone: optStr(body.phone),
         token: optStr(body.token),
         items: toCartItems(body.items),
         // Optional add-on gift bundled into the SAME checkout (the "also

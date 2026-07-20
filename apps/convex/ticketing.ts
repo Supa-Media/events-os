@@ -26,6 +26,7 @@ import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { normalizeEmail } from "./lib/access";
+import { normalizePhone } from "./lib/twilio";
 import { requireEvent, requireOwned, requireUserId } from "./lib/context";
 import { beginEmailVerification, clearEmailCode } from "./lib/emailCodes";
 import { createPaidDonationForOrder } from "./giving";
@@ -753,6 +754,9 @@ export const getPublicPage = query({
             name: viewer.name,
             // An imported guest viewing via token may lack an email — null it.
             email: viewer.email ?? null,
+            // Lets the client skip the identity sheet on a repeat ticket
+            // purchase only when a phone is already on file.
+            phone: viewer.phone ?? null,
             status: viewer.status,
             // Legacy rows (undefined) predate verification — treat as verified.
             emailVerified: viewer.emailVerified !== false,
@@ -1188,6 +1192,9 @@ export const prepareOrder = internalMutation({
     slug: v.string(),
     name: v.string(),
     email: v.string(),
+    // Buyer's phone — required for ticket purchases (the door + SMS blasts need
+    // a way to reach ticket holders). Normalized to E.164; stored on the rsvp.
+    phone: v.optional(v.string()),
     token: v.optional(v.string()),
     items: v.array(
       v.object({ ticketTypeId: v.id("ticketTypes"), quantity: v.number() }),
@@ -1208,6 +1215,16 @@ export const prepareOrder = internalMutation({
       throw new ConvexError({
         code: "INVALID_INPUT",
         message: "A name and valid email are required.",
+      });
+    }
+    // Phone is required to buy a ticket. Reuse an already-stored number for a
+    // returning guest (their rsvp may already carry one) so we never block a
+    // repeat buyer; otherwise a valid number must be supplied.
+    const phone = args.phone ? normalizePhone(args.phone) : null;
+    if (args.phone && !phone) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "Enter a valid phone number.",
       });
     }
     if (args.items.length === 0 || args.items.length > 10) {
@@ -1268,6 +1285,15 @@ export const prepareOrder = internalMutation({
         )
         .first();
     }
+    // A phone must be on file for a ticket buyer — the one just entered, or one
+    // this guest already gave on a prior RSVP/purchase.
+    const finalPhone = phone ?? rsvp?.phone ?? null;
+    if (!finalPhone) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "A phone number is required to get tickets.",
+      });
+    }
     let rsvpId: Id<"rsvps">;
     let guestToken: string;
     let needsEmailVerification: boolean;
@@ -1275,7 +1301,7 @@ export const prepareOrder = internalMutation({
       rsvpId = rsvp._id;
       guestToken = rsvp.token;
       needsEmailVerification = rsvp.emailVerified === false;
-      await ctx.db.patch(rsvp._id, { name, updatedAt: now });
+      await ctx.db.patch(rsvp._id, { name, phone: finalPhone, updatedAt: now });
     } else {
       guestToken = newGuestToken();
       needsEmailVerification = true;
@@ -1284,6 +1310,7 @@ export const prepareOrder = internalMutation({
         chapterId: page.chapterId,
         name,
         email,
+        phone: finalPhone,
         status: "maybe", // flips to "going" when the order is fulfilled
         token: guestToken,
         source: "ticket",
