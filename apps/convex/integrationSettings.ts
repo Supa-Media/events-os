@@ -22,9 +22,20 @@
  * together; `getIntegrationsStatus` projects only `{configured, accountSid
  * last4, messagingServiceSid present, updatedAt}`.
  *
+ * Resend email (own-key integration) follows the SAME discipline: the API KEY
+ * is the secret and never leaves the table except through
+ * `readResendSettings` (the sending actions/helpers in `lib/resend.ts`). The
+ * FROM ADDRESS is not secret — it's the sender line every recipient already
+ * sees — so `getIntegrationsStatus` returns it in full, not redacted.
+ * `setResendSettings` sets/clears both fields together: `apiKey: null` clears
+ * both (falls back to `RESEND_API_KEY`/`AUTH_EMAIL_FROM` env, or the logged
+ * no-op degrade); a non-null key may be saved with or without a from-address
+ * (blank/omitted from-address falls back to the env default at send time).
+ *
  * Resolution order for the actual sync/send (see `givebutterSync.ts` /
- * `lib/twilio.ts`): the stored setting, else the deployment env var(s), else a
- * logged no-op degrade — mirrors `financeSettings.readSandboxMode`.
+ * `lib/twilio.ts` / `lib/resend.ts`): the stored setting, else the deployment
+ * env var(s), else a logged no-op degrade — mirrors
+ * `financeSettings.readSandboxMode`.
  */
 import { query, mutation, internalQuery } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
@@ -41,6 +52,25 @@ async function getSettings(ctx: QueryCtx) {
 /** Last 4 characters of a key, for display only — never the key itself. */
 function last4(key: string): string {
   return key.slice(-4);
+}
+
+/**
+ * Loosely validate + normalize a Resend "From" address: must look like an
+ * email (`addr@dom`) or the `"Name <addr@dom>"` form Resend also accepts —
+ * checked only by presence of `@`, not a full RFC 5322 parse (Resend itself
+ * is the source of truth on send). A blank value (after trim) means "unset",
+ * not an error — the caller falls back to the env default.
+ */
+function normalizeFromAddress(raw: string): string | undefined {
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  if (!trimmed.includes("@")) {
+    throw new ConvexError({
+      code: "INVALID_ARGUMENT",
+      message: 'From address must be an email or "Name <email>", e.g. "Chapter OS <os@publicworship.life>".',
+    });
+  }
+  return trimmed;
 }
 
 /**
@@ -64,6 +94,14 @@ export const getIntegrationsStatus = query({
       messagingServiceConfigured: v.boolean(),
       updatedAt: v.union(v.number(), v.null()),
     }),
+    resend: v.object({
+      configured: v.boolean(),
+      last4: v.union(v.string(), v.null()),
+      // NOT secret — the sender line every recipient already sees — so it's
+      // returned in full, unlike `last4`.
+      fromAddress: v.union(v.string(), v.null()),
+      updatedAt: v.union(v.number(), v.null()),
+    }),
   }),
   handler: async (ctx) => {
     await requireSuperuser(ctx);
@@ -72,6 +110,7 @@ export const getIntegrationsStatus = query({
     const sid = settings?.twilioAccountSid;
     const token = settings?.twilioAuthToken;
     const messagingServiceSid = settings?.twilioMessagingServiceSid;
+    const resendKey = settings?.resendApiKey;
     return {
       givebutter: {
         configured: !!key,
@@ -84,6 +123,12 @@ export const getIntegrationsStatus = query({
         configured: !!sid && !!token && !!messagingServiceSid,
         accountSidLast4: sid ? last4(sid) : null,
         messagingServiceConfigured: !!messagingServiceSid,
+        updatedAt: settings?.updatedAt ?? null,
+      },
+      resend: {
+        configured: !!resendKey,
+        last4: resendKey ? last4(resendKey) : null,
+        fromAddress: settings?.resendFromAddress ?? null,
         updatedAt: settings?.updatedAt ?? null,
       },
     };
@@ -238,5 +283,110 @@ export const readTwilioCredentials = internalQuery({
     const messagingServiceSid = settings?.twilioMessagingServiceSid;
     if (!accountSid || !authToken || !messagingServiceSid) return null;
     return { accountSid, authToken, messagingServiceSid };
+  },
+});
+
+/**
+ * Set or clear the Resend email settings (own-key integration). SUPERUSER-ONLY.
+ * `apiKey: null` clears BOTH fields (send then falls back to the
+ * `RESEND_API_KEY`/`AUTH_EMAIL_FROM` env vars, or the logged no-op degrade);
+ * a non-null `apiKey` must be non-empty after trimming and sets the key. The
+ * from-address can be set alongside the key, or updated on its own
+ * afterward (`apiKey` omitted) — but only once a key is already on file,
+ * since there's nothing to send with otherwise. At least one of `apiKey` /
+ * `fromAddress` must be provided. `fromAddress` is validated loosely (must
+ * look like an email or `"Name <email>"`); a blank value clears it rather
+ * than erroring, falling back to the env default at send time.
+ */
+export const setResendSettings = mutation({
+  args: {
+    apiKey: v.optional(v.union(v.string(), v.null())),
+    fromAddress: v.optional(v.union(v.string(), v.null())),
+  },
+  returns: v.null(),
+  handler: async (ctx, { apiKey, fromAddress }) => {
+    await requireSuperuser(ctx);
+    const updatedBy = (await requireUserId(ctx)) as Id<"users">;
+    const existing = await getSettings(ctx);
+
+    if (apiKey === undefined && fromAddress === undefined) {
+      throw new ConvexError({
+        code: "INVALID_ARGUMENT",
+        message: "Provide an API key or a from address to update.",
+      });
+    }
+
+    let key: string | undefined;
+    let from: string | undefined;
+
+    if (apiKey === null) {
+      // `apiKey: null` clears BOTH fields, regardless of `fromAddress`.
+      key = undefined;
+      from = undefined;
+    } else if (apiKey !== undefined) {
+      const trimmed = apiKey.trim();
+      if (!trimmed) {
+        throw new ConvexError({
+          code: "INVALID_ARGUMENT",
+          message: "API key can't be empty.",
+        });
+      }
+      key = trimmed;
+      from =
+        fromAddress === undefined
+          ? existing?.resendFromAddress
+          : fromAddress === null
+            ? undefined
+            : normalizeFromAddress(fromAddress);
+    } else {
+      // `apiKey` omitted — updating the from-address alone requires a key
+      // already on file.
+      if (!existing?.resendApiKey) {
+        throw new ConvexError({
+          code: "INVALID_ARGUMENT",
+          message: "Set a Resend API key before updating the from address.",
+        });
+      }
+      key = existing.resendApiKey;
+      from =
+        fromAddress === null ? undefined : normalizeFromAddress(fromAddress as string);
+    }
+
+    const fields = {
+      resendApiKey: key,
+      resendFromAddress: from,
+      updatedBy,
+      updatedAt: Date.now(),
+    };
+    if (existing) {
+      await ctx.db.patch(existing._id, fields);
+    } else {
+      await ctx.db.insert("integrationSettings", fields);
+    }
+    return null;
+  },
+});
+
+/**
+ * Action-facing read of the raw Resend settings (or `null` when no key is
+ * stored). The only path the API key ever leaves the table through —
+ * `lib/resend.ts`'s `resolveResendSettings` consults this via `ctx.runQuery`
+ * before falling back to the `RESEND_API_KEY`/`AUTH_EMAIL_FROM` env vars.
+ * NEVER exposed as a public function.
+ */
+export const readResendSettings = internalQuery({
+  args: {},
+  returns: v.union(
+    v.object({
+      apiKey: v.string(),
+      fromAddress: v.union(v.string(), v.null()),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx) => {
+    const settings = await getSettings(ctx);
+    const apiKey = settings?.resendApiKey;
+    if (!apiKey) return null;
+    return { apiKey, fromAddress: settings?.resendFromAddress ?? null };
   },
 });

@@ -1874,14 +1874,14 @@ export const handleIncreaseDigitalWalletAuthenticationRequested = internalAction
           actionBody = { digital_wallet_authentication: { result: "failure" } };
         } else {
           try {
-            const delivered = await sendEmailReporting(
-              auth.email,
-              "Your Public Worship wallet verification code",
-              emailShell(`
+            const delivered = await sendEmailReporting(ctx, {
+              to: auth.email,
+              subject: "Your Public Worship wallet verification code",
+              html: emailShell(`
                 <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">Your wallet verification code</h1>
                 <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Enter this code to finish adding your card to your digital wallet:</p>
                 <p style="margin:0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:32px;font-weight:700;letter-spacing:0.08em;color:#210909">${escapeHtml(auth.one_time_passcode)}</p>`),
-            );
+            });
             if (delivered) {
               actionBody = {
                 digital_wallet_authentication: {
@@ -2318,10 +2318,10 @@ export const notifyPersonalChargeFlagged = internalAction({
       // flag/pay-back list this charge lives in — not Reimbursements (which
       // only shows the aggregate "you owe" total). Null when APP_URL is unset.
       const link = appUrl("/finances/cards");
-      await sendEmail(
-        contact.email,
+      await sendEmail(ctx, {
+        to: contact.email,
         subject,
-        emailShell(`
+        html: emailShell(`
           <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">${escapeHtml(subject)}</h1>
           <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(contact.cardholderName)} — a finance manager marked ${escapeHtml(merchant)} (${escapeHtml(dollars)}) as a personal charge. Pay it back from the Cards tab in the app.</p>
           ${
@@ -2329,7 +2329,7 @@ export const notifyPersonalChargeFlagged = internalAction({
               ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${link}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">Pay it back →</a></div>`
               : ""
           }`),
-      );
+      });
     } catch (err) {
       console.error(
         "notifyPersonalChargeFlagged: email failed",
@@ -3137,10 +3137,10 @@ async function notifyReceiptReminder(
   // grid's "Missing receipt" pill drives (`FILTER_KEYS` in
   // `(app)/finances/reconcile.tsx`). Null (omitted) when APP_URL is unset.
   const link = appUrl("/finances/reconcile?filter=missing_receipt");
-  await sendEmail(
-    contact.email,
+  await sendEmail(ctx, {
+    to: contact.email,
     subject,
-    emailShell(`
+    html: emailShell(`
       <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">${escapeHtml(subject)}</h1>
       <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(contact.cardholderName)} — ${escapeHtml(message)}</p>
       ${
@@ -3148,7 +3148,7 @@ async function notifyReceiptReminder(
           ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${link}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">Add receipt →</a></div>`
           : ""
       }`),
-  );
+  });
 }
 
 /**

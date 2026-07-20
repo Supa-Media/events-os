@@ -785,16 +785,16 @@ export const sendWeeklyDigests = internalAction({
           : overdue.length > 0
             ? `${overdue.length} overdue item${overdue.length === 1 ? "" : "s"} need${overdue.length === 1 ? "s" : ""} a look`
             : `Your team has ${teamCount} overdue item${teamCount === 1 ? "" : "s"}`;
-      await sendEmail(
-        r.email,
+      await sendEmail(ctx, {
+        to: r.email,
         subject,
-        emailShell(`
+        html: emailShell(`
         <h1 style="margin:0 0 8px;font-size:24px;line-height:1.2">Your week ahead, ${esc(firstName)}</h1>
         <p style="margin:0;font-family:${SANS};font-size:14px;line-height:1.6;color:${MUTED}">Everything with your name on it that's due this week — so Sunday-you can set up Monday-you. Project buttons below update status right from this email.</p>
         ${overdue.length ? sectionHeading("Overdue", ACCENT) + entryRows(overdue, true, tokens, base) : ""}
         ${dueThisWeek.length ? sectionHeading("Due this week") + entryRows(dueThisWeek, true, tokens, base) : ""}
         ${directsOverdue.length ? sectionHeading("Your team — overdue", ACCENT) + directsOverdueRows(directsOverdue) + `<p style="margin:4px 0 0;font-family:${SANS};font-size:12px;line-height:1.5;color:${MUTED}">Worth a nudge in your next 1:1 — or a comment on the project.</p>` : ""}`),
-      );
+      });
     }
     return null;
   },
@@ -815,14 +815,14 @@ export const sendDueReminders = internalAction({
       const subject = dueToday.length
         ? `Due today: ${dueToday[0].name}${count > 1 ? ` (+${count - 1} more)` : ""}`
         : `Due tomorrow: ${dueTomorrow[0].name}${count > 1 ? ` (+${count - 1} more)` : ""}`;
-      await sendEmail(
-        r.email,
+      await sendEmail(ctx, {
+        to: r.email,
         subject,
-        emailShell(`
+        html: emailShell(`
         <h1 style="margin:0 0 8px;font-size:24px;line-height:1.2">Coming up ${dueToday.length ? "today" : "tomorrow"}</h1>
         ${dueToday.length ? sectionHeading("Due today", ACCENT) + entryRows(dueToday, false, tokens, base) : ""}
         ${dueTomorrow.length ? sectionHeading("Due tomorrow") + entryRows(dueTomorrow, false, tokens, base) : ""}`),
-      );
+      });
     }
     return null;
   },
@@ -846,15 +846,15 @@ export const sendProjectCommentEmail = internalAction({
     body: v.string(),
   },
   handler: async (
-    _ctx,
+    ctx,
     { to, recipientName, projectId, projectName, authorName, body },
   ) => {
     const firstName = recipientName.split(/\s+/)[0];
     const link = projectId ? appUrl(`/project/${projectId}`) : null;
-    await sendEmail(
+    await sendEmail(ctx, {
       to,
-      `${authorName} commented on ${projectName}`,
-      emailShell(`
+      subject: `${authorName} commented on ${projectName}`,
+      html: emailShell(`
       <h1 style="margin:0 0 8px;font-size:22px;line-height:1.3">New comment on ${esc(projectName)}</h1>
       <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:${MUTED}">Hey ${esc(firstName)} — ${esc(authorName)} left an update on your project:</p>
       <div style="background:#fff;border-left:3px solid ${ACCENT};border-radius:0 12px 12px 0;padding:12px 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6">${esc(body)}</div>
@@ -864,7 +864,7 @@ export const sendProjectCommentEmail = internalAction({
           : ""
       }
       <p style="margin:16px 0 0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;line-height:1.6;color:${MUTED}">Reply on the project's thread so the progression stays in one place.</p>`),
-    );
+    });
     return null;
   },
 });
