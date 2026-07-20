@@ -157,6 +157,7 @@ const COLS = {
   amount: 120,
   source: 230,
   book: 140,
+  event: 180,
 } as const;
 
 type LedgerGift = {
@@ -172,6 +173,12 @@ type LedgerGift = {
   hasReceipts: boolean;
   edited: boolean;
   systemWritten: boolean;
+  // Gift→event attach (fundraiser attribution) — null when unattached.
+  eventId: Id<"events"> | null;
+  eventName: string | null;
+  // True when the attachment is the on-page donation dual-write (locked —
+  // see `attachGiftToEvent`'s `GIFT_HAS_EVENT_SOURCE`), not a manual attach.
+  hasEventSource: boolean;
 };
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -267,9 +274,13 @@ function GiftsBody({
   const filtersActive =
     datePreset !== "all" || methodFilter !== "all" || amountBand !== "all";
   const searching = search.trim().length > 0;
-  const width = isAllScopes
-    ? COLS.date + COLS.donor + COLS.amount + COLS.source + COLS.book
-    : COLS.date + COLS.donor + COLS.amount + COLS.source;
+  const width =
+    COLS.date +
+    COLS.donor +
+    COLS.amount +
+    COLS.source +
+    (isAllScopes ? COLS.book : 0) +
+    COLS.event;
 
   // Export (owner request #3) — exactly the CURRENT view: post date-range,
   // post method/amount filters, post search `filtered` rows, in ledger order.
@@ -413,6 +424,7 @@ function GiftsBody({
             {isAllScopes ? (
               <SortableHeaderCell label="Book" width={COLS.book} />
             ) : null}
+            <SortableHeaderCell label="Event" width={COLS.event} />
           </GridHeaderRow>
           {filtered.map((g, i) => (
             <GiftLedgerRow
@@ -505,6 +517,15 @@ function GiftLedgerRow({
           </Text>
         </GridCell>
       ) : null}
+      <GridCell width={COLS.event}>
+        <View className="flex-1 px-2 py-1.5">
+          {gift.eventName ? (
+            <Badge label={gift.eventName} tone="neutral" />
+          ) : (
+            <Text className="text-sm text-faint">—</Text>
+          )}
+        </View>
+      </GridCell>
     </GridRow>
   );
 }
@@ -636,7 +657,7 @@ function GiftDetailSheet({
 }) {
   const data = useQuery(api.givingPlatform.getGift, { giftId });
   const [mode, setMode] = useState<
-    "view" | "edit" | "move" | "reassign" | "remove" | "split"
+    "view" | "edit" | "move" | "reassign" | "remove" | "split" | "attach"
   >("view");
 
   const gift = data?.gift;
@@ -652,7 +673,9 @@ function GiftDetailSheet({
             ? "Reassign donor"
             : mode === "split"
               ? "Split gift"
-              : "Remove gift";
+              : mode === "attach"
+                ? "Attach to event"
+                : "Remove gift";
 
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onClose}>
@@ -681,6 +704,14 @@ function GiftDetailSheet({
                   onReassign={() => setMode("reassign")}
                   onRemove={() => setMode("remove")}
                   onSplit={() => setMode("split")}
+                  onAttach={() => setMode("attach")}
+                />
+              ) : mode === "attach" ? (
+                <AttachEventForm
+                  giftId={giftId}
+                  scope={gift.scope}
+                  currentEventId={gift.eventId ?? null}
+                  onDone={() => setMode("view")}
                 />
               ) : mode === "remove" ? (
                 <RemoveGiftForm
@@ -744,6 +775,7 @@ function GiftDetailView({
   onReassign,
   onRemove,
   onSplit,
+  onAttach,
 }: {
   data: {
     gift: {
@@ -753,8 +785,11 @@ function GiftDetailView({
       method: string;
       note?: string;
       receiptUrls: string[];
+      eventId?: Id<"events">;
+      donationId?: Id<"donations">;
     };
     donorName: string;
+    eventName: string | null;
     bookLabel: string;
     systemWritten: boolean;
     audit: AuditRow[];
@@ -766,8 +801,13 @@ function GiftDetailView({
   onReassign: () => void;
   onRemove: () => void;
   onSplit: () => void;
+  onAttach: () => void;
 }) {
   const { gift } = data;
+  // On-page donations are already auto-attributed by the dual-write and
+  // already counted in `donationsCents` — `attachGiftToEvent` refuses these
+  // (`GIFT_HAS_EVENT_SOURCE`), so the attach control is hidden for them.
+  const hasEventSource = gift.donationId !== undefined;
 
   return (
     <View>
@@ -784,10 +824,42 @@ function GiftDetailView({
           {data.systemWritten ? (
             <Badge label="Source-managed" tone="warn" />
           ) : null}
+          {data.eventName ? (
+            <Badge label={`→ ${data.eventName}`} tone="neutral" />
+          ) : null}
         </View>
         {gift.note ? (
           <Text className="mt-2 text-sm text-ink">{gift.note}</Text>
         ) : null}
+      </View>
+
+      {/* Fundraiser attribution — attach/detach this gift from an event. */}
+      <View className="mb-3 rounded-lg border border-border bg-raised p-2.5">
+        <Text className="mb-1 text-xs font-bold uppercase tracking-wider text-faint">
+          Event
+        </Text>
+        {hasEventSource ? (
+          <Text className="text-xs text-muted">
+            Attributed to {data.eventName ?? "an event"} via the event page —
+            on-page donations are auto-attributed and can't be re-attached
+            here.
+          </Text>
+        ) : (
+          <>
+            <Text className="mb-2 text-sm text-ink">
+              {data.eventName ?? "Not attached to an event"}
+            </Text>
+            {canManage ? (
+              <Button
+                title={data.eventName ? "Change event" : "Attach to event"}
+                icon="link"
+                size="sm"
+                variant="secondary"
+                onPress={onAttach}
+              />
+            ) : null}
+          </>
+        )}
       </View>
 
       {gift.receiptUrls.length > 0 ? (
@@ -1329,6 +1401,132 @@ function ReassignDonorForm({
         </View>
         <View className="flex-1">
           <Button title="Reassign" onPress={save} loading={saving} disabled={!toDonorId} />
+        </View>
+      </View>
+    </View>
+  );
+}
+
+/**
+ * Attach (or detach) a gift to an event — the fundraiser attribution flow.
+ * Some Givebutter-imported/offline gifts were given "toward the fundraiser"
+ * but land unattached; this picker tags which event's goal the gift counts
+ * toward. Lists events via `events.listForGiftAttach` (scoped the same way
+ * the gift's own book is), searchable like `ReassignDonorForm`'s donor
+ * picker. `attachGiftToEvent` (server) already refuses a
+ * `donationId`-carrying gift — this form is only reachable for eligible
+ * gifts (see `GiftDetailView`'s `hasEventSource` gate).
+ */
+function AttachEventForm({
+  giftId,
+  scope,
+  currentEventId,
+  onDone,
+}: {
+  giftId: Id<"gifts">;
+  scope: GivingScope;
+  currentEventId: Id<"events"> | null;
+  onDone: () => void;
+}) {
+  const attachGift = useMutation(api.givingPlatform.attachGiftToEvent);
+  const events = useQuery(api.events.listForGiftAttach, { scope });
+  const [search, setSearch] = useState("");
+  const [selectedEventId, setSelectedEventId] = useState<Id<"events"> | null>(
+    currentEventId,
+  );
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const candidates = useMemo(() => {
+    const list = events ?? [];
+    const q = search.trim().toLowerCase();
+    if (!q) return list.slice(0, 30);
+    return list.filter((e) => e.name.toLowerCase().includes(q)).slice(0, 30);
+  }, [events, search]);
+
+  async function save(eventId: Id<"events"> | null) {
+    setError(null);
+    setSaving(true);
+    try {
+      await attachGift({ giftId, eventId });
+      onDone();
+    } catch (e) {
+      alertError(e);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <View>
+      <Text className="mb-2 text-sm text-muted">
+        Attach this gift to an event so it counts toward that event's
+        fundraising goal — separate from on-page donations, which are already
+        counted automatically.
+      </Text>
+      <TextField
+        value={search}
+        onChangeText={setSearch}
+        placeholder="Search events…"
+        autoCapitalize="none"
+      />
+      {events === undefined ? (
+        <ActivityIndicator color={colors.accent} />
+      ) : (
+        <View className="mb-2 gap-1">
+          {candidates.map((e) => {
+            const selected = selectedEventId === e._id;
+            return (
+              <Pressable
+                key={e._id}
+                onPress={() => setSelectedEventId(e._id)}
+                className={`flex-row items-center justify-between rounded-lg border p-2.5 ${
+                  selected ? "border-accent bg-brand-100" : "border-border bg-raised"
+                }`}
+              >
+                <View className="flex-1 pr-2">
+                  <Text className="text-sm font-semibold text-ink" numberOfLines={1}>
+                    {e.name}
+                  </Text>
+                  <Text className="text-xs text-muted" numberOfLines={1}>
+                    {new Date(e.eventDate).toLocaleDateString()}
+                  </Text>
+                </View>
+                <Icon
+                  name={selected ? "check-circle" : "circle"}
+                  size={16}
+                  color={selected ? colors.accent : colors.faint}
+                />
+              </Pressable>
+            );
+          })}
+          {candidates.length === 0 ? (
+            <Text className="text-sm text-muted">No events found.</Text>
+          ) : null}
+        </View>
+      )}
+      {error ? <Text className="mb-2 text-sm text-danger">{error}</Text> : null}
+      <View className="flex-row gap-2">
+        <View className="flex-1">
+          <Button title="Cancel" variant="secondary" onPress={onDone} />
+        </View>
+        {currentEventId ? (
+          <View className="flex-1">
+            <Button
+              title="Detach"
+              variant="danger"
+              onPress={() => void save(null)}
+              loading={saving}
+            />
+          </View>
+        ) : null}
+        <View className="flex-1">
+          <Button
+            title="Save"
+            onPress={() => void save(selectedEventId)}
+            loading={saving}
+            disabled={!selectedEventId || selectedEventId === currentEventId}
+          />
         </View>
       </View>
     </View>

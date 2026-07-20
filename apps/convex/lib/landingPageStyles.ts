@@ -52,6 +52,9 @@ export const LANDING_CSS = `
   mask-image:linear-gradient(#000 40%,transparent);
 }
 main{max-width:1080px;margin:0 auto;padding:20px 20px 96px;position:relative}
+.previewbar{display:flex;justify-content:center;padding-top:10px}
+.previewpill{display:inline-flex;align-items:center;gap:6px;background:var(--warn);color:#fff;
+  font-size:12px;font-weight:700;letter-spacing:.02em;border-radius:999px;padding:6px 14px;box-shadow:var(--shadow)}
 .topbar{display:flex;justify-content:center;padding:10px 0 26px}
 .wordmark{font-weight:700;font-size:12px;letter-spacing:.22em;color:var(--accent)}
 .grid{display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:52px;align-items:start}
@@ -67,9 +70,28 @@ main{max-width:1080px;margin:0 auto;padding:20px 20px 96px;position:relative}
   background:radial-gradient(circle at 30% 30%,#F5D3D0,var(--accent));
   display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700}
 h1.title{font-size:clamp(38px,6.5vw,60px);line-height:1.08;font-weight:700;margin:18px 0 8px;letter-spacing:-.01em}
-.tagline{font-size:18px;color:var(--muted);margin-bottom:26px}
+.tagline{font-size:18px;color:var(--muted);margin-bottom:14px}
+/* social proof + goal + hero CTA — the "buy a ticket" ask, high on the page */
+.proofrow{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 0}
+.proofchip{display:inline-flex;align-items:center;background:var(--raised);border:1px solid var(--border);
+  border-radius:999px;padding:6px 14px;font-size:13px;font-weight:600;color:var(--muted);box-shadow:var(--shadow)}
+.goalcard{background:var(--raised);border:1px solid var(--border);border-radius:16px;
+  padding:14px 16px;margin-top:12px;box-shadow:var(--shadow)}
+.goalrow{display:flex;justify-content:space-between;align-items:baseline;font-size:13.5px;color:var(--muted);margin-bottom:8px;gap:8px}
+.goalraised{color:var(--accent);font-weight:700;font-size:16px}
+.goaltarget{font-weight:500;white-space:nowrap}
+.goaltrack{height:8px;border-radius:999px;background:var(--sunken);overflow:hidden}
+.goalfill{height:100%;border-radius:999px;background:linear-gradient(90deg,var(--accent),var(--accent-hover));transition:width .4s ease}
+.herocta{display:flex;gap:10px;margin-top:16px;flex-wrap:wrap}
+.ctabtn{flex:1;min-width:150px;border-radius:999px;padding:14px 20px;font-weight:700;
+  font-size:15.5px;text-align:center;transition:all .15s}
+.ctabtn.primary{background:var(--accent);color:#fff;box-shadow:0 6px 18px rgba(210,59,58,.35)}
+.ctabtn.primary:hover{background:var(--accent-hover)}
+.ctabtn.secondary{background:var(--raised);color:var(--accent);border:1.5px solid var(--accent)}
+.ctabtn.secondary:hover{background:var(--accent-soft)}
 .metacard{display:flex;gap:14px;align-items:flex-start;background:var(--raised);
-  border:1px solid var(--border);border-radius:16px;padding:14px 16px;margin-bottom:12px;box-shadow:var(--shadow)}
+  border:1px solid var(--border);border-radius:16px;padding:14px 16px;margin:18px 0 12px;box-shadow:var(--shadow)}
+.metacard + .metacard{margin-top:0}
 .metacard .ic{width:44px;height:44px;border-radius:12px;background:var(--accent-soft);
   display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0}
 .metacard .t{font-weight:600;font-size:15px}

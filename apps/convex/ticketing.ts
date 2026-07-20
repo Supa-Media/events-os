@@ -28,6 +28,7 @@ import { Doc, Id } from "./_generated/dataModel";
 import { normalizeEmail } from "./lib/access";
 import { requireEvent, requireOwned, requireUserId } from "./lib/context";
 import { beginEmailVerification, clearEmailCode } from "./lib/emailCodes";
+import { createPaidDonationForOrder } from "./giving";
 import { RSVP_STATUSES } from "./schema/ticketing";
 
 // ── Small helpers ────────────────────────────────────────────────────────────
@@ -220,6 +221,7 @@ export const createPage = mutation({
       notGoingCount: 0,
       ticketsSoldCount: 0,
       revenueCents: 0,
+      previewToken: newGuestToken(),
       createdBy: userId as Id<"users">,
       createdAt: now,
       updatedAt: now,
@@ -248,6 +250,11 @@ export const updatePage = mutation({
       givingEnabled: v.optional(v.boolean()),
       givingPrompt: v.optional(v.union(v.string(), v.null())),
       suggestedAmountsCents: v.optional(v.union(v.array(v.number()), v.null())),
+      // Fundraising goal in whole cents (null clears it).
+      goalCents: v.optional(v.union(v.number(), v.null())),
+      // Cover crop focal point, 0–100 percent (null resets to centered).
+      coverFocalX: v.optional(v.union(v.number(), v.null())),
+      coverFocalY: v.optional(v.union(v.number(), v.null())),
       showGuestList: v.optional(v.boolean()),
       activityRestricted: v.optional(v.boolean()),
       capacity: v.optional(v.union(v.number(), v.null())),
@@ -292,6 +299,28 @@ export const updatePage = mutation({
       });
     }
 
+    // Goal is a whole number of cents ≥ 0 (same guard as prices/amounts).
+    if (
+      patch.goalCents != null &&
+      (patch.goalCents < 0 || !Number.isInteger(patch.goalCents))
+    ) {
+      throw new ConvexError({
+        code: "INVALID_PRICE",
+        message: "The goal must be a whole number of cents ≥ 0.",
+      });
+    }
+
+    // Focal point percents are clamped to 0–100 (null resets to centered).
+    for (const key of ["coverFocalX", "coverFocalY"] as const) {
+      const val = patch[key];
+      if (val != null && (val < 0 || val > 100)) {
+        throw new ConvexError({
+          code: "INVALID_FOCAL",
+          message: "Cover focal point must be between 0 and 100.",
+        });
+      }
+    }
+
     // v.null() sentinels → unset the optional field.
     const {
       coverImage,
@@ -300,6 +329,9 @@ export const updatePage = mutation({
       givingPrompt,
       suggestedAmountsCents,
       givebutterCampaignId,
+      goalCents,
+      coverFocalX,
+      coverFocalY,
       ...rest
     } = patch;
     await ctx.db.patch(pageId, {
@@ -316,9 +348,33 @@ export const updatePage = mutation({
       ...(givebutterCampaignId !== undefined
         ? { givebutterCampaignId: givebutterCampaignId ?? undefined }
         : {}),
+      ...(goalCents !== undefined ? { goalCents: goalCents ?? undefined } : {}),
+      ...(coverFocalX !== undefined
+        ? { coverFocalX: coverFocalX ?? undefined }
+        : {}),
+      ...(coverFocalY !== undefined
+        ? { coverFocalY: coverFocalY ?? undefined }
+        : {}),
       updatedAt: Date.now(),
     });
     return null;
+  },
+});
+
+/**
+ * Return (minting on first use) the secret preview token for a page, so the
+ * composer's "Open preview" button can build `…/rsvp/<slug>?preview=<token>`
+ * that renders even while the page is a draft. Pages created before this field
+ * existed get one lazily here.
+ */
+export const ensurePreviewToken = mutation({
+  args: { pageId: v.id("eventPages") },
+  handler: async (ctx, { pageId }) => {
+    const page = await requireOwned(ctx, "eventPages", pageId, "Page");
+    if (page.previewToken) return page.previewToken;
+    const previewToken = newGuestToken();
+    await ctx.db.patch(pageId, { previewToken, updatedAt: Date.now() });
+    return previewToken;
   },
 });
 
@@ -404,6 +460,41 @@ export const updateTicketType = mutation({
           : val;
     }
     await ctx.db.patch(ticketTypeId, resolved);
+    return null;
+  },
+});
+
+/**
+ * Promote a Givebutter mirror ticket type into a real, natively-sellable tier —
+ * the "make it one and the same" action. A synced tier is created `isActive:
+ * false` + `externalProvider: "givebutter"` (so it shows "Off" and can't be
+ * bought on the page); this flips it on and drops the external marker, keeping
+ * its `soldCount` so native + Givebutter sales accumulate on ONE tier. From
+ * then on the sync matches this tier by name instead of minting a new mirror
+ * (see `givebutterSync.ts`). Optionally sets the sell price at the same time.
+ */
+export const setTicketTypeSellable = mutation({
+  args: {
+    ticketTypeId: v.id("ticketTypes"),
+    priceCents: v.optional(v.number()),
+  },
+  handler: async (ctx, { ticketTypeId, priceCents }) => {
+    await requireOwned(ctx, "ticketTypes", ticketTypeId, "Ticket type");
+    if (
+      priceCents !== undefined &&
+      (priceCents < 0 || !Number.isInteger(priceCents))
+    ) {
+      throw new ConvexError({
+        code: "INVALID_PRICE",
+        message: "Price must be a whole number of cents ≥ 0.",
+      });
+    }
+    await ctx.db.patch(ticketTypeId, {
+      isActive: true,
+      externalProvider: undefined,
+      ...(priceCents !== undefined ? { priceCents } : {}),
+      updatedAt: Date.now(),
+    });
     return null;
   },
 });
@@ -541,10 +632,28 @@ export const checkInTicket = mutation({
  * viewer's RSVP, unlocks gated address/activity.
  */
 export const getPublicPage = query({
-  args: { slug: v.string(), token: v.optional(v.string()) },
-  handler: async (ctx, { slug, token }) => {
-    const page = await getPublishedPage(ctx, slug);
-    if (!page) return null;
+  args: {
+    slug: v.string(),
+    token: v.optional(v.string()),
+    // Admin "Open preview" secret — renders an unpublished page (see
+    // `ensurePreviewToken`). Ignored once the page is published.
+    previewToken: v.optional(v.string()),
+  },
+  handler: async (ctx, { slug, token, previewToken }) => {
+    const raw = await ctx.db
+      .query("eventPages")
+      .withIndex("by_slug", (q) => q.eq("slug", slug))
+      .unique();
+    if (!raw) return null;
+    // Access = published, OR a matching preview token (drafts stay private).
+    const isPreview = !raw.published;
+    if (
+      isPreview &&
+      !(previewToken && raw.previewToken && previewToken === raw.previewToken)
+    ) {
+      return null;
+    }
+    const page = raw;
     const event = await ctx.db.get(page.eventId);
     if (!event) return null;
     const now = Date.now();
@@ -577,9 +686,16 @@ export const getPublicPage = query({
       )
       .order("desc")
       .take(6);
+    // Tickets-only events (RSVP turned off) show ONLY ticketed attendees in the
+    // guest list — never leftover RSVP/import rows. When RSVP is on, show
+    // everyone (Partiful-style). `source === "ticket"` is set by both native and
+    // Givebutter-synced ticket fulfillment.
+    const ticketsOnly = page.rsvpEnabled === false;
     const guests = page.showGuestList === false
       ? []
-      : [...going, ...maybe].map((r) => ({ name: r.name, status: r.status }));
+      : [...going, ...maybe]
+          .filter((r) => !ticketsOnly || r.source === "ticket")
+          .map((r) => ({ name: r.name, status: r.status }));
 
     // Address gating (Partiful's "RSVP for full location").
     const addressLocked =
@@ -592,6 +708,7 @@ export const getPublicPage = query({
       : await buildActivity(ctx, page.eventId, viewer);
 
     return {
+      isPreview,
       slug: page.slug,
       eventName: event.name,
       startDate: event.eventDate,
@@ -610,6 +727,19 @@ export const getPublicPage = query({
       suggestedAmountsCents: page.suggestedAmountsCents ?? [],
       donationsCents: page.donationsCents ?? 0,
       donationsCount: page.donationsCount ?? 0,
+      // Fundraising goal + everything the progress bar needs. "Raised" toward
+      // the goal is ticket revenue + on-page giving + gifts attached to the
+      // event (all three surfaced so the client can render "$X of $Y").
+      goalCents: page.goalCents ?? null,
+      revenueCents: page.revenueCents,
+      externalGiftsCents: page.externalGiftsCents ?? 0,
+      raisedCents:
+        page.revenueCents +
+        (page.donationsCents ?? 0) +
+        (page.externalGiftsCents ?? 0),
+      // Cover crop focal point (percent); default centered.
+      coverFocalX: page.coverFocalX ?? 50,
+      coverFocalY: page.coverFocalY ?? 50,
       capacity: page.capacity ?? null,
       counts: {
         going: page.goingCount,
@@ -1062,6 +1192,10 @@ export const prepareOrder = internalMutation({
     items: v.array(
       v.object({ ticketTypeId: v.id("ticketTypes"), quantity: v.number() }),
     ),
+    // Optional add-on gift bundled into the SAME checkout (the "also
+    // donate?" upsell) — stashed on the pending order so the webhook can
+    // split the one Stripe charge. Absent/0 = tickets only.
+    donationCents: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     const page = await getPublishedPage(ctx, args.slug);
@@ -1078,6 +1212,13 @@ export const prepareOrder = internalMutation({
     }
     if (args.items.length === 0 || args.items.length > 10) {
       throw new ConvexError({ code: "INVALID_CART", message: "Pick some tickets first." });
+    }
+    const donationCents = args.donationCents ?? 0;
+    if (!Number.isInteger(donationCents) || donationCents < 0) {
+      throw new ConvexError({
+        code: "INVALID_AMOUNT",
+        message: "Donation amount must be a whole number of cents.",
+      });
     }
 
     const now = Date.now();
@@ -1170,6 +1311,7 @@ export const prepareOrder = internalMutation({
       email,
       items: lines,
       totalCents,
+      ...(donationCents > 0 ? { donationCents } : {}),
       currency: "usd",
       status: "pending",
       createdAt: now,
@@ -1180,6 +1322,7 @@ export const prepareOrder = internalMutation({
     return {
       orderId,
       totalCents,
+      donationCents,
       guestToken,
       needsEmailVerification,
       eventName: event?.name ?? "Event",
@@ -1299,6 +1442,22 @@ async function fulfill(
     }
   }
 
+  // Combined checkout add-on: the SAME Stripe charge included an optional
+  // "also donate?" gift. Split it out now — ticket money already landed on
+  // revenueCents above; this only ever touches donationsCents/gifts (money
+  // invariant). Guarded by the `order.status === "paid"` early-return above,
+  // so a webhook redelivery never double-creates this donation.
+  if (order.donationCents && order.donationCents > 0) {
+    await createPaidDonationForOrder(ctx, {
+      eventId: order.eventId,
+      chapterId: order.chapterId,
+      rsvpId: order.rsvpId,
+      name: order.name,
+      email: order.email,
+      amountCents: order.donationCents,
+    });
+  }
+
   await ctx.scheduler.runAfter(0, internal.ticketingEmails.sendTicketsEmail, {
     orderId,
   });
@@ -1387,9 +1546,20 @@ export const getOrderEmailPayload = internalQuery({
 
 /** Resolve a published page's cover image for the public /rsvp/<slug>/cover route. */
 export const getCoverStorageId = internalQuery({
-  args: { slug: v.string() },
-  handler: async (ctx, { slug }) => {
-    const page = await getPublishedPage(ctx, slug);
-    return page?.coverImage ?? null;
+  args: { slug: v.string(), previewToken: v.optional(v.string()) },
+  handler: async (ctx, { slug, previewToken }) => {
+    const page = await ctx.db
+      .query("eventPages")
+      .withIndex("by_slug", (q) => q.eq("slug", slug))
+      .unique();
+    if (!page) return null;
+    // Cover is public once published, or with a matching draft preview token.
+    if (
+      !page.published &&
+      !(previewToken && page.previewToken && previewToken === page.previewToken)
+    ) {
+      return null;
+    }
+    return page.coverImage ?? null;
   },
 });

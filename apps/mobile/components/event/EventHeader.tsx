@@ -1260,6 +1260,7 @@ export function EventTools({
   onDayOf,
   onTickets,
   ticketsActive,
+  ticketsLabel = "RSVP page",
   onMoney,
   moneyActive,
   isTraining,
@@ -1273,6 +1274,11 @@ export function EventTools({
   onTickets: () => void;
   /** True while the Tickets surface is showing — flags ⋯ and its menu row. */
   ticketsActive: boolean;
+  /** Label for the tools-menu row and its accessibility text — "RSVP page"
+   *  by default, or "Event page" once the page is tickets-only (RSVPs off),
+   *  so the menu stops leading with RSVP language a ticketing-only event
+   *  never uses. */
+  ticketsLabel?: string;
   onMoney: () => void;
   /** True while the Money surface is showing — flags ⋯ and its menu row. */
   moneyActive: boolean;
@@ -1353,7 +1359,7 @@ export function EventTools({
         accessibilityRole="button"
         accessibilityLabel={
           ticketsActive
-            ? "More tools (RSVP page open)"
+            ? `More tools (${ticketsLabel} open)`
             : moneyActive
               ? "More tools (Money open)"
               : "More tools"
@@ -1373,7 +1379,7 @@ export function EventTools({
       <Popover visible={visible} anchor={anchor} width={210} onClose={closeMenu}>
         <ToolsMenuRow
           icon="tag"
-          label="RSVP page"
+          label={ticketsLabel}
           active={ticketsActive}
           onPress={() => {
             closeMenu();

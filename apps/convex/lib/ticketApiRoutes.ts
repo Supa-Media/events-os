@@ -203,6 +203,12 @@ export function registerTicketApiRoutes(http: HttpRouter): void {
         email: String(body.email ?? ""),
         token: optStr(body.token),
         items: toCartItems(body.items),
+        // Optional add-on gift bundled into the SAME checkout (the "also
+        // donate?" upsell) — undefined/absent means tickets only.
+        donationCents:
+          body.donationCents === undefined
+            ? undefined
+            : Math.floor(Number(body.donationCents)),
       }),
     ),
   });

@@ -15,9 +15,12 @@ var KEY='pwguest:'+SLUG;
 var TOKEN=null;
 try{TOKEN=localStorage.getItem(KEY);}catch(e){}
 var cart={};
-var giveAmount=0; // selected suggested donation amount (cents)
+var giveAmount=0; // selected suggested donation amount (cents), standalone "Give" card
 var pending=null; // action waiting on the identity sheet
 var openPicker=null,openReply=null;
+var donateActive=false,donateContinue=null; // checkout donation-upsell step state
+var upsellAmount=0; // selected donation-upsell amount (cents)
+var UPSELL_AMOUNTS=[0,2000,2500,5000,10000]; // $0(skip)/$20/$25/$50/$100
 var EMOJIS=['🔥','❤️','🙌','😂','👀','🎉'];
 var PASTELS=['#F5E5C7','#A8D9C4','#C9A8E0','#D6E5F2','#F5D3D0'];
 var STATUS_META={going:{e:'👍',w:'Going'},maybe:{e:'🤔',w:'Maybe'},not_going:{e:'😢',w:"Can't go"}};
@@ -26,6 +29,7 @@ function $(id){return document.getElementById(id);}
 function el(tag,cls,text){var n=document.createElement(tag);if(cls)n.className=cls;if(text!=null)n.textContent=text;return n;}
 function toast(msg){var t=$('toast');t.textContent=msg;t.classList.add('show');clearTimeout(t._h);t._h=setTimeout(function(){t.classList.remove('show');},3200);}
 function money(c){return c===0?'Free':'$'+(c/100).toFixed(c%100===0?0:2);}
+function dollars(c){return '$'+(c/100).toFixed(c%100===0?0:2);} // money(), but 0 reads as "$0" not "Free" (goal/raised, not ticket price)
 function initialsOf(name){var parts=name.trim().split(/\\s+/);var s=(parts[0]?parts[0][0]:'')+(parts[1]?parts[1][0]:'');return s.toUpperCase()||'?';}
 function pastel(name){var h=0;for(var i=0;i<name.length;i++)h=(h*31+name.charCodeAt(i))>>>0;return PASTELS[h%PASTELS.length];}
 function ago(ts){var s=Math.max(1,Math.round((Date.now()-ts)/1000));
@@ -43,8 +47,14 @@ function refresh(){
 function saveToken(t){if(!t)return;TOKEN=t;try{localStorage.setItem(KEY,t);}catch(e){}}
 
 /* ── sheet ── */
+function scrollToCard(id){
+  var node=$(id);
+  if(node&&node.scrollIntoView)node.scrollIntoView({behavior:'smooth',block:'center'});
+}
 function openSheet(title,sub,cta,action){
   pending=action;
+  donateActive=false;donateContinue=null;
+  var df=$('donatefields');if(df)df.style.display='none';
   setSheetMode('id');
   $('sheettitle').textContent=title;
   $('sheetsub').textContent=sub;
@@ -54,10 +64,17 @@ function openSheet(title,sub,cta,action){
   $('overlay').classList.add('open');
   setTimeout(function(){$('f_name').focus();},100);
 }
-function closeSheet(){$('overlay').classList.remove('open');pending=null;}
+function closeSheet(){$('overlay').classList.remove('open');pending=null;donateActive=false;donateContinue=null;}
 $('sheetclose').onclick=closeSheet;
 $('overlay').addEventListener('click',function(e){if(e.target===$('overlay'))closeSheet();});
 $('sheetgo').onclick=function(){
+  if(donateActive){
+    var amt=currentUpsellCents();
+    var cont=donateContinue;
+    donateActive=false;donateContinue=null;
+    if(cont)cont(amt);
+    return;
+  }
   if(sheetMode==='code'){submitVerify();return;}
   var name=$('f_name').value.trim(),email=$('f_email').value.trim();
   if(!name||email.indexOf('@')<0){$('sheeterr').textContent='Add your name and a real email ✨';return;}
@@ -70,6 +87,14 @@ $('sheetgo').onclick=function(){
     })
     .catch(function(err){$('sheetgo').disabled=false;$('sheeterr').textContent=err.message;});
 };
+var doncustomInit=$('doncustom');
+if(doncustomInit){
+  doncustomInit.oninput=function(){
+    upsellAmount=0;
+    var sibs=document.querySelectorAll('#donateamts .amtbtn');
+    for(var i=0;i<sibs.length;i++)sibs[i].classList.remove('sel');
+  };
+}
 ${VERIFY_JS}
 
 /* ── rsvp ── */
@@ -96,6 +121,11 @@ function pickStatus(status){
 }
 function requireIdentity(then,title){
   if(TOKEN&&D.viewer)return then();
+  if(!D.rsvpEnabled){
+    toast(D.ticketsEnabled?'Get a ticket first to join in 🎟️':'Grab your spot first to join in ✨');
+    scrollToCard(D.ticketsEnabled?'ticketscard':(D.givingEnabled?'givingcard':'ticketscard'));
+    return;
+  }
   openSheet(title||'Join the party first ✨','RSVP so everyone knows who’s talking.','RSVP & continue',
     function(name,email){return doRsvp('going',name,email).then(then);});
 }
@@ -144,21 +174,60 @@ function renderTickets(){
 function startCheckout(){
   var items=[];for(var k in cart)items.push({ticketTypeId:k,quantity:cart[k]});
   if(items.length===0)return;
-  var run=function(name,email){
-    return api('/api/tickets/checkout',{slug:SLUG,token:TOKEN||undefined,name:name,email:email,items:items})
-      .then(function(res){
-        saveToken(res.token);
-        if(res.kind==='stripe'){window.location.href=res.url;return;}
-        cart={};
-        toast('🎟️ Tickets sent — check your email!');
-        return refresh().then(function(){
-          if(res.needsEmailVerification)return{needsVerify:true,email:email};
-          return null;
+  var ticketTotal=cartTotal();
+  var finish=function(donationCents){
+    closeSheet();
+    var run=function(name,email){
+      return api('/api/tickets/checkout',{slug:SLUG,token:TOKEN||undefined,name:name,email:email,items:items,donationCents:donationCents||0})
+        .then(function(res){
+          saveToken(res.token);
+          if(res.kind==='stripe'){window.location.href=res.url;return;}
+          cart={};
+          toast('🎟️ Tickets sent — check your email!');
+          return refresh().then(function(){
+            if(res.needsEmailVerification)return{needsVerify:true,email:email};
+            return null;
+          });
         });
-      });
+    };
+    if(TOKEN&&D.viewer){run(D.viewer.name,D.viewer.email).catch(function(e){toast(e.message);});}
+    else openSheet('Almost there 🎟️','Your tickets and receipt land in your inbox.','Continue',run);
   };
-  if(TOKEN&&D.viewer){run(D.viewer.name,D.viewer.email).catch(function(e){toast(e.message);});}
-  else openSheet('Almost there 🎟️','Your tickets and receipt land in your inbox.','Continue',run);
+  if(D.givingEnabled)openDonateUpsell(ticketTotal,finish);else finish(0);
+}
+/* "Would you also like to add a donation?" step, shown before checkout when
+   giving is enabled — one combined Stripe charge, split server-side. */
+function currentUpsellCents(){
+  var inp=$('doncustom');
+  if(inp&&inp.value.trim())return parseGiveInput(inp.value);
+  return upsellAmount;
+}
+function renderDonateAmts(){
+  var grid=$('donateamts');
+  if(!grid)return;
+  grid.innerHTML='';
+  UPSELL_AMOUNTS.forEach(function(c){
+    var label=c===0?'No thanks':money(c);
+    var b=el('button','amtbtn'+(upsellAmount===c?' sel':''),label);
+    b.onclick=function(){upsellAmount=c;var ci=$('doncustom');if(ci)ci.value='';renderDonateAmts();};
+    grid.appendChild(b);
+  });
+}
+function openDonateUpsell(ticketTotal,onDone){
+  upsellAmount=0;
+  var custom=$('doncustom');if(custom)custom.value='';
+  $('idfields').style.display='none';
+  $('codefields').style.display='none';
+  var df=$('donatefields');df.style.display='block';
+  $('sheettitle').textContent='Add a donation? 🎁';
+  $('sheetsub').textContent='Tickets: '+money(ticketTotal)+'. Want to chip in extra for the fundraiser? One simple checkout.';
+  $('sheeterr').textContent='';
+  renderDonateAmts();
+  $('sheetgo').textContent='Continue';
+  $('sheetgo').disabled=false;
+  donateActive=true;
+  donateContinue=function(amt){df.style.display='none';onDone(amt);};
+  $('overlay').classList.add('open');
 }
 
 /* ── giving ── */
@@ -252,6 +321,56 @@ function renderRsvp(){
   }
 }
 
+/* ── social proof / goal / hero cta ── */
+function renderSocialProof(){
+  var box=$('socialproof');
+  if(!box)return;
+  box.innerHTML='';
+  var chips=[];
+  if(D.ticketsEnabled&&D.counts.ticketsSold>0)chips.push('🎟️ '+D.counts.ticketsSold+' ticket'+(D.counts.ticketsSold===1?'':'s')+' sold');
+  if(D.rsvpEnabled&&D.counts.going>0)chips.push('👍 '+D.counts.going+' going');
+  if(D.rsvpEnabled&&D.counts.maybe>0)chips.push(D.counts.maybe+' maybe');
+  if(chips.length===0){box.style.display='none';return;}
+  box.style.display='flex';
+  chips.forEach(function(t){box.appendChild(el('span','proofchip',t));});
+}
+function renderGoal(){
+  var box=$('goalbar');
+  if(!box)return;
+  box.innerHTML='';
+  if(D.goalCents==null||D.goalCents<=0){box.style.display='none';return;}
+  box.style.display='block';
+  var pct=Math.max(0,Math.min(100,Math.round((D.raisedCents/D.goalCents)*100)));
+  var row=el('div','goalrow');
+  row.appendChild(el('span','goalraised',dollars(D.raisedCents)+' raised'));
+  row.appendChild(el('span','goaltarget','of '+dollars(D.goalCents)+' goal'));
+  box.appendChild(row);
+  var track=el('div','goaltrack');
+  var fill=el('div','goalfill');fill.style.width=pct+'%';
+  track.appendChild(fill);
+  box.appendChild(track);
+}
+function renderHeroCta(){
+  var box=$('herocta');
+  if(!box)return;
+  box.innerHTML='';
+  var primary=null;
+  if(D.ticketsEnabled)primary={label:'Get tickets',target:'ticketscard'};
+  else if(D.rsvpEnabled)primary={label:'RSVP now',target:'rsvpcard'};
+  else if(D.givingEnabled)primary={label:'Give now',target:'givingcard'};
+  if(primary){
+    var pb=el('button','ctabtn primary',primary.label+' →');
+    pb.onclick=function(){scrollToCard(primary.target);};
+    box.appendChild(pb);
+  }
+  if(D.givingEnabled&&(!primary||primary.target!=='givingcard')){
+    var sb=el('button','ctabtn secondary','Donate');
+    sb.onclick=function(){scrollToCard('givingcard');};
+    box.appendChild(sb);
+  }
+  box.style.display=box.children.length?'flex':'none';
+}
+
 /* ── guests ── */
 function renderGuests(){
   var box=$('guests');
@@ -259,7 +378,7 @@ function renderGuests(){
   var total=D.counts.going+D.counts.maybe;
   if(D.guests.length===0&&total===0){
     var empty=el('div','gcount');
-    empty.textContent='No one has RSVP’d yet — be the first ✨';
+    empty.textContent=D.rsvpEnabled?'No one has RSVP’d yet — be the first ✨':'No tickets sold yet — be the first 🎟️';
     box.appendChild(empty);return;
   }
   var row=el('div','avatars');
@@ -383,17 +502,22 @@ function renderActivity(){
     lock.appendChild(rows);
     var veil=el('div','veil');
     veil.appendChild(el('div','lk','🔒'));
-    veil.appendChild(el('p',null,'Only guests can see the conversation. RSVP to peek inside.'));
-    var btn=el('button','buybtn','RSVP to unlock');
+    veil.appendChild(el('p',null,D.rsvpEnabled
+      ? 'Only guests can see the conversation. RSVP to peek inside.'
+      : 'Only ticket holders can see the conversation. Get your ticket to peek inside.'));
+    var btn=el('button','buybtn',D.rsvpEnabled?'RSVP to unlock':(D.ticketsEnabled?'Get tickets to unlock':'Unlock'));
     btn.style.width='auto';btn.style.padding='11px 26px';btn.style.marginTop='2px';
-    btn.onclick=function(){pickStatus('going');};
+    btn.onclick=function(){
+      if(D.rsvpEnabled)pickStatus('going');
+      else scrollToCard(D.ticketsEnabled?'ticketscard':'givingcard');
+    };
     veil.appendChild(btn);
     lock.appendChild(veil);
     box.appendChild(lock);
     return;
   }
   var comp=el('div','composer');
-  var inp=el('input');inp.placeholder=D.viewer?'Say something to the group…':'RSVP to join the conversation…';
+  var inp=el('input');inp.placeholder=D.viewer?'Say something to the group…':(D.rsvpEnabled?'RSVP to join the conversation…':'Get a ticket to join the conversation…');
   var post=el('button','buybtn','Post');
   post.style.width='auto';post.style.padding='11px 22px';post.style.marginTop='0';
   var submit=function(){
@@ -416,6 +540,9 @@ function renderAll(){
   renderTickets();
   renderGiving();
   renderRsvp();
+  renderSocialProof();
+  renderGoal();
+  renderHeroCta();
   renderGuests();
   renderActivity();
 }

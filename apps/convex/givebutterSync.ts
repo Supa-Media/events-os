@@ -239,8 +239,14 @@ export const setResolvedCampaignId = internalMutation({
  *     counter/money changes. (This is also the seam a future REFUND
  *     reconciliation pass would hook into — see the file-header note — but v1
  *     has no refund signal from Givebutter, so a refunded ticket stays `paid`.)
- *  2. NEW → find-or-create the MIRROR `ticketTypes` row (matched by
- *     `externalProvider:"givebutter"` + normalized name; `isActive:false`).
+ *  2. NEW → match an EXISTING ACTIVE NATIVE `ticketTypes` row by normalized
+ *     name first (so a native sellable tier and its Givebutter sales share
+ *     ONE tier — never flips that row's `isActive`); only when no active
+ *     native tier matches does this fall back to find-or-create the MIRROR
+ *     `ticketTypes` row (matched by `externalProvider:"givebutter"` +
+ *     normalized name; `isActive:false`). The admin promotes an old mirror to
+ *     sellable via `setTicketTypeSellable`, after which future syncs match it
+ *     natively (step 2's first branch) instead of minting more mirrors.
  *  3. RSVP: match-or-create by email (email-less → see the branch below).
  *  4. Insert the mirror `ticketOrders` row (`paid`, no Stripe fields).
  *  5. Insert the `tickets` row with a REAL native code (door scanner works).
@@ -310,37 +316,62 @@ export const applyGivebutterTickets = internalMutation({
         continue;
       }
 
-      // 2. Mirror ticket type — match-or-create.
+      // 2. Ticket type — match an ACTIVE NATIVE tier first (so native +
+      //    Givebutter sales share ONE sellable tier once the admin has
+      //    promoted/created one of this name), else find-or-create the
+      //    inactive mirror as before.
       const siblings = await ctx.db
         .query("ticketTypes")
         .withIndex("by_event", (q) => q.eq("eventId", eventId))
         .take(100);
       const wantName = normalizeName(t.ticketTypeName);
-      let mirror = siblings.find(
+      const nativeMatch = siblings.find(
         (tt) =>
-          tt.externalProvider === "givebutter" &&
+          tt.isActive &&
+          tt.externalProvider === undefined &&
           normalizeName(tt.name) === wantName,
       );
       let mirrorTypeId: Id<"ticketTypes">;
-      if (mirror) {
-        mirrorTypeId = mirror._id;
+      if (nativeMatch) {
+        // Native tier absorbs the synced sale as-is — never flip its
+        // `isActive`, never mint a mirror alongside it.
+        //
+        // Intentionally NOT capacity-checked: the sale already happened on
+        // Givebutter (the external system of record for it), so we must record
+        // it here — dropping it would leave a real, paid attendee unable to be
+        // scanned in at the door. `capacity` caps NATIVE checkout only (see
+        // `remainingFor` in ticketing.ts); a matched native tier can therefore
+        // read `soldCount > capacity` after a sync burst, which is truthful
+        // (that many people really are coming) — the native page just shows
+        // "0 left" and stops selling natively.
+        mirrorTypeId = nativeMatch._id;
       } else {
-        const now = Date.now();
-        mirrorTypeId = await ctx.db.insert("ticketTypes", {
-          eventId,
-          chapterId,
-          name: t.ticketTypeName,
-          priceCents: t.priceCents,
-          currency: "usd",
-          soldCount: 0,
-          sortOrder: siblings.length,
-          // A mirror type is NEVER natively sellable — it only anchors synced
-          // tickets so the scanner + rollups work for Givebutter buyers.
-          isActive: false,
-          externalProvider: "givebutter",
-          createdAt: now,
-          updatedAt: now,
-        });
+        let mirror = siblings.find(
+          (tt) =>
+            tt.externalProvider === "givebutter" &&
+            normalizeName(tt.name) === wantName,
+        );
+        if (mirror) {
+          mirrorTypeId = mirror._id;
+        } else {
+          const now = Date.now();
+          mirrorTypeId = await ctx.db.insert("ticketTypes", {
+            eventId,
+            chapterId,
+            name: t.ticketTypeName,
+            priceCents: t.priceCents,
+            currency: "usd",
+            soldCount: 0,
+            sortOrder: siblings.length,
+            // A mirror type is NEVER natively sellable — it only anchors synced
+            // tickets so the scanner + rollups work for Givebutter buyers,
+            // until (if ever) the admin promotes it via setTicketTypeSellable.
+            isActive: false,
+            externalProvider: "givebutter",
+            createdAt: now,
+            updatedAt: now,
+          });
+        }
       }
 
       // 3. RSVP — match-or-create by email.
