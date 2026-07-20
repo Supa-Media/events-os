@@ -4,6 +4,7 @@ export { Screen, Narrow, FULL_WIDTH, NARROW_WIDTH } from "./Screen";
 export { AppShell } from "./AppShell";
 export { SidebarNavItem } from "./SidebarNav";
 export { PageHeader } from "./PageHeader";
+export { BackLink } from "./BackLink";
 export { Card } from "./Card";
 export { Button } from "./Button";
 export { Badge, type BadgeTone } from "./Badge";

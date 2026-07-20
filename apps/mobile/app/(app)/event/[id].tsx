@@ -14,6 +14,7 @@ import {
   Screen,
   Narrow,
   FULL_WIDTH,
+  BackLink,
   Card,
   Button,
   SectionHeader,
@@ -547,14 +548,13 @@ export default function EventDetailScreen() {
           <Screen maxWidth={FULL_WIDTH}>
         <Narrow>
         <ToastView toast={toast} onDismiss={dismiss} />
-        {/* Breadcrumb / back */}
-        <Pressable
-          onPress={() => router.replace("/")}
-          className="mb-4 flex-row items-center gap-1.5 self-start active:opacity-70"
-        >
-          <Icon name="arrow-left" size={15} color={colors.muted} />
-          <Text className="text-sm font-medium text-muted">Events</Text>
-        </Pressable>
+        {/* Breadcrumb / back. Tab switches (`?tab=`) update via
+            `router.setParams`, which merges params on the CURRENT route
+            rather than pushing a new history entry (confirmed against
+            expo-router's routing internals) — so `canGoBack`/`back` here
+            steps straight past tab noise to wherever actually navigated to
+            this event, never through the tabs themselves. */}
+        <BackLink fallback="/" />
 
         {/* Header + What's-next show on desktop (always) and on the mobile plan
             overview. A drilled-in mobile section shows a compact back bar

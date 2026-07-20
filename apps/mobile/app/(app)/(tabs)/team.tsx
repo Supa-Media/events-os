@@ -13,7 +13,7 @@
  * hidden for them too). `projects.list` is scoped the same way.
  */
 import { useEffect, useMemo, useState } from "react";
-import { View, Text, Pressable, ScrollView, Modal } from "react-native";
+import { View, Text, Pressable, Modal } from "react-native";
 import { useRouter } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
@@ -34,7 +34,6 @@ import {
   ProjectCard,
   buildProjectTree,
 } from "../../../components/team/ProjectCard";
-import { OrgChart } from "../../../components/team/OrgChart";
 import { buildOrgTree } from "../../../components/team/orgTree";
 import { WorkloadView } from "../../../components/team/WorkloadView";
 import {
@@ -72,7 +71,6 @@ export default function TeamScreen() {
   // changes for them.
   const scopeOptions = useQuery(api.projects.scopeOptions);
   const [scopePickerOpen, setScopePickerOpen] = useState(false);
-  const [view, setView] = useState<"list" | "chart">("list");
   // Top-level Work segments: the org's Projects vs the chapter's Duties catalog
   // (leads/admins only — this whole branch is gated on teamView === "org").
   const [section, setSection] = useState<"projects" | "duties">("projects");
@@ -245,20 +243,9 @@ export default function TeamScreen() {
               marginBottom: spacing.md,
             }}
           >
-            <View className="flex-row items-center gap-3">
-              {/* List ⇄ org-chart toggle */}
-              <Segmented
-                options={[
-                  { key: "list", icon: "list", label: "List" },
-                  { key: "chart", icon: "git-branch", label: "Chart" },
-                ]}
-                value={view}
-                onChange={setView}
-              />
-              <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-                {org.included.length} people
-              </Text>
-            </View>
+            <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+              {org.included.length} people
+            </Text>
           </View>
 
         {org.included.length === 0 ? (
@@ -274,35 +261,18 @@ export default function TeamScreen() {
                 their manager — tap anyone to see their projects.
               </Text>
             ) : null}
-            {view === "chart" ? (
-              <ScrollView
-                horizontal
-                showsHorizontalScrollIndicator={false}
-                className="rounded-lg border border-border bg-surface"
-                contentContainerStyle={{ padding: spacing.lg }}
-              >
-                <OrgChart
-                  roots={org.roots}
+            <View className="overflow-hidden rounded-lg border border-border bg-raised px-2 py-1.5">
+              {org.roots.map((p) => (
+                <OrgNode
+                  key={p._id}
+                  person={p}
                   childrenOf={org.childrenOf}
                   teamSize={org.teamSize}
                   projectCount={projectCount}
                   onOpen={(id) => router.push(`/team/${id}` as any)}
                 />
-              </ScrollView>
-            ) : (
-              <View className="overflow-hidden rounded-lg border border-border bg-raised px-2 py-1.5">
-                {org.roots.map((p) => (
-                  <OrgNode
-                    key={p._id}
-                    person={p}
-                    childrenOf={org.childrenOf}
-                    teamSize={org.teamSize}
-                    projectCount={projectCount}
-                    onOpen={(id) => router.push(`/team/${id}` as any)}
-                  />
-                ))}
-              </View>
-            )}
+              ))}
+            </View>
           </>
         )}
 
