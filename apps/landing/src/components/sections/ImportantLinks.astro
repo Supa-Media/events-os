@@ -1,0 +1,44 @@
+---
+import { getCollection } from "astro:content";
+import Container from "../ui/Container.astro";
+import Eyebrow from "../ui/Eyebrow.astro";
+import LinkCard from "../ui/LinkCard.astro";
+
+const entries = await getCollection("links");
+---
+
+<section id="links" class="py-20 sm:py-28 scroll-mt-16">
+  <Container size="wide">
+    <div
+      class="flex flex-col items-center gap-3 text-center mb-12 sm:mb-14"
+      data-animate="fade-up"
+    >
+      <Eyebrow icon="sparkle">Public Worship</Eyebrow>
+      {/* Source H2: 52px / 1.08 / Corben 400. */}
+      <h2
+        class="font-display font-normal leading-[1.08] text-3xl sm:text-[42px] md:text-[52px]"
+      >
+        Important <span class="text-red-500">Links</span>
+      </h2>
+    </div>
+
+    <div class="grid gap-4 sm:gap-5 sm:grid-cols-2 lg:grid-cols-3">
+      {
+        entries.map((entry, i) => (
+          <div data-animate="fade-up" style={`--delay: ${i * 60}ms`}>
+            <LinkCard
+              title={entry.data.title}
+              subtitle={entry.data.subtitle}
+              url={entry.data.url}
+              thumbnail={entry.data.thumbnail}
+              bgImage={entry.data.bgImage}
+              cta={entry.data.cta}
+              copy={entry.data.copy}
+              align={entry.data.align}
+            />
+          </div>
+        ))
+      }
+    </div>
+  </Container>
+</section>

@@ -1,0 +1,556 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import Container from "../components/ui/Container.astro";
+import SectionHeading from "../components/ui/SectionHeading.astro";
+import Button from "../components/ui/Button.astro";
+import NavBar from "../components/collab/NavBar.astro";
+import CollabFooter from "../components/collab/CollabFooter.astro";
+import FourPaths from "../components/collab/FourPaths.astro";
+import { asset } from "../lib/asset";
+
+const rateSheet = [
+  { role: "Lead producer (full song)", cash: "$500", equity: "5%" },
+  { role: "Co-producer", cash: "$250", equity: "2%" },
+  { role: "Recording engineer (tracking)", cash: "$200", equity: "1.5%" },
+  { role: "Mix engineer", cash: "$400", equity: "3%" },
+  { role: "Mastering engineer", cash: "$125", equity: "0.75%" },
+  { role: "Vocal producer", cash: "$250", equity: "2%" },
+  { role: "Arranger", cash: "$200", equity: "1.5%" },
+  { role: "Featured vocalist", cash: "$300", equity: "3%" },
+  { role: "Background vocalist", cash: "$125", equity: "0.75%" },
+  { role: "Session instrumentalist", cash: "$125", equity: "0.75%" },
+  { role: "Marketing / rollout lead", cash: "$500", equity: "3%" },
+];
+
+// Per-role line shown inside relevant leaves.
+const rateRow = (role: string) => {
+  const found = rateSheet.find((r) => r.role === role);
+  return found ?? { role, cash: "—", equity: "—" };
+};
+---
+
+<BaseLayout
+  title="Collaborate"
+  description="A walkthrough of how Public Worship works with songwriters, artists, producers, musicians, and engineers — by role and by situation."
+>
+  <section class="py-12 sm:py-16">
+    <Container size="default">
+      <SectionHeading eyebrow="Collaborate" align="left" as="h1">
+        Collaborate with <span class="text-red-500">Public Worship</span>
+      </SectionHeading>
+      <p class="mt-6 max-w-prose text-base sm:text-lg text-ink/80 leading-relaxed">
+        Public Worship works with songwriters, artists, producers, musicians,
+        and engineers across many sessions. The terms that apply to you depend
+        on what you contributed and where the song is in our process. Pick the
+        situation that fits and we'll walk you through what to expect.
+      </p>
+      <p class="mt-4 max-w-prose text-sm text-ink/70">
+        For the canonical, long-form policy, see
+        <a href={asset("/music-policy")} class="text-red-500 underline-offset-2 hover:underline">/music-policy</a>.
+      </p>
+    </Container>
+  </section>
+
+  <section class="pb-8">
+    <Container size="default">
+      <div class="rounded-2xl bg-pink-softer/40 border border-pink-soft/60 p-6 sm:p-8">
+        <p class="font-display text-lg font-normal text-ink">Two things to know before you start</p>
+        <ol class="mt-3 list-decimal pl-6 space-y-2 text-sm text-ink/85">
+          <li>
+            <strong class="font-semibold">Public Worship is a volunteer-run initiative of Global Echo Charitable Co., a 501(c)(3) nonprofit.</strong>
+            No one on the team draws a salary. When we talk about "Public
+            Worship's share," it goes back into the next song, the next
+            gathering, equipment, and the mission — not into anyone's
+            pocket.
+          </li>
+          <li>
+            <strong class="font-semibold">Cash isn't always available — equity, donation, and declining always are.</strong>
+            We're early-stage and don't always have cash to pay every
+            contributor at full rate. We'll tell you exactly what's
+            available for your role on a release before you choose a path.
+          </li>
+        </ol>
+      </div>
+    </Container>
+  </section>
+
+  <section id="collab-flow" class="py-12 scroll-mt-16">
+    <Container size="default">
+      {/* =========================================================
+           ENTRY SCREEN
+         ========================================================= */}
+      <div id="entry" data-collab-screen>
+        <h2 class="font-display font-normal text-2xl sm:text-3xl text-ink">Where are you?</h2>
+        <p class="mt-3 max-w-prose text-ink/80">
+          Pick whichever fits best. You can always go back or start over.
+        </p>
+        <div class="mt-6 grid gap-3 sm:grid-cols-2">
+          <button
+            type="button"
+            data-collab-target="greenlit-role"
+            class="text-left rounded-xl border border-ink/15 bg-cream-soft p-5 hover:border-red-500 hover:shadow-soft transition-all"
+          >
+            <span class="font-display font-normal text-lg text-ink">A song I'm part of is being released officially</span>
+            <span class="mt-2 block text-sm text-ink/70">The song has been greenlit for an Official Public Worship Release.</span>
+          </button>
+          <button
+            type="button"
+            data-collab-target="leaf-pre-greenlight"
+            class="text-left rounded-xl border border-ink/15 bg-cream-soft p-5 hover:border-red-500 hover:shadow-soft transition-all"
+          >
+            <span class="font-display font-normal text-lg text-ink">A song I'm part of is still in development</span>
+            <span class="mt-2 block text-sm text-ink/70">No formal greenlight yet. We're still in sessions, demos, or workshopping.</span>
+          </button>
+          <button
+            type="button"
+            data-collab-target="leaf-reversion"
+            class="text-left rounded-xl border border-ink/15 bg-cream-soft p-5 hover:border-red-500 hover:shadow-soft transition-all"
+          >
+            <span class="font-display font-normal text-lg text-ink">A song I wrote isn't being released and I want my options</span>
+            <span class="mt-2 block text-sm text-ink/70">It was written in a Public Worship session but won't be released by us.</span>
+          </button>
+          <button
+            type="button"
+            data-collab-target="leaf-primary-artist"
+            class="text-left rounded-xl border border-ink/15 bg-cream-soft p-5 hover:border-red-500 hover:shadow-soft transition-all"
+          >
+            <span class="font-display font-normal text-lg text-ink">I'm being asked to become a Public Worship primary artist</span>
+            <span class="mt-2 block text-sm text-ink/70">Long-term collaboration, not a one-off feature.</span>
+          </button>
+          <button
+            type="button"
+            data-collab-target="leaf-invited-featured"
+            class="text-left rounded-xl border border-ink/15 bg-cream-soft p-5 hover:border-red-500 hover:shadow-soft transition-all"
+          >
+            <span class="font-display font-normal text-lg text-ink">Public Worship reached out to me about featuring on a release</span>
+            <span class="mt-2 block text-sm text-ink/70">We invited you to lend your voice and your artist name to a specific song.</span>
+          </button>
+          <button
+            type="button"
+            data-collab-target="leaf-overview"
+            class="text-left rounded-xl border border-ink/15 bg-cream-soft p-5 hover:border-red-500 hover:shadow-soft transition-all"
+          >
+            <span class="font-display font-normal text-lg text-ink">I'm just exploring how this works</span>
+            <span class="mt-2 block text-sm text-ink/70">Browse the rate sheet and the full policy.</span>
+          </button>
+        </div>
+      </div>
+
+      {/* =========================================================
+           GREENLIT ROLE PICKER
+         ========================================================= */}
+      <div id="greenlit-role" data-collab-screen hidden>
+        <div class="flex flex-wrap items-center gap-3 mb-4">
+          <button type="button" data-collab-back class="text-sm text-ink/70 hover:text-red-500 underline-offset-2 hover:underline">← Back</button>
+          <span class="text-ink/30">/</span>
+          <button type="button" data-collab-restart class="text-sm text-ink/70 hover:text-red-500 underline-offset-2 hover:underline">Start over</button>
+        </div>
+        <h2 class="font-display font-normal text-2xl sm:text-3xl text-ink">What was your role on the release?</h2>
+        <p class="mt-3 max-w-prose text-ink/80">
+          The song is greenlit. Pick what you contributed. If you contributed
+          in more than one role (e.g., produced and wrote), pick "Multiple
+          roles" at the bottom and we'll talk through the combined picture.
+        </p>
+        <div class="mt-6 grid gap-3 sm:grid-cols-2">
+          <button type="button" data-collab-target="leaf-greenlit-primary" class="text-left rounded-xl border border-ink/15 bg-cream-soft p-5 hover:border-red-500 hover:shadow-soft transition-all">
+            <span class="font-display font-normal text-lg text-ink">Primary artist</span>
+            <span class="mt-1 block text-sm text-ink/70">Named artist of the release; long-term collaborator.</span>
+          </button>
+          <button type="button" data-collab-target="leaf-greenlit-featured" class="text-left rounded-xl border border-ink/15 bg-cream-soft p-5 hover:border-red-500 hover:shadow-soft transition-all">
+            <span class="font-display font-normal text-lg text-ink">Featured artist</span>
+            <span class="mt-1 block text-sm text-ink/70">Prominently featured on this specific release.</span>
+          </button>
+          <button type="button" data-collab-target="leaf-greenlit-writer" class="text-left rounded-xl border border-ink/15 bg-cream-soft p-5 hover:border-red-500 hover:shadow-soft transition-all">
+            <span class="font-display font-normal text-lg text-ink">Songwriter / co-writer</span>
+            <span class="mt-1 block text-sm text-ink/70">Contributed to lyrics, melody, or composition.</span>
+          </button>
+          <button type="button" data-collab-target="leaf-greenlit-producer" class="text-left rounded-xl border border-ink/15 bg-cream-soft p-5 hover:border-red-500 hover:shadow-soft transition-all">
+            <span class="font-display font-normal text-lg text-ink">Producer</span>
+            <span class="mt-1 block text-sm text-ink/70">Lead, co-producer, or vocal producer.</span>
+          </button>
+          <button type="button" data-collab-target="leaf-greenlit-engineer" class="text-left rounded-xl border border-ink/15 bg-cream-soft p-5 hover:border-red-500 hover:shadow-soft transition-all">
+            <span class="font-display font-normal text-lg text-ink">Engineer</span>
+            <span class="mt-1 block text-sm text-ink/70">Tracking, mix, or mastering engineer.</span>
+          </button>
+          <button type="button" data-collab-target="leaf-greenlit-vocalist" class="text-left rounded-xl border border-ink/15 bg-cream-soft p-5 hover:border-red-500 hover:shadow-soft transition-all">
+            <span class="font-display font-normal text-lg text-ink">Vocalist (BGV / session)</span>
+            <span class="mt-1 block text-sm text-ink/70">Background vocalist or session vocal performer.</span>
+          </button>
+          <button type="button" data-collab-target="leaf-greenlit-instrumentalist" class="text-left rounded-xl border border-ink/15 bg-cream-soft p-5 hover:border-red-500 hover:shadow-soft transition-all">
+            <span class="font-display font-normal text-lg text-ink">Session instrumentalist</span>
+            <span class="mt-1 block text-sm text-ink/70">Played an instrument on the recording.</span>
+          </button>
+          <button type="button" data-collab-target="leaf-greenlit-multiple" class="text-left rounded-xl border border-ink/15 bg-cream-soft p-5 hover:border-red-500 hover:shadow-soft transition-all sm:col-span-2">
+            <span class="font-display font-normal text-lg text-ink">Multiple roles, or my situation isn't above</span>
+            <span class="mt-1 block text-sm text-ink/70">Let's talk it through.</span>
+          </button>
+        </div>
+      </div>
+
+      {/* =========================================================
+           LEAVES
+         ========================================================= */}
+
+      {/* Primary artist on greenlit release */}
+      <div id="leaf-greenlit-primary" data-collab-screen hidden>
+        <NavBar />
+        <h2 class="font-display font-normal text-2xl sm:text-3xl text-ink">You're the primary artist on a greenlit release</h2>
+        <div class="mt-4 pw-prose text-ink/85 leading-relaxed flex flex-col gap-4">
+          <p>
+            You're the named artist of the release — the voice and identity
+            we're building this song around. Your role spans more than the
+            recording itself: writing, rollout, ongoing relationship.
+          </p>
+          <p>
+            <strong class="font-semibold">What you'll receive:</strong>
+          </p>
+          <ul class="list-disc pl-6 space-y-1.5">
+            <li>Primary artist credit on the release.</li>
+            <li>Your full writer share on anything you wrote (Public Worship takes 0% of writer share).</li>
+            <li>Your share of the publisher pool that flows to writers.</li>
+            <li><strong class="font-semibold">15 master points (15% of net master income) per release</strong> as the Primary Artist baseline, granted automatically under the Primary Artist Agreement (see <a href={asset("/music-policy#participation")}>§10</a>).</li>
+            <li>Additional points for any other roles you take on the same release — writing, producing, vocal producing, playing — under the four paths in the rate sheet, on top of the 15-point baseline.</li>
+            <li>Cash fee or honorarium where the release budget allows. We'll tell you what's funded for your role on this specific release before you choose a path.</li>
+            <li>Ongoing collaboration — your relationship with us isn't a one-song contract.</li>
+          </ul>
+          <p><strong class="font-semibold">What you won't receive:</strong></p>
+          <ul class="list-disc pl-6 space-y-1.5">
+            <li>Master ownership. Public Worship owns 100% of the official master. See <a href={asset("/music-policy#master")}>§9</a> for why.</li>
+            <li>Exclusive rights over your career. You remain free to release your own music, sign your own deals, and work outside Public Worship.</li>
+          </ul>
+          <p><strong class="font-semibold">If you leave on good terms later:</strong> your existing master income participation on existing releases continues. The catalog stays with Public Worship; what you earned stays with you.</p>
+          <p><strong class="font-semibold">What happens next:</strong> a Primary Artist agreement is signed before the release. It names the specific releases covered, your participation tier, what we'll do for you in terms of platform support, and the off-ramp.</p>
+        </div>
+        <CollabFooter />
+      </div>
+
+      {/* Featured artist on greenlit release */}
+      <div id="leaf-greenlit-featured" data-collab-screen hidden>
+        <NavBar />
+        <h2 class="font-display font-normal text-2xl sm:text-3xl text-ink">You're a featured artist on a greenlit release</h2>
+        <div class="mt-4 pw-prose text-ink/85 leading-relaxed flex flex-col gap-4">
+          <p>You're prominently featured on this specific release — credit reads <em>Public Worship feat. [you]</em> or similar — but you're not entering a long-term primary-artist relationship.</p>
+          <p><strong class="font-semibold">What you'll receive:</strong></p>
+          <ul class="list-disc pl-6 space-y-1.5">
+            <li>Featured artist credit on the release.</li>
+            <li>Your writer share on anything you wrote (Public Worship takes 0%).</li>
+            <li>Your share of the publisher pool that flows to writers.</li>
+            <li>One of the four paths for your performance/feature contribution: cash fee, master income participation, donation, or decline (see below).</li>
+          </ul>
+          <p><strong class="font-semibold">Rate sheet:</strong> featured vocalist — <strong class="font-semibold">{rateRow("Featured vocalist").cash}</strong> cash or <strong class="font-semibold">{rateRow("Featured vocalist").equity}</strong> master income participation, per song.</p>
+          <FourPaths />
+        </div>
+        <CollabFooter />
+      </div>
+
+      {/* Songwriter / co-writer */}
+      <div id="leaf-greenlit-writer" data-collab-screen hidden>
+        <NavBar />
+        <h2 class="font-display font-normal text-2xl sm:text-3xl text-ink">You wrote on a greenlit release</h2>
+        <div class="mt-4 pw-prose text-ink/85 leading-relaxed flex flex-col gap-4">
+          <p>You contributed to lyrics, melody, or composition. The writer share is yours.</p>
+          <p><strong class="font-semibold">What you'll receive:</strong></p>
+          <ul class="list-disc pl-6 space-y-1.5">
+            <li>Your portion of the writer share, per the agreed split sheet. Public Worship takes 0% of writer share.</li>
+            <li>Your portion of the publisher pool that flows to writers — 50% of the publisher share is split among writers according to writer splits.</li>
+            <li>Performance and mechanical royalties as a registered writer (we'll help with PRO and CCLI registration).</li>
+          </ul>
+          <p><strong class="font-semibold">Important note on producing/playing vs. writing:</strong> production, mixing, engineering, and performance are honored contributions, but they don't enter the writer share unless you also contributed to lyrics, melody, or composition.</p>
+          <p><strong class="font-semibold">Cover and re-recording:</strong> as a writer, you may have rights connected to the composition for separate covers or re-records. The official Public Worship master remains owned and controlled by Public Worship. Talk to us first to clear any separate release.</p>
+          <p><strong class="font-semibold">What happens next:</strong> a split sheet is signed before the song is released. No release goes out with unresolved writer splits.</p>
+        </div>
+        <CollabFooter />
+      </div>
+
+      {/* Producer */}
+      <div id="leaf-greenlit-producer" data-collab-screen hidden>
+        <NavBar />
+        <h2 class="font-display font-normal text-2xl sm:text-3xl text-ink">You produced on a greenlit release</h2>
+        <div class="mt-4 pw-prose text-ink/85 leading-relaxed flex flex-col gap-4">
+          <p>Lead, co-producer, or vocal producer. Production is a major contribution and you have a real path here.</p>
+          <p><strong class="font-semibold">Rate sheet:</strong></p>
+          <ul class="list-disc pl-6 space-y-1.5">
+            <li>Lead producer (full song): <strong class="font-semibold">{rateRow("Lead producer (full song)").cash}</strong> cash or <strong class="font-semibold">{rateRow("Lead producer (full song)").equity}</strong> equity</li>
+            <li>Co-producer: <strong class="font-semibold">{rateRow("Co-producer").cash}</strong> cash or <strong class="font-semibold">{rateRow("Co-producer").equity}</strong> equity</li>
+            <li>Vocal producer: <strong class="font-semibold">{rateRow("Vocal producer").cash}</strong> cash or <strong class="font-semibold">{rateRow("Vocal producer").equity}</strong> equity</li>
+          </ul>
+          <p><strong class="font-semibold">Production vs. songwriting:</strong> producing alone doesn't grant songwriting ownership. If you also contributed to lyrics, melody, or composition, you're on the writer split too.</p>
+          <FourPaths />
+          <p><strong class="font-semibold">A note on production credits:</strong> you'll be credited as producer on the release regardless of which path you take. Credit is not a path; it's owed.</p>
+        </div>
+        <CollabFooter />
+      </div>
+
+      {/* Engineer */}
+      <div id="leaf-greenlit-engineer" data-collab-screen hidden>
+        <NavBar />
+        <h2 class="font-display font-normal text-2xl sm:text-3xl text-ink">You engineered on a greenlit release</h2>
+        <div class="mt-4 pw-prose text-ink/85 leading-relaxed flex flex-col gap-4">
+          <p>Tracking, mixing, or mastering. Each is a distinct role with its own rate.</p>
+          <p><strong class="font-semibold">Rate sheet:</strong></p>
+          <ul class="list-disc pl-6 space-y-1.5">
+            <li>Recording engineer (tracking): <strong class="font-semibold">{rateRow("Recording engineer (tracking)").cash}</strong> cash or <strong class="font-semibold">{rateRow("Recording engineer (tracking)").equity}</strong> equity</li>
+            <li>Mix engineer: <strong class="font-semibold">{rateRow("Mix engineer").cash}</strong> cash or <strong class="font-semibold">{rateRow("Mix engineer").equity}</strong> equity</li>
+            <li>Mastering engineer: <strong class="font-semibold">{rateRow("Mastering engineer").cash}</strong> cash or <strong class="font-semibold">{rateRow("Mastering engineer").equity}</strong> equity</li>
+          </ul>
+          <p><strong class="font-semibold">Engineering vs. songwriting:</strong> engineering is honored as a contribution but doesn't grant songwriting ownership unless you also contributed to lyrics, melody, or composition.</p>
+          <FourPaths />
+        </div>
+        <CollabFooter />
+      </div>
+
+      {/* Vocalist BGV / session */}
+      <div id="leaf-greenlit-vocalist" data-collab-screen hidden>
+        <NavBar />
+        <h2 class="font-display font-normal text-2xl sm:text-3xl text-ink">You sang on a greenlit release</h2>
+        <div class="mt-4 pw-prose text-ink/85 leading-relaxed flex flex-col gap-4">
+          <p>This page is for background vocalists and session vocal performers. If you're the named featured vocalist, <button type="button" data-collab-target="leaf-greenlit-featured" class="text-red-500 underline-offset-2 hover:underline">go here instead</button>.</p>
+          <p><strong class="font-semibold">Rate sheet:</strong> background vocalist — <strong class="font-semibold">{rateRow("Background vocalist").cash}</strong> cash or <strong class="font-semibold">{rateRow("Background vocalist").equity}</strong> equity, per song. Covers all stacks recorded in one session for that song.</p>
+          <p><strong class="font-semibold">Performing vs. songwriting:</strong> performing on the recording doesn't grant songwriting ownership unless you also contributed to lyrics, melody, or composition.</p>
+          <FourPaths />
+        </div>
+        <CollabFooter />
+      </div>
+
+      {/* Session instrumentalist */}
+      <div id="leaf-greenlit-instrumentalist" data-collab-screen hidden>
+        <NavBar />
+        <h2 class="font-display font-normal text-2xl sm:text-3xl text-ink">You played an instrument on a greenlit release</h2>
+        <div class="mt-4 pw-prose text-ink/85 leading-relaxed flex flex-col gap-4">
+          <p>Per-instrument, per-song rate. If you played multiple instruments on the same song, that's a per-instrument rate each.</p>
+          <p><strong class="font-semibold">Rate sheet:</strong> session instrumentalist — <strong class="font-semibold">{rateRow("Session instrumentalist").cash}</strong> cash or <strong class="font-semibold">{rateRow("Session instrumentalist").equity}</strong> equity, per song, per instrument.</p>
+          <p><strong class="font-semibold">Playing vs. songwriting:</strong> playing on the recording doesn't grant songwriting ownership unless you also contributed to lyrics, melody, or composition.</p>
+          <FourPaths />
+        </div>
+        <CollabFooter />
+      </div>
+
+      {/* Multiple roles / not sure */}
+      <div id="leaf-greenlit-multiple" data-collab-screen hidden>
+        <NavBar />
+        <h2 class="font-display font-normal text-2xl sm:text-3xl text-ink">Let's talk it through</h2>
+        <div class="mt-4 pw-prose text-ink/85 leading-relaxed flex flex-col gap-4">
+          <p>Multiple roles or a situation that doesn't fit a single bucket — that's normal. Producers who also write, primary artists who also play multiple instruments, engineers who also mix and master.</p>
+          <p>Each role's compensation is tracked separately on the rate sheet, so the picture compounds — but it's also worth a conversation to make sure nothing is missed and the four-path choices are clear for each part of your contribution.</p>
+          <p>The full rate sheet is below this section. The full policy lives at <a href={asset("/music-policy")} class="text-red-500 underline-offset-2 hover:underline">/music-policy</a>.</p>
+          <p>Reach us at <a href="mailto:hello@publicworship.life" class="text-red-500 underline-offset-2 hover:underline">hello@publicworship.life</a> and we'll set up a conversation before any agreement is signed.</p>
+        </div>
+        <CollabFooter />
+      </div>
+
+      {/* Pre-greenlight */}
+      <div id="leaf-pre-greenlight" data-collab-screen hidden>
+        <NavBar />
+        <h2 class="font-display font-normal text-2xl sm:text-3xl text-ink">A song you're part of is still in development</h2>
+        <div class="mt-4 pw-prose text-ink/85 leading-relaxed flex flex-col gap-4">
+          <p>Public Worship makes more songs in sessions than we release. Until a song is greenlit for an official release, no compensation framework is attached. Greenlight is a written decision, not implied by enthusiasm in the room.</p>
+          <p><strong class="font-semibold">While the song is still in development:</strong></p>
+          <ul class="list-disc pl-6 space-y-1.5">
+            <li>You retain your writer share on whatever you wrote. Public Worship has no publishing claim until greenlight.</li>
+            <li>The demo recording is owned by Public Worship (made with our resources).</li>
+            <li>None of the rate-sheet paths apply yet — those activate at greenlight.</li>
+            <li>Selection is stewardship, not judgment. Releasing a song costs us real money. We have to choose, and not every song fits the project or the cycle. That's not a comment on the song or on you.</li>
+          </ul>
+          <p><strong class="font-semibold">If the song never gets greenlit, you have options.</strong>
+            <button type="button" data-collab-target="leaf-reversion" class="text-red-500 underline-offset-2 hover:underline">See the reversion path</button>.
+          </p>
+        </div>
+        <CollabFooter />
+      </div>
+
+      {/* Reversion */}
+      <div id="leaf-reversion" data-collab-screen hidden>
+        <NavBar />
+        <h2 class="font-display font-normal text-2xl sm:text-3xl text-ink">You wrote on a song we aren't releasing</h2>
+        <div class="mt-4 pw-prose text-ink/85 leading-relaxed flex flex-col gap-4">
+          <p>If you wrote on a song in a Public Worship session and we haven't greenlit it for an official release, you can ask for the song back.</p>
+          <p><strong class="font-semibold">How it works:</strong></p>
+          <ul class="list-disc pl-6 space-y-1.5">
+            <li>You request a formal release of the <em>composition</em> back to you. In most cases, the request will be granted.</li>
+            <li>Public Worship may decline if we are actively considering the song for a future cycle. If we decline, we'll tell you what we're considering it for and when we'll revisit.</li>
+            <li>If granted, you can re-record and release the song as your own work — no Public Worship publishing share, no master claim, no encumbrance.</li>
+            <li>The original demo recording stays owned by Public Worship and we won't release it commercially without your written agreement.</li>
+          </ul>
+          <p><strong class="font-semibold">Why we keep the demo:</strong> we recorded it using our studio, equipment, and engineering. The recording is ours. The composition can still be yours.</p>
+          <p><strong class="font-semibold">How to ask:</strong> email <a href="mailto:hello@publicworship.life" class="text-red-500 underline-offset-2 hover:underline">hello@publicworship.life</a> with the song name and a brief note. We'll respond within two weeks.</p>
+        </div>
+        <CollabFooter />
+      </div>
+
+      {/* Becoming a primary artist */}
+      <div id="leaf-primary-artist" data-collab-screen hidden>
+        <NavBar />
+        <h2 class="font-display font-normal text-2xl sm:text-3xl text-ink">Becoming a Public Worship primary artist</h2>
+        <div class="mt-4 pw-prose text-ink/85 leading-relaxed flex flex-col gap-4">
+          <p>A Public Worship primary artist is someone we're building with over time, not just a one-off feature. Before we have this conversation, we want you to read two things:</p>
+          <ul class="list-disc pl-6 space-y-1.5">
+            <li>The full <a href={asset("/music-policy")} class="text-red-500 underline-offset-2 hover:underline">royalty and release policy</a>.</li>
+            <li>The <a href={asset("/artists")} class="text-red-500 underline-offset-2 hover:underline">artist expectations doc</a> — what we expect of artists who carry the Public Worship name.</li>
+          </ul>
+          <p><strong class="font-semibold">If after reading both you still want to talk, here's what to expect:</strong></p>
+          <ul class="list-disc pl-6 space-y-1.5">
+            <li>The relationship is non-exclusive. You keep your own career, your own catalog, your own deals.</li>
+            <li>Specific releases will have written agreements. Participation tiers, platform support, and off-ramp are documented before commitment.</li>
+            <li>Public Worship retains master ownership of releases under our name. Your writer share stays whole; your participation in master income is real but capped within the policy's overall framework.</li>
+            <li>It's a real relationship, not a contract for a career. We make decisions together about which songs become Official Public Worship Releases and which you carry on your own.</li>
+          </ul>
+          <p><strong class="font-semibold">How to start the conversation:</strong> email <a href="mailto:hello@publicworship.life" class="text-red-500 underline-offset-2 hover:underline">hello@publicworship.life</a> with a brief note about who you are and what you've made.</p>
+        </div>
+        <CollabFooter />
+      </div>
+
+      {/* Invited / courted featured artist — the "reaching up" outreach pitch */}
+      <div id="leaf-invited-featured" data-collab-screen hidden class="scroll-mt-16">
+        <NavBar />
+        <h2 class="font-display font-normal text-2xl sm:text-3xl text-ink">Public Worship invited you to feature on a release</h2>
+        <div class="mt-4 pw-prose text-ink/85 leading-relaxed flex flex-col gap-4">
+          <p>
+            We reached out to you on purpose. We're a New York City volunteer
+            ministry releasing our first songs, and there's a song we believe
+            your voice — and your name — were made to carry. We think you break
+            the mold of what it means to make music that worships God, and we'd
+            be honored to build this one with you.
+          </p>
+          <p>
+            Our heart behind it is simple: every lyric and sound is meant to
+            lift God's name, not ours. We want to be upfront with you from the
+            start — so here's exactly what we're asking, and exactly what you'd
+            get, with our compensation and ownership published in full, not
+            negotiated case by case.
+          </p>
+          <p><strong class="font-semibold">What we're asking:</strong></p>
+          <ul class="list-disc pl-6 space-y-1.5">
+            <li>A featured vocal on one specific song — a lead, a verse, a bridge, or a vocal moment we'll shape together.</li>
+            <li>Permission to credit you as a featured artist on streaming platforms — the release reads <em>Public Worship feat. [you]</em> — so your name travels with the song and lands on your artist profile.</li>
+            <li>That's the whole ask. This is a per-song feature, not a deal, and not a commitment to anything beyond this one release.</li>
+          </ul>
+          <p><strong class="font-semibold">What it means for you:</strong></p>
+          <ul class="list-disc pl-6 space-y-1.5">
+            <li><strong class="font-semibold">Featured artist credit</strong> on the release and on every DSP (Spotify, Apple Music, and the rest). The song appears under your name, not just ours.</li>
+            <li><strong class="font-semibold">Your writer share stays whole</strong> on anything you write in the room — Public Worship takes 0% of writer share — plus your portion of the publisher pool that flows to writers.</li>
+            <li><strong class="font-semibold">Creative input and final approval</strong> on your performance, your credit, and how your name and likeness are used. Nothing goes out that you haven't signed off on.</li>
+            <li><strong class="font-semibold">One of the four paths</strong> for the feature itself — cash when funded, master income participation, donation, or decline (below). Featured vocalist rate: <strong class="font-semibold">{rateRow("Featured vocalist").cash}</strong> cash or <strong class="font-semibold">{rateRow("Featured vocalist").equity}</strong> master income participation, per song.</li>
+            <li><strong class="font-semibold">Non-exclusive, always.</strong> You keep your career, your catalog, your label, and your deals. This song doesn't touch any of them.</li>
+          </ul>
+          <FourPaths />
+          <div class="mt-2 rounded-xl bg-pink-softer/40 border border-pink-soft/60 p-5">
+            <p class="font-display font-normal text-base text-ink">How compensation &amp; ownership work</p>
+            <p class="mt-3 text-sm text-ink/85 leading-relaxed">
+              The short version: Public Worship is a volunteer-led 501(c)(3) — no
+              one draws a salary, and our share goes back into the mission. We
+              own the official master, your writer share stays whole, and master
+              income is shared with contributors through real percentage splits.
+              The full numbers and the reasoning behind them are published, so
+              your team can see exactly what the split looks like before you say
+              yes:
+            </p>
+            <ul class="mt-3 list-disc pl-5 space-y-1.5 text-sm text-ink/85">
+              <li>
+                The <a href="#rate-sheet" class="text-red-500 underline-offset-2 hover:underline">going market rate sheet</a> — what each role earns in cash or master points, per song.
+              </li>
+              <li>
+                The full <a href={asset("/music-policy")} class="text-red-500 underline-offset-2 hover:underline">royalty &amp; release policy</a> — songwriting, publishing, master ownership (<a href={asset("/music-policy#master")} class="text-red-500 underline-offset-2 hover:underline">§9</a>), and how master-income participation is granted (<a href={asset("/music-policy#participation")} class="text-red-500 underline-offset-2 hover:underline">§10</a>).
+              </li>
+            </ul>
+          </div>
+          <p><strong class="font-semibold">What we ask of you:</strong> only lend your name to something you'd genuinely want it on. Listen to the song, meet the room, and say no freely if it isn't for you — declining costs you nothing and the door stays open for later.</p>
+          <p><strong class="font-semibold">A note on the master:</strong> Public Worship owns the official master of the release (see <a href={asset("/music-policy#master")}>§9</a> for why). Your writer share, your participation, and your approval rights are all real and protected — but the recording itself lives in the Public Worship catalog. If that's a dealbreaker for you, tell us early and we'll talk it through before anything is recorded.</p>
+          <p><strong class="font-semibold">What happens next:</strong> reply to whoever reached out, or email <a href="mailto:hello@publicworship.life" class="text-red-500 underline-offset-2 hover:underline">hello@publicworship.life</a>. We'll send you the song, the credit exactly as it would appear, and a short featured-artist agreement before anything is recorded or released.</p>
+        </div>
+        <CollabFooter />
+      </div>
+
+      {/* Just exploring */}
+      <div id="leaf-overview" data-collab-screen hidden>
+        <NavBar />
+        <h2 class="font-display font-normal text-2xl sm:text-3xl text-ink">Browsing how this works</h2>
+        <div class="mt-4 pw-prose text-ink/85 leading-relaxed flex flex-col gap-4">
+          <p>Two places to look:</p>
+          <ul class="list-disc pl-6 space-y-1.5">
+            <li>The <a href="#rate-sheet" class="text-red-500 underline-offset-2 hover:underline">rate sheet</a> below this section. What every contributor role can take in cash, equity, or donation.</li>
+            <li>The full <a href={asset("/music-policy")} class="text-red-500 underline-offset-2 hover:underline">policy document</a>. The canonical version of how we handle songwriting, publishing, master ownership, and participation.</li>
+          </ul>
+          <p><strong class="font-semibold">The four paths in short:</strong> for every contributor on a greenlit release, you choose one of: cash fee (when funded), master income participation, in-kind donation, or decline. All four are equally honored.</p>
+          <p><strong class="font-semibold">What we won't do:</strong> imply that contributors who choose donation or equity are more spiritual or more deserving of future opportunities than contributors who need cash. Cash is what we offer when we have it. Equity is what we can always offer. Donation is a gift, never an expectation.</p>
+        </div>
+        <CollabFooter />
+      </div>
+
+    </Container>
+  </section>
+
+  {/* =========================================================
+       ALWAYS-VISIBLE RATE SHEET
+     ========================================================= */}
+  <section id="rate-sheet" class="py-16 scroll-mt-16">
+    <Container size="default">
+      <SectionHeading eyebrow="Rates" align="left">
+        Going market <span class="text-red-500">rate sheet</span>
+      </SectionHeading>
+      <div class="mt-6 max-w-prose text-ink/80 leading-relaxed flex flex-col gap-3">
+        <p>
+          These rates reflect Public Worship's current season — a New York
+          City–based volunteer ministry releasing its first songs. They are
+          anchored to independent-artist market rates, not major-label rates,
+          and not a "ministry discount."
+        </p>
+        <p class="text-sm text-ink/70">
+          <strong class="font-semibold">Effective:</strong> 2026.
+          <strong class="font-semibold"> Next scheduled review:</strong> end of 2027.
+          All rates are per song unless noted.
+        </p>
+      </div>
+
+      <div class="mt-8 overflow-x-auto rounded-xl border border-ink/10">
+        <table class="w-full text-sm">
+          <thead class="bg-pink-softer/40 text-ink">
+            <tr>
+              <th class="px-4 py-3 text-left font-display font-normal">Role</th>
+              <th class="px-4 py-3 text-right font-display font-normal">Cash fee</th>
+              <th class="px-4 py-3 text-right font-display font-normal">Master points</th>
+            </tr>
+          </thead>
+          <tbody class="divide-y divide-ink/10">
+            {rateSheet.map((row) => (
+              <tr>
+                <td class="px-4 py-3 align-top">{row.role}</td>
+                <td class="px-4 py-3 align-top text-right font-medium">{row.cash}</td>
+                <td class="px-4 py-3 align-top text-right font-medium">{row.equity}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <p class="mt-4 text-sm text-ink/70">
+        Source ranges and per-row reasoning are in the
+        <a href={asset("/music-policy#rate-sheet")} class="text-red-500 underline-offset-2 hover:underline">policy rate sheet</a>.
+      </p>
+
+      <div class="mt-10 rounded-2xl bg-pink-softer/40 border border-pink-soft/60 p-6 sm:p-8">
+        <p class="font-display font-normal text-lg text-ink">A note on cash availability</p>
+        <p class="mt-3 text-sm text-ink/85 leading-relaxed">
+          Cash is conditional on each release's budget. Equity, donation, and
+          declining are always available. Before a release, we'll tell you
+          exactly what cash is funded for your role for that song. If too
+          many contributors require cash we can't fund, the release may
+          pause, reshape, or wait — we'd rather pause than push anyone
+          toward a path that isn't right for them.
+        </p>
+      </div>
+
+      <div class="mt-12 flex flex-wrap gap-4">
+        <Button href={asset("/music-policy")} variant="primary" size="md">
+          Read the full policy
+        </Button>
+        <Button href="mailto:hello@publicworship.life" variant="outline" size="md">
+          Talk to us
+        </Button>
+      </div>
+    </Container>
+  </section>
+
+  <script>
+    import "../scripts/collaborate.ts";
+  </script>
+</BaseLayout>

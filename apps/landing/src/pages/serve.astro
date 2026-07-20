@@ -1,0 +1,69 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import Container from "../components/ui/Container.astro";
+import SectionHeading from "../components/ui/SectionHeading.astro";
+import ServeNeeds from "../components/sections/ServeNeeds.astro";
+import Button from "../components/ui/Button.astro";
+---
+
+<BaseLayout
+  title="How Can I Serve"
+  description="Volunteer with Public Worship — bring your gifts to bold, public Jesus worship in NYC."
+>
+  <section class="py-12 sm:py-16">
+    <Container size="default">
+      <SectionHeading eyebrow="Volunteering" align="left" as="h1">
+        How Can I <span class="text-red-500">Serve</span>
+      </SectionHeading>
+    </Container>
+  </section>
+
+  <section class="pb-12">
+    <Container size="default" class="max-w-3xl">
+      <div class="flex flex-col gap-5 text-ink/85 leading-relaxed">
+        <p>
+          We welcome individuals who are passionate about worship and Jesus to
+          join us! There are many ways to serve: you can volunteer your time,
+          <a
+            href="https://givebutter.com/publicworship"
+            class="text-red-500 underline-offset-2 hover:underline"
+            target="_blank"
+            rel="noopener noreferrer">support financially</a
+          >, or even help amplify our events by sharing on
+          <a
+            href="https://instagram.com/publicworship.life"
+            class="text-red-500 underline-offset-2 hover:underline"
+            target="_blank"
+            rel="noopener noreferrer">social media</a
+          >. Whether you're looking to join consistently as part of the team or
+          simply step in during one of our worship gatherings, there's room to
+          contribute and make an impact.
+        </p>
+        <p>
+          Public Worship is growing, and while our dream is to see worship
+          happening in every city as often as possible, we are currently
+          operating at capacity. Because of the volume of requests we receive,
+          the best way to connect is often by meeting us at an event and
+          speaking with one of our team members directly. Still, we encourage
+          everyone to fill out the form below — we keep a database of interests
+          and availabilities, and when the right need arises, we will reach out.
+          Every willing hand matters in building toward this vision, and we're
+          grateful for those who want to carry it forward with us.
+        </p>
+      </div>
+
+      <div class="mt-12">
+        <ServeNeeds />
+      </div>
+
+      <div class="mt-12 flex justify-center">
+        <Button
+          href="https://forms.gle/Sos6JfvpqoaJxj8E9"
+          variant="outline"
+          size="lg"
+          external>Fill out Form</Button
+        >
+      </div>
+    </Container>
+  </section>
+</BaseLayout>

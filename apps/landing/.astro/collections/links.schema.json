@@ -1,0 +1,60 @@
+{
+  "$ref": "#/definitions/links",
+  "definitions": {
+    "links": {
+      "type": "object",
+      "properties": {
+        "$schema": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "subtitle": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "thumbnail": {
+            "type": "string"
+          },
+          "bgImage": {
+            "type": "string"
+          },
+          "cta": {
+            "type": "string"
+          },
+          "copy": {
+            "type": "string"
+          },
+          "align": {
+            "type": "string",
+            "enum": [
+              "center",
+              "topLeft"
+            ],
+            "default": "center"
+          },
+          "featured": {
+            "type": "boolean",
+            "default": false
+          }
+        },
+        "required": [
+          "id",
+          "title"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

@@ -1,0 +1,30 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import Hero from "../components/sections/Hero.astro";
+import HeroVideo from "../components/sections/HeroVideo.astro";
+import About from "../components/sections/About.astro";
+import ImpactStats from "../components/sections/ImpactStats.astro";
+import ImportantLinks from "../components/sections/ImportantLinks.astro";
+import FaqList from "../components/sections/FaqList.astro";
+import DonateCta from "../components/sections/DonateCta.astro";
+import MidVideo from "../components/sections/MidVideo.astro";
+---
+
+<BaseLayout
+  title="Bringing God's presence into public spaces"
+  description="Public Worship is a worship initiative of Global Echo Charitable Co., a 501(c)(3) nonprofit, bringing bold, public Jesus worship into the streets, parks, and trains of New York City."
+>
+  <Hero />
+  <HeroVideo />
+  <ImportantLinks />
+  <About />
+  <DonateCta cards="icons" />
+  <ImpactStats />
+  <MidVideo />
+  <FaqList />
+  <DonateCta
+    eyebrow="Support"
+    heading={`Support Us <span class="text-red-500">Through Your Generosity</span>`}
+    cards="illustrations"
+  />
+</BaseLayout>

@@ -31,7 +31,7 @@ describe("resolvePublicSiteUrl", () => {
   test("prod: the prod Convex deployment maps to the branded domain with no override", () => {
     expect(
       resolvePublicSiteUrl("", "https://vivid-rhinoceros-688.convex.cloud"),
-    ).toBe("https://rsvp.publicworship.life");
+    ).toBe("https://publicworship.life");
   });
 
   test("other cloud deployments derive the .convex.site host", () => {

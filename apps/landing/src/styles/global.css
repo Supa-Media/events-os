@@ -1,0 +1,122 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: light;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    @apply bg-cream font-body text-ink antialiased;
+    background-image:
+      radial-gradient(
+        circle at 50% 0%,
+        rgba(208, 58, 58, 0.025) 0%,
+        transparent 60%
+      );
+    background-attachment: fixed;
+  }
+
+  h1, h2, h3, h4 {
+    @apply font-display tracking-tight;
+  }
+
+  a {
+    @apply transition-colors;
+  }
+
+  *:focus-visible {
+    @apply outline-none ring-2 ring-red-500/60 ring-offset-2 ring-offset-cream rounded-sm;
+  }
+}
+
+@layer components {
+  /* Big eyebrow chip — used at the top of most sections.
+   * Source: 16px ink text, 10px 16px padding, 10px radius, bg #F9DFDF. */
+  .pw-eyebrow {
+    @apply inline-flex items-center gap-2 rounded-[10px] bg-pink-softer px-4 py-2.5
+           text-base font-normal text-ink;
+  }
+
+  /* Small inline eyebrow — used over the FAQ heading.
+   * Source: 14px Corben, accent red, no chip background. */
+  .pw-eyebrow-sm {
+    @apply inline-flex items-center gap-1.5 px-0 py-0
+           font-display text-sm font-normal text-red-500;
+  }
+
+  /* Style inline prose links, but exempt anchors that are styled as buttons
+   * (Button.astro renders <a class="inline-flex ..."> when href is set).
+   * Without this guard, primary buttons embedded in prose render red-on-red. */
+  .pw-prose a:not([class*="inline-flex"]) {
+    @apply text-red-500 underline decoration-red-200 underline-offset-2 hover:decoration-red-500;
+  }
+
+  .pw-prose p + p {
+    @apply mt-4;
+  }
+}
+
+/* =================================================================
+   Scroll-triggered entrance animations
+   Controller: src/scripts/scroll-animate.ts (IntersectionObserver).
+   Add `data-animate="<variant>"` on any element to opt in.
+   ================================================================= */
+
+[data-animate] {
+  --delay: 0ms;
+  transition-property: opacity, transform;
+  transition-duration: 700ms;
+  transition-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+  transition-delay: var(--delay);
+  will-change: opacity, transform;
+}
+
+.js-enabled [data-animate="fade-up"] {
+  opacity: 0;
+  transform: translate3d(0, 24px, 0);
+}
+
+.js-enabled [data-animate="fade-up"][data-animate-in] {
+  opacity: 1;
+  transform: translate3d(0, 0, 0);
+}
+
+.js-enabled [data-animate="hero-object"] {
+  --rot: 0deg;
+  --pulse-delay: 0s;
+  opacity: 0;
+  transform: translate3d(0, 16px, 0) rotate(0deg) scale(0.85);
+  transition-duration: 900ms;
+}
+
+.js-enabled [data-animate="hero-object"][data-animate-in] {
+  opacity: 1;
+  transform: translate3d(0, 0, 0) rotate(var(--rot)) scale(1);
+  animation: pw-float 0.9s ease-in-out infinite alternate;
+  /* Per-element negative delay (set inline on each decor img) starts the
+   * cycle mid-stride so the four icons pulse out of sync, not in lockstep. */
+  animation-delay: var(--pulse-delay);
+}
+
+@keyframes pw-float {
+  from { transform: translate3d(0, -3px, 0) rotate(calc(var(--rot) + 1deg)) scale(0.8); }
+  to   { transform: translate3d(0, 0, 0) rotate(var(--rot)) scale(1); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-animate],
+  [data-animate][data-animate-in] {
+    transition: none !important;
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}

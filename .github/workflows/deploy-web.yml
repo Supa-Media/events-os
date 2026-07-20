@@ -1,7 +1,10 @@
 # Deploy the Expo web app to EAS Hosting (production) on every merge to `main`.
 #
 # Single environment by design (no staging, for now) — mirrors the Convex deploy.
-# Exports the web bundle and publishes it to EAS Hosting at https://events-os.expo.app.
+# Exports the web bundle and publishes it to EAS Hosting at https://events-os.expo.app —
+# the app's real, user-facing URL is https://publicworship.life/os, fronted by a
+# Cloudflare Worker that proxies /os/* (prefix stripped) to this EAS Hosting origin.
+# See docs/plans/url-consolidation.md.
 name: Deploy Web (production)
 
 on:
@@ -71,6 +74,6 @@ jobs:
         run: |
           echo "## Web deploy (production)" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **URL:** https://events-os.expo.app" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **URL:** https://publicworship.life/os (fronted by the Cloudflare Worker; EAS Hosting origin: https://events-os.expo.app)" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Commit:** \`${GITHUB_SHA::7}\`" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Triggered by:** ${{ github.actor }}" >> "$GITHUB_STEP_SUMMARY"

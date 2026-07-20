@@ -1,0 +1,69 @@
+---
+export interface Props {
+  label: string;
+  verse: string;
+  reference: string;
+  body: string;
+  illustration?: string;
+  illustrationAlt?: string;
+  bg: "pink" | "peach" | "mint" | "lavender";
+}
+
+const {
+  label,
+  verse,
+  reference,
+  body,
+  illustration,
+  illustrationAlt = "",
+  bg,
+} = Astro.props;
+
+const bgMap = {
+  pink: "bg-pink-soft",
+  peach: "bg-peach",
+  mint: "bg-mint",
+  lavender: "bg-lavender",
+} as const;
+
+const labelColorMap = {
+  pink: "text-red-700",
+  peach: "text-amber-800",
+  mint: "text-emerald-800",
+  lavender: "text-purple-800",
+} as const;
+---
+
+<article
+  class={`relative overflow-hidden rounded-3xl px-7 py-9 sm:px-10 sm:py-12 ${bgMap[bg]}`}
+>
+  <h3
+    class={`font-display text-xl font-normal mb-4 ${labelColorMap[bg]}`}
+  >
+    {label}
+  </h3>
+
+  <blockquote class="mb-5 font-display text-xl sm:text-2xl text-ink/85 leading-snug">
+    "{verse}"
+    <cite class="block mt-2 text-sm not-italic font-medium text-ink/65">
+      — {reference}
+    </cite>
+  </blockquote>
+
+  <p class="text-ink/85 leading-relaxed max-w-prose">
+    {body}
+  </p>
+
+  {
+    illustration && (
+      <img
+        src={illustration}
+        alt={illustrationAlt}
+        aria-hidden={illustrationAlt ? "false" : "true"}
+        class="absolute right-4 bottom-4 h-16 w-16 sm:h-20 sm:w-20 opacity-80"
+        width="80"
+        height="80"
+      />
+    )
+  }
+</article>

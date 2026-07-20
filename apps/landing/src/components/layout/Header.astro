@@ -1,0 +1,64 @@
+---
+import Container from "../ui/Container.astro";
+import Button from "../ui/Button.astro";
+import Logo from "../icons/Logo.astro";
+import MenuIcon from "../icons/MenuIcon.astro";
+import { asset } from "../../lib/asset";
+
+export interface Props {
+  brand?: "public-worship" | "global-echo";
+}
+
+const { brand = "public-worship" } = Astro.props;
+
+const home = asset(brand === "global-echo" ? "/ge" : "/");
+
+const navLinks = [
+  { label: "About", href: `${home}#about` },
+  { label: "Impact", href: `${home}#impact` },
+  { label: "Links", href: `${home}#links` },
+  { label: "FAQ", href: `${home}#faq` },
+];
+---
+
+<header class="relative z-30 py-5">
+  <Container size="wide" class="flex items-center justify-between gap-12">
+    <a href={home} class="flex-shrink-0 rounded-md" aria-label="Home">
+      <Logo brand={brand} />
+    </a>
+
+    {/* Source nav: 16px DM Sans regular, ink color, ~32px gap. */}
+    <nav
+      class="hidden md:flex items-center gap-8"
+      aria-label="Primary navigation"
+    >
+      {
+        navLinks.map((l) => (
+          <a
+            href={l.href}
+            class="text-base font-normal text-ink hover:text-red-500"
+          >
+            {l.label}
+          </a>
+        ))
+      }
+    </nav>
+
+    <div class="hidden md:block">
+      <Button href="mailto:hello@publicworship.life" variant="outline" size="sm"
+        >Contact Us</Button
+      >
+    </div>
+
+    <button
+      type="button"
+      class="md:hidden inline-flex h-11 w-11 items-center justify-center rounded-full border border-red-500 text-red-500"
+      data-mobile-menu-trigger
+      aria-expanded="false"
+      aria-controls="mobile-menu-panel"
+      aria-label="Open menu"
+    >
+      <MenuIcon class="h-5 w-5" />
+    </button>
+  </Container>
+</header>

@@ -7,8 +7,10 @@ import { Alert, Platform } from "react-native";
 
 /** Production Convex deployment (see reference_convex-prod-deploy-target). */
 const PROD_CONVEX_DEPLOYMENT = "vivid-rhinoceros-688";
-/** Branded custom domain fronting prod's public event pages. */
-const PROD_SITE_URL = "https://rsvp.publicworship.life";
+/** Branded consolidated domain fronting prod's public event pages (Convex
+ *  serves /event, /e, /t, /give, /p, /reimburse, /api, /stripe, /increase
+ *  behind the Cloudflare Worker at the apex — see docs/plans/url-consolidation.md). */
+const PROD_SITE_URL = "https://publicworship.life";
 
 /**
  * Pure resolver for the public-page base URL — kept separate from `publicSiteUrl`

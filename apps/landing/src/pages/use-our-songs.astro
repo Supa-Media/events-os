@@ -1,0 +1,342 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import Container from "../components/ui/Container.astro";
+import SectionHeading from "../components/ui/SectionHeading.astro";
+import Button from "../components/ui/Button.astro";
+import { asset } from "../lib/asset";
+
+const sections = [
+  { id: "posture", label: "Our posture" },
+  { id: "where-we-are", label: "Where we are right now" },
+  { id: "ccli", label: "Sing them in your gatherings (CCLI)" },
+  { id: "covers", label: "Record your own version (church covers)" },
+  { id: "commercial", label: "Release a cover commercially" },
+  { id: "sync", label: "Use a song in film, TV, or advertising" },
+  { id: "faq", label: "Common questions" },
+  { id: "contact", label: "When in doubt, ask" },
+];
+---
+
+<BaseLayout
+  title="Use Our Songs"
+  description="How to sing, record, and share Public Worship songs in your church. Plain-language guide for worship leaders, church bands, and anyone covering our music."
+>
+  <section class="py-12 sm:py-16">
+    <Container size="default">
+      <SectionHeading eyebrow="For churches and worship leaders" align="left" as="h1">
+        Use Our <span class="text-red-500">Songs</span>
+      </SectionHeading>
+      <p class="mt-6 max-w-prose text-base sm:text-lg text-ink/80 leading-relaxed">
+        Public Worship songs are written for the church to sing. We want
+        them used — in your gatherings, your worship nights, your team's
+        recordings. This page is the plain-language guide. The full
+        contributor-side policy lives at
+        <a href={asset("/music-policy")} class="text-red-500 underline-offset-2 hover:underline">/music-policy</a>.
+      </p>
+    </Container>
+  </section>
+
+  <section class="pb-8">
+    <Container size="default">
+      <div class="rounded-2xl bg-pink-softer/40 border border-pink-soft/60 p-6 sm:p-8">
+        <p class="font-display text-lg font-normal text-ink">In this guide</p>
+        <ol class="mt-4 grid gap-x-8 gap-y-1.5 sm:grid-cols-2 list-decimal list-inside text-sm text-ink/85">
+          {sections.map((s) => (
+            <li>
+              <a href={`#${s.id}`} class="text-ink hover:text-red-500 underline-offset-2 hover:underline">
+                {s.label}
+              </a>
+            </li>
+          ))}
+        </ol>
+      </div>
+    </Container>
+  </section>
+
+  <section class="pb-24">
+    <Container size="default">
+      <div class="max-w-prose pw-prose text-ink/85 leading-relaxed">
+        <article id="posture" class="scroll-mt-24 mt-12 first:mt-0">
+          <h2 class="font-display font-normal text-3xl sm:text-4xl text-ink">Our posture</h2>
+          <div class="mt-4 flex flex-col gap-4">
+            <p>
+              We are a nonprofit. The point of these songs is for people
+              to sing them. If your church wants to put one of our songs
+              in a Sunday service, on a worship night, in a youth retreat
+              recording, on a livestream, or on your worship team's
+              album — please do.
+            </p>
+            <p>
+              We use the standard worship-music infrastructure (CCLI, PROs,
+              The MLC) so that doing the right thing is also the easy
+              thing. In almost every case, your church already has the
+              license you need.
+            </p>
+          </div>
+        </article>
+
+        <article id="where-we-are" class="scroll-mt-24 mt-16">
+          <h2 class="font-display font-normal text-3xl sm:text-4xl text-ink">Where we are right now</h2>
+          <div class="mt-4 flex flex-col gap-4">
+            <p>
+              <strong class="font-semibold">Public Worship has not released its first song yet.</strong>
+              We're in the writing and recording season. Before our first
+              release, we will register the catalog with CCLI, a
+              performing rights organization (ASCAP or BMI), The MLC, and
+              SoundExchange — the standard set that lets churches sing
+              our songs under their existing licenses and lets us
+              participate in royalties when songs travel.
+            </p>
+            <p>
+              Until those registrations are live, the guidance on this
+              page describes how it <em>will</em> work. We'll update this
+              page with our CCLI Song Numbers, publisher info, and PRO
+              affiliations as the first release goes out.
+            </p>
+          </div>
+        </article>
+
+        <article id="ccli" class="scroll-mt-24 mt-16">
+          <h2 class="font-display font-normal text-3xl sm:text-4xl text-ink">Sing them in your gatherings (CCLI)</h2>
+          <div class="mt-4 flex flex-col gap-4">
+            <p>
+              If your church holds a current CCLI license — most churches
+              with regular gatherings do — that license already covers
+              what you need to use Public Worship songs in your services.
+              You do not need to ask us first.
+            </p>
+            <p>Under a standard CCLI Church Copyright License, you can:</p>
+            <ul class="list-disc pl-6 space-y-1.5">
+              <li>Project our lyrics on screen</li>
+              <li>Print our lyrics in bulletins, song sheets, and event programs</li>
+              <li>Reproduce chord charts and lead sheets for your team</li>
+              <li>Make custom arrangements for your team's instrumentation</li>
+              <li>Translate lyrics into another language for your congregation</li>
+            </ul>
+            <p>
+              Under a CCLI <strong class="font-semibold">Streaming License</strong>,
+              you can also include our songs in livestreamed and on-demand
+              recordings of your services on your church's website,
+              Facebook, YouTube, and similar platforms.
+            </p>
+            <p>
+              When you report songs to CCLI, that report flows back to
+              the writers and to Public Worship Publishing. Reporting is
+              how church use translates into support for the people who
+              wrote the songs. If your church is on CCLI, please report
+              ours when you sing them.
+            </p>
+            <p class="text-sm text-ink/70">
+              Not on CCLI yet? Most churches in the US/UK/Canada find it
+              the simplest path. <a href="https://us.ccli.com/" rel="noopener" class="text-red-500 underline-offset-2 hover:underline">us.ccli.com</a>.
+            </p>
+          </div>
+        </article>
+
+        <article id="covers" class="scroll-mt-24 mt-16">
+          <h2 class="font-display font-normal text-3xl sm:text-4xl text-ink">Record your own version (church covers)</h2>
+          <div class="mt-4 flex flex-col gap-4">
+            <p>
+              <strong class="font-semibold">Yes — we want you to do this.</strong>
+              A church band recording its own version of a Public Worship
+              song, for its own album, EP, or single, is one of the most
+              mission-aligned uses of these songs we can imagine.
+            </p>
+            <p>
+              The CCLI <strong class="font-semibold">Church Streaming License</strong>
+              and <strong class="font-semibold">CCLI Cover Recording License (CSPL)</strong>
+              are the right tools for this. They let your church record,
+              produce, and distribute your own version of an eligible
+              song. Most of our catalog will be eligible.
+            </p>
+            <p>What this looks like in practice:</p>
+            <ul class="list-disc pl-6 space-y-1.5">
+              <li>Your worship team records your version in your room with your players</li>
+              <li>You release it under your church's name on Spotify, Apple Music, Bandcamp, YouTube</li>
+              <li>You credit the original writers (CCLI/your distributor handles this)</li>
+              <li>Mechanical royalties flow to the writers and Public Worship Publishing through standard channels</li>
+              <li>You keep your master recording — it's your version</li>
+            </ul>
+            <p>
+              You don't need our permission for this. The license
+              infrastructure is the permission. We'd love to hear about
+              it after — we'll share church covers we love.
+            </p>
+            <p class="text-sm text-ink/70">
+              <strong class="font-semibold">One limit:</strong> the
+              CCLI cover license covers re-recordings of the song with
+              your own performance. It does <em>not</em> let you
+              re-distribute our master recording (the actual file we
+              released). For that, see <a href="#sync">sync</a> below or
+              write us.
+            </p>
+          </div>
+        </article>
+
+        <article id="commercial" class="scroll-mt-24 mt-16">
+          <h2 class="font-display font-normal text-3xl sm:text-4xl text-ink">Release a cover commercially</h2>
+          <div class="mt-4 flex flex-col gap-4">
+            <p>
+              Anyone — not just churches — can release a cover of a
+              Public Worship song commercially under the
+              <strong class="font-semibold">US compulsory mechanical license</strong>.
+              You don't need our permission. You do need to pay the
+              statutory mechanical rate (currently roughly $0.124 per
+              copy for songs under 5 minutes), routed through
+              <strong class="font-semibold">The Mechanical Licensing Collective (The MLC)</strong>
+              for streaming and through your distributor for downloads
+              and physical.
+            </p>
+            <p>
+              Most modern distributors (DistroKid, CD Baby, TuneCore,
+              United Masters) handle this automatically when you mark a
+              release as a cover and supply the original writer info.
+              That's the standard path.
+            </p>
+            <p>
+              <strong class="font-semibold">What you can't do without our permission:</strong>
+              change the lyrics in a way that alters the meaning of the
+              song, or pair the cover with sync (visual media) — those
+              require additional licensing. See <a href="#sync">sync</a>
+              below.
+            </p>
+          </div>
+        </article>
+
+        <article id="sync" class="scroll-mt-24 mt-16">
+          <h2 class="font-display font-normal text-3xl sm:text-4xl text-ink">Use a song in film, TV, or advertising</h2>
+          <div class="mt-4 flex flex-col gap-4">
+            <p>
+              Sync — pairing a song with visual media — requires two
+              separate permissions:
+            </p>
+            <ul class="list-disc pl-6 space-y-1.5">
+              <li>
+                <strong class="font-semibold">Composition (sync license)</strong> — from the writers and publishers. For Public Worship songs, that's the writers + Public Worship Publishing.
+              </li>
+              <li>
+                <strong class="font-semibold">Master (master use license)</strong> — only required if you're using our actual recording. If you're re-recording the song for your project, you skip this and just get the sync license above.
+              </li>
+            </ul>
+            <p>
+              Public Worship grants both for uses consistent with the
+              ministry's mission. We have a written posture on what
+              we'll review more carefully — see
+              <a href={asset("/music-policy#ministry-use")} class="text-red-500 underline-offset-2 hover:underline">music-policy §19</a>.
+            </p>
+            <p>
+              For a sync request, write us at
+              <a href="mailto:hello@publicworship.life" class="text-red-500 underline-offset-2 hover:underline">hello@publicworship.life</a>
+              with the project name, the song(s) you want, the use (film
+              / TV / ad / online video), territory, term, and a short
+              description. We'll respond within two weeks.
+            </p>
+          </div>
+        </article>
+
+        <article id="faq" class="scroll-mt-24 mt-16">
+          <h2 class="font-display font-normal text-3xl sm:text-4xl text-ink">Common questions</h2>
+          <div class="mt-4 flex flex-col gap-6">
+            <div>
+              <p class="font-display font-normal text-lg text-ink">
+                Can our worship night fundraiser sing one of your songs?
+              </p>
+              <p class="mt-2">
+                Yes. Standard CCLI license covers it. If the event is
+                ticketed and at scale, your venue's ASCAP/BMI license
+                handles the performance side.
+              </p>
+            </div>
+            <div>
+              <p class="font-display font-normal text-lg text-ink">
+                Can we record our youth retreat with your songs and post it on YouTube?
+              </p>
+              <p class="mt-2">
+                Yes, under your CCLI Streaming License.
+              </p>
+            </div>
+            <div>
+              <p class="font-display font-normal text-lg text-ink">
+                We want to release a worship album as a church and put one of your songs on it. Cool?
+              </p>
+              <p class="mt-2">
+                Yes — please do. Use the CCLI Cover Recording License or
+                the standard compulsory mechanical license through your
+                distributor.
+              </p>
+            </div>
+            <div>
+              <p class="font-display font-normal text-lg text-ink">
+                Do we owe you anything?
+              </p>
+              <p class="mt-2">
+                Not directly. Your church's existing CCLI license
+                already routes a portion to writers and publishers based
+                on your reporting. For a commercial cover, the
+                statutory mechanical handles it. The infrastructure does
+                the work.
+              </p>
+            </div>
+            <div>
+              <p class="font-display font-normal text-lg text-ink">
+                Can we change the words?
+              </p>
+              <p class="mt-2">
+                Small adjustments for fit (gendered language, regional
+                phrasing, a missing pronoun) are fine — the worship
+                tradition has always done this. Substantive lyric
+                rewrites that change the meaning of the song should be
+                checked with us first; the writers have moral rights to
+                the song's intent.
+              </p>
+            </div>
+            <div>
+              <p class="font-display font-normal text-lg text-ink">
+                Can we translate it into our language?
+              </p>
+              <p class="mt-2">
+                Yes for congregational use under your CCLI
+                Translation/Custom Adaptation rider. For commercial
+                release of a translated version, write us — we'd love to
+                see it.
+              </p>
+            </div>
+            <div>
+              <p class="font-display font-normal text-lg text-ink">
+                We're not on CCLI. What now?
+              </p>
+              <p class="mt-2">
+                Easiest path: get on CCLI. It covers the global worship
+                catalog, including everything we'll release. If CCLI
+                isn't an option for your context, write us and we'll
+                figure out the right license together.
+              </p>
+            </div>
+          </div>
+        </article>
+
+        <article id="contact" class="scroll-mt-24 mt-16">
+          <h2 class="font-display font-normal text-3xl sm:text-4xl text-ink">When in doubt, ask</h2>
+          <div class="mt-4 flex flex-col gap-4">
+            <p>
+              The standard worship-music licenses cover almost everything
+              a church or worship leader will ever want to do with our
+              songs. If you're looking at this page and your situation
+              isn't covered, write us — we'd rather have a quick
+              conversation than have you walk away unsure.
+            </p>
+          </div>
+        </article>
+      </div>
+
+      <div class="mt-16 flex flex-wrap gap-4">
+        <Button href="mailto:hello@publicworship.life" variant="primary" size="md">
+          Talk to us
+        </Button>
+        <Button href={asset("/music-policy")} variant="outline" size="md">
+          Read the full policy
+        </Button>
+      </div>
+    </Container>
+  </section>
+</BaseLayout>

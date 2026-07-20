@@ -14,3 +14,35 @@ jobs:
       strictness: "standard"
       shared-package: "@events-os/shared"
     secrets: inherit
+
+  # App-local job: the framework's reusable CI (above) only knows about
+  # shared/mobile/convex, so infra/router and apps/landing get no coverage
+  # from it. Upstreaming general workspace-package support is a framework
+  # follow-up candidate; until then this job covers them here.
+  router-and-landing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # All @supa-media/* packages are public on GitHub Packages; GITHUB_TOKEN
+      # authenticates the registry (see .npmrc).
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Test @events-os/router
+        run: pnpm --filter @events-os/router test
+
+      - name: Typecheck @events-os/router
+        run: pnpm --filter @events-os/router typecheck
+
+      - name: Build @events-os/landing
+        run: pnpm --filter @events-os/landing build

@@ -15,9 +15,9 @@ afterEach(() => {
 
 describe("siteUrl", () => {
   test("prefers PUBLIC_SITE_URL (custom domain) over CONVEX_SITE_URL", () => {
-    process.env.PUBLIC_SITE_URL = "https://rsvp.publicworship.life";
+    process.env.PUBLIC_SITE_URL = "https://publicworship.life";
     process.env.CONVEX_SITE_URL = "https://something.convex.site";
-    expect(siteUrl()).toBe("https://rsvp.publicworship.life");
+    expect(siteUrl()).toBe("https://publicworship.life");
   });
 
   test("falls back to CONVEX_SITE_URL when no custom domain is set", () => {
@@ -27,8 +27,8 @@ describe("siteUrl", () => {
   });
 
   test("strips trailing slashes so callers can append paths", () => {
-    process.env.PUBLIC_SITE_URL = "https://rsvp.publicworship.life/";
-    expect(siteUrl()).toBe("https://rsvp.publicworship.life");
+    process.env.PUBLIC_SITE_URL = "https://publicworship.life/";
+    expect(siteUrl()).toBe("https://publicworship.life");
   });
 });
 
@@ -42,19 +42,19 @@ describe("eventPath / eventPageUrl", () => {
   });
 
   test("eventPageUrl composes the absolute branded URL under PUBLIC_SITE_URL", () => {
-    process.env.PUBLIC_SITE_URL = "https://events.publicworship.life";
+    process.env.PUBLIC_SITE_URL = "https://publicworship.life";
     expect(eventPageUrl("summer-night")).toBe(
-      "https://events.publicworship.life/event/summer-night",
+      "https://publicworship.life/event/summer-night",
     );
     expect(eventPageUrl("summer-night", "cover")).toBe(
-      "https://events.publicworship.life/event/summer-night/cover",
+      "https://publicworship.life/event/summer-night/cover",
     );
   });
 
   test("eventPageUrl trims a trailing slash on the base (no //event/)", () => {
-    process.env.PUBLIC_SITE_URL = "https://events.publicworship.life/";
+    process.env.PUBLIC_SITE_URL = "https://publicworship.life/";
     expect(eventPageUrl("summer-night")).toBe(
-      "https://events.publicworship.life/event/summer-night",
+      "https://publicworship.life/event/summer-night",
     );
   });
 });

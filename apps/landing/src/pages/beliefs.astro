@@ -1,0 +1,25 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import Container from "../components/ui/Container.astro";
+import SectionHeading from "../components/ui/SectionHeading.astro";
+import BeliefsList from "../components/sections/BeliefsList.astro";
+---
+
+<BaseLayout
+  title="Statement of Beliefs"
+  description="What Public Worship believes, in plain language. Our 12-point Statement of Beliefs."
+>
+  <section class="py-12 sm:py-16">
+    <Container size="default">
+      <SectionHeading eyebrow="Our Beliefs" align="left" as="h1">
+        Statement of <span class="text-red-500">Beliefs</span>
+      </SectionHeading>
+    </Container>
+  </section>
+
+  <section class="pb-24">
+    <Container size="default">
+      <BeliefsList />
+    </Container>
+  </section>
+</BaseLayout>

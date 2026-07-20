@@ -1,0 +1,23 @@
+---
+const needs = [
+  "Video Editors",
+  "Color Graders",
+  "Cinematographers",
+  "Live Sound Engineers",
+  "Studio Mixing Engineers",
+  "Graphic Designers",
+  "Merch Designers",
+  "Digital Marketers / Advertisers",
+  "Songwriters",
+  "Event Planners",
+  "Project Managers",
+  "Greeters",
+];
+---
+
+<div class="max-w-3xl">
+  <h3 class="font-display text-xl font-normal text-ink mb-3">2026 Needs</h3>
+  <ul class="grid gap-1 text-ink/80 sm:grid-cols-2">
+    {needs.map((n) => <li>– {n}</li>)}
+  </ul>
+</div>

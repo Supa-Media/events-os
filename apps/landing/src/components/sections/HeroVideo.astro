@@ -1,0 +1,29 @@
+---
+import Container from "../ui/Container.astro";
+import { asset } from "../../lib/asset";
+---
+
+{/* Source: hero video (Simeon — Mighty One) sits in its own panel BELOW the
+ * hero text section, not stacked inside it. Aspect ~3:2, 16px radius. */}
+<section class="pb-12 sm:pb-16">
+  <Container size="wide">
+    <div
+      class="overflow-hidden rounded-2xl aspect-[3/2] bg-ink/10"
+      data-animate="fade-up"
+    >
+      <video
+        class="block h-full w-full object-cover"
+        autoplay
+        muted
+        loop
+        playsinline
+        preload="metadata"
+        poster={asset("/images/event-1.png")}
+        aria-hidden="true"
+      >
+        <source src={asset("/videos/hero.webm")} type="video/webm" />
+        <source src={asset("/videos/hero.mp4")} type="video/mp4" />
+      </video>
+    </div>
+  </Container>
+</section>
