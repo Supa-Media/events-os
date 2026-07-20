@@ -28,6 +28,12 @@ export const eventPages = defineTable({
   // Cover/flyer image — the hero of the landing page AND the OG/iMessage
   // preview image (served publicly via /rsvp/<slug>/cover).
   coverImage: v.optional(v.id("_storage")),
+  // Focal point (0–100, percent) for cropping `coverImage` — maps to the CSS
+  // `object-position` of the hero crop so the admin controls what stays in
+  // frame on the landing page instead of a hardcoded center crop. Unset (the
+  // legacy default) = centered (50/50).
+  coverFocalX: v.optional(v.number()),
+  coverFocalY: v.optional(v.number()),
   // Short line under the title (e.g. "A night of worship on the rooftop").
   tagline: v.optional(v.string()),
   // Longer "About this event" body (plain text, newlines preserved).
@@ -51,6 +57,10 @@ export const eventPages = defineTable({
   givingEnabled: v.optional(v.boolean()), // default false
   givingPrompt: v.optional(v.string()), // custom "support this event" copy
   suggestedAmountsCents: v.optional(v.array(v.number())), // preset buttons (ints)
+  // Fundraising goal (integer cents). When set, the page shows a progress bar
+  // and "$X of $Y raised" — where "raised" combines ticket revenue AND giving
+  // (see the `*Cents` rollups below). Unset = no goal shown.
+  goalCents: v.optional(v.number()),
   showGuestList: v.optional(v.boolean()), // default true
   // Partiful-style gate: activity feed visible only after you RSVP.
   activityRestricted: v.optional(v.boolean()), // default true
@@ -62,8 +72,20 @@ export const eventPages = defineTable({
   ticketsSoldCount: v.number(),
   revenueCents: v.number(),
   // Giving rollup (siblings of revenueCents; default 0 when unset).
+  // `donationsCents` = money given THROUGH this event page (the on-page "Give"
+  // flow: Stripe card donations + manually-recorded cash/other, each also
+  // dual-written into the donor-CRM `gifts` ledger).
   donationsCents: v.optional(v.number()),
   donationsCount: v.optional(v.number()),
+  // `externalGiftsCents` = donor-CRM `gifts` MANUALLY attached to this event
+  // (Givebutter-imported or offline gifts given "toward the fundraiser"). Kept
+  // separate from `donationsCents` so the two never double-count: an on-page
+  // donation is already a `gifts` row (via `donationId`) and is EXCLUDED here —
+  // only `donationId`-less gifts land in this rollup (see giving attach flow).
+  // The event's total "given" = donationsCents + externalGiftsCents, and both
+  // count toward `goalCents` alongside ticket `revenueCents`.
+  externalGiftsCents: v.optional(v.number()),
+  externalGiftsCount: v.optional(v.number()),
   // Givebutter live ticket sync (poll-only, PR B). When a campaign id is set,
   // the manual "Sync now" button + the 15-min cron pull that campaign's tickets
   // into native mirror orders/tickets/RSVPs (display attribution only — never
@@ -71,6 +93,11 @@ export const eventPages = defineTable({
   givebutterCampaignId: v.optional(v.string()),
   givebutterLastSyncedAt: v.optional(v.number()),
   givebutterLastSyncError: v.optional(v.string()),
+  // Secret token for the admin "Open preview" link: appends `?preview=<token>`
+  // to the public URL so the page renders even while `published` is false
+  // (and before go-live). Lazily minted by `ensurePreviewToken`; never returned
+  // by any public/list query.
+  previewToken: v.optional(v.string()),
   createdBy: v.id("users"),
   createdAt: v.number(),
   updatedAt: v.number(),
@@ -194,6 +221,13 @@ export const ticketOrders = defineTable({
     }),
   ),
   totalCents: v.number(),
+  // Optional add-on gift bundled into the SAME checkout as the tickets (the
+  // "would you also like to donate?" upsell). Carried on the pending order so
+  // the webhook can split the one Stripe charge: tickets → revenue, this →
+  // a `donations` row (giving). Absent/0 = tickets only. Not included in
+  // `totalCents` (which is the ticket line-item subtotal) — it's added to the
+  // Stripe session as its own line so the money stays cleanly attributed.
+  donationCents: v.optional(v.number()),
   currency: v.string(),
   status: v.union(
     v.literal("pending"),

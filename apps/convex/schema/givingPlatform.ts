@@ -285,6 +285,10 @@ export const gifts = defineTable({
   // The dashboard's last-30-days window (bounded range read, never a full scan).
   .index("by_scope_and_received", ["scope", "receivedAt"])
   .index("by_externalRef", ["externalRef"])
+  // Gifts manually attached to an event (the fundraiser attribution feature) —
+  // powers the per-event gift list + `externalGiftsCents` recompute. Only
+  // attached gifts have `eventId`; unattached rows are never in this index.
+  .index("by_event", ["eventId"])
   .index("by_donation", ["donationId"])
   .index("by_pledge", ["pledgeId"])
   // One gift per billing cycle — the `invoice.paid` idempotency lookup.

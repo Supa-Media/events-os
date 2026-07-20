@@ -89,13 +89,15 @@ const publicRsvpPage = httpAction(async (ctx, req) => {
     const segments = url.pathname.split("/").filter(Boolean); // ["rsvp"|"r"|"event"|"e", slug, ...]
     const slug = decodeURIComponent(segments[1] ?? "");
     const sub = segments[2] ?? null;
+    // Admin draft preview: `?preview=<token>` renders an unpublished page.
+    const previewToken = url.searchParams.get("preview") ?? undefined;
     if (!slug) return html(renderNotFound(), 404);
 
     // Cover image — public so OG scrapers (iMessage) can fetch it.
     if (sub === "cover") {
       const storageId = await ctx.runQuery(
         internal.ticketing.getCoverStorageId,
-        { slug },
+        { slug, previewToken },
       );
       if (!storageId) return new Response("Not found", { status: 404 });
       const blob = await ctx.storage.get(storageId);
@@ -108,7 +110,10 @@ const publicRsvpPage = httpAction(async (ctx, req) => {
       });
     }
 
-    const page = await ctx.runQuery(api.ticketing.getPublicPage, { slug });
+    const page = await ctx.runQuery(api.ticketing.getPublicPage, {
+      slug,
+      previewToken,
+    });
     if (!page) return html(renderNotFound(), 404);
 
     if (sub === "calendar.ics") {
