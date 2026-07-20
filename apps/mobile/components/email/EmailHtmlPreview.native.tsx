@@ -17,6 +17,12 @@ export function EmailHtmlPreview({ html, height = 560 }: EmailHtmlPreviewProps) 
         originWhitelist={["*"]}
         source={{ html }}
         scrollEnabled
+        // The preview is always static HTML (never fetched, never expects a
+        // page script) — disabling JS closes off the native equivalent of
+        // the web variant's sandboxed iframe (`EmailHtmlPreview.web.tsx`'s
+        // `sandbox=""`), so a malicious/compromised author-written merge
+        // tag or pasted markdown can't execute script inside the WebView.
+        javaScriptEnabled={false}
         style={{ backgroundColor: "transparent" }}
       />
     </View>

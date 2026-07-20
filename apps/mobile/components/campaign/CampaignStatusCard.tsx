@@ -70,6 +70,21 @@ export function CampaignStatusCard({
             </Text>
           ) : null}
         </View>
+        {campaign.status === "failed" ? (
+          // The backend explicitly allows `send()` for status "failed" (same
+          // gate as "draft" — `campaigns.ts#send`), so retrying reuses the
+          // exact same confirm/send flow `DraftSendRow` already has, just
+          // relabeled so it reads as a retry rather than a first send.
+          <View className="mt-3 border-t border-border pt-3">
+            <DraftSendRow
+              campaign={campaign}
+              audienceName={audienceName}
+              preview={preview}
+              run={run}
+              retry
+            />
+          </View>
+        ) : null}
       </Card>
     );
   }
@@ -98,11 +113,16 @@ function DraftSendRow({
   audienceName,
   preview,
   run,
+  retry = false,
 }: {
   campaign: Campaign;
   audienceName: string | null;
   preview: PreviewResult | undefined;
   run: ActionRunner["run"];
+  /** Rendered for a "failed" campaign instead of a "draft" one — same
+   *  underlying `send()` call (the backend allows both statuses), just
+   *  relabeled so it reads as a retry rather than a first send. */
+  retry?: boolean;
 }) {
   const send = useMutation(api.campaigns.send);
   const [sending, setSending] = useState(false);
@@ -122,20 +142,20 @@ function DraftSendRow({
     }
     const excludedNote = excludedBits.length > 0 ? ` (${excludedBits.join(", ")} excluded)` : "";
     confirmAction({
-      title: "Send campaign?",
+      title: retry ? "Retry sending this campaign?" : "Send campaign?",
       message: `Sends to ${preview.count} ${preview.count === 1 ? "person" : "people"}${excludedNote}. This can't be undone.`,
-      confirmLabel: "Send",
+      confirmLabel: retry ? "Retry send" : "Send",
       onConfirm: () => {
         setSending(true);
         void run(() => send({ campaignId: campaign._id }), {
-          errorTitle: "Couldn't send campaign",
+          errorTitle: retry ? "Couldn't retry the send" : "Couldn't send campaign",
         }).finally(() => setSending(false));
       },
     });
   }
 
   return (
-    <View className="mt-3 gap-2">
+    <View className={retry ? "gap-2" : "mt-3 gap-2"}>
       <Text className="text-sm text-muted">
         {audienceName ? `Audience: ${audienceName}` : "Pick an audience above before sending."}
       </Text>
@@ -146,7 +166,13 @@ function DraftSendRow({
         <Text className="text-xs text-warn">The design is empty — add at least one block.</Text>
       ) : null}
       <View className="flex-row justify-end">
-        <Button title="Send campaign" icon="send" onPress={handleSend} loading={sending} disabled={!canSend} />
+        <Button
+          title={retry ? "Retry send" : "Send campaign"}
+          icon="send"
+          onPress={handleSend}
+          loading={sending}
+          disabled={!canSend}
+        />
       </View>
     </View>
   );

@@ -158,6 +158,66 @@ describe("email audience excludes emailSuppressions (campaigns integration)", ()
     expect(preview.emailRecipients).toBe(3);
     expect(preview.emailSuppressed).toBe(1);
   });
+
+  test("suppression matching normalizes the rsvp email (trim + lowercase), not just lowercases it", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await run(s.t, async (ctx) => {
+      const now = Date.now();
+      const eventTypeId = await ctx.db.insert("eventTypes", {
+        chapterId: s.chapterId,
+        name: "Night",
+        slug: "night-padded",
+        version: 1,
+        createdBy: s.userId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const eventId = await ctx.db.insert("events", {
+        chapterId: s.chapterId,
+        eventTypeId,
+        templateVersion: 1,
+        name: "Night",
+        eventDate: now,
+        status: "planning",
+        createdBy: s.userId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      // A padded/mixed-case email — the kind that slips in from a pasted or
+      // imported address — while `emailSuppressions.email` is stored
+      // normalized (trim + lowercase, per the schema doc).
+      await ctx.db.insert("rsvps", {
+        eventId,
+        chapterId: s.chapterId,
+        name: "Padded Pat",
+        email: "  Pat@Example.com  ",
+        status: "going",
+        token: "tok-pat-padded",
+        createdAt: now,
+        updatedAt: now,
+      });
+      return eventId;
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("emailSuppressions", {
+        email: "pat@example.com",
+        reason: "unsubscribe",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const blastId = await insertBlast(s, eventId, "everyone");
+    const payload = await s.t.query(internal.blasts.getBlastPayload, { blastId });
+    expect(payload?.emails ?? []).toEqual([]);
+
+    const preview = await s.as.query(api.blasts.previewBlastAudience, {
+      eventId,
+      audience: "everyone",
+    });
+    expect(preview.emailRecipients).toBe(0);
+    expect(preview.emailSuppressed).toBe(1);
+  });
 });
 
 describe("sendBlast guardrails", () => {

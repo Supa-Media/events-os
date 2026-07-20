@@ -356,6 +356,87 @@ describe("/resend/webhook", () => {
     expect(campaign?.replyCount).toBe(1);
   });
 
+  test("a display-name/angle-bracket `to` address still matches the campaign's plus-address", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await configureWebhookSecret(s);
+    const { campaignId } = await seedCampaignRecipient(s);
+
+    // Some mail clients copy the reply-to plus-address into `To:` wrapped in
+    // an RFC-5322 "Display Name <addr>" form, the same shape `from` already
+    // arrives in — `toAddressList` must strip that before the plus-address
+    // regex ever sees it, or the reply falls through to "no match".
+    const res = await postResendWebhook(t, {
+      type: "email.received",
+      data: {
+        to: [`Jane <campaign+${campaignId}@reply.publicworship.life>`],
+        from: "jane@example.com",
+        subject: "Re: Hi",
+        text: "Thanks!",
+      },
+    });
+    expect(res.status).toBe(200);
+
+    const replies = await run(s.t, (ctx) =>
+      ctx.db.query("emailReplies").withIndex("by_campaign", (q) => q.eq("campaignId", campaignId)).collect(),
+    );
+    expect(replies).toHaveLength(1);
+
+    const campaign = await run(s.t, (ctx) => ctx.db.get(campaignId));
+    expect(campaign?.replyCount).toBe(1);
+  });
+
+  test("an inbound reply's textBody/htmlBody are truncated with a visible marker at the size caps", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await configureWebhookSecret(s);
+    const { campaignId } = await seedCampaignRecipient(s);
+
+    const oversizedText = "a".repeat(60_000);
+    const oversizedHtml = "<p>b</p>".repeat(20_000); // 160,000 chars
+
+    await postResendWebhook(t, {
+      type: "email.received",
+      data: {
+        to: [`campaign+${campaignId}@reply.publicworship.life`],
+        from: "jane@example.com",
+        subject: "Re: Hi",
+        text: oversizedText,
+        html: oversizedHtml,
+      },
+    });
+
+    const reply = await run(s.t, (ctx) =>
+      ctx.db.query("emailReplies").withIndex("by_campaign", (q) => q.eq("campaignId", campaignId)).first(),
+    );
+    expect(reply?.textBody?.length).toBe(50_000 + "… [truncated]".length);
+    expect(reply?.textBody?.endsWith("… [truncated]")).toBe(true);
+    expect(reply?.htmlBody?.length).toBe(150_000 + "… [truncated]".length);
+    expect(reply?.htmlBody?.endsWith("… [truncated]")).toBe(true);
+  });
+
+  test("a body under the size cap is stored verbatim, with no truncation marker", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await configureWebhookSecret(s);
+    const { campaignId } = await seedCampaignRecipient(s);
+
+    await postResendWebhook(t, {
+      type: "email.received",
+      data: {
+        to: [`campaign+${campaignId}@reply.publicworship.life`],
+        from: "jane@example.com",
+        subject: "Re: Hi",
+        text: "Short and sweet.",
+      },
+    });
+
+    const reply = await run(s.t, (ctx) =>
+      ctx.db.query("emailReplies").withIndex("by_campaign", (q) => q.eq("campaignId", campaignId)).first(),
+    );
+    expect(reply?.textBody).toBe("Short and sweet.");
+  });
+
   test("an inbound reply with no matching plus-address still gets a row (campaignId unset)", async () => {
     const t = newT();
     const s = await asSuperuser(t);

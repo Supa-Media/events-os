@@ -693,9 +693,17 @@ function parseFromHeader(raw: string): { name: string | null; email: string } {
   return { name: null, email: raw.trim() };
 }
 
+/** Bare addresses from a `to` field — Resend may deliver each entry as a
+ *  bare address OR the same "Display Name <addr>" form `from` carries (e.g.
+ *  a reply sent via a mail client that copies the campaign's plus-address
+ *  into `To:` with a name attached), so this reuses `parseFromHeader`'s
+ *  angle-bracket stripping rather than matching on the raw string — an
+ *  unparsed "Jane <campaign+x@dom>" would never match the plus-address regex
+ *  in `findCampaignByPlusAddress`. */
 function toAddressList(to: string[] | string | undefined): string[] {
   if (!to) return [];
-  return Array.isArray(to) ? to : [to];
+  const list = Array.isArray(to) ? to : [to];
+  return list.map((raw) => parseFromHeader(raw).email);
 }
 
 http.route({
@@ -748,14 +756,22 @@ http.route({
         if (campaignId) break;
       }
       const from = parseFromHeader(event.data?.from ?? "");
-      await ctx.runMutation(internal.campaigns.recordInboundReply, {
-        campaignId: campaignId ?? undefined,
-        fromEmail: from.email,
-        fromName: from.name ?? undefined,
-        subject: event.data?.subject,
-        textBody: event.data?.text,
-        htmlBody: event.data?.html,
-      });
+      try {
+        await ctx.runMutation(internal.campaigns.recordInboundReply, {
+          campaignId: campaignId ?? undefined,
+          fromEmail: from.email,
+          fromName: from.name ?? undefined,
+          subject: event.data?.subject,
+          textBody: event.data?.text,
+          htmlBody: event.data?.html,
+        });
+      } catch (err) {
+        // A malformed/oversized payload should never turn into a Resend
+        // retry storm (Resend retries non-2xx webhook responses) — log and
+        // still 200, mirroring the other providers' swallow-and-log paths
+        // (e.g. `ingestIncreaseCardTransaction`).
+        console.error("[resend] failed to record inbound reply", err);
+      }
     }
     // Unknown event types (delivery, open/click tracking if ever enabled…)
     // are a silent no-op — this route only cares about deliverability

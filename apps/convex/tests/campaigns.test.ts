@@ -784,6 +784,155 @@ describe("send pipeline", () => {
   });
 });
 
+// ── applyDeliveryBatch — atomic continuation ─────────────────────────────────
+// The delivery loop's crash-safety fix: `applyDeliveryBatch` decides, in the
+// SAME mutation that persists a batch's results, whether to schedule the
+// next batch or finalize the campaign — never as a separate action-side step
+// that a crash could skip.
+
+async function seedSendingCampaign(
+  s: ChapterSetup,
+  opts: { recipientCount?: number } = {},
+): Promise<Id<"campaigns">> {
+  const audienceId = await seedAudience(s);
+  return await run(s.t, (ctx) =>
+    ctx.db.insert("campaigns", {
+      scope: "central",
+      name: "N",
+      subject: "Hi",
+      audienceId,
+      doc: heroDoc(),
+      status: "sending",
+      recipientCount: opts.recipientCount,
+      createdBy: s.userId,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }),
+  );
+}
+
+async function seedQueuedRecipient(
+  s: ChapterSetup,
+  campaignId: Id<"campaigns">,
+  email: string,
+): Promise<Id<"campaignRecipients">> {
+  return await run(s.t, (ctx) =>
+    ctx.db.insert("campaignRecipients", {
+      campaignId,
+      email,
+      status: "queued",
+      unsubscribeToken: `tok-${email}`,
+    }),
+  );
+}
+
+describe("applyDeliveryBatch — atomic continuation", () => {
+  test("finalizes the campaign immediately when no queued rows remain — no scheduled hop needed", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const campaignId = await seedSendingCampaign(s, { recipientCount: 1 });
+    const recipientId = await seedQueuedRecipient(s, campaignId, "only@example.com");
+
+    await t.mutation(internal.campaigns.applyDeliveryBatch, {
+      campaignId,
+      results: [{ recipientId, outcome: "sent" }],
+    });
+
+    // Finalized synchronously, inside the same mutation — no need to drain
+    // any scheduled function first.
+    const campaign = await run(s.t, (ctx) => ctx.db.get(campaignId));
+    expect(campaign?.status).toBe("sent");
+    expect(campaign?.sentAt).toBeDefined();
+
+    const scheduled = await run(s.t, (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(scheduled).toHaveLength(0);
+  });
+
+  test("schedules the next batch atomically when queued rows remain — campaign stays 'sending' until then", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const campaignId = await seedSendingCampaign(s, { recipientCount: 2 });
+    const doneId = await seedQueuedRecipient(s, campaignId, "done@example.com");
+    await seedQueuedRecipient(s, campaignId, "still-queued@example.com");
+
+    await t.mutation(internal.campaigns.applyDeliveryBatch, {
+      campaignId,
+      results: [{ recipientId: doneId, outcome: "sent" }],
+    });
+
+    // Not finalized — one row is still "queued".
+    const campaign = await run(s.t, (ctx) => ctx.db.get(campaignId));
+    expect(campaign?.status).toBe("sending");
+    expect(campaign?.sentCount).toBe(1);
+
+    const scheduled = await run(s.t, (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0].name).toContain("deliverCampaignBatch");
+    expect((scheduled[0].args[0] as { campaignId: Id<"campaigns"> }).campaignId).toBe(
+      campaignId,
+    );
+  });
+});
+
+// ── sweepStuckSends — the safety-net cron ────────────────────────────────────
+
+const TEN_MINUTES = 10 * 60 * 1000;
+
+describe("sweepStuckSends", () => {
+  test("reschedules a stale 'sending' campaign, and leaves a fresh one alone", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const now = Date.now();
+
+    const staleId = await seedSendingCampaign(s, { recipientCount: 1 });
+    await run(s.t, (ctx) =>
+      ctx.db.patch(staleId, { updatedAt: now - TEN_MINUTES - 1 }),
+    );
+    const freshId = await seedSendingCampaign(s, { recipientCount: 1 });
+    await run(s.t, (ctx) => ctx.db.patch(freshId, { updatedAt: now - 1000 }));
+
+    const rescheduled = await t.mutation(internal.campaigns.sweepStuckSends, {});
+    expect(rescheduled).toBe(1);
+
+    const scheduled = await run(s.t, (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0].name).toContain("deliverCampaignBatch");
+    expect((scheduled[0].args[0] as { campaignId: Id<"campaigns"> }).campaignId).toBe(
+      staleId,
+    );
+  });
+
+  test("reschedules materializeRecipients (not deliverCampaignBatch) when recipientCount never got set", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const staleId = await seedSendingCampaign(s); // recipientCount left unset
+    await run(s.t, (ctx) =>
+      ctx.db.patch(staleId, { updatedAt: Date.now() - TEN_MINUTES - 1 }),
+    );
+
+    const rescheduled = await t.mutation(internal.campaigns.sweepStuckSends, {});
+    expect(rescheduled).toBe(1);
+
+    const scheduled = await run(s.t, (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(scheduled).toHaveLength(1);
+    expect(scheduled[0].name).toContain("materializeRecipients");
+  });
+
+  test("no-ops when there's nothing stuck", async () => {
+    const t = newT();
+    const rescheduled = await t.mutation(internal.campaigns.sweepStuckSends, {});
+    expect(rescheduled).toBe(0);
+  });
+});
+
 // ── sendTest ──────────────────────────────────────────────────────────────
 
 describe("sendTest", () => {

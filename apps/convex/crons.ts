@@ -133,4 +133,18 @@ crons.interval(
   {},
 );
 
+// Every 15 min: safety net for stuck email-campaign sends
+// (`campaigns.ts#sweepStuckSends`) — reschedules any campaign still
+// "sending" whose `updatedAt` has gone quiet for 10+ minutes (a crash inside
+// `materializeRecipients`/`deliverCampaignBatch` before it ever reached a
+// mutation, the one gap the pipeline's own atomic-continuation scheduling
+// can't close on its own). Idempotent either direction: re-materializing
+// clears stale rows first, re-delivering is entirely "queued"-row-driven.
+crons.interval(
+  "stuck campaign send sweep",
+  { minutes: 15 },
+  internal.campaigns.sweepStuckSends,
+  {},
+);
+
 export default crons;

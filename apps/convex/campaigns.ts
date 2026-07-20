@@ -10,10 +10,17 @@
  * `materializeRecipients` (an internalAction — it resolves the audience via
  * `audiences.ts#resolveAudienceForSend` and writes one `campaignRecipients`
  * row per address in batches of 100, the house `backfillGiftsFromDonations`
- * slice pattern) → `deliverCampaignBatch` (an internalAction, self-
- * rescheduling) sends 25 at a time and persists the results, until the
- * `campaignRecipients.by_campaign_and_status "queued"` index comes back empty
- * → `finishCampaignSend` sets the final status/counts/`sentAt`.
+ * slice pattern; `setRecipientCount`, its final write, schedules the first
+ * `deliverCampaignBatch` itself) → `deliverCampaignBatch` (an internalAction)
+ * sends 25 at a time; `applyDeliveryBatch`, the mutation that persists each
+ * batch's results, ATOMICALLY decides — in the same transaction — whether to
+ * schedule the next batch (more "queued" rows remain) or finalize the
+ * campaign (`completeCampaignSend`) right there. Every continuation is
+ * scheduled from a mutation, never from the action after the fact, so a crash
+ * between "recorded the write" and "scheduled what's next" can't happen — see
+ * `applyDeliveryBatch`'s doc. A safety-net cron (`crons.ts`) reschedules any
+ * "sending" campaign that's gone quiet (a crash mid-action, before it ever
+ * reaches a mutation, is the one gap that leaves nothing scheduled).
  *
  * `sendTest` is a synchronous action (not a scheduled send) — it renders
  * against the caller's own name/email and a dummy unsubscribe URL, and sends
@@ -37,6 +44,7 @@ import { requireUserId } from "./lib/context";
 import { requireCampaignsAccess } from "./lib/campaignsAccess";
 import { siteUrl } from "./lib/siteUrl";
 import { resolveResendSettings, sendResendEmail } from "./lib/resend";
+import { newGuestToken } from "./ticketing";
 import {
   renderCampaignEmail,
   renderCampaignText,
@@ -45,18 +53,6 @@ import {
 import { CAMPAIGN_STATUSES } from "./schema/campaigns";
 
 const scopeValidator = v.union(v.id("chapters"), v.literal("central"));
-
-/** URL-safe random token — the `rsvps.token`/`newGuestToken` precedent
- *  (`crypto.getRandomValues`, the safe random source available in both
- *  Convex mutations and actions). */
-function randomToken(length = 32): string {
-  const chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-  const bytes = new Uint8Array(length);
-  crypto.getRandomValues(bytes);
-  let out = "";
-  for (let i = 0; i < length; i++) out += chars[bytes[i] % chars.length];
-  return out;
-}
 
 // ── CRUD ──────────────────────────────────────────────────────────────────
 
@@ -377,18 +373,27 @@ export const insertRecipientBatch = internalMutation({
         email: r.email,
         name: r.name,
         status: "queued",
-        unsubscribeToken: randomToken(),
+        unsubscribeToken: newGuestToken(),
       });
     }
     return null;
   },
 });
 
+/** Record the resolved recipient count AND schedule the first
+ *  `deliverCampaignBatch` invocation in the SAME mutation — scheduling from a
+ *  mutation commits atomically with its writes, so a crash right after this
+ *  call can never leave the campaign materialized-but-never-started (the
+ *  `applyDeliveryBatch` doc below has the full rationale; this is the
+ *  materialize-side half of the same fix). */
 export const setRecipientCount = internalMutation({
   args: { campaignId: v.id("campaigns"), recipientCount: v.number() },
   returns: v.null(),
   handler: async (ctx, { campaignId, recipientCount }) => {
     await ctx.db.patch(campaignId, { recipientCount, updatedAt: Date.now() });
+    await ctx.scheduler.runAfter(0, internal.campaigns.deliverCampaignBatch, {
+      campaignId,
+    });
     return null;
   },
 });
@@ -415,8 +420,9 @@ export const clearRecipientsBatch = internalMutation({
  * Resolve the campaign's audience and materialize it into `campaignRecipients`
  * rows, batching inserts at `MATERIALIZE_BATCH_SIZE`. Zero matching
  * recipients is a RECORDED failure (not an error) — the campaign never
- * dangles in "sending" with nothing to deliver. On success, schedules the
- * first `deliverCampaignBatch` invocation.
+ * dangles in "sending" with nothing to deliver. On success, `setRecipientCount`
+ * itself schedules the first `deliverCampaignBatch` invocation (atomically —
+ * see its doc), so there's nothing left to schedule here.
  */
 export const materializeRecipients = internalAction({
   args: { campaignId: v.id("campaigns") },
@@ -458,9 +464,6 @@ export const materializeRecipients = internalAction({
       campaignId,
       recipientCount: recipients.length,
     });
-    await ctx.scheduler.runAfter(0, internal.campaigns.deliverCampaignBatch, {
-      campaignId,
-    });
     return null;
   },
 });
@@ -490,9 +493,42 @@ export const getQueuedBatch = internalQuery({
 
 type DeliveryOutcome = "sent" | "failed" | "suppressed";
 
-/** Persist one batch's per-recipient outcomes + the campaign's rollup
- *  counters, in a single mutation call (the action does all the network I/O;
- *  this does all the writes — "as few action→mutation calls as possible"). */
+/** Shared "no queued rows remain" finalize logic — status mirrors
+ *  `blasts.ts#finishBlast`: "failed" iff at least one row was processed and
+ *  NONE of them sent; "sent" otherwise (including a mixed partial-failure
+ *  send — the per-row `failedCount` still tells that story). Factored out so
+ *  `applyDeliveryBatch`'s atomic continuation can call it directly (same
+ *  transaction, no extra scheduled hop) as well as `finishCampaignSend`. */
+async function completeCampaignSend(ctx: MutationCtx, campaignId: Id<"campaigns">): Promise<void> {
+  const campaign = await ctx.db.get(campaignId);
+  if (!campaign) return;
+  const sentCount = campaign.sentCount ?? 0;
+  const failedCount = campaign.failedCount ?? 0;
+  const suppressedCount = campaign.suppressedCount ?? 0;
+  const processed = sentCount + failedCount + suppressedCount;
+  const status = processed > 0 && sentCount === 0 ? "failed" : "sent";
+  await ctx.db.patch(campaignId, { status, sentAt: Date.now(), updatedAt: Date.now() });
+}
+
+/**
+ * Persist one batch's per-recipient outcomes + the campaign's rollup
+ * counters (the action does all the network I/O; this does all the writes —
+ * "as few action→mutation calls as possible"), THEN — in the very same
+ * transaction — decide what happens next: schedule the next
+ * `deliverCampaignBatch` if "queued" rows remain, or finalize the campaign
+ * right here if none do.
+ *
+ * This atomic continuation is the fix for a real failure mode: the OLD shape
+ * had the action call this mutation and THEN separately call
+ * `ctx.scheduler.runAfter` — two independent steps. A crash in the action
+ * between those two calls (deploy restart, an uncaught error after this
+ * mutation resolved) stranded the campaign in "sending" forever, since
+ * actions aren't retried by Convex. Scheduling from INSIDE a mutation commits
+ * atomically with its writes, so that gap no longer exists — either this
+ * whole batch (row patches + counters + the next step) commits together, or
+ * none of it does. (The safety-net sweep cron in `crons.ts` covers the
+ * OTHER gap this doesn't — a crash in the action BEFORE it ever calls this
+ * mutation, e.g. mid-Resend-call.) */
 export const applyDeliveryBatch = internalMutation({
   args: {
     campaignId: v.id("campaigns"),
@@ -523,23 +559,37 @@ export const applyDeliveryBatch = internalMutation({
       await ctx.db.patch(r.recipientId, patch);
     }
     const campaign = await ctx.db.get(campaignId);
-    if (campaign) {
-      await ctx.db.patch(campaignId, {
-        sentCount: (campaign.sentCount ?? 0) + sentDelta,
-        failedCount: (campaign.failedCount ?? 0) + failedDelta,
-        suppressedCount: (campaign.suppressedCount ?? 0) + suppressedDelta,
-        updatedAt: Date.now(),
-      });
+    if (!campaign) return null;
+    await ctx.db.patch(campaignId, {
+      sentCount: (campaign.sentCount ?? 0) + sentDelta,
+      failedCount: (campaign.failedCount ?? 0) + failedDelta,
+      suppressedCount: (campaign.suppressedCount ?? 0) + suppressedDelta,
+      updatedAt: Date.now(),
+    });
+
+    const stillQueued = await ctx.db
+      .query("campaignRecipients")
+      .withIndex("by_campaign_and_status", (q) =>
+        q.eq("campaignId", campaignId).eq("status", "queued"),
+      )
+      .take(1);
+    if (stillQueued.length > 0) {
+      await ctx.scheduler.runAfter(0, internal.campaigns.deliverCampaignBatch, { campaignId });
+    } else {
+      await completeCampaignSend(ctx, campaignId);
     }
     return null;
   },
 });
 
-/** Finalize a campaign once no "queued" rows remain (or immediately, for the
- *  zero-recipients short-circuit via `zeroRecipientsError`). Status mirrors
- *  `blasts.ts#finishBlast`: "failed" iff at least one row was processed and
- *  NONE of them sent; "sent" otherwise (including a mixed partial-failure
- *  send — the per-row `failedCount` still tells that story). */
+/** Finalize a campaign — either immediately for the zero-recipients
+ *  short-circuit (`zeroRecipientsError`), or via `completeCampaignSend`'s
+ *  shared "no queued rows remain" logic. Kept as its own callable mutation
+ *  for `materializeRecipients`'s zero-recipients path, `deliverCampaignBatch`'s
+ *  empty-fetch safety net, and the sweep cron — `applyDeliveryBatch`'s own
+ *  atomic continuation calls `completeCampaignSend` directly instead of
+ *  routing through here (no reason to pay for an extra mutation hop when
+ *  it's already inside one). */
 export const finishCampaignSend = internalMutation({
   args: {
     campaignId: v.id("campaigns"),
@@ -564,22 +614,71 @@ export const finishCampaignSend = internalMutation({
       return null;
     }
 
-    const sentCount = campaign.sentCount ?? 0;
-    const failedCount = campaign.failedCount ?? 0;
-    const suppressedCount = campaign.suppressedCount ?? 0;
-    const processed = sentCount + failedCount + suppressedCount;
-    const status = processed > 0 && sentCount === 0 ? "failed" : "sent";
-    await ctx.db.patch(campaignId, { status, sentAt: Date.now(), updatedAt: Date.now() });
+    await completeCampaignSend(ctx, campaignId);
     return null;
   },
 });
 
+// ── stuck-send sweep (crons.ts safety net) ──────────────────────────────────
+
+const STUCK_SEND_STALE_MS = 10 * 60 * 1000; // 10 minutes
+const STUCK_SEND_SCAN_LIMIT = 50;
+
 /**
- * Send up to `DELIVER_BATCH_SIZE` queued recipients, then self-reschedule.
- * Terminates (and finalizes the campaign) once a fetch comes back empty.
- * Every per-recipient failure — suppressed, Resend unreachable, an invalid
- * document — is RECORDED on that row, never thrown; one bad address never
- * stalls the rest of the send.
+ * Safety-net sweep (see the module doc's "atomic continuation" note) — catches
+ * the one gap atomic scheduling can't: a crash INSIDE an action before it
+ * ever reaches a mutation (mid Resend network call, mid audience resolution),
+ * which leaves nothing scheduled at all. Finds campaigns stuck in "sending"
+ * whose `updatedAt` hasn't moved in `STUCK_SEND_STALE_MS` — a healthy active
+ * send bumps `updatedAt` on every `applyDeliveryBatch`/`setRecipientCount`
+ * write, so a fresh send is never mistaken for stuck — and reschedules the
+ * next step: `materializeRecipients` when `recipientCount` is still unset
+ * (materialize never finished — idempotent, it clears any stale rows first),
+ * else `deliverCampaignBatch` (idempotent — driven entirely by "queued" rows,
+ * never rows already terminal). Bounded per run via `by_status`; a backlog
+ * larger than the bound drains across runs (the
+ * `maintenance.sweepRateLimitAttempts` precedent). Returns the number of
+ * campaigns rescheduled, for tests.
+ */
+export const sweepStuckSends = internalMutation({
+  args: {},
+  returns: v.number(),
+  handler: async (ctx) => {
+    const cutoff = Date.now() - STUCK_SEND_STALE_MS;
+    const candidates = await ctx.db
+      .query("campaigns")
+      .withIndex("by_status", (q) => q.eq("status", "sending"))
+      .take(STUCK_SEND_SCAN_LIMIT);
+
+    let rescheduled = 0;
+    for (const campaign of candidates) {
+      if (campaign.updatedAt >= cutoff) continue; // still actively progressing
+      rescheduled++;
+      if (campaign.recipientCount === undefined) {
+        await ctx.scheduler.runAfter(0, internal.campaigns.materializeRecipients, {
+          campaignId: campaign._id,
+        });
+      } else {
+        await ctx.scheduler.runAfter(0, internal.campaigns.deliverCampaignBatch, {
+          campaignId: campaign._id,
+        });
+      }
+    }
+    return rescheduled;
+  },
+});
+
+/**
+ * Send up to `DELIVER_BATCH_SIZE` queued recipients; `applyDeliveryBatch`
+ * then decides — atomically, in the mutation that persists these results —
+ * whether to schedule the next batch or finalize the campaign (see its doc).
+ * Also finalizes directly (via `finishCampaignSend`) if this fetch itself
+ * comes back with nothing queued — the sweep cron's re-invocation of an
+ * already-fully-processed campaign, or the natural empty-fetch case in the
+ * older shape, both land here safely (idempotent either way). Every
+ * per-recipient failure — suppressed, Resend unreachable, an invalid document
+ * — is RECORDED on that row, never thrown; one bad address never stalls the
+ * rest of the send.
  */
 export const deliverCampaignBatch = internalAction({
   args: { campaignId: v.id("campaigns") },
@@ -670,8 +769,10 @@ export const deliverCampaignBatch = internalAction({
       }
     }
 
+    // `applyDeliveryBatch` schedules the NEXT batch (or finalizes the
+    // campaign) itself, atomically with these writes — see its doc. Nothing
+    // left to schedule here.
     await ctx.runMutation(internal.campaigns.applyDeliveryBatch, { campaignId, results });
-    await ctx.scheduler.runAfter(0, internal.campaigns.deliverCampaignBatch, { campaignId });
     return null;
   },
 });
@@ -764,6 +865,19 @@ export const unsubscribeByToken = internalMutation({
 
 // ── /resend/webhook (http.ts) ────────────────────────────────────────────────
 
+const INBOUND_TEXT_BODY_LIMIT = 50_000;
+const INBOUND_HTML_BODY_LIMIT = 150_000;
+const TRUNCATION_MARKER = "… [truncated]";
+
+/** Cap an inbound body at `limit` chars, appending a visible marker — an
+ *  inbound webhook payload is attacker/third-party-controlled (Resend just
+ *  forwards whatever the sender sent), so an unbounded body could otherwise
+ *  blow past Convex's 1MB document size limit or bloat the replies inbox. */
+function truncateBody(body: string | undefined, limit: number): string | undefined {
+  if (body === undefined || body.length <= limit) return body;
+  return `${body.slice(0, limit)}${TRUNCATION_MARKER}`;
+}
+
 /** Record an inbound reply, matched to a campaign (or not — a stray reply
  *  still gets a row rather than silently vanishing) via the plus-address the
  *  `/resend/webhook` route parsed out of the `to` header. */
@@ -783,8 +897,8 @@ export const recordInboundReply = internalMutation({
       fromEmail,
       fromName,
       subject,
-      textBody,
-      htmlBody,
+      textBody: truncateBody(textBody, INBOUND_TEXT_BODY_LIMIT),
+      htmlBody: truncateBody(htmlBody, INBOUND_HTML_BODY_LIMIT),
       receivedAt: Date.now(),
       read: false,
     });

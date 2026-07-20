@@ -1,6 +1,11 @@
 import { describe, expect, test } from "vitest";
 import type { EmailBlock, EmailDocument } from "./emailBlocks";
-import { renderCampaignEmail, renderCampaignText } from "./emailRender";
+import {
+  renderCampaignEmail,
+  renderCampaignText,
+  safeEmailHref,
+  safeImageSrc,
+} from "./emailRender";
 
 const baseOpts = {
   recipient: { name: "Alex Rivera", email: "alex@example.com" },
@@ -54,6 +59,15 @@ describe("renderCampaignEmail — merge tags", () => {
     expect(html).not.toContain("there");
   });
 
+  test("a fallback containing a literal '}' still substitutes fully — no raw tag leaks", () => {
+    const html = renderCampaignEmail(
+      doc([{ id: "1", kind: "heading", text: "{{firstName|Hi}there}}" }]),
+      { ...baseOpts, recipient: { name: null, email: "x@example.com" } },
+    );
+    expect(html).toContain("Hi}there");
+    expect(html).not.toContain("{{firstName");
+  });
+
   test("an XSS attempt in the recipient name is escaped, not injected", () => {
     const html = renderCampaignEmail(
       doc([{ id: "1", kind: "heading", text: "Hi {{name}}" }]),
@@ -99,6 +113,28 @@ describe("renderCampaignEmail — markdown subset", () => {
     );
     expect(html).toContain('href="https://x.test/go"');
     expect(html).toContain(">click here<");
+  });
+
+  test("a link URL with one level of balanced parens isn't truncated (Wikipedia-style)", () => {
+    const html = renderCampaignEmail(
+      doc([
+        {
+          id: "1",
+          kind: "text",
+          markdown: "[wiki](https://en.wikipedia.org/wiki/Foo_(bar))",
+        },
+      ]),
+      baseOpts,
+    );
+    expect(html).toContain('href="https://en.wikipedia.org/wiki/Foo_(bar)"');
+  });
+
+  test("nested italic inside bold renders correctly", () => {
+    const html = renderCampaignEmail(
+      doc([{ id: "1", kind: "text", markdown: "**bold *italic* text**" }]),
+      baseOpts,
+    );
+    expect(html).toContain("<strong>bold <em>italic</em> text</strong>");
   });
 
   test("a simple '- ' list becomes a <ul>", () => {
@@ -155,6 +191,71 @@ describe("renderCampaignEmail — every block kind", () => {
     const withExtra = renderCampaignEmail(doc(withUnknown), baseOpts);
     expect(withExtra).toBe(withKnownOnly);
     expect(withExtra).not.toContain("v.mp4");
+  });
+});
+
+describe("renderCampaignEmail — URL scheme allowlist (SECURITY)", () => {
+  test("a javascript: button href renders as an inert '#'", () => {
+    const html = renderCampaignEmail(
+      doc([{ id: "1", kind: "button", label: "Click", url: "javascript:alert(1)" }]),
+      baseOpts,
+    );
+    expect(html).toContain('href="#"');
+    expect(html).not.toContain("javascript:");
+  });
+
+  test("a data: image src renders with an empty src (no image loads)", () => {
+    const html = renderCampaignEmail(
+      doc([
+        {
+          id: "1",
+          kind: "image",
+          url: "data:text/html,<script>alert(1)</script>",
+          alt: "x",
+        },
+      ]),
+      baseOpts,
+    );
+    expect(html).toContain('src=""');
+    expect(html).not.toContain("data:text/html");
+  });
+
+  test("scheme matching is case-insensitive — 'JavaScript:' is still blocked", () => {
+    const html = renderCampaignEmail(
+      doc([{ id: "1", kind: "button", label: "Click", url: "JavaScript:alert(1)" }]),
+      baseOpts,
+    );
+    expect(html).toContain('href="#"');
+  });
+
+  test("mailto: is allowed for a button link", () => {
+    const html = renderCampaignEmail(
+      doc([{ id: "1", kind: "button", label: "Email us", url: "mailto:hello@example.com" }]),
+      baseOpts,
+    );
+    expect(html).toContain('href="mailto:hello@example.com"');
+  });
+});
+
+describe("safeEmailHref / safeImageSrc (unit)", () => {
+  test("safeEmailHref allows http/https/mailto, case-insensitive, trimmed", () => {
+    expect(safeEmailHref(" https://x.test ")).toBe("https://x.test");
+    expect(safeEmailHref("HTTP://x.test")).toBe("HTTP://x.test");
+    expect(safeEmailHref("mailto:a@b.com")).toBe("mailto:a@b.com");
+  });
+
+  test("safeEmailHref rejects anything else", () => {
+    expect(safeEmailHref("javascript:alert(1)")).toBe("#");
+    expect(safeEmailHref("data:text/html,x")).toBe("#");
+    expect(safeEmailHref("vbscript:x")).toBe("#");
+    expect(safeEmailHref("not-a-url")).toBe("#");
+  });
+
+  test("safeImageSrc allows only http/https", () => {
+    expect(safeImageSrc("https://x.test/a.png")).toBe("https://x.test/a.png");
+    expect(safeImageSrc("http://x.test/a.png")).toBe("http://x.test/a.png");
+    expect(safeImageSrc("mailto:a@b.com")).toBe("");
+    expect(safeImageSrc("data:image/png;base64,xxx")).toBe("");
   });
 });
 

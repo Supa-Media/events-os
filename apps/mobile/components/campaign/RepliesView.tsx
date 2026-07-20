@@ -12,14 +12,14 @@
  *
  */
 import { useState } from "react";
-import { View, Text, Pressable, StyleSheet } from "react-native";
+import { View, Text, StyleSheet } from "react-native";
 import { useRouter } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import { EmptyState } from "../ui";
 import { colors, spacing } from "../../lib/theme";
-import { formatDateTime } from "../../lib/format";
+import { ReplyRow } from "./ReplyRow";
 import type { EmailReply } from "./replyTypes";
 
 type Campaign = FunctionReturnType<typeof api.campaigns.listCampaigns>[number];
@@ -66,18 +66,13 @@ export function RepliesView() {
         const unread = !r.read && openedId !== r._id;
         const matchedCampaign = campaignName(r.campaignId);
         return (
-          <Pressable
+          <ReplyRow
             key={r._id}
+            reply={r}
+            unread={unread}
             onPress={() => open(r)}
             className="rounded-lg border border-border bg-raised px-4 py-3 active:bg-sunken web:hover:bg-sunken"
           >
-            <View style={styles.top}>
-              {unread ? <View style={styles.dot} /> : <View style={styles.dotSpacer} />}
-              <Text style={[styles.from, unread ? styles.unreadText : null]} numberOfLines={1}>
-                {r.fromName || r.fromEmail}
-              </Text>
-              <Text style={styles.time}>{formatDateTime(r.receivedAt)}</Text>
-            </View>
             <Text style={[styles.subject, unread ? styles.unreadText : null]} numberOfLines={1}>
               {r.subject || "(no subject)"}
             </Text>
@@ -87,7 +82,7 @@ export function RepliesView() {
             <Text style={styles.campaign} numberOfLines={1}>
               {matchedCampaign ? `Re: ${matchedCampaign}` : "Didn't match a campaign"}
             </Text>
-          </Pressable>
+          </ReplyRow>
         );
       })}
     </View>
@@ -96,12 +91,7 @@ export function RepliesView() {
 
 const styles = StyleSheet.create({
   list: { gap: spacing.sm },
-  top: { flexDirection: "row", alignItems: "center", gap: spacing.sm },
-  dot: { width: 8, height: 8, borderRadius: 4, backgroundColor: colors.accent },
-  dotSpacer: { width: 8, height: 8 },
-  from: { flex: 1, fontSize: 14, fontWeight: "600", color: colors.text },
   unreadText: { fontWeight: "700", color: colors.ink },
-  time: { fontSize: 12, color: colors.muted },
   subject: { fontSize: 14, color: colors.text, marginTop: 2 },
   snippet: { fontSize: 13, color: colors.muted, marginTop: 2 },
   campaign: { fontSize: 12, color: colors.faint, marginTop: spacing.xs },

@@ -98,3 +98,10 @@ never read as "sent". Test sends go to any address with `[Test]` prefixed.
   25/batch. Raise deliberately, with Resend rate limits in mind.
 - No open/click tracking yet — Resend webhooks carry these events, so it's
   an additive follow-up on the same webhook route.
+- Campaigns is for announcements/newsletters, not personal outreach — the
+  Academy's Development stream teaches that a donor re-signup ask is
+  PERSONAL outreach (a call, a 1:1 email, a conversation), never a blast.
+  Nothing here enforces that distinction in-app; it's a norm the training
+  carries. Open follow-up for the org lead: cross-link (or update) the
+  relevant Academy lesson so it references Campaigns explicitly now that the
+  feature exists — do not edit Academy content as part of this change.

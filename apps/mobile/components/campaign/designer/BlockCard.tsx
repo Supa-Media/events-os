@@ -17,6 +17,7 @@ import { Icon, TextField, Select, Field } from "../../ui";
 import { MarkdownEditor } from "../../markdown";
 import { colors } from "../../../lib/theme";
 import { BLOCK_KIND_LABELS } from "../../../lib/emailDesigner";
+import type { ActionRunner } from "../../../lib/useActionToast";
 
 const COMPACT_MARKDOWN_HEIGHT = 180;
 
@@ -29,6 +30,7 @@ export function BlockCard({
   onDelete,
   drag,
   uploadImage,
+  run,
 }: {
   block: EmailBlock;
   selected: boolean;
@@ -39,6 +41,10 @@ export function BlockCard({
   drag?: GestureType;
   /** Web-only image upload (see `ImageBlockEditor`); omitted → URL-only. */
   uploadImage?: (file: Blob, contentType: string) => Promise<string>;
+  /** Surfaces an `uploadImage` failure via the screen's toast/Alert —
+   *  required whenever `uploadImage` is passed (both come from the design
+   *  screen together). */
+  run?: ActionRunner["run"];
 }) {
   return (
     <Pressable onPress={onSelect} accessibilityRole="button" accessibilityLabel={`${BLOCK_KIND_LABELS[block.kind]} block`}>
@@ -77,7 +83,7 @@ export function BlockCard({
           </Pressable>
         </View>
 
-        <BlockEditor block={block} onChange={onChange} uploadImage={uploadImage} />
+        <BlockEditor block={block} onChange={onChange} uploadImage={uploadImage} run={run} />
       </View>
     </Pressable>
   );
@@ -87,10 +93,12 @@ function BlockEditor({
   block,
   onChange,
   uploadImage,
+  run,
 }: {
   block: EmailBlock;
   onChange: (patch: Record<string, unknown>) => void;
   uploadImage?: (file: Blob, contentType: string) => Promise<string>;
+  run?: ActionRunner["run"];
 }) {
   switch (block.kind) {
     case "heading":
@@ -127,7 +135,9 @@ function BlockEditor({
       );
 
     case "image":
-      return <ImageBlockEditor block={block} onChange={onChange} uploadImage={uploadImage} />;
+      return (
+        <ImageBlockEditor block={block} onChange={onChange} uploadImage={uploadImage} run={run} />
+      );
 
     case "button":
       return (
@@ -211,10 +221,12 @@ function ImageBlockEditor({
   block,
   onChange,
   uploadImage,
+  run,
 }: {
   block: Extract<EmailBlock, { kind: "image" }>;
   onChange: (patch: Record<string, unknown>) => void;
   uploadImage?: (file: Blob, contentType: string) => Promise<string>;
+  run?: ActionRunner["run"];
 }) {
   return (
     <View>
@@ -226,7 +238,13 @@ function ImageBlockEditor({
         autoCapitalize="none"
         keyboardType="url"
       />
-      {uploadImage ? <ImageUploadButton onUploaded={(url) => onChange({ url })} uploadImage={uploadImage} /> : null}
+      {uploadImage && run ? (
+        <ImageUploadButton
+          onUploaded={(url) => onChange({ url })}
+          uploadImage={uploadImage}
+          run={run}
+        />
+      ) : null}
       <TextField
         label="Alt text"
         value={block.alt}
@@ -257,17 +275,27 @@ function ImageBlockEditor({
 function ImageUploadButton({
   uploadImage,
   onUploaded,
+  run,
 }: {
   uploadImage: (file: Blob, contentType: string) => Promise<string>;
   onUploaded: (url: string) => void;
+  run: ActionRunner["run"];
 }) {
   const [uploading, setUploading] = useState(false);
 
   async function uploadBlob(blob: Blob, contentType: string) {
     setUploading(true);
     try {
-      const url = await uploadImage(blob, contentType);
-      onUploaded(url);
+      // `run` surfaces a failure (a bad response, a network error) via the
+      // screen's toast/Alert instead of silently swallowing it — previously
+      // an upload failure here left the spinner stop with no explanation.
+      await run(
+        async () => {
+          const url = await uploadImage(blob, contentType);
+          onUploaded(url);
+        },
+        { errorTitle: "Couldn't upload image" },
+      );
     } finally {
       setUploading(false);
     }

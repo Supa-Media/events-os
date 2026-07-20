@@ -1,5 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
+  isAllowedImageUrl,
+  isAllowedLinkUrl,
   isKnownMergeTag,
   MERGE_TAGS,
   newBlockId,
@@ -129,5 +131,55 @@ describe("validateEmailDocument", () => {
     });
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toMatch(/duplicate id/);
+  });
+
+  // ── URL scheme allowlist (SECURITY write gate) ───────────────────────────
+
+  test("rejects a javascript: button url", () => {
+    const result = validateEmailDocument({
+      blocks: [{ id: "1", kind: "button", label: "Go", url: "javascript:alert(1)" }],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/http:, https:, or mailto:/);
+  });
+
+  test("rejects a data: image url", () => {
+    const result = validateEmailDocument({
+      blocks: [{ id: "1", kind: "image", url: "data:image/png;base64,xxx", alt: "x" }],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toMatch(/http: or https:/);
+  });
+
+  test("accepts a mailto: button url", () => {
+    const result = validateEmailDocument({
+      blocks: [{ id: "1", kind: "button", label: "Email us", url: "mailto:hello@example.com" }],
+    });
+    expect(result.ok).toBe(true);
+  });
+
+  test("rejects a mailto: image url (images are http/https only)", () => {
+    const result = validateEmailDocument({
+      blocks: [{ id: "1", kind: "image", url: "mailto:hello@example.com", alt: "x" }],
+    });
+    expect(result.ok).toBe(false);
+  });
+});
+
+describe("isAllowedLinkUrl / isAllowedImageUrl (unit)", () => {
+  test("isAllowedLinkUrl allows http/https/mailto, case-insensitive", () => {
+    expect(isAllowedLinkUrl("https://x.test")).toBe(true);
+    expect(isAllowedLinkUrl("HTTP://x.test")).toBe(true);
+    expect(isAllowedLinkUrl("mailto:a@b.com")).toBe(true);
+    expect(isAllowedLinkUrl("javascript:alert(1)")).toBe(false);
+    expect(isAllowedLinkUrl("JavaScript:alert(1)")).toBe(false);
+    expect(isAllowedLinkUrl("not-a-url")).toBe(false);
+  });
+
+  test("isAllowedImageUrl allows only http/https", () => {
+    expect(isAllowedImageUrl("https://x.test/a.png")).toBe(true);
+    expect(isAllowedImageUrl("http://x.test/a.png")).toBe(true);
+    expect(isAllowedImageUrl("mailto:a@b.com")).toBe(false);
+    expect(isAllowedImageUrl("data:image/png;base64,xxx")).toBe(false);
   });
 });

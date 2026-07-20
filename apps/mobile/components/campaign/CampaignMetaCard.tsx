@@ -60,7 +60,15 @@ export function CampaignMetaCard({
   }
 
   function saveSubject() {
-    if (subject !== (campaign.subject ?? "")) void onSave({ subject });
+    // Mirrors `saveName`: an empty (trimmed) subject resets the field to the
+    // saved value rather than calling `onSave` — `updateCampaignMeta` throws
+    // `EMPTY` on a blank subject, which without this guard left the local
+    // field desynced from what's actually saved (the blur handler would
+    // have already fired, the throw is unhandled here, and the empty text
+    // stays on screen looking saved).
+    const trimmed = subject.trim();
+    if (trimmed && trimmed !== (campaign.subject ?? "")) void onSave({ subject: trimmed });
+    else if (!trimmed) setSubject(campaign.subject ?? "");
   }
 
   function savePreviewText() {

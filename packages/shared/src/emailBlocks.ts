@@ -44,6 +44,41 @@ export function isKnownMergeTag(tag: string): boolean {
   return MERGE_TAG_NAMES.has(tag);
 }
 
+// ── URL scheme allowlist (SECURITY) ─────────────────────────────────────────
+// Checked at TWO points, deliberately redundant (defense in depth):
+// `validateEmailDocument` below rejects a disallowed scheme at the WRITE gate
+// (so a malicious/malformed document — e.g. a `javascript:` button href, a
+// `data:` image src — never lands in the table), and `emailRender.ts`'s
+// `safeEmailHref`/`safeImageSrc` re-check at RENDER time (covering any
+// document written before this gate existed, or via a path that bypassed it).
+
+/** Schemes allowed for a button/link URL: http/https for normal links,
+ *  mailto: for "email me" buttons. */
+const ALLOWED_LINK_SCHEMES = ["http:", "https:", "mailto:"];
+/** Images only ever need http/https — no reason for a campaign image to be a
+ *  mailto: or anything else. */
+const ALLOWED_IMAGE_SCHEMES = ["http:", "https:"];
+
+/** The `scheme:` prefix of `url` (lowercased, trimmed), or null if it has
+ *  none — a relative/scheme-less string (`"#anchor"`, `"example.com"`) is
+ *  treated as having no scheme, not as implicitly safe. */
+function urlScheme(url: string): string | null {
+  const match = /^([a-zA-Z][a-zA-Z0-9+.-]*):/.exec(url.trim());
+  return match ? `${match[1].toLowerCase()}:` : null;
+}
+
+/** True iff `url`'s scheme is one a button/markdown-link href may use. */
+export function isAllowedLinkUrl(url: string): boolean {
+  const scheme = urlScheme(url);
+  return scheme !== null && ALLOWED_LINK_SCHEMES.includes(scheme);
+}
+
+/** True iff `url`'s scheme is one an image `src` may use. */
+export function isAllowedImageUrl(url: string): boolean {
+  const scheme = urlScheme(url);
+  return scheme !== null && ALLOWED_IMAGE_SCHEMES.includes(scheme);
+}
+
 let fallbackIdCounter = 0;
 
 /**
@@ -108,6 +143,9 @@ function validateBlock(block: unknown, path: string): string | null {
       if (typeof block.url !== "string" || block.url.length === 0) {
         return `${path}: image "url" must be a non-empty string`;
       }
+      if (!isAllowedImageUrl(block.url)) {
+        return `${path}: image "url" must start with http: or https:`;
+      }
       if (typeof block.alt !== "string") return `${path}: image "alt" must be a string`;
       if (
         block.width !== undefined &&
@@ -124,6 +162,9 @@ function validateBlock(block: unknown, path: string): string | null {
       }
       if (typeof block.url !== "string" || block.url.length === 0) {
         return `${path}: button "url" must be a non-empty string`;
+      }
+      if (!isAllowedLinkUrl(block.url)) {
+        return `${path}: button "url" must start with http:, https:, or mailto:`;
       }
       if (
         block.align !== undefined &&

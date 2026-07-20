@@ -3,7 +3,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { Screen, Narrow, Button, ToastView } from "../../../components/ui";
+import { Screen, Narrow, Button, ToastView, EmptyState } from "../../../components/ui";
 import { useActionRunner } from "../../../lib/useActionToast";
 import { CampaignMetaCard } from "../../../components/campaign/CampaignMetaCard";
 import { CampaignStatusCard } from "../../../components/campaign/CampaignStatusCard";
@@ -20,11 +20,39 @@ import { CampaignRepliesSection } from "../../../components/campaign/CampaignRep
  * doesn't special-case either — so there's no "not found" branch here; an
  * unreachable id surfaces as an unhandled query error the same way it does
  * on that screen.
+ *
+ * Gated the same way `campaigns/index.tsx` (and `giving/donors.tsx` before
+ * it) gates its own screen: `myCampaignsAccess` is checked here, in the
+ * OUTER component, before any campaign-scoped query ever fires — a
+ * non-privileged caller deep-linking straight to `/campaign/<id>` must never
+ * reach `getCampaign` (`FORBIDDEN`, thrown into the ErrorBoundary). The rest
+ * of the screen's hooks/logic live in `CampaignDetailBody`, which only
+ * mounts once access is confirmed.
  */
 export default function CampaignDetailScreen() {
-  const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
   const campaignId = id as Id<"campaigns">;
+  const access = useQuery(api.audiences.myCampaignsAccess, {});
+
+  if (access === undefined) return <Screen loading />;
+  if (!access.canView) {
+    return (
+      <Screen>
+        <Narrow>
+          <EmptyState
+            icon="lock"
+            title="Campaigns is available to org leadership"
+            message="Ask a central Executive Director or Financial Manager to grant you access."
+          />
+        </Narrow>
+      </Screen>
+    );
+  }
+  return <CampaignDetailBody campaignId={campaignId} />;
+}
+
+function CampaignDetailBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
+  const router = useRouter();
 
   const campaign = useQuery(api.campaigns.getCampaign, { campaignId });
   const audiences = useQuery(api.audiences.listAudiences, {});

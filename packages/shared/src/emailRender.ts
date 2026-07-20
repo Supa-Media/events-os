@@ -11,6 +11,7 @@
  */
 
 import type { EmailBlock, EmailDocument } from "./emailBlocks";
+import { isAllowedImageUrl, isAllowedLinkUrl } from "./emailBlocks";
 import { firstNameOf } from "./names";
 
 // Same brand constants as ticketingEmails.ts's emailShell() — keep in sync.
@@ -44,12 +45,42 @@ function esc(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
+// ── URL sanitization (SECURITY) ──────────────────────────────────────────
+// `validateEmailDocument` (emailBlocks.ts) already rejects a disallowed
+// button/image URL scheme at the WRITE gate, but these are the render-time
+// half of the same defense-in-depth — they cover any document written
+// before that gate existed, or by a path that bypassed it (e.g. a direct DB
+// write, an import script). Never trust that a stored `url` is safe just
+// because it once passed validation.
+
+/** Sanitize a URL for use as an href — http:, https:, and mailto: are the
+ *  only allowed schemes (case-insensitive, trimmed); anything else (a
+ *  `javascript:` XSS payload, `data:`, `vbscript:`, a malformed string)
+ *  renders as an inert `#` instead of the raw value. */
+export function safeEmailHref(url: string): string {
+  return isAllowedLinkUrl(url) ? url.trim() : "#";
+}
+
+/** Sanitize a URL for use as an image `src` — http:/https: only. Anything
+ *  else renders as an EMPTY src (no image loads) rather than a
+ *  dangerous/broken one. */
+export function safeImageSrc(url: string): string {
+  return isAllowedImageUrl(url) ? url.trim() : "";
+}
+
 // ── Merge tags ────────────────────────────────────────────────────────────
 // `{{tag}}` or `{{tag|fallback}}`. Supported tags: firstName, name (see
 // `MERGE_TAGS` in emailBlocks.ts). Unrecognized tags, or a recognized tag
 // with no resolvable value, fall back to the author's `|fallback` text (if
 // given) or the word "friend".
-const MERGE_TAG_RE = /\{\{\s*(\w+)(?:\|([^}]*))?\s*\}\}/g;
+//
+// The fallback group allows a single `}` as long as it isn't immediately
+// followed by another `}` (`\}(?!\})`, a lookahead — no lookbehind needed, so
+// this stays safe on Hermes/React Native's regex engine) — a plain `[^}]*`
+// can't match a fallback that itself contains a literal `}`, e.g.
+// `{{firstName|Hi}there}}`, and would leave the raw tag un-substituted in
+// the sent email.
+const MERGE_TAG_RE = /\{\{\s*(\w+)(?:\|((?:[^}]|\}(?!\}))*))?\s*\}\}/g;
 
 function resolveMergeTagValue(
   tag: string,
@@ -102,14 +133,25 @@ function substituteMergeTagsPlain(text: string, recipient: CampaignRecipient): s
 // wraps existing (safe) text in tags — it never needs to escape anything
 // itself.
 
+// One level of parenthesis-nesting inside a link URL — `[^()\s]` handles the
+// ordinary case, `\([^()]*\)` lets a single balanced `(...)` pass through
+// (e.g. a Wikipedia-style `https://en.wikipedia.org/wiki/Foo_(bar)`), which
+// a plain `[^)]+` truncates at the URL's own first `)`.
+const LINK_RE = /\[([^\]]+)\]\(((?:[^()\s]|\([^()]*\))+)\)/g;
+
 function inlineMarkdown(escapedText: string): string {
   let html = escapedText;
   html = html.replace(
-    /\[([^\]]+)\]\(([^)]+)\)/g,
+    LINK_RE,
     (_m, label: string, url: string) =>
-      `<a href="${url}" style="color:${ACCENT};text-decoration:underline">${label}</a>`,
+      `<a href="${safeEmailHref(url)}" style="color:${ACCENT};text-decoration:underline">${label}</a>`,
   );
-  html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+  // Bold runs BEFORE italic, and non-greedily across ANY character (not just
+  // non-`*` ones) — a greedy/`[^*]+`-style bold match can't span an embedded
+  // single-`*` italic run (`**bold *italic* text**`: the content between the
+  // outer `**` pair contains `*` characters a `[^*]+` class excludes), so it
+  // simply fails to match and the whole thing falls through unrendered.
+  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
   html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
   return html;
 }
@@ -176,7 +218,7 @@ function renderTextBlock(
 
 function renderImageBlock(block: Extract<EmailBlock, { kind: "image" }>): string {
   const width = block.width === "half" ? "50%" : "100%";
-  return `<img src="${esc(block.url)}" alt="${esc(block.alt)}" style="display:block;width:${width};max-width:100%;border-radius:12px;margin:0 0 16px" />`;
+  return `<img src="${esc(safeImageSrc(block.url))}" alt="${esc(block.alt)}" style="display:block;width:${width};max-width:100%;border-radius:12px;margin:0 0 16px" />`;
 }
 
 function renderButtonBlock(
@@ -185,7 +227,7 @@ function renderButtonBlock(
 ): string {
   const label = substituteMergeTagsHtml(esc(block.label), recipient);
   const align = block.align === "left" ? "left" : "center";
-  return `<div style="text-align:${align};margin:0 0 16px"><a href="${esc(block.url)}" style="display:inline-block;background:${ACCENT};color:#fff;text-decoration:none;font-family:${SANS};font-weight:600;font-size:14px;padding:12px 24px;border-radius:999px">${label}</a></div>`;
+  return `<div style="text-align:${align};margin:0 0 16px"><a href="${esc(safeEmailHref(block.url))}" style="display:inline-block;background:${ACCENT};color:#fff;text-decoration:none;font-family:${SANS};font-weight:600;font-size:14px;padding:12px 24px;border-radius:999px">${label}</a></div>`;
 }
 
 function renderDividerBlock(): string {
@@ -273,8 +315,12 @@ function stripMarkdownSubset(markdown: string): string {
       return trimmed.startsWith("- ") ? `• ${trimmed.slice(2)}` : trimmed;
     })
     .join("\n")
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)")
-    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    // Same link/bold fixes as `inlineMarkdown`'s `LINK_RE` / bold pass —
+    // parenthesis-nesting and non-greedy bold, so plaintext strips the exact
+    // same markdown the HTML render understands (a Wikipedia-style URL or a
+    // `**bold *italic* text**` run shouldn't come out mangled here either).
+    .replace(LINK_RE, "$1 ($2)")
+    .replace(/\*\*(.+?)\*\*/g, "$1")
     .replace(/\*([^*]+)\*/g, "$1");
 }
 

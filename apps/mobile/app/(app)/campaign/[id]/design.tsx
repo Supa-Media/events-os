@@ -28,8 +28,17 @@ import {
   type EmailBlockKind,
   type EmailDocument,
 } from "@events-os/shared";
-import { Screen, FULL_WIDTH, Button, Icon } from "../../../../components/ui";
+import {
+  Screen,
+  FULL_WIDTH,
+  Narrow,
+  Button,
+  Icon,
+  EmptyState,
+  ToastView,
+} from "../../../../components/ui";
 import { colors } from "../../../../lib/theme";
+import { useActionRunner } from "../../../../lib/useActionToast";
 import {
   canRedo,
   canUndo,
@@ -58,10 +67,38 @@ const AUTOSAVE_DEBOUNCE_MS = 600;
 /** Sample recipient the live preview renders against — never sent anywhere. */
 const PREVIEW_RECIPIENT = { name: "Ada Lovelace", email: "ada@example.com" };
 
+/**
+ * Gated the same way `campaigns/index.tsx` (and `giving/donors.tsx` before
+ * it) gates its own screen: `myCampaignsAccess` is checked here, in the
+ * OUTER component, before `CampaignDesignBody` ever mounts — a
+ * non-privileged caller deep-linking straight to `/campaign/<id>/design`
+ * must never reach `getCampaign`/`updateCampaignDoc` (`FORBIDDEN`, thrown
+ * into the ErrorBoundary).
+ */
 export default function CampaignDesignScreen() {
-  const router = useRouter();
   const { id } = useLocalSearchParams<{ id: string }>();
   const campaignId = id as Id<"campaigns">;
+  const access = useQuery(api.audiences.myCampaignsAccess, {});
+
+  if (access === undefined) return <Screen loading />;
+  if (!access.canView) {
+    return (
+      <Screen>
+        <Narrow>
+          <EmptyState
+            icon="lock"
+            title="Campaigns is available to org leadership"
+            message="Ask a central Executive Director or Financial Manager to grant you access."
+          />
+        </Narrow>
+      </Screen>
+    );
+  }
+  return <CampaignDesignBody campaignId={campaignId} />;
+}
+
+function CampaignDesignBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
+  const router = useRouter();
 
   const campaign = useQuery(api.campaigns.getCampaign, { campaignId });
   const updateDoc = useMutation(api.campaigns.updateCampaignDoc);
@@ -71,11 +108,19 @@ export default function CampaignDesignScreen() {
   // not `useQuery` (which subscribes reactively, not what a one-off resolve
   // after an upload needs).
   const convex = useConvex();
+  const { run, toast, dismiss } = useActionRunner();
 
   const [history, setHistory] = useState<History<EmailDocument> | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
   const lastSavedRef = useRef<EmailDocument | null>(null);
+  // A "latest" ref for `history` — the debounce timer's closure (and the
+  // save-completion callback below) is captured at EFFECT-SETUP time, so
+  // without this it can only ever see the `history` that was current when
+  // ITS OWN save kicked off, not whatever the user has since undone/redone
+  // to while that save was still in flight.
+  const historyRef = useRef<History<EmailDocument> | null>(null);
+  historyRef.current = history;
 
   const editable = campaign?.status === "draft";
   const { width } = useWindowDimensions();
@@ -92,6 +137,31 @@ export default function CampaignDesignScreen() {
   const emptyDoc = useMemo<EmailDocument>(() => ({ blocks: [] }), []);
   const doc = history?.present ?? emptyDoc;
 
+  /**
+   * Persist `toSave`, then check whether `history.present` has moved on (an
+   * undo/redo — or any edit — landing while THIS save was still in flight).
+   * If it has, immediately re-save the CURRENT present instead of waiting
+   * out another debounce cycle: without this, a save already in flight when
+   * an undo lands can resolve AFTER that undo's own (independently
+   * scheduled) save and clobber it on the server with the stale, pre-undo
+   * document — the undo would silently fail to persist.
+   */
+  const saveDoc = useCallback(
+    (toSave: EmailDocument) => {
+      setSaveState("saving");
+      void updateDoc({ campaignId, doc: toSave }).then(() => {
+        lastSavedRef.current = toSave;
+        const latest = historyRef.current?.present;
+        if (latest !== undefined && latest !== toSave) {
+          saveDoc(latest);
+          return;
+        }
+        setSaveState("saved");
+      });
+    },
+    [updateDoc, campaignId],
+  );
+
   // Debounced autosave: fires whenever `history.present` changes to a
   // reference that isn't the last-saved one (undo/redo land back on an
   // earlier snapshot's exact reference, so returning to an already-saved
@@ -99,17 +169,9 @@ export default function CampaignDesignScreen() {
   useEffect(() => {
     if (!editable || history === null) return;
     if (history.present === lastSavedRef.current) return;
-    const timer = setTimeout(() => {
-      const toSave = history.present;
-      setSaveState("saving");
-      void updateDoc({ campaignId, doc: toSave }).then(() => {
-        lastSavedRef.current = toSave;
-        setSaveState("saved");
-      });
-    }, AUTOSAVE_DEBOUNCE_MS);
+    const timer = setTimeout(() => saveDoc(history.present), AUTOSAVE_DEBOUNCE_MS);
     return () => clearTimeout(timer);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [history, editable, campaignId]);
+  }, [history, editable, saveDoc]);
 
   const applyDoc = useCallback((next: EmailDocument) => {
     setHistory((h) => (h ? pushHistory(h, next) : h));
@@ -191,6 +253,13 @@ export default function CampaignDesignScreen() {
         headers: { "Content-Type": contentType },
         body: file,
       });
+      // A non-2xx response's body usually isn't JSON at all (a proxy error
+      // page, an empty body) — check `res.ok` BEFORE parsing it, or the
+      // real failure (upload rejected) gets masked by a confusing JSON
+      // parse error instead.
+      if (!res.ok) {
+        throw new Error(`Image upload failed (HTTP ${res.status})`);
+      }
       const { storageId } = await res.json();
       const url = await convex.query(api.storage.getUrl, { storageId });
       if (!url) throw new Error("Could not resolve uploaded image URL");
@@ -274,6 +343,7 @@ export default function CampaignDesignScreen() {
                 onDelete={() => handleDelete(blockId)}
                 drag={drag}
                 uploadImage={uploadImage}
+                run={run}
               />
             );
           }}
@@ -308,6 +378,7 @@ export default function CampaignDesignScreen() {
 
   return (
     <Screen maxWidth={FULL_WIDTH}>
+      <ToastView toast={toast} onDismiss={dismiss} />
       <View className="mb-3 flex-row items-center justify-between gap-3">
         <Text className="font-display text-lg text-ink" numberOfLines={1}>
           {campaign.name}

@@ -26,6 +26,7 @@ import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { requireEvent, requireUserId } from "./lib/context";
+import { normalizeEmail } from "./lib/access";
 import { eventPageUrl } from "./lib/siteUrl";
 import { emailShell, sendEmail } from "./ticketingEmails";
 import {
@@ -150,7 +151,11 @@ function emailRecipients(
   const recipients: string[] = [];
   let suppressedCount = 0;
   for (const email of deduped) {
-    if (suppressed.has(email.toLowerCase())) {
+    // `normalizeEmail` (trim + lowercase) matches exactly how
+    // `emailSuppressions.email` is stored — a plain `.toLowerCase()` alone
+    // would miss a suppressed address whose rsvp row carries stray
+    // whitespace (`"  x@y.com "` !== `"x@y.com"` after only lowercasing).
+    if (suppressed.has(normalizeEmail(email) ?? email.toLowerCase())) {
       suppressedCount++;
     } else {
       recipients.push(email);
