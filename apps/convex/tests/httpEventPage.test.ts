@@ -11,11 +11,12 @@ import {
 import type { Id } from "../_generated/dataModel";
 
 /**
- * HTTP integration for the public event page routes. The page is served under
- * the branded "/event/" prefix; the legacy "/e/" prefix is kept as an alias so
- * already-shared links (and OG-cached cover URLs) never break. Both prefixes
- * hit the same handler, so these tests pin that both resolve identically and
- * that unpublished/garbage slugs 404.
+ * HTTP integration for the public RSVP page routes. The page (the guest-facing
+ * event page, renamed to the "RSVP page") is served under the branded "/rsvp/"
+ * prefix, with "/r/" (short) plus the pre-rename "/event/" and "/e/" prefixes
+ * all kept as aliases so already-shared links (and OG-cached cover URLs) never
+ * break. All four prefixes hit the same handler, so these tests pin that they
+ * resolve identically and that unpublished/garbage slugs 404.
  */
 
 async function seedEvent(s: ChapterSetup): Promise<Id<"events">> {
@@ -76,8 +77,8 @@ async function seedPublishedPage(withCover = false): Promise<{
   return { t, slug };
 }
 
-describe("public event page routes", () => {
-  for (const prefix of ["/event", "/e"] as const) {
+describe("public RSVP page routes", () => {
+  for (const prefix of ["/rsvp", "/r", "/event", "/e"] as const) {
     test(`${prefix}/<slug> serves the landing page HTML`, async () => {
       const { t, slug } = await seedPublishedPage();
       const res = await t.fetch(`${prefix}/${slug}`, {});
@@ -102,19 +103,21 @@ describe("public event page routes", () => {
     });
   }
 
-  test("unpublished slug 404s under /event/", async () => {
+  test("unpublished slug 404s under /rsvp/", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const eventId = await seedEvent(s);
     await s.as.mutation(api.ticketing.createPage, { eventId });
     const admin = await s.as.query(api.ticketing.getAdminPage, { eventId });
-    const res = await t.fetch(`/event/${admin.page!.slug}`, {});
+    const res = await t.fetch(`/rsvp/${admin.page!.slug}`, {});
     expect(res.status).toBe(404);
   });
 
-  test("garbage slug 404s under both prefixes", async () => {
+  test("garbage slug 404s under all prefixes", async () => {
     const t = newT();
     await setupChapter(t);
+    expect((await t.fetch("/rsvp/nope-nope", {})).status).toBe(404);
+    expect((await t.fetch("/r/nope-nope", {})).status).toBe(404);
     expect((await t.fetch("/event/nope-nope", {})).status).toBe(404);
     expect((await t.fetch("/e/nope-nope", {})).status).toBe(404);
   });

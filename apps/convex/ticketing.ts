@@ -1,11 +1,12 @@
 /**
- * Ticketing — public event pages, RSVPs, ticket sales, comments & reactions.
+ * Ticketing — public RSVP pages, RSVPs, ticket sales, comments & reactions.
  *
  * Three surfaces:
  *   - ADMIN (requireAccess via chapter helpers): page setup, ticket types,
  *     guest list, orders, check-in. Used by the Tickets tab in the app.
- *   - PUBLIC, no-auth: everything the landing page (/event/<slug>, served from
- *     http.ts — the legacy /e/<slug> alias still resolves) needs. Guests are
+ *   - PUBLIC, no-auth: everything the RSVP page (/rsvp/<slug>, served from
+ *     http.ts — the older /event/<slug> and legacy /e/<slug> aliases still
+ *     resolve) needs. Guests are
  *     identified by their RSVP row's secret
  *     `token` — never by auth. Mirrors `setlists.publicBoard`.
  *   - INTERNAL: order preparation/fulfillment shared by the Stripe checkout
@@ -272,7 +273,7 @@ export const updatePage = mutation({
       if (clash && clash._id !== pageId) {
         throw new ConvexError({
           code: "SLUG_TAKEN",
-          message: `"${slug}" is already used by another event page.`,
+          message: `"${slug}" is already used by another RSVP page.`,
         });
       }
       patch.slug = slug;
@@ -814,7 +815,7 @@ export const submitRsvp = mutation({
   handler: async (ctx, args) => {
     const page = await getPublishedPage(ctx, args.slug);
     if (!page) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Event page not found." });
+      throw new ConvexError({ code: "NOT_FOUND", message: "RSVP page not found." });
     }
     if (page.rsvpEnabled === false) {
       throw new ConvexError({ code: "RSVP_CLOSED", message: "RSVPs are closed." });
@@ -913,7 +914,7 @@ export const addComment = mutation({
   handler: async (ctx, args) => {
     const page = await getPublishedPage(ctx, args.slug);
     if (!page) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Event page not found." });
+      throw new ConvexError({ code: "NOT_FOUND", message: "RSVP page not found." });
     }
     const viewer = await getViewerRsvp(ctx, page.eventId, args.token);
     if (!viewer) {
@@ -965,7 +966,7 @@ export const toggleReaction = mutation({
   handler: async (ctx, args) => {
     const page = await getPublishedPage(ctx, args.slug);
     if (!page) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Event page not found." });
+      throw new ConvexError({ code: "NOT_FOUND", message: "RSVP page not found." });
     }
     const viewer = await getViewerRsvp(ctx, page.eventId, args.token);
     if (!viewer) {
@@ -1384,7 +1385,7 @@ export const getOrderEmailPayload = internalQuery({
   },
 });
 
-/** Resolve a published page's cover image for the public /event/<slug>/cover route. */
+/** Resolve a published page's cover image for the public /rsvp/<slug>/cover route. */
 export const getCoverStorageId = internalQuery({
   args: { slug: v.string() },
   handler: async (ctx, { slug }) => {

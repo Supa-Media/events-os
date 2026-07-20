@@ -26,7 +26,7 @@ import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { requireEvent, requireUserId } from "./lib/context";
-import { eventPageUrl } from "./lib/siteUrl";
+import { rsvpPageUrl } from "./lib/siteUrl";
 import { emailShell, sendEmail } from "./ticketingEmails";
 import {
   normalizePhone,
@@ -258,7 +258,7 @@ async function deliverEmailBlast(
       <div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:#7A5A5A;margin-bottom:8px">${hostName} · ${eventName}</div>
       <h1 style="margin:0 0 16px;font-size:24px;line-height:1.25">${subject}</h1>
       ${paragraphs}
-      ${slug ? `<a href="${eventPageUrl(slug)}" style="display:inline-block;margin-top:6px;background:#D23B3A;color:#fff;text-decoration:none;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-weight:600;font-size:14px;padding:12px 24px;border-radius:999px">View event</a>` : ""}`);
+      ${slug ? `<a href="${rsvpPageUrl(slug)}" style="display:inline-block;margin-top:6px;background:#D23B3A;color:#fff;text-decoration:none;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-weight:600;font-size:14px;padding:12px 24px;border-radius:999px">View event</a>` : ""}`);
 
   let sent = 0;
   let lastError: string | undefined;

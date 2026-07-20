@@ -1,5 +1,5 @@
 /**
- * Giving — donations on the public event page. Mirrors the ticket-order money
+ * Giving — donations on the public RSVP page. Mirrors the ticket-order money
  * machinery 1:1 (no parallel system):
  *
  *   - ADMIN (requireEvent / requireOwned): record a manual cash/other donation,

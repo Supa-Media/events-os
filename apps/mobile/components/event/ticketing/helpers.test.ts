@@ -10,7 +10,7 @@ jest.mock("react-native", () => ({
   Alert: { alert: () => {} },
 }));
 
-import { eventPageUrl, resolvePublicSiteUrl } from "./helpers";
+import { rsvpPageUrl, resolvePublicSiteUrl } from "./helpers";
 
 /**
  * `resolvePublicSiteUrl` is the pure core of `publicSiteUrl()` — it picks the
@@ -48,16 +48,15 @@ describe("resolvePublicSiteUrl", () => {
 });
 
 /**
- * The client mirror of the backend `eventPageUrl`: it composes the admin
- * "share this link" string off `publicSiteUrl()` + the public "/event/" path
- * segment (switched from the terse "/e/"; the "/e/" prefix stays alive
- * server-side as a backward-compat alias).
+ * The client mirror of the backend `rsvpPageUrl`: it composes the admin
+ * "share this link" string off `publicSiteUrl()` + the canonical public
+ * "/rsvp/" path segment (the "/r/", "/event/" and "/e/" prefixes stay alive
+ * server-side as aliases so already-shared links never break).
  */
-describe("eventPageUrl", () => {
-  test("uses the /event/<slug> segment, not the legacy /e/", () => {
-    const url = eventPageUrl("summer-night");
-    expect(url).toContain("/event/summer-night");
-    expect(url).not.toContain("/e/summer-night");
-    expect(url.endsWith("/event/summer-night")).toBe(true);
+describe("rsvpPageUrl", () => {
+  test("uses the canonical /rsvp/<slug> segment", () => {
+    const url = rsvpPageUrl("summer-night");
+    expect(url).toContain("/rsvp/summer-night");
+    expect(url.endsWith("/rsvp/summer-night")).toBe(true);
   });
 });

@@ -25,6 +25,11 @@ describe("route: apex landing paths -> assets", () => {
 
 describe("route: Convex prefixes -> proxy unchanged", () => {
   it.each([
+    // /rsvp/ is the canonical public RSVP page; /r/ (short), /event/ and /e/
+    // are aliases that all resolve to the same page.
+    ["/rsvp/abc123", `${CONVEX_ORIGIN}/rsvp/abc123`],
+    ["/rsvp/abc123/cover", `${CONVEX_ORIGIN}/rsvp/abc123/cover`],
+    ["/r/abc123", `${CONVEX_ORIGIN}/r/abc123`],
     ["/event/abc123", `${CONVEX_ORIGIN}/event/abc123`],
     ["/event/abc123/cover", `${CONVEX_ORIGIN}/event/abc123/cover`],
     ["/e/abc123", `${CONVEX_ORIGIN}/e/abc123`],

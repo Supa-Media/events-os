@@ -8,8 +8,9 @@
  * (`auth.addHttpRoutes`); the JSON APIs backing the public ticketing,
  * reimbursement, and giving client scripts (`/api/tickets/*`,
  * `/api/reimburse/*`, `/api/give/*`); the server-rendered public pages
- * (`/event/` — with `/e/` kept as a backward-compat alias, see the comment at
- * its route below — `/t/`, `/give`, `/p/`, `/reimburse/`); and the two
+ * (`/rsvp/` — the guest RSVP page, with `/event/` and `/e/` kept as back-compat
+ * aliases, see the comment at its route below — `/t/`, `/give`, `/p/`,
+ * `/reimburse/`); and the two
  * payment-provider webhook receivers (`/stripe/webhook`,
  * `/increase/webhook`).
  *
@@ -75,15 +76,17 @@ function html(body: string, status = 200): Response {
   });
 }
 
-// ── Public event pages: /event/<slug>[/cover|/calendar.ics] ─────────────────
-// Served under the branded "/event/" prefix; the legacy "/e/" prefix is kept
-// as an alias (same handler) so already-shared links and OG-cached cover URLs
-// keep resolving. The handler derives slug/sub from the trailing path segments,
-// so it works unchanged under either prefix.
+// ── Public RSVP pages: /rsvp/<slug>[/cover|/calendar.ics] ───────────────────
+// The guest-facing event page — renamed to the "RSVP page" (Events-director
+// vocabulary). Served under the branded "/rsvp/" prefix; the older "/event/"
+// and legacy "/e/" prefixes are kept as aliases (same handler) so already-
+// shared links and OG-cached cover URLs keep resolving. The handler derives
+// slug/sub from the trailing path segments, so it works unchanged under any of
+// the three prefixes.
 
-const publicEventPage = httpAction(async (ctx, req) => {
+const publicRsvpPage = httpAction(async (ctx, req) => {
     const url = new URL(req.url);
-    const segments = url.pathname.split("/").filter(Boolean); // ["event"|"e", slug, ...]
+    const segments = url.pathname.split("/").filter(Boolean); // ["rsvp"|"r"|"event"|"e", slug, ...]
     const slug = decodeURIComponent(segments[1] ?? "");
     const sub = segments[2] ?? null;
     if (!slug) return html(renderNotFound(), 404);
@@ -131,9 +134,14 @@ const publicEventPage = httpAction(async (ctx, req) => {
     return html(renderLandingPage(page, siteUrl()));
 });
 
-http.route({ pathPrefix: "/event/", method: "GET", handler: publicEventPage });
-// Backward-compat alias for links shared before the "/event/" rename.
-http.route({ pathPrefix: "/e/", method: "GET", handler: publicEventPage });
+http.route({ pathPrefix: "/rsvp/", method: "GET", handler: publicRsvpPage });
+// Aliases (same handler) so every prefix resolves identically: "/r/" is the
+// short form of "/rsvp/"; "/event/" and its short "/e/" are the pre-rename
+// prefixes, kept so already-shared/emailed links never break. Canonical URLs
+// (OG tags, emails, ICS, Stripe returns) point at "/rsvp/".
+http.route({ pathPrefix: "/r/", method: "GET", handler: publicRsvpPage });
+http.route({ pathPrefix: "/event/", method: "GET", handler: publicRsvpPage });
+http.route({ pathPrefix: "/e/", method: "GET", handler: publicRsvpPage });
 
 // ── Public ticket page: /t/<code> ────────────────────────────────────────────
 
