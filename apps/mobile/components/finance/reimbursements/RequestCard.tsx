@@ -15,7 +15,7 @@
  * error via the parent's action runner.
  */
 import { useMemo, useState } from "react";
-import { View, Text, Pressable } from "react-native";
+import { View, Text, Pressable, Linking } from "react-native";
 import { useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
@@ -353,7 +353,17 @@ function LineTable({
                 {dated.transactionDate != null ? shortDate(dated.transactionDate) : "—"}
               </Text>
               <View className="w-16 items-center">
-                {line.hasReceipt ? (
+                {line.hasReceipt && line.receiptUrl ? (
+                  <Pressable
+                    hitSlop={6}
+                    onPress={() => Linking.openURL(line.receiptUrl as string)}
+                    className="active:opacity-70"
+                  >
+                    <Icon name="check" size={15} color={colors.success} />
+                  </Pressable>
+                ) : line.hasReceipt ? (
+                  // Receipt attached but no servable URL (e.g. the stored
+                  // file was deleted from storage) — not tappable.
                   <Icon name="check" size={15} color={colors.success} />
                 ) : (
                   <Icon name="minus" size={15} color={colors.faint} />

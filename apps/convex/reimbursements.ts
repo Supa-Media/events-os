@@ -1587,6 +1587,14 @@ export const get = query({
           category: await categoryName(ctx, l.categoryId),
           fund: await fundName(ctx, l.fundId),
           hasReceipt: !!l.receiptStorageId,
+          // A signed, servable URL for the stored receipt (image or PDF) — null
+          // when there's no receipt OR the stored file has since been deleted.
+          // Detail-only (see `list` above): resolving one URL per line here is
+          // fine, but `list` covers the whole queue and must not fan out N
+          // signed-URL lookups per request.
+          receiptUrl: l.receiptStorageId
+            ? await ctx.storage.getUrl(l.receiptStorageId)
+            : null,
           approved: l.approved ?? null,
           order: l.order,
         })),

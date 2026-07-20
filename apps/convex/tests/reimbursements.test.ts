@@ -972,6 +972,65 @@ describe("in-app queue never leaks the token", () => {
     for (const line of detail.lines) {
       expect(typeof line.transactionDate).toBe("number");
     }
+    // Every line has a stored receipt (submitTwoLine's `validLine` always
+    // attaches one) — the approver needs an actual URL to look at it, not
+    // just the `hasReceipt` boolean.
+    for (const line of detail.lines) {
+      expect(line.hasReceipt).toBe(true);
+      expect(typeof line.receiptUrl).toBe("string");
+    }
+  });
+
+  test("get returns null receiptUrl for a line with no stored receipt", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    const { token } = await submitTwoLine(s, "nyc");
+    const person = await seedPerson(s, {
+      name: "Manager",
+      userId: s.userId,
+      isTeamMember: true,
+    });
+    await grantRole(s, person, "manager");
+
+    const rows = await s.as.query(api.reimbursements.list, {});
+    const lineIds = await run(t, async (ctx) => {
+      const lines = await ctx.db
+        .query("reimbursementLineItems")
+        .withIndex("by_reimbursement", (q) =>
+          q.eq("reimbursementId", rows[0]._id),
+        )
+        .collect();
+      return lines.map((l) => l._id);
+    });
+    // Strip the receipt off one legacy-style line directly in the db (the
+    // submit mutations always require one; a bare `patch` mirrors a
+    // pre-existing legacy row without one).
+    await run(t, (ctx) => ctx.db.patch(lineIds[0], { receiptStorageId: undefined }));
+
+    const detail = await s.as.query(api.reimbursements.get, {
+      reimbursementId: rows[0]._id,
+    });
+    const strippedLine = detail.lines.find((l) => l._id === lineIds[0])!;
+    expect(strippedLine.hasReceipt).toBe(false);
+    expect(strippedLine.receiptUrl).toBeNull();
+    void token;
+  });
+
+  test("a non-viewer cannot read the detail", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    const { token } = await submitTwoLine(s, "nyc");
+    void token;
+    const rows = await run(t, async (ctx) =>
+      ctx.db.query("reimbursementRequests").collect(),
+    );
+    // Seed a roster row but grant no finance role.
+    await seedPerson(s, { name: "Nobody", userId: s.userId });
+    await expect(
+      s.as.query(api.reimbursements.get, { reimbursementId: rows[0]._id }),
+    ).rejects.toBeInstanceOf(ConvexError);
   });
 
   test("list status filter works", async () => {
