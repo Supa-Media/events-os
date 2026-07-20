@@ -12,9 +12,14 @@
  * `workload` answers "what is everyone under this person working on?" in one
  * query: the person's manager(s) + direct reports, plus every member of their
  * subtree (themselves included) with the events they own and the event roles
- * they hold. Manual projects ride along via `api.projects.list` on the client
- * so both stay independently reactive. Access is scoped like `overview`:
- * admins can inspect anyone; everyone else only people in their own subtree.
+ * they hold. Each owned event and held role also carries that member's
+ * `overdueTasks` (event items overdue by the digest's own reckoning — see
+ * `reminders.ts#collectOverdueEventTasksByChapter`), deduped so a task never
+ * appears twice for one member: an event a member both owns and holds a role
+ * on puts its overdue tasks on the events row only. Manual projects ride
+ * along via `api.projects.list` on the client so both stay independently
+ * reactive. Access is scoped like `overview`: admins can inspect anyone;
+ * everyone else only people in their own subtree.
  *
  * Manager/report relationships (`nav`'s `canManage`, `overview`'s
  * `hasReports`/`canManage`/`people[].effectiveManagerIds`, `workload`'s
@@ -32,6 +37,7 @@ import { v } from "convex/values";
 import { isOperationalEvent, responsibilityAppliesTo } from "@events-os/shared";
 import { getChapterIdOrNull } from "./lib/context";
 import { orgWideCatalog } from "./responsibilities";
+import { collectOverdueEventTasksByChapter } from "./reminders";
 import {
   isChapterAdmin,
   viewerPerson,
@@ -422,6 +428,28 @@ export const workload = query({
       return roleCache.get(roleId) ?? null;
     };
 
+    // Every subtree member's OVERDUE event tasks, one item scan for the
+    // whole chapter (not per member) — reuses the digest's exact
+    // attribution/completion rules (see reminders.ts) so what's "overdue"
+    // here matches what's overdue in the Sunday digest.
+    const overdueByPerson = await collectOverdueEventTasksByChapter(
+      ctx,
+      person.chapterId,
+      Date.now(),
+    );
+    const overdueTasksFor = (
+      personId: Id<"people">,
+      eventId: Id<"events">,
+    ) =>
+      (overdueByPerson.get(personId) ?? [])
+        .filter((t) => t.eventId === eventId)
+        .map((t) => ({
+          itemId: t.itemId,
+          title: t.title,
+          module: t.module,
+          dueDate: t.dueDate,
+        }));
+
     const members = await Promise.all(
       subtreeNodes(childrenOf, person).map(async ({ person: p, depth }) => {
         const ownedEvents = events
@@ -432,7 +460,11 @@ export const workload = query({
             name: e.name,
             eventDate: e.eventDate,
             status: e.status,
+            overdueTasks: overdueTasksFor(p._id, e._id),
           }));
+        // A member who OWNS an event carries that event's overdue tasks on
+        // the events row — the matching role row (if any) never repeats them.
+        const ownedEventIds = new Set(ownedEvents.map((e) => e._id));
 
         // Event roles this person holds (module leadership lives here).
         const assignments = await ctx.db
@@ -450,6 +482,9 @@ export const workload = query({
                 eventName: event.name,
                 eventDate: event.eventDate,
                 roleLabel: role.label,
+                overdueTasks: ownedEventIds.has(a.eventId)
+                  ? []
+                  : overdueTasksFor(p._id, a.eventId),
               };
             }),
           )

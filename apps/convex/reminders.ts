@@ -76,6 +76,13 @@ export type WorkEntry = {
   purpose?: string | null;
   blocker?: string | null;
   lastComment?: { body: string; authorName: string | null } | null;
+  /** Tasks only — the event-item identity, unused by the email cards but
+   * read by `collectOverdueEventTasksByChapter` (org.ts's per-person
+   * overdue rows) so it can reuse this same attribution pass instead of
+   * re-deriving it. */
+  eventId?: Id<"events">;
+  itemId?: Id<"eventItems">;
+  module?: string;
 };
 
 export type RecipientWork = {
@@ -138,30 +145,14 @@ export function partitionForDueSoon(
   };
 }
 
-/**
- * One chapter's open dated work per emailable person. Every table read is
- * scoped to the chapter (so a single query transaction never spans the whole
- * deployment) and bounded to due dates inside [now - lookback, now + horizon
- * + 1d], so ancient stragglers, far-future plans, and undated rows never
- * enter either email.
- */
-export async function collectOpenWorkForChapter(
-  ctx: QueryCtx,
-  chapterId: Id<"chapters">,
-  now: number,
-  onlyPersonId?: Id<"people">,
-): Promise<RecipientWork[]> {
-  const windowStart = now - OVERDUE_LOOKBACK_MS;
-  const windowEnd = now + WINDOW_AHEAD_MS;
-  const recipients: RecipientWork[] = [];
-
-  const people = await ctx.db
-    .query("people")
-    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-    .collect();
-  const personById = new Map(people.map((p) => [p._id, p]));
-  // A person can actually receive an email: on the roster, active, addressable.
-  const reachable = (id: Id<"people">): boolean => {
+/** A person can actually receive an email: on the roster, active, addressable.
+ * Shared by the digest's recipient fan-out and (with `onlyPersonId`
+ * undefined) by `collectOverdueEventTasksByChapter`'s attribution — same
+ * "can this candidate be charged the task" rule either way. */
+function reachablePredicate(
+  personById: Map<Id<"people">, Doc<"people">>,
+): (id: Id<"people">) => boolean {
+  return (id: Id<"people">): boolean => {
     const p = personById.get(id);
     return (
       !!p &&
@@ -170,116 +161,50 @@ export async function collectOpenWorkForChapter(
       !!(p.pwEmail ?? p.email)
     );
   };
-  const byOwner = new Map<Id<"people">, WorkEntry[]>();
-  const add = (owner: Id<"people">, entry: WorkEntry) => {
-    if (entry.dueDate < windowStart || entry.dueDate > windowEnd) return;
-    // "Mine" scoping: when collecting one person's own open work, drop
-    // everything charged to anyone else before it's ever grouped.
-    if (onlyPersonId && owner !== onlyPersonId) return;
-    const list = byOwner.get(owner) ?? [];
-    list.push(entry);
-    byOwner.set(owner, list);
-  };
+}
 
-  // Events, read once for both branches below: the item branch needs the
-  // in-flight operational events; the project branch needs to know which
-  // events are Academy training sandboxes so projects wrapping one never
-  // email anyone either.
-  const events = await ctx.db
-    .query("events")
-    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-    .collect();
-  const trainingEventIds = new Set(
-    events.filter((e) => !isOperationalEvent(e)).map((e) => e._id),
-  );
-
-  // Projects — deadline'd open work, charged to the effective owner (an
-  // unowned sub-project inherits its nearest owned ancestor, same rule as
-  // the Team views).
-  const projects = await ctx.db
-    .query("projects")
-    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-    .collect();
-  const projectById = new Map(projects.map((p) => [p._id, p]));
-  const effectiveOwner = (p: Doc<"projects">): Id<"people"> | undefined => {
-    let cur: Doc<"projects"> | undefined = p;
-    for (let hops = 0; cur && hops < 100; hops++) {
-      if (cur.ownerPersonId) return cur.ownerPersonId;
-      cur = cur.parentProjectId
-        ? projectById.get(cur.parentProjectId)
-        : undefined;
-    }
-    return undefined;
-  };
-  const inWindowProjects = projects.filter(
-    (p) =>
-      p.deadline != null &&
-      p.deadline >= windowStart &&
-      p.deadline <= windowEnd &&
-      OPEN_PROJECT_STATUSES.has(p.status) &&
-      // A project wrapping an Academy training sandbox is training too.
-      !(p.eventId && trainingEventIds.has(p.eventId)) &&
-      effectiveOwner(p) !== undefined,
-  );
-  // Independent per-project thread reads, run together rather than serially.
-  const lastComments = await Promise.all(
-    inWindowProjects.map((p) =>
-      ctx.db
-        .query("projectComments")
-        .withIndex("by_project", (q) => q.eq("projectId", p._id))
-        .order("desc")
-        .first(),
-    ),
-  );
-  const lastAuthors = await Promise.all(
-    lastComments.map((c) => (c ? ctx.db.get(c.authorPersonId) : null)),
-  );
-  inWindowProjects.forEach((p, i) => {
-    const parent = p.parentProjectId
-      ? projectById.get(p.parentProjectId)
-      : undefined;
-    const last = lastComments[i];
-    add(effectiveOwner(p)!, {
-      kind: "project",
-      name: p.name,
-      context: parent?.name ?? null,
-      dueDate: p.deadline!,
-      projectId: p._id,
-      status: p.status,
-      purpose: p.purpose ?? null,
-      blocker: p.blocker ?? null,
-      lastComment: last
-        ? { body: last.body, authorName: lastAuthors[i]?.name ?? null }
-        : null,
-    });
-  });
-
-  // Event items — every due-dated grid row (planning doc, comms, permits,
-  // supplies, custom modules — the same rows the readiness bars count),
-  // from events still in flight. Read via the [chapterId, dueDate] index
-  // range-scanned to the window, so undated and out-of-window rows are never
-  // loaded. "Open" defers to the module's own status vocabulary (its status
-  // column's isComplete options); a module with no status column can't be
-  // completed, so its dated items stay open until the date. Accountability
-  // resolves like the app does: the item's owner cell first, else everyone
-  // assigned to the item's ROLE on this event, else the event's owner (whose
-  // job is filling exactly these gaps) — but an owner/role holder who can't
-  // receive email falls through to the event owner rather than silently
-  // dropping the task.
-  const eventById = new Map(
+/** In-flight operational events, keyed by id — completed/cancelled events,
+ * past events (date + 2-week grace), and Academy training sandboxes never
+ * carry due-dated work into either email or the person Work page. */
+function operationalEventsInFlight(
+  events: Doc<"events">[],
+  now: number,
+): Map<Id<"events">, Doc<"events">> {
+  return new Map(
     events
       .filter(
         (e) =>
           e.status !== "completed" &&
           e.status !== "cancelled" &&
-          // Past events (date + 2-week grace) stop nagging: their wrap-up
-          // window has closed, so their task rows never enter either email.
           !isPastEvent(e.eventDate, now) &&
-          // Academy training sandboxes never email anyone about quest rows.
           isOperationalEvent(e),
       )
       .map((e) => [e._id, e]),
   );
+}
+
+/**
+ * Every OPEN, dated event-item row for the chapter's in-flight operational
+ * events (`eventById`), attributed exactly like the digest: the item's owner
+ * cell first, else everyone assigned to the item's role on that event, else
+ * the event's owner — skipping a candidate `reachable` rejects so an
+ * unreachable owner/role-holder's task still routes through to the event
+ * owner rather than vanishing. Calls `add(personId, entry)` per attributed
+ * person; bounds are enforced by `add` (via `windowStart`/`windowEnd`) and by
+ * the `by_chapter_and_dueDate` range read here. Shared by
+ * `collectOpenWorkForChapter` (digest) and `collectOverdueEventTasksByChapter`
+ * (org.ts's per-person overdue rows) — one attribution rule, two consumers.
+ */
+async function collectEventItemWork(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  eventById: Map<Id<"events">, Doc<"events">>,
+  windowStart: number,
+  windowEnd: number,
+  reachable: (id: Id<"people">) => boolean,
+  onlyPersonId: Id<"people"> | undefined,
+  add: (owner: Id<"people">, entry: WorkEntry) => void,
+): Promise<void> {
   const items = await ctx.db
     .query("eventItems")
     .withIndex("by_chapter_and_dueDate", (q) =>
@@ -368,9 +293,137 @@ export async function collectOpenWorkForChapter(
         name: item.title,
         context: `${event.name} · ${moduleLabel}`,
         dueDate: item.dueDate,
+        eventId: item.eventId,
+        itemId: item._id,
+        module: item.module,
       });
     }
   }
+}
+
+/**
+ * One chapter's open dated work per emailable person. Every table read is
+ * scoped to the chapter (so a single query transaction never spans the whole
+ * deployment) and bounded to due dates inside [now - lookback, now + horizon
+ * + 1d], so ancient stragglers, far-future plans, and undated rows never
+ * enter either email.
+ */
+export async function collectOpenWorkForChapter(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  now: number,
+  onlyPersonId?: Id<"people">,
+): Promise<RecipientWork[]> {
+  const windowStart = now - OVERDUE_LOOKBACK_MS;
+  const windowEnd = now + WINDOW_AHEAD_MS;
+  const recipients: RecipientWork[] = [];
+
+  const people = await ctx.db
+    .query("people")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .collect();
+  const personById = new Map(people.map((p) => [p._id, p]));
+  const reachable = reachablePredicate(personById);
+  const byOwner = new Map<Id<"people">, WorkEntry[]>();
+  const add = (owner: Id<"people">, entry: WorkEntry) => {
+    if (entry.dueDate < windowStart || entry.dueDate > windowEnd) return;
+    // "Mine" scoping: when collecting one person's own open work, drop
+    // everything charged to anyone else before it's ever grouped.
+    if (onlyPersonId && owner !== onlyPersonId) return;
+    const list = byOwner.get(owner) ?? [];
+    list.push(entry);
+    byOwner.set(owner, list);
+  };
+
+  // Events, read once for both branches below: the item branch needs the
+  // in-flight operational events; the project branch needs to know which
+  // events are Academy training sandboxes so projects wrapping one never
+  // email anyone either.
+  const events = await ctx.db
+    .query("events")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .collect();
+  const trainingEventIds = new Set(
+    events.filter((e) => !isOperationalEvent(e)).map((e) => e._id),
+  );
+
+  // Projects — deadline'd open work, charged to the effective owner (an
+  // unowned sub-project inherits its nearest owned ancestor, same rule as
+  // the Team views).
+  const projects = await ctx.db
+    .query("projects")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .collect();
+  const projectById = new Map(projects.map((p) => [p._id, p]));
+  const effectiveOwner = (p: Doc<"projects">): Id<"people"> | undefined => {
+    let cur: Doc<"projects"> | undefined = p;
+    for (let hops = 0; cur && hops < 100; hops++) {
+      if (cur.ownerPersonId) return cur.ownerPersonId;
+      cur = cur.parentProjectId
+        ? projectById.get(cur.parentProjectId)
+        : undefined;
+    }
+    return undefined;
+  };
+  const inWindowProjects = projects.filter(
+    (p) =>
+      p.deadline != null &&
+      p.deadline >= windowStart &&
+      p.deadline <= windowEnd &&
+      OPEN_PROJECT_STATUSES.has(p.status) &&
+      // A project wrapping an Academy training sandbox is training too.
+      !(p.eventId && trainingEventIds.has(p.eventId)) &&
+      effectiveOwner(p) !== undefined,
+  );
+  // Independent per-project thread reads, run together rather than serially.
+  const lastComments = await Promise.all(
+    inWindowProjects.map((p) =>
+      ctx.db
+        .query("projectComments")
+        .withIndex("by_project", (q) => q.eq("projectId", p._id))
+        .order("desc")
+        .first(),
+    ),
+  );
+  const lastAuthors = await Promise.all(
+    lastComments.map((c) => (c ? ctx.db.get(c.authorPersonId) : null)),
+  );
+  inWindowProjects.forEach((p, i) => {
+    const parent = p.parentProjectId
+      ? projectById.get(p.parentProjectId)
+      : undefined;
+    const last = lastComments[i];
+    add(effectiveOwner(p)!, {
+      kind: "project",
+      name: p.name,
+      context: parent?.name ?? null,
+      dueDate: p.deadline!,
+      projectId: p._id,
+      status: p.status,
+      purpose: p.purpose ?? null,
+      blocker: p.blocker ?? null,
+      lastComment: last
+        ? { body: last.body, authorName: lastAuthors[i]?.name ?? null }
+        : null,
+    });
+  });
+
+  // Event items — every due-dated grid row (planning doc, comms, permits,
+  // supplies, custom modules — the same rows the readiness bars count),
+  // from events still in flight, attributed via `collectEventItemWork`
+  // (owner cell → role holders → event-owner fallback, same rule the app
+  // itself uses).
+  const eventById = operationalEventsInFlight(events, now);
+  await collectEventItemWork(
+    ctx,
+    chapterId,
+    eventById,
+    windowStart,
+    windowEnd,
+    reachable,
+    onlyPersonId,
+    add,
+  );
 
   // "Mine" path: return just this person's own entries, skipping the
   // emailability fan-out and the manager directs rollup entirely.
@@ -415,6 +468,86 @@ export async function collectOpenWorkForChapter(
     });
   }
   return recipients;
+}
+
+export type OverdueEventTask = {
+  itemId: Id<"eventItems">;
+  eventId: Id<"events">;
+  module: string;
+  title: string;
+  dueDate: number;
+};
+
+/**
+ * Per-person OVERDUE event tasks for a chapter, one item scan for the whole
+ * chapter (not per person) — powers the person Work page's "slacking on X
+ * for event Y" rows (`api.org.workload`). Reuses `collectEventItemWork`'s
+ * exact attribution and completion rules, so a task counted overdue here is
+ * overdue in the Sunday digest too; the overdue cut itself is the same
+ * `dayKey(dueDate) < today` bucketing `partitionForDigest` uses.
+ *
+ * Unlike the digest (which only fans out to emailable recipients),
+ * EVERY attributed person's overdue tasks are returned here — the Work page
+ * needs to show a person's overdue work even when they have no email on
+ * file. `reachable` still gates which CANDIDATES an item's ownership can
+ * land on before falling back to the event owner (the same rule the digest
+ * applies), it just doesn't gate who appears in the result.
+ */
+export async function collectOverdueEventTasksByChapter(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  now: number,
+): Promise<Map<Id<"people">, OverdueEventTask[]>> {
+  const windowStart = now - OVERDUE_LOOKBACK_MS;
+  const windowEnd = now + WINDOW_AHEAD_MS;
+
+  const people = await ctx.db
+    .query("people")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .collect();
+  const personById = new Map(people.map((p) => [p._id, p]));
+  const reachable = reachablePredicate(personById);
+
+  const events = await ctx.db
+    .query("events")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .collect();
+  const eventById = operationalEventsInFlight(events, now);
+
+  const byOwner = new Map<Id<"people">, WorkEntry[]>();
+  const add = (owner: Id<"people">, entry: WorkEntry) => {
+    if (entry.dueDate < windowStart || entry.dueDate > windowEnd) return;
+    const list = byOwner.get(owner) ?? [];
+    list.push(entry);
+    byOwner.set(owner, list);
+  };
+  await collectEventItemWork(
+    ctx,
+    chapterId,
+    eventById,
+    windowStart,
+    windowEnd,
+    reachable,
+    undefined,
+    add,
+  );
+
+  const today = dayKey(now);
+  const result = new Map<Id<"people">, OverdueEventTask[]>();
+  for (const [personId, entries] of byOwner) {
+    const overdue = entries
+      .filter((e) => e.kind === "task" && dayKey(e.dueDate) < today)
+      .sort((a, b) => a.dueDate - b.dueDate)
+      .map((e) => ({
+        itemId: e.itemId!,
+        eventId: e.eventId!,
+        module: e.module!,
+        title: e.name || "(untitled)",
+        dueDate: e.dueDate,
+      }));
+    if (overdue.length > 0) result.set(personId, overdue);
+  }
+  return result;
 }
 
 /** Chapter ids to fan the collection over — one bounded transaction each.
