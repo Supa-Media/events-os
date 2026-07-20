@@ -6,7 +6,7 @@ import {
   Screen,
   Narrow,
   FULL_WIDTH,
-  Button,
+  BackLink,
   SectionHeader,
   EmptyState,
 } from "../../../components/ui";
@@ -57,9 +57,7 @@ export default function TemplateEditorScreen() {
           icon="inbox"
           title="Template not found"
           message="This template no longer exists."
-          action={
-            <Button title="Back to events" variant="secondary" onPress={() => router.back()} />
-          }
+          action={<BackLink fallback="/templates" />}
         />
       </Screen>
     );
