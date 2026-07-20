@@ -79,6 +79,35 @@ jobs:
           TOKEN_SET: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
         run: echo "has_token=$TOKEN_SET" >> "$GITHUB_OUTPUT"
 
+      # Preflight: prove the synced token can actually write to the account
+      # wrangler will deploy into, BEFORE the opaque `wrangler deploy` failure.
+      # A mis-synced or wrongly-scoped CLOUDFLARE_API_TOKEN otherwise dies with
+      # "Could not route ... [code: 7003]", which says nothing about the cause.
+      # This hits GET /accounts/<id> with the token and prints the account NAME
+      # it resolves to (never the secret) — so a wrong token/account is obvious.
+      - name: Verify Cloudflare credentials (preflight)
+        if: steps.cf.outputs.has_token == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          echo "account_id length: ${#CLOUDFLARE_ACCOUNT_ID} (expect 32) · token length: ${#CLOUDFLARE_API_TOKEN}"
+          resp="$(curl -sS -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+            "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID")"
+          node -e '
+            const d = JSON.parse(process.argv[1] || "{}");
+            if (d.success) {
+              console.log("[ok] token can access account: " + ((d.result && d.result.name) || "(unknown)"));
+            } else {
+              console.error("[FAIL] the synced CLOUDFLARE_API_TOKEN cannot access CLOUDFLARE_ACCOUNT_ID.");
+              console.error("       Cloudflare errors: " + JSON.stringify(d.errors));
+              console.error("       => The token value in 1Password op://Events/CLOUDFLARE_API_TOKEN/production");
+              console.error("          is not a token scoped to this account. Fix the secret and re-sync.");
+              process.exit(1);
+            }
+          ' "$resp"
+
       - name: Deploy pw-router (Cloudflare Worker)
         if: steps.cf.outputs.has_token == 'true'
         working-directory: infra/router
