@@ -1,13 +1,14 @@
 /**
  * Guest list — everyone who RSVP'd or bought tickets, with client-side
- * search. Ticket buyers get a small 🎟 marker next to their name.
+ * search plus a status/ticket-holder filter chip row. Ticket buyers get a
+ * small 🎟 marker next to their name.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Text, View } from "react-native";
 import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { Badge, Card, TextField, type BadgeTone } from "../../ui";
+import { Badge, Card, Pill, TextField, type BadgeTone } from "../../ui";
 
 const STATUS_META: Record<string, { label: string; tone: BadgeTone }> = {
   going: { label: "Going", tone: "success" },
@@ -15,22 +16,51 @@ const STATUS_META: Record<string, { label: string; tone: BadgeTone }> = {
   not_going: { label: "Can't go", tone: "neutral" },
 };
 
-export function GuestListCard({ eventId }: { eventId: Id<"events"> }) {
+export type GuestFilter = "all" | "going" | "maybe" | "not_going" | "ticket";
+
+const FILTERS: Array<{ value: GuestFilter; label: string }> = [
+  { value: "all", label: "All" },
+  { value: "going", label: "Going" },
+  { value: "maybe", label: "Maybe" },
+  { value: "not_going", label: "Can't go" },
+  { value: "ticket", label: "🎟 Ticket holders" },
+];
+
+export function GuestListCard({
+  eventId,
+  initialFilter,
+}: {
+  eventId: Id<"events">;
+  /** Lets a parent deep-link into a filter (e.g. tapping a pulse-strip stat). */
+  initialFilter?: GuestFilter;
+}) {
   const rsvps = useQuery(api.ticketing.listRsvpsAdmin, { eventId });
   const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<GuestFilter>(initialFilter ?? "all");
+
+  // Re-apply the deep-linked filter whenever the parent changes it, but leave
+  // the user free to tap other chips afterwards (no effect re-run until the
+  // prop itself changes again).
+  useEffect(() => {
+    if (initialFilter !== undefined) setFilter(initialFilter);
+  }, [initialFilter]);
 
   const filtered = useMemo(() => {
     const rows = rsvps ?? [];
     const q = search.trim().toLowerCase();
-    if (!q) return rows;
-    return rows.filter(
-      (r) =>
+    return rows.filter((r) => {
+      if (filter === "ticket" ? r.source !== "ticket" : filter !== "all" && r.status !== filter) {
+        return false;
+      }
+      if (!q) return true;
+      return (
         r.name.toLowerCase().includes(q) ||
         // Imported guests may have no email/phone — search only what exists.
         (r.email?.toLowerCase().includes(q) ?? false) ||
-        (r.phone?.toLowerCase().includes(q) ?? false),
-    );
-  }, [rsvps, search]);
+        (r.phone?.toLowerCase().includes(q) ?? false)
+      );
+    });
+  }, [rsvps, search, filter]);
 
   if (rsvps === undefined) {
     return (
@@ -40,19 +70,35 @@ export function GuestListCard({ eventId }: { eventId: Id<"events"> }) {
     );
   }
 
+  const filterActive = filter !== "all";
+
   return (
     <Card>
       <Text className="mb-3 text-sm font-semibold text-ink">
-        {rsvps.length} guest{rsvps.length === 1 ? "" : "s"}
+        {filterActive
+          ? `${filtered.length} of ${rsvps.length} guest${rsvps.length === 1 ? "" : "s"}`
+          : `${rsvps.length} guest${rsvps.length === 1 ? "" : "s"}`}
       </Text>
       {rsvps.length > 0 ? (
-        <TextField
-          value={search}
-          onChangeText={setSearch}
-          placeholder="Search by name or email…"
-          autoCapitalize="none"
-          autoCorrect={false}
-        />
+        <>
+          <TextField
+            value={search}
+            onChangeText={setSearch}
+            placeholder="Search by name or email…"
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
+          <View className="mb-3 mt-2 flex-row flex-wrap gap-2">
+            {FILTERS.map((f) => (
+              <Pill
+                key={f.value}
+                label={f.label}
+                selected={filter === f.value}
+                onPress={() => setFilter(f.value)}
+              />
+            ))}
+          </View>
+        </>
       ) : null}
 
       {rsvps.length === 0 ? (
@@ -61,7 +107,9 @@ export function GuestListCard({ eventId }: { eventId: Id<"events"> }) {
         </Text>
       ) : filtered.length === 0 ? (
         <Text className="py-2 text-base text-muted">
-          No guests match "{search.trim()}".
+          {filterActive
+            ? "No guests match this filter."
+            : `No guests match "${search.trim()}".`}
         </Text>
       ) : (
         filtered.map((r, i) => {

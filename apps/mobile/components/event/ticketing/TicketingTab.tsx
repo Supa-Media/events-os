@@ -28,7 +28,7 @@ import { useActionRunner, type ActionRunner } from "../../../lib/useActionToast"
 import { formatDateTime } from "../../../lib/format";
 import { DesignPhase } from "./DesignPhase";
 import { GivingCard } from "./GivingCard";
-import { GuestListCard } from "./GuestListCard";
+import { GuestListCard, type GuestFilter } from "./GuestListCard";
 import { ImportAttendanceCard } from "./ImportAttendanceCard";
 import { CheckInCard } from "./CheckInCard";
 import { BlastComposerCard } from "./BlastComposerCard";
@@ -52,6 +52,10 @@ export default function TicketingTab({ eventId }: { eventId: Id<"events"> }) {
   const [openPhase, setOpenPhase] = useState<
     LaunchPhaseKey | null | undefined
   >(undefined);
+  // Deep-links a pulse-strip tap into the guest list's filter chips.
+  const [guestFilter, setGuestFilter] = useState<GuestFilter | undefined>(
+    undefined,
+  );
 
   if (data === undefined) {
     return (
@@ -102,6 +106,12 @@ export default function TicketingTab({ eventId }: { eventId: Id<"events"> }) {
   const togglePhase = (key: LaunchPhaseKey) =>
     setOpenPhase(key === activePhase ? null : key);
 
+  // Tapping a pulse-strip stat jumps to Grow and pre-filters the guest list.
+  const goToGuestFilter = (filter: GuestFilter) => {
+    setOpenPhase("grow");
+    setGuestFilter(filter);
+  };
+
   const dateLabel = ev?.eventDate ? formatDateTime(ev.eventDate) : null;
 
   function phaseBody(key: LaunchPhaseKey) {
@@ -127,7 +137,7 @@ export default function TicketingTab({ eventId }: { eventId: Id<"events"> }) {
               <BlastComposerCard eventId={eventId} run={run} />
             </PhaseBlock>
             <PhaseBlock label="Guest list">
-              <GuestListCard eventId={eventId} />
+              <GuestListCard eventId={eventId} initialFilter={guestFilter} />
             </PhaseBlock>
             <PhaseBlock label="Import attendance">
               <ImportAttendanceCard eventId={eventId} />
@@ -155,9 +165,21 @@ export default function TicketingTab({ eventId }: { eventId: Id<"events"> }) {
       {/* Live pulse — meaningful only once the page is live. */}
       {page.published ? (
         <View className="mb-3 flex-row flex-wrap gap-2">
-          <StatCard label="Going" value={String(page.goingCount)} />
-          <StatCard label="Maybe" value={String(page.maybeCount)} />
-          <StatCard label="Tickets" value={String(page.ticketsSoldCount)} />
+          <StatCard
+            label="Going"
+            value={String(page.goingCount)}
+            onPress={() => goToGuestFilter("going")}
+          />
+          <StatCard
+            label="Maybe"
+            value={String(page.maybeCount)}
+            onPress={() => goToGuestFilter("maybe")}
+          />
+          <StatCard
+            label="Tickets"
+            value={String(page.ticketsSoldCount)}
+            onPress={() => goToGuestFilter("ticket")}
+          />
           <StatCard label="Revenue" value={formatMoney(page.revenueCents)} />
           <StatCard label="Given" value={formatMoney(page.donationsCents ?? 0)} />
         </View>
@@ -206,10 +228,21 @@ function PhaseBlock({
   );
 }
 
-/** One small stat tile in the live "pulse" strip. */
-function StatCard({ label, value }: { label: string; value: string }) {
+/** One small stat tile in the live "pulse" strip. Tappable tiles (Going,
+ * Maybe, Tickets) jump to the guest list pre-filtered to who's behind the
+ * number; Revenue/Given have no matching guest-list filter, so they stay
+ * static. */
+function StatCard({
+  label,
+  value,
+  onPress,
+}: {
+  label: string;
+  value: string;
+  onPress?: () => void;
+}) {
   return (
-    <Card padding="sm" className="min-w-[104px] flex-1">
+    <Card padding="sm" className="min-w-[104px] flex-1" onPress={onPress}>
       <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
         {label}
       </Text>
