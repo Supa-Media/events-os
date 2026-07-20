@@ -43,15 +43,25 @@ export async function resolveResendSettings(
   return { apiKey, fromAddress: envFrom };
 }
 
+export type ResendSendResult = { ok: boolean; status: number };
+
 /**
- * Send one email via the Resend REST API. Throws on a non-2xx response so
- * callers that need to know whether delivery landed (`sendEmailReporting`)
- * can report it; the thrown message NEVER includes the API key.
+ * Send one email via the Resend REST API. Distinguishes two failure modes
+ * that callers (`sendEmailReporting`) need to treat differently:
+ *  - a non-2xx RESPONSE (bad address, invalid domain, rate limit…) is logged
+ *    here and returned as `{ok:false, status}` — NOT thrown, since one
+ *    rejected recipient isn't a system failure.
+ *  - a `fetch` REJECTION (DNS failure, timeout, Resend fully down) is a
+ *    transport failure, NOT caught here — it propagates to the caller so a
+ *    real Resend outage can't be mistaken for "delivered" (see
+ *    `sendEmailReporting` / `blasts.ts#deliverEmailBlast`'s per-recipient
+ *    catch, which needs a real throw to count a failure).
+ * The logged/returned text NEVER includes the API key.
  */
 export async function sendResendEmail(
   settings: ResendSettings,
   { to, subject, html }: { to: string; subject: string; html: string },
-): Promise<void> {
+): Promise<ResendSendResult> {
   const response = await fetch("https://api.resend.com/emails", {
     method: "POST",
     headers: {
@@ -62,6 +72,7 @@ export async function sendResendEmail(
   });
   if (!response.ok) {
     // Resend error bodies carry a code + message, never our API key.
-    throw new Error(`Resend send failed (${response.status}): ${await response.text()}`);
+    console.error(`[resend] send failed (${response.status}): ${await response.text()}`);
   }
+  return { ok: response.ok, status: response.status };
 }

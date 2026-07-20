@@ -4,9 +4,13 @@
  * `sendEmail`/`sendEmailReporting` are the shared chokepoint every email in
  * this codebase sends through — including `accessAllowlist.ts`'s
  * access-granted mailer, `reminders.ts`, `reimbursements.ts`, `cards.ts`, and
- * `blasts.ts`. Best effort (log, never throw for `sendEmail`), no-op when no
- * Resend key resolves (dev). All emails carry the Public Worship look: cream
- * card, deep-red accents.
+ * `blasts.ts`. No-op when no Resend key resolves (dev). Best effort against a
+ * REJECTED response (a bad address, an invalid domain — logged, returns
+ * `false`, never throws), but a genuine transport failure (Resend fully down)
+ * PROPAGATES out of both — that distinction matters to `blasts.ts`'s
+ * per-recipient delivery loop, which needs a real throw to count a failure
+ * instead of quietly marking a blast "sent" during an outage. All emails
+ * carry the Public Worship look: cream card, deep-red accents.
  *
  * The Resend key/from-address come from `lib/resend.ts`'s
  * `resolveResendSettings` — the in-app superuser setting
@@ -53,12 +57,19 @@ export function emailShell(inner: string): string {
 }
 
 /**
- * Same best-effort send as `sendEmail`, but tells the caller whether delivery
- * actually landed — `true` only when a Resend key resolved (stored setting or
+ * Same send as `sendEmail`, but tells the caller whether delivery actually
+ * landed — `true` only when a Resend key resolved (stored setting or
  * `RESEND_API_KEY` env) AND Resend responded 2xx. Callers that need to report
  * a delivery outcome upstream (e.g. the Increase digital-wallet-authentication
- * webhook) should use this instead of `sendEmail`, which always resolves and
- * never throws.
+ * webhook, or `blasts.ts`'s per-recipient send loop) should use this instead
+ * of `sendEmail`.
+ *
+ * A non-2xx Resend response resolves to `false` (logged by
+ * `sendResendEmail`, never thrown) — a single bounced/rejected address isn't
+ * a system failure. A genuine transport error (network down, Resend
+ * unreachable) is deliberately NOT caught here: it propagates to the caller,
+ * so a full Resend outage surfaces as a real failure instead of silently
+ * resolving `false` alongside an ordinary bounce.
  *
  * `ctx` is the minimal shape `resolveResendSettings` needs (`runQuery`) —
  * every call site already has a real `ActionCtx` in scope.
@@ -72,15 +83,17 @@ export async function sendEmailReporting(
     console.log(`[ticketing] email skipped (no Resend key configured): "${subject}" → ${to}`);
     return false;
   }
-  try {
-    await sendResendEmail(settings, { to, subject, html });
-  } catch (err) {
-    console.error(`[ticketing] email failed ("${subject}"):`, err);
-    return false;
-  }
-  return true;
+  const result = await sendResendEmail(settings, { to, subject, html });
+  return result.ok;
 }
 
+/** Best-effort against a rejected Resend response (returns without throwing —
+ *  see `sendEmailReporting`), but a transport-level failure (Resend
+ *  unreachable) still throws out of here, same as it does out of
+ *  `sendEmailReporting`. Every current caller besides `blasts.ts` is a
+ *  scheduled `internalAction` where an uncaught throw just fails that one
+ *  scheduled run (no retry storm) rather than looking like a delivered
+ *  email. */
 export async function sendEmail(
   ctx: Pick<ActionCtx, "runQuery">,
   args: { to: string; subject: string; html: string },

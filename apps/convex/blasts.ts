@@ -323,8 +323,15 @@ function phoneLast4(phone: string): string {
 
 /** Deliver an SMS blast: one text per normalized phone, best-effort. Records
  *  one `smsUsageEvents` row per recipient (sent/failed/opted_out) — the cost
- *  ledger behind `smsUsage.getSmsSpendSummary`. */
-async function deliverSmsBlast(
+ *  ledger behind `smsUsage.getSmsSpendSummary`.
+ *
+ *  Exported (not just internal to the module) so tests can exercise the
+ *  send-time opt-out recheck directly against a hand-built payload — the
+ *  scenario it guards against (everyone in `phones` opting out in the real
+ *  gap between `sendBlast` scheduling this and this action actually running)
+ *  can't be reproduced by racing `deliverBlast`'s own two sequential reads
+ *  from outside. Not called from anywhere but `deliverBlast` in production. */
+export async function deliverSmsBlast(
   ctx: ActionCtx,
   payload: NonNullable<BlastPayload>,
 ): Promise<{ recipientCount: number; sentCount: number; error?: string }> {
@@ -352,6 +359,20 @@ async function deliverSmsBlast(
     } else {
       eligible.push(phone);
     }
+  }
+
+  if (eligible.length === 0 && phones.length > 0) {
+    // Everyone in the audience opted out in the gap between `sendBlast`
+    // scheduling this delivery and this recheck actually running — without
+    // this, `lastError` stays undefined and `finishBlast` marks the blast
+    // "sent" with `sentCount:0` (its `error && sentCount === 0` failure test
+    // never trips). A blast that reached nobody is a failure worth
+    // disclosing, not a silent success.
+    return {
+      recipientCount: phones.length,
+      sentCount: 0,
+      error: `All ${phones.length} recipient${phones.length === 1 ? "" : "s"} had opted out by delivery time.`,
+    };
   }
 
   const creds = await resolveTwilioCredentials(ctx);

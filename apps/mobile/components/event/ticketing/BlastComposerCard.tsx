@@ -17,7 +17,7 @@ import { Text, View } from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { formatCents } from "@events-os/shared";
+import { formatUsdMicros } from "@events-os/shared";
 import { Badge, Button, Card, Field, Pill, TextField, type BadgeTone } from "../../ui";
 import { formatDateTime } from "../../../lib/format";
 import type { ActionRunner } from "../../../lib/useActionToast";
@@ -27,12 +27,6 @@ import { confirmAction } from "./helpers";
  *  cost preview query — keeps `previewBlastAudience` from re-running on
  *  every character. */
 const BODY_DEBOUNCE_MS = 400;
-
-/** Micro-USD (1e-6 USD, see `SMS_SEGMENT_PRICE_USD_MICROS`) as a dollar
- *  string, via the same cents formatter finance uses elsewhere. */
-function formatSmsCost(micros: number): string {
-  return formatCents(Math.round(micros / 10_000));
-}
 
 type Audience = "everyone" | "going" | "maybe" | "ticket_holders";
 type Channel = "email" | "sms";
@@ -191,7 +185,7 @@ export function BlastComposerCard({
             <Text className="mb-1 text-xs text-muted">
               {preview.smsRecipients} people · ~{preview.estimatedSegments}{" "}
               segment{preview.estimatedSegments === 1 ? "" : "s"} each · est.{" "}
-              {formatSmsCost(preview.estimatedCostUsdMicros)} org cost
+              {formatUsdMicros(preview.estimatedCostUsdMicros)} org cost
             </Text>
           ) : null}
           {preview && preview.smsOptedOut > 0 ? (

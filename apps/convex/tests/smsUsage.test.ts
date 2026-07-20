@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import { api } from "../_generated/api";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import type { Id } from "../_generated/dataModel";
+import { isScanTruncated, SPEND_SCAN_LIMIT } from "../smsUsage";
 
 /**
  * SMS usage/cost ledger (Attendance F) — `smsUsage.getSmsSpendSummary`, the
@@ -55,6 +56,18 @@ describe("getSmsSpendSummary gate", () => {
     const result = await s.as.query(api.smsUsage.getSmsSpendSummary, {});
     expect(result).not.toBeNull();
     expect(result!.currentMonth.segments).toBe(0);
+    // Nowhere near SPEND_SCAN_LIMIT rows in a fresh test chapter.
+    expect(result!.truncated).toBe(false);
+  });
+});
+
+describe("isScanTruncated (the truncation-detection boundary)", () => {
+  // Reproducing SPEND_SCAN_LIMIT (20k) real rows in a test is prohibitively
+  // slow, so the arithmetic itself is unit-tested directly instead.
+  test("false below the cap, true exactly at the cap", () => {
+    expect(isScanTruncated(0)).toBe(false);
+    expect(isScanTruncated(SPEND_SCAN_LIMIT - 1)).toBe(false);
+    expect(isScanTruncated(SPEND_SCAN_LIMIT)).toBe(true);
   });
 });
 
@@ -85,6 +98,16 @@ describe("getSmsSpendSummary rollup", () => {
       outcome: "sent",
       createdAt: lastMonthTs,
     });
+    // Well before the previous month — outside the query's index range
+    // entirely (FIX 4: `by_time` is now bounded with `.gte(previousStart)`,
+    // not scanned unbounded from "now" backwards). Must not appear anywhere.
+    await insertUsageRow(s, {
+      purpose: "blast",
+      segments: 99,
+      costUsdMicros: 990_000,
+      outcome: "sent",
+      createdAt: lastMonthTs - 90 * 24 * 60 * 60 * 1000,
+    });
 
     const result = (await s.as.query(api.smsUsage.getSmsSpendSummary, {}))!;
 
@@ -101,6 +124,7 @@ describe("getSmsSpendSummary rollup", () => {
 
     expect(result.previousMonth.segments).toBe(3);
     expect(result.previousMonth.costUsdMicros).toBe(30_000);
+    expect(result.truncated).toBe(false);
   });
 
   test("per-chapter breakdown groups the current month's sent spend by chapter, 'central' included", async () => {

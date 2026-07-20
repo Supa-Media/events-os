@@ -196,4 +196,47 @@ describe("sendBlast guardrails", () => {
       vi.useRealTimers();
     }
   });
+
+  test("a Resend outage marks the email blast 'failed', not silently 'sent' (FIX 1 regression)", async () => {
+    // Before FIX 1, `sendEmail`/`sendEmailReporting` swallowed EVERY Resend
+    // failure (bounce or outage alike) without throwing, so this per-recipient
+    // catch in `deliverEmailBlast` never fired and a full outage still landed
+    // as "sent" with sentCount:0. Now a transport-level failure propagates,
+    // so this catch actually catches it.
+    vi.useFakeTimers();
+    const realFetch = globalThis.fetch;
+    const realKey = process.env.RESEND_API_KEY;
+    const realFrom = process.env.AUTH_EMAIL_FROM;
+    try {
+      process.env.RESEND_API_KEY = "env_key_used";
+      process.env.AUTH_EMAIL_FROM = "env-from@used.com";
+      const t = newT();
+      const s = await setupChapter(t);
+      const eventId = await seedEventWithGuests(s);
+
+      globalThis.fetch = (async () => {
+        throw new Error("resend outage");
+      }) as unknown as typeof fetch;
+
+      await s.as.mutation(api.blasts.sendBlast, {
+        eventId,
+        channel: "email",
+        body: "hello",
+        audience: "going", // 2 recipients (ann@, ben@)
+      });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      const history = await s.as.query(api.blasts.listBlasts, { eventId });
+      expect(history[0].status).toBe("failed");
+      expect(history[0].sentCount).toBe(0);
+      expect(history[0].error).toMatch(/resend outage/);
+    } finally {
+      vi.useRealTimers();
+      globalThis.fetch = realFetch;
+      if (realKey === undefined) delete process.env.RESEND_API_KEY;
+      else process.env.RESEND_API_KEY = realKey;
+      if (realFrom === undefined) delete process.env.AUTH_EMAIL_FROM;
+      else process.env.AUTH_EMAIL_FROM = realFrom;
+    }
+  });
 });

@@ -50,8 +50,19 @@ function startOfMonthUtc(ts: number): number {
 /** Bounded scan — a low-volume audit surface (same spirit as
  *  `aiCodingData.ts`'s `USAGE_SCAN_LIMIT`), not a paginated ledger. Two
  *  calendar months of SMS sends is comfortably under this cap for any
- *  realistic org SMS volume. */
-const SPEND_SCAN_LIMIT = 20_000;
+ *  realistic org SMS volume. Exported so tests can assert the boundary
+ *  arithmetic (`isScanTruncated`) without inserting `SPEND_SCAN_LIMIT` rows. */
+export const SPEND_SCAN_LIMIT = 20_000;
+
+/** Whether the bounded scan below likely undercounts real spend:
+ *  `rowCount` hitting the cap means the query's `.take` cut off rows that
+ *  were still inside the requested window, not that there genuinely were
+ *  exactly `SPEND_SCAN_LIMIT` of them. Pure arithmetic, extracted so the
+ *  boundary is unit-testable directly — reproducing the cap with real rows
+ *  in a test would be prohibitively slow. */
+export function isScanTruncated(rowCount: number): boolean {
+  return rowCount === SPEND_SCAN_LIMIT;
+}
 
 type PurposeTotals = { segments: number; costUsdMicros: number };
 type MonthTotals = {
@@ -119,6 +130,10 @@ export const getSmsSpendSummary = query({
           costUsdMicros: v.number(),
         }),
       ),
+      // True when the scan below hit SPEND_SCAN_LIMIT — the totals above may
+      // be undercounting real spend (older rows inside the window got cut
+      // off by `.take`), not that spend was actually zero past the cap.
+      truncated: v.boolean(),
     }),
   ),
   handler: async (ctx) => {
@@ -131,17 +146,23 @@ export const getSmsSpendSummary = query({
       return null;
     }
 
-    const rows = await ctx.db
-      .query("smsUsageEvents")
-      .withIndex("by_time")
-      .order("desc")
-      .take(SPEND_SCAN_LIMIT);
-
     const now = Date.now();
     const currentStart = startOfMonthUtc(now);
     const previousStart = startOfMonthUtc(
       new Date(currentStart - 1).getTime(),
     );
+
+    // Computed BEFORE the query so the index range itself excludes anything
+    // older than the previous month's start — an unbounded `by_time` scan
+    // could silently drop rows from the two months this rollup actually
+    // reports on once total volume passed SPEND_SCAN_LIMIT (bounded only by
+    // `.take`, from the newest row backwards, with no lower bound at all).
+    const rows = await ctx.db
+      .query("smsUsageEvents")
+      .withIndex("by_time", (q) => q.gte("createdAt", previousStart))
+      .order("desc")
+      .take(SPEND_SCAN_LIMIT);
+    const truncated = isScanTruncated(rows.length);
 
     const currentRows = rows.filter((r) => r.createdAt >= currentStart);
     const previousRows = rows.filter(
@@ -177,6 +198,7 @@ export const getSmsSpendSummary = query({
       currentMonth: foldMonth(currentRows),
       previousMonth: foldMonth(previousRows),
       byChapter,
+      truncated,
     };
   },
 });

@@ -124,9 +124,8 @@ Written by:
 -month totals split by purpose, plus a per-chapter breakdown for the current
 month. Only `outcome: "sent"` rows count toward spend — a failed send or a
 send skipped for an opt-out never actually billed. `TwilioUsageSummary.tsx`
-(`apps/mobile/components/integrations/`) renders it; it is **exported but not
-yet mounted** in `integrations.tsx` — drop it in below the Twilio connection
-card.
+(`apps/mobile/components/integrations/`) renders it, mounted in
+`integrations.tsx` below the Twilio connection card.
 
 ## 4. Cost preview in the composer
 
@@ -155,12 +154,14 @@ bookkeeping value. Instead:
    starting-point amount like $50/month covers most single-chapter SMS
    volume; raise it once `getSmsSpendSummary` shows it's tight.
 3. **Chapter vs. central attribution**: start every chapter on ONE shared
-   central "SMS / Texting" line (`chapterId: "central"` on the budget) unless
-   a chapter is clearly heavy-volume. The usage ledger's per-chapter rollup
-   (`getSmsSpendSummary.byChapter`) is exactly the signal for "this chapter
-   should carry its own budget line" — when one chapter's monthly segment
-   count dwarfs the others, give it its own chapter-scoped recurring budget
-   instead of drawing down the shared central one.
+   central "SMS / Texting" line (`finances.createBudget` with `central: true`
+   — it stores `chapterId: "central"` server-side; the mutation takes no
+   `chapterId` argument) unless a chapter is clearly heavy-volume. The usage
+   ledger's per-chapter rollup (`getSmsSpendSummary.byChapter`) is exactly
+   the signal for "this chapter should carry its own budget line" — when one
+   chapter's monthly segment count dwarfs the others, give it its own
+   chapter-scoped recurring budget instead of drawing down the shared
+   central one.
 4. When the actual Twilio invoice arrives, record it as a normal manual
    transaction against that budget/category (the existing manual-transaction
    flow, `finances.createManualTransaction`) — the usage ledger is a planning
@@ -182,9 +183,6 @@ bookkeeping value. Instead:
 
 ## Open questions / follow-ups
 
-- `TwilioUsageSummary.tsx` needs to be mounted in `integrations.tsx` by
-  whoever owns that file next (not touched here — a concurrent change owned
-  it during this work).
 - `smsOptOuts.source: "manual"` is modeled in the schema but nothing writes
   it yet — a future "block this number" admin action could use it.
 - No public/admin surface lists or clears `smsOptOuts` rows directly today;

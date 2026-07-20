@@ -437,4 +437,53 @@ describe("email send chokepoint (lib/resend.ts resolution order)", () => {
 
     expect(fetchCalled).toBe(false);
   });
+
+  // ── FIX 1: non-2xx vs. transport-failure semantics ─────────────────────────
+  // The regression this guards: `sendResendEmail` used to throw on BOTH a
+  // non-2xx response AND a network exception, and `sendEmailReporting`
+  // swallowed both in one blanket try/catch — so a full Resend outage looked
+  // identical to an ordinary bounce, and `blasts.ts#deliverEmailBlast`'s
+  // per-recipient catch (which needs a real throw to count a failure) never
+  // fired for either. Now: non-2xx logs + resolves `false` (no throw);
+  // a transport/fetch exception propagates all the way out.
+
+  test("a non-2xx Resend response is logged and resolves without throwing", async () => {
+    process.env.RESEND_API_KEY = "env_key_used";
+    process.env.AUTH_EMAIL_FROM = "env-from@used.com";
+    const t = newT();
+    await setupChapter(t);
+
+    globalThis.fetch = (async () => ({
+      ok: false,
+      status: 422,
+      text: async () => '{"message":"invalid to address"}',
+    })) as unknown as typeof fetch;
+
+    // The action itself never throws — sendEmail/sendEmailReporting treat a
+    // rejected response as a best-effort miss, not a system failure.
+    await expect(
+      t.action(internal.ticketingEmails.sendVerificationEmail, {
+        email: "guest@example.com",
+        code: "123456",
+      }),
+    ).resolves.toBeNull();
+  });
+
+  test("a fetch/network exception propagates out of the send chokepoint instead of being swallowed", async () => {
+    process.env.RESEND_API_KEY = "env_key_used";
+    process.env.AUTH_EMAIL_FROM = "env-from@used.com";
+    const t = newT();
+    await setupChapter(t);
+
+    globalThis.fetch = (async () => {
+      throw new Error("resend is unreachable");
+    }) as unknown as typeof fetch;
+
+    await expect(
+      t.action(internal.ticketingEmails.sendVerificationEmail, {
+        email: "guest@example.com",
+        code: "123456",
+      }),
+    ).rejects.toThrow(/resend is unreachable/);
+  });
 });

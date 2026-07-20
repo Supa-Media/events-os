@@ -529,12 +529,25 @@ http.route({
     const params: Record<string, string> = {};
     for (const [key, value] of form.entries()) params[key] = value;
 
-    const valid = await validateTwilioSignature(
-      req.url,
-      params,
-      req.headers.get("X-Twilio-Signature"),
-      creds.authToken,
-    );
+    // Twilio signs against the exact URL it was configured to POST to — per
+    // docs/plans/sms-comms.md's OPS section, that's the canonical
+    // `<deployment>.convex.site/twilio/webhook` URL, i.e. `CONVEX_SITE_URL`
+    // (Convex-provided) + this route's path. `req.url` is normally identical,
+    // but isn't guaranteed to be — a fronting proxy, an unexpected scheme, or
+    // a trailing slash can all make it diverge, which would silently reject
+    // every real STOP/START (a compliance risk, not just a bug). Try the
+    // canonical URL first when the env var is set, then fall back to
+    // `req.url` — the fallback is also what keeps convex-test's simulated
+    // `t.fetch` (which has no real CONVEX_SITE_URL-matching origin) working.
+    const signatureHeader = req.headers.get("X-Twilio-Signature");
+    const canonicalUrl = process.env.CONVEX_SITE_URL
+      ? `${process.env.CONVEX_SITE_URL.replace(/\/+$/, "")}/twilio/webhook`
+      : null;
+    const valid =
+      (canonicalUrl
+        ? await validateTwilioSignature(canonicalUrl, params, signatureHeader, creds.authToken)
+        : false) ||
+      (await validateTwilioSignature(req.url, params, signatureHeader, creds.authToken));
     if (!valid) return new Response("Invalid signature", { status: 400 });
 
     // Dedup on MessageSid — Twilio can redeliver the same inbound webhook.

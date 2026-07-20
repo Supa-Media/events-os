@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   estimateSegments,
   estimateSmsCostUsdMicros,
+  formatUsdMicros,
   SMS_SEGMENT_PRICE_USD_MICROS,
 } from "./sms";
 
@@ -72,5 +73,22 @@ describe("estimateSmsCostUsdMicros", () => {
 
   test("zero recipients costs nothing", () => {
     expect(estimateSmsCostUsdMicros("hello", 0)).toBe(0);
+  });
+});
+
+describe("formatUsdMicros", () => {
+  test("exactly zero is '$0.00'", () => {
+    expect(formatUsdMicros(0)).toBe("$0.00");
+  });
+
+  test("2 decimals at or above a cent", () => {
+    expect(formatUsdMicros(10_000)).toBe("$0.01"); // exactly one cent — the boundary
+    expect(formatUsdMicros(1_000_000)).toBe("$1.00");
+    expect(formatUsdMicros(2_500_000)).toBe("$2.50");
+  });
+
+  test("4 decimals below a cent", () => {
+    expect(formatUsdMicros(5_000)).toBe("$0.0050");
+    expect(formatUsdMicros(1)).toBe("$0.0000");
   });
 });

@@ -81,3 +81,21 @@ export function estimateSmsCostUsdMicros(
 ): number {
   return estimateSegments(body) * SMS_SEGMENT_PRICE_USD_MICROS * recipientCount;
 }
+
+/**
+ * Micro-USD (1e-6 USD — the unit `costUsdMicros` fields use throughout the
+ * app: `smsUsageEvents`, `aiUsageEvents`) as a display dollar string: 2
+ * decimals at or above a cent, 4 decimals below (a single SMS segment is
+ * ~$0.01, and a single AI call is often well under a cent, so both need the
+ * extra precision down there), "$0.00" for exactly zero.
+ *
+ * The ONE shared micro-USD formatter — previously reimplemented three times
+ * (`AiUsageSection.tsx`'s and `TwilioUsageSummary.tsx`'s near-identical
+ * `formatMicroCost`, plus `BlastComposerCard.tsx`'s cents-rounding
+ * `formatSmsCost`), which is how they drifted. Every mobile screen showing a
+ * micro-USD amount should use this instead of a local copy.
+ */
+export function formatUsdMicros(micros: number): string {
+  const usd = micros / 1_000_000;
+  return usd === 0 ? "$0.00" : `$${usd.toFixed(usd < 0.01 ? 4 : 2)}`;
+}
