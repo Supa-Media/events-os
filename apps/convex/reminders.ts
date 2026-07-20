@@ -90,8 +90,10 @@ export type RecipientWork = {
   name: string;
   email: string;
   entries: WorkEntry[];
-  /** Direct reports' dated work — the digest surfaces what's overdue. */
-  directs: Array<{ name: string; entries: WorkEntry[] }>;
+  /** Direct reports' dated work — the digest surfaces what's overdue.
+   *  `personId` carries through so the manager rollup can link each direct's
+   *  name to their own workload page (`/team/<personId>`). */
+  directs: Array<{ personId: Id<"people">; name: string; entries: WorkEntry[] }>;
 };
 
 // One formatter, reused — Intl.DateTimeFormat construction dwarfs .format(),
@@ -457,7 +459,11 @@ export async function collectOpenWorkForChapter(
           d.status !== "inactive" &&
           (byOwner.get(d._id)?.length ?? 0) > 0,
       )
-      .map((d) => ({ name: d.name, entries: byOwner.get(d._id)! }));
+      .map((d) => ({
+        personId: d._id,
+        name: d.name,
+        entries: byOwner.get(d._id)!,
+      }));
     if (entries.length === 0 && directs.length === 0) continue;
     recipients.push({
       personId: person._id,
@@ -492,26 +498,45 @@ export type OverdueEventTask = {
  * file. `reachable` still gates which CANDIDATES an item's ownership can
  * land on before falling back to the event owner (the same rule the digest
  * applies), it just doesn't gate who appears in the result.
+ *
+ * `prefetched` lets a caller that already read the chapter's people/events
+ * this transaction (namely `org.ts#workload`, which needs both anyway for
+ * its own subtree/events response) hand them in instead of paying for a
+ * second `by_chapter` scan of each. Safe to pass `workload`'s already-
+ * filtered `chapterRoster` (no placeholder/sample rows) and `isOperationalEvent`-
+ * filtered events here: `reachable`'s placeholder check is redundant with
+ * that filter (a missing person id reads as unreachable either way), and a
+ * `isSamplePerson` row's only role/ownership ties are to Academy training
+ * sandbox events — which `isOperationalEvent` already excludes from the
+ * events this function ever attributes against — so it can never legally
+ * differ from a candidate the raw, unfiltered scan would have reached.
+ * Omit it (the standalone call path — the digest crons, tests) and this
+ * does its own two chapter-wide reads exactly as before.
  */
 export async function collectOverdueEventTasksByChapter(
   ctx: QueryCtx,
   chapterId: Id<"chapters">,
   now: number,
+  prefetched?: { people?: Doc<"people">[]; events?: Doc<"events">[] },
 ): Promise<Map<Id<"people">, OverdueEventTask[]>> {
   const windowStart = now - OVERDUE_LOOKBACK_MS;
   const windowEnd = now + WINDOW_AHEAD_MS;
 
-  const people = await ctx.db
-    .query("people")
-    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-    .collect();
+  const people =
+    prefetched?.people ??
+    (await ctx.db
+      .query("people")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .collect());
   const personById = new Map(people.map((p) => [p._id, p]));
   const reachable = reachablePredicate(personById);
 
-  const events = await ctx.db
-    .query("events")
-    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-    .collect();
+  const events =
+    prefetched?.events ??
+    (await ctx.db
+      .query("events")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .collect());
   const eventById = operationalEventsInFlight(events, now);
 
   const byOwner = new Map<Id<"people">, WorkEntry[]>();
@@ -580,6 +605,15 @@ const esc = escapeHtml;
 
 const SANS = "-apple-system,'Segoe UI',Roboto,sans-serif";
 
+/** The event screen's tab key for a module — `volunteer_expectations` isn't
+ *  its own tab, it's folded into the combined "Crew & Duties" tab (see
+ *  `(app)/event/[id].tsx`'s tab-building comment), so a task-entry deep link
+ *  has to translate the module the same way the event screen's own tab
+ *  links do. Every other module key IS its tab key. */
+function eventTabFor(module: string): string {
+  return module === "volunteer_expectations" ? "crew" : module;
+}
+
 /**
  * One work entry as an email card. Tasks stay compact; projects get the full
  * management picture — status, purpose, blocker, latest thread update — plus
@@ -598,6 +632,14 @@ function entryCard(
     </div>`;
   const token = e.projectId ? tokenByProject[e.projectId] : undefined;
   const link = token ? `${base}/p/${token}` : null;
+  // Task entries have no `/p/` token (they're not project action-token
+  // targets) — they link straight into the event's tab that owns the item,
+  // when APP_URL is configured (null otherwise, per `appUrl`'s contract —
+  // never a dead link).
+  const taskLink =
+    e.kind === "task" && e.eventId && e.module
+      ? appUrl(`/event/${e.eventId}?tab=${eventTabFor(e.module)}`)
+      : null;
   const detail =
     e.kind === "project"
       ? `
@@ -614,7 +656,11 @@ function entryCard(
       </div>`
           : ""
       }`
-      : "";
+      : taskLink
+        ? `<div style="font-family:${SANS};font-size:12px;font-weight:600;padding-top:8px">
+        <a href="${taskLink}" style="color:${ACCENT};text-decoration:none;padding:5px 2px;display:inline-block">Open →</a>
+      </div>`
+        : "";
   return `
       <div style="background:#fff;border:1px solid #EFE0DC;border-radius:12px;padding:12px 16px;margin:0 0 8px">
         <div style="font-family:${SANS};font-size:14px;font-weight:600">${esc(e.name)}</div>
@@ -634,23 +680,33 @@ function entryRows(
     .join("");
 }
 
-/** The manager rollup: each direct's overdue work, compact and read-only. */
+/** The manager rollup: each direct's overdue work, compact and read-only. The
+ *  direct's name links to their own workload page when APP_URL is configured
+ *  (null otherwise — `appUrl`'s contract, never a dead link). */
 function directsOverdueRows(
-  directs: Array<{ name: string; overdue: WorkEntry[] }>,
+  directs: Array<{
+    personId: Id<"people">;
+    name: string;
+    overdue: WorkEntry[];
+  }>,
 ): string {
   return directs
-    .map(
-      (d) => `
+    .map((d) => {
+      const link = appUrl(`/team/${d.personId}`);
+      const nameHtml = link
+        ? `<a href="${link}" style="color:inherit;text-decoration:none">${esc(d.name)}</a>`
+        : esc(d.name);
+      return `
       <div style="background:#fff;border:1px solid #EFE0DC;border-radius:12px;padding:12px 16px;margin:0 0 8px">
-        <div style="font-family:${SANS};font-size:13px;font-weight:700">${esc(d.name)}</div>
+        <div style="font-family:${SANS};font-size:13px;font-weight:700">${nameHtml}</div>
         ${d.overdue
           .map(
             (e) =>
               `<div style="font-family:${SANS};font-size:13px;color:${MUTED};padding-top:4px">${esc(e.name)}${e.context ? ` <span style="color:#A98C8C">· ${esc(e.context)}</span>` : ""} · was due ${formatDue(e.dueDate)}</div>`,
           )
           .join("")}
-      </div>`,
-    )
+      </div>`;
+    })
     .join("");
 }
 
@@ -705,6 +761,7 @@ export const sendWeeklyDigests = internalAction({
       const { overdue, dueThisWeek } = partitionForDigest(r.entries, now);
       const directsOverdue = r.directs
         .map((d) => ({
+          personId: d.personId,
           name: d.name,
           overdue: partitionForDigest(d.entries, now).overdue,
         }))

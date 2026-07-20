@@ -272,6 +272,47 @@ describe("org.workload overdue tasks", () => {
     expect(member.roles[0].overdueTasks).toEqual([]);
   });
 
+  test("role+role dedupe: two roles on the SAME event never both carry the event's overdue tasks", async () => {
+    const s = await setupChapter(newT());
+    const now = Date.now();
+    const eventOwner = await addPerson(s, "Dami");
+    const lead = await addPerson(s, "Charisma");
+    const eventId = await addEvent(s, "Eden July", {
+      ownerPersonId: eventOwner,
+    });
+    // Charisma holds TWO roles on the same event — a person can wear more
+    // than one hat (e.g. Event Lead + Comms Lead).
+    const commsRoleId = await addRole(s, eventId, "Comms Lead");
+    const prodRoleId = await addRole(s, eventId, "Production Lead");
+    await assignRole(s, eventId, commsRoleId, lead);
+    await assignRole(s, eventId, prodRoleId, lead);
+    const itemId = await addItem(s, eventId, "Post announcement", {
+      roleId: commsRoleId,
+      dueDate: now - 2 * DAY,
+    });
+
+    const workload = await s.as.query(api.org.workload, { personId: lead });
+    const member = workload!.members.find((m) => m._id === lead)!;
+    // Charisma doesn't own the event, so it's not in her `events` list.
+    expect(member.events).toHaveLength(0);
+    // Both role rows for the event show up...
+    expect(member.roles).toHaveLength(2);
+    expect(member.roles.every((r) => r.eventId === eventId)).toBe(true);
+    // ...but only ONE of them carries the event's overdue task — never both.
+    const withTasks = member.roles.filter((r) => r.overdueTasks.length > 0);
+    expect(withTasks).toHaveLength(1);
+    expect(withTasks[0].overdueTasks).toEqual([
+      {
+        itemId,
+        title: "Post announcement",
+        module: "comms",
+        dueDate: now - 2 * DAY,
+      },
+    ]);
+    const withoutTasks = member.roles.filter((r) => r.overdueTasks.length === 0);
+    expect(withoutTasks).toHaveLength(1);
+  });
+
   test("untitled items render with a fallback title", async () => {
     const s = await setupChapter(newT());
     const now = Date.now();

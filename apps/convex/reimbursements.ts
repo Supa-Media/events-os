@@ -74,6 +74,7 @@ import {
 import { assertRoutingNumber, assertAccountNumber } from "./increase";
 import { sendEmail, emailShell } from "./ticketingEmails";
 import { escapeHtml } from "./lib/html";
+import { appUrl, siteUrl } from "./lib/siteUrl";
 import { gatherForPickerCandidates } from "./lib/forPickerCandidates";
 import { ROLLUP_SCAN_LIMIT } from "./finances";
 
@@ -1476,6 +1477,11 @@ export const listStaleReimbursements = internalQuery({
     olderThanMs: v.number(),
   },
   handler: async (ctx, { chapterId, now, olderThanMs }) => {
+    // For the accountless public-form claimant (below), the reminder link is
+    // the server-rendered `/reimburse/<slug>?token=` status page
+    // (`http.ts`'s `/reimburse/` route) — needs the chapter's slug, one read
+    // for the whole chapter rather than per request.
+    const chapter = await ctx.db.get(chapterId);
     const candidates: Doc<"reimbursementRequests">[] = [];
     for (const status of ["submitted", "preapproved"] as const) {
       const rows = await ctx.db
@@ -1493,6 +1499,17 @@ export const listStaleReimbursements = internalQuery({
       totalCents: number;
       status: ReimbursementStatus;
       missingReceipts: boolean;
+      // True only for the authenticated in-app submit path (`personId`
+      // server-derived from the caller's own roster row — see the schema
+      // doc on `reimbursementRequests.identityVerified`), i.e. the claimant
+      // has an app account and can be sent to the in-app Reimbursements tab.
+      identityVerified: boolean;
+      // The claimant's secret status-page token (`reimburse/` http route) —
+      // mailed only to that request's OWN `payeeEmail`, same trust boundary
+      // as the token the public submit flow already hands the claimant's
+      // browser once. Used for the non-`identityVerified` (accountless) case.
+      token: string;
+      chapterSlug: string | null;
     }> = [];
     for (const req of candidates) {
       const lines = await linesFor(ctx, req._id);
@@ -1506,6 +1523,9 @@ export const listStaleReimbursements = internalQuery({
         totalCents: req.totalCents,
         status: req.status,
         missingReceipts,
+        identityVerified: req.identityVerified === true,
+        token: req.token,
+        chapterSlug: chapter?.slug ?? null,
       });
     }
     return stale;
@@ -1516,6 +1536,18 @@ export const listStaleReimbursements = internalQuery({
  * Sweep every chapter's stale reimbursements and email the claimant a nudge.
  * Best-effort Resend — a no-op that only logs when RESEND_API_KEY is unset
  * (mirrors `reminders.ts` / the ticketing emails), so dev + CI never send.
+ *
+ * The recipient is always the CLAIMANT (`payeeEmail`), never a finance
+ * manager — this sweep only nudges the person waiting on their own money.
+ * The CTA link is conditional on how they submitted:
+ *   - in-app member (`identityVerified`) → their own Reimbursements tab
+ *     (`appUrl`, authenticated; null when APP_URL is unset).
+ *   - accountless public-form claimant → the server-rendered, no-login
+ *     status page at `/reimburse/<chapterSlug>?token=<token>` (`http.ts`'s
+ *     `/reimburse/` route + `getPublicReimbursement`), via `siteUrl()` same
+ *     as every other guest-facing link in this codebase. Only omitted if the
+ *     chapter's slug is somehow missing (shouldn't happen for a chapter that
+ *     can receive public submissions in the first place).
  */
 export const sendReimbursementReminders = internalAction({
   args: {},
@@ -1536,12 +1568,22 @@ export const sendReimbursementReminders = internalAction({
         const reason = r.missingReceipts
           ? "We're still waiting on a receipt for one or more line items."
           : "It's still waiting on a manager to review it.";
+        const link = r.identityVerified
+          ? appUrl("/finances/reimbursements")
+          : r.chapterSlug
+            ? `${siteUrl()}/reimburse/${encodeURIComponent(r.chapterSlug)}?token=${encodeURIComponent(r.token)}`
+            : null;
         await sendEmail(
           r.payeeEmail,
           `Your reimbursement ${r.reference} is still pending`,
           emailShell(`
           <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">Reimbursement ${escapeHtml(r.reference)}</h1>
-          <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(r.payeeName)} — your ${escapeHtml(dollars)} reimbursement is still open. ${reason}</p>`),
+          <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(r.payeeName)} — your ${escapeHtml(dollars)} reimbursement is still open. ${reason}</p>
+          ${
+            link
+              ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${link}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">View request →</a></div>`
+              : ""
+          }`),
         );
       }
     }

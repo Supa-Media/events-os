@@ -431,11 +431,16 @@ export const workload = query({
     // Every subtree member's OVERDUE event tasks, one item scan for the
     // whole chapter (not per member) — reuses the digest's exact
     // attribution/completion rules (see reminders.ts) so what's "overdue"
-    // here matches what's overdue in the Sunday digest.
+    // here matches what's overdue in the Sunday digest. Hands in the
+    // roster + events this query already read above instead of paying for
+    // `collectOverdueEventTasksByChapter`'s own two `by_chapter` scans of
+    // the same tables — see its doc comment for why the (filtered) roster
+    // and (isOperationalEvent-filtered) events are safe to reuse as-is.
     const overdueByPerson = await collectOverdueEventTasksByChapter(
       ctx,
       person.chapterId,
       Date.now(),
+      { people: roster, events },
     );
     const overdueTasksFor = (
       personId: Id<"people">,
@@ -471,6 +476,17 @@ export const workload = query({
           .query("roleAssignments")
           .withIndex("by_person", (q) => q.eq("personId", p._id))
           .collect();
+        // Two roles on the SAME event (e.g. Event Lead + Comms Lead) must
+        // never both carry that event's overdue tasks — only the FIRST role
+        // row for a given event does; every later role row on that same
+        // event gets `[]`, same as an owned event's role row already does.
+        // `Promise.all` preserves `assignments`' own order in its output
+        // regardless of which `getRole` resolves first, so seeding this off
+        // the resolved (pre-sort) array is deterministic. An owned event's
+        // role rows are unaffected — they're always `[]` via `ownedEventIds`
+        // and never mark `seenRoleEventIds`, so they can't suppress a
+        // legitimate first role row on a DIFFERENT (non-owned) event.
+        const seenRoleEventIds = new Set<Id<"events">>();
         const roles = (
           await Promise.all(
             assignments.map(async (a) => {
@@ -482,14 +498,21 @@ export const workload = query({
                 eventName: event.name,
                 eventDate: event.eventDate,
                 roleLabel: role.label,
-                overdueTasks: ownedEventIds.has(a.eventId)
-                  ? []
-                  : overdueTasksFor(p._id, a.eventId),
               };
             }),
           )
         )
           .filter((r): r is NonNullable<typeof r> => r !== null)
+          .map((r) => {
+            const owned = ownedEventIds.has(r.eventId);
+            const alreadySeen = !owned && seenRoleEventIds.has(r.eventId);
+            if (!owned) seenRoleEventIds.add(r.eventId);
+            return {
+              ...r,
+              overdueTasks:
+                owned || alreadySeen ? [] : overdueTasksFor(p._id, r.eventId),
+            };
+          })
           .sort((a, b) => b.eventDate - a.eventDate);
 
         return {

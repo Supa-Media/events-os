@@ -122,6 +122,7 @@ import {
 } from "./increase";
 import { sendEmail, sendEmailReporting, emailShell } from "./ticketingEmails";
 import { escapeHtml } from "./lib/html";
+import { appUrl } from "./lib/siteUrl";
 
 const externalAccountFundingValidator = v.union(
   ...EXTERNAL_ACCOUNT_FUNDINGS.map((f) => v.literal(f)),
@@ -2313,12 +2314,21 @@ export const notifyPersonalChargeFlagged = internalAction({
       const dollars = `$${(contact.amountCents / 100).toFixed(2)}`;
       const merchant = contact.merchantName ?? "a charge on your card";
       const subject = `A charge on your card was marked personal — you owe ${dollars}`;
+      // The Cards tab's member view (`MemberCardsView`) owns the per-charge
+      // flag/pay-back list this charge lives in — not Reimbursements (which
+      // only shows the aggregate "you owe" total). Null when APP_URL is unset.
+      const link = appUrl("/finances/cards");
       await sendEmail(
         contact.email,
         subject,
         emailShell(`
           <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">${escapeHtml(subject)}</h1>
-          <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(contact.cardholderName)} — a finance manager marked ${escapeHtml(merchant)} (${escapeHtml(dollars)}) as a personal charge. Pay it back from the Reimbursements tab in the app.</p>`),
+          <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(contact.cardholderName)} — a finance manager marked ${escapeHtml(merchant)} (${escapeHtml(dollars)}) as a personal charge. Pay it back from the Cards tab in the app.</p>
+          ${
+            link
+              ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${link}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">Pay it back →</a></div>`
+              : ""
+          }`),
       );
     } catch (err) {
       console.error(
@@ -3123,12 +3133,21 @@ async function notifyReceiptReminder(
   const message = isEscalation
     ? `It's been ${RECEIPT_ESCALATE_DAYS} days and your ${dollars} charge at ${merchant} still needs a receipt. Your card locks in ${daysLeft} more day${daysLeft === 1 ? "" : "s"} without one.`
     : `Don't forget to add a receipt for your ${dollars} charge at ${merchant}.`;
+  // The bookkeeper's missing-receipt queue — same filter pill the Reconcile
+  // grid's "Missing receipt" pill drives (`FILTER_KEYS` in
+  // `(app)/finances/reconcile.tsx`). Null (omitted) when APP_URL is unset.
+  const link = appUrl("/finances/reconcile?filter=missing_receipt");
   await sendEmail(
     contact.email,
     subject,
     emailShell(`
       <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">${escapeHtml(subject)}</h1>
-      <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(contact.cardholderName)} — ${escapeHtml(message)}</p>`),
+      <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(contact.cardholderName)} — ${escapeHtml(message)}</p>
+      ${
+        link
+          ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${link}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">Add receipt →</a></div>`
+          : ""
+      }`),
   );
 }
 
