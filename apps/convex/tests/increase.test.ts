@@ -114,6 +114,27 @@ async function seedReimbursement(
   );
 }
 
+/** Insert a single line item covering the given amount, so a REAL call to
+ *  `reimbursements.approve` (used by the "approve → payReimbursement" wiring
+ *  tests below) computes a matching `approvedCents` instead of the 0-lines
+ *  default `seedReimbursement`'s directly-seeded `approved` rows never need. */
+async function seedLine(
+  s: ChapterSetup,
+  reimbursementId: Id<"reimbursementRequests">,
+  amountCents: number,
+): Promise<void> {
+  await run(s.t, (ctx) =>
+    ctx.db.insert("reimbursementLineItems", {
+      chapterId: s.chapterId,
+      reimbursementId,
+      description: "Supplies",
+      amountCents,
+      order: 0,
+      createdAt: Date.now(),
+    }),
+  );
+}
+
 /** Count the `transfer`-flow transactions linked to a reimbursement. */
 async function transferTxns(
   s: ChapterSetup,
@@ -140,6 +161,24 @@ async function payoutsFor(
         q.eq("reimbursementId", reimbursementId),
       )
       .collect(),
+  );
+}
+
+/** An active PRODUCTION Increase account for the chapter (default mode). Hoisted
+ *  to module scope so both the "real ACH" describe block below and the
+ *  "approve → payReimbursement" wiring tests can seed it. */
+async function seedActiveAccount(s: ChapterSetup): Promise<void> {
+  const now = Date.now();
+  await run(s.t, (ctx) =>
+    ctx.db.insert("increaseAccounts", {
+      chapterId: s.chapterId,
+      sandbox: false,
+      onboardingStatus: "active",
+      increaseEntityId: "entity_prod",
+      increaseAccountId: "account_prod_1",
+      createdAt: now,
+      updatedAt: now,
+    }),
   );
 }
 
@@ -200,22 +239,6 @@ describe("payReimbursement (real ACH once a destination is linked)", () => {
     if (originalKey === undefined) delete process.env.INCREASE_API_KEY;
     else process.env.INCREASE_API_KEY = originalKey;
   });
-
-  /** An active PRODUCTION Increase account for the chapter (default mode). */
-  async function seedActiveAccount(s: ChapterSetup): Promise<void> {
-    const now = Date.now();
-    await run(s.t, (ctx) =>
-      ctx.db.insert("increaseAccounts", {
-        chapterId: s.chapterId,
-        sandbox: false,
-        onboardingStatus: "active",
-        increaseEntityId: "entity_prod",
-        increaseAccountId: "account_prod_1",
-        createdAt: now,
-        updatedAt: now,
-      }),
-    );
-  }
 
   test("takes the real ACH branch once externalAccountId + an active account + the key exist", async () => {
     const t = newT();
@@ -432,6 +455,109 @@ describe("payReimbursement (real ACH once a destination is linked)", () => {
     });
     expect(payout.provider).toBe("manual");
     expect(payout.status).toBe("pending");
+  });
+});
+
+// ── approve → payReimbursement: the auto-pay wiring the manager UI drives ────
+//
+// The manager screen no longer treats "Approve & pay" as approve-only: after
+// `api.reimbursements.approve` succeeds, it immediately calls
+// `api.increase.payReimbursement` (client-driven composition — see
+// `apps/mobile/app/(app)/finances/reimbursements/index.tsx`'s `handleApprove`).
+// `beginPayout`/`payReimbursement`'s state machine is already exercised above
+// against DIRECTLY-SEEDED `approved` rows; these tests exercise the EXACT
+// two-call sequence the UI performs, starting from a real `approve()` call, to
+// prove the wiring itself (not just each half in isolation).
+describe("approve → payReimbursement (the auto-pay wiring the manager UI drives)", () => {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.INCREASE_API_KEY;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.INCREASE_API_KEY;
+    else process.env.INCREASE_API_KEY = originalKey;
+  });
+
+  test("fallback: no linked destination → approve leaves it `approved`, payReimbursement mints a manual/pending payout, and a retry doesn't double-pay", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const payee = await seedPerson(s, { name: "Vera" });
+    const reimbursementId = await seedReimbursement(s, {
+      status: "submitted",
+      payeePersonId: payee,
+      totalCents: 1800,
+    });
+    await seedLine(s, reimbursementId, 1800);
+
+    const approveResult = await s.as.mutation(api.reimbursements.approve, {
+      reimbursementId,
+    });
+    expect(approveResult.approvedCents).toBe(1800);
+    const approved = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
+    expect(approved?.status).toBe("approved");
+
+    // No INCREASE_API_KEY / no linked destination in the test env → degrades
+    // to a manual payout — the request stays `approved` (never a fake "paid"),
+    // ready for `markPaidManually` or a "Pay by ACH" retry.
+    const first = await s.as.action(api.increase.payReimbursement, {
+      reimbursementId,
+    });
+    expect(first.provider).toBe("manual");
+    expect(first.status).toBe("pending");
+    const stillApproved = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
+    expect(stillApproved?.status).toBe("approved");
+
+    // A retry (the UI's "Pay by ACH" fallback button) is idempotent — no
+    // second payout row, never double-pays.
+    const second = await s.as.action(api.increase.payReimbursement, {
+      reimbursementId,
+    });
+    expect(second.id).toBe(first.id);
+    const payouts = await payoutsFor(s, reimbursementId);
+    expect(payouts.length).toBe(1);
+  });
+
+  test("real ACH: an already-linked destination + active account pays automatically once approve() is followed by payReimbursement()", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    await seedActiveAccount(s);
+    const payee = await seedPerson(s, { name: "Vera" });
+    const reimbursementId = await seedReimbursement(s, {
+      status: "submitted",
+      payeePersonId: payee,
+      totalCents: 1800,
+    });
+    await seedLine(s, reimbursementId, 1800);
+    // Every new submission captures a real Increase External Account at
+    // submit time (bank-details-at-submit) — simulate that here.
+    await run(s.t, (ctx) =>
+      ctx.db.patch(reimbursementId, { externalAccountId: "extacct_autopay" }),
+    );
+
+    await s.as.mutation(api.reimbursements.approve, { reimbursementId });
+
+    process.env.INCREASE_API_KEY = "test_key";
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.includes("/ach_transfers")) {
+        return new Response(
+          JSON.stringify({ id: "ach_autopay_1", status: "submitted" }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      throw new Error(`unexpected fetch: ${path}`);
+    }) as unknown as typeof fetch;
+
+    const payout = await s.as.action(api.increase.payReimbursement, {
+      reimbursementId,
+    });
+    expect(payout.provider).toBe("increase");
+    expect(payout.status).toBe("processing");
+
+    const req = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
+    expect(req?.status).toBe("paying");
   });
 });
 

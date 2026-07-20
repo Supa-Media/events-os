@@ -252,6 +252,63 @@ export async function getFinanceRole(
   };
 }
 
+// Generous bounds for the manager-enumeration reads below — mirrors
+// `FUND_SCAN_LIMIT`'s reasoning (a chapter's finance grants/seat holders
+// number in the single digits to low dozens, never near this).
+const FINANCE_ROLE_SCAN_LIMIT = 5000;
+const SEAT_ASSIGNMENT_SCAN_LIMIT = 5000;
+
+/**
+ * Enumerate every person who currently holds finance MANAGER capability
+ * reachable from `chapterId` — the REVERSE of `getFinanceRole` (which answers
+ * "what can THIS ONE caller do"). Used by notification paths that need to
+ * find "who can approve this", not gate a single caller's write.
+ *
+ * Same B10 UNION `getFinanceRole` computes (see its doc): the STRONGEST rank
+ * matters there, but a manager here only needs ONE source to qualify —
+ *   - a stored `financeRoles` grant with `role: "manager"`, at this chapter
+ *     OR at `"central"` (this is what a `finance_manager` specialized-role
+ *     title bridges to — see `bridgeFinanceManagerGrant`), UNIONED with
+ *   - a seat-derived `finance.manager` holder (an org-chart seat carrying
+ *     that capability — e.g. `treasurer`/`financial_manager`) at this
+ *     chapter OR at `"central"`, read directly off `seatAssignments`/
+ *     `seatDefs` so a seat that hasn't (or can't) bridge to a stored grant
+ *     still counts, mirroring `getSeatDerivedCapabilities`'s live role in
+ *     the union.
+ *
+ * Superusers are deliberately NOT included — `SUPERUSER_EMAILS` is a fixed
+ * dev/ops allowlist, not roster people whose mailbox is tied to a chapter's
+ * finance duties, and superuser status isn't a stored, enumerable grant.
+ */
+export async function listChapterFinanceManagerPersonIds(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<Set<Id<"people">>> {
+  const personIds = new Set<Id<"people">>();
+  const scopes: FinanceScope[] = [chapterId, "central"];
+  for (const scope of scopes) {
+    const grants = await ctx.db
+      .query("financeRoles")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", scope))
+      .take(FINANCE_ROLE_SCAN_LIMIT);
+    for (const g of grants) {
+      if (g.role === "manager") personIds.add(g.personId);
+    }
+
+    const assignments = await ctx.db
+      .query("seatAssignments")
+      .withIndex("by_scope", (q) => q.eq("scope", scope))
+      .take(SEAT_ASSIGNMENT_SCAN_LIMIT);
+    for (const a of assignments) {
+      const def = await ctx.db.get(a.seatDefId);
+      if (def?.capabilities.includes("finance.manager")) {
+        personIds.add(a.personId);
+      }
+    }
+  }
+  return personIds;
+}
+
 /**
  * Assert the caller holds at least the `min` finance role, returning their
  * resolved access. The single gate every read/write function calls.

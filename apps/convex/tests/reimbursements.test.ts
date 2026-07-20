@@ -1,5 +1,5 @@
 /// <reference types="vite/client" />
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { ConvexError } from "convex/values";
 import {
   newT,
@@ -11,6 +11,7 @@ import {
 } from "./setup.helpers";
 import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
+import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
 
 /**
  * Reimbursement tests — the accountless PUBLIC submission path (secret token,
@@ -119,6 +120,69 @@ async function grantRole(
       personId,
       role,
       scope: "chapter",
+      createdAt: Date.now(),
+    }),
+  );
+}
+
+/** A CENTRAL finance-manager grant — the real shape `bridgeFinanceManagerGrant`
+ *  writes for a central `finance_manager` specialized role: `chapterId` is the
+ *  literal `"central"` sentinel (not a real chapter id), `scope: "central"`. */
+async function grantCentralManagerRole(
+  s: ChapterSetup,
+  personId: Id<"people">,
+): Promise<void> {
+  await run(s.t, (ctx) =>
+    ctx.db.insert("financeRoles", {
+      chapterId: "central",
+      personId,
+      role: "manager",
+      scope: "central",
+      createdAt: Date.now(),
+    }),
+  );
+}
+
+/** Seed the seat defs (`treasurer`/`financial_manager`/…) into a fresh
+ *  instance, then set up a chapter on it — the seat-derived twin of
+ *  `setupChapter` alone, mirroring `budgetDraftLifecycle.test.ts`'s helper of
+ *  the same name. */
+async function seatSetup(
+  opts: { email?: string; chapterName?: string } = {},
+): Promise<ChapterSetup> {
+  const t = newT();
+  await run(t, (ctx) => runSeedSeatDefs(ctx));
+  return setupChapter(t, opts);
+}
+
+/** The seatDef row seeded for a template `slug`. */
+async function defBySlug(s: ChapterSetup, slug: string) {
+  const def = await run(s.t, (ctx) =>
+    ctx.db
+      .query("seatDefs")
+      .withIndex("by_slug", (q) => q.eq("slug", slug))
+      .unique(),
+  );
+  if (!def) throw new Error(`${slug} not seeded`);
+  return def;
+}
+
+/** Insert a `seatAssignments` row directly (bypassing `assignSeat`'s
+ *  write-through) — isolates "what the seat chart alone implies" from a
+ *  stored `financeRoles`/`specializedRoles` bridge row, mirroring
+ *  `financeGatesSeatUnion.test.ts`'s helper of the same name. */
+async function assignSeatDirect(
+  s: ChapterSetup,
+  personId: Id<"people">,
+  slug: string,
+  scope: Id<"chapters"> | "central",
+): Promise<void> {
+  const def = await defBySlug(s, slug);
+  await run(s.t, (ctx) =>
+    ctx.db.insert("seatAssignments", {
+      seatDefId: def._id,
+      scope,
+      personId,
       createdAt: Date.now(),
     }),
   );
@@ -972,6 +1036,65 @@ describe("in-app queue never leaks the token", () => {
     for (const line of detail.lines) {
       expect(typeof line.transactionDate).toBe("number");
     }
+    // Every line has a stored receipt (submitTwoLine's `validLine` always
+    // attaches one) — the approver needs an actual URL to look at it, not
+    // just the `hasReceipt` boolean.
+    for (const line of detail.lines) {
+      expect(line.hasReceipt).toBe(true);
+      expect(typeof line.receiptUrl).toBe("string");
+    }
+  });
+
+  test("get returns null receiptUrl for a line with no stored receipt", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    const { token } = await submitTwoLine(s, "nyc");
+    const person = await seedPerson(s, {
+      name: "Manager",
+      userId: s.userId,
+      isTeamMember: true,
+    });
+    await grantRole(s, person, "manager");
+
+    const rows = await s.as.query(api.reimbursements.list, {});
+    const lineIds = await run(t, async (ctx) => {
+      const lines = await ctx.db
+        .query("reimbursementLineItems")
+        .withIndex("by_reimbursement", (q) =>
+          q.eq("reimbursementId", rows[0]._id),
+        )
+        .collect();
+      return lines.map((l) => l._id);
+    });
+    // Strip the receipt off one legacy-style line directly in the db (the
+    // submit mutations always require one; a bare `patch` mirrors a
+    // pre-existing legacy row without one).
+    await run(t, (ctx) => ctx.db.patch(lineIds[0], { receiptStorageId: undefined }));
+
+    const detail = await s.as.query(api.reimbursements.get, {
+      reimbursementId: rows[0]._id,
+    });
+    const strippedLine = detail.lines.find((l) => l._id === lineIds[0])!;
+    expect(strippedLine.hasReceipt).toBe(false);
+    expect(strippedLine.receiptUrl).toBeNull();
+    void token;
+  });
+
+  test("a non-viewer cannot read the detail", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    const { token } = await submitTwoLine(s, "nyc");
+    void token;
+    const rows = await run(t, async (ctx) =>
+      ctx.db.query("reimbursementRequests").collect(),
+    );
+    // Seed a roster row but grant no finance role.
+    await seedPerson(s, { name: "Nobody", userId: s.userId });
+    await expect(
+      s.as.query(api.reimbursements.get, { reimbursementId: rows[0]._id }),
+    ).rejects.toBeInstanceOf(ConvexError);
   });
 
   test("list status filter works", async () => {
@@ -2077,6 +2200,66 @@ describe("accountless receipt upload (token-scoped — replacing a receipt post-
   });
 });
 
+describe("autoPayEnabled (approvalPolicy.autoPayOnApproval read for the manager UI's auto-pay wiring)", () => {
+  test("defaults true with no approvalPolicy row", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const manager = await seedPerson(s, {
+      name: "Manny",
+      userId: s.userId,
+      isTeamMember: true,
+    });
+    await grantRole(s, manager, "viewer");
+    expect(await s.as.query(api.reimbursements.autoPayEnabled, {})).toBe(true);
+  });
+
+  test("true when the chapter's policy row leaves autoPayOnApproval unset", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const manager = await seedPerson(s, {
+      name: "Manny",
+      userId: s.userId,
+      isTeamMember: true,
+    });
+    await grantRole(s, manager, "viewer");
+    await run(s.t, (ctx) =>
+      ctx.db.insert("approvalPolicy", {
+        chapterId: s.chapterId,
+        updatedAt: Date.now(),
+      }),
+    );
+    expect(await s.as.query(api.reimbursements.autoPayEnabled, {})).toBe(true);
+  });
+
+  test("false when the chapter explicitly opts out", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const manager = await seedPerson(s, {
+      name: "Manny",
+      userId: s.userId,
+      isTeamMember: true,
+    });
+    await grantRole(s, manager, "viewer");
+    await run(s.t, (ctx) =>
+      ctx.db.insert("approvalPolicy", {
+        chapterId: s.chapterId,
+        autoPayOnApproval: false,
+        updatedAt: Date.now(),
+      }),
+    );
+    expect(await s.as.query(api.reimbursements.autoPayEnabled, {})).toBe(false);
+  });
+
+  test("a caller without a finance role is rejected (viewer-gated)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // The caller has NO financeRoles row → below viewer.
+    await expect(
+      s.as.query(api.reimbursements.autoPayEnabled, {}),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+});
+
 describe("reminder sweep", () => {
   test("degrades without RESEND_API_KEY (no throw)", async () => {
     const t = newT();
@@ -2087,5 +2270,278 @@ describe("reminder sweep", () => {
     await expect(
       t.action(internal.reimbursements.sendReimbursementReminders, {}),
     ).resolves.toBeNull();
+  });
+});
+
+describe("submission notice to finance approvers (sendReimbursementSubmittedEmail)", () => {
+  /** Mock BOTH `POST /external_accounts` (Increase, needed by every submit)
+   *  AND `POST https://api.resend.com/emails` (the notice itself), recording
+   *  every Resend send. */
+  function mockIncreaseAndResend(): Array<{ to: string; subject: string }> {
+    const resendCalls: Array<{ to: string; subject: string }> = [];
+    let seq = 0;
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const path = String(input);
+      if (path.includes("/external_accounts")) {
+        seq += 1;
+        return new Response(
+          JSON.stringify({ id: `extacct_notice_${seq}` }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (path.includes("api.resend.com/emails")) {
+        const body = init?.body ? JSON.parse(String(init.body)) : {};
+        resendCalls.push({ to: body.to, subject: body.subject });
+        return new Response(JSON.stringify({ id: "email_1" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`unexpected fetch: ${path}`);
+    }) as unknown as typeof fetch;
+    return resendCalls;
+  }
+
+  const PREV_RESEND_KEY = process.env.RESEND_API_KEY;
+  afterEach(() => {
+    if (PREV_RESEND_KEY === undefined) delete process.env.RESEND_API_KEY;
+    else process.env.RESEND_API_KEY = PREV_RESEND_KEY;
+  });
+
+  test("emails a chapter finance manager (stored financeRoles grant) after a public submission", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      await setSlug(s, "nyc");
+      const manager = await seedPerson(s, {
+        name: "Manny",
+        email: "manny@example.com",
+      });
+      await grantRole(s, manager, "manager");
+      process.env.RESEND_API_KEY = "test_key";
+      const resendCalls = mockIncreaseAndResend();
+
+      const { reference } = await submitTwoLine(s, "nyc", {
+        payeeEmail: "dana@example.com",
+      });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      expect(resendCalls.length).toBe(1);
+      expect(resendCalls[0].to).toBe("manny@example.com");
+      expect(resendCalls[0].subject).toContain(reference);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("also emails a seat-derived treasurer with NO stored financeRoles row", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = await seatSetup();
+      await setSlug(s, "nyc");
+      const treasurer = await addMember(s, {
+        email: "treasurer@example.com",
+        name: "Tia Treasurer",
+      });
+      await assignSeatDirect(s, treasurer.personId, "treasurer", s.chapterId);
+      process.env.RESEND_API_KEY = "test_key";
+      const resendCalls = mockIncreaseAndResend();
+
+      await submitTwoLine(s, "nyc", { payeeEmail: "dana@example.com" });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      expect(resendCalls.map((c) => c.to)).toContain("treasurer@example.com");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("also emails a central financial manager (chapterId:\"central\" grant) for a CHAPTER submission", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      await setSlug(s, "nyc");
+      const centralManager = await seedPerson(s, {
+        name: "Cara Central",
+        email: "cara@example.com",
+      });
+      await grantCentralManagerRole(s, centralManager);
+      process.env.RESEND_API_KEY = "test_key";
+      const resendCalls = mockIncreaseAndResend();
+
+      await submitTwoLine(s, "nyc", { payeeEmail: "dana@example.com" });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      expect(resendCalls.map((c) => c.to)).toContain("cara@example.com");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a request needing PRE-approval also triggers the notice (same manager gate as approve)", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      await setSlug(s, "nyc");
+      const manager = await seedPerson(s, {
+        name: "Manny",
+        email: "manny@example.com",
+      });
+      await grantRole(s, manager, "manager");
+      process.env.RESEND_API_KEY = "test_key";
+      const resendCalls = mockIncreaseAndResend();
+
+      await submitTwoLine(s, "nyc", {
+        payeeEmail: "dana@example.com",
+        requestPreApproval: true,
+      });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      expect(resendCalls.length).toBe(1);
+      expect(resendCalls[0].to).toBe("manny@example.com");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("excludes the requester even when they hold the chapter's manager role themselves (in-app self-submit)", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      const selfManager = await seedPerson(s, {
+        name: "Self Manager",
+        email: "self@example.com",
+        userId: s.userId,
+      });
+      await grantRole(s, selfManager, "manager");
+      process.env.RESEND_API_KEY = "test_key";
+      const resendCalls = mockIncreaseAndResend();
+
+      await submitInApp(s.as, s);
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      // The ONLY finance manager in the chapter is the requester themselves —
+      // no recipients left after the SoD exclusion, so no Resend call at all.
+      expect(resendCalls.length).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a SECOND manager still gets notified when the requester is also a manager", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      const selfManager = await seedPerson(s, {
+        name: "Self Manager",
+        email: "self@example.com",
+        userId: s.userId,
+      });
+      await grantRole(s, selfManager, "manager");
+      const otherManager = await seedPerson(s, {
+        name: "Other Manager",
+        email: "other@example.com",
+      });
+      await grantRole(s, otherManager, "manager");
+      process.env.RESEND_API_KEY = "test_key";
+      const resendCalls = mockIncreaseAndResend();
+
+      await submitInApp(s.as, s);
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      expect(resendCalls.length).toBe(1);
+      expect(resendCalls[0].to).toBe("other@example.com");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("getReimbursementSubmittedEmailPayload also excludes a manager by EMAIL match, even with a different personId (assertApprovalSoD's second signal)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // The manager's roster row and the request's `personId` are DIFFERENT
+    // people rows — only the shared email address links them — mirroring
+    // `assertApprovalSoD`'s "roster link OR email" dual-signal check.
+    const manager = await seedPerson(s, {
+      name: "Manny",
+      email: "shared@example.com",
+    });
+    await grantRole(s, manager, "manager");
+    const unrelatedRequester = await seedPerson(s, { name: "Someone Else" });
+
+    const now = Date.now();
+    const reimbursementId = await run(s.t, (ctx) =>
+      ctx.db.insert("reimbursementRequests", {
+        chapterId: s.chapterId,
+        token: "test-token",
+        status: "submitted",
+        payeeName: "Manny",
+        payeeEmail: "shared@example.com",
+        personId: unrelatedRequester,
+        totalCents: 1000,
+        purpose: "Testing the email-signal exclusion",
+        submittedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+
+    const payload = await t.query(
+      internal.reimbursements.getReimbursementSubmittedEmailPayload,
+      { reimbursementId },
+    );
+    expect(payload?.recipients).toEqual([]);
+  });
+
+  test("no recipients in the chapter → no throw, no Resend call", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      await setSlug(s, "nyc");
+      process.env.RESEND_API_KEY = "test_key";
+      const resendCalls = mockIncreaseAndResend();
+
+      await expect(
+        submitTwoLine(s, "nyc", { payeeEmail: "dana@example.com" }),
+      ).resolves.toBeDefined();
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      expect(resendCalls.length).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("degrades without RESEND_API_KEY (no throw, even with a real recipient)", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      await setSlug(s, "nyc");
+      const manager = await seedPerson(s, {
+        name: "Manny",
+        email: "manny@example.com",
+      });
+      await grantRole(s, manager, "manager");
+      delete process.env.RESEND_API_KEY;
+
+      await expect(
+        submitTwoLine(s, "nyc", { payeeEmail: "dana@example.com" }),
+      ).resolves.toBeDefined();
+      // Draining must not throw even though the notice degrades to a no-op —
+      // if it did, this `await` itself would reject and fail the test.
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

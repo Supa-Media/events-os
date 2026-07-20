@@ -72,6 +72,7 @@ import {
   resolveCallerPersonId,
   assertSeparationOfDuties,
   defaultFundId,
+  listChapterFinanceManagerPersonIds,
 } from "./lib/finance";
 import { assertRoutingNumber, assertAccountNumber } from "./increase";
 import { sendEmail, emailShell } from "./ticketingEmails";
@@ -644,6 +645,22 @@ async function createReimbursement(
     createdAt: now,
     updatedAt: now,
   });
+
+  // Best-effort "review this" nudge to the chapter's finance approvers — the
+  // manager queue is otherwise pull-only, so nobody learns a request landed
+  // until they happen to check. Covers BOTH new-request statuses this
+  // function can produce: `submitted` (needs `approve`/`reject`) AND
+  // `pending_preapproval` (needs `preApprove`, gated by the same
+  // `requireFinanceManager` as the others — see `loadForManage`) — same
+  // recipient set either way. Scheduled (not awaited inline) so a Resend
+  // hiccup can never fail the submission itself; see
+  // `sendReimbursementSubmittedEmail`'s own try/catch for the send-side half
+  // of that guarantee.
+  await ctx.scheduler.runAfter(
+    0,
+    internal.reimbursements.sendReimbursementSubmittedEmail,
+    { reimbursementId },
+  );
 
   // Silently default a line's fund to the chapter's General Fund when neither
   // the client nor the public reimburse page's category auto-fill (see
@@ -1540,6 +1557,29 @@ export const list = query({
   },
 });
 
+/**
+ * Whether the manager UI should auto-initiate the ACH payout right after
+ * `approve` succeeds (`approvalPolicy.autoPayOnApproval`, chapter-scoped).
+ * Defaults to ON (`true`) when no policy row exists or the flag is unset — a
+ * chapter opts OUT by explicitly setting it `false`. Read by the manager
+ * queue (`index.tsx`'s `handleApprove`) to decide whether to follow a
+ * successful `approve`/`approve({approvedLineIds})` with
+ * `api.increase.payReimbursement`; the payout call itself stays fully gated
+ * (manager role + disbursement SoD) regardless of this flag.
+ */
+export const autoPayEnabled = query({
+  args: {},
+  handler: async (ctx) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireFinanceRole(ctx, chapterId, "viewer");
+    const policy = await ctx.db
+      .query("approvalPolicy")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .first();
+    return policy?.autoPayOnApproval !== false;
+  },
+});
+
 /** One reimbursement + its lines for the detail panel. NO token returned. */
 export const get = query({
   args: { reimbursementId: v.id("reimbursementRequests") },
@@ -1587,6 +1627,14 @@ export const get = query({
           category: await categoryName(ctx, l.categoryId),
           fund: await fundName(ctx, l.fundId),
           hasReceipt: !!l.receiptStorageId,
+          // A signed, servable URL for the stored receipt (image or PDF) — null
+          // when there's no receipt OR the stored file has since been deleted.
+          // Detail-only (see `list` above): resolving one URL per line here is
+          // fine, but `list` covers the whole queue and must not fan out N
+          // signed-URL lookups per request.
+          receiptUrl: l.receiptStorageId
+            ? await ctx.storage.getUrl(l.receiptStorageId)
+            : null,
           approved: l.approved ?? null,
           order: l.order,
         })),
@@ -1920,6 +1968,132 @@ export const sendReimbursementReminders = internalAction({
           }`),
         );
       }
+    }
+    return null;
+  },
+});
+
+// ── INTERNAL: submission notice to finance approvers ─────────────────────────
+
+/**
+ * The recipients + display fields `sendReimbursementSubmittedEmail` needs, or
+ * `null` if the request no longer exists (a scheduled job racing a since-
+ * canceled/deleted row — shouldn't happen in practice, but the action should
+ * degrade rather than throw).
+ *
+ * Recipients = everyone `listChapterFinanceManagerPersonIds` says can approve
+ * in this chapter, MINUS the requester — excluded by BOTH signals
+ * `assertApprovalSoD` uses (the roster link `req.personId`, AND a normalized-
+ * email match against `req.payeeEmail`), so a manager who also happens to be
+ * the claimant is never told to review their own request. Deduped by
+ * normalized email (a person could otherwise appear once per qualifying
+ * grant/seat, or two roster rows could share one inbox).
+ */
+export const getReimbursementSubmittedEmailPayload = internalQuery({
+  args: { reimbursementId: v.id("reimbursementRequests") },
+  handler: async (ctx, { reimbursementId }) => {
+    const req = await ctx.db.get(reimbursementId);
+    if (!req) return null;
+    const chapter = await ctx.db.get(req.chapterId);
+
+    const approverIds = await listChapterFinanceManagerPersonIds(
+      ctx,
+      req.chapterId,
+    );
+    if (req.personId) approverIds.delete(req.personId);
+
+    const requesterEmail = normalizeEmail(req.payeeEmail);
+    const seenEmails = new Set<string>();
+    const recipients: string[] = [];
+    for (const personId of approverIds) {
+      const person = await ctx.db.get(personId);
+      if (!person || person.isPlaceholder === true) continue;
+      const email = normalizeEmail(person.email);
+      if (!email) continue;
+      // Mirrors `assertApprovalSoD`'s second signal: an email match catches
+      // "the manager IS the claimant" even when the roster link above missed
+      // it (e.g. a public-form submission whose best-effort person-match
+      // landed on a different row than the manager's own).
+      if (requesterEmail && email === requesterEmail) continue;
+      if (seenEmails.has(email)) continue;
+      seenEmails.add(email);
+      recipients.push(email);
+    }
+
+    return {
+      recipients,
+      reference: referenceFor(req._id),
+      payeeName: req.payeeName,
+      purpose: req.purpose ?? "",
+      totalCents: req.totalCents,
+      chapterName: chapter?.name ?? "your chapter",
+    };
+  },
+});
+
+/**
+ * "New reimbursement to review" — best-effort Resend to every finance
+ * approver in the chapter (see `getReimbursementSubmittedEmailPayload`'s
+ * recipient logic), scheduled by `createReimbursement` right after a request
+ * lands in `submitted` or `pending_preapproval`. The manager queue is
+ * otherwise pull-only, so this is the only signal an approver gets that
+ * something is waiting on them.
+ *
+ * Wrapped in a try/catch (mirrors `cards.notifyPersonalChargeFlagged`): this
+ * runs off `ctx.scheduler.runAfter(0, …)`, AFTER the submission already
+ * committed, so a thrown error here can't undo the submission either way —
+ * but letting it throw would still surface as a failed scheduled job in the
+ * dashboard for something that's meant to degrade silently (no
+ * RESEND_API_KEY in dev, a transient Resend/network failure, zero
+ * recipients), so it's swallowed here the same way the sibling does.
+ */
+export const sendReimbursementSubmittedEmail = internalAction({
+  args: { reimbursementId: v.id("reimbursementRequests") },
+  handler: async (ctx, { reimbursementId }) => {
+    try {
+      const payload = await ctx.runQuery(
+        internal.reimbursements.getReimbursementSubmittedEmailPayload,
+        { reimbursementId },
+      );
+      if (!payload || payload.recipients.length === 0) return null;
+
+      const dollars = `$${(payload.totalCents / 100).toFixed(2)}`;
+      const subject = `New reimbursement to review: ${payload.reference} (${dollars})`;
+      const link = appUrl("/finances/reimbursements");
+      const forPurpose = payload.purpose
+        ? ` for <b>${escapeHtml(payload.purpose)}</b>`
+        : "";
+      const html = emailShell(`
+        <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">Reimbursement ${escapeHtml(payload.reference)}</h1>
+        <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">${escapeHtml(payload.payeeName)} submitted a ${escapeHtml(dollars)} reimbursement${forPurpose} at ${escapeHtml(payload.chapterName)}. It's waiting on your review.</p>
+        ${
+          link
+            ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${link}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">Review it →</a></div>`
+            : `<p style="margin:0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;line-height:1.6;color:#7A5A5A">Review it from the Reimbursements tab in the app.</p>`
+        }`);
+
+      for (const email of payload.recipients) {
+        // Per-recipient: `sendEmail` already swallows HTTP-level Resend
+        // failures, but a fetch-level exception (DNS, timeout) would
+        // otherwise abort the loop and silently skip the remaining
+        // recipients. Isolate each send so one bad address can't cost the
+        // others their notification.
+        try {
+          await sendEmail(email, subject, html);
+        } catch (err) {
+          console.error(
+            "sendReimbursementSubmittedEmail: recipient send failed",
+            reimbursementId,
+            err,
+          );
+        }
+      }
+    } catch (err) {
+      console.error(
+        "sendReimbursementSubmittedEmail: failed",
+        reimbursementId,
+        err,
+      );
     }
     return null;
   },
