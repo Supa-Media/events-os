@@ -5,14 +5,21 @@
  * manager actions:
  *   - submitted / preapproved → Reject · Approve lines… · Approve & pay
  *   - pending_preapproval      → Decline · Pre-approve
- *   - approved                 → Mark paid (`markPaidManually`), with a note
- *                                that ACH auto-payout via Increase is coming
+ *   - approved                 → Pay by ACH (retry) · Mark paid
+ *                                (`markPaidManually`) — this state is now the
+ *                                FALLBACK: the parent auto-initiates the ACH
+ *                                payout right after approval succeeds, so a
+ *                                request only sits here when that couldn't
+ *                                start (no linked destination, no active
+ *                                Increase account, or Increase unreachable)
  *   - everything else          → read-only (a status note)
  *
  * "Approve lines…" opens an inline per-line checkbox selector that submits
  * `approve({ approvedLineIds })` (partial approval); "Approve & pay" submits
- * `approve({})` (all lines). Both surface the server-side separation-of-duties
- * error via the parent's action runner.
+ * `approve({})` (all lines) — the parent (`index.tsx`'s `handleApprove`)
+ * follows either with `api.increase.payReimbursement` to auto-pay. Both
+ * surface the server-side separation-of-duties error via the parent's action
+ * runner.
  */
 import { useMemo, useState } from "react";
 import { View, Text, Pressable, Linking } from "react-native";
@@ -57,8 +64,12 @@ type Props = {
   ) => Promise<void>;
   onPreApprove: (id: Id<"reimbursementRequests">) => Promise<void>;
   onReject: (id: Id<"reimbursementRequests">) => Promise<void>;
-  /** Mark an approved request paid (`markPaidManually`). */
+  /** Mark an approved request paid by hand (`markPaidManually`) — the
+   *  fallback when auto-pay couldn't start the ACH transfer. */
   onMarkPaid: (id: Id<"reimbursementRequests">) => Promise<void>;
+  /** Retry the ACH payout (`payReimbursement`) on a request stuck `approved`
+   *  because auto-pay didn't take the real branch. Idempotent. */
+  onRetryPayout: (id: Id<"reimbursementRequests">) => Promise<void>;
 };
 
 export function RequestCard({
@@ -68,6 +79,7 @@ export function RequestCard({
   onPreApprove,
   onReject,
   onMarkPaid,
+  onRetryPayout,
 }: Props) {
   // `expanded` shows the read-only line table; `selecting` swaps it for the
   // per-line checkbox approve selector. Either mode needs the request's lines.
@@ -187,14 +199,15 @@ export function RequestCard({
         </View>
       ) : null}
 
-      {/* Pay note — approved requests are paid manually for now; ACH is next. */}
+      {/* Pay note — `approved` is now the FALLBACK state: auto-pay already
+          tried and couldn't start the ACH transfer for this request. */}
       {canMarkPaid(row.status) ? (
         <View className="mt-3 flex-row items-center gap-2 rounded-md bg-info-bg px-3 py-2">
           <Icon name="info" size={14} color={colors.info} />
           <Text className="flex-1 text-xs text-info">
-            Send the ACH transfer from the chapter's Increase account, then mark
-            it paid here. Auto-payout via Increase is coming — destination bank
-            capture is a follow-up.
+            Automatic ACH payout couldn't start for this request — send the
+            transfer from the chapter's Increase account, then mark it paid
+            here, or retry "Pay by ACH" below.
           </Text>
         </View>
       ) : null}
@@ -251,14 +264,24 @@ export function RequestCard({
               />
             </>
           ) : canMarkPaid(row.status) ? (
-            <Button
-              title={`Mark paid ${formatCents(row.approvedCents ?? row.totalCents)}`}
-              variant="primary"
-              size="sm"
-              icon="check-circle"
-              loading={busy}
-              onPress={() => runBusy(() => onMarkPaid(row._id))}
-            />
+            <>
+              <Button
+                title="Pay by ACH"
+                variant="secondary"
+                size="sm"
+                icon="refresh-cw"
+                disabled={busy}
+                onPress={() => runBusy(() => onRetryPayout(row._id))}
+              />
+              <Button
+                title={`Mark paid ${formatCents(row.approvedCents ?? row.totalCents)}`}
+                variant="primary"
+                size="sm"
+                icon="check-circle"
+                loading={busy}
+                onPress={() => runBusy(() => onMarkPaid(row._id))}
+              />
+            </>
           ) : (
             <ReadOnlyNote status={row.status} payout={payout} />
           )}

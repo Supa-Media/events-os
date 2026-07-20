@@ -1540,6 +1540,29 @@ export const list = query({
   },
 });
 
+/**
+ * Whether the manager UI should auto-initiate the ACH payout right after
+ * `approve` succeeds (`approvalPolicy.autoPayOnApproval`, chapter-scoped).
+ * Defaults to ON (`true`) when no policy row exists or the flag is unset — a
+ * chapter opts OUT by explicitly setting it `false`. Read by the manager
+ * queue (`index.tsx`'s `handleApprove`) to decide whether to follow a
+ * successful `approve`/`approve({approvedLineIds})` with
+ * `api.increase.payReimbursement`; the payout call itself stays fully gated
+ * (manager role + disbursement SoD) regardless of this flag.
+ */
+export const autoPayEnabled = query({
+  args: {},
+  handler: async (ctx) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireFinanceRole(ctx, chapterId, "viewer");
+    const policy = await ctx.db
+      .query("approvalPolicy")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .first();
+    return policy?.autoPayOnApproval !== false;
+  },
+});
+
 /** One reimbursement + its lines for the detail panel. NO token returned. */
 export const get = query({
   args: { reimbursementId: v.id("reimbursementRequests") },

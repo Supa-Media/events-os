@@ -2136,6 +2136,66 @@ describe("accountless receipt upload (token-scoped — replacing a receipt post-
   });
 });
 
+describe("autoPayEnabled (approvalPolicy.autoPayOnApproval read for the manager UI's auto-pay wiring)", () => {
+  test("defaults true with no approvalPolicy row", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const manager = await seedPerson(s, {
+      name: "Manny",
+      userId: s.userId,
+      isTeamMember: true,
+    });
+    await grantRole(s, manager, "viewer");
+    expect(await s.as.query(api.reimbursements.autoPayEnabled, {})).toBe(true);
+  });
+
+  test("true when the chapter's policy row leaves autoPayOnApproval unset", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const manager = await seedPerson(s, {
+      name: "Manny",
+      userId: s.userId,
+      isTeamMember: true,
+    });
+    await grantRole(s, manager, "viewer");
+    await run(s.t, (ctx) =>
+      ctx.db.insert("approvalPolicy", {
+        chapterId: s.chapterId,
+        updatedAt: Date.now(),
+      }),
+    );
+    expect(await s.as.query(api.reimbursements.autoPayEnabled, {})).toBe(true);
+  });
+
+  test("false when the chapter explicitly opts out", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const manager = await seedPerson(s, {
+      name: "Manny",
+      userId: s.userId,
+      isTeamMember: true,
+    });
+    await grantRole(s, manager, "viewer");
+    await run(s.t, (ctx) =>
+      ctx.db.insert("approvalPolicy", {
+        chapterId: s.chapterId,
+        autoPayOnApproval: false,
+        updatedAt: Date.now(),
+      }),
+    );
+    expect(await s.as.query(api.reimbursements.autoPayEnabled, {})).toBe(false);
+  });
+
+  test("a caller without a finance role is rejected (viewer-gated)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // The caller has NO financeRoles row → below viewer.
+    await expect(
+      s.as.query(api.reimbursements.autoPayEnabled, {}),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+});
+
 describe("reminder sweep", () => {
   test("degrades without RESEND_API_KEY (no throw)", async () => {
     const t = newT();
