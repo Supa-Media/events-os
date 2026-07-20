@@ -46,6 +46,14 @@
           "featured": {
             "type": "boolean",
             "default": false
+          },
+          "slot": {
+            "type": "string",
+            "enum": [
+              "lead",
+              "trail"
+            ],
+            "default": "trail"
           }
         },
         "required": [

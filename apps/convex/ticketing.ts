@@ -633,6 +633,63 @@ export const getPublicPage = query({
   },
 });
 
+/**
+ * Public, unauthenticated list of published UPCOMING event pages — the source
+ * for the marketing site's "Important Links" section (apps/landing), fetched
+ * same-origin via GET /api/events/upcoming (registered in http.ts). Returns
+ * only page-level, non-PII fields.
+ *
+ * "Upcoming" = the event hasn't ended yet (`endDate ?? eventDate >= now`), so a
+ * page drops off the homepage on its own once the event is over — no manual
+ * cleanup. Training-sandbox events are always excluded (they must never reach a
+ * public surface). Ordered soonest-first, capped by `limit`.
+ *
+ * Read cost stays flat as historical published pages accumulate: we read the
+ * most-recently-created published pages first (upcoming events are always among
+ * them) and bound the scan, rather than reading every published page ever.
+ */
+export const listPublishedUpcoming = query({
+  args: { limit: v.optional(v.number()) },
+  handler: async (ctx, { limit }) => {
+    const now = Date.now();
+    const max = Math.max(1, Math.min(limit ?? 6, 24));
+
+    const pages = await ctx.db
+      .query("eventPages")
+      .withIndex("by_published", (q) => q.eq("published", true))
+      .order("desc")
+      .take(100);
+
+    const upcoming: Array<{
+      slug: string;
+      eventName: string;
+      startDate: number;
+      endDate: number | null;
+      tagline: string | null;
+      venueName: string | null;
+      hasCover: boolean;
+    }> = [];
+    for (const page of pages) {
+      const event = await ctx.db.get(page.eventId);
+      // Skip orphaned pages and the Academy's training sandbox events.
+      if (!event || event.isTraining) continue;
+      const endsAt = page.endDate ?? event.eventDate;
+      if (endsAt < now) continue;
+      upcoming.push({
+        slug: page.slug,
+        eventName: event.name,
+        startDate: event.eventDate,
+        endDate: page.endDate ?? null,
+        tagline: page.tagline ?? null,
+        venueName: page.venueName ?? null,
+        hasCover: !!page.coverImage,
+      });
+    }
+    upcoming.sort((a, b) => a.startDate - b.startDate);
+    return upcoming.slice(0, max);
+  },
+});
+
 /** Reaction rollup for one activity target. */
 async function reactionsFor(
   ctx: QueryCtx,
