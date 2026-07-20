@@ -553,6 +553,15 @@ export async function removeGiftRow(
   if (gift.countedInLaunchFund) {
     await applyLaunchFundDelta(ctx, gift.scope, -gift.amountCents);
   }
+
+  // Gift→event attach: a MANUALLY attached external gift (`eventId` set, NO
+  // `donationId` — an on-page donation's dual-write is never un-bumped here,
+  // it's owned by `giving.ts#bumpGivingRollup`/`removeDonation` instead) was
+  // counted in that event's `externalGiftsCents`/`externalGiftsCount` — reverse
+  // it so a delete stays consistent with `attachGiftToEvent`'s bookkeeping.
+  if (gift.eventId !== undefined && gift.donationId === undefined) {
+    await bumpEventExternalGifts(ctx, gift.eventId, -gift.amountCents, -1);
+  }
 }
 
 /**
@@ -985,6 +994,37 @@ export async function dualWriteGiftForDonation(
     donationId: donation._id,
     ...(donation.note ? { note: donation.note } : {}),
     ...(donation.recordedBy ? { recordedBy: donation.recordedBy } : {}),
+  });
+}
+
+/**
+ * Bump `eventPages.externalGiftsCents`/`externalGiftsCount` by the given
+ * deltas (clamped ≥ 0), for an event's `by_event` page row. This is the
+ * MANUAL-ATTACH rollup only — mirrors `giving.ts#bumpGivingRollup`'s pattern
+ * exactly, but for the SIBLING counter that tracks donor-CRM gifts manually
+ * attached to an event (Givebutter-imported / offline gifts given "toward the
+ * fundraiser"), never the on-page donation flow's `donationsCents`. Callers
+ * MUST only invoke this for a gift with `donationId === undefined` — an
+ * on-page donation's dual-written gift is already counted in
+ * `donationsCents`, and folding it into `externalGiftsCents` too would
+ * double-count (see `schema/ticketing.ts`'s `externalGiftsCents` doc). No-op
+ * (no write) if the event has no `eventPages` row.
+ */
+export async function bumpEventExternalGifts(
+  ctx: MutationCtx,
+  eventId: Id<"events">,
+  deltaCents: number,
+  deltaCount: number,
+): Promise<void> {
+  const page = await ctx.db
+    .query("eventPages")
+    .withIndex("by_event", (q) => q.eq("eventId", eventId))
+    .unique();
+  if (!page) return;
+  await ctx.db.patch(page._id, {
+    externalGiftsCents: Math.max(0, (page.externalGiftsCents ?? 0) + deltaCents),
+    externalGiftsCount: Math.max(0, (page.externalGiftsCount ?? 0) + deltaCount),
+    updatedAt: Date.now(),
   });
 }
 
