@@ -12,18 +12,29 @@
  * (identity is server-derived from the caller's own roster row — this screen
  * only supplies editable DISPLAY overrides, never who the request is
  * attributed to). Line items are a spreadsheet-style grid — description,
- * qty × rate (amount is the product, editable line-by-line), and an optional
+ * qty × rate (amount is the product, editable line-by-line), a REQUIRED
  * per-line receipt uploaded straight to Convex storage the moment it's picked
  * (mirrors `ReceiptButton`'s generate-url → POST → storageId flow) so the
- * `receiptStorageId` travels with the line on submit.
+ * `receiptStorageId` travels with the line on submit, and a REQUIRED per-line
+ * transaction date. Submission is blocked — with an inline, itemized error —
+ * until every line clears all three.
  *
- * Name/email/phone prefill, funds, and the optional "For" (event/project) tag
- * options come from `api.reimbursements.newRequestOptions` — a member-safe
- * read with NO finance-role gate, since any chapter member needs it to
- * submit, whether or not they hold a finance grant. There's no fund picker
- * (funds are backend-only, WP-1.4): every line silently lands on the
+ * Name/email/phone prefill, funds, and the "For" (event/project/recurring
+ * budget) tag options come from `api.reimbursements.newRequestOptions` — a
+ * member-safe read with NO finance-role gate, since any chapter member needs
+ * it to submit, whether or not they hold a finance grant. There's no fund
+ * picker (funds are backend-only, WP-1.4): every line silently lands on the
  * chapter's General Fund server-side. The "For" tag is purely informational
- * (an event or a project, never both) — it never feeds budget-vs-actual math.
+ * (an event, a project, or a recurring budget — never more than one) — it
+ * never feeds budget-vs-actual math.
+ *
+ * Direct deposit is REQUIRED, not optional: a full ACH destination (routing +
+ * account + type) must be linked via `linkBankAccount` BEFORE the request is
+ * created — there is no more last-4-only / "a manager pays you manually"
+ * fallback. The form therefore links FIRST and passes the resulting
+ * `externalAccountId` through to `submitReimbursement`; if linking fails, the
+ * submission never happens (surfaced as an inline error, not a silent
+ * degrade).
  *
  * Built to `docs/plans/finance.md` (Reimbursements) + the public reimburse.html
  * visual spec, restyled onto the in-app finance theme (NativeWind + lib/theme).
@@ -31,10 +42,12 @@
 import { useState } from "react";
 import { Platform, Pressable, Text, TextInput, View } from "react-native";
 import { useAction, useMutation, useQuery } from "convex/react";
+import type { FunctionReference } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 // expo-image-picker is Expo Go-safe (classified `core`); only used on native.
 import * as ImagePicker from "expo-image-picker";
+import { BUDGET_CADENCE_LABELS, type BudgetCadence } from "@events-os/shared";
 import {
   Button,
   Field,
@@ -46,12 +59,97 @@ import {
   ToastView,
 } from "../../ui";
 import { colors } from "../../../lib/theme";
+import { formatDate } from "../../../lib/format";
 import { useActionRunner } from "../../../lib/useActionToast";
 import { formatMoney, parseDollars } from "../../event/ticketing/helpers";
+import { Calendar } from "../../ui/Calendar";
+import { Popover } from "../../ui/Popover";
+import { useAnchor } from "../../ui/useAnchor";
+
+// ── Backend contract types. These mirror the `api.reimbursements.*` shapes
+// (`purpose`, per-line `transactionDate`, `externalAccountId`, `budgetId`,
+// the widened `newRequestOptions`/`linkBankAccount`) — the generated types
+// lag until `convex dev` regenerates, so the casts below keep this file
+// honest against the real validators in apps/convex/reimbursements.ts.
+type ForOptionRow = { id: string; label: string };
+type BudgetOptionRow = { id: string; label: string; cadence: BudgetCadence };
+
+type NewRequestOptionsResult = {
+  defaultPayeeName: string;
+  defaultPayeeEmail: string;
+  defaultPayeePhone: string;
+  funds: { id: string; name: string }[];
+  forOptions: {
+    events: ForOptionRow[];
+    projects: ForOptionRow[];
+    budgets: BudgetOptionRow[];
+  };
+};
+type NewRequestOptionsFn = FunctionReference<
+  "query",
+  "public",
+  Record<string, never>,
+  NewRequestOptionsResult
+>;
+
+type LinkBankAccountArgs = {
+  routingNumber: string;
+  accountNumber: string;
+  accountHolderName?: string;
+  funding?: "checking" | "savings";
+};
+type LinkBankAccountResult = {
+  linked: boolean;
+  externalAccountId?: string;
+  last4?: string;
+};
+type LinkBankAccountFn = FunctionReference<
+  "action",
+  "public",
+  LinkBankAccountArgs,
+  LinkBankAccountResult
+>;
+
+type SubmitLineArg = {
+  description: string;
+  amountCents: number;
+  receiptStorageId: Id<"_storage">;
+  transactionDate: number;
+};
+type SubmitReimbursementArgs = {
+  payeeName?: string;
+  payeeEmail?: string;
+  payeePhone?: string;
+  purpose: string;
+  requestPreApproval?: boolean;
+  eventId?: Id<"events">;
+  projectId?: Id<"projects">;
+  budgetId?: Id<"budgets">;
+  externalAccountId: string;
+  bankAccountLast4?: string;
+  lines: SubmitLineArg[];
+};
+type SubmitReimbursementResult = {
+  reimbursementId: Id<"reimbursementRequests">;
+  reference: string;
+};
+type SubmitReimbursementFn = FunctionReference<
+  "mutation",
+  "public",
+  SubmitReimbursementArgs,
+  SubmitReimbursementResult
+>;
+
+/** A line's transaction date can't be more than 48h in the future… */
+const MAX_FUTURE_MS = 48 * 60 * 60 * 1000;
+/** …or more than ~3 years in the past (mirrors the backend's own bound). */
+const MAX_PAST_MS = 3 * 365 * 24 * 60 * 60 * 1000;
 
 /** One in-progress line item — pure client state until Submit builds the
  *  mutation payload. `qtyText`/`rateText` are raw strings so the user can type
- *  freely (a blank field ≠ 0); the amount shown is always their product. */
+ *  freely (a blank field ≠ 0); the amount shown is always their product.
+ *  `receiptStorageId` and `transactionDate` are both REQUIRED at submit — the
+ *  backend rejects a line missing either. */
 type DraftLine = {
   key: string;
   description: string;
@@ -60,6 +158,9 @@ type DraftLine = {
   receiptStorageId: Id<"_storage"> | null;
   receiptName: string | null;
   uploading: boolean;
+  /** Defaults to "now" (always inside the valid window) so a member who
+   *  never touches the picker still submits a legal date. */
+  transactionDate: number;
 };
 
 function emptyLine(): DraftLine {
@@ -71,6 +172,7 @@ function emptyLine(): DraftLine {
     receiptStorageId: null,
     receiptName: null,
     uploading: false,
+    transactionDate: Date.now(),
   };
 }
 
@@ -82,16 +184,25 @@ function lineAmountCents(line: DraftLine): number {
   return Math.round(qty * rateCents);
 }
 
-/** The "For" picker's value encoding: `""` (none), `event:<id>`, or
- *  `project:<id>` — one `Select` standing in for two mutually-exclusive
- *  optional ids, decoded back into `eventId`/`projectId` args on submit. */
-function decodeForValue(value: string): { eventId?: Id<"events">; projectId?: Id<"projects"> } {
+/** The "For" picker's value encoding: `""` (none), `event:<id>`,
+ *  `project:<id>`, or `budget:<id>` — one `Select` standing in for three
+ *  mutually-exclusive optional ids, decoded back into `eventId`/`projectId`/
+ *  `budgetId` args on submit (client-side mirror of the backend's own
+ *  mutual-exclusion rule). */
+function decodeForValue(
+  value: string,
+): { eventId?: Id<"events">; projectId?: Id<"projects">; budgetId?: Id<"budgets"> } {
   if (value.startsWith("event:")) return { eventId: value.slice(6) as Id<"events"> };
   if (value.startsWith("project:")) return { projectId: value.slice(8) as Id<"projects"> };
+  if (value.startsWith("budget:")) return { budgetId: value.slice(7) as Id<"budgets"> };
   return {};
 }
 
-type ForOptions = { events: { id: string; label: string }[]; projects: { id: string; label: string }[] };
+type ForOptions = {
+  events: ForOptionRow[];
+  projects: ForOptionRow[];
+  budgets?: BudgetOptionRow[];
+};
 
 function buildForOptions(options: ForOptions | undefined) {
   if (!options) return [{ value: "", label: "None" }];
@@ -105,6 +216,15 @@ function buildForOptions(options: ForOptions | undefined) {
   if (options.projects.length > 0) {
     items.push({ value: "__grp_projects", label: "Projects", header: true });
     for (const p of options.projects) items.push({ value: `project:${p.id}`, label: p.label });
+  }
+  if (options.budgets && options.budgets.length > 0) {
+    items.push({ value: "__grp_budgets", label: "Budgets", header: true });
+    for (const b of options.budgets) {
+      items.push({
+        value: `budget:${b.id}`,
+        label: `${b.label} · ${BUDGET_CADENCE_LABELS[b.cadence]}`,
+      });
+    }
   }
   return items;
 }
@@ -127,23 +247,22 @@ export function ReimbursementRequestForm({
   title = "Request a reimbursement",
   subtitle = "Tell us what you spent and we'll pay you back by direct deposit once a finance manager approves.",
 }: Props) {
-  const options = useQuery(api.reimbursements.newRequestOptions, {});
-  const submit = useMutation(api.reimbursements.submitReimbursement);
-  const linkBankAccount = useAction(api.reimbursements.linkBankAccount);
+  const options = useQuery(api.reimbursements.newRequestOptions as unknown as NewRequestOptionsFn, {});
+  const submit = useMutation(api.reimbursements.submitReimbursement as unknown as SubmitReimbursementFn);
+  const linkBankAccount = useAction(api.reimbursements.linkBankAccount as unknown as LinkBankAccountFn);
   const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
   const { run, toast, dismiss } = useActionRunner();
 
   const [payeeName, setPayeeName] = useState<string | null>(null);
   const [payeeEmail, setPayeeEmail] = useState<string | null>(null);
-  const [bankLast4, setBankLast4] = useState("");
-  // Full ACH destination (optional): when both are filled, we link a REAL
-  // Increase External Account after submit so the payout can go out by actual
-  // ACH instead of degrading to a manual one. Leaving these blank still works
-  // exactly as before (last-4 only, manager pays by hand).
+  // Full ACH destination — REQUIRED. Linked BEFORE submit (see `handleSubmit`)
+  // so the resulting `externalAccountId` can travel with the create call; the
+  // last-4-only / manual-payment fallback is gone.
   const [routingNumber, setRoutingNumber] = useState("");
   const [accountNumber, setAccountNumber] = useState("");
   const [funding, setFunding] = useState<"checking" | "savings">("checking");
-  const [notes, setNotes] = useState("");
+  // The required "why" — what the request is for, sent as `purpose`.
+  const [purpose, setPurpose] = useState("");
   const [forValue, setForValue] = useState("");
   const [lines, setLines] = useState<DraftLine[]>([emptyLine()]);
   const [error, setError] = useState<string | null>(null);
@@ -225,13 +344,36 @@ export function ReimbursementRequestForm({
     updateLine(key, { receiptStorageId: null, receiptName: null });
   }
 
+  /** Lines with a description or an amount — the same "usable" filter used to
+   *  both validate and build the submit payload. */
+  function usableLines(): DraftLine[] {
+    return lines.filter((l) => l.description.trim() || lineAmountCents(l) > 0);
+  }
+
   function validate(): string | null {
     if (!nameValue.trim()) return "Add your name.";
-    const usable = lines.filter((l) => l.description.trim() || lineAmountCents(l) > 0);
+    if (!purpose.trim()) return "What was this for? Why was it needed?";
+    const usable = usableLines();
     if (usable.length === 0) return "Add at least one line item with an amount.";
     for (const l of usable) {
       if (!l.description.trim()) return "Every line needs a description.";
       if (lineAmountCents(l) <= 0) return "Every line needs a qty and rate that add up to more than $0.";
+      if (l.transactionDate > Date.now() + MAX_FUTURE_MS) {
+        return `"${l.description.trim() || "Untitled line"}" — the transaction date can't be more than 48 hours in the future.`;
+      }
+      if (l.transactionDate < Date.now() - MAX_PAST_MS) {
+        return `"${l.description.trim() || "Untitled line"}" — the transaction date can't be more than 3 years old.`;
+      }
+    }
+    // Every line needs a receipt — list which ones don't, rather than a single
+    // generic error, so it's obvious what's still missing.
+    const missingReceipts = usable.filter((l) => !l.receiptStorageId);
+    if (missingReceipts.length > 0) {
+      const names = missingReceipts.map((l, i) => l.description.trim() || `Line ${i + 1}`);
+      return `Add a receipt for: ${names.join(", ")}.`;
+    }
+    if (!routingNumber.trim() || !accountNumber.trim()) {
+      return "Add your routing and account number so we can pay you by direct deposit.";
     }
     return null;
   }
@@ -243,57 +385,59 @@ export function ReimbursementRequestForm({
       setError(problem);
       return;
     }
-    const hasFullDestination = routingNumber.trim().length > 0 && accountNumber.trim().length > 0;
-    if (routingNumber.trim() && !accountNumber.trim()) {
-      setError("Add your account number too, or clear the routing number.");
-      return;
-    }
-    if (accountNumber.trim() && !routingNumber.trim()) {
-      setError("Add your routing number too, or clear the account number.");
-      return;
-    }
-    const usable = lines.filter((l) => l.description.trim() || lineAmountCents(l) > 0);
+    const usable = usableLines();
     const forIds = decodeForValue(forValue);
     setSubmitting(true);
+
+    // Link FIRST: the backend rejects a create without an already-linked full
+    // ACH destination, so the External Account must exist before we submit.
+    const linked = await run(
+      () =>
+        linkBankAccount({
+          routingNumber: routingNumber.trim(),
+          accountNumber: accountNumber.trim(),
+          accountHolderName: nameValue.trim(),
+          funding,
+        }),
+      { errorTitle: "Couldn't link your bank account" },
+    );
+    if (linked === undefined || !linked.linked || !linked.externalAccountId) {
+      setSubmitting(false);
+      if (linked !== undefined) {
+        setError(
+          "We couldn't verify your bank account — double-check the routing and account numbers and try again.",
+        );
+      }
+      return;
+    }
+    // Captured as a plain local (rather than re-reading `linked.externalAccountId`
+    // inside the closure below) so the narrowing above actually sticks — TS
+    // doesn't retain property-truthiness narrowing across a closure boundary.
+    const externalAccountId = linked.externalAccountId;
+
     const result = await run(
       () =>
         submit({
           payeeName: nameValue.trim(),
           payeeEmail: emailValue.trim() || undefined,
-          // With a full destination, compute the last-4 client-side as a
-          // FALLBACK so the request always shows a last-4 even if the post-submit
-          // `linkBankAccount` degrades (linked:false). A successful link
-          // overwrites this with the same last-4 (`attachExternalAccount`).
-          bankAccountLast4: hasFullDestination
-            ? accountNumber.trim().replace(/\D/g, "").slice(-4) || undefined
-            : bankLast4.trim() || undefined,
-          purpose: notes.trim() || undefined,
+          purpose: purpose.trim(),
           requestPreApproval,
           eventId: forIds.eventId,
           projectId: forIds.projectId,
+          budgetId: forIds.budgetId,
+          externalAccountId,
+          // Display-only last-4, known at link time (the public flow passes it
+          // the same way) — so the queue shows "····1234" for in-app requests.
+          bankAccountLast4: linked.last4,
           lines: usable.map((l) => ({
             description: l.description.trim(),
             amountCents: lineAmountCents(l),
-            receiptStorageId: l.receiptStorageId ?? undefined,
+            receiptStorageId: l.receiptStorageId as Id<"_storage">,
+            transactionDate: l.transactionDate,
           })),
         }),
       { errorTitle: requestPreApproval ? "Couldn't request pre-approval" : "Couldn't submit" },
     );
-    if (result !== undefined && hasFullDestination) {
-      // Best-effort: a failure here never blocks the submission that already
-      // succeeded — it just means a manager pays this one by hand instead.
-      await run(
-        () =>
-          linkBankAccount({
-            reimbursementId: result.reimbursementId,
-            routingNumber: routingNumber.trim(),
-            accountNumber: accountNumber.trim(),
-            accountHolderName: nameValue.trim(),
-            funding,
-          }),
-        { errorTitle: "Submitted, but couldn't link your bank account" },
-      );
-    }
     setSubmitting(false);
     if (result !== undefined) {
       if (onSubmitted) onSubmitted();
@@ -320,7 +464,7 @@ export function ReimbursementRequestForm({
               size="sm"
               onPress={() => {
                 setLines([emptyLine()]);
-                setNotes("");
+                setPurpose("");
                 setForValue("");
                 setJustSubmitted(false);
               }}
@@ -367,12 +511,21 @@ export function ReimbursementRequestForm({
           </View>
 
           <Select
-            label="What's this for? (optional)"
-            hint="Tag an event or project so the finance team can see what it relates to."
+            label="What's this for?"
+            hint="Tag an event, a project, or one of the chapter's recurring budgets so the finance team can see what it relates to."
             value={forValue}
             options={forOptions}
             onChange={setForValue}
             placeholder="None"
+          />
+
+          <TextField
+            label="What was this for? Why was it needed?"
+            value={purpose}
+            onChangeText={setPurpose}
+            placeholder="A short note the finance team can review at a glance…"
+            multiline
+            numberOfLines={3}
           />
 
           <Field label="Direct deposit — where we pay you">
@@ -411,20 +564,10 @@ export function ReimbursementRequestForm({
             </View>
             <Text className="mt-1 text-2xs text-faint">
               Securely linked through our banking partner (Increase) — we never
-              store your full account number. Prefer to just tell us the last 4
-              digits? Leave these blank and a finance manager will pay you
-              manually.
+              store your full account number. Required: a request can't be
+              submitted without a linked bank account, and approval pays it
+              out directly.
             </Text>
-            {!routingNumber && !accountNumber ? (
-              <TextField
-                label="Pay to — bank last 4 (optional)"
-                value={bankLast4}
-                onChangeText={(v) => setBankLast4(v.replace(/[^0-9]/g, "").slice(0, 4))}
-                keyboardType="number-pad"
-                maxLength={4}
-                placeholder="e.g. 3391"
-              />
-            ) : null}
           </Field>
 
           <Field label="Line items">
@@ -461,15 +604,6 @@ export function ReimbursementRequestForm({
               onPress={addLine}
             />
           </Field>
-
-          <TextField
-            label="Notes (optional)"
-            value={notes}
-            onChangeText={setNotes}
-            placeholder="Anything the finance team should know…"
-            multiline
-            numberOfLines={3}
-          />
 
           <View className="mt-2 flex-row items-start gap-2 rounded-md bg-warn-bg px-3 py-2.5">
             <Icon name="alert-triangle" size={14} color={colors.warn} />
@@ -570,6 +704,15 @@ function LineRow({
         </Pressable>
       </View>
 
+      {/* Per-line transaction date — required. */}
+      <View className="mt-2 flex-row items-center gap-2">
+        <Text className="text-xs font-semibold text-muted">Transaction date</Text>
+        <TransactionDateCell
+          value={line.transactionDate}
+          onChange={(ms) => onChange({ transactionDate: ms })}
+        />
+      </View>
+
       {/* Per-line receipt dropzone. */}
       <View className="mt-2">
         {line.uploading ? (
@@ -600,6 +743,45 @@ function LineRow({
         )}
       </View>
     </View>
+  );
+}
+
+/** A line's required transaction date — the same Calendar/Popover idiom the
+ *  rest of the app uses for a day-only pick (mirrors `DueDateCell`), without
+ *  the DUE↔TIMING offset math that cell adds: this is a plain day picker, no
+ *  time-of-day component, since only the calendar day matters for the
+ *  48h-future / 3y-old bounds the backend enforces. */
+function TransactionDateCell({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (ms: number) => void;
+}) {
+  const { ref, anchor, visible, open, close } = useAnchor();
+
+  return (
+    <>
+      <Pressable
+        ref={ref}
+        onPress={open}
+        className="flex-row items-center gap-1.5 rounded-md border border-border-strong bg-raised px-2.5 py-1.5 active:opacity-80"
+      >
+        <Icon name="calendar" size={13} color={colors.muted} />
+        <Text className="text-sm text-ink">{formatDate(value)}</Text>
+      </Pressable>
+
+      <Popover visible={visible} onClose={close} anchor={anchor} width={288}>
+        <Calendar
+          selected={value}
+          seed={value}
+          onSelect={(dayMs) => {
+            onChange(dayMs);
+            close();
+          }}
+        />
+      </Popover>
+    </>
   );
 }
 

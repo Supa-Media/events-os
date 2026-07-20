@@ -270,7 +270,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "bullets",
         items: [
-          "**Reimbursement — Public Worship owes you:** submit the request in-app with line items and a receipt for each one; it moves through submitted → approved → paying → paid. Someone else — never you — has to approve it.",
+          "**Reimbursement — Public Worship owes you:** submit the request in-app with a short note on WHY it was needed, a transaction date on every line, and a receipt for every line — none of that is optional, the app blocks submission until all three are there. Your full bank details (routing + account, not just a last-4) are captured up front too, so approval pays you directly by ACH — there's no manual last-4 fallback anymore. It then moves through submitted → approved → paying → paid. Someone else — never you — has to approve it.",
           "**Personal-charge flag — you owe Public Worship:** flag your own charge as personal on My Transactions, or a manager flags it for you. It opens an owed balance, tracked the same way, just pointed the other direction.",
           "**Both directions live in one place:** the Reimbursements tab shows \"Public Worship owes you\" and \"you owe Public Worship\" side by side, so nothing nets out silently.",
           "**Don't recognize a charge at all?** That's different from a personal charge you remember making — flagging it \"personal\" says YOU made it. If a charge on the Public Worship card is a genuine mystery, freeze the card yourself right away (instant, self-serve, reversible), then tell your Treasurer or the Financial Manager immediately so they can look into it. Don't guess by flagging an unrecognized charge as personal.",
@@ -311,7 +311,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
             text: "Pay with your own card, then submit a reimbursement request for it",
             correct: true,
             feedback:
-              "Right. Paying out of pocket happens — the fix is tracking it, not hiding it. Submit the reimbursement with your receipt and it moves through the normal approve → paid flow.",
+              "Right. Paying out of pocket happens — the fix is tracking it, not hiding it. Submit the reimbursement with your receipt, the transaction date, and why it was needed, and it moves through the normal approve → paid flow.",
           },
           {
             text: "Skip the purchase entirely and try again another day",
@@ -358,14 +358,14 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         prompt: "You paid for event supplies with your own card. What do you do?",
         options: [
-          "Submit a reimbursement request with the line items",
+          "Submit a reimbursement request with the line items, a receipt and date on each, and why it was needed",
           "Nothing — it evens out eventually",
           "Ask your Treasurer to send you cash directly",
           "Put it on your Public Worship card retroactively",
         ],
         answerIndex: 0,
         explanation:
-          "A reimbursement request is the front door for out-of-pocket mission spending — it's how \"Public Worship owes you\" gets tracked to paid.",
+          "A reimbursement request is the front door for out-of-pocket mission spending — every line needs its own receipt and transaction date, and the request itself needs a short note on why, or it won't submit. That's how \"Public Worship owes you\" gets tracked to paid.",
       },
       {
         prompt: "A personal charge accidentally hit your Public Worship card. What's true?",

@@ -47,7 +47,7 @@ import {
   internalMutation,
   internalAction,
 } from "./_generated/server";
-import type { MutationCtx, QueryCtx } from "./_generated/server";
+import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
@@ -56,6 +56,8 @@ import {
   REIMBURSEMENT_STATUS_LABELS,
   EXTERNAL_ACCOUNT_FUNDINGS,
   type ReimbursementStatus,
+  type ExternalAccountFunding,
+  type BudgetCadence,
 } from "@events-os/shared";
 import { normalizeEmail, getUserEmail } from "./lib/access";
 import {
@@ -75,8 +77,12 @@ import { assertRoutingNumber, assertAccountNumber } from "./increase";
 import { sendEmail, emailShell } from "./ticketingEmails";
 import { escapeHtml } from "./lib/html";
 import { appUrl, siteUrl } from "./lib/siteUrl";
-import { gatherForPickerCandidates } from "./lib/forPickerCandidates";
-import { ROLLUP_SCAN_LIMIT } from "./finances";
+import {
+  gatherForPickerCandidates,
+  budgetDisplayNameFor,
+  effectiveBudgetType,
+} from "./lib/forPickerCandidates";
+import { ROLLUP_SCAN_LIMIT, isAttributableBudget } from "./finances";
 
 const externalAccountFundingValidator = v.union(
   ...EXTERNAL_ACCOUNT_FUNDINGS.map((f) => v.literal(f)),
@@ -89,13 +95,18 @@ const reimbursementStatusValidator = v.union(
 
 /** The submitted line-item shape, shared by the public + in-app submit paths.
  *  Money is a raw `v.number()` here — the integer-cents check is enforced in
- *  `assertLineCents` (an arg validator can't reject a non-integer). */
+ *  `assertLineCents` (an arg validator can't reject a non-integer). Kept
+ *  OPTIONAL at the validator level for `receiptStorageId`/`transactionDate`
+ *  even though `createReimbursement` requires both for a NEW line — an arg
+ *  validator can't express "required except on legacy rows"; the actual gate
+ *  is `assertRequiredLineFields` below, the one invariant owner. */
 const submitLineValidator = v.object({
   description: v.string(),
   amountCents: v.number(),
   categoryId: v.optional(v.id("budgetCategories")),
   fundId: v.optional(v.id("funds")),
   receiptStorageId: v.optional(v.id("_storage")),
+  transactionDate: v.optional(v.number()),
 });
 type SubmitLine = {
   description: string;
@@ -103,6 +114,7 @@ type SubmitLine = {
   categoryId?: Id<"budgetCategories">;
   fundId?: Id<"funds">;
   receiptStorageId?: Id<"_storage">;
+  transactionDate?: number;
 };
 
 // ── Status machine ───────────────────────────────────────────────────────────
@@ -202,20 +214,37 @@ function capOptional(
   return out.length > 0 ? out : undefined;
 }
 
-/** Reduce an untrusted "bank last 4" to its digits, keeping only the last 4 —
- *  so a full account number pasted here is never stored. Undefined when blank;
- *  throws when it contains no digits. */
-function sanitizeLast4(value: string | undefined): string | undefined {
-  if (value === undefined) return undefined;
-  const digits = value.replace(/\D/g, "");
-  if (digits.length === 0) {
-    if (value.trim().length === 0) return undefined;
+/** A `transactionDate` sanity window: reject anything more than 48h in the
+ *  future (clock skew tolerance, not a loophole for post-dating) or older
+ *  than 3 years (a receipt that stale isn't a live reimbursement claim). */
+const TRANSACTION_DATE_MAX_FUTURE_MS = 48 * 60 * 60 * 1000;
+const TRANSACTION_DATE_MAX_PAST_MS = 3 * 365 * 24 * 60 * 60 * 1000;
+
+/** Validate a line's `transactionDate`: REQUIRED, a finite ms timestamp,
+ *  within the sanity window above. Every line submitted through
+ *  `createReimbursement` goes through this — the single gate for both the
+ *  public and in-app surfaces. */
+function assertTransactionDate(value: number | undefined, label = "Transaction date"): number {
+  if (value === undefined || !Number.isFinite(value)) {
     throw new ConvexError({
       code: "INVALID_INPUT",
-      message: "Bank account last 4 must be digits.",
+      message: `${label} is required.`,
     });
   }
-  return digits.slice(-4);
+  const now = Date.now();
+  if (value > now + TRANSACTION_DATE_MAX_FUTURE_MS) {
+    throw new ConvexError({
+      code: "INVALID_INPUT",
+      message: `${label} can't be in the future.`,
+    });
+  }
+  if (value < now - TRANSACTION_DATE_MAX_PAST_MS) {
+    throw new ConvexError({
+      code: "INVALID_INPUT",
+      message: `${label} is too old — it must be within the last 3 years.`,
+    });
+  }
+  return value;
 }
 
 /** The claimant status-timeline for the public page:
@@ -331,11 +360,15 @@ async function fundName(
 }
 
 /** The request-level "For" tag's display name — the event's or project's own
- *  name, whichever (if either) is set. Null when neither was tagged. */
+ *  name, or (WP: recurring budgets) the recurring budget's own display name
+ *  (`budgetDisplayNameFor`, e.g. "Education"). Exactly one of the three is
+ *  ever set (`createReimbursement`'s mutual-exclusivity check); null when
+ *  none were tagged. */
 async function forLabel(
   ctx: QueryCtx,
   eventId: Id<"events"> | undefined,
   projectId: Id<"projects"> | undefined,
+  budgetId: Id<"budgets"> | undefined,
 ): Promise<string | null> {
   if (eventId) {
     const event = await ctx.db.get(eventId);
@@ -344,6 +377,10 @@ async function forLabel(
   if (projectId) {
     const project = await ctx.db.get(projectId);
     return project?.name ?? null;
+  }
+  if (budgetId) {
+    const budget = await ctx.db.get(budgetId);
+    return budget ? budgetDisplayNameFor(budget) : null;
   }
   return null;
 }
@@ -394,11 +431,18 @@ async function matchPerson(
  * The shared create path behind BOTH submit surfaces (public /reimburse form and
  * the in-app member twin). The caller resolves the chapter + the claimant's
  * `personId` its own way (public: slug + best-effort roster match; in-app: the
- * authenticated caller's own roster person), then hands validated-but-untrusted
- * field values here. This single helper owns all the invariants — name/email
- * validation, per-line integer-cents + chapter-ownership checks, the total, the
- * `bankAccountLast4` reduction, the pre-approval status, and the request+lines
- * insert — so the two surfaces can never drift.
+ * authenticated caller's own roster person) AND a real ACH destination (the
+ * `externalAccountId`/`bankAccountLast4` pair, resolved by the CLIENT linking
+ * a real bank account BEFORE this ever runs — see `linkPublicBankAccount`/
+ * `linkBankAccount` below, both callable with no existing request — then
+ * passing the result into `submitPublicReimbursement`/`submitReimbursement`),
+ * then hands validated-but-untrusted field values here. This single helper
+ * owns EVERY invariant — name/email validation, the REQUIRED purpose, per-line integer-
+ * cents + REQUIRED receipt + REQUIRED sanity-checked `transactionDate` +
+ * chapter-ownership checks, the total, the REQUIRED bank destination, the
+ * mutually-exclusive "For" tag (event XOR project XOR recurring budget), the
+ * pre-approval status, and the request+lines insert — so the two surfaces can
+ * never drift.
  *
  * `personId` is the SEPARATION-OF-DUTIES anchor: the approval flow compares an
  * approver against `req.personId`, so it must be the real claimant (server-
@@ -411,7 +455,19 @@ async function createReimbursement(
     payeeName: string;
     payeeEmail: string;
     payeePhone?: string;
-    purpose?: string;
+    purpose: string;
+    /** The Increase External Account id this request's payout is addressed
+     *  to — resolved by linking a REAL bank account BEFORE this runs (the
+     *  public/in-app submit surfaces both call `linkPublicBankAccount`/
+     *  `linkBankAccount` first, then pass the resulting id here). REQUIRED:
+     *  no request may be created without a full ACH destination (owner
+     *  mandate — the last-4/manual path at submit is retired). */
+    externalAccountId: string;
+    /** The last-4 Increase derived from the SAME account-creation call, for
+     *  display — optional (a caller that already has it should pass it, but
+     *  its absence never blocks a submission; the real destination is
+     *  `externalAccountId`). NEVER a client-typed last-4 (that path is
+     *  retired) — this is only ever the digits Increase itself returned. */
     bankAccountLast4?: string;
     requestPreApproval?: boolean;
     personId: Id<"people"> | null;
@@ -419,12 +475,15 @@ async function createReimbursement(
      *  authenticated in-app path) rather than the public path's best-effort
      *  phone/email match. Drives `identityVerified` on the row. */
     identityVerified?: boolean;
-    /** Optional "what this was for" tag — an event OR a project, never both.
-     *  Purely informational (unlike a transaction's `budgetId`, this never
-     *  feeds budget-vs-actual math — see the file's ANTI-DOUBLE-COUNT
-     *  invariant). Only the in-app path collects this today. */
+    /** Optional "what this was for" tag — an event, a project, OR a
+     *  RECURRING budget, never more than one. Purely informational for
+     *  event/project (unlike a transaction's `budgetId`, this never feeds
+     *  budget-vs-actual math — see the file's ANTI-DOUBLE-COUNT invariant);
+     *  `budgetId` similarly never posts spend against the budget by itself —
+     *  it's a label until a finance manager attributes the actual payout. */
     eventId?: Id<"events">;
     projectId?: Id<"projects">;
+    budgetId?: Id<"budgets">;
     lines: SubmitLine[];
   },
 ): Promise<{
@@ -450,16 +509,40 @@ async function createReimbursement(
     });
   }
   const payeePhone = capOptional(input.payeePhone, 40);
-  const purpose = capOptional(input.purpose, 2000);
-  const bankAccountLast4 = sanitizeLast4(input.bankAccountLast4);
 
-  // "For" tag: an event OR a project, never both — verify whichever was
-  // supplied actually belongs to this chapter (untrusted input must never
-  // reference another chapter's ref).
-  if (input.eventId && input.projectId) {
+  // The "why" — required, non-blank after trim.
+  const purpose = cap(input.purpose, 2000);
+  if (!purpose) {
     throw new ConvexError({
       code: "INVALID_INPUT",
-      message: "Pick an event or a project, not both.",
+      message: "Tell us what this reimbursement is for.",
+    });
+  }
+
+  // Bank destination — REQUIRED. `createReimbursement` is the single
+  // invariant owner: even if a future caller forgets to resolve one first,
+  // no row can land without a real Increase External Account. The last-4 is
+  // display-only and optional (never required — some callers already have it
+  // from the same account-creation call, some don't bother threading it
+  // through, and its absence blocks nothing).
+  const externalAccountId = input.externalAccountId?.trim();
+  const bankAccountLast4 = input.bankAccountLast4?.trim() || undefined;
+  if (!externalAccountId) {
+    throw new ConvexError({
+      code: "BANK_REQUIRED",
+      message: "A linked bank account is required to submit a reimbursement.",
+    });
+  }
+
+  // "For" tag: an event, a project, OR a recurring budget — never more than
+  // one. Verify whichever was supplied actually belongs to this chapter
+  // (untrusted input must never reference another chapter's ref).
+  const forTagCount =
+    (input.eventId ? 1 : 0) + (input.projectId ? 1 : 0) + (input.budgetId ? 1 : 0);
+  if (forTagCount > 1) {
+    throw new ConvexError({
+      code: "INVALID_INPUT",
+      message: "Pick an event, a project, or a budget — not more than one.",
     });
   }
   if (input.eventId) {
@@ -470,6 +553,16 @@ async function createReimbursement(
     const project = await ctx.db.get(input.projectId);
     await requireInChapter(ctx, chapterId, project, "Project");
   }
+  if (input.budgetId) {
+    const budget = await ctx.db.get(input.budgetId);
+    await requireInChapter(ctx, chapterId, budget, "Budget");
+    if (effectiveBudgetType(budget!) !== "recurring") {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "That budget isn't a recurring budget.",
+      });
+    }
+  }
 
   if (input.lines.length === 0 || input.lines.length > 100) {
     throw new ConvexError({
@@ -478,10 +571,25 @@ async function createReimbursement(
     });
   }
 
-  // Validate every line's money + verify any fund/category belongs to this
-  // chapter (untrusted input must never reference another chapter).
+  // Validate every line: money, a non-blank description, a REQUIRED receipt,
+  // a REQUIRED sanity-checked transaction date, + verify any fund/category
+  // belongs to this chapter (untrusted input must never reference another
+  // chapter).
   for (const line of input.lines) {
     assertLineCents(line.amountCents);
+    if (!cap(line.description, 500)) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "Every line needs a description.",
+      });
+    }
+    if (!line.receiptStorageId) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "Every line needs a receipt.",
+      });
+    }
+    assertTransactionDate(line.transactionDate);
     if (line.fundId) {
       const fund = await ctx.db.get(line.fundId);
       if (!fund || fund.chapterId !== chapterId) {
@@ -528,7 +636,9 @@ async function createReimbursement(
     purpose,
     eventId: input.eventId,
     projectId: input.projectId,
+    budgetId: input.budgetId,
     totalCents,
+    externalAccountId,
     bankAccountLast4,
     submittedAt: now,
     createdAt: now,
@@ -555,6 +665,7 @@ async function createReimbursement(
       fundId: line.fundId ?? fallbackFundId,
       categoryId: line.categoryId,
       receiptStorageId: line.receiptStorageId,
+      transactionDate: line.transactionDate,
       order: i,
       createdAt: now,
     });
@@ -583,20 +694,47 @@ async function createReimbursement(
 const SUBMIT_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 const SUBMIT_RATE_LIMIT_MAX = 5;
 
-/** Throw `RATE_LIMITED` if `key` already hit the cap within the window. Cheap:
- *  one indexed range query, bounded to `SUBMIT_RATE_LIMIT_MAX` rows. */
-async function assertSubmitNotRateLimited(
+/**
+ * Rate limit for the pre-submit public receipt-upload endpoint
+ * (`preSubmitUploadUrl`, backing `/api/reimburse/pre-upload-url`) — the SAME
+ * `reimbursementSubmitAttempts` table + `by_key_and_time` mechanism as the
+ * submit limiter above, keyed independently (`"upload_ip:<address>"`) so
+ * uploading several lines' receipts ahead of ONE submission doesn't burn the
+ * submit budget. Threshold is looser than submit's (a single request can
+ * carry up to 100 lines, each needing its own upload call) but still bounded
+ * — an unauthenticated, no-CAPTCHA endpoint left unlimited is spammable.
+ */
+const UPLOAD_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+const UPLOAD_RATE_LIMIT_MAX = 40;
+
+/**
+ * Rate limit for resolving a bank destination with NO existing reimbursement
+ * (the public `linkPublicBankAccount` called with no `token` — the pre-submit
+ * "link first" step the public reimburse page's httpAction now performs).
+ * Same shared mechanism, its own key prefix (`"banklink_ip:<address>"`) so it
+ * never competes with submit's own budget — a real Increase API call is the
+ * most expensive thing this file does, so it gets its own (still generous)
+ * cap rather than none at all.
+ */
+const BANK_LINK_RATE_LIMIT_WINDOW_MS = 60 * 60 * 1000; // 1 hour
+const BANK_LINK_RATE_LIMIT_MAX = 20;
+
+/** Throw `RATE_LIMITED` if `key` already hit `max` within `windowMs`. Cheap:
+ *  one indexed range query, bounded to `max` rows. */
+async function assertNotRateLimited(
   ctx: MutationCtx,
   key: string,
+  max: number,
+  windowMs: number,
 ): Promise<void> {
-  const windowStart = Date.now() - SUBMIT_RATE_LIMIT_WINDOW_MS;
+  const windowStart = Date.now() - windowMs;
   const recent = await ctx.db
     .query("reimbursementSubmitAttempts")
     .withIndex("by_key_and_time", (q) =>
       q.eq("key", key).gte("createdAt", windowStart),
     )
-    .take(SUBMIT_RATE_LIMIT_MAX);
-  if (recent.length >= SUBMIT_RATE_LIMIT_MAX) {
+    .take(max);
+  if (recent.length >= max) {
     throw new ConvexError({
       code: "RATE_LIMITED",
       message:
@@ -605,16 +743,50 @@ async function assertSubmitNotRateLimited(
   }
 }
 
-/** Record one successful submission against a rate-limit key. */
-async function recordSubmitAttempt(
-  ctx: MutationCtx,
-  key: string,
-): Promise<void> {
+/** Record one successful attempt against a rate-limit key. */
+async function recordAttempt(ctx: MutationCtx, key: string): Promise<void> {
   // Swept daily by maintenance.sweepRateLimitAttempts (crons.ts) once older
-  // than SUBMIT_RATE_LIMIT_WINDOW_MS.
+  // than the relevant window.
   await ctx.db.insert("reimbursementSubmitAttempts", {
     key,
     createdAt: Date.now(),
+  });
+}
+
+/** The submit-specific rate limit (see `SUBMIT_RATE_LIMIT_MAX`'s doc). */
+async function assertSubmitNotRateLimited(
+  ctx: MutationCtx,
+  key: string,
+): Promise<void> {
+  await assertNotRateLimited(ctx, key, SUBMIT_RATE_LIMIT_MAX, SUBMIT_RATE_LIMIT_WINDOW_MS);
+}
+
+/**
+ * Create the ONE Increase External Account behind every "resolve a real ACH
+ * destination" step in this file, from ALREADY-VALIDATED routing/account
+ * digits (callers validate via `assertRoutingNumber`/`assertAccountNumber`
+ * themselves — see `linkPublicBankAccount`/`linkBankAccount` below, which
+ * validate up front, BEFORE any query/network call, so a malformed number
+ * fails fast without touching either). Never persists the raw account number
+ * — only the returned reference id + last-4 is the caller's job to store.
+ */
+async function createExternalAccountRaw(
+  ctx: ActionCtx,
+  args: {
+    routingNumber: string;
+    accountNumber: string;
+    accountHolderName: string;
+    funding?: ExternalAccountFunding;
+  },
+): Promise<{ externalAccountId: string; last4: string } | null> {
+  return await ctx.runAction(internal.increase.createExternalAccount, {
+    routingNumber: args.routingNumber,
+    accountNumber: args.accountNumber,
+    accountHolderName: (args.accountHolderName.trim() || "Reimbursement payee").slice(
+      0,
+      200,
+    ),
+    funding: args.funding ?? "checking",
   });
 }
 
@@ -625,18 +797,28 @@ async function recordSubmitAttempt(
  * Status is `pending_preapproval` when pre-approval is requested, else
  * `submitted`. `totalCents` is the integer-cents sum of the lines.
  *
+ * A plain MUTATION: the caller (the `/api/reimburse/submit` httpAction)
+ * ORCHESTRATES — it calls `linkPublicBankAccount` (an action, no token) FIRST
+ * to create a real Increase External Account from the posted routing/
+ * account/type, THEN calls this mutation with the resulting
+ * `externalAccountId`/last-4. `externalAccountId` is REQUIRED here —
+ * `createReimbursement` is the single invariant owner and rejects a missing
+ * one regardless of caller (owner mandate; the last-4/manual path at submit
+ * is retired).
+ *
  * `payeeEmail` is REQUIRED + format-validated: it's the claimant's contact for
  * the reminder cron, and (normalized) one half of the separation-of-duties
  * check the approval flow enforces (a manager can't approve a request bearing
- * their own email). All untrusted strings are trimmed + hard-capped, and
- * `bankAccountLast4` is reduced to its last 4 digits so a full account number
- * is never stored.
+ * their own email). All untrusted strings are trimmed + hard-capped.
  *
  * RATE-LIMITED (see `assertSubmitNotRateLimited` above): checked by IP
  * (`clientIp`, forwarded from the public httpAction — undefined for the
  * authenticated in-app `submitReimbursement` twin, which never calls this
  * limiter) and by normalized email, BEFORE any write. A successful submission
- * records one attempt per key that was checked.
+ * records one attempt per key that was checked. Strips any client-supplied
+ * `categoryId`/`fundId` off every line — the public form no longer collects
+ * either (categorization is a finance manager's review-time job), so a public
+ * line is NEVER allowed to self-categorize even if a raw API call tries.
  */
 export const submitPublicReimbursement = mutation({
   args: {
@@ -644,10 +826,15 @@ export const submitPublicReimbursement = mutation({
     payeeName: v.string(),
     payeeEmail: v.string(),
     payeePhone: v.optional(v.string()),
-    purpose: v.optional(v.string()),
-    bankAccountLast4: v.optional(v.string()),
+    purpose: v.string(),
     requestPreApproval: v.optional(v.boolean()),
     lines: v.array(submitLineValidator),
+    // The ACH destination — resolved by `linkPublicBankAccount` BEFORE this
+    // mutation runs (see the httpAction orchestration above). Only the
+    // reference id + a display last-4 ever reach Convex — never the raw
+    // routing/account numbers.
+    externalAccountId: v.string(),
+    bankAccountLast4: v.optional(v.string()),
     /** The caller's IP, forwarded by the `/api/reimburse/submit` httpAction
      *  (read from the `x-forwarded-for` request header there — a plain
      *  mutation has no access to request headers itself). Undefined when
@@ -655,7 +842,7 @@ export const submitPublicReimbursement = mutation({
      *  still applies. */
     clientIp: v.optional(v.string()),
   },
-  handler: async (ctx, args) => {
+  handler: async (ctx, args): Promise<{ token: string; reference: string }> => {
     const chapter = await ctx.db
       .query("chapters")
       .withIndex("by_slug", (q) => q.eq("slug", args.chapterSlug))
@@ -694,19 +881,84 @@ export const submitPublicReimbursement = mutation({
       payeeEmail: args.payeeEmail,
       payeePhone: args.payeePhone,
       purpose: args.purpose,
+      externalAccountId: args.externalAccountId,
       bankAccountLast4: args.bankAccountLast4,
       requestPreApproval: args.requestPreApproval,
       personId,
-      lines: args.lines,
+      // Public-page privacy: never let a line self-categorize, even if a raw
+      // API call tries to smuggle a categoryId/fundId through.
+      lines: args.lines.map((l) => ({
+        ...l,
+        categoryId: undefined,
+        fundId: undefined,
+      })),
     });
 
     // Only record a key that was actually checked above.
-    if (ipKey) await recordSubmitAttempt(ctx, `ip:${ipKey}`);
+    if (ipKey) await recordAttempt(ctx, `ip:${ipKey}`);
     if (normalizedEmail) {
-      await recordSubmitAttempt(ctx, `email:${normalizedEmail}`);
+      await recordAttempt(ctx, `email:${normalizedEmail}`);
     }
 
     return { token, reference };
+  },
+});
+
+/**
+ * Generate a pre-submit receipt-upload URL for the PUBLIC form — no token
+ * (the request doesn't exist yet), scoped only by chapter slug. Rate-limited
+ * by IP (see `UPLOAD_RATE_LIMIT_MAX`'s doc) so this unauthenticated endpoint
+ * can't be hammered. Backs `/api/reimburse/pre-upload-url`: the client
+ * uploads each line's receipt here BEFORE calling submit, then includes the
+ * returned `storageId` as that line's `receiptStorageId` in the submit
+ * payload (receipts now attach BEFORE submit on the public flow — the
+ * post-submit, token-scoped `publicUploadUrl`/`attachPublicReceipt` pair below
+ * stays for REPLACING a receipt on an already-editable request).
+ */
+export const preSubmitUploadUrl = mutation({
+  args: { chapterSlug: v.string(), clientIp: v.optional(v.string()) },
+  handler: async (ctx, { chapterSlug, clientIp }) => {
+    const chapter = await ctx.db
+      .query("chapters")
+      .withIndex("by_slug", (q) => q.eq("slug", chapterSlug))
+      .unique();
+    if (!chapter) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "We couldn't find that chapter.",
+      });
+    }
+    const ipKey = capOptional(clientIp, 100);
+    if (ipKey) {
+      await assertNotRateLimited(
+        ctx,
+        `upload_ip:${ipKey}`,
+        UPLOAD_RATE_LIMIT_MAX,
+        UPLOAD_RATE_LIMIT_WINDOW_MS,
+      );
+      await recordAttempt(ctx, `upload_ip:${ipKey}`);
+    }
+    return await ctx.storage.generateUploadUrl();
+  },
+});
+
+/** Rate-limit gate for `linkPublicBankAccount` called with NO `token` (see
+ *  `BANK_LINK_RATE_LIMIT_MAX`'s doc) — checked + recorded atomically in one
+ *  mutation, called from the action BEFORE it spends a real Increase call. */
+export const assertBankLinkNotRateLimited = internalMutation({
+  args: { clientIp: v.optional(v.string()) },
+  handler: async (ctx, { clientIp }) => {
+    const ipKey = capOptional(clientIp, 100);
+    if (ipKey) {
+      await assertNotRateLimited(
+        ctx,
+        `banklink_ip:${ipKey}`,
+        BANK_LINK_RATE_LIMIT_MAX,
+        BANK_LINK_RATE_LIMIT_WINDOW_MS,
+      );
+      await recordAttempt(ctx, `banklink_ip:${ipKey}`);
+    }
+    return null;
   },
 });
 
@@ -719,24 +971,38 @@ export const submitPublicReimbursement = mutation({
  * form pre-fills them); they can't change WHO the request is attributed to, so
  * separation of duties still binds to the real caller.
  *
- * Reuses the exact validation, line-item shape, receipt handling, and
- * pre-approval wiring as the public path via `createReimbursement` — the
- * reminder cron then sweeps it like any other request.
+ * A plain MUTATION: the client LINKS FIRST — calls `linkBankAccount` (an
+ * action, no `reimbursementId`) to create a real Increase External Account,
+ * then calls this mutation with the resulting `externalAccountId`.
+ * `externalAccountId` is REQUIRED here — `createReimbursement` is the single
+ * invariant owner and rejects a missing one regardless of caller. Reuses the
+ * exact validation, line-item shape, receipt handling, and pre-approval
+ * wiring as the public path via `createReimbursement` so the two submit
+ * surfaces can't drift.
  */
 export const submitReimbursement = mutation({
   args: {
     payeeName: v.optional(v.string()),
     payeeEmail: v.optional(v.string()),
     payeePhone: v.optional(v.string()),
-    purpose: v.optional(v.string()),
-    bankAccountLast4: v.optional(v.string()),
+    purpose: v.string(),
     requestPreApproval: v.optional(v.boolean()),
-    /** "What this was for" — an event or a project, never both. */
+    /** "What this was for" — an event, a project, or a recurring budget,
+     *  never more than one. */
     eventId: v.optional(v.id("events")),
     projectId: v.optional(v.id("projects")),
+    budgetId: v.optional(v.id("budgets")),
     lines: v.array(submitLineValidator),
+    // The ACH destination — resolved by `linkBankAccount` BEFORE this
+    // mutation runs. Only the reference id + an optional display last-4 ever
+    // reach Convex — never the raw routing/account numbers.
+    externalAccountId: v.string(),
+    bankAccountLast4: v.optional(v.string()),
   },
-  handler: async (ctx, args) => {
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ reimbursementId: Id<"reimbursementRequests">; reference: string }> => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     // The claimant is the authenticated caller's own roster person (throws
     // NO_PERSON if they have no profile in this chapter yet).
@@ -760,10 +1026,12 @@ export const submitReimbursement = mutation({
       payeeEmail,
       payeePhone: args.payeePhone ?? person?.phone,
       purpose: args.purpose,
+      externalAccountId: args.externalAccountId,
       bankAccountLast4: args.bankAccountLast4,
       requestPreApproval: args.requestPreApproval,
       eventId: args.eventId,
       projectId: args.projectId,
+      budgetId: args.budgetId,
       personId,
       // This IS the authenticated path — `personId` above came from
       // `resolveCallerPersonId`, the caller's own verified roster row.
@@ -780,27 +1048,51 @@ export const submitReimbursement = mutation({
  *  `eventId`/`projectId` — see `createReimbursement`'s doc). */
 type ForOptionRow = { id: string; label: string };
 
+/** One selectable RECURRING budget row for the "For" picker — display name +
+ *  cadence (e.g. "Education" · "yearly") so the UI can render "Education ·
+ *  Yearly". */
+type ForBudgetOptionRow = { id: string; label: string; cadence: BudgetCadence };
+
 /**
- * The chapter's events + projects for the request form's optional "For"
- * picker — a plain informational tag, NOT the `finances.forPickerOptions`
- * budget-attribution picker (that one requires a finance role and filters to
- * only APPROVED budgets, neither of which applies here: any chapter member
- * can tag their own request against any event/project, budgeted or not).
- * Reuses `gatherForPickerCandidates`'s scan for the same dated labels, but
- * drops its budget/recurring shaping entirely.
+ * The chapter's BUDGET-BACKED events/projects + its own approved recurring
+ * budgets, for the request form's optional "For" picker — request-level
+ * `eventId`/`projectId`/`budgetId`, mutually exclusive (see
+ * `createReimbursement`'s doc). NOT the `finances.forPickerOptions`
+ * transaction-attribution picker (that one is finance-role-gated and also
+ * includes central-level recurring budgets) — this one is open to any
+ * chapter member tagging their OWN request, but still only offers a ref/
+ * budget that's actually attributable (`isAttributableBudget`: has a real,
+ * APPROVED budget) — an unbudgeted event/project is silently omitted, same
+ * "no fabricated attribution" rule the transaction picker enforces. Recurring
+ * budgets are scoped to `level === "chapter"` ONLY — a central-level
+ * recurring budget (the org's own City Launch Fund line items) is never
+ * offered here; a chapter member's reimbursement can only tag their OWN
+ * chapter's recurring budget. Reuses `gatherForPickerCandidates`'s scan for
+ * the same dated labels + one-budget-per-ref dedup.
  */
 async function forRequestOptions(
   ctx: QueryCtx,
   chapterId: Id<"chapters">,
-): Promise<{ events: ForOptionRow[]; projects: ForOptionRow[] }> {
+): Promise<{ events: ForOptionRow[]; projects: ForOptionRow[]; budgets: ForBudgetOptionRow[] }> {
   const { candidates } = await gatherForPickerCandidates(ctx, chapterId, ROLLUP_SCAN_LIMIT);
   return {
-    events: candidates
-      .filter((c) => c.refKind === "event")
-      .map((c) => ({ id: c.refId, label: c.label })),
-    projects: candidates
-      .filter((c) => c.refKind === "project")
-      .map((c) => ({ id: c.refId, label: c.label })),
+    events: candidates.flatMap((c) =>
+      c.refKind === "event" && isAttributableBudget(c.budget)
+        ? [{ id: c.refId, label: c.label }]
+        : [],
+    ),
+    projects: candidates.flatMap((c) =>
+      c.refKind === "project" && isAttributableBudget(c.budget)
+        ? [{ id: c.refId, label: c.label }]
+        : [],
+    ),
+    budgets: candidates.flatMap((c) => {
+      if (c.refKind !== "recurring" || c.level !== "chapter") return [];
+      if (!isAttributableBudget(c.budget)) return [];
+      return [
+        { id: c.budget._id, label: budgetDisplayNameFor(c.budget), cadence: c.budget.cadence },
+      ];
+    }),
   };
 }
 
@@ -826,7 +1118,7 @@ export const newRequestOptions = query({
         defaultPayeeEmail: "",
         defaultPayeePhone: "",
         funds: [],
-        forOptions: { events: [], projects: [] },
+        forOptions: { events: [], projects: [], budgets: [] },
       };
     }
     const person = await viewerPerson(ctx, chapterId as Id<"chapters">);
@@ -1043,34 +1335,53 @@ export const attachExternalAccount = internalMutation({
   },
 });
 
-/** Gate + resolve a PUBLIC (token-scoped) link target: must exist + still be
- *  editable. Returns the fields the action needs (id + a display-name default). */
+/** Gate + resolve a PUBLIC link target. `token` is OPTIONAL:
+ *  - present: must resolve to an existing, still-editable request (the RELINK
+ *    path — fixing/replacing an already-submitted request's destination).
+ *  - absent: the PRE-submit "no request exists yet" path — no gate beyond
+ *    what the caller already validated, just a display-name default (empty,
+ *    since there's no payee name to fall back to yet — the action's own
+ *    `accountHolderName` argument, or Increase's own fallback, wins).
+ *  Returns the fields the action needs (id-or-null + a display-name default). */
 export const beginLinkPublicBankAccount = internalQuery({
-  args: { token: v.string() },
-  handler: async (ctx, { token }) => {
+  args: { token: v.optional(v.string()) },
+  handler: async (
+    ctx,
+    { token },
+  ): Promise<{ reimbursementId: Id<"reimbursementRequests"> | null; payeeName: string }> => {
+    if (!token) return { reimbursementId: null, payeeName: "" };
     const request = assertLinkable(await byToken(ctx, token));
     return { reimbursementId: request._id, payeeName: request.payeeName };
   },
 });
 
 /**
- * Link a REAL bank account (routing + account number) to a PUBLIC, token-
- * scoped reimbursement so its payout can be addressed by an actual Increase
- * ACH transfer instead of degrading to a manual one. Creates an Increase
- * External Account (`increase.createExternalAccount`) — the raw account
- * number is NEVER persisted in Convex, only the returned reference id + a
- * last-4 (`attachExternalAccount`). Ownership is proven by the secret `token`
- * (the same precedent as `attachPublicReceipt`), never a client-supplied id.
+ * Resolve a REAL bank account (routing + account number) as an Increase
+ * External Account. `token` is OPTIONAL:
+ *  - present: the RELINK path — attaches to that PUBLIC, token-scoped
+ *    reimbursement so its payout can be addressed by an actual Increase ACH
+ *    transfer. Ownership is proven by the secret `token` (the same precedent
+ *    as `attachPublicReceipt`), never a client-supplied id.
+ *  - absent: the PRE-submit path — the public reimburse page's
+ *    `/api/reimburse/submit` httpAction calls this FIRST (no request exists
+ *    yet), then hands the returned `externalAccountId`/`last4` to
+ *    `submitPublicReimbursement`. Rate-limited by IP in this mode only (see
+ *    `BANK_LINK_RATE_LIMIT_MAX`'s doc) — a real Increase API call is the most
+ *    expensive thing this file does.
  *
- * BEST-EFFORT: if the Increase call fails or isn't configured, the request is
- * left exactly as it was (still fully submitted) — `linked:false` tells the
- * form to show "we couldn't verify your bank details; a finance manager will
- * follow up" rather than blocking submission. Valid only while the request is
- * still editable (pre-payout).
+ * Either way, the raw account number is NEVER persisted in Convex — only the
+ * returned reference id + a last-4. BEST-EFFORT: if the Increase call fails
+ * or isn't configured, `linked:false` (no `externalAccountId`/`last4`) tells
+ * the caller to surface an error rather than proceed — a NEW submission can't
+ * exist without this succeeding (owner mandate), while a RELINK attempt
+ * simply leaves the request's existing destination untouched.
  */
 export const linkPublicBankAccount = action({
-  args: { token: v.string(), ...linkBankAccountArgs },
-  handler: async (ctx, args): Promise<{ linked: boolean }> => {
+  args: { token: v.optional(v.string()), clientIp: v.optional(v.string()), ...linkBankAccountArgs },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ linked: boolean; externalAccountId?: string; last4?: string }> => {
     const routingNumber = assertRoutingNumber(args.routingNumber);
     const accountNumber = assertAccountNumber(args.accountNumber);
 
@@ -1079,38 +1390,53 @@ export const linkPublicBankAccount = action({
       { token: args.token },
     );
 
-    const created = await ctx.runAction(internal.increase.createExternalAccount, {
+    if (!args.token) {
+      await ctx.runMutation(internal.reimbursements.assertBankLinkNotRateLimited, {
+        clientIp: args.clientIp,
+      });
+    }
+
+    const created = await createExternalAccountRaw(ctx, {
       routingNumber,
       accountNumber,
-      accountHolderName: (args.accountHolderName?.trim() || prep.payeeName).slice(
-        0,
-        200,
-      ),
-      funding: args.funding ?? "checking",
+      accountHolderName: args.accountHolderName?.trim() || prep.payeeName,
+      funding: args.funding,
     });
     if (!created) return { linked: false };
 
-    await ctx.runMutation(internal.reimbursements.attachExternalAccount, {
-      reimbursementId: prep.reimbursementId,
-      externalAccountId: created.externalAccountId,
-      last4: created.last4,
-    });
-    return { linked: true };
+    if (prep.reimbursementId) {
+      await ctx.runMutation(internal.reimbursements.attachExternalAccount, {
+        reimbursementId: prep.reimbursementId,
+        externalAccountId: created.externalAccountId,
+        last4: created.last4,
+      });
+    }
+    return { linked: true, externalAccountId: created.externalAccountId, last4: created.last4 };
   },
 });
 
-/** Gate + resolve an AUTHENTICATED in-app link target: the request must exist,
- *  still be editable, AND belong to the CALLER's own verified roster identity
- *  — never someone else's. Identity is server-derived, never client-supplied
- *  (mirrors `submitReimbursement`). */
+/** Gate + resolve an AUTHENTICATED in-app link target. `reimbursementId` is
+ *  OPTIONAL:
+ *  - present: the request must exist, still be editable, AND belong to the
+ *    CALLER's own verified roster identity — never someone else's (mirrors
+ *    `submitReimbursement`'s identity handling).
+ *  - absent: the PRE-submit "no request exists yet" path — still requires
+ *    auth (a roster person), just resolves a display-name default from it. */
 export const beginLinkBankAccount = internalMutation({
-  args: { reimbursementId: v.id("reimbursementRequests") },
-  handler: async (ctx, { reimbursementId }) => {
+  args: { reimbursementId: v.optional(v.id("reimbursementRequests")) },
+  handler: async (
+    ctx,
+    { reimbursementId },
+  ): Promise<{ reimbursementId: Id<"reimbursementRequests"> | null; payeeName: string }> => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const callerPersonId = await resolveCallerPersonId(ctx, chapterId);
+    if (!reimbursementId) {
+      const person = await ctx.db.get(callerPersonId);
+      return { reimbursementId: null, payeeName: person?.name ?? "" };
+    }
     const req = await ctx.db.get(reimbursementId);
     await requireInChapter(ctx, chapterId, req, "Reimbursement");
     const request = assertLinkable(req);
-    const callerPersonId = await resolveCallerPersonId(ctx, chapterId);
     if (!request.identityVerified || request.personId !== callerPersonId) {
       throw new ConvexError({
         code: "FORBIDDEN",
@@ -1122,14 +1448,20 @@ export const beginLinkBankAccount = internalMutation({
 });
 
 /**
- * Link a REAL bank account to the CALLER'S OWN in-app reimbursement — the
- * authenticated twin of `linkPublicBankAccount`. Same Increase External
- * Account creation, same "never persist the raw account number" contract, and
- * the same best-effort `{linked}` degrade.
+ * Resolve a REAL bank account to (optionally) the CALLER'S OWN in-app
+ * reimbursement — the authenticated twin of `linkPublicBankAccount`. Same
+ * "either RELINK an existing request or PRE-resolve before one exists" split
+ * (`reimbursementId` optional), same Increase External Account creation, same
+ * "never persist the raw account number" contract, and the same best-effort
+ * `{linked}` degrade — the CALLER (`submitReimbursement` on the pre-submit
+ * path) decides whether a `linked:false` blocks a new submission.
  */
 export const linkBankAccount = action({
-  args: { reimbursementId: v.id("reimbursementRequests"), ...linkBankAccountArgs },
-  handler: async (ctx, args): Promise<{ linked: boolean }> => {
+  args: { reimbursementId: v.optional(v.id("reimbursementRequests")), ...linkBankAccountArgs },
+  handler: async (
+    ctx,
+    args,
+  ): Promise<{ linked: boolean; externalAccountId?: string; last4?: string }> => {
     const routingNumber = assertRoutingNumber(args.routingNumber);
     const accountNumber = assertAccountNumber(args.accountNumber);
 
@@ -1137,23 +1469,22 @@ export const linkBankAccount = action({
       reimbursementId: args.reimbursementId,
     });
 
-    const created = await ctx.runAction(internal.increase.createExternalAccount, {
+    const created = await createExternalAccountRaw(ctx, {
       routingNumber,
       accountNumber,
-      accountHolderName: (args.accountHolderName?.trim() || prep.payeeName).slice(
-        0,
-        200,
-      ),
-      funding: args.funding ?? "checking",
+      accountHolderName: args.accountHolderName?.trim() || prep.payeeName,
+      funding: args.funding,
     });
     if (!created) return { linked: false };
 
-    await ctx.runMutation(internal.reimbursements.attachExternalAccount, {
-      reimbursementId: args.reimbursementId,
-      externalAccountId: created.externalAccountId,
-      last4: created.last4,
-    });
-    return { linked: true };
+    if (prep.reimbursementId) {
+      await ctx.runMutation(internal.reimbursements.attachExternalAccount, {
+        reimbursementId: prep.reimbursementId,
+        externalAccountId: created.externalAccountId,
+        last4: created.last4,
+      });
+    }
+    return { linked: true, externalAccountId: created.externalAccountId, last4: created.last4 };
   },
 });
 
@@ -1231,7 +1562,7 @@ export const get = query({
       // submission, or null (including on the public path).
       verifiedRosterName: await verifiedRosterName(ctx, request),
       purpose: request.purpose ?? null,
-      forLabel: await forLabel(ctx, request.eventId, request.projectId),
+      forLabel: await forLabel(ctx, request.eventId, request.projectId, request.budgetId),
       requesterType: await requesterType(ctx, request.personId),
       totalCents: request.totalCents,
       approvedCents: request.approvedCents,
@@ -1250,6 +1581,9 @@ export const get = query({
           _id: l._id,
           description: l.description,
           amountCents: l.amountCents,
+          // When the purchase happened (required at intake since the owner
+          // mandate; null on legacy rows) — approvers read spend timing here.
+          transactionDate: l.transactionDate ?? null,
           category: await categoryName(ctx, l.categoryId),
           fund: await fundName(ctx, l.fundId),
           hasReceipt: !!l.receiptStorageId,

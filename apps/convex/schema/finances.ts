@@ -483,9 +483,14 @@ export const reimbursementRequests = defineTable({
   identityVerified: v.optional(v.boolean()),
 
   purpose: v.optional(v.string()),
-  // What the spend was for (categorization is per line item).
+  // What the spend was for (categorization is per line item). Mutually
+  // exclusive (enforced in `createReimbursement`): at most ONE of
+  // event/project/budget. `budgetId` must be a RECURRING budget belonging to
+  // this chapter (an event/project's own budget is reached via
+  // `eventId`/`projectId` instead, never `budgetId` directly).
   eventId: v.optional(v.id("events")),
   projectId: v.optional(v.id("projects")),
+  budgetId: v.optional(v.id("budgets")),
 
   // Denormalized sum of line-item amounts (integer cents), and the approved
   // subtotal once a manager approves (supports partial approval).
@@ -534,7 +539,16 @@ export const reimbursementLineItems = defineTable({
   categoryId: v.optional(v.id("budgetCategories")),
   eventId: v.optional(v.id("events")),
   projectId: v.optional(v.id("projects")),
+  // REQUIRED (server-enforced in `createReimbursement`) for any line created
+  // through the submit mutations — `v.optional` only so a pre-existing legacy
+  // row (created before this field existed) still validates.
   receiptStorageId: v.optional(v.id("_storage")),
+  // The date the money was actually spent — REQUIRED (server-enforced in
+  // `createReimbursement`, sanity-checked: a finite ms timestamp, not more
+  // than 48h in the future, not older than 3 years) for any line created
+  // through the submit mutations. `v.optional` only so a pre-existing legacy
+  // row (created before this field existed) still validates.
+  transactionDate: v.optional(v.number()),
   // Partial approval: a line can be individually approved or rejected.
   approved: v.optional(v.boolean()),
   matchedTransactionId: v.optional(v.id("transactions")),

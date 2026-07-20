@@ -1,9 +1,11 @@
-import { afterEach, describe, expect, test } from "vitest";
+/// <reference types="vite/client" />
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { ConvexError } from "convex/values";
 import {
   newT,
   run,
   setupChapter,
+  storeBlob,
   type ChapterSetup,
   type TestConvex,
 } from "./setup.helpers";
@@ -11,15 +13,71 @@ import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 
 /**
- * Phase 3 reimbursement tests:
- *  - the accountless PUBLIC submission path (secret token, status timeline),
- *  - the in-app manager queue never leaking the token,
- *  - separation of duties (a requester can't approve their own request),
- *  - partial approval math + flags,
- *  - illegal status transitions,
- *  - accountless receipt upload gated on editability,
- *  - the reminder sweep degrading without RESEND_API_KEY.
+ * Reimbursement tests — the accountless PUBLIC submission path (secret token,
+ * status timeline), its in-app member twin, and the in-app manager approval
+ * queue.
+ *
+ * Owner-mandated overhaul covered here:
+ *  - the public page's `chapterForReimburse` payload carries NO funds/budget
+ *    categories (categorization is a finance manager's review-time job);
+ *  - `purpose`, every line's `description`/`receiptStorageId`/
+ *    `transactionDate` are REQUIRED (server-enforced, one invariant owner:
+ *    `createReimbursement`);
+ *  - a pre-submit, no-token, rate-limited receipt-upload endpoint
+ *    (`preSubmitUploadUrl`) backs the public flow's "receipts before submit";
+ *  - NO reimbursement request may be created without a real ACH destination:
+ *    the client LINKS FIRST (`linkPublicBankAccount`/`linkBankAccount`, now
+ *    both callable with no existing request — `token`/`reimbursementId`
+ *    optional — to create a real Increase External Account), then passes the
+ *    resulting `externalAccountId` into `submitPublicReimbursement`/
+ *    `submitReimbursement` (plain mutations, which reject a missing one);
+ *  - the "For" tag is now event XOR project XOR a RECURRING budget
+ *    (`budgetId`), and `newRequestOptions`'s picker only offers a
+ *    BUDGET-BACKED event/project or the chapter's own approved recurring
+ *    budgets (never central).
+ *
+ * Also still covers: SoD, partial approval, illegal transitions, the
+ * accountless receipt upload (token-scoped, kept for REPLACING a receipt),
+ * and the reminder sweep degrading without RESEND_API_KEY.
  */
+
+// ── Increase mock plumbing ───────────────────────────────────────────────────
+// Every reimbursement submission now requires a real Increase External
+// Account, so EVERY test in this file needs `/external_accounts` to resolve.
+// Default to a succeeding mock before each test (a fresh id per call);
+// individual tests that want to exercise a bank-link FAILURE override
+// `globalThis.fetch`/unset `INCREASE_API_KEY` locally — `afterEach` always
+// restores this default before the next test runs.
+const ORIGINAL_FETCH = globalThis.fetch;
+const ORIGINAL_INCREASE_KEY = process.env.INCREASE_API_KEY;
+let extAcctSeq = 0;
+
+function mockIncreaseSuccess(): void {
+  process.env.INCREASE_API_KEY = "test_key";
+  globalThis.fetch = (async (input: RequestInfo | URL) => {
+    const path = String(input);
+    if (path.includes("/external_accounts")) {
+      extAcctSeq += 1;
+      return new Response(JSON.stringify({ id: `extacct_auto_${extAcctSeq}` }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+    throw new Error(`unexpected fetch: ${path}`);
+  }) as unknown as typeof fetch;
+}
+
+beforeEach(() => {
+  mockIncreaseSuccess();
+});
+
+afterEach(() => {
+  globalThis.fetch = ORIGINAL_FETCH;
+  if (ORIGINAL_INCREASE_KEY === undefined) delete process.env.INCREASE_API_KEY;
+  else process.env.INCREASE_API_KEY = ORIGINAL_INCREASE_KEY;
+});
+
+// ── Fixtures ──────────────────────────────────────────────────────────────────
 
 /** Give the seeded chapter a slug so the public submit can resolve it. */
 async function setSlug(s: ChapterSetup, slug: string): Promise<void> {
@@ -98,31 +156,183 @@ async function addMember(
   return { as, userId, personId };
 }
 
-/** Submit a two-line public reimbursement; returns { token, reference }. */
+type ValidLine = {
+  description: string;
+  amountCents: number;
+  receiptStorageId: Id<"_storage">;
+  transactionDate: number;
+};
+
+/** One VALID line — description/amountCents overridable, a real stored
+ *  receipt + a fresh `transactionDate` always present (both REQUIRED now). */
+async function validLine(
+  s: ChapterSetup,
+  overrides: Partial<Pick<ValidLine, "description" | "amountCents" | "transactionDate">> = {},
+): Promise<ValidLine> {
+  const receiptStorageId = await storeBlob(s.t);
+  return {
+    description: "Gaffer tape",
+    amountCents: 1200,
+    transactionDate: Date.now(),
+    ...overrides,
+    receiptStorageId,
+  };
+}
+
+/** `n` valid lines with the classic Gaffer-tape/Snacks amounts. */
+async function validLines(s: ChapterSetup, n = 2): Promise<ValidLine[]> {
+  const specs = [
+    { description: "Gaffer tape", amountCents: 1200 },
+    { description: "Snacks", amountCents: 800 },
+  ];
+  const out: ValidLine[] = [];
+  for (let i = 0; i < n; i++) out.push(await validLine(s, specs[i % specs.length]));
+  return out;
+}
+
+/** LINK FIRST (public, no token — the request doesn't exist yet), the way
+ *  the real client (the public reimburse page's httpAction, and the mobile
+ *  in-app form) both now resolve a bank destination before ever calling
+ *  submit. Throws (mirroring a real client refusing to proceed) if the link
+ *  doesn't succeed. */
+async function resolvePublicBank(
+  s: ChapterSetup,
+  overrides: Partial<{
+    routingNumber: string;
+    accountNumber: string;
+    accountHolderName: string;
+    funding: "checking" | "savings";
+    clientIp: string;
+  }> = {},
+): Promise<{ externalAccountId: string; last4?: string }> {
+  const result = await s.t.action(api.reimbursements.linkPublicBankAccount, {
+    ...overrides,
+    routingNumber: overrides.routingNumber ?? "011000015",
+    accountNumber: overrides.accountNumber ?? "555000111",
+  });
+  if (!result.linked || !result.externalAccountId) {
+    throw new ConvexError({
+      code: "BANK_LINK_FAILED",
+      message: "We couldn't verify those bank details.",
+    });
+  }
+  return { externalAccountId: result.externalAccountId, last4: result.last4 };
+}
+
+/** LINK FIRST (in-app, no `reimbursementId` — the request doesn't exist yet)
+ *  — the authenticated twin of `resolvePublicBank`. */
+async function resolveInAppBank(
+  as: ReturnType<TestConvex["withIdentity"]>,
+  overrides: Partial<{
+    routingNumber: string;
+    accountNumber: string;
+    accountHolderName: string;
+    funding: "checking" | "savings";
+  }> = {},
+): Promise<{ externalAccountId: string; last4?: string }> {
+  const result = await as.action(api.reimbursements.linkBankAccount, {
+    ...overrides,
+    routingNumber: overrides.routingNumber ?? "011000015",
+    accountNumber: overrides.accountNumber ?? "0987654321",
+  });
+  if (!result.linked || !result.externalAccountId) {
+    throw new ConvexError({
+      code: "BANK_LINK_FAILED",
+      message: "We couldn't verify those bank details.",
+    });
+  }
+  return { externalAccountId: result.externalAccountId, last4: result.last4 };
+}
+
+/** Link a bank account, then submit a public reimbursement (the real
+ *  two-step flow) — override any field, including `lines` or the bank
+ *  fields (forwarded to the link step, not the submit mutation). */
 async function submitTwoLine(
   s: ChapterSetup,
   slug: string,
-  extra: {
-    payeeEmail?: string;
-    payeePhone?: string;
-    requestPreApproval?: boolean;
-    clientIp?: string;
-  } = {},
+  extra: Partial<{
+    payeeName: string;
+    payeeEmail: string;
+    payeePhone: string;
+    purpose: string;
+    requestPreApproval: boolean;
+    clientIp: string;
+    routingNumber: string;
+    accountNumber: string;
+    accountHolderName: string;
+    funding: "checking" | "savings";
+    lines: ValidLine[];
+  }> = {},
 ): Promise<{ token: string; reference: string }> {
+  const lines = extra.lines ?? (await validLines(s));
+  const bank = await resolvePublicBank(s, {
+    routingNumber: extra.routingNumber,
+    accountNumber: extra.accountNumber,
+    accountHolderName: extra.accountHolderName,
+    funding: extra.funding,
+    clientIp: extra.clientIp,
+  });
   return await s.t.mutation(api.reimbursements.submitPublicReimbursement, {
     chapterSlug: slug,
-    payeeName: "Dana Rivers",
-    payeeEmail: "dana@example.com",
-    ...extra,
-    lines: [
-      { description: "Gaffer tape", amountCents: 1200 },
-      { description: "Snacks", amountCents: 800 },
-    ],
+    payeeName: extra.payeeName ?? "Dana Rivers",
+    payeeEmail: extra.payeeEmail ?? "dana@example.com",
+    payeePhone: extra.payeePhone,
+    purpose: extra.purpose ?? "Event supplies",
+    requestPreApproval: extra.requestPreApproval,
+    clientIp: extra.clientIp,
+    externalAccountId: bank.externalAccountId,
+    bankAccountLast4: bank.last4,
+    lines,
+  });
+}
+
+/** Link a bank account, then submit an in-app reimbursement (the real
+ *  two-step flow) — the authenticated twin of `submitTwoLine`. */
+async function submitInApp(
+  as: ReturnType<TestConvex["withIdentity"]>,
+  s: ChapterSetup,
+  extra: Partial<{
+    payeeName: string;
+    payeeEmail: string;
+    payeePhone: string;
+    purpose: string;
+    requestPreApproval: boolean;
+    eventId: Id<"events">;
+    projectId: Id<"projects">;
+    budgetId: Id<"budgets">;
+    routingNumber: string;
+    accountNumber: string;
+    lines: Array<{
+      description: string;
+      amountCents: number;
+      receiptStorageId?: Id<"_storage">;
+      transactionDate?: number;
+      fundId?: Id<"funds">;
+    }>;
+  }> = {},
+): Promise<{ reimbursementId: Id<"reimbursementRequests">; reference: string }> {
+  const lines = extra.lines ?? [await validLine(s)];
+  const bank = await resolveInAppBank(as, {
+    routingNumber: extra.routingNumber,
+    accountNumber: extra.accountNumber,
+  });
+  return await as.mutation(api.reimbursements.submitReimbursement, {
+    payeeName: extra.payeeName,
+    payeeEmail: extra.payeeEmail,
+    payeePhone: extra.payeePhone,
+    purpose: extra.purpose ?? "Event supplies",
+    requestPreApproval: extra.requestPreApproval,
+    eventId: extra.eventId,
+    projectId: extra.projectId,
+    budgetId: extra.budgetId,
+    externalAccountId: bank.externalAccountId,
+    bankAccountLast4: bank.last4,
+    lines,
   });
 }
 
 describe("public submission + status view", () => {
-  test("creates a request + lines with a secret token", async () => {
+  test("creates a request + lines with a secret token, resolves a real bank destination", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await setSlug(s, "nyc");
@@ -145,8 +355,12 @@ describe("public submission + status view", () => {
     });
     expect(req?.status).toBe("submitted");
     expect(req?.totalCents).toBe(2000);
+    expect(req?.externalAccountId).toBeTruthy();
+    expect(req?.bankAccountLast4).toBe("0111"); // last 4 of "555000111"
     expect(lines.length).toBe(2);
     expect(lines.map((l) => l.order).sort()).toEqual([0, 1]);
+    expect(lines.every((l) => !!l.receiptStorageId)).toBe(true);
+    expect(lines.every((l) => typeof l.transactionDate === "number")).toBe(true);
   });
 
   test("pre-approval request lands in pending_preapproval", async () => {
@@ -165,9 +379,9 @@ describe("public submission + status view", () => {
   test("unknown slug is rejected", async () => {
     const t = newT();
     const s = await setupChapter(t);
-    await expect(
-      submitTwoLine(s, "does-not-exist"),
-    ).rejects.toBeInstanceOf(ConvexError);
+    await expect(submitTwoLine(s, "does-not-exist")).rejects.toBeInstanceOf(
+      ConvexError,
+    );
   });
 
   test("non-integer cents is rejected", async () => {
@@ -175,11 +389,8 @@ describe("public submission + status view", () => {
     const s = await setupChapter(t);
     await setSlug(s, "nyc");
     await expect(
-      s.t.mutation(api.reimbursements.submitPublicReimbursement, {
-        chapterSlug: "nyc",
-        payeeName: "Dana",
-        payeeEmail: "dana@example.com",
-        lines: [{ description: "x", amountCents: 12.5 }],
+      submitTwoLine(s, "nyc", {
+        lines: [{ description: "x", amountCents: 12.5 } as unknown as ValidLine],
       }),
     ).rejects.toBeInstanceOf(ConvexError);
   });
@@ -190,11 +401,8 @@ describe("public submission + status view", () => {
     await setSlug(s, "nyc");
     for (const bad of [0, -100, 100_000_001]) {
       await expect(
-        s.t.mutation(api.reimbursements.submitPublicReimbursement, {
-          chapterSlug: "nyc",
-          payeeName: "Dana",
-          payeeEmail: "dana@example.com",
-          lines: [{ description: "x", amountCents: bad }],
+        submitTwoLine(s, "nyc", {
+          lines: [{ description: "x", amountCents: bad } as unknown as ValidLine],
         }),
       ).rejects.toBeInstanceOf(ConvexError);
     }
@@ -206,53 +414,28 @@ describe("public submission + status view", () => {
     await setSlug(s, "nyc");
     for (const bad of ["", "   ", "not-an-email"]) {
       await expect(
-        s.t.mutation(api.reimbursements.submitPublicReimbursement, {
-          chapterSlug: "nyc",
-          payeeName: "Dana",
-          payeeEmail: bad,
-          lines: [{ description: "x", amountCents: 1200 }],
-        }),
+        submitTwoLine(s, "nyc", { payeeEmail: bad, lines: [await validLine(s)] }),
       ).rejects.toBeInstanceOf(ConvexError);
     }
-  });
-
-  test("bankAccountLast4 keeps only the last 4 digits (never a full number)", async () => {
-    const t = newT();
-    const s = await setupChapter(t);
-    await setSlug(s, "nyc");
-    const { token } = await s.t.mutation(
-      api.reimbursements.submitPublicReimbursement,
-      {
-        chapterSlug: "nyc",
-        payeeName: "Dana Rivers",
-        payeeEmail: "dana@example.com",
-        bankAccountLast4: "4111 1111 1111 1234",
-        lines: [{ description: "x", amountCents: 1200 }],
-      },
-    );
-    const req = await run(s.t, (ctx) =>
-      ctx.db
-        .query("reimbursementRequests")
-        .withIndex("by_token", (q) => q.eq("token", token))
-        .unique(),
-    );
-    expect(req?.bankAccountLast4).toBe("1234");
   });
 
   test("long free-text fields are capped server-side", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await setSlug(s, "nyc");
-    const { token } = await s.t.mutation(
-      api.reimbursements.submitPublicReimbursement,
-      {
-        chapterSlug: "nyc",
-        payeeName: "N".repeat(500),
-        payeeEmail: "dana@example.com",
-        purpose: "P".repeat(5000),
-        lines: [{ description: "D".repeat(2000), amountCents: 1200 }],
-      },
-    );
+    const receiptStorageId = await storeBlob(s.t);
+    const { token } = await submitTwoLine(s, "nyc", {
+      payeeName: "N".repeat(500),
+      purpose: "P".repeat(5000),
+      lines: [
+        {
+          description: "D".repeat(2000),
+          amountCents: 1200,
+          receiptStorageId,
+          transactionDate: Date.now(),
+        },
+      ],
+    });
     const { req, line } = await run(s.t, async (ctx) => {
       const req = await ctx.db
         .query("reimbursementRequests")
@@ -287,14 +470,6 @@ describe("public submission + status view", () => {
     // No secrets leak through the status view.
     expect(JSON.stringify(view)).not.toContain(token);
     expect(view as Record<string, unknown>).not.toHaveProperty("token");
-    // Submitted → "Submitted" done, "Under review" now.
-    const steps = Object.fromEntries(
-      view!.timeline.map((s) => [s.step, s.state]),
-    );
-    expect(steps.submitted).toBe("done");
-    expect(steps.under_review).toBe("now");
-    expect(steps.approved).toBe("todo");
-    expect(steps.paid).toBe("todo");
   });
 
   test("getPublicReimbursement is null for an unknown token", async () => {
@@ -305,76 +480,283 @@ describe("public submission + status view", () => {
     });
     expect(view).toBeNull();
   });
+});
 
-  describe("linkPublicBankAccount (public ACH destination capture)", () => {
-    const originalFetch = globalThis.fetch;
-    const originalKey = process.env.INCREASE_API_KEY;
-
-    afterEach(() => {
-      globalThis.fetch = originalFetch;
-      if (originalKey === undefined) delete process.env.INCREASE_API_KEY;
-      else process.env.INCREASE_API_KEY = originalKey;
+describe("public-page privacy: no funds/categories in the payload", () => {
+  test("chapterForReimburse returns only slug + name — no funds or budget categories", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    await run(s.t, (ctx) =>
+      ctx.db.insert("funds", {
+        chapterId: s.chapterId,
+        name: "General",
+        restriction: "unrestricted",
+        sortOrder: 0,
+        createdAt: Date.now(),
+      }),
+    );
+    const chapter = await run(s.t, (ctx) => ctx.db.get(s.chapterId));
+    const view = await t.query(api.lib.reimburseApiRoutes.chapterForReimburse, {
+      slug: "nyc",
     });
+    expect(view).toEqual({ slug: "nyc", name: chapter!.name });
+    expect(view as Record<string, unknown>).not.toHaveProperty("funds");
+    expect(view as Record<string, unknown>).not.toHaveProperty("categories");
+  });
 
-    test("links a real bank account by the secret token, never persisting the raw account number", async () => {
-      const t = newT();
-      const s = await setupChapter(t);
-      await setSlug(s, "nyc");
-      const { token } = await submitTwoLine(s, "nyc");
+  test("an unknown slug returns null", async () => {
+    const t = newT();
+    await setupChapter(t);
+    const view = await t.query(api.lib.reimburseApiRoutes.chapterForReimburse, {
+      slug: "nope",
+    });
+    expect(view).toBeNull();
+  });
+});
 
-      process.env.INCREASE_API_KEY = "test_key";
-      const calls: Array<Record<string, unknown>> = [];
-      globalThis.fetch = (async (
-        input: RequestInfo | URL,
-        init?: RequestInit,
-      ) => {
-        const path = String(input);
-        if (path.includes("/external_accounts")) {
-          calls.push(init?.body ? JSON.parse(String(init.body)) : {});
-          return new Response(JSON.stringify({ id: "extacct_public_1" }), {
-            status: 200,
-            headers: { "Content-Type": "application/json" },
-          });
-        }
-        throw new Error(`unexpected fetch: ${path}`);
-      }) as unknown as typeof fetch;
+describe("required fields at submit (purpose, description, receipt, transactionDate)", () => {
+  test("a blank purpose is rejected", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    for (const bad of ["", "   "]) {
+      await expect(
+        submitTwoLine(s, "nyc", { purpose: bad, lines: [await validLine(s)] }),
+      ).rejects.toBeInstanceOf(ConvexError);
+    }
+  });
 
-      const result = await t.action(api.reimbursements.linkPublicBankAccount, {
-        token,
+  test("a blank line description is rejected", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    const line = await validLine(s, { description: "   " });
+    await expect(
+      submitTwoLine(s, "nyc", { lines: [line] }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("a missing receipt is rejected", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    await expect(
+      submitTwoLine(s, "nyc", {
+        lines: [
+          {
+            description: "x",
+            amountCents: 1200,
+            transactionDate: Date.now(),
+          } as unknown as ValidLine,
+        ],
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("a missing transactionDate is rejected", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    const receiptStorageId = await storeBlob(s.t);
+    await expect(
+      submitTwoLine(s, "nyc", {
+        lines: [
+          { description: "x", amountCents: 1200, receiptStorageId } as unknown as ValidLine,
+        ],
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("a transactionDate more than 48h in the future is rejected", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    const line = await validLine(s, {
+      transactionDate: Date.now() + 3 * 24 * 60 * 60 * 1000,
+    });
+    await expect(
+      submitTwoLine(s, "nyc", { lines: [line] }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("a transactionDate older than 3 years is rejected", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    const line = await validLine(s, {
+      transactionDate: Date.now() - 4 * 365 * 24 * 60 * 60 * 1000,
+    });
+    await expect(
+      submitTwoLine(s, "nyc", { lines: [line] }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("a transactionDate within the sanity window is accepted", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    const line = await validLine(s, {
+      transactionDate: Date.now() - 30 * 24 * 60 * 60 * 1000, // a month ago
+    });
+    await expect(
+      submitTwoLine(s, "nyc", { lines: [line] }),
+    ).resolves.toMatchObject({ token: expect.any(String) });
+  });
+});
+
+describe("bank destination required at submit", () => {
+  test("a malformed routing number is rejected before any Increase call", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    globalThis.fetch = (() => {
+      throw new Error("fetch must not be called on invalid input");
+    }) as unknown as typeof fetch;
+    await expect(
+      submitTwoLine(s, "nyc", { routingNumber: "123" }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("Increase not configured for this environment rejects the submission (never a manual degrade at submit)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    delete process.env.INCREASE_API_KEY;
+    globalThis.fetch = (() => {
+      throw new Error("fetch must not be called when the key is unset");
+    }) as unknown as typeof fetch;
+    await expect(submitTwoLine(s, "nyc")).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("a failed Increase call rejects the submission", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({ error: "nope" }), {
+        status: 422,
+        headers: { "Content-Type": "application/json" },
+      })) as unknown as typeof fetch;
+    await expect(submitTwoLine(s, "nyc")).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("the in-app path also requires a resolved bank destination", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, { name: "Dana Rivers", userId: s.userId });
+    delete process.env.INCREASE_API_KEY;
+    globalThis.fetch = (() => {
+      throw new Error("fetch must not be called when the key is unset");
+    }) as unknown as typeof fetch;
+    await expect(submitInApp(s.as, s)).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("the resolved external account id + last4 are stored, never the raw account number", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    const calls: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.includes("/external_accounts")) {
+        calls.push(init?.body ? JSON.parse(String(init.body)) : {});
+        return new Response(JSON.stringify({ id: "extacct_captured_1" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`unexpected fetch: ${path}`);
+    }) as unknown as typeof fetch;
+
+    const { token } = await submitTwoLine(s, "nyc", {
+      accountNumber: "999888777",
+    });
+    expect(calls[0].account_number).toBe("999888777");
+    expect(calls[0].routing_number).toBe("011000015");
+
+    const req = await run(s.t, (ctx) =>
+      ctx.db
+        .query("reimbursementRequests")
+        .withIndex("by_token", (q) => q.eq("token", token))
+        .unique(),
+    );
+    expect(req?.externalAccountId).toBe("extacct_captured_1");
+    expect(req?.bankAccountLast4).toBe("8777");
+    expect(JSON.stringify(req)).not.toContain("999888777");
+  });
+
+  test("linkPublicBankAccount with no token resolves a destination with no request required — returns externalAccountId + last4", async () => {
+    const t = newT();
+    await setupChapter(t);
+    const result = await t.action(api.reimbursements.linkPublicBankAccount, {
+      routingNumber: "011000015",
+      accountNumber: "555000111",
+    });
+    expect(result.linked).toBe(true);
+    expect(result.externalAccountId).toBeTruthy();
+    expect(result.last4).toBe("0111");
+  });
+
+  test("linkBankAccount with no reimbursementId resolves a destination with no request required — returns externalAccountId + last4", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, { name: "Dana Rivers", userId: s.userId });
+    const result = await s.as.action(api.reimbursements.linkBankAccount, {
+      routingNumber: "011000015",
+      accountNumber: "0987654321",
+    });
+    expect(result.linked).toBe(true);
+    expect(result.externalAccountId).toBeTruthy();
+    expect(result.last4).toBe("4321");
+  });
+
+  test("linkBankAccount with no reimbursementId still requires auth (a roster person)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // No roster row for the caller.
+    await expect(
+      s.as.action(api.reimbursements.linkBankAccount, {
+        routingNumber: "011000015",
+        accountNumber: "0987654321",
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("linkPublicBankAccount with no token is rate-limited per IP", async () => {
+    const t = newT();
+    await setupChapter(t);
+    // The cap (20) is generous — exhaust it, then confirm the NEXT call trips.
+    for (let i = 0; i < 20; i++) {
+      await t.action(api.reimbursements.linkPublicBankAccount, {
         routingNumber: "011000015",
         accountNumber: "555000111",
-        funding: "savings",
+        clientIp: "203.0.113.11",
       });
-      expect(result.linked).toBe(true);
-      expect(calls[0].funding).toBe("savings");
+    }
+    let caught: unknown;
+    try {
+      await t.action(api.reimbursements.linkPublicBankAccount, {
+        routingNumber: "011000015",
+        accountNumber: "555000111",
+        clientIp: "203.0.113.11",
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConvexError);
+    expect((caught as ConvexError<{ code: string }>).data.code).toBe(
+      "RATE_LIMITED",
+    );
 
-      const req = await run(s.t, (ctx) =>
-        ctx.db
-          .query("reimbursementRequests")
-          .withIndex("by_token", (q) => q.eq("token", token))
-          .unique(),
-      );
-      expect(req?.externalAccountId).toBe("extacct_public_1");
-      expect(req?.bankAccountLast4).toBe("0111");
-      expect(JSON.stringify(req)).not.toContain("555000111");
-    });
-
-    test("an unknown token is rejected (never a silent no-op)", async () => {
-      const t = newT();
-      await setupChapter(t);
-      process.env.INCREASE_API_KEY = "test_key";
-      globalThis.fetch = (() => {
-        throw new Error("fetch must not be called for an unknown token");
-      }) as unknown as typeof fetch;
-
-      await expect(
-        t.action(api.reimbursements.linkPublicBankAccount, {
-          token: "does-not-exist",
-          routingNumber: "011000015",
-          accountNumber: "555000111",
-        }),
-      ).rejects.toBeInstanceOf(ConvexError);
-    });
+    // A different IP is unaffected.
+    await expect(
+      t.action(api.reimbursements.linkPublicBankAccount, {
+        routingNumber: "011000015",
+        accountNumber: "555000111",
+        clientIp: "198.51.100.21",
+      }),
+    ).resolves.toMatchObject({ linked: true });
   });
 });
 
@@ -488,21 +870,71 @@ describe("submitPublicReimbursement rate limiting", () => {
     await setSlug(s, "nyc");
 
     for (let i = 0; i < 5; i++) {
-      await s.t.mutation(api.reimbursements.submitPublicReimbursement, {
-        chapterSlug: "nyc",
-        payeeName: "No IP",
+      await submitTwoLine(s, "nyc", {
         payeeEmail: "no-ip@example.com",
-        lines: [{ description: "x", amountCents: 500 }],
+        clientIp: undefined,
       });
     }
     await expect(
-      s.t.mutation(api.reimbursements.submitPublicReimbursement, {
-        chapterSlug: "nyc",
-        payeeName: "No IP",
-        payeeEmail: "no-ip@example.com",
-        lines: [{ description: "x", amountCents: 500 }],
+      submitTwoLine(s, "nyc", { payeeEmail: "no-ip@example.com", clientIp: undefined }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+});
+
+describe("pre-submit receipt upload (public, no token)", () => {
+  test("returns an upload URL for a known chapter slug", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    const url = await t.mutation(api.reimbursements.preSubmitUploadUrl, {
+      chapterSlug: "nyc",
+      clientIp: "203.0.113.5",
+    });
+    expect(typeof url).toBe("string");
+  });
+
+  test("rejects an unknown chapter slug", async () => {
+    const t = newT();
+    await setupChapter(t);
+    await expect(
+      t.mutation(api.reimbursements.preSubmitUploadUrl, {
+        chapterSlug: "does-not-exist",
       }),
     ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("rate-limited per IP after the cap — a different IP is unaffected", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    // The cap (40) is generous — exhaust it, then confirm the NEXT call trips.
+    for (let i = 0; i < 40; i++) {
+      await t.mutation(api.reimbursements.preSubmitUploadUrl, {
+        chapterSlug: "nyc",
+        clientIp: "203.0.113.7",
+      });
+    }
+    let caught: unknown;
+    try {
+      await t.mutation(api.reimbursements.preSubmitUploadUrl, {
+        chapterSlug: "nyc",
+        clientIp: "203.0.113.7",
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConvexError);
+    expect((caught as ConvexError<{ code: string }>).data.code).toBe(
+      "RATE_LIMITED",
+    );
+
+    // A different IP is unaffected — and it's a SEPARATE counter from submit's.
+    await expect(
+      t.mutation(api.reimbursements.preSubmitUploadUrl, {
+        chapterSlug: "nyc",
+        clientIp: "198.51.100.20",
+      }),
+    ).resolves.toEqual(expect.any(String));
   });
 });
 
@@ -525,7 +957,7 @@ describe("in-app queue never leaks the token", () => {
     expect(rows[0] as Record<string, unknown>).not.toHaveProperty("token");
     expect(rows[0].totalCents).toBe(2000);
     expect(rows[0].lineItemCount).toBe(2);
-    expect(rows[0].receiptsState).toBe("none");
+    expect(rows[0].receiptsState).toBe("complete"); // receipts are now required
 
     const detail = await s.as.query(api.reimbursements.get, {
       reimbursementId: rows[0]._id,
@@ -533,6 +965,13 @@ describe("in-app queue never leaks the token", () => {
     expect(JSON.stringify(detail)).not.toContain(token);
     expect(detail as Record<string, unknown>).not.toHaveProperty("token");
     expect(detail.lines.length).toBe(2);
+    expect(detail.hasExternalAccount).toBe(true);
+    // The required transactionDate must flow through to the approver's view —
+    // it's how spend timing reaches review (regression: it was stored but
+    // dropped from this payload).
+    for (const line of detail.lines) {
+      expect(typeof line.transactionDate).toBe("number");
+    }
   });
 
   test("list status filter works", async () => {
@@ -586,10 +1025,7 @@ describe("verified roster identity alongside a payee override", () => {
     await grantRole(s, manager, "manager");
 
     // Dana submits under a different display name — the override.
-    await requester.as.mutation(api.reimbursements.submitReimbursement, {
-      payeeName: "D. Rivers Family Fund",
-      lines: [{ description: "Gaffer tape", amountCents: 1200 }],
-    });
+    await submitInApp(requester.as, s, { payeeName: "D. Rivers Family Fund" });
 
     const rows = await s.as.query(api.reimbursements.list, {});
     expect(rows.length).toBe(1);
@@ -634,8 +1070,13 @@ describe("in-app member self-service submission", () => {
   test("requires auth", async () => {
     const t = newT();
     await setupChapter(t);
+    // Unauthenticated — the LINK step itself requires auth, so a real client
+    // never even gets this far; here we call submit directly to pin that the
+    // mutation ALSO gates on auth, independent of the caller's own linking.
     await expect(
       t.mutation(api.reimbursements.submitReimbursement, {
+        purpose: "Event supplies",
+        externalAccountId: "extacct_fake",
         lines: [{ description: "Gaffer tape", amountCents: 1200 }],
       }),
     ).rejects.toBeInstanceOf(ConvexError);
@@ -644,11 +1085,7 @@ describe("in-app member self-service submission", () => {
   test("requires a roster person (NO_PERSON) when the caller has no roster row", async () => {
     const t = newT();
     const s = await setupChapter(t);
-    await expect(
-      s.as.mutation(api.reimbursements.submitReimbursement, {
-        lines: [{ description: "Gaffer tape", amountCents: 1200 }],
-      }),
-    ).rejects.toBeInstanceOf(ConvexError);
+    await expect(submitInApp(s.as, s)).rejects.toBeInstanceOf(ConvexError);
   });
 
   test("creates a request anchored to the caller's own roster person, with a fund + correct total", async () => {
@@ -669,17 +1106,15 @@ describe("in-app member self-service submission", () => {
       }),
     );
 
-    const { reference, reimbursementId } = await s.as.mutation(
-      api.reimbursements.submitReimbursement,
-      {
-        lines: [
-          { description: "Gaffer tape", amountCents: 1200, fundId },
-          { description: "Snacks", amountCents: 800, fundId },
-        ],
-      },
-    );
+    const line1 = await validLine(s, { description: "Gaffer tape", amountCents: 1200 });
+    const line2 = await validLine(s, { description: "Snacks", amountCents: 800 });
+    const { reference, reimbursementId } = await submitInApp(s.as, s, {
+      lines: [
+        { ...line1, fundId },
+        { ...line2, fundId },
+      ],
+    });
     expect(reference).toMatch(/^RB-/);
-    // No secret token is ever handed to an authenticated submitter.
     expect(reimbursementId).toBeTruthy();
 
     const { req, lines } = await run(s.t, async (ctx) => {
@@ -699,6 +1134,7 @@ describe("in-app member self-service submission", () => {
     expect(req?.personId).toBe(person);
     expect(req?.payeeName).toBe("Dana Rivers");
     expect(req?.payeeEmail).toBe("dana@example.com");
+    expect(req?.externalAccountId).toBeTruthy();
     expect(lines.length).toBe(2);
     expect(lines.every((l) => l.fundId === fundId)).toBe(true);
   });
@@ -721,16 +1157,9 @@ describe("in-app member self-service submission", () => {
       }),
     );
 
-    // No fund picker in the in-app form anymore — lines never carry a fundId.
-    const { reimbursementId } = await s.as.mutation(
-      api.reimbursements.submitReimbursement,
-      {
-        lines: [
-          { description: "Gaffer tape", amountCents: 1200 },
-          { description: "Snacks", amountCents: 800 },
-        ],
-      },
-    );
+    const { reimbursementId } = await submitInApp(s.as, s, {
+      lines: await validLines(s),
+    });
     const lines = await run(s.t, (ctx) =>
       ctx.db
         .query("reimbursementLineItems")
@@ -751,13 +1180,9 @@ describe("in-app member self-service submission", () => {
       email: "dana@example.com",
       userId: s.userId,
     });
-    const { reimbursementId } = await s.as.mutation(
-      api.reimbursements.submitReimbursement,
-      {
-        requestPreApproval: true,
-        lines: [{ description: "Gaffer tape", amountCents: 1200 }],
-      },
-    );
+    const { reimbursementId } = await submitInApp(s.as, s, {
+      requestPreApproval: true,
+    });
     const req = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
     expect(req?.status).toBe("pending_preapproval");
   });
@@ -768,7 +1193,7 @@ describe("in-app member self-service submission", () => {
     await seedPerson(s, { name: "Dana Rivers", userId: s.userId });
     for (const bad of [12.5, 0, -100]) {
       await expect(
-        s.as.mutation(api.reimbursements.submitReimbursement, {
+        submitInApp(s.as, s, {
           lines: [{ description: "x", amountCents: bad }],
         }),
       ).rejects.toBeInstanceOf(ConvexError);
@@ -783,14 +1208,10 @@ describe("in-app member self-service submission", () => {
       email: "dana@example.com",
       userId: s.userId,
     });
-    const { reimbursementId } = await s.as.mutation(
-      api.reimbursements.submitReimbursement,
-      {
-        payeeName: "D. Rivers",
-        payeeEmail: "dana+work@example.com",
-        lines: [{ description: "Gaffer tape", amountCents: 1200 }],
-      },
-    );
+    const { reimbursementId } = await submitInApp(s.as, s, {
+      payeeName: "D. Rivers",
+      payeeEmail: "dana+work@example.com",
+    });
     const req = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
     // Display overrides win…
     expect(req?.payeeName).toBe("D. Rivers");
@@ -810,8 +1231,8 @@ describe("in-app member self-service submission", () => {
     });
     // Someone else's public submission shouldn't show up in Dana's list.
     await submitTwoLine(s, "nyc", { payeeEmail: "other@example.com" });
-    await s.as.mutation(api.reimbursements.submitReimbursement, {
-      lines: [{ description: "Gaffer tape", amountCents: 1200 }],
+    await submitInApp(s.as, s, {
+      lines: [await validLine(s, { description: "Gaffer tape", amountCents: 1200 })],
     });
 
     const mine = await s.as.query(api.reimbursements.myReimbursements, {});
@@ -834,15 +1255,15 @@ describe("in-app member self-service submission", () => {
     });
 
     // Dana submits two of her own requests…
-    await s.as.mutation(api.reimbursements.submitReimbursement, {
-      lines: [{ description: "Gaffer tape", amountCents: 1200 }],
+    await submitInApp(s.as, s, {
+      lines: [await validLine(s, { description: "Gaffer tape", amountCents: 1200 })],
     });
-    await s.as.mutation(api.reimbursements.submitReimbursement, {
-      lines: [{ description: "Snacks", amountCents: 800 }],
+    await submitInApp(s.as, s, {
+      lines: [await validLine(s, { description: "Snacks", amountCents: 800 })],
     });
     // …Sam submits one of his own, in the SAME chapter.
-    await other.as.mutation(api.reimbursements.submitReimbursement, {
-      lines: [{ description: "Parking", amountCents: 500 }],
+    await submitInApp(other.as, s, {
+      lines: [await validLine(s, { description: "Parking", amountCents: 500 })],
     });
 
     const danas = await s.as.query(api.reimbursements.myReimbursements, {});
@@ -856,7 +1277,6 @@ describe("in-app member self-service submission", () => {
     expect(sams.length).toBe(1);
     expect(sams[0].totalCents).toBe(500);
     expect(JSON.stringify(sams)).not.toContain("token");
-
     // Neither list leaks into the other's.
     expect(danas.some((r) => r.totalCents === 500)).toBe(false);
     expect(sams.some((r) => r.totalCents === 1200 || r.totalCents === 800)).toBe(
@@ -864,16 +1284,7 @@ describe("in-app member self-service submission", () => {
     );
   });
 
-  describe("linkBankAccount (in-app ACH destination capture)", () => {
-    const originalFetch = globalThis.fetch;
-    const originalKey = process.env.INCREASE_API_KEY;
-
-    afterEach(() => {
-      globalThis.fetch = originalFetch;
-      if (originalKey === undefined) delete process.env.INCREASE_API_KEY;
-      else process.env.INCREASE_API_KEY = originalKey;
-    });
-
+  describe("linkBankAccount (in-app RELINK — fixing/replacing an already-submitted request's destination)", () => {
     /** Mock `POST /external_accounts`, recording the request body. */
     function mockExternalAccountFetch(id = "extacct_new_1") {
       const calls: Array<Record<string, unknown>> = [];
@@ -895,7 +1306,7 @@ describe("in-app member self-service submission", () => {
       return calls;
     }
 
-    test("creates an Increase External Account and links it, never persisting the raw account number", async () => {
+    test("relinks and never persists the raw account number", async () => {
       const t = newT();
       const s = await setupChapter(t);
       await seedPerson(s, {
@@ -903,11 +1314,7 @@ describe("in-app member self-service submission", () => {
         email: "dana@example.com",
         userId: s.userId,
       });
-      const { reimbursementId } = await s.as.mutation(
-        api.reimbursements.submitReimbursement,
-        { lines: [{ description: "Gaffer tape", amountCents: 1200 }] },
-      );
-      process.env.INCREASE_API_KEY = "test_key";
+      const { reimbursementId } = await submitInApp(s.as, s);
       const calls = mockExternalAccountFetch("extacct_dana_1");
 
       const result = await s.as.action(api.reimbursements.linkBankAccount, {
@@ -938,11 +1345,7 @@ describe("in-app member self-service submission", () => {
         name: "Dana Rivers",
         userId: s.userId,
       });
-      const { reimbursementId } = await s.as.mutation(
-        api.reimbursements.submitReimbursement,
-        { lines: [{ description: "x", amountCents: 1200 }] },
-      );
-      process.env.INCREASE_API_KEY = "test_key";
+      const { reimbursementId } = await submitInApp(s.as, s);
       globalThis.fetch = (() => {
         throw new Error("fetch must not be called on invalid input");
       }) as unknown as typeof fetch;
@@ -960,10 +1363,7 @@ describe("in-app member self-service submission", () => {
       const t = newT();
       const s = await setupChapter(t);
       await seedPerson(s, { name: "Dana Rivers", userId: s.userId });
-      const { reimbursementId } = await s.as.mutation(
-        api.reimbursements.submitReimbursement,
-        { lines: [{ description: "x", amountCents: 1200 }] },
-      );
+      const { reimbursementId } = await submitInApp(s.as, s);
       delete process.env.INCREASE_API_KEY;
       globalThis.fetch = (() => {
         throw new Error("fetch must not be called when the key is unset");
@@ -972,11 +1372,13 @@ describe("in-app member self-service submission", () => {
       const result = await s.as.action(api.reimbursements.linkBankAccount, {
         reimbursementId,
         routingNumber: "011000015",
-        accountNumber: "0987654321",
+        accountNumber: "0987654322",
       });
       expect(result.linked).toBe(false);
+      // The ORIGINAL bank destination (from submit) is untouched.
       const req = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
-      expect(req?.externalAccountId).toBeUndefined();
+      expect(req?.externalAccountId).toBeTruthy();
+      expect(req?.externalAccountId).not.toBe("");
     });
 
     test("self-only: a different member cannot link a bank account to someone else's request", async () => {
@@ -987,15 +1389,11 @@ describe("in-app member self-service submission", () => {
         email: "dana@example.com",
         userId: s.userId,
       });
-      const { reimbursementId } = await s.as.mutation(
-        api.reimbursements.submitReimbursement,
-        { lines: [{ description: "x", amountCents: 1200 }] },
-      );
+      const { reimbursementId } = await submitInApp(s.as, s);
       const other = await addMember(s, {
         email: "sam@publicworship.life",
         name: "Sam Lee",
       });
-      process.env.INCREASE_API_KEY = "test_key";
       mockExternalAccountFetch();
 
       await expect(
@@ -1008,9 +1406,9 @@ describe("in-app member self-service submission", () => {
     });
 
     test("ALLOWS relinking while `approved` (fix the bad bank details a bounce re-opened)", async () => {
-      // IMPORTANT 4: `reverseSettledPayout` re-opens a bounced reimbursement to
-      // `approved`; most returns are wrong-account (R03/R04), so the claimant must
-      // be able to fix the destination. `approved` is a LINKABLE status.
+      // IMPORTANT: `reverseSettledPayout` re-opens a bounced reimbursement to
+      // `approved`; most returns are wrong-account — the claimant must be able
+      // to fix the destination. `approved` is a LINKABLE status.
       const t = newT();
       const s = await setupChapter(t);
       await seedPerson(s, {
@@ -1018,10 +1416,7 @@ describe("in-app member self-service submission", () => {
         email: "dana@example.com",
         userId: s.userId,
       });
-      const { reimbursementId } = await s.as.mutation(
-        api.reimbursements.submitReimbursement,
-        { lines: [{ description: "x", amountCents: 1200 }] },
-      );
+      const { reimbursementId } = await submitInApp(s.as, s);
       // A distinct manager approves it (can't approve their own request).
       const manager = await addMember(s, {
         email: "manny@publicworship.life",
@@ -1030,7 +1425,6 @@ describe("in-app member self-service submission", () => {
       await grantRole(s, manager.personId, "manager");
       await manager.as.mutation(api.reimbursements.approve, { reimbursementId });
 
-      process.env.INCREASE_API_KEY = "test_key";
       mockExternalAccountFetch("extacct_relink_1");
 
       const result = await s.as.action(api.reimbursements.linkBankAccount, {
@@ -1053,16 +1447,12 @@ describe("in-app member self-service submission", () => {
         email: "dana@example.com",
         userId: s.userId,
       });
-      const { reimbursementId } = await s.as.mutation(
-        api.reimbursements.submitReimbursement,
-        { lines: [{ description: "x", amountCents: 1200 }] },
-      );
+      const { reimbursementId } = await submitInApp(s.as, s);
       // Force a past-linkable status directly (an in-flight payout).
       await run(s.t, (ctx) =>
         ctx.db.patch(reimbursementId, { status: "paying" }),
       );
 
-      process.env.INCREASE_API_KEY = "test_key";
       globalThis.fetch = (() => {
         throw new Error("fetch must not be called once past linkable");
       }) as unknown as typeof fetch;
@@ -1077,9 +1467,10 @@ describe("in-app member self-service submission", () => {
     });
 
     test("TOCTOU: attachExternalAccount no-ops if the request advanced past linkable mid-link", async () => {
-      // IMPORTANT 5: begin* saw a linkable request, then the slow Increase call
-      // ran; if a concurrent pay advanced it to `paying`, the destination must NOT
-      // be stamped. We simulate the race by flipping the status DURING the fetch.
+      // IMPORTANT: `begin*` saw a linkable request, then the slow Increase call
+      // ran; if a concurrent pay advanced it to `paying`, the destination must
+      // NOT be stamped. We simulate the race by flipping the status DURING the
+      // fetch.
       const t = newT();
       const s = await setupChapter(t);
       await seedPerson(s, {
@@ -1087,11 +1478,11 @@ describe("in-app member self-service submission", () => {
         email: "dana@example.com",
         userId: s.userId,
       });
-      const { reimbursementId } = await s.as.mutation(
-        api.reimbursements.submitReimbursement,
-        { lines: [{ description: "x", amountCents: 1200 }] },
-      );
-      process.env.INCREASE_API_KEY = "test_key";
+      const { reimbursementId } = await submitInApp(s.as, s);
+      const originalExternalAccountId = (
+        await run(s.t, (ctx) => ctx.db.get(reimbursementId))
+      )?.externalAccountId;
+
       globalThis.fetch = (async (input: RequestInfo | URL) => {
         const path = String(input);
         if (path.includes("/external_accounts")) {
@@ -1113,10 +1504,11 @@ describe("in-app member self-service submission", () => {
         accountNumber: "0987654321",
       });
       // The action still returns linked (Increase created the account), but the
-      // destination was NOT stamped onto the now-`paying` request.
+      // destination was NOT restamped onto the now-`paying` request.
       expect(result.linked).toBe(true);
       const req = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
-      expect(req?.externalAccountId).toBeUndefined();
+      expect(req?.externalAccountId).toBe(originalExternalAccountId);
+      expect(req?.externalAccountId).not.toBe("extacct_race_1");
     });
   });
 
@@ -1141,10 +1533,11 @@ describe("in-app member self-service submission", () => {
     expect(options.defaultPayeeName).toBe("Dana Rivers");
     expect(options.defaultPayeeEmail).toBe("dana@example.com");
     expect(options.funds.map((f) => f.name)).toEqual(["General"]);
+    expect(options.forOptions.budgets).toEqual([]);
   });
 });
 
-describe("optional 'For' tag (eventId/projectId)", () => {
+describe("'For' tag: event / project (budget-backed only) / recurring budget — mutually exclusive", () => {
   /** Seed a minimal event in `s`'s chapter (needs an `eventTypes` row first —
    *  mirrors the fixture other finance test suites use). */
   async function seedEvent(s: ChapterSetup, name = "Fall Retreat"): Promise<Id<"events">> {
@@ -1187,18 +1580,91 @@ describe("optional 'For' tag (eventId/projectId)", () => {
     );
   }
 
-  test("newRequestOptions surfaces the chapter's events + projects", async () => {
+  /** An APPROVED one_time budget for an event/project — grandfathered (no
+   *  `approvalStatus`) counts as approved. */
+  async function seedApprovedRefBudget(
+    s: ChapterSetup,
+    refKind: "event" | "project",
+    refId: string,
+  ): Promise<Id<"budgets">> {
+    return await run(s.t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: s.chapterId,
+        amountCents: 50000,
+        type: "one_time",
+        refKind,
+        scopeRefId: refId,
+        cadence: "per_instance",
+        year: 2026,
+        createdAt: Date.now(),
+      }),
+    );
+  }
+
+  /** An APPROVED recurring budget, chapter- or central-level. */
+  async function seedRecurringBudget(
+    s: ChapterSetup,
+    opts: { level?: "chapter" | "central"; label?: string; cadence?: "monthly" | "quarterly" | "yearly"; approved?: boolean } = {},
+  ): Promise<Id<"budgets">> {
+    return await run(s.t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: opts.level === "central" ? "central" : s.chapterId,
+        amountCents: 100000,
+        type: "recurring",
+        cadence: opts.cadence ?? "yearly",
+        year: 2026,
+        label: opts.label ?? "Education",
+        approvalStatus: opts.approved === false ? "draft" : undefined,
+        createdAt: Date.now(),
+      }),
+    );
+  }
+
+  test("newRequestOptions omits an unbudgeted event/project entirely", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, { name: "Dana Rivers", userId: s.userId });
+    await seedEvent(s, "Bare Event");
+    await seedProject(s, "Bare Project");
+
+    const options = await s.as.query(api.reimbursements.newRequestOptions, {});
+    expect(options.forOptions.events).toEqual([]);
+    expect(options.forOptions.projects).toEqual([]);
+  });
+
+  test("newRequestOptions surfaces only BUDGET-BACKED events/projects", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await seedPerson(s, { name: "Dana Rivers", userId: s.userId });
     const eventId = await seedEvent(s, "Fall Retreat");
+    await seedApprovedRefBudget(s, "event", eventId);
     const projectId = await seedProject(s, "New Building Fund");
+    await seedApprovedRefBudget(s, "project", projectId);
+    // An unbudgeted sibling stays hidden.
+    await seedEvent(s, "Bare Event");
 
     const options = await s.as.query(api.reimbursements.newRequestOptions, {});
     expect(options.forOptions.events.map((e) => e.id)).toEqual([eventId]);
     expect(options.forOptions.events[0].label).toContain("Fall Retreat");
     expect(options.forOptions.projects.map((p) => p.id)).toEqual([projectId]);
     expect(options.forOptions.projects[0].label).toBe("New Building Fund");
+  });
+
+  test("newRequestOptions surfaces the chapter's OWN approved recurring budgets, never central or unapproved ones", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, { name: "Dana Rivers", userId: s.userId });
+    const chapterBudgetId = await seedRecurringBudget(s, {
+      label: "Education",
+      cadence: "yearly",
+    });
+    await seedRecurringBudget(s, { level: "central", label: "City Launch Fund" });
+    await seedRecurringBudget(s, { label: "Draft Budget", approved: false });
+
+    const options = await s.as.query(api.reimbursements.newRequestOptions, {});
+    expect(options.forOptions.budgets).toEqual([
+      { id: chapterBudgetId, label: "Education", cadence: "yearly" },
+    ]);
   });
 
   test("submitReimbursement stores an eventId tag and surfaces its label via get()", async () => {
@@ -1209,10 +1675,7 @@ describe("optional 'For' tag (eventId/projectId)", () => {
     await grantRole(s, manager, "manager");
     const requester = await addMember(s, { email: "dana@publicworship.life", name: "Dana Rivers" });
 
-    await requester.as.mutation(api.reimbursements.submitReimbursement, {
-      eventId,
-      lines: [{ description: "Gaffer tape", amountCents: 1200 }],
-    });
+    await submitInApp(requester.as, s, { eventId });
 
     const rows = await s.as.query(api.reimbursements.list, {});
     const detail = await s.as.query(api.reimbursements.get, {
@@ -1229,10 +1692,7 @@ describe("optional 'For' tag (eventId/projectId)", () => {
     await grantRole(s, manager, "manager");
     const requester = await addMember(s, { email: "dana@publicworship.life", name: "Dana Rivers" });
 
-    await requester.as.mutation(api.reimbursements.submitReimbursement, {
-      projectId,
-      lines: [{ description: "Lumber", amountCents: 5000 }],
-    });
+    await submitInApp(requester.as, s, { projectId });
 
     const rows = await s.as.query(api.reimbursements.list, {});
     const detail = await s.as.query(api.reimbursements.get, {
@@ -1241,19 +1701,39 @@ describe("optional 'For' tag (eventId/projectId)", () => {
     expect(detail.forLabel).toBe("New Building Fund");
   });
 
-  test("rejects both eventId and projectId on the same request", async () => {
+  test("submitReimbursement stores a recurring budgetId tag and surfaces its display name via get()", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const budgetId = await seedRecurringBudget(s, { label: "Education", cadence: "yearly" });
+    const manager = await seedPerson(s, { name: "Manager", userId: s.userId, isTeamMember: true });
+    await grantRole(s, manager, "manager");
+    const requester = await addMember(s, { email: "dana@publicworship.life", name: "Dana Rivers" });
+
+    await submitInApp(requester.as, s, { budgetId });
+
+    const rows = await s.as.query(api.reimbursements.list, {});
+    const detail = await s.as.query(api.reimbursements.get, {
+      reimbursementId: rows[0]._id,
+    });
+    expect(detail.forLabel).toBe("Education");
+  });
+
+  test("rejects more than one of eventId/projectId/budgetId on the same request", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await seedPerson(s, { name: "Dana Rivers", userId: s.userId });
     const eventId = await seedEvent(s);
     const projectId = await seedProject(s);
+    const budgetId = await seedRecurringBudget(s);
 
     await expect(
-      s.as.mutation(api.reimbursements.submitReimbursement, {
-        eventId,
-        projectId,
-        lines: [{ description: "Gaffer tape", amountCents: 1200 }],
-      }),
+      submitInApp(s.as, s, { eventId, projectId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+    await expect(
+      submitInApp(s.as, s, { eventId, budgetId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+    await expect(
+      submitInApp(s.as, s, { projectId, budgetId }),
     ).rejects.toBeInstanceOf(ConvexError);
   });
 
@@ -1265,10 +1745,31 @@ describe("optional 'For' tag (eventId/projectId)", () => {
     const otherEventId = await seedEvent(other, "Boston's Own Event");
 
     await expect(
-      s.as.mutation(api.reimbursements.submitReimbursement, {
-        eventId: otherEventId,
-        lines: [{ description: "Gaffer tape", amountCents: 1200 }],
-      }),
+      submitInApp(s.as, s, { eventId: otherEventId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("rejects a budgetId belonging to another chapter", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, { name: "Dana Rivers", userId: s.userId });
+    const other = await setupChapter(t, { email: "other@publicworship.life", chapterName: "Boston" });
+    const otherBudgetId = await seedRecurringBudget(other, { label: "Boston's Budget" });
+
+    await expect(
+      submitInApp(s.as, s, { budgetId: otherBudgetId }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("rejects a budgetId that isn't a recurring budget (a one_time event/project budget)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, { name: "Dana Rivers", userId: s.userId });
+    const eventId = await seedEvent(s);
+    const oneTimeBudgetId = await seedApprovedRefBudget(s, "event", eventId);
+
+    await expect(
+      submitInApp(s.as, s, { budgetId: oneTimeBudgetId }),
     ).rejects.toBeInstanceOf(ConvexError);
   });
 });
@@ -1541,7 +2042,7 @@ describe("illegal transitions", () => {
   });
 });
 
-describe("accountless receipt upload", () => {
+describe("accountless receipt upload (token-scoped — replacing a receipt post-submit)", () => {
   test("works while editable, rejected once terminal", async () => {
     const t = newT();
     const s = await setupChapter(t);

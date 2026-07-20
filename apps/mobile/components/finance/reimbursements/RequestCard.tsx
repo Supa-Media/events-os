@@ -33,10 +33,18 @@ import {
   shortDate,
   type ReimbursementRow,
   type ReimbursementDetail,
+  type ReimbursementLine,
 } from "./helpers";
 
 /** A payout summary as returned by `api.increase.listPayouts` (optional hint). */
 type Payout = FunctionReturnType<typeof api.increase.listPayouts>[number];
+
+/** `get`'s per-line shape, extended locally with `transactionDate` — a field
+ *  the backend contract adds (every line now carries the date it was
+ *  actually paid) but that hasn't landed in the generated return type yet
+ *  (a sibling agent owns `apps/convex` and is adding it concurrently). Kept
+ *  optional so the column degrades to an em dash until it does. */
+type ReimbursementLineWithDate = ReimbursementLine & { transactionDate?: number };
 
 type Props = {
   row: ReimbursementRow;
@@ -291,8 +299,20 @@ function LineTable({
   }
   return (
     <View className="mt-3">
-      {/* The request-level "For" tag (an event or project, purely
-          informational — see `reimbursements.ts#forLabel`), when set. */}
+      {/* The required "why" — every request now carries one at submit. Shown
+          prominently, above the "For" tag and the line table, since it's the
+          first thing an approver should read. */}
+      {detail.purpose ? (
+        <View className="mb-3 rounded-md bg-sunken px-3 py-2.5">
+          <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+            Purpose
+          </Text>
+          <Text className="mt-0.5 text-sm text-ink">{detail.purpose}</Text>
+        </View>
+      ) : null}
+      {/* The request-level "For" tag (an event, a project, or a recurring
+          budget, purely informational — see `reimbursements.ts#forLabel`),
+          when set. */}
       {detail.forLabel ? (
         <View className="mb-2 flex-row items-center gap-1.5">
           <Icon name="tag" size={12} color={colors.muted} />
@@ -304,6 +324,9 @@ function LineTable({
           <Text className="flex-1 text-2xs font-bold uppercase tracking-wider text-muted">
             Line item
           </Text>
+          <Text className="w-20 text-2xs font-bold uppercase tracking-wider text-muted">
+            Date
+          </Text>
           <Text className="w-16 text-center text-2xs font-bold uppercase tracking-wider text-muted">
             Receipt
           </Text>
@@ -311,31 +334,37 @@ function LineTable({
             Amount
           </Text>
         </View>
-        {detail.lines.map((line) => (
-          <View
-            key={line._id}
-            className="flex-row items-center border-t border-border px-3 py-2"
-          >
-            <View className="flex-1 pr-2">
-              <Text className="text-sm font-medium text-ink">
-                {line.description}
+        {detail.lines.map((line) => {
+          const dated = line as ReimbursementLineWithDate;
+          return (
+            <View
+              key={line._id}
+              className="flex-row items-center border-t border-border px-3 py-2"
+            >
+              <View className="flex-1 pr-2">
+                <Text className="text-sm font-medium text-ink">
+                  {line.description}
+                </Text>
+                {line.category ? (
+                  <Text className="text-xs text-muted">{line.category}</Text>
+                ) : null}
+              </View>
+              <Text className="w-20 text-xs text-muted">
+                {dated.transactionDate != null ? shortDate(dated.transactionDate) : "—"}
               </Text>
-              {line.category ? (
-                <Text className="text-xs text-muted">{line.category}</Text>
-              ) : null}
+              <View className="w-16 items-center">
+                {line.hasReceipt ? (
+                  <Icon name="check" size={15} color={colors.success} />
+                ) : (
+                  <Icon name="minus" size={15} color={colors.faint} />
+                )}
+              </View>
+              <Text className="w-24 text-right text-sm font-semibold text-ink">
+                {formatCents(line.amountCents)}
+              </Text>
             </View>
-            <View className="w-16 items-center">
-              {line.hasReceipt ? (
-                <Icon name="check" size={15} color={colors.success} />
-              ) : (
-                <Icon name="minus" size={15} color={colors.faint} />
-              )}
-            </View>
-            <Text className="w-24 text-right text-sm font-semibold text-ink">
-              {formatCents(line.amountCents)}
-            </Text>
-          </View>
-        ))}
+          );
+        })}
       </View>
     </View>
   );
