@@ -73,10 +73,16 @@ async function writeFreshCode(
   return code;
 }
 
-function scheduleCodeSms(ctx: MutationCtx, phone: string, code: string) {
+function scheduleCodeSms(
+  ctx: MutationCtx,
+  rsvpId: Id<"rsvps">,
+  phone: string,
+  code: string,
+) {
   return ctx.scheduler.runAfter(0, internal.ticketingSms.sendVerificationSms, {
     phone,
     code,
+    rsvpId,
   });
 }
 
@@ -92,7 +98,7 @@ export async function beginPhoneVerification(
   const existing = await pendingPhoneCodeFor(ctx, rsvp._id);
   if (sentRecently(existing)) return;
   const code = await writeFreshCode(ctx, rsvp._id, existing);
-  await scheduleCodeSms(ctx, rsvp.phone, code);
+  await scheduleCodeSms(ctx, rsvp._id, rsvp.phone, code);
 }
 
 /** Explicit "Resend code" request — throws when rate-limited. */
@@ -108,5 +114,5 @@ export async function resendPhoneCode(
     });
   }
   const code = await writeFreshCode(ctx, rsvp._id, existing);
-  await scheduleCodeSms(ctx, rsvp.phone, code);
+  await scheduleCodeSms(ctx, rsvp._id, rsvp.phone, code);
 }

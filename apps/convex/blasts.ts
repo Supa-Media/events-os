@@ -33,6 +33,8 @@ import {
   resolveTwilioCredentials,
   sendSms,
 } from "./lib/twilio";
+import { optedOutPhoneSet } from "./smsOptOuts";
+import { estimateSegments, SMS_SEGMENT_PRICE_USD_MICROS } from "@events-os/shared";
 
 const audienceValidator = v.union(
   v.literal("everyone"),
@@ -142,18 +144,32 @@ function emailRecipients(rows: Doc<"rsvps">[]): string[] {
  * imported/synced = reachable), de-duped by NORMALIZED phone so "(917)
  * 555-0000" and "9175550000" collapse to one text. Phone-only imported guests
  * with no email ARE included — the payoff of the SMS channel.
+ *
+ * `optedOut` (normalized E.164 → opted-out, see `smsOptOuts.ts`) is filtered
+ * out of `recipients` and counted separately in `optedOutCount` so callers
+ * (the composer preview, the delivery path) can both skip AND disclose it.
+ * Pure + synchronous so it stays trivially unit-testable — callers resolve
+ * the opt-out set themselves (`optedOutPhoneSet`) before calling in.
  */
-function phoneRecipients(rows: Doc<"rsvps">[]): string[] {
+function phoneRecipients(
+  rows: Doc<"rsvps">[],
+  optedOut: Set<string> = new Set(),
+): { recipients: string[]; optedOutCount: number } {
   const seen = new Set<string>();
-  const out: string[] = [];
+  const recipients: string[] = [];
+  let optedOutCount = 0;
   for (const r of rows) {
     if (!r.phone || r.phoneVerified === false) continue;
     const normalized = normalizePhone(r.phone);
     if (!normalized || seen.has(normalized)) continue;
     seen.add(normalized);
-    out.push(normalized);
+    if (optedOut.has(normalized)) {
+      optedOutCount++;
+      continue;
+    }
+    recipients.push(normalized);
   }
-  return out;
+  return { recipients, optedOutCount };
 }
 
 /** Everything delivery needs in one read: blast + event + recipient lists. */
@@ -169,10 +185,11 @@ export const getBlastPayload = internalQuery({
       .unique();
 
     const rows = await audienceRsvps(ctx, blast.eventId, blast.audience);
+    const optedOut = await optedOutPhoneSet(ctx);
     return {
       blast,
       emails: emailRecipients(rows),
-      phones: phoneRecipients(rows),
+      phones: phoneRecipients(rows, optedOut).recipients,
       eventName: event?.name ?? "Event",
       slug: page?.slug ?? null,
       hostName: page?.hostName ?? "Public Worship",
@@ -201,22 +218,47 @@ function smsConfigured(settings: Doc<"integrationSettings"> | null): boolean {
 /**
  * Composer preview: recipient counts per channel for an audience, plus whether
  * SMS can send. Event-gated (any admin), never returns addresses/numbers.
+ *
+ * `body` is the DRAFT message text (optional — the composer may not have
+ * typed anything yet). When present it drives `estimatedSegments` /
+ * `estimatedCostUsdMicros` for the SMS channel (the "Reply STOP to opt out."
+ * suffix `deliverSmsBlast` appends is included in the estimate, so the
+ * preview matches what actually ships). `smsOptedOut` is how many numbers in
+ * this audience were excluded because they've opted out — surfaced so the
+ * composer can disclose "N opted out and will be skipped" rather than just
+ * silently shrinking the recipient count.
  */
 export const previewBlastAudience = query({
-  args: { eventId: v.id("events"), audience: audienceValidator },
+  args: {
+    eventId: v.id("events"),
+    audience: audienceValidator,
+    body: v.optional(v.string()),
+  },
   returns: v.object({
     emailRecipients: v.number(),
     smsRecipients: v.number(),
     smsConfigured: v.boolean(),
+    smsOptedOut: v.number(),
+    estimatedSegments: v.number(),
+    estimatedCostUsdMicros: v.number(),
   }),
-  handler: async (ctx, { eventId, audience }) => {
+  handler: async (ctx, { eventId, audience, body }) => {
     await requireEvent(ctx, eventId);
     const rows = await audienceRsvps(ctx, eventId, audience);
     const settings = await ctx.db.query("integrationSettings").first();
+    const optedOut = await optedOutPhoneSet(ctx);
+    const sms = phoneRecipients(rows, optedOut);
+    // Mirror deliverSmsBlast's exact wire body so the estimate matches reality.
+    const draftWithSuffix = `${body ?? ""}\n\nReply STOP to opt out.`;
+    const estimatedSegments = body ? estimateSegments(draftWithSuffix) : 0;
     return {
       emailRecipients: emailRecipients(rows).length,
-      smsRecipients: phoneRecipients(rows).length,
+      smsRecipients: sms.recipients.length,
       smsConfigured: smsConfigured(settings),
+      smsOptedOut: sms.optedOutCount,
+      estimatedSegments,
+      estimatedCostUsdMicros:
+        estimatedSegments * SMS_SEGMENT_PRICE_USD_MICROS * sms.recipients.length,
     };
   },
 });
@@ -264,7 +306,7 @@ async function deliverEmailBlast(
   let lastError: string | undefined;
   for (const email of emails) {
     try {
-      await sendEmail(email, subject, html);
+      await sendEmail(ctx, { to: email, subject, html });
       sent++;
     } catch (err) {
       lastError = String(err);
@@ -273,12 +315,45 @@ async function deliverEmailBlast(
   return { recipientCount: emails.length, sentCount: sent, error: lastError };
 }
 
-/** Deliver an SMS blast: one text per normalized phone, best-effort. */
+/** Last 4 digits of an E.164 number — enough to spot-check a usage row
+ *  without storing a reachable phone number in the cost ledger. */
+function phoneLast4(phone: string): string {
+  return phone.slice(-4);
+}
+
+/** Deliver an SMS blast: one text per normalized phone, best-effort. Records
+ *  one `smsUsageEvents` row per recipient (sent/failed/opted_out) — the cost
+ *  ledger behind `smsUsage.getSmsSpendSummary`. */
 async function deliverSmsBlast(
   ctx: ActionCtx,
   payload: NonNullable<BlastPayload>,
 ): Promise<{ recipientCount: number; sentCount: number; error?: string }> {
   const { blast, phones } = payload;
+
+  // Recheck opt-outs right before sending — `payload.phones` was already
+  // filtered when the blast was scheduled (`getBlastPayload`), but a STOP can
+  // arrive in the gap between scheduling and this action actually running.
+  const optedOutNow = new Set(
+    await ctx.runQuery(internal.smsOptOuts.listOptedOutPhones, {}),
+  );
+  const eligible: string[] = [];
+  for (const phone of phones) {
+    if (optedOutNow.has(phone)) {
+      await ctx.runMutation(internal.smsUsage.recordUsageEvent, {
+        chapterId: blast.chapterId,
+        purpose: "blast",
+        blastId: blast._id,
+        eventId: blast.eventId,
+        phoneLast4: phoneLast4(phone),
+        segments: 0,
+        costUsdMicros: 0,
+        outcome: "opted_out",
+      });
+    } else {
+      eligible.push(phone);
+    }
+  }
+
   const creds = await resolveTwilioCredentials(ctx);
   if (!creds) {
     // Recorded, not thrown — the row lands `failed` with a clear reason.
@@ -293,15 +368,37 @@ async function deliverSmsBlast(
   // the visible disclosure carriers/A2P registration expect. Transactional
   // verification codes (ticketingSms.ts) deliberately omit it.
   const body = `${blast.body}\n\nReply STOP to opt out.`;
+  const segments = estimateSegments(body);
+  const costPerRecipient = segments * SMS_SEGMENT_PRICE_USD_MICROS;
 
   let sent = 0;
   let lastError: string | undefined;
-  for (const to of phones) {
+  for (const to of eligible) {
     try {
       await sendSms(creds, { to, body });
       sent++;
+      await ctx.runMutation(internal.smsUsage.recordUsageEvent, {
+        chapterId: blast.chapterId,
+        purpose: "blast",
+        blastId: blast._id,
+        eventId: blast.eventId,
+        phoneLast4: phoneLast4(to),
+        segments,
+        costUsdMicros: costPerRecipient,
+        outcome: "sent",
+      });
     } catch (err) {
       lastError = String(err);
+      await ctx.runMutation(internal.smsUsage.recordUsageEvent, {
+        chapterId: blast.chapterId,
+        purpose: "blast",
+        blastId: blast._id,
+        eventId: blast.eventId,
+        phoneLast4: phoneLast4(to),
+        segments,
+        costUsdMicros: 0,
+        outcome: "failed",
+      });
     }
   }
   return { recipientCount: phones.length, sentCount: sent, error: lastError };

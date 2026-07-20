@@ -1960,3 +1960,6 @@ export * from "./finance";
 
 // ── Org-chart seat taxonomy (template constants + capability vocabulary) ─────
 export * from "./seats";
+
+// ── SMS segment estimation + pricing (Attendance F cost preview/ledger) ──────
+export * from "./sms";

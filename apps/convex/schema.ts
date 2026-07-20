@@ -100,6 +100,8 @@ import { aiUsageEvents, aiCodingIngestState } from "./schema/aiUsage";
 import { academyProgress, courseCompletions } from "./schema/academy";
 import { schemaMigrations } from "./schema/migrations";
 import { integrationSettings } from "./schema/integrationSettings";
+import { smsOptOuts } from "./schema/smsOptOuts";
+import { smsUsageEvents } from "./schema/smsUsage";
 
 /**
  * Database schema for Chapter OS.
@@ -351,6 +353,15 @@ const schema = defineSchema({
   // Givebutter API key). See schema/integrationSettings.ts +
   // integrationSettings.ts.
   integrationSettings,
+
+  // SMS opt-outs (Attendance F) — deployment-wide STOP/START ledger, a
+  // defense-in-depth mirror of Twilio's own Advanced Opt-Out. See
+  // schema/smsOptOuts.ts + smsOptOuts.ts + the `/twilio/webhook` route.
+  smsOptOuts,
+  // SMS usage/cost ledger (Attendance F) — one row per send attempt (blast or
+  // verification code), the Twilio analog of `aiUsageEvents`. See
+  // schema/smsUsage.ts + smsUsage.ts.
+  smsUsageEvents,
 });
 
 export default schema;

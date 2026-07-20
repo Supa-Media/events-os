@@ -4,16 +4,35 @@
  * only when Twilio is connected (previewBlastAudience.smsConfigured); when it
  * isn't, the chip stays selectable but the composer shows a hint pointing at
  * Profile → Integrations. Each channel shows its own live recipient count.
+ *
+ * The SMS channel also previews a cost estimate (`estimatedSegments` ×
+ * `estimatedCostUsdMicros`, from `@events-os/shared`'s segment estimator —
+ * see `blasts.ts#previewBlastAudience` + docs/plans/sms-comms.md) and how
+ * many numbers in the audience have opted out (`smsOptedOut`) and will be
+ * silently skipped. The draft body is debounced before it drives the query
+ * so fast typing doesn't fire a preview on every keystroke.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Text, View } from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
+import { formatCents } from "@events-os/shared";
 import { Badge, Button, Card, Field, Pill, TextField, type BadgeTone } from "../../ui";
 import { formatDateTime } from "../../../lib/format";
 import type { ActionRunner } from "../../../lib/useActionToast";
 import { confirmAction } from "./helpers";
+
+/** How long to wait after the last keystroke before the draft body drives the
+ *  cost preview query — keeps `previewBlastAudience` from re-running on
+ *  every character. */
+const BODY_DEBOUNCE_MS = 400;
+
+/** Micro-USD (1e-6 USD, see `SMS_SEGMENT_PRICE_USD_MICROS`) as a dollar
+ *  string, via the same cents formatter finance uses elsewhere. */
+function formatSmsCost(micros: number): string {
+  return formatCents(Math.round(micros / 10_000));
+}
 
 type Audience = "everyone" | "going" | "maybe" | "ticket_holders";
 type Channel = "email" | "sms";
@@ -52,7 +71,18 @@ export function BlastComposerCard({
   const [body, setBody] = useState("");
   const [sending, setSending] = useState(false);
 
-  const preview = useQuery(api.blasts.previewBlastAudience, { eventId, audience });
+  // Debounce the draft body before it drives the cost-preview query.
+  const [debouncedBody, setDebouncedBody] = useState("");
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedBody(body), BODY_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [body]);
+
+  const preview = useQuery(api.blasts.previewBlastAudience, {
+    eventId,
+    audience,
+    body: channel === "sms" && debouncedBody.trim() ? debouncedBody : undefined,
+  });
   const smsConfigured = preview?.smsConfigured ?? false;
   const recipientCount =
     preview === undefined
@@ -153,9 +183,23 @@ export function BlastComposerCard({
         style={{ minHeight: 110, textAlignVertical: "top" }}
       />
       {channel === "sms" ? (
-        <Text className="mb-2 text-xs text-muted">
-          A “Reply STOP to opt out” line is appended automatically.
-        </Text>
+        <>
+          <Text className="mb-1 text-xs text-muted">
+            A “Reply STOP to opt out” line is appended automatically.
+          </Text>
+          {preview && preview.estimatedSegments > 0 ? (
+            <Text className="mb-1 text-xs text-muted">
+              {preview.smsRecipients} people · ~{preview.estimatedSegments}{" "}
+              segment{preview.estimatedSegments === 1 ? "" : "s"} each · est.{" "}
+              {formatSmsCost(preview.estimatedCostUsdMicros)} org cost
+            </Text>
+          ) : null}
+          {preview && preview.smsOptedOut > 0 ? (
+            <Text className="mb-2 text-xs text-muted">
+              {preview.smsOptedOut} opted out and will be skipped.
+            </Text>
+          ) : null}
+        </>
       ) : null}
       <View className="flex-row justify-end">
         <Button

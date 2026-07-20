@@ -9,15 +9,15 @@
  * reimbursement, and giving client scripts (`/api/tickets/*`,
  * `/api/reimburse/*`, `/api/give/*`); the server-rendered public pages
  * (`/event/` — with `/e/` kept as a backward-compat alias, see the comment at
- * its route below — `/t/`, `/give`, `/p/`, `/reimburse/`); and the two
- * payment-provider webhook receivers (`/stripe/webhook`,
- * `/increase/webhook`).
+ * its route below — `/t/`, `/give`, `/p/`, `/reimburse/`); and the three
+ * provider webhook receivers (`/stripe/webhook`, `/increase/webhook`,
+ * `/twilio/webhook`).
  *
  * This module's default export is what Convex's HTTP actions router
  * dispatches on. Removing or misconfiguring it drops every public event
- * page, ticket page, giving page, and reimbursement page, and both webhooks
- * — whose signature verification (`verifyStripeSignature`,
- * `verifyIncreaseSignature`) happens exactly here.
+ * page, ticket page, giving page, and reimbursement page, and all three
+ * webhooks — whose signature verification (`verifyStripeSignature`,
+ * `verifyIncreaseSignature`, `validateTwilioSignature`) happens exactly here.
  */
 import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
@@ -51,6 +51,11 @@ import { EMAIL_ACTION_STATUSES, type EmailActionStatus } from "./projectActions"
 import { appUrl, siteUrl } from "./lib/siteUrl";
 import { verifyStripeSignature } from "./stripe";
 import { verifyIncreaseSignature } from "./increase";
+import {
+  normalizePhone,
+  resolveTwilioCredentials,
+  validateTwilioSignature,
+} from "./lib/twilio";
 
 const http = httpRouter();
 
@@ -476,6 +481,91 @@ http.route({
       });
     }
     return new Response("ok", { status: 200 });
+  }),
+});
+
+// ── Twilio inbound SMS webhook ────────────────────────────────────────────────
+// Point a Messaging Service's inbound webhook at
+// `https://<deployment>.convex.site/twilio/webhook` (see
+// docs/plans/sms-comms.md's OPS section). Handles the STOP/START keyword
+// family as a defense-in-depth mirror of Twilio's own Advanced Opt-Out
+// (`smsOptOuts.ts`) — everything else is a silent no-op. Always responds with
+// empty TwiML (`<Response/>`) so Twilio never auto-replies on our behalf.
+
+// A fresh `Response` per call — a `Response`'s body stream can only be read
+// once, so a single shared instance can't safely back more than one webhook
+// reply (this route can return it from more than one place per request, and
+// is called on every redelivery).
+function emptyTwiml(): Response {
+  return new Response("<Response/>", {
+    status: 200,
+    headers: { "Content-Type": "text/xml; charset=utf-8" },
+  });
+}
+
+const STOP_KEYWORDS = new Set([
+  "STOP",
+  "STOPALL",
+  "UNSUBSCRIBE",
+  "CANCEL",
+  "END",
+  "QUIT",
+]);
+const START_KEYWORDS = new Set(["START", "UNSTOP", "YES"]);
+
+http.route({
+  path: "/twilio/webhook",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    const creds = await resolveTwilioCredentials(ctx);
+    if (!creds) {
+      console.error("[twilio] webhook received but Twilio isn't configured");
+      return new Response("Not configured", { status: 500 });
+    }
+
+    // Twilio POSTs application/x-www-form-urlencoded (From, Body, MessageSid…).
+    const rawBody = await req.text();
+    const form = new URLSearchParams(rawBody);
+    const params: Record<string, string> = {};
+    for (const [key, value] of form.entries()) params[key] = value;
+
+    const valid = await validateTwilioSignature(
+      req.url,
+      params,
+      req.headers.get("X-Twilio-Signature"),
+      creds.authToken,
+    );
+    if (!valid) return new Response("Invalid signature", { status: 400 });
+
+    // Dedup on MessageSid — Twilio can redeliver the same inbound webhook.
+    const messageSid = params.MessageSid ?? params.SmsMessageSid ?? "";
+    if (messageSid) {
+      const { isNew } = await ctx.runMutation(
+        internal.webhooks.recordWebhookEvent,
+        {
+          provider: "twilio",
+          eventId: messageSid,
+          summary: (params.Body ?? "").slice(0, 80),
+        },
+      );
+      if (!isNew) return emptyTwiml();
+    }
+
+    const from = normalizePhone(params.From ?? "");
+    const keyword = (params.Body ?? "").trim().toUpperCase();
+    if (from) {
+      if (STOP_KEYWORDS.has(keyword)) {
+        await ctx.runMutation(internal.smsOptOuts.recordOptOut, {
+          phone: from,
+          source: "stop_webhook",
+        });
+      } else if (START_KEYWORDS.has(keyword)) {
+        await ctx.runMutation(internal.smsOptOuts.clearOptOut, { phone: from });
+      }
+      // Any other message (a reply, a stray text) is a silent no-op — nothing
+      // else in this app expects two-way SMS conversation.
+    }
+    return emptyTwiml();
   }),
 });
 
