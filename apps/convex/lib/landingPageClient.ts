@@ -19,6 +19,7 @@ var giveAmount=0; // selected suggested donation amount (cents), standalone "Giv
 var pending=null; // action waiting on the identity sheet
 var openPicker=null,openReply=null;
 var donateActive=false,donateContinue=null; // checkout donation-upsell step state
+var phoneReq=false; // identity sheet is collecting a (required) phone number
 var upsellAmount=0; // selected donation-upsell amount (cents)
 var UPSELL_AMOUNTS=[0,2000,2500,5000,10000]; // $0(skip)/$20/$25/$50/$100
 var EMOJIS=['🔥','❤️','🙌','😂','👀','🎉'];
@@ -51,8 +52,10 @@ function scrollToCard(id){
   var node=$(id);
   if(node&&node.scrollIntoView)node.scrollIntoView({behavior:'smooth',block:'center'});
 }
-function openSheet(title,sub,cta,action){
+function validPhone(s){return (''+s).replace(/\\D/g,'').length>=10;}
+function openSheet(title,sub,cta,action,opts){
   pending=action;
+  phoneReq=!!(opts&&opts.phone);
   donateActive=false;donateContinue=null;
   var df=$('donatefields');if(df)df.style.display='none';
   setSheetMode('id');
@@ -61,6 +64,8 @@ function openSheet(title,sub,cta,action){
   $('sheetgo').textContent=cta;
   $('sheeterr').textContent='';
   if(D.viewer){$('f_name').value=D.viewer.name;$('f_email').value=D.viewer.email||'';}
+  var pf=$('phonefld');if(pf)pf.style.display=phoneReq?'block':'none';
+  if(phoneReq&&D.viewer&&D.viewer.phone)$('f_phone').value=D.viewer.phone;
   $('overlay').classList.add('open');
   setTimeout(function(){$('f_name').focus();},100);
 }
@@ -78,10 +83,15 @@ $('sheetgo').onclick=function(){
   if(sheetMode==='code'){submitVerify();return;}
   var name=$('f_name').value.trim(),email=$('f_email').value.trim();
   if(!name||email.indexOf('@')<0){$('sheeterr').textContent='Add your name and a real email ✨';return;}
+  var phone='';
+  if(phoneReq){
+    phone=$('f_phone').value.trim();
+    if(!validPhone(phone)){$('sheeterr').textContent='Add a valid phone number 📱';return;}
+  }
   if(!pending)return closeSheet();
   var act=pending;
   $('sheetgo').disabled=true;
-  act(name,email).then(function(r){
+  act(name,email,phone).then(function(r){
       $('sheetgo').disabled=false;
       if(r&&r.needsVerify)openVerifySheet(r.email);else closeSheet();
     })
@@ -177,8 +187,8 @@ function startCheckout(){
   var ticketTotal=cartTotal();
   var finish=function(donationCents){
     closeSheet();
-    var run=function(name,email){
-      return api('/api/tickets/checkout',{slug:SLUG,token:TOKEN||undefined,name:name,email:email,items:items,donationCents:donationCents||0})
+    var run=function(name,email,phone){
+      return api('/api/tickets/checkout',{slug:SLUG,token:TOKEN||undefined,name:name,email:email,phone:phone||undefined,items:items,donationCents:donationCents||0})
         .then(function(res){
           saveToken(res.token);
           if(res.kind==='stripe'){window.location.href=res.url;return;}
@@ -190,8 +200,10 @@ function startCheckout(){
           });
         });
     };
-    if(TOKEN&&D.viewer){run(D.viewer.name,D.viewer.email).catch(function(e){toast(e.message);});}
-    else openSheet('Almost there 🎟️','Your tickets and receipt land in your inbox.','Continue',run);
+    // A phone is required to buy — skip the sheet only for a returning guest who
+    // already has one on file; otherwise collect name/email/phone.
+    if(TOKEN&&D.viewer&&D.viewer.phone){run(D.viewer.name,D.viewer.email,D.viewer.phone).catch(function(e){toast(e.message);});}
+    else openSheet('Almost there 🎟️','Your tickets and receipt land in your inbox.','Continue',run,{phone:true});
   };
   if(D.givingEnabled)openDonateUpsell(ticketTotal,finish);else finish(0);
 }

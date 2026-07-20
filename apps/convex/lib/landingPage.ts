@@ -255,6 +255,7 @@ ${coverUrl ? `<div class="backdrop" style="background-image:url('${coverUrl}');b
     <div id="idfields">
       <div class="fld"><label for="f_name">Your name</label><input id="f_name" autocomplete="name" placeholder="First and last name"></div>
       <div class="fld"><label for="f_email">Email</label><input id="f_email" type="email" autocomplete="email" placeholder="you@example.com"></div>
+      <div class="fld" id="phonefld" style="display:none"><label for="f_phone">Phone number</label><input id="f_phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="(555) 123-4567"></div>
     </div>
     <div id="codefields" style="display:none">
       <div class="fld"><label for="f_code">6-digit code</label><input id="f_code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="123456"></div>

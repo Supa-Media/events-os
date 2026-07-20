@@ -134,6 +134,7 @@ async function seedPaidTicketOrder(
     slug: admin.page!.slug,
     name: "Terry Ticket",
     email,
+    phone: "5551234567",
     items: [{ ticketTypeId, quantity: 1 }],
   });
   await s.t.mutation(internal.ticketing.attachStripeSession, {

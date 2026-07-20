@@ -32,6 +32,8 @@ export const createCheckout = action({
     slug: v.string(),
     name: v.string(),
     email: v.string(),
+    // Buyer phone — required for tickets (validated/normalized in prepareOrder).
+    phone: v.optional(v.string()),
     token: v.optional(v.string()),
     items: v.array(
       v.object({ ticketTypeId: v.id("ticketTypes"), quantity: v.number() }),
@@ -46,6 +48,7 @@ export const createCheckout = action({
       slug: args.slug,
       name: args.name,
       email: args.email,
+      phone: args.phone,
       token: args.token,
       items: args.items,
       donationCents: args.donationCents,

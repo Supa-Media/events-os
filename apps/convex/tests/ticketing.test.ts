@@ -208,6 +208,7 @@ describe("orders & tickets", () => {
       slug,
       name: "Ben Buyer",
       email: "ben@example.com",
+      phone: "5551234567",
       items: [{ ticketTypeId: freeId, quantity: 2 }],
     });
     expect(prepared.totalCents).toBe(0);
@@ -256,6 +257,7 @@ describe("orders & tickets", () => {
       slug,
       name: "Ben Buyer",
       email: "ben@example.com",
+      phone: "5551234567",
       items: [{ ticketTypeId: freeId, quantity: 1 }],
     });
     await t.mutation(internal.ticketing.fulfillOrder, {
@@ -309,6 +311,7 @@ describe("stripe webhook fulfillment", () => {
       slug,
       name: "Ben Buyer",
       email: "ben@example.com",
+      phone: "5551234567",
       items: [{ ticketTypeId: paidId, quantity: 2 }],
     });
     expect(prepared.totalCents).toBe(5000);
@@ -361,6 +364,7 @@ describe("stripe webhook fulfillment", () => {
       slug,
       name: "Ben Buyer",
       email: "ben@example.com",
+      phone: "5551234567",
       items: [{ ticketTypeId: paidId, quantity: 1 }],
       donationCents: 1500,
     });
@@ -444,6 +448,60 @@ describe("stripe webhook fulfillment", () => {
     ).rejects.toThrow();
   });
 
+  test("prepareOrder requires a phone; a returning guest reuses one on file", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const { slug, paidId } = await paidSetup(s, eventId);
+
+    // No phone at all → rejected.
+    await expect(
+      t.mutation(internal.ticketing.prepareOrder, {
+        slug,
+        name: "No Phone",
+        email: "nophone@example.com",
+        items: [{ ticketTypeId: paidId, quantity: 1 }],
+      }),
+    ).rejects.toThrow();
+
+    // A number that can't be normalized → rejected.
+    await expect(
+      t.mutation(internal.ticketing.prepareOrder, {
+        slug,
+        name: "Bad Phone",
+        email: "bad@example.com",
+        phone: "123",
+        items: [{ ticketTypeId: paidId, quantity: 1 }],
+      }),
+    ).rejects.toThrow();
+
+    // A valid number is normalized to E.164 and stored on the buyer's rsvp.
+    const prepared = await t.mutation(internal.ticketing.prepareOrder, {
+      slug,
+      name: "Pat Phone",
+      email: "pat@example.com",
+      phone: "(555) 867-5309",
+      items: [{ ticketTypeId: paidId, quantity: 1 }],
+    });
+    const rsvp = await run(t, async (ctx) =>
+      ctx.db
+        .query("rsvps")
+        .withIndex("by_token", (q) => q.eq("token", prepared.guestToken))
+        .unique(),
+    );
+    expect(rsvp?.phone).toBe("+15558675309");
+
+    // The returning guest (same token) can buy again WITHOUT re-entering it.
+    const again = await t.mutation(internal.ticketing.prepareOrder, {
+      slug,
+      name: "Pat Phone",
+      email: "pat@example.com",
+      token: prepared.guestToken,
+      items: [{ ticketTypeId: paidId, quantity: 1 }],
+    });
+    expect(again.orderId).toBeDefined();
+  });
+
   test("cancelPendingOrder expires an unpaid order without issuing tickets", async () => {
     const t = newT();
     const s = await setupChapter(t);
@@ -454,6 +512,7 @@ describe("stripe webhook fulfillment", () => {
       slug,
       name: "Cara",
       email: "cara@example.com",
+      phone: "5559990000",
       items: [{ ticketTypeId: paidId, quantity: 1 }],
     });
     await t.mutation(internal.ticketing.attachStripeSession, {
