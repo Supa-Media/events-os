@@ -1,0 +1,31 @@
+---
+import { asset } from "../../lib/asset";
+
+export interface Props {
+  brand?: "public-worship" | "global-echo";
+  class?: string;
+}
+
+const { brand = "public-worship", class: className = "" } = Astro.props;
+---
+
+{
+  brand === "public-worship" ? (
+    <img
+      src={asset("/images/pw-logo-words.png")}
+      alt="Public Worship"
+      class={`block h-9 w-auto ${className}`}
+      width="1200"
+      height="283"
+    />
+  ) : (
+    <span class={`inline-flex flex-col leading-none ${className}`}>
+      <span class="font-display text-[0.65rem] font-bold uppercase tracking-[0.2em] text-ink">
+        Global
+      </span>
+      <span class="font-display text-[0.65rem] font-bold uppercase tracking-[0.2em] text-ink">
+        Echo
+      </span>
+    </span>
+  )
+}

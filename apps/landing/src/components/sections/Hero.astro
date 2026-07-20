@@ -1,0 +1,91 @@
+---
+import Button from "../ui/Button.astro";
+import Eyebrow from "../ui/Eyebrow.astro";
+import Container from "../ui/Container.astro";
+import { asset } from "../../lib/asset";
+---
+
+<section
+  class="relative pt-20 pb-20 sm:pt-24 sm:pb-24 min-h-[860px] overflow-hidden"
+  style={`background-image: linear-gradient(rgba(253, 246, 246, 0) 72%, rgb(253, 246, 246)), url('${asset("/decor/background-lines-pattern.svg")}'); background-size: auto, cover; background-repeat: repeat, no-repeat; background-position: 0 0, center;`}
+>
+  {/* Decor positions copied from source DOM at 1440 viewport (offsets relative
+   * to hero start at y≈80, hero height ≈868):
+   *   flag  x=338  y=162  120x125  -22°  -> 23.5% / top 82
+   *   idea  x=965  y=142  167x167  +33°  -> right 21% / top 62
+   *   heart x=231  y=648  206x180  +15°  -> 16% / top 568
+   *   sunny x=991  y=621  217x196  -15°  -> right 16% / top 541
+   */}
+  <img
+    src={asset("/decor/flag.svg")}
+    alt=""
+    aria-hidden="true"
+    data-animate="hero-object"
+    style="--rot: -22deg; --pulse-delay: -0.2s;"
+    class="hidden md:block absolute left-[5%] lg:left-[23%] top-[80px] h-[110px] w-auto lg:h-[140px] origin-center"
+  />
+  <img
+    src={asset("/decor/idea.svg")}
+    alt=""
+    aria-hidden="true"
+    data-animate="hero-object"
+    style="--rot: 33deg; --pulse-delay: -0.9s;"
+    class="hidden md:block absolute right-[5%] lg:right-[21%] top-[60px] h-[110px] w-auto lg:h-[140px] origin-center"
+  />
+  <img
+    src={asset("/decor/heart.svg")}
+    alt=""
+    aria-hidden="true"
+    data-animate="hero-object"
+    style="--rot: 15deg; --pulse-delay: -1.3s;"
+    class="hidden md:block absolute left-[3%] lg:left-[16%] top-[420px] lg:top-[560px] h-[110px] w-auto lg:h-[140px] origin-center"
+  />
+  <img
+    src={asset("/decor/sunny.svg")}
+    alt=""
+    aria-hidden="true"
+    data-animate="hero-object"
+    style="--rot: -15deg; --pulse-delay: -0.5s;"
+    class="hidden md:block absolute right-[3%] lg:right-[16%] top-[400px] lg:top-[540px] h-[110px] w-auto lg:h-[140px] origin-center"
+  />
+
+  <div class="md:hidden flex justify-center gap-3 mb-6 px-5">
+    <img src={asset("/decor/flag.svg")} alt="" aria-hidden="true" class="h-12 w-12" />
+    <img src={asset("/decor/heart.svg")} alt="" aria-hidden="true" class="h-12 w-12" />
+    <img src={asset("/decor/sunny.svg")} alt="" aria-hidden="true" class="h-12 w-12" />
+  </div>
+
+  <Container size="default" class="relative">
+    <div class="flex flex-col items-center text-center gap-7" data-animate="fade-up">
+      <Eyebrow>Worship with us</Eyebrow>
+
+      {/* H1 size verified from source DOM: 68px desktop, line-height 1.08,
+       * fontFamily Corben, fontWeight 400, container max-w 768px (max-w-3xl).
+       * Corben ships only 400/700 — keep font-normal. */}
+      <h1
+        class="font-display font-normal text-ink leading-[1.08] text-4xl sm:text-5xl md:text-[68px] max-w-3xl"
+      >
+        Together, Let's Forge a Future of
+        <span class="text-red-500">Bold and Radical Jesus Worship</span>
+      </h1>
+
+      {/* Source: 20px / 1.44, full ink color, max-width 480px. */}
+      <p class="max-w-[480px] text-lg sm:text-xl leading-[1.44] text-ink">
+        We're building a Revelations 7:9 future where every nation, tribe and
+        tongue will worship God in spirit and in truth.
+      </p>
+
+      <div class="flex flex-wrap items-center justify-center gap-3 pt-2">
+        <Button
+          href="https://givebutter.com/publicworship"
+          variant="primary"
+          size="lg"
+          external
+        >
+          Make a Donation
+        </Button>
+        <Button href={asset("/ge")} variant="outline" size="lg">About Public Worship</Button>
+      </div>
+    </div>
+  </Container>
+</section>

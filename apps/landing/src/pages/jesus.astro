@@ -1,0 +1,148 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import Container from "../components/ui/Container.astro";
+import JesusSection from "../components/sections/JesusSection.astro";
+import { asset } from "../lib/asset";
+
+const sections = [
+  {
+    label: "Father",
+    verse:
+      "The Spirit you received does not make you slaves, so that you live in fear again; rather, the Spirit you received brought about your adoption to sonship. And by him we cry, 'Abba, Father.'",
+    reference: "Romans 8:15 (NIV)",
+    body: "At the heart of the gospel is this stunning truth: we are adopted by God. Christianity is not just a moral code or spiritual path. It is the miracle of former enemies becoming sons and daughters. Through Christ's death, we are not only forgiven but welcomed to the table as family. Whether the word \"father\" stirs warmth or longing, God meets us with a love that overflows. This adoption is not symbolic. It is legal, costly, and full of grace. We are no longer slaves to fear. We are heirs with authority and intimacy. By the Spirit, we cry, \"Abba,\" the trusting voice of a child in the arms of a perfect Father.",
+    illustration: asset("/images/jesus-father.svg"),
+    bg: "pink" as const,
+  },
+  {
+    label: "Husband",
+    verse:
+      "Husbands, love your wives, just as Christ loved the church and gave himself up for her to make her holy, cleansing her by the washing with water through the word.",
+    reference: "Ephesians 5:25–26 (NIV)",
+    body: "Christ does not love from a distance. He enters into covenant with us, not out of duty but out of deep, pursuing love. The relationship between Christ and the Church is not symbolic or abstract. It is a true union, like that of a bride and groom, built on sacrifice and grace. He loved us when we were unworthy. He gave Himself not because we were pure, but to purify us. Every act of His love is meant to restore, cleanse, and prepare us for glory. Even now, He is forming us for a future celebration, a wedding where joy will overflow and His promises will be fulfilled. This is not just poetic language. It is the heartbeat of redemption and the promise of eternal belonging.",
+    illustration: asset("/images/jesus-husband.svg"),
+    bg: "peach" as const,
+  },
+  {
+    label: "Friend",
+    verse:
+      "I no longer call you servants, because a servant does not know his master's business. Instead, I have called you friends, for everything that I learned from my Father I have made known to you.",
+    reference: "John 15:15 (NIV)",
+    body: "There is something profound about being called a friend of God. Not servant, not follower, but friend. This is the closeness Christ offers, not cold obedience, but shared life. He draws us near and says, \"Everything the Father has shown Me, I have shared with you.\" Friendship with Jesus is not casual. It means we are known, trusted, and invited into the heart of God's will. He proved the depth of this love by laying down His life. Unlike the fragile friendships of this world, His is steady and faithful. He stays close, speaks clearly, and walks with us. This friendship is a gift of grace. It is not earned and will not be taken away. To be His friend is to be welcomed into His confidence and His purpose.",
+    illustration: asset("/images/jesus-friend.svg"),
+    bg: "mint" as const,
+  },
+];
+---
+
+<BaseLayout
+  title="Jesus — Father, Husband, Friend"
+  description="Three relational pictures of Jesus from Scripture: Father, Husband, Friend. The doorway to faith is belief — not earning."
+>
+  <section class="py-10 sm:py-16">
+    <Container size="default">
+      <blockquote
+        class="mx-auto max-w-3xl text-center font-display text-2xl sm:text-3xl md:text-4xl text-ink leading-snug"
+        data-animate="fade-up"
+      >
+        "I am the <span class="text-red-500">Way, Truth,</span> and
+        <span class="text-red-500">Life</span>. No one comes to the Father
+        except through me"
+        <cite class="block mt-3 text-sm not-italic font-medium text-ink/65">
+          ~ Jesus, Son of God
+        </cite>
+      </blockquote>
+    </Container>
+  </section>
+
+  <section class="pb-12">
+    <Container size="default">
+      <h2
+        class="font-display text-3xl sm:text-4xl font-normal text-ink mb-10"
+        data-animate="fade-up"
+      >
+        Father. Husband. Friend.
+      </h2>
+
+      <div class="flex flex-col gap-6">
+        {
+          sections.map((s, i) => (
+            <div data-animate="fade-up" style={`--delay: ${i * 60}ms`}>
+              <JesusSection
+                label={s.label}
+                verse={s.verse}
+                reference={s.reference}
+                body={s.body}
+                illustration={s.illustration}
+                bg={s.bg}
+              />
+            </div>
+          ))
+        }
+
+        <article
+          class="relative overflow-hidden rounded-3xl px-7 py-9 sm:px-10 sm:py-12 bg-lavender"
+          data-animate="fade-up"
+          style="--delay: 240ms"
+        >
+          <h3 class="font-display text-xl font-normal mb-4 text-purple-800">
+            Accepting the Father, Husband, and Friend
+          </h3>
+          <blockquote
+            class="mb-5 font-display text-xl sm:text-2xl text-ink/85 leading-snug"
+          >
+            "That the promise by faith in Jesus Christ might be given to those
+            who believe."
+            <cite class="block mt-2 text-sm not-italic font-medium text-ink/65">
+              — Galatians 3:22 (NIV)
+            </cite>
+          </blockquote>
+          <p class="text-ink/85 leading-relaxed max-w-prose">
+            Everything we've said about Christ, as Father, as Husband, as
+            Friend, rests on one invitation: believe. Faith is how we enter in.
+            Not by proving ourselves, not by fixing our past, not by earning
+            favor, but by placing our trust in the One who has already done the
+            work. Faith is not wishful thinking; it is anchoring your life to
+            the truth that Jesus is who He says — He is your way, your truth,
+            your life.
+          </p>
+          <p class="mt-4 text-ink/85 leading-relaxed max-w-prose">
+            To believe is to receive. It is to let Christ call you His own. It
+            is to say yes to being fathered by love, pursued by grace, and
+            befriended by glory. This is not religion, it is relationship. And
+            it starts here: in your heart, with your faith, and with the
+            whispered surrender that says, "Jesus, I believe." That's how the
+            door opens. That's where the journey begins.
+          </p>
+          <img
+            src={asset("/images/jesus-accept.svg")}
+            alt=""
+            aria-hidden="true"
+            class="absolute right-4 bottom-4 h-16 w-16 sm:h-20 sm:w-20 opacity-80"
+            width="80"
+            height="80"
+          />
+        </article>
+      </div>
+    </Container>
+  </section>
+
+  <section class="py-12 sm:py-20 text-center">
+    <Container size="default">
+      <h2
+        class="font-display text-3xl sm:text-4xl font-normal text-ink leading-tight max-w-2xl mx-auto"
+      >
+        Brought to you by Fiery Word, a gospel publication
+      </h2>
+      <p class="mt-4 text-ink/70">
+        visit
+        <a
+          href="https://fieryword.blog"
+          class="text-red-500 underline underline-offset-2"
+          target="_blank"
+          rel="noopener noreferrer">fieryword.blog</a
+        > for more gospel resources
+      </p>
+    </Container>
+  </section>
+</BaseLayout>

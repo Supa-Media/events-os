@@ -1,0 +1,16 @@
+---
+import { getCollection } from "astro:content";
+
+const entries = await getCollection("beliefs");
+---
+
+<ol class="flex flex-col gap-5 max-w-prose mx-auto">
+  {
+    entries.map((entry, i) => (
+      <li class="flex gap-3 text-ink/80 leading-relaxed">
+        <span class="font-medium text-ink">{i + 1}.</span>
+        <span>{entry.data.body}</span>
+      </li>
+    ))
+  }
+</ol>

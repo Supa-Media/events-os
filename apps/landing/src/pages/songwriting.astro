@@ -1,0 +1,444 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import Container from "../components/ui/Container.astro";
+import SectionHeading from "../components/ui/SectionHeading.astro";
+import { asset } from "../lib/asset";
+
+const sections = [
+  { id: "conviction", label: "I. The conviction" },
+  { id: "test", label: "II. The test" },
+  { id: "practice", label: "III. The practice" },
+  { id: "further-reading", label: "Further reading" },
+];
+
+const niv = (ref: string) =>
+  `https://www.biblegateway.com/passage/?search=${encodeURIComponent(ref)}&version=NIV`;
+
+const refClass =
+  "underline decoration-ink/25 decoration-1 underline-offset-2 hover:decoration-red-500 hover:text-red-500";
+---
+
+<BaseLayout
+  title="Songwriting & Song Selection Manifesto"
+  description="The convictions, scriptures, and standards Public Worship holds our songwriting and song selection to."
+>
+  <section class="py-12 sm:py-16">
+    <Container size="default">
+      <SectionHeading eyebrow="Manifesto" align="left" as="h1">
+        Songwriting & <span class="text-red-500">Song Selection</span> Manifesto
+      </SectionHeading>
+    </Container>
+  </section>
+
+  <section class="pb-8">
+    <Container size="default">
+      <div class="rounded-2xl bg-cream-soft border border-ink/15 p-6 sm:p-8">
+        <p class="font-display text-xl sm:text-2xl font-normal text-ink leading-snug">
+          We center our catalog on <span class="text-red-500">throne-room worship</span> — songs whose
+          primary content is who God is, with the worshiper present only in
+          ways that magnify Him.
+        </p>
+        <p class="mt-4 max-w-prose text-sm sm:text-base text-ink/85 leading-relaxed">
+          This is a curatorial focus, not a verdict on other forms of worship
+          music. Scripture models many registers — lament, testimony,
+          confession, petition — and we honor them. We are choosing to
+          specialize in what we believe is most lacking in contemporary
+          worship: songs that simply declare God Himself, sustained from the
+          first line to the last.
+        </p>
+      </div>
+    </Container>
+  </section>
+
+  <section class="pb-8">
+    <Container size="default">
+      <div class="rounded-2xl bg-pink-softer/40 border border-pink-soft/60 p-6 sm:p-8">
+        <p class="font-display text-lg font-normal text-ink">In this document</p>
+        <ol class="mt-4 grid gap-x-8 gap-y-1.5 sm:grid-cols-2 list-decimal list-inside text-sm text-ink/85">
+          {sections.map((s) => (
+            <li>
+              <a href={`#${s.id}`} class="text-ink hover:text-red-500 underline-offset-2 hover:underline">
+                {s.label}
+              </a>
+            </li>
+          ))}
+        </ol>
+      </div>
+    </Container>
+  </section>
+
+  <section class="pb-24">
+    <Container size="default">
+      <div class="max-w-prose pw-prose text-ink/85 leading-relaxed">
+
+        <article id="conviction" class="scroll-mt-24 mt-12 first:mt-0">
+          <h2 class="font-display font-normal text-3xl sm:text-4xl text-ink">I. The conviction</h2>
+          <div class="mt-4 flex flex-col gap-4">
+            <p>
+              The Hebrew word most often translated <em>worship</em> is
+              <strong class="font-semibold">shâchâh</strong> — to bow down.
+              In <a href={niv("John 4:23-24")} class={refClass}>John 4</a>
+              Jesus says the Father seeks worshipers who worship in spirit
+              and in truth. In <a href={niv("Psalm 29")} class={refClass}>Psalm 29</a>
+              we are told to <em>ascribe to the LORD the glory due his name</em>.
+              Two anchors that hold this whole document together.
+            </p>
+            <p>
+              Our specific focus is
+              <strong class="font-semibold">throne-room worship</strong>.
+              The image is John's vision in Revelation:
+            </p>
+            <blockquote class="border-l-4 border-ink/20 pl-4 italic text-ink/80">
+              "Holy, holy, holy is the Lord God Almighty, who was, and is,
+              and is to come." (<a href={niv("Revelation 4:8")} class={refClass}>Rev 4:8</a>)
+              <br /><br />
+              "Worthy is the Lamb, who was slain." (<a href={niv("Revelation 5:12")} class={refClass}>Rev 5:12</a>)
+            </blockquote>
+            <p>
+              The worshipers are present. They are not the subject. The
+              Lamb is. This is the shape we want to multiply — and the
+              shape that, when we look honestly at contemporary worship, we
+              believe is rarest.
+            </p>
+            <p>
+              We are not saying other forms of worship music are wrong.
+              Scripture models many registers, and we sing songs in all of
+              them when the moment calls for them. We are saying this: the
+              church already has lament, testimony, and confession in
+              abundance. The kind of song that simply declares God —
+              sustained, with the worshiper present only to bow lower — is
+              what we are choosing to make more of.
+            </p>
+          </div>
+        </article>
+
+        <article id="test" class="scroll-mt-24 mt-16">
+          <h2 class="font-display font-normal text-3xl sm:text-4xl text-ink">II. The test</h2>
+          <div class="mt-4 flex flex-col gap-4">
+            <p>
+              For any lyric — one we have written or are considering
+              leading — we ask:
+              <strong class="font-semibold">what is the function of the
+              worshiper's presence?</strong> And:
+              <strong class="font-semibold">is she giving something to God,
+              or reporting something about herself?</strong> The pronoun
+              does not decide it. The function does.
+            </p>
+
+            <div class="overflow-x-auto -mx-2 sm:mx-0 mt-4">
+              <table class="w-full text-sm border-collapse">
+                <thead>
+                  <tr class="text-left border-b border-ink/20">
+                    <th class="py-2 pr-3 font-display font-normal text-ink">Function of self in the lyric</th>
+                    <th class="py-2 pr-3 font-display font-normal text-ink">Example</th>
+                    <th class="py-2 pr-3 font-display font-normal text-ink whitespace-nowrap">Verdict</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-ink/10">
+                  <tr>
+                    <td class="py-2 pr-3 align-top">Self absent, <em>or</em> "we" / "the saints" / "all creation" present only as those who bow, ascribe, or fall down (<strong class="font-semibold">ascription</strong>)</td>
+                    <td class="py-2 pr-3 align-top italic text-ink/75">"A thousand generations falling down in worship"</td>
+                    <td class="py-2 pr-3 align-top text-red-500 whitespace-nowrap">✓ Welcome</td>
+                  </tr>
+                  <tr>
+                    <td class="py-2 pr-3 align-top">Self <em>giving</em> attention / wonder / voice / awe outward to God (<strong class="font-semibold">offering</strong>)</td>
+                    <td class="py-2 pr-3 align-top italic text-ink/75">"When I in awesome wonder consider all the works thy hands have made"</td>
+                    <td class="py-2 pr-3 align-top text-red-500 whitespace-nowrap">✓ Welcome</td>
+                  </tr>
+                  <tr>
+                    <td class="py-2 pr-3 align-top">Self present only to be made small / brought low (<strong class="font-semibold">diminishment</strong>)</td>
+                    <td class="py-2 pr-3 align-top italic text-ink/75">"If the highest place I reach is at Your feet"</td>
+                    <td class="py-2 pr-3 align-top text-red-500 whitespace-nowrap">✓ Welcome</td>
+                  </tr>
+                  <tr>
+                    <td class="py-2 pr-3 align-top">Self present only to be yielded to God's authority (<strong class="font-semibold">surrender</strong>)</td>
+                    <td class="py-2 pr-3 align-top italic text-ink/75">"Take my life and let it be consecrated, Lord, to Thee"</td>
+                    <td class="py-2 pr-3 align-top text-red-500 whitespace-nowrap">✓ Welcome</td>
+                  </tr>
+                  <tr>
+                    <td class="py-2 pr-3 align-top">Self as the discoverer / surprised / one whose realization is the song's content</td>
+                    <td class="py-2 pr-3 align-top italic text-ink/75">"Who thought I'd find You at the lowest place?"</td>
+                    <td class="py-2 pr-3 align-top text-ink/60 whitespace-nowrap">✗ Not the diet</td>
+                  </tr>
+                  <tr>
+                    <td class="py-2 pr-3 align-top">Self as the recipient of affection / identity / security</td>
+                    <td class="py-2 pr-3 align-top italic text-ink/75">"I'll never be more loved than I am right now"</td>
+                    <td class="py-2 pr-3 align-top text-ink/60 whitespace-nowrap">✗ Not the diet</td>
+                  </tr>
+                  <tr>
+                    <td class="py-2 pr-3 align-top">Self as the testifier recounting what God did <em>for me</em></td>
+                    <td class="py-2 pr-3 align-top italic text-ink/75">"He makes me lie down in green pastures"</td>
+                    <td class="py-2 pr-3 align-top text-ink/60 whitespace-nowrap">✗ Not the diet</td>
+                  </tr>
+                  <tr>
+                    <td class="py-2 pr-3 align-top">Self as the resolved / committer / one who promises</td>
+                    <td class="py-2 pr-3 align-top italic text-ink/75">"I'll never let go of Your hand"</td>
+                    <td class="py-2 pr-3 align-top text-ink/60 whitespace-nowrap">✗ Not the diet</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="mt-3 text-xs sm:text-sm text-ink/60">
+              The welcome zone has four shapes —
+              <em>self appears only to make God greater, or not at all</em>.
+              The not-the-diet zone has four —
+              <em>self carries the song</em>.
+            </p>
+
+            <aside class="mt-6 rounded-xl bg-pink-softer/30 border border-pink-soft/50 p-5">
+              <p class="font-display text-base text-ink">"We" vs "I"</p>
+              <p class="mt-2 text-sm text-ink/85 leading-relaxed">
+                The test is grammatical-person-blind. Swapping "I" for "we"
+                does not move a song from one zone to the other.
+                <em>"We'll never be more loved than we are right now"</em>
+                is still self-as-recipient-of-affection — just collective.
+                Read for function, not for pronoun.
+              </p>
+            </aside>
+
+            <aside class="mt-3 rounded-xl bg-pink-softer/30 border border-pink-soft/50 p-5">
+              <p class="font-display text-base text-ink">Giving vs reporting</p>
+              <p class="mt-2 text-sm text-ink/85 leading-relaxed">
+                The same verb does completely different work depending on
+                direction. <em>"When I in awesome wonder consider all the
+                works thy hands have made"</em> uses "I" as the giver of
+                consideration outward to God's works — offering, and welcome.
+                <em>"Who thought I'd find You at the lowest place?"</em>
+                uses "I" as the reporter of personal surprise — testimony,
+                and not the diet. Both lines have "I" as grammatical
+                subject; the function is opposite.
+              </p>
+            </aside>
+
+            <p class="font-display text-lg text-ink mt-8">The four welcome shapes</p>
+            <ul class="list-disc pl-6 space-y-2">
+              <li>
+                <strong class="font-semibold">Ascription.</strong> Direct
+                declaration of who God is and what He has done.
+                <em>
+                  <a href={niv("Isaiah 6:3")} class={refClass}>Isa 6:3</a>;
+                  <a href={niv("Revelation 4:8")} class={refClass}>Rev 4:8</a>;
+                  <a href={niv("Revelation 5:12")} class={refClass}>5:12</a>;
+                  <a href={niv("Psalm 99")} class={refClass}>Ps 99</a>;
+                  <a href={niv("Philippians 2:6-11")} class={refClass}>Phil 2:6–11</a>;
+                  <a href={niv("Colossians 1:15-20")} class={refClass}>Col 1:15–20</a>.
+                </em>
+              </li>
+              <li>
+                <strong class="font-semibold">Offering / praise-giving.</strong>
+                Self as the giver of attention, wonder, voice, awe —
+                faculties turned Godward as the medium of praise. Includes
+                the worshiper's act of giving thanks outward to God.
+                <em>
+                  <a href={niv("Psalm 34:3")} class={refClass}>Ps 34:3</a>;
+                  <a href={niv("Psalm 103:1")} class={refClass}>103:1</a>;
+                  <a href={niv("Psalm 121:1")} class={refClass}>121:1</a>;
+                  <a href={niv("Psalm 145:1-2")} class={refClass}>145:1–2</a>;
+                  <a href={niv("Luke 1:46")} class={refClass}>Lk 1:46</a>.
+                </em>
+              </li>
+              <li>
+                <strong class="font-semibold">Diminishment.</strong> Self
+                appears only to be made small under God.
+                <em>
+                  <a href={niv("Job 40:4")} class={refClass}>Job 40:4</a>;
+                  <a href={niv("Isaiah 6:5")} class={refClass}>Isa 6:5</a>;
+                  <a href={niv("Luke 5:8")} class={refClass}>Lk 5:8</a>;
+                  <a href={niv("Genesis 18:27")} class={refClass}>Gen 18:27</a>;
+                  <a href={niv("John 3:30")} class={refClass}>Jn 3:30</a>.
+                </em>
+              </li>
+              <li>
+                <strong class="font-semibold">Surrender.</strong> Self
+                appears only to be yielded to God's authority.
+                <em>
+                  <a href={niv("Romans 12:1")} class={refClass}>Rom 12:1</a>;
+                  <a href={niv("Luke 22:42")} class={refClass}>Lk 22:42</a>;
+                  <a href={niv("Luke 1:38")} class={refClass}>Lk 1:38</a>;
+                  <a href={niv("Isaiah 6:8")} class={refClass}>Isa 6:8</a>.
+                </em>
+              </li>
+            </ul>
+
+            <p class="font-display text-lg text-ink mt-6">A note on "blessed be God" and thanksgiving forms</p>
+            <p>
+              The biblical eulogies (<a href={niv("Ephesians 1:3-14")} class={refClass}>Eph 1:3–14</a>;
+              <a href={niv("1 Peter 1:3-5")} class={refClass}>1 Pet 1:3–5</a>;
+              <a href={niv("2 Corinthians 1:3-4")} class={refClass}>2 Cor 1:3–4</a>;
+              the <a href={niv("Luke 1:68-79")} class={refClass}>Benedictus</a>)
+              and the thanksgiving forms in Paul's letters sit on the
+              boundary of our welcome zone. They pass when their focus
+              stays on God's character and Christ's acts; they drift when
+              they dwell on what we received ("who comforts us in all our
+              troubles", "salvation from our enemies"). The form itself is
+              biblical. The drift is what we watch for. Apply the test line
+              by line.
+            </p>
+
+            <p class="font-display text-lg text-ink mt-6">Acknowledged but not centered</p>
+            <p>
+              Lament (<a href={niv("Psalm 13")} class={refClass}>Ps 13</a>;
+              <a href={niv("Psalm 22")} class={refClass}>22</a>;
+              <a href={niv("Psalm 130")} class={refClass}>130</a>),
+              testimony (<a href={niv("Psalm 23")} class={refClass}>Ps 23</a>;
+              <a href={niv("Psalm 116")} class={refClass}>116</a>;
+              the <a href={niv("Luke 1:46-55")} class={refClass}>Magnificat</a>),
+              confession (<a href={niv("Psalm 51")} class={refClass}>Ps 51</a>),
+              and petition (<a href={niv("Psalm 40")} class={refClass}>Ps 40</a>;
+              the <a href={niv("Matthew 6:9-13")} class={refClass}>Lord's Prayer</a>).
+              We sing these. We do not build our identity around them,
+              because the church already has them in abundance.
+            </p>
+
+            <p class="font-display text-lg text-ink mt-6">A note on mixed songs</p>
+            <p>
+              Many beloved worship songs and hymns have a strong
+              throne-room hook wrapped in testimony-framed verses. They are
+              not bad. We will sing some of them. But the shape we are
+              trying to write more of is
+              <strong class="font-semibold">the song that is throne-room
+              throughout</strong> — no testimony scaffolding leading into a
+              vertical chorus. Just sustained praise. That shape is rare,
+              and that rareness is what we are addressing.
+            </p>
+          </div>
+        </article>
+
+        <article id="practice" class="scroll-mt-24 mt-16">
+          <h2 class="font-display font-normal text-3xl sm:text-4xl text-ink">III. The practice</h2>
+          <div class="mt-4 flex flex-col gap-4">
+            <p class="font-display text-lg text-ink">What we're guarding against</p>
+            <ul class="list-disc pl-6 space-y-2">
+              <li>
+                <strong class="font-semibold">Self as ground.</strong> Songs
+                that locate the worshiper's identity, worthiness, or
+                victory in the worshiper rather than in Christ.
+              </li>
+              <li>
+                <strong class="font-semibold">Self as testifier.</strong>
+                Songs structured as personal narrative — what I thought,
+                what I discovered, what I will feel — where God is the
+                surprise resolution rather than the subject.
+              </li>
+              <li>
+                <strong class="font-semibold">Self as resolved.</strong>
+                Songs where the energy is the worshiper's commitment or
+                grit ("I'll never let go"), and God recedes into the object
+                of that resolve.
+              </li>
+            </ul>
+
+            <p class="font-display text-lg text-ink mt-6">Our commitments</p>
+            <ul class="list-disc pl-6 space-y-2">
+              <li>
+                <strong class="font-semibold">Theological soundness, non-negotiable.</strong>
+                Every release is checked against Scripture and our
+                <a href={asset("/beliefs")} class="text-red-500 underline-offset-2 hover:underline">Statement of Beliefs</a>.
+              </li>
+              <li>
+                <strong class="font-semibold">Writers as stewards of the test.</strong>
+                Every writing room has someone whose job is to apply the
+                test to the lyric before the song leaves the room.
+              </li>
+              <li>
+                <strong class="font-semibold">The same standard for songs we did not write.</strong>
+                When we lead a cover, a hymn, or a worship song already in
+                circulation, it goes through the same test. Popularity does
+                not exempt it.
+              </li>
+              <li>
+                <strong class="font-semibold">Singability.</strong> Songs
+                are written so a congregation can actually sing them in the
+                rooms where we lead worship.
+              </li>
+              <li>
+                <strong class="font-semibold">Fear of God in the room.</strong>
+                Songwriting that calls itself worship is no small thing. We
+                approach the work as people who will give an account.
+              </li>
+            </ul>
+
+            <p class="font-display text-lg text-ink mt-6">An invitation</p>
+            <p>
+              If you write gospel music, we invite you into the same
+              standard. Write the song that is throne-room from the first
+              line to the last. Hold yourself to Scripture before you hold
+              yourself to the algorithm. We will be glad to hear what you
+              write.
+            </p>
+
+            <p class="font-display text-lg text-ink mt-6">Closing</p>
+            <blockquote class="border-l-4 border-ink/20 pl-4 italic text-ink/80">
+              "The fear of the LORD is the beginning of wisdom." (<a href={niv("Proverbs 9:10")} class={refClass}>Proverbs 9:10</a>)
+            </blockquote>
+            <p>
+              We do not begin with method. We begin with bowing. We will
+              fail. When we do, we want to be told, with Scripture in hand.
+              We are submitting this work to God and to His people.
+            </p>
+            <p class="text-ink/70">— The Public Worship Team</p>
+          </div>
+        </article>
+
+        <article id="further-reading" class="scroll-mt-24 mt-16">
+          <h2 class="font-display font-normal text-3xl sm:text-4xl text-ink">Further reading</h2>
+          <div class="mt-4 flex flex-col gap-4">
+            <p>
+              Free articles and primary sources online — the ones we have
+              found most worth the time.
+            </p>
+            <ul class="list-disc pl-6 space-y-3">
+              <li>
+                <a href="https://www.newadvent.org/fathers/110110.htm" class="text-red-500 underline-offset-2 hover:underline">
+                  Augustine of Hippo, <em>Confessions</em> Book X.33
+                </a> (c. 400). The fourth-century locus classicus on music
+                in worship: "When it happens to me to be more moved by the
+                singing than by what is sung, I confess myself to have
+                sinned criminally." Short, devastating, still load-bearing.
+              </li>
+              <li>
+                <a href="https://www.ccel.org/ccel/ccel/eee/files/wattsprh.htm" class="text-red-500 underline-offset-2 hover:underline">
+                  Isaac Watts, Preface to <em>Hymns and Spiritual Songs</em>
+                </a> (1707). The 18th-century defense of writing worship
+                in the worshiper's voice. Read it as a check on
+                overcorrecting our own position.
+              </li>
+              <li>
+                <a href="https://worshipmatters.com/2006/12/01/worship-leaders-pastors-evaluating-worship-song-lyrics/" class="text-red-500 underline-offset-2 hover:underline">
+                  Bob Kauflin, "Worship Leaders/Pastors: Evaluating Worship Song Lyrics"
+                </a> (2006). A working worship pastor's checklist for
+                testing lyrics. Practitioner-grade.
+              </li>
+              <li>
+                <a href="https://www.thegospelcoalition.org/blogs/justin-taylor/dont-neglect-the-horizontal-dimension-of-singing-and-worship/" class="text-red-500 underline-offset-2 hover:underline">
+                  Justin Taylor, "Don't Neglect the Horizontal Dimension of Singing and Worship"
+                </a> (TGC, 2017). The strongest free counter-voice to our
+                framing — tests our position against
+                <a href={niv("Ephesians 5:19")} class={refClass}>Eph 5:19</a>
+                and <a href={niv("Colossians 3:16")} class={refClass}>Col 3:16</a>.
+                Read it before you trust our position too much.
+              </li>
+              <li>
+                <a href="https://www.christianitytoday.com/2021/05/marva-dawn-tribute-worship-christians-equipped-ministry/" class="text-red-500 underline-offset-2 hover:underline">
+                  Marva Dawn, tribute and quotes (Christianity Today, 2021)
+                </a>. The closest free entry point to her core critique of
+                self-focused worship — "too much music being used today is
+                narcissistic — it's about us and how we feel about God."
+              </li>
+              <li>
+                <a href="https://three-things.ca/the-costly-loss-of-lament-for-the-church/" class="text-red-500 underline-offset-2 hover:underline">
+                  Walter Brueggemann, "The Costly Loss of Lament" (summary)
+                </a>. A faithful summary of Brueggemann's 1986 essay. The
+                indispensable counter-voice for any catalog tempted to
+                skip lament — a vertical-only worship that excludes "Why
+                are you cast down, O my soul?" is, on his account,
+                theologically dangerous in the opposite direction.
+              </li>
+            </ul>
+          </div>
+        </article>
+
+      </div>
+    </Container>
+  </section>
+</BaseLayout>

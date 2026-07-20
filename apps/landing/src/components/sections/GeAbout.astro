@@ -1,0 +1,50 @@
+---
+import Container from "../ui/Container.astro";
+import SectionHeading from "../ui/SectionHeading.astro";
+
+const blocks = [
+  {
+    title: "Who We Are",
+    body: "Global Echo Charitable is a 501(c)(3) nonprofit startup organization committed to sharing the love of Jesus and supporting initiatives that bring light into the world. As the parent organization of Public Worship, Global Echo empowers creative and bold expressions of faith that reach people beyond traditional church settings with the transformative power of the Gospel.",
+    footnote: "EIN: 80-0870719",
+  },
+  {
+    title: "What We Do",
+    body: "Public Worship is the biggest initiative of Global Echo. We are a movement of worship leaders, musicians, and believers lifting up the name of Jesus in public spaces. We believe worship should not be confined to four walls. Through music, prayer, and community, we create opportunities for people to encounter God in unexpected places like parks, plazas, and subways.",
+  },
+  {
+    title: "Why It Matters",
+    body: "Global Echo provides the structure and support that makes Public Worship possible. As a registered nonprofit, we are able to receive tax-deductible donations, apply for grants, and steward financial and spiritual resources that fuel the mission. Your partnership helps us host outdoor gatherings, produce worship content, train evangelism teams, and disciple people through every encounter.",
+  },
+];
+---
+
+<section id="about" class="py-20 sm:py-28 scroll-mt-16">
+  <Container size="default">
+    <div data-animate="fade-up">
+      <SectionHeading eyebrow="About Us" align="center">
+        Funding the right <span class="text-red-500">Initiatives</span>
+      </SectionHeading>
+    </div>
+
+    <div class="mt-14 grid gap-10 md:grid-cols-3">
+      {
+        blocks.map((b, i) => (
+          <div
+            class="flex flex-col gap-3 text-center md:text-left"
+            data-animate="fade-up"
+            style={`--delay: ${i * 80}ms`}
+          >
+            <h3 class="font-display text-2xl font-normal text-ink">
+              {b.title}
+            </h3>
+            <p class="text-ink/75 leading-relaxed">{b.body}</p>
+            {b.footnote && (
+              <p class="text-sm font-medium text-ink/55 mt-1">{b.footnote}</p>
+            )}
+          </div>
+        ))
+      }
+    </div>
+  </Container>
+</section>

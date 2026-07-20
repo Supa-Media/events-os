@@ -1,0 +1,24 @@
+---
+// A subtle wavy SVG divider. Pure decoration; aria-hidden.
+export interface Props {
+  class?: string;
+  flip?: boolean;
+}
+
+const { class: className = "", flip = false } = Astro.props;
+---
+
+<div
+  class={`pointer-events-none w-full overflow-hidden leading-none ${flip ? "rotate-180" : ""} ${className}`}
+  aria-hidden="true"
+>
+  <svg
+    viewBox="0 0 1200 60"
+    preserveAspectRatio="none"
+    class="block h-10 w-full text-pink-softer/70"
+  >
+    <path
+      d="M0,40 C200,0 400,80 600,40 C800,0 1000,80 1200,40 L1200,60 L0,60 Z"
+      fill="currentColor"></path>
+  </svg>
+</div>

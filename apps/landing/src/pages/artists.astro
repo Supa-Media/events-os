@@ -1,0 +1,552 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import Container from "../components/ui/Container.astro";
+import SectionHeading from "../components/ui/SectionHeading.astro";
+import { asset } from "../lib/asset";
+
+const sections = [
+  { id: "artists-as-brands", label: "Artists as brands" },
+  { id: "standards", label: "What we look for in artists we partner with" },
+  { id: "live", label: "Live, not just studio" },
+  { id: "reality", label: "The reality of being an artist" },
+  { id: "selectivity", label: "Why we are selective about releases" },
+  { id: "strategic-release", label: "Releasing strategically" },
+  { id: "reality-check", label: "Reality check" },
+  { id: "brand-trust", label: "Building brand trust" },
+  { id: "fork", label: "A fork in the road" },
+  { id: "self-assessment", label: "Ask yourself" },
+];
+---
+
+<BaseLayout
+  title="Being a Public Worship Artist"
+  description="What it means to carry the Public Worship name as an artist — the standards, the work, the cost, and the honest fork in the road."
+>
+  <section class="py-12 sm:py-16">
+    <Container size="default">
+      <SectionHeading eyebrow="Artists" align="left" as="h1">
+        Being a <span class="text-red-500">Public Worship</span> artist
+      </SectionHeading>
+      <p class="mt-6 max-w-prose text-base sm:text-lg text-ink/80 leading-relaxed">
+        This page exists so you can read it honestly and decide whether
+        being a Public Worship artist is your path. It also describes what
+        we look for when choosing artists to partner with long-term — not
+        a contract or a set of rules, but a frank account of how we
+        evaluate fit. We're not trying to talk anyone into it. The role
+        asks a lot, the bar is high, and there are many other meaningful
+        ways to serve the music if this isn't where God is leading you.
+      </p>
+      <p class="mt-4 max-w-prose text-sm text-ink/70">
+        For how Public Worship handles royalties, master ownership, and the
+        rate sheet, see
+        <a href={asset("/music-policy")} class="text-red-500 underline-offset-2 hover:underline">/music-policy</a>.
+        For a role-by-role walkthrough, see
+        <a href={asset("/collaborate")} class="text-red-500 underline-offset-2 hover:underline">/collaborate</a>.
+      </p>
+    </Container>
+  </section>
+
+  <section class="pb-8">
+    <Container size="default">
+      <div class="rounded-2xl bg-pink-softer/40 border border-pink-soft/60 p-6 sm:p-8">
+        <p class="font-display text-lg font-normal text-ink">In this document</p>
+        <ol class="mt-4 grid gap-x-8 gap-y-1.5 sm:grid-cols-2 list-decimal list-inside text-sm text-ink/85">
+          {sections.map((s) => (
+            <li>
+              <a href={`#${s.id}`} class="text-ink hover:text-red-500 underline-offset-2 hover:underline">
+                {s.label}
+              </a>
+            </li>
+          ))}
+        </ol>
+      </div>
+    </Container>
+  </section>
+
+  <section class="pb-24">
+    <Container size="default">
+      <div class="max-w-prose pw-prose text-ink/85 leading-relaxed">
+
+        <article class="mt-12 first:mt-0">
+          <h2 class="font-display font-normal text-3xl sm:text-4xl text-ink">Intro</h2>
+          <div class="mt-4 flex flex-col gap-4">
+            <p>
+              An artist is more than a musician. An artist is a brand. The
+              music is the product, but the brand — image, values, voice,
+              presence — is what carries the music to people who will keep
+              coming back to it.
+            </p>
+            <p>
+              For artists associated with Public Worship, that brand carries
+              one more layer: it carries the name of a worship ministry. The
+              music doesn't have to be explicitly worship music to be released
+              under our name, but the artist has to live in a way that doesn't
+              undermine the mission the music is attached to.
+            </p>
+            <p>
+              That isn't a small commitment. This page is a frank look at what
+              we ask of artists, what the work actually looks like, and what
+              alternatives exist if this particular path isn't yours.
+            </p>
+          </div>
+        </article>
+
+        <article id="artists-as-brands" class="scroll-mt-24 mt-16">
+          <h2 class="font-display font-normal text-3xl sm:text-4xl text-ink">Artists as brands</h2>
+          <div class="mt-4 flex flex-col gap-4">
+            <p>
+              Think of yourself as a small business. Your music is your
+              product. Your brand is what sells it. Two artists can sing the
+              same song and the performances will land differently because
+              the brands around them are different.
+            </p>
+            <p>A brand worth building should:</p>
+            <ul class="list-disc pl-6 space-y-1.5">
+              <li>Reflect who you actually are.</li>
+              <li>Build trust and loyalty over time with the people who hear you.</li>
+              <li>
+                Carry a consistent message — across the music you release,
+                the photos and videos you post, the way you show up online
+                and in person.
+              </li>
+            </ul>
+            <h3 class="mt-6 font-display font-normal text-xl text-ink">Practical branding</h3>
+            <ul class="list-disc pl-6 space-y-1.5">
+              <li>
+                <strong class="font-semibold">Be intentional with visuals.</strong>
+                Every photo and every clip you post is shaping your public
+                image, whether you mean it to or not. Treat it accordingly.
+              </li>
+              <li>
+                <strong class="font-semibold">Stay consistent.</strong> A unified
+                aesthetic and tone across your platforms makes you legible to
+                listeners. Drift dilutes you.
+              </li>
+              <li>
+                <strong class="font-semibold">Engage your audience.</strong>
+                Respond to comments. Show gratitude. Share moments that are
+                real — joy, vulnerability, gratitude. People follow people.
+              </li>
+            </ul>
+          </div>
+        </article>
+
+        <article id="standards" class="scroll-mt-24 mt-16">
+          <h2 class="font-display font-normal text-3xl sm:text-4xl text-ink">What we look for in artists we partner with</h2>
+          <div class="mt-4 flex flex-col gap-4">
+            <p>
+              We tend to partner with artists who hold themselves to a
+              higher standard than the broader music industry's
+              baseline. Not because we want to be policing or
+              moralistic, but because the music we put out is attached
+              to a Christian worship ministry, and the credibility of
+              the ministry is bound up with the credibility of the
+              people who carry its name. This isn't a contract — it's
+              how we evaluate fit when deciding whom to build with
+              long-term.
+            </p>
+            <p>
+              We don't expect your music to be explicitly
+              worship-focused. We do look for alignment with Christian
+              values across what you make. The artists we partner with
+              tend to think of themselves the way the church thinks of
+              teachers and leaders — not perfect, but accountable.
+            </p>
+
+            <h3 class="mt-4 font-display font-normal text-xl text-ink">Content integrity</h3>
+            <p>
+              When we evaluate fit, we look at how lyrics, themes, and
+              visuals come together across an artist's whole catalog —
+              releases under our name and personal releases alongside —
+              because the public reads them together. We're not
+              policing your art; we're choosing whom to partner with.
+            </p>
+
+            <h3 class="mt-4 font-display font-normal text-xl text-ink">Public behavior</h3>
+            <p>
+              An artist who carries the Public Worship name represents
+              more than themselves, online and offline. We don't look
+              for performance or pretense — we look for awareness and
+              integrity. The artists we partner with well are usually
+              the ones whose public presence already reflects that
+              without having to be reminded — what they post, what
+              they endorse, and how they engage when tired and
+              frustrated all communicate something to the people
+              watching.
+            </p>
+
+            <h3 class="mt-4 font-display font-normal text-xl text-ink">Spiritual accountability</h3>
+            <p>
+              We look for artists who surround themselves with mentors
+              and peers who can hold them to their commitments — who
+              carry their art inside community, not as a solo project.
+              The artists who last in this kind of work tend to be the
+              ones who let other people speak into their lives.
+            </p>
+
+            <div class="mt-4 rounded-xl bg-pink-softer/40 border border-pink-soft/60 p-5">
+              <p class="font-display font-normal text-base text-ink">If you've stumbled</p>
+              <p class="mt-2 text-sm text-ink/85">
+                None of this assumes a perfect track record. Christian
+                accountability is a path, not a finish line. If something in
+                your past or present needs care, what we want is honesty and
+                a willingness to walk it out — not concealment. We would
+                rather work with someone who is becoming whole than with
+                someone who has performed wholeness.
+              </p>
+            </div>
+          </div>
+        </article>
+
+        <article id="live" class="scroll-mt-24 mt-16">
+          <h2 class="font-display font-normal text-3xl sm:text-4xl text-ink">Live, not just studio</h2>
+          <div class="mt-4 flex flex-col gap-4">
+            <p>
+              Public Worship is an events ministry first. We started in
+              streets, parks, and trains, and the music exists in service of
+              public worship gatherings — not the other way around. That
+              history shapes what we look for in artists who carry the name.
+            </p>
+            <p>
+              For artists associated with Public Worship — and especially for
+              primary artists — there is a real preference for people who can
+              do both:
+            </p>
+            <ul class="list-disc pl-6 space-y-1.5">
+              <li>
+                <strong class="font-semibold">Studio.</strong> Show up to
+                write and record. Hold a vision for songs as recorded
+                products. Carry yourself well in production rooms.
+              </li>
+              <li>
+                <strong class="font-semibold">Live.</strong> Show up to
+                public worship gatherings. Lead worship in unscripted live
+                moments. Hold a room without a click track. Travel with us
+                to events when we are called.
+              </li>
+            </ul>
+            <p>
+              An artist who carries the Public Worship name may end up
+              representing the ministry at our gatherings, at partner events,
+              on potential tours, or anywhere we are invited to lead
+              worship. The studio work and the live work feed each other —
+              we don't see them as separate categories. The songs are made
+              for rooms full of people, and the people we build with should
+              know how to be in those rooms.
+            </p>
+            <p>
+              This is not a hard requirement for every collaboration. A
+              featured vocalist on one studio track may never need to lead
+              live. A producer can serve from the studio alone. But for
+              primary artist relationships, the live dimension is part of
+              what we are looking at.
+            </p>
+            <p>
+              <strong class="font-semibold">If you are studio-strong but unsure about live</strong>,
+              flag it up front. We can sometimes build into it together —
+              starting with smaller live moments, gathering experience over
+              time. What we want to avoid is surprise expectations later.
+              Honesty now is better than discomfort later.
+            </p>
+          </div>
+        </article>
+
+        <article id="reality" class="scroll-mt-24 mt-16">
+          <h2 class="font-display font-normal text-3xl sm:text-4xl text-ink">The reality of being an artist</h2>
+          <div class="mt-4 flex flex-col gap-4">
+            <p>
+              Many people think they want to be artists until they meet the
+              demands of the role. Being an artist is like running a
+              business. It demands time, effort, and money. It is not a side
+              hustle. It is a calling that asks for consistent dedication.
+            </p>
+
+            <h3 class="mt-4 font-display font-normal text-xl text-ink">Time</h3>
+            <p>
+              Expect to give at least <strong class="font-semibold">10+ hours per week</strong>
+              to building your artistry — writing, practicing, recording,
+              creating content, engaging with your audience, learning the
+              business side. This is true while you have a job, while you're
+              in school, while life is happening. If you cannot consistently
+              find that time, meaningful growth is unlikely. The artists who
+              break through almost always look back at long stretches of
+              unglamorous, repetitive work.
+            </p>
+
+            <h3 class="mt-4 font-display font-normal text-xl text-ink">Money</h3>
+            <p>
+              Building a brand requires real money. Songs cost money to make.
+              Marketing costs money. Equipment costs money. The artist is
+              usually the one carrying the financial weight of a project. An
+              artist often acts as their own producer, vocalist, or even
+              business — partly out of artistic conviction and partly out of
+              economic necessity.
+            </p>
+
+            <p>An honest budget for one indie song looks roughly like this:</p>
+            <div class="overflow-x-auto rounded-xl border border-ink/10">
+              <table class="w-full text-sm">
+                <thead class="bg-pink-softer/40 text-ink">
+                  <tr>
+                    <th class="px-4 py-3 text-left font-display font-normal">Line item</th>
+                    <th class="px-4 py-3 text-right font-display font-normal">Typical cost</th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-ink/10">
+                  <tr><td class="px-4 py-3">Production (beats or hiring a producer)</td><td class="px-4 py-3 text-right">$50–$150</td></tr>
+                  <tr><td class="px-4 py-3">Recording (studio time or home setup)</td><td class="px-4 py-3 text-right">$50–$100</td></tr>
+                  <tr><td class="px-4 py-3">Mixing & mastering</td><td class="px-4 py-3 text-right">$100–$200</td></tr>
+                  <tr><td class="px-4 py-3">Distribution (DistroKid, TuneCore, etc.)</td><td class="px-4 py-3 text-right">$20–$50</td></tr>
+                  <tr><td class="px-4 py-3">Marketing (ads, promo content)</td><td class="px-4 py-3 text-right">$50–$150</td></tr>
+                  <tr class="bg-cream-soft"><td class="px-4 py-3 font-medium">Total</td><td class="px-4 py-3 text-right font-medium">$300–$650+</td></tr>
+                </tbody>
+              </table>
+            </div>
+            <p class="text-sm text-ink/70">
+              That's the floor for a single song at a credible indie level.
+              The numbers go higher quickly when you start working with
+              experienced producers and engineers. See the
+              <a href={asset("/music-policy#rate-sheet")} class="text-red-500 underline-offset-2 hover:underline">Public Worship rate sheet</a>
+              for what professional contributions actually cost at market.
+            </p>
+          </div>
+        </article>
+
+        <article id="selectivity" class="scroll-mt-24 mt-16">
+          <h2 class="font-display font-normal text-3xl sm:text-4xl text-ink">Why we are selective about releases</h2>
+          <div class="mt-4 flex flex-col gap-4">
+            <p>
+              For songs released under the Public Worship name, the ministry
+              typically takes on the majority of the financial responsibility:
+              studio, mixing, mastering, distribution, marketing. That is
+              good news for the artist. It also means we have to be selective
+              about which songs we choose to release.
+            </p>
+            <p>
+              <strong class="font-semibold">This isn't personal. It's stewardship.</strong>
+              Asking us to release a song is asking the nonprofit to spend
+              several hundred to several thousand dollars betting on that
+              song. We are stewards of the money people have given to the
+              mission. We will not be able to greenlight every song, and our
+              decision about a particular song is not a judgment of you or
+              your gift.
+            </p>
+            <p>
+              The good news is that you always have a third option: you can
+              carry the financial responsibility yourself and release the
+              song as your own artist, on your own terms. As an artist, you
+              are a business owner. Business owners think clearly about
+              return on investment.
+            </p>
+            <p>
+              If a song you wrote in a Public Worship session isn't being
+              released by us, you can also ask for the song back to release
+              it independently — see the
+              <a href={asset("/collaborate")} class="text-red-500 underline-offset-2 hover:underline">collaborate walkthrough</a>
+              and the
+              <a href={asset("/music-policy#demos")} class="text-red-500 underline-offset-2 hover:underline">demos and unreleased songs section</a>
+              of the policy.
+            </p>
+          </div>
+        </article>
+
+        <article id="strategic-release" class="scroll-mt-24 mt-16">
+          <h2 class="font-display font-normal text-3xl sm:text-4xl text-ink">Releasing strategically</h2>
+          <div class="mt-4 flex flex-col gap-4">
+            <p>
+              Most working artists have created many more songs than they
+              have ever released. This is normal. Not every song needs to see
+              the light of day. Unreleased material is a creative exercise, a
+              stepping stone, a way to learn what you're capable of and what
+              direction you actually want to go.
+            </p>
+            <p>
+              Releasing strategically — choosing the right songs, the right
+              moments, the right rollouts — is part of the work. Over-releasing
+              dilutes you. Under-releasing leaves you invisible. Finding the
+              rhythm is part of becoming an artist.
+            </p>
+          </div>
+        </article>
+
+        <article id="reality-check" class="scroll-mt-24 mt-16">
+          <h2 class="font-display font-normal text-3xl sm:text-4xl text-ink">Reality check</h2>
+          <div class="mt-4 flex flex-col gap-4">
+            <p>
+              If you are not willing to invest at least <strong class="font-semibold">$300</strong>
+              into a single song or the equivalent in real time, equipment,
+              and effort, this path probably isn't yet for you. Time and
+              money are how you move music from hobby level to professional
+              level. There is no shortcut around them.
+            </p>
+            <p>
+              If reading that feels discouraging, please take it in context.
+              Yes, you could sing at an open mic, get noticed by an industry
+              executive, and have your life change overnight. That happens.
+              It happens about as often as winning the lottery. Building
+              something that lasts is the more reliable path: learning to
+              create a quality product, investing your time and money in the
+              right places, treating your music like a real thing instead of
+              a wish.
+            </p>
+            <p>
+              The road is hard. It is also formative. Artists who walk it
+              grow in creativity, resilience, and discipline — and those are
+              tools that serve every part of life, whether or not the music
+              itself becomes commercial.
+            </p>
+          </div>
+        </article>
+
+        <article id="brand-trust" class="scroll-mt-24 mt-16">
+          <h2 class="font-display font-normal text-3xl sm:text-4xl text-ink">Building brand trust</h2>
+          <div class="mt-4 flex flex-col gap-4">
+            <p>
+              A brand grows in value as you invest in it. A trusted brand
+              opens doors — to features, collaborations, sync placements,
+              partnerships. Those doors do not open at random. They open for
+              artists who have done the work of becoming legible and
+              credible.
+            </p>
+            <h3 class="mt-2 font-display font-normal text-xl text-ink">Strategic collaborations</h3>
+            <ul class="list-disc pl-6 space-y-1.5">
+              <li>Choose features and collaborations that align with your vision and elevate your music.</li>
+              <li>Avoid partnerships that would dilute your brand's values or muddle your voice.</li>
+              <li>
+                <strong class="font-semibold">We tend to partner with artists who are actively building their brands.</strong>
+                Not because we're gatekeeping, but because partnership is
+                meaningful when both sides bring something to the table.
+              </li>
+            </ul>
+            <p>
+              Treat features as strategic partnerships, not entitlements. The
+              question is not "will Public Worship feature me?" The question
+              is "what am I building such that being featured would be a
+              natural step in both directions?"
+            </p>
+          </div>
+        </article>
+
+        <article id="fork" class="scroll-mt-24 mt-16">
+          <h2 class="font-display font-normal text-3xl sm:text-4xl text-ink">A fork in the road</h2>
+          <div class="mt-4 flex flex-col gap-4">
+            <p>
+              Some readers will finish this and feel ready to start. If
+              that's you, we're genuinely glad. The work is real and so is
+              the reward.
+            </p>
+            <p>
+              Other readers will finish this and recognize that being an
+              artist — at least the way it has just been described — isn't
+              their path. That is also a real and good answer.
+            </p>
+            <p>
+              Music has many roles. The artist is one of them, and a
+              demanding one. There are other ways to use musical gifts that
+              are equally meaningful and that don't require carrying a brand:
+            </p>
+            <ul class="list-disc pl-6 space-y-1.5">
+              <li><strong class="font-semibold">Producing</strong> — shaping the sound and direction of songs.</li>
+              <li><strong class="font-semibold">Writing</strong> — crafting lyrics and melodies for other artists.</li>
+              <li><strong class="font-semibold">Vocal performance</strong> — recording backing or session vocals on others' projects.</li>
+              <li><strong class="font-semibold">Playing instruments</strong> — contributing to live and recorded projects.</li>
+              <li><strong class="font-semibold">Engineering</strong> — recording, mixing, or mastering for others.</li>
+              <li><strong class="font-semibold">Arranging and vocal producing</strong> — guiding how a song takes shape in the room.</li>
+            </ul>
+            <p>
+              All of these are honored at Public Worship. All of them have
+              real
+              <a href={asset("/music-policy#rate-sheet")} class="text-red-500 underline-offset-2 hover:underline">rate-sheet</a>
+              roles and the same four-paths choice for compensation as any
+              other contributor. None of them require you to be the face of
+              a brand.
+            </p>
+            <p>
+              Pray about where you actually feel called. Whatever the answer,
+              pursue it with intent. Every gift can be used to glorify God
+              and bless others — and there is no hierarchy among the gifts.
+            </p>
+          </div>
+        </article>
+
+        <article id="self-assessment" class="scroll-mt-24 mt-16">
+          <h2 class="font-display font-normal text-3xl sm:text-4xl text-ink">Ask yourself</h2>
+          <div class="mt-4 flex flex-col gap-4">
+            <p>
+              If you are weighing whether to step into the artist role under
+              the Public Worship name, sit with these questions honestly:
+            </p>
+
+            <div class="mt-2 rounded-2xl bg-peach/40 border border-peach p-6 sm:p-8">
+              <ol class="list-decimal pl-6 space-y-3 text-ink/90">
+                <li>
+                  Am I willing to dedicate <strong class="font-semibold">10+ hours a week</strong>
+                  to building my artistry — consistently, in seasons when I
+                  don't feel like it?
+                </li>
+                <li>
+                  Am I ready to invest financially in my own career — at
+                  least <strong class="font-semibold">$300 per release</strong>
+                  in cash or in-kind work, and likely more?
+                </li>
+                <li>
+                  Does my brand — what I post, what I say, how I show up —
+                  align with my faith and values? If someone looked at my
+                  whole feed today, would the answer still be yes?
+                </li>
+                <li>
+                  Do I have people in my life I can be accountable to about
+                  this — mentors, peers, a community that knows me?
+                </li>
+                <li>
+                  Am I willing to hear "not this song" or "not yet" without
+                  taking it as a verdict on me?
+                </li>
+                <li>
+                  Am I able and willing to show up <strong class="font-semibold">live</strong> —
+                  to lead worship at public gatherings, travel when we are
+                  called, and represent the ministry in rooms outside the
+                  studio?
+                </li>
+              </ol>
+            </div>
+
+            <p class="mt-4">
+              If your honest answer to all six is yes, take the next step.
+              Email <a href="mailto:hello@publicworship.life" class="text-red-500 underline-offset-2 hover:underline">hello@publicworship.life</a>
+              with a brief note about who you are and what you've been
+              making.
+            </p>
+            <p>
+              If your honest answer to one or more is no — or "not yet" —
+              that's good information. It doesn't close any doors. It might
+              point you toward a different role in the music, or toward more
+              time growing into this one. Both directions are honored here.
+            </p>
+          </div>
+        </article>
+
+        <article class="mt-16">
+          <h2 class="font-display font-normal text-3xl sm:text-4xl text-ink">Conclusion</h2>
+          <div class="mt-4 flex flex-col gap-4">
+            <p>
+              Being an artist is about more than making music. It is about
+              building a brand that resonates, holding to standards that
+              inspire, and giving your time and resources to bring a vision
+              to life. If you are serious about this path, embrace it fully —
+              with intentionality, integrity, and consistency.
+            </p>
+            <p>
+              Public Worship exists to support artists who are committed to
+              building a brand that honors God, elevates their music, and
+              inspires others. We are also here to honor the many people who
+              serve the music in other ways — producers, writers, vocalists,
+              engineers, instrumentalists. Every role matters. Every gift can
+              be used.
+            </p>
+          </div>
+        </article>
+      </div>
+    </Container>
+  </section>
+</BaseLayout>

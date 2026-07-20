@@ -1,0 +1,37 @@
+{
+  "$ref": "#/definitions/impact",
+  "definitions": {
+    "impact": {
+      "type": "object",
+      "properties": {
+        "$schema": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "sublabel": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "value",
+          "label"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

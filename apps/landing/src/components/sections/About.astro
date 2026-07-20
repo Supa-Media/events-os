@@ -1,0 +1,106 @@
+---
+import Container from "../ui/Container.astro";
+import SectionHeading from "../ui/SectionHeading.astro";
+import { asset } from "../../lib/asset";
+
+// 3x2 asymmetric grid:
+//   Row 1: Mission (pink-soft) | Photo 1 | Vision (peach)
+//   Row 2: Photo 2             | Why Public (pink-band) | Photo 3
+type Cell =
+  | {
+      kind: "text";
+      title: string;
+      body: string;
+      bg: "pink-soft" | "peach" | "pink-band";
+    }
+  | { kind: "photo"; src: string };
+
+const cells: Cell[] = [
+  {
+    kind: "text",
+    title: "The Mission",
+    body: "At Public Worship, we exist to create a holy experience through music — one that ignites unwavering faith in Jesus. We strive to move seeds from rocky ground into good soil, to produce fruits of genuine worship that reflects our bold identity in Christ.",
+    bg: "pink-soft",
+  },
+  { kind: "photo", src: asset("/images/event-1.png") },
+  {
+    kind: "text",
+    title: "The Vision",
+    body: "Our vision is a world where nobody is ignorant to who Jesus is, and how he asks us to worship him — In spirit and in truth.",
+    bg: "peach",
+  },
+  { kind: "photo", src: asset("/images/event-2.png") },
+  {
+    kind: "text",
+    title: "Why Public",
+    body: "Worship was never meant to stay inside four walls. At Public Worship, we believe God's presence belongs in everyday places like streets, parks, trains, and the heart of the city. Jesus met people where they were, and we follow His example. When we lift up His name in public, He shows up. People who have never known Him can encounter His love, and lives are changed. This isn't just music — it's an invitation to meet Jesus.",
+    bg: "pink-band",
+  },
+  { kind: "photo", src: asset("/images/event-3.png") },
+];
+
+// Source: pink card uses dark red title, peach uses dark orange.
+const bgClassMap = {
+  "pink-soft": "bg-pink-soft",
+  peach: "bg-peach",
+  "pink-band": "bg-pink-band",
+} as const;
+
+const titleClassMap = {
+  "pink-soft": "text-red-700",
+  peach: "text-amber-800",
+  "pink-band": "text-red-700",
+} as const;
+---
+
+<section id="about" class="py-20 sm:py-28 scroll-mt-16">
+  <Container size="wide">
+    <div data-animate="fade-up" class="mb-12 sm:mb-14">
+      <SectionHeading eyebrow="About Us" align="center">
+        Uniting Hearts, <span class="text-red-500">Changing Lives</span>
+      </SectionHeading>
+    </div>
+
+    {/* Source: cards are ~384x400 with 16px radius and 32/40 padding. The
+     * source has NO wavy texture overlay on these cards — it's a flat fill. */}
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-5">
+      {
+        cells.map((cell, i) =>
+          cell.kind === "text" ? (
+            <article
+              class={`relative overflow-hidden rounded-2xl p-8 pb-10 min-h-[400px] flex flex-col justify-between ${bgClassMap[cell.bg]}`}
+              data-animate="fade-up"
+              style={`--delay: ${i * 60}ms`}
+            >
+              <h3
+                class={`font-display text-2xl sm:text-3xl font-normal ${titleClassMap[cell.bg]} max-w-[18ch]`}
+              >
+                {cell.title}
+              </h3>
+              <p class="text-ink/85 leading-relaxed text-[0.95rem] sm:text-base max-w-prose">
+                {cell.body}
+              </p>
+            </article>
+          ) : (
+            <div
+              class="overflow-hidden rounded-2xl min-h-[400px] bg-ink/5"
+              data-animate="fade-up"
+              style={`--delay: ${i * 60}ms`}
+            >
+              <img
+                src={cell.src}
+                alt=""
+                aria-hidden="true"
+                class="h-full w-full object-cover"
+                loading="lazy"
+                decoding="async"
+                width="800"
+                height="800"
+              />
+            </div>
+          )
+        )
+      }
+    </div>
+  </Container>
+</section>

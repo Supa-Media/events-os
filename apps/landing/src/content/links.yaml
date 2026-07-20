@@ -1,0 +1,46 @@
+# =====================================================================
+# IMPORTANT LINKS — homepage Links section
+# =====================================================================
+# How to add a link:
+#   1. Drop the thumbnail/photo into /public/links/ (any format).
+#   2. Add a new block below — copy/paste an existing one and edit the
+#      fields. The id should be a short slug, unique across links.
+#   3. Reorder by moving the block up or down.
+#   4. Commit. The site rebuilds automatically (~30s).
+#
+# Required: id, title, url
+# Optional: subtitle, thumbnail (small logo above text), bgImage
+#           (full-bleed photo background — used for poster cards),
+#           cta (a small line under subtitle), align ("center" | "topLeft"),
+#           featured (true | false)
+# =====================================================================
+
+- id: givebutter
+  title: Donate
+  subtitle: "(Card, Apple Pay, Venmo, ACH)"
+  url: https://givebutter.com/publicworship
+
+- id: scavenger-hunt
+  title: Scavenger Hunt
+  url: https://scavenger-hunt-beryl.vercel.app/
+
+- id: eden
+  title: Eden Worship & Picnic — Public Worship presents
+  url: https://partiful.com/e/yJRnupvB4MTHSMkN4FHU
+  bgImage: /links/eden-poster.png
+
+- id: instagram
+  title: Instagram
+  url: https://instagram.com/publicworship.life
+  thumbnail: /links/instagram-photo.png
+
+- id: tiktok
+  title: TikTok
+  url: https://www.tiktok.com/@publicworship.life
+  thumbnail: /links/tiktok-photo.png
+
+- id: zelle
+  title: Donate Through Zelle
+  subtitle: give@publicworship.life
+  copy: give@publicworship.life
+  cta: "(Click to Copy)"

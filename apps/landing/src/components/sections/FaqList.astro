@@ -1,0 +1,34 @@
+---
+import { getCollection } from "astro:content";
+import Container from "../ui/Container.astro";
+import SectionHeading from "../ui/SectionHeading.astro";
+import FaqItem from "../ui/FaqItem.astro";
+import { renderMarkdown } from "../../lib/markdown";
+
+const entries = await getCollection("faqs");
+---
+
+<section id="faq" class="py-20 sm:py-28 scroll-mt-16">
+  <Container size="wide">
+    {/* Source FAQ grid: ~518 / 596 split with a 70px gutter. The eyebrow on this
+     * section is the small inline variant (14px Corben red), not a chip. */}
+    <div class="grid gap-12 lg:gap-[70px] lg:grid-cols-[1fr_1.15fr] lg:items-start">
+      <div data-animate="fade-up">
+        <SectionHeading eyebrow="FAQ" eyebrowSize="sm" align="left">
+          Answers to Your <span class="text-red-500">Burning Questions</span>
+        </SectionHeading>
+      </div>
+
+      <div data-animate="fade-up" style="--delay: 120ms">
+        {
+          entries.map((entry) => (
+            <FaqItem
+              question={entry.data.question}
+              answerHtml={renderMarkdown(entry.data.answer)}
+            />
+          ))
+        }
+      </div>
+    </div>
+  </Container>
+</section>

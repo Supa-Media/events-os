@@ -1,0 +1,121 @@
+---
+import { asset } from "../../lib/asset";
+
+export interface Props {
+  title: string;
+  subtitle?: string;
+  url?: string;
+  thumbnail?: string;
+  bgImage?: string;
+  cta?: string;
+  copy?: string;
+  align?: "center" | "topLeft";
+}
+
+const {
+  title,
+  subtitle,
+  url,
+  thumbnail,
+  bgImage,
+  cta,
+  copy,
+  align = "center",
+} = Astro.props;
+
+const thumbSrc = thumbnail ? asset(thumbnail) : null;
+const bgSrc = bgImage ? asset(bgImage) : null;
+
+// When `copy` is set the card is a click-to-copy button (no navigation);
+// otherwise it's a link.
+const isCopy = Boolean(copy);
+const isExternal = !isCopy && url ? /^https?:|^mailto:/.test(url) : false;
+const Tag = isCopy ? "button" : "a";
+const tagAttrs = isCopy
+  ? { type: "button", "data-copy": copy }
+  : {
+      href: url,
+      ...(isExternal
+        ? { target: "_blank", rel: "noopener noreferrer" }
+        : {}),
+    };
+
+// Source: padding 48px, 16px radius, flat #F9DFDF background, no aspect ratio
+// constraint (height tracks content, ~110px for logo cards).
+const layoutClass =
+  align === "topLeft"
+    ? "items-start text-left p-8 sm:p-10"
+    : "items-center justify-center text-center p-8 sm:p-12";
+---
+
+<Tag
+  {...tagAttrs}
+  aria-label={title}
+  class="group relative block w-full min-h-[150px] cursor-pointer appearance-none overflow-hidden rounded-2xl bg-pink-softer transition-transform hover:-translate-y-0.5"
+>
+  {
+    bgSrc && (
+      <img
+        src={bgSrc}
+        alt=""
+        class="absolute inset-0 h-full w-full object-cover"
+        loading="lazy"
+        decoding="async"
+      />
+    )
+  }
+  {
+    !bgSrc && (
+      <div
+        class={`relative z-[1] flex h-full flex-col gap-1 ${layoutClass} ${
+          align === "center" ? "justify-center" : ""
+        }`}
+      >
+        {thumbSrc && (
+          <img
+            src={thumbSrc}
+            alt={title}
+            class="max-h-10 sm:max-h-12 w-auto object-contain"
+            loading="lazy"
+          />
+        )}
+        {!thumbSrc && (
+          <h3 class="font-display text-xl sm:text-2xl text-link-blue">
+            {title}
+          </h3>
+        )}
+        {subtitle && <p class="text-sm sm:text-base text-link-blue">{subtitle}</p>}
+        {cta && <p class="text-sm text-link-blue" data-cta>{cta}</p>}
+      </div>
+    )
+  }
+</Tag>
+
+<script>
+  document.querySelectorAll<HTMLElement>("[data-copy]").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const text = btn.getAttribute("data-copy");
+      if (!text) return;
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        ta.remove();
+      }
+      const cta = btn.querySelector("[data-cta]");
+      if (cta) {
+        const prev = cta.textContent;
+        cta.textContent = "Copied!";
+        setTimeout(() => {
+          cta.textContent = prev;
+        }, 1500);
+      }
+    });
+  });
+</script>
