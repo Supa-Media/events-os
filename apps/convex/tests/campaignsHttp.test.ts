@@ -1,4 +1,4 @@
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { createHmac } from "node:crypto";
 import { ConvexError } from "convex/values";
 import { api } from "../_generated/api";
@@ -462,6 +462,129 @@ describe("/resend/webhook", () => {
     const replies = await run(s.t, (ctx) => ctx.db.query("emailReplies").collect());
     expect(suppressions).toHaveLength(0);
     expect(replies).toHaveLength(0);
+  });
+});
+
+// ── Reply auto-forward to the per-campaign sender ────────────────────────────
+// A matched inbound reply, for a campaign with `fromEmail` set, schedules a
+// best-effort forward (`internal.campaigns.forwardReplyToSender`) so the
+// webhook handler itself stays fast — drained here via
+// `t.finishAllScheduledFunctions`, same pattern `campaigns.test.ts` uses for
+// the send pipeline's own scheduled continuations.
+
+async function configureResendKey(s: ChapterSetup): Promise<void> {
+  await s.as.mutation(api.integrationSettings.setResendSettings, {
+    apiKey: "re_test_key",
+    fromAddress: "Chapter OS <os@publicworship.life>",
+  });
+}
+
+describe("forwardReplyToSender (reply auto-forward)", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  test("a matched inbound reply to a campaign with fromEmail set sends a forward to that address", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await asSuperuser(t);
+      await configureWebhookSecret(s);
+      await configureResendKey(s);
+      const { campaignId } = await seedCampaignRecipient(s);
+      await run(s.t, (ctx) =>
+        ctx.db.patch(campaignId, { fromName: "AJ", fromEmail: "aj@publicworship.life" }),
+      );
+
+      const sends: { to: string; subject: string; replyTo?: string; text?: string }[] = [];
+      globalThis.fetch = (async (_url: string, init?: { body?: string }) => {
+        const body = init?.body ? JSON.parse(init.body) : {};
+        sends.push({ to: body.to, subject: body.subject, replyTo: body.reply_to, text: body.text });
+        return { ok: true, status: 200, text: async () => "{}" };
+      }) as unknown as typeof fetch;
+
+      const res = await postResendWebhook(t, {
+        type: "email.received",
+        data: {
+          to: [`campaign+${campaignId}@reply.publicworship.life`],
+          from: "Jane Doe <jane@example.com>",
+          subject: "Re: Hi",
+          text: "Thanks for the update!",
+        },
+      });
+      expect(res.status).toBe(200);
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      expect(sends).toHaveLength(1);
+      expect(sends[0].to).toBe("aj@publicworship.life");
+      expect(sends[0].subject).toBe('Re: Hi — reply from Jane Doe <jane@example.com>');
+      // Reply-To is the REPLIER's address, not the campaign's — hitting
+      // reply in the recipient's mail client should go to the guest.
+      expect(sends[0].replyTo).toBe("jane@example.com");
+      expect(sends[0].text).toContain("Thanks for the update!");
+      expect(sends[0].text).toContain("jane@example.com");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a matched inbound reply to a campaign with NO fromEmail set sends no forward", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await asSuperuser(t);
+      await configureWebhookSecret(s);
+      await configureResendKey(s);
+      const { campaignId } = await seedCampaignRecipient(s); // fromEmail left unset
+
+      let fetchCount = 0;
+      globalThis.fetch = (async () => {
+        fetchCount++;
+        return { ok: true, status: 200, text: async () => "{}" };
+      }) as unknown as typeof fetch;
+
+      await postResendWebhook(t, {
+        type: "email.received",
+        data: {
+          to: [`campaign+${campaignId}@reply.publicworship.life`],
+          from: "jane@example.com",
+          subject: "Re: Hi",
+          text: "Thanks!",
+        },
+      });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      expect(fetchCount).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("an unmatched reply (no campaignId) never schedules a forward", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await asSuperuser(t);
+      await configureWebhookSecret(s);
+      await configureResendKey(s);
+
+      let fetchCount = 0;
+      globalThis.fetch = (async () => {
+        fetchCount++;
+        return { ok: true, status: 200, text: async () => "{}" };
+      }) as unknown as typeof fetch;
+
+      await postResendWebhook(t, {
+        type: "email.received",
+        data: { to: ["hello@publicworship.life"], from: "stray@example.com", subject: "Hi" },
+      });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      expect(fetchCount).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

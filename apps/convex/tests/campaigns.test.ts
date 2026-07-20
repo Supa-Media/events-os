@@ -3,6 +3,7 @@ import { ConvexError } from "convex/values";
 import { api, internal } from "../_generated/api";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import type { Id } from "../_generated/dataModel";
+import { resolveAudienceRecipients } from "../lib/audienceResolve";
 
 /**
  * Email campaigns (audiences.ts + campaigns.ts + the /unsubscribe and
@@ -554,8 +555,13 @@ describe("send pipeline", () => {
         _url: string,
         init?: { body?: string },
       ) => {
-        const body = init?.body ? JSON.parse(init.body) : {};
-        sends.push({ to: body.to, subject: body.subject, body });
+        // `deliverCampaignBatch` now posts the whole batch as one request —
+        // the body is an ARRAY of per-recipient items, Resend's
+        // `/emails/batch` shape (see `lib/resend.ts#sendResendEmailBatch`).
+        const items: Record<string, unknown>[] = init?.body ? JSON.parse(init.body) : [];
+        for (const item of items) {
+          sends.push({ to: item.to as string, subject: item.subject as string, body: item });
+        }
         return { ok: true, status: 200, text: async () => "{}" };
       }) as unknown as typeof fetch;
 
@@ -778,6 +784,378 @@ describe("send pipeline", () => {
       const campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
       expect(campaign.status).toBe("sent");
       expect(campaign.recipientCount).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("one Resend batch request carries every recipient, each with its own distinct unsubscribe URL", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await asSuperuser(t);
+      await configureResend(s);
+      await run(s.t, async (ctx) => {
+        for (const email of ["a@example.com", "b@example.com", "c@example.com"]) {
+          await ctx.db.insert("people", {
+            chapterId: s.chapterId,
+            name: email,
+            email,
+            status: "active",
+            createdAt: Date.now(),
+          });
+        }
+      });
+      const audienceId = await seedAudience(s, "people");
+      const campaignId = await s.as.mutation(api.campaigns.createCampaign, {
+        scope: "central",
+        name: "N",
+        subject: "Hi",
+        audienceId,
+        doc: heroDoc(),
+      });
+
+      let requestCount = 0;
+      let lastBatch: Array<{ to: string; headers: Record<string, string> }> = [];
+      globalThis.fetch = (async (_url: string, init?: { body?: string }) => {
+        requestCount++;
+        lastBatch = init?.body ? JSON.parse(init.body) : [];
+        return { ok: true, status: 200, text: async () => "{}" };
+      }) as unknown as typeof fetch;
+
+      await s.as.mutation(api.campaigns.send, { campaignId });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      // 3 recipients comfortably fit in one 100-recipient batch — one Resend
+      // request for the whole send.
+      expect(requestCount).toBe(1);
+      expect(lastBatch).toHaveLength(3);
+      const unsubscribeLinks = lastBatch.map((item) => item.headers["List-Unsubscribe"]);
+      expect(new Set(unsubscribeLinks).size).toBe(3); // every item's token is distinct
+
+      const campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
+      expect(campaign.sentCount).toBe(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a non-2xx batch response marks every recipient in that batch failed", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await asSuperuser(t);
+      await configureResend(s);
+      await run(s.t, async (ctx) => {
+        for (const email of ["x@example.com", "y@example.com"]) {
+          await ctx.db.insert("people", {
+            chapterId: s.chapterId,
+            name: email,
+            email,
+            status: "active",
+            createdAt: Date.now(),
+          });
+        }
+      });
+      const audienceId = await seedAudience(s, "people");
+      const campaignId = await s.as.mutation(api.campaigns.createCampaign, {
+        scope: "central",
+        name: "N",
+        subject: "Hi",
+        audienceId,
+        doc: heroDoc(),
+      });
+
+      globalThis.fetch = (async () => ({
+        ok: false,
+        status: 422,
+        text: async () => JSON.stringify({ message: "invalid recipient in batch" }),
+      })) as unknown as typeof fetch;
+
+      await s.as.mutation(api.campaigns.send, { campaignId });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      const campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
+      expect(campaign.sentCount).toBe(0);
+      expect(campaign.failedCount).toBe(2);
+      expect(campaign.status).toBe("failed"); // 0 sent out of 2 processed
+
+      const recipients = await run(s.t, (ctx) =>
+        ctx.db
+          .query("campaignRecipients")
+          .withIndex("by_campaign", (q) => q.eq("campaignId", campaignId))
+          .collect(),
+      );
+      expect(recipients.every((r) => r.status === "failed")).toBe(true);
+      expect(recipients.every((r) => r.error?.includes("422"))).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ── Per-campaign sender ("send as a person") ─────────────────────────────────
+
+describe("per-campaign sender", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  test("createCampaign rejects fromEmail when Resend's from address isn't configured", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const audienceId = await seedAudience(s);
+    await expect(
+      s.as.mutation(api.campaigns.createCampaign, {
+        scope: "central",
+        name: "N",
+        subject: "Hi",
+        audienceId,
+        doc: heroDoc(),
+        fromEmail: "aj@publicworship.life",
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("createCampaign rejects a fromEmail whose domain doesn't match the org's Resend sender", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await configureResend(s); // fromAddress: "Chapter OS <os@publicworship.life>"
+    const audienceId = await seedAudience(s);
+    await expect(
+      s.as.mutation(api.campaigns.createCampaign, {
+        scope: "central",
+        name: "N",
+        subject: "Hi",
+        audienceId,
+        doc: heroDoc(),
+        fromEmail: "aj@gmail.com",
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("createCampaign accepts a matching-domain fromEmail + fromName; updateCampaignMeta can clear it back to the org default", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await configureResend(s);
+    const audienceId = await seedAudience(s);
+    const campaignId = await s.as.mutation(api.campaigns.createCampaign, {
+      scope: "central",
+      name: "N",
+      subject: "Hi",
+      audienceId,
+      doc: heroDoc(),
+      fromName: "AJ",
+      fromEmail: "aj@publicworship.life",
+    });
+    const created = await s.as.query(api.campaigns.getCampaign, { campaignId });
+    expect(created.fromName).toBe("AJ");
+    expect(created.fromEmail).toBe("aj@publicworship.life");
+
+    // null clears both fields back to "use the org default".
+    await s.as.mutation(api.campaigns.updateCampaignMeta, {
+      campaignId,
+      fromName: null,
+      fromEmail: null,
+    });
+    const cleared = await s.as.query(api.campaigns.getCampaign, { campaignId });
+    expect(cleared.fromName).toBeUndefined();
+    expect(cleared.fromEmail).toBeUndefined();
+  });
+
+  test("updateCampaignMeta rejects a mismatched-domain fromEmail", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await configureResend(s);
+    const audienceId = await seedAudience(s);
+    const campaignId = await s.as.mutation(api.campaigns.createCampaign, {
+      scope: "central",
+      name: "N",
+      subject: "Hi",
+      audienceId,
+      doc: heroDoc(),
+    });
+    await expect(
+      s.as.mutation(api.campaigns.updateCampaignMeta, {
+        campaignId,
+        fromEmail: "someone@othersite.org",
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("getSenderDefaults surfaces the org's configured from address + domain", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await configureResend(s);
+    const defaults = await s.as.query(api.campaigns.getSenderDefaults, {});
+    expect(defaults.orgFromAddress).toBe("Chapter OS <os@publicworship.life>");
+    expect(defaults.orgDomain).toBe("publicworship.life");
+  });
+
+  test("delivery uses the per-campaign sender as the From line when set, falling back to the org default otherwise", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await asSuperuser(t);
+      await configureResend(s);
+      await run(s.t, (ctx) =>
+        ctx.db.insert("people", {
+          chapterId: s.chapterId,
+          name: "Reader",
+          email: "reader@example.com",
+          status: "active",
+          createdAt: Date.now(),
+        }),
+      );
+      const audienceId = await seedAudience(s, "people");
+      const campaignId = await s.as.mutation(api.campaigns.createCampaign, {
+        scope: "central",
+        name: "N",
+        subject: "Hi",
+        audienceId,
+        doc: heroDoc(),
+        fromName: "AJ",
+        fromEmail: "aj@publicworship.life",
+      });
+
+      let lastBatch: Array<{ from: string }> = [];
+      globalThis.fetch = (async (_url: string, init?: { body?: string }) => {
+        lastBatch = init?.body ? JSON.parse(init.body) : [];
+        return { ok: true, status: 200, text: async () => "{}" };
+      }) as unknown as typeof fetch;
+
+      await s.as.mutation(api.campaigns.send, { campaignId });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      expect(lastBatch).toHaveLength(1);
+      expect(lastBatch[0].from).toBe("AJ <aj@publicworship.life>");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("sendTest also applies the per-campaign sender override", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await configureResend(s);
+    const audienceId = await seedAudience(s);
+    const campaignId = await s.as.mutation(api.campaigns.createCampaign, {
+      scope: "central",
+      name: "N",
+      subject: "Hi",
+      audienceId,
+      doc: heroDoc(),
+      fromEmail: "aj@publicworship.life", // no fromName — bare email in the From line
+    });
+
+    let capturedFrom: string | undefined;
+    globalThis.fetch = (async (_url: string, init?: { body?: string }) => {
+      const body = init?.body ? JSON.parse(init.body) : {};
+      capturedFrom = body.from;
+      return { ok: true, status: 200, text: async () => "{}" };
+    }) as unknown as typeof fetch;
+
+    await s.as.action(api.campaigns.sendTest, { campaignId, to: "preview@example.com" });
+    expect(capturedFrom).toBe("aj@publicworship.life");
+  });
+});
+
+// ── Audience cap surfaced (truncation) ───────────────────────────────────────
+
+describe("audience cap surfaced", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  test("previewAudience reports untruncated for a normal-size audience (below the 5,000 cap)", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await seedAudience(s, "people");
+    const preview = await s.as.query(api.audiences.previewAudience, {
+      scope: "central",
+      source: "people",
+      filters: {},
+    });
+    expect(preview.truncated).toBe(false);
+    expect(preview.truncatedCount).toBe(0);
+  });
+
+  test("resolveAudienceRecipients reports truncated:true + an exact truncatedCount once matches exceed the cap", async () => {
+    // `AUDIENCE_RESOLVE_LIMIT` (5,000) is too large to seed in a test, so this
+    // exercises the same cap arithmetic `previewAudience`/`resolveAudienceForSend`
+    // both call through, against a small limit passed directly — the
+    // resolver's cap logic doesn't care what the number is.
+    const t = newT();
+    const s = await asSuperuser(t);
+    await run(s.t, async (ctx) => {
+      for (let i = 0; i < 5; i++) {
+        await ctx.db.insert("people", {
+          chapterId: s.chapterId,
+          name: `Person ${i}`,
+          email: `person${i}@example.com`,
+          status: "active",
+          createdAt: Date.now(),
+        });
+      }
+    });
+    const resolution = await run(s.t, (ctx) =>
+      resolveAudienceRecipients(ctx, { scope: "central", source: "people", filters: {} }, 3),
+    );
+    expect(resolution.recipients).toHaveLength(3);
+    expect(resolution.truncated).toBe(true);
+    expect(resolution.truncatedCount).toBe(2); // 5 matches - 3 cap
+  });
+
+  test("setRecipientCount persists audienceTruncated on the campaign row", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const campaignId = await seedSendingCampaign(s);
+    await t.mutation(internal.campaigns.setRecipientCount, {
+      campaignId,
+      recipientCount: 5000,
+      audienceTruncated: true,
+    });
+    const campaign = await run(s.t, (ctx) => ctx.db.get(campaignId));
+    expect(campaign?.recipientCount).toBe(5000);
+    expect(campaign?.audienceTruncated).toBe(true);
+  });
+
+  test("materializeRecipients stores audienceTruncated:false on a normal (under-cap) send", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await asSuperuser(t);
+      await configureResend(s);
+      await run(s.t, (ctx) =>
+        ctx.db.insert("people", {
+          chapterId: s.chapterId,
+          name: "P",
+          email: "p@example.com",
+          status: "active",
+          createdAt: Date.now(),
+        }),
+      );
+      const audienceId = await seedAudience(s, "people");
+      const campaignId = await s.as.mutation(api.campaigns.createCampaign, {
+        scope: "central",
+        name: "N",
+        subject: "Hi",
+        audienceId,
+        doc: heroDoc(),
+      });
+      globalThis.fetch = (async () => ({
+        ok: true,
+        status: 200,
+        text: async () => "{}",
+      })) as unknown as typeof fetch;
+
+      await s.as.mutation(api.campaigns.send, { campaignId });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      const campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
+      expect(campaign.audienceTruncated).toBe(false);
     } finally {
       vi.useRealTimers();
     }

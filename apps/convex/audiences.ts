@@ -143,6 +143,12 @@ export const previewAudience = query({
     sample: v.array(v.object({ name: v.optional(v.string()), email: v.string() })),
     excludedSuppressed: v.number(),
     excludedUnverified: v.number(),
+    // The 5,000-recipient cap (`AUDIENCE_RESOLVE_LIMIT`), surfaced instead of
+    // silently truncated — `truncatedCount` is exact here (a live query, not
+    // a stored snapshot), unlike the campaign row's boolean-only
+    // `audienceTruncated` (see `schema/campaigns.ts`).
+    truncated: v.boolean(),
+    truncatedCount: v.number(),
   }),
   handler: async (ctx, { scope, source, filters }) => {
     await requireCampaignsAccess(ctx);
@@ -152,6 +158,8 @@ export const previewAudience = query({
       sample: resolution.recipients.slice(0, 10),
       excludedSuppressed: resolution.excludedSuppressed,
       excludedUnverified: resolution.excludedUnverified,
+      truncated: resolution.truncated,
+      truncatedCount: resolution.truncatedCount,
     };
   },
 });
@@ -167,12 +175,15 @@ export const resolveAudienceForSend = internalQuery({
   args: { audienceId: v.id("audiences") },
   returns: v.union(
     v.null(),
-    v.array(v.object({ email: v.string(), name: v.optional(v.string()) })),
+    v.object({
+      recipients: v.array(v.object({ email: v.string(), name: v.optional(v.string()) })),
+      truncated: v.boolean(),
+    }),
   ),
   handler: async (ctx, { audienceId }) => {
     const audience = await ctx.db.get(audienceId);
     if (!audience) return null;
     const resolution = await resolveAudienceRecipients(ctx, audience, AUDIENCE_RESOLVE_LIMIT);
-    return resolution.recipients;
+    return { recipients: resolution.recipients, truncated: resolution.truncated };
   },
 });

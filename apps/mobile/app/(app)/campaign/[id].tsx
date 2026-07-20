@@ -78,6 +78,8 @@ function CampaignDetailBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
     subject?: string;
     previewText?: string;
     audienceId?: Id<"audiences">;
+    fromName?: string | null;
+    fromEmail?: string | null;
   }) {
     return run(() => updateMeta({ campaignId, ...patch }), {
       errorTitle: "Couldn't save campaign",

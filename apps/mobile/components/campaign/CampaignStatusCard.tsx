@@ -1,23 +1,52 @@
 /**
  * Campaign status card — the send workflow. Renders differently per
  * `campaign.status`:
- *   draft   → Send button (confirm summarizes reach + exclusions) + a
- *             test-send row (send the current design to one address first).
+ *   draft   → Send button (confirm summarizes reach + exclusions + the
+ *             effective sender) + a test-send row (send the current design
+ *             to one address first).
  *   sending → live progress from the campaign's own counts.
  *   sent    → results (sent / failed / suppressed) + reply count.
  *   failed  → results + whatever error the send action left behind.
+ *
+ * `campaign.audienceTruncated` (set at materialize time — see
+ * `lib/audienceResolve.ts`) is a durable, boolean-only record of whether the
+ * audience hit the 5,000 cap when this was actually sent; the draft
+ * send-confirm instead uses the live `preview.truncated`/`truncatedCount`
+ * (exact, since it's a fresh query) to name how many would be left out.
  */
 import { useState } from "react";
 import { View, Text } from "react-native";
-import { useAction, useMutation } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import { Card, Button, Badge, TextField, ProgressBar, Field } from "../ui";
-import { campaignStatusLabel, campaignStatusTone, confirmAction, pluralCount, pluralReply } from "./helpers";
+import {
+  campaignStatusLabel,
+  campaignStatusTone,
+  confirmAction,
+  formatSenderDisplay,
+  pluralCount,
+  pluralReply,
+} from "./helpers";
 import type { ActionRunner } from "../../lib/useActionToast";
 
 type Campaign = NonNullable<FunctionReturnType<typeof api.campaigns.getCampaign>>;
 type PreviewResult = FunctionReturnType<typeof api.audiences.previewAudience>;
+
+/** "Audience hit the 5,000 cap when this was sent — some contacts were left
+ *  out." — shown wherever a campaign's PERSISTED `audienceTruncated` is true
+ *  (sending/sent/failed views); the exact count isn't stored (only the
+ *  boolean — see `schema/campaigns.ts`), unlike the pre-send confirm, which
+ *  reads the live, exact `preview.truncatedCount`. */
+function AudienceCapWarning({ truncated }: { truncated: boolean | undefined }) {
+  if (!truncated) return null;
+  return (
+    <Text className="mt-1 text-xs text-warn">
+      Audience hit the 5,000 cap when this was sent — some contacts were left out. Raise the
+      cap deliberately if this audience needs to reach everyone.
+    </Text>
+  );
+}
 
 export function CampaignStatusCard({
   campaign,
@@ -42,6 +71,7 @@ export function CampaignStatusCard({
           <Text className="mt-2 text-sm text-muted">
             {pluralCount(sentCount, "sent")} of {pluralCount(recipientCount, "recipient")}
           </Text>
+          <AudienceCapWarning truncated={campaign.audienceTruncated} />
         </View>
       </Card>
     );
@@ -64,6 +94,7 @@ export function CampaignStatusCard({
           {replyCount > 0 ? (
             <Text className="text-sm text-muted">{pluralReply(replyCount)} so far</Text>
           ) : null}
+          <AudienceCapWarning truncated={campaign.audienceTruncated} />
           {campaign.status === "failed" ? (
             <Text className="mt-1 text-sm text-danger">
               {campaign.error ?? "The send didn't complete. Check the campaign's audience and design, then try again."}
@@ -125,6 +156,7 @@ function DraftSendRow({
   retry?: boolean;
 }) {
   const send = useMutation(api.campaigns.send);
+  const senderDefaults = useQuery(api.campaigns.getSenderDefaults, {});
   const [sending, setSending] = useState(false);
   const hasAudience = campaign.audienceId != null;
   const hasContent = campaign.doc.blocks.length > 0;
@@ -141,9 +173,15 @@ function DraftSendRow({
       excludedBits.push(`${preview.excludedUnverified} unverified`);
     }
     const excludedNote = excludedBits.length > 0 ? ` (${excludedBits.join(", ")} excluded)` : "";
+    const senderDisplay = campaign.fromEmail
+      ? formatSenderDisplay(campaign.fromName, campaign.fromEmail)
+      : (senderDefaults?.orgFromAddress ?? "the org default sender");
+    const capNote = preview.truncated
+      ? ` Audience hit the 5,000 cap — ${pluralCount(preview.truncatedCount, "person")} left out; raise the cap deliberately.`
+      : "";
     confirmAction({
       title: retry ? "Retry sending this campaign?" : "Send campaign?",
-      message: `Sends to ${preview.count} ${preview.count === 1 ? "person" : "people"}${excludedNote}. This can't be undone.`,
+      message: `Sends to ${preview.count} ${preview.count === 1 ? "person" : "people"}${excludedNote} as ${senderDisplay}.${capNote} This can't be undone.`,
       confirmLabel: retry ? "Retry send" : "Send",
       onConfirm: () => {
         setSending(true);

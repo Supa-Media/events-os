@@ -62,8 +62,10 @@ export type ResendSendResult = { ok: boolean; status: number };
  * campaigns (`campaigns.ts`) — a plaintext alternative body, a per-campaign
  * `campaign+<id>@<inboundDomain>` reply-to, and the `List-Unsubscribe` /
  * `List-Unsubscribe-Post` headers a one-click-unsubscribe send needs.
+ * `from` is a per-send override of `settings.fromAddress` — the per-campaign
+ * "send as a person" sender (`campaigns.ts`'s `fromName`/`fromEmail`).
  * Backward compatible: every existing call site (RSVP/donation receipts,
- * blasts, verification codes) omits all three.
+ * blasts, verification codes) omits all four.
  */
 export async function sendResendEmail(
   settings: ResendSettings,
@@ -72,6 +74,7 @@ export async function sendResendEmail(
     subject,
     html,
     text,
+    from,
     replyTo,
     headers,
   }: {
@@ -79,6 +82,7 @@ export async function sendResendEmail(
     subject: string;
     html: string;
     text?: string;
+    from?: string;
     replyTo?: string;
     headers?: Record<string, string>;
   },
@@ -90,7 +94,7 @@ export async function sendResendEmail(
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      from: settings.fromAddress,
+      from: from ?? settings.fromAddress,
       to,
       subject,
       html,
@@ -104,6 +108,102 @@ export async function sendResendEmail(
     console.error(`[resend] send failed (${response.status}): ${await response.text()}`);
   }
   return { ok: response.ok, status: response.status };
+}
+
+/**
+ * One recipient's fields for `sendResendEmailBatch` — the same per-item
+ * shape a single `sendResendEmail` call takes (Resend's batch endpoint is
+ * literally an array of the same object), so per-recipient personalization
+ * (unsubscribe headers/tokens, merge-tag html/text) travels per-item exactly
+ * like it does today.
+ */
+export type ResendBatchEmail = {
+  to: string;
+  subject: string;
+  html: string;
+  text?: string;
+  from?: string;
+  replyTo?: string;
+  headers?: Record<string, string>;
+};
+
+/**
+ * Send up to 100 emails in ONE Resend API call
+ * (`POST /emails/batch` — https://resend.com/docs/api-reference/emails/send-batch-emails).
+ * Each array item carries its own `to`/`subject`/`html`/`text`/`from`/
+ * `reply_to`/`headers`, so per-recipient personalization (a distinct
+ * `List-Unsubscribe` token per address) works exactly like individual sends —
+ * Resend just accepts the whole array in one request, which is how
+ * `campaigns.ts#deliverCampaignBatch` stays comfortably under Resend's ~2
+ * requests/second default rate limit while still sending each recipient
+ * their own personalized email.
+ *
+ * Same two-failure-mode split as `sendResendEmail`, but coarser: Resend
+ * rejects a batch request WHOLESALE on any per-item validation error (a 4xx
+ * covering the whole array, not a per-item result) — so a non-2xx response
+ * here means every item in this request failed, not just one. A transport
+ * REJECTION still propagates (thrown), same as `sendResendEmail`.
+ */
+export async function sendResendEmailBatch(
+  settings: ResendSettings,
+  emails: ResendBatchEmail[],
+): Promise<ResendSendResult> {
+  const response = await fetch("https://api.resend.com/emails/batch", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${settings.apiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(
+      emails.map((e) => ({
+        from: e.from ?? settings.fromAddress,
+        to: e.to,
+        subject: e.subject,
+        html: e.html,
+        ...(e.text !== undefined ? { text: e.text } : {}),
+        ...(e.replyTo !== undefined ? { reply_to: e.replyTo } : {}),
+        ...(e.headers !== undefined ? { headers: e.headers } : {}),
+      })),
+    ),
+  });
+  if (!response.ok) {
+    console.error(`[resend] batch send failed (${response.status}): ${await response.text()}`);
+  }
+  return { ok: response.ok, status: response.status };
+}
+
+// ── Address parsing (per-campaign sender / org from-address domain) ─────────
+
+/** "Name <addr@dom>" → { name, email}; a bare address → { name: null, email
+ *  }. Loose (not a full RFC 5322 parse), same discipline as
+ *  `integrationSettings.ts`'s `normalizeFromAddress`. */
+export function parseFromAddress(raw: string): { name: string | null; email: string } {
+  const trimmed = raw.trim();
+  const match = /^(.*)<(.+)>$/.exec(trimmed);
+  if (match) {
+    const name = match[1].trim().replace(/^"|"$/g, "");
+    return { name: name || null, email: match[2].trim() };
+  }
+  return { name: null, email: trimmed };
+}
+
+/** The lowercased domain of an email address, accepting either a bare
+ *  address or the `"Name <addr@dom>"` form. `null` when it doesn't look like
+ *  an email at all. */
+export function emailDomain(raw: string): string | null {
+  const { email } = parseFromAddress(raw);
+  const at = email.lastIndexOf("@");
+  if (at === -1 || at === email.length - 1) return null;
+  return email.slice(at + 1).toLowerCase();
+}
+
+/** Build a `From:` header value from an optional display name + a bare
+ *  address — `"Name <addr>"` when a name is given, else just the bare
+ *  address. Used for the per-campaign sender override
+ *  (`campaigns.ts`'s `fromName`/`fromEmail`). */
+export function formatFromAddress(name: string | undefined | null, email: string): string {
+  const trimmed = name?.trim();
+  return trimmed ? `${trimmed} <${email}>` : email;
 }
 
 // ── Resend webhook signature verification (Svix) ─────────────────────────────

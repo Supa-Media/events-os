@@ -1,6 +1,6 @@
 /**
- * Campaign metadata — name / subject / preview text / audience. Eager
- * autosave: text fields save on blur (mirrors `template/NameEditor` +
+ * Campaign metadata — name / subject / preview text / audience / sender.
+ * Eager autosave: text fields save on blur (mirrors `template/NameEditor` +
  * `DescriptionEditor`), the audience Select saves immediately on change. The
  * audience picker shows a live recipient count next to it, so switching
  * audiences shows its impact before the caller ever hits Send.
@@ -8,6 +8,13 @@
  * `preview` (the current audience's live `previewAudience` result) is lifted
  * to the parent screen and passed in — `CampaignStatusCard`'s send-confirm
  * summary needs the exact same numbers, so there's one query, not two.
+ *
+ * "Send as" (`fromName`/`fromEmail`) is the per-campaign sender override —
+ * blank means "use the org's default Resend sender". `getSenderDefaults`
+ * supplies the org domain (for the hint text) and default address (for the
+ * "leave blank to send as…" copy); the domain match itself is enforced
+ * server-side (`campaigns.ts#validateSenderFields`) and surfaced here as a
+ * plain save error.
  *
  * Read-only once `status !== "draft"`: `updateCampaignMeta`/`updateCampaignDoc`
  * both throw `NOT_DRAFT` server-side once a send has started or finished
@@ -17,6 +24,7 @@
  */
 import { useEffect, useState } from "react";
 import { View, Text } from "react-native";
+import { useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
@@ -41,14 +49,22 @@ export function CampaignMetaCard({
     subject?: string;
     previewText?: string;
     audienceId?: Id<"audiences">;
+    fromName?: string | null;
+    fromEmail?: string | null;
   }) => Promise<unknown>;
 }) {
   const [name, setName] = useState(campaign.name);
   const [subject, setSubject] = useState(campaign.subject ?? "");
   const [previewText, setPreviewText] = useState(campaign.previewText ?? "");
+  const [fromName, setFromName] = useState(campaign.fromName ?? "");
+  const [fromEmail, setFromEmail] = useState(campaign.fromEmail ?? "");
   useEffect(() => setName(campaign.name), [campaign.name]);
   useEffect(() => setSubject(campaign.subject ?? ""), [campaign.subject]);
   useEffect(() => setPreviewText(campaign.previewText ?? ""), [campaign.previewText]);
+  useEffect(() => setFromName(campaign.fromName ?? ""), [campaign.fromName]);
+  useEffect(() => setFromEmail(campaign.fromEmail ?? ""), [campaign.fromEmail]);
+
+  const senderDefaults = useQuery(api.campaigns.getSenderDefaults, {});
 
   const editable = campaign.status === "draft";
   const selectedAudience = audiences.find((a) => a._id === campaign.audienceId) ?? null;
@@ -73,6 +89,20 @@ export function CampaignMetaCard({
 
   function savePreviewText() {
     if (previewText !== (campaign.previewText ?? "")) void onSave({ previewText });
+  }
+
+  // Blank clears back to the org default (`fromName`/`fromEmail: null`) — a
+  // server-rejected value (e.g. a mismatched domain) throws through `onSave`
+  // (the parent's `run()` surfaces it as a toast); the local field is left
+  // as typed so the caller can see and fix what they entered.
+  function saveFromName() {
+    const trimmed = fromName.trim();
+    if (trimmed !== (campaign.fromName ?? "")) void onSave({ fromName: trimmed || null });
+  }
+
+  function saveFromEmail() {
+    const trimmed = fromEmail.trim();
+    if (trimmed !== (campaign.fromEmail ?? "")) void onSave({ fromEmail: trimmed || null });
   }
 
   return (
@@ -140,8 +170,40 @@ export function CampaignMetaCard({
                   : ""}
               </Text>
             ) : null}
+            {preview.truncated ? (
+              <Text className="mt-0.5 text-xs text-warn">
+                Showing the first 5,000 — this audience matches more than the cap.
+              </Text>
+            ) : null}
           </View>
         )}
+      </Field>
+      <Field
+        label="Send as"
+        hint={
+          senderDefaults
+            ? `Must be @${senderDefaults.orgDomain ?? "your organization's domain"}. Leave blank to send as ${senderDefaults.orgFromAddress ?? "the org default"}.`
+            : undefined
+        }
+      >
+        <View className="gap-2">
+          <TextField
+            placeholder="Sender name (optional) — e.g. AJ"
+            value={fromName}
+            onChangeText={setFromName}
+            onBlur={saveFromName}
+            editable={editable}
+          />
+          <TextField
+            placeholder="Sender email (optional) — e.g. aj@yourdomain.org"
+            value={fromEmail}
+            onChangeText={setFromEmail}
+            onBlur={saveFromEmail}
+            editable={editable}
+            keyboardType="email-address"
+            autoCapitalize="none"
+          />
+        </View>
       </Field>
     </Card>
   );

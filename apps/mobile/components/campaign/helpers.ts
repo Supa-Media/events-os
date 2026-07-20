@@ -70,3 +70,15 @@ export function pluralCount(n: number, noun: string): string {
 export function pluralReply(n: number): string {
   return `${n} repl${n === 1 ? "y" : "ies"}`;
 }
+
+/** "Name <email>" when a name is given, else just the bare email — mirrors
+ *  the backend's `lib/resend.ts#formatFromAddress`, kept as a small
+ *  client-side twin so the send-confirm/status-card copy can show the exact
+ *  From line a send will actually use without a round-trip. */
+export function formatSenderDisplay(
+  name: string | null | undefined,
+  email: string,
+): string {
+  const trimmed = name?.trim();
+  return trimmed ? `${trimmed} <${email}>` : email;
+}

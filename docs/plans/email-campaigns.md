@@ -37,7 +37,10 @@ Three sources, resolved live with counts before any send:
 - **people** — chapter roster, active, non-placeholder, `pwEmail ?? email`.
 
 Every source drops suppressed addresses (`emailSuppressions`) and reports
-`excludedSuppressed` / `excludedUnverified` in the preview.
+`excludedSuppressed` / `excludedUnverified` in the preview, plus `truncated`
+/ `truncatedCount` when the audience exceeds the 5,000-recipient cap (see
+"Deliberate limits" below) — the preview says "showing the first 5,000"
+rather than silently under-counting.
 
 ## The designer
 
@@ -52,15 +55,38 @@ can't inject markup.
 ## Sending
 
 `campaigns.send` → materialize `campaignRecipients` (batches of 100, one
-random unsubscribe token per row) → self-rescheduling delivery batches of
-25 via the `by_campaign_and_status` index. Per recipient: suppression
+random unsubscribe token per row; also records `audienceTruncated` — see
+"Deliberate limits") → self-rescheduling delivery batches of up to 100 via
+the `by_campaign_and_status` index. Each batch is ONE Resend request
+(`POST /emails/batch`, `lib/resend.ts#sendResendEmailBatch`) carrying every
+recipient's personalized item (own `to`/html/text/headers/reply-to) — the
+same per-recipient personalization as an individual send, just one HTTP
+round trip for up to 100 of them. Batches are paced ~600ms apart
+(`applyDeliveryBatch`'s continuation) to stay comfortably under Resend's
+default ~2 requests/second rate limit; a 5,000-recipient send is ~50
+requests, well under a minute of pacing. Per recipient: suppression
 recheck, personalized HTML + plaintext, `List-Unsubscribe` +
 `List-Unsubscribe-Post: List-Unsubscribe=One-Click` headers, visible
 footer unsubscribe link (`/unsubscribe/<token>`) and the org's mailing
 address (CAN-SPAM). Reply-To is `campaign+<id>@<resendInboundDomain>` when
-inbound is configured. Non-2xx Resend responses mark that one recipient
-failed; transport failures throw and are recorded — a full outage can
+inbound is configured. A non-2xx Resend response marks EVERY recipient in
+that request's batch failed (Resend rejects a batch request wholesale on
+any per-item validation error — there's no per-item result on failure);
+transport failures throw and are recorded the same way — a full outage can
 never read as "sent". Test sends go to any address with `[Test]` prefixed.
+
+**Sender ("send as a person").** A campaign can optionally set `fromName`/
+`fromEmail` (`CampaignMetaCard`'s "Send as" section) to send as a named
+person instead of the org's default Resend sender — e.g. `AJ
+<aj@publicworship.life>`. `fromEmail`, when set, must be a bare address on
+the SAME domain as the org's configured Resend from address
+(`campaigns.ts#validateSenderFields`); setting one before Resend itself is
+configured is rejected with a message pointing at Profile → Integrations.
+Leaving both blank (the default) sends as the org's address, unchanged.
+Both the real send and `sendTest` apply the same override
+(`lib/resend.ts#formatFromAddress` → `sendResendEmail`/`sendResendEmailBatch`'s
+`from` param); the send-confirm dialog and status card both show the
+effective sender before/after sending.
 
 ## Suppression & webhooks
 
@@ -71,7 +97,15 @@ never read as "sent". Test sends go to any address with `[Test]` prefixed.
   `email.bounced`/`email.complained` → suppression (reasons
   `bounce`/`complaint`); inbound received → `emailReplies` matched by the
   `campaign+<id>` plus-address (unmatched replies still land in the
-  org-wide Replies inbox).
+  org-wide Replies inbox). When a matched reply's campaign has `fromEmail`
+  set, the webhook also SCHEDULES (never awaits inline, to keep the webhook
+  fast) a best-effort forward (`internal.campaigns.forwardReplyToSender`) of
+  the reply to that address — subject `Re: <campaign subject> — reply from
+  <replier>`, plaintext+HTML body containing the reply text with the
+  replier's address prominent, and `Reply-To` set to the REPLIER (not the
+  campaign) so hitting reply in Gmail goes straight to the guest. Forward
+  failures (no Resend configured, a transport error) are caught and logged,
+  never surfaced to the webhook caller or retried.
 - Suppressions also apply to event **blasts** (`blasts.ts`) — one
   do-not-email ledger for the whole app.
 
@@ -99,6 +133,24 @@ Google's apex records.
 2. Webhooks: add endpoint `https://<prod>.convex.site/resend/webhook`,
    subscribe to bounced/complained/inbound events, paste the `whsec_…`
    signing secret into Integrations.
+
+**Which Resend plan.** Only the **Transactional** plan, ever — Resend's
+separate "Marketing" product is their hosted audience/broadcast tool,
+priced per contact stored with them; our audiences/campaigns live in
+Convex and every send goes through the transactional API, billed per
+email. Free tier works for setup/testing but caps at 100 emails/day;
+upgrade to Transactional Pro ($20/mo, 50k emails/mo, no daily cap) before
+the first real campaign. While upgrading, note the account's rate limit
+(default ~2 req/s) — `campaigns.ts#DELIVER_BATCH_PACING_MS` is tuned to it.
+
+**First-campaign smoke test (one-time).** Before the first real send, run
+a campaign to a 2–3 address test audience (your own inboxes) and check in
+Gmail's "Show original": the per-recipient `List-Unsubscribe` /
+`List-Unsubscribe-Post` headers are present and each recipient's
+unsubscribe link is distinct. This validates the one unverified Resend
+assumption in the batch path (per-item `headers`/`reply_to`/`from` support
+on `POST /emails/batch`); if headers are missing, flag it — the delivery
+code would need to fall back to individual sends.
 3. Inbound/replies: add `reply.publicworship.life` as the inbound domain
    (one MX record on that subdomain only → Resend), set it as the inbound
    domain in Integrations. Until then, campaigns send without a custom
@@ -119,8 +171,15 @@ Google's apex records.
 - Merge fields are name-only. Gift amounts in email copy were considered
   and rejected (wrong-amount risk beats personalization value); segment
   with `gaveWithinDays` instead.
-- Audience resolution caps at 5,000 recipients per send; delivery is
-  25/batch. Raise deliberately, with Resend rate limits in mind.
+- Audience resolution caps at 5,000 recipients per send (`AUDIENCE_RESOLVE_LIMIT`,
+  `lib/audienceResolve.ts`) — surfaced, not silent: `truncated`/`truncatedCount`
+  come back from `previewAudience` (exact, live) and `audienceTruncated`
+  (boolean, a durable record of what was true at send time) is stored on the
+  campaign row at materialize time; the composer preview, send-confirm, and
+  status card all show a warning when it binds. Delivery batches at up to
+  100 recipients per Resend request, paced ~600ms apart — comfortably under
+  Resend's default rate limit with room for other Resend traffic the
+  deployment sends concurrently. Raise either cap deliberately.
 - No open/click tracking yet — Resend webhooks carry these events, so it's
   an additive follow-up on the same webhook route.
 - Campaigns is for announcements/newsletters, not personal outreach — the

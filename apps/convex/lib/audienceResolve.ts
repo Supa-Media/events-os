@@ -9,9 +9,16 @@
  * these can be large tables. `AUDIENCE_RESOLVE_LIMIT` is the overall
  * recipient cap for both preview and send: a preview's `count` and a real
  * send's recipient list are both capped at this number, documented rather
- * than silently truncated. Suppressed addresses (`emailSuppressions`) are
- * ALWAYS dropped, and the raw source rows are ALWAYS deduped by normalized
- * email before that cap is applied.
+ * than silently truncated (`AudienceResolution.truncated`/`truncatedCount`).
+ * Suppressed addresses (`emailSuppressions`) are ALWAYS dropped, and the raw
+ * source rows are ALWAYS deduped by normalized email before that cap is
+ * applied — the per-source resolvers (`resolveGuests`/`resolveDonors`/
+ * `resolvePeople`) themselves are NOT limit-aware; they run to completion
+ * against their own already-bounded per-chapter/per-scope sub-limits
+ * (`EVENTS_PER_CHAPTER_LIMIT` etc. below), and `resolveAudienceRecipients`
+ * applies `AUDIENCE_RESOLVE_LIMIT` once, at the very end, against the full
+ * deduped+suppression-filtered set — the only way to report an honest
+ * `truncatedCount` instead of an early-exit guess.
  */
 import type { Infer } from "convex/values";
 import type { Doc, Id } from "../_generated/dataModel";
@@ -39,6 +46,13 @@ export interface AudienceResolution {
   /** Guests only: how many matching RSVPs were dropped for
    *  `emailVerified === false`. Always 0 for donors/people. */
   excludedUnverified: number;
+  /** True when the deduped, suppression-filtered match count exceeded
+   *  `limit` and `recipients` was truncated to it — surfaced (not silent) so
+   *  a send/preview against an audience bigger than the cap says so. */
+  truncated: boolean;
+  /** How many otherwise-matching recipients were left out solely because of
+   *  the cap (0 when `truncated` is false). */
+  truncatedCount: number;
 }
 
 /** The overall recipient cap applied to both preview and send resolution —
@@ -88,7 +102,6 @@ async function resolveGuestEventIds(
 async function resolveGuests(
   ctx: QueryCtx,
   filters: AudienceFilters,
-  limit: number,
 ): Promise<{ raw: ResolvedRecipient[]; excludedUnverified: number }> {
   const eventIds = await resolveGuestEventIds(ctx, filters);
   const byEmail = new Map<string, { name?: string; updatedAt: number }>();
@@ -111,7 +124,6 @@ async function resolveGuests(
         byEmail.set(email, { name: r.name, updatedAt: r.updatedAt });
       }
     }
-    if (byEmail.size >= limit) break;
   }
   return {
     raw: [...byEmail.entries()].map(([email, v]) => ({ email, name: v.name })),
@@ -139,7 +151,6 @@ async function targetDonorScopes(
 async function resolveDonors(
   ctx: QueryCtx,
   audience: { scope: AudienceScope; filters: AudienceFilters },
-  limit: number,
 ): Promise<ResolvedRecipient[]> {
   const scopes = await targetDonorScopes(ctx, audience);
   const { donorStatus, gaveWithinDays } = audience.filters;
@@ -182,7 +193,6 @@ async function resolveDonors(
       if (!email || byEmail.has(email)) continue;
       byEmail.set(email, { email, name: d.name });
     }
-    if (byEmail.size >= limit) break;
   }
   return [...byEmail.values()];
 }
@@ -192,7 +202,6 @@ async function resolveDonors(
 async function resolvePeople(
   ctx: QueryCtx,
   filters: AudienceFilters,
-  limit: number,
 ): Promise<ResolvedRecipient[]> {
   const chapterIds = await targetChapterIds(ctx, filters);
   const byEmail = new Map<string, ResolvedRecipient>();
@@ -209,7 +218,6 @@ async function resolvePeople(
       if (!email || byEmail.has(email)) continue;
       byEmail.set(email, { email, name: p.name });
     }
-    if (byEmail.size >= limit) break;
   }
   return [...byEmail.values()];
 }
@@ -230,26 +238,29 @@ export async function resolveAudienceRecipients(
   let excludedUnverified = 0;
 
   if (audience.source === "guests") {
-    const result = await resolveGuests(ctx, audience.filters, limit);
+    const result = await resolveGuests(ctx, audience.filters);
     raw = result.raw;
     excludedUnverified = result.excludedUnverified;
   } else if (audience.source === "donors") {
-    raw = await resolveDonors(ctx, audience, limit);
+    raw = await resolveDonors(ctx, audience);
   } else {
-    raw = await resolvePeople(ctx, audience.filters, limit);
+    raw = await resolvePeople(ctx, audience.filters);
   }
 
   const suppressed = await suppressedEmailSet(ctx);
-  const recipients: ResolvedRecipient[] = [];
+  const filtered: ResolvedRecipient[] = [];
   let excludedSuppressed = 0;
   for (const r of raw) {
     if (suppressed.has(r.email)) {
       excludedSuppressed++;
       continue;
     }
-    recipients.push(r);
-    if (recipients.length >= limit) break;
+    filtered.push(r);
   }
 
-  return { recipients, excludedSuppressed, excludedUnverified };
+  const truncated = filtered.length > limit;
+  const truncatedCount = truncated ? filtered.length - limit : 0;
+  const recipients = truncated ? filtered.slice(0, limit) : filtered;
+
+  return { recipients, excludedSuppressed, excludedUnverified, truncated, truncatedCount };
 }

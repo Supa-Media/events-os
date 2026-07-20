@@ -11,16 +11,29 @@
  * `audiences.ts#resolveAudienceForSend` and writes one `campaignRecipients`
  * row per address in batches of 100, the house `backfillGiftsFromDonations`
  * slice pattern; `setRecipientCount`, its final write, schedules the first
- * `deliverCampaignBatch` itself) → `deliverCampaignBatch` (an internalAction)
- * sends 25 at a time; `applyDeliveryBatch`, the mutation that persists each
- * batch's results, ATOMICALLY decides — in the same transaction — whether to
- * schedule the next batch (more "queued" rows remain) or finalize the
- * campaign (`completeCampaignSend`) right there. Every continuation is
- * scheduled from a mutation, never from the action after the fact, so a crash
- * between "recorded the write" and "scheduled what's next" can't happen — see
+ * `deliverCampaignBatch` itself, and also records `audienceTruncated` — see
+ * `lib/audienceResolve.ts`) → `deliverCampaignBatch` (an internalAction)
+ * sends up to `DELIVER_BATCH_SIZE` (100) recipients per invocation as ONE
+ * Resend batch request (`lib/resend.ts#sendResendEmailBatch`); `applyDeliveryBatch`,
+ * the mutation that persists each batch's results, ATOMICALLY decides — in
+ * the same transaction — whether to schedule the next batch ~600ms later
+ * (more "queued" rows remain, paced to stay under Resend's default ~2
+ * requests/second rate limit) or finalize the campaign
+ * (`completeCampaignSend`) right there. Every continuation is scheduled from
+ * a mutation, never from the action after the fact, so a crash between
+ * "recorded the write" and "scheduled what's next" can't happen — see
  * `applyDeliveryBatch`'s doc. A safety-net cron (`crons.ts`) reschedules any
  * "sending" campaign that's gone quiet (a crash mid-action, before it ever
  * reaches a mutation, is the one gap that leaves nothing scheduled).
+ *
+ * Per-campaign sender ("send as a person"): `fromName`/`fromEmail`
+ * (`schema/campaigns.ts`), validated at write time by `validateSenderFields`
+ * — `fromEmail`, when set, must be a bare address on the SAME domain as the
+ * org's configured Resend from address (`getSenderDefaults` surfaces that
+ * domain to the UI). `deliverCampaignBatch`/`sendTest` build the `From:`
+ * header via `lib/resend.ts#formatFromAddress` and pass it as `sendResendEmail`/
+ * `sendResendEmailBatch`'s `from` override, falling back to the org default
+ * when unset.
  *
  * `sendTest` is a synchronous action (not a scheduled send) — it renders
  * against the caller's own name/email and a dummy unsubscribe URL, and sends
@@ -43,7 +56,14 @@ import { Doc, Id } from "./_generated/dataModel";
 import { requireUserId } from "./lib/context";
 import { requireCampaignsAccess } from "./lib/campaignsAccess";
 import { siteUrl } from "./lib/siteUrl";
-import { resolveResendSettings, sendResendEmail } from "./lib/resend";
+import {
+  emailDomain,
+  formatFromAddress,
+  resolveResendSettings,
+  sendResendEmail,
+  sendResendEmailBatch,
+} from "./lib/resend";
+import { escapeHtml } from "./lib/html";
 import { newGuestToken } from "./ticketing";
 import {
   renderCampaignEmail,
@@ -82,6 +102,96 @@ export const getCampaign = query({
   },
 });
 
+// ── Per-campaign sender ("send as a person") ──────────────────────────────
+
+/** A `From:`/`fromName` value must never carry a header-breaking character —
+ *  both are interpolated straight into an email header (`formatFromAddress`
+ *  → `sendResendEmail`'s `from`). */
+const HEADER_UNSAFE_RE = /[\r\n<>]/;
+
+/** Resolve the org's currently configured Resend from-address (the in-app
+ *  setting, else the `AUTH_EMAIL_FROM` env var) — NOT the hardcoded
+ *  `lib/resend.ts` fallback, which isn't a deliberate org choice and
+ *  shouldn't anchor what domain a per-campaign sender is allowed to use.
+ *  `undefined` means "nothing configured yet". */
+async function resolveOrgFromAddress(ctx: MutationCtx): Promise<string | undefined> {
+  const settings = await ctx.db.query("integrationSettings").first();
+  return settings?.resendFromAddress ?? process.env.AUTH_EMAIL_FROM;
+}
+
+/**
+ * Validate + normalize the optional per-campaign sender fields. `fromName`
+ * just needs to be header-safe. `fromEmail`, when non-blank, must be a BARE
+ * address (no "Name <addr>" wrapper — `fromName` is the separate display-name
+ * field) whose domain matches the org's configured Resend from-address domain
+ * EXACTLY; if the org hasn't configured one at all, setting `fromEmail` is
+ * rejected with a message pointing at Profile → Integrations rather than
+ * silently accepting an address with nothing to validate it against. Passing
+ * either field as an empty/blank string clears it (reverts to the org
+ * default at send time).
+ */
+async function validateSenderFields(
+  ctx: MutationCtx,
+  fromName: string | undefined,
+  fromEmail: string | undefined,
+): Promise<{ fromName?: string; fromEmail?: string }> {
+  const trimmedName = fromName?.trim() || undefined;
+  if (trimmedName && HEADER_UNSAFE_RE.test(trimmedName)) {
+    throw new ConvexError({
+      code: "INVALID_ARGUMENT",
+      message: "Sender name can't contain line breaks or angle brackets.",
+    });
+  }
+
+  const trimmedEmail = fromEmail?.trim() || undefined;
+  if (!trimmedEmail) {
+    return { fromName: trimmedName, fromEmail: undefined };
+  }
+  if (HEADER_UNSAFE_RE.test(trimmedEmail) || trimmedEmail.split("@").length !== 2) {
+    throw new ConvexError({
+      code: "INVALID_ARGUMENT",
+      message: "Sender email must be a bare address, e.g. aj@publicworship.life.",
+    });
+  }
+
+  const orgFrom = await resolveOrgFromAddress(ctx);
+  if (!orgFrom) {
+    throw new ConvexError({
+      code: "NOT_CONFIGURED",
+      message:
+        "Configure Resend's from address first (Profile → Integrations) before setting a per-campaign sender.",
+    });
+  }
+  const orgDomain = emailDomain(orgFrom);
+  const candidateDomain = emailDomain(trimmedEmail);
+  if (!orgDomain || !candidateDomain || candidateDomain !== orgDomain) {
+    throw new ConvexError({
+      code: "INVALID_ARGUMENT",
+      message: `Sender email must be @${orgDomain ?? "your organization's domain"}, matching your Resend sender.`,
+    });
+  }
+  return { fromName: trimmedName, fromEmail: trimmedEmail };
+}
+
+/** Non-secret defaults the composer UI needs to render the "Send as" section
+ *  (the hint text's domain, and the org default sender to show when a
+ *  campaign has no override) — gated the same as everything else here
+ *  (`requireCampaignsAccess`, NOT superuser-only; the from-address itself is
+ *  already surfaced in full by `getIntegrationsStatus`, per that file's doc). */
+export const getSenderDefaults = query({
+  args: {},
+  returns: v.object({
+    orgFromAddress: v.union(v.string(), v.null()),
+    orgDomain: v.union(v.string(), v.null()),
+  }),
+  handler: async (ctx) => {
+    await requireCampaignsAccess(ctx);
+    const settings = await ctx.db.query("integrationSettings").first();
+    const orgFrom = settings?.resendFromAddress ?? process.env.AUTH_EMAIL_FROM ?? null;
+    return { orgFromAddress: orgFrom, orgDomain: orgFrom ? emailDomain(orgFrom) : null };
+  },
+});
+
 export const createCampaign = mutation({
   args: {
     scope: scopeValidator,
@@ -90,8 +200,13 @@ export const createCampaign = mutation({
     previewText: v.optional(v.string()),
     audienceId: v.id("audiences"),
     doc: v.any(),
+    fromName: v.optional(v.string()),
+    fromEmail: v.optional(v.string()),
   },
-  handler: async (ctx, { scope, name, subject, previewText, audienceId, doc }) => {
+  handler: async (
+    ctx,
+    { scope, name, subject, previewText, audienceId, doc, fromName, fromEmail },
+  ) => {
     await requireCampaignsAccess(ctx);
     const userId = (await requireUserId(ctx)) as Id<"users">;
 
@@ -111,6 +226,7 @@ export const createCampaign = mutation({
     if (!validated.ok) {
       throw new ConvexError({ code: "INVALID_DOC", message: validated.error });
     }
+    const sender = await validateSenderFields(ctx, fromName, fromEmail);
 
     const now = Date.now();
     return await ctx.db.insert("campaigns", {
@@ -121,6 +237,8 @@ export const createCampaign = mutation({
       audienceId,
       doc: validated.doc,
       status: "draft",
+      fromName: sender.fromName,
+      fromEmail: sender.fromEmail,
       createdBy: userId,
       createdAt: now,
       updatedAt: now,
@@ -147,8 +265,16 @@ export const updateCampaignMeta = mutation({
     subject: v.optional(v.string()),
     previewText: v.optional(v.union(v.string(), v.null())),
     audienceId: v.optional(v.id("audiences")),
+    // `null` clears the field (reverts to the org default sender);
+    // `undefined` leaves it unchanged — the `previewText` null-sentinel
+    // convention.
+    fromName: v.optional(v.union(v.string(), v.null())),
+    fromEmail: v.optional(v.union(v.string(), v.null())),
   },
-  handler: async (ctx, { campaignId, name, subject, previewText, audienceId }) => {
+  handler: async (
+    ctx,
+    { campaignId, name, subject, previewText, audienceId, fromName, fromEmail },
+  ) => {
     await requireCampaignsAccess(ctx);
     const existing = await ctx.db.get(campaignId);
     if (!existing) {
@@ -178,6 +304,18 @@ export const updateCampaignMeta = mutation({
         throw new ConvexError({ code: "NOT_FOUND", message: "Audience not found." });
       }
       patch.audienceId = audienceId;
+    }
+    if (fromName !== undefined || fromEmail !== undefined) {
+      // Re-validate the COMBINED effective value — a change to just one of
+      // the pair still needs the other's current value to build a correct
+      // `From:` line, and `fromEmail`'s domain check runs off whichever
+      // value is now in play.
+      const nextFromName = fromName === undefined ? existing.fromName : (fromName ?? undefined);
+      const nextFromEmail =
+        fromEmail === undefined ? existing.fromEmail : (fromEmail ?? undefined);
+      const sender = await validateSenderFields(ctx, nextFromName, nextFromEmail);
+      patch.fromName = sender.fromName;
+      patch.fromEmail = sender.fromEmail;
     }
     await ctx.db.patch(campaignId, patch);
     return null;
@@ -258,12 +396,18 @@ export const sendTest = action({
     // materializes a real `campaignRecipients` row/token.
     const unsubscribeUrl = `${siteUrl()}/unsubscribe/test`;
     const renderOpts = { recipient, unsubscribeUrl, orgAddress: mailSettings.orgMailingAddress };
+    // The per-campaign sender, when set — same override the real send uses,
+    // so a test send previews the actual From line too.
+    const fromOverride = campaign.fromEmail
+      ? formatFromAddress(campaign.fromName, campaign.fromEmail)
+      : undefined;
 
     const sendResult = await sendResendEmail(settings, {
       to,
       subject: `[Test] ${campaign.subject}`,
       html: renderCampaignEmail(validated.doc, renderOpts),
       text: renderCampaignText(validated.doc, renderOpts),
+      from: fromOverride,
     });
     if (!sendResult.ok) {
       // A test send is interactive — surface the rejection to the composer
@@ -380,17 +524,26 @@ export const insertRecipientBatch = internalMutation({
   },
 });
 
-/** Record the resolved recipient count AND schedule the first
- *  `deliverCampaignBatch` invocation in the SAME mutation — scheduling from a
- *  mutation commits atomically with its writes, so a crash right after this
- *  call can never leave the campaign materialized-but-never-started (the
- *  `applyDeliveryBatch` doc below has the full rationale; this is the
- *  materialize-side half of the same fix). */
+/** Record the resolved recipient count (+ whether the audience was truncated
+ *  at the `AUDIENCE_RESOLVE_LIMIT` cap — `lib/audienceResolve.ts`) AND
+ *  schedule the first `deliverCampaignBatch` invocation in the SAME mutation
+ *  — scheduling from a mutation commits atomically with its writes, so a
+ *  crash right after this call can never leave the campaign
+ *  materialized-but-never-started (the `applyDeliveryBatch` doc below has the
+ *  full rationale; this is the materialize-side half of the same fix). */
 export const setRecipientCount = internalMutation({
-  args: { campaignId: v.id("campaigns"), recipientCount: v.number() },
+  args: {
+    campaignId: v.id("campaigns"),
+    recipientCount: v.number(),
+    audienceTruncated: v.boolean(),
+  },
   returns: v.null(),
-  handler: async (ctx, { campaignId, recipientCount }) => {
-    await ctx.db.patch(campaignId, { recipientCount, updatedAt: Date.now() });
+  handler: async (ctx, { campaignId, recipientCount, audienceTruncated }) => {
+    await ctx.db.patch(campaignId, {
+      recipientCount,
+      audienceTruncated,
+      updatedAt: Date.now(),
+    });
     await ctx.scheduler.runAfter(0, internal.campaigns.deliverCampaignBatch, {
       campaignId,
     });
@@ -443,10 +596,10 @@ export const materializeRecipients = internalAction({
       if (deleted === 0) break;
     }
 
-    const recipients = await ctx.runQuery(internal.audiences.resolveAudienceForSend, {
+    const resolution = await ctx.runQuery(internal.audiences.resolveAudienceForSend, {
       audienceId: campaign.audienceId,
     });
-    if (!recipients || recipients.length === 0) {
+    if (!resolution || resolution.recipients.length === 0) {
       await ctx.runMutation(internal.campaigns.finishCampaignSend, {
         campaignId,
         zeroRecipientsError: "No recipients matched this audience.",
@@ -454,6 +607,7 @@ export const materializeRecipients = internalAction({
       return null;
     }
 
+    const { recipients, truncated } = resolution;
     for (let i = 0; i < recipients.length; i += MATERIALIZE_BATCH_SIZE) {
       await ctx.runMutation(internal.campaigns.insertRecipientBatch, {
         campaignId,
@@ -463,6 +617,7 @@ export const materializeRecipients = internalAction({
     await ctx.runMutation(internal.campaigns.setRecipientCount, {
       campaignId,
       recipientCount: recipients.length,
+      audienceTruncated: truncated,
     });
     return null;
   },
@@ -470,7 +625,21 @@ export const materializeRecipients = internalAction({
 
 // ── deliver ───────────────────────────────────────────────────────────────
 
-const DELIVER_BATCH_SIZE = 25;
+// Resend's batch endpoint accepts up to 100 items per request; matching this
+// exactly means one action invocation == one Resend API call, keeping
+// `deliverCampaignBatch` simple (no sub-batching within an invocation) while
+// still comfortably clearing Resend's default ~2 requests/second rate limit
+// with the ~600ms pacing between invocations (`applyDeliveryBatch`'s
+// continuation, below) — a 5,000-recipient send is ~50 requests, under a
+// minute of wall-clock pacing.
+const DELIVER_BATCH_SIZE = 100;
+
+/** Delay between successive `deliverCampaignBatch` invocations of the SAME
+ *  campaign (`applyDeliveryBatch`'s continuation, below) — one Resend batch
+ *  request per invocation, so this alone paces the whole send comfortably
+ *  under Resend's default ~2 requests/second rate limit (with headroom for
+ *  any other Resend traffic the deployment sends concurrently). */
+const DELIVER_BATCH_PACING_MS = 600;
 
 /** Up to `DELIVER_BATCH_SIZE` still-"queued" recipients for a campaign, plus
  *  the campaign row itself (subject/doc). An empty `rows` array is the
@@ -574,7 +743,9 @@ export const applyDeliveryBatch = internalMutation({
       )
       .take(1);
     if (stillQueued.length > 0) {
-      await ctx.scheduler.runAfter(0, internal.campaigns.deliverCampaignBatch, { campaignId });
+      await ctx.scheduler.runAfter(DELIVER_BATCH_PACING_MS, internal.campaigns.deliverCampaignBatch, {
+        campaignId,
+      });
     } else {
       await completeCampaignSend(ctx, campaignId);
     }
@@ -707,6 +878,34 @@ export const deliverCampaignBatch = internalAction({
       error?: string;
     }[] = [];
 
+    // The per-campaign sender override, when set — same value for every
+    // recipient in this batch (it's a campaign-level field), unlike the
+    // per-recipient unsubscribe token/headers below.
+    const fromOverride = campaign.fromEmail
+      ? formatFromAddress(campaign.fromName, campaign.fromEmail)
+      : undefined;
+    const replyTo = mailSettings.resendInboundDomain
+      ? `campaign+${campaign._id}@${mailSettings.resendInboundDomain}`
+      : undefined;
+
+    // Build the personalized batch — each item keeps its own unsubscribe
+    // token/URL and `List-Unsubscribe` header even though they all travel in
+    // ONE Resend request (`sendResendEmailBatch`'s per-item shape). Rows that
+    // fail a pre-flight check (suppressed, invalid doc, Resend unconfigured)
+    // never make it into the batch at all — recorded directly instead.
+    const toSend: {
+      recipientId: Id<"campaignRecipients">;
+      email: {
+        to: string;
+        subject: string;
+        html: string;
+        text: string;
+        from?: string;
+        replyTo?: string;
+        headers: Record<string, string>;
+      };
+    }[] = [];
+
     for (const row of rows) {
       if (suppressedNow.has(row.email)) {
         results.push({ recipientId: row._id, outcome: "suppressed" });
@@ -736,36 +935,50 @@ export const deliverCampaignBatch = internalAction({
         unsubscribeUrl,
         orgAddress: mailSettings.orgMailingAddress,
       };
-      const replyTo = mailSettings.resendInboundDomain
-        ? `campaign+${campaign._id}@${mailSettings.resendInboundDomain}`
-        : undefined;
 
-      try {
-        const sendResult = await sendResendEmail(resendSettings, {
+      toSend.push({
+        recipientId: row._id,
+        email: {
           to: row.email,
           subject: campaign.subject,
           html: renderCampaignEmail(validated.doc, renderOpts),
           text: renderCampaignText(validated.doc, renderOpts),
+          from: fromOverride,
           replyTo,
           headers: {
             "List-Unsubscribe": `<${unsubscribeUrl}>`,
             "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
           },
-        });
-        // `sendResendEmail` only THROWS on transport failures; an ordinary
-        // non-2xx (bad address, rate limit) comes back as {ok:false} and
-        // must be counted as a failed recipient, not a sent one.
-        results.push(
-          sendResult.ok
-            ? { recipientId: row._id, outcome: "sent" as const }
-            : {
-                recipientId: row._id,
-                outcome: "failed" as const,
-                error: `Resend responded ${sendResult.status}`,
-              },
+        },
+      });
+    }
+
+    if (toSend.length > 0 && resendSettings) {
+      // `sendResendEmailBatch` only THROWS on transport failures; an
+      // ordinary non-2xx comes back as `{ok:false}` — and Resend rejects the
+      // WHOLE batch request on any per-item validation error (no per-item
+      // result on failure), so a non-2xx here means every recipient in THIS
+      // batch failed, not just one.
+      try {
+        const batchResult = await sendResendEmailBatch(
+          resendSettings,
+          toSend.map((s) => s.email),
         );
+        for (const s of toSend) {
+          results.push(
+            batchResult.ok
+              ? { recipientId: s.recipientId, outcome: "sent" as const }
+              : {
+                  recipientId: s.recipientId,
+                  outcome: "failed" as const,
+                  error: `Resend responded ${batchResult.status}`,
+                },
+          );
+        }
       } catch (err) {
-        results.push({ recipientId: row._id, outcome: "failed", error: String(err) });
+        for (const s of toSend) {
+          results.push({ recipientId: s.recipientId, outcome: "failed", error: String(err) });
+        }
       }
     }
 
@@ -907,6 +1120,73 @@ export const recordInboundReply = internalMutation({
       if (campaign) {
         await ctx.db.patch(campaignId, { replyCount: (campaign.replyCount ?? 0) + 1 });
       }
+    }
+    return null;
+  },
+});
+
+/**
+ * Best-effort forward of an inbound reply to the campaign's per-campaign
+ * sender (`fromEmail`), when one is set — scheduled by `http.ts`'s
+ * `/resend/webhook` route right after `recordInboundReply` commits, so the
+ * webhook handler itself stays fast (one write + one `ctx.scheduler` call,
+ * no outbound Resend call inline). No-ops (never throws) when the campaign
+ * has no `fromEmail`, or Resend isn't configured — a forward is a
+ * nice-to-have layered on top of an already-recorded reply, and must never
+ * turn into a Resend webhook retry storm the way a thrown error here would
+ * (Resend retries non-2xx webhook responses; this action runs AFTER the
+ * webhook has already responded, but the discipline — catch and log,
+ * never throw — matches every other best-effort path in this route).
+ *
+ * `replyTo` is set to the REPLIER's address, not the campaign's, so hitting
+ * "reply" in the recipient's mail client goes straight to the guest — the
+ * whole point of the forward.
+ */
+export const forwardReplyToSender = internalAction({
+  args: {
+    campaignId: v.id("campaigns"),
+    replyFromEmail: v.string(),
+    replyFromName: v.optional(v.string()),
+    replyText: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, { campaignId, replyFromEmail, replyFromName, replyText }) => {
+    try {
+      const campaign = await ctx.runQuery(internal.campaigns.getCampaignInternal, {
+        campaignId,
+      });
+      if (!campaign?.fromEmail) return null; // no per-campaign sender to forward to
+
+      const settings = await resolveResendSettings(ctx);
+      if (!settings) return null; // Resend isn't connected — can't forward either
+
+      const replierLabel = replyFromName ? `${replyFromName} <${replyFromEmail}>` : replyFromEmail;
+      const body = truncateBody(replyText, INBOUND_TEXT_BODY_LIMIT)?.trim() || "(no message body)";
+      const text = [
+        `${replierLabel} replied to "${campaign.subject}":`,
+        "",
+        body,
+        "",
+        "—",
+        `Reply to this email to respond directly to ${replierLabel}.`,
+      ].join("\n");
+      const html =
+        `<p><strong>${escapeHtml(replierLabel)}</strong> replied to "${escapeHtml(campaign.subject)}":</p>` +
+        `<p style="white-space:pre-wrap">${escapeHtml(body)}</p>` +
+        `<p>Reply to this email to respond directly to ${escapeHtml(replierLabel)}.</p>`;
+
+      // Sent from the ORG's Resend settings (not the campaign's custom
+      // sender) — this is mail TO the campaign's fromEmail person, not FROM
+      // them.
+      await sendResendEmail(settings, {
+        to: campaign.fromEmail,
+        subject: `Re: ${campaign.subject} — reply from ${replierLabel}`,
+        html,
+        text,
+        replyTo: replyFromEmail,
+      });
+    } catch (err) {
+      console.error("[campaigns] failed to forward reply to sender", err);
     }
     return null;
   },

@@ -312,6 +312,11 @@ function AudiencePreviewCard({ preview }: { preview: PreviewResult | undefined }
             : ""}
         </Text>
       ) : null}
+      {preview.truncated ? (
+        <Text className="mt-0.5 text-xs text-warn">
+          Showing the first 5,000 — this audience matches more than the cap.
+        </Text>
+      ) : null}
       {preview.sample.length > 0 ? (
         <View className="mt-2 gap-1">
           {preview.sample.slice(0, 5).map((p: { name?: string | null; email: string }, i: number) => (

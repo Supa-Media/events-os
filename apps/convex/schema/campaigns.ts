@@ -21,9 +21,11 @@ import { DONOR_STATUSES } from "./givingPlatform";
  * "sending" → `materializeRecipients` (internalAction) resolves the audience
  * into `campaignRecipients` rows (one per email, each carrying its own
  * `unsubscribeToken`, the rsvps.token precedent) → `deliverCampaignBatch`
- * (internalAction, self-rescheduling) sends 25 at a time and updates each
- * row → the campaign is finalized with rollup counts. Delivery never throws
- * on a per-recipient failure — mirrors `blasts.ts#finishBlast`'s
+ * (internalAction, self-rescheduling) sends up to 100 at a time via Resend's
+ * batch endpoint (one HTTP request per action invocation) and updates each
+ * row, paced ~600ms between batches to stay under Resend's rate limit → the
+ * campaign is finalized with rollup counts. Delivery never throws on a
+ * per-recipient failure — mirrors `blasts.ts#finishBlast`'s
  * recorded-failure-not-throw philosophy.
  *
  * `emailSuppressions` is the deployment-wide unsubscribe/bounce/complaint
@@ -89,12 +91,26 @@ export const campaigns = defineTable({
   audienceId: v.id("audiences"),
   doc: v.any(),
   status: v.union(...CAMPAIGN_STATUSES.map((s) => v.literal(s))),
+  // Per-campaign sender ("from a person") — both optional; when `fromEmail`
+  // is unset, sends fall back to the org's configured Resend from address.
+  // `fromEmail`, when set, is validated at write time (`campaigns.ts`) to be
+  // a bare address whose domain matches the org's Resend from-address
+  // domain exactly — see `validateSenderFields`.
+  fromName: v.optional(v.string()),
+  fromEmail: v.optional(v.string()),
   recipientCount: v.optional(v.number()),
   sentCount: v.optional(v.number()),
   failedCount: v.optional(v.number()),
   suppressedCount: v.optional(v.number()),
   error: v.optional(v.string()),
   replyCount: v.optional(v.number()),
+  // Set at materialize time (`campaigns.ts#materializeRecipients`) — true
+  // when the resolved audience had more matches than
+  // `lib/audienceResolve.ts#AUDIENCE_RESOLVE_LIMIT` and was truncated to the
+  // cap. A durable record of what was true when this campaign was actually
+  // sent (the live composer preview can drift after the fact as the
+  // underlying data changes).
+  audienceTruncated: v.optional(v.boolean()),
   createdBy: v.id("users"),
   createdAt: v.number(),
   updatedAt: v.number(),

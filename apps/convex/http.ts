@@ -765,6 +765,19 @@ http.route({
           textBody: event.data?.text,
           htmlBody: event.data?.html,
         });
+        if (campaignId) {
+          // Best-effort forward to the campaign's per-campaign sender
+          // (`fromEmail`), when it has one — SCHEDULED (not awaited inline)
+          // so the webhook response stays fast; `forwardReplyToSender`
+          // no-ops on its own when the campaign has no `fromEmail` and never
+          // throws (catches + logs internally).
+          await ctx.scheduler.runAfter(0, internal.campaigns.forwardReplyToSender, {
+            campaignId,
+            replyFromEmail: from.email,
+            replyFromName: from.name ?? undefined,
+            replyText: event.data?.text,
+          });
+        }
       } catch (err) {
         // A malformed/oversized payload should never turn into a Resend
         // retry storm (Resend retries non-2xx webhook responses) — log and
