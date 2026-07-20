@@ -412,6 +412,10 @@ export function ReimbursementRequestForm({
       }
       return;
     }
+    // Captured as a plain local (rather than re-reading `linked.externalAccountId`
+    // inside the closure below) so the narrowing above actually sticks — TS
+    // doesn't retain property-truthiness narrowing across a closure boundary.
+    const externalAccountId = linked.externalAccountId;
 
     const result = await run(
       () =>
@@ -423,7 +427,7 @@ export function ReimbursementRequestForm({
           eventId: forIds.eventId,
           projectId: forIds.projectId,
           budgetId: forIds.budgetId,
-          externalAccountId: linked.externalAccountId,
+          externalAccountId,
           lines: usable.map((l) => ({
             description: l.description.trim(),
             amountCents: lineAmountCents(l),
@@ -699,6 +703,15 @@ function LineRow({
         </Pressable>
       </View>
 
+      {/* Per-line transaction date — required. */}
+      <View className="mt-2 flex-row items-center gap-2">
+        <Text className="text-xs font-semibold text-muted">Transaction date</Text>
+        <TransactionDateCell
+          value={line.transactionDate}
+          onChange={(ms) => onChange({ transactionDate: ms })}
+        />
+      </View>
+
       {/* Per-line receipt dropzone. */}
       <View className="mt-2">
         {line.uploading ? (
@@ -729,6 +742,45 @@ function LineRow({
         )}
       </View>
     </View>
+  );
+}
+
+/** A line's required transaction date — the same Calendar/Popover idiom the
+ *  rest of the app uses for a day-only pick (mirrors `DueDateCell`), without
+ *  the DUE↔TIMING offset math that cell adds: this is a plain day picker, no
+ *  time-of-day component, since only the calendar day matters for the
+ *  48h-future / 3y-old bounds the backend enforces. */
+function TransactionDateCell({
+  value,
+  onChange,
+}: {
+  value: number;
+  onChange: (ms: number) => void;
+}) {
+  const { ref, anchor, visible, open, close } = useAnchor();
+
+  return (
+    <>
+      <Pressable
+        ref={ref}
+        onPress={open}
+        className="flex-row items-center gap-1.5 rounded-md border border-border-strong bg-raised px-2.5 py-1.5 active:opacity-80"
+      >
+        <Icon name="calendar" size={13} color={colors.muted} />
+        <Text className="text-sm text-ink">{formatDate(value)}</Text>
+      </Pressable>
+
+      <Popover visible={visible} onClose={close} anchor={anchor} width={288}>
+        <Calendar
+          selected={value}
+          seed={value}
+          onSelect={(dayMs) => {
+            onChange(dayMs);
+            close();
+          }}
+        />
+      </Popover>
+    </>
   );
 }
 

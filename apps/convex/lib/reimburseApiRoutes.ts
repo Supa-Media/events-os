@@ -13,8 +13,9 @@ import type { HttpRouter } from "convex/server";
 import { httpAction, query } from "../_generated/server";
 import type { ActionCtx } from "../_generated/server";
 import { api } from "../_generated/api";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import type { Id } from "../_generated/dataModel";
+import type { ExternalAccountFunding } from "@events-os/shared";
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -78,33 +79,36 @@ function optStr(value: unknown): string | undefined {
 }
 
 /** Coerce an untrusted line-items payload into the submit mutation's shape.
- *  Money is validated server-side; ids are verified to belong to the chapter. */
+ *  Money + `transactionDate` are sanity-checked server-side; the receipt id is
+ *  verified to belong to the chapter's storage. NO `categoryId`/`fundId` here
+ *  on purpose — the public form no longer collects either (categorization is
+ *  a finance manager's review-time job); `submitPublicReimbursement`
+ *  additionally strips those fields server-side even if a raw API call tries
+ *  to smuggle them through. */
 function toLines(raw: unknown): Array<{
   description: string;
   amountCents: number;
-  categoryId?: Id<"budgetCategories">;
-  fundId?: Id<"funds">;
   receiptStorageId?: Id<"_storage">;
+  transactionDate?: number;
 }> {
   if (!Array.isArray(raw)) return [];
   return raw.map((item) => {
     const it = item as {
       description?: unknown;
       amountCents?: unknown;
-      categoryId?: unknown;
-      fundId?: unknown;
       receiptStorageId?: unknown;
+      transactionDate?: unknown;
     };
     return {
       description: String(it.description ?? ""),
       amountCents: Math.round(Number(it.amountCents)),
-      categoryId: it.categoryId
-        ? (it.categoryId as Id<"budgetCategories">)
-        : undefined,
-      fundId: it.fundId ? (it.fundId as Id<"funds">) : undefined,
       receiptStorageId: it.receiptStorageId
         ? (it.receiptStorageId as Id<"_storage">)
         : undefined,
+      transactionDate:
+        it.transactionDate != null && it.transactionDate !== ""
+          ? Math.round(Number(it.transactionDate))
+          : undefined,
     };
   });
 }
@@ -126,28 +130,71 @@ export function registerReimburseApiRoutes(http: HttpRouter): void {
     }),
   });
 
-  // Submit the request → { token, reference }.
+  // Submit the request → { token, reference }. ORCHESTRATES the two steps a
+  // NEW reimbursement now requires: `linkPublicBankAccount` (an action, no
+  // token — the request doesn't exist yet) creates the real Increase
+  // External Account from the posted routing/account/type FIRST, THEN
+  // `submitPublicReimbursement` (a mutation) writes the request with the
+  // resulting `externalAccountId`. No request can be created without a full
+  // ACH destination (owner mandate) — a failed/unconfigured bank link
+  // surfaces as a 400 before anything is written.
   http.route({
     path: "/api/reimburse/submit",
     method: "POST",
-    handler: jsonPost((ctx, body, req) =>
-      ctx.runMutation(api.reimbursements.submitPublicReimbursement, {
+    handler: jsonPost(async (ctx, body, req) => {
+      const clientIp = clientIpFromRequest(req);
+      const bank = await ctx.runAction(api.reimbursements.linkPublicBankAccount, {
+        routingNumber: String(body.routingNumber ?? ""),
+        accountNumber: String(body.accountNumber ?? ""),
+        accountHolderName: optStr(body.accountHolderName),
+        funding: optStr(body.funding) as ExternalAccountFunding | undefined,
+        clientIp,
+      });
+      if (!bank.linked || !bank.externalAccountId) {
+        throw new ConvexError({
+          code: "BANK_LINK_FAILED",
+          message:
+            "We couldn't verify those bank details. Please double check them and try again.",
+        });
+      }
+      return await ctx.runMutation(api.reimbursements.submitPublicReimbursement, {
         chapterSlug: String(body.chapterSlug ?? ""),
         payeeName: String(body.payeeName ?? ""),
         // Required now (SoD + reminder contact) — the mutation rejects a blank.
         payeeEmail: String(body.payeeEmail ?? ""),
         payeePhone: optStr(body.payeePhone),
-        purpose: optStr(body.purpose),
-        bankAccountLast4: optStr(body.bankAccountLast4),
+        // Required (the "why") — the mutation rejects a blank.
+        purpose: String(body.purpose ?? ""),
         requestPreApproval: body.requestPreApproval === true,
         lines: toLines(body.lines),
+        // Never the raw routing/account numbers — only the Increase
+        // reference id + a display last-4 land in Convex.
+        externalAccountId: bank.externalAccountId,
+        bankAccountLast4: bank.last4,
         // Forwarded so the mutation can rate-limit per IP (see reimbursements.ts).
+        clientIp,
+      });
+    }),
+  });
+
+  // Pre-submit receipt-upload URL — no token (the request doesn't exist yet),
+  // scoped by chapter slug + rate-limited per IP. The client uploads each
+  // line's receipt HERE before calling /api/reimburse/submit, then includes
+  // the returned storageId as that line's `receiptStorageId`.
+  http.route({
+    path: "/api/reimburse/pre-upload-url",
+    method: "POST",
+    handler: jsonPost((ctx, body, req) =>
+      ctx.runMutation(api.reimbursements.preSubmitUploadUrl, {
+        chapterSlug: String(body.chapterSlug ?? ""),
         clientIp: clientIpFromRequest(req),
-      }),
+      }).then((uploadUrl) => ({ uploadUrl })),
     ),
   });
 
-  // Accountless receipt-upload URL (token-scoped) → { uploadUrl }.
+  // Accountless receipt-upload URL (token-scoped) → { uploadUrl }. Kept for
+  // REPLACING a receipt on an already-editable, already-submitted request
+  // (the initial submission's receipts now go through pre-upload-url above).
   http.route({
     path: "/api/reimburse/upload-url",
     method: "POST",
@@ -212,9 +259,12 @@ export function registerReimburseApiRoutes(http: HttpRouter): void {
 
 /**
  * Chapter display data for the public reimburse form, by slug. Public (no auth)
- * — only non-secret display fields + the chapter's active budget categories
- * (each carrying the fund it rolls up to, so the form can fill the fund in
- * automatically). Null when the slug is unknown.
+ * — ONLY non-secret display fields: the chapter's name + its own slug. NO
+ * funds or budget categories here (owner mandate, public-page privacy): a
+ * logged-out visitor never sees the chapter's internal fund/category
+ * structure — categorizing a line is a finance manager's review-time job,
+ * done in their own tooling after the request lands. Null when the slug is
+ * unknown.
  */
 export const chapterForReimburse = query({
   args: { slug: v.string() },
@@ -225,34 +275,9 @@ export const chapterForReimburse = query({
       .unique();
     if (!chapter) return null;
 
-    const funds = (
-      await ctx.db
-        .query("funds")
-        .withIndex("by_chapter", (q) => q.eq("chapterId", chapter._id))
-        .take(200)
-    )
-      .filter((f) => f.isActive !== false)
-      .sort((a, b) => a.sortOrder - b.sortOrder);
-    const fundNameById = new Map(funds.map((f) => [String(f._id), f.name]));
-
-    const categories = (
-      await ctx.db
-        .query("budgetCategories")
-        .withIndex("by_chapter", (q) => q.eq("chapterId", chapter._id))
-        .take(500)
-    )
-      .filter((c) => c.isActive !== false)
-      .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0));
-
     return {
       slug: chapter.slug ?? slug,
       name: chapter.name,
-      categories: categories.map((c) => ({
-        id: String(c._id),
-        name: c.name,
-        fundId: String(c.fundId),
-        fundName: fundNameById.get(String(c.fundId)) ?? null,
-      })),
     };
   },
 });
