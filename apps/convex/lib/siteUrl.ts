@@ -1,7 +1,7 @@
 /**
  * Base URL for guest-facing links: landing pages, ticket pages, OG tags,
  * Stripe return URLs, and emails. Set PUBLIC_SITE_URL (e.g.
- * https://rsvp.publicworship.life) when a custom domain fronts the
+ * https://publicworship.life) when a custom domain fronts the
  * deployment's HTTP actions; otherwise the built-in .convex.site domain
  * (CONVEX_SITE_URL) is used.
  */
@@ -12,7 +12,7 @@ export function siteUrl(): string {
 
 /**
  * URL path segment for public event pages. Was "e"; now "event" for branding
- * (e.g. events.publicworship.life/event/<slug>). The old "/e/" prefix is kept
+ * (e.g. publicworship.life/event/<slug>). The old "/e/" prefix is kept
  * as an alias in http.ts so already-shared links never break.
  */
 export const EVENT_PATH = "event";
@@ -52,7 +52,10 @@ export function givePageUrl(slug?: string): string {
 /**
  * Deep link into the authenticated app (the Expo web build) at `path`, when
  * APP_URL is configured. Null otherwise — callers omit the link entirely
- * rather than sending a dead one.
+ * rather than sending a dead one. In prod, APP_URL is
+ * https://publicworship.life/os — the Cloudflare Worker routes that prefix
+ * (stripped) to the Expo web app's EAS Hosting origin; see
+ * docs/plans/url-consolidation.md.
  */
 export function appUrl(path: string): string | null {
   const base = process.env.APP_URL?.replace(/\/+$/, "");

@@ -49,6 +49,7 @@ import { useMemo, useState } from "react";
 import { View, Text, Platform, Alert, Share } from "react-native";
 import * as Linking from "expo-linking";
 import { useRouter } from "expo-router";
+import { webAppUrl } from "../../../../lib/appUrl";
 import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
@@ -115,16 +116,16 @@ function notifyPayoutOutcome(payout: { provider: string; status: string }) {
   }
 }
 
-/** The `/reimburse-request` share-link page's URL. Web: the current origin —
- *  the page lives in this SAME Expo app, so wherever it's being viewed from
- *  IS where the link resolves (mirrors `EventHeader.tsx`'s `shareCrew` link).
- *  Native has no equivalent "this app's own web origin" signal, so it falls
- *  back to the app's own URL scheme (`Linking.createURL` — openable only by
- *  someone who already has the app installed; there's no universal-link
- *  domain configured yet, see `app.config.js`'s `intentFilters`). */
+/** The `/reimburse-request` share-link page's URL. Web: the current origin
+ *  plus the app's `/os` base path (`webAppUrl` — mirrors `EventHeader.tsx`'s
+ *  `shareCrew` link). Native has no equivalent "this app's own web origin"
+ *  signal, so it falls back to the app's own URL scheme (`Linking.createURL`
+ *  — openable only by someone who already has the app installed; there's no
+ *  universal-link domain configured yet, see `app.config.js`'s
+ *  `intentFilters`). */
 function reimburseRequestUrl(): string {
   if (Platform.OS === "web" && typeof window !== "undefined") {
-    return `${window.location.origin}/reimburse-request`;
+    return webAppUrl("/reimburse-request");
   }
   return Linking.createURL("/reimburse-request");
 }

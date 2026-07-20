@@ -1,3 +1,14 @@
+> **Superseded.** This plan proposed branding public event pages onto
+> `events.publicworship.life`. That shipped as `rsvp.publicworship.life`
+> instead (the domain actually provisioned), and both are now replaced by
+> path-based routing on a single consolidated domain,
+> `https://publicworship.life` (public event pages live at
+> `https://publicworship.life/event/<slug>`, same as this doc describes, just
+> without the subdomain). See **[docs/plans/url-consolidation.md](./url-consolidation.md)**
+> for the current, canonical architecture — env var names (`PUBLIC_SITE_URL`,
+> `EXPO_PUBLIC_SITE_URL`, `APP_URL`) and the `/event/` path segment described
+> below are still accurate; only the domain/subdomain framing here is stale.
+
 # Feature: Custom-domain public event pages (`events.publicworship.life/event/<slug>`)
 
 ## Feature Description

@@ -89,6 +89,16 @@ module.exports = ({ config }) => ({
       origin: false,
     },
   },
+  experiments: {
+    // Web-only base path once the Cloudflare Worker fronts
+    // https://publicworship.life and proxies /os/* (prefix stripped) to this
+    // app's EAS Hosting origin — see docs/plans/url-consolidation.md. Lets
+    // expo-router's own internal navigation (<Link>/router.push) resolve
+    // correctly without per-call changes. Mirrors `APP_BASE_PATH` in
+    // `lib/appUrl.ts` (duplicated, not imported — this file is plain
+    // CommonJS, not run through the TS/Babel pipeline); keep both in sync.
+    baseUrl: "/os",
+  },
   owner: "lilseyi",
   runtimeVersion: {
     policy: "appVersion",

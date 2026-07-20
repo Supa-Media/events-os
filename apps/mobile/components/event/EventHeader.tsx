@@ -31,6 +31,7 @@ import {
 import { ScopeToggle, type ScopeChoice } from "../team/ScopeToggle";
 import { colors } from "../../lib/theme";
 import { formatDateTime } from "../../lib/format";
+import { webAppUrl } from "../../lib/appUrl";
 import {
   EVENT_STATUSES,
   EVENT_STATUS_LABELS,
@@ -1313,8 +1314,7 @@ export function EventTools({
    */
   function shareCrew() {
     const url =
-      (typeof window !== "undefined" ? window.location.origin : "") +
-      `/share/${eventId}`;
+      typeof window !== "undefined" ? webAppUrl(`/share/${eventId}`) : "";
     const done = () => {
       setCopied(true);
       copyTimer.current = setTimeout(() => {

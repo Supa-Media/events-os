@@ -8,6 +8,7 @@ import { ToastView } from "../../../../components/ui/Toast";
 import { TagPicker } from "../../../../components/songs/SongTags";
 import { useActionRunner } from "../../../../lib/useActionToast";
 import { colors } from "../../../../lib/theme";
+import { webAppUrl } from "../../../../lib/appUrl";
 import {
   SONG_REQUEST_STATUS_LABELS,
   type SongRequestStatus,
@@ -571,8 +572,7 @@ function CopyLinkButton({ eventId }: { eventId: string }) {
   const [copied, setCopied] = useState(false);
   function copy() {
     const url =
-      (typeof window !== "undefined" ? window.location.origin : "") +
-      `/songs/${eventId}`;
+      typeof window !== "undefined" ? webAppUrl(`/songs/${eventId}`) : "";
     if (typeof navigator !== "undefined" && navigator.clipboard) {
       navigator.clipboard.writeText(url).then(() => {
         setCopied(true);
