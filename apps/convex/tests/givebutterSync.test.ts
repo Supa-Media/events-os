@@ -862,7 +862,7 @@ describe("transactions to tickets join", () => {
     ).resolves.toBeNull();
 
     const page = await pageRow(s, eventId);
-    expect(page?.givebutterLastSyncError).toBe(
+    expect(page?.givebutterLastSyncError).toContain(
       "HTTP 500 fetching Givebutter transactions.",
     );
   });
@@ -915,7 +915,7 @@ describe("transactions to tickets join", () => {
     ).resolves.toBeNull();
 
     const page = await pageRow(s, eventId);
-    expect(page?.givebutterLastSyncError).toBe(
+    expect(page?.givebutterLastSyncError).toContain(
       "HTTP 503 fetching Givebutter tickets.",
     );
   });
@@ -1034,7 +1034,7 @@ describe("transactions to tickets join", () => {
           status: 200,
           json: async () => ({
             data: [{ id: `t-${url}`, campaign_id: 686283, refunded: false }],
-            links: { next: `${url.split("?")[0]}?page=next` },
+            links: { next: `${url.split("?")[0]}?page=2` },
           }),
           text: async () => "{}",
         };
@@ -1054,5 +1054,177 @@ describe("transactions to tickets join", () => {
     const page = await pageRow(s, eventId);
     expect(page?.givebutterLastSyncError).toContain("counts may be incomplete");
     expect(page?.givebutterLastSyncError).toContain("transactions");
+  });
+
+  test("a polluted transactions links.next is sanitized to ?page=N (live-API 400 regression)", async () => {
+    process.env.GIVEBUTTER_API_KEY = "test_key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId, "686283");
+
+    // Givebutter's real /v1/transactions paginator leaks Laravel model
+    // attributes into links.next; following it verbatim gets HTTP 400. The
+    // mock enforces exactly that: junk params → 400, clean ?page=2 → data.
+    const pollutedNext =
+      "https://api.givebutter.com/v1/transactions?apiKey%5Bincrementing%5D=1&keyable%5Bexists%5D=1&page=2";
+    globalThis.fetch = (async (url: string) => {
+      if (url.endsWith("/campaigns/686283")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data: { id: 686283 } }),
+          text: async () => "{}",
+        };
+      }
+      if (url.includes("apiKey")) {
+        return {
+          ok: false,
+          status: 400,
+          json: async () => ({}),
+          text: async () => "The api key.incrementing field is prohibited.",
+        };
+      }
+      if (url === "https://api.givebutter.com/v1/transactions?page=2") {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            data: [{ id: "t2", campaign_id: 686283, status: "succeeded" }],
+            links: { next: null },
+          }),
+          text: async () => "{}",
+        };
+      }
+      if (url.includes("/transactions")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            data: [{ id: "t1", campaign_id: 686283, status: "succeeded" }],
+            links: { next: pollutedNext },
+          }),
+          text: async () => "{}",
+        };
+      }
+      if (url.includes("/tickets")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            data: ["t1", "t2"].map((txn, i) => ({
+              id: 300 + i,
+              transaction_id: txn,
+              email: `${txn}@x.com`,
+              price: 25,
+              title: "GA",
+              created_at: new Date().toISOString(),
+            })),
+            links: { next: null },
+          }),
+          text: async () => "{}",
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [], links: { next: null } }),
+        text: async () => "{}",
+      };
+    }) as unknown as typeof fetch;
+
+    await expect(
+      t.action(internal.givebutterSync.syncGivebutterCampaign, { eventId }),
+    ).resolves.toBeNull();
+
+    // Both transaction pages were reached (page 2 via the SANITIZED url), so
+    // both tickets joined and no error was recorded.
+    const page = await pageRow(s, eventId);
+    expect(page?.givebutterLastSyncError).toBeUndefined();
+    expect(page).toMatchObject({ ticketsSoldCount: 2 });
+  });
+
+  test("refunds are recognized in every live encoding: status, flat flag, nested sub-transactions", async () => {
+    process.env.GIVEBUTTER_API_KEY = "test_key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId, "686283");
+
+    globalThis.fetch = (async (url: string) => {
+      if (url.endsWith("/campaigns/686283")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data: { id: 686283 } }),
+          text: async () => "{}",
+        };
+      }
+      if (url.includes("/transactions")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            data: [
+              // Live payload shape: no flat `refunded`; nested carries it.
+              {
+                id: "ok1",
+                campaign_id: 686283,
+                status: "succeeded",
+                transactions: [{ refunded: false }],
+              },
+              {
+                id: "r-status",
+                campaign_id: 686283,
+                status: "refunded",
+                transactions: [{ refunded: false }],
+              },
+              {
+                id: "r-nested",
+                campaign_id: 686283,
+                status: "succeeded",
+                transactions: [{ refunded: true }],
+              },
+              { id: "r-flat", campaign_id: 686283, refunded: "true" },
+            ],
+            links: { next: null },
+          }),
+          text: async () => "{}",
+        };
+      }
+      if (url.includes("/tickets")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            data: ["ok1", "r-status", "r-nested", "r-flat"].map((txn, i) => ({
+              id: 400 + i,
+              transaction_id: txn,
+              email: `${txn}@x.com`,
+              price: 25,
+              title: "GA",
+              created_at: new Date().toISOString(),
+            })),
+            links: { next: null },
+          }),
+          text: async () => "{}",
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [], links: { next: null } }),
+        text: async () => "{}",
+      };
+    }) as unknown as typeof fetch;
+
+    await expect(
+      t.action(internal.givebutterSync.syncGivebutterCampaign, { eventId }),
+    ).resolves.toBeNull();
+
+    // Only the non-refunded transaction's ticket lands.
+    const orders = await rows(s, "ticketOrders", eventId);
+    expect(orders).toHaveLength(1);
+    expect(orders[0].externalRef).toBe("gb:ticket:400");
   });
 });

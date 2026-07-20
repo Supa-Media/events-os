@@ -518,7 +518,13 @@ interface GivebutterTicketsPage {
 interface GivebutterTransactionRaw {
   id?: number | string;
   campaign_id?: number | string | null;
+  // Live payloads carry a status ("pending" | "succeeded" | "refunded" | ...)
+  // on the top-level object and the refund flag on NESTED sub-transactions —
+  // not the flat `refunded` the OpenAPI spec describes. All three are read
+  // (see `isRefundedTransaction`) so either encoding is caught.
+  status?: string | null;
   refunded?: boolean | string | null;
+  transactions?: Array<{ refunded?: boolean | string | null }>;
 }
 
 interface GivebutterTransactionsPage {
@@ -590,7 +596,7 @@ async function resolveCampaignId(
         return id;
       }
     }
-    url = body.links?.next ?? null;
+    url = nextPageUrl(body.links?.next);
   }
   return null;
 }
@@ -605,6 +611,49 @@ function gbGet(key: string, url: string): Promise<Response> {
       Accept: "application/json",
     },
   });
+}
+
+/** Short body snippet for a failed Givebutter response, so the recorded sync
+ *  error says WHY (e.g. a validation message), not just the status code. */
+async function gbErrorDetail(res: Response): Promise<string> {
+  try {
+    const text = (await res.text()).replace(/\s+/g, " ").trim();
+    return text ? ` (${text.slice(0, 140)})` : "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Sanitize a Laravel `links.next` URL down to `<origin><path>?page=N`.
+ * Givebutter's `/v1/transactions` paginator leaks internal model attributes
+ * into the query string (`apiKey[incrementing]=1&keyable[...]=...`), and
+ * following that URL verbatim gets rejected with HTTP 400 — page 1 succeeds,
+ * page 2 fails (verified against the live API). Only the `page` param is
+ * meaningful, so keep exactly that. Returns null (stop paginating) when
+ * there's no next URL or no parseable page number.
+ */
+function nextPageUrl(next: string | null | undefined): string | null {
+  if (!next) return null;
+  try {
+    const u = new URL(next);
+    const page = u.searchParams.get("page");
+    if (!page || !/^\d+$/.test(page)) return null;
+    return `${u.origin}${u.pathname}?page=${page}`;
+  } catch {
+    return null;
+  }
+}
+
+/** True when Givebutter marks a transaction refunded in ANY of its encodings:
+ *  the top-level `status`, a flat `refunded` flag (the OpenAPI shape), or a
+ *  nested sub-transaction's `refunded` (the live payload shape). */
+function isRefundedTransaction(txn: GivebutterTransactionRaw): boolean {
+  const flag = (v: boolean | string | null | undefined) =>
+    v === true || v === "true";
+  if ((txn.status ?? "").toLowerCase() === "refunded") return true;
+  if (flag(txn.refunded)) return true;
+  return (txn.transactions ?? []).some((t) => flag(t.refunded));
 }
 
 /**
@@ -638,9 +687,7 @@ async function validateNumericCampaignId(
  * capped at `GIVEBUTTER_MAX_PAGES`) and return the set of `String(id)` for
  * transactions belonging to `campaignId` — the join key a ticket lacks (see
  * the file-header note). Skips transactions Givebutter has marked refunded
- * (`refunded === true` or the string `"true"` only — the spec types the field
- * as a string, so any other encoding is treated as NOT refunded to avoid
- * dropping valid transactions on an unexpected shape).
+ * in any encoding (see `isRefundedTransaction`).
  *
  * `truncated` is true when the cap was hit with more pages remaining — the
  * caller surfaces that as a warning, since a capped ACCOUNT-WIDE sweep means
@@ -656,17 +703,22 @@ async function sweepCampaignTransactionIds(
   for (let page = 0; page < GIVEBUTTER_MAX_PAGES && url; page++) {
     const res = await gbGet(key, url);
     if (!res.ok) {
-      throw new Error(`HTTP ${res.status} fetching Givebutter transactions.`);
+      throw new Error(
+        `HTTP ${res.status} fetching Givebutter transactions.${await gbErrorDetail(res)}`,
+      );
     }
     const body = (await res.json()) as GivebutterTransactionsPage;
     for (const txn of body.data ?? []) {
       if (txn.id === undefined || txn.id === null || txn.id === "") continue;
       if (String(txn.campaign_id) !== campaignId) continue;
-      if (txn.refunded === true || txn.refunded === "true") continue;
+      if (isRefundedTransaction(txn)) continue;
       ids.add(String(txn.id));
     }
-    url = body.links?.next ?? null;
+    url = nextPageUrl(body.links?.next);
   }
+  console.log(
+    `[givebutter] transaction sweep for campaign ${campaignId}: ${ids.size} matching ids`,
+  );
   return { ids, truncated: url !== null };
 }
 
@@ -796,12 +848,15 @@ async function syncOneCampaign(
     const { ids: transactionIds, truncated: txnTruncated } =
       await sweepCampaignTransactionIds(key, campaignId);
     let ticketsTruncated = false;
+    let matched = 0;
     if (transactionIds.size > 0) {
       let url: string | null = `${GIVEBUTTER_API_BASE}/tickets`;
       for (let page = 0; page < GIVEBUTTER_MAX_PAGES && url; page++) {
         const res = await gbGet(key, url);
         if (!res.ok) {
-          throw new Error(`HTTP ${res.status} fetching Givebutter tickets.`);
+          throw new Error(
+            `HTTP ${res.status} fetching Givebutter tickets.${await gbErrorDetail(res)}`,
+          );
         }
         const body = (await res.json()) as GivebutterTicketsPage;
         const rows = body.data ?? [];
@@ -819,14 +874,18 @@ async function syncOneCampaign(
           if (t) normalized.push(t);
         }
         if (normalized.length > 0) {
+          matched += normalized.length;
           await ctx.runMutation(
             internal.givebutterSync.applyGivebutterTickets,
             { eventId, tickets: normalized },
           );
         }
-        url = body.links?.next ?? null;
+        url = nextPageUrl(body.links?.next);
       }
       ticketsTruncated = url !== null;
+      console.log(
+        `[givebutter] ticket sweep for event ${eventId}: ${matched} tickets matched campaign ${campaignId}`,
+      );
     }
     // A capped ACCOUNT-WIDE sweep means rows past the cap were silently
     // missed — surface it as a sync warning instead of reporting clean
