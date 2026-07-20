@@ -19,7 +19,9 @@
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "pw-router",
   "main": "src/index.ts",
-  "compatibility_date": "2026-07-20",
+  // Stable past date rather than "today": a future-dated (or clock-skewed)
+  // runner can reject a compatibility_date that resolves to "in the future".
+  "compatibility_date": "2026-07-01",
 
   "assets": {
     // Built by `pnpm --filter "./apps/landing" build` (Astro) before deploy —
@@ -34,14 +36,32 @@
     // this to "404-page".
     // "not_found_handling": "404-page",
 
-    // MUST stay true: asset matching is by path only, ignoring hostname. With
+    // Worker-first is required because asset matching ignores hostname: with
     // the default assets-first behavior, rsvp.publicworship.life/ (or any
     // legacy-hostname path that happens to match a landing asset) would be
     // served the landing HTML directly instead of reaching the fetch handler
     // that 301s it. Running the Worker first keeps the hostname redirects
     // authoritative; src/index.ts falls through to env.ASSETS.fetch() for
     // landing paths.
-    "run_worker_first": true
+    //
+    // The negative patterns below exempt the pure static-asset directories
+    // (apps/landing/public/: artifacts, decor, icons, images, links,
+    // textures, videos; /_astro is Astro's hashed build output) so they hit
+    // the asset fast path directly — cheaper and cacheable — instead of
+    // round-tripping through the Worker. On a legacy hostname those paths
+    // then serve the asset instead of a 301, which is harmless: only page
+    // URLs (not raw asset paths) get shared or bookmarked.
+    "run_worker_first": [
+      "/*",
+      "!/_astro/*",
+      "!/images/*",
+      "!/videos/*",
+      "!/icons/*",
+      "!/decor/*",
+      "!/links/*",
+      "!/textures/*",
+      "!/artifacts/*"
+    ]
   },
 
   "observability": {

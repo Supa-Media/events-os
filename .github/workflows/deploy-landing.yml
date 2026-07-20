@@ -6,6 +6,13 @@
 # --frozen-lockfile` with GITHUB_TOKEN for the private @supa-media/* GitHub
 # Packages registry, see .npmrc).
 #
+# This deliberately does NOT use the framework's reusable deploy-web.yml: its
+# `hosting: cloudflare` mode is Cloudflare *Pages* (`wrangler pages deploy`),
+# which can't express a Worker with a static-assets binding plus custom fetch
+# routing (pw-router proxies /os/* and the Convex prefixes and serves the
+# Astro build as assets — see infra/router/src/route.ts). Upstreaming a
+# Workers deploy mode is a framework follow-up candidate.
+#
 # The Cloudflare deploy step is gated on CLOUDFLARE_API_TOKEN being present:
 # that secret isn't provisioned yet, so until it lands this job builds the
 # site, verifies it, and skips the actual `wrangler deploy` with a notice
@@ -18,6 +25,8 @@ on:
     paths:
       - "apps/landing/**"
       - "infra/router/**"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
       - ".github/workflows/deploy-landing.yml"
   workflow_dispatch:
 
@@ -41,10 +50,12 @@ jobs:
           node-version: 22
           cache: pnpm
 
-      # All @supa-media/* packages are public on GitHub Packages; GITHUB_TOKEN
+      # Scoped to apps/landing and infra/router (plus their dependencies) —
+      # all this job needs to build the site and test/deploy the router. All
+      # @supa-media/* packages are public on GitHub Packages; GITHUB_TOKEN
       # authenticates the registry (see .npmrc).
       - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+        run: pnpm install --filter "./apps/landing..." --filter "./infra/router..." --frozen-lockfile
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -52,6 +63,11 @@ jobs:
       # working regardless of what apps/landing's package.json ends up named.
       - name: Build landing site
         run: pnpm --filter "./apps/landing" build
+
+      # Gate the deploy on the router's own test suite so a broken router
+      # never gets deployed.
+      - name: Test pw-router
+        run: pnpm --filter @events-os/router test
 
       # CLOUDFLARE_API_TOKEN is not provisioned yet (pending, expected once
       # the pw-router Worker is set up in the Cloudflare dashboard). Detect

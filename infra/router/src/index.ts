@@ -22,7 +22,16 @@ export default {
 
     switch (decision.kind) {
       case "redirect":
-        return Response.redirect(decision.location, 301);
+        // Deterministic (legacy-host) redirects are safe to cache — a plain
+        // 301 Response.redirect() isn't cacheable at the edge, so build the
+        // Response by hand with an explicit Cache-Control instead.
+        return new Response(null, {
+          status: 301,
+          headers: {
+            Location: decision.location,
+            "Cache-Control": "public, max-age=86400",
+          },
+        });
 
       case "proxy": {
         const target = new URL(decision.target);
@@ -32,6 +41,17 @@ export default {
         // https://developers.cloudflare.com/workers/examples/respond-with-another-site/).
         const proxyRequest = new Request(target, request);
         proxyRequest.headers.set("Host", target.host);
+
+        if (decision.cache === "immutable") {
+          // Content-hashed bundle output (Expo's /_expo/*) — safe to cache
+          // at the edge indefinitely. Cookie-bearing requests are ineligible
+          // for edge caching, so strip it before handing off to `fetch`.
+          proxyRequest.headers.delete("Cookie");
+          return fetch(proxyRequest, {
+            cf: { cacheEverything: true, cacheTtl: 31536000 },
+          });
+        }
+
         return fetch(proxyRequest);
       }
 

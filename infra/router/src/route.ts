@@ -20,11 +20,17 @@
 
 export type RouteDecision =
   | { kind: "redirect"; location: string }
-  | { kind: "proxy"; target: string }
+  | { kind: "proxy"; target: string; cache?: "immutable" }
   | { kind: "assets" };
 
 export const EXPO_ORIGIN = "https://events-os.expo.app";
 export const CONVEX_ORIGIN = "https://vivid-rhinoceros-688.convex.site";
+
+// The Expo web app's base path — mirrored (hand-synced, not imported) as
+// APP_BASE_PATH in apps/mobile/lib/appUrl.ts and experiments.baseUrl in
+// apps/mobile/app.config.js. infra/router/src/drift.test.ts asserts all
+// three stay in sync.
+export const OS_PREFIX = "/os";
 
 const APEX = "publicworship.life";
 const WWW_HOST = "www.publicworship.life";
@@ -37,8 +43,9 @@ const RSVP_HOST = "rsvp.publicworship.life";
 // /api/reimburse/*, /api/give/*, /api/auth/*, all under /api/), and the two
 // payment-provider webhooks (/stripe/webhook, /increase/webhook). /give is
 // handled separately below since it's an exact-path route (the map) plus a
-// pathPrefix route (/give/<slug>), not a plain prefix.
-const CONVEX_PREFIXES = [
+// pathPrefix route (/give/<slug>), not a plain prefix. Exported so
+// drift.test.ts can assert against apps/convex/http.ts's literals.
+export const CONVEX_PREFIXES = [
   "/event/",
   "/e/",
   "/t/",
@@ -56,7 +63,7 @@ function isConvexPath(pathname: string): boolean {
 
 /** Strips a leading "/os" prefix, mapping bare "/os" or "/os/" to "/". */
 function stripOsPrefix(pathname: string): string {
-  const rest = pathname.slice("/os".length);
+  const rest = pathname.slice(OS_PREFIX.length);
   return rest === "" ? "/" : rest;
 }
 
@@ -78,8 +85,16 @@ export function route(url: URL): RouteDecision {
 
   // Apex (and any other/unexpected host, e.g. a workers.dev preview URL):
   // apply the same path rules as the apex.
-  if (pathname === "/os" || pathname.startsWith("/os/")) {
-    return { kind: "proxy", target: `${EXPO_ORIGIN}${stripOsPrefix(pathname)}${search}` };
+  if (pathname === OS_PREFIX || pathname.startsWith(`${OS_PREFIX}/`)) {
+    const strippedPath = stripOsPrefix(pathname);
+    // Expo's content-hashed bundle output (/_expo/*) is immutable — safe to
+    // cache at the edge indefinitely (see index.ts's proxy branch).
+    const cache = strippedPath.startsWith("/_expo/") ? "immutable" : undefined;
+    return {
+      kind: "proxy",
+      target: `${EXPO_ORIGIN}${strippedPath}${search}`,
+      ...(cache ? { cache } : {}),
+    };
   }
 
   if (isConvexPath(pathname)) {
@@ -94,5 +109,5 @@ export function route(url: URL): RouteDecision {
  * the inverse of stripOsPrefix: "/" -> "/os", "/songs/x" -> "/os/songs/x".
  */
 function stripOsPrefixInverse(pathname: string): string {
-  return pathname === "/" ? "/os" : `/os${pathname}`;
+  return pathname === "/" ? OS_PREFIX : `${OS_PREFIX}${pathname}`;
 }

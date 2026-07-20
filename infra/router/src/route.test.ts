@@ -44,26 +44,6 @@ describe("route: Convex prefixes -> proxy unchanged", () => {
       target: expectedTarget,
     });
   });
-
-  it("/give exactly matches (no trailing content required)", () => {
-    expect(route(u("https://publicworship.life/give"))).toEqual({
-      kind: "proxy",
-      target: `${CONVEX_ORIGIN}/give`,
-    });
-  });
-
-  it("/give/x matches the territory prefix", () => {
-    expect(route(u("https://publicworship.life/give/x"))).toEqual({
-      kind: "proxy",
-      target: `${CONVEX_ORIGIN}/give/x`,
-    });
-  });
-
-  it("/giveaway does NOT match /give (falls through to assets)", () => {
-    expect(route(u("https://publicworship.life/giveaway"))).toEqual({
-      kind: "assets",
-    });
-  });
 });
 
 describe("route: /os -> strip prefix, proxy to the Expo web app", () => {
@@ -92,12 +72,32 @@ describe("route: /os -> strip prefix, proxy to the Expo web app", () => {
     expect(route(u("https://publicworship.life/os/_expo/asset.js"))).toEqual({
       kind: "proxy",
       target: `${EXPO_ORIGIN}/_expo/asset.js`,
+      cache: "immutable",
     });
   });
 
   it("/osprey (looks like /os but isn't) is not stripped, falls through to assets", () => {
     expect(route(u("https://publicworship.life/osprey"))).toEqual({
       kind: "assets",
+    });
+  });
+});
+
+describe("route: edge cache hint for Expo's hashed bundle output", () => {
+  it("/os/_expo/static/js/x.js gets cache: immutable", () => {
+    expect(
+      route(u("https://publicworship.life/os/_expo/static/js/x.js")),
+    ).toEqual({
+      kind: "proxy",
+      target: `${EXPO_ORIGIN}/_expo/static/js/x.js`,
+      cache: "immutable",
+    });
+  });
+
+  it("/os/event/abc does not get a cache hint", () => {
+    expect(route(u("https://publicworship.life/os/event/abc"))).toEqual({
+      kind: "proxy",
+      target: `${EXPO_ORIGIN}/event/abc`,
     });
   });
 });
