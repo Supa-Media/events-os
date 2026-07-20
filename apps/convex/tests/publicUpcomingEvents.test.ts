@@ -173,8 +173,8 @@ describe("GET /api/events/upcoming", () => {
         venueName: null,
         startDate: expect.any(Number),
         endDate: null,
-        href: `/event/${coverSlug}`,
-        coverUrl: `/event/${coverSlug}/cover`,
+        href: `/rsvp/${coverSlug}`,
+        coverUrl: `/rsvp/${coverSlug}/cover`,
       },
       {
         title: "Plain Night",
@@ -182,7 +182,7 @@ describe("GET /api/events/upcoming", () => {
         venueName: null,
         startDate: expect.any(Number),
         endDate: null,
-        href: `/event/${plainSlug}`,
+        href: `/rsvp/${plainSlug}`,
         coverUrl: null,
       },
     ]);

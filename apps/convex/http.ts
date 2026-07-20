@@ -49,7 +49,7 @@ import {
   renderProjectActionResult,
 } from "./lib/projectActionPage";
 import { EMAIL_ACTION_STATUSES, type EmailActionStatus } from "./projectActions";
-import { appUrl, eventPath, siteUrl } from "./lib/siteUrl";
+import { appUrl, rsvpPath, siteUrl } from "./lib/siteUrl";
 import { verifyStripeSignature } from "./stripe";
 import { verifyIncreaseSignature } from "./increase";
 
@@ -183,8 +183,8 @@ http.route({
       venueName: e.venueName,
       startDate: e.startDate,
       endDate: e.endDate,
-      href: eventPath(e.slug),
-      coverUrl: e.hasCover ? eventPath(e.slug, "cover") : null,
+      href: rsvpPath(e.slug),
+      coverUrl: e.hasCover ? rsvpPath(e.slug, "cover") : null,
     }));
     return new Response(JSON.stringify(body), {
       status: 200,
