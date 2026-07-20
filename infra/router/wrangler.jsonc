@@ -1,0 +1,50 @@
+{
+  // pw-router: the single Cloudflare Worker fronting publicworship.life.
+  //
+  // See ../../CLAUDE.md's URL-consolidation notes and src/route.ts's module
+  // doc comment for the full routing table. In short:
+  //   - publicworship.life (apex): /os/* -> Expo web app (prefix stripped),
+  //     Convex prefixes (/event/, /e/, /t/, /give, /give/*, /p/, /reimburse/,
+  //     /api/, /stripe/, /increase/) -> Convex HTTP actions (unchanged),
+  //     everything else -> static assets (the Astro landing build).
+  //   - www.publicworship.life -> 301 to https://publicworship.life<path>
+  //   - events.publicworship.life -> 301 to https://publicworship.life/os<path>
+  //   - rsvp.publicworship.life -> 301 to https://publicworship.life<path>
+  //
+  // Custom domains: this Worker is NOT attached to any route here. The four
+  // hostnames above (publicworship.life, www., events., rsvp.) are attached
+  // as Custom Domains / Routes in the Cloudflare dashboard by the account
+  // owner, since that requires the zone to already be on Cloudflare DNS.
+  // This file intentionally has no top-level "routes"/"route" key.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "pw-router",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-20",
+
+  "assets": {
+    // Built by `pnpm --filter "./apps/landing" build` (Astro) before deploy —
+    // see .github/workflows/deploy-landing.yml.
+    "directory": "../../apps/landing/dist",
+    "binding": "ASSETS",
+    // apps/landing has no src/pages/404.astro at the time of writing, so
+    // there's no dist/404.html for "404-page" mode to serve. Leaving
+    // not_found_handling unset defaults to "none" (a plain 404 response for
+    // unmatched asset requests) rather than misconfiguring against a file
+    // that doesn't exist. If/when the landing site grows a 404 page, set
+    // this to "404-page".
+    // "not_found_handling": "404-page",
+
+    // MUST stay true: asset matching is by path only, ignoring hostname. With
+    // the default assets-first behavior, rsvp.publicworship.life/ (or any
+    // legacy-hostname path that happens to match a landing asset) would be
+    // served the landing HTML directly instead of reaching the fetch handler
+    // that 301s it. Running the Worker first keeps the hostname redirects
+    // authoritative; src/index.ts falls through to env.ASSETS.fetch() for
+    // landing paths.
+    "run_worker_first": true
+  },
+
+  "observability": {
+    "enabled": true
+  }
+}

@@ -1,0 +1,86 @@
+# Deploy the Astro landing site + pw-router (the Cloudflare Worker that
+# fronts https://publicworship.life) on every merge to `main`.
+#
+# Mirrors deploy-web.yml / deploy-convex.yml's setup pattern (checkout ->
+# pnpm/action-setup -> setup-node with pnpm cache -> `pnpm install
+# --frozen-lockfile` with GITHUB_TOKEN for the private @supa-media/* GitHub
+# Packages registry, see .npmrc).
+#
+# The Cloudflare deploy step is gated on CLOUDFLARE_API_TOKEN being present:
+# that secret isn't provisioned yet, so until it lands this job builds the
+# site, verifies it, and skips the actual `wrangler deploy` with a notice
+# instead of failing the run.
+name: Deploy Landing (production)
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/landing/**"
+      - "infra/router/**"
+      - ".github/workflows/deploy-landing.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-landing-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Build landing + deploy pw-router (production)
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      # All @supa-media/* packages are public on GitHub Packages; GITHUB_TOKEN
+      # authenticates the registry (see .npmrc).
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Path-filter form (rather than a package-name filter) so this keeps
+      # working regardless of what apps/landing's package.json ends up named.
+      - name: Build landing site
+        run: pnpm --filter "./apps/landing" build
+
+      # CLOUDFLARE_API_TOKEN is not provisioned yet (pending, expected once
+      # the pw-router Worker is set up in the Cloudflare dashboard). Detect
+      # its absence here so the deploy step below can skip gracefully instead
+      # of failing the whole run.
+      - name: Check for Cloudflare credentials
+        id: cf
+        env:
+          TOKEN_SET: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
+        run: echo "has_token=$TOKEN_SET" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy pw-router (Cloudflare Worker)
+        if: steps.cf.outputs.has_token == 'true'
+        working-directory: infra/router
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      - name: Skip notice (no Cloudflare credentials yet)
+        if: steps.cf.outputs.has_token != 'true'
+        run: echo "::notice::Skipped pw-router deploy — CLOUDFLARE_API_TOKEN is not set in the 'production' environment yet. Deploy manually once it is (see infra/router/README or CLAUDE.md), or re-run this workflow after the secret is added."
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "## Landing deploy (production)" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **URL:** https://publicworship.life" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Cloudflare deploy:** ${{ steps.cf.outputs.has_token == 'true' && 'ran' || 'skipped (no CLOUDFLARE_API_TOKEN)' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Commit:** \`${GITHUB_SHA::7}\`" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Triggered by:** ${{ github.actor }}" >> "$GITHUB_STEP_SUMMARY"
