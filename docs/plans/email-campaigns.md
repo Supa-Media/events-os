@@ -77,15 +77,40 @@ never read as "sent". Test sends go to any address with `[Test]` prefixed.
 
 ## Ops setup (one-time, in Resend)
 
-1. Verify the sending domain (`publicworship.life`) — DKIM/SPF records in
-   Cloudflare; set the from address + API key on Profile → Integrations.
+**Google Workspace coexistence — read first.** The org's real mail
+(`hello@`, `give@`, groups) is Google Workspace on the apex domain. Resend
+breaks that in exactly two ways, both avoidable: enabling Resend *Inbound*
+on the root domain (its MX replaces Google's → all receiving dies — this is
+what happened to supa.media once), or replacing/duplicating the apex SPF
+TXT (two SPF records on one name = permerror). The rule: **Google owns the
+apex MX and apex SPF, forever; Resend only ever gets subdomains for
+anything that receives mail.** Root-domain *sending* verification is safe —
+Resend's records for it are a `resend._domainkey` DKIM TXT plus MX/SPF on
+its own `send.` subdomain (bounce return-path), none of which collide with
+Google's apex records.
+
+1. Verify the sending domain (`publicworship.life`) in Resend — add its
+   records **by hand** in Cloudflare (no auto-configure wizard): the
+   `resend._domainkey` TXT and the `send.publicworship.life` MX + SPF TXT.
+   Do NOT touch the apex MX or apex SPF. Decline any "receive email on
+   this domain" option. Then set the from address + API key on Profile →
+   Integrations. Verify with `dig MX publicworship.life` (Google's servers,
+   unchanged) + a test email *to* hello@ + a test send *from* the app.
 2. Webhooks: add endpoint `https://<prod>.convex.site/resend/webhook`,
    subscribe to bounced/complained/inbound events, paste the `whsec_…`
    signing secret into Integrations.
-3. Inbound/replies: add an inbound domain (e.g. `reply.publicworship.life`
-   — one MX record to Resend), set it as the inbound domain in
-   Integrations. Until then, campaigns send without a custom Reply-To and
-   the Replies inbox stays an explained empty state.
+3. Inbound/replies: add `reply.publicworship.life` as the inbound domain
+   (one MX record on that subdomain only → Resend), set it as the inbound
+   domain in Integrations. Until then, campaigns send without a custom
+   Reply-To and the Replies inbox stays an explained empty state.
+4. Recommended: an apex `_dmarc` TXT (`v=DMARC1; p=none;
+   rua=mailto:hello@publicworship.life`) — Google and Resend both
+   DKIM-align on the domain, so DMARC passes for both; tighten to
+   `p=quarantine` once reports look clean.
+5. If bulk volume ever grows to many thousands/month, move campaign sends
+   to a dedicated from-subdomain (e.g. `news.publicworship.life`) so
+   marketing reputation can't drag on the root domain the org's personal
+   Google mail sends from. Not needed at current scale.
 
 ## Deliberate limits (v1)
 
