@@ -33,6 +33,11 @@
  * No quiz answers changed truth value — none of the existing questions
  * asserted "no notification" or "manual payout" as fact. Titles, minutes,
  * and quiz lengths are unchanged, so the snapshot test needed no updates.
+ *
+ * Review fix: `finance-reimbursements-and-flags`'s auto-ACH line now notes
+ * the manual-payout fallback for a chapter whose Increase account isn't set
+ * up yet, so it no longer reads as an unconditional guarantee. No titles,
+ * minutes, or quiz content changed.
  */
 
 import type {
@@ -283,7 +288,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "bullets",
         items: [
-          "**Reimbursement — Public Worship owes you:** submit the request in-app with a short note on WHY it was needed, a transaction date on every line, and a receipt for every line — none of that is optional, the app blocks submission until all three are there. Your full bank details (routing + account, not just a last-4) are captured up front too, so the moment someone approves it, the ACH payout fires automatically from the chapter's Increase account — no one has to separately go send it. It then moves through submitted → approved → paying → paid. Someone else — never you — has to approve it.",
+          "**Reimbursement — Public Worship owes you:** submit the request in-app with a short note on WHY it was needed, a transaction date on every line, and a receipt for every line — none of that is optional, the app blocks submission until all three are there. Your full bank details (routing + account, not just a last-4) are captured up front too, so the moment someone approves it, the ACH payout fires automatically from the chapter's Increase account — no one has to separately go send it (unless that account isn't set up yet for the chapter, in which case the Treasurer pays it manually instead). It then moves through submitted → approved → paying → paid. Someone else — never you — has to approve it.",
           "**Personal-charge flag — you owe Public Worship:** flag your own charge as personal on My Transactions, or a manager flags it for you. It opens an owed balance, tracked the same way, just pointed the other direction.",
           "**Both directions live in one place:** the Reimbursements tab shows \"Public Worship owes you\" and \"you owe Public Worship\" side by side, so nothing nets out silently.",
           "**Don't recognize a charge at all?** That's different from a personal charge you remember making — flagging it \"personal\" says YOU made it. If a charge on the Public Worship card is a genuine mystery, freeze the card yourself right away (instant, self-serve, reversible), then tell your Treasurer or the Financial Manager immediately so they can look into it. Don't guess by flagging an unrecognized charge as personal.",

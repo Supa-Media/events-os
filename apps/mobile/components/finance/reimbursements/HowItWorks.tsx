@@ -15,7 +15,7 @@ const STEPS: Step[] = [
   },
   {
     title: "ACH payout",
-    detail: "Approval auto-sends the ACH from the chapter's Increase account straight to your bank.",
+    detail: "Approval auto-sends the ACH straight to your bank (or the Treasurer pays it manually if the chapter's account isn't set up).",
   },
 ];
 

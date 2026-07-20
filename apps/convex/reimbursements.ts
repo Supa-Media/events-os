@@ -2073,7 +2073,20 @@ export const sendReimbursementSubmittedEmail = internalAction({
         }`);
 
       for (const email of payload.recipients) {
-        await sendEmail(email, subject, html);
+        // Per-recipient: `sendEmail` already swallows HTTP-level Resend
+        // failures, but a fetch-level exception (DNS, timeout) would
+        // otherwise abort the loop and silently skip the remaining
+        // recipients. Isolate each send so one bad address can't cost the
+        // others their notification.
+        try {
+          await sendEmail(email, subject, html);
+        } catch (err) {
+          console.error(
+            "sendReimbursementSubmittedEmail: recipient send failed",
+            reimbursementId,
+            err,
+          );
+        }
       }
     } catch (err) {
       console.error(
