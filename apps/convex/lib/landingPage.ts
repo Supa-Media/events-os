@@ -44,6 +44,7 @@ type PublicPage = {
   goalCents: number | null;
   revenueCents: number;
   externalGiftsCents: number;
+  externalGiftsCount: number;
   raisedCents: number;
   // Cover crop focal point (percent, 0-100).
   coverFocalX: number;

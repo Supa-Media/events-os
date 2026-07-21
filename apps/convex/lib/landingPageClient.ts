@@ -496,10 +496,15 @@ function renderGiving(){
   card.style.display='block';
   card.appendChild(el('div','cardtitle serif','Support this event'));
   if(D.givingPrompt)card.appendChild(el('div','giveprompt',D.givingPrompt));
-  if(D.donationsCents>0){
+  // "Raised" = total given toward the event: on-page donations PLUS external
+  // gifts (Givebutter/offline gifts attributed to the event), matching the
+  // admin "Given" stat and the schema's externalGiftsCents doc.
+  var givenCents=(D.donationsCents||0)+(D.externalGiftsCents||0);
+  var giftCount=(D.donationsCount||0)+(D.externalGiftsCount||0);
+  if(givenCents>0){
     var raised=el('div','raised');
-    raised.appendChild(el('b',null,money(D.donationsCents)));
-    var suffix=' raised'+(D.donationsCount?(' · '+D.donationsCount+' gift'+(D.donationsCount===1?'':'s')):'');
+    raised.appendChild(el('b',null,money(givenCents)));
+    var suffix=' raised'+(giftCount?(' · '+giftCount+' gift'+(giftCount===1?'':'s')):'');
     raised.appendChild(document.createTextNode(suffix));
     card.appendChild(raised);
   }
