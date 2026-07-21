@@ -165,6 +165,42 @@ export function registerTicketApiRoutes(http: HttpRouter): void {
     ),
   });
 
+  // Guest sign-in: look up a guest by email/phone, send a code, then trade the
+  // code for their guest token. `start` always returns {ok:true} (no
+  // enumeration); `verify` returns {token} or the same generic 400 as a wrong
+  // code. `method` is coerced to the "email"|"phone" union the mutation accepts.
+  http.route({
+    path: "/api/tickets/signin-start",
+    method: "POST",
+    handler: jsonPost((ctx, body) =>
+      ctx.runMutation(api.ticketingVerification.startGuestSignIn, {
+        slug: String(body.slug ?? ""),
+        method: body.method === "phone" ? "phone" : "email",
+        contact: String(body.contact ?? ""),
+      }),
+    ),
+  });
+
+  http.route({
+    path: "/api/tickets/signin-verify",
+    method: "POST",
+    handler: jsonPost(async (ctx, body) => {
+      const result = await ctx.runMutation(
+        api.ticketingVerification.verifyGuestSignIn,
+        {
+          slug: String(body.slug ?? ""),
+          method: body.method === "phone" ? "phone" : "email",
+          contact: String(body.contact ?? ""),
+          code: String(body.code ?? ""),
+        },
+      );
+      // Wrong/expired code (or unknown contact) is a soft failure so attempt
+      // counts persist — surface it as the same 400 shape as thrown errors.
+      if (!result.ok) throw new ConvexError({ message: result.error });
+      return result;
+    }),
+  });
+
   http.route({
     path: "/api/tickets/comment",
     method: "POST",

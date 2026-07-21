@@ -96,6 +96,22 @@ export async function beginEmailVerification(
   await scheduleCodeEmail(ctx, rsvp.email, code);
 }
 
+/**
+ * Email a fresh code for GUEST SIGN-IN (restoring identity by proving you own
+ * the address). Unlike `beginEmailVerification` it does NOT flip `emailVerified`
+ * — signing in mustn't downgrade an already-verified guest. Rate-limited (one
+ * send/min); silently no-ops if a code was just sent.
+ */
+export async function sendSignInEmailCode(
+  ctx: MutationCtx,
+  rsvp: VerifiableRsvp,
+): Promise<void> {
+  const existing = await pendingCodeFor(ctx, rsvp._id);
+  if (sentRecently(existing)) return;
+  const code = await writeFreshCode(ctx, rsvp._id, existing);
+  await scheduleCodeEmail(ctx, rsvp.email, code);
+}
+
 /** Explicit "Resend code" request — throws when rate-limited. */
 export async function resendEmailCode(
   ctx: MutationCtx,

@@ -175,6 +175,9 @@ describe("GET /api/events/upcoming", () => {
         endDate: null,
         href: `/rsvp/${coverSlug}`,
         coverUrl: `/rsvp/${coverSlug}/cover`,
+        // Default focal point (centered) — no crop set on these events.
+        coverFocalX: 50,
+        coverFocalY: 50,
       },
       {
         title: "Plain Night",
@@ -184,6 +187,8 @@ describe("GET /api/events/upcoming", () => {
         endDate: null,
         href: `/rsvp/${plainSlug}`,
         coverUrl: null,
+        coverFocalX: 50,
+        coverFocalY: 50,
       },
     ]);
   });

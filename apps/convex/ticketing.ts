@@ -708,6 +708,36 @@ export const getPublicPage = query({
       ? null
       : await buildActivity(ctx, page.eventId, viewer);
 
+    // The signed-in guest's own issued tickets — `code` backs both the QR and
+    // the human check-in code shown on the page. Bounded (a guest holds few
+    // orders/tickets); empty when not signed in.
+    const myTickets: Array<{
+      code: string;
+      ticketTypeName: string;
+      status: Doc<"tickets">["status"];
+      checkedInAt: number | null;
+    }> = [];
+    if (viewer) {
+      const myOrders = await ctx.db
+        .query("ticketOrders")
+        .withIndex("by_rsvp", (q) => q.eq("rsvpId", viewer._id))
+        .take(50);
+      for (const order of myOrders) {
+        const ts = await ctx.db
+          .query("tickets")
+          .withIndex("by_order", (q) => q.eq("orderId", order._id))
+          .take(50);
+        for (const t of ts) {
+          myTickets.push({
+            code: t.code,
+            ticketTypeName: t.ticketTypeName,
+            status: t.status,
+            checkedInAt: t.checkedInAt ?? null,
+          });
+        }
+      }
+    }
+
     return {
       isPreview,
       slug: page.slug,
@@ -803,6 +833,8 @@ export const listPublishedUpcoming = query({
       tagline: string | null;
       venueName: string | null;
       hasCover: boolean;
+      coverFocalX: number;
+      coverFocalY: number;
     }> = [];
     for (const page of pages) {
       const event = await ctx.db.get(page.eventId);
@@ -818,6 +850,10 @@ export const listPublishedUpcoming = query({
         tagline: page.tagline ?? null,
         venueName: page.venueName ?? null,
         hasCover: !!page.coverImage,
+        // Cover crop focal point (percent) so marketing surfaces (the
+        // "Important Links" card) crop the same way the landing page does.
+        coverFocalX: page.coverFocalX ?? 50,
+        coverFocalY: page.coverFocalY ?? 50,
       });
     }
     upcoming.sort((a, b) => a.startDate - b.startDate);
@@ -963,6 +999,17 @@ export const submitRsvp = mutation({
         message: "A name and valid email are required.",
       });
     }
+    // Normalize the phone to E.164 on the way in (same as `prepareOrder`), so a
+    // phone captured here is stored identically to one captured at checkout —
+    // otherwise guest sign-in by phone (which looks up the normalized number)
+    // would never match a raw RSVP-entered value.
+    const phone = args.phone ? normalizePhone(args.phone) : null;
+    if (args.phone && !phone) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "Enter a valid phone number.",
+      });
+    }
     if (
       args.status === "going" &&
       page.capacity !== undefined &&
@@ -993,7 +1040,7 @@ export const submitRsvp = mutation({
       await ctx.db.patch(rsvp._id, {
         name,
         email,
-        ...(args.phone !== undefined ? { phone: args.phone } : {}),
+        ...(args.phone !== undefined ? { phone: phone ?? undefined } : {}),
         status: args.status,
         updatedAt: now,
       });
@@ -1014,7 +1061,7 @@ export const submitRsvp = mutation({
       chapterId: page.chapterId,
       name,
       email,
-      phone: args.phone,
+      phone: phone ?? undefined,
       status: args.status,
       token,
       source: "rsvp",

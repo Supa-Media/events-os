@@ -64,11 +64,22 @@ type PublicPage = {
   viewer: {
     name: string;
     email: string | null; // imported name-only guests may have no email
+    phone: string | null;
     status: string;
     emailVerified: boolean;
   } | null;
   activityLocked: boolean;
   activity: unknown[] | null;
+  // Signed-in guest's own tickets (QR + check-in code). Empty/absent when
+  // not signed in (no viewer) or the viewer holds no tickets. Optional here
+  // because getPublicPage's rollout may lag this renderer; the client script
+  // already treats a missing array as empty (`D.myTickets||[]`).
+  myTickets?: Array<{
+    code: string;
+    ticketTypeName: string;
+    status: "valid" | "checked_in" | "void";
+    checkedInAt: number | null;
+  }>;
 };
 
 /** HTML-escape untrusted strings for element content / attributes. */
@@ -182,9 +193,10 @@ ${BASE_CSS}${LANDING_CSS}
 ${coverUrl ? `<div class="backdrop" style="background-image:url('${coverUrl}');background-position:${focalX}% ${focalY}%"></div>` : ""}
 <main>
   ${p.isPreview ? `<div class="previewbar"><span class="previewpill">👀 Draft preview — not published yet</span></div>` : ""}
-  <div class="topbar"><div class="wordmark">✦ ${esc(p.hostName.toUpperCase())} ✦</div></div>
+  <div class="topbar"><div class="wordmark">✦ ${esc(p.hostName.toUpperCase())} ✦</div><div id="signinbar"></div></div>
   <div class="grid">
     <div class="left">
+      <div class="card" id="myticketscard" style="display:none"></div>
       <span class="hostchip"><span class="dot">${esc(p.hostName[0] ?? "P")}</span> Hosted by ${esc(p.hostName)}</span>
       <h1 class="title serif">${esc(p.eventName)}</h1>
       ${p.tagline ? `<p class="tagline">${esc(p.tagline)}</p>` : ""}
@@ -257,6 +269,13 @@ ${coverUrl ? `<div class="backdrop" style="background-image:url('${coverUrl}');b
       <div class="fld"><label for="f_email">Email</label><input id="f_email" type="email" autocomplete="email" placeholder="you@example.com"></div>
       <div class="fld" id="phonefld" style="display:none"><label for="f_phone">Phone number</label><input id="f_phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="(555) 123-4567"></div>
     </div>
+    <div id="signinfields" style="display:none">
+      <div class="signintoggle">
+        <button type="button" class="signinmethod sel" id="signin_m_email" data-m="email">Email</button>
+        <button type="button" class="signinmethod" id="signin_m_phone" data-m="phone">Phone</button>
+      </div>
+      <div class="fld"><label for="f_signin">Email or phone</label><input id="f_signin" type="email" autocomplete="email" placeholder="you@example.com"></div>
+    </div>
     <div id="codefields" style="display:none">
       <div class="fld"><label for="f_code">6-digit code</label><input id="f_code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="123456"></div>
       <button id="resendcode" type="button" style="background:none;border:none;padding:4px 0;color:var(--accent);font-size:13px;font-weight:600;cursor:pointer;text-decoration:underline">Resend code</button>
@@ -267,6 +286,7 @@ ${coverUrl ? `<div class="backdrop" style="background-image:url('${coverUrl}');b
 </div>
 <div id="toast"></div>
 
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
 <script>window.__INIT__=${initialJson};window.__CFG__={slug:${JSON.stringify(p.slug)}};</script>
 <script>
 ${LANDING_SCRIPT}
