@@ -70,6 +70,7 @@ function openSheet(title,sub,cta,action,opts){
   $('sheeterr').textContent='';
   if(D.viewer){$('f_name').value=D.viewer.name;$('f_email').value=D.viewer.email||'';}
   var pf=$('phonefld');if(pf)pf.style.display=phoneReq?'block':'none';
+  var sc=$('smsconsent');if(sc)sc.style.display=phoneReq?'block':'none';
   if(phoneReq&&D.viewer&&D.viewer.phone)$('f_phone').value=D.viewer.phone;
   $('overlay').classList.add('open');
   setTimeout(function(){$('f_name').focus();},100);

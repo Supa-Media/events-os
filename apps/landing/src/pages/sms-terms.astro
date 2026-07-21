@@ -1,0 +1,92 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import Container from "../components/ui/Container.astro";
+import SectionHeading from "../components/ui/SectionHeading.astro";
+
+const updated = "July 21, 2026";
+---
+
+<BaseLayout
+  title="SMS Terms"
+  description="Terms for Public Worship text messages — what we send, how often, and how to opt out."
+>
+  <section class="py-12 sm:py-16">
+    <Container size="default">
+      <SectionHeading eyebrow="Messaging" align="left" as="h1">
+        SMS <span class="text-red-500">Terms</span>
+      </SectionHeading>
+    </Container>
+  </section>
+
+  <section class="pb-16">
+    <Container size="default" class="max-w-3xl">
+      <div class="flex flex-col gap-5 text-ink/85 leading-relaxed">
+        <p class="text-ink/60 text-sm">Last updated {updated}</p>
+
+        <p>
+          These terms govern the text messages sent by Public Worship, a worship
+          initiative of Global Echo Charitable Co., a 501(c)(3) nonprofit. By
+          providing your mobile number on one of our event pages, you agree to
+          these terms.
+        </p>
+
+        <h2 class="font-display text-xl mt-4">What we send</h2>
+        <p>
+          Our messaging program sends two kinds of texts: (1) one-time
+          verification codes when you RSVP for or buy tickets to an event, and
+          (2) announcements, reminders, and invitations about current and future
+          Public Worship events. We do not sell, rent, or share your number with
+          third parties for their own marketing.
+        </p>
+
+        <h2 class="font-display text-xl mt-4">Message frequency</h2>
+        <p>
+          Message frequency varies. Verification codes are sent only when you
+          request one. Event announcements and invitations are typically sent a
+          few times per month, depending on how many events are happening near
+          you.
+        </p>
+
+        <h2 class="font-display text-xl mt-4">Cost</h2>
+        <p>
+          Message and data rates may apply, according to the plan you have with
+          your wireless carrier. Public Worship does not charge you for these
+          messages.
+        </p>
+
+        <h2 class="font-display text-xl mt-4">Opting out — reply STOP</h2>
+        <p>
+          You can cancel at any time by replying <strong>STOP</strong> to any
+          message. After you send STOP, we will send one confirmation and then
+          stop sending you texts. To rejoin, provide your number again on an
+          event page.
+        </p>
+
+        <h2 class="font-display text-xl mt-4">Help — reply HELP</h2>
+        <p>
+          Reply <strong>HELP</strong> to any message for assistance, or email us
+          at <a
+            href="mailto:hello@publicworship.life"
+            class="text-red-500 underline-offset-2 hover:underline"
+            >hello@publicworship.life</a
+          >.
+        </p>
+
+        <h2 class="font-display text-xl mt-4">Carriers</h2>
+        <p>
+          Carriers are not liable for delayed or undelivered messages.
+        </p>
+
+        <h2 class="font-display text-xl mt-4">Privacy</h2>
+        <p>
+          Your information is handled as described in our <a
+            href="/privacy"
+            class="text-red-500 underline-offset-2 hover:underline"
+            >Privacy Policy</a
+          >. Mobile information is never shared with third parties or affiliates
+          for marketing or promotional purposes.
+        </p>
+      </div>
+    </Container>
+  </section>
+</BaseLayout>

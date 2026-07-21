@@ -278,6 +278,11 @@ section{margin-top:36px}
 .sheetbtn:hover{background:var(--accent-hover)}
 .sheetbtn:disabled{opacity:.6;pointer-events:none}
 .sheeterr{color:var(--accent);font-size:13px;margin-top:10px;text-align:center;min-height:16px}
+/* SMS consent disclosure — shown with the phone field; entering a number is
+   the opt-in, so the disclosure carries the A2P-required elements (program,
+   frequency, rates, STOP/HELP, links). */
+.smsconsent{font-size:11.5px;line-height:1.5;color:var(--muted);margin:-2px 0 12px}
+.smsconsent a{color:var(--accent);text-decoration:underline}
 /* toast */
 #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(20px);
   background:var(--ink);color:var(--cream);border-radius:999px;padding:11px 22px;
