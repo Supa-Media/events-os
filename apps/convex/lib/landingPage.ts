@@ -268,6 +268,7 @@ ${coverUrl ? `<div class="backdrop" style="background-image:url('${coverUrl}');b
       <div class="fld"><label for="f_name">Your name</label><input id="f_name" autocomplete="name" placeholder="First and last name"></div>
       <div class="fld"><label for="f_email">Email</label><input id="f_email" type="email" autocomplete="email" placeholder="you@example.com"></div>
       <div class="fld" id="phonefld" style="display:none"><label for="f_phone">Phone number</label><input id="f_phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="(555) 123-4567"></div>
+      <div class="smsconsent" id="smsconsent" style="display:none">By adding your number you agree to receive a verification code and recurring texts about this and future Public Worship events. Msg &amp; data rates may apply; frequency varies. Reply STOP to opt out, HELP for help. See our <a href="https://publicworship.life/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a> and <a href="https://publicworship.life/sms-terms" target="_blank" rel="noopener noreferrer">SMS Terms</a>.</div>
     </div>
     <div id="signinfields" style="display:none">
       <div class="signintoggle">
