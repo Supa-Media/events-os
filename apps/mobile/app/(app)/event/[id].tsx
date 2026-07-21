@@ -32,6 +32,7 @@ import { PlanSections } from "../../../components/event/PlanSections";
 import { EventTodos } from "../../../components/event/EventTodos";
 import { GuidesSection } from "../../../components/event/GuidesSection";
 import { SandboxScope } from "../../../components/event/SandboxScope";
+import { MentionDataProvider } from "../../../components/mentions/MentionDataProvider";
 import {
   ModuleRollupRow,
   confirmRemoveModule,
@@ -549,6 +550,12 @@ export default function EventDetailScreen() {
     // Training sandboxes scope every person picker below (roles, grid cells,
     // crew) to the learner + placeholder people — enforced server-side; the
     // scope just carries the event id down to the pickers.
+    //
+    // MentionDataProvider: fetched once here, it makes every free-text grid
+    // cell on this screen (Tasks details, Comms/Run of Show/Supplies/Permits/
+    // Debrief notes, Crew expectations…) @mention-aware. Template editors
+    // deliberately don't mount it, so their identical grids stay plain.
+    <MentionDataProvider>
     <SandboxScope value={event.isTraining === true ? String(eventId) : null}>
       <Stack.Screen options={{ headerShown: false }} />
       <View className="flex-1 flex-row">
@@ -964,6 +971,7 @@ export default function EventDetailScreen() {
         onClose={() => setOwnerOpen(false)}
       />
     </SandboxScope>
+    </MentionDataProvider>
   );
 }
 

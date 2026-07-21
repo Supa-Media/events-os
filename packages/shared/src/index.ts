@@ -1960,3 +1960,6 @@ export * from "./finance";
 
 // ── Org-chart seat taxonomy (template constants + capability vocabulary) ─────
 export * from "./seats";
+
+// ── @mention markup for plain-text notes fields ───────────────────────────────
+export * from "./mentions";

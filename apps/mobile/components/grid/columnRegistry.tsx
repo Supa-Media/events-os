@@ -49,6 +49,9 @@ export const DEFAULT_COL_WIDTH = 160;
 export interface InlineTextConfig {
   multiline?: boolean;
   numeric?: boolean;
+  /** Free-text types offer the `@`-mention picker + rendered mention links
+   *  (when a MentionDataProvider is mounted — event screens, not templates). */
+  mentionable?: boolean;
   /** Placeholder; a function lets the `title` column override it by key. */
   placeholder?: string | ((column: GridColumn) => string);
   weight?: ((column: GridColumn) => "normal" | "medium") | "normal" | "medium";
@@ -70,6 +73,7 @@ export const COLUMN_TYPE_REGISTRY: Record<ColumnType, ColumnTypeEntry> = {
     width: DEFAULT_COL_WIDTH,
     inlineText: {
       multiline: true,
+      mentionable: true,
       placeholder: (c) => (c.key === "title" ? "Untitled" : "—"),
       weight: (c) => (c.key === "title" ? "medium" : "normal"),
       parse: (t, c) => (c.key === "title" ? t : t.trim() ? t : null),
@@ -79,6 +83,7 @@ export const COLUMN_TYPE_REGISTRY: Record<ColumnType, ColumnTypeEntry> = {
     width: 280,
     inlineText: {
       multiline: true,
+      mentionable: true,
       placeholder: "—",
       parse: (t) => (t.trim() ? t : null),
     },
