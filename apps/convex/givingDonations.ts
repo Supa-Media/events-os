@@ -65,6 +65,13 @@ export const startGiveDonationCheckout = action({
     amountCents: v.number(),
     name: v.string(),
     email: v.string(),
+    // Wave 2 (F6, activity wall): opt in to a public, PII-free echo of this
+    // gift on the territory's `/give/<slug>` activity wall — see
+    // `givingActivity.ts`. All three are optional and additive; omitting them
+    // (the pre-wave-2 client) behaves exactly as before.
+    shareOnWall: v.optional(v.boolean()),
+    publicName: v.optional(v.string()),
+    message: v.optional(v.string()),
   },
   handler: async (ctx, args): Promise<{ url: string }> => {
     const slug = args.slug?.trim() || undefined;
@@ -143,6 +150,23 @@ export const startGiveDonationCheckout = action({
       });
     }
     const session = (await response.json()) as { id: string; url: string };
+
+    // Wave 2 (F6, activity wall): record a PENDING wall entry — never shown
+    // until the webhook settles it (`markActivityVisible`). The wall is
+    // per-territory, so a "central" (no-slug, general-ministry) gift has no
+    // chapter to post to and is skipped. `recordPendingActivity` itself skips
+    // silently if the giver left both name and message blank.
+    if (args.shareOnWall && scope !== "central") {
+      await ctx.runMutation(internal.givingActivity.recordPendingActivity, {
+        refKey: `give:${session.id}`,
+        scope,
+        kind: "gift",
+        amountCents: prepared.amountCents,
+        ...(args.publicName ? { displayName: args.publicName } : {}),
+        ...(args.message ? { message: args.message } : {}),
+      });
+    }
+
     return { url: session.url };
   },
 });

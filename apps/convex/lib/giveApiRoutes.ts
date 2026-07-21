@@ -59,11 +59,17 @@ export function registerGiveApiRoutes(http: HttpRouter): void {
           message: "This territory isn't available for backing right now.",
         });
       }
+      const publicName = String(body.publicName ?? "").trim();
+      const message = String(body.message ?? "").trim();
       return ctx.runAction(api.givingPledges.startPledgeCheckout, {
         chapterId: resolved.chapterId,
         amountCents: Math.floor(Number(body.amountCents)),
         name: String(body.name ?? ""),
         email: String(body.email ?? ""),
+        // Optional public activity-wall opt-in.
+        ...(body.shareOnWall ? { shareOnWall: true } : {}),
+        ...(publicName ? { publicName } : {}),
+        ...(message ? { message } : {}),
       });
     }),
   });
@@ -76,11 +82,17 @@ export function registerGiveApiRoutes(http: HttpRouter): void {
     method: "POST",
     handler: jsonPost(async (ctx, body) => {
       const slug = String(body.slug ?? "").trim() || undefined;
+      const publicName = String(body.publicName ?? "").trim();
+      const message = String(body.message ?? "").trim();
       return ctx.runAction(api.givingDonations.startGiveDonationCheckout, {
         ...(slug ? { slug } : {}),
         amountCents: Math.floor(Number(body.amountCents)),
         name: String(body.name ?? ""),
         email: String(body.email ?? ""),
+        // Optional public activity-wall opt-in (ignored for central/no-slug gifts).
+        ...(body.shareOnWall ? { shareOnWall: true } : {}),
+        ...(publicName ? { publicName } : {}),
+        ...(message ? { message } : {}),
       });
     }),
   });
@@ -92,23 +104,30 @@ export function registerGiveApiRoutes(http: HttpRouter): void {
     path: "/api/give/interest",
     method: "POST",
     handler: jsonPost(async (ctx, body) => {
-      const kind = String(body.kind ?? "");
+      const toStrArray = (v: unknown): string[] =>
+        Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean) : [];
+      const kinds = toStrArray(body.kinds);
+      const roles = toStrArray(body.roles);
       const name = String(body.name ?? "").trim();
       const email = String(body.email ?? "").trim();
+      const phone = String(body.phone ?? "").trim();
+      const socialHandle = String(body.socialHandle ?? "").trim();
       const location = String(body.location ?? "").trim();
       const message = String(body.message ?? "").trim();
+      const skills = String(body.skills ?? "").trim();
+      const church = String(body.church ?? "").trim();
       const territorySlug = String(body.territorySlug ?? "").trim();
       await ctx.runMutation(api.givingInterest.submitInterest, {
-        kind: kind as
-          | "want_in_city"
-          | "volunteer"
-          | "join_team"
-          | "fund"
-          | "suggest_space",
+        kinds,
         ...(name ? { name } : {}),
         ...(email ? { email } : {}),
+        ...(phone ? { phone } : {}),
+        ...(socialHandle ? { socialHandle } : {}),
         ...(location ? { location } : {}),
         ...(message ? { message } : {}),
+        ...(roles.length ? { roles } : {}),
+        ...(skills ? { skills } : {}),
+        ...(church ? { church } : {}),
         ...(territorySlug ? { territorySlug } : {}),
       });
       return { ok: true };

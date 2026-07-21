@@ -194,16 +194,86 @@ section{margin-bottom:32px}
 .tab-panel{display:none}
 .tab-panel.active{display:block}
 
-/* ── interest / suggest-a-space ── */
+/* ── interest / suggest-a-space (F4: multi-select checkboxes) ── */
 .interest-count{font-size:14px;color:var(--muted);margin-bottom:14px}
 .interest-opts{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:8px;margin-bottom:16px}
-.interest-opt{display:flex;flex-direction:column;align-items:flex-start;gap:3px;text-align:left;
+.interest-opt{display:flex;align-items:flex-start;gap:10px;text-align:left;cursor:pointer;
   border:1.5px solid var(--border-strong);border-radius:14px;padding:11px 14px;transition:all .12s;background:none}
 .interest-opt:hover{border-color:var(--accent)}
-.interest-opt.sel{background:var(--accent-soft);border-color:var(--accent);
+.interest-opt:has(input:checked){background:var(--accent-soft);border-color:var(--accent);
   box-shadow:0 0 0 3px rgba(210,59,58,.14)}
+.interest-opt input[type="checkbox"]{width:16px;height:16px;margin-top:2px;accent-color:var(--accent);flex-shrink:0}
+.interest-opt .io-text{display:flex;flex-direction:column;gap:3px}
 .interest-opt .io-label{font-weight:700;font-size:13.5px;color:var(--ink)}
 .interest-opt .io-hint{font-size:12px;color:var(--muted)}
+.interest-hint{font-size:12.5px;color:var(--faint);margin:-6px 0 10px}
+
+/* ── founding-team progressive reveal (F4: roles, skills, church, phone, social) ── */
+.jointeam-fld{border:1px dashed var(--border-strong);border-radius:14px;padding:14px;margin-bottom:14px;background:var(--sunken)}
+.jointeam-fld > .fld:last-child{margin-bottom:0}
+.jointeam-note{font-size:12.5px;color:var(--muted);line-height:1.5;margin-bottom:10px}
+.role-opts{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:6px;margin-bottom:4px}
+.role-opt{display:flex;align-items:center;gap:6px;font-size:12.5px;color:var(--ink);border:1px solid var(--border);
+  border-radius:10px;padding:6px 10px;cursor:pointer;background:var(--raised)}
+.role-opt:has(input:checked){background:var(--accent-soft);border-color:var(--accent)}
+.role-opt input{width:14px;height:14px;accent-color:var(--accent)}
+
+/* ── share-on-wall extras (F6, shared by the monthly + one-time forms) ── */
+.sharewall{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);margin:-2px 0 14px;cursor:pointer}
+.sharewall input{width:16px;height:16px;accent-color:var(--accent)}
+
+/* ── one-time → City Launch Fund framing (F5, territory pre-launch) ── */
+.onetime-launch-intro{margin-bottom:14px}
+.onetime-launch-intro h3{font-family:'Corben',Georgia,serif;font-size:16px;font-weight:400;margin-bottom:4px}
+.onetime-launch-intro p{font-size:13px;color:var(--muted);line-height:1.5}
+
+/* ── money transparency (F2, both pages) ── */
+.moneybox .lead{color:var(--muted);font-size:15px;line-height:1.6;margin-bottom:16px}
+.mt-h3{font-family:'Corben',Georgia,serif;font-size:16px;font-weight:400;margin:18px 0 8px}
+.mt-table-wrap{overflow-x:auto;margin-bottom:16px}
+.mt-table{width:100%;border-collapse:collapse;font-size:13.5px}
+.mt-table th,.mt-table td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--border)}
+.mt-table th{color:var(--muted);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.02em}
+.mt-detail{border:1px solid var(--border);border-radius:14px;padding:14px 16px;margin-bottom:14px;background:var(--raised)}
+.mt-detail summary{cursor:pointer;font-weight:700;font-size:14.5px;color:var(--ink)}
+.mt-detail .mt-sub{font-size:12.5px;font-weight:700;color:var(--muted);margin:12px 0 4px;text-transform:uppercase;letter-spacing:.02em}
+.mt-lines{margin-top:8px}
+.mt-line{display:flex;justify-content:space-between;gap:12px;font-size:13.5px;color:var(--muted);padding:4px 0}
+.mt-line-note{color:var(--faint);font-size:12px}
+.mt-total{display:flex;justify-content:space-between;font-weight:700;font-size:14px;color:var(--ink);
+  border-top:1px solid var(--border);margin-top:8px;padding-top:8px}
+.mt-total-grand{color:var(--accent)}
+.mt-split{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px;margin-bottom:16px}
+.mt-backer-def{font-size:13px;color:var(--muted);line-height:1.5}
+
+/* ── sustain section (F3, territory, launched-but-under-backed) ── */
+.sustainbox{border:1px solid var(--border);border-radius:20px;padding:20px 22px;background:var(--sunken)}
+.sustainbox > p{color:#4A2E2E;font-size:14.5px;line-height:1.6;margin-bottom:16px}
+.sustain-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin-bottom:16px}
+.sustain-item{background:var(--raised);border:1px solid var(--border);border-radius:14px;padding:14px}
+.sustain-item h3{font-size:14px;margin-bottom:4px}
+.sustain-item p{font-size:13px;color:var(--muted);line-height:1.5}
+.fundraiser-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
+.fundraiser-card{display:block;border:1px solid var(--border);border-radius:14px;background:var(--raised);
+  padding:14px;text-decoration:none;color:inherit;transition:border-color .15s}
+.fundraiser-card:hover{border-color:var(--accent)}
+.fundraiser-card .fc-name{font-weight:700;font-size:14px;color:var(--ink)}
+.fundraiser-card .fc-stat{font-size:12.5px;color:var(--muted);margin:3px 0 8px}
+.fundraiser-empty{font-size:13.5px;color:var(--muted)}
+
+/* ── activity wall (F6, territory) ── */
+.activitywall{border:1px solid var(--border);border-radius:20px;padding:18px 20px;background:var(--raised)}
+.activity-list{display:flex;flex-direction:column;gap:12px}
+.activity-item{border-bottom:1px solid var(--border);padding-bottom:12px}
+.activity-item:last-child{border-bottom:0;padding-bottom:0}
+.ai-line{font-size:14px;color:var(--ink)}
+.ai-msg{font-size:13.5px;color:var(--muted);font-style:italic;margin-top:3px}
+.ai-time{font-size:11.5px;color:var(--faint);margin-top:3px}
+.activity-empty{color:var(--muted);font-size:14px}
+
+/* ── team philosophy (F7, both pages) ── */
+.teamphilo p{color:var(--muted);font-size:14.5px;line-height:1.65;margin-bottom:12px}
+.teamphilo-quote{font-family:'Corben',Georgia,serif;font-size:16px;color:var(--accent);font-style:italic}
 
 .give-404{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;
   text-align:center;padding:24px;gap:10px}

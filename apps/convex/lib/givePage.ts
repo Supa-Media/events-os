@@ -14,6 +14,15 @@
  * goal cards) live in `givePageSections.ts` to keep this file's two page
  * compositions readable.
  *
+ * WAVE 2 (2026-07): a thank-you banner on the map after a one-time gift
+ * (`thankYou`), a deep "where your giving goes" money-transparency section
+ * (single-sourced from the shared finance constants — see
+ * `givePageSections.ts`'s `moneyTransparencyHtml`), a launched-but-under-
+ * backed "sustain" section + a public activity wall on the territory page,
+ * a multi-select interest form, one-time-gift → City Launch Fund framing for
+ * pre-launch territories, and a "who we're looking for" team-philosophy
+ * block on both pages.
+ *
  * The map's dots are plotted with a hand-rolled equirectangular projection
  * (see `projectPoint`) onto a simplified, hand-rolled continental-US outline
  * polygon (`US_OUTLINE`) — no tile imagery, no third-party map library.
@@ -23,10 +32,14 @@ import { GIVE_CSS } from "./givePageStyles";
 import { GIVE_CAMPAIGN_SCRIPT } from "./givePageClient";
 import {
   activeRaisesHtml,
+  activityWallHtml,
   interestSectionHtml,
+  moneyTransparencyHtml,
   monthlyGiveFormHtml,
   oneTimeGiveFormHtml,
   programCardsHtml,
+  sustainSectionHtml,
+  teamPhilosophyHtml,
 } from "./givePageSections";
 import { escapeHtml as esc } from "./html";
 import { givePagePath } from "./siteUrl";
@@ -35,6 +48,7 @@ import {
   CENTRAL_SKIM_PCT,
   formatCents,
   launchTemplateTotalCents,
+  PUBLIC_BACKER_TIERS,
 } from "@events-os/shared";
 
 type TerritoryStage = "prospect" | "raising" | "launched";
@@ -78,12 +92,47 @@ export type PublicTerritoryData = {
     targetCents: number;
     months: Array<{ month: string; cents: number }>;
   } | null;
+  // Wave 2 (F3 sustain section) — published, FUTURE fundraiser event pages for
+  // this territory's chapter that carry a `goalCents` (see
+  // `territories.ts#getPublicTerritory`'s F3-data extension). Capped 5,
+  // soonest first, PII-free. Rendered only for a launched-but-under-backed
+  // territory (`sustainSectionHtml`'s gate).
+  upcomingFundraisers: Array<{
+    name: string;
+    slug: string;
+    goalCents: number;
+    raisedCents: number;
+    startDate: number;
+  }>;
+  // Wave 2 (F3) — count of committed/active sponsorships for this chapter (0
+  // when none). PII-free (a count, not the sponsor list).
+  sponsorshipCount: number;
 };
 
 /** PII-free aggregate counts for the interest section's live "N people want
  *  this in their city" line — fed by `api.givingInterest.publicInterestStats`
  *  (bounded counts only, mirrors `getPublicMapData`'s discipline). */
 export type InterestStats = { total: number; wantInCity: number };
+
+/**
+ * One row of the territory page's public activity wall (F6) — a recurring
+ * backer or a one-time gift that opted in to "share this on the wall" (see
+ * `givePageSections.ts`'s `giveFormExtrasHtml`). Fed by
+ * `api.givingActivity.getTerritoryActivity` (up to 20 newest VISIBLE rows).
+ * PII-free: `displayName` is the giver's own self-provided public name, NEVER
+ * an email.
+ */
+export type TerritoryActivityEntry = {
+  kind: "backer" | "gift";
+  // `null` when the giver left no display name / message — the shape the
+  // PII-free `givingActivity.getTerritoryActivity` validator returns (which
+  // uses `v.union(v.string(), v.null())`); `undefined` is accepted too so a
+  // caller can simply omit them. The renderer truthiness-checks both.
+  displayName?: string | null;
+  amountCents: number;
+  message?: string | null;
+  at: number;
+};
 
 // ── Preset give amounts ──────────────────────────────────────────────────────
 // One-time (map + territory): $25/$50/$100/$250, default $50. Backer/monthly
@@ -95,6 +144,13 @@ export type InterestStats = { total: number; wantInCity: number };
 export const ONE_TIME_PRESETS_CENTS = [2500, 5000, 10000, 25000];
 export const ONE_TIME_DEFAULT_INDEX = 1; // $50
 export const BACKER_PRESETS_CENTS = [5000, 10000, 20000];
+
+// F5 (wave 2): a pre-launch territory's one-time tab is framed as a gift
+// toward that city's Launch Fund — swap in a couple of larger suggested
+// amounts (keeping the $50 default) to invite generosity toward the ~$8k
+// equipment + training ask, rather than the map's smaller "just give" range.
+export const LAUNCH_FUND_ONE_TIME_PRESETS_CENTS = [5000, 10000, 25000, 100000];
+export const LAUNCH_FUND_ONE_TIME_DEFAULT_INDEX = 0; // $50
 
 // ── Map projection ────────────────────────────────────────────────────────────
 // A simple EQUIRECTANGULAR projection (linear lat/lng → x/y — no curvature
@@ -228,53 +284,21 @@ function transparencyNoteHtml(): string {
   return `<p class="transparency-note">Every gift is recorded and receipted by email. ${localPct}% funds the local chapter; ${skimPct}% becomes the City Launch Fund for the next city.</p>`;
 }
 
-/** The "How a chapter happens" explainer — the playbook's transparency
- *  section (PRD §5), with every number pulled from the shared finance
- *  constants so it can never drift from the real skim/backer/launch-grant
- *  math. Territory-page only (kept as-is from the pre-redesign page); the map
- *  page's philosophy section is `whereYourGivingGoesHtml` below. */
-function explainerHtml(): string {
-  const localPct = Math.round((1 - CENTRAL_SKIM_PCT) * 100);
-  const skimPct = Math.round(CENTRAL_SKIM_PCT * 100);
-  return `<section class="explainer">
-  <h2 class="sectionhead">How a chapter happens</h2>
-  <div class="grid">
-    <div class="fact"><div class="k">5</div><div class="v">A core team of five gets a city started — worship, hospitality, comms, ops, and a chapter director.</div></div>
-    <div class="fact"><div class="k">${esc(formatCents(BACKER_UNIT_CENTS, { showCents: false }))}/mo</div><div class="v">The backer floor. Every recurring backer chips in at least this much to fund the team's monthly operating costs.</div></div>
-    <div class="fact"><div class="k">${localPct}% / ${skimPct}%</div><div class="v">${localPct}% of backer revenue stays local to the chapter; ${skimPct}% goes to the City Launch Fund that seeds the NEXT city.</div></div>
-    <div class="fact"><div class="k">~${esc(formatCents(launchTemplateTotalCents(), { showCents: false }))}</div><div class="v">The one-time City Launch Fund grant — equipment plus a training trip — that starts a brand-new chapter.</div></div>
-  </div>
-</section>`;
-}
-
-/** The map page's "Where your giving goes" philosophy section (block #4) —
- *  an adaptation of `explainerHtml`'s fact grid (same constant-driven
- *  numbers) with the philosophy prose ahead of it. */
-function whereYourGivingGoesHtml(): string {
-  const localPct = Math.round((1 - CENTRAL_SKIM_PCT) * 100);
-  const skimPct = Math.round(CENTRAL_SKIM_PCT * 100);
-  const launchGrant = esc(
-    formatCents(launchTemplateTotalCents(), { showCents: false }),
-  );
-  return `<section class="explainer">
-  <h2 class="sectionhead">Where your giving goes</h2>
-  <p class="lead">A core team of five — worship, hospitality, comms, ops, chapter director — runs a city's chapter. ${localPct}% of monthly backer revenue funds their work locally; ${skimPct}% flows to a City Launch Fund that trains and equips the next team. A new city receives about ${launchGrant} to start: equipment, materials, and a training trip. One dollar, multiplied across cities.</p>
-  <div class="grid">
-    <div class="fact"><div class="k">5</div><div class="v">A core team of five gets a city started — worship, hospitality, comms, ops, and a chapter director.</div></div>
-    <div class="fact"><div class="k">${esc(formatCents(BACKER_UNIT_CENTS, { showCents: false }))}/mo</div><div class="v">The backer floor. Every recurring backer chips in at least this much to fund the team's monthly operating costs.</div></div>
-    <div class="fact"><div class="k">${localPct}% / ${skimPct}%</div><div class="v">${localPct}% of backer revenue stays local to the chapter; ${skimPct}% goes to the City Launch Fund that seeds the NEXT city.</div></div>
-    <div class="fact"><div class="k">~${launchGrant}</div><div class="v">The one-time City Launch Fund grant — equipment plus a training trip — that starts a brand-new chapter.</div></div>
-  </div>
-</section>`;
-}
-
 /** The map page's "City Launch Plan" section (block #2) — the movement
- *  pitch right above the map itself. */
+ *  pitch right above the map itself. Wave-2 copy alignment: the playbook
+ *  one-liner (5-person team + 20 backers at $50/mo makes a city
+ *  self-sustaining, a slice of every chapter funds the next), computed from
+ *  the shared constants rather than the stale "~25 backers" copy. New York's
+ *  own page still shows its real 25-backer target from `data` unaffected —
+ *  this is just the generic movement pitch. */
 function cityLaunchPlanHtml(): string {
   const unit = esc(formatCents(BACKER_UNIT_CENTS, { showCents: false }));
+  const tier20 =
+    PUBLIC_BACKER_TIERS.find((t) => t.minBackers === 20) ?? PUBLIC_BACKER_TIERS[0];
+  const monthly20 = esc(formatCents(tier20.monthlyCents, { showCents: false }));
   return `<div class="citylaunch">
   <h2 class="sectionhead serif">Public Worship — The Movement: City Launch Plan</h2>
-  <p>Every city starts the same way: a worship leader, a hospitality coordinator, someone on comms, an operations lead, and a chapter director. Find ~25 monthly backers at ${unit} or more, and that team launches where you are. Starting with New York, we train a team, then plan the next cities together.</p>
+  <p>Every city starts the same way: a worship leader, a hospitality coordinator, someone on comms, an operations lead, and a chapter director. A 5-person team plus ${tier20.minBackers} backers at ${unit}/mo (${monthly20}/mo) makes a city self-sustaining — and a slice of every chapter funds the launch of the next. Starting with New York, we train a team, then plan the next cities together.</p>
 </div>`;
 }
 
@@ -371,10 +395,31 @@ function milestoneLadderHtml(data: PublicTerritoryData): string {
 </section>`;
 }
 
-/** The territory page's give box: a two-tab (monthly default, one-time) give
- *  form, with the backer-vs-recurring-giver explainer and the transparency
- *  note right alongside. */
+/**
+ * The territory page's give box: a two-tab (monthly default, one-time) give
+ * form, with the backer-vs-recurring-giver explainer and the transparency
+ * note right alongside.
+ *
+ * F5 (wave 2): a PRE-LAUNCH territory (`stage !== "launched"`) frames the
+ * one-time tab as a gift toward that city's Launch Fund — a short intro tying
+ * the ask to the equipment list, plus larger suggested amounts
+ * (`LAUNCH_FUND_ONE_TIME_PRESETS_CENTS`) to invite generosity. A launched
+ * territory's one-time tab is unchanged from wave 1.
+ */
 function giveBoxHtml(data: PublicTerritoryData): string {
+  const preLaunch = data.stage !== "launched";
+  const oneTimePresets = preLaunch
+    ? LAUNCH_FUND_ONE_TIME_PRESETS_CENTS
+    : ONE_TIME_PRESETS_CENTS;
+  const oneTimeDefaultIndex = preLaunch
+    ? LAUNCH_FUND_ONE_TIME_DEFAULT_INDEX
+    : ONE_TIME_DEFAULT_INDEX;
+  const oneTimeIntro = preLaunch
+    ? `<div class="onetime-launch-intro">
+  <h3>Give toward the ${esc(data.name)} City Launch Fund</h3>
+  <p>Your gift helps buy the microphones, the mixer, the speakers — everything on the launch team's equipment list — and fund their training trip before day one.</p>
+</div>`
+    : "";
   return `<section class="givecard">
   <div class="givecard-head">
     <h2>Give to ${esc(data.name)}</h2>
@@ -388,9 +433,10 @@ function giveBoxHtml(data: PublicTerritoryData): string {
     ${monthlyGiveFormHtml(BACKER_PRESETS_CENTS)}
   </div>
   <div class="tab-panel" data-tab-panel="onetime">
+    ${oneTimeIntro}
     ${oneTimeGiveFormHtml({
-      presetsCents: ONE_TIME_PRESETS_CENTS,
-      defaultIndex: ONE_TIME_DEFAULT_INDEX,
+      presetsCents: oneTimePresets,
+      defaultIndex: oneTimeDefaultIndex,
       submitLabel: "Give now",
     })}
   </div>
@@ -403,11 +449,18 @@ function giveBoxHtml(data: PublicTerritoryData): string {
 export function renderGiveMapPage(
   territories: MapTerritory[],
   interestStats: InterestStats,
+  thankYou: boolean,
   siteUrl: string,
 ): string {
   const title = "See where Public Worship is growing, and start a chapter in your city.";
   const description =
     "Public Worship gathers neighborhoods for worship in public spaces — bold gospel and generous community care. Give a one-time gift to help the work right now, or back the team that will bring it to your city.";
+
+  // F1 (wave 2): a one-time gift on the map returns to `/give?donated=1` —
+  // the orchestrator (http.ts) reads that query param and passes `thankYou`.
+  const thankYouBanner = thankYou
+    ? `<div class="thankyou success">🙏 Thank you for your gift — a receipt is on its way.</div>`
+    : "";
 
   const dots = territories
     .map((c) => {
@@ -448,6 +501,7 @@ export function renderGiveMapPage(
     mode: "map",
     slug: null,
     oneTimePresetsCents: ONE_TIME_PRESETS_CENTS,
+    oneTimeDefaultIndex: ONE_TIME_DEFAULT_INDEX,
   }).replace(/</g, "\\u003c");
 
   return `<!doctype html>
@@ -461,6 +515,9 @@ ${BASE_CSS}${GIVE_CSS}
 <body>
 <main class="give">
   <div class="give-topbar"><div class="wordmark">✦ PUBLIC WORSHIP ✦</div></div>
+
+  ${thankYouBanner}
+
   <div class="give-hero">
     <h1 class="serif">${esc(title)}</h1>
     <p>${esc(description)}</p>
@@ -496,7 +553,9 @@ ${BASE_CSS}${GIVE_CSS}
     ${territories.length === 0 ? `<p style="color:var(--muted);font-size:14px">Nothing here yet.</p>` : listRows}
   </div>
 
-  ${whereYourGivingGoesHtml()}
+  ${moneyTransparencyHtml()}
+
+  ${teamPhilosophyHtml()}
 
   ${interestSectionHtml(interestStats)}
 
@@ -516,6 +575,7 @@ ${GIVE_CAMPAIGN_SCRIPT}
 export function renderGiveTerritoryPage(
   data: PublicTerritoryData,
   interestStats: InterestStats,
+  activity: TerritoryActivityEntry[],
   siteUrl: string,
   pledgeParam: string | null,
 ): string {
@@ -551,11 +611,24 @@ export function renderGiveTerritoryPage(
     ? `<div class="next-callout">${remaining} more backer${remaining === 1 ? "" : "s"} guarantee${remaining === 1 ? "s" : ""} ${esc(data.nextMilestone.commitment)} in ${esc(data.name)}.</div>`
     : "";
 
+  // F5 (wave 2): a pre-launch territory's one-time tab uses the larger
+  // Launch-Fund preset ladder (see `giveBoxHtml`) — bootstrap the SAME
+  // presets/default here so the client script's amount picker matches
+  // whichever preset is server-rendered `.sel`.
+  const preLaunch = data.stage !== "launched";
+  const oneTimePresetsCents = preLaunch
+    ? LAUNCH_FUND_ONE_TIME_PRESETS_CENTS
+    : ONE_TIME_PRESETS_CENTS;
+  const oneTimeDefaultIndex = preLaunch
+    ? LAUNCH_FUND_ONE_TIME_DEFAULT_INDEX
+    : ONE_TIME_DEFAULT_INDEX;
+
   const initialJson = JSON.stringify({
     mode: "territory",
     slug: data.slug,
     backerPresetsCents: BACKER_PRESETS_CENTS,
-    oneTimePresetsCents: ONE_TIME_PRESETS_CENTS,
+    oneTimePresetsCents,
+    oneTimeDefaultIndex,
     backerUnitCents: BACKER_UNIT_CENTS,
   }).replace(/</g, "\\u003c");
 
@@ -592,15 +665,21 @@ ${BASE_CSS}${GIVE_CSS}
 
   ${giveBoxHtml(data)}
 
+  ${activityWallHtml(activity)}
+
   ${milestoneLadderHtml(data)}
 
   ${programCardsHtml()}
 
   ${data.stage === "launched" ? foundingCalloutHtml() : ""}
 
+  ${data.stage === "launched" && data.backerCount < data.targetBackers ? sustainSectionHtml(data) : ""}
+
   ${data.story ? `<section><h2 class="sectionhead">The story so far</h2><div class="story">${esc(data.story)}</div></section>` : ""}
 
-  ${explainerHtml()}
+  ${moneyTransparencyHtml()}
+
+  ${teamPhilosophyHtml()}
 
   ${interestSectionHtml(interestStats)}
 

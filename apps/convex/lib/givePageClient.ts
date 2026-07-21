@@ -7,18 +7,28 @@
  * all).
  *
  * Reads `window.__GIVE__` (stamped by `givePage.ts`):
- *   map:       { mode:"map", slug:null, oneTimePresetsCents }
+ *   map:       { mode:"map", slug:null, oneTimePresetsCents, oneTimeDefaultIndex }
  *   territory: { mode:"territory", slug, backerPresetsCents,
- *                oneTimePresetsCents, backerUnitCents }
+ *                oneTimePresetsCents, oneTimeDefaultIndex, backerUnitCents }
  *
  * Drives three same-origin JSON POSTs (all mirror `landingPageClient.ts`'s
  * `startDonation` shape — resolve → redirect to the returned Stripe URL):
  *   - `/api/give/donate`   — the one-time form (`#gc_onetime_form`).
  *   - `/api/give/pledge`   — the monthly/backer form (`#gc_monthly_form`,
- *                            territory only) — UNCHANGED payload shape.
+ *                            territory only) — UNCHANGED core payload shape,
+ *                            PLUS (F6, wave 2) the optional `shareOnWall`/
+ *                            `publicName`/`message` trio, sent only when the
+ *                            form's "share this on the wall" box is checked.
  *   - `/api/give/interest` — the interest + suggest-a-space form (`#gi_form`,
- *                            map + territory) — no redirect, shows an inline
- *                            thank-you on success.
+ *                            map + territory) — MULTI-SELECT (F4, wave 2):
+ *                            sends `kinds: string[]` from however many
+ *                            checkboxes are checked. Checking "I want to be
+ *                            on the founding team" (`join_team`) reveals a
+ *                            role picker + skills/church/phone/social fields
+ *                            and REQUIRES name, phone, email, and at least
+ *                            one role before submit; every other selection
+ *                            stays fully optional. No redirect — shows an
+ *                            inline thank-you on success.
  */
 export const GIVE_CAMPAIGN_SCRIPT = `
 (function(){
@@ -109,6 +119,17 @@ function wireAmountForm(opts){
     if(btn)btn.disabled=true;
     var payload={amountCents:amountCents,name:name,email:email};
     if(G.slug)payload.slug=G.slug;
+    // F6 (wave 2): "share this on the wall" — publicName/message only ever
+    // travel alongside shareOnWall, so an unchecked box never leaks a typed
+    // (but un-shared) message to the server.
+    var share=!!(($(prefix+'_share')||{}).checked);
+    if(share){
+      var publicName=(($(prefix+'_public_name')||{}).value||'').trim();
+      var wallMessage=(($(prefix+'_message')||{}).value||'').trim().slice(0,280);
+      payload.shareOnWall=true;
+      if(publicName)payload.publicName=publicName;
+      if(wallMessage)payload.message=wallMessage;
+    }
     fetch(opts.endpoint,{
       method:'POST',
       headers:{'Content-Type':'application/json'},
@@ -150,32 +171,45 @@ function wireTabs(){
 }
 
 /* Wire the interest + suggest-a-space form. Present (with the same ids) on
-   both pages; no-ops if #gi_form isn't on the page. */
+   both pages; no-ops if #gi_form isn't on the page. MULTI-SELECT (F4, wave
+   2): several .interest-opt checkboxes may be checked at once, sent as
+   kinds:string[]. Two fields progressively reveal off the checked set:
+     - the location field, when want_in_city or suggest_space is checked.
+     - the founding-team block (role picker + skills/church/phone/social),
+       when join_team is checked -- which also makes name/phone/email/role
+       REQUIRED (every other selection stays fully optional, matching wave
+       1's "at least one of name/email/location/message" rule). */
 function wireInterestForm(){
   var form=$('gi_form');
   if(!form)return;
-  var selectedKind=null;
-  var opts=qsa('.interest-opt');
   var locationFld=$('gi_location_fld');
-  function refreshLocationField(){
-    if(!locationFld)return;
-    var show=selectedKind==='want_in_city'||selectedKind==='suggest_space';
-    locationFld.style.display=show?'block':'none';
+  var jointeamFld=$('gi_jointeam_fld');
+
+  function selectedKinds(){
+    var out=[];
+    var all=qsa('.interest-opt input[type="checkbox"]');
+    for(var i=0;i<all.length;i++){if(all[i].checked)out.push(all[i].value);}
+    return out;
   }
-  for(var i=0;i<opts.length;i++){
-    (function(o){
-      o.addEventListener('click',function(){
-        var kind=o.getAttribute('data-kind');
-        selectedKind=(selectedKind===kind)?null:kind;
-        var all=qsa('.interest-opt');
-        for(var j=0;j<all.length;j++){
-          all[j].classList.toggle('sel',all[j].getAttribute('data-kind')===selectedKind);
-        }
-        refreshLocationField();
-      });
-    })(opts[i]);
+  function selectedRoles(){
+    var out=[];
+    var all=qsa('.role-opt input[type="checkbox"]');
+    for(var i=0;i<all.length;i++){if(all[i].checked)out.push(all[i].value);}
+    return out;
   }
-  refreshLocationField();
+  function refreshFields(){
+    var kinds=selectedKinds();
+    if(locationFld){
+      var wantLocation=kinds.indexOf('want_in_city')>=0||kinds.indexOf('suggest_space')>=0;
+      locationFld.style.display=wantLocation?'block':'none';
+    }
+    if(jointeamFld){
+      jointeamFld.style.display=(kinds.indexOf('join_team')>=0)?'block':'none';
+    }
+  }
+  var kindBoxes=qsa('.interest-opt input[type="checkbox"]');
+  for(var i=0;i<kindBoxes.length;i++){kindBoxes[i].addEventListener('change',refreshFields);}
+  refreshFields();
 
   form.addEventListener('submit',function(e){
     e.preventDefault();
@@ -183,21 +217,40 @@ function wireInterestForm(){
     var ok=$('gi_ok');
     if(err)err.textContent='';
     if(ok)ok.textContent='';
-    if(!selectedKind){if(err)err.textContent='Choose one so we know how to follow up.';return;}
+    var kinds=selectedKinds();
+    if(!kinds.length){if(err)err.textContent='Choose at least one so we know how to follow up.';return;}
     var name=(($('gi_name')||{}).value||'').trim();
     var email=(($('gi_email')||{}).value||'').trim();
     var location=(($('gi_location')||{}).value||'').trim();
     var message=(($('gi_message')||{}).value||'').trim();
-    if(!name&&!email&&!location&&!message){
+    var joinTeam=kinds.indexOf('join_team')>=0;
+    var roles=joinTeam?selectedRoles():[];
+    var skills=(($('gi_skills')||{}).value||'').trim();
+    var church=(($('gi_church')||{}).value||'').trim();
+    var phone=(($('gi_phone')||{}).value||'').trim();
+    var social=(($('gi_social')||{}).value||'').trim();
+    if(joinTeam){
+      if(!name||!phone||email.indexOf('@')<0||!roles.length){
+        if(err)err.textContent='Joining the founding team needs your name, phone, email, and at least one role.';
+        return;
+      }
+    }else if(!name&&!email&&!location&&!message){
       if(err)err.textContent='Add at least one way for us to follow up (name, email, location, or a message).';
       return;
     }
-    var payload={kind:selectedKind};
+    var payload={kinds:kinds};
     if(name)payload.name=name;
     if(email)payload.email=email;
     if(location)payload.location=location;
     if(message)payload.message=message;
     if(G.mode==='territory'&&G.slug)payload.territorySlug=G.slug;
+    if(joinTeam){
+      if(roles.length)payload.roles=roles;
+      if(skills)payload.skills=skills;
+      if(church)payload.church=church;
+      if(phone)payload.phone=phone;
+      if(social)payload.socialHandle=social;
+    }
     var btn=$('gi_submit');
     if(btn)btn.disabled=true;
     fetch('/api/give/interest',{
@@ -223,7 +276,7 @@ document.addEventListener('DOMContentLoaded',function(){
   wireAmountForm({
     prefix:'gc_onetime',
     presets:G.oneTimePresetsCents||[2500,5000,10000,25000],
-    defaultIndex:1,
+    defaultIndex:(typeof G.oneTimeDefaultIndex==='number')?G.oneTimeDefaultIndex:1,
     isMonthly:false,
     unitCents:0,
     endpoint:'/api/give/donate'

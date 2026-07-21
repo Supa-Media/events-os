@@ -215,12 +215,17 @@ http.route({
 http.route({
   path: "/give",
   method: "GET",
-  handler: httpAction(async (ctx) => {
+  handler: httpAction(async (ctx, req) => {
+    // A central (no-slug) one-time gift returns here with `?donated=1` — show a
+    // thank-you banner (the territory page handles its own thank-you states).
+    const thankYou = new URL(req.url).searchParams.get("donated") === "1";
     const [territories, interestStats] = await Promise.all([
       ctx.runQuery(api.territories.getPublicMapData, {}),
       ctx.runQuery(api.givingInterest.publicInterestStats, {}),
     ]);
-    return html(renderGiveMapPage(territories, interestStats, siteUrl()));
+    return html(
+      renderGiveMapPage(territories, interestStats, thankYou, siteUrl()),
+    );
   }),
 });
 
@@ -232,9 +237,10 @@ http.route({
     const segments = url.pathname.split("/").filter(Boolean); // ["give", slug]
     const slug = decodeURIComponent(segments[1] ?? "");
     if (!slug || segments.length > 2) return html(renderGiveNotFound(), 404);
-    const [data, interestStats] = await Promise.all([
+    const [data, interestStats, activity] = await Promise.all([
       ctx.runQuery(api.territories.getPublicTerritory, { slug }),
       ctx.runQuery(api.givingInterest.publicInterestStats, {}),
+      ctx.runQuery(api.givingActivity.getTerritoryActivity, { slug }),
     ]);
     if (!data) return html(renderGiveNotFound(), 404);
     // A one-time gift returns with `?donated=1`; a recurring backer with
@@ -245,7 +251,13 @@ http.route({
         ? "donated"
         : url.searchParams.get("pledge");
     return html(
-      renderGiveTerritoryPage(data, interestStats, siteUrl(), pledgeParam),
+      renderGiveTerritoryPage(
+        data,
+        interestStats,
+        activity,
+        siteUrl(),
+        pledgeParam,
+      ),
     );
   }),
 });
@@ -386,6 +398,12 @@ http.route({
           donorId: obj.metadata.giveDonorId ?? "",
           scope: obj.metadata.giveScope ?? "",
         });
+        // Flip the giver's optional activity-wall entry visible with the SETTLED
+        // one-time amount (no-op if they didn't opt in). See givingActivity.ts.
+        await ctx.runMutation(internal.givingActivity.markActivityVisible, {
+          refKey: `give:${obj.id}`,
+          amountCents: obj.amount_total ?? 0,
+        });
       } else if (obj.metadata?.pledgeId) {
         const pledgeId = obj.metadata.pledgeId;
         // A BACKER (subscription) checkout — identified by our pledge id in the
@@ -402,6 +420,12 @@ http.route({
               : {}),
           },
         );
+        // Flip the backer's optional activity-wall entry visible. No amount is
+        // passed — the wall shows the recurring MONTHLY pledge amount stored at
+        // pending time (a subscription session's `amount_total` is $0/prorated).
+        await ctx.runMutation(internal.givingActivity.markActivityVisible, {
+          refKey: String(pledgeId),
+        });
       } else {
         const paymentIntentId = obj.payment_intent ?? undefined;
         // One shared session id is either a ticket order OR a donation. Try the

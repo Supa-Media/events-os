@@ -43,11 +43,20 @@ type InterestStatus = "new" | "contacted" | "archived";
 
 type InterestRow = {
   _id: Id<"givingInterest">;
-  kind: InterestKind;
+  // Multi-select (wave 2, F4): a submission can carry several kinds at once
+  // ("want it in my city" + "volunteer" + "help fund" together) — no longer a
+  // single `kind`.
+  kinds: InterestKind[];
   name: string | null;
   email: string | null;
+  phone: string | null;
+  socialHandle: string | null;
   location: string | null;
   message: string | null;
+  // Founding-team fields (F7) — populated mainly on `join_team` submissions.
+  roles: string[] | null;
+  skills: string | null;
+  church: string | null;
   territorySlug: string | null;
   status: InterestStatus;
   createdAt: number;
@@ -173,10 +182,13 @@ function InterestBody({ canManage }: { canManage: boolean }) {
                 <Card padding="md">
                   <View className="mb-2 flex-row items-center justify-between">
                     <View className="flex-1 flex-row flex-wrap items-center gap-2 pr-2">
-                      <Badge
-                        label={KIND_LABELS[row.kind]}
-                        tone={kindTone(row.kind)}
-                      />
+                      {row.kinds.map((kind) => (
+                        <Badge
+                          key={kind}
+                          label={KIND_LABELS[kind]}
+                          tone={kindTone(kind)}
+                        />
+                      ))}
                       {row.territorySlug ? (
                         <Text className="text-xs text-muted" numberOfLines={1}>
                           /give/{row.territorySlug}
@@ -193,8 +205,33 @@ function InterestBody({ canManage }: { canManage: boolean }) {
                   {row.email ? (
                     <Text className="text-xs text-muted">{row.email}</Text>
                   ) : null}
+                  {row.phone ? (
+                    <Text className="text-xs text-muted">{row.phone}</Text>
+                  ) : null}
+                  {row.socialHandle ? (
+                    <Text className="text-xs text-muted">
+                      {row.socialHandle}
+                    </Text>
+                  ) : null}
                   {row.location ? (
                     <Text className="text-xs text-muted">{row.location}</Text>
+                  ) : null}
+                  {row.church ? (
+                    <Text className="text-xs text-muted">
+                      Church: {row.church}
+                    </Text>
+                  ) : null}
+                  {row.roles && row.roles.length > 0 ? (
+                    <View className="mt-1 flex-row flex-wrap gap-1">
+                      {row.roles.map((role, i) => (
+                        <Badge key={`${role}-${i}`} label={role} tone="neutral" />
+                      ))}
+                    </View>
+                  ) : null}
+                  {row.skills ? (
+                    <Text className="mt-1 text-sm text-ink">
+                      Skills: {row.skills}
+                    </Text>
                   ) : null}
                   {row.message ? (
                     <Text className="mt-1 text-sm text-ink">
