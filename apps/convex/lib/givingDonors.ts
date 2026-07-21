@@ -413,7 +413,16 @@ async function recomputeDonorStatus(
 /**
  * Insert a gift for a donor and bump every rollup: the donor's lifetime/count/
  * first/last, the donor's derived status, and the scope aggregates. The single
- * write path for recorded gifts (manual entry, CSV import, event dual-write).
+ * write path for recorded gifts (manual entry, CSV import, event dual-write,
+ * Givebutter donation sync).
+ *
+ * EVENT "GIVEN" ROLLUP: a gift TAGGED to an event that is NOT an on-page
+ * donation (`eventId` set, `donationId` unset) also rolls into that event's
+ * `externalGiftsCents`/`externalGiftsCount` — see the guarded bump at the end.
+ * This is the fix for the historical gap where a gift carrying an `eventId`
+ * (manual `recordGift`, the Givebutter donation sync) never actually counted
+ * toward the event's Given total unless it was later run through
+ * `attachGiftToEvent`.
  */
 export async function recordGiftForDonor(
   ctx: MutationCtx,
@@ -497,6 +506,23 @@ export async function recordGiftForDonor(
   );
   if (countedInLaunchFund) {
     await ctx.db.patch(giftId, { countedInLaunchFund: true });
+  }
+
+  // Event fundraiser "Given" rollup: a gift TAGGED to an event that is NOT an
+  // on-page donation dual-write (`eventId` set, `donationId` UNSET) rolls into
+  // that event's `externalGiftsCents`/`externalGiftsCount` — the SAME rollup
+  // `attachGiftToEvent` maintains — so a gift born with an `eventId` (manual
+  // `recordGift`, the Givebutter donation sync) counts toward the event's Given
+  // total immediately, closing the gap where it only counted after a manual
+  // re-attach. The `donationId` guard is the double-count firewall: an on-page
+  // donation's dual-written gift is already in `donationsCents`, so it must
+  // never also land here (mirrors `bumpEventExternalGifts`'s contract +
+  // `attachGiftToEvent`'s guard). `removeGiftRow` reverses this exact
+  // (eventId && !donationId) case, and `attachGiftToEvent`'s same-event no-op
+  // guard prevents a later re-attach from double-bumping. See
+  // `schema/ticketing.ts`'s `externalGiftsCents` doc.
+  if (args.eventId !== undefined && args.donationId === undefined) {
+    await bumpEventExternalGifts(ctx, args.eventId, args.amountCents, 1);
   }
   return giftId;
 }
@@ -1008,16 +1034,17 @@ export async function dualWriteGiftForDonation(
 
 /**
  * Bump `eventPages.externalGiftsCents`/`externalGiftsCount` by the given
- * deltas (clamped ≥ 0), for an event's `by_event` page row. This is the
- * MANUAL-ATTACH rollup only — mirrors `giving.ts#bumpGivingRollup`'s pattern
- * exactly, but for the SIBLING counter that tracks donor-CRM gifts manually
- * attached to an event (Givebutter-imported / offline gifts given "toward the
- * fundraiser"), never the on-page donation flow's `donationsCents`. Callers
- * MUST only invoke this for a gift with `donationId === undefined` — an
- * on-page donation's dual-written gift is already counted in
- * `donationsCents`, and folding it into `externalGiftsCents` too would
- * double-count (see `schema/ticketing.ts`'s `externalGiftsCents` doc). No-op
- * (no write) if the event has no `eventPages` row.
+ * deltas (clamped ≥ 0), for an event's `by_event` page row. Mirrors
+ * `giving.ts#bumpGivingRollup`'s pattern exactly, but for the SIBLING counter
+ * that tracks donor-CRM gifts attributed to an event (Givebutter donations /
+ * offline gifts given "toward the fundraiser"), never the on-page donation
+ * flow's `donationsCents`. Callers: `recordGiftForDonor` (a gift born with an
+ * `eventId`), `attachGiftToEvent`/detach, `editGiftRow` (amount change), and
+ * `removeGiftRow` (reversal). Callers MUST only invoke this for a gift with
+ * `donationId === undefined` — an on-page donation's dual-written gift is
+ * already counted in `donationsCents`, and folding it into `externalGiftsCents`
+ * too would double-count (see `schema/ticketing.ts`'s `externalGiftsCents`
+ * doc). No-op (no write) if the event has no `eventPages` row.
  */
 export async function bumpEventExternalGifts(
   ctx: MutationCtx,

@@ -617,6 +617,94 @@ describe("attachGiftToEvent", () => {
   });
 });
 
+// ── recordGiftForDonor event "Given" rollup (the closed rollup gap) ──────────
+//
+// A gift BORN with an `eventId` (manual recordGift, the Givebutter donation
+// sync) must roll into that event's externalGiftsCents/Count immediately —
+// UNLESS it also carries a `donationId` (a native on-page donation, already
+// counted in donationsCents), which is the double-count firewall.
+
+describe("recordGiftForDonor event rollup gap", () => {
+  test("a gift with eventId and no donationId bumps externalGiftsCents/Count", async () => {
+    const s = await devDirectorSetup();
+    const { eventId, pageId } = await seedEventWithPage(s);
+    await run(s.t, async (ctx) => {
+      const donorId = await matchOrCreateDonor(ctx, {
+        scope: s.chapterId,
+        name: "Direct Event Giver",
+      });
+      await recordGiftForDonor(ctx, {
+        donorId,
+        amountCents: 4200,
+        receivedAt: Date.now(),
+        method: "givebutter",
+        eventId,
+      });
+    });
+    const page = await eventPageRow(s, pageId);
+    expect(page?.externalGiftsCents).toBe(4200);
+    expect(page?.externalGiftsCount).toBe(1);
+  });
+
+  test("a gift with a donationId does NOT bump externalGiftsCents (double-count guard)", async () => {
+    const s = await devDirectorSetup();
+    const { eventId, pageId } = await seedEventWithPage(s);
+    await run(s.t, async (ctx) => {
+      const donationId = await ctx.db.insert("donations", {
+        chapterId: s.chapterId,
+        eventId,
+        name: "On-page Giver",
+        amountCents: 4200,
+        currency: "usd",
+        method: "card",
+        status: "paid",
+        createdAt: Date.now(),
+      });
+      const donorId = await matchOrCreateDonor(ctx, {
+        scope: s.chapterId,
+        name: "On-page Giver",
+      });
+      await recordGiftForDonor(ctx, {
+        donorId,
+        amountCents: 4200,
+        receivedAt: Date.now(),
+        method: "stripe",
+        eventId,
+        donationId,
+      });
+    });
+    const page = await eventPageRow(s, pageId);
+    expect(page?.externalGiftsCents ?? 0).toBe(0);
+    expect(page?.externalGiftsCount ?? 0).toBe(0);
+  });
+
+  test("removing an eventId gift reverses the externalGiftsCents bump", async () => {
+    const s = await devDirectorSetup();
+    const { eventId, pageId } = await seedEventWithPage(s);
+    const giftId = await run(s.t, async (ctx) => {
+      const donorId = await matchOrCreateDonor(ctx, {
+        scope: s.chapterId,
+        name: "Reversible Giver",
+      });
+      return recordGiftForDonor(ctx, {
+        donorId,
+        amountCents: 3000,
+        receivedAt: Date.now(),
+        method: "givebutter",
+        eventId,
+      });
+    });
+    expect((await eventPageRow(s, pageId))?.externalGiftsCents).toBe(3000);
+
+    await s.as.mutation(api.givingPlatform.removeGift, {
+      giftId,
+      why: "Test reversal",
+    });
+    expect((await eventPageRow(s, pageId))?.externalGiftsCents).toBe(0);
+    expect((await eventPageRow(s, pageId))?.externalGiftsCount).toBe(0);
+  });
+});
+
 // ── Widened-source record path ────────────────────────────────────────────────
 
 describe("widened source union", () => {
