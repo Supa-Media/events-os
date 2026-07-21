@@ -225,6 +225,10 @@ export const ticketOrders = defineTable({
       name: v.string(),
       quantity: v.number(),
       unitPriceCents: v.number(),
+      // Per-admission assigned attendee names for this line, index-aligned to
+      // the `quantity` tickets fulfill() issues. Entry i blank/absent = the
+      // ticket is "for the purchaser" and inherits order.name. Length <= quantity.
+      attendeeNames: v.optional(v.array(v.string())),
     }),
   ),
   totalCents: v.number(),

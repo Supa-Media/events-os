@@ -9,6 +9,7 @@ import { internalAction } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { rsvpPageUrl, siteUrl } from "./lib/siteUrl";
+import { escapeHtml } from "./lib/html";
 
 const ACCENT = "#D23B3A";
 const INK = "#210909";
@@ -145,6 +146,7 @@ export const sendTicketsEmail = internalAction({
         (t) => `
       <a href="${base}/t/${t.code}" style="display:block;text-decoration:none;color:${INK};background:#fff;border:1px dashed #E4CFCB;border-radius:14px;padding:14px 18px;margin:0 0 10px">
         <div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:11px;letter-spacing:0.08em;color:${MUTED};text-transform:uppercase">${t.ticketTypeName}</div>
+        ${t.attendeeName ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;font-weight:600;color:${INK};padding-top:2px">${escapeHtml(t.attendeeName)}</div>` : ""}
         <div style="font-family:'SF Mono',Menlo,Consolas,monospace;font-size:20px;font-weight:700;letter-spacing:0.06em;color:${ACCENT};padding-top:2px">${t.code}</div>
       </a>`,
       )

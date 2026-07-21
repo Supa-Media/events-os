@@ -22,6 +22,7 @@ var pending=null; // action waiting on the identity sheet
 var openPicker=null,openReply=null;
 var donateActive=false,donateContinue=null; // checkout donation-upsell step state
 var phoneReq=false; // identity sheet is collecting a (required) phone number
+var recipientSpec=null; // checkout: [{ticketTypeId,name,count,_entries}] to assign per-ticket names
 var upsellAmount=0; // selected donation-upsell amount (cents)
 var signinCtx=null; // {method,contact} while the "sign in to see my tickets" sheet
   // is open; routes the shared #sheetgo/#resendcode handlers, mirroring donateActive
@@ -73,9 +74,51 @@ function openSheet(title,sub,cta,action,opts){
   if(D.viewer){$('f_name').value=D.viewer.name;$('f_email').value=D.viewer.email||'';}
   var pf=$('phonefld');if(pf)pf.style.display=phoneReq?'block':'none';
   var sc=$('smsconsent');if(sc)sc.style.display=phoneReq?'block':'none';
+  var dc=$('doublecheck');if(dc)dc.style.display=phoneReq?'block':'none';
   if(phoneReq&&D.viewer&&D.viewer.phone)$('f_phone').value=D.viewer.phone;
+  recipientSpec=(opts&&opts.recipients)||null;
+  renderRecipientFields();
   $('overlay').classList.add('open');
   setTimeout(function(){$('f_name').focus();},100);
+}
+/* Per-ticket "who's this for?" assignment, shown in the checkout sheet. One
+   block per admission with a For me / For someone else toggle; gifted tickets
+   collect a first + last name. Entry state lives on the spec line (_entries),
+   so it survives re-renders. Blank/self entries become "" (the purchaser). */
+function renderRecipientFields(){
+  var box=$('recipientfields');
+  if(!box)return;
+  box.innerHTML='';
+  if(!recipientSpec||recipientSpec.length===0){box.style.display='none';return;}
+  recipientSpec.forEach(function(line){
+    if(!line._entries)line._entries=[];
+    for(var i=0;i<line.count;i++){
+      (function(idx){
+        if(!line._entries[idx])line._entries[idx]={forSelf:true,first:'',last:''};
+        var entry=line._entries[idx];
+        var block=el('div','rcp');
+        var label=line.count>1?(line.name+' — ticket '+(idx+1)):line.name;
+        block.appendChild(el('div','rcp-head',label));
+        var tog=el('div','rcp-toggle');
+        var meBtn=el('button','rcp-opt'+(entry.forSelf?' sel':''),'For me');
+        var otherBtn=el('button','rcp-opt'+(entry.forSelf?'':' sel'),'For someone else');
+        meBtn.type='button';otherBtn.type='button';
+        var names=el('div','rcp-names');
+        names.style.display=entry.forSelf?'none':'flex';
+        var first=el('input');first.placeholder='First name';first.value=entry.first;
+        var last=el('input');last.placeholder='Last name';last.value=entry.last;
+        first.oninput=function(){entry.first=first.value;};
+        last.oninput=function(){entry.last=last.value;};
+        meBtn.onclick=function(){entry.forSelf=true;meBtn.className='rcp-opt sel';otherBtn.className='rcp-opt';names.style.display='none';};
+        otherBtn.onclick=function(){entry.forSelf=false;otherBtn.className='rcp-opt sel';meBtn.className='rcp-opt';names.style.display='flex';setTimeout(function(){first.focus();},50);};
+        tog.appendChild(meBtn);tog.appendChild(otherBtn);
+        names.appendChild(first);names.appendChild(last);
+        block.appendChild(tog);block.appendChild(names);
+        box.appendChild(block);
+      })(i);
+    }
+  });
+  box.style.display='block';
 }
 function closeSheet(){$('overlay').classList.remove('open');pending=null;donateActive=false;donateContinue=null;signinCtx=null;}
 $('sheetclose').onclick=closeSheet;
@@ -100,10 +143,30 @@ $('sheetgo').onclick=function(){
     phone=$('f_phone').value.trim();
     if(!validPhone(phone)){$('sheeterr').textContent='Add a valid phone number 📱';return;}
   }
+  // Gather per-ticket recipient names (checkout only). Self entries send "";
+  // gifted entries require a first + last name.
+  var recipients=null;
+  if(recipientSpec){
+    recipients=[];
+    for(var ri=0;ri<recipientSpec.length;ri++){
+      var line=recipientSpec[ri];
+      var names=[];
+      for(var ei=0;ei<line.count;ei++){
+        var entry=(line._entries&&line._entries[ei])||{forSelf:true};
+        if(entry.forSelf){names.push('');}
+        else{
+          var fn=(entry.first||'').trim(),ln=(entry.last||'').trim();
+          if(!fn||!ln){$('sheeterr').textContent='Add a first and last name for each gifted ticket 🎁';return;}
+          names.push(fn+' '+ln);
+        }
+      }
+      recipients.push({ticketTypeId:line.ticketTypeId,attendeeNames:names});
+    }
+  }
   if(!pending)return closeSheet();
   var act=pending;
   $('sheetgo').disabled=true;
-  act(name,email,phone).then(function(r){
+  act(name,email,phone,recipients).then(function(r){
       $('sheetgo').disabled=false;
       if(r&&r.needsVerify)openVerifySheet(r.email);else closeSheet();
     })
@@ -211,8 +274,14 @@ function renderSigninBar(){
   var box=$('signinbar');
   if(!box)return;
   box.innerHTML='';
-  if(D.viewer){box.style.display='none';return;}
   box.style.display='block';
+  // Signed in: show who, plus a way out. Otherwise offer the sign-in prompt.
+  if(D.viewer){
+    var out=el('button','signinbtn',(D.viewer.name?'Signed in as '+D.viewer.name+' · ':'')+'Sign out');
+    out.onclick=function(){doSignOut();};
+    box.appendChild(out);
+    return;
+  }
   var btn=el('button','signinbtn','🎟 Have a ticket or already RSVP’d? Sign in');
   btn.onclick=function(){openSignIn();};
   box.appendChild(btn);
@@ -245,6 +314,7 @@ function renderMyTickets(){
     row.appendChild(qr);
     var inf=el('div','mytix-inf');
     inf.appendChild(el('div','nm',t.ticketTypeName));
+    if(t.attendeeName)inf.appendChild(el('div','rcp-name',t.attendeeName));
     inf.appendChild(el('div','code',t.code));
     inf.appendChild(el('span','statuschip st-'+t.status,statusLabel[t.status]||t.status));
     row.appendChild(inf);
@@ -339,10 +409,29 @@ function startCheckout(){
   var items=[];for(var k in cart)items.push({ticketTypeId:k,quantity:cart[k]});
   if(items.length===0)return;
   var ticketTotal=cartTotal();
+  // Spec for the "who are these tickets for?" step: one line per cart tier, in
+  // ticket-type order, so the sheet can assign a name to each admission.
+  var recipients=[];
+  D.ticketTypes.forEach(function(tt){
+    if(cart[tt.id])recipients.push({ticketTypeId:tt.id,name:tt.name,count:cart[tt.id]});
+  });
   var finish=function(donationCents){
     closeSheet();
-    var run=function(name,email,phone){
-      return api('/api/tickets/checkout',{slug:SLUG,token:TOKEN||undefined,name:name,email:email,phone:phone||undefined,items:items,donationCents:donationCents||0})
+    var run=function(name,email,phone,recips){
+      // Merge assigned names onto the matching cart line (by ticketTypeId);
+      // lines with no assignments post plain {ticketTypeId,quantity}.
+      var payloadItems=items.map(function(it){
+        var assigned=null;
+        if(recips){
+          for(var i=0;i<recips.length;i++){
+            if(recips[i].ticketTypeId===it.ticketTypeId){assigned=recips[i].attendeeNames;break;}
+          }
+        }
+        return assigned
+          ?{ticketTypeId:it.ticketTypeId,quantity:it.quantity,attendeeNames:assigned}
+          :{ticketTypeId:it.ticketTypeId,quantity:it.quantity};
+      });
+      return api('/api/tickets/checkout',{slug:SLUG,token:TOKEN||undefined,name:name,email:email,phone:phone||undefined,items:payloadItems,donationCents:donationCents||0})
         .then(function(res){
           saveToken(res.token);
           if(res.kind==='stripe'){window.location.href=res.url;return;}
@@ -354,10 +443,10 @@ function startCheckout(){
           });
         });
     };
-    // A phone is required to buy — skip the sheet only for a returning guest who
-    // already has one on file; otherwise collect name/email/phone.
-    if(TOKEN&&D.viewer&&D.viewer.phone){run(D.viewer.name,D.viewer.email,D.viewer.phone).catch(function(e){toast(e.message);});}
-    else openSheet('Almost there 🎟️','Your tickets and receipt land in your inbox.','Continue',run,{phone:true});
+    // Always open the sheet — even a returning guest with a phone on file goes
+    // through it so they can assign each ticket to a recipient (defaults to
+    // "For me", one Continue tap for an all-self order).
+    openSheet('Almost there 🎟️','Your tickets and receipt land in your inbox.','Continue',run,{phone:true,recipients:recipients});
   };
   if(D.givingEnabled)openDonateUpsell(ticketTotal,finish);else finish(0);
 }

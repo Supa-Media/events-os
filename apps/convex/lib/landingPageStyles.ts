@@ -283,6 +283,25 @@ section{margin-top:36px}
    frequency, rates, STOP/HELP, links). */
 .smsconsent{font-size:11.5px;line-height:1.5;color:var(--muted);margin:-2px 0 12px}
 .smsconsent a{color:var(--accent);text-decoration:underline}
+/* "Double-check your info" nudge — shown with the phone field, reminding
+   buyers they'll use email/number to pull their ticket up later. */
+.doublecheck{font-size:11.5px;line-height:1.5;color:var(--muted);margin:-2px 0 12px}
+/* Per-ticket recipient assignment ("for me" / "for someone else"). One block
+   per admission with a two-button toggle and (when gifting) name inputs. */
+.rcp{border:1px solid var(--border);border-radius:14px;padding:12px;margin-bottom:10px}
+.rcp-head{font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:8px}
+.rcp-toggle{display:flex;gap:8px;margin-bottom:8px}
+.rcp-opt{flex:1;border:1.5px solid var(--border-strong);border-radius:12px;padding:8px 4px;
+  font-weight:700;font-size:13px;color:var(--muted);transition:all .12s;cursor:pointer}
+.rcp-opt:hover{border-color:var(--accent);color:var(--accent)}
+.rcp-opt.sel{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);
+  box-shadow:0 0 0 3px rgba(210,59,58,.14)}
+.rcp-names{display:flex;gap:8px}
+.rcp-names input{flex:1;background:var(--raised);border:1.5px solid var(--border);
+  border-radius:12px;padding:10px 14px;outline:none;transition:border .15s}
+.rcp-names input:focus{border-color:var(--accent)}
+/* Recipient name shown under a ticket in "Your tickets". */
+.rcp-name{font-size:12.5px;color:var(--muted);margin-top:1px}
 /* toast */
 #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(20px);
   background:var(--ink);color:var(--cream);border-radius:999px;padding:11px 22px;

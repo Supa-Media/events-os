@@ -36,7 +36,13 @@ export const createCheckout = action({
     phone: v.optional(v.string()),
     token: v.optional(v.string()),
     items: v.array(
-      v.object({ ticketTypeId: v.id("ticketTypes"), quantity: v.number() }),
+      v.object({
+        ticketTypeId: v.id("ticketTypes"),
+        quantity: v.number(),
+        // Per-admission recipient names (index-aligned to quantity). Passed
+        // straight through to prepareOrder; never sent to Stripe.
+        attendeeNames: v.optional(v.array(v.string())),
+      }),
     ),
     // Optional add-on gift bundled into this SAME checkout (the "also want
     // to donate?" upsell) — one card charge, split on fulfillment into ticket

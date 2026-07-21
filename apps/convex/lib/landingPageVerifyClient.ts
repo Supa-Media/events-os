@@ -16,6 +16,8 @@ function setSheetMode(m){
   sheetMode=m;
   $('idfields').style.display=m==='code'?'none':'block';
   $('codefields').style.display=m==='code'?'block':'none';
+  // The per-ticket recipient step belongs only to the id step of checkout.
+  var rf=$('recipientfields');if(rf&&m==='code')rf.style.display='none';
 }
 function openVerifySheet(email){
   pending=null;
