@@ -306,7 +306,7 @@ function cityLaunchPlanHtml(): string {
  *  territory page's give box so the ask and the framing sit together. */
 function backerVsRecurringGiverHtml(): string {
   const unit = esc(formatCents(BACKER_UNIT_CENTS, { showCents: false }));
-  return `<p class="giveprompt">A backer commits ${unit} or more each month to a city chapter — directly funding the core team. Give between $20 and $49/mo and you're a recurring giver: just as valued, building the launch fund with us. Both matter. Both count.</p>`;
+  return `<p class="giveprompt">A backer commits ${unit} or more each month to a city chapter — directly funding the core team. Give a smaller monthly amount and you're a recurring giver: just as valued, building the launch fund with us. Both matter. Both count.</p>`;
 }
 
 /** The founding/New-York callout (block #8) — rendered only for the launched
