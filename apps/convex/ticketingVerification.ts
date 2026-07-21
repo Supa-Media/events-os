@@ -306,7 +306,16 @@ export const verifyGuestSignIn = mutation({
     if (!rsvp) return { ok: false as const, error: BAD_CODE };
 
     if (method === "email") {
-      const pending = await requireUsableCode(ctx, rsvp);
+      // `requireUsableCode` throws distinct NO_CODE/LOCKED/EXPIRED errors — but
+      // for sign-in those must NOT be surfaced: a real guest with no pending
+      // code has to look identical to an unknown contact, or the error text
+      // becomes a guest-list enumeration oracle. Collapse them to BAD_CODE.
+      let pending: Doc<"rsvpEmailCodes">;
+      try {
+        pending = await requireUsableCode(ctx, rsvp);
+      } catch {
+        return { ok: false as const, error: BAD_CODE };
+      }
       if (hashEmailCode(code) !== pending.codeHash) {
         await ctx.db.patch(pending._id, { attempts: pending.attempts + 1 });
         return { ok: false as const, error: BAD_CODE };
@@ -314,7 +323,12 @@ export const verifyGuestSignIn = mutation({
       await ctx.db.patch(rsvp._id, { emailVerified: true, updatedAt: Date.now() });
       await ctx.db.delete(pending._id);
     } else {
-      const pending = await requireUsablePhoneCode(ctx, rsvp);
+      let pending: Doc<"rsvpPhoneCodes">;
+      try {
+        pending = await requireUsablePhoneCode(ctx, rsvp);
+      } catch {
+        return { ok: false as const, error: BAD_CODE };
+      }
       if (hashPhoneCode(code) !== pending.codeHash) {
         await ctx.db.patch(pending._id, { attempts: pending.attempts + 1 });
         return { ok: false as const, error: BAD_CODE };

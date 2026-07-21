@@ -999,6 +999,17 @@ export const submitRsvp = mutation({
         message: "A name and valid email are required.",
       });
     }
+    // Normalize the phone to E.164 on the way in (same as `prepareOrder`), so a
+    // phone captured here is stored identically to one captured at checkout —
+    // otherwise guest sign-in by phone (which looks up the normalized number)
+    // would never match a raw RSVP-entered value.
+    const phone = args.phone ? normalizePhone(args.phone) : null;
+    if (args.phone && !phone) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "Enter a valid phone number.",
+      });
+    }
     if (
       args.status === "going" &&
       page.capacity !== undefined &&
@@ -1029,7 +1040,7 @@ export const submitRsvp = mutation({
       await ctx.db.patch(rsvp._id, {
         name,
         email,
-        ...(args.phone !== undefined ? { phone: args.phone } : {}),
+        ...(args.phone !== undefined ? { phone: phone ?? undefined } : {}),
         status: args.status,
         updatedAt: now,
       });
@@ -1050,7 +1061,7 @@ export const submitRsvp = mutation({
       chapterId: page.chapterId,
       name,
       email,
-      phone: args.phone,
+      phone: phone ?? undefined,
       status: args.status,
       token,
       source: "rsvp",

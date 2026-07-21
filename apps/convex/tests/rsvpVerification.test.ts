@@ -448,4 +448,33 @@ describe("guest sign-in", () => {
     ).toEqual({ ok: true, token: ada.token });
     expect((await rsvpByToken(s, ada.token))!.phoneVerified).toBe(true);
   });
+
+  test("a known guest with no usable code fails identically to an unknown one", async () => {
+    const { t, s, slug } = await setupPage();
+    const ada = await submitAda(t, slug);
+    const rsvp = await rsvpByToken(s, ada.token);
+    // Drop the pending code — mimics an already-verified/expired guest. Verify
+    // must NOT throw a distinct NO_CODE error (that would leak that this email
+    // is on the guest list); it returns the same generic result as an unknown.
+    const row = await codeRowFor(s, rsvp!._id);
+    await run(s.t, (ctx) => ctx.db.delete(row!._id));
+
+    const known = await t.mutation(api.ticketingVerification.verifyGuestSignIn, {
+      slug,
+      method: "email",
+      contact: "ada@example.com",
+      code: "123456",
+    });
+    const unknown = await t.mutation(api.ticketingVerification.verifyGuestSignIn, {
+      slug,
+      method: "email",
+      contact: "nobody@example.com",
+      code: "123456",
+    });
+    expect(known.ok).toBe(false);
+    expect(unknown.ok).toBe(false);
+    expect((known as { error: string }).error).toBe(
+      (unknown as { error: string }).error,
+    );
+  });
 });
