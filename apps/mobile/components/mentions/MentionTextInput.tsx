@@ -17,7 +17,7 @@
 import { useEffect, useRef, useState } from "react";
 import { View, Text, TextInput, Pressable } from "react-native";
 import { encodeMention, type MentionType } from "@events-os/shared";
-import { Popover } from "../ui/Popover";
+import { MentionPopover } from "./MentionPopover";
 import { useAnchor } from "../ui/useAnchor";
 import { detectMentionTrigger, type MentionTrigger } from "./mentionTrigger.logic";
 import { colors } from "../../lib/theme";
@@ -34,23 +34,51 @@ type Suggestion = {
 export function MentionTextInput({
   value,
   onCommit,
+  onDone,
   placeholder,
+  multiline,
+  autoFocus,
+  weight,
   people,
   seatHoldings,
   seatOptions,
 }: {
   value: string;
   onCommit: (v: string) => void;
+  /** Fires when an editing session ends (blur, or a mention was inserted) —
+   *  lets a display/edit wrapper (MentionInlineText) flip back to rendered
+   *  links. Distinct from onCommit, which is about persisting the value. */
+  onDone?: () => void;
   placeholder?: string;
+  /** Auto-growing multiline input (mirrors the grid InlineText's behavior). */
+  multiline?: boolean;
+  autoFocus?: boolean;
+  weight?: "normal" | "medium";
   people: { _id: string; name: string }[];
   seatHoldings: { personId: string; seatDefId: string }[];
   seatOptions: { seatDefId: string; title: string }[];
 }) {
   const [text, setText] = useState(value);
   const [trigger, setTrigger] = useState<MentionTrigger>(null);
+  // Auto-grow multiline inputs to their content height (same rationale as the
+  // grid's InlineText: wrapped text must never clip).
+  const [contentH, setContentH] = useState<number | undefined>(undefined);
   const cursorRef = useRef(value.length);
   const justSelectedRef = useRef(false);
+  const inputRef = useRef<TextInput>(null);
   const { ref, anchor, visible, open, close } = useAnchor();
+
+  // Where the caret is RIGHT NOW. react-native-web does not reliably fire
+  // onSelectionChange while typing (it did fire on native), so relying on
+  // cursorRef alone left it permanently stale on web and the `@` trigger
+  // never detected. On web the TextInput ref IS the DOM <input>/<textarea>,
+  // whose selectionEnd is already updated when the change event fires — read
+  // it directly; fall back to cursorRef (native) or end-of-text.
+  const readCursor = (fallbackText: string): number => {
+    const el = inputRef.current as unknown as { selectionEnd?: unknown } | null;
+    if (el && typeof el.selectionEnd === "number") return el.selectionEnd;
+    return cursorRef.current ?? fallbackText.length;
+  };
 
   // Keep the field in sync when the underlying value changes from elsewhere
   // (mirrors InlineText).
@@ -81,16 +109,26 @@ export function MentionTextInput({
     setTrigger(null);
     close();
     onCommit(nextText);
+    // On web the portal popover prevents the suggestion click from blurring
+    // the input (see MentionPopover.web), so the pressIn flag is never reset
+    // by a blur — reset it here or the NEXT genuine blur would be swallowed.
+    justSelectedRef.current = false;
+    // Inserting is a natural end-of-session: surface the rendered link as
+    // immediate payoff.
+    onDone?.();
   };
 
   return (
     <>
       <View ref={ref} className="flex-1">
         <TextInput
+          ref={inputRef}
           value={text}
           onChangeText={(t) => {
             setText(t);
-            runTrigger(t, cursorRef.current);
+            const cursor = readCursor(t);
+            cursorRef.current = cursor;
+            runTrigger(t, cursor);
           }}
           onSelectionChange={(e) => {
             const sel = e.nativeEvent.selection.end;
@@ -105,15 +143,31 @@ export function MentionTextInput({
               return;
             }
             onCommit(text);
+            onDone?.();
           }}
           placeholder={placeholder}
           placeholderTextColor={colors.faint}
           autoCapitalize="none"
-          className="flex-1 px-2 py-1.5 text-sm leading-snug text-ink"
-          style={{ minWidth: 40 }}
+          multiline={multiline}
+          autoFocus={autoFocus}
+          textAlignVertical="top"
+          onContentSizeChange={
+            multiline
+              ? (e) => setContentH(e.nativeEvent.contentSize.height)
+              : undefined
+          }
+          className={`flex-1 px-2 py-1.5 text-sm leading-snug text-ink ${
+            weight === "medium" ? "font-medium" : ""
+          }`}
+          style={[
+            { minWidth: 40 },
+            // minHeight (not height) — same as the grid InlineText: a
+            // manually-stretched row's extra space is filled via flex.
+            multiline && contentH ? { minHeight: Math.max(contentH, 22) } : null,
+          ]}
         />
       </View>
-      <Popover visible={visible} onClose={close} anchor={anchor}>
+      <MentionPopover visible={visible} onClose={close} anchor={anchor}>
         <View className="py-1">
           {suggestions.length === 0 ? (
             <Text className="px-3 py-2 text-sm text-faint">No matches</Text>
@@ -137,7 +191,7 @@ export function MentionTextInput({
             ))
           )}
         </View>
-      </Popover>
+      </MentionPopover>
     </>
   );
 }

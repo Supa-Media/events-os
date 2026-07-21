@@ -73,7 +73,7 @@ import {
   type HowToDocSummary,
 } from "../team/HowToDocCell";
 import { MentionText } from "../mentions/MentionText";
-import { MentionTextInput } from "../mentions/MentionTextInput";
+import { MentionInlineText } from "../mentions/MentionInlineText";
 import { colors, spacing } from "../../lib/theme";
 import { alertError } from "../../lib/errors";
 import { confirmAction } from "../event/ticketing/helpers";
@@ -652,9 +652,9 @@ function ResponsibilityRow({
       </Cell>
 
       {/* Notes — a foreign (read-only) row's @mentions render as tappable
-          links (MentionText); an editable row keeps the always-live text
-          cell, now with an @-trigger picker (MentionTextInput). See
-          components/mentions/. */}
+          links (MentionText); an editable row uses the display/edit toggle
+          (MentionInlineText), so its own mentions ALSO render as links until
+          tapped, then flip to the @-trigger input. See components/mentions/. */}
       <Cell width={COLS.notes}>
         {isForeign ? (
           row.notes ? (
@@ -662,6 +662,7 @@ function ResponsibilityRow({
               text={row.notes}
               people={people}
               seatHoldings={seatHoldings}
+              numberOfLines={1}
             />
           ) : (
             <Text className="px-2 text-sm text-ink" numberOfLines={1}>
@@ -669,13 +670,14 @@ function ResponsibilityRow({
             </Text>
           )
         ) : (
-          <MentionTextInput
+          <MentionInlineText
             value={row.notes ?? ""}
             placeholder="—"
+            numberOfLines={1}
             people={people}
             seatHoldings={seatHoldings}
             seatOptions={seatOptions}
-            onCommit={(t) => update({ notes: t.trim() || null })}
+            onCommit={(t) => update({ notes: String(t).trim() || null })}
           />
         )}
       </Cell>
