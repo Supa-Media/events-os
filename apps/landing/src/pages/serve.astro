@@ -4,6 +4,7 @@ import Container from "../components/ui/Container.astro";
 import SectionHeading from "../components/ui/SectionHeading.astro";
 import ServeNeeds from "../components/sections/ServeNeeds.astro";
 import Button from "../components/ui/Button.astro";
+import { asset } from "../lib/asset";
 ---
 
 <BaseLayout
@@ -25,10 +26,8 @@ import Button from "../components/ui/Button.astro";
           We welcome individuals who are passionate about worship and Jesus to
           join us! There are many ways to serve: you can volunteer your time,
           <a
-            href="https://givebutter.com/publicworship"
-            class="text-red-500 underline-offset-2 hover:underline"
-            target="_blank"
-            rel="noopener noreferrer">support financially</a
+            href={asset("/give")}
+            class="text-red-500 underline-offset-2 hover:underline">support financially</a
           >, or even help amplify our events by sharing on
           <a
             href="https://instagram.com/publicworship.life"

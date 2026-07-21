@@ -220,21 +220,29 @@ export function interestSectionHtml(interestStats: {
 
 // ── "What your backing makes happen" — the three program cards ──────────────
 
-const PROGRAM_CARDS: ReadonlyArray<{ emoji: string; title: string; body: string }> = [
+const PROGRAM_CARDS: ReadonlyArray<{
+  emoji: string;
+  title: string;
+  body: string;
+  instagramUrl?: string;
+}> = [
   {
     emoji: "🌳",
     title: "Eden",
     body: "Eden brings people together for worship in a park — with free charcuterie, hand-made community gifts (last year, custom bouquets and warm blankets), and games that break the ice. Worship outside four walls: joyful, generous, rooted in the neighborhood.",
+    instagramUrl: "https://www.instagram.com/p/DZGYzsXFhCi/",
   },
   {
     emoji: "🎉",
     title: "Love Thy Neighbor",
     body: "Love Thy Neighbor is a block party or cookout with a full band and an experienced worship leader — food, music, and the energy of a whole neighborhood showing up. It's bigger, so it takes permits, logistics, staging, and a production team to land well — and it reaches people who might never step into a church.",
+    instagramUrl: "https://www.instagram.com/p/DO62pchjvAZ/",
   },
   {
     emoji: "🙌",
     title: "Worship With Strangers",
     body: "Worship With Strangers is the monthly rhythm that holds every chapter — honest, open worship, the gospel preached, and real time to connect. Small enough to feel real, frequent enough to become family.",
+    instagramUrl: "https://www.instagram.com/p/DUrTvH6jvRh/",
   },
 ];
 
@@ -244,6 +252,7 @@ export function programCardsHtml(): string {
   <div class="picon">${p.emoji}</div>
   <div class="ptitle">${esc(p.title)}</div>
   <div class="pbody">${esc(p.body)}</div>
+  ${p.instagramUrl ? `<a class="plink" href="${esc(p.instagramUrl)}" target="_blank" rel="noopener">Watch it on Instagram →</a>` : ""}
 </div>`,
   ).join("\n");
   return `<section>

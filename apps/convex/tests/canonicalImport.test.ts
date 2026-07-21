@@ -400,10 +400,10 @@ describe("previewImport / importCanonical — recurring rows", () => {
     });
     expect(preview.rows[0].disposition).toBe("duplicate");
 
-    // Sub-floor amount → invalid.
+    // Sub-floor amount → invalid ($3, below the $5 floor).
     preview = await s.as.query(api.givingImport.previewImport, {
       scope: s.chapterId,
-      rows: [{ rowType: "recurring", name: "Tiny", recurringMonthlyCents: 1000 }],
+      rows: [{ rowType: "recurring", name: "Tiny", recurringMonthlyCents: 300 }],
     });
     expect(preview.rows[0].disposition).toBe("invalid");
   });

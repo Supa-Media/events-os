@@ -23,10 +23,10 @@
 #           slot ("lead" = before the auto events, "trail" = after; default trail)
 # =====================================================================
 
-- id: givebutter
+- id: give
   title: Donate
-  subtitle: "(Card, Apple Pay, Venmo, ACH)"
-  url: https://givebutter.com/publicworship
+  subtitle: "(Card, Apple Pay & Google Pay)"
+  url: /give
   slot: lead
 
 - id: instagram

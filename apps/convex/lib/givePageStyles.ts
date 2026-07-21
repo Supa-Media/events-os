@@ -151,6 +151,8 @@ section{margin-bottom:32px}
 .programcard .picon{font-size:26px;margin-bottom:6px}
 .programcard .ptitle{font-family:'Corben',Georgia,serif;font-size:17px;margin-bottom:6px}
 .programcard .pbody{font-size:13.5px;color:var(--muted);line-height:1.55}
+.programcard .plink{display:inline-block;margin-top:10px;font-size:13px;font-weight:700;color:var(--accent);text-decoration:none}
+.programcard .plink:hover{text-decoration:underline}
 
 /* ── give forms (generic card, shared by one-time / monthly / interest) ── */
 .givecard{background:var(--raised);border:1px solid var(--border);border-radius:20px;
