@@ -15,6 +15,8 @@ var KEY='pwguest:'+SLUG;
 var TOKEN=null;
 try{TOKEN=localStorage.getItem(KEY);}catch(e){}
 var cart={};
+var ticketsSeeded=false; // one-shot: default a single ticket type to qty 1
+var giveSeeded=false; // one-shot: preselect a suggested donation on the Give card
 var giveAmount=0; // selected suggested donation amount (cents), standalone "Give" card
 var pending=null; // action waiting on the identity sheet
 var openPicker=null,openReply=null;
@@ -175,7 +177,10 @@ function openSigninCodeStep(){
   $('signinfields').style.display='none';
   setSheetMode('code');
   $('sheettitle').textContent='Enter your code';
-  $('sheetsub').textContent='We sent a 6-digit code to '+signinCtx.contact;
+  // Phrased so it doesn't confirm whether the contact is on the list (no
+  // enumeration), but still tells a guest with no ticket what to do instead of
+  // trapping them on a code they can never receive.
+  $('sheetsub').textContent='If '+signinCtx.contact+' has a ticket or RSVP, a 6-digit code is on its way. Not getting one? It may not be on this event — try another, or contact the host.';
   $('sheetgo').textContent='Sign in';
   $('sheetgo').disabled=false;
   $('sheeterr').textContent='';
@@ -288,6 +293,15 @@ function renderTickets(){
   card.innerHTML='';
   if(!D.ticketsEnabled||D.ticketTypes.length===0){card.style.display='none';return;}
   card.style.display='block';
+  // Default the cart to 1 when there's a single on-sale ticket type, so "Get
+  // tickets" is live instead of grayed out. With multiple tiers we leave it at
+  // 0 — we won't pick a tier for the guest. One-shot so it never fights a
+  // guest who explicitly steps back down to 0.
+  if(!ticketsSeeded){
+    ticketsSeeded=true;
+    var onSale=D.ticketTypes.filter(function(t){return t.onSale;});
+    if(onSale.length===1)cart[onSale[0].id]=1;
+  }
   card.appendChild(el('div','cardtitle serif','Tickets'));
   D.ticketTypes.forEach(function(tt){
     var row=el('div','tier');
@@ -401,6 +415,11 @@ function renderGiving(){
     card.appendChild(raised);
   }
   var amts=D.suggestedAmountsCents||[];
+  // Preselect a middle-ish suggested amount so the Give button is live and the
+  // ask has an anchor. One-shot — a guest typing a custom amount (which sets
+  // giveAmount=0) is never re-seeded. The checkout donation upsell is left at
+  // "No thanks" on purpose, so nobody is charged a gift they didn't pick.
+  if(!giveSeeded&&amts.length){giveSeeded=true;giveAmount=amts.length>1?amts[1]:amts[0];}
   if(amts.length){
     var grid=el('div','amtgrid');
     amts.forEach(function(c){
@@ -596,8 +615,9 @@ function feedItem(item,isReply){
   var nm=el('b',null,item.authorName+(item.isViewer?' (you)':''));
   line.appendChild(nm);
   if(item.type==='rsvp'){
-    var m=STATUS_META[item.status]||{e:'',w:item.status};
-    var st=el('span','st',' rsvped '+m.w+' '+m.e);
+    var st;
+    if(item.source==='ticket'){st=el('span','st',' bought a ticket 🎟️');}
+    else{var m=STATUS_META[item.status]||{e:'',w:item.status};st=el('span','st',' rsvped '+m.w+' '+m.e);}
     line.appendChild(st);
   }
   line.appendChild(el('span','ago',ago(item.createdAt)));
