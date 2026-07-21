@@ -44,6 +44,7 @@ function jsonPost(run: (ctx: ActionCtx, body: JsonBody) => Promise<unknown>) {
 }
 
 export function registerGiveApiRoutes(http: HttpRouter): void {
+  // Recurring backer / recurring-giver subscription (mode=subscription).
   http.route({
     path: "/api/give/pledge",
     method: "POST",
@@ -64,6 +65,53 @@ export function registerGiveApiRoutes(http: HttpRouter): void {
         name: String(body.name ?? ""),
         email: String(body.email ?? ""),
       });
+    }),
+  });
+
+  // One-time gift (mode=payment). `slug` present → gift scopes to that
+  // territory's chapter; absent/empty → the general ministry (`central`). The
+  // action resolves the scope + validates; settlement happens on the webhook.
+  http.route({
+    path: "/api/give/donate",
+    method: "POST",
+    handler: jsonPost(async (ctx, body) => {
+      const slug = String(body.slug ?? "").trim() || undefined;
+      return ctx.runAction(api.givingDonations.startGiveDonationCheckout, {
+        ...(slug ? { slug } : {}),
+        amountCents: Math.floor(Number(body.amountCents)),
+        name: String(body.name ?? ""),
+        email: String(body.email ?? ""),
+      });
+    }),
+  });
+
+  // Interest + suggest-a-space capture (no payment). Unauthenticated public
+  // endpoint — mirrors the pledge/donation flow's trust model; validation +
+  // caps live in `givingInterest.submitInterest`.
+  http.route({
+    path: "/api/give/interest",
+    method: "POST",
+    handler: jsonPost(async (ctx, body) => {
+      const kind = String(body.kind ?? "");
+      const name = String(body.name ?? "").trim();
+      const email = String(body.email ?? "").trim();
+      const location = String(body.location ?? "").trim();
+      const message = String(body.message ?? "").trim();
+      const territorySlug = String(body.territorySlug ?? "").trim();
+      await ctx.runMutation(api.givingInterest.submitInterest, {
+        kind: kind as
+          | "want_in_city"
+          | "volunteer"
+          | "join_team"
+          | "fund"
+          | "suggest_space",
+        ...(name ? { name } : {}),
+        ...(email ? { email } : {}),
+        ...(location ? { location } : {}),
+        ...(message ? { message } : {}),
+        ...(territorySlug ? { territorySlug } : {}),
+      });
+      return { ok: true };
     }),
   });
 }

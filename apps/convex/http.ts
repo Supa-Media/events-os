@@ -216,11 +216,11 @@ http.route({
   path: "/give",
   method: "GET",
   handler: httpAction(async (ctx) => {
-    const territories = await ctx.runQuery(
-      api.territories.getPublicMapData,
-      {},
-    );
-    return html(renderGiveMapPage(territories, siteUrl()));
+    const [territories, interestStats] = await Promise.all([
+      ctx.runQuery(api.territories.getPublicMapData, {}),
+      ctx.runQuery(api.givingInterest.publicInterestStats, {}),
+    ]);
+    return html(renderGiveMapPage(territories, interestStats, siteUrl()));
   }),
 });
 
@@ -232,12 +232,21 @@ http.route({
     const segments = url.pathname.split("/").filter(Boolean); // ["give", slug]
     const slug = decodeURIComponent(segments[1] ?? "");
     if (!slug || segments.length > 2) return html(renderGiveNotFound(), 404);
-    const data = await ctx.runQuery(api.territories.getPublicTerritory, {
-      slug,
-    });
+    const [data, interestStats] = await Promise.all([
+      ctx.runQuery(api.territories.getPublicTerritory, { slug }),
+      ctx.runQuery(api.givingInterest.publicInterestStats, {}),
+    ]);
     if (!data) return html(renderGiveNotFound(), 404);
-    const pledgeParam = url.searchParams.get("pledge");
-    return html(renderGiveTerritoryPage(data, siteUrl(), pledgeParam));
+    // A one-time gift returns with `?donated=1`; a recurring backer with
+    // `?pledge=success|canceled`. Fold the former into the same `pledgeParam`
+    // the renderer switches on (it treats `"donated"` as the gift thank-you).
+    const pledgeParam =
+      url.searchParams.get("donated") === "1"
+        ? "donated"
+        : url.searchParams.get("pledge");
+    return html(
+      renderGiveTerritoryPage(data, interestStats, siteUrl(), pledgeParam),
+    );
   }),
 });
 
@@ -331,6 +340,8 @@ http.route({
           customer?: string | null;
           subscription?: string | null;
           metadata?: Record<string, string> | null;
+          // checkout.session.completed (one-time give): the settled total.
+          amount_total?: number;
           // invoice.paid / invoice.payment_failed:
           amount_paid?: number;
           // customer.subscription.updated / .deleted:
@@ -361,8 +372,22 @@ http.route({
       }
     } else if (event.type === "checkout.session.completed") {
       const obj = event.data.object;
-      const pledgeId = obj.metadata?.pledgeId;
-      if (pledgeId) {
+      if (obj.metadata?.giveDonation === "1") {
+        // A one-time "give" checkout — settle it via the single gifts write
+        // path (`recordGiveDonationPaid`, idempotent on the session id). Amount
+        // is read from the session's own `amount_total`, never a client value.
+        // Handled BEFORE the pledge/order/donation fan-out: a give session
+        // carries no pledgeId and is neither an order nor an event donation, so
+        // without this branch it would fall through to the "unknown session"
+        // error log.
+        await ctx.runMutation(internal.givingDonations.recordGiveDonationPaid, {
+          sessionId: obj.id,
+          amountTotalCents: obj.amount_total ?? 0,
+          donorId: obj.metadata.giveDonorId ?? "",
+          scope: obj.metadata.giveScope ?? "",
+        });
+      } else if (obj.metadata?.pledgeId) {
+        const pledgeId = obj.metadata.pledgeId;
         // A BACKER (subscription) checkout — identified by our pledge id in the
         // session metadata (a ticket/donation session carries none). Activate
         // the pledge + link its Stripe customer/subscription. Idempotent, and a
