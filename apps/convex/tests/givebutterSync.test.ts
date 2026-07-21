@@ -1359,3 +1359,431 @@ describe("transactions to tickets join", () => {
     expect(orders[0].externalRef).toBe("gb:ticket:400");
   });
 });
+
+// ── Givebutter DONATIONS (the gift portion of a transaction) ─────────────────
+//
+// A transaction's donation line items roll into the event's Given total
+// (`externalGiftsCents`), Revenue stays ticket-only, and re-running is
+// idempotent (dedup on the transaction id). See the MONEY INVARIANT header +
+// `applyGivebutterDonations` / `donationCentsFromTransaction` on
+// givebutterSync.ts.
+
+type GbDonation = {
+  externalId: string;
+  donationCents: number;
+  donorName: string;
+  email: string | null;
+  phone: string | null;
+  receivedAt: number;
+};
+
+function gbDonation(
+  over: Partial<GbDonation> & { externalId: string },
+): GbDonation {
+  return {
+    donationCents: 5000,
+    donorName: "Gwen Giver",
+    email: null,
+    phone: null,
+    receivedAt: Date.now(),
+    ...over,
+  };
+}
+
+const giftRows = (s: ChapterSetup, eventId: Id<"events">) =>
+  run(s.t, (ctx) =>
+    ctx.db
+      .query("gifts")
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
+      .collect(),
+  ) as Promise<Doc<"gifts">[]>;
+
+function applyDonations(
+  s: ChapterSetup,
+  eventId: Id<"events">,
+  donations: GbDonation[],
+) {
+  return s.t.mutation(internal.givebutterSync.applyGivebutterDonations, {
+    eventId,
+    donations,
+  });
+}
+
+describe("applyGivebutterDonations", () => {
+  test("a pure donation raises Given (externalGiftsCents), records a gift, and creates no ticket rows", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId);
+
+    const res = await applyDonations(s, eventId, [
+      gbDonation({
+        externalId: "txn_1",
+        donationCents: 5000,
+        email: "gwen@x.com",
+      }),
+    ]);
+    expect(res).toMatchObject({ inserted: 1, skipped: 0 });
+
+    const page = await pageRow(s, eventId);
+    expect(page?.externalGiftsCents).toBe(5000);
+    expect(page?.externalGiftsCount).toBe(1);
+    // Revenue (ticket-only) is untouched.
+    expect(page?.revenueCents).toBe(0);
+    expect(page?.ticketsSoldCount).toBe(0);
+
+    // The donation path creates NO ticket-side rows.
+    expect(await rows(s, "ticketOrders", eventId)).toHaveLength(0);
+    expect(await rows(s, "tickets", eventId)).toHaveLength(0);
+
+    const gifts = await giftRows(s, eventId);
+    expect(gifts).toHaveLength(1);
+    expect(gifts[0]).toMatchObject({
+      amountCents: 5000,
+      method: "givebutter",
+      externalRef: "txn_1",
+      eventId,
+    });
+    expect(gifts[0].donationId).toBeUndefined();
+  });
+
+  test("re-applying the same transaction id is idempotent (Given unchanged, no duplicate gift)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId);
+
+    const d = gbDonation({
+      externalId: "txn_dup",
+      donationCents: 2500,
+      email: "dup@x.com",
+    });
+    await applyDonations(s, eventId, [d]);
+    const res2 = await applyDonations(s, eventId, [d]);
+    expect(res2).toMatchObject({ inserted: 0, skipped: 1 });
+
+    expect((await pageRow(s, eventId))?.externalGiftsCents).toBe(2500);
+    expect((await pageRow(s, eventId))?.externalGiftsCount).toBe(1);
+    expect(await giftRows(s, eventId)).toHaveLength(1);
+  });
+
+  test("a non-positive donation is skipped (no gift, no rollup)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId);
+
+    const res = await applyDonations(s, eventId, [
+      gbDonation({ externalId: "txn_zero", donationCents: 0 }),
+    ]);
+    expect(res).toMatchObject({ inserted: 0, skipped: 1 });
+    expect((await pageRow(s, eventId))?.externalGiftsCents ?? 0).toBe(0);
+    expect(await giftRows(s, eventId)).toHaveLength(0);
+  });
+});
+
+// Action-level: derive the donation from a transaction's `line_items` and prove
+// the ticket/donation split never overlaps, refunds contribute nothing, and a
+// full re-sync is idempotent.
+describe("Givebutter donation sync (transactions → gifts)", () => {
+  const realFetch = globalThis.fetch;
+  const originalKey = process.env.GIVEBUTTER_API_KEY;
+
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    if (originalKey === undefined) delete process.env.GIVEBUTTER_API_KEY;
+    else process.env.GIVEBUTTER_API_KEY = originalKey;
+  });
+
+  /** A fetch mock: campaign validate 200, then the given transactions + tickets
+   *  payloads, everything else empty. */
+  function mockGb(opts: {
+    transactions: unknown[];
+    tickets?: unknown[];
+  }): void {
+    globalThis.fetch = (async (url: string) => {
+      if (url.endsWith("/campaigns/686283")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data: { id: 686283 } }),
+          text: async () => "{}",
+        };
+      }
+      if (url.includes("/transactions")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ data: opts.transactions, links: { next: null } }),
+          text: async () => "{}",
+        };
+      }
+      if (url.includes("/tickets")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({
+            data: opts.tickets ?? [],
+            links: { next: null },
+          }),
+          text: async () => "{}",
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ data: [], links: { next: null } }),
+        text: async () => "{}",
+      };
+    }) as unknown as typeof fetch;
+  }
+
+  test("a pure-donation transaction lifts Given, writes a gift, and creates no ticket rows", async () => {
+    process.env.GIVEBUTTER_API_KEY = "test_key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId, "686283");
+
+    // Live shape: line_items nested under `transactions[]` sub-transactions.
+    // Pure donation $100 (+ $2.24 fee) → donation = 100.
+    mockGb({
+      transactions: [
+        {
+          id: "d1",
+          campaign_id: 686283,
+          status: "succeeded",
+          first_name: "Dana",
+          last_name: "Donor",
+          email: "dana@x.com",
+          created_at: new Date().toISOString(),
+          transactions: [
+            {
+              refunded: false,
+              line_items: [
+                { subtype: "donation", total: 100 },
+                { subtype: "fee", total: 2.24 },
+              ],
+            },
+          ],
+        },
+      ],
+      tickets: [],
+    });
+
+    await expect(
+      t.action(internal.givebutterSync.syncGivebutterCampaign, { eventId }),
+    ).resolves.toBeNull();
+
+    const page = await pageRow(s, eventId);
+    // Donation portion only (fee line excluded); Revenue untouched.
+    expect(page?.externalGiftsCents).toBe(10000);
+    expect(page?.externalGiftsCount).toBe(1);
+    expect(page?.revenueCents).toBe(0);
+    expect(page?.ticketsSoldCount).toBe(0);
+    expect(page?.givebutterLastSyncError).toBeUndefined();
+
+    expect(await rows(s, "ticketOrders", eventId)).toHaveLength(0);
+    const gifts = await giftRows(s, eventId);
+    expect(gifts).toHaveLength(1);
+    expect(gifts[0]).toMatchObject({ amountCents: 10000, externalRef: "d1" });
+  });
+
+  test("a mixed ticket+donation transaction: Revenue gets the ticket, Given gets the donation, no overlap", async () => {
+    process.env.GIVEBUTTER_API_KEY = "test_key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId, "686283");
+
+    // Live shape: ticket $25 + donation $75 + fee $3.30 (amount=100) → the
+    // donation is exactly 75; the $25 ticket is Revenue, never Given.
+    mockGb({
+      transactions: [
+        {
+          id: "m1",
+          campaign_id: 686283,
+          status: "succeeded",
+          first_name: "Mel",
+          last_name: "Mixed",
+          email: "mel@x.com",
+          created_at: new Date().toISOString(),
+          transactions: [
+            {
+              refunded: false,
+              line_items: [
+                { subtype: "ticket", total: 25 },
+                { subtype: "donation", total: 75 },
+                { subtype: "fee", total: 3.3 },
+              ],
+            },
+          ],
+        },
+      ],
+      tickets: [
+        {
+          id: 501,
+          transaction_id: "m1",
+          email: "mel@x.com",
+          price: 25,
+          title: "GA",
+          created_at: new Date().toISOString(),
+        },
+      ],
+    });
+
+    await expect(
+      t.action(internal.givebutterSync.syncGivebutterCampaign, { eventId }),
+    ).resolves.toBeNull();
+
+    const page = await pageRow(s, eventId);
+    expect(page?.revenueCents).toBe(2500); // ticket price only
+    expect(page?.ticketsSoldCount).toBe(1);
+    expect(page?.externalGiftsCents).toBe(7500); // donation only ($75)
+    expect(page?.externalGiftsCount).toBe(1);
+
+    // Exactly one ticket order and one gift — the same dollar is never in both.
+    expect(await rows(s, "ticketOrders", eventId)).toHaveLength(1);
+    const gifts = await giftRows(s, eventId);
+    expect(gifts).toHaveLength(1);
+    expect(gifts[0]).toMatchObject({ amountCents: 7500, externalRef: "m1" });
+  });
+
+  test("re-running the full sync is idempotent — Revenue and Given unchanged", async () => {
+    process.env.GIVEBUTTER_API_KEY = "test_key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId, "686283");
+
+    mockGb({
+      transactions: [
+        {
+          id: "m1",
+          campaign_id: 686283,
+          status: "succeeded",
+          email: "mel@x.com",
+          created_at: new Date().toISOString(),
+          transactions: [
+            {
+              refunded: false,
+              line_items: [
+                { subtype: "ticket", total: 25 },
+                { subtype: "donation", total: 75 },
+              ],
+            },
+          ],
+        },
+      ],
+      tickets: [
+        {
+          id: 501,
+          transaction_id: "m1",
+          email: "mel@x.com",
+          price: 25,
+          title: "GA",
+          created_at: new Date().toISOString(),
+        },
+      ],
+    });
+
+    await t.action(internal.givebutterSync.syncGivebutterCampaign, { eventId });
+    await t.action(internal.givebutterSync.syncGivebutterCampaign, { eventId });
+
+    const page = await pageRow(s, eventId);
+    expect(page?.revenueCents).toBe(2500);
+    expect(page?.ticketsSoldCount).toBe(1);
+    expect(page?.externalGiftsCents).toBe(7500);
+    expect(page?.externalGiftsCount).toBe(1);
+    expect(await rows(s, "ticketOrders", eventId)).toHaveLength(1);
+    expect(await giftRows(s, eventId)).toHaveLength(1);
+  });
+
+  test("a refunded transaction contributes no donation", async () => {
+    process.env.GIVEBUTTER_API_KEY = "test_key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId, "686283");
+
+    mockGb({
+      transactions: [
+        {
+          id: "r1",
+          campaign_id: 686283,
+          status: "refunded",
+          email: "ref@x.com",
+          created_at: new Date().toISOString(),
+          transactions: [
+            {
+              refunded: true,
+              line_items: [{ subtype: "donation", total: 50 }],
+            },
+          ],
+        },
+      ],
+      tickets: [],
+    });
+
+    await expect(
+      t.action(internal.givebutterSync.syncGivebutterCampaign, { eventId }),
+    ).resolves.toBeNull();
+
+    const page = await pageRow(s, eventId);
+    expect(page?.externalGiftsCents ?? 0).toBe(0);
+    expect(page?.externalGiftsCount ?? 0).toBe(0);
+    expect(await giftRows(s, eventId)).toHaveLength(0);
+  });
+
+  test("a pure-ticket transaction adds no donation (Given stays 0)", async () => {
+    process.env.GIVEBUTTER_API_KEY = "test_key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId, "686283");
+
+    // Ticket $25 + fee $1.06, NO donation line → donation = 0.
+    mockGb({
+      transactions: [
+        {
+          id: "k1",
+          campaign_id: 686283,
+          status: "succeeded",
+          email: "buyer@x.com",
+          created_at: new Date().toISOString(),
+          transactions: [
+            {
+              refunded: false,
+              line_items: [
+                { subtype: "ticket", total: 25 },
+                { subtype: "fee", total: 1.06 },
+              ],
+            },
+          ],
+        },
+      ],
+      tickets: [
+        {
+          id: 601,
+          transaction_id: "k1",
+          email: "buyer@x.com",
+          price: 25,
+          title: "GA",
+          created_at: new Date().toISOString(),
+        },
+      ],
+    });
+
+    await expect(
+      t.action(internal.givebutterSync.syncGivebutterCampaign, { eventId }),
+    ).resolves.toBeNull();
+
+    const page = await pageRow(s, eventId);
+    // Ticket lands in Revenue; nothing lands in Given; no gift row.
+    expect(page?.revenueCents).toBe(2500);
+    expect(page?.ticketsSoldCount).toBe(1);
+    expect(page?.externalGiftsCents ?? 0).toBe(0);
+    expect(page?.externalGiftsCount ?? 0).toBe(0);
+    expect(await giftRows(s, eventId)).toHaveLength(0);
+  });
+});
