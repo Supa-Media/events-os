@@ -322,6 +322,28 @@ export const updatePage = mutation({
       }
     }
 
+    // Single-mode events: RSVP and ticketing are mutually exclusive (a free
+    // ticket is a $0 ticket type, not RSVP). Enabling one clears the other.
+    // Switching to RSVP is blocked once a ticket has sold; switching to
+    // ticketed archives the free-RSVP guests (done after the patch, below).
+    const enablingTickets = patch.ticketsEnabled === true;
+    const enablingRsvp = patch.rsvpEnabled === true;
+    if (enablingTickets && enablingRsvp) {
+      throw new ConvexError({
+        code: "MODE_CONFLICT",
+        message: "An event is either RSVP or ticketed — pick one.",
+      });
+    }
+    if (enablingRsvp && page.ticketsSoldCount > 0) {
+      throw new ConvexError({
+        code: "MODE_LOCKED",
+        message:
+          "Tickets have already sold — this event can't switch back to RSVP.",
+      });
+    }
+    if (enablingTickets) patch.rsvpEnabled = false;
+    else if (enablingRsvp) patch.ticketsEnabled = false;
+
     // v.null() sentinels → unset the optional field.
     const {
       coverImage,
@@ -358,9 +380,45 @@ export const updatePage = mutation({
         : {}),
       updatedAt: Date.now(),
     });
+    // Switching to ticketed drops the free-RSVP guests (recoverable archive),
+    // so the page reads as ticketed and stale RSVPs don't linger.
+    if (enablingTickets) await archiveFreeRsvps(ctx, page);
     return null;
   },
 });
+
+/**
+ * Archive every free-RSVP row on a page (source !== "ticket" and not already
+ * archived), keeping ticket buyers untouched. Rows are kept for recoverability;
+ * counters are decremented in ONE aggregate patch (never per-row
+ * `bumpRsvpCounters`), mirroring the batch idiom in eventAttendanceImport.
+ */
+async function archiveFreeRsvps(
+  ctx: MutationCtx,
+  page: Doc<"eventPages">,
+): Promise<void> {
+  const now = Date.now();
+  const rows = await ctx.db
+    .query("rsvps")
+    .withIndex("by_event", (q) => q.eq("eventId", page.eventId))
+    .take(2000);
+  let dGoing = 0;
+  let dMaybe = 0;
+  for (const r of rows) {
+    if (r.archivedAt != null || r.source === "ticket") continue;
+    await ctx.db.patch(r._id, { archivedAt: now, updatedAt: now });
+    if (r.status === "going") dGoing++;
+    else if (r.status === "maybe") dMaybe++;
+  }
+  if (dGoing || dMaybe) {
+    const fresh = (await ctx.db.get(page._id))!;
+    await ctx.db.patch(page._id, {
+      goingCount: Math.max(0, fresh.goingCount - dGoing),
+      maybeCount: Math.max(0, fresh.maybeCount - dMaybe),
+      updatedAt: now,
+    });
+  }
+}
 
 /**
  * Return (minting on first use) the secret preview token for a page, so the
@@ -551,18 +609,22 @@ export const listRsvpsAdmin = query({
       ticketCountByRsvpId.set(rsvpId, (ticketCountByRsvpId.get(rsvpId) ?? 0) + 1);
     }
 
-    return rows.map((r) => ({
-      id: r._id,
-      name: r.name,
-      // Imported name-only guests may have no email — project null, never
-      // undefined (the guest list renders phone/name for those rows).
-      email: r.email ?? null,
-      phone: r.phone ?? null,
-      status: r.status,
-      source: r.source ?? "rsvp",
-      createdAt: r.createdAt,
-      ticketCount: ticketCountByRsvpId.get(r._id) ?? 0,
-    }));
+    // Archived free-RSVP rows (from a switch to ticketed mode) are kept for
+    // recoverability but never shown in the guest list.
+    return rows
+      .filter((r) => r.archivedAt == null)
+      .map((r) => ({
+        id: r._id,
+        name: r.name,
+        // Imported name-only guests may have no email — project null, never
+        // undefined (the guest list renders phone/name for those rows).
+        email: r.email ?? null,
+        phone: r.phone ?? null,
+        status: r.status,
+        source: r.source ?? "rsvp",
+        createdAt: r.createdAt,
+        ticketCount: ticketCountByRsvpId.get(r._id) ?? 0,
+      }));
   },
 });
 
@@ -695,7 +757,10 @@ export const getPublicPage = query({
     const guests = page.showGuestList === false
       ? []
       : [...going, ...maybe]
-          .filter((r) => !ticketsOnly || r.source === "ticket")
+          .filter(
+            (r) =>
+              r.archivedAt == null && (!ticketsOnly || r.source === "ticket"),
+          )
           .map((r) => ({ name: r.name, status: r.status }));
 
     // Address gating (Partiful's "RSVP for full location").
@@ -936,7 +1001,9 @@ async function buildActivity(
   // never leftover RSVP/import rows — mirroring the guest-list filter above.
   for (const r of recentRsvps.filter(
     (r) =>
-      r.status !== "not_going" && (!ticketsOnly || r.source === "ticket"),
+      r.status !== "not_going" &&
+      r.archivedAt == null &&
+      (!ticketsOnly || r.source === "ticket"),
   )) {
     const replies = (byParent.get(`rsvp:${String(r._id)}`) ?? []).sort(
       (a, b) => a.createdAt - b.createdAt,
@@ -1042,7 +1109,12 @@ export const submitRsvp = mutation({
 
     if (rsvp) {
       const emailChanged = email !== rsvp.email;
-      if (rsvp.status !== args.status) {
+      const wasArchived = rsvp.archivedAt != null;
+      if (wasArchived) {
+        // The row was archived out of the counters on a switch to ticketed;
+        // re-activating it re-adds a fresh count for its new status.
+        await bumpRsvpCounters(ctx, page, null, args.status);
+      } else if (rsvp.status !== args.status) {
         await bumpRsvpCounters(ctx, page, rsvp.status, args.status);
       }
       await ctx.db.patch(rsvp._id, {
@@ -1050,6 +1122,7 @@ export const submitRsvp = mutation({
         email,
         ...(args.phone !== undefined ? { phone: phone ?? undefined } : {}),
         status: args.status,
+        ...(wasArchived ? { archivedAt: undefined } : {}),
         updatedAt: now,
       });
       // A changed email must be re-verified; an unchanged one keeps its state.
