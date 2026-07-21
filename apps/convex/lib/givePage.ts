@@ -49,6 +49,7 @@ import {
   formatCents,
   launchTemplateTotalCents,
   PUBLIC_BACKER_TIERS,
+  CHAPTER_CORE_ROLES,
 } from "@events-os/shared";
 
 type TerritoryStage = "prospect" | "raising" | "launched";
@@ -296,9 +297,17 @@ function cityLaunchPlanHtml(): string {
   const tier20 =
     PUBLIC_BACKER_TIERS.find((t) => t.minBackers === 20) ?? PUBLIC_BACKER_TIERS[0];
   const monthly20 = esc(formatCents(tier20.monthlyCents, { showCents: false }));
+  // The real five-person team, derived from the shared roles so it can never
+  // drift from the roles table further down the page. Starts with the Chapter
+  // Director. "Chapter Director, Music Lead, … , and Treasurer".
+  const roleList = esc(
+    CHAPTER_CORE_ROLES.map((r) => r.role)
+      .join(", ")
+      .replace(/,([^,]*)$/, ", and$1"),
+  );
   return `<div class="citylaunch">
   <h2 class="sectionhead serif">Public Worship — The Movement: City Launch Plan</h2>
-  <p>Every city starts the same way: a worship leader, a hospitality coordinator, someone on comms, an operations lead, and a chapter director. A 5-person team plus ${tier20.minBackers} backers at ${unit}/mo (${monthly20}/mo) makes a city self-sustaining — and a slice of every chapter funds the launch of the next. Starting with New York, we train a team, then plan the next cities together.</p>
+  <p>Every city runs on the same five-person volunteer team — ${roleList}. That team plus ${tier20.minBackers} backers at ${unit}/mo (${monthly20}/mo) makes a city self-sustaining, and a slice of every chapter funds the launch of the next. Starting with New York, we train a team, then plan the next cities together.</p>
 </div>`;
 }
 
@@ -581,10 +590,15 @@ export function renderGiveTerritoryPage(
 ): string {
   const url = `${siteUrl}${givePagePath(data.slug)}`;
   const backerUnit = formatCents(BACKER_UNIT_CENTS, { showCents: false });
-  const title = `${data.name}, ${data.region} — ${data.backerCount} of ${data.targetBackers} backers`;
-  const description = data.nextMilestone
-    ? `${Math.max(0, data.nextMilestone.minBackers - data.backerCount)} more backers guarantee ${data.nextMilestone.commitment} in ${data.name}. Back this territory for ${backerUnit}/mo, or give a one-time gift.`
-    : `Help ${data.name}, ${data.region} launch a Public Worship chapter. Back this territory for ${backerUnit}/mo, or give a one-time gift.`;
+  // City-first, hype title/description — renders in EVERY share preview
+  // ("Public Worship — New York"), independent of the image card below.
+  const title = `Public Worship — ${data.name}`;
+  const description =
+    data.stage === "launched"
+      ? `Public Worship is alive in ${data.name}, ${data.region}. Help sustain bold, public, generous worship in the city — become a backer or give a one-time gift.`
+      : data.nextMilestone
+        ? `Bring Public Worship to ${data.name}, ${data.region}. ${Math.max(0, data.nextMilestone.minBackers - data.backerCount)} more backers guarantee ${data.nextMilestone.commitment} — back the movement for ${backerUnit}/mo, or give a one-time gift.`
+        : `Bring Public Worship to ${data.name}, ${data.region} — back the team for ${backerUnit}/mo, or give a one-time gift.`;
 
   const progressPct = data.targetBackers > 0
     ? Math.min(100, Math.round((data.backerCount / data.targetBackers) * 100))
