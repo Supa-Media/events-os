@@ -706,7 +706,7 @@ export const getPublicPage = query({
     const activityLocked = (page.activityRestricted ?? true) && !hasRsvpd;
     const activity = activityLocked
       ? null
-      : await buildActivity(ctx, page.eventId, viewer);
+      : await buildActivity(ctx, page.eventId, viewer, ticketsOnly);
 
     // The signed-in guest's own issued tickets — `code` backs both the QR and
     // the human check-in code shown on the page. Bounded (a guest holds few
@@ -892,6 +892,7 @@ async function buildActivity(
   ctx: QueryCtx,
   eventId: Id<"events">,
   viewer: Doc<"rsvps"> | null,
+  ticketsOnly: boolean,
 ) {
   const viewerKey = viewer ? String(viewer._id) : null;
 
@@ -931,7 +932,12 @@ async function buildActivity(
   });
 
   const items: Array<Record<string, unknown>> = [];
-  for (const r of recentRsvps.filter((r) => r.status !== "not_going")) {
+  // Tickets-only events (RSVP off) show ONLY ticketed attendees in the feed —
+  // never leftover RSVP/import rows — mirroring the guest-list filter above.
+  for (const r of recentRsvps.filter(
+    (r) =>
+      r.status !== "not_going" && (!ticketsOnly || r.source === "ticket"),
+  )) {
     const replies = (byParent.get(`rsvp:${String(r._id)}`) ?? []).sort(
       (a, b) => a.createdAt - b.createdAt,
     );
@@ -941,6 +947,8 @@ async function buildActivity(
       authorName: r.name,
       isViewer: !!viewer && r._id === viewer._id,
       status: r.status,
+      // Lets the client say "bought a ticket" vs "RSVP'd" (legacy rows = "rsvp").
+      source: r.source ?? "rsvp",
       createdAt: r.updatedAt,
       reactions: await reactionsFor(ctx, "rsvp", String(r._id), viewerKey),
       replies: await Promise.all(replies.map(commentShape)),
