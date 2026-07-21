@@ -192,9 +192,11 @@ describe("give map page", () => {
     expect(html).toMatch(/Chapter Director/);
   });
 
-  test("renders the team-philosophy block (F7)", () => {
+  test("renders the team-philosophy block (F7), incl. the one-year term", () => {
     expect(html).toMatch(/Who we're looking for/i);
     expect(html).toMatch(/sacrificial giving/i);
+    // Positions are a one-year term, renewable once.
+    expect(html).toMatch(/one-year term/i);
   });
 
   test("renders multi-select interest checkboxes (F4)", () => {
@@ -228,8 +230,9 @@ describe("give territory page (raising, pre-launch)", () => {
     expect(html).toContain("/api/give/donate");
   });
 
-  test("uses the $50 backer framing, not the stale $20/mo copy", () => {
+  test("uses the $50 backer framing, with no arbitrary $20 lower bound", () => {
     expect(html).not.toContain("$20/mo");
+    expect(html).not.toContain("$20 and $49");
   });
 
   test("frames milestones as guarantees, not unlocks", () => {

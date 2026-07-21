@@ -508,5 +508,6 @@ export function teamPhilosophyHtml(): string {
   <p>Every Public Worship team — central and every chapter — is volunteer. We're looking for people who want real leadership experience and carry a genuine passion and heart for worship: people already committed to serving a local church community, who align with our statement of beliefs, and who understand sacrifice — already serving at their church and wanting to do more.</p>
   <p class="teamphilo-quote">Serving your church is your tithes and offerings; Public Worship is your sacrificial giving.</p>
   <p>We're looking for people willing to give sacrificially with their time. God has blessed Public Worship with more than enough candidates ready to answer the call, and it's central's duty to train them from the ground up so they have everything they need: resources, mentorship, discipleship, and custom in-house software that makes doing this well easier for everyone.</p>
+  <p>Each position is a one-year term, with the option to renew for one more — long enough to pour in and build something real, with a natural moment to hand off the baton.</p>
 </section>`;
 }
