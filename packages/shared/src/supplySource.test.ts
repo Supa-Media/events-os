@@ -5,6 +5,16 @@ import {
   normalizeSupplySource,
 } from "./index";
 
+/**
+ * Supply "source" is a provenance model (chapter storage vs. borrowed vs.
+ * bought, etc.) that decides whether a supply row is inventory-backed and
+ * feeds the derived acquisition Status shown in the grid, calendar, and
+ * packing screen. Legacy events still carry retired source values
+ * ("storage", "misc") from before the provenance model existed, so this
+ * suite pins the alias table and its effect on both inventory-backed
+ * detection and derived status for those legacy rows.
+ */
+
 describe("normalizeSupplySource", () => {
   test("maps the retired values onto the provenance set", () => {
     expect(normalizeSupplySource("storage")).toBe("chapter_storage");

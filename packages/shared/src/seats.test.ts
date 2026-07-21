@@ -14,6 +14,16 @@ import {
   seatsForChart,
 } from "./seats";
 
+/**
+ * `seats.ts` is the owner-approved seed template for the org-chart seat
+ * taxonomy (central + per-chapter), including the parent/child tree shape
+ * and which seats carry which capability strings. This suite pins that
+ * taxonomy — both its structural invariants (acyclic, single root per
+ * chart, child chart matches parent chart) and an exact snapshot of the
+ * capabilities per seat — so an edit to SEAT_DEFS trips a loud, specific
+ * failure here instead of silently drifting from the approved flowchart.
+ */
+
 describe("SEAT_IDS / SEAT_DEFS", () => {
   test("SEAT_IDS has no duplicates", () => {
     expect(new Set(SEAT_IDS).size).toBe(SEAT_IDS.length);
