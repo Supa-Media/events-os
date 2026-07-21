@@ -831,6 +831,7 @@ export const getPublicPage = query({
       goalCents: page.goalCents ?? null,
       revenueCents: page.revenueCents,
       externalGiftsCents: page.externalGiftsCents ?? 0,
+      externalGiftsCount: page.externalGiftsCount ?? 0,
       raisedCents:
         page.revenueCents +
         (page.donationsCents ?? 0) +
