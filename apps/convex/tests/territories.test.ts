@@ -158,6 +158,73 @@ describe("saveTerritory", () => {
     expect(territory?.targetBackers).toBe(lowest.minBackers);
   });
 
+  test("share-card image: stores, flags on the public page, serves via storage id, and clears", async () => {
+    const s = await devDirectorSetup();
+    // convex-test's run ctx provides `storage.store` at runtime, but the
+    // mutation-ctx storage type doesn't declare it — cast just for the test.
+    const storageId = (await run(s.t, (ctx) =>
+      (
+        ctx.storage as unknown as {
+          store: (b: Blob) => Promise<Id<"_storage">>;
+        }
+      ).store(new Blob([new Uint8Array([1, 2, 3, 4])], { type: "image/png" })),
+    )) as Id<"_storage">;
+    const id = await s.as.mutation(api.territories.saveTerritory, {
+      name: "Philly",
+      region: "PA",
+      lat: 39.95,
+      lng: -75.16,
+      slug: "philly-pa",
+      publiclyVisible: true,
+      ogImageStorageId: storageId,
+    });
+    // Public page flags it; the internal serve query returns the id.
+    const pub = await s.as.query(api.territories.getPublicTerritory, {
+      slug: "philly-pa",
+    });
+    expect(pub?.hasOgImage).toBe(true);
+    const served = await s.t.query(
+      internal.territories.getTerritoryOgStorageId,
+      { slug: "philly-pa" },
+    );
+    expect(served).toBe(storageId);
+    // Admin row exposes the id + a resolved url.
+    const rows = await s.as.query(api.territories.listTerritoriesAdmin, {});
+    const row = rows.find((r) => r._id === id);
+    expect(row?.ogImageStorageId).toBe(storageId);
+    expect(typeof row?.ogImageUrl).toBe("string");
+    // An unrelated edit (omitting ogImageStorageId) leaves the card in place.
+    await s.as.mutation(api.territories.saveTerritory, {
+      territoryId: id,
+      name: "Philadelphia",
+      region: "PA",
+      lat: 39.95,
+      lng: -75.16,
+      slug: "philly-pa",
+      publiclyVisible: true,
+    });
+    expect(
+      await s.t.query(internal.territories.getTerritoryOgStorageId, {
+        slug: "philly-pa",
+      }),
+    ).toBe(storageId);
+    // Passing null clears it.
+    await s.as.mutation(api.territories.saveTerritory, {
+      territoryId: id,
+      name: "Philadelphia",
+      region: "PA",
+      lat: 39.95,
+      lng: -75.16,
+      slug: "philly-pa",
+      publiclyVisible: true,
+      ogImageStorageId: null,
+    });
+    const pub2 = await s.as.query(api.territories.getPublicTerritory, {
+      slug: "philly-pa",
+    });
+    expect(pub2?.hasOgImage).toBe(false);
+  });
+
   test("dual slug uniqueness: rejects a slug taken by another territory OR a chapter", async () => {
     const s = await devDirectorSetup();
     await s.as.mutation(api.territories.saveTerritory, {

@@ -386,6 +386,10 @@ const territoryAdminValidator = v.object({
   launchFundCents: v.number(),
   launchFundTargetCents: v.number(),
   launchedAt: v.union(v.number(), v.null()),
+  // The share-card image: the raw storage id + a resolved preview URL (null
+  // when unset), so the admin form can show + replace the current card.
+  ogImageStorageId: v.union(v.id("_storage"), v.null()),
+  ogImageUrl: v.union(v.string(), v.null()),
   // Joined from the linked chapter — the single source of truth for the count.
   backerCount: v.number(),
   chapterIsActive: v.boolean(),
@@ -410,6 +414,10 @@ async function toAdminRow(ctx: QueryCtx, row: Doc<"territories">) {
     launchFundCents: row.launchFundCents,
     launchFundTargetCents: row.launchFundTargetCents,
     launchedAt: row.launchedAt ?? null,
+    ogImageStorageId: row.ogImageStorageId ?? null,
+    ogImageUrl: row.ogImageStorageId
+      ? await ctx.storage.getUrl(row.ogImageStorageId)
+      : null,
     backerCount: chapter?.backerCount ?? 0,
     chapterIsActive: chapter?.isActive === true,
     createdAt: row.createdAt,
@@ -456,6 +464,9 @@ export const saveTerritory = mutation({
     story: v.optional(v.string()),
     publiclyVisible: v.boolean(),
     launchFundTargetCents: v.optional(v.number()),
+    // The share-card image. Omit to leave unchanged; `null` clears it; an id
+    // sets it. Uploaded via `api.storage.generateUploadUrl` in the admin form.
+    ogImageStorageId: v.optional(v.union(v.id("_storage"), v.null())),
   },
   returns: v.id("territories"),
   handler: async (ctx, args) => {
@@ -509,6 +520,11 @@ export const saveTerritory = mutation({
         story,
         publiclyVisible: args.publiclyVisible,
         launchFundTargetCents,
+        // Omitted → unchanged; `null` → cleared (undefined removes the field);
+        // an id → set.
+        ...(args.ogImageStorageId === undefined
+          ? {}
+          : { ogImageStorageId: args.ogImageStorageId ?? undefined }),
         updatedAt: now,
       });
       // Keep the linked chapter's display name in step with a rename.
@@ -548,6 +564,9 @@ export const saveTerritory = mutation({
       targetBackers,
       story,
       publiclyVisible: args.publiclyVisible,
+      ...(args.ogImageStorageId
+        ? { ogImageStorageId: args.ogImageStorageId }
+        : {}),
       launchFundCents: 0,
       launchFundTargetCents,
       createdAt: now,
@@ -696,6 +715,9 @@ const publicTerritoryValidator = v.union(
     backerCount: v.number(),
     targetBackers: v.number(),
     story: v.union(v.string(), v.null()),
+    // Whether a share-card image is set — the page emits an `og:image`
+    // (`/give/<slug>/og`) only when true.
+    hasOgImage: v.boolean(),
     milestones: v.array(milestoneRungValidator),
     nextMilestone: v.union(milestoneRungValidator, v.null()),
     // The pre-launch launch pot (docs/plans/giving-territories.md §D3), or
@@ -817,12 +839,31 @@ export const getPublicTerritory = query({
       backerCount,
       targetBackers: territory.targetBackers,
       story: territory.story ?? null,
+      hasOgImage: territory.ogImageStorageId != null,
       milestones,
       nextMilestone,
       launchFund,
       upcomingFundraisers,
       sponsorshipCount,
     };
+  },
+});
+
+/**
+ * The share-card image's storage id for a `publiclyVisible` territory slug (or
+ * null). Internal — `http.ts` serves the bytes at `/give/<slug>/og`. No PII;
+ * gated only by `publiclyVisible` (a hidden territory's card isn't reachable).
+ */
+export const getTerritoryOgStorageId = internalQuery({
+  args: { slug: v.string() },
+  returns: v.union(v.id("_storage"), v.null()),
+  handler: async (ctx, { slug }) => {
+    const territory = await ctx.db
+      .query("territories")
+      .withIndex("by_slug", (q) => q.eq("slug", slug))
+      .first();
+    if (!territory || !territory.publiclyVisible) return null;
+    return territory.ogImageStorageId ?? null;
   },
 });
 

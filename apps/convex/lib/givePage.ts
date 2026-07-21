@@ -73,6 +73,8 @@ export type PublicTerritoryData = {
   backerCount: number;
   targetBackers: number;
   story: string | null;
+  /** Whether an uploaded share-card image exists (→ emit `og:image`). */
+  hasOgImage: boolean;
   milestones: Array<{
     minBackers: number;
     label: string;
@@ -258,7 +260,18 @@ function ogHead(opts: {
   title: string;
   description: string;
   url: string;
+  /** Absolute URL of the 1080×1080 share-card image (the uploaded per-territory
+   *  card). When set, the page advertises it to every OG scraper + uses a
+   *  large-image Twitter card. */
+  imageUrl?: string;
 }): string {
+  const imageTags = opts.imageUrl
+    ? `<meta property="og:image" content="${opts.imageUrl}">
+<meta property="og:image:width" content="1080">
+<meta property="og:image:height" content="1080">
+<meta property="og:image:alt" content="${esc(opts.title)}">
+<meta name="twitter:image" content="${opts.imageUrl}">`
+    : "";
   return `<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>${esc(opts.title)}</title>
@@ -268,9 +281,10 @@ function ogHead(opts: {
 <meta property="og:title" content="${esc(opts.title)}">
 <meta property="og:description" content="${esc(opts.description)}">
 <meta property="og:url" content="${opts.url}">
-<meta name="twitter:card" content="summary">
+<meta name="twitter:card" content="${opts.imageUrl ? "summary_large_image" : "summary"}">
 <meta name="twitter:title" content="${esc(opts.title)}">
 <meta name="twitter:description" content="${esc(opts.description)}">
+${imageTags}
 <meta name="theme-color" content="#FDF6F6">
 ${FAVICON}
 ${FONTS}`;
@@ -590,15 +604,21 @@ export function renderGiveTerritoryPage(
 ): string {
   const url = `${siteUrl}${givePagePath(data.slug)}`;
   const backerUnit = formatCents(BACKER_UNIT_CENTS, { showCents: false });
-  // City-first, hype title/description — renders in EVERY share preview
-  // ("Public Worship — New York"), independent of the image card below.
+  // City-first title + a description carrying the EXACT live backer count (or
+  // the zero-state) — the numbers ride in the preview TEXT, so the uploaded
+  // image card can stay static ("BECOME A BACKER"). Renders in every share.
   const title = `Public Worship — ${data.name}`;
-  const description =
-    data.stage === "launched"
-      ? `Public Worship is alive in ${data.name}, ${data.region}. Help sustain bold, public, generous worship in the city — become a backer or give a one-time gift.`
-      : data.nextMilestone
-        ? `Bring Public Worship to ${data.name}, ${data.region}. ${Math.max(0, data.nextMilestone.minBackers - data.backerCount)} more backers guarantee ${data.nextMilestone.commitment} — back the movement for ${backerUnit}/mo, or give a one-time gift.`
-        : `Bring Public Worship to ${data.name}, ${data.region} — back the team for ${backerUnit}/mo, or give a one-time gift.`;
+  const countLine =
+    data.backerCount === 0
+      ? `Be the first to back Public Worship in ${data.name}, ${data.region}.`
+      : data.stage === "launched"
+        ? `${data.backerCount} backers strong in ${data.name}, ${data.region}.`
+        : `${data.backerCount} of ${data.targetBackers} backers so far in ${data.name}, ${data.region}.`;
+  const description = `${countLine} Become a backer at ${backerUnit}/mo, or give a one-time gift.`;
+  // The uploaded share card (served from Convex storage), when set.
+  const ogImageUrl = data.hasOgImage
+    ? `${siteUrl}${givePagePath(data.slug)}/og`
+    : undefined;
 
   const progressPct = data.targetBackers > 0
     ? Math.min(100, Math.round((data.backerCount / data.targetBackers) * 100))
@@ -649,7 +669,7 @@ export function renderGiveTerritoryPage(
   return `<!doctype html>
 <html lang="en">
 <head>
-${ogHead({ title, description, url })}
+${ogHead({ title, description, url, ...(ogImageUrl ? { imageUrl: ogImageUrl } : {}) })}
 <style>
 ${BASE_CSS}${GIVE_CSS}
 </style>
