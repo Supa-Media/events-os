@@ -188,7 +188,15 @@ export default function TicketingTab({ eventId }: { eventId: Id<"events"> }) {
             onPress={() => goToGuestFilter("ticket")}
           />
           <StatCard label="Revenue" value={formatMoney(page.revenueCents)} />
-          <StatCard label="Given" value={formatMoney(page.donationsCents ?? 0)} />
+          {/* "Given" = on-page donations + external gifts (Givebutter/offline
+              donations attributed to the event) — mirrors the schema's
+              externalGiftsCents doc and the Goal card's raised total. */}
+          <StatCard
+            label="Given"
+            value={formatMoney(
+              (page.donationsCents ?? 0) + (page.externalGiftsCents ?? 0),
+            )}
+          />
           {page.goalCents != null ? (
             <GoalStatCard
               raisedCents={
