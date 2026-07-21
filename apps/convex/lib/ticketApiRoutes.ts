@@ -51,12 +51,22 @@ function optStr(value: unknown): string | undefined {
 /** Coerce an untrusted cart payload into checkout line items (validated server-side). */
 function toCartItems(
   raw: unknown,
-): Array<{ ticketTypeId: Id<"ticketTypes">; quantity: number }> {
+): Array<{
+  ticketTypeId: Id<"ticketTypes">;
+  quantity: number;
+  attendeeNames?: string[];
+}> {
   if (!Array.isArray(raw)) return [];
-  return raw.map((item) => ({
-    ticketTypeId: (item as { ticketTypeId: Id<"ticketTypes"> }).ticketTypeId,
-    quantity: Number((item as { quantity: unknown }).quantity),
-  }));
+  return raw.map((item) => {
+    const names = (item as { attendeeNames?: unknown }).attendeeNames;
+    return {
+      ticketTypeId: (item as { ticketTypeId: Id<"ticketTypes"> }).ticketTypeId,
+      quantity: Number((item as { quantity: unknown }).quantity),
+      ...(Array.isArray(names)
+        ? { attendeeNames: names.map((n) => String(n ?? "")) }
+        : {}),
+    };
+  });
 }
 
 export function registerTicketApiRoutes(http: HttpRouter): void {

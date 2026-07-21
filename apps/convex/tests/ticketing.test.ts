@@ -619,3 +619,245 @@ describe("stripe webhook fulfillment", () => {
     ).toHaveLength(0);
   });
 });
+
+describe("ticket recipients", () => {
+  /** Publish a ticketed page with two free tiers (big capacity) + a paid tier. */
+  async function recipientSetup(s: ChapterSetup, eventId: Id<"events">) {
+    const { pageId, slug } = await publishPage(s, eventId);
+    await s.as.mutation(api.ticketing.updatePage, {
+      pageId,
+      patch: { ticketsEnabled: true },
+    });
+    const freeId = (await s.as.mutation(api.ticketing.createTicketType, {
+      eventId,
+      name: "Community",
+      priceCents: 0,
+      capacity: 20,
+    })) as Id<"ticketTypes">;
+    const vipId = (await s.as.mutation(api.ticketing.createTicketType, {
+      eventId,
+      name: "VIP",
+      priceCents: 0,
+      capacity: 20,
+    })) as Id<"ticketTypes">;
+    const paidId = (await s.as.mutation(api.ticketing.createTicketType, {
+      eventId,
+      name: "Supporter",
+      priceCents: 2500,
+    })) as Id<"ticketTypes">;
+    return { slug, freeId, vipId, paidId };
+  }
+
+  /** Tickets for an order in issuance order (by_order = ascending creation). */
+  async function orderTicketNames(
+    t: ReturnType<typeof newT>,
+    orderId: Id<"ticketOrders">,
+  ) {
+    const rows = await run(t, (ctx) =>
+      ctx.db
+        .query("tickets")
+        .withIndex("by_order", (q) => q.eq("orderId", orderId))
+        .collect(),
+    );
+    return rows.map((r) => r.attendeeName);
+  }
+
+  test("mixed recipients: per-admission names land on tickets, blanks inherit buyer", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const { slug, freeId } = await recipientSetup(s, eventId);
+
+    const prepared = await t.mutation(internal.ticketing.prepareOrder, {
+      slug,
+      name: "Ben Buyer",
+      email: "ben@example.com",
+      phone: "5551234567",
+      items: [
+        {
+          ticketTypeId: freeId,
+          quantity: 3,
+          attendeeNames: ["", "Jordan Lee", "Sam Poe"],
+        },
+      ],
+    });
+    await t.mutation(internal.ticketing.fulfillOrder, {
+      orderId: prepared.orderId,
+    });
+
+    expect(await orderTicketNames(t, prepared.orderId)).toEqual([
+      "Ben Buyer",
+      "Jordan Lee",
+      "Sam Poe",
+    ]);
+  });
+
+  test("all 'for me': no attendeeNames means every ticket is the purchaser", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const { slug, freeId } = await recipientSetup(s, eventId);
+
+    const prepared = await t.mutation(internal.ticketing.prepareOrder, {
+      slug,
+      name: "Ben Buyer",
+      email: "ben@example.com",
+      phone: "5551234567",
+      items: [{ ticketTypeId: freeId, quantity: 2 }],
+    });
+    await t.mutation(internal.ticketing.fulfillOrder, {
+      orderId: prepared.orderId,
+    });
+
+    expect(await orderTicketNames(t, prepared.orderId)).toEqual([
+      "Ben Buyer",
+      "Ben Buyer",
+    ]);
+  });
+
+  test("recipients never spawn extra rsvps: one purchaser identity holds all tickets", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const { slug, freeId } = await recipientSetup(s, eventId);
+
+    const prepared = await t.mutation(internal.ticketing.prepareOrder, {
+      slug,
+      name: "Ben Buyer",
+      email: "ben@example.com",
+      phone: "5551234567",
+      items: [
+        {
+          ticketTypeId: freeId,
+          quantity: 3,
+          attendeeNames: ["", "Jordan Lee", "Sam Poe"],
+        },
+      ],
+    });
+    await t.mutation(internal.ticketing.fulfillOrder, {
+      orderId: prepared.orderId,
+    });
+
+    const rsvpRows = await run(t, (ctx) =>
+      ctx.db
+        .query("rsvps")
+        .withIndex("by_event", (q) => q.eq("eventId", eventId))
+        .collect(),
+    );
+    expect(rsvpRows).toHaveLength(1);
+    expect(rsvpRows[0].name).toBe("Ben Buyer");
+    expect(rsvpRows[0].source).toBe("ticket");
+  });
+
+  test("multi-line orders keep each tier's names index-aligned to its own tickets", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const { slug, freeId, vipId } = await recipientSetup(s, eventId);
+
+    const prepared = await t.mutation(internal.ticketing.prepareOrder, {
+      slug,
+      name: "Ben Buyer",
+      email: "ben@example.com",
+      phone: "5551234567",
+      items: [
+        { ticketTypeId: freeId, quantity: 2, attendeeNames: ["Ann Aa", "Bob Bb"] },
+        { ticketTypeId: vipId, quantity: 2, attendeeNames: ["Cid Cc", "Dee Dd"] },
+      ],
+    });
+    await t.mutation(internal.ticketing.fulfillOrder, {
+      orderId: prepared.orderId,
+    });
+
+    const rows = await run(t, (ctx) =>
+      ctx.db
+        .query("tickets")
+        .withIndex("by_order", (q) => q.eq("orderId", prepared.orderId))
+        .collect(),
+    );
+    const byTier = (tierId: Id<"ticketTypes">) =>
+      rows
+        .filter((r) => r.ticketTypeId === tierId)
+        .map((r) => r.attendeeName)
+        .sort();
+    expect(byTier(freeId)).toEqual(["Ann Aa", "Bob Bb"]);
+    expect(byTier(vipId)).toEqual(["Cid Cc", "Dee Dd"]);
+  });
+
+  test("names are clamped to quantity: extras dropped, shortfall inherits buyer", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const { slug, freeId } = await recipientSetup(s, eventId);
+
+    // More names than seats: the extra "C" is dropped.
+    const over = await t.mutation(internal.ticketing.prepareOrder, {
+      slug,
+      name: "Ben Buyer",
+      email: "ben@example.com",
+      phone: "5551234567",
+      items: [{ ticketTypeId: freeId, quantity: 2, attendeeNames: ["A", "B", "C"] }],
+    });
+    await t.mutation(internal.ticketing.fulfillOrder, { orderId: over.orderId });
+    expect(await orderTicketNames(t, over.orderId)).toEqual(["A", "B"]);
+
+    // Fewer names than seats: the unassigned seat inherits the purchaser.
+    const under = await t.mutation(internal.ticketing.prepareOrder, {
+      slug,
+      name: "Ben Buyer",
+      email: "ben@example.com",
+      phone: "5551234567",
+      items: [{ ticketTypeId: freeId, quantity: 2, attendeeNames: ["Solo"] }],
+    });
+    await t.mutation(internal.ticketing.fulfillOrder, { orderId: under.orderId });
+    expect(await orderTicketNames(t, under.orderId)).toEqual(["Solo", "Ben Buyer"]);
+  });
+
+  test("retrieval: paid order surfaces assigned names on myTickets and the public ticket", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const { slug, paidId } = await recipientSetup(s, eventId);
+
+    const prepared = await t.mutation(internal.ticketing.prepareOrder, {
+      slug,
+      name: "Ben Buyer",
+      email: "ben@example.com",
+      phone: "5551234567",
+      items: [
+        { ticketTypeId: paidId, quantity: 2, attendeeNames: ["", "Gift Guest"] },
+      ],
+    });
+    await t.mutation(internal.ticketing.attachStripeSession, {
+      orderId: prepared.orderId,
+      sessionId: "cs_test_recipients",
+    });
+    await t.mutation(internal.ticketing.markSessionPaid, {
+      sessionId: "cs_test_recipients",
+      paymentIntentId: "pi_recipients",
+    });
+
+    // myTickets (retrieval by guest token) carries the assigned names.
+    const pub = await t.query(api.ticketing.getPublicPage, {
+      slug,
+      token: prepared.guestToken,
+    });
+    expect(pub?.myTickets).toHaveLength(2);
+    const myNames = (pub?.myTickets ?? [])
+      .map((x) => x.attendeeName)
+      .sort();
+    expect(myNames).toEqual(["Ben Buyer", "Gift Guest"]);
+
+    // The public /t/<code> page shows the gifted recipient's name.
+    const gifted = await run(t, (ctx) =>
+      ctx.db
+        .query("tickets")
+        .withIndex("by_order", (q) => q.eq("orderId", prepared.orderId))
+        .collect(),
+    ).then((rows) => rows.find((r) => r.attendeeName === "Gift Guest")!);
+    const ticketPage = await t.query(api.ticketing.getPublicTicket, {
+      code: gifted.code,
+    });
+    expect(ticketPage?.attendeeName).toBe("Gift Guest");
+  });
+});

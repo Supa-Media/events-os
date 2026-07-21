@@ -779,6 +779,7 @@ export const getPublicPage = query({
     const myTickets: Array<{
       code: string;
       ticketTypeName: string;
+      attendeeName: string;
       status: Doc<"tickets">["status"];
       checkedInAt: number | null;
     }> = [];
@@ -796,6 +797,7 @@ export const getPublicPage = query({
           myTickets.push({
             code: t.code,
             ticketTypeName: t.ticketTypeName,
+            attendeeName: t.attendeeName,
             status: t.status,
             checkedInAt: t.checkedInAt ?? null,
           });
@@ -844,6 +846,7 @@ export const getPublicPage = query({
       },
       guests,
       ticketTypes,
+      myTickets,
       viewer: viewer
         ? {
             name: viewer.name,
@@ -1325,7 +1328,13 @@ export const prepareOrder = internalMutation({
     phone: v.optional(v.string()),
     token: v.optional(v.string()),
     items: v.array(
-      v.object({ ticketTypeId: v.id("ticketTypes"), quantity: v.number() }),
+      v.object({
+        ticketTypeId: v.id("ticketTypes"),
+        quantity: v.number(),
+        // Per-admission recipient names for this line (index-aligned to
+        // quantity). Blank/absent entry = the ticket is for the purchaser.
+        attendeeNames: v.optional(v.array(v.string())),
+      }),
     ),
     // Optional add-on gift bundled into the SAME checkout (the "also
     // donate?" upsell) — stashed on the pending order so the webhook can
@@ -1372,6 +1381,7 @@ export const prepareOrder = internalMutation({
       name: string;
       quantity: number;
       unitPriceCents: number;
+      attendeeNames?: string[];
     }> = [];
     for (const item of args.items) {
       const tt = await ctx.db.get(item.ticketTypeId);
@@ -1395,11 +1405,18 @@ export const prepareOrder = internalMutation({
           message: `Only ${remaining} ${tt.name} ticket${remaining === 1 ? "" : "s"} left.`,
         });
       }
+      // Normalize per-admission names to exactly `qty` trimmed, bounded
+      // entries; only attach the array when at least one name is assigned.
+      const rawNames = item.attendeeNames ?? [];
+      const attendeeNames = Array.from({ length: qty }, (_, i) =>
+        (rawNames[i] ?? "").trim().slice(0, 120),
+      );
       lines.push({
         ticketTypeId: tt._id,
         name: tt.name,
         quantity: qty,
         unitPriceCents: tt.priceCents,
+        ...(attendeeNames.some((n) => n.length > 0) ? { attendeeNames } : {}),
       });
     }
 
@@ -1531,13 +1548,16 @@ async function fulfill(
         .withIndex("by_code", (q) => q.eq("code", code))
         .unique();
       if (clash) code = newTicketCode();
+      // Prefer the per-admission assigned name; blank/absent falls back to the
+      // purchaser (order.name). Purchaser email stays on every ticket.
+      const assigned = line.attendeeNames?.[i]?.trim();
       await ctx.db.insert("tickets", {
         eventId: order.eventId,
         chapterId: order.chapterId,
         orderId,
         ticketTypeId: line.ticketTypeId,
         ticketTypeName: line.name,
-        attendeeName: order.name,
+        attendeeName: assigned || order.name,
         attendeeEmail: order.email,
         code,
         status: "valid",
@@ -1690,6 +1710,7 @@ export const getOrderEmailPayload = internalQuery({
       tickets: tickets.map((t) => ({
         code: t.code,
         ticketTypeName: t.ticketTypeName,
+        attendeeName: t.attendeeName,
       })),
       eventName: event?.name ?? "Event",
       startDate: event?.eventDate ?? null,

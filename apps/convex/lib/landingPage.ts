@@ -77,6 +77,7 @@ type PublicPage = {
   myTickets?: Array<{
     code: string;
     ticketTypeName: string;
+    attendeeName: string;
     status: "valid" | "checked_in" | "void";
     checkedInAt: number | null;
   }>;
@@ -269,7 +270,9 @@ ${coverUrl ? `<div class="backdrop" style="background-image:url('${coverUrl}');b
       <div class="fld"><label for="f_email">Email</label><input id="f_email" type="email" autocomplete="email" placeholder="you@example.com"></div>
       <div class="fld" id="phonefld" style="display:none"><label for="f_phone">Phone number</label><input id="f_phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="(555) 123-4567"></div>
       <div class="smsconsent" id="smsconsent" style="display:none">By adding your number you agree to receive a verification code and recurring texts about this and future Public Worship events. Msg &amp; data rates may apply; frequency varies. Reply STOP to opt out, HELP for help. See our <a href="https://publicworship.life/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a> and <a href="https://publicworship.life/sms-terms" target="_blank" rel="noopener noreferrer">SMS Terms</a>.</div>
+      <div class="doublecheck" id="doublecheck" style="display:none">Double-check your email and number — you'll use them to pull up your ticket later.</div>
     </div>
+    <div id="recipientfields" style="display:none"></div>
     <div id="signinfields" style="display:none">
       <div class="signintoggle">
         <button type="button" class="signinmethod sel" id="signin_m_email" data-m="email">Email</button>
