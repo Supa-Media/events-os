@@ -42,6 +42,8 @@ export function MentionTextInput({
   people,
   seatHoldings,
   seatOptions,
+  inputClassName,
+  onFocusChange,
 }: {
   value: string;
   onCommit: (v: string) => void;
@@ -57,6 +59,14 @@ export function MentionTextInput({
   people: { _id: string; name: string }[];
   seatHoldings: { personId: string; seatDefId: string }[];
   seatOptions: { seatDefId: string; title: string }[];
+  /** Overrides the default `className` on the underlying `TextInput` — lets
+   *  callers with their own box styling (e.g. CopyEditor) avoid the grid's
+   *  default cell padding/typography. */
+  inputClassName?: string;
+  /** Fires on focus and blur, in addition to (not instead of) this input's
+   *  own onBlur commit logic — lets a caller drive its own focus-state
+   *  styling (e.g. CopyEditor's border-accent toggle). */
+  onFocusChange?: (focused: boolean) => void;
 }) {
   const [text, setText] = useState(value);
   const [trigger, setTrigger] = useState<MentionTrigger>(null);
@@ -135,9 +145,11 @@ export function MentionTextInput({
             cursorRef.current = sel;
             runTrigger(text, sel);
           }}
+          onFocus={() => onFocusChange?.(true)}
           onBlur={() => {
             close();
             setTrigger(null);
+            onFocusChange?.(false);
             if (justSelectedRef.current) {
               justSelectedRef.current = false;
               return;
@@ -156,9 +168,12 @@ export function MentionTextInput({
               ? (e) => setContentH(e.nativeEvent.contentSize.height)
               : undefined
           }
-          className={`flex-1 px-2 py-1.5 text-sm leading-snug text-ink ${
-            weight === "medium" ? "font-medium" : ""
-          }`}
+          className={
+            inputClassName ??
+            `flex-1 px-2 py-1.5 text-sm leading-snug text-ink ${
+              weight === "medium" ? "font-medium" : ""
+            }`
+          }
           style={[
             { minWidth: 40 },
             // minHeight (not height) — same as the grid InlineText: a

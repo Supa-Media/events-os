@@ -29,6 +29,8 @@ export function MentionInlineText({
   people,
   seatHoldings,
   seatOptions,
+  inputClassName,
+  onFocusChange,
 }: {
   value: any;
   onCommit: (v: any) => void;
@@ -42,6 +44,13 @@ export function MentionInlineText({
   people: { _id: string; name: string }[];
   seatHoldings: { personId: string; seatDefId: string }[];
   seatOptions: { seatDefId: string; title: string }[];
+  /** Style override for the edit-mode input, passed through to
+   *  MentionTextInput — lets a caller with its own box styling (e.g.
+   *  CopyEditor) replace the default cell className. */
+  inputClassName?: string;
+  /** Fires on the edit-mode input's focus/blur, passed through to
+   *  MentionTextInput — lets a caller drive its own focus-state styling. */
+  onFocusChange?: (focused: boolean) => void;
 }) {
   const text = value == null ? "" : String(value);
   const [editing, setEditing] = useState(false);
@@ -95,6 +104,8 @@ export function MentionInlineText({
       seatOptions={seatOptions}
       onCommit={(t) => onCommit(parse ? parse(t) : t)}
       onDone={() => setEditing(false)}
+      inputClassName={inputClassName}
+      onFocusChange={onFocusChange}
     />
   );
 }
