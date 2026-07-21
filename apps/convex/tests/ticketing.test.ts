@@ -285,6 +285,95 @@ describe("orders & tickets", () => {
   });
 });
 
+describe("event mode (RSVP vs ticketed are exclusive)", () => {
+  test("switching to ticketed archives free RSVPs, keeps buyers, blocks switch-back once sold", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const { pageId, slug } = await publishPage(s, eventId);
+
+    // Two free RSVPs while the event is in RSVP mode (the default).
+    await t.mutation(api.ticketing.submitRsvp, {
+      slug,
+      name: "Rita RSVP",
+      email: "rita@example.com",
+      status: "going",
+    });
+    await t.mutation(api.ticketing.submitRsvp, {
+      slug,
+      name: "Maya Maybe",
+      email: "maya@example.com",
+      status: "maybe",
+    });
+    let pub = await t.query(api.ticketing.getPublicPage, { slug });
+    expect(pub?.counts).toMatchObject({ going: 1, maybe: 1 });
+    expect(pub?.guests).toHaveLength(2);
+
+    // Enabling tickets flips the event to ticketed mode: RSVP is turned off and
+    // the free-RSVP guests are archived out of the counts, guest list, and feed.
+    await s.as.mutation(api.ticketing.updatePage, {
+      pageId,
+      patch: { ticketsEnabled: true },
+    });
+    pub = await t.query(api.ticketing.getPublicPage, { slug });
+    expect(pub?.rsvpEnabled).toBe(false);
+    expect(pub?.counts).toMatchObject({ going: 0, maybe: 0 });
+    expect(pub?.guests).toHaveLength(0);
+    // The rows are archived (recoverable), not deleted.
+    const admin = await s.as.query(api.ticketing.listRsvpsAdmin, { eventId });
+    expect(admin).toHaveLength(0);
+    const stillThere = await run(s.t, (ctx) =>
+      ctx.db
+        .query("rsvps")
+        .withIndex("by_event", (q) => q.eq("eventId", eventId))
+        .collect(),
+    );
+    expect(stillThere).toHaveLength(2);
+    expect(stillThere.every((r) => r.archivedAt != null)).toBe(true);
+
+    // A ticket buyer is kept — never archived.
+    const freeId = (await s.as.mutation(api.ticketing.createTicketType, {
+      eventId,
+      name: "Community",
+      priceCents: 0,
+    })) as Id<"ticketTypes">;
+    const prepared = await t.mutation(internal.ticketing.prepareOrder, {
+      slug,
+      name: "Ben Buyer",
+      email: "ben@example.com",
+      phone: "5551234567",
+      items: [{ ticketTypeId: freeId, quantity: 1 }],
+    });
+    await t.mutation(internal.ticketing.fulfillOrder, {
+      orderId: prepared.orderId,
+    });
+    pub = await t.query(api.ticketing.getPublicPage, { slug });
+    expect(pub?.counts).toMatchObject({ going: 1, ticketsSold: 1 });
+    expect(pub?.guests).toHaveLength(1);
+
+    // Once a ticket has sold, the event can't be switched back to RSVP.
+    await expect(
+      s.as.mutation(api.ticketing.updatePage, {
+        pageId,
+        patch: { rsvpEnabled: true },
+      }),
+    ).rejects.toThrow();
+  });
+
+  test("enabling both RSVP and tickets at once is rejected", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const { pageId } = await publishPage(s, eventId);
+    await expect(
+      s.as.mutation(api.ticketing.updatePage, {
+        pageId,
+        patch: { rsvpEnabled: true, ticketsEnabled: true },
+      }),
+    ).rejects.toThrow();
+  });
+});
+
 describe("stripe webhook fulfillment", () => {
   /** Publish a page with a paid tier and return its slug + ticket type id. */
   async function paidSetup(s: ChapterSetup, eventId: Id<"events">) {

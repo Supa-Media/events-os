@@ -168,6 +168,11 @@ export const rsvps = defineTable({
   // handle, "Panelist", "+1 of X", ticket type/price, etc.). Never shown on
   // the public page; admin-only context on the guest list.
   note: v.optional(v.string()),
+  // Set when a free-RSVP row is archived because its event switched to ticketed
+  // mode (events are single-mode: RSVP or ticketed, never both). Archived rows
+  // are kept (recoverable) but excluded from every count, guest list, and feed.
+  // Ticket-buyer rows (source === "ticket") are never archived.
+  archivedAt: v.optional(v.number()),
   createdAt: v.number(),
   updatedAt: v.number(),
 })
