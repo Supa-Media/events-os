@@ -51,6 +51,12 @@ export const territories = defineTable({
   // editable — a dev director may set a different first goal.
   targetBackers: v.number(), // positive integer
   story: v.optional(v.string()),
+  // Optional 1080×1080 social share-preview card (the `/give/<slug>` OG image),
+  // uploaded in the Territories admin and served by `http.ts` at
+  // `/give/<slug>/og`. A static per-region card ("PUBLIC WORSHIP / <REGION> /
+  // BECOME A BACKER") — the live backer count/zero-state rides in the OG
+  // description text, not the image, so the image never needs regenerating.
+  ogImageStorageId: v.optional(v.id("_storage")),
   // Only `publiclyVisible` territories appear on `/give` or resolve at
   // `/give/<slug>` — lets central stage a territory before announcing it.
   publiclyVisible: v.boolean(),

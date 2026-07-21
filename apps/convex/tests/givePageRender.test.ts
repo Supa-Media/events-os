@@ -69,6 +69,7 @@ const RAISING_TERRITORY: PublicTerritoryData = {
   backerCount: 9,
   targetBackers: 25,
   story: "A small team started gathering in a park last summer.",
+  hasOgImage: false,
   milestones: [
     { minBackers: 20, label: "WWS", commitment: "Worship With Strangers, monthly" },
     { minBackers: 30, label: "+Eden", commitment: "Eden" },
@@ -233,6 +234,35 @@ describe("give territory page (raising, pre-launch)", () => {
   test("uses the $50 backer framing, with no arbitrary $20 lower bound", () => {
     expect(html).not.toContain("$20/mo");
     expect(html).not.toContain("$20 and $49");
+  });
+
+  test("OG description carries the exact backer count; no og:image without a card", () => {
+    expect(html).toMatch(/9 of 25 backers so far/);
+    expect(html).not.toContain('property="og:image"');
+  });
+
+  test("emits the og:image + large card when a share card is uploaded", () => {
+    const withImg = renderGiveTerritoryPage(
+      { ...RAISING_TERRITORY, hasOgImage: true },
+      STATS,
+      ACTIVITY,
+      SITE,
+      null,
+    );
+    expect(withImg).toContain('property="og:image"');
+    expect(withImg).toContain("/give/columbus-oh/og");
+    expect(withImg).toContain("summary_large_image");
+  });
+
+  test("zero backers → a 'be the first' OG description", () => {
+    const zero = renderGiveTerritoryPage(
+      { ...RAISING_TERRITORY, backerCount: 0 },
+      STATS,
+      ACTIVITY,
+      SITE,
+      null,
+    );
+    expect(zero).toMatch(/Be the first to back Public Worship in Columbus/);
   });
 
   test("frames milestones as guarantees, not unlocks", () => {

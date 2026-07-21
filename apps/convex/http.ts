@@ -234,9 +234,31 @@ http.route({
   method: "GET",
   handler: httpAction(async (ctx, req) => {
     const url = new URL(req.url);
-    const segments = url.pathname.split("/").filter(Boolean); // ["give", slug]
+    const segments = url.pathname.split("/").filter(Boolean); // ["give", slug, sub?]
     const slug = decodeURIComponent(segments[1] ?? "");
-    if (!slug || segments.length > 2) return html(renderGiveNotFound(), 404);
+    const sub = segments[2];
+    if (!slug) return html(renderGiveNotFound(), 404);
+
+    // Share-card image: GET /give/<slug>/og — the uploaded OG card, served from
+    // Convex storage so social scrapers (iMessage/X/etc.) get a real PNG.
+    // Public so OG scrapers can fetch it; 404 when the territory has no card.
+    if (sub === "og" && segments.length === 3) {
+      const storageId = await ctx.runQuery(
+        internal.territories.getTerritoryOgStorageId,
+        { slug },
+      );
+      if (!storageId) return new Response("Not found", { status: 404 });
+      const blob = await ctx.storage.get(storageId);
+      if (!blob) return new Response("Not found", { status: 404 });
+      return new Response(blob, {
+        headers: {
+          "Content-Type": blob.type || "image/png",
+          "Cache-Control": "public, max-age=300",
+        },
+      });
+    }
+    if (segments.length > 2) return html(renderGiveNotFound(), 404);
+
     const [data, interestStats, activity] = await Promise.all([
       ctx.runQuery(api.territories.getPublicTerritory, { slug }),
       ctx.runQuery(api.givingInterest.publicInterestStats, {}),
