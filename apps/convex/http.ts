@@ -215,12 +215,17 @@ http.route({
 http.route({
   path: "/give",
   method: "GET",
-  handler: httpAction(async (ctx) => {
-    const territories = await ctx.runQuery(
-      api.territories.getPublicMapData,
-      {},
+  handler: httpAction(async (ctx, req) => {
+    // A central (no-slug) one-time gift returns here with `?donated=1` — show a
+    // thank-you banner (the territory page handles its own thank-you states).
+    const thankYou = new URL(req.url).searchParams.get("donated") === "1";
+    const [territories, interestStats] = await Promise.all([
+      ctx.runQuery(api.territories.getPublicMapData, {}),
+      ctx.runQuery(api.givingInterest.publicInterestStats, {}),
+    ]);
+    return html(
+      renderGiveMapPage(territories, interestStats, thankYou, siteUrl()),
     );
-    return html(renderGiveMapPage(territories, siteUrl()));
   }),
 });
 
@@ -232,12 +237,28 @@ http.route({
     const segments = url.pathname.split("/").filter(Boolean); // ["give", slug]
     const slug = decodeURIComponent(segments[1] ?? "");
     if (!slug || segments.length > 2) return html(renderGiveNotFound(), 404);
-    const data = await ctx.runQuery(api.territories.getPublicTerritory, {
-      slug,
-    });
+    const [data, interestStats, activity] = await Promise.all([
+      ctx.runQuery(api.territories.getPublicTerritory, { slug }),
+      ctx.runQuery(api.givingInterest.publicInterestStats, {}),
+      ctx.runQuery(api.givingActivity.getTerritoryActivity, { slug }),
+    ]);
     if (!data) return html(renderGiveNotFound(), 404);
-    const pledgeParam = url.searchParams.get("pledge");
-    return html(renderGiveTerritoryPage(data, siteUrl(), pledgeParam));
+    // A one-time gift returns with `?donated=1`; a recurring backer with
+    // `?pledge=success|canceled`. Fold the former into the same `pledgeParam`
+    // the renderer switches on (it treats `"donated"` as the gift thank-you).
+    const pledgeParam =
+      url.searchParams.get("donated") === "1"
+        ? "donated"
+        : url.searchParams.get("pledge");
+    return html(
+      renderGiveTerritoryPage(
+        data,
+        interestStats,
+        activity,
+        siteUrl(),
+        pledgeParam,
+      ),
+    );
   }),
 });
 
@@ -331,6 +352,8 @@ http.route({
           customer?: string | null;
           subscription?: string | null;
           metadata?: Record<string, string> | null;
+          // checkout.session.completed (one-time give): the settled total.
+          amount_total?: number;
           // invoice.paid / invoice.payment_failed:
           amount_paid?: number;
           // customer.subscription.updated / .deleted:
@@ -361,8 +384,28 @@ http.route({
       }
     } else if (event.type === "checkout.session.completed") {
       const obj = event.data.object;
-      const pledgeId = obj.metadata?.pledgeId;
-      if (pledgeId) {
+      if (obj.metadata?.giveDonation === "1") {
+        // A one-time "give" checkout — settle it via the single gifts write
+        // path (`recordGiveDonationPaid`, idempotent on the session id). Amount
+        // is read from the session's own `amount_total`, never a client value.
+        // Handled BEFORE the pledge/order/donation fan-out: a give session
+        // carries no pledgeId and is neither an order nor an event donation, so
+        // without this branch it would fall through to the "unknown session"
+        // error log.
+        await ctx.runMutation(internal.givingDonations.recordGiveDonationPaid, {
+          sessionId: obj.id,
+          amountTotalCents: obj.amount_total ?? 0,
+          donorId: obj.metadata.giveDonorId ?? "",
+          scope: obj.metadata.giveScope ?? "",
+        });
+        // Flip the giver's optional activity-wall entry visible with the SETTLED
+        // one-time amount (no-op if they didn't opt in). See givingActivity.ts.
+        await ctx.runMutation(internal.givingActivity.markActivityVisible, {
+          refKey: `give:${obj.id}`,
+          amountCents: obj.amount_total ?? 0,
+        });
+      } else if (obj.metadata?.pledgeId) {
+        const pledgeId = obj.metadata.pledgeId;
         // A BACKER (subscription) checkout — identified by our pledge id in the
         // session metadata (a ticket/donation session carries none). Activate
         // the pledge + link its Stripe customer/subscription. Idempotent, and a
@@ -377,6 +420,12 @@ http.route({
               : {}),
           },
         );
+        // Flip the backer's optional activity-wall entry visible. No amount is
+        // passed — the wall shows the recurring MONTHLY pledge amount stored at
+        // pending time (a subscription session's `amount_total` is $0/prorated).
+        await ctx.runMutation(internal.givingActivity.markActivityVisible, {
+          refKey: String(pledgeId),
+        });
       } else {
         const paymentIntentId = obj.payment_intent ?? undefined;
         // One shared session id is either a ticket order OR a donation. Try the

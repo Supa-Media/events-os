@@ -327,6 +327,13 @@ export const startPledgeCheckout = action({
     amountCents: v.number(),
     name: v.string(),
     email: v.string(),
+    // Wave 2 (F6, activity wall): opt in to a public, PII-free echo of this
+    // backing on the territory's `/give/<slug>` activity wall — see
+    // `givingActivity.ts`. All three are optional and additive; omitting them
+    // (the pre-wave-2 client) behaves exactly as before.
+    shareOnWall: v.optional(v.boolean()),
+    publicName: v.optional(v.string()),
+    message: v.optional(v.string()),
   },
   handler: async (ctx, args): Promise<{ url: string }> => {
     const prepared: {
@@ -395,6 +402,24 @@ export const startPledgeCheckout = action({
       });
     }
     const session = (await response.json()) as { id: string; url: string };
+
+    // Wave 2 (F6, activity wall): record a PENDING wall entry — never shown
+    // until the webhook settles it (`markActivityVisible`). A pledge always
+    // backs a real chapter (never `"central"` — see `preparePledge`), so
+    // there's no scope guard needed here (unlike the one-time gift flow).
+    // `recordPendingActivity` itself skips silently if the giver left both
+    // name and message blank.
+    if (args.shareOnWall) {
+      await ctx.runMutation(internal.givingActivity.recordPendingActivity, {
+        refKey: String(prepared.pledgeId),
+        scope: args.chapterId,
+        kind: "backer",
+        amountCents: prepared.amountCents,
+        ...(args.publicName ? { displayName: args.publicName } : {}),
+        ...(args.message ? { message: args.message } : {}),
+      });
+    }
+
     return { url: session.url };
   },
 });

@@ -82,6 +82,8 @@ import {
 } from "./schema/givingPlatform";
 import { sponsorPackages, sponsorships } from "./schema/sponsorships";
 import { territories } from "./schema/territories";
+import { givingInterest } from "./schema/givingInterest";
+import { givingActivity } from "./schema/givingActivity";
 import { seatDefs, seatAssignments } from "./schema/seats";
 import { seatStructureLog } from "./schema/seatStructureLog";
 import { seatProposals } from "./schema/seatProposals";
@@ -296,6 +298,19 @@ const schema = defineSchema({
   // here. Supersedes `cityCampaigns` (see schema/territories.ts + territories.ts
   // + docs/plans/giving-territories.md).
   territories,
+
+  // Interest capture + suggest-a-space (giving-territories addendum, the
+  // `/give` redesign) — lead capture (no payment rail) from the public `/give`
+  // page's "want this in my city" / volunteer / join team / fund / suggest-a-
+  // space CTAs, triaged centrally. See schema/givingInterest.ts +
+  // givingInterest.ts.
+  givingInterest,
+
+  // Public per-territory activity wall (the `/give` redesign) — recurring
+  // backers + one-time givers who opted to share a message/display name; every
+  // row required a real Stripe payment (spam deterrent), flipped visible on
+  // settle. See schema/givingActivity.ts + givingActivity.ts.
+  givingActivity,
 
   // Org chart (seats) — a tree of seats shared by the central chart + every
   // chapter's identical chapter chart; occupancy is per-scope (see

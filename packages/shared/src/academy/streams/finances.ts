@@ -845,7 +845,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "p",
-        text: "The chapter operating formula is $520 fixed + $50 per teammate, plus a conference sinking fund per funded seat (~$275÷12 for a driving city, ~$500÷12 for a flight). For a 5-person team that floor lands around $770/month — film, food, transport, storage, software, the ordinary costs of running the mission.",
+        text: "The chapter operating formula is $570 fixed + $20 per teammate, plus a conference sinking fund per funded seat (~$275÷12 for a driving city, ~$500÷12 for a flight). For a 5-person team that floor lands around $670/month — film, food, transport, storage, software, the ordinary costs of running the mission.",
       },
       {
         kind: "rule",
