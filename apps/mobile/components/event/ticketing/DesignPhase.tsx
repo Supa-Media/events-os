@@ -11,7 +11,7 @@
  */
 import { useState } from "react";
 import { Text, View } from "react-native";
-import { useMutation } from "convex/react";
+import { useAction, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Doc, Id } from "@events-os/convex/_generated/dataModel";
 import { Button, Pill, TextField, Field, LocationAutocomplete } from "../../ui";
@@ -24,7 +24,7 @@ import { TicketTypesCard } from "./TicketTypesCard";
 import { GivebutterSyncCard } from "./GivebutterSyncCard";
 import { parseDollars } from "./helpers";
 
-type CardKey = "cover" | "location" | "rsvp" | "tickets" | "giving";
+type CardKey = "autofill" | "cover" | "location" | "rsvp" | "tickets" | "giving";
 
 type Props = {
   eventId: Id<"events">;
@@ -46,6 +46,7 @@ export function DesignPhase({
   dateLabel,
 }: Props) {
   const updatePage = useMutation(api.ticketing.updatePage);
+  const autofillEventPage = useAction(api.aiActions.autofillEventPage);
 
   // Local edit buffers, seeded from the server row once.
   const [tagline, setTagline] = useState(page.tagline ?? "");
@@ -61,6 +62,10 @@ export function DesignPhase({
   );
   const [saving, setSaving] = useState(false);
   const [openCard, setOpenCard] = useState<CardKey | null>("cover");
+
+  // "Fill page with AI": nothing to type — the action gathers the event's own
+  // plan (tasks, comms, run of show…) server-side and drafts the copy from it.
+  const [autofilling, setAutofilling] = useState(false);
 
   const patchPage = (patch: Parameters<typeof updatePage>[0]["patch"]) =>
     run(() => updatePage({ pageId: page._id, patch }), {
@@ -96,6 +101,28 @@ export function DesignPhase({
     setSaving(false);
   }
 
+  /**
+   * One action call drafts tagline/description/givingPrompt from the event's
+   * own plan, then merges into the LOCAL edit buffers only — nothing is saved
+   * until "Save page", so the existing buffer-until-save flow is the review step.
+   */
+  async function handleAutofill() {
+    setAutofilling(true);
+    const result = await run(
+      () => autofillEventPage({ eventId, pageId: page._id }),
+      { errorTitle: "Couldn't fill the page" },
+    );
+    setAutofilling(false);
+    if (!result) return;
+    if (result.fields.tagline !== undefined) setTagline(result.fields.tagline);
+    if (result.fields.description !== undefined)
+      setDescription(result.fields.description);
+    if (result.fields.givingPrompt !== undefined)
+      setGivingPrompt(result.fields.givingPrompt);
+    // Open "Cover & story" so the drafted copy is visible without another tap.
+    setOpenCard("cover");
+  }
+
   const rsvpOn = page.rsvpEnabled !== false;
   const ticketsOn = page.ticketsEnabled === true;
   const givingOn = page.givingEnabled === true;
@@ -112,6 +139,30 @@ export function DesignPhase({
       />
 
       <View className="gap-2.5">
+        {/* Fill page with AI — the event's own plan (tasks, comms, run of
+            show…) is the context; the draft lands in the same local buffers
+            and "Save page" stays the commit gate. */}
+        <SetupCard
+          icon="sparkles"
+          title="Fill page with AI"
+          status={{ label: "Optional", tone: "opt" }}
+          open={openCard === "autofill"}
+          onToggleOpen={() => toggle("autofill")}
+        >
+          <Text className="mb-2 text-xs text-muted">
+            Drafts the tagline, description & giving prompt from this event's
+            plan — tasks, comms, run of show, and more.
+          </Text>
+          <View className="flex-row justify-end">
+            <Button
+              title="Fill page with AI"
+              icon="sparkles"
+              loading={autofilling}
+              onPress={() => void handleAutofill()}
+            />
+          </View>
+        </SetupCard>
+
         {/* Cover & story */}
         <SetupCard
           icon="image"

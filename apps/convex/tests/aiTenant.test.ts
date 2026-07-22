@@ -128,6 +128,78 @@ describe("ai.itemForAutofill (read) tenant boundary", () => {
   });
 });
 
+describe("ai.eventPageAutofillContext (read) tenant boundary", () => {
+  /** Seed the event's public page directly (the shape createPage inserts). */
+  async function seedPage(
+    t: ReturnType<typeof newT>,
+    chapterId: Id<"chapters">,
+    eventId: Id<"events">,
+    userId: Id<"users">,
+  ) {
+    return await run(t, (ctx) =>
+      ctx.db.insert("eventPages", {
+        eventId,
+        chapterId,
+        slug: "tenant-event",
+        published: false,
+        hostName: "Public Worship",
+        addressVisibility: "public",
+        rsvpEnabled: true,
+        ticketsEnabled: false,
+        showGuestList: true,
+        activityRestricted: true,
+        goingCount: 0,
+        maybeCount: 0,
+        notGoingCount: 0,
+        ticketsSoldCount: 0,
+        revenueCents: 0,
+        tagline: "A tenant tagline",
+        description: "A tenant description",
+        givingPrompt: "Give generously",
+        createdBy: userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+  }
+
+  test("same-chapter → returns the event/page copy fields", async () => {
+    const t = newT();
+    const { chapterId, userId } = await setupChapter(t);
+    const { eventId } = await seedEventWithItem(t, chapterId, userId);
+    await seedPage(t, chapterId, eventId, userId);
+
+    const info = await t.query(internal.ai.eventPageAutofillContext, {
+      eventId,
+      chapterId,
+    });
+    expect(info).not.toBeNull();
+    expect(info!.name).toBe("Tenant Event");
+    expect(typeof info!.eventDate).toBe("number");
+    expect(info!.tagline).toBe("A tenant tagline");
+    expect(info!.description).toBe("A tenant description");
+    expect(info!.givingPrompt).toBe("Give generously");
+  });
+
+  test("cross-chapter → returns null", async () => {
+    const t = newT();
+    const a = await setupChapter(t, { email: "a6@publicworship.life" });
+    const b = await setupChapter(t, {
+      email: "b6@publicworship.life",
+      chapterName: "Other 6",
+    });
+    const { eventId } = await seedEventWithItem(t, a.chapterId, a.userId);
+    await seedPage(t, a.chapterId, eventId, a.userId);
+
+    // Event + page belong to chapter A, but we pass chapter B's id.
+    const info = await t.query(internal.ai.eventPageAutofillContext, {
+      eventId,
+      chapterId: b.chapterId,
+    });
+    expect(info).toBeNull();
+  });
+});
+
 describe("ai.applyItemPatch (write) tenant boundary", () => {
   test("same-chapter → patches the item", async () => {
     const t = newT();

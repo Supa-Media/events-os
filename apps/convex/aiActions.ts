@@ -39,6 +39,8 @@ import {
   zonedTimeToUtc,
   type AiCatalogModel,
 } from "@events-os/shared";
+import Anthropic from "@anthropic-ai/sdk";
+import { serializeEventPlan } from "./lib/eventPlanSerializer";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
@@ -663,6 +665,161 @@ async function openRouterCall(
     }) as ModelMessage,
     usage: (json?.usage ?? {}) as OpenRouterUsage,
   };
+}
+
+// ── Provider selection (OpenRouter | Anthropic) for the autofill features ────
+export type AiProvider = "openrouter" | "anthropic";
+
+/** Default Anthropic model when ANTHROPIC_MODEL isn't set. */
+const ANTHROPIC_DEFAULT_MODEL = "claude-opus-4-8";
+
+/** Opus 4.8 list pricing (USD per 1M tokens) — the Anthropic API returns token
+ *  counts but no dollar cost, so cost is computed here (mirrors `callCost`'s
+ *  estimate branch; ANTHROPIC_MODEL overrides pick a model, not a price — if a
+ *  differently-priced model is pinned, revisit these constants). */
+const ANTHROPIC_INPUT_USD_PER_MTOK = 5;
+const ANTHROPIC_OUTPUT_USD_PER_MTOK = 25;
+
+/** The Anthropic model slug the anthropic provider bills/audits against. */
+function anthropicModelSlug(): string {
+  return process.env.ANTHROPIC_MODEL || ANTHROPIC_DEFAULT_MODEL;
+}
+
+/**
+ * Which LLM gateway the one-shot autofill features call.
+ *
+ * `AI_PROVIDER` pins it explicitly ("anthropic" | "openrouter", clear error
+ * when the pinned provider's key is missing). Otherwise auto-detect:
+ * OPENROUTER_API_KEY wins when present (preserves existing behavior), else
+ * ANTHROPIC_API_KEY → anthropic. Neither key → the existing
+ * `NO_OPENROUTER_KEY` error CODE (kept so the UI's error handling doesn't
+ * change) with a message naming both options.
+ *
+ * Exported for the provider-selection unit tests (pure function of env).
+ */
+export function resolveAiProvider(): AiProvider {
+  const pinned = process.env.AI_PROVIDER;
+  if (pinned === "anthropic") {
+    if (!process.env.ANTHROPIC_API_KEY)
+      throw new ConvexError({
+        code: "NO_OPENROUTER_KEY",
+        message: "AI_PROVIDER=anthropic but ANTHROPIC_API_KEY is not configured.",
+      });
+    return "anthropic";
+  }
+  if (pinned === "openrouter") {
+    if (!process.env.OPENROUTER_API_KEY)
+      throw new ConvexError({
+        code: "NO_OPENROUTER_KEY",
+        message: "AI_PROVIDER=openrouter but OPENROUTER_API_KEY is not configured.",
+      });
+    return "openrouter";
+  }
+  if (pinned)
+    throw new ConvexError({
+      code: "NO_OPENROUTER_KEY",
+      message: `Unknown AI_PROVIDER "${pinned}" — use "openrouter" or "anthropic".`,
+    });
+  if (process.env.OPENROUTER_API_KEY) return "openrouter";
+  if (process.env.ANTHROPIC_API_KEY) return "anthropic";
+  throw new ConvexError({
+    code: "NO_OPENROUTER_KEY",
+    message:
+      "No AI provider is configured — set OPENROUTER_API_KEY or ANTHROPIC_API_KEY.",
+  });
+}
+
+/**
+ * One Anthropic Messages call via the official SDK — the sibling of
+ * `openRouterCall` with the same call-shape contract (system prompt, user
+ * prompt, maxTokens; returns text + token usage). Deliberately minimal:
+ * no temperature/top_p/top_k (rejected on Opus 4.8) and no thinking config
+ * (omitted → the model's default). Errors are surfaced as a generic
+ * ConvexError (status only — never the key or the raw request/response), so
+ * the callers' failed-run path handles them exactly like OpenRouter errors.
+ */
+async function anthropicCall(
+  messages: ChatMessage[],
+  opts: { maxTokens?: number } = {},
+): Promise<{ message: ModelMessage; usage: OpenRouterUsage; slug: string }> {
+  const model = anthropicModelSlug();
+  const client = new Anthropic({
+    apiKey: process.env.ANTHROPIC_API_KEY,
+    // Match the OpenRouter path's hung-call guard (SDK timeout is in ms).
+    timeout: OPENROUTER_TIMEOUT_MS,
+  });
+  // Same shape both call sites use: system messages → the `system` param,
+  // the rest → user/assistant turns with plain string content.
+  const system = messages
+    .filter((m) => m.role === "system")
+    .map((m) => String(m.content ?? ""))
+    .join("\n\n");
+  const turns = messages
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .map((m) => ({
+      role: m.role as "user" | "assistant",
+      content: String(m.content ?? ""),
+    }));
+  try {
+    const msg = await client.messages.create({
+      model,
+      max_tokens: opts.maxTokens ?? ASSISTANT_MAX_TOKENS,
+      ...(system ? { system } : {}),
+      messages: turns,
+    });
+    const text = msg.content
+      .filter((b): b is Anthropic.TextBlock => b.type === "text")
+      .map((b) => b.text)
+      .join("");
+    const inputTokens = msg.usage.input_tokens ?? 0;
+    const outputTokens = msg.usage.output_tokens ?? 0;
+    return {
+      message: { role: "assistant", content: text },
+      usage: {
+        prompt_tokens: inputTokens,
+        completion_tokens: outputTokens,
+        // Computed cost in the slot `callCost` prefers, so the shared
+        // logUsage/aiRuns accounting works unchanged.
+        cost:
+          (inputTokens * ANTHROPIC_INPUT_USD_PER_MTOK +
+            outputTokens * ANTHROPIC_OUTPUT_USD_PER_MTOK) /
+          1_000_000,
+      },
+      slug: model,
+    };
+  } catch (err) {
+    // Typed SDK errors → generic user-facing error via the same failed-run
+    // path as OpenRouter. Status code only — never the key or raw payloads.
+    if (err instanceof Anthropic.APIError) {
+      throw new ConvexError({
+        code: "ANTHROPIC_ERROR",
+        message: `Anthropic call failed (${err.status ?? "network"}).`,
+      });
+    }
+    throw new ConvexError({
+      code: "ANTHROPIC_ERROR",
+      message: "Anthropic request failed.",
+    });
+  }
+}
+
+/**
+ * Provider-routed completion for the one-shot autofill features. OpenRouter
+ * keeps the existing raw-fetch gateway + slug; Anthropic goes through the
+ * official SDK. Returns the slug that actually ran so aiRuns/aiUsage record
+ * the real model. (`effort` is OpenRouter-only — the Anthropic path omits any
+ * thinking config on purpose.)
+ */
+async function autofillModelCall(
+  provider: AiProvider,
+  openRouterSlug: string,
+  messages: ChatMessage[],
+  opts: { maxTokens?: number; effort?: string } = {},
+): Promise<{ message: ModelMessage; usage: OpenRouterUsage; slug: string }> {
+  if (provider === "anthropic")
+    return anthropicCall(messages, { maxTokens: opts.maxTokens });
+  const { message, usage } = await openRouterCall(openRouterSlug, messages, opts);
+  return { message, usage, slug: openRouterSlug };
 }
 
 /**
@@ -2281,11 +2438,9 @@ export const autofillItem = action({
         code: "AI_BUDGET",
         message: `AI budget reached (${budget.over}).`,
       });
-    if (!process.env.OPENROUTER_API_KEY)
-      throw new ConvexError({
-        code: "NO_OPENROUTER_KEY",
-        message: "OPENROUTER_API_KEY is not configured.",
-      });
+    // Provider gate: OpenRouter or Anthropic (throws NO_OPENROUTER_KEY when
+    // neither is configured — code kept so callers' handling doesn't change).
+    const provider = resolveAiProvider();
 
     // TENANT BOUNDARY: itemForAutofill only returns when the item is in the
     // caller's chapter (chapterId from myContext, never the client). A null
@@ -2299,7 +2454,8 @@ export const autofillItem = action({
       throw new ConvexError({ code: "NOT_FOUND", message: "Item not found." });
 
     const cfg = await ctx.runQuery(api.ai.aiConfig, {});
-    const slug = cfg.activeModel;
+    const slug =
+      provider === "anthropic" ? anthropicModelSlug() : cfg.activeModel;
     const has = (k: string) => info.columnKeys.includes(k);
 
     const runId = await ctx.runMutation(internal.ai.startRun, {
@@ -2337,7 +2493,8 @@ export const autofillItem = action({
 
       // Cost — typical retail price estimate from the model.
       if (has("cost") && info.fields.cost == null) {
-        const { message, usage } = await openRouterCall(
+        const { message, usage } = await autofillModelCall(
+          provider,
           slug,
           [
             {
@@ -2400,6 +2557,165 @@ export const autofillItem = action({
         itemsTouched: filled.length,
         costUsd: cost,
         summary: "Autofill errored",
+      });
+      throw err;
+    }
+  },
+});
+
+const EVENT_PAGE_AUTOFILL_SYSTEM_PROMPT =
+  "You write short, warm copy for a church event's public RSVP page from " +
+  "the organizer's own event plan (overview, tasks, comms schedule, run of " +
+  "show, supplies, permits). Reply with ONLY a JSON object with up to " +
+  "three optional string keys: tagline (one line, under 80 chars), " +
+  "description (2-4 short sentences), givingPrompt (one line inviting " +
+  "donations, only if the plan mentions giving/donations/offering). Omit " +
+  "any key the plan doesn't give you enough to write confidently — never " +
+  "invent specifics (names, dollar amounts, dates, addresses) that aren't " +
+  "in the plan. No markdown, no code fences, no extra keys, no commentary.";
+
+/**
+ * Defensively parse the model's reply into the three (optional) copy fields.
+ * A non-JSON or malformed reply is "nothing extracted" ({}), never a throw —
+ * a flaky model output must not crash the organizer's flow.
+ */
+function parseEventPageAutofillReply(
+  content: unknown,
+): { tagline?: string; description?: string; givingPrompt?: string } {
+  const raw = String(content ?? "").trim();
+  const jsonText = raw.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonText);
+  } catch {
+    return {};
+  }
+  if (typeof parsed !== "object" || parsed === null) return {};
+  const out: { tagline?: string; description?: string; givingPrompt?: string } =
+    {};
+  for (const key of ["tagline", "description", "givingPrompt"] as const) {
+    const val = (parsed as Record<string, unknown>)[key];
+    if (typeof val === "string" && val.trim()) out[key] = val.trim();
+  }
+  return out;
+}
+
+/**
+ * "Fill page with AI" on the RSVP-page editor's Design phase: nothing is
+ * typed or pasted — the event's OWN plan (overview, tasks, comms schedule,
+ * run of show, supplies, permits…) is gathered server-side, serialized into
+ * a plain-text plan document, and one model call drafts the page's narrative
+ * copy (tagline / description / givingPrompt) from it. Unlike `autofillItem`
+ * this does NOT patch the database — it returns the drafted fields and the
+ * client merges them into the form's local edit buffers, so the existing
+ * "Save page" button stays the review/commit gate.
+ */
+export const autofillEventPage = action({
+  args: {
+    eventId: v.id("events"),
+    pageId: v.id("eventPages"),
+  },
+  handler: async (
+    ctx,
+    { eventId, pageId },
+  ): Promise<{
+    ok: boolean;
+    fields: { tagline?: string; description?: string; givingPrompt?: string };
+  }> => {
+    const { userId, chapterId } = await ctx.runQuery(internal.ai.myContext, {});
+
+    const budget = await ctx.runQuery(api.ai.budgetStatus, {});
+    if (budget.over)
+      throw new ConvexError({
+        code: "AI_BUDGET",
+        message: `AI budget reached (${budget.over}).`,
+      });
+    // Provider gate: OpenRouter or Anthropic (throws NO_OPENROUTER_KEY when
+    // neither is configured — code kept so the DesignPhase banner keeps working).
+    const provider = resolveAiProvider();
+
+    // TENANT BOUNDARY: eventPageAutofillContext only returns when the event +
+    // page are in the caller's chapter (chapterId from myContext, never the
+    // client). A null result means missing OR cross-chapter — refuse before
+    // any LLM work, so a cross-tenant id can't be read.
+    const info = await ctx.runQuery(internal.ai.eventPageAutofillContext, {
+      eventId,
+      chapterId,
+    });
+    if (!info || info.pageId !== pageId)
+      throw new ConvexError({ code: "NOT_FOUND", message: "Page not found." });
+
+    // Serialize the event's own plan into the prompt document (capped +
+    // fairly truncated inside the serializer). An event with no rows yet
+    // still proceeds — the overview (name/date/venue) alone is valid context.
+    const planDoc = serializeEventPlan({
+      overview: {
+        name: info.name,
+        eventDate: info.eventDate,
+        location: info.location,
+        venueName: info.venueName,
+        address: info.address,
+        budgetUsd: info.budgetUsd,
+        tagline: info.tagline,
+        description: info.description,
+        givingPrompt: info.givingPrompt,
+      },
+      modules: info.modules,
+      items: info.items,
+    });
+
+    const cfg = await ctx.runQuery(api.ai.aiConfig, {});
+    const slug =
+      provider === "anthropic" ? anthropicModelSlug() : cfg.activeModel;
+
+    const runId = await ctx.runMutation(internal.ai.startRun, {
+      chapterId,
+      userId,
+      feature: "autofill_event_page",
+      eventId,
+      model: slug,
+    });
+
+    try {
+      const { message, usage } = await autofillModelCall(
+        provider,
+        slug,
+        [
+          { role: "system", content: EVENT_PAGE_AUTOFILL_SYSTEM_PROMPT },
+          { role: "user", content: `Here is the event's plan:\n\n${planDoc}` },
+        ],
+        // A one-shot copy draft — low effort keeps this cheap and fast (the
+        // assistant chat is where high reasoning matters, not here).
+        { maxTokens: 600, effort: "low" },
+      );
+      const cost = callCost(slug, usage);
+      const fields = parseEventPageAutofillReply(message.content);
+
+      await ctx.runMutation(internal.ai.logUsage, {
+        chapterId,
+        userId,
+        runId,
+        feature: "autofill_event_page",
+        model: slug,
+        inputTokens: usage.prompt_tokens ?? 0,
+        outputTokens: usage.completion_tokens ?? 0,
+        costUsd: cost,
+      });
+      await ctx.runMutation(internal.ai.finishRun, {
+        runId,
+        status: "done",
+        itemsTouched: Object.keys(fields).length,
+        costUsd: cost,
+        summary: `Suggested ${Object.keys(fields).join(", ") || "nothing"}`,
+      });
+      return { ok: Object.keys(fields).length > 0, fields };
+    } catch (err) {
+      await ctx.runMutation(internal.ai.finishRun, {
+        runId,
+        status: "error",
+        itemsTouched: 0,
+        costUsd: 0,
+        summary: err instanceof Error ? err.message : "Autofill failed",
       });
       throw err;
     }
