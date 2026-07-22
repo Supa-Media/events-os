@@ -2406,6 +2406,170 @@ export const autofillItem = action({
   },
 });
 
+/** Longest planning-doc paste `autofillEventPage` accepts (clear error, not
+ *  silent truncation or an unbounded LLM bill). Exported for the tests. */
+export const MAX_PLANNING_DOC_CHARS = 20_000;
+
+const EVENT_PAGE_AUTOFILL_SYSTEM_PROMPT =
+  "You write short, warm copy for a church event's public RSVP page from " +
+  "an organizer's planning notes. Reply with ONLY a JSON object with up to " +
+  "three optional string keys: tagline (one line, under 80 chars), " +
+  "description (2-4 short sentences), givingPrompt (one line inviting " +
+  "donations, only if the notes mention giving/donations/offering). Omit " +
+  "any key the notes don't give you enough to write confidently — never " +
+  "invent specifics (names, dollar amounts, dates, addresses) that aren't " +
+  "in the notes. No markdown, no code fences, no extra keys, no commentary.";
+
+/**
+ * Defensively parse the model's reply into the three (optional) copy fields.
+ * A non-JSON or malformed reply is "nothing extracted" ({}), never a throw —
+ * a flaky model output must not crash the organizer's flow.
+ */
+function parseEventPageAutofillReply(
+  content: unknown,
+): { tagline?: string; description?: string; givingPrompt?: string } {
+  const raw = String(content ?? "").trim();
+  const jsonText = raw.replace(/^```(?:json)?\s*/i, "").replace(/```\s*$/i, "");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonText);
+  } catch {
+    return {};
+  }
+  if (typeof parsed !== "object" || parsed === null) return {};
+  const out: { tagline?: string; description?: string; givingPrompt?: string } =
+    {};
+  for (const key of ["tagline", "description", "givingPrompt"] as const) {
+    const val = (parsed as Record<string, unknown>)[key];
+    if (typeof val === "string" && val.trim()) out[key] = val.trim();
+  }
+  return out;
+}
+
+/**
+ * "Fill from planning doc" on the RSVP-page editor's Design phase: the
+ * organizer pastes their planning notes and one model call drafts the page's
+ * narrative copy (tagline / description / givingPrompt). Unlike `autofillItem`
+ * this does NOT patch the database — it returns the drafted fields and the
+ * client merges them into the form's local edit buffers, so the existing
+ * "Save page" button stays the review/commit gate. The pasted text is used
+ * once for this call and never persisted.
+ */
+export const autofillEventPage = action({
+  args: {
+    eventId: v.id("events"),
+    pageId: v.id("eventPages"),
+    planningDocText: v.string(),
+  },
+  handler: async (
+    ctx,
+    { eventId, pageId, planningDocText },
+  ): Promise<{
+    ok: boolean;
+    fields: { tagline?: string; description?: string; givingPrompt?: string };
+  }> => {
+    const text = planningDocText.trim();
+    if (!text)
+      throw new ConvexError({
+        code: "EMPTY_INPUT",
+        message: "Paste your planning doc first.",
+      });
+    if (text.length > MAX_PLANNING_DOC_CHARS)
+      throw new ConvexError({
+        code: "TEXT_TOO_LONG",
+        message: `That's too long (max ${MAX_PLANNING_DOC_CHARS.toLocaleString()} characters) — paste a shorter excerpt.`,
+      });
+
+    const { userId, chapterId } = await ctx.runQuery(internal.ai.myContext, {});
+
+    const budget = await ctx.runQuery(api.ai.budgetStatus, {});
+    if (budget.over)
+      throw new ConvexError({
+        code: "AI_BUDGET",
+        message: `AI budget reached (${budget.over}).`,
+      });
+    if (!process.env.OPENROUTER_API_KEY)
+      throw new ConvexError({
+        code: "NO_OPENROUTER_KEY",
+        message: "OPENROUTER_API_KEY is not configured.",
+      });
+
+    // TENANT BOUNDARY: eventPageAutofillContext only returns when the event +
+    // page are in the caller's chapter (chapterId from myContext, never the
+    // client). A null result means missing OR cross-chapter — refuse before
+    // any LLM work, so a cross-tenant id can't be read.
+    const info = await ctx.runQuery(internal.ai.eventPageAutofillContext, {
+      eventId,
+      chapterId,
+    });
+    if (!info || info.pageId !== pageId)
+      throw new ConvexError({ code: "NOT_FOUND", message: "Page not found." });
+
+    const cfg = await ctx.runQuery(api.ai.aiConfig, {});
+    const slug = cfg.activeModel;
+
+    const runId = await ctx.runMutation(internal.ai.startRun, {
+      chapterId,
+      userId,
+      feature: "autofill_event_page",
+      eventId,
+      model: slug,
+    });
+
+    try {
+      const { message, usage } = await openRouterCall(
+        slug,
+        [
+          { role: "system", content: EVENT_PAGE_AUTOFILL_SYSTEM_PROMPT },
+          {
+            role: "user",
+            content:
+              `Event name: ${info.name}\n` +
+              `Event date: ${new Date(info.eventDate).toDateString()}\n` +
+              `Current tagline: ${info.tagline ?? "(none)"}\n` +
+              `Current description: ${info.description ?? "(none)"}\n` +
+              `Current giving prompt: ${info.givingPrompt ?? "(none)"}\n\n` +
+              `Planning doc:\n${text}`,
+          },
+        ],
+        // A one-shot copy draft — low effort keeps this cheap and fast (the
+        // assistant chat is where high reasoning matters, not here).
+        { maxTokens: 600, effort: "low" },
+      );
+      const cost = callCost(slug, usage);
+      const fields = parseEventPageAutofillReply(message.content);
+
+      await ctx.runMutation(internal.ai.logUsage, {
+        chapterId,
+        userId,
+        runId,
+        feature: "autofill_event_page",
+        model: slug,
+        inputTokens: usage.prompt_tokens ?? 0,
+        outputTokens: usage.completion_tokens ?? 0,
+        costUsd: cost,
+      });
+      await ctx.runMutation(internal.ai.finishRun, {
+        runId,
+        status: "done",
+        itemsTouched: Object.keys(fields).length,
+        costUsd: cost,
+        summary: `Suggested ${Object.keys(fields).join(", ") || "nothing"}`,
+      });
+      return { ok: Object.keys(fields).length > 0, fields };
+    } catch (err) {
+      await ctx.runMutation(internal.ai.finishRun, {
+        runId,
+        status: "error",
+        itemsTouched: 0,
+        costUsd: 0,
+        summary: err instanceof Error ? err.message : "Autofill failed",
+      });
+      throw err;
+    }
+  },
+});
+
 /** The most recent thread turns, as plain chat messages for model context. */
 function docHistoryTurns(
   history: Array<{ kind: string; text?: string | null }>,

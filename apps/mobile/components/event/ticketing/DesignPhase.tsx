@@ -11,7 +11,7 @@
  */
 import { useState } from "react";
 import { Text, View } from "react-native";
-import { useMutation } from "convex/react";
+import { useAction, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Doc, Id } from "@events-os/convex/_generated/dataModel";
 import { Button, Pill, TextField, Field, LocationAutocomplete } from "../../ui";
@@ -24,7 +24,7 @@ import { TicketTypesCard } from "./TicketTypesCard";
 import { GivebutterSyncCard } from "./GivebutterSyncCard";
 import { parseDollars } from "./helpers";
 
-type CardKey = "cover" | "location" | "rsvp" | "tickets" | "giving";
+type CardKey = "autofill" | "cover" | "location" | "rsvp" | "tickets" | "giving";
 
 type Props = {
   eventId: Id<"events">;
@@ -46,6 +46,7 @@ export function DesignPhase({
   dateLabel,
 }: Props) {
   const updatePage = useMutation(api.ticketing.updatePage);
+  const autofillEventPage = useAction(api.aiActions.autofillEventPage);
 
   // Local edit buffers, seeded from the server row once.
   const [tagline, setTagline] = useState(page.tagline ?? "");
@@ -61,6 +62,11 @@ export function DesignPhase({
   );
   const [saving, setSaving] = useState(false);
   const [openCard, setOpenCard] = useState<CardKey | null>("cover");
+
+  // "Fill from planning doc": the pasted text lives only in this buffer — it's
+  // sent to the action once and never persisted anywhere.
+  const [planningDocText, setPlanningDocText] = useState("");
+  const [autofilling, setAutofilling] = useState(false);
 
   const patchPage = (patch: Parameters<typeof updatePage>[0]["patch"]) =>
     run(() => updatePage({ pageId: page._id, patch }), {
@@ -96,6 +102,28 @@ export function DesignPhase({
     setSaving(false);
   }
 
+  /**
+   * One action call drafts tagline/description/givingPrompt from the pasted
+   * doc, then merges into the LOCAL edit buffers only — nothing is saved until
+   * "Save page", so the existing buffer-until-save flow is the review step.
+   */
+  async function handleAutofill() {
+    setAutofilling(true);
+    const result = await run(
+      () => autofillEventPage({ eventId, pageId: page._id, planningDocText }),
+      { errorTitle: "Couldn't fill from doc" },
+    );
+    setAutofilling(false);
+    if (!result) return;
+    if (result.fields.tagline !== undefined) setTagline(result.fields.tagline);
+    if (result.fields.description !== undefined)
+      setDescription(result.fields.description);
+    if (result.fields.givingPrompt !== undefined)
+      setGivingPrompt(result.fields.givingPrompt);
+    // Open "Cover & story" so the drafted copy is visible without another tap.
+    setOpenCard("cover");
+  }
+
   const rsvpOn = page.rsvpEnabled !== false;
   const ticketsOn = page.ticketsEnabled === true;
   const givingOn = page.givingEnabled === true;
@@ -112,6 +140,39 @@ export function DesignPhase({
       />
 
       <View className="gap-2.5">
+        {/* Fill from planning doc — paste once, AI drafts the page copy into
+            the same local buffers; "Save page" stays the commit gate. */}
+        <SetupCard
+          icon="sparkles"
+          title="Fill from planning doc"
+          status={
+            planningDocText.trim()
+              ? { label: "Ready", tone: "done" }
+              : { label: "Optional", tone: "opt" }
+          }
+          open={openCard === "autofill"}
+          onToggleOpen={() => toggle("autofill")}
+        >
+          <TextField
+            label="Paste your planning doc"
+            value={planningDocText}
+            onChangeText={setPlanningDocText}
+            multiline
+            numberOfLines={6}
+            style={{ minHeight: 140, textAlignVertical: "top" }}
+            hint="Paste your planning notes — AI drafts the tagline, description, and giving prompt from it."
+          />
+          <View className="flex-row justify-end">
+            <Button
+              title="Fill page with AI"
+              icon="sparkles"
+              loading={autofilling}
+              disabled={!planningDocText.trim()}
+              onPress={() => void handleAutofill()}
+            />
+          </View>
+        </SetupCard>
+
         {/* Cover & story */}
         <SetupCard
           icon="image"

@@ -257,6 +257,36 @@ export const itemForAutofill = internalQuery({
   },
 });
 
+/**
+ * The event + page copy fields the RSVP-page autofill prompt needs (name/date
+ * for grounding, the current tagline/description/givingPrompt so the model can
+ * improve rather than ignore what's already there).
+ */
+export const eventPageAutofillContext = internalQuery({
+  args: { eventId: v.id("events"), chapterId: v.id("chapters") },
+  handler: async (ctx, { eventId, chapterId }) => {
+    const event = await ctx.db.get(eventId);
+    // TENANT BOUNDARY: eventId is an arbitrary arg from an action. Confirm the
+    // event (and its page) is in the caller's chapter before returning any
+    // copy — otherwise autofill could read another chapter's page. Return null
+    // on missing OR cross-chapter (the action surfaces "Page not found").
+    if (!event || event.chapterId !== chapterId) return null;
+    const page = await ctx.db
+      .query("eventPages")
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
+      .unique();
+    if (!page || page.chapterId !== chapterId) return null;
+    return {
+      pageId: page._id,
+      name: event.name,
+      eventDate: event.eventDate,
+      tagline: page.tagline ?? null,
+      description: page.description ?? null,
+      givingPrompt: page.givingPrompt ?? null,
+    };
+  },
+});
+
 // ── Internal: run lifecycle ──────────────────────────────────────────────────
 export const startRun = internalMutation({
   args: {
