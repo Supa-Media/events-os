@@ -101,10 +101,14 @@ describe("aiActions.autofillEventPage", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     delete process.env.OPENROUTER_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.AI_PROVIDER;
   });
 
-  test("no OPENROUTER_API_KEY → throws NO_OPENROUTER_KEY", async () => {
+  test("no provider key at all → throws NO_OPENROUTER_KEY", async () => {
     delete process.env.OPENROUTER_API_KEY;
+    delete process.env.ANTHROPIC_API_KEY;
+    delete process.env.AI_PROVIDER;
     const t = newT();
     const s = await setupChapter(t);
     const { eventId, pageId } = await seedEventWithPlan(s);

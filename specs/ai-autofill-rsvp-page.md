@@ -522,3 +522,29 @@ can use to properly fill the RSVP form."
   error. Kept unchanged: budget gate, `NO_OPENROUTER_KEY` gate, `NOT_FOUND`
   tenant gate, the `aiRuns` audit, the single `openRouterCall`, and the
   return-fields-never-write-DB contract.
+
+## Requester decisions (revision 3)
+
+**Dual-provider AI gateway (requester-approved scope):** the autofill
+features (`autofillEventPage`, `autofillItem`) now work with an
+`ANTHROPIC_API_KEY` as an alternative to OpenRouter.
+
+- Provider selection (`resolveAiProvider` in `apps/convex/aiActions.ts`):
+  `AI_PROVIDER=anthropic|openrouter` pins the provider explicitly (clear
+  error when that provider's key is missing; an unknown value errors rather
+  than silently auto-detecting). Otherwise auto-detect — OPENROUTER_API_KEY
+  wins when present (preserves existing behavior), else ANTHROPIC_API_KEY.
+  Neither key → the existing `NO_OPENROUTER_KEY` error CODE is kept (so the
+  DesignPhase error banner keeps working) with a message naming both keys.
+- Anthropic path uses the official `@anthropic-ai/sdk` (not raw fetch;
+  `aiActions.ts` is "use node"): `client.messages.create` with
+  `ANTHROPIC_MODEL` (default `claude-opus-4-8`), the same maxTokens as the
+  OpenRouter path, no temperature/top_p/top_k and no thinking config
+  (rejected/omitted on Opus 4.8). Text is the concatenated `text` content
+  blocks; usage maps `input_tokens`/`output_tokens` into the shared
+  logUsage/aiRuns accounting, with cost computed from Opus 4.8 list pricing
+  ($5/$25 per 1M tokens) into the `usage.cost` slot `callCost` prefers.
+  SDK errors surface as a generic ConvexError (status only — never the key
+  or raw request) through the same failed-run path as OpenRouter errors.
+- `aiCoding.ts` and the assistant chat loop are untouched — OpenRouter-only,
+  out of scope.
