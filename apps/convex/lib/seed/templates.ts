@@ -23,6 +23,7 @@ import {
   seedTemplateCols,
   type ItemRow,
 } from "./helpers";
+import { LTN_DESCRIPTION, LTN_ROWS_BY_MODULE } from "./loveThyNeighbor";
 
 /** Seed item rows for the new modules, shared between seedDemoData and backfillNewModules. */
 export const PERMIT_ROWS: ItemRow[] = [
@@ -1190,14 +1191,12 @@ export async function buildChapterRolesAndTemplates(
   await addTemplateItems(ctx, edenId, "volunteer_expectations", VOLUNTEER_ROWS, edenRoleByKey);
   await addTemplateItems(ctx, edenId, "retro", RETRO_ROWS, edenRoleByKey);
 
-  // ── Love Thy Neighbor (derived from Eden — same structure) ─────────────────
+  // ── Love Thy Neighbor (own content — outdoor neighborhood block party) ─────
   const ltnId = (await ctx.db.insert("eventTypes", {
     chapterId,
     name: "Love Thy Neighbor",
     slug: toSlug("Love Thy Neighbor"),
-    description:
-      "Annual neighbor-facing outreach — same structure as Eden, derived from it.",
-    deriveFromEventTypeId: edenId,
+    description: LTN_DESCRIPTION,
     disabledCoreModules: [],
     version: 1,
     isArchived: false,
@@ -1205,40 +1204,15 @@ export async function buildChapterRolesAndTemplates(
     createdAt: now,
     updatedAt: now,
   })) as Id<"eventTypes">;
-  // Clone Eden's roles, columns + items so LTN starts structurally aligned.
-  // Item roleIds are remapped from Eden's role ids to LTN's own copies.
-  const edenRoles = await ctx.db
-    .query("templateRoles")
-    .withIndex("by_template", (q: any) => q.eq("eventTypeId", edenId))
-    .collect();
-  const ltnRoleIdMap = new Map<string, Id<"templateRoles">>();
-  for (const r of edenRoles) {
-    const { _id, _creationTime, eventTypeId: _e, ...rest } = r as any;
-    const newId = (await ctx.db.insert("templateRoles", {
-      eventTypeId: ltnId,
-      ...rest,
-    })) as Id<"templateRoles">;
-    ltnRoleIdMap.set(String(_id), newId);
+
+  const ltnRoleByKey = await seedTemplateRoles(ctx, ltnId, DEFAULT_ROLES);
+
+  for (const m of GRID_CORE_MODULE_KEYS) {
+    await seedTemplateCols(ctx, ltnId, m);
   }
-  const edenCols = await ctx.db
-    .query("templateColumns")
-    .withIndex("by_eventType", (q: any) => q.eq("eventTypeId", edenId))
-    .collect();
-  for (const c of edenCols) {
-    const { _id, _creationTime, eventTypeId: _e, ...rest } = c as any;
-    await ctx.db.insert("templateColumns", { eventTypeId: ltnId, ...rest });
-  }
-  const edenItems = await ctx.db
-    .query("templateItems")
-    .withIndex("by_eventType", (q: any) => q.eq("eventTypeId", edenId))
-    .collect();
-  for (const it of edenItems) {
-    const { _id, _creationTime, eventTypeId: _e, ...rest } = it as any;
-    await ctx.db.insert("templateItems", {
-      eventTypeId: ltnId,
-      ...rest,
-      roleId: rest.roleId ? ltnRoleIdMap.get(String(rest.roleId)) : undefined,
-    });
+
+  for (const [module, rows] of Object.entries(LTN_ROWS_BY_MODULE)) {
+    await addTemplateItems(ctx, ltnId, module as ModuleKey, rows, ltnRoleByKey);
   }
 
   // ── Worship With Strangers (lightweight; trimmed supplies columns) ─────────

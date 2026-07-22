@@ -54,6 +54,7 @@ import {
   FIELD_DAY_VOLUNTEER,
   FIELD_DAY_PERMITS,
 } from "./lib/seed/fieldDay";
+import { LTN_DESCRIPTION, LTN_ROWS_BY_MODULE } from "./lib/seed/loveThyNeighbor";
 import {
   NY_CHAPTER_NAME,
   CORE_TEAM,
@@ -1393,6 +1394,99 @@ export const fieldDayTemplate = internalMutation({
     }
 
     return { eventTypeId, name, chapter: chapter.name, itemsInserted };
+  },
+});
+
+/**
+ * Upsert the "Love Thy Neighbor" template's content for a chapter that was
+ * already bootstrapped before this content existed — `ensureChapters` is a
+ * no-op once a chapter's row exists, so it can never pick up a content-only
+ * change to `buildChapterRolesAndTemplates`. If the chapter already has a
+ * "Love Thy Neighbor" `eventTypes` row (e.g. today's Eden-derived stub), it
+ * is PATCHED IN PLACE — its id is preserved and only its child rows
+ * (roles/columns/items) are replaced — so any event already created from it
+ * keeps working (`instantiateEvent` deep-copies at creation time; nothing
+ * re-reads the template afterward). If the chapter has none, one is created.
+ *
+ * Idempotent: safe to re-run. Runnable with
+ * `npx convex run seed:upgradeLoveThyNeighborTemplate` (add `--prod` to
+ * target production). Defaults to the first chapter/user; pass
+ * `chapterId`/`createdBy` to target a specific one.
+ *
+ * SECURITY: `internalMutation` — no auth, bulk-writes template data, not
+ * called from the UI. Dashboard/CLI only.
+ */
+export const upgradeLoveThyNeighborTemplate = internalMutation({
+  args: {
+    chapterId: v.optional(v.id("chapters")),
+    createdBy: v.optional(v.id("users")),
+  },
+  handler: async (ctx: MutationCtx, args) => {
+    const chapter = args.chapterId
+      ? await ctx.db.get(args.chapterId)
+      : await ctx.db.query("chapters").first();
+    if (!chapter)
+      throw new ConvexError({
+        code: "NO_CHAPTER",
+        message: "No chapter found — pass chapterId explicitly.",
+      });
+    const user = args.createdBy
+      ? await ctx.db.get(args.createdBy)
+      : await ctx.db.query("users").first();
+    if (!user)
+      throw new ConvexError({
+        code: "NO_USER",
+        message: "No user found — pass createdBy explicitly.",
+      });
+
+    const now = Date.now();
+    const slug = toSlug("Love Thy Neighbor");
+    const existing = await ctx.db
+      .query("eventTypes")
+      .withIndex("by_chapter_slug", (q) =>
+        q.eq("chapterId", chapter._id).eq("slug", slug),
+      )
+      .first();
+
+    let eventTypeId: Id<"eventTypes">;
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        description: LTN_DESCRIPTION,
+        deriveFromEventTypeId: undefined,
+        disabledCoreModules: [],
+        updatedAt: now,
+      });
+      eventTypeId = existing._id;
+      const roles = await ctx.db.query("templateRoles").withIndex("by_template", (q) => q.eq("eventTypeId", eventTypeId)).collect();
+      const columns = await ctx.db.query("templateColumns").withIndex("by_eventType", (q) => q.eq("eventTypeId", eventTypeId)).collect();
+      const items = await ctx.db.query("templateItems").withIndex("by_eventType", (q) => q.eq("eventTypeId", eventTypeId)).collect();
+      for (const row of [...roles, ...columns, ...items]) await ctx.db.delete(row._id);
+    } else {
+      eventTypeId = (await ctx.db.insert("eventTypes", {
+        chapterId: chapter._id,
+        name: "Love Thy Neighbor",
+        slug,
+        description: LTN_DESCRIPTION,
+        disabledCoreModules: [],
+        version: 1,
+        isArchived: false,
+        createdBy: user._id,
+        createdAt: now,
+        updatedAt: now,
+      })) as Id<"eventTypes">;
+    }
+
+    const roleIdByKey = await seedTemplateRoles(ctx, eventTypeId, DEFAULT_ROLES);
+    for (const m of GRID_CORE_MODULE_KEYS) {
+      await seedTemplateCols(ctx, eventTypeId, m);
+    }
+    let itemsInserted = 0;
+    for (const [module, rows] of Object.entries(LTN_ROWS_BY_MODULE)) {
+      await addTemplateItems(ctx, eventTypeId, module as ModuleKey, rows, roleIdByKey);
+      itemsInserted += rows.length;
+    }
+
+    return { eventTypeId, chapter: chapter.name, replaced: !!existing, itemsInserted };
   },
 });
 
