@@ -247,16 +247,23 @@ export const createFromTemplate = mutation({
   },
 });
 
-/** List chapter events (default upcoming) with readiness + task counts. */
+/**
+ * List chapter events (default upcoming) with readiness + task counts.
+ *
+ * `chapterId` optionally peeks into a DIFFERENT chapter than the caller's own
+ * (central reach required — see `resolvePeekChapterId`); absent (or the
+ * caller's own chapter) behaves exactly as before.
+ */
 export const list = query({
   args: {
     scope: v.optional(v.union(v.literal("upcoming"), v.literal("all"))),
     // Academy training events are sandboxes — hidden from every operational
     // list (both scopes) unless a caller explicitly opts in.
     includeTraining: v.optional(v.boolean()),
+    chapterId: v.optional(v.id("chapters")),
   },
-  handler: async (ctx, { scope, includeTraining }) => {
-    const chapterId = await getChapterIdOrNull(ctx);
+  handler: async (ctx, { scope, includeTraining, chapterId: requestedChapterId }) => {
+    const chapterId = await resolvePeekChapterId(ctx, requestedChapterId);
     if (!chapterId) return [];
     const now = Date.now();
     const all = (
