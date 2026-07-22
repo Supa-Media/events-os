@@ -64,6 +64,7 @@ import type * as lib_giftAudit from "../lib/giftAudit.js";
 import type * as lib_giveApiRoutes from "../lib/giveApiRoutes.js";
 import type * as lib_givePage from "../lib/givePage.js";
 import type * as lib_givePageClient from "../lib/givePageClient.js";
+import type * as lib_givePageSections from "../lib/givePageSections.js";
 import type * as lib_givePageStyles from "../lib/givePageStyles.js";
 import type * as lib_givingAccess from "../lib/givingAccess.js";
 import type * as lib_givingAudit from "../lib/givingAudit.js";
@@ -274,6 +275,7 @@ declare const fullApi: ApiFromModules<{
   "lib/giveApiRoutes": typeof lib_giveApiRoutes;
   "lib/givePage": typeof lib_givePage;
   "lib/givePageClient": typeof lib_givePageClient;
+  "lib/givePageSections": typeof lib_givePageSections;
   "lib/givePageStyles": typeof lib_givePageStyles;
   "lib/givingAccess": typeof lib_givingAccess;
   "lib/givingAudit": typeof lib_givingAudit;

@@ -28,6 +28,7 @@ import { formatDate } from "../../../lib/format";
 import { useActionRunner } from "../../../lib/useActionToast";
 import { useChapterContext } from "../../../lib/ChapterContext";
 import { TemplatesView } from "../../../components/template/TemplatesView";
+import { EventsCalendarView } from "../../../components/event/EventsCalendarView";
 import {
   EVENT_STATUS_LABELS,
   PHASE_LABELS,
@@ -40,6 +41,9 @@ type EventRow = FunctionReturnType<typeof api.events.current>[number];
 
 /** Events has two modes for admins/leads: the events list and its templates. */
 type Mode = "events" | "templates";
+
+/** Within the events mode, the flat list or the month calendar. */
+type ViewMode = "list" | "calendar";
 
 /**
  * Wide-viewport breakpoint. Mirrors AppShell's `DESKTOP` (760) — at/above it we
@@ -72,6 +76,7 @@ export default function EventsScreen() {
   // Admins/leads can flip Events into its Templates mode (folded in from the
   // old Templates tab); everyone else only ever sees the events list.
   const [mode, setMode] = useState<Mode>("events");
+  const [viewMode, setViewMode] = useState<ViewMode>("list");
   const { run, toast, dismiss } = useActionRunner();
 
   // The derived landing: a volunteer has no Events screen — their lobby is the
@@ -135,23 +140,43 @@ export default function EventsScreen() {
         }
       />
 
-      {/* Events ⇄ Templates — admins/leads only (members never see it). */}
-      {canManageTemplates ? (
-        <View className="mt-1 flex-row">
-          <Segmented
-            options={[
-              { key: "events", icon: "layout", label: "Events" },
-              { key: "templates", icon: "grid", label: "Templates" },
-            ]}
-            value={mode}
-            onChange={setMode}
-          />
+      {/* Events ⇄ Templates — admins/leads only (members never see it) — and,
+          within Events, the flat List ⇄ month Calendar toggle, visible to
+          every tier that reaches this screen. Two independent Segmenteds. */}
+      {canManageTemplates || mode === "events" ? (
+        <View className="mt-1 flex-row items-center justify-between gap-3">
+          {canManageTemplates ? (
+            <Segmented
+              options={[
+                { key: "events", icon: "layout", label: "Events" },
+                { key: "templates", icon: "grid", label: "Templates" },
+              ]}
+              value={mode}
+              onChange={setMode}
+            />
+          ) : (
+            <View />
+          )}
+          {mode === "events" ? (
+            <Segmented
+              options={[
+                { key: "list", icon: "layout", label: "List" },
+                { key: "calendar", icon: "calendar", label: "Calendar" },
+              ]}
+              value={viewMode}
+              onChange={setViewMode}
+            />
+          ) : null}
         </View>
       ) : null}
 
       {mode === "templates" ? (
         <View className="mt-6">
           <TemplatesView />
+        </View>
+      ) : viewMode === "calendar" ? (
+        <View className="mt-6">
+          <EventsCalendarView isPeeking={isPeeking} chapterId={chapterId} />
         </View>
       ) : (
         <>
