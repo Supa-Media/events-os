@@ -39,6 +39,7 @@ import {
   zonedTimeToUtc,
   type AiCatalogModel,
 } from "@events-os/shared";
+import { serializeEventPlan } from "./lib/eventPlanSerializer";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
@@ -2406,19 +2407,16 @@ export const autofillItem = action({
   },
 });
 
-/** Longest planning-doc paste `autofillEventPage` accepts (clear error, not
- *  silent truncation or an unbounded LLM bill). Exported for the tests. */
-export const MAX_PLANNING_DOC_CHARS = 20_000;
-
 const EVENT_PAGE_AUTOFILL_SYSTEM_PROMPT =
   "You write short, warm copy for a church event's public RSVP page from " +
-  "an organizer's planning notes. Reply with ONLY a JSON object with up to " +
+  "the organizer's own event plan (overview, tasks, comms schedule, run of " +
+  "show, supplies, permits). Reply with ONLY a JSON object with up to " +
   "three optional string keys: tagline (one line, under 80 chars), " +
   "description (2-4 short sentences), givingPrompt (one line inviting " +
-  "donations, only if the notes mention giving/donations/offering). Omit " +
-  "any key the notes don't give you enough to write confidently — never " +
+  "donations, only if the plan mentions giving/donations/offering). Omit " +
+  "any key the plan doesn't give you enough to write confidently — never " +
   "invent specifics (names, dollar amounts, dates, addresses) that aren't " +
-  "in the notes. No markdown, no code fences, no extra keys, no commentary.";
+  "in the plan. No markdown, no code fences, no extra keys, no commentary.";
 
 /**
  * Defensively parse the model's reply into the three (optional) copy fields.
@@ -2447,39 +2445,27 @@ function parseEventPageAutofillReply(
 }
 
 /**
- * "Fill from planning doc" on the RSVP-page editor's Design phase: the
- * organizer pastes their planning notes and one model call drafts the page's
- * narrative copy (tagline / description / givingPrompt). Unlike `autofillItem`
+ * "Fill page with AI" on the RSVP-page editor's Design phase: nothing is
+ * typed or pasted — the event's OWN plan (overview, tasks, comms schedule,
+ * run of show, supplies, permits…) is gathered server-side, serialized into
+ * a plain-text plan document, and one model call drafts the page's narrative
+ * copy (tagline / description / givingPrompt) from it. Unlike `autofillItem`
  * this does NOT patch the database — it returns the drafted fields and the
  * client merges them into the form's local edit buffers, so the existing
- * "Save page" button stays the review/commit gate. The pasted text is used
- * once for this call and never persisted.
+ * "Save page" button stays the review/commit gate.
  */
 export const autofillEventPage = action({
   args: {
     eventId: v.id("events"),
     pageId: v.id("eventPages"),
-    planningDocText: v.string(),
   },
   handler: async (
     ctx,
-    { eventId, pageId, planningDocText },
+    { eventId, pageId },
   ): Promise<{
     ok: boolean;
     fields: { tagline?: string; description?: string; givingPrompt?: string };
   }> => {
-    const text = planningDocText.trim();
-    if (!text)
-      throw new ConvexError({
-        code: "EMPTY_INPUT",
-        message: "Paste your planning doc first.",
-      });
-    if (text.length > MAX_PLANNING_DOC_CHARS)
-      throw new ConvexError({
-        code: "TEXT_TOO_LONG",
-        message: `That's too long (max ${MAX_PLANNING_DOC_CHARS.toLocaleString()} characters) — paste a shorter excerpt.`,
-      });
-
     const { userId, chapterId } = await ctx.runQuery(internal.ai.myContext, {});
 
     const budget = await ctx.runQuery(api.ai.budgetStatus, {});
@@ -2505,6 +2491,25 @@ export const autofillEventPage = action({
     if (!info || info.pageId !== pageId)
       throw new ConvexError({ code: "NOT_FOUND", message: "Page not found." });
 
+    // Serialize the event's own plan into the prompt document (capped +
+    // fairly truncated inside the serializer). An event with no rows yet
+    // still proceeds — the overview (name/date/venue) alone is valid context.
+    const planDoc = serializeEventPlan({
+      overview: {
+        name: info.name,
+        eventDate: info.eventDate,
+        location: info.location,
+        venueName: info.venueName,
+        address: info.address,
+        budgetUsd: info.budgetUsd,
+        tagline: info.tagline,
+        description: info.description,
+        givingPrompt: info.givingPrompt,
+      },
+      modules: info.modules,
+      items: info.items,
+    });
+
     const cfg = await ctx.runQuery(api.ai.aiConfig, {});
     const slug = cfg.activeModel;
 
@@ -2521,16 +2526,7 @@ export const autofillEventPage = action({
         slug,
         [
           { role: "system", content: EVENT_PAGE_AUTOFILL_SYSTEM_PROMPT },
-          {
-            role: "user",
-            content:
-              `Event name: ${info.name}\n` +
-              `Event date: ${new Date(info.eventDate).toDateString()}\n` +
-              `Current tagline: ${info.tagline ?? "(none)"}\n` +
-              `Current description: ${info.description ?? "(none)"}\n` +
-              `Current giving prompt: ${info.givingPrompt ?? "(none)"}\n\n` +
-              `Planning doc:\n${text}`,
-          },
+          { role: "user", content: `Here is the event's plan:\n\n${planDoc}` },
         ],
         // A one-shot copy draft — low effort keeps this cheap and fast (the
         // assistant chat is where high reasoning matters, not here).

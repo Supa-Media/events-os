@@ -3,14 +3,15 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { api } from "../_generated/api";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import type { Id } from "../_generated/dataModel";
-import { MAX_PLANNING_DOC_CHARS } from "../aiActions";
 
 /**
- * `aiActions.autofillEventPage` — the RSVP-page "Fill from planning doc"
- * action. Characterizes:
- *   - the input gates (empty / over-length paste) fire BEFORE any OpenRouter
- *     call is made,
+ * `aiActions.autofillEventPage` — the RSVP-page "Fill page with AI" action.
+ * Nothing is typed or pasted: the event's OWN plan (overview + module rows)
+ * is gathered server-side and serialized into the prompt. Characterizes:
  *   - the missing-key gate (`NO_OPENROUTER_KEY`),
+ *   - the tenant gate (cross-chapter → NOT_FOUND, zero OpenRouter calls),
+ *   - the outgoing prompt actually carries the event's plan (name + item
+ *     detail text from multiple modules),
  *   - a successful reply returns ONLY the fields the model supplied, trimmed,
  *     and does NOT write the page (the client's local buffers + "Save page"
  *     are the commit path),
@@ -30,8 +31,21 @@ function stubOpenRouterOk(content: string, usage?: Record<string, unknown>) {
   return fetchStub;
 }
 
-/** Seed a chapter + event + its public page (via the real creation path). */
-async function seedEventWithPage(s: ChapterSetup) {
+/** The user message the stubbed OpenRouter call was sent (the plan document). */
+function sentUserContent(fetchStub: ReturnType<typeof vi.fn>): string {
+  const [, init] = fetchStub.mock.calls[0] as [string, { body: string }];
+  const body = JSON.parse(init.body);
+  const userMsg = body.messages.find((m: any) => m.role === "user");
+  return String(userMsg?.content ?? "");
+}
+
+/**
+ * Seed a chapter + event + its public page (via the real creation path) +
+ * plan rows across two modules — a Tasks (planning_doc) row whose details
+ * carry the games list, and a Comms Schedule row. The event's own plan is
+ * what the action serializes into the prompt.
+ */
+async function seedEventWithPlan(s: ChapterSetup) {
   const eventId = await run(s.t, async (ctx) => {
     const now = Date.now();
     const eventTypeId = await ctx.db.insert("eventTypes", {
@@ -43,7 +57,7 @@ async function seedEventWithPage(s: ChapterSetup) {
       createdAt: now,
       updatedAt: now,
     });
-    return await ctx.db.insert("events", {
+    const eventId = await ctx.db.insert("events", {
       chapterId: s.chapterId,
       eventTypeId,
       templateVersion: 1,
@@ -54,14 +68,34 @@ async function seedEventWithPage(s: ChapterSetup) {
       createdAt: now,
       updatedAt: now,
     });
+    await ctx.db.insert("eventItems", {
+      eventId,
+      chapterId: s.chapterId,
+      module: "planning_doc",
+      title: "Plan lawn games",
+      order: 0,
+      status: "in_progress",
+      fields: {
+        details: "Games list: cornhole, giant Jenga, and spikeball",
+        notes: "Borrow sets from the youth group",
+      },
+    });
+    await ctx.db.insert("eventItems", {
+      eventId,
+      chapterId: s.chapterId,
+      module: "comms",
+      title: "IG announcement post",
+      order: 0,
+      status: "drafting",
+      fields: { notes: "Lead with the rooftop sunset angle" },
+    });
+    return eventId;
   });
   const pageId = (await s.as.mutation(api.ticketing.createPage, {
     eventId,
   })) as Id<"eventPages">;
   return { eventId, pageId };
 }
-
-const DOC = "We're hosting a rooftop worship night with live music and prayer.";
 
 describe("aiActions.autofillEventPage", () => {
   afterEach(() => {
@@ -73,51 +107,13 @@ describe("aiActions.autofillEventPage", () => {
     delete process.env.OPENROUTER_API_KEY;
     const t = newT();
     const s = await setupChapter(t);
-    const { eventId, pageId } = await seedEventWithPage(s);
+    const { eventId, pageId } = await seedEventWithPlan(s);
 
     await expect(
-      s.as.action(api.aiActions.autofillEventPage, {
-        eventId,
-        pageId,
-        planningDocText: DOC,
-      }),
+      s.as.action(api.aiActions.autofillEventPage, { eventId, pageId }),
     ).rejects.toMatchObject({
       data: { code: "NO_OPENROUTER_KEY" },
     });
-  });
-
-  test("empty/whitespace-only paste → throws EMPTY_INPUT, no OpenRouter call", async () => {
-    process.env.OPENROUTER_API_KEY = "test-key";
-    const t = newT();
-    const s = await setupChapter(t);
-    const { eventId, pageId } = await seedEventWithPage(s);
-    const fetchStub = stubOpenRouterOk("{}");
-
-    await expect(
-      s.as.action(api.aiActions.autofillEventPage, {
-        eventId,
-        pageId,
-        planningDocText: "   \n\t ",
-      }),
-    ).rejects.toMatchObject({ data: { code: "EMPTY_INPUT" } });
-    expect(fetchStub).not.toHaveBeenCalled();
-  });
-
-  test("over-length paste → throws TEXT_TOO_LONG, no OpenRouter call", async () => {
-    process.env.OPENROUTER_API_KEY = "test-key";
-    const t = newT();
-    const s = await setupChapter(t);
-    const { eventId, pageId } = await seedEventWithPage(s);
-    const fetchStub = stubOpenRouterOk("{}");
-
-    await expect(
-      s.as.action(api.aiActions.autofillEventPage, {
-        eventId,
-        pageId,
-        planningDocText: "x".repeat(MAX_PLANNING_DOC_CHARS + 1),
-      }),
-    ).rejects.toMatchObject({ data: { code: "TEXT_TOO_LONG" } });
-    expect(fetchStub).not.toHaveBeenCalled();
   });
 
   test("cross-chapter eventId → throws NOT_FOUND before any OpenRouter call", async () => {
@@ -128,25 +124,42 @@ describe("aiActions.autofillEventPage", () => {
       email: "b@publicworship.life",
       chapterName: "Other Chapter",
     });
-    const { eventId, pageId } = await seedEventWithPage(a);
+    const { eventId, pageId } = await seedEventWithPlan(a);
     const fetchStub = stubOpenRouterOk("{}");
 
     // Caller is chapter B, page belongs to chapter A.
     await expect(
-      b.as.action(api.aiActions.autofillEventPage, {
-        eventId,
-        pageId,
-        planningDocText: DOC,
-      }),
+      b.as.action(api.aiActions.autofillEventPage, { eventId, pageId }),
     ).rejects.toMatchObject({ data: { code: "NOT_FOUND" } });
     expect(fetchStub).not.toHaveBeenCalled();
+  });
+
+  test("prompt carries the event's own plan: name + module rows' detail text", async () => {
+    process.env.OPENROUTER_API_KEY = "test-key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const { eventId, pageId } = await seedEventWithPlan(s);
+    const fetchStub = stubOpenRouterOk(JSON.stringify({ tagline: "Up top" }));
+
+    await s.as.action(api.aiActions.autofillEventPage, { eventId, pageId });
+
+    expect(fetchStub).toHaveBeenCalledTimes(1);
+    const content = sentUserContent(fetchStub);
+    // Overview grounding.
+    expect(content).toContain("Rooftop Worship Night");
+    // Tasks row: title + the details text (the games list).
+    expect(content).toContain("Plan lawn games");
+    expect(content).toContain("cornhole, giant Jenga, and spikeball");
+    // Comms row from a second module, under its module heading.
+    expect(content).toContain("Comms Schedule");
+    expect(content).toContain("IG announcement post");
   });
 
   test("successful reply → returns only the supplied fields, trimmed; page row untouched", async () => {
     process.env.OPENROUTER_API_KEY = "test-key";
     const t = newT();
     const s = await setupChapter(t);
-    const { eventId, pageId } = await seedEventWithPage(s);
+    const { eventId, pageId } = await seedEventWithPlan(s);
     stubOpenRouterOk(
       JSON.stringify({
         tagline: "  A rooftop night of worship ",
@@ -158,7 +171,6 @@ describe("aiActions.autofillEventPage", () => {
     const result = await s.as.action(api.aiActions.autofillEventPage, {
       eventId,
       pageId,
-      planningDocText: DOC,
     });
 
     expect(result).toEqual({
@@ -189,13 +201,12 @@ describe("aiActions.autofillEventPage", () => {
     process.env.OPENROUTER_API_KEY = "test-key";
     const t = newT();
     const s = await setupChapter(t);
-    const { eventId, pageId } = await seedEventWithPage(s);
+    const { eventId, pageId } = await seedEventWithPlan(s);
     stubOpenRouterOk("Sure, here's some copy you could use: A great night!");
 
     const result = await s.as.action(api.aiActions.autofillEventPage, {
       eventId,
       pageId,
-      planningDocText: DOC,
     });
 
     expect(result).toEqual({ ok: false, fields: {} });

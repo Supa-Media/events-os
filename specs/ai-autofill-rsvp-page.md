@@ -485,3 +485,40 @@ Execute every command. Every one must exit clean.
   saved/reusable (e.g. re-run autofill later without re-pasting), that's a
   small but real scope change (a new optional string column, or a `docs`-table
   entry) — flagged explicitly rather than assumed.
+
+## Requester decisions (revision 2)
+
+**Feedback (verbatim intent):** "There should be no need to type in the
+planning doc — the whole page it lives in IS the planning doc. The tasks, the
+overview card, comms schedule — all of these contain valuable context the AI
+can use to properly fill the RSVP form."
+
+**Design change — no paste box; context auto-gathered server-side:**
+- The "Fill from planning doc" paste card is gone. The card is now
+  "Fill page with AI": one always-enabled button, no input. The action
+  (`autofillEventPage`) takes only `eventId` + `pageId`.
+- `ai.eventPageAutofillContext` (tenant boundary unchanged) now gathers the
+  event's OWN plan: the event row (name, date, location, budget via the
+  budget row), the page's current copy + venue/address, the event's resolved
+  active modules, and every `eventItems` row (module, title, status, fields
+  bag) — reusing the same index/access patterns as `eventContext` /
+  `items.listForEventModule`, without duplicating their business logic.
+- A new pure serializer (`apps/convex/lib/eventPlanSerializer.ts`,
+  `serializeEventPlan`) flattens that into a plain-text "event plan"
+  document: an Event overview section first, then one section per module
+  that has rows (Tasks with title + details + notes, Comms Schedule, Run of
+  Show, Supplies, Permits, …). `@[Label](mention:…)` tokens are stripped to
+  their plain labels (via shared `splitMentionSegments`) so the model sees
+  names, not markup.
+- Truncation: the total is capped at `MAX_PLANNING_DOC_CHARS` (20k, now
+  defined in the serializer). The overview is always kept whole; module
+  sections split the remaining budget by fair-share "water-fill" — sections
+  that fit keep their full text, their surplus is redistributed among the
+  oversized ones, so one huge Tasks section can't evict a small Comms
+  section. Truncated sections end with an explicit "…(truncated)" marker.
+- `EMPTY_INPUT` and `TEXT_TOO_LONG` are gone as user-facing errors: there is
+  no input to be empty (an event with no rows still proceeds — the overview
+  alone is valid context) and over-length is handled by truncation, never an
+  error. Kept unchanged: budget gate, `NO_OPENROUTER_KEY` gate, `NOT_FOUND`
+  tenant gate, the `aiRuns` audit, the single `openRouterCall`, and the
+  return-fields-never-write-DB contract.

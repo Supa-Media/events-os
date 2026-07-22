@@ -63,9 +63,8 @@ export function DesignPhase({
   const [saving, setSaving] = useState(false);
   const [openCard, setOpenCard] = useState<CardKey | null>("cover");
 
-  // "Fill from planning doc": the pasted text lives only in this buffer — it's
-  // sent to the action once and never persisted anywhere.
-  const [planningDocText, setPlanningDocText] = useState("");
+  // "Fill page with AI": nothing to type — the action gathers the event's own
+  // plan (tasks, comms, run of show…) server-side and drafts the copy from it.
   const [autofilling, setAutofilling] = useState(false);
 
   const patchPage = (patch: Parameters<typeof updatePage>[0]["patch"]) =>
@@ -103,15 +102,15 @@ export function DesignPhase({
   }
 
   /**
-   * One action call drafts tagline/description/givingPrompt from the pasted
-   * doc, then merges into the LOCAL edit buffers only — nothing is saved until
-   * "Save page", so the existing buffer-until-save flow is the review step.
+   * One action call drafts tagline/description/givingPrompt from the event's
+   * own plan, then merges into the LOCAL edit buffers only — nothing is saved
+   * until "Save page", so the existing buffer-until-save flow is the review step.
    */
   async function handleAutofill() {
     setAutofilling(true);
     const result = await run(
-      () => autofillEventPage({ eventId, pageId: page._id, planningDocText }),
-      { errorTitle: "Couldn't fill from doc" },
+      () => autofillEventPage({ eventId, pageId: page._id }),
+      { errorTitle: "Couldn't fill the page" },
     );
     setAutofilling(false);
     if (!result) return;
@@ -140,34 +139,25 @@ export function DesignPhase({
       />
 
       <View className="gap-2.5">
-        {/* Fill from planning doc — paste once, AI drafts the page copy into
-            the same local buffers; "Save page" stays the commit gate. */}
+        {/* Fill page with AI — the event's own plan (tasks, comms, run of
+            show…) is the context; the draft lands in the same local buffers
+            and "Save page" stays the commit gate. */}
         <SetupCard
           icon="sparkles"
-          title="Fill from planning doc"
-          status={
-            planningDocText.trim()
-              ? { label: "Ready", tone: "done" }
-              : { label: "Optional", tone: "opt" }
-          }
+          title="Fill page with AI"
+          status={{ label: "Optional", tone: "opt" }}
           open={openCard === "autofill"}
           onToggleOpen={() => toggle("autofill")}
         >
-          <TextField
-            label="Paste your planning doc"
-            value={planningDocText}
-            onChangeText={setPlanningDocText}
-            multiline
-            numberOfLines={6}
-            style={{ minHeight: 140, textAlignVertical: "top" }}
-            hint="Paste your planning notes — AI drafts the tagline, description, and giving prompt from it."
-          />
+          <Text className="mb-2 text-xs text-muted">
+            Drafts the tagline, description & giving prompt from this event's
+            plan — tasks, comms, run of show, and more.
+          </Text>
           <View className="flex-row justify-end">
             <Button
               title="Fill page with AI"
               icon="sparkles"
               loading={autofilling}
-              disabled={!planningDocText.trim()}
               onPress={() => void handleAutofill()}
             />
           </View>

@@ -258,9 +258,11 @@ export const itemForAutofill = internalQuery({
 });
 
 /**
- * The event + page copy fields the RSVP-page autofill prompt needs (name/date
- * for grounding, the current tagline/description/givingPrompt so the model can
- * improve rather than ignore what's already there).
+ * Everything the RSVP-page autofill prompt needs, gathered from the event's
+ * OWN plan — the page the organizer plans in IS the planning doc. Returns the
+ * event overview (name/date/location/budget), the page's current copy (so the
+ * model can improve rather than ignore what's already there), and the event's
+ * active modules + their rows, ready for `serializeEventPlan`.
  */
 export const eventPageAutofillContext = internalQuery({
   args: { eventId: v.id("events"), chapterId: v.id("chapters") },
@@ -276,13 +278,46 @@ export const eventPageAutofillContext = internalQuery({
       .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .unique();
     if (!page || page.chapterId !== chapterId) return null;
+
+    // The event's resolved active modules + their rows — the raw material the
+    // serializer flattens into the prompt's "event plan" document.
+    const modules = (await eventActiveModules(ctx, event)).map((m: any) => ({
+      key: m.key as string,
+      label: m.label as string,
+    }));
+    const items = (
+      await ctx.db
+        .query("eventItems")
+        .withIndex("by_event", (q: any) => q.eq("eventId", eventId))
+        .collect()
+    )
+      .sort((a: any, b: any) => a.order - b.order)
+      .map((it: any) => ({
+        module: it.module as string,
+        title: it.title as string,
+        status: (it.status ?? null) as string | null,
+        fields: (it.fields ?? {}) as Record<string, unknown>,
+      }));
+
+    // Planned budget reads the budget ROW (single source of truth), mirroring
+    // eventContext above.
+    const budgetRow = await getBudgetForRef(ctx, "event", eventId);
+    const budgetUsd =
+      budgetRow && budgetRow.amountCents > 0 ? budgetRow.amountCents / 100 : null;
+
     return {
       pageId: page._id,
       name: event.name,
       eventDate: event.eventDate,
+      location: event.location ?? null,
+      budgetUsd,
+      venueName: page.venueName ?? null,
+      address: page.address ?? null,
       tagline: page.tagline ?? null,
       description: page.description ?? null,
       givingPrompt: page.givingPrompt ?? null,
+      modules,
+      items,
     };
   },
 });
