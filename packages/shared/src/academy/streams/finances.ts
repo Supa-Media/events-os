@@ -38,6 +38,16 @@
  * the manual-payout fallback for a chapter whose Increase account isn't set
  * up yet, so it no longer reads as an unconditional guarantee. No titles,
  * minutes, or quiz content changed.
+ *
+ * Budget-decision email touch-up (founder feedback review — the two-party
+ * approval workflow now emails BOTH directions): `finance-approving-budgets`
+ * and `finance-budget-lifecycle` each gained a clause on their "send" and
+ * "approve/request changes" bullets — submitting already emailed the scope's
+ * approvers before this touch-up (unchanged); approving or requesting
+ * changes now ALSO emails the submitter back (new), note included on a
+ * Changes requested decision. Mirrors the reimbursement touch-up above.
+ * Neither section's title, minutes, or quiz length changed, so the snapshot
+ * test needed no updates.
  */
 
 import type {
@@ -765,7 +775,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "bullets",
         items: [
-          "**How it works:** whoever plans a budget taps **Submit for approval** right on its card. It then shows **Awaiting approval** to anyone who can act on it — tap **Approve** or **Request changes** (with a reason) straight from that same card.",
+          "**How it works:** whoever plans a budget taps **Submit for approval** right on its card. It then shows **Awaiting approval** to anyone who can act on it — AND emails them, so the approver doesn't have to be watching the app. Tap **Approve** or **Request changes** (with a reason) straight from that same card, and the submitter gets an email back either way, note included on a Request changes.",
           "**Who approves what:** a chapter budget is approved by you (the Chapter Director); your Treasurer can also approve one if you were the one who submitted it — separation of duties always picks whoever ISN'T the requester, even a dual-hat holder acting on their own submission.",
           "**Central budgets are the mirror image:** approved by the Executive Director, or the Financial Manager if the ED submitted it.",
           "**Over the approved cap:** spending past what a budget allows raises a loud warning right on the card — it doesn't block the card yet.",
@@ -1439,8 +1449,8 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "bullets",
         items: [
           "**Draft** — the amount and line items are yours to edit freely. Nobody outside your own head has weighed in yet, and nothing you type here spends anything.",
-          "**Send for review** — a deliberate tap, never an autosave. The moment you send it, the budget is Awaiting approval and visible to whoever can act on it.",
-          "**Approve or Request changes** — the approver either clears it (Approved) or kicks it back with a reason (Changes requested), which reopens it for editing and a fresh send.",
+          "**Send for review** — a deliberate tap, never an autosave. The moment you send it, the budget is Awaiting approval, visible to whoever can act on it — and they get an email too, not just a badge in the app.",
+          "**Approve or Request changes** — the approver either clears it (Approved) or kicks it back with a reason (Changes requested), which reopens it for editing and a fresh send. Either decision emails the submitter back, so a Changes requested reason doesn't just sit waiting to be noticed.",
           "**Who approves what** — a chapter budget's approver is its Treasurer or Chapter Director; a central budget's is the Executive Director or Financial Manager.",
         ],
       },

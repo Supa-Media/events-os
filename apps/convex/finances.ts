@@ -1193,7 +1193,7 @@ function tagAllocationForDash(
  * that doesn't (or no longer) resolves, same rule `dashboardChapter`'s
  * `codedTo.refKind` already applies to the recent-transactions digest.
  */
-async function resolveBudgetRef(
+export async function resolveBudgetRef(
   b: Doc<"budgets">,
   getEvent: (id: Id<"events">) => Promise<Doc<"events"> | null>,
   getProject: (id: Id<"projects">) => Promise<Doc<"projects"> | null>,
@@ -1996,8 +1996,9 @@ function monthEquivalentBudgetCents(
   }
 }
 
-/** A tiny read-through name cache for a table's display name. */
-function nameCache<
+/** A tiny read-through name cache for a table's display name. Exported for
+ *  `budgetDecisionEmails.ts`'s own `resolveBudgetRef` call. */
+export function nameCache<
   T extends
     | "events"
     | "projects"
@@ -5126,6 +5127,14 @@ export const updateBudget = mutation({
 //     director's seat can't widen central approval.
 // Either scope: approver ≠ submitter (identity, not role) — a dual-hat holder
 // who submitted as one seat cannot approve their own submission as the other.
+//
+// Notifications (founder feedback review): `submitBudgetForApproval` emails
+// the scope's approvers (`notifyBudgetApprovers`, below); `approveBudget`/
+// `requestBudgetChanges` each email the SUBMITTER back
+// (`budgetDecisionEmails.ts#notifyBudgetSubmitter`), including the reviewer's
+// `reviewNote` on a changes-requested decision. Both directions are
+// best-effort, scheduled Resend sends — never awaited inline, never block
+// the mutation.
 
 /** Assert a budget's EFFECTIVE approval status permits `action`. */
 function assertBudgetTransition(
@@ -5409,6 +5418,12 @@ export const approveBudget = mutation({
       party: approvalParty,
       note,
     });
+    // Notify the submitter back — best-effort email (never awaited inline; a
+    // mutation can't call Resend itself). See `budgetDecisionEmails.ts`'s
+    // module doc for why this lives in its own file instead of here.
+    await ctx.scheduler.runAfter(0, internal.budgetDecisionEmails.notifyBudgetSubmitter, {
+      budgetId,
+    });
     return null;
   },
 });
@@ -5444,6 +5459,13 @@ export const requestBudgetChanges = mutation({
     await logBudgetDecision(ctx, budgetId, "changes_requested", callerPersonId, {
       party: "two_party",
       note,
+    });
+    // Notify the submitter back — best-effort email, including the `note`
+    // (the "why" on a changes-requested decision). See
+    // `budgetDecisionEmails.ts`'s module doc for why this lives in its own
+    // file instead of here.
+    await ctx.scheduler.runAfter(0, internal.budgetDecisionEmails.notifyBudgetSubmitter, {
+      budgetId,
     });
     return null;
   },
@@ -7283,7 +7305,17 @@ export const listReconcile = query({
     // conflict since `chapterId` is only consulted in the `else` branch).
     chapterId: v.optional(v.id("chapters")),
   },
-  returns: v.object({ rows: v.array(reconcileRow), counts: reconcileCounts }),
+  returns: v.object({
+    rows: v.array(reconcileRow),
+    counts: reconcileCounts,
+    // The caller's OWN roster person id (home-chapter scoped, `null` for a
+    // superuser with no roster row) — founder feedback review: lets the grid
+    // widen "Mark personal" to a cardholder viewing their OWN charge, not
+    // just a manager (`cards.flagPersonalCharge` already allows either
+    // server-side; the UI just didn't offer it here). Resolved ONCE per
+    // query rather than per row since it never varies row to row.
+    viewerPersonId: v.union(v.id("people"), v.null()),
+  }),
   handler: async (ctx, args) => {
     const filter = args.filter ?? "all";
     const zero = {
@@ -7294,7 +7326,7 @@ export const listReconcile = query({
       ready: 0,
     };
     const homeChapterId = await readChapterId(ctx);
-    if (!homeChapterId) return { rows: [], counts: zero };
+    if (!homeChapterId) return { rows: [], counts: zero, viewerPersonId: null };
     // Resolve the reconcile scope: central (org-wide reach), a DIFFERENT
     // chapter via central drill-down, or the caller's own chapter (viewer).
     // Central-owned txns key on the `"central"` sentinel.
@@ -7401,7 +7433,13 @@ export const listReconcile = query({
         repaymentStatus: await resolveRepaymentStatus(tr),
       });
     }
-    return { rows, counts };
+    // Resolved off the caller's HOME chapter (not `scope`, which can be a
+    // central/peeked chapter the caller may not have a roster row in) — the
+    // grid compares this against each row's `cardholder.personId` to decide
+    // "is this MY charge," which is unaffected by which chapter's queue is
+    // currently on screen. `null` for a superuser with no roster row at all.
+    const viewer = await viewerPerson(ctx, homeChapterId);
+    return { rows, counts, viewerPersonId: viewer?._id ?? null };
   },
 });
 
