@@ -70,6 +70,7 @@ import {
   reimbursementSubmitAttempts,
   cardDetailsRevealAttempts,
   financeSettings,
+  inboundReceipts,
 } from "./schema/finances";
 import {
   donors,
@@ -251,6 +252,8 @@ const schema = defineSchema({
   // WP-C.3: rate limiter for the HOLDER-ONLY card-details reveal (add-to-wallet).
   cardDetailsRevealAttempts,
   financeSettings,
+  // Inbound email → OCR → reconcile pipeline (receipt backfill). See receiptInbox.ts.
+  inboundReceipts,
 
   // Backer milestone ladder (giving-platform PRD §3) — dev-director-editable
   // "N backers → chapter commits to X" rungs. Global-only for now; seeded

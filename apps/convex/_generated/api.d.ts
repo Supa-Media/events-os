@@ -153,6 +153,7 @@ import type * as places from "../places.js";
 import type * as profiles from "../profiles.js";
 import type * as projectActions from "../projectActions.js";
 import type * as projects from "../projects.js";
+import type * as receiptInbox from "../receiptInbox.js";
 import type * as reconcileSuggest from "../reconcileSuggest.js";
 import type * as reimbursementBackfill from "../reimbursementBackfill.js";
 import type * as reimbursements from "../reimbursements.js";
@@ -368,6 +369,7 @@ declare const fullApi: ApiFromModules<{
   profiles: typeof profiles;
   projectActions: typeof projectActions;
   projects: typeof projects;
+  receiptInbox: typeof receiptInbox;
   reconcileSuggest: typeof reconcileSuggest;
   reimbursementBackfill: typeof reimbursementBackfill;
   reimbursements: typeof reimbursements;
