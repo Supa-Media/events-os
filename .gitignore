@@ -43,4 +43,6 @@ Thumbs.db
 .claude/*
 # ...except the committed permission allowlist the cloud-setup script applies
 !.claude/settings.json
+# ...and shared repo skills, which agents self-improve across runs
+!.claude/skills/
 .agents/
