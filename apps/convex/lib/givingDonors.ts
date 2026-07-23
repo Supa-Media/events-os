@@ -15,6 +15,7 @@ import { normalizeEmail } from "./access";
 import type { GivingScope } from "./givingAccess";
 import { territoryForChapter } from "../territories";
 import { chapterRoster } from "./org";
+import { syncDonorIdentity } from "./donorIdentity";
 
 /** The 90-day lapse window (the AJ donor system's rule, PRD §1). */
 export const LAPSE_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
@@ -362,7 +363,13 @@ export async function matchOrCreateDonor(
     phone,
     name,
   });
-  if (existing) return existing._id;
+  if (existing) {
+    // Cross-chapter identity layer: keep the existing donor attached to its
+    // identity (attaches it lazily if it predates the layer / the backfill).
+    // Additive — never touches the donor's own per-scope rollups.
+    await syncDonorIdentity(ctx, existing._id);
+    return existing._id;
+  }
 
   const now = Date.now();
   const donorId = await ctx.db.insert("donors", {
@@ -386,6 +393,11 @@ export async function matchOrCreateDonor(
     const inserted = await ctx.db.get(donorId);
     if (inserted) await linkDonorToPerson(ctx, inserted);
   }
+  // Cross-chapter identity layer: attach the brand-new donor to its identity
+  // (creating the identity if this is the first row for the person), adding this
+  // scope to the identity's `scopes`. Done after the person-link so the fresh
+  // donor doc is read inside `syncDonorIdentity`.
+  await syncDonorIdentity(ctx, donorId);
   return donorId;
 }
 
@@ -494,6 +506,10 @@ export async function recordGiftForDonor(
     giftDelta: 1,
   });
   await recomputeDonorStatus(ctx, donor, { giftCount, lastGiftAt });
+  // Cross-chapter identity layer: the donor's lifetime/count/lastGift just
+  // moved, so refresh its identity's recomputed aggregate. Additive — the
+  // donor's own rollups above are untouched.
+  await syncDonorIdentity(ctx, args.donorId);
 
   // Territories launch pot: a gift landing on a pre-launch territory's chapter
   // accrues 100% to that territory's `launchFundCents`. `applyLaunchFundDelta`
@@ -570,6 +586,9 @@ export async function removeGiftRow(
     giftDelta: -1,
   });
   await recomputeDonorStatus(ctx, donor, { giftCount, lastGiftAt });
+  // Cross-chapter identity layer: the donor's aggregate just shrank — refresh
+  // its identity's recomputed totals to match.
+  await syncDonorIdentity(ctx, donor._id);
 
   // Territories launch pot: reverse ONLY a gift that was actually counted into
   // its territory's pot (`countedInLaunchFund`). `applyLaunchFundDelta` no-ops
@@ -766,6 +785,13 @@ export async function editGiftRow(
       lastGiftAt: donorPatch.lastGiftAt,
     });
   }
+
+  // Cross-chapter identity layer: a money-field edit (amount or date) moved the
+  // donor's lifetime / lastGift — refresh its identity aggregate. Note/receipt/
+  // method-only edits don't touch the aggregate, so they skip this.
+  if (amountChanging || receivedAtChanging) {
+    await syncDonorIdentity(ctx, donor._id);
+  }
 }
 
 /**
@@ -801,6 +827,10 @@ async function recomputeDonorAfterGiftLeft(
     firstGiftAt: oldest?.receivedAt,
   });
   await recomputeDonorStatus(ctx, donor, { giftCount, lastGiftAt });
+  // Cross-chapter identity layer: this donor lost a gift (reassigned/moved) —
+  // refresh its identity aggregate (a scope may drop out if this was the
+  // donor's only tie, once the row's own totals recompute).
+  await syncDonorIdentity(ctx, donor._id);
 }
 
 /**
@@ -829,6 +859,9 @@ async function applyGiftToDonor(
     firstGiftAt,
   });
   await recomputeDonorStatus(ctx, donor, { giftCount, lastGiftAt });
+  // Cross-chapter identity layer: this donor gained a gift (reassigned/moved
+  // in) — refresh its identity aggregate + `scopes`.
+  await syncDonorIdentity(ctx, donor._id);
 }
 
 /**

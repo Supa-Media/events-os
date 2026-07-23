@@ -52,6 +52,7 @@ import {
   isSystemWrittenGift,
   bumpEventExternalGifts,
 } from "./lib/givingDonors";
+import { syncDonorIdentity } from "./lib/donorIdentity";
 import {
   writeGiftAudit,
   auditCents,
@@ -1037,6 +1038,79 @@ export const listOrgDonorsByIdentity = query({
 });
 
 /**
+ * ORG-WIDE donors grouped by the PERSISTENT cross-chapter IDENTITY layer
+ * (donor-identity, 2026-07) — the same "one underlying person across books"
+ * roll-up as `listOrgDonorsByIdentity`, but read from the stored
+ * `donorIdentities` table instead of grouped in memory at read time. Central
+ * reach only (`requireGivingView(ctx, "central")`) — chapter separation is
+ * preserved: a chapter-only caller never reaches this org-wide view and stays
+ * on the per-scope `listDonors`.
+ *
+ * Reads the strongest-lifetime identities (`by_lifetime` desc, bounded), then
+ * for each resolves its underlying per-scope `donors` rows (`by_identity`,
+ * bounded) into a per-book breakdown — so the UI can show ONE person with the
+ * chapters they're part of AND drill into each scope's own row. The identity's
+ * denormalized aggregate is authoritative for the headline totals; each row's
+ * own per-scope rollup is surfaced untouched in the breakdown.
+ */
+export const listDonorIdentities = query({
+  args: {},
+  handler: async (ctx) => {
+    await requireGivingView(ctx, "central");
+    const chapterNames = new Map<string, string>();
+    for (const c of await listActiveChapters(ctx, FLEET_CHAPTER_LIMIT)) {
+      chapterNames.set(c._id, c.name);
+    }
+
+    const identities = await ctx.db
+      .query("donorIdentities")
+      .withIndex("by_lifetime")
+      .order("desc")
+      .take(ORG_DONORS_LIMIT);
+
+    const donors = await Promise.all(
+      identities.map(async (identity) => {
+        const rows = await ctx.db
+          .query("donors")
+          .withIndex("by_identity", (q) => q.eq("identityId", identity._id))
+          .take(ORG_DONORS_PER_SCOPE);
+        const books = await Promise.all(
+          rows
+            .slice()
+            .sort((a, b) => b.lifetimeCents - a.lifetimeCents)
+            .map(async (d) => ({
+              donorId: d._id,
+              scope: d.scope,
+              bookLabel: await bookLabel(ctx, d.scope, chapterNames),
+              lifetimeCents: d.lifetimeCents,
+              giftCount: d.giftCount,
+              status: d.status,
+            })),
+        );
+        return {
+          identityId: identity._id,
+          key: identity.key,
+          name: identity.name,
+          email: identity.email ?? null,
+          lifetimeCents: identity.lifetimeCents,
+          giftCount: identity.giftCount,
+          lastGiftAt: identity.lastGiftAt ?? null,
+          // The distinct books this person is part of / has given to — the
+          // labels for the "what chapters" cell (order matches the stored set).
+          scopeLabels: await Promise.all(
+            identity.scopes.map((s) => bookLabel(ctx, s as GivingScope, chapterNames)),
+          ),
+          bookCount: books.length,
+          books,
+        };
+      }),
+    );
+
+    return { donors };
+  },
+});
+
+/**
  * Preview a manual donor merge (owner request #5) — "what will move" before
  * `dataHygiene.mergeDonors` runs. Both donors must be in `scope` (manage-gated).
  * Reports the duplicate's gift/pledge/sponsorship counts + lifetime that will
@@ -1166,6 +1240,11 @@ export const upsertDonor = mutation({
         });
       }
       await ctx.db.patch(args.donorId, patch);
+      // Cross-chapter identity layer: a name/email/phone edit may re-key this
+      // donor onto a different identity (email is the primary key) — re-attach
+      // + refresh the old and new identity aggregates. Additive; per-scope
+      // rollups are untouched.
+      await syncDonorIdentity(ctx, args.donorId);
       // Owner feedback #4: narrate a name/email/phone change on the donor audit
       // trail (the identity fields — never the address/notes churn). `patch`
       // only carries fields the caller sent, so an untouched field's "after" is
@@ -1223,6 +1302,11 @@ export const upsertDonor = mutation({
       ownerPersonId: args.ownerPersonId,
     });
     await ctx.db.patch(donorId, patch);
+    // Cross-chapter identity layer: `matchOrCreateDonor` already attached the
+    // identity from the match keys, but the explicit `patch` above may have set
+    // a name/email/phone the match step didn't have — re-sync so the identity
+    // key + aggregate reflect the final donor fields.
+    await syncDonorIdentity(ctx, donorId);
     // `matchOrCreateDonor` already tried to link a BRAND-NEW donor (email,
     // phone, and name all considered — `phone` is passed through above so it
     // participates in that first match). This is a belt-and-suspenders retry
@@ -1289,6 +1373,11 @@ export const setDonorPerson = mutation({
       }
       if (donor.personId === personId) return null; // already linked here
       await ctx.db.patch(donorId, { personId });
+      // Cross-chapter identity layer: `personId` is a linking signal, NOT the
+      // identity key (email is), so the grouping is unchanged — but ensure the
+      // donor is attached to its identity (attaches lazily if it predates the
+      // layer) so a person-link never leaves an identity stale.
+      await syncDonorIdentity(ctx, donorId);
       await writeDonorAudit(ctx, {
         donorId,
         scope: donor.scope,

@@ -201,6 +201,18 @@ export const donors = defineTable({
   lastGiftAt: v.optional(v.number()),
   firstGiftAt: v.optional(v.number()),
   createdAt: v.number(),
+  // Cross-chapter IDENTITY layer (donor-identity, 2026-07): the `donorIdentities`
+  // row that represents this scope-partitioned donor's UNDERLYING PERSON across
+  // books. ADDITIVE — this row's own per-scope rollups (`lifetimeCents`/
+  // `giftCount`) are NEVER changed by the identity layer; the identity only
+  // GROUPS rows and keeps its OWN aggregate. Attached-or-created on every donor
+  // write (`matchOrCreateDonor`, `upsertDonor`) and kept in sync when a gift
+  // lands/leaves or the donor is edited (`lib/donorIdentity.ts`). Optional
+  // because it's populated lazily on write + by `donorIdentityBackfill.ts` for
+  // pre-existing rows. Grouping key is normalized email (primary), else phone,
+  // else exact normalized name — the same person-across-books rule
+  // `listOrgDonorsByIdentity` reads at query time, now persisted.
+  identityId: v.optional(v.id("donorIdentities")),
 })
   .index("by_scope", ["scope"])
   .index("by_scope_and_status", ["scope", "status"])
@@ -213,7 +225,63 @@ export const donors = defineTable({
   .index("by_email", ["email"])
   // Phone fallback for `linkDonorToPerson`'s people-roster match (territories
   // P5) — a scoped exact-phone lookup alongside the email/name indexes above.
-  .index("by_scope_and_phone", ["scope", "phone"]);
+  .index("by_scope_and_phone", ["scope", "phone"])
+  // Cross-chapter identity layer: every scope row that belongs to one underlying
+  // person, for the identity's aggregate recompute + the drill-in per-book list.
+  .index("by_identity", ["identityId"]);
+
+/**
+ * A cross-chapter donor IDENTITY (donor-identity, 2026-07) — the ONE underlying
+ * person behind the scope-partitioned `donors` rows. The giving book is
+ * per-`(scope, person)` (a giver to central AND New York is two `donors` rows,
+ * on purpose, so chapters keep their donors separate). This layer sits OVER
+ * those rows: a donor who gives to everyone shows up as one identity carrying
+ * the `scopes` they're part of, WITHOUT collapsing the underlying rows or
+ * touching their per-scope money rollups.
+ *
+ * Grouping key (`key`, the `by_key` dedup index): normalized email (primary),
+ * else exact phone, else exact normalized name — the person-across-books rule
+ * `givingPlatform.listOrgDonorsByIdentity` computes at read time, now PERSISTED
+ * and maintained on write. (That read-time query keys `personId` first, but a
+ * `personId` is a per-chapter roster row that can never be shared across two
+ * scope-partitioned donors, so email is what actually groups cross-book — and
+ * is the donors table's own documented "primary key". `personId` stays a
+ * linking signal, not the stored identity key.)
+ *
+ * Denormalized aggregates (`lifetimeCents`/`giftCount`/`lastGiftAt`) are the
+ * SUM/MAX across the identity's `donors` rows, RECOMPUTED from those rows on
+ * every relevant write (never a blind bump — one donor per scope makes the
+ * recompute a small bounded read, so it can't drift). `scopes` is the distinct
+ * set of books this identity's rows belong to — the "field for what chapters"
+ * a giver is part of / has given to. An identity with no remaining rows is
+ * garbage-collected (this layer is additive scaffolding, safe to delete — never
+ * money data).
+ */
+export const donorIdentities = defineTable({
+  // The grouping key: "e:<normalized email>" | "p:<trimmed phone>" |
+  // "n:<normalized name>" (see `lib/donorIdentity.ts#donorIdentityKey`).
+  key: v.string(),
+  // Normalized-lowercase email — present iff the key is email-derived (the
+  // primary/stable key). Kept for display + `by_email` lookup.
+  email: v.optional(v.string()),
+  // Display name (from the strongest-lifetime attached donor row).
+  name: v.string(),
+  phone: v.optional(v.string()),
+  // Aggregates across the identity's `donors` rows (recomputed, never blind-bumped).
+  lifetimeCents: v.number(),
+  giftCount: v.number(),
+  lastGiftAt: v.optional(v.number()),
+  // The books this identity is part of / has given to — the distinct set of its
+  // donor rows' scopes. This is the cross-chapter "what chapters" field.
+  scopes: v.array(givingScope),
+  createdAt: v.number(),
+})
+  // Dedup + attach lookup: at most one identity per grouping key.
+  .index("by_key", ["key"])
+  // Email lookup (display / future cross-surface reconciliation).
+  .index("by_email", ["email"])
+  // "Biggest underlying donors" ordering for the identity-grouped org view.
+  .index("by_lifetime", ["lifetimeCents"]);
 
 /**
  * One gift — a single dollar-amount received, ever, from any source. The unit

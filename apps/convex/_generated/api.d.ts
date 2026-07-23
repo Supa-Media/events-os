@@ -27,6 +27,7 @@ import type * as dashboardCharts from "../dashboardCharts.js";
 import type * as dashboardDrill from "../dashboardDrill.js";
 import type * as dataHygiene from "../dataHygiene.js";
 import type * as docs from "../docs.js";
+import type * as donorIdentityBackfill from "../donorIdentityBackfill.js";
 import type * as engagements from "../engagements.js";
 import type * as eventAttendanceImport from "../eventAttendanceImport.js";
 import type * as eventTypes from "../eventTypes.js";
@@ -241,6 +242,7 @@ declare const fullApi: ApiFromModules<{
   dashboardDrill: typeof dashboardDrill;
   dataHygiene: typeof dataHygiene;
   docs: typeof docs;
+  donorIdentityBackfill: typeof donorIdentityBackfill;
   engagements: typeof engagements;
   eventAttendanceImport: typeof eventAttendanceImport;
   eventTypes: typeof eventTypes;
