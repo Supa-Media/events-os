@@ -21,7 +21,7 @@ import { v } from "convex/values";
 import { ConvexError } from "convex/values";
 import { Id } from "./_generated/dataModel";
 import { requireUserId, getChapterIdOrNull } from "./lib/context";
-import { getFinanceRole, requireCentralEdOrFm } from "./lib/finance";
+import { getFinanceRole, requireCentralEdOrFm, isCentralEdOrFm } from "./lib/finance";
 import { requireSuperuser } from "./lib/superuser";
 
 /** Read the deployment-wide sandbox flag (default false). Shared by the public
@@ -143,15 +143,27 @@ export const getFinancePolicy = query({
     noReceiptAutoConvertDays: number | null;
     cardPrerequisiteCourseSlug: string | null;
   }> => {
-    const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
     const inert = { noReceiptAutoConvertDays: null, cardPrerequisiteCourseSlug: null };
-    if (!chapterId) return inert;
-    const access = await getFinanceRole(ctx, chapterId);
-    if (access.role == null) return inert;
-    return {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) return inert;
+    const real = async () => ({
       noReceiptAutoConvertDays: await readNoReceiptAutoConvertDays(ctx),
       cardPrerequisiteCourseSlug: await readCardPrerequisiteCourseSlug(ctx),
-    };
+    });
+    // Any chapter finance-role holder may read it, AND so may a central ED/FM —
+    // the latter is exactly who owns these levers (they set them on the
+    // central-only Accounts screen) but may hold no chapter finance role, so
+    // the chapter-role gate alone would show them a blank policy (the write
+    // gate is `requireCentralEdOrFm`). A no-role persona still gets the inert
+    // default rather than a throw (an unconditionally-mounted, role-gated query
+    // must degrade, not crash the render — the getFinanceSettings precedent).
+    const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
+    if (chapterId) {
+      const access = await getFinanceRole(ctx, chapterId);
+      if (access.role != null) return real();
+    }
+    if (await isCentralEdOrFm(ctx)) return real();
+    return inert;
   },
 });
 
