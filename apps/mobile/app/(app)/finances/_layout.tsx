@@ -13,7 +13,7 @@ import { SandboxModeBanner } from "../../../components/finance/SandboxModeBanner
  *
  * The tab SET itself branches on the caller's REAL finance seats
  * (`financeRoles.mySeats`, WP-0.2): a seat holder gets the manager tab bar
- * (Dashboard · Reconcile · Cards · Reimbursements) — the desk each of those
+ * (Dashboard · Reconcile · Receipts · Cards · Reimbursements) — the desk each of those
  * renders (central / chapter) still resolves INSIDE the screen. A caller with
  * NO finance seat (the member/cardholder case, D3) gets the reduced member
  * set instead — My Card · My Transactions · Reimbursements — so they never
@@ -41,6 +41,7 @@ const BUDGETS_TAB = { label: "Budgets", path: "/finances/budgets" };
 const SEAT_TABS: { label: string; path: string }[] = [
   { label: "Dashboard", path: "/finances" },
   { label: "Reconcile", path: "/finances/reconcile" },
+  { label: "Receipts", path: "/finances/receipts" },
   BUDGETS_TAB,
   { label: "Cards", path: "/finances/cards" },
   { label: "Reimbursements", path: "/finances/reimbursements" },
