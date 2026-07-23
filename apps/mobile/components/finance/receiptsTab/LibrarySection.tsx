@@ -123,6 +123,11 @@ function ReceiptCard({
         <Text className="text-2xs text-faint" numberOfLines={1}>
           {receipt.receiptDate != null ? formatDate(receipt.receiptDate) : formatDate(receipt.createdAt)}
         </Text>
+        {receipt.filename ? (
+          <Text className="text-2xs text-faint" numberOfLines={1}>
+            {receipt.filename}
+          </Text>
+        ) : null}
         <View className="flex-row flex-wrap items-center gap-1 pt-0.5">
           <Badge label={senderClassLabel(receipt.senderClass)} tone={senderClassTone(receipt.senderClass)} />
           <Badge label={SOURCE_LABEL[receipt.source]} tone="neutral" />
@@ -131,6 +136,8 @@ function ReceiptCard({
           <Text className="text-2xs font-semibold text-success">
             {receipt.linkCount} {receipt.linkCount === 1 ? "link" : "links"}
           </Text>
+        ) : receipt.ocrError ? (
+          <Badge label="Extraction failed" tone="danger" icon="alert-triangle" />
         ) : (
           <Text className="text-2xs text-faint">Unmatched</Text>
         )}

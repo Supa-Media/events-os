@@ -71,6 +71,7 @@ export function UploadZone({
         for (const batch of chunk(uploaded, MAX_UPLOAD_BATCH)) {
           const results = await submitUploadedReceipts({
             storageIds: batch.map((b) => b.storageId),
+            filenames: batch.map((b) => b.name),
           });
           for (const r of results) {
             const name = batch.find((b) => b.storageId === r.storageId)?.name ?? "Receipt";

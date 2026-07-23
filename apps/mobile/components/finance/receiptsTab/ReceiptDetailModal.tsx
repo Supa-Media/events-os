@@ -58,6 +58,7 @@ export function ReceiptDetailModal({
   const updateFields = useMutation(api.receipts.updateReceiptFields);
   const linkReceipt = useMutation(api.receipts.linkReceipt);
   const unlinkReceipt = useMutation(api.receipts.unlinkReceipt);
+  const retryExtraction = useMutation(api.receipts.retryExtraction);
 
   const [amountText, setAmountText] = useState("");
   const [date, setDate] = useState<number | null>(null);
@@ -67,6 +68,9 @@ export function ReceiptDetailModal({
   const [saving, setSaving] = useState(false);
   const [imgFailed, setImgFailed] = useState(false);
   const [showCalendar, setShowCalendar] = useState(false);
+  const [retrying, setRetrying] = useState(false);
+  const [showModelInput, setShowModelInput] = useState(false);
+  const [modelOverride, setModelOverride] = useState("");
 
   // Seed local edit state once per receipt (never stomps an in-progress edit
   // on a background live-query refresh of the SAME receipt).
@@ -119,6 +123,19 @@ export function ReceiptDetailModal({
     void run(() => linkReceipt({ receiptId, transactionId }), {
       errorTitle: "Couldn't link receipt",
     });
+  }
+
+  async function handleRetry() {
+    setRetrying(true);
+    await run(
+      () =>
+        retryExtraction({
+          receiptId,
+          model: modelOverride.trim() ? modelOverride.trim() : undefined,
+        }),
+      { errorTitle: "Couldn't retry extraction" },
+    );
+    setRetrying(false);
   }
 
   const correctedByName = receipt?.correctedByPersonId
@@ -176,13 +193,16 @@ export function ReceiptDetailModal({
                   )}
                 </View>
 
-                <View className="mb-3 flex-row flex-wrap items-center gap-1.5">
+                <View className="mb-1 flex-row flex-wrap items-center gap-1.5">
                   <Badge label={senderClassLabel(receipt.senderClass)} tone={senderClassTone(receipt.senderClass)} />
                   <Badge label={receipt.source === "email" ? "Emailed" : "Uploaded"} tone="neutral" />
                   {receipt.softDuplicate && !receipt.duplicateOfReceiptId ? (
                     <Badge label="Possible duplicate" tone="warn" icon="alert-triangle" />
                   ) : null}
                 </View>
+                <Text className="mb-3 text-2xs text-faint" numberOfLines={1}>
+                  {receipt.filename ?? "Unknown source"}
+                </Text>
 
                 {/* Duplicate-of callout */}
                 {receipt.duplicateOf ? (
@@ -263,17 +283,53 @@ export function ReceiptDetailModal({
                   numberOfLines={2}
                 />
 
-                <Text className="mb-1 -mt-1 text-2xs text-faint">
-                  OCR read: {receipt.ocrAmountCents != null ? formatCents(receipt.ocrAmountCents) : "—"} ·{" "}
-                  {receipt.ocrDate != null ? formatDate(receipt.ocrDate) : "—"} ·{" "}
-                  {receipt.ocrMerchant ?? "—"}
-                </Text>
+                {receipt.ocrError ? (
+                  <View className="mb-2 -mt-1 flex-row items-start gap-2 rounded-md border border-danger bg-danger-bg px-3 py-2">
+                    <Icon name="alert-triangle" size={14} color={colors.danger} />
+                    <Text className="flex-1 text-xs text-danger">{receipt.ocrError}</Text>
+                  </View>
+                ) : (
+                  <Text className="mb-1 -mt-1 text-2xs text-faint">
+                    OCR read: {receipt.ocrAmountCents != null ? formatCents(receipt.ocrAmountCents) : "—"} ·{" "}
+                    {receipt.ocrDate != null ? formatDate(receipt.ocrDate) : "—"} ·{" "}
+                    {receipt.ocrMerchant ?? "—"}
+                  </Text>
+                )}
                 {correctedByName ? (
-                  <Text className="mb-3 text-2xs text-faint">
+                  <Text className="mb-2 text-2xs text-faint">
                     Corrected by {correctedByName}
                     {receipt.correctedAt ? ` · ${formatDate(receipt.correctedAt)}` : ""}
                   </Text>
                 ) : null}
+
+                {/* Retry extraction — re-runs OCR/PDF-text routing on the same
+                    stored file. Never auto-attaches (see `receipts.retryExtraction`'s
+                    doc) — the refreshed candidates below are for a human to pick. */}
+                <View className="mb-4 gap-1.5">
+                  <View className="flex-row flex-wrap items-center gap-2">
+                    <Button
+                      title="Retry extraction"
+                      variant="secondary"
+                      size="sm"
+                      icon="refresh-cw"
+                      loading={retrying}
+                      onPress={() => void handleRetry()}
+                    />
+                    <Pressable onPress={() => setShowModelInput((v) => !v)} hitSlop={6}>
+                      <Text className="text-2xs font-semibold text-muted">
+                        {showModelInput ? "Hide model override" : "Model override…"}
+                      </Text>
+                    </Pressable>
+                  </View>
+                  {showModelInput ? (
+                    <TextField
+                      label="Model (advanced)"
+                      value={modelOverride}
+                      onChangeText={setModelOverride}
+                      placeholder="Defaults to the configured model"
+                    />
+                  ) : null}
+                </View>
 
                 <Button
                   title="Save changes"

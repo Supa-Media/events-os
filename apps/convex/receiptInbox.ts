@@ -426,11 +426,13 @@ export const findReceiptMatches = internalQuery({
 const extractedReceiptValidator = v.object({
   storageId: v.id("_storage"),
   sourceKind: v.union(v.literal("attachment"), v.literal("body")),
+  filename: v.optional(v.string()),
   ocrAmountCents: v.optional(v.number()),
   ocrDate: v.optional(v.number()),
   ocrMerchant: v.optional(v.string()),
   ocrConfidence: v.optional(v.number()),
   ocrModel: v.optional(v.string()),
+  ocrError: v.optional(v.string()),
   candidateTransactionIds: v.array(v.id("transactions")),
 });
 
@@ -453,6 +455,10 @@ export const commitInboundReceipts = internalMutation({
     personId: v.optional(v.id("people")),
     chapterId: v.optional(v.id("chapters")),
     senderClass: senderClassValidator,
+    // Attachments the inline-asset filter dropped before extraction ever ran
+    // (a logo, a signature, a tracking pixel) — appended to the row's
+    // `detail` so they never just silently vanish. See `isLikelyInlineAsset`.
+    skippedAttachmentNames: v.optional(v.array(v.string())),
     extracted: v.array(extractedReceiptValidator),
   },
   returns: v.object({
@@ -494,11 +500,13 @@ export const commitInboundReceipts = internalMutation({
         source: "email",
         inboundReceiptId: args.receiptId,
         senderClass: args.senderClass,
+        filename: ex.filename,
         ocrAmountCents: ex.ocrAmountCents,
         ocrDate: ex.ocrDate,
         ocrMerchant: ex.ocrMerchant,
         ocrConfidence: ex.ocrConfidence,
         ocrModel: ex.ocrModel,
+        ocrError: ex.ocrError,
         candidateTransactionIds: ex.candidateTransactionIds.length
           ? ex.candidateTransactionIds
           : undefined,
@@ -622,7 +630,7 @@ export const commitInboundReceipts = internalMutation({
         : {}),
       ...(firstMatchedTxn ? { matchedTransactionId: firstMatchedTxn } : {}),
       status,
-      detail,
+      detail: appendSkippedNote(detail, args.skippedAttachmentNames ?? []),
       updatedAt: Date.now(),
     });
 
@@ -746,6 +754,39 @@ export function parseReceiptFromText(body: string): {
   return { amountCents, date, merchant: null };
 }
 
+/** Provenance marker stored in `ocrModel` for a receipt whose fields came
+ *  from a PDF's own text layer (`receiptPdf.ts`) rather than a model call —
+ *  zero-LLM, so distinct from an actual vision-model slug. */
+export const PDF_TEXT_LAYER_PROVENANCE = "pdf-text-layer";
+
+/** True iff `contentType`/`filename` name a PDF. Checked both ways: Resend's
+ *  `content_type` is usually reliable, but a mislabelled attachment's `.pdf`
+ *  extension is a fallback signal (mirrors `isReceiptFile`'s own belt-and-
+ *  suspenders check). */
+export function isPdfContentType(contentType: string, filename?: string): boolean {
+  return (
+    contentType.toLowerCase() === "application/pdf" ||
+    /\.pdf$/i.test((filename ?? "").toLowerCase())
+  );
+}
+
+/**
+ * True iff a PDF's extracted text layer looks like real receipt text rather
+ * than emptiness/garbage — the signal that decides "digital PDF, parse it
+ * with zero LLM" vs "scanned PDF, fall back to vision OCR". Deliberately
+ * simple: a SCANNED pdf's text layer is either empty or a handful of stray
+ * control/whitespace characters pdf.js can't resolve to real glyphs; a
+ * genuine digital receipt (Givebutter, Stripe, Square…) always yields at
+ * least a few dozen real characters of prose/numbers with a normal
+ * letters+digits density. Exported for direct unit testing (no ctx needed).
+ */
+export function isMeaningfulPdfText(text: string): boolean {
+  const collapsed = text.replace(/\s+/g, " ").trim();
+  if (collapsed.length < 20) return false;
+  const alnum = (collapsed.match(/[a-zA-Z0-9]/g) ?? []).length;
+  return alnum / collapsed.length > 0.3;
+}
+
 /** Format cents as "$X.YZ" for reply copy / review detail. */
 function fmtUsd(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
@@ -768,22 +809,84 @@ interface ResendAttachment {
   download_url?: string;
 }
 
+// ── Inline-asset filter (the duplicate-receipt fix) ──────────────────────────
+/** Attachments smaller than this are CANDIDATES for the inline-asset filter
+ *  below — but size ALONE never disqualifies one (see `isLikelyInlineAsset`'s
+ *  doc). ~15KB: comfortably above a typical embedded logo/signature/tracking
+ *  pixel, comfortably below a real thermal-receipt or storefront photo — the
+ *  floor stays deliberately conservative so a legit small receipt photo is
+ *  never the one that gets dropped. */
+const INLINE_ASSET_SIZE_FLOOR_BYTES = 15 * 1024;
+/** Filename shapes common to embedded EMAIL assets — a company logo, an
+ *  email-signature graphic, a social/nav icon, a banner, a spacer gif, a
+ *  tracking pixel, or a generic `imageNNN` MIME part a mail client assigns an
+ *  inline image with no real name. Anchored so a merchant whose name merely
+ *  CONTAINS one of these words (rare, but possible) isn't punished by the
+ *  substring match alone — it also needs to be under the size floor. */
+const INLINE_ASSET_NAME_RE =
+  /logo|signature|\bsig\b|icon|banner|spacer|track(?:ing)?[-_ ]?pixel|^image[-_]?\d{2,4}\b/i;
+
+/**
+ * True iff an attachment is almost certainly an embedded EMAIL ASSET (a
+ * signature graphic, a company logo, a tracking pixel) rather than a photo or
+ * scan of a receipt — the fix for the duplicate-receipt bug: a forwarded
+ * receipt whose email signature carries a logo image must never mint a
+ * SECOND "receipt" for that logo. PDFs always pass (a digital receipt PDF is
+ * never an inline asset).
+ *
+ * Deliberately conservative — BOTH signals must agree:
+ *  - a small size (under `INLINE_ASSET_SIZE_FLOOR_BYTES`) — size alone never
+ *    disqualifies an attachment, since a legitimate small thermal-receipt
+ *    photo can easily be under that floor too, and
+ *  - an asset-shaped filename — a name alone never disqualifies one either
+ *    (an unusually-named real receipt photo shouldn't be dropped for a
+ *    coincidental substring match).
+ * When in doubt (missing size, no filename match, or an ambiguous name), the
+ * attachment is PROCESSED, never silently dropped.
+ */
+export function isLikelyInlineAsset(a: {
+  contentType: string;
+  filename: string;
+  size?: number;
+}): boolean {
+  if (isPdfContentType(a.contentType, a.filename)) return false;
+  if (a.size == null || a.size >= INLINE_ASSET_SIZE_FLOOR_BYTES) return false;
+  return INLINE_ASSET_NAME_RE.test(a.filename.toLowerCase());
+}
+
+/** Append a note about attachments the inline-asset filter skipped — so a
+ *  filtered-out logo/signature never just silently disappears (a bookkeeper
+ *  can see it was seen and why it wasn't treated as a receipt). No-op when
+ *  nothing was skipped. Bounded to the first 5 names inline, with a `+N more`
+ *  tail for a noisier email. */
+export function appendSkippedNote(detail: string, skippedNames: string[]): string {
+  if (skippedNames.length === 0) return detail;
+  const shown = skippedNames.slice(0, 5).join(", ");
+  const rest = skippedNames.length > 5 ? `, +${skippedNames.length - 5} more` : "";
+  return `${detail} (Skipped ${skippedNames.length} likely non-receipt attachment${
+    skippedNames.length === 1 ? "" : "s"
+  }: ${shown}${rest}.)`;
+}
+
 /**
  * List a received email's attachments via the Resend API
  * (`GET /emails/receiving/{emailId}/attachments`) and return EVERY one that
- * looks like a receipt image or PDF, downloaded as a Blob (bounded by
- * `MAX_ATTACHMENTS`). Each is OCR'd + matched independently. The `download_url`
- * is a short-lived signed CloudFront URL (no auth header needed for the download
- * itself; the LIST call needs the API key). Returns `[]` when there's no usable
- * attachment or the API key / network is unavailable.
+ * looks like a receipt image or PDF AND isn't almost-certainly an inline
+ * email asset (`isLikelyInlineAsset`), downloaded as a Blob (bounded by
+ * `MAX_ATTACHMENTS`). Each usable one is extracted + matched independently.
+ * The `download_url` is a short-lived signed CloudFront URL (no auth header
+ * needed for the download itself; the LIST call needs the API key). Returns
+ * no attachments (and no skips) when there's no usable attachment or the API
+ * key / network is unavailable.
  */
-async function fetchAllReceiptAttachments(
-  emailId: string,
-): Promise<{ blob: Blob; contentType: string; filename: string }[]> {
+async function fetchAllReceiptAttachments(emailId: string): Promise<{
+  attachments: { blob: Blob; contentType: string; filename: string }[];
+  skippedNames: string[];
+}> {
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) {
     console.log("[receiptInbox] RESEND_API_KEY unset — cannot fetch attachments.");
-    return [];
+    return { attachments: [], skippedNames: [] };
   }
   let list: ResendAttachment[];
   try {
@@ -793,13 +896,13 @@ async function fetchAllReceiptAttachments(
     );
     if (!res.ok) {
       console.log(`[receiptInbox] attachment list failed (${res.status}).`);
-      return [];
+      return { attachments: [], skippedNames: [] };
     }
     const json: any = await res.json();
     list = (Array.isArray(json) ? json : json?.data) ?? [];
   } catch (err) {
     console.log(`[receiptInbox] attachment list errored: ${String(err)}`);
-    return [];
+    return { attachments: [], skippedNames: [] };
   }
 
   const isReceiptFile = (a: ResendAttachment) => {
@@ -811,12 +914,21 @@ async function fetchAllReceiptAttachments(
       /\.(jpe?g|png|webp|heic|gif|pdf)$/.test(name)
     );
   };
-  const targets = list
-    .filter((a) => isReceiptFile(a) && a.download_url)
-    .slice(0, MAX_ATTACHMENTS);
+
+  const skippedNames: string[] = [];
+  const targets: ResendAttachment[] = [];
+  for (const a of list) {
+    if (!a.download_url || !isReceiptFile(a)) continue;
+    if (isLikelyInlineAsset({ contentType: a.content_type ?? "", filename: a.filename ?? "", size: a.size })) {
+      skippedNames.push(a.filename ?? a.id);
+      continue;
+    }
+    targets.push(a);
+  }
+  const bounded = targets.slice(0, MAX_ATTACHMENTS);
 
   const out: { blob: Blob; contentType: string; filename: string }[] = [];
-  for (const target of targets) {
+  for (const target of bounded) {
     try {
       const dl = await fetch(target.download_url!);
       if (!dl.ok) {
@@ -833,7 +945,7 @@ async function fetchAllReceiptAttachments(
       console.log(`[receiptInbox] attachment download errored: ${String(err)}`);
     }
   }
-  return out;
+  return { attachments: out, skippedNames };
 }
 
 /** Base64-encode an ArrayBuffer for a data: URL (chunked to avoid arg limits).
@@ -958,16 +1070,117 @@ function extractJson(s: string): any | null {
   return null;
 }
 
-// ── The pipeline action ──────────────────────────────────────────────────────
-/** One extracted receipt (a stored file + its OCR read), before matching. */
-interface ExtractedReceipt {
-  storageId: Id<"_storage">;
-  sourceKind: "attachment" | "body";
+// ── Extraction routing (PDF text layer → vision OCR fallback) ────────────────
+/** What one file's extraction attempt yielded — `ocrError` is always a
+ *  human-readable reason when `ocrAmountCents` came back empty (the fix for
+ *  "OCR read: — · — · —" with no explanation). */
+export interface OcrRoutingResult {
   ocrAmountCents?: number;
   ocrDate?: number;
   ocrMerchant?: string;
   ocrConfidence?: number;
   ocrModel?: string;
+  ocrError?: string;
+}
+
+/**
+ * Route ONE stored file through extraction: a PDF tries its own TEXT LAYER
+ * first (zero LLM — `receiptPdf.ts#extractPdfText`, an action→action call
+ * across the Node boundary) and only falls back to the vision model
+ * (`ocrReceiptImage`, untouched — see that function's own doc) when the PDF
+ * has no usable text layer (a scanned/faxed receipt); anything else (an
+ * image) goes straight to vision, exactly as before. Always resolves an
+ * `ocrError` when extraction produced no total — the point of this PR: a
+ * receipt detail that says WHY, not a silent "—".
+ *
+ * Shared by the email pipeline (`runPipeline`), the mass-upload pipeline
+ * (`receipts.ts#runUploadPipeline`), and `receipts.ts#retryExtraction` — ONE
+ * place decides "PDF text vs vision" so the three callers can't drift apart.
+ */
+export async function extractReceiptFields(
+  ctx: ActionCtx,
+  args: {
+    storageId: Id<"_storage">;
+    config: AiEngineConfig;
+    blob: Blob;
+    contentType: string;
+    filename?: string;
+    model: string;
+  },
+): Promise<OcrRoutingResult> {
+  const { storageId, config, blob, contentType, filename, model } = args;
+
+  if (isPdfContentType(contentType, filename)) {
+    const { text } = await ctx.runAction(internal.receiptPdf.extractPdfText, {
+      storageId,
+    });
+    if (isMeaningfulPdfText(text)) {
+      const parsed = parseReceiptFromText(text);
+      return {
+        ocrAmountCents: parsed.amountCents ?? undefined,
+        ocrDate: parsed.date ?? undefined,
+        ocrMerchant: parsed.merchant ?? undefined,
+        ocrConfidence: parsed.amountCents != null ? 0.7 : 0,
+        ocrModel: PDF_TEXT_LAYER_PROVENANCE,
+        ocrError:
+          parsed.amountCents == null
+            ? "Read the PDF's text but couldn't find a total on it."
+            : undefined,
+      };
+    }
+    // A SCANNED pdf — no usable text layer. Fall back to the vision model,
+    // same as before this PR.
+    const buf = await blob.arrayBuffer();
+    const dataUrl = `data:${contentType};base64,${arrayBufferToBase64(buf)}`;
+    const ocr = await ocrReceiptImage(config, dataUrl, model);
+    if (ocr?.amountCents != null) {
+      return {
+        ocrAmountCents: ocr.amountCents,
+        ocrDate: ocr.date ?? undefined,
+        ocrMerchant: ocr.merchant ?? undefined,
+        ocrConfidence: ocr.confidence ?? undefined,
+        ocrModel: model,
+      };
+    }
+    return {
+      ocrModel: model,
+      ocrError: "Scanned PDF — the vision model could not read a total off it.",
+    };
+  }
+
+  // An image (or anything else worth handing to the vision model).
+  const buf = await blob.arrayBuffer();
+  const dataUrl = `data:${contentType};base64,${arrayBufferToBase64(buf)}`;
+  const ocr = await ocrReceiptImage(config, dataUrl, model);
+  if (ocr?.amountCents != null) {
+    return {
+      ocrAmountCents: ocr.amountCents,
+      ocrDate: ocr.date ?? undefined,
+      ocrMerchant: ocr.merchant ?? undefined,
+      ocrConfidence: ocr.confidence ?? undefined,
+      ocrModel: model,
+    };
+  }
+  return {
+    ocrModel: model,
+    ocrError: process.env.OPENROUTER_API_KEY
+      ? "The vision model could not read a total off this receipt."
+      : "Vision OCR is not configured (no API key) — extraction was skipped.",
+  };
+}
+
+// ── The pipeline action ──────────────────────────────────────────────────────
+/** One extracted receipt (a stored file + its OCR read), before matching. */
+interface ExtractedReceipt {
+  storageId: Id<"_storage">;
+  sourceKind: "attachment" | "body";
+  filename?: string;
+  ocrAmountCents?: number;
+  ocrDate?: number;
+  ocrMerchant?: string;
+  ocrConfidence?: number;
+  ocrModel?: string;
+  ocrError?: string;
   candidateTransactionIds: Id<"transactions">[];
 }
 
@@ -1026,8 +1239,12 @@ async function runPipeline(
   });
   const isTrusted = receiptSenderCanAutoAttach(sender.senderClass);
 
-  // 2. Get receipt content: EVERY usable image/PDF attachment, else the body.
-  const attachments = await fetchAllReceiptAttachments(row.emailId);
+  // 2. Get receipt content: EVERY usable image/PDF attachment (skipping
+  //    almost-certainly-inline assets — logos, signatures, tracking pixels;
+  //    see `isLikelyInlineAsset`), else the body. A PDF attachment tries its
+  //    own text layer first (zero LLM) before ever reaching the vision model
+  //    — see `extractReceiptFields`.
+  const { attachments, skippedNames } = await fetchAllReceiptAttachments(row.emailId);
   const extracted: ExtractedReceipt[] = [];
 
   if (attachments.length > 0) {
@@ -1040,17 +1257,24 @@ async function runPipeline(
     const model = resolveOcrModel(config);
     for (const att of attachments) {
       const storageId = await ctx.storage.store(att.blob);
-      const buf = await att.blob.arrayBuffer();
-      const dataUrl = `data:${att.contentType};base64,${arrayBufferToBase64(buf)}`;
-      const ocr = await ocrReceiptImage(config, dataUrl, model);
+      const result = await extractReceiptFields(ctx, {
+        storageId,
+        config,
+        blob: att.blob,
+        contentType: att.contentType,
+        filename: att.filename,
+        model,
+      });
       extracted.push({
         storageId,
         sourceKind: "attachment",
-        ocrAmountCents: ocr?.amountCents ?? undefined,
-        ocrDate: ocr?.date ?? undefined,
-        ocrMerchant: ocr?.merchant ?? undefined,
-        ocrConfidence: ocr?.confidence ?? undefined,
-        ocrModel: model,
+        filename: att.filename,
+        ocrAmountCents: result.ocrAmountCents,
+        ocrDate: result.ocrDate,
+        ocrMerchant: result.ocrMerchant,
+        ocrConfidence: result.ocrConfidence,
+        ocrModel: result.ocrModel,
+        ocrError: result.ocrError,
         candidateTransactionIds: [],
       });
     }
@@ -1070,9 +1294,14 @@ async function runPipeline(
       extracted.push({
         storageId,
         sourceKind: "body",
+        filename: "email body",
         ocrAmountCents: parsed.amountCents ?? undefined,
         ocrDate: parsed.date ?? undefined,
         ocrConfidence: parsed.amountCents != null ? 0.5 : 0,
+        ocrError:
+          parsed.amountCents == null
+            ? "Couldn't find a total in the email body text."
+            : undefined,
         candidateTransactionIds: [],
       });
     }
@@ -1088,7 +1317,10 @@ async function runPipeline(
         senderClass: sender.senderClass,
         ...(sender.personId ? { personId: sender.personId } : {}),
         ...(sender.chapterId ? { chapterId: sender.chapterId } : {}),
-        detail: "No receipt image or readable body found in the email.",
+        detail: appendSkippedNote(
+          "No receipt image or readable body found in the email.",
+          skippedNames,
+        ),
       },
     });
     return null;
@@ -1123,14 +1355,17 @@ async function runPipeline(
       personId: sender.personId ?? undefined,
       chapterId: sender.chapterId ?? undefined,
       senderClass: sender.senderClass,
+      skippedAttachmentNames: skippedNames,
       extracted: extracted.map((ex) => ({
         storageId: ex.storageId,
         sourceKind: ex.sourceKind,
+        filename: ex.filename,
         ocrAmountCents: ex.ocrAmountCents,
         ocrDate: ex.ocrDate,
         ocrMerchant: ex.ocrMerchant,
         ocrConfidence: ex.ocrConfidence,
         ocrModel: ex.ocrModel,
+        ocrError: ex.ocrError,
         candidateTransactionIds: ex.candidateTransactionIds,
       })),
     },

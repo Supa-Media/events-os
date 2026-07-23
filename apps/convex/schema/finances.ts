@@ -1145,6 +1145,21 @@ export const receipts = defineTable({
   ocrMerchant: v.optional(v.string()),
   ocrConfidence: v.optional(v.number()),
   ocrModel: v.optional(v.string()),
+  // RECEIPT QUALITY PR: a human-readable reason extraction produced NOTHING —
+  // a model/network error, an unsupported file type, a scanned PDF with no
+  // text layer and an unreadable scan, an empty email body. Historically these
+  // failures only ever hit `console.log` and the receipt detail just showed
+  // blank OCR fields with no explanation (the "OCR read: — · — · —" bug).
+  // Cleared (patched to `undefined`) the moment a LATER extraction (a retry,
+  // or — for the upload path — the original pipeline run) succeeds, so a
+  // stale failure never lingers next to a fresh, successful read.
+  ocrError: v.optional(v.string()),
+  // The ORIGINAL attachment filename this receipt came from (e.g.
+  // "receipt.pdf"), or a synthetic label when there was no file name to carry
+  // — "email body" (the message text itself was the receipt) / "text
+  // message" (the SMS channel's body). Absent on legacy rows that predate
+  // this field. Purely descriptive — never used for routing.
+  filename: v.optional(v.string()),
 
   // Set by the (future) correction mutation when a human edits a canonical
   // field away from its OCR seed — audit of who last corrected it, and when.

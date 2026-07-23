@@ -52,9 +52,9 @@ import {
 import {
   matchReceiptCandidates,
   candidateValidator,
-  ocrReceiptImage,
-  arrayBufferToBase64,
+  extractReceiptFields,
   resolveOcrModel,
+  type OcrRoutingResult,
 } from "./receiptInbox";
 
 // ── Validators ───────────────────────────────────────────────────────────────
@@ -108,6 +108,10 @@ const receiptSummary = v.object({
   url: v.union(v.string(), v.null()),
   source: receiptSourceValidator,
   senderClass: v.union(receiptSenderClassValidator, v.null()),
+  // The original attachment filename (or a synthetic "email body"/"text
+  // message" label) — see `schema/finances.ts`'s doc comment on
+  // `receipts.filename`.
+  filename: v.union(v.string(), v.null()),
   amountCents: v.union(v.number(), v.null()),
   receiptDate: v.union(v.number(), v.null()),
   merchant: v.union(v.string(), v.null()),
@@ -116,6 +120,9 @@ const receiptSummary = v.object({
   ocrDate: v.union(v.number(), v.null()),
   ocrMerchant: v.union(v.string(), v.null()),
   ocrConfidence: v.union(v.number(), v.null()),
+  // A human-readable reason extraction produced NOTHING — see
+  // `schema/finances.ts`'s doc comment on `receipts.ocrError`.
+  ocrError: v.union(v.string(), v.null()),
   linkCount: v.number(),
   duplicateOfReceiptId: v.union(v.id("receipts"), v.null()),
   createdAt: v.number(),
@@ -126,6 +133,7 @@ async function toReceiptSummary(ctx: QueryCtx, r: Doc<"receipts">) {
     url: await ctx.storage.getUrl(r.storageId),
     source: r.source,
     senderClass: r.senderClass ?? null,
+    filename: r.filename ?? null,
     amountCents: r.amountCents ?? null,
     receiptDate: r.receiptDate ?? null,
     merchant: r.merchant ?? null,
@@ -134,6 +142,7 @@ async function toReceiptSummary(ctx: QueryCtx, r: Doc<"receipts">) {
     ocrDate: r.ocrDate ?? null,
     ocrMerchant: r.ocrMerchant ?? null,
     ocrConfidence: r.ocrConfidence ?? null,
+    ocrError: r.ocrError ?? null,
     linkCount: r.linkCount,
     duplicateOfReceiptId: r.duplicateOfReceiptId ?? null,
     createdAt: r.createdAt,
@@ -668,7 +677,15 @@ const uploadOutcome = v.object({
  * match → maybe auto-attach) to run right after this mutation commits.
  */
 export const submitUploadedReceipts = mutation({
-  args: { storageIds: v.array(v.id("_storage")) },
+  args: {
+    storageIds: v.array(v.id("_storage")),
+    // Parallel to `storageIds` (index-matched) — the ORIGINAL filename each
+    // file had client-side, when the picker could read one (web `<input
+    // type=file>`'s `file.name`, `expo-image-picker`'s `asset.fileName`).
+    // Optional/nullable per slot: a native picker sometimes has none to
+    // offer, and an older client may omit the array entirely.
+    filenames: v.optional(v.array(v.union(v.string(), v.null()))),
+  },
   returns: v.array(uploadOutcome),
   handler: async (ctx, args) => {
     // Gate FIRST — an empty or over-cap call still requires the caller to
@@ -686,7 +703,9 @@ export const submitUploadedReceipts = mutation({
     }
 
     const results: (typeof uploadOutcome.type)[] = [];
-    for (const storageId of args.storageIds) {
+    for (let i = 0; i < args.storageIds.length; i++) {
+      const storageId = args.storageIds[i];
+      const filename = args.filenames?.[i] ?? undefined;
       const meta = await ctx.db.system.get("_storage", storageId);
       const fileSha256 = meta?.sha256;
       const duplicateOfReceiptId = fileSha256
@@ -698,6 +717,7 @@ export const submitUploadedReceipts = mutation({
         storageId,
         source: "upload",
         uploadedByPersonId: uploader,
+        filename,
         fileSha256,
         duplicateOfReceiptId,
       });
@@ -773,6 +793,11 @@ export const applyUploadOcrAndAttach = internalMutation({
     ocrMerchant: v.optional(v.string()),
     ocrConfidence: v.optional(v.number()),
     ocrModel: v.optional(v.string()),
+    // A human-readable reason extraction produced no total, or `undefined` on
+    // a successful read — always written explicitly so a SUCCESS clears any
+    // stale failure reason from an earlier attempt (never left to linger next
+    // to a fresh, successful read).
+    ocrError: v.optional(v.string()),
     candidateTransactionIds: v.array(v.id("transactions")),
   },
   returns: v.null(),
@@ -780,7 +805,7 @@ export const applyUploadOcrAndAttach = internalMutation({
     const receipt = await ctx.db.get(args.receiptId);
     if (!receipt) return null;
 
-    const patch: Record<string, unknown> = { updatedAt: Date.now() };
+    const patch: Record<string, unknown> = { updatedAt: Date.now(), ocrError: args.ocrError };
     if (args.ocrAmountCents != null) patch.ocrAmountCents = args.ocrAmountCents;
     if (args.ocrDate != null) patch.ocrDate = args.ocrDate;
     if (args.ocrMerchant) patch.ocrMerchant = args.ocrMerchant;
@@ -872,9 +897,12 @@ async function runUploadPipeline(
 
   const blob = await ctx.storage.get(receipt.storageId);
   if (!blob) {
-    await ctx.runMutation(internal.receipts.noteUploadError, {
+    const note = "The uploaded file could not be found in storage.";
+    await ctx.runMutation(internal.receipts.noteUploadError, { receiptId, note });
+    await ctx.runMutation(internal.receipts.applyUploadOcrAndAttach, {
       receiptId,
-      note: "The uploaded file could not be found in storage.",
+      ocrError: note,
+      candidateTransactionIds: [],
     });
     return;
   }
@@ -885,25 +913,31 @@ async function runUploadPipeline(
     blob.type ??
     "application/octet-stream";
 
-  let ocr: {
-    amountCents: number | null;
-    date: number | null;
-    merchant: string | null;
-    confidence: number | null;
-  } | null = null;
-  // No engine key configured → `ocrReceiptImage` returns `null` (a typed no-key
-  // error, logged) — the row stays unlinked with no candidates rather than
-  // crashing, exactly like the email pipeline's own keyless behavior.
-  let usedModel: string | undefined;
+  // A non-image/PDF upload (e.g. a rendered text receipt) skips extraction
+  // the same way the email pipeline's body path never calls the LLM for
+  // text — but now says so, instead of silently leaving every OCR field
+  // blank. `extractReceiptFields` (`receiptInbox.ts`) is the SAME routing —
+  // PDF text layer first (zero LLM), vision OCR fallback — the email and
+  // retry pipelines use. The model resolves the engine way: per-call
+  // `modelOverride` (the retry UI's hook) > stored global `aiModel` >
+  // per-provider default. A missing engine key degrades to a typed no-key
+  // error (row stays unlinked, no crash), same as the email pipeline.
+  let result: OcrRoutingResult;
   if (contentType.startsWith("image/") || contentType === "application/pdf") {
     const config = await ctx.runQuery(
       internal.integrationSettings.readAiEngineConfig,
       {},
     );
-    usedModel = resolveOcrModel(config, modelOverride);
-    const buf = await blob.arrayBuffer();
-    const dataUrl = `data:${contentType};base64,${arrayBufferToBase64(buf)}`;
-    ocr = await ocrReceiptImage(config, dataUrl, usedModel);
+    result = await extractReceiptFields(ctx, {
+      storageId: receipt.storageId,
+      config,
+      blob,
+      contentType,
+      filename: receipt.filename,
+      model: resolveOcrModel(config, modelOverride),
+    });
+  } else {
+    result = { ocrError: "Unsupported file type for extraction." };
   }
 
   // Candidates are computed in a QUERY here (their own transaction), separate
@@ -915,24 +949,218 @@ async function runUploadPipeline(
   if (
     receipt.chapterId != null &&
     receipt.chapterId !== CENTRAL &&
-    ocr?.amountCents != null
+    result.ocrAmountCents != null
   ) {
     const candidates = await ctx.runQuery(internal.receiptInbox.findReceiptMatches, {
       chapterId: receipt.chapterId,
-      amountCents: ocr.amountCents,
-      receiptDate: ocr.date ?? receipt.createdAt,
-      ocrMerchant: ocr.merchant ?? undefined,
+      amountCents: result.ocrAmountCents,
+      receiptDate: result.ocrDate ?? receipt.createdAt,
+      ocrMerchant: result.ocrMerchant ?? undefined,
     });
     candidateTransactionIds = candidates.map((c) => c.transactionId);
   }
 
   await ctx.runMutation(internal.receipts.applyUploadOcrAndAttach, {
     receiptId,
-    ocrAmountCents: ocr?.amountCents ?? undefined,
-    ocrDate: ocr?.date ?? undefined,
-    ocrMerchant: ocr?.merchant ?? undefined,
-    ocrConfidence: ocr?.confidence ?? undefined,
-    ocrModel: ocr ? usedModel : undefined,
+    ocrAmountCents: result.ocrAmountCents,
+    ocrDate: result.ocrDate,
+    ocrMerchant: result.ocrMerchant,
+    ocrConfidence: result.ocrConfidence,
+    ocrModel: result.ocrModel,
+    ocrError: result.ocrError,
+    candidateTransactionIds,
+  });
+}
+
+// ── retryExtraction (bookkeeper-triggered reprocessing) ──────────────────────
+/**
+ * Re-run extraction on ONE receipt: reload its stored file, redo the SAME
+ * routing every ingest path uses (PDF text layer → parse; else vision OCR —
+ * `extractReceiptFields`), refresh its candidate shortlist, and clear/set
+ * `ocrError`. The fix for "no way to retry a failed extraction from the UI" —
+ * a bookkeeper who fixes the OpenRouter key, or just wants another attempt,
+ * no longer has to re-upload the file to get a second try.
+ *
+ * NEVER auto-attaches (unlike the upload/email pipelines) — a human is
+ * ALREADY looking at this receipt (that's why they clicked retry); the
+ * refreshed candidates are surfaced for them to pick, not silently linked
+ * behind their back. NEVER touches a canonical field the human has already
+ * corrected (`correctedAt` set) — only the immutable `ocr*` provenance
+ * refreshes; the canonical amount/date/merchant they entered stays put.
+ *
+ * `model` is an OPTIONAL override threaded straight through to
+ * `ocrReceiptImage`'s existing `model` parameter (untouched — see that
+ * function's own doc) for a one-off "try a different model" without
+ * changing the chapter's configured default. Bookkeeper+, chapter-only.
+ */
+export const retryExtraction = mutation({
+  args: { receiptId: v.id("receipts"), model: v.optional(v.string()) },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireFinanceRole(ctx, chapterId, "bookkeeper");
+
+    const receipt = await ctx.db.get(args.receiptId);
+    if (!receipt || receipt.chapterId !== chapterId) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Receipt not found in your chapter.",
+      });
+    }
+
+    await ctx.scheduler.runAfter(0, internal.receipts.runRetryExtraction, {
+      receiptId: args.receiptId,
+      model: args.model?.trim() ? args.model.trim() : undefined,
+    });
+    return null;
+  },
+});
+
+/**
+ * Write a retry's fresh OCR read: always refreshes `ocr*` + the candidate
+ * shortlist, and always writes `ocrError` explicitly (a string on failure, or
+ * `undefined` to clear a stale one on success). Canonical fields
+ * (amount/date/merchant) are seeded from the fresh read ONLY when nobody has
+ * corrected this receipt yet (`correctedAt` unset) — the same
+ * human-correction guard `applyUploadOcrAndAttach` uses. NEVER auto-attaches
+ * — see `retryExtraction`'s doc.
+ */
+export const applyRetryExtraction = internalMutation({
+  args: {
+    receiptId: v.id("receipts"),
+    ocrAmountCents: v.optional(v.number()),
+    ocrDate: v.optional(v.number()),
+    ocrMerchant: v.optional(v.string()),
+    ocrConfidence: v.optional(v.number()),
+    ocrModel: v.optional(v.string()),
+    ocrError: v.optional(v.string()),
+    candidateTransactionIds: v.array(v.id("transactions")),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const receipt = await ctx.db.get(args.receiptId);
+    if (!receipt) return null;
+
+    const patch: Record<string, unknown> = {
+      updatedAt: Date.now(),
+      ocrError: args.ocrError,
+      // Always refresh the shortlist (even to empty) — a retry is a human
+      // actively looking at this receipt, so a fresher read should surface
+      // fresher matches even when canonical fields stay untouched.
+      candidateTransactionIds: args.candidateTransactionIds,
+    };
+    if (args.ocrAmountCents != null) patch.ocrAmountCents = args.ocrAmountCents;
+    if (args.ocrDate != null) patch.ocrDate = args.ocrDate;
+    if (args.ocrMerchant) patch.ocrMerchant = args.ocrMerchant;
+    if (args.ocrConfidence != null) patch.ocrConfidence = args.ocrConfidence;
+    if (args.ocrModel) patch.ocrModel = args.ocrModel;
+    // Never touch a canonical field a human has already corrected.
+    if (receipt.correctedAt == null) {
+      if (args.ocrAmountCents != null) patch.amountCents = args.ocrAmountCents;
+      if (args.ocrDate != null) patch.receiptDate = args.ocrDate;
+      if (args.ocrMerchant) patch.merchant = args.ocrMerchant;
+    }
+
+    await ctx.db.patch(args.receiptId, patch);
+    return null;
+  },
+});
+
+/** Scheduled by `retryExtraction`. Crash-safe like every other pipeline
+ *  action here: a thrown error is caught and turned into a visible
+ *  `ocrError` rather than stranding the receipt mid-retry with no signal. */
+export const runRetryExtraction = internalAction({
+  args: { receiptId: v.id("receipts"), model: v.optional(v.string()) },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    try {
+      await runRetryPipeline(ctx, args.receiptId, args.model);
+    } catch (err) {
+      console.error(`[receipts] retryExtraction errored for ${args.receiptId}: ${String(err)}`);
+      try {
+        await ctx.runMutation(internal.receipts.applyRetryExtraction, {
+          receiptId: args.receiptId,
+          candidateTransactionIds: [],
+          ocrError: `Retry failed: ${String(err).slice(0, 300)}`,
+        });
+      } catch (patchErr) {
+        console.error(`[receipts] could not note retry error on ${args.receiptId}: ${String(patchErr)}`);
+      }
+    }
+    return null;
+  },
+});
+
+async function runRetryPipeline(
+  ctx: ActionCtx,
+  receiptId: Id<"receipts">,
+  model: string | undefined,
+): Promise<void> {
+  const receipt = (await ctx.runQuery(internal.receipts.getReceiptForProcessing, {
+    receiptId,
+  })) as Doc<"receipts"> | null;
+  if (!receipt) return;
+
+  const blob = await ctx.storage.get(receipt.storageId);
+  if (!blob) {
+    await ctx.runMutation(internal.receipts.applyRetryExtraction, {
+      receiptId,
+      candidateTransactionIds: receipt.candidateTransactionIds ?? [],
+      ocrError: "The stored file could not be found — it may have been deleted.",
+    });
+    return;
+  }
+  const contentType =
+    (await ctx.runQuery(internal.receipts.getStorageContentType, {
+      storageId: receipt.storageId,
+    })) ??
+    blob.type ??
+    "application/octet-stream";
+
+  let result: OcrRoutingResult;
+  if (contentType.startsWith("image/") || contentType === "application/pdf") {
+    // Retry resolves the model the engine way, with the optional per-retry
+    // `model` as the override (the "try a different model inline" hook) >
+    // stored global `aiModel` > per-provider default.
+    const config = await ctx.runQuery(
+      internal.integrationSettings.readAiEngineConfig,
+      {},
+    );
+    result = await extractReceiptFields(ctx, {
+      storageId: receipt.storageId,
+      config,
+      blob,
+      contentType,
+      filename: receipt.filename,
+      model: resolveOcrModel(config, model),
+    });
+  } else {
+    result = { ocrError: "Unsupported file type for extraction." };
+  }
+
+  let candidateTransactionIds: Id<"transactions">[] = [];
+  if (
+    receipt.chapterId != null &&
+    receipt.chapterId !== CENTRAL &&
+    result.ocrAmountCents != null
+  ) {
+    const candidates = await ctx.runQuery(internal.receiptInbox.findReceiptMatches, {
+      chapterId: receipt.chapterId,
+      amountCents: result.ocrAmountCents,
+      receiptDate: result.ocrDate ?? receipt.createdAt,
+      ocrMerchant: result.ocrMerchant ?? undefined,
+    });
+    candidateTransactionIds = candidates.map((c) => c.transactionId);
+  }
+
+  await ctx.runMutation(internal.receipts.applyRetryExtraction, {
+    receiptId,
+    ocrAmountCents: result.ocrAmountCents,
+    ocrDate: result.ocrDate,
+    ocrMerchant: result.ocrMerchant,
+    ocrConfidence: result.ocrConfidence,
+    ocrModel: result.ocrModel,
+    ocrError: result.ocrError,
     candidateTransactionIds,
   });
 }

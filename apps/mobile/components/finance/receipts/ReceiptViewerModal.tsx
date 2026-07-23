@@ -138,7 +138,11 @@ export function ReceiptViewerModal({
     else void pickNative(onPicked);
   }
 
-  async function uploadReceipt(blob: Blob, contentType: string): Promise<Id<"receipts"> | undefined> {
+  async function uploadReceipt(
+    blob: Blob,
+    contentType: string,
+    filename?: string,
+  ): Promise<Id<"receipts"> | undefined> {
     return run(
       async () => {
         const uploadUrl = await generateUploadUrl();
@@ -148,7 +152,10 @@ export function ReceiptViewerModal({
           body: blob,
         });
         const { storageId } = (await res.json()) as { storageId: Id<"_storage"> };
-        const [outcome] = await submitUploadedReceipts({ storageIds: [storageId] });
+        const [outcome] = await submitUploadedReceipts({
+          storageIds: [storageId],
+          filenames: [filename ?? null],
+        });
         return outcome.receiptId;
       },
       { errorTitle: "Couldn't upload receipt" },
@@ -332,7 +339,14 @@ function ReceiptDetail({
         <Text className="text-xs text-muted">
           {r.receiptDate != null ? shortDate(r.receiptDate) : "No date read"}
         </Text>
-        {ocrParts.length > 0 ? (
+        {r.filename ? (
+          <Text className="text-2xs text-faint" numberOfLines={1}>
+            {r.filename}
+          </Text>
+        ) : null}
+        {r.ocrError ? (
+          <Text className="text-2xs text-danger">Extraction failed: {r.ocrError}</Text>
+        ) : ocrParts.length > 0 ? (
           <Text className="text-2xs text-faint">OCR read: {ocrParts.join(" · ")}</Text>
         ) : null}
       </View>
