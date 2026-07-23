@@ -1,7 +1,7 @@
 # Receipt email ingest — inbound OCR → reconcile pipeline
 
 Backfilling a large pile of receipts by hand is slow. This pipeline lets a
-receipt be **emailed** to `reply.publicworship.life`; the backend OCRs it,
+receipt be **emailed** to `receipts@reply.publicworship.life`; the backend OCRs it,
 matches it to an already-synced card transaction that's missing a receipt, and
 attaches it automatically when the match is unambiguous. Everything ambiguous
 lands in a bookkeeper review queue.
@@ -9,9 +9,12 @@ lands in a bookkeeper review queue.
 ## Flow
 
 ```
-email → reply.publicworship.life
+email → receipts@reply.publicworship.life
       → Resend inbound (email.received webhook, Svix-signed)
-      → POST /resend/inbound            (http.ts — verify + dedup + schedule)
+      → POST /resend/inbound            (http.ts — verify + address-filter +
+                                         dedup + schedule; mail to any OTHER
+                                         address on the domain is ack'd and
+                                         skipped)
       → recordInboundReceipt            (dedup on Resend's email_id)
       → processInboundReceipt (action)  (receiptInbox.ts)
            1. resolve sender → people row (auth gate; unknown → ignored)
@@ -65,6 +68,7 @@ Copy the webhook's **signing secret** (`whsec_…`).
 | `RESEND_API_KEY` | Already set (outbound). Also used to fetch inbound attachments + reply. |
 | `OPENROUTER_API_KEY` | Already set (AI coding). Used for image OCR only. |
 | `RECEIPT_OCR_MODEL` | *Optional.* Override the OCR model. Defaults to a cheap vision model (`google/gemini-2.0-flash-001`). Point it at any OpenRouter vision model — free/cheap for a big backfill, stronger if scans read poorly. |
+| `RECEIPT_INBOUND_ADDRESSES` | *Optional.* Comma-separated allow-list of inbound addresses treated as the receipts inbox. Defaults to `receipts@reply.publicworship.life`. Mail to any other address on the domain is acknowledged but not processed. |
 
 Degrades gracefully: no `OPENROUTER_API_KEY` → image receipts route to review
 (the file is still stored); no `RESEND_API_KEY` → no attachment fetch/reply.

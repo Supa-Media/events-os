@@ -131,6 +131,39 @@ export const recordInboundReceipt = internalMutation({
   },
 });
 
+// ── Addressing (which inbound emails are receipts at all) ────────────────────
+/** Extract the bare address out of a possibly display-named recipient
+ *  ("Jane Doe <jane@x.com>" → "jane@x.com"), normalized. Inbound `from`/`to`
+ *  values may arrive either bare or in RFC-5322 display form. */
+export function extractEmailAddress(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const angled = raw.match(/<([^>]+)>/);
+  return normalizeEmail(angled ? angled[1] : raw);
+}
+
+/**
+ * True iff ANY recipient of the inbound email is a dedicated receipt-inbox
+ * address. The inbound domain (`reply.publicworship.life`) will carry other
+ * addresses for other purposes, so the webhook must NOT treat every email to
+ * the domain as a receipt — only mail addressed (To or Cc) to the receipts
+ * inbox. Config, not code: `RECEIPT_INBOUND_ADDRESSES` is a comma-separated
+ * allow-list, defaulting to `receipts@reply.publicworship.life`.
+ */
+export function isReceiptInboxAddress(
+  recipients: readonly (string | null | undefined)[],
+): boolean {
+  const allowed = new Set(
+    (process.env.RECEIPT_INBOUND_ADDRESSES ?? "receipts@reply.publicworship.life")
+      .split(",")
+      .map((a) => normalizeEmail(a))
+      .filter((a): a is string => a != null),
+  );
+  return recipients.some((r) => {
+    const addr = extractEmailAddress(r);
+    return addr != null && allowed.has(addr);
+  });
+}
+
 // ── Sender resolution (the auth gate) ────────────────────────────────────────
 /**
  * Resolve a raw sender address to a roster `people` row. Matches against both
@@ -151,7 +184,9 @@ export const resolvePersonByEmail = internalQuery({
     v.null(),
   ),
   handler: async (ctx, { email }) => {
-    const normalized = normalizeEmail(email);
+    // `from` may arrive in display form ("Jane Doe <jane@x.com>") — strip to
+    // the bare normalized address before matching.
+    const normalized = extractEmailAddress(email);
     if (!normalized) return null;
     // Fast path: an exactly-stored (lowercase) personal email.
     const byEmail = await ctx.db

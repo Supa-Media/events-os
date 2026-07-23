@@ -4,7 +4,11 @@ import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { internal } from "../_generated/api";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
-import { parseReceiptFromText } from "../receiptInbox";
+import {
+  parseReceiptFromText,
+  isReceiptInboxAddress,
+  extractEmailAddress,
+} from "../receiptInbox";
 import { verifyStandardWebhookSignature } from "../lib/standardWebhook";
 
 /**
@@ -188,6 +192,52 @@ describe("verifyStandardWebhookSignature", () => {
   });
 });
 
+// ── isReceiptInboxAddress (the addressing filter) ────────────────────────────
+describe("isReceiptInboxAddress", () => {
+  test("accepts only the receipts inbox, To or Cc, case-insensitively", () => {
+    expect(isReceiptInboxAddress(["receipts@reply.publicworship.life"])).toBe(true);
+    expect(isReceiptInboxAddress(["RECEIPTS@Reply.PublicWorship.Life"])).toBe(true);
+    // Cc position counts too (second recipient).
+    expect(
+      isReceiptInboxAddress(["someone@else.com", "receipts@reply.publicworship.life"]),
+    ).toBe(true);
+    // Other addresses on the same inbound domain are NOT receipts.
+    expect(isReceiptInboxAddress(["hello@reply.publicworship.life"])).toBe(false);
+    expect(isReceiptInboxAddress([])).toBe(false);
+    expect(isReceiptInboxAddress([null, undefined])).toBe(false);
+  });
+
+  test("handles display-name recipient forms", () => {
+    expect(
+      isReceiptInboxAddress(['"PW Receipts" <receipts@reply.publicworship.life>']),
+    ).toBe(true);
+  });
+
+  test("honors the RECEIPT_INBOUND_ADDRESSES override (comma-separated)", () => {
+    const prev = process.env.RECEIPT_INBOUND_ADDRESSES;
+    try {
+      process.env.RECEIPT_INBOUND_ADDRESSES =
+        "backfill@reply.publicworship.life, receipts@reply.publicworship.life";
+      expect(isReceiptInboxAddress(["backfill@reply.publicworship.life"])).toBe(true);
+      expect(isReceiptInboxAddress(["receipts@reply.publicworship.life"])).toBe(true);
+      process.env.RECEIPT_INBOUND_ADDRESSES = "only@reply.publicworship.life";
+      expect(isReceiptInboxAddress(["receipts@reply.publicworship.life"])).toBe(false);
+    } finally {
+      if (prev === undefined) delete process.env.RECEIPT_INBOUND_ADDRESSES;
+      else process.env.RECEIPT_INBOUND_ADDRESSES = prev;
+    }
+  });
+});
+
+describe("extractEmailAddress", () => {
+  test("strips display names and normalizes; passes bare addresses through", () => {
+    expect(extractEmailAddress("Jane Doe <Jane@Example.com>")).toBe("jane@example.com");
+    expect(extractEmailAddress("  BARE@X.COM ")).toBe("bare@x.com");
+    expect(extractEmailAddress("")).toBeNull();
+    expect(extractEmailAddress(null)).toBeNull();
+  });
+});
+
 // ── recordInboundReceipt (dedup) ─────────────────────────────────────────────
 describe("recordInboundReceipt", () => {
   test("dedupes on emailId", async () => {
@@ -221,6 +271,16 @@ describe("resolvePersonByEmail", () => {
       email: "stranger@nowhere.com",
     });
     expect(miss).toBeNull();
+  });
+
+  test("resolves a display-name From value", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const p = await seedPerson(s, { email: "jane@example.com" });
+    const hit = await t.query(internal.receiptInbox.resolvePersonByEmail, {
+      email: "Jane Doe <Jane@Example.com>",
+    });
+    expect(hit?.personId).toBe(p);
   });
 });
 

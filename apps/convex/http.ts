@@ -53,6 +53,7 @@ import { appUrl, rsvpPath, siteUrl } from "./lib/siteUrl";
 import { verifyStripeSignature } from "./stripe";
 import { verifyIncreaseSignature } from "./increase";
 import { verifyStandardWebhookSignature } from "./lib/standardWebhook";
+import { isReceiptInboxAddress } from "./receiptInbox";
 
 const http = httpRouter();
 
@@ -633,14 +634,15 @@ http.route({
     if (!valid) return new Response("Invalid signature", { status: 400 });
 
     // Resend inbound: { type:"email.received", data:{ email_id, from, to[],
-    // subject, ... } }. Attachments/body are fetched later via the Resend API
-    // (the webhook carries metadata only).
+    // cc[], subject, ... } }. Attachments/body are fetched later via the
+    // Resend API (the webhook carries metadata only).
     let event: {
       type?: string;
       data?: {
         email_id?: string;
         from?: string;
         to?: string[] | string;
+        cc?: string[] | string;
         subject?: string;
       };
     };
@@ -654,9 +656,23 @@ http.route({
     if (event.type !== "email.received" || !event.data?.email_id || !event.data.from) {
       return new Response("ok", { status: 200 });
     }
-    const to = Array.isArray(event.data.to)
-      ? event.data.to[0]
-      : event.data.to ?? undefined;
+    // Only mail addressed (To or Cc) to the RECEIPTS inbox is a receipt — the
+    // inbound domain will carry other addresses for other purposes, so
+    // everything else is ack'd WITHOUT recording (see `isReceiptInboxAddress`).
+    const toList = Array.isArray(event.data.to)
+      ? event.data.to
+      : event.data.to
+        ? [event.data.to]
+        : [];
+    const ccList = Array.isArray(event.data.cc)
+      ? event.data.cc
+      : event.data.cc
+        ? [event.data.cc]
+        : [];
+    if (!isReceiptInboxAddress([...toList, ...ccList])) {
+      return new Response("ok", { status: 200 });
+    }
+    const to = toList[0];
 
     const { isNew, receiptId } = await ctx.runMutation(
       internal.receiptInbox.recordInboundReceipt,
