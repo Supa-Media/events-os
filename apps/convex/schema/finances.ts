@@ -1057,4 +1057,14 @@ export const financeSettings = defineTable({
   updatedAt: v.number(),
   cardArt: v.optional(cardArtConfigValidator),
   cardArtSandbox: v.optional(cardArtConfigValidator),
+  // Org-wide receipt policy: after this many days a card charge still missing a
+  // receipt auto-converts to a personal repayment (the cardholder owes it back).
+  // `undefined` = OFF (no auto-conversion) until central finance picks a number.
+  // Enforced by the daily `cards.autoConvertOverdueReceipts` sweep.
+  noReceiptAutoConvertDays: v.optional(v.number()),
+  // Org-wide card prerequisite: the Academy course slug a member must complete
+  // before a card can be issued/activated. `undefined` = no prerequisite gate
+  // (issuance unaffected), so cards keep working until central finance points
+  // this at Kansi's card-prerequisite course.
+  cardPrerequisiteCourseSlug: v.optional(v.string()),
 });
