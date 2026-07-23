@@ -70,6 +70,7 @@ import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
 import { useGivingScope } from "../../../lib/useGivingScope";
 import { DonorDuplicatesSheet } from "../../../components/giving/DonorDuplicatesSheet";
+import { DonorIdentityGrid } from "../../../components/giving/DonorIdentityGrid";
 import { toCsv } from "../../../components/giving/csv";
 import { exportCsv } from "../../../components/giving/exportCsv";
 import {
@@ -137,6 +138,12 @@ type DonorRow = {
 // import the convex-side schema literals directly, so the option lists are
 // kept in step with `schema/givingPlatform.ts`'s `DONOR_STATUSES`/
 // `DONOR_KINDS`/`DONOR_SOURCES` by hand (small, stable unions).
+
+// Cross-chapter identity layer (donor-identity): the central-only view toggle.
+const VIEW_FILTERS: FilterSelectOption[] = [
+  { value: "book", label: "By book" },
+  { value: "person", label: "By person" },
+];
 
 const STATUS_FILTERS: FilterSelectOption[] = [
   { value: "all", label: "All" },
@@ -231,6 +238,13 @@ function DonorsBody({
   const [scopeSel, setScopeSel] = useState<string>(lensScope);
   // Duplicate review + merge — manage-gated (Attendance C).
   const [dupOpen, setDupOpen] = useState(false);
+  // Cross-chapter identity layer (donor-identity): central holders can flip
+  // between the per-book donor grid ("By book") and the identity-grouped view
+  // ("By person"), where a giver to central AND a chapter shows up as ONE
+  // person with the chapters they're part of. Chapter-only viewers never see
+  // this toggle and stay on their own book (chapter separation preserved).
+  const [viewMode, setViewMode] = useState<"book" | "person">("book");
+  const identityView = isCentral && viewMode === "person";
 
   // Central holders get a scope dropdown built from the fleet (central + each
   // active chapter). Skipped for chapter-only viewers (never central-gated).
@@ -307,6 +321,29 @@ function DonorsBody({
     setSort((current) => nextSortState(key, current));
   }
 
+  // Cross-chapter identity layer: the "By person" view is self-contained (its
+  // own central-gated query), so it renders without the per-book donor page.
+  if (identityView) {
+    return (
+      <Screen maxWidth={FULL_WIDTH}>
+        <Narrow>
+          <View className="mb-4 flex-row items-center justify-between">
+            <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+              Donors
+            </Text>
+            <FilterSelect
+              label="View"
+              value={viewMode}
+              options={VIEW_FILTERS}
+              onChange={(v) => setViewMode(v as "book" | "person")}
+            />
+          </View>
+        </Narrow>
+        <DonorIdentityGrid />
+      </Screen>
+    );
+  }
+
   if (donors === undefined) {
     return (
       <View className="items-center justify-center py-16">
@@ -363,6 +400,14 @@ function DonorsBody({
             <GridCountLabel label="Donors" count={donors.length} />
           )}
           <View className="flex-row items-center gap-2">
+            {isCentral ? (
+              <FilterSelect
+                label="View"
+                value={viewMode}
+                options={VIEW_FILTERS}
+                onChange={(v) => setViewMode(v as "book" | "person")}
+              />
+            ) : null}
             <Button
               title="Export"
               icon="download"

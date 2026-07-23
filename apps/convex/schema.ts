@@ -73,6 +73,7 @@ import {
 } from "./schema/finances";
 import {
   donors,
+  donorIdentities,
   gifts,
   giftAudit,
   donorAudit,
@@ -263,6 +264,13 @@ const schema = defineSchema({
   // Money is integer cents; `transactions` stays the only actuals ledger (see
   // docs/plans/giving-platform.md §1 + schema/givingPlatform.ts).
   donors,
+  // Cross-chapter donor IDENTITY layer (donor-identity, 2026-07): the ONE
+  // underlying person behind the scope-partitioned `donors` rows. ADDITIVE —
+  // groups rows by normalized email (else phone/name) and carries a `scopes`
+  // list of the books that person is part of, without collapsing rows or
+  // touching per-scope money rollups. See schema/givingPlatform.ts +
+  // lib/donorIdentity.ts.
+  donorIdentities,
   gifts,
   // Gifts ledger: the human-edit audit breadcrumb trail (per-gift, newest-first
   // via by_gift). Written by the desk mutations, never affects a money rollup.
