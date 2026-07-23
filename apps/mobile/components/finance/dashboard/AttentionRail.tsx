@@ -29,7 +29,7 @@ import type { ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import type { BudgetApprovalStatus } from "@events-os/shared";
-import { Badge, Icon } from "../../ui";
+import { Badge, Icon, InfoTooltip } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { Money } from "./parts";
 import { BudgetApprovalActions } from "./BudgetApprovalActions";
@@ -129,6 +129,7 @@ export function AttentionRail({
           detail={<Money cents={unattributedCents} className="text-2xs font-semibold text-ink" />}
           actionLabel={isDrilldown ? undefined : "Reconcile"}
           onPress={isDrilldown ? undefined : () => onAttentionAction("needs_budget")}
+          tooltip="This period's spend with no budget linked. Only explicit links count — there's no automatic matching."
         />
       ) : null}
 
@@ -168,12 +169,14 @@ export function RailRow({
   detail,
   actionLabel,
   onPress,
+  tooltip,
 }: {
   count: number;
   title: string;
   detail: string | ReactNode;
   actionLabel?: string;
   onPress?: () => void;
+  tooltip?: string;
 }) {
   const content = (
     <>
@@ -184,9 +187,12 @@ export function RailRow({
         </Text>
       </View>
       <View className="flex-1">
-        <Text className="text-xs font-semibold text-ink" numberOfLines={1}>
-          {title}
-        </Text>
+        <View className="flex-row items-center gap-1.5">
+          <Text className="text-xs font-semibold text-ink" numberOfLines={1}>
+            {title}
+          </Text>
+          {tooltip ? <InfoTooltip text={tooltip} size={14} /> : null}
+        </View>
         {typeof detail === "string" ? (
           <Text className="text-2xs text-muted" numberOfLines={1}>
             {detail}

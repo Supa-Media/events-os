@@ -546,7 +546,14 @@ function CityLaunchFundTile({ fund }: { fund: CityLaunchFund }) {
     : fund.periodNetCents !== 0
       ? `${fund.periodNetCents > 0 ? "+" : ""}${formatCents(fund.periodNetCents)} this period`
       : "15% skim of chapter revenue";
-  return <Tile label="City Launch Fund" value={formatCents(fund.positionCents)} meta={meta} />;
+  return (
+    <Tile
+      label="City Launch Fund"
+      value={formatCents(fund.positionCents)}
+      meta={meta}
+      tooltip="15% of chapter backer revenue routed here each month to fund the next city's launch."
+    />
+  );
 }
 
 // ── Right-column attention rail sections ─────────────────────────────────────
@@ -683,6 +690,7 @@ function UnattributedRail({
         detail={<Money cents={cents} className="text-2xs font-semibold text-ink" />}
         actionLabel={expanded ? "Hide" : "Review"}
         onPress={() => setExpanded((e) => !e)}
+        tooltip="This period's spend across every chapter with no budget linked. Only explicit links count — there's no automatic matching."
       />
       {expanded ? (
         <View className="ml-2 mt-2 gap-2 border-l border-border pl-3">

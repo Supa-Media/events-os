@@ -13,7 +13,7 @@ import { Component, type ReactNode } from "react";
 import { Text, View, Pressable } from "react-native";
 import { formatCents, type TransactionFlow } from "@events-os/shared";
 import { colors } from "../../../lib/theme";
-import { Icon, type BadgeTone } from "../../ui";
+import { Icon, type BadgeTone, InfoTooltip } from "../../ui";
 
 // ── Error boundary ───────────────────────────────────────────────────────────
 /**
@@ -91,17 +91,22 @@ export function Tile({
   value,
   meta,
   valueClassName = "text-ink",
+  tooltip,
 }: {
   label: string;
   value: string;
   meta?: string;
   valueClassName?: string;
+  tooltip?: string;
 }) {
   return (
     <View className="min-w-[150px] flex-1 gap-1.5 rounded-lg border border-border bg-raised p-4 shadow-card">
-      <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-        {label}
-      </Text>
+      <View className="flex-row items-center gap-1">
+        <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+          {label}
+        </Text>
+        {tooltip ? <InfoTooltip text={tooltip} size={12} /> : null}
+      </View>
       <Text className={`font-display text-2xl ${valueClassName}`} style={TABULAR}>
         {value}
       </Text>

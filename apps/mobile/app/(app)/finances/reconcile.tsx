@@ -43,6 +43,7 @@ import {
   EmptyState,
   FULL_WIDTH,
   Icon,
+  InfoTooltip,
   Narrow,
   Pill,
   Screen,
@@ -414,6 +415,10 @@ function ReconcileGrid() {
                 onPress={() => setFilter(f.key)}
               />
             ))}
+            <InfoTooltip
+              text="Needs budget: categorized but no budget linked. Missing receipt: no receipt uploaded. Uncategorized: no category assigned. Ready: receipt + category + budget all present."
+              size={14}
+            />
             {counts && counts.missing_receipt > 0 ? (
               <Button
                 title="Chase receipts"
