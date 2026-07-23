@@ -54,6 +54,8 @@ import { verifyStripeSignature } from "./stripe";
 import { verifyIncreaseSignature } from "./increase";
 import { verifyStandardWebhookSignature } from "./lib/standardWebhook";
 import { isReceiptInboxAddress } from "./receiptInbox";
+import { resolveTwilioCredentials, verifyTwilioSignature } from "./lib/twilio";
+import { resolveTwilioReceiptsWebhookUrl } from "./smsReceipts";
 
 const http = httpRouter();
 
@@ -75,6 +77,16 @@ function html(body: string, status = 200): Response {
   return new Response(body, {
     status,
     headers: { "Content-Type": "text/html; charset=utf-8" },
+  });
+}
+
+/** An empty TwiML `<Response/>` — Twilio expects TwiML (or a 2xx no-body) back
+ *  from an inbound-message webhook; an empty `<Response/>` tells it "received,
+ *  no auto-reply" without Twilio itself sending anything. */
+function emptyTwiml(status = 200): Response {
+  return new Response("<Response/>", {
+    status,
+    headers: { "Content-Type": "text/xml" },
   });
 }
 
@@ -704,6 +716,83 @@ http.route({
       );
     }
     return new Response("ok", { status: 200 });
+  }),
+});
+
+// ── Twilio inbound SMS/MMS receipt webhook ───────────────────────────────────
+// Receipts texted to the org's dedicated receipts number land here as a
+// Twilio inbound-message webhook (form-encoded: `MessageSid`, `From`, `Body`,
+// `NumMedia`, `MediaUrl{N}`, `MediaContentType{N}`). We verify Twilio's own
+// signature scheme (`X-Twilio-Signature` — NOT Standard Webhooks, hence its
+// own `verifyTwilioSignature`), DEDUPE + record the message
+// (`recordSmsReceipt`, idempotent on `MessageSid`), then schedule the
+// OCR→match pipeline and ack fast with an empty TwiML `<Response/>` (Twilio
+// errors on a non-2xx/non-TwiML reply and will retry). See `smsReceipts.ts`.
+//
+// The auth token resolves stored-setting-first (`integrationSettings`, set
+// in-app at profile > integrations by a superuser), falling back to the
+// `TWILIO_AUTH_TOKEN` env var — the SAME discipline (and the SAME trio) every
+// other Twilio call in this repo uses (`lib/twilio.ts#resolveTwilioCredentials`).
+//
+// SIGNATURE SUBTLETY: Twilio signs the EXACT URL it posted to. If the number's
+// webhook points directly at this Convex deployment's site origin (the
+// documented setup — see `docs/plans/receipt-email-ingest.md`'s SMS section),
+// `req.url` here already matches. If it were instead pointed at the
+// `pw-router`-proxied `publicworship.life` path, the Worker rewrites the
+// request's host before forwarding, so `req.url` would differ from what
+// Twilio signed — `TWILIO_RECEIPTS_WEBHOOK_URL` exists to override the
+// default for that case (see `smsReceipts.ts#resolveTwilioReceiptsWebhookUrl`).
+
+http.route({
+  path: "/twilio/receipts",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    const creds = await resolveTwilioCredentials(ctx);
+    if (!creds) {
+      console.error(
+        "[smsReceipts] Twilio not configured (stored setting or TWILIO_* env) — can't verify inbound signature.",
+      );
+      return new Response("Not configured", { status: 500 });
+    }
+
+    const bodyText = await req.text();
+    const params = Object.fromEntries(new URLSearchParams(bodyText));
+    const url = resolveTwilioReceiptsWebhookUrl(req);
+    const signature = req.headers.get("X-Twilio-Signature");
+    const valid = await verifyTwilioSignature(url, params, creds.authToken, signature);
+    if (!valid) return new Response("Invalid signature", { status: 403 });
+
+    const messageSid = params.MessageSid;
+    const from = params.From;
+    if (!messageSid || !from) {
+      // Malformed/unexpected payload from an otherwise-authenticated request —
+      // ack anyway so Twilio doesn't retry-storm a request it will never fix.
+      return emptyTwiml();
+    }
+
+    const numMedia = Math.max(0, parseInt(params.NumMedia ?? "0", 10) || 0);
+    const media: { url: string; contentType?: string }[] = [];
+    for (let i = 0; i < numMedia; i++) {
+      const mediaUrl = params[`MediaUrl${i}`];
+      if (mediaUrl) {
+        media.push({ url: mediaUrl, contentType: params[`MediaContentType${i}`] });
+      }
+    }
+
+    const { isNew, receiptId } = await ctx.runMutation(
+      internal.smsReceipts.recordSmsReceipt,
+      {
+        envelope: { messageSid, fromPhone: from, body: params.Body },
+      },
+    );
+    if (isNew) {
+      await ctx.scheduler.runAfter(0, internal.smsReceipts.processSmsReceipt, {
+        receiptId,
+        body: params.Body,
+        media,
+      });
+    }
+    return emptyTwiml();
   }),
 });
 

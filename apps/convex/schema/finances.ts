@@ -992,14 +992,35 @@ export const webhookEvents = defineTable({
  *  (`receiptInbox.attachMatchedReceipt`); this table records provenance +
  *  the AI's OCR read, never a categorization the model made on its own. */
 export const inboundReceipts = defineTable({
-  // Resend's unique id for the received email — the idempotent dedup key.
+  // The PROVIDER'S unique message id — the idempotent dedup key. Resend's
+  // `email_id` for an `email`-channel row; Twilio's `MessageSid` for an
+  // `sms`-channel row (also mirrored onto `smsMessageSid` below, which carries
+  // its own dedup index — belt-and-suspenders, since this field predates the
+  // SMS channel and other code still keys off it as "the" provider id).
   emailId: v.string(),
   status: v.union(...INBOUND_RECEIPT_STATUSES.map((s) => v.literal(s))),
   // Envelope, captured verbatim from the webhook for the review queue + audit.
+  // For an `sms` row `fromEmail` holds the sender's PHONE NUMBER (kept for
+  // back-compat with every reader of this required field) — `fromPhone` below
+  // is the honestly-typed field new code should read.
   fromEmail: v.string(),
   toEmail: v.optional(v.string()),
   subject: v.optional(v.string()),
   receivedAt: v.number(),
+
+  // ── SMS/MMS channel (Twilio) ────────────────────────────────────────────────
+  // Absent = `email` (the original, still-default channel — see `receiptInbox.ts`).
+  // `sms` = the Twilio inbound webhook (`http.ts`'s `/twilio/receipts`,
+  // `smsReceipts.ts`).
+  channel: v.optional(v.union(v.literal("email"), v.literal("sms"))),
+  // Twilio's `MessageSid` — the SMS-specific dedup key (`by_sms_sid`), kept
+  // alongside the `emailId` reuse above so an SMS-specific lookup never has to
+  // reason about the shared field's dual meaning.
+  smsMessageSid: v.optional(v.string()),
+  // The sender's phone number (E.164 or whatever Twilio's `From` sent) — the
+  // honest field for an `sms` row. See `fromEmail`'s doc comment above for why
+  // the phone is ALSO mirrored there.
+  fromPhone: v.optional(v.string()),
 
   // Resolved sender + the chapter its transactions live in. Both absent until
   // the action runs; an UNKNOWN sender (no `people` match) is still processed
@@ -1057,6 +1078,9 @@ export const inboundReceipts = defineTable({
 })
   // The idempotency guard: first-sight lookup by the provider's email id.
   .index("by_email_id", ["emailId"])
+  // The idempotency guard for the SMS channel: first-sight lookup by Twilio's
+  // MessageSid (`smsReceipts.ts#recordSmsReceipt`).
+  .index("by_sms_sid", ["smsMessageSid"])
   // The review queue: "every inbound receipt in state X", newest first.
   .index("by_status", ["status"])
   // Scope the review queue to one chapter once the sender is resolved.
