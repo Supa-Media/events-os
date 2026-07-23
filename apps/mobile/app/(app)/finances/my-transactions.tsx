@@ -19,7 +19,6 @@
  * grid uses (exported from `ReconcileList.tsx`) so uploading looks and behaves
  * identically everywhere in the app.
  */
-import { useState } from "react";
 import { Text, View } from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -53,17 +52,14 @@ export default function MyTransactionsScreen() {
   const flagPersonalCharge = useMutation(api.cards.flagPersonalCharge);
   const { run, toast, dismiss } = useActionRunner();
 
-  // Charges flagged personal this session. `personTransactions` doesn't carry
-  // `isPersonal` (it's a plain txn summary), so — same as `MemberCardsView` —
-  // we track what the caller just flagged locally rather than re-deriving it.
-  const [flagged, setFlagged] = useState<Record<string, boolean>>({});
-
   async function handleFlag(id: string) {
-    const res = await run(
+    // No local flagged state needed (R1b follow-up): `personTransactions` rows
+    // now carry `isPersonal`, and the live subscription re-renders the row the
+    // moment the flag commits — including a flag a manager made from Reconcile.
+    await run(
       () => flagPersonalCharge({ transactionId: id as Id<"transactions"> }),
       { errorTitle: "Couldn't flag this charge" },
     );
-    if (res) setFlagged((m) => ({ ...m, [id]: true }));
   }
 
   if (transactions === undefined) {
@@ -109,7 +105,6 @@ export default function MyTransactionsScreen() {
             </TableHeader>
             {transactions.map((t, i) => {
               const status = txnStatusTone(t.status);
-              const isPersonal = flagged[t.id] === true;
               return (
                 <Row key={t.id} last={i === transactions.length - 1}>
                   <Cell flex={2}>
@@ -155,7 +150,7 @@ export default function MyTransactionsScreen() {
                     />
                   </Cell>
                   <Cell width={150} align="right">
-                    {isPersonal ? (
+                    {t.isPersonal ? (
                       <Badge label="Personal" tone="accent" />
                     ) : t.cardLast4 != null ? (
                       // `flagPersonalCharge` (cards.ts) throws NOT_A_CARD_CHARGE

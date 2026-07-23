@@ -30,9 +30,18 @@ import { SandboxModeBanner } from "../../../components/finance/SandboxModeBanner
  */
 const ACCOUNTS_TAB = { label: "Accounts", path: "/finances/accounts" };
 
+// Budgets — "budgets at a glance" — is the one tab BOTH sets carry: read-only
+// spent-vs-room-left visibility is deliberately open to every team member
+// (the FM's top ask — cardholders shouldn't have to ask her), and seat
+// holders get the same tab so both personas are looking at one shared page
+// when a cardholder asks about it. Backed by the ungated-by-design
+// `finances.budgetsGlance` (see its doc comment).
+const BUDGETS_TAB = { label: "Budgets", path: "/finances/budgets" };
+
 const SEAT_TABS: { label: string; path: string }[] = [
   { label: "Dashboard", path: "/finances" },
   { label: "Reconcile", path: "/finances/reconcile" },
+  BUDGETS_TAB,
   { label: "Cards", path: "/finances/cards" },
   { label: "Reimbursements", path: "/finances/reimbursements" },
 ];
@@ -40,6 +49,7 @@ const SEAT_TABS: { label: string; path: string }[] = [
 const MEMBER_TABS: { label: string; path: string }[] = [
   { label: "My Card", path: "/finances/cards" },
   { label: "My Transactions", path: "/finances/my-transactions" },
+  BUDGETS_TAB,
   { label: "Reimbursements", path: "/finances/reimbursements" },
 ];
 

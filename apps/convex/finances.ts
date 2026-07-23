@@ -9,6 +9,8 @@
  *
  * Gating (finance-role ladder viewer < bookkeeper < manager):
  *  - reads                          → requireFinanceRole(..., "viewer")
+ *    (EXCEPTIONS, member-visible by design: `personTransactions`' own-rows
+ *    path and `budgetsGlance` — see their doc comments)
  *  - transaction writes             → requireFinanceRole(..., "bookkeeper")
  *  - fund/category/team/budget CRUD → requireFinanceManager
  *  - central roll-up                → requireFinanceCentral
@@ -50,6 +52,7 @@ import {
   TRANSACTION_SOURCES,
   TRANSACTION_FLOWS,
   TRANSACTION_STATUSES,
+  REPAYMENT_STATUSES,
   BUDGET_SCOPE_LABELS,
   BUDGET_TYPE_LABELS,
   CENTRAL,
@@ -125,6 +128,9 @@ const sourceValidator = v.union(...TRANSACTION_SOURCES.map((s) => v.literal(s)))
 const flowValidator = v.union(...TRANSACTION_FLOWS.map((f) => v.literal(f)));
 const statusValidator = v.union(
   ...TRANSACTION_STATUSES.map((s) => v.literal(s)),
+);
+const repaymentStatusValidator = v.union(
+  ...REPAYMENT_STATUSES.map((s) => v.literal(s)),
 );
 
 // ── Row-shape validators (the read projections) ──────────────────────────────
@@ -229,6 +235,13 @@ const txnSummaryFields = {
   // True iff a receipt is attached (`receiptStorageId != null`) — the truthful
   // signal behind the reconcile "Missing receipt" filter + Receipt column.
   hasReceipt: v.boolean(),
+  // The personal-charge flag (`cards.flagPersonalCharge` / `flagPersonal`) —
+  // an accidental personal charge, excluded from every SPEND total until
+  // repaid. Surfaced (R1b follow-up) so the Reconcile grid + member "My
+  // transactions" can SHOW the flag from the payload instead of tracking
+  // "what did I just flag" in session-local state, which forgot the flag on
+  // every reload and never showed a manager-flagged charge at all.
+  isPersonal: v.boolean(),
   // The card's last-4 (parsed out of the sync description), for display.
   cardLast4: v.union(v.string(), v.null()),
   // Receipt-reminder timeline stage ("none" until a day-1/day-3 nudge fires;
@@ -282,6 +295,11 @@ const reconcileRow = v.object({
   ...txnSummaryFields,
   cardholder: v.union(cardholderRef, v.null()),
   aiSuggestion: v.union(reconcileAiSuggestion, v.null()),
+  // The linked personal repayment's LIVE status (`personalRepayments` via
+  // `repaymentId`) — `null` for an unflagged charge (or a flagged one whose
+  // repayment row vanished). Lets the grid's Personal badge distinguish
+  // "awaiting repayment" from "repaid" instead of one undated flag forever.
+  repaymentStatus: v.union(repaymentStatusValidator, v.null()),
 });
 
 // The reconcile filter pills (server-side, correct across ALL rows).
@@ -649,6 +667,7 @@ function toTxnSummary(tr: Doc<"transactions">) {
     budgetId: tr.budgetId ?? null,
     needsBudget: needsBudget(tr),
     hasReceipt: tr.receiptStorageId != null,
+    isPersonal: tr.isPersonal === true,
     cardLast4: tr.cardLast4 ?? null,
     reminderStage: tr.receiptReminderStage ?? ("none" as const),
   };
@@ -1982,7 +2001,8 @@ function nameCache<
     | "eventTypes"
     | "funds"
     | "budgetCategories"
-    | "budgets",
+    | "budgets"
+    | "personalRepayments",
 >(
   ctx: QueryCtx,
   table: T,
@@ -1994,6 +2014,43 @@ function nameCache<
     const doc = (await ctx.db.get(id)) as Doc<T> | null;
     cache.set(id, doc);
     return doc;
+  };
+}
+
+/**
+ * A per-query cardholder resolver: the `personId` on the txn, else the person
+ * who owns its `cardId`, resolved to `{ personId, name, imageUrl }` with
+ * read-through caching for people / cards / avatar urls across rows. Factored
+ * out of `listReconcile` so the missing-receipt chase view (`receiptChase`)
+ * resolves the SAME "whose charge is this" answer the reconcile Cardholder
+ * column shows — the chase list must never attribute a charge to a different
+ * person than the grid the FM just came from.
+ */
+function makeCardholderResolver(ctx: QueryCtx) {
+  const getPerson = nameCache(ctx, "people");
+  const getCard = nameCache(ctx, "cards");
+  const imageUrlCache = new Map<Id<"_storage">, string | null>();
+  return async (
+    tr: Doc<"transactions">,
+  ): Promise<{ personId: Id<"people">; name: string; imageUrl: string | null } | null> => {
+    let personId = tr.personId ?? null;
+    if (!personId && tr.cardId) {
+      const card = await getCard(tr.cardId);
+      personId = card?.cardholderPersonId ?? null;
+    }
+    if (!personId) return null;
+    const person = await getPerson(personId);
+    if (!person) return null;
+    let imageUrl: string | null = null;
+    if (person.image) {
+      if (imageUrlCache.has(person.image)) {
+        imageUrl = imageUrlCache.get(person.image)!;
+      } else {
+        imageUrl = await ctx.storage.getUrl(person.image);
+        imageUrlCache.set(person.image, imageUrl);
+      }
+    }
+    return { personId, name: person.name, imageUrl };
   };
 }
 
@@ -3832,6 +3889,137 @@ export const personTransactions = query({
     return rows
       .filter((tr) => tr.chapterId === chapterId)
       .map((tr) => toMemberTxnSummary(tr, viewerPersonId));
+  },
+});
+
+// ── Budgets at a glance (member-visible, read-only) ──────────────────────────
+
+// One budget's glance row: name/scope, the cap, spend to date, and the room
+// left. `capCents` is ALWAYS the EFFECTIVE cap (`effectiveCapCents`, B1) — a
+// pending increase is never advertised as already-spendable room.
+const glanceBudgetRow = v.object({
+  id: v.id("budgets"),
+  name: v.string(),
+  // The linked event/project's date (one-time budgets with a live ref only).
+  dateLabel: v.union(v.string(), v.null()),
+  type: typeValidator,
+  cadence: cadenceValidator,
+  capCents: v.number(),
+  spentCents: v.number(),
+  remainingCents: v.number(),
+  pct: v.number(),
+  status: okWarnValidator,
+});
+
+/**
+ * BUDGETS AT A GLANCE — the whole chapter's "how much has been spent on X and
+ * how much room is left", readable by ANY signed-in team member (the FM's top
+ * ask: cardholders shouldn't have to ask her before swiping).
+ *
+ * DELIBERATELY NOT finance-role gated — the one finance read that isn't.
+ * Membership (`readChapterId` — auth + a chapter roster) is the only gate:
+ * this is read-only spend-vs-cap visibility for the ~16 volunteers holding
+ * cards, not a reconcile/edit surface, and per the owner every team member
+ * should see it without holding a `financeRoles` grant. Everything else about
+ * a budget (creating, approving, editing, the transaction detail behind the
+ * numbers) stays on the gated surfaces.
+ *
+ * Shows only budgets with an IN-FORCE cap: approved (`isAttributableBudget`
+ * — the same gate that decides what the "For" picker offers), OR a
+ * previously-approved budget whose increase is mid-review (`approvedCents`
+ * recorded — the `effectiveCapCents` special case; its OLD cap is still the
+ * one in force, and vanishing from the team's view because the FM asked for
+ * more room would read as "the budget's gone"). A never-approved
+ * draft/submission isn't spendable yet, so advertising it would invite
+ * spending against room that doesn't exist. Zero-cap zero-spend stragglers
+ * are hidden (the same WP-wave4 item-9 belt the dashboard cards apply).
+ *
+ * Spend math REUSES the dashboard's own rules, so this view can never
+ * disagree with what the FM sees:
+ *  - one_time (event/project) → LIFETIME linked spend (`budgetId` link +
+ *    `isSpend` — the `oneTimeCardBreakdown`/`actualsForRef` rule);
+ *  - recurring → the CURRENT cadence window via `txnCountsTowardBudget`
+ *    (monthly → this month, quarterly → this quarter, yearly → the year),
+ *    against the full cadence cap.
+ * Current-Eastern-year budgets only, one bounded `loadPeriodTxns` read.
+ */
+export const budgetsGlance = query({
+  args: {},
+  returns: v.object({
+    year: v.number(),
+    month: v.number(),
+    oneTime: v.array(glanceBudgetRow),
+    recurring: v.array(glanceBudgetRow),
+  }),
+  handler: async (ctx) => {
+    const now = easternParts(Date.now());
+    const empty = { year: now.year, month: now.month, oneTime: [], recurring: [] };
+    const chapterId = await readChapterId(ctx);
+    if (!chapterId) return empty;
+    // No requireFinanceRole here — see the doc comment above (member-visible
+    // by design; membership is the gate).
+
+    const sandboxMode = await readSandbox(ctx);
+    const yearTxns = await loadPeriodTxns(ctx, chapterId, now.year, sandboxMode);
+    const budgets = await ctx.db
+      .query("budgets")
+      .withIndex("by_chapter_and_period", (q) =>
+        q.eq("chapterId", chapterId).eq("year", now.year),
+      )
+      .take(ROLLUP_SCAN_LIMIT);
+
+    const getEvent = nameCache(ctx, "events");
+    const getProject = nameCache(ctx, "projects");
+    const oneTime: (typeof glanceBudgetRow.type & { refDate: number | null })[] = [];
+    const recurring: (typeof glanceBudgetRow.type)[] = [];
+    for (const b of budgets) {
+      // Only a budget with an in-force cap is advertised to the whole team:
+      // approved (grandfathered included), or previously approved with an
+      // increase mid-review (`approvedCents` — its old cap still governs).
+      if (!isAttributableBudget(b) && b.approvedCents == null) continue;
+      const isOneTime = effectiveType(b) === "one_time";
+      const spentCents = yearTxns.reduce((sum, tr) => {
+        const counts = isOneTime
+          ? tr.budgetId === b._id && isSpend(tr)
+          : txnCountsTowardBudget(tr, b, now.month);
+        return counts ? sum + tr.amountCents : sum;
+      }, 0);
+      const capCents = effectiveCapCents(b);
+      // WP-wave4 (item 9) mirror: hide the "$0.00 / $0.00" stragglers.
+      if (capCents === 0 && spentCents === 0) continue;
+      const pct = pctOf(spentCents, capCents);
+      const { name, dateLabel, refDate } = await resolveBudgetRef(b, getEvent, getProject);
+      const row = {
+        id: b._id,
+        name,
+        dateLabel,
+        type: effectiveType(b),
+        cadence: b.cadence,
+        capCents,
+        spentCents,
+        remainingCents: capCents - spentCents,
+        pct,
+        status: statusFor(pct),
+      };
+      if (isOneTime) oneTime.push({ ...row, refDate });
+      else recurring.push(row);
+    }
+
+    // One-time: newest ref date first (the events/projects people are spending
+    // on NOW), date-less rows last. Recurring: alphabetical — a short, stable
+    // list of standing buckets.
+    oneTime.sort((a, b) => {
+      if ((a.refDate == null) !== (b.refDate == null)) return a.refDate == null ? 1 : -1;
+      return (b.refDate ?? 0) - (a.refDate ?? 0);
+    });
+    recurring.sort((a, b) => a.name.localeCompare(b.name));
+
+    return {
+      year: now.year,
+      month: now.month,
+      oneTime: oneTime.map(({ refDate: _refDate, ...row }) => row),
+      recurring,
+    };
   },
 });
 
@@ -7125,32 +7313,20 @@ export const listReconcile = query({
     const selected = all.filter(predicates[filter]);
 
     // Resolve the cardholder only for the rows we actually return (bounded
-    // `storage.getUrl` calls), caching people / cards / image urls across rows.
-    const getPerson = nameCache(ctx, "people");
-    const getCard = nameCache(ctx, "cards");
+    // `storage.getUrl` calls), caching people / cards / image urls across rows
+    // (`makeCardholderResolver` — shared with the `receiptChase` view).
+    const resolveCardholder = makeCardholderResolver(ctx);
     // Same read-through caching for the AI suggestion's resolved display names.
     const getFund = nameCache(ctx, "funds");
     const getCategory = nameCache(ctx, "budgetCategories");
-    const imageUrlCache = new Map<Id<"_storage">, string | null>();
-    const resolveCardholder = async (tr: Doc<"transactions">) => {
-      let personId = tr.personId ?? null;
-      if (!personId && tr.cardId) {
-        const card = await getCard(tr.cardId);
-        personId = card?.cardholderPersonId ?? null;
-      }
-      if (!personId) return null;
-      const person = await getPerson(personId);
-      if (!person) return null;
-      let imageUrl: string | null = null;
-      if (person.image) {
-        if (imageUrlCache.has(person.image)) {
-          imageUrl = imageUrlCache.get(person.image)!;
-        } else {
-          imageUrl = await ctx.storage.getUrl(person.image);
-          imageUrlCache.set(person.image, imageUrl);
-        }
-      }
-      return { personId, name: person.name, imageUrl };
+    // The linked personal repayment's live status (`repaymentId` →
+    // `personalRepayments.status`) — resolved per returned row so the grid's
+    // Personal badge can read "Repaid" once the repayment settles.
+    const getRepayment = nameCache(ctx, "personalRepayments");
+    const resolveRepaymentStatus = async (tr: Doc<"transactions">) => {
+      if (!tr.repaymentId) return null;
+      const rep = await getRepayment(tr.repaymentId);
+      return rep?.status ?? null;
     };
 
     // The AI suggestion, resolved to display names — only for a still-
@@ -7189,9 +7365,136 @@ export const listReconcile = query({
         ...toTxnSummary(tr),
         cardholder: await resolveCardholder(tr),
         aiSuggestion: await resolveAiSuggestion(tr),
+        repaymentStatus: await resolveRepaymentStatus(tr),
       });
     }
     return { rows, counts };
+  },
+});
+
+// ── Missing-receipt chase (the FM's "who do I nudge" list) ───────────────────
+
+// One charge still owed a receipt, projected for the chase list — read-only
+// display fields plus the reminder-timeline stage (same meaning as
+// `txnSummaryFields.reminderStage`) so the list can show how loudly each
+// charge has already been nudged.
+const chaseTxn = v.object({
+  id: v.id("transactions"),
+  postedAt: v.number(),
+  amountCents: v.number(),
+  merchantName: v.union(v.string(), v.null()),
+  description: v.union(v.string(), v.null()),
+  cardLast4: v.union(v.string(), v.null()),
+  reminderStage: v.union(
+    v.literal("none"),
+    v.literal("flagged"),
+    v.literal("escalated"),
+  ),
+});
+
+// One cardholder's bundle of receipt-owing charges. `personId` is `null` for
+// the "Unattributed" group (a charge that resolves to no cardholder at all).
+const chaseGroup = v.object({
+  personId: v.union(v.id("people"), v.null()),
+  name: v.string(),
+  imageUrl: v.union(v.string(), v.null()),
+  totalCents: v.number(),
+  transactions: v.array(chaseTxn),
+});
+
+/**
+ * MISSING-RECEIPT CHASE — every charge still owed a receipt, grouped by
+ * cardholder: the FM's ready-made "who do I nudge, and for what" list, so
+ * chasing 16 volunteers doesn't mean re-deriving the same answer from the
+ * reconcile grid's flat Missing-receipt filter each week.
+ *
+ * "Needs a receipt" here = a SPEND charge (`isSpend` — transfers / excluded /
+ * personal rows never owe one) with no receipt attached AND not yet
+ * `reconciled`. Deliberately NARROWER than the reconcile grid's
+ * `missing_receipt` pill (which keeps reconciled rows): a treasurer who
+ * closed a row receipt-less made a call — there's nobody left to chase.
+ *
+ * Grouping resolves the cardholder exactly like the reconcile Cardholder
+ * column (`makeCardholderResolver`: the txn's `personId`, else the owner of
+ * its `cardId`); a charge resolving to nobody lands in the "Unattributed"
+ * group (`personId: null`). Within a group charges sort by amount DESC (chase
+ * the big ones first); groups sort by their total DESC, with Unattributed
+ * pinned LAST regardless of size — there's no one to chase for it.
+ *
+ * Viewer+ gated (the same floor as `listReconcile`), single bounded scan over
+ * `by_chapter_and_postedAt` (`ROLLUP_SCAN_LIMIT`, the reconcile inbox bound).
+ */
+export const receiptChase = query({
+  args: {},
+  returns: v.object({
+    groups: v.array(chaseGroup),
+    totalCents: v.number(),
+    count: v.number(),
+  }),
+  handler: async (ctx) => {
+    const chapterId = await readChapterId(ctx);
+    if (!chapterId) return { groups: [], totalCents: 0, count: 0 };
+    await requireFinanceRole(ctx, chapterId, "viewer");
+
+    const sandboxMode = await readSandbox(ctx);
+    const owing = (
+      await ctx.db
+        .query("transactions")
+        .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", chapterId))
+        .order("desc")
+        .take(ROLLUP_SCAN_LIMIT)
+    )
+      .filter((tr) => txnMatchesMode(tr, sandboxMode))
+      .filter(
+        (tr) =>
+          isSpend(tr) && tr.status !== "reconciled" && tr.receiptStorageId == null,
+      );
+
+    const resolveCardholder = makeCardholderResolver(ctx);
+    const byHolder = new Map<string, typeof chaseGroup.type>();
+    for (const tr of owing) {
+      const holder = await resolveCardholder(tr);
+      const key = holder?.personId ?? "unattributed";
+      let group = byHolder.get(key);
+      if (!group) {
+        group = {
+          personId: holder?.personId ?? null,
+          name: holder?.name ?? "Unattributed",
+          imageUrl: holder?.imageUrl ?? null,
+          totalCents: 0,
+          transactions: [],
+        };
+        byHolder.set(key, group);
+      }
+      group.totalCents += tr.amountCents;
+      group.transactions.push({
+        id: tr._id,
+        postedAt: tr.postedAt,
+        amountCents: tr.amountCents,
+        merchantName: tr.merchantName ?? null,
+        description: tr.description ?? null,
+        cardLast4: tr.cardLast4 ?? null,
+        reminderStage: tr.receiptReminderStage ?? ("none" as const),
+      });
+    }
+
+    const groups = [...byHolder.values()];
+    for (const g of groups) {
+      g.transactions.sort((a, b) => b.amountCents - a.amountCents);
+    }
+    groups.sort((a, b) => {
+      // Unattributed last, always (nobody to chase); otherwise biggest total first.
+      if ((a.personId == null) !== (b.personId == null)) {
+        return a.personId == null ? 1 : -1;
+      }
+      return b.totalCents - a.totalCents;
+    });
+
+    return {
+      groups,
+      totalCents: groups.reduce((s, g) => s + g.totalCents, 0),
+      count: owing.length,
+    };
   },
 });
 
