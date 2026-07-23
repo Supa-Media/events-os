@@ -14,10 +14,9 @@
  */
 import { Pressable, Text, View } from "react-native";
 import { formatCents } from "@events-os/shared";
-import { Icon } from "../../ui";
+import { Icon, InfoTooltip } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { GOLD } from "./chartColors";
-import { InfoTooltip } from "../ui";
 import type { CategoryRollupResult } from "./categoryRollup";
 
 export function CategoryBars({
