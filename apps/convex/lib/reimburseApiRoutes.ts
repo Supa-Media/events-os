@@ -166,6 +166,13 @@ export function registerReimburseApiRoutes(http: HttpRouter): void {
         // Required (the "why") — the mutation rejects a blank.
         purpose: String(body.purpose ?? ""),
         requestPreApproval: body.requestPreApproval === true,
+        // When the claimant plans to buy (ms) — pre-approval asks only; the
+        // mutation rejects one on a plain submission (and sanity-checks the
+        // window server-side).
+        plannedPurchaseDate:
+          body.plannedPurchaseDate != null && body.plannedPurchaseDate !== ""
+            ? Math.round(Number(body.plannedPurchaseDate))
+            : undefined,
         lines: toLines(body.lines),
         // Never the raw routing/account numbers — only the Increase
         // reference id + a display last-4 land in Convex.

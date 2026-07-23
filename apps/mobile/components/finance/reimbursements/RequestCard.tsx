@@ -53,6 +53,14 @@ type Payout = FunctionReturnType<typeof api.increase.listPayouts>[number];
  *  optional so the column degrades to an em dash until it does. */
 type ReimbursementLineWithDate = ReimbursementLine & { transactionDate?: number };
 
+/** `list`'s row shape, extended locally with `plannedPurchaseDate` (a
+ *  pre-approval ask's "when the claimant plans to buy") — same generated-type
+ *  lag as `ReimbursementLineWithDate` above. Kept optional so the row simply
+ *  omits the line until the regenerated type carries it. */
+type ReimbursementRowWithPlanned = ReimbursementRow & {
+  plannedPurchaseDate?: number | null;
+};
+
 type Props = {
   row: ReimbursementRow;
   /** The live payout for this request, if any (drives the read-only hint). */
@@ -95,6 +103,9 @@ export function RequestCard({
   const status = STATUS_BADGE[row.status];
   const receipts = RECEIPTS_BADGE[row.receiptsState];
   const actionable = isActionable(row.status);
+  // A pre-approval ask's planned purchase date (see the local type above).
+  const plannedPurchaseDate = (row as ReimbursementRowWithPlanned)
+    .plannedPurchaseDate;
   const partiallyApproved =
     row.approvedCents != null && row.approvedCents !== row.totalCents;
 
@@ -132,6 +143,17 @@ export function RequestCard({
                 {row.verifiedRosterName === row.requesterName
                   ? "Verified roster identity"
                   : `Roster: ${row.verifiedRosterName}`}
+              </Text>
+            ) : null}
+            {/* Pre-approval-to-spend: when the claimant plans to buy — shown
+                only while the pre-approval decision / spend is still ahead
+                (pending_preapproval, or preapproved awaiting receipts), so an
+                approver can gauge how urgent the ask is. */}
+            {plannedPurchaseDate != null &&
+            (row.status === "pending_preapproval" ||
+              row.status === "preapproved") ? (
+              <Text className="mt-0.5 text-xs text-muted">
+                Plans to buy {shortDate(plannedPurchaseDate)}
               </Text>
             ) : null}
           </View>

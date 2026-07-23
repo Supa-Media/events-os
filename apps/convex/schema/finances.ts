@@ -483,6 +483,18 @@ export const reimbursementRequests = defineTable({
   identityVerified: v.optional(v.boolean()),
 
   purpose: v.optional(v.string()),
+  // Pre-approval-to-spend: when the claimant PLANS to make the purchase (ms
+  // timestamp, noon-local by convention like line `transactionDate`). Only
+  // ever set on a request created with `requestPreApproval` (enforced in
+  // `createReimbursement`) — a normal submission is for money already spent,
+  // so a "planned" date is meaningless there.
+  plannedPurchaseDate: v.optional(v.number()),
+  // When the ONE-SHOT "your planned purchase date has passed — submit your
+  // receipts" follow-up email was sent (the daily reimbursement-reminder
+  // cron). `undefined` = not sent yet; its presence is what makes the
+  // follow-up fire exactly once (the recurring staleness nag is separate and
+  // keeps applying afterwards).
+  purchaseFollowUpSentAt: v.optional(v.number()),
   // What the spend was for (categorization is per line item). Mutually
   // exclusive (enforced in `createReimbursement`): at most ONE of
   // event/project/budget. `budgetId` must be a RECURRING budget belonging to

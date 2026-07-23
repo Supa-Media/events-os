@@ -320,6 +320,7 @@ async function submitTwoLine(
     payeePhone: string;
     purpose: string;
     requestPreApproval: boolean;
+    plannedPurchaseDate: number;
     clientIp: string;
     routingNumber: string;
     accountNumber: string;
@@ -343,6 +344,7 @@ async function submitTwoLine(
     payeePhone: extra.payeePhone,
     purpose: extra.purpose ?? "Event supplies",
     requestPreApproval: extra.requestPreApproval,
+    plannedPurchaseDate: extra.plannedPurchaseDate,
     clientIp: extra.clientIp,
     externalAccountId: bank.externalAccountId,
     bankAccountLast4: bank.last4,
@@ -361,6 +363,7 @@ async function submitInApp(
     payeePhone: string;
     purpose: string;
     requestPreApproval: boolean;
+    plannedPurchaseDate: number;
     eventId: Id<"events">;
     projectId: Id<"projects">;
     budgetId: Id<"budgets">;
@@ -386,6 +389,7 @@ async function submitInApp(
     payeePhone: extra.payeePhone,
     purpose: extra.purpose ?? "Event supplies",
     requestPreApproval: extra.requestPreApproval,
+    plannedPurchaseDate: extra.plannedPurchaseDate,
     eventId: extra.eventId,
     projectId: extra.projectId,
     budgetId: extra.budgetId,
@@ -2270,6 +2274,298 @@ describe("reminder sweep", () => {
     await expect(
       t.action(internal.reimbursements.sendReimbursementReminders, {}),
     ).resolves.toBeNull();
+  });
+});
+
+describe("planned purchase date (pre-approval asks)", () => {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  test("stored on a public pre-approval submit", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    const planned = Date.now() + 7 * DAY_MS;
+    const { token } = await submitTwoLine(s, "nyc", {
+      requestPreApproval: true,
+      plannedPurchaseDate: planned,
+    });
+    const req = await run(s.t, (ctx) =>
+      ctx.db
+        .query("reimbursementRequests")
+        .withIndex("by_token", (q) => q.eq("token", token))
+        .unique(),
+    );
+    expect(req?.status).toBe("pending_preapproval");
+    expect(req?.plannedPurchaseDate).toBe(planned);
+  });
+
+  test("stored on an in-app pre-approval submit", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, { name: "Dana Rivers", userId: s.userId });
+    const planned = Date.now() + 3 * DAY_MS;
+    const { reimbursementId } = await submitInApp(s.as, s, {
+      requestPreApproval: true,
+      plannedPurchaseDate: planned,
+    });
+    const req = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
+    expect(req?.status).toBe("pending_preapproval");
+    expect(req?.plannedPurchaseDate).toBe(planned);
+  });
+
+  test("rejected on a plain submission (no pre-approval ask)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    await expect(
+      submitTwoLine(s, "nyc", {
+        plannedPurchaseDate: Date.now() + 7 * DAY_MS,
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("rejected outside the sanity window (past, or more than a year out)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    for (const bad of [Date.now() - 3 * DAY_MS, Date.now() + 400 * DAY_MS]) {
+      await expect(
+        submitTwoLine(s, "nyc", {
+          requestPreApproval: true,
+          plannedPurchaseDate: bad,
+        }),
+      ).rejects.toBeInstanceOf(ConvexError);
+    }
+  });
+
+  test("surfaces in the manager queue's list + get (null when unset)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    const planned = Date.now() + 7 * DAY_MS;
+    await submitTwoLine(s, "nyc", {
+      requestPreApproval: true,
+      plannedPurchaseDate: planned,
+    });
+    await submitTwoLine(s, "nyc", { payeeEmail: "other@example.com" });
+    const person = await seedPerson(s, { name: "Manager", userId: s.userId });
+    await grantRole(s, person, "viewer");
+
+    const rows = await s.as.query(api.reimbursements.list, {});
+    const withDate = rows.find((r) => r.status === "pending_preapproval")!;
+    const withoutDate = rows.find((r) => r.status === "submitted")!;
+    expect(withDate.plannedPurchaseDate).toBe(planned);
+    expect(withoutDate.plannedPurchaseDate).toBeNull();
+
+    const detail = await s.as.query(api.reimbursements.get, {
+      reimbursementId: withDate._id,
+    });
+    expect(detail.plannedPurchaseDate).toBe(planned);
+  });
+});
+
+describe("planned-purchase receipt follow-up (reminder sweep)", () => {
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  /** Insert a request (+ two lines) DIRECTLY — the sweep tests need full
+   *  control of `plannedPurchaseDate` (already in the past), receipts, and
+   *  the sent-stamp, states the submit path (which validates the date window
+   *  and requires receipts) can't produce. Defaults to the exact "due a
+   *  follow-up" shape: `preapproved`, planned date passed, no receipts, not
+   *  yet stamped. */
+  async function seedPreapproved(
+    s: ChapterSetup,
+    opts: Partial<{
+      status: "pending_preapproval" | "preapproved" | "submitted" | "approved";
+      plannedPurchaseDate: number | null;
+      purchaseFollowUpSentAt: number;
+      withReceipts: boolean;
+      payeeEmail: string;
+      submittedAt: number;
+    }> = {},
+  ): Promise<Id<"reimbursementRequests">> {
+    const now = Date.now();
+    const reimbursementId = await run(s.t, (ctx) =>
+      ctx.db.insert("reimbursementRequests", {
+        chapterId: s.chapterId,
+        token: `tok-${Math.random().toString(36).slice(2)}`,
+        status: opts.status ?? "preapproved",
+        payeeName: "Dana Rivers",
+        payeeEmail: opts.payeeEmail ?? "dana@example.com",
+        purpose: "Planned supplies",
+        totalCents: 2000,
+        plannedPurchaseDate:
+          opts.plannedPurchaseDate === null
+            ? undefined
+            : opts.plannedPurchaseDate ?? now - DAY_MS,
+        purchaseFollowUpSentAt: opts.purchaseFollowUpSentAt,
+        submittedAt: opts.submittedAt ?? now,
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+    for (let i = 0; i < 2; i++) {
+      const receiptStorageId = opts.withReceipts
+        ? await storeBlob(s.t)
+        : undefined;
+      await run(s.t, (ctx) =>
+        ctx.db.insert("reimbursementLineItems", {
+          chapterId: s.chapterId,
+          reimbursementId,
+          description: i === 0 ? "Gaffer tape" : "Snacks",
+          amountCents: 1000,
+          receiptStorageId,
+          order: i,
+          createdAt: now,
+        }),
+      );
+    }
+    return reimbursementId;
+  }
+
+  function listFollowUps(s: ChapterSetup) {
+    return s.t.query(internal.reimbursements.listPlannedPurchaseFollowUps, {
+      chapterId: s.chapterId,
+      now: Date.now(),
+    });
+  }
+
+  test("due once the planned date passes with no receipts on any line", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    const planned = Date.now() - DAY_MS;
+    await seedPreapproved(s, { plannedPurchaseDate: planned });
+    const due = await listFollowUps(s);
+    expect(due.length).toBe(1);
+    expect(due[0].payeeEmail).toBe("dana@example.com");
+    expect(due[0].plannedPurchaseDate).toBe(planned);
+    expect(due[0].chapterSlug).toBe("nyc");
+  });
+
+  test("not due before the planned date", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPreapproved(s, { plannedPurchaseDate: Date.now() + DAY_MS });
+    expect(await listFollowUps(s)).toEqual([]);
+  });
+
+  test("skipped when any line already bears a receipt", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPreapproved(s, { withReceipts: true });
+    expect(await listFollowUps(s)).toEqual([]);
+  });
+
+  test("skipped when the follow-up was already sent (exactly-once guard)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPreapproved(s, { purchaseFollowUpSentAt: Date.now() - DAY_MS });
+    expect(await listFollowUps(s)).toEqual([]);
+  });
+
+  test("only preapproved requests with a planned date qualify", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // Wrong status (still awaiting the pre-approval decision / already past
+    // the receipt stage), or no planned date at all — none are due.
+    await seedPreapproved(s, { status: "pending_preapproval" });
+    await seedPreapproved(s, { status: "approved" });
+    await seedPreapproved(s, { plannedPurchaseDate: null });
+    expect(await listFollowUps(s)).toEqual([]);
+  });
+
+  test("markPurchaseFollowUpSent no-ops once the request moved on", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const reimbursementId = await seedPreapproved(s, { status: "approved" });
+    await t.mutation(internal.reimbursements.markPurchaseFollowUpSent, {
+      reimbursementId,
+    });
+    const req = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
+    expect(req?.purchaseFollowUpSentAt).toBeUndefined();
+  });
+
+  // ── The sweep action end-to-end (Resend mocked) ────────────────────────────
+
+  /** Mock `POST https://api.resend.com/emails`, recording every send. The
+   *  seeded requests never touch Increase, so no `/external_accounts` branch
+   *  is needed here (unlike `mockIncreaseAndResend` below). */
+  function mockResend(): Array<{ to: string; subject: string }> {
+    const resendCalls: Array<{ to: string; subject: string }> = [];
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const path = String(input);
+      if (path.includes("api.resend.com/emails")) {
+        const body = init?.body ? JSON.parse(String(init.body)) : {};
+        resendCalls.push({ to: body.to, subject: body.subject });
+        return new Response(JSON.stringify({ id: "email_1" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`unexpected fetch: ${path}`);
+    }) as unknown as typeof fetch;
+    return resendCalls;
+  }
+
+  const PREV_RESEND_KEY = process.env.RESEND_API_KEY;
+  afterEach(() => {
+    if (PREV_RESEND_KEY === undefined) delete process.env.RESEND_API_KEY;
+    else process.env.RESEND_API_KEY = PREV_RESEND_KEY;
+  });
+
+  const FOLLOW_UP_SUBJECT = "time to submit your receipts";
+
+  test("emails the claimant EXACTLY once and stamps the send; the staleness nag keeps applying", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    const reimbursementId = await seedPreapproved(s);
+    process.env.RESEND_API_KEY = "test_key";
+    const resendCalls = mockResend();
+
+    await t.action(internal.reimbursements.sendReimbursementReminders, {});
+
+    // Run 1: the one-shot follow-up + the (receipt-missing) staleness nag —
+    // both to the claimant, distinguished by subject.
+    const followUps = resendCalls.filter((c) =>
+      c.subject.includes(FOLLOW_UP_SUBJECT),
+    );
+    expect(followUps.length).toBe(1);
+    expect(followUps[0].to).toBe("dana@example.com");
+    const req = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
+    expect(typeof req?.purchaseFollowUpSentAt).toBe("number");
+
+    // Run 2: the follow-up does NOT repeat…
+    resendCalls.length = 0;
+    await t.action(internal.reimbursements.sendReimbursementReminders, {});
+    expect(
+      resendCalls.filter((c) => c.subject.includes(FOLLOW_UP_SUBJECT)).length,
+    ).toBe(0);
+    // …but the recurring staleness nag still fires for the same request.
+    expect(
+      resendCalls.filter((c) => c.subject.includes("is still pending")).length,
+    ).toBe(1);
+  });
+
+  test("a request whose planned date hasn't passed gets no follow-up from the sweep", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    const reimbursementId = await seedPreapproved(s, {
+      plannedPurchaseDate: Date.now() + DAY_MS,
+      withReceipts: true, // also keeps the staleness nag quiet
+    });
+    process.env.RESEND_API_KEY = "test_key";
+    const resendCalls = mockResend();
+
+    await t.action(internal.reimbursements.sendReimbursementReminders, {});
+    expect(resendCalls.length).toBe(0);
+    const req = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
+    expect(req?.purchaseFollowUpSentAt).toBeUndefined();
   });
 });
 
