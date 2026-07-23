@@ -213,6 +213,10 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         caption:
           "Uploading the receipt is the only move that matters — it clears the reminder and the lock, whichever stage you're at.",
       },
+      {
+        kind: "tip",
+        text: "**Don't have the app handy?** Forward or take a photo and email the receipt to **receipts@reply.publicworship.life** — it lands in the same place as an in-app upload. Your chapter's bookkeepers see and manage every receipt — emailed or uploaded — in one place: Finances → Receipts.",
+      },
     ],
     quiz: [
       {
