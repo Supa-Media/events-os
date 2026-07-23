@@ -549,7 +549,11 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "You chase the exceptions, not everyone",
-        text: "Most receipts show up before the reminders even matter. Reconcile's Missing receipt filter is your actual worklist — a handful of stragglers each month, not the whole roster.",
+        text: "Most receipts show up before the reminders even matter. Chase Receipts (reached from Reconcile) is your actual worklist, grouped by cardholder — a handful of stragglers each month, not the whole roster.",
+      },
+      {
+        kind: "p",
+        text: "For that handful, you don't have to text them yourself anymore. Chase Receipts has a **Send reminder** button on each cardholder's group (and a **Remind all** for the whole list) — one click re-sends the same reminder email the automated timeline sends, plus a text if they have a phone on file. It's capped at once per cardholder per day, so mashing the button can't spam anyone; a nudge already sent today just reads \"Nudged today\" instead of firing again.",
       },
       {
         kind: "reveal",
@@ -588,13 +592,26 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt: "What's the Treasurer's actual daily worklist for receipts?",
         options: [
           "Personally message every cardholder every day",
-          "The Missing receipt filter in Reconcile — the handful of stragglers, not the whole roster",
+          "Chase Receipts — the handful of stragglers each month, not the whole roster",
           "A shared spreadsheet outside the app",
           "There isn't one; it's fully automatic",
         ],
         answerIndex: 1,
         explanation:
-          "The reminder timeline handles the routine cases; the filter is where you spend your actual attention.",
+          "The reminder timeline handles the routine cases; Chase Receipts is where you spend your actual attention.",
+      },
+      {
+        prompt:
+          "A straggler hasn't uploaded a receipt and you don't want to wait for the next automated reminder. What do you do?",
+        options: [
+          "Text them yourself, outside the app",
+          "Click Send reminder on their group in Chase Receipts",
+          "Manually lock their card early",
+          "Nothing can be done before the next scheduled reminder",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Send reminder (and Remind all for the whole list) fires the same reminder email — plus a text if they have a phone on file — right from Chase Receipts, capped at once per cardholder per day.",
       },
     ],
   },

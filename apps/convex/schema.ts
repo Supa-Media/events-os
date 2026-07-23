@@ -69,6 +69,7 @@ import {
   webhookEvents,
   reimbursementSubmitAttempts,
   cardDetailsRevealAttempts,
+  receiptNudgeAttempts,
   financeSettings,
   inboundReceipts,
   receipts,
@@ -253,6 +254,9 @@ const schema = defineSchema({
   reimbursementSubmitAttempts,
   // WP-C.3: rate limiter for the HOLDER-ONLY card-details reveal (add-to-wallet).
   cardDetailsRevealAttempts,
+  // Rate limiter for the FM-only manual Chase Receipts "Send reminder"/
+  // "Remind all" nudge — at most one per cardholder per 24h.
+  receiptNudgeAttempts,
   financeSettings,
   // Inbound email → OCR → reconcile pipeline (receipt backfill). See receiptInbox.ts.
   inboundReceipts,

@@ -115,6 +115,14 @@
  * consumables/low-stock, and what belongs in the registry. The
  * `logistics-lead` course gained the new module (its description finally
  * cashes the "gains a keeping-inventory module" promise). Total: 98 sections.
+ *
+ * Chase Receipts manual nudge (the in-app "Send reminder"/"Remind all"
+ * buttons, `cards.sendReceiptNudge`): `finance-chasing-receipts` gained a
+ * paragraph on the buttons (one click re-sends the same reminder email +
+ * best-effort text, rate-limited to once per cardholder per day) and one quiz
+ * question on when to use them instead of texting a cardholder off-app —
+ * quiz length 3→4 (bumped below). Its title, minutes, and placement are
+ * unchanged. No slugs, sections, or courses moved; total stays 98 sections.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -707,7 +715,7 @@ const EXPECTED_SECTIONS: {
     slug: "finance-chasing-receipts",
     title: "Chasing receipts",
     minutes: 3,
-    quizLength: 3,
+    quizLength: 4,
     optional: false,
     capstoneKind: null,
   },
