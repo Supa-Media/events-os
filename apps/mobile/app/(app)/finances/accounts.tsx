@@ -57,6 +57,7 @@ import { useActionRunner } from "../../../lib/useActionToast";
 import { AccountRow } from "../../../components/finance/accounts/AccountRow";
 import { ConnectPanel } from "../../../components/finance/accounts/ConnectPanel";
 import { AiUsageSection } from "../../../components/finance/accounts/AiUsageSection";
+import { FinancePolicySection } from "../../../components/finance/accounts/FinancePolicySection";
 
 const ONBOARDING_BADGE: Record<
   "not_started" | "pending" | "active" | "disabled",
@@ -209,6 +210,11 @@ function AccountsBody() {
         )}
 
         <AiUsageSection />
+
+        <SectionHeader title="Receipt & card policy" />
+        <Card>
+          <FinancePolicySection />
+        </Card>
 
         <SectionHeader title="Developer / testing" />
         <Card>
