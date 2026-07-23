@@ -78,7 +78,11 @@ import {
 import { readSandbox } from "./financeSettings";
 import { MAX_MILESTONES } from "./backerMilestones";
 import { gatherForPickerCandidates } from "./lib/forPickerCandidates";
-import { isMissingReceiptCharge, unlockCardIfReceiptsResolved } from "./cards";
+import {
+  isMissingReceiptCharge,
+  unlockCardIfReceiptsResolved,
+  convertChargeToPersonalRepayment,
+} from "./cards";
 import { queueSuggestionOnIngest } from "./aiCodingData";
 import {
   getChapterIdOrNull,
@@ -3889,6 +3893,34 @@ export const personTransactions = query({
     return rows
       .filter((tr) => tr.chapterId === chapterId)
       .map((tr) => toMemberTxnSummary(tr, viewerPersonId));
+  },
+});
+
+/**
+ * Member-visible spend-category list for the caller's OWN chapter — powers the
+ * cardholder's `submitOwnCharge` category picker on the "My transactions" tab.
+ * DELIBERATELY NOT finance-role gated (same posture as `budgetsGlance`): a
+ * cardholder with no finance seat still needs a category list to pre-fill the
+ * bookkeeper's review, and membership (`readChapterId`) is the only gate.
+ * Returns id + name only (active categories, sorted) — no spend/attribution
+ * detail; `listCategories` (viewer-gated, richer) stays the reconcile surface.
+ */
+export const myChargeCategories = query({
+  args: {},
+  returns: v.array(v.object({ id: v.id("budgetCategories"), name: v.string() })),
+  handler: async (
+    ctx,
+  ): Promise<{ id: Id<"budgetCategories">; name: string }[]> => {
+    const chapterId = await readChapterId(ctx);
+    if (!chapterId) return [];
+    const cats = await ctx.db
+      .query("budgetCategories")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .take(ROLLUP_SCAN_LIMIT);
+    return cats
+      .filter((c) => c.isActive !== false)
+      .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+      .map((c) => ({ id: c._id, name: c.name }));
   },
 });
 
@@ -8100,6 +8132,141 @@ export const setTransactionCategory = mutation({
     // mirrors `categorizeTransaction`'s own rule.
     patch.aiSuggestion = undefined;
     await ctx.db.patch(args.transactionId, patch);
+    return null;
+  },
+});
+
+/**
+ * CARDHOLDER SELF-SERVICE ("Concur-style" pre-fill) — the cardholder who OWNS
+ * a card charge sets its spend `categoryId` and a freeform `note` (the who/why
+ * explanation), and optionally flags it personal, to PRE-FILL the bookkeeper's
+ * Reconcile review before they ever see the row.
+ *
+ * Deliberately far NARROWER than `categorizeTransaction` (bookkeeper-gated,
+ * reattributes fund/team/budget): this path can ONLY touch `categoryId` and
+ * `note` of the caller's OWN charge — never `fundId`/`teamId`/`budgetId`/
+ * `amountCents`, and `status` only via the same unreviewed→categorized advance
+ * the reconcile paths do. It is NOT finance-role gated (a bookkeeper already
+ * has `categorizeTransaction`; this is additive for a plain member).
+ *
+ * AUTH mirrors `cards.flagPersonalCharge`'s cardholder check: the caller must
+ * be the `cardholderPersonId` of the charge's card (get card → cardholder →
+ * compare to the caller's finance `access.personId`). Only a card charge
+ * (`cardId` set) owned by the caller qualifies — anything else is
+ * NOT_A_CARD_CHARGE / FORBIDDEN.
+ *
+ * RECONCILED LOCK: a `status:"reconciled"` row is refused (the Treasurer has
+ * closed it) — the same precedent `setTransactionCategory` documents for its
+ * event-lead path. The personal flag REUSES `cards`'s shared
+ * `convertChargeToPersonalRepayment` (no duplicate `personalRepayments`
+ * insert) and is idempotent.
+ */
+export const submitOwnCharge = mutation({
+  args: {
+    transactionId: v.id("transactions"),
+    // `undefined` leaves the field unchanged; `null` clears it; an id sets it
+    // (a spend category in the CALLER's own chapter).
+    categoryId: v.optional(v.union(v.id("budgetCategories"), v.null())),
+    note: v.optional(v.union(v.string(), v.null())),
+    flagPersonal: v.optional(v.boolean()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const access = await getFinanceRole(ctx, chapterId);
+
+    const txn = (await ctx.db.get(args.transactionId)) as Doc<"transactions"> | null;
+    if (!txn || txn.chapterId !== chapterId) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Transaction not found in your chapter.",
+      });
+    }
+    if (!txn.cardId) {
+      throw new ConvexError({
+        code: "NOT_A_CARD_CHARGE",
+        message: "Only a card charge can be submitted this way.",
+      });
+    }
+    const card = await ctx.db.get(txn.cardId);
+    if (!card || card.chapterId !== chapterId) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Card not found in your chapter.",
+      });
+    }
+    // Auth: the cardholder themselves ONLY (mirrors `flagPersonalCharge`'s
+    // `isCardholder`) — this is the member's own-charge surface, not a
+    // manager tool. A bookkeeper reattributes via `categorizeTransaction`.
+    const isCardholder =
+      access.personId != null && access.personId === card.cardholderPersonId;
+    if (!isCardholder) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message: "Only the cardholder can submit details for this charge.",
+      });
+    }
+    // RECONCILED LOCK: the Treasurer has closed this row.
+    if (txn.status === "reconciled") {
+      throw new ConvexError({
+        code: "RECONCILED_LOCKED",
+        message:
+          "This charge is closed by your treasurer — ask them to reopen it before changing it.",
+      });
+    }
+
+    const patch: {
+      categoryId?: Id<"budgetCategories">;
+      note?: string;
+      status?: "categorized";
+      aiSuggestion?: undefined;
+    } = {};
+    if (args.categoryId !== undefined) {
+      if (args.categoryId) {
+        // Category must belong to the caller's OWN chapter (never central, never
+        // another chapter's) — the same verify pattern the reconcile paths use.
+        await requireInCallerChapter(
+          ctx,
+          chapterId,
+          "budgetCategories",
+          args.categoryId,
+          "Category",
+        );
+        patch.categoryId = args.categoryId;
+      } else {
+        patch.categoryId = undefined; // clear
+      }
+      // A human just coded this manually — clear any stored AI suggestion so it
+      // can't later resurface via `acceptSuggestion` and clobber it (mirrors
+      // `categorizeTransaction`/`setTransactionCategory`).
+      patch.aiSuggestion = undefined;
+    }
+    if (args.note !== undefined) {
+      const trimmed = args.note?.trim() || null;
+      if (trimmed && trimmed.length > MAX_NOTE_LENGTH) {
+        throw new ConvexError({
+          code: "NOTE_TOO_LONG",
+          message: `A note can't be longer than ${MAX_NOTE_LENGTH} characters.`,
+        });
+      }
+      patch.note = trimmed ?? undefined;
+    }
+    // Advance unreviewed → categorized once a category makes the row "coded" —
+    // the SAME (and only) status transition `categorizeTransaction`/
+    // `setTransactionCategory` do; never any other.
+    const nextCategoryId = "categoryId" in patch ? patch.categoryId : txn.categoryId;
+    if (nextCategoryId && txn.status === "unreviewed") patch.status = "categorized";
+    if (Object.keys(patch).length > 0) {
+      await ctx.db.patch(args.transactionId, patch);
+    }
+
+    // Optional personal flag — REUSE the shared conversion core (no duplicate
+    // `personalRepayments` insert). Idempotent: re-submitting an already
+    // personal charge is a no-op. Re-read so the helper sees the patch above.
+    if (args.flagPersonal === true) {
+      const fresh = (await ctx.db.get(args.transactionId)) as Doc<"transactions">;
+      await convertChargeToPersonalRepayment(ctx, fresh, card.cardholderPersonId);
+    }
     return null;
   },
 });

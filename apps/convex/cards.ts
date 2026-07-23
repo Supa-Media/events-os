@@ -104,7 +104,7 @@ import {
   type RepaymentMethod,
   type RepaymentStatus,
 } from "@events-os/shared";
-import { readSandbox } from "./financeSettings";
+import { readSandbox, readNoReceiptAutoConvertDays } from "./financeSettings";
 import {
   requireChapterId,
   requireInChapter,
@@ -2359,6 +2359,57 @@ export const cardBillingAddress = action({
   },
 });
 
+/**
+ * SHARED conversion core: turn a card charge into a `pending` personal
+ * repayment owned by the cardholder, and back-link the txn
+ * (`isPersonal`/`repaymentId`). IDEMPOTENT — one repayment per transaction: if
+ * the charge already carries a `personalRepayments` row it's reused (healing
+ * the txn's back-links if they ever drifted), and `created:false` is returned
+ * so a caller can skip first-time-only side effects (the flag notification;
+ * the sweep's converted-count).
+ *
+ * Extracted so the insert-`personalRepayments` + patch core lives in ONE place
+ * and is shared by BOTH `flagPersonalCharge` (manual — cardholder or manager)
+ * and `autoConvertOverdueReceipts` (the no-receipt sweep). The CALLER owns
+ * authorization, chapter verification, and any notification — this helper only
+ * touches the two rows. Exported so the member-facing `finances.submitOwnCharge`
+ * can flag-personal through the same core without duplicating the insert.
+ */
+export async function convertChargeToPersonalRepayment(
+  ctx: MutationCtx,
+  txn: Doc<"transactions">,
+  cardholderPersonId: Id<"people">,
+): Promise<{ repayment: Doc<"personalRepayments">; created: boolean }> {
+  const existing = await ctx.db
+    .query("personalRepayments")
+    .withIndex("by_transaction", (q) => q.eq("transactionId", txn._id))
+    .first();
+  if (existing) {
+    if (txn.isPersonal !== true || txn.repaymentId == null) {
+      await ctx.db.patch(txn._id, {
+        isPersonal: true,
+        repaymentId: existing._id,
+      });
+    }
+    return { repayment: existing, created: false };
+  }
+  const now = Date.now();
+  const repaymentId = await ctx.db.insert("personalRepayments", {
+    // A card charge is always chapter-scoped (central issues no cards).
+    chapterId: txn.chapterId as Id<"chapters">,
+    transactionId: txn._id,
+    payerPersonId: cardholderPersonId,
+    amountCents: txn.amountCents,
+    // The method is chosen when the payer initiates repayment; default until.
+    method: "ach",
+    status: "pending",
+    createdAt: now,
+    updatedAt: now,
+  });
+  await ctx.db.patch(txn._id, { isPersonal: true, repaymentId });
+  return { repayment: (await ctx.db.get(repaymentId))!, created: true };
+}
+
 // ── flagPersonalCharge (cardholder or manager) ───────────────────────────────
 
 /**
@@ -2404,45 +2455,26 @@ export const flagPersonalCharge = mutation({
       });
     }
 
-    // IDEMPOTENT: one repayment per transaction.
-    const existing = await ctx.db
-      .query("personalRepayments")
-      .withIndex("by_transaction", (q) => q.eq("transactionId", transactionId))
-      .first();
-    if (existing) {
-      if (transaction.isPersonal !== true || transaction.repaymentId == null) {
-        await ctx.db.patch(transactionId, {
-          isPersonal: true,
-          repaymentId: existing._id,
-        });
-      }
-      return toRepaymentSummary(existing);
-    }
+    // IDEMPOTENT: one repayment per transaction — the shared conversion core
+    // (also used by the no-receipt sweep) handles the insert + back-link.
+    const { repayment, created } = await convertChargeToPersonalRepayment(
+      ctx,
+      transaction,
+      cardholderPersonId,
+    );
 
-    const now = Date.now();
-    const repaymentId = await ctx.db.insert("personalRepayments", {
-      chapterId,
-      transactionId,
-      payerPersonId: cardholderPersonId,
-      amountCents: transaction.amountCents,
-      // The method is chosen when the payer initiates repayment; default until.
-      method: "ach",
-      status: "pending",
-      createdAt: now,
-      updatedAt: now,
-    });
-    await ctx.db.patch(transactionId, { isPersonal: true, repaymentId });
-
-    // Manager flagging SOMEONE ELSE's charge → notify the cardholder. Scheduled
-    // (not awaited) so a slow/failing Resend call never blocks the flag itself;
-    // the action below is best-effort and degrades silently without a key.
-    if (!isCardholder) {
+    // Manager flagging SOMEONE ELSE's charge → notify the cardholder, but ONLY
+    // on the FIRST conversion (`created`) — a repeat flag of an already-personal
+    // charge is a no-op and must not re-email. Scheduled (not awaited) so a
+    // slow/failing Resend call never blocks the flag itself; the action is
+    // best-effort and degrades silently without a key.
+    if (created && !isCardholder) {
       await ctx.scheduler.runAfter(0, internal.cards.notifyPersonalChargeFlagged, {
-        repaymentId,
+        repaymentId: repayment._id,
       });
     }
 
-    return toRepaymentSummary((await ctx.db.get(repaymentId))!);
+    return toRepaymentSummary(repayment);
   },
 });
 
@@ -2481,8 +2513,11 @@ export const getPersonalChargeFlagContact = internalQuery({
  *  Never throws past itself (it's a scheduled fire-and-forget job off the
  *  flagging mutation, so a Resend failure here must not surface anywhere). */
 export const notifyPersonalChargeFlagged = internalAction({
-  args: { repaymentId: v.id("personalRepayments") },
-  handler: async (ctx, { repaymentId }) => {
+  // `auto` distinguishes the no-receipt sweep's auto-conversion
+  // (`autoConvertOverdueReceipts`) from a manager's manual flag — same email
+  // machinery, different reason copy.
+  args: { repaymentId: v.id("personalRepayments"), auto: v.optional(v.boolean()) },
+  handler: async (ctx, { repaymentId, auto }) => {
     try {
       const contact = await ctx.runQuery(
         internal.cards.getPersonalChargeFlagContact,
@@ -2491,7 +2526,12 @@ export const notifyPersonalChargeFlagged = internalAction({
       if (!contact) return null;
       const dollars = `$${(contact.amountCents / 100).toFixed(2)}`;
       const merchant = contact.merchantName ?? "a charge on your card";
-      const subject = `A charge on your card was marked personal — you owe ${dollars}`;
+      const subject = auto
+        ? `A charge with no receipt became a personal charge — you owe ${dollars}`
+        : `A charge on your card was marked personal — you owe ${dollars}`;
+      const reason = auto
+        ? `${escapeHtml(merchant)} (${escapeHtml(dollars)}) passed the receipt deadline with no receipt attached, so it was automatically converted to a personal charge.`
+        : `a finance manager marked ${escapeHtml(merchant)} (${escapeHtml(dollars)}) as a personal charge.`;
       // The Cards tab's member view (`MemberCardsView`) owns the per-charge
       // flag/pay-back list this charge lives in — not Reimbursements (which
       // only shows the aggregate "you owe" total). Null when APP_URL is unset.
@@ -2501,7 +2541,7 @@ export const notifyPersonalChargeFlagged = internalAction({
         subject,
         emailShell(`
           <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">${escapeHtml(subject)}</h1>
-          <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(contact.cardholderName)} — a finance manager marked ${escapeHtml(merchant)} (${escapeHtml(dollars)}) as a personal charge. Pay it back from the Cards tab in the app.</p>
+          <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(contact.cardholderName)} — ${reason} Pay it back from the Cards tab in the app.</p>
           ${
             link
               ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${link}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">Pay it back →</a></div>`
@@ -3032,6 +3072,13 @@ export const initiateRepayment = action({
  * Exported so the chapter dashboard's "cards nearing auto-lock" queue reuses the
  * exact same predicate as this auto-lock sweep — only the grace-window
  * comparison differs (nearing = still within grace, overdue = past it).
+ *
+ * A PERSONAL charge (`isPersonal` — flagged or auto-converted to a personal
+ * repayment) is EXCLUDED: it's no longer an org expense awaiting a receipt but
+ * money the cardholder owes back, so it must not keep a card auto-locked or
+ * surface as "missing receipt" anywhere. This is the single predicate the
+ * lock/unlock/nearing paths all read, so excluding it here removes converted
+ * charges from every one of them at once.
  */
 export function isMissingReceiptCharge(
   tr: Doc<"transactions">,
@@ -3042,6 +3089,7 @@ export function isMissingReceiptCharge(
     tr.flow === "outflow" &&
     tr.status !== "excluded" &&
     tr.status !== "reconciled" &&
+    tr.isPersonal !== true &&
     !tr.receiptStorageId
   );
 }
@@ -3151,6 +3199,78 @@ export const autoLockOverdueCards = internalMutation({
       }
     }
     return { lockedCount, unlockedCount };
+  },
+});
+
+// ── autoConvertOverdueReceipts (no-receipt → personal repayment) ─────────────
+
+/**
+ * The org-wide no-receipt auto-conversion sweep the daily cron calls — the
+ * TERMINAL step past the day-1/day-3 receipt reminders and the day-7 auto-lock.
+ *
+ * Reads the org-wide deadline (`financeSettings.noReceiptAutoConvertDays` via
+ * `readNoReceiptAutoConvertDays`). `null` (the default — central finance never
+ * picked a number) → NO-OP. Otherwise every card charge still missing its
+ * receipt PAST that many days is converted into a `pending` personal repayment
+ * the cardholder owes back (via the shared `convertChargeToPersonalRepayment`,
+ * so the flag/pay-back machinery is identical to a manual flag).
+ *
+ * Same age basis (`postedAt`) and eligibility predicate as the auto-lock sweep:
+ * `isOverdueReceiptCharge`, which (since this WP excludes `isPersonal`) also
+ * skips an already-converted charge — so a converted charge is never re-swept
+ * and, critically, no longer keeps its card auto-locked. Bounded + idempotent
+ * like the reminder sweep: at most `REMINDER_BATCH_LIMIT` conversions per run,
+ * globally oldest-first, so a backlog drains gradually instead of converting
+ * (and emailing) everyone in one burst. Each first-time conversion best-effort
+ * emails the cardholder (scheduled, degrades without a Resend key).
+ */
+export const autoConvertOverdueReceipts = internalMutation({
+  args: {},
+  returns: v.object({ convertedCount: v.number() }),
+  handler: async (ctx): Promise<{ convertedCount: number }> => {
+    const days = await readNoReceiptAutoConvertDays(ctx);
+    // Policy OFF (the default) — nothing auto-converts.
+    if (days == null) return { convertedCount: 0 };
+    const now = Date.now();
+    const cutoff = now - days * DAY_MS;
+    const cards = await ctx.db.query("cards").take(AUTOLOCK_LIMIT);
+
+    // Gather every eligible charge across ALL cards first, so the batch cap
+    // below picks the globally oldest — mirrors `advanceReceiptReminders`.
+    const candidates: { tr: Doc<"transactions">; card: Doc<"cards"> }[] = [];
+    for (const card of cards) {
+      if (card.status === "canceled") continue;
+      const txns = await ctx.db
+        .query("transactions")
+        .withIndex("by_card", (q) => q.eq("cardId", card._id))
+        .order("desc")
+        .take(CARD_TXN_LIMIT);
+      for (const tr of txns) {
+        if (isOverdueReceiptCharge(tr, card, cutoff)) {
+          candidates.push({ tr, card });
+        }
+      }
+    }
+    candidates.sort((a, b) => a.tr.postedAt - b.tr.postedAt);
+    const batch = candidates.slice(0, REMINDER_BATCH_LIMIT);
+
+    let convertedCount = 0;
+    for (const { tr, card } of batch) {
+      const { repayment, created } = await convertChargeToPersonalRepayment(
+        ctx,
+        tr,
+        card.cardholderPersonId,
+      );
+      // Idempotent: a charge already converted (created:false) isn't recounted
+      // or re-emailed on a later run.
+      if (!created) continue;
+      convertedCount++;
+      await ctx.scheduler.runAfter(0, internal.cards.notifyPersonalChargeFlagged, {
+        repaymentId: repayment._id,
+        auto: true,
+      });
+    }
+    return { convertedCount };
   },
 });
 

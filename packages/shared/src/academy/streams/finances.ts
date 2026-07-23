@@ -256,7 +256,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 0,
         explanation:
-          "My Transactions is your mini-reconcile — attach receipts and flag charges on your own transactions without needing a finance seat.",
+          "My Transactions is your mini-reconcile — attach receipts, add a category and a short note on who and why, and flag charges on your own transactions, all without needing a finance seat. What you add pre-fills the finance team's review.",
       },
       {
         prompt:

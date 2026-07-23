@@ -54,6 +54,19 @@ crons.cron(
   {},
 );
 
+// Daily 10:00 UTC = 6am EDT: convert card charges still missing a receipt past
+// the org-wide no-receipt deadline (`financeSettings.noReceiptAutoConvertDays`)
+// into personal repayments. NO-OP by default (policy off until central finance
+// sets a number). Runs BEFORE the auto-lock below so a just-converted charge —
+// now a personal repayment, excluded from the missing-receipt set — no longer
+// counts toward that card's lock in the same daily pass.
+crons.cron(
+  "no-receipt personal-charge auto-convert",
+  "0 10 * * *",
+  internal.cards.autoConvertOverdueReceipts,
+  {},
+);
+
 // Daily 11:00 UTC = 7am EDT: auto-lock member cards whose receipt grace window
 // (>7 days late) has lapsed with a receipt still missing. Uploading a receipt
 // unlocks the card.
