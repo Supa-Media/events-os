@@ -11,6 +11,14 @@
  * has real Increase-issued controls (caps/validity/lock). A receipt overdue/
  * due-soon isn't a separate table column anymore (condensed); it's folded
  * into the name subtitle as a small inline flag instead.
+ *
+ * MONTHLY-CAP DISCOVERABILITY (founder feedback review): `CardControlsModal`
+ * (cap + validity window) used to be reachable only through the ⋯ menu's
+ * "Edit controls…" item — a manager scanning this table for who's near their
+ * cap had no direct way to act on what they were looking at. The cap cell
+ * itself is now a second, obvious entry point to the SAME modal (a small
+ * pencil affordance next to the cap figure); the ⋯ menu item stays too, so
+ * nothing about how it's wired changes, just how it's discovered.
  */
 import { Alert, Pressable, Text, View } from "react-native";
 import { formatCents } from "@events-os/shared";
@@ -138,15 +146,38 @@ export function CardholderRow({
         <Text className="text-sm text-ink" style={{ fontVariant: ["tabular-nums"] }}>
           {formatCents(card.spentThisMonthCents)}
         </Text>
-        {/* The card's monthly cap at a glance (edited via "Edit controls…"). */}
-        <Text
-          className="text-xs text-faint"
-          style={{ fontVariant: ["tabular-nums"] }}
-        >
-          {card.monthlyCapCents != null
-            ? `of ${formatCents(card.monthlyCapCents)}`
-            : "no cap"}
-        </Text>
+        {/* The card's monthly cap at a glance — a direct entry point to
+            `CardControlsModal` (same "Edit controls…" the ⋯ menu opens), not
+            just a read-only figure. Canceled cards keep the ⋯ menu empty
+            (see `actions` above) so this stays plain text there too. */}
+        {isCanceled ? (
+          <Text
+            className="text-xs text-faint"
+            style={{ fontVariant: ["tabular-nums"] }}
+          >
+            {card.monthlyCapCents != null
+              ? `of ${formatCents(card.monthlyCapCents)}`
+              : "no cap"}
+          </Text>
+        ) : (
+          <Pressable
+            onPress={onEditControls}
+            hitSlop={6}
+            accessibilityRole="button"
+            accessibilityLabel="Edit monthly cap"
+            className="flex-row items-center justify-end gap-0.5 active:opacity-70 web:hover:opacity-80"
+          >
+            <Text
+              className="text-xs text-faint"
+              style={{ fontVariant: ["tabular-nums"] }}
+            >
+              {card.monthlyCapCents != null
+                ? `of ${formatCents(card.monthlyCapCents)}`
+                : "no cap"}
+            </Text>
+            <Icon name="edit-2" size={9} color={colors.faint} />
+          </Pressable>
+        )}
       </Cell>
 
       <Cell width={132} align="right">

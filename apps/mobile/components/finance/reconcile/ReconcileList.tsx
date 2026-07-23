@@ -47,6 +47,17 @@
  * "Repaid" from the payload — the old session-local "what did I just flag"
  * state (which forgot on reload and never showed a member/manager flag made
  * elsewhere) is gone.
+ *
+ * OWN-CHARGE FLAG (founder feedback review): `cards.flagPersonalCharge`
+ * already allows the CARDHOLDER, not just a manager, to flag their own charge
+ * server-side — but this grid only ever offered the button to `isManager`,
+ * so a bookkeeper-only cardholder (full Reconcile access, no manager rank)
+ * reconciling their OWN charge had no way to flag it here (their only path
+ * was the separate "My transactions" screen). The button now also shows when
+ * `row.cardholder?.personId === viewerPersonId` — the caller's OWN roster
+ * person, resolved once by `listReconcile` — so "manager flags anyone" and
+ * "cardholder flags themselves" are both covered, exactly mirroring the
+ * server's own OR-gate. Server authz stays the source of truth either way.
  */
 import { useEffect, useRef, useState } from "react";
 import { View, Text, Pressable, Platform, ScrollView, TextInput } from "react-native";
@@ -120,6 +131,7 @@ export function ReconcileList({
   onToggleAll,
   centralScope = false,
   isManager = false,
+  viewerPersonId = null,
 }: {
   rows: TxnRow[];
   categoryItems: PickerItem[];
@@ -135,6 +147,10 @@ export function ReconcileList({
   // the "Mark personal" row action, which mirrors `cards.flagPersonalCharge`'s
   // own server-side manager-or-cardholder authz.
   isManager?: boolean;
+  // Founder feedback review: the caller's OWN roster person id
+  // (`listReconcile`'s `viewerPersonId`) — widens "Mark personal" to a
+  // cardholder's OWN row, mirroring the server's cardholder-or-manager gate.
+  viewerPersonId?: Id<"people"> | null;
 }) {
   const allSelected = rows.length > 0 && rows.every((r) => selected.has(r.id));
   // Drop the chapter-only Category column's width in central scope so the
@@ -179,6 +195,7 @@ export function ReconcileList({
               isLast={i === rows.length - 1}
               centralScope={centralScope}
               isManager={isManager}
+              viewerPersonId={viewerPersonId}
             />
           ))}
         </View>
@@ -196,6 +213,7 @@ function ReconcileRow({
   isLast,
   centralScope,
   isManager,
+  viewerPersonId,
 }: {
   row: TxnRow;
   categoryItems: PickerItem[];
@@ -205,6 +223,7 @@ function ReconcileRow({
   isLast: boolean;
   centralScope: boolean;
   isManager: boolean;
+  viewerPersonId: Id<"people"> | null;
 }) {
   const categorize = useMutation(api.finances.categorizeTransaction);
   const setStatus = useMutation(api.finances.setTransactionStatus);
@@ -217,6 +236,13 @@ function ReconcileRow({
 
   // Fire-and-surface: run a cell mutation, alerting the server's reason on error.
   const guard = (p: Promise<unknown>) => p.catch((err) => alertError(err));
+
+  // Founder feedback review: "is this MY charge" — the cardholder's OWN half
+  // of `cards.flagPersonalCharge`'s server-side OR-gate (cardholder OR
+  // manager). `viewerPersonId` is `null` for a superuser with no roster row,
+  // which correctly never matches a real cardholder here.
+  const isOwnCharge =
+    viewerPersonId != null && row.cardholder?.personId === viewerPersonId;
 
   const [noteModalOpen, setNoteModalOpen] = useState(false);
   // Accept feels TERMINAL: the moment a suggestion is accepted we show a brief
@@ -445,10 +471,13 @@ function ReconcileRow({
         />
       </Cell>
 
-      {/* Actions (R1): note (icon fills in when set) + manager-only "Mark
-          personal" on a card charge that isn't already personal. A flagged
-          charge shows its REAL repayment state ("Personal" until the
-          cardholder pays it back, then "Repaid") from the row payload. */}
+      {/* Actions (R1): note (icon fills in when set) + "Mark personal" on a
+          card charge that isn't already personal, shown for a MANAGER (any
+          charge) OR the CARDHOLDER on their OWN charge (`isOwnCharge` —
+          founder feedback review, mirrors `cards.flagPersonalCharge`'s
+          server-side cardholder-or-manager gate). A flagged charge shows its
+          REAL repayment state ("Personal" until the cardholder pays it
+          back, then "Repaid") from the row payload. */}
       <Cell width={COLS.actions}>
         <View className="flex-1 flex-row items-center justify-center gap-2 px-1">
           <Pressable
@@ -470,7 +499,7 @@ function ReconcileRow({
             ) : (
               <Badge label="Personal" tone="accent" />
             )
-          ) : isManager && row.cardLast4 != null ? (
+          ) : (isManager || isOwnCharge) && row.cardLast4 != null ? (
             <Pressable
               onPress={handleMarkPersonal}
               hitSlop={6}

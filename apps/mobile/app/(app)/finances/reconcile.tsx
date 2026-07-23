@@ -137,7 +137,10 @@ function ReconcileGrid() {
   // R1b: "Mark personal" (cards.flagPersonalCharge's manager path) is a
   // manager-only action — a bookkeeper has full Reconcile access but not this.
   // A caller has at most one chapter seat (their home chapter, MVP — see
-  // `requireChapterId`), so this is unambiguous.
+  // `requireChapterId`), so this is unambiguous. `ReconcileList` ALSO widens
+  // the same button to a cardholder's OWN row (founder feedback review) via
+  // `reconcile.viewerPersonId` below — that's the other half of
+  // `flagPersonalCharge`'s server-side OR-gate, unrelated to this flag.
   const isManager = seats.some((s) => s.scope === "chapter" && s.role === "manager");
 
   // WP-dashboard-drill Phase 2: a central caller PEEKING into a chapter that
@@ -470,6 +473,7 @@ function ReconcileGrid() {
             onToggleAll={toggleAll}
             centralScope={centralScope}
             isManager={isManager}
+            viewerPersonId={reconcile?.viewerPersonId ?? null}
           />
         )}
       </Screen>

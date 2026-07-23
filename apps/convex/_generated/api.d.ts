@@ -17,6 +17,7 @@ import type * as aiCodingData from "../aiCodingData.js";
 import type * as auth from "../auth.js";
 import type * as backerMilestones from "../backerMilestones.js";
 import type * as blasts from "../blasts.js";
+import type * as budgetDecisionEmails from "../budgetDecisionEmails.js";
 import type * as budgetLines from "../budgetLines.js";
 import type * as cards from "../cards.js";
 import type * as checkIns from "../checkIns.js";
@@ -237,6 +238,7 @@ declare const fullApi: ApiFromModules<{
   auth: typeof auth;
   backerMilestones: typeof backerMilestones;
   blasts: typeof blasts;
+  budgetDecisionEmails: typeof budgetDecisionEmails;
   budgetLines: typeof budgetLines;
   cards: typeof cards;
   checkIns: typeof checkIns;
