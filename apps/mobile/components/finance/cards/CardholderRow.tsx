@@ -1,6 +1,7 @@
 /**
  * One CONDENSED row of the manager cardholders table (WP owner report item 2):
- * avatar + name · last4, this-month spend, the lifecycle status chip, and a ⋯
+ * avatar + name · last4, this-month spend over the card's monthly cap, the
+ * lifecycle status chip, and a ⋯
  * menu with the manager actions (lock / unlock / edit controls). Pure
  * presentation — the mutations live in the parent so a single toast surfaces
  * every failure.
@@ -28,6 +29,7 @@ import {
   cardStatusBadge,
   cardTypeLabel,
   receiptStatus,
+  trainingBadge,
   type CardSummary,
 } from "./helpers";
 
@@ -51,6 +53,9 @@ export function CardholderRow({
   const receipts = receiptStatus(card);
   const receiptDue = receipts.tone === "warn";
   const isCanceled = card.status === "canceled";
+  // Org-wide card-prerequisite training status — null (no chip) when there's
+  // no gate configured.
+  const training = trainingBadge(card.prerequisiteMet);
 
   // A card the HOLDER froze themselves (suspected foul play) — a manager's
   // unlock is the superset power that can still lift it (server behavior
@@ -114,12 +119,15 @@ export function CardholderRow({
             <Text className="text-sm font-semibold text-ink" numberOfLines={1}>
               {card.cardholderName ?? "Unknown"}
             </Text>
-            <View className="flex-row items-center gap-1">
+            <View className="flex-row items-center gap-1.5">
               <Text className="text-xs text-faint" numberOfLines={1}>
                 {cardTypeLabel(card.type)} ···{card.last4 ?? "••••"}
               </Text>
               {receiptDue ? (
                 <Icon name="flag" size={10} color={colors.warn} />
+              ) : null}
+              {training ? (
+                <Badge label={training.label} tone={training.tone} icon={training.icon} />
               ) : null}
             </View>
           </View>
@@ -129,6 +137,15 @@ export function CardholderRow({
       <Cell width={96} align="right">
         <Text className="text-sm text-ink" style={{ fontVariant: ["tabular-nums"] }}>
           {formatCents(card.spentThisMonthCents)}
+        </Text>
+        {/* The card's monthly cap at a glance (edited via "Edit controls…"). */}
+        <Text
+          className="text-xs text-faint"
+          style={{ fontVariant: ["tabular-nums"] }}
+        >
+          {card.monthlyCapCents != null
+            ? `of ${formatCents(card.monthlyCapCents)}`
+            : "no cap"}
         </Text>
       </Cell>
 

@@ -460,6 +460,39 @@ export async function awardAllCourses(
   return awarded;
 }
 
+/**
+ * Whether a person has COMPLETED a given course — the shared read the
+ * card-issuance prerequisite gate (and its UI indicators) consult. Two ways to
+ * count as complete, in order:
+ *  1. the canonical earned badge (a `courseCompletions` row, via the private
+ *     `completedCourseSlugs`), and
+ *  2. a LIVE-derived complete course (`courseEarnedAt` over `progressBySlug`):
+ *     a member who just passed every required module but hasn't been
+ *     badge-awarded yet still counts, so issuance is never gated on the
+ *     award timing.
+ * Returns `false` for a slug that isn't a real `ACADEMY_COURSES` course — an
+ * unknown/unauthored course can never be completed; the CALLER decides whether
+ * that means fail-open (the issuance gate does) or "not trained" (the UI).
+ */
+export async function hasCompletedCourse(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  personId: Id<"people">,
+  courseSlug: string,
+): Promise<boolean> {
+  const course = ACADEMY_COURSES.find((c) => c.slug === courseSlug);
+  if (!course) return false;
+  // The canonical earned badge first — one indexed read.
+  if ((await completedCourseSlugs(ctx, chapterId, personId)).has(courseSlug)) {
+    return true;
+  }
+  // Live derivation for a course that's complete but not yet badge-awarded.
+  const bySlug = await progressBySlug(ctx, chapterId, personId);
+  return (
+    (await courseEarnedAt(ctx, chapterId, personId, course, bySlug)) !== null
+  );
+}
+
 // ── Progress ──────────────────────────────────────────────────────────────────
 
 /** A capstone's training sub-state myProgress returns (fed to the hub). */

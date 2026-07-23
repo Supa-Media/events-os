@@ -41,7 +41,12 @@
  * and, for a finance MANAGER on a card charge that isn't already personal, a
  * "Mark personal" flag — the manager path of `cards.flagPersonalCharge` (#147)
  * had no Reconcile entry point before this; the member's own "My transactions"
- * flag flow is untouched.
+ * flag flow is untouched. The flag's state is REAL now (R1b follow-up):
+ * `listReconcile` rows carry `isPersonal` + the linked repayment's live
+ * `repaymentStatus`, so the badge reads "Personal" (awaiting repayment) or
+ * "Repaid" from the payload — the old session-local "what did I just flag"
+ * state (which forgot on reload and never showed a member/manager flag made
+ * elsewhere) is gone.
  */
 import { useEffect, useRef, useState } from "react";
 import { View, Text, Pressable, Platform, ScrollView, TextInput } from "react-native";
@@ -210,17 +215,12 @@ function ReconcileRow({
   const guard = (p: Promise<unknown>) => p.catch((err) => alertError(err));
 
   const [noteModalOpen, setNoteModalOpen] = useState(false);
-  // R1b: charges flagged personal THIS SESSION. `listReconcile`'s row doesn't
-  // carry `isPersonal` (mirrors `my-transactions.tsx`'s same limitation — see
-  // its comment) — we track what the caller just flagged locally rather than
-  // re-deriving it, so the row instantly reflects the flag without a refetch.
-  const [flaggedPersonal, setFlaggedPersonal] = useState(false);
-  const isPersonal = flaggedPersonal;
 
   async function handleMarkPersonal() {
     try {
+      // No local flagged state needed: `listReconcile`'s live subscription
+      // re-renders this row with `isPersonal` set the moment the flag commits.
       await flagPersonalCharge({ transactionId: id });
-      setFlaggedPersonal(true);
     } catch (err) {
       alertError(err);
     }
@@ -388,7 +388,9 @@ function ReconcileRow({
       </Cell>
 
       {/* Actions (R1): note (icon fills in when set) + manager-only "Mark
-          personal" on a card charge that isn't already personal. */}
+          personal" on a card charge that isn't already personal. A flagged
+          charge shows its REAL repayment state ("Personal" until the
+          cardholder pays it back, then "Repaid") from the row payload. */}
       <Cell width={COLS.actions}>
         <View className="flex-1 flex-row items-center justify-center gap-2 px-1">
           <Pressable
@@ -404,8 +406,12 @@ function ReconcileRow({
               color={row.note ? colors.accent : colors.faint}
             />
           </Pressable>
-          {isPersonal ? (
-            <Badge label="Personal" tone="accent" />
+          {row.isPersonal ? (
+            row.repaymentStatus === "paid" ? (
+              <Badge label="Repaid" tone="success" />
+            ) : (
+              <Badge label="Personal" tone="accent" />
+            )
           ) : isManager && row.cardLast4 != null ? (
             <Pressable
               onPress={handleMarkPersonal}

@@ -483,6 +483,18 @@ export const reimbursementRequests = defineTable({
   identityVerified: v.optional(v.boolean()),
 
   purpose: v.optional(v.string()),
+  // Pre-approval-to-spend: when the claimant PLANS to make the purchase (ms
+  // timestamp, noon-local by convention like line `transactionDate`). Only
+  // ever set on a request created with `requestPreApproval` (enforced in
+  // `createReimbursement`) — a normal submission is for money already spent,
+  // so a "planned" date is meaningless there.
+  plannedPurchaseDate: v.optional(v.number()),
+  // When the ONE-SHOT "your planned purchase date has passed — submit your
+  // receipts" follow-up email was sent (the daily reimbursement-reminder
+  // cron). `undefined` = not sent yet; its presence is what makes the
+  // follow-up fire exactly once (the recurring staleness nag is separate and
+  // keeps applying afterwards).
+  purchaseFollowUpSentAt: v.optional(v.number()),
   // What the spend was for (categorization is per line item). Mutually
   // exclusive (enforced in `createReimbursement`): at most ONE of
   // event/project/budget. `budgetId` must be a RECURRING budget belonging to
@@ -747,8 +759,9 @@ export const financeStripeCustomers = defineTable({
 
 // ── Card authorizations (real-time-decision log) ─────────────────────────────
 /** The log of Increase `card_authorization` real-time decisions (approve /
- *  decline from the monthly cap + validity + receipt-lock rules). Kept for
- *  audit + to reconcile against the eventual posted transaction. */
+ *  decline from the monthly cap + validity + receipt-lock + merchant
+ *  allow-list rules). Kept for audit + to reconcile against the eventual
+ *  posted transaction. */
 export const cardAuthorizations = defineTable({
   chapterId: v.id("chapters"),
   cardId: v.id("cards"),
@@ -764,6 +777,27 @@ export const cardAuthorizations = defineTable({
   .index("by_chapter", ["chapterId"])
   .index("by_card", ["cardId"])
   .index("by_increase_auth", ["increaseAuthId"]);
+
+// ── Card merchant allow-list (chapter policy) ────────────────────────────────
+/** The chapter's merchant allow-list for real-time card authorizations. ONE
+ *  row per chapter (the `approvalPolicy` shape), managed by a finance manager.
+ *  When `enforced` is true AND the list is non-empty,
+ *  `cards.decideCardAuthorization` DECLINES any authorization whose merchant
+ *  matches NO entry — name entries are case-insensitive substrings of the
+ *  merchant descriptor, category entries exact 4-digit MCC matches. Unenforced
+ *  (or empty) the list changes nothing. The arrays live on this one config doc
+ *  deliberately: they're BOUNDED SMALL (entry-count + per-entry length caps in
+ *  `cards.setMerchantPolicy`), far from any document limit. */
+export const cardMerchantPolicy = defineTable({
+  chapterId: v.id("chapters"),
+  enforced: v.boolean(),
+  // Case-insensitive substrings matched against the merchant descriptor.
+  allowedMerchantNames: v.array(v.string()),
+  // Exact 4-digit merchant category codes (MCCs).
+  allowedMerchantCategories: v.array(v.string()),
+  updatedByPersonId: v.optional(v.id("people")),
+  updatedAt: v.number(),
+}).index("by_chapter", ["chapterId"]);
 
 // ── Approval policy + audit ──────────────────────────────────────────────────
 /** Per-chapter approval thresholds. One row per chapter. */
@@ -1023,4 +1057,14 @@ export const financeSettings = defineTable({
   updatedAt: v.number(),
   cardArt: v.optional(cardArtConfigValidator),
   cardArtSandbox: v.optional(cardArtConfigValidator),
+  // Org-wide receipt policy: after this many days a card charge still missing a
+  // receipt auto-converts to a personal repayment (the cardholder owes it back).
+  // `undefined` = OFF (no auto-conversion) until central finance picks a number.
+  // Enforced by the daily `cards.autoConvertOverdueReceipts` sweep.
+  noReceiptAutoConvertDays: v.optional(v.number()),
+  // Org-wide card prerequisite: the Academy course slug a member must complete
+  // before a card can be issued/activated. `undefined` = no prerequisite gate
+  // (issuance unaffected), so cards keep working until central finance points
+  // this at Kansi's card-prerequisite course.
+  cardPrerequisiteCourseSlug: v.optional(v.string()),
 });

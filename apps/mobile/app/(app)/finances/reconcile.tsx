@@ -35,7 +35,7 @@
 import { useMemo, useState } from "react";
 import { View, Text, TextInput, Pressable } from "react-native";
 import { useQuery, useMutation } from "convex/react";
-import { useLocalSearchParams } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
@@ -112,6 +112,7 @@ function ReconcileGrid() {
   // state only; the pills/toggle remain fully interactive afterward. Unknown
   // or malformed values fall back to the existing defaults, never throw.
   const params = useLocalSearchParams<{ filter?: string; scope?: string }>();
+  const router = useRouter();
   const initialFilter: FilterKey =
     params.filter && FILTER_KEYS.has(params.filter as FilterKey)
       ? (params.filter as FilterKey)
@@ -384,8 +385,10 @@ function ReconcileGrid() {
             ) : null}
           </View>
 
-          {/* Server-side filter pills, each with its live count. */}
-          <View className="mb-4 flex-row flex-wrap gap-2">
+          {/* Server-side filter pills, each with its live count — plus the
+              jump to the by-cardholder Chase receipts list (who still owes a
+              receipt, biggest first) whenever any receipt is outstanding. */}
+          <View className="mb-4 flex-row flex-wrap items-center gap-2">
             {FILTERS.map((f) => (
               <Pill
                 key={f.key}
@@ -394,6 +397,15 @@ function ReconcileGrid() {
                 onPress={() => setFilter(f.key)}
               />
             ))}
+            {counts && counts.missing_receipt > 0 ? (
+              <Button
+                title="Chase receipts"
+                variant="ghost"
+                size="sm"
+                icon="bell"
+                onPress={() => router.navigate("/finances/receipt-chase" as never)}
+              />
+            ) : null}
           </View>
         </Narrow>
 

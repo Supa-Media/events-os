@@ -78,6 +78,7 @@ import {
   getChapterIdOrNull,
 } from "./lib/context";
 import { normalizeEmail, getUserEmail } from "./lib/access";
+import { deriveReimbursementTxnFields } from "./lib/reimbursementTxnFields";
 import {
   requireFinanceRole,
   requireFinanceManager,
@@ -823,6 +824,12 @@ async function postReimbursementTransfer(
     return existing._id;
   }
   const now = Date.now();
+  // Inherit the reimbursement's own description / merchant / "For" / purpose /
+  // category / receipt so the payout row is self-explanatory in Reconcile
+  // instead of an "Unlabeled charge / Uncategorized / For: None / missing
+  // receipt". The row stays `flow:"transfer"` (excluded from spend), so these
+  // are display + attribution only and can never double-count.
+  const ported = await deriveReimbursementTxnFields(ctx, req);
   const txnId = await ctx.db.insert("transactions", {
     chapterId,
     source: "reimbursement",
@@ -834,6 +841,7 @@ async function postReimbursementTransfer(
     reimbursementId: req._id,
     status: "reconciled",
     createdAt: now,
+    ...ported,
   });
   await ctx.db.patch(payout._id, { transactionId: txnId, updatedAt: now });
   return txnId;

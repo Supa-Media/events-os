@@ -201,8 +201,12 @@ function pubbar(chapterName: string): string {
  * BEFORE submit (via `/api/reimburse/pre-upload-url`, no token) — the client
  * uploads every line's receipt first, then calls /api/reimburse/submit with
  * each line's `receiptStorageId` + `transactionDate` already attached, plus
- * the required bank destination (routing + account + type). No category
- * picker here — categorization is a finance manager's review-time job.
+ * the required bank destination (routing + account + type). An optional
+ * planned purchase date (in the pre-approval callout) rides along ONLY when
+ * the claimant taps "Ask for pre-approval" — it tells the approver when the
+ * spend is coming and drives the post-date receipt follow-up email. No
+ * category picker here — categorization is a finance manager's review-time
+ * job.
  */
 export function renderReimburseForm(chapter: ReimburseChapterView): string {
   const init = JSON.stringify({
@@ -263,7 +267,9 @@ ${pubbar(chapter.name)}
 
       <div class="field"><span class="fl">Notes (optional)</span><textarea id="f_notes" class="forminput" rows="2" placeholder="Anything the finance team should know…"></textarea></div>
 
-      <div class="callout"><b>Was this pre-approved?</b> If it wasn't already in the budget, tap "Ask for pre-approval" instead — surprises can be sent back.</div>
+      <div class="callout"><b>Was this pre-approved?</b> If it wasn't already in the budget, tap "Ask for pre-approval" instead — surprises can be sent back.
+        <div class="field mt8"><span class="fl" style="font-size:10px">Asking for pre-approval? When do you plan to buy? (optional)</span><input id="f_planned" type="date" class="forminput" style="max-width:220px"></div>
+      </div>
 
       <div class="callout err hide" id="formerr"></div>
 
@@ -535,6 +541,9 @@ function submit(preApproval){
   if(account.length<4)return showErr('Please enter your full account number.');
   var holder=$('f_holder').value.trim();
   var funding=$('f_funding').value||'checking';
+  /* Planned purchase date rides only with "Ask for pre-approval" — the
+     backend rejects one on a plain submission. */
+  var planned=preApproval?dateToMs($('f_planned').value):null;
 
   var btnP=$('submit'),btnA=$('preapprove');
   btnP.disabled=true;btnA.disabled=true;
@@ -556,6 +565,7 @@ function submit(preApproval){
       payeeEmail:email,
       purpose:purpose,
       requestPreApproval:!!preApproval,
+      plannedPurchaseDate:planned==null?undefined:planned,
       lines:c.lines.map(function(l){
         return {description:l.description,amountCents:l.amountCents,transactionDate:l.transactionDate,receiptStorageId:l.receiptStorageId};
       }),

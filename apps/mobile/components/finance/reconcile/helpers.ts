@@ -6,9 +6,9 @@
  * stay presentational. Everything money-shaped runs through `formatCents`.
  *
  * DATA NOTE: the grid's data source is `listReconcile` (its `reconcileRow`
- * projection), which resolves `hasReceipt`, `cardLast4`, `reminderStage`, and a
- * `cardholder` on top of the txn summary and filters SERVER-SIDE across all
- * rows. `reminderStage` ("none" | "flagged" | "escalated") reflects the real
+ * projection), which resolves `hasReceipt`, `cardLast4`, `reminderStage`,
+ * `isPersonal` + the linked repayment's `repaymentStatus`, and a `cardholder`
+ * on top of the txn summary and filters SERVER-SIDE across all rows. `reminderStage` ("none" | "flagged" | "escalated") reflects the real
  * day-1/day-3 receipt-reminder timeline advanced by
  * `cards.advanceReceiptReminders` (Phase 3) — the day-7 terminal auto-lock is
  * a card-level state shown in the Cards tab, not this grid.

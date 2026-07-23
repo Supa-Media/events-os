@@ -292,11 +292,14 @@ ${FONTS}`;
 
 /** Every gift's plain-language transparency line (block #10) — the split
  *  read from `CENTRAL_SKIM_PCT` so it can never drift from the real math.
- *  Shown right under a give form, where the ask is fresh. */
+ *  Shown right under a give form, where the ask is fresh. The second line is
+ *  the unrestricted-gift statement (leadership decision, 2026-07): every pool
+ *  is unrestricted, and donors are told so at the point of giving. */
 function transparencyNoteHtml(): string {
   const localPct = Math.round((1 - CENTRAL_SKIM_PCT) * 100);
   const skimPct = Math.round(CENTRAL_SKIM_PCT * 100);
-  return `<p class="transparency-note">Every gift is recorded and receipted by email. ${localPct}% funds the local chapter; ${skimPct}% becomes the City Launch Fund for the next city.</p>`;
+  return `<p class="transparency-note">Every gift is recorded and receipted by email. ${localPct}% funds the local chapter; ${skimPct}% becomes the City Launch Fund for the next city.</p>
+<p class="transparency-note">When we raise for a specific purpose — an event, a program, a new city — that's our stated intention for your gift. Gifts are unrestricted: if a goal is exceeded or plans change, your generosity may support general operations and other programs. A gift to a specific chapter stays with that chapter.</p>`;
 }
 
 /** The map page's "City Launch Plan" section (block #2) — the movement
@@ -380,7 +383,7 @@ function launchFundModuleHtml(fund: NonNullable<PublicTerritoryData["launchFund"
   <div class="lf-amount"><b>${esc(formatCents(fund.cents, { showCents: false }))}</b> of ~${esc(formatCents(fund.targetCents, { showCents: false }))}</div>
   <div class="progress-track"><div class="progress-fill" style="width:${pct}%"></div></div>
   <div class="lf-bars">${bars}</div>
-  <p class="lf-note">Every dollar backers give before launch goes straight into this pot — it offsets the one-time ~${esc(formatCents(launchTemplateTotalCents(), { showCents: false }))} City Launch Fund grant central would otherwise cover to start the chapter.</p>
+  <p class="lf-note">Every dollar backers give before launch goes straight into this pot — it offsets the one-time ~${esc(formatCents(launchTemplateTotalCents(), { showCents: false }))} City Launch Fund grant central would otherwise cover to start the chapter. The pot is our stated intention for these gifts — gifts are unrestricted, so if the goal is exceeded or plans change, they may support general operations and other programs.</p>
 </section>`;
 }
 

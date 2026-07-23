@@ -763,7 +763,7 @@ const EXPECTED_SECTIONS: {
     slug: "finance-accounts-and-cards-admin",
     title: "Accounts, cards, and the City Launch Fund",
     minutes: 3,
-    quizLength: 4,
+    quizLength: 5,
     optional: false,
     capstoneKind: null,
   },

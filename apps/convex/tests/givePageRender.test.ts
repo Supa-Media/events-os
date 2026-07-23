@@ -185,6 +185,13 @@ describe("give map page", () => {
     expect(thanked).toContain("receipt is on its way");
   });
 
+  test("tells donors gifts are unrestricted, right under the give form", () => {
+    expect(html).toContain("Gifts are unrestricted");
+    expect(html).toMatch(/stated intention/i);
+    expect(html).toMatch(/general operations and other programs/i);
+    expect(html).toMatch(/gift to a specific chapter stays with that chapter/i);
+  });
+
   test("renders the money transparency section (F2)", () => {
     expect(html).toMatch(/Where your giving goes/i);
     expect(html).toMatch(/what we.re buying/i);
@@ -278,6 +285,16 @@ describe("give territory page (raising, pre-launch)", () => {
   test("sends the territory slug with an interest submission", () => {
     expect(html).toContain("columbus-oh");
     expect(html).toContain("/api/give/interest");
+  });
+
+  test("tells donors gifts are unrestricted, incl. on the launch-pot copy", () => {
+    // The give box's transparency note…
+    expect(html).toContain("Gifts are unrestricted");
+    expect(html).toMatch(/gift to a specific chapter stays with that chapter/i);
+    // …and the launch-fund pot, which raises for a specific purpose.
+    expect(html).toMatch(
+      /The pot is our stated intention for these gifts — gifts are unrestricted/,
+    );
   });
 
   test("frames the one-time tab as the City Launch Fund (F5, pre-launch)", () => {

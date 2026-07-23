@@ -18,7 +18,9 @@
  *     status state machine validated against the shared `REIMBURSEMENT_STATUSES`
  *     tuple.
  *   - INTERNAL: a stale-request reminder sweep for a cron (best-effort Resend,
- *     no-op without RESEND_API_KEY — same degrade pattern as `reminders.ts`).
+ *     no-op without RESEND_API_KEY — same degrade pattern as `reminders.ts`),
+ *     which also fires the ONE-SHOT planned-purchase receipt follow-up for
+ *     `preapproved` requests whose planned purchase date has passed.
  *
  * INVARIANTS:
  *  - Money is ALWAYS a non-negative INTEGER number of cents (validated here;
@@ -171,6 +173,17 @@ function referenceFor(id: Id<"reimbursementRequests">): string {
   return `RB-${String(id).slice(-6).toUpperCase()}`;
 }
 
+/** A ms timestamp as a long human date for email copy (e.g. "July 25, 2026"),
+ *  in the team's timezone — mirrors `reminders.ts`'s due-date formatting. */
+function formatEmailDate(ts: number): string {
+  return new Date(ts).toLocaleDateString("en-US", {
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "America/New_York",
+  });
+}
+
 /** Two-letter avatar initials from a display name. */
 function initials(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -243,6 +256,44 @@ function assertTransactionDate(value: number | undefined, label = "Transaction d
     throw new ConvexError({
       code: "INVALID_INPUT",
       message: `${label} is too old — it must be within the last 3 years.`,
+    });
+  }
+  return value;
+}
+
+/** A `plannedPurchaseDate` sanity window — it's a FORWARD-looking plan (the
+ *  claimant hasn't bought yet), so the bounds run the other way from
+ *  `transactionDate`'s: reject anything more than 48h in the PAST (clock-skew
+ *  tolerance for "buying today", not a loophole for back-dating) or more than
+ *  a year out (a plan that far off isn't a live pre-approval ask). */
+const PLANNED_DATE_MAX_PAST_MS = 48 * 60 * 60 * 1000;
+const PLANNED_DATE_MAX_FUTURE_MS = 365 * 24 * 60 * 60 * 1000;
+
+/** Validate an OPTIONAL `plannedPurchaseDate`: when present, a finite ms
+ *  timestamp within the sanity window above. Both submit surfaces funnel
+ *  through `createReimbursement`, the single gate. */
+function assertPlannedPurchaseDate(
+  value: number | undefined,
+  label = "Planned purchase date",
+): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isFinite(value)) {
+    throw new ConvexError({
+      code: "INVALID_INPUT",
+      message: `${label} isn't a valid date.`,
+    });
+  }
+  const now = Date.now();
+  if (value < now - PLANNED_DATE_MAX_PAST_MS) {
+    throw new ConvexError({
+      code: "INVALID_INPUT",
+      message: `${label} can't be in the past.`,
+    });
+  }
+  if (value > now + PLANNED_DATE_MAX_FUTURE_MS) {
+    throw new ConvexError({
+      code: "INVALID_INPUT",
+      message: `${label} must be within the next year.`,
     });
   }
   return value;
@@ -471,6 +522,11 @@ async function createReimbursement(
      *  retired) — this is only ever the digits Increase itself returned. */
     bankAccountLast4?: string;
     requestPreApproval?: boolean;
+    /** When the claimant PLANS to make the purchase (ms) — only legal
+     *  alongside `requestPreApproval` (a normal submission is for money
+     *  already spent). Sanity-checked by `assertPlannedPurchaseDate`; drives
+     *  the reminder cron's one-shot receipt follow-up once the date passes. */
+    plannedPurchaseDate?: number;
     personId: Id<"people"> | null;
     /** True only when `personId` is a server-verified identity (the
      *  authenticated in-app path) rather than the public path's best-effort
@@ -619,6 +675,19 @@ async function createReimbursement(
     });
   }
 
+  // A planned purchase date only makes sense on a pre-approval ask — reject
+  // (rather than silently drop) one on a plain submission so a confused
+  // caller hears about it instead of losing the date.
+  if (input.plannedPurchaseDate !== undefined && !input.requestPreApproval) {
+    throw new ConvexError({
+      code: "INVALID_INPUT",
+      message: "A planned purchase date only applies when asking for pre-approval.",
+    });
+  }
+  const plannedPurchaseDate = assertPlannedPurchaseDate(
+    input.plannedPurchaseDate,
+  );
+
   const now = Date.now();
   const token = crypto.randomUUID();
   const status: ReimbursementStatus = input.requestPreApproval
@@ -635,6 +704,7 @@ async function createReimbursement(
     personId: input.personId ?? undefined,
     identityVerified: input.identityVerified === true ? true : undefined,
     purpose,
+    plannedPurchaseDate,
     eventId: input.eventId,
     projectId: input.projectId,
     budgetId: input.budgetId,
@@ -845,6 +915,9 @@ export const submitPublicReimbursement = mutation({
     payeePhone: v.optional(v.string()),
     purpose: v.string(),
     requestPreApproval: v.optional(v.boolean()),
+    // When the claimant plans to buy (ms) — pre-approval asks only; see
+    // `createReimbursement`'s doc.
+    plannedPurchaseDate: v.optional(v.number()),
     lines: v.array(submitLineValidator),
     // The ACH destination — resolved by `linkPublicBankAccount` BEFORE this
     // mutation runs (see the httpAction orchestration above). Only the
@@ -901,6 +974,7 @@ export const submitPublicReimbursement = mutation({
       externalAccountId: args.externalAccountId,
       bankAccountLast4: args.bankAccountLast4,
       requestPreApproval: args.requestPreApproval,
+      plannedPurchaseDate: args.plannedPurchaseDate,
       personId,
       // Public-page privacy: never let a line self-categorize, even if a raw
       // API call tries to smuggle a categoryId/fundId through.
@@ -1004,6 +1078,9 @@ export const submitReimbursement = mutation({
     payeePhone: v.optional(v.string()),
     purpose: v.string(),
     requestPreApproval: v.optional(v.boolean()),
+    // When the claimant plans to buy (ms) — pre-approval asks only; see
+    // `createReimbursement`'s doc.
+    plannedPurchaseDate: v.optional(v.number()),
     /** "What this was for" — an event, a project, or a recurring budget,
      *  never more than one. */
     eventId: v.optional(v.id("events")),
@@ -1046,6 +1123,7 @@ export const submitReimbursement = mutation({
       externalAccountId: args.externalAccountId,
       bankAccountLast4: args.bankAccountLast4,
       requestPreApproval: args.requestPreApproval,
+      plannedPurchaseDate: args.plannedPurchaseDate,
       eventId: args.eventId,
       projectId: args.projectId,
       budgetId: args.budgetId,
@@ -1551,6 +1629,10 @@ export const list = query({
           statusBadge: REIMBURSEMENT_STATUS_LABELS[req.status],
           totalCents: req.totalCents,
           approvedCents: req.approvedCents,
+          // When the claimant plans to buy (pre-approval asks only) — the
+          // queue shows it on a pending pre-approval so an approver knows how
+          // urgent the decision is.
+          plannedPurchaseDate: req.plannedPurchaseDate ?? null,
         };
       }),
     );
@@ -1602,6 +1684,8 @@ export const get = query({
       // submission, or null (including on the public path).
       verifiedRosterName: await verifiedRosterName(ctx, request),
       purpose: request.purpose ?? null,
+      // When the claimant plans to buy (pre-approval asks only; see `list`).
+      plannedPurchaseDate: request.plannedPurchaseDate ?? null,
       forLabel: await forLabel(ctx, request.eventId, request.projectId, request.budgetId),
       requesterType: await requesterType(ctx, request.personId),
       totalCents: request.totalCents,
@@ -1915,6 +1999,81 @@ export const listStaleReimbursements = internalQuery({
 });
 
 /**
+ * `preapproved` requests in one chapter due the ONE-SHOT receipt follow-up:
+ * the planned purchase date has passed, NO line has a receipt yet (the
+ * claimant hasn't come back with proof of the spend), and the follow-up
+ * hasn't already been sent (`purchaseFollowUpSentAt` unset — the exactly-once
+ * guard). Same claimant-contact shape as `listStaleReimbursements` above,
+ * plus the id so the caller can stamp the send. Bounded reads, scoped to the
+ * chapter + status index.
+ */
+export const listPlannedPurchaseFollowUps = internalQuery({
+  args: { chapterId: v.id("chapters"), now: v.number() },
+  handler: async (ctx, { chapterId, now }) => {
+    // Same one-read-per-chapter slug resolution as `listStaleReimbursements`.
+    const chapter = await ctx.db.get(chapterId);
+    const rows = await ctx.db
+      .query("reimbursementRequests")
+      .withIndex("by_chapter_and_status", (q) =>
+        q.eq("chapterId", chapterId).eq("status", "preapproved"),
+      )
+      .take(200);
+    const due: Array<{
+      reimbursementId: Id<"reimbursementRequests">;
+      reference: string;
+      payeeName: string;
+      payeeEmail: string | null;
+      totalCents: number;
+      plannedPurchaseDate: number;
+      // See `listStaleReimbursements`'s field docs — the same in-app vs
+      // accountless CTA-link split.
+      identityVerified: boolean;
+      token: string;
+      chapterSlug: string | null;
+    }> = [];
+    for (const req of rows) {
+      if (req.plannedPurchaseDate === undefined) continue;
+      if (req.plannedPurchaseDate >= now) continue;
+      if (req.purchaseFollowUpSentAt !== undefined) continue;
+      const lines = await linesFor(ctx, req._id);
+      // A receipt on ANY line means the claimant is already submitting proof
+      // — the follow-up would be noise (the staleness nag still covers a
+      // half-receipted request via `missingReceipts` above).
+      if (lines.some((l) => l.receiptStorageId)) continue;
+      due.push({
+        reimbursementId: req._id,
+        reference: referenceFor(req._id),
+        payeeName: req.payeeName,
+        payeeEmail: req.payeeEmail ?? null,
+        totalCents: req.totalCents,
+        plannedPurchaseDate: req.plannedPurchaseDate,
+        identityVerified: req.identityVerified === true,
+        token: req.token,
+        chapterSlug: chapter?.slug ?? null,
+      });
+    }
+    return due;
+  },
+});
+
+/** Stamp `purchaseFollowUpSentAt` so the receipt follow-up fires exactly once.
+ *  Deliberately does NOT touch `updatedAt` — a cron send isn't a claimant/
+ *  manager edit. No-ops (rather than throws) when the request has since moved
+ *  on or is already stamped, so a race with a concurrent status change can't
+ *  fail the sweep. */
+export const markPurchaseFollowUpSent = internalMutation({
+  args: { reimbursementId: v.id("reimbursementRequests") },
+  handler: async (ctx, { reimbursementId }) => {
+    const req = await ctx.db.get(reimbursementId);
+    if (!req || req.status !== "preapproved" || req.purchaseFollowUpSentAt !== undefined) {
+      return null;
+    }
+    await ctx.db.patch(reimbursementId, { purchaseFollowUpSentAt: Date.now() });
+    return null;
+  },
+});
+
+/**
  * Sweep every chapter's stale reimbursements and email the claimant a nudge.
  * Best-effort Resend — a no-op that only logs when RESEND_API_KEY is unset
  * (mirrors `reminders.ts` / the ticketing emails), so dev + CI never send.
@@ -1930,6 +2089,15 @@ export const listStaleReimbursements = internalQuery({
  *     as every other guest-facing link in this codebase. Only omitted if the
  *     chapter's slug is somehow missing (shouldn't happen for a chapter that
  *     can receive public submissions in the first place).
+ *
+ * ALSO runs the ONE-SHOT planned-purchase receipt follow-up per chapter
+ * (`listPlannedPurchaseFollowUps`): a `preapproved` request whose planned
+ * purchase date has passed with no receipt on any line yet gets a single
+ * "submit your receipts" email — stamped (`markPurchaseFollowUpSent`) BEFORE
+ * the send, the same at-most-once ordering as `cards.advanceReceiptReminders`,
+ * so a crash mid-run can't re-email tomorrow (a lost email is recoverable —
+ * the recurring staleness nag above keeps applying afterwards; a double
+ * "one-time" nag isn't). Same claimant-only recipient + CTA-link rules.
  */
 export const sendReimbursementReminders = internalAction({
   args: {},
@@ -1964,6 +2132,39 @@ export const sendReimbursementReminders = internalAction({
           ${
             link
               ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${link}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">View request →</a></div>`
+              : ""
+          }`),
+        );
+      }
+
+      // The one-shot planned-purchase receipt follow-up (see the doc above).
+      const followUps = await ctx.runQuery(
+        internal.reimbursements.listPlannedPurchaseFollowUps,
+        { chapterId, now },
+      );
+      for (const r of followUps) {
+        // Stamp FIRST — even a contact-less request is marked, so it can't
+        // resurface daily waiting on an email that will never send.
+        await ctx.runMutation(
+          internal.reimbursements.markPurchaseFollowUpSent,
+          { reimbursementId: r.reimbursementId },
+        );
+        if (!r.payeeEmail) continue;
+        const dollars = `$${(r.totalCents / 100).toFixed(2)}`;
+        const link = r.identityVerified
+          ? appUrl("/finances/reimbursements")
+          : r.chapterSlug
+            ? `${siteUrl()}/reimburse/${encodeURIComponent(r.chapterSlug)}?token=${encodeURIComponent(r.token)}`
+            : null;
+        await sendEmail(
+          r.payeeEmail,
+          `Your reimbursement ${r.reference} — time to submit your receipts`,
+          emailShell(`
+          <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">Reimbursement ${escapeHtml(r.reference)}</h1>
+          <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(r.payeeName)} — your planned purchase date (${escapeHtml(formatEmailDate(r.plannedPurchaseDate))}) has passed, and your ${escapeHtml(dollars)} pre-approved reimbursement is still waiting on receipts. Submit your receipts to complete the reimbursement.</p>
+          ${
+            link
+              ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${link}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">Add receipts →</a></div>`
               : ""
           }`),
         );
@@ -2027,6 +2228,9 @@ export const getReimbursementSubmittedEmailPayload = internalQuery({
       purpose: req.purpose ?? "",
       totalCents: req.totalCents,
       chapterName: chapter?.name ?? "your chapter",
+      // Pre-approval asks only — lets the notice say WHEN the claimant plans
+      // to buy, so an approver can gauge how urgent the decision is.
+      plannedPurchaseDate: req.plannedPurchaseDate ?? null,
     };
   },
 });
@@ -2063,9 +2267,14 @@ export const sendReimbursementSubmittedEmail = internalAction({
       const forPurpose = payload.purpose
         ? ` for <b>${escapeHtml(payload.purpose)}</b>`
         : "";
+      // A pre-approval ask's planned purchase date — tells the approver when
+      // the claimant intends to buy, i.e. how urgent the decision is.
+      const planned = payload.plannedPurchaseDate
+        ? ` They plan to make the purchase on <b>${escapeHtml(formatEmailDate(payload.plannedPurchaseDate))}</b>.`
+        : "";
       const html = emailShell(`
         <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">Reimbursement ${escapeHtml(payload.reference)}</h1>
-        <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">${escapeHtml(payload.payeeName)} submitted a ${escapeHtml(dollars)} reimbursement${forPurpose} at ${escapeHtml(payload.chapterName)}. It's waiting on your review.</p>
+        <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">${escapeHtml(payload.payeeName)} submitted a ${escapeHtml(dollars)} reimbursement${forPurpose} at ${escapeHtml(payload.chapterName)}. It's waiting on your review.${planned}</p>
         ${
           link
             ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${link}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">Review it →</a></div>`

@@ -28,6 +28,12 @@
  * (an event, a project, or a recurring budget — never more than one) — it
  * never feeds budget-vs-actual math.
  *
+ * "Ask for pre-approval" can carry an OPTIONAL planned purchase date (the
+ * picker lives inside the pre-approval callout): it tells the approver when
+ * the spend is coming and drives the reminder cron's post-date "submit your
+ * receipts" follow-up. Never sent on a plain submission — the backend rejects
+ * one there.
+ *
  * Direct deposit is REQUIRED, not optional: a full ACH destination (routing +
  * account + type) must be linked via `linkBankAccount` BEFORE the request is
  * created — there is no more last-4-only / "a manager pays you manually"
@@ -122,6 +128,7 @@ type SubmitReimbursementArgs = {
   payeePhone?: string;
   purpose: string;
   requestPreApproval?: boolean;
+  plannedPurchaseDate?: number;
   eventId?: Id<"events">;
   projectId?: Id<"projects">;
   budgetId?: Id<"budgets">;
@@ -144,6 +151,12 @@ type SubmitReimbursementFn = FunctionReference<
 const MAX_FUTURE_MS = 48 * 60 * 60 * 1000;
 /** …or more than ~3 years in the past (mirrors the backend's own bound). */
 const MAX_PAST_MS = 3 * 365 * 24 * 60 * 60 * 1000;
+
+/** The planned purchase date (pre-approval asks only) runs the OTHER way —
+ *  a forward-looking plan can't be more than 48h in the past… */
+const MAX_PLANNED_PAST_MS = 48 * 60 * 60 * 1000;
+/** …or more than a year out (both mirror the backend's own bounds). */
+const MAX_PLANNED_FUTURE_MS = 365 * 24 * 60 * 60 * 1000;
 
 /** One in-progress line item — pure client state until Submit builds the
  *  mutation payload. `qtyText`/`rateText` are raw strings so the user can type
@@ -263,6 +276,10 @@ export function ReimbursementRequestForm({
   const [funding, setFunding] = useState<"checking" | "savings">("checking");
   // The required "why" — what the request is for, sent as `purpose`.
   const [purpose, setPurpose] = useState("");
+  // When the member plans to buy — OPTIONAL, and only sent with "Ask for
+  // pre-approval" (the backend rejects one on a plain submission). `null` =
+  // not set.
+  const [plannedPurchaseDate, setPlannedPurchaseDate] = useState<number | null>(null);
   const [forValue, setForValue] = useState("");
   const [lines, setLines] = useState<DraftLine[]>([emptyLine()]);
   const [error, setError] = useState<string | null>(null);
@@ -385,6 +402,19 @@ export function ReimbursementRequestForm({
       setError(problem);
       return;
     }
+    // The planned purchase date only travels with a pre-approval ask, and must
+    // sit inside the backend's own sanity window (mirrored here so the member
+    // hears about it before the network round-trip).
+    if (requestPreApproval && plannedPurchaseDate != null) {
+      if (plannedPurchaseDate < Date.now() - MAX_PLANNED_PAST_MS) {
+        setError("The planned purchase date can't be in the past.");
+        return;
+      }
+      if (plannedPurchaseDate > Date.now() + MAX_PLANNED_FUTURE_MS) {
+        setError("The planned purchase date must be within the next year.");
+        return;
+      }
+    }
     const usable = usableLines();
     const forIds = decodeForValue(forValue);
     setSubmitting(true);
@@ -422,6 +452,12 @@ export function ReimbursementRequestForm({
           payeeEmail: emailValue.trim() || undefined,
           purpose: purpose.trim(),
           requestPreApproval,
+          // Only rides with a pre-approval ask — the backend rejects it on a
+          // plain submission.
+          plannedPurchaseDate:
+            requestPreApproval && plannedPurchaseDate != null
+              ? plannedPurchaseDate
+              : undefined,
           eventId: forIds.eventId,
           projectId: forIds.projectId,
           budgetId: forIds.budgetId,
@@ -465,6 +501,7 @@ export function ReimbursementRequestForm({
               onPress={() => {
                 setLines([emptyLine()]);
                 setPurpose("");
+                setPlannedPurchaseDate(null);
                 setForValue("");
                 setJustSubmitted(false);
               }}
@@ -605,12 +642,27 @@ export function ReimbursementRequestForm({
             />
           </Field>
 
-          <View className="mt-2 flex-row items-start gap-2 rounded-md bg-warn-bg px-3 py-2.5">
-            <Icon name="alert-triangle" size={14} color={colors.warn} />
-            <Text className="flex-1 text-xs text-warn">
-              Was this pre-approved? If it wasn't already in the budget, ask for
-              pre-approval instead — surprises can be sent back.
-            </Text>
+          <View className="mt-2 rounded-md bg-warn-bg px-3 py-2.5">
+            <View className="flex-row items-start gap-2">
+              <Icon name="alert-triangle" size={14} color={colors.warn} />
+              <Text className="flex-1 text-xs text-warn">
+                Was this pre-approved? If it wasn't already in the budget, ask
+                for pre-approval instead — surprises can be sent back.
+              </Text>
+            </View>
+            {/* Planned purchase date — optional, and only sent when the member
+                taps "Ask for pre-approval" (hence its home inside this
+                callout): tells the approver when the spend is coming, and
+                drives the post-date "submit your receipts" follow-up email. */}
+            <View className="mt-2 flex-row flex-wrap items-center gap-2">
+              <Text className="text-xs font-semibold text-warn">
+                Asking for pre-approval? When do you plan to buy?
+              </Text>
+              <PlannedDateCell
+                value={plannedPurchaseDate}
+                onChange={setPlannedPurchaseDate}
+              />
+            </View>
           </View>
 
           {error ? (
@@ -775,6 +827,55 @@ function TransactionDateCell({
         <Calendar
           selected={value}
           seed={value}
+          onSelect={(dayMs) => {
+            onChange(dayMs);
+            close();
+          }}
+        />
+      </Popover>
+    </>
+  );
+}
+
+/** The OPTIONAL planned purchase date (pre-approval asks only) — the same
+ *  Calendar/Popover day-pick idiom as `TransactionDateCell`, but nullable:
+ *  unset renders a "Pick a date" affordance, and a set date carries an inline
+ *  clear so the member can go back to "no date" without submitting one. */
+function PlannedDateCell({
+  value,
+  onChange,
+}: {
+  value: number | null;
+  onChange: (ms: number | null) => void;
+}) {
+  const { ref, anchor, visible, open, close } = useAnchor();
+
+  return (
+    <>
+      <Pressable
+        ref={ref}
+        onPress={open}
+        className="flex-row items-center gap-1.5 rounded-md border border-border-strong bg-raised px-2.5 py-1.5 active:opacity-80"
+      >
+        <Icon name="calendar" size={13} color={colors.muted} />
+        <Text className={value != null ? "text-sm text-ink" : "text-sm text-faint"}>
+          {value != null ? formatDate(value) : "Pick a date (optional)"}
+        </Text>
+        {value != null ? (
+          <Pressable
+            onPress={() => onChange(null)}
+            hitSlop={6}
+            accessibilityLabel="Clear planned purchase date"
+          >
+            <Icon name="x" size={13} color={colors.muted} />
+          </Pressable>
+        ) : null}
+      </Pressable>
+
+      <Popover visible={visible} onClose={close} anchor={anchor} width={288}>
+        <Calendar
+          selected={value}
+          seed={value ?? Date.now()}
           onSelect={(dayMs) => {
             onChange(dayMs);
             close();

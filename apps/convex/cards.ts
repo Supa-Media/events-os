@@ -7,7 +7,11 @@
  * its receipts + reconciliation. There are only TWO hard controls — a monthly
  * safety cap (`monthlyCapCents`) and a validity window (`validFrom`/`validUntil`)
  * — plus the receipt auto-lock (a charge whose receipt is >7 days late locks the
- * card; a manager/cardholder unlock clears the grace window). Personal charges
+ * card; a manager/cardholder unlock clears the grace window). The one
+ * CHAPTER-LEVEL control is the merchant allow-list (`cardMerchantPolicy`, one
+ * row per chapter): when ENFORCED and NON-EMPTY, the real-time decision also
+ * declines any authorization whose merchant matches no allowed name substring
+ * or MCC — see `decideAgainstMerchantPolicy`. Personal charges
  * are flagged + repaid via the cardholder's own debit/ACH, which posts an
  * OFFSETTING `flow:"transfer"` credit — no reimbursement paperwork.
  *
@@ -93,6 +97,7 @@ import {
   matchesMode,
   isSandboxObjectId,
   isCardEligible,
+  getAcademyCourse,
   type CardType,
   type CardStatus,
   type CardSource,
@@ -100,7 +105,12 @@ import {
   type RepaymentMethod,
   type RepaymentStatus,
 } from "@events-os/shared";
-import { readSandbox } from "./financeSettings";
+import {
+  readSandbox,
+  readNoReceiptAutoConvertDays,
+  readCardPrerequisiteCourseSlug,
+} from "./financeSettings";
+import { hasCompletedCourse } from "./academy";
 import {
   requireChapterId,
   requireInChapter,
@@ -208,6 +218,24 @@ const cardRequestSummaryValidator = v.object({
   cardId: v.union(v.id("cards"), v.null()),
 });
 
+// The org-wide card-prerequisite state, `null` when no gate is configured:
+//  - `prerequisiteMet` on a row: `null` when no prerequisite is configured OR
+//    the configured course isn't in the catalog (fail-open — no effective
+//    gate); otherwise whether that person has completed it.
+// The list rows below reuse the base card/request validators + this one field
+// so the manager UI can badge Trained ✓ / Needs training per row.
+const prerequisiteMetValidator = v.union(v.boolean(), v.null());
+
+const cardRowValidator = v.object({
+  ...cardSummaryValidator.fields,
+  prerequisiteMet: prerequisiteMetValidator,
+});
+
+const cardRequestRowValidator = v.object({
+  ...cardRequestSummaryValidator.fields,
+  prerequisiteMet: prerequisiteMetValidator,
+});
+
 const repaymentSummaryValidator = v.object({
   id: v.id("personalRepayments"),
   transactionId: v.id("transactions"),
@@ -225,6 +253,12 @@ const repaymentSummaryValidator = v.object({
 const authDecisionValidator = v.object({
   approved: v.boolean(),
   reason: v.optional(v.string()),
+});
+
+const merchantPolicyValidator = v.object({
+  enforced: v.boolean(),
+  allowedMerchantNames: v.array(v.string()),
+  allowedMerchantCategories: v.array(v.string()),
 });
 
 // ── TS shapes (for action ↔ internal-mutation typing) ────────────────────────
@@ -255,6 +289,12 @@ interface CardRequestSummary {
   cardId: Id<"cards"> | null;
 }
 
+// A `null` `prerequisiteMet` means "no effective card-prerequisite gate" (none
+// configured, or the configured course isn't in the catalog → fail-open); a
+// boolean is that person's completion of the configured course.
+type CardRow = CardSummary & { prerequisiteMet: boolean | null };
+type CardRequestRow = CardRequestSummary & { prerequisiteMet: boolean | null };
+
 interface RepaymentSummary {
   id: Id<"personalRepayments">;
   transactionId: Id<"transactions">;
@@ -265,6 +305,12 @@ interface RepaymentSummary {
   creditTransactionId: Id<"transactions"> | null;
   hasExternalAccount: boolean;
   payerAccountLast4: string | null;
+}
+
+interface MerchantPolicySummary {
+  enforced: boolean;
+  allowedMerchantNames: string[];
+  allowedMerchantCategories: string[];
 }
 
 interface UnfreezeCardResult {
@@ -535,6 +581,23 @@ async function toCardRequestSummary(
   };
 }
 
+/**
+ * The org-wide card-prerequisite course resolved to its catalog entry, or
+ * `null` when there is NO EFFECTIVE gate — either none is configured, or the
+ * configured slug isn't a real `ACADEMY_COURSES` course (fail-open, exactly
+ * like `beginIssueCard`: an unknown course can never be completed, so it can't
+ * be allowed to read as "everyone needs training"). Shared by the list queries
+ * and `cardPrerequisiteStatus` so they all agree on when a gate is in effect.
+ */
+async function effectivePrerequisiteCourse(
+  ctx: QueryCtx,
+): Promise<{ slug: string; title: string } | null> {
+  const slug = await readCardPrerequisiteCourseSlug(ctx);
+  if (slug === null) return null;
+  const course = getAcademyCourse(slug);
+  return course ? { slug: course.slug, title: course.title } : null;
+}
+
 // ── issueCard (action, manager) ──────────────────────────────────────────────
 
 /**
@@ -579,6 +642,32 @@ export const beginIssueCard = internalMutation({
         message:
           "Cards can only be issued to people with a @publicworship.life email.",
       });
+    }
+
+    // Academy-course prerequisite (org-wide, OFF by default). The single hard
+    // gate for BOTH issuance paths: `issueCard` (direct) and
+    // `decideCardRequest → issueCard` (approved request) both funnel here.
+    const prerequisiteSlug = await readCardPrerequisiteCourseSlug(ctx);
+    if (prerequisiteSlug !== null) {
+      const course = getAcademyCourse(prerequisiteSlug);
+      if (course === undefined) {
+        // FAIL-OPEN: an unknown / not-yet-authored course can NEVER be
+        // completed, so gating on it would brick ALL issuance for the whole
+        // org. The settings UI already warns about this misconfiguration, so
+        // we skip the gate rather than block everyone.
+      } else if (
+        !(await hasCompletedCourse(
+          ctx,
+          chapterId,
+          args.cardholderPersonId,
+          prerequisiteSlug,
+        ))
+      ) {
+        throw new ConvexError({
+          code: "CARD_PREREQUISITE_INCOMPLETE",
+          message: `${course.title} must be completed before a card can be issued.`,
+        });
+      }
     }
 
     // Mode-aware: issue on the chapter's CURRENT-environment account (never
@@ -759,8 +848,8 @@ export const issueCard = action({
 /** The chapter's cards (viewer+) — the manager card view. */
 export const listCards = query({
   args: {},
-  returns: v.array(cardSummaryValidator),
-  handler: async (ctx): Promise<CardSummary[]> => {
+  returns: v.array(cardRowValidator),
+  handler: async (ctx): Promise<CardRow[]> => {
     const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
     if (!chapterId) return [];
     await requireFinanceRole(ctx, chapterId, "viewer");
@@ -775,7 +864,19 @@ export const listCards = query({
         .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
         .take(CARD_SCAN_LIMIT)
     ).filter((c) => matchesMode(c.increaseCardId ?? null, sandboxMode));
-    return Promise.all(cards.map((c) => buildCardSummary(ctx, c)));
+    // Per-cardholder training status for the manager roster's Trained ✓ /
+    // Needs training badge — `null` on every row when there's no effective
+    // gate. `hasCompletedCourse` is a couple of indexed reads per card; the
+    // list is already bounded by CARD_SCAN_LIMIT.
+    const course = await effectivePrerequisiteCourse(ctx);
+    return Promise.all(
+      cards.map(async (c) => ({
+        ...(await buildCardSummary(ctx, c)),
+        prerequisiteMet: course
+          ? await hasCompletedCourse(ctx, chapterId, c.cardholderPersonId, course.slug)
+          : null,
+      })),
+    );
   },
 });
 
@@ -991,6 +1092,130 @@ export const setCardControls = mutation({
     }
     await ctx.db.patch(card._id, patch);
     return buildCardSummary(ctx, (await ctx.db.get(card._id))!);
+  },
+});
+
+// ── Merchant allow-list (chapter policy) ─────────────────────────────────────
+
+// Bound the allow-list config doc: a modest, single-doc policy — the entry
+// count + per-entry length caps keep the arrays far from any document limit.
+const MERCHANT_ALLOWLIST_MAX_ENTRIES = 100;
+const MERCHANT_ALLOWLIST_ENTRY_MAX = 100;
+// Category entries are exactly the 4-digit MCC Increase sends on an
+// authorization (`merchant_category_code`).
+const MCC_RE = /^\d{4}$/;
+
+/** The chapter's merchant allow-list row, or null before one's ever been set. */
+async function readMerchantPolicy(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<Doc<"cardMerchantPolicy"> | null> {
+  return await ctx.db
+    .query("cardMerchantPolicy")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .first();
+}
+
+/** The read projection the allow-list UI renders. A missing row reads as the
+ *  safe default: enforcement off, nothing listed. */
+function toMerchantPolicySummary(
+  policy: Doc<"cardMerchantPolicy"> | null,
+): MerchantPolicySummary {
+  return {
+    enforced: policy?.enforced ?? false,
+    allowedMerchantNames: policy?.allowedMerchantNames ?? [],
+    allowedMerchantCategories: policy?.allowedMerchantCategories ?? [],
+  };
+}
+
+/** Trim, drop empties, enforce the per-entry length cap, and de-duplicate
+ *  case-insensitively (first casing wins — matching is case-insensitive
+ *  anyway, so "Costco" + "COSTCO" would be the same entry twice). */
+function normalizeAllowlistEntries(entries: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of entries) {
+    const entry = raw.trim();
+    if (!entry) continue;
+    if (entry.length > MERCHANT_ALLOWLIST_ENTRY_MAX) {
+      throw new ConvexError({
+        code: "ALLOWLIST_ENTRY_TOO_LONG",
+        message: `Allow-list entries are capped at ${MERCHANT_ALLOWLIST_ENTRY_MAX} characters.`,
+      });
+    }
+    const key = entry.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(entry);
+  }
+  return out;
+}
+
+/** The chapter's merchant allow-list (viewer+ — the same floor as `listCards`,
+ *  so the Cards tab can show the policy state). Safe defaults (enforcement
+ *  off, empty lists) before a manager ever saves one. */
+export const getMerchantPolicy = query({
+  args: {},
+  returns: merchantPolicyValidator,
+  handler: async (ctx): Promise<MerchantPolicySummary> => {
+    const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
+    if (!chapterId) return toMerchantPolicySummary(null);
+    await requireFinanceRole(ctx, chapterId, "viewer");
+    return toMerchantPolicySummary(await readMerchantPolicy(ctx, chapterId));
+  },
+});
+
+/**
+ * Replace the chapter's merchant allow-list + enforcement toggle (manager).
+ * Entries are normalized (trimmed, de-duplicated case-insensitively) and
+ * BOUNDED; category entries must be 4-digit MCCs — the finance manager pastes
+ * codes off the card network's list, and a malformed one would silently never
+ * match anything. Enforcement only bites when the list is non-empty (see
+ * `decideAgainstMerchantPolicy`), so flipping the toggle on an empty list can
+ * never brick every card at once.
+ */
+export const setMerchantPolicy = mutation({
+  args: {
+    enforced: v.boolean(),
+    allowedMerchantNames: v.array(v.string()),
+    allowedMerchantCategories: v.array(v.string()),
+  },
+  returns: merchantPolicyValidator,
+  handler: async (ctx, args): Promise<MerchantPolicySummary> => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const access = await requireFinanceManager(ctx, chapterId);
+
+    const names = normalizeAllowlistEntries(args.allowedMerchantNames);
+    const categories = normalizeAllowlistEntries(args.allowedMerchantCategories);
+    for (const code of categories) {
+      if (!MCC_RE.test(code)) {
+        throw new ConvexError({
+          code: "INVALID_MERCHANT_CATEGORY",
+          message: `"${code}" isn't a merchant category code — use the 4-digit MCC (e.g. 5411 for grocery stores).`,
+        });
+      }
+    }
+    if (names.length + categories.length > MERCHANT_ALLOWLIST_MAX_ENTRIES) {
+      throw new ConvexError({
+        code: "ALLOWLIST_TOO_LARGE",
+        message: `The allow-list is capped at ${MERCHANT_ALLOWLIST_MAX_ENTRIES} entries.`,
+      });
+    }
+
+    const existing = await readMerchantPolicy(ctx, chapterId);
+    const fields = {
+      enforced: args.enforced,
+      allowedMerchantNames: names,
+      allowedMerchantCategories: categories,
+      updatedByPersonId: access.personId ?? undefined,
+      updatedAt: Date.now(),
+    };
+    if (existing) {
+      await ctx.db.patch(existing._id, fields);
+    } else {
+      await ctx.db.insert("cardMerchantPolicy", { chapterId, ...fields });
+    }
+    return toMerchantPolicySummary(await readMerchantPolicy(ctx, chapterId));
   },
 });
 
@@ -1311,8 +1536,8 @@ export const requestCard = mutation({
  *  forever would be noise) or when there's none/no chapter/roster row yet. */
 export const myCardRequest = query({
   args: {},
-  returns: v.union(cardRequestSummaryValidator, v.null()),
-  handler: async (ctx): Promise<CardRequestSummary | null> => {
+  returns: v.union(cardRequestRowValidator, v.null()),
+  handler: async (ctx): Promise<CardRequestRow | null> => {
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return null;
     const person = await viewerPerson(ctx, chapterId as Id<"chapters">);
@@ -1325,7 +1550,13 @@ export const myCardRequest = query({
     const mine = rows.filter((r) => r.chapterId === chapterId);
     const latest = mine[0];
     if (!latest || latest.status === "approved") return null;
-    return toCardRequestSummary(ctx, latest);
+    const course = await effectivePrerequisiteCourse(ctx);
+    return {
+      ...(await toCardRequestSummary(ctx, latest)),
+      prerequisiteMet: course
+        ? await hasCompletedCourse(ctx, chapterId as Id<"chapters">, person._id, course.slug)
+        : null,
+    };
   },
 });
 
@@ -1334,8 +1565,8 @@ export const myCardRequest = query({
  *  only a finance manager can actually decide one (`decideCardRequest`). */
 export const listCardRequests = query({
   args: {},
-  returns: v.array(cardRequestSummaryValidator),
-  handler: async (ctx): Promise<CardRequestSummary[]> => {
+  returns: v.array(cardRequestRowValidator),
+  handler: async (ctx): Promise<CardRequestRow[]> => {
     const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
     if (!chapterId) return [];
     await requireFinanceRole(ctx, chapterId, "viewer");
@@ -1345,7 +1576,65 @@ export const listCardRequests = query({
         q.eq("chapterId", chapterId).eq("status", "requested"),
       )
       .take(CARD_REQUEST_SCAN_LIMIT);
-    return Promise.all(rows.map((r) => toCardRequestSummary(ctx, r)));
+    // Whether each requester has finished the org's card-prerequisite course —
+    // so a manager sees Trained ✓ / Needs training before approving. `null`
+    // on every row when there's no effective gate.
+    const course = await effectivePrerequisiteCourse(ctx);
+    return Promise.all(
+      rows.map(async (r) => ({
+        ...(await toCardRequestSummary(ctx, r)),
+        prerequisiteMet: course
+          ? await hasCompletedCourse(ctx, chapterId, r.personId, course.slug)
+          : null,
+      })),
+    );
+  },
+});
+
+/**
+ * The org-wide card-prerequisite course + whether a person has completed it —
+ * the read behind the "Complete <course> to get a card" member note and the
+ * "Trained ✓ / Needs training" hint in the Issue-card flow. Returns `null`
+ * whenever there's NO EFFECTIVE gate (none configured, or the configured slug
+ * isn't a real course → fail-open, matching `beginIssueCard`).
+ *
+ * `personId` OMITTED → the CALLER's own status (any member, no finance role).
+ * `personId` GIVEN → that person's status; viewer+ gated and chapter-scoped,
+ * for the manager Issue-card flow inspecting a pickable cardholder. Card
+ * completion is already chapter-visible (see `courseCompleters`), so this
+ * exposes nothing new.
+ */
+export const cardPrerequisiteStatus = query({
+  args: { personId: v.optional(v.id("people")) },
+  returns: v.union(
+    v.object({ slug: v.string(), title: v.string(), met: v.boolean() }),
+    v.null(),
+  ),
+  handler: async (
+    ctx,
+    { personId },
+  ): Promise<{ slug: string; title: string; met: boolean } | null> => {
+    const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
+    if (!chapterId) return null;
+    const course = await effectivePrerequisiteCourse(ctx);
+    if (!course) return null;
+
+    let target: Id<"people">;
+    if (personId) {
+      await requireFinanceRole(ctx, chapterId, "viewer");
+      const person = await ctx.db.get(personId);
+      await requireInChapter(ctx, chapterId, person, "Person");
+      target = personId;
+    } else {
+      const me = await viewerPerson(ctx, chapterId);
+      if (!me) return null;
+      target = me._id;
+    }
+    return {
+      slug: course.slug,
+      title: course.title,
+      met: await hasCompletedCourse(ctx, chapterId, target, course.slug),
+    };
   },
 });
 
@@ -1464,11 +1753,39 @@ function decideAgainstCard(
   return { approved: true };
 }
 
+/** The pure merchant decision: DECLINE when the chapter's allow-list is
+ *  ENFORCED and NON-EMPTY and the merchant matches no entry — name entries
+ *  are case-insensitive substrings of the merchant descriptor, category
+ *  entries exact 4-digit MCC matches; ANY one match approves. No policy row,
+ *  enforcement off, or an empty list never declines, so behavior without a
+ *  configured allow-list is exactly as before it existed. An authorization
+ *  carrying NO merchant data can't match an entry, so under an enforced
+ *  non-empty list it declines. */
+function decideAgainstMerchantPolicy(
+  policy: Doc<"cardMerchantPolicy"> | null,
+  merchantName: string | undefined,
+  merchantCategory: string | undefined,
+): { approved: boolean; reason?: string } {
+  if (!policy || !policy.enforced) return { approved: true };
+  const names = policy.allowedMerchantNames;
+  const categories = policy.allowedMerchantCategories;
+  if (names.length + categories.length === 0) return { approved: true };
+  const descriptor = (merchantName ?? "").toLowerCase();
+  if (descriptor && names.some((n) => descriptor.includes(n.toLowerCase()))) {
+    return { approved: true };
+  }
+  if (merchantCategory != null && categories.includes(merchantCategory)) {
+    return { approved: true };
+  }
+  return { approved: false, reason: "merchant not on allow-list" };
+}
+
 /**
  * The real-time card-authorization decision. The orchestrator's Increase
  * webhook (`card_authorization` / `real_time_decision`) calls this synchronously
  * and responds to Increase with the result. Looks the card up by
- * `increaseCardId`, decides against the two controls + lock state, and logs a
+ * `increaseCardId`, decides against the two controls + lock state + the
+ * chapter's merchant allow-list (`decideAgainstMerchantPolicy`), and logs a
  * `cardAuthorizations` row every time. NEVER throws — a thrown decision would
  * wrongly decline/hang the network — so any internal error defaults to DECLINE.
  * Idempotent per `increaseAuthId`: a retried authorization returns the same
@@ -1517,12 +1834,22 @@ export const decideCardAuthorization = internalMutation({
       // settled), NOT just settled transactions — otherwise a burst of
       // unsettled charges blows through the cap before any transaction posts.
       const monthAuthorizedCents = await cardMonthAuthorizedCents(ctx, card, now);
-      const decision = decideAgainstCard(
+      let decision = decideAgainstCard(
         card,
         args.amountCents,
         monthAuthorizedCents,
         now,
       );
+      // Chapter merchant allow-list — checked only once the card itself would
+      // approve, so a lock/validity/cap decline keeps its more specific reason.
+      if (decision.approved) {
+        const policy = await readMerchantPolicy(ctx, card.chapterId);
+        decision = decideAgainstMerchantPolicy(
+          policy,
+          args.merchantName,
+          args.merchantCategory,
+        );
+      }
 
       await ctx.db.insert("cardAuthorizations", {
         chapterId: card.chapterId,
@@ -2181,6 +2508,57 @@ export const cardBillingAddress = action({
   },
 });
 
+/**
+ * SHARED conversion core: turn a card charge into a `pending` personal
+ * repayment owned by the cardholder, and back-link the txn
+ * (`isPersonal`/`repaymentId`). IDEMPOTENT — one repayment per transaction: if
+ * the charge already carries a `personalRepayments` row it's reused (healing
+ * the txn's back-links if they ever drifted), and `created:false` is returned
+ * so a caller can skip first-time-only side effects (the flag notification;
+ * the sweep's converted-count).
+ *
+ * Extracted so the insert-`personalRepayments` + patch core lives in ONE place
+ * and is shared by BOTH `flagPersonalCharge` (manual — cardholder or manager)
+ * and `autoConvertOverdueReceipts` (the no-receipt sweep). The CALLER owns
+ * authorization, chapter verification, and any notification — this helper only
+ * touches the two rows. Exported so the member-facing `finances.submitOwnCharge`
+ * can flag-personal through the same core without duplicating the insert.
+ */
+export async function convertChargeToPersonalRepayment(
+  ctx: MutationCtx,
+  txn: Doc<"transactions">,
+  cardholderPersonId: Id<"people">,
+): Promise<{ repayment: Doc<"personalRepayments">; created: boolean }> {
+  const existing = await ctx.db
+    .query("personalRepayments")
+    .withIndex("by_transaction", (q) => q.eq("transactionId", txn._id))
+    .first();
+  if (existing) {
+    if (txn.isPersonal !== true || txn.repaymentId == null) {
+      await ctx.db.patch(txn._id, {
+        isPersonal: true,
+        repaymentId: existing._id,
+      });
+    }
+    return { repayment: existing, created: false };
+  }
+  const now = Date.now();
+  const repaymentId = await ctx.db.insert("personalRepayments", {
+    // A card charge is always chapter-scoped (central issues no cards).
+    chapterId: txn.chapterId as Id<"chapters">,
+    transactionId: txn._id,
+    payerPersonId: cardholderPersonId,
+    amountCents: txn.amountCents,
+    // The method is chosen when the payer initiates repayment; default until.
+    method: "ach",
+    status: "pending",
+    createdAt: now,
+    updatedAt: now,
+  });
+  await ctx.db.patch(txn._id, { isPersonal: true, repaymentId });
+  return { repayment: (await ctx.db.get(repaymentId))!, created: true };
+}
+
 // ── flagPersonalCharge (cardholder or manager) ───────────────────────────────
 
 /**
@@ -2226,45 +2604,26 @@ export const flagPersonalCharge = mutation({
       });
     }
 
-    // IDEMPOTENT: one repayment per transaction.
-    const existing = await ctx.db
-      .query("personalRepayments")
-      .withIndex("by_transaction", (q) => q.eq("transactionId", transactionId))
-      .first();
-    if (existing) {
-      if (transaction.isPersonal !== true || transaction.repaymentId == null) {
-        await ctx.db.patch(transactionId, {
-          isPersonal: true,
-          repaymentId: existing._id,
-        });
-      }
-      return toRepaymentSummary(existing);
-    }
+    // IDEMPOTENT: one repayment per transaction — the shared conversion core
+    // (also used by the no-receipt sweep) handles the insert + back-link.
+    const { repayment, created } = await convertChargeToPersonalRepayment(
+      ctx,
+      transaction,
+      cardholderPersonId,
+    );
 
-    const now = Date.now();
-    const repaymentId = await ctx.db.insert("personalRepayments", {
-      chapterId,
-      transactionId,
-      payerPersonId: cardholderPersonId,
-      amountCents: transaction.amountCents,
-      // The method is chosen when the payer initiates repayment; default until.
-      method: "ach",
-      status: "pending",
-      createdAt: now,
-      updatedAt: now,
-    });
-    await ctx.db.patch(transactionId, { isPersonal: true, repaymentId });
-
-    // Manager flagging SOMEONE ELSE's charge → notify the cardholder. Scheduled
-    // (not awaited) so a slow/failing Resend call never blocks the flag itself;
-    // the action below is best-effort and degrades silently without a key.
-    if (!isCardholder) {
+    // Manager flagging SOMEONE ELSE's charge → notify the cardholder, but ONLY
+    // on the FIRST conversion (`created`) — a repeat flag of an already-personal
+    // charge is a no-op and must not re-email. Scheduled (not awaited) so a
+    // slow/failing Resend call never blocks the flag itself; the action is
+    // best-effort and degrades silently without a key.
+    if (created && !isCardholder) {
       await ctx.scheduler.runAfter(0, internal.cards.notifyPersonalChargeFlagged, {
-        repaymentId,
+        repaymentId: repayment._id,
       });
     }
 
-    return toRepaymentSummary((await ctx.db.get(repaymentId))!);
+    return toRepaymentSummary(repayment);
   },
 });
 
@@ -2303,8 +2662,11 @@ export const getPersonalChargeFlagContact = internalQuery({
  *  Never throws past itself (it's a scheduled fire-and-forget job off the
  *  flagging mutation, so a Resend failure here must not surface anywhere). */
 export const notifyPersonalChargeFlagged = internalAction({
-  args: { repaymentId: v.id("personalRepayments") },
-  handler: async (ctx, { repaymentId }) => {
+  // `auto` distinguishes the no-receipt sweep's auto-conversion
+  // (`autoConvertOverdueReceipts`) from a manager's manual flag — same email
+  // machinery, different reason copy.
+  args: { repaymentId: v.id("personalRepayments"), auto: v.optional(v.boolean()) },
+  handler: async (ctx, { repaymentId, auto }) => {
     try {
       const contact = await ctx.runQuery(
         internal.cards.getPersonalChargeFlagContact,
@@ -2313,7 +2675,12 @@ export const notifyPersonalChargeFlagged = internalAction({
       if (!contact) return null;
       const dollars = `$${(contact.amountCents / 100).toFixed(2)}`;
       const merchant = contact.merchantName ?? "a charge on your card";
-      const subject = `A charge on your card was marked personal — you owe ${dollars}`;
+      const subject = auto
+        ? `A charge with no receipt became a personal charge — you owe ${dollars}`
+        : `A charge on your card was marked personal — you owe ${dollars}`;
+      const reason = auto
+        ? `${escapeHtml(merchant)} (${escapeHtml(dollars)}) passed the receipt deadline with no receipt attached, so it was automatically converted to a personal charge.`
+        : `a finance manager marked ${escapeHtml(merchant)} (${escapeHtml(dollars)}) as a personal charge.`;
       // The Cards tab's member view (`MemberCardsView`) owns the per-charge
       // flag/pay-back list this charge lives in — not Reimbursements (which
       // only shows the aggregate "you owe" total). Null when APP_URL is unset.
@@ -2323,7 +2690,7 @@ export const notifyPersonalChargeFlagged = internalAction({
         subject,
         emailShell(`
           <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">${escapeHtml(subject)}</h1>
-          <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(contact.cardholderName)} — a finance manager marked ${escapeHtml(merchant)} (${escapeHtml(dollars)}) as a personal charge. Pay it back from the Cards tab in the app.</p>
+          <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(contact.cardholderName)} — ${reason} Pay it back from the Cards tab in the app.</p>
           ${
             link
               ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${link}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">Pay it back →</a></div>`
@@ -2854,6 +3221,13 @@ export const initiateRepayment = action({
  * Exported so the chapter dashboard's "cards nearing auto-lock" queue reuses the
  * exact same predicate as this auto-lock sweep — only the grace-window
  * comparison differs (nearing = still within grace, overdue = past it).
+ *
+ * A PERSONAL charge (`isPersonal` — flagged or auto-converted to a personal
+ * repayment) is EXCLUDED: it's no longer an org expense awaiting a receipt but
+ * money the cardholder owes back, so it must not keep a card auto-locked or
+ * surface as "missing receipt" anywhere. This is the single predicate the
+ * lock/unlock/nearing paths all read, so excluding it here removes converted
+ * charges from every one of them at once.
  */
 export function isMissingReceiptCharge(
   tr: Doc<"transactions">,
@@ -2864,6 +3238,7 @@ export function isMissingReceiptCharge(
     tr.flow === "outflow" &&
     tr.status !== "excluded" &&
     tr.status !== "reconciled" &&
+    tr.isPersonal !== true &&
     !tr.receiptStorageId
   );
 }
@@ -2973,6 +3348,78 @@ export const autoLockOverdueCards = internalMutation({
       }
     }
     return { lockedCount, unlockedCount };
+  },
+});
+
+// ── autoConvertOverdueReceipts (no-receipt → personal repayment) ─────────────
+
+/**
+ * The org-wide no-receipt auto-conversion sweep the daily cron calls — the
+ * TERMINAL step past the day-1/day-3 receipt reminders and the day-7 auto-lock.
+ *
+ * Reads the org-wide deadline (`financeSettings.noReceiptAutoConvertDays` via
+ * `readNoReceiptAutoConvertDays`). `null` (the default — central finance never
+ * picked a number) → NO-OP. Otherwise every card charge still missing its
+ * receipt PAST that many days is converted into a `pending` personal repayment
+ * the cardholder owes back (via the shared `convertChargeToPersonalRepayment`,
+ * so the flag/pay-back machinery is identical to a manual flag).
+ *
+ * Same age basis (`postedAt`) and eligibility predicate as the auto-lock sweep:
+ * `isOverdueReceiptCharge`, which (since this WP excludes `isPersonal`) also
+ * skips an already-converted charge — so a converted charge is never re-swept
+ * and, critically, no longer keeps its card auto-locked. Bounded + idempotent
+ * like the reminder sweep: at most `REMINDER_BATCH_LIMIT` conversions per run,
+ * globally oldest-first, so a backlog drains gradually instead of converting
+ * (and emailing) everyone in one burst. Each first-time conversion best-effort
+ * emails the cardholder (scheduled, degrades without a Resend key).
+ */
+export const autoConvertOverdueReceipts = internalMutation({
+  args: {},
+  returns: v.object({ convertedCount: v.number() }),
+  handler: async (ctx): Promise<{ convertedCount: number }> => {
+    const days = await readNoReceiptAutoConvertDays(ctx);
+    // Policy OFF (the default) — nothing auto-converts.
+    if (days == null) return { convertedCount: 0 };
+    const now = Date.now();
+    const cutoff = now - days * DAY_MS;
+    const cards = await ctx.db.query("cards").take(AUTOLOCK_LIMIT);
+
+    // Gather every eligible charge across ALL cards first, so the batch cap
+    // below picks the globally oldest — mirrors `advanceReceiptReminders`.
+    const candidates: { tr: Doc<"transactions">; card: Doc<"cards"> }[] = [];
+    for (const card of cards) {
+      if (card.status === "canceled") continue;
+      const txns = await ctx.db
+        .query("transactions")
+        .withIndex("by_card", (q) => q.eq("cardId", card._id))
+        .order("desc")
+        .take(CARD_TXN_LIMIT);
+      for (const tr of txns) {
+        if (isOverdueReceiptCharge(tr, card, cutoff)) {
+          candidates.push({ tr, card });
+        }
+      }
+    }
+    candidates.sort((a, b) => a.tr.postedAt - b.tr.postedAt);
+    const batch = candidates.slice(0, REMINDER_BATCH_LIMIT);
+
+    let convertedCount = 0;
+    for (const { tr, card } of batch) {
+      const { repayment, created } = await convertChargeToPersonalRepayment(
+        ctx,
+        tr,
+        card.cardholderPersonId,
+      );
+      // Idempotent: a charge already converted (created:false) isn't recounted
+      // or re-emailed on a later run.
+      if (!created) continue;
+      convertedCount++;
+      await ctx.scheduler.runAfter(0, internal.cards.notifyPersonalChargeFlagged, {
+        repaymentId: repayment._id,
+        auto: true,
+      });
+    }
+    return { convertedCount };
   },
 });
 

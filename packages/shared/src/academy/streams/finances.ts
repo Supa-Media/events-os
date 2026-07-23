@@ -256,7 +256,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 0,
         explanation:
-          "My Transactions is your mini-reconcile — attach receipts and flag charges on your own transactions without needing a finance seat.",
+          "My Transactions is your mini-reconcile — attach receipts, add a category and a short note on who and why, and flag charges on your own transactions, all without needing a finance seat. What you add pre-fills the finance team's review.",
       },
       {
         prompt:
@@ -1108,6 +1108,10 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         text: "**Three new card-lifecycle features are now live (WP-C.1):** A cardholder can self-serve freeze their own card instantly (suspected foul play) — it's instant and reversible by them alone. An FM or Treasurer can permanently cancel/close a card (a member who had one canceled can request a replacement). And any member can request a card (one open request at a time); you approve it (which issues the card) or deny it. The old direct-issuance flow still works as a manager shortcut.",
       },
       {
+        kind: "tip",
+        text: "**Card prerequisite (org-wide, optional):** central finance can require a member to finish a specific finance Academy course before a card is issued — set it in the Accounts screen's *Receipt & card policy* section. It's OFF by default. When it's set, requesting a card still works; the gate is at ISSUANCE, so a member can request, finish the course, then be approved. In the cards admin an untrained cardholder reads **Needs training**, so you can see at a glance who's ready. (If the configured course doesn't exist, the gate stays off rather than blocking everyone.)",
+      },
+      {
         kind: "reveal",
         prompt:
           "A member emails asking you to freeze their card because their phone was stolen. What do you tell them?",
@@ -1163,6 +1167,19 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 0,
         explanation:
           "All three shipped together in WP-C.1: a cardholder can self-serve freeze/unfreeze their own card instantly (reversible), an FM or Treasurer can permanently cancel/close a card, and any member can submit a card request (with at most one open request at a time) for you to approve or deny.",
+      },
+      {
+        prompt:
+          "Central finance has set a required Academy course before a card can be issued. A member who hasn't finished it requests a card. What happens?",
+        options: [
+          "Their request is blocked — they can't even submit it until they finish",
+          "The request goes through; you just can't issue/approve the card until they complete the course, and they show as 'Needs training' until then",
+          "The card is issued anyway — the requirement only applies to direct issuance",
+          "Their existing card is locked until they finish",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The prerequisite gates ISSUANCE, not the request. A member can request now, finish the course, and then be approved — and the cards admin flags an untrained cardholder as 'Needs training' so you can see who's ready. The requirement is off by default and set on the Accounts screen.",
       },
     ],
   },
