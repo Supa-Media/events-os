@@ -84,6 +84,7 @@ import {
   convertChargeToPersonalRepayment,
 } from "./cards";
 import { queueSuggestionOnIngest } from "./aiCodingData";
+import { createReceipt, linkReceiptToTransaction } from "./lib/receiptLinks";
 import {
   getChapterIdOrNull,
   requireChapterId,
@@ -8013,17 +8014,28 @@ export const attachReceipt = mutation({
         }
       }
     }
-    await ctx.db.patch(args.transactionId, {
-      receiptStorageId: args.storageId,
-      // The reminder timeline is moot once a receipt is attached.
-      receiptReminderStage: undefined,
-      lastReminderSentAt: undefined,
+    // First-class document + link (the receipts layer is now the source of
+    // truth; `transactions.receiptStorageId` is the denormalized cache the link
+    // maintains — see lib/receiptLinks.ts). The reminder-clear + card-unlock
+    // side effects live in `linkReceiptToTransaction`.
+    //
+    // BEHAVIOR PRESERVED: the in-app upload path historically did NOT flip a
+    // `categorized` charge to `reconciled` (reconcile is a deliberate later
+    // step here), so we opt out via `reconcileIfCategorized: false`.
+    const uploader = await viewerPerson(ctx, chapterId);
+    const receiptId = await createReceipt(ctx, {
+      chapterId: txn.chapterId,
+      storageId: args.storageId,
+      source: "upload",
+      ...(uploader ? { uploadedByPersonId: uploader._id } : {}),
     });
-    // If this charge was the (or a) reason the card auto-locked, re-check
-    // eligibility right away — don't wait for the next daily cron sweep.
-    if (txn.cardId) {
-      await unlockCardIfReceiptsResolved(ctx, txn.cardId);
-    }
+    await linkReceiptToTransaction(ctx, {
+      receiptId,
+      transactionId: args.transactionId,
+      source: "upload",
+      ...(uploader ? { linkedByPersonId: uploader._id } : {}),
+      reconcileIfCategorized: false,
+    });
     return null;
   },
 });

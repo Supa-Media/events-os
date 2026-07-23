@@ -10,32 +10,38 @@
  *   2. The route schedules `processInboundReceipt` (an action) and returns 200
  *      fast — the webhook must ack quickly; all the slow work is async.
  *   3. `processInboundReceipt`:
- *        a. Resolves the SENDER to a `people` row (`resolvePersonByEmail`). An
- *           unknown sender → `ignored` (the endpoint is public; roster
- *           membership is the auth gate). This also fixes the chapter to match
- *           against.
- *        b. Gets the receipt content: prefers a real image/PDF ATTACHMENT
- *           (fetched via the Resend Attachments API), else falls back to the
- *           email BODY text (the "just an email" receipts).
- *        c. Extracts { amountCents, date, merchant }:
+ *        a. CLASSIFIES the sender (`classifySender`). The endpoint is public and
+ *           the gate is OPEN (owner decision, 2026-07-23): EVERY email is
+ *           processed end-to-end regardless of sender. The classification —
+ *           team / roster / internal / external — is an AUTOMATION axis, never a
+ *           permission: only a `team`/`roster` sender (resolved to a `people`
+ *           row) may trigger an auto-attach; an `internal`/`external` email is
+ *           always routed to human review (a `From:` header is spoofable, so a
+ *           stranger's mail must never move money).
+ *        b. Gets the receipt content: EVERY usable image/PDF ATTACHMENT (each
+ *           processed independently), else the email BODY text.
+ *        c. Extracts { amountCents, date, merchant } per receipt:
  *             - BODY receipts are parsed with a plain in-Convex heuristic
  *               (`parseReceiptFromText`) — ZERO LLM.
  *             - IMAGE/PDF receipts go to a cheap multimodal model via OpenRouter
  *               (`ocrReceiptImage`) — the only LLM call, and only for photos.
- *        d. Matches against the sender-chapter's UNRECEIPTED spend within a
- *           date window at the EXACT cent (`findReceiptMatches`).
- *        e. Exactly ONE candidate → `attachMatchedReceipt` (auto): attaches the
- *           file (counts as "receipt uploaded"), flips `reconciled` only if the
- *           txn was already `categorized`, and unlocks the card. 0 or >1, or an
- *           unreadable total → `needs_review`/`no_match` for a bookkeeper.
- *        f. Replies to the sender (best-effort) with the outcome.
+ *        d. Matches each against the sender-chapter's UNRECEIPTED spend within a
+ *           date window at the EXACT cent (`findReceiptMatches`). No chapter (an
+ *           unknown sender) → no candidates; the receipt routes to review.
+ *        e. Creates ONE first-class `receipts` row PER extracted receipt (source
+ *           `email`), stamped with the sender class + OCR provenance and its own
+ *           match shortlist. A `team`/`roster` receipt with exactly ONE candidate
+ *           auto-attaches (links + flips an already-`categorized` charge to
+ *           `reconciled` + unlocks the card, all via `lib/receiptLinks.ts`).
+ *           Everything else defers to a human.
+ *        f. Replies to the sender (best-effort) — ONLY to team/roster senders.
  *
- * MONEY SAFETY: the model NEVER moves money and NEVER categorizes here — it
- * only reads a total off a receipt. The only write that touches a transaction
- * is `attachMatchedReceipt`, and it only ever attaches a receipt + (maybe)
- * flips an already-categorized txn to reconciled. Ambiguity always defers to a
- * human. This mirrors the AI-coding rule ("a human confirms; the model never
- * moves money", `aiCoding.ts`).
+ * MONEY SAFETY: the model NEVER moves money and NEVER categorizes here — it only
+ * reads a total off a receipt. The only write that touches a transaction is the
+ * link layer (`lib/receiptLinks.ts`), and it only ever attaches a receipt +
+ * (maybe) flips an already-categorized txn to reconciled. Ambiguity, an
+ * untrusted sender, or an unreadable total always defer to a human. This mirrors
+ * the AI-coding rule ("a human confirms; the model never moves money").
  */
 import {
   query,
@@ -44,22 +50,25 @@ import {
   internalMutation,
   internalAction,
 } from "./_generated/server";
-import type { ActionCtx, MutationCtx } from "./_generated/server";
+import type { ActionCtx, QueryCtx } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import {
   INBOUND_RECEIPT_STATUSES,
+  RECEIPT_SENDER_CLASSES,
+  receiptSenderCanAutoAttach,
   FINANCE_TIMEZONE,
   financeRoleAtLeast,
   FINANCE_ROLE_LABELS,
+  type ReceiptSenderClass,
 } from "@events-os/shared";
 import { ROLLUP_SCAN_LIMIT, txnMatchesMode, isSpend } from "./finances";
 import { readSandbox } from "./financeSettings";
-import { normalizeEmail } from "./lib/access";
+import { normalizeEmail, isAllowedEmail } from "./lib/access";
 import { getChapterIdOrNull } from "./lib/context";
 import { getFinanceRole, requireFinanceRole } from "./lib/finance";
-import { unlockCardIfReceiptsResolved } from "./cards";
+import { createReceipt, linkReceiptToTransaction } from "./lib/receiptLinks";
 import { sendEmail } from "./ticketingEmails";
 
 // ── Tuning constants ─────────────────────────────────────────────────────────
@@ -72,6 +81,9 @@ const MATCH_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 const CANDIDATE_SCAN_LIMIT = ROLLUP_SCAN_LIMIT;
 /** How many candidate ids we persist onto a `needs_review` row for the UI. */
 const MAX_CANDIDATES_SURFACED = 8;
+/** How many attachments we ever process off one email (bounded — a receipt
+ *  email carries a handful of photos, not hundreds). */
+const MAX_ATTACHMENTS = 10;
 /** Abort a single OpenRouter OCR completion if it hangs longer than this. */
 const OCR_TIMEOUT_MS = 60_000;
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
@@ -86,6 +98,9 @@ function ocrModel(): string {
 // ── Validators ───────────────────────────────────────────────────────────────
 const statusValidator = v.union(
   ...INBOUND_RECEIPT_STATUSES.map((s) => v.literal(s)),
+);
+const senderClassValidator = v.union(
+  ...RECEIPT_SENDER_CLASSES.map((c) => v.literal(c)),
 );
 
 /** The envelope the HTTP route captures off the verified webhook and hands to
@@ -164,18 +179,46 @@ export function isReceiptInboxAddress(
   });
 }
 
-// ── Sender resolution (the auth gate) ────────────────────────────────────────
+// ── Sender resolution + classification ───────────────────────────────────────
 /**
- * Resolve a raw sender address to a roster `people` row. Matches against both
- * the personal `email` and the Public Worship `pwEmail` (core-team cardholders
- * commonly send from the latter).
+ * Resolve a raw sender address to a roster `people` doc (or null). Matches
+ * against both the personal `email` and the Public Worship `pwEmail` (core-team
+ * cardholders commonly send from the latter).
  *
  * `people.email` is stored AS ENTERED (not normalized), so the `by_email` index
  * is only a fast path for the already-lowercase common case; a bounded scan
  * comparing NORMALIZED addresses is the correctness backstop (it also covers
  * the unindexed `pwEmail`). Volume here is low (a backfill webhook), so the
- * fallback scan is acceptable. Returns the first match with its chapter, or
- * null (→ the email is `ignored`).
+ * fallback scan is acceptable.
+ */
+async function lookupPersonByEmail(
+  ctx: QueryCtx,
+  email: string,
+): Promise<Doc<"people"> | null> {
+  const normalized = extractEmailAddress(email);
+  if (!normalized) return null;
+  // Fast path: an exactly-stored (lowercase) personal email.
+  const byEmail = await ctx.db
+    .query("people")
+    .withIndex("by_email", (q) => q.eq("email", normalized))
+    .first();
+  if (byEmail) return byEmail;
+  // Correctness backstop: bounded scan comparing normalized `email`/`pwEmail`
+  // (catches mixed-case stored addresses and the secondary PW address).
+  const scan = await ctx.db.query("people").take(ROLLUP_SCAN_LIMIT);
+  return (
+    scan.find(
+      (p) =>
+        (p.email && normalizeEmail(p.email) === normalized) ||
+        (p.pwEmail && normalizeEmail(p.pwEmail) === normalized),
+    ) ?? null
+  );
+}
+
+/**
+ * Resolve a sender to a person + chapter, or null. Kept as its own contract for
+ * direct testing; the pipeline uses `classifySender` (which builds on the same
+ * lookup) so an UNKNOWN sender still flows through instead of being dropped.
  */
 export const resolvePersonByEmail = internalQuery({
   args: { email: v.string() },
@@ -184,28 +227,43 @@ export const resolvePersonByEmail = internalQuery({
     v.null(),
   ),
   handler: async (ctx, { email }) => {
-    // `from` may arrive in display form ("Jane Doe <jane@x.com>") — strip to
-    // the bare normalized address before matching.
-    const normalized = extractEmailAddress(email);
-    if (!normalized) return null;
-    // Fast path: an exactly-stored (lowercase) personal email.
-    const byEmail = await ctx.db
-      .query("people")
-      .withIndex("by_email", (q) => q.eq("email", normalized))
-      .first();
-    if (byEmail) {
-      return { personId: byEmail._id, chapterId: byEmail.chapterId };
+    const person = await lookupPersonByEmail(ctx, email);
+    if (!person) return null;
+    return { personId: person._id, chapterId: person.chapterId };
+  },
+});
+
+/**
+ * Classify an inbound sender into the AUTOMATION axis + resolve their person /
+ * chapter when known. NEVER a permission — a public endpoint's `From:` is
+ * spoofable, so the class only decides whether the pipeline may AUTO-ATTACH
+ * (team/roster) or must route to human review (internal/external). See
+ * `RECEIPT_SENDER_CLASSES`. An unresolved sender has no chapter, so its receipts
+ * get no auto-match candidates (there's nothing to match against).
+ */
+export const classifySender = internalQuery({
+  args: { email: v.string() },
+  returns: v.object({
+    senderClass: senderClassValidator,
+    personId: v.union(v.id("people"), v.null()),
+    chapterId: v.union(v.id("chapters"), v.null()),
+  }),
+  handler: async (ctx, { email }) => {
+    const person = await lookupPersonByEmail(ctx, email);
+    if (person) {
+      return {
+        senderClass: person.isTeamMember ? "team" : "roster",
+        personId: person._id,
+        chapterId: person.chapterId,
+      } as const;
     }
-    // Correctness backstop: bounded scan comparing normalized `email`/`pwEmail`
-    // (catches mixed-case stored addresses and the secondary PW address).
-    const scan = await ctx.db.query("people").take(ROLLUP_SCAN_LIMIT);
-    const match = scan.find(
-      (p) =>
-        (p.email && normalizeEmail(p.email) === normalized) ||
-        (p.pwEmail && normalizeEmail(p.pwEmail) === normalized),
-    );
-    if (match) return { personId: match._id, chapterId: match.chapterId };
-    return null;
+    // No roster match — trust falls to the address domain alone.
+    const senderClass: ReceiptSenderClass = isAllowedEmail(
+      extractEmailAddress(email),
+    )
+      ? "internal"
+      : "external";
+    return { senderClass, personId: null, chapterId: null };
   },
 });
 
@@ -311,60 +369,197 @@ export const findReceiptMatches = internalQuery({
   },
 });
 
-// ── Attach the matched receipt (the ONE money-adjacent write) ────────────────
-/**
- * Attach a stored receipt to a transaction, internally (no user in scope — the
- * pipeline runs as a scheduled action). Mirrors `finances.attachReceipt`'s
- * effect: sets `receiptStorageId`, clears the reminder timeline, and re-checks
- * the card's receipt-lock — PLUS flips `categorized` → `reconciled` (a receipt
- * on an already-coded charge is a fully reconciled charge). An `unreviewed`
- * charge is left for the AI coder / human to categorize; we never invent a
- * categorization. Idempotent-ish: refuses to clobber a receipt that already
- * landed (a human or a race got there first) — returns `attached: false`.
- */
-/**
- * The shared attach effect, so the AUTO path (`attachMatchedReceipt`) and the
- * MANUAL path (`manualMatchInboundReceipt`) are byte-identical in what they do
- * to a transaction. Mirrors `finances.attachReceipt`'s core: sets
- * `receiptStorageId`, clears the reminder timeline, flips `categorized` →
- * `reconciled`, and re-checks the card's receipt-lock. Refuses to clobber a
- * receipt that already landed (`attached: false`).
- */
-async function applyReceiptAttachment(
-  ctx: MutationCtx,
-  transactionId: Id<"transactions">,
-  storageId: Id<"_storage">,
-): Promise<{ attached: boolean; reconciled: boolean }> {
-  const txn = await ctx.db.get(transactionId);
-  if (!txn) return { attached: false, reconciled: false };
-  if (txn.receiptStorageId != null) {
-    // Someone (or another inbound email) already attached one — don't stomp.
-    return { attached: false, reconciled: false };
-  }
-  const reconcile = txn.status === "categorized";
-  await ctx.db.patch(transactionId, {
-    receiptStorageId: storageId,
-    receiptReminderStage: undefined,
-    lastReminderSentAt: undefined,
-    ...(reconcile ? { status: "reconciled" as const } : {}),
-  });
-  if (txn.cardId) {
-    // Re-check the card's receipt-lock right away (same as `attachReceipt`).
-    await unlockCardIfReceiptsResolved(ctx, txn.cardId);
-  }
-  return { attached: true, reconciled: reconcile };
-}
+// ── Commit: create receipt documents + auto-attach + write the inbound row ───
+/** One extracted receipt the action hands the commit mutation: a stored file,
+ *  its OCR read, and its (already-computed) match shortlist. */
+const extractedReceiptValidator = v.object({
+  storageId: v.id("_storage"),
+  sourceKind: v.union(v.literal("attachment"), v.literal("body")),
+  ocrAmountCents: v.optional(v.number()),
+  ocrDate: v.optional(v.number()),
+  ocrMerchant: v.optional(v.string()),
+  ocrConfidence: v.optional(v.number()),
+  ocrModel: v.optional(v.string()),
+  candidateTransactionIds: v.array(v.id("transactions")),
+});
 
-/** The AUTO path's attach — an internal mutation the pipeline action invokes
- *  via `ctx.runMutation`. Thin wrapper over `applyReceiptAttachment`. */
-export const attachMatchedReceipt = internalMutation({
+/**
+ * Create the first-class `receipts` rows for one inbound email, auto-attach the
+ * ones the policy allows, and write the aggregate outcome back onto the
+ * `inboundReceipts` row — all in ONE transaction.
+ *
+ * AUTOMATION POLICY (money safety): a receipt auto-attaches ONLY when its sender
+ * is `team`/`roster` (`receiptSenderCanAutoAttach`) AND it has exactly ONE
+ * candidate. An `internal`/`external` sender, an ambiguous match, an unreadable
+ * total, or an unknown chapter always routes to human review — never an
+ * auto-attach, never a reconcile. The inbound row's status AGGREGATES: `matched`
+ * only if EVERY extracted receipt auto-matched, else the most-actionable state
+ * (`needs_review` > `no_match`).
+ */
+export const commitInboundReceipts = internalMutation({
   args: {
-    transactionId: v.id("transactions"),
-    storageId: v.id("_storage"),
+    receiptId: v.id("inboundReceipts"),
+    personId: v.optional(v.id("people")),
+    chapterId: v.optional(v.id("chapters")),
+    senderClass: senderClassValidator,
+    extracted: v.array(extractedReceiptValidator),
   },
-  returns: v.object({ attached: v.boolean(), reconciled: v.boolean() }),
-  handler: async (ctx, args) =>
-    await applyReceiptAttachment(ctx, args.transactionId, args.storageId),
+  returns: v.object({
+    status: statusValidator,
+    totalCount: v.number(),
+    matchedCount: v.number(),
+    amountCents: v.union(v.number(), v.null()),
+    matchedTransactionId: v.union(v.id("transactions"), v.null()),
+    matchedMerchant: v.union(v.string(), v.null()),
+  }),
+  handler: async (ctx, args) => {
+    const canAuto = receiptSenderCanAutoAttach(args.senderClass);
+    const chapterKnown = args.chapterId != null;
+
+    let matchedCount = 0;
+    let firstMatchedTxn: Id<"transactions"> | null = null;
+    let firstMatchedMerchant: string | null = null;
+    let firstMatchedPostedAt: number | null = null;
+    let anyReconciled = false;
+    const reasons = new Set<string>();
+
+    for (const ex of args.extracted) {
+      const receiptId = await createReceipt(ctx, {
+        chapterId: args.chapterId,
+        storageId: ex.storageId,
+        source: "email",
+        inboundReceiptId: args.receiptId,
+        senderClass: args.senderClass,
+        ocrAmountCents: ex.ocrAmountCents,
+        ocrDate: ex.ocrDate,
+        ocrMerchant: ex.ocrMerchant,
+        ocrConfidence: ex.ocrConfidence,
+        ocrModel: ex.ocrModel,
+        candidateTransactionIds: ex.candidateTransactionIds.length
+          ? ex.candidateTransactionIds
+          : undefined,
+      });
+
+      if (ex.ocrAmountCents == null) {
+        reasons.add("unreadable");
+        continue;
+      }
+      if (!chapterKnown) {
+        // No chapter to search against — a human must place it.
+        reasons.add("unknown");
+        continue;
+      }
+      const cands = ex.candidateTransactionIds;
+      if (cands.length === 0) {
+        // A clean total read but nothing matched — a pure no-match (no `reasons`
+        // entry, so the aggregate lands on `no_match` unless another receipt in
+        // the same email needs review).
+        continue;
+      }
+      if (cands.length === 1 && canAuto) {
+        const res = await linkReceiptToTransaction(ctx, {
+          receiptId,
+          transactionId: cands[0],
+          source: "auto_email",
+          reconcileIfCategorized: true,
+        });
+        matchedCount++;
+        if (firstMatchedTxn == null) {
+          firstMatchedTxn = cands[0];
+          const txn = await ctx.db.get(cands[0]);
+          firstMatchedMerchant = txn?.merchantName ?? txn?.description ?? null;
+          firstMatchedPostedAt = txn?.postedAt ?? null;
+        }
+        if (res.reconciled) anyReconciled = true;
+      } else {
+        // Ambiguous (>1) OR an untrusted sender not allowed to auto-attach.
+        reasons.add(cands.length > 1 ? "ambiguous" : "untrusted");
+      }
+    }
+
+    const total = args.extracted.length;
+    const firstAmount = args.extracted[0]?.ocrAmountCents ?? null;
+
+    // Aggregate status: `matched` only if EVERY receipt auto-matched; else the
+    // most-actionable state (needs_review > no_match).
+    let status: (typeof INBOUND_RECEIPT_STATUSES)[number];
+    let detail: string;
+    if (total > 0 && matchedCount === total) {
+      status = "matched";
+      detail =
+        total === 1 && firstMatchedTxn
+          ? `Attached to ${firstMatchedMerchant ?? "a charge"} (${
+              firstAmount != null ? fmtUsd(firstAmount) : "receipt"
+            }${firstMatchedPostedAt != null ? `, ${shortDate(firstMatchedPostedAt)}` : ""})${
+              anyReconciled ? " and reconciled" : ""
+            }.`
+          : `Attached ${matchedCount} receipt${matchedCount === 1 ? "" : "s"} to charges.`;
+    } else if (reasons.size > 0) {
+      status = "needs_review";
+      if (reasons.has("unknown")) {
+        detail = "Sender unknown — pick the transaction manually.";
+      } else if (reasons.has("untrusted")) {
+        detail = "Sender not verified — a bookkeeper must confirm the match.";
+      } else if (reasons.has("ambiguous")) {
+        detail =
+          firstAmount != null
+            ? `Multiple charges match ${fmtUsd(firstAmount)} — pick the right one.`
+            : "Multiple charges match — pick the right one.";
+      } else {
+        detail =
+          total === 1
+            ? "Could not read a total off the receipt — needs a human."
+            : "One or more receipts need a human to place.";
+      }
+    } else {
+      status = "no_match";
+      detail =
+        total === 1 && firstAmount != null
+          ? `No unreceipted charge for ${fmtUsd(firstAmount)} within ±14 days.`
+          : "No matching charges found.";
+    }
+
+    // Write the aggregate back onto the inbound row. The first extracted
+    // receipt's OCR read + file drive the (single-receipt-oriented) review queue
+    // fields for now (the CRM PR reads the per-`receipts` rows directly).
+    const first = args.extracted[0];
+    await ctx.db.patch(args.receiptId, {
+      ...(args.personId ? { personId: args.personId } : {}),
+      ...(args.chapterId ? { chapterId: args.chapterId } : {}),
+      senderClass: args.senderClass,
+      ...(first
+        ? {
+            receiptStorageId: first.storageId,
+            sourceKind: first.sourceKind,
+            ...(first.ocrAmountCents != null
+              ? { ocrAmountCents: first.ocrAmountCents }
+              : {}),
+            ...(first.ocrDate != null ? { ocrDate: first.ocrDate } : {}),
+            ...(first.ocrMerchant ? { ocrMerchant: first.ocrMerchant } : {}),
+            ...(first.ocrModel ? { ocrModel: first.ocrModel } : {}),
+            ...(first.ocrConfidence != null
+              ? { ocrConfidence: first.ocrConfidence }
+              : {}),
+            ...(first.candidateTransactionIds.length
+              ? { candidateTransactionIds: first.candidateTransactionIds }
+              : {}),
+          }
+        : {}),
+      ...(firstMatchedTxn ? { matchedTransactionId: firstMatchedTxn } : {}),
+      status,
+      detail,
+      updatedAt: Date.now(),
+    });
+
+    return {
+      status,
+      totalCount: total,
+      matchedCount,
+      amountCents: firstAmount,
+      matchedTransactionId: firstMatchedTxn,
+      matchedMerchant: firstMatchedMerchant,
+    };
+  },
 });
 
 // ── Row lifecycle mutations (called by the action) ───────────────────────────
@@ -375,9 +570,10 @@ export const getInboundReceipt = internalQuery({
   handler: async (ctx, { receiptId }) => await ctx.db.get(receiptId),
 });
 
-/** Patch a receipt row's resolved sender / chapter / stored file / OCR result /
- *  status / detail. One narrow write the action funnels every state change
- *  through, always bumping `updatedAt`. */
+/** Patch a receipt row's resolved sender / chapter / class / stored file / OCR
+ *  result / status / detail. One narrow write for the state changes the commit
+ *  mutation doesn't own (the `ignored`/`error` terminal branches). Always bumps
+ *  `updatedAt`. */
 export const updateInboundReceipt = internalMutation({
   args: {
     receiptId: v.id("inboundReceipts"),
@@ -385,6 +581,7 @@ export const updateInboundReceipt = internalMutation({
       status: v.optional(statusValidator),
       personId: v.optional(v.id("people")),
       chapterId: v.optional(v.id("chapters")),
+      senderClass: v.optional(senderClassValidator),
       receiptStorageId: v.optional(v.id("_storage")),
       sourceKind: v.optional(v.union(v.literal("attachment"), v.literal("body"))),
       ocrAmountCents: v.optional(v.number()),
@@ -498,19 +695,20 @@ interface ResendAttachment {
 
 /**
  * List a received email's attachments via the Resend API
- * (`GET /emails/receiving/{emailId}/attachments`) and return the first one that
- * looks like a receipt image or PDF, downloaded as a Blob. The `download_url`
- * is a short-lived signed CloudFront URL (no auth header needed for the
- * download itself; the LIST call needs the API key). Returns null when there's
- * no usable attachment or the API key / network is unavailable.
+ * (`GET /emails/receiving/{emailId}/attachments`) and return EVERY one that
+ * looks like a receipt image or PDF, downloaded as a Blob (bounded by
+ * `MAX_ATTACHMENTS`). Each is OCR'd + matched independently. The `download_url`
+ * is a short-lived signed CloudFront URL (no auth header needed for the download
+ * itself; the LIST call needs the API key). Returns `[]` when there's no usable
+ * attachment or the API key / network is unavailable.
  */
-async function fetchFirstReceiptAttachment(
+async function fetchAllReceiptAttachments(
   emailId: string,
-): Promise<{ blob: Blob; contentType: string; filename: string } | null> {
+): Promise<{ blob: Blob; contentType: string; filename: string }[]> {
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) {
     console.log("[receiptInbox] RESEND_API_KEY unset — cannot fetch attachments.");
-    return null;
+    return [];
   }
   let list: ResendAttachment[];
   try {
@@ -520,13 +718,13 @@ async function fetchFirstReceiptAttachment(
     );
     if (!res.ok) {
       console.log(`[receiptInbox] attachment list failed (${res.status}).`);
-      return null;
+      return [];
     }
     const json: any = await res.json();
     list = (Array.isArray(json) ? json : json?.data) ?? [];
   } catch (err) {
     console.log(`[receiptInbox] attachment list errored: ${String(err)}`);
-    return null;
+    return [];
   }
 
   const isReceiptFile = (a: ResendAttachment) => {
@@ -538,25 +736,29 @@ async function fetchFirstReceiptAttachment(
       /\.(jpe?g|png|webp|heic|gif|pdf)$/.test(name)
     );
   };
-  const target = list.find((a) => isReceiptFile(a) && a.download_url);
-  if (!target?.download_url) return null;
+  const targets = list
+    .filter((a) => isReceiptFile(a) && a.download_url)
+    .slice(0, MAX_ATTACHMENTS);
 
-  try {
-    const dl = await fetch(target.download_url);
-    if (!dl.ok) {
-      console.log(`[receiptInbox] attachment download failed (${dl.status}).`);
-      return null;
+  const out: { blob: Blob; contentType: string; filename: string }[] = [];
+  for (const target of targets) {
+    try {
+      const dl = await fetch(target.download_url!);
+      if (!dl.ok) {
+        console.log(`[receiptInbox] attachment download failed (${dl.status}).`);
+        continue;
+      }
+      const blob = await dl.blob();
+      out.push({
+        blob,
+        contentType: target.content_type ?? blob.type ?? "application/octet-stream",
+        filename: target.filename ?? "receipt",
+      });
+    } catch (err) {
+      console.log(`[receiptInbox] attachment download errored: ${String(err)}`);
     }
-    const blob = await dl.blob();
-    return {
-      blob,
-      contentType: target.content_type ?? blob.type ?? "application/octet-stream",
-      filename: target.filename ?? "receipt",
-    };
-  } catch (err) {
-    console.log(`[receiptInbox] attachment download errored: ${String(err)}`);
-    return null;
   }
+  return out;
 }
 
 /** Base64-encode an ArrayBuffer for a data: URL (chunked to avoid arg limits). */
@@ -694,11 +896,23 @@ function extractJson(s: string): any | null {
 }
 
 // ── The pipeline action ──────────────────────────────────────────────────────
+/** One extracted receipt (a stored file + its OCR read), before matching. */
+interface ExtractedReceipt {
+  storageId: Id<"_storage">;
+  sourceKind: "attachment" | "body";
+  ocrAmountCents?: number;
+  ocrDate?: number;
+  ocrMerchant?: string;
+  ocrConfidence?: number;
+  ocrModel?: string;
+  candidateTransactionIds: Id<"transactions">[];
+}
+
 /**
- * Process ONE inbound receipt: resolve sender → get content → OCR → match →
- * attach-or-queue → reply. Scheduled by the HTTP route right after
- * `recordInboundReceipt` returns `isNew: true`. Every terminal state is written
- * back onto the row (`updateInboundReceipt`) so the review queue is truthful.
+ * Process ONE inbound receipt: classify sender → get content → OCR each →
+ * match each → create documents + auto-attach-or-queue → reply. Scheduled by the
+ * HTTP route right after `recordInboundReceipt` returns `isNew: true`. Every
+ * terminal state is written back onto the row so the review queue is truthful.
  */
 export const processInboundReceipt = internalAction({
   args: { receiptId: v.id("inboundReceipts") },
@@ -741,179 +955,133 @@ async function runPipeline(
   receiptId: Id<"inboundReceipts">,
   row: Doc<"inboundReceipts">,
 ): Promise<null> {
-    // 1. Sender must be on the roster (auth gate for a public endpoint).
-    const sender = await ctx.runQuery(internal.receiptInbox.resolvePersonByEmail, {
-      email: row.fromEmail,
-    });
-    if (!sender) {
-      await ctx.runMutation(internal.receiptInbox.updateInboundReceipt, {
-        receiptId,
-        patch: {
-          status: "ignored",
-          detail: `Sender ${row.fromEmail} is not on the roster — ignored.`,
-        },
+  // 1. Classify the sender. The gate is OPEN: every email is processed. The
+  //    class only decides whether an auto-attach is permitted (team/roster) or
+  //    the receipt must route to review (internal/external).
+  const sender = await ctx.runQuery(internal.receiptInbox.classifySender, {
+    email: row.fromEmail,
+  });
+  const isTrusted = receiptSenderCanAutoAttach(sender.senderClass);
+
+  // 2. Get receipt content: EVERY usable image/PDF attachment, else the body.
+  const attachments = await fetchAllReceiptAttachments(row.emailId);
+  const extracted: ExtractedReceipt[] = [];
+
+  if (attachments.length > 0) {
+    const model = ocrModel();
+    for (const att of attachments) {
+      const storageId = await ctx.storage.store(att.blob);
+      const buf = await att.blob.arrayBuffer();
+      const dataUrl = `data:${att.contentType};base64,${arrayBufferToBase64(buf)}`;
+      const ocr = await ocrReceiptImage(dataUrl, model);
+      extracted.push({
+        storageId,
+        sourceKind: "attachment",
+        ocrAmountCents: ocr?.amountCents ?? undefined,
+        ocrDate: ocr?.date ?? undefined,
+        ocrMerchant: ocr?.merchant ?? undefined,
+        ocrConfidence: ocr?.confidence ?? undefined,
+        ocrModel: model,
+        candidateTransactionIds: [],
       });
-      return null;
     }
-
-    // 2. Get receipt content: prefer an image/PDF attachment, else the body.
-    const attachment = await fetchFirstReceiptAttachment(row.emailId);
-    let storageId: Id<"_storage"> | undefined;
-    let sourceKind: "attachment" | "body";
-    let ocr: {
-      amountCents: number | null;
-      date: number | null;
-      merchant: string | null;
-      confidence: number | null;
-    } | null;
-    let usedModel: string | undefined;
-
-    if (attachment) {
-      sourceKind = "attachment";
-      storageId = await ctx.storage.store(attachment.blob);
-      const buf = await attachment.blob.arrayBuffer();
-      const dataUrl = `data:${attachment.contentType};base64,${arrayBufferToBase64(buf)}`;
-      usedModel = ocrModel();
-      ocr = await ocrReceiptImage(dataUrl, usedModel);
-    } else {
-      // No usable attachment — the email BODY is the receipt (ZERO LLM). The
-      // body is STORED as a file too: an email receipt saved as a document IS
-      // the receipt ("some of the receipts are just emails" — the whole point
-      // of the backfill), so a unique match can auto-attach it exactly like a
-      // photo. HTML is stored as text/html so the review UI renders it.
-      sourceKind = "body";
-      const full = await fetchReceivedEmailBody(row.emailId);
-      const text = full ?? row.subject ?? "";
-      if (text.trim()) {
-        const isHtml = /<[a-z][\s\S]*>/i.test(text);
-        storageId = await ctx.storage.store(
-          new Blob([text], { type: isHtml ? "text/html" : "text/plain" }),
-        );
-      }
+  } else {
+    // No usable attachment — the email BODY is the receipt (ZERO LLM). Stored
+    // as a file too: an email receipt saved as a document IS the receipt, so a
+    // unique match can auto-attach it exactly like a photo. HTML is stored as
+    // text/html so the review UI renders it.
+    const full = await fetchReceivedEmailBody(row.emailId);
+    const text = full ?? row.subject ?? "";
+    if (text.trim()) {
+      const isHtml = /<[a-z][\s\S]*>/i.test(text);
+      const storageId = await ctx.storage.store(
+        new Blob([text], { type: isHtml ? "text/html" : "text/plain" }),
+      );
       const parsed = parseReceiptFromText(text);
-      ocr = { ...parsed, confidence: parsed.amountCents != null ? 0.5 : 0 };
-    }
-
-    const amountCents = ocr?.amountCents ?? null;
-    const receiptDate = ocr?.date ?? row.receivedAt;
-    const merchant = ocr?.merchant ?? undefined;
-
-    // Persist the resolved sender + stored file + OCR read regardless of match.
-    const basePatch = {
-      personId: sender.personId,
-      chapterId: sender.chapterId,
-      ...(storageId ? { receiptStorageId: storageId } : {}),
-      sourceKind,
-      ...(amountCents != null ? { ocrAmountCents: amountCents } : {}),
-      ...(ocr?.date != null ? { ocrDate: ocr.date } : {}),
-      ...(merchant ? { ocrMerchant: merchant } : {}),
-      ...(usedModel ? { ocrModel: usedModel } : {}),
-      ...(ocr?.confidence != null ? { ocrConfidence: ocr.confidence } : {}),
-    };
-
-    // 3. Unreadable total → needs_review (a human can eyeball the stored file).
-    if (amountCents == null) {
-      await ctx.runMutation(internal.receiptInbox.updateInboundReceipt, {
-        receiptId,
-        patch: {
-          ...basePatch,
-          status: "needs_review",
-          detail:
-            sourceKind === "attachment"
-              ? "Could not read a total off the receipt image — needs a human."
-              : "No total found in the email body — needs a human.",
-        },
+      extracted.push({
+        storageId,
+        sourceKind: "body",
+        ocrAmountCents: parsed.amountCents ?? undefined,
+        ocrDate: parsed.date ?? undefined,
+        ocrConfidence: parsed.amountCents != null ? 0.5 : 0,
+        candidateTransactionIds: [],
       });
-      await replyToSender(row.fromEmail, "needs_review", { amountCents: null });
-      return null;
     }
+  }
 
-    // 4. Match against the sender-chapter's unreceipted spend.
-    const candidates = await ctx.runQuery(internal.receiptInbox.findReceiptMatches, {
-      chapterId: sender.chapterId,
-      amountCents,
-      receiptDate,
-      ocrMerchant: merchant,
-      senderPersonId: sender.personId,
-    });
-
-    if (candidates.length === 0) {
-      await ctx.runMutation(internal.receiptInbox.updateInboundReceipt, {
-        receiptId,
-        patch: {
-          ...basePatch,
-          status: "no_match",
-          detail: `No unreceipted charge for ${fmtUsd(amountCents)} within ±14 days of ${shortDate(receiptDate)}.`,
-        },
-      });
-      await replyToSender(row.fromEmail, "no_match", { amountCents });
-      return null;
-    }
-
-    if (candidates.length > 1) {
-      await ctx.runMutation(internal.receiptInbox.updateInboundReceipt, {
-        receiptId,
-        patch: {
-          ...basePatch,
-          status: "needs_review",
-          candidateTransactionIds: candidates.map((c) => c.transactionId),
-          detail: `${candidates.length} charges match ${fmtUsd(amountCents)} — pick the right one.`,
-        },
-      });
-      await replyToSender(row.fromEmail, "needs_review", { amountCents });
-      return null;
-    }
-
-    // 5. Exactly one candidate → auto-attach (only if we have a stored file).
-    const only = candidates[0];
-    if (!storageId) {
-      // A body-only receipt with a unique amount match: we matched but have no
-      // file to attach. Surface for review rather than silently dropping it.
-      await ctx.runMutation(internal.receiptInbox.updateInboundReceipt, {
-        receiptId,
-        patch: {
-          ...basePatch,
-          status: "needs_review",
-          candidateTransactionIds: [only.transactionId],
-          detail: `Matched ${fmtUsd(amountCents)} to one charge, but the email had no receipt file to attach.`,
-        },
-      });
-      await replyToSender(row.fromEmail, "needs_review", { amountCents });
-      return null;
-    }
-
-    const result = await ctx.runMutation(internal.receiptInbox.attachMatchedReceipt, {
-      transactionId: only.transactionId,
-      storageId,
-    });
-    if (!result.attached) {
-      await ctx.runMutation(internal.receiptInbox.updateInboundReceipt, {
-        receiptId,
-        patch: {
-          ...basePatch,
-          status: "needs_review",
-          candidateTransactionIds: [only.transactionId],
-          detail: "The matched charge already had a receipt — needs a human.",
-        },
-      });
-      await replyToSender(row.fromEmail, "needs_review", { amountCents });
-      return null;
-    }
-
+  // 3. Nothing to OCR at all — non-receipt mail. Mark ignored (reserved now for
+  //    dismissal + non-receipt mail) without inventing a receipt document.
+  if (extracted.length === 0) {
     await ctx.runMutation(internal.receiptInbox.updateInboundReceipt, {
       receiptId,
       patch: {
-        ...basePatch,
-        status: "matched",
-        matchedTransactionId: only.transactionId,
-        detail: `Attached to ${only.merchantName ?? only.description ?? "a charge"} (${fmtUsd(amountCents)}, ${shortDate(only.postedAt)})${result.reconciled ? " and reconciled" : ""}.`,
+        status: "ignored",
+        senderClass: sender.senderClass,
+        ...(sender.personId ? { personId: sender.personId } : {}),
+        ...(sender.chapterId ? { chapterId: sender.chapterId } : {}),
+        detail: "No receipt image or readable body found in the email.",
       },
     });
-    await replyToSender(row.fromEmail, "matched", {
-      amountCents,
-      merchant: only.merchantName ?? only.description ?? undefined,
-    });
     return null;
+  }
+
+  // 4. Match each extracted receipt against the sender-chapter's unreceipted
+  //    spend. No chapter (unknown sender) → no candidates (nothing to match).
+  if (sender.chapterId) {
+    for (const ex of extracted) {
+      if (ex.ocrAmountCents != null) {
+        const candidates = await ctx.runQuery(
+          internal.receiptInbox.findReceiptMatches,
+          {
+            chapterId: sender.chapterId,
+            amountCents: ex.ocrAmountCents,
+            receiptDate: ex.ocrDate ?? row.receivedAt,
+            ocrMerchant: ex.ocrMerchant,
+            senderPersonId: sender.personId ?? undefined,
+          },
+        );
+        ex.candidateTransactionIds = candidates.map((c) => c.transactionId);
+      }
+    }
+  }
+
+  // 5. Create the receipt documents, auto-attach the ones the policy allows,
+  //    and write the aggregate outcome onto the inbound row (one transaction).
+  const result = await ctx.runMutation(
+    internal.receiptInbox.commitInboundReceipts,
+    {
+      receiptId,
+      personId: sender.personId ?? undefined,
+      chapterId: sender.chapterId ?? undefined,
+      senderClass: sender.senderClass,
+      extracted: extracted.map((ex) => ({
+        storageId: ex.storageId,
+        sourceKind: ex.sourceKind,
+        ocrAmountCents: ex.ocrAmountCents,
+        ocrDate: ex.ocrDate,
+        ocrMerchant: ex.ocrMerchant,
+        ocrConfidence: ex.ocrConfidence,
+        ocrModel: ex.ocrModel,
+        candidateTransactionIds: ex.candidateTransactionIds,
+      })),
+    },
+  );
+
+  // 6. Courtesy reply — ONLY to trusted (team/roster) senders. We never
+  //    confirm-or-deny anything to a stranger (a spoofable From:).
+  if (isTrusted) {
+    const outcome =
+      result.status === "matched"
+        ? "matched"
+        : result.status === "no_match"
+          ? "no_match"
+          : "needs_review";
+    await replyToSender(row.fromEmail, outcome, {
+      amountCents: result.amountCents,
+      merchant: result.matchedMerchant ?? undefined,
+    });
+  }
+  return null;
 }
 
 /**
@@ -940,7 +1108,8 @@ async function fetchReceivedEmailBody(emailId: string): Promise<string | null> {
 /**
  * Best-effort confirmation/needs-help reply to the sender (degrades to a no-op
  * without `RESEND_API_KEY`, same as every other outbound in this repo). Kept
- * plain-text-simple; the point is a human ack, not a designed email.
+ * plain-text-simple; the point is a human ack, not a designed email. Only ever
+ * called for team/roster senders (never a stranger).
  */
 async function replyToSender(
   to: string,
@@ -981,6 +1150,7 @@ const reviewRow = v.object({
   fromEmail: v.string(),
   subject: v.optional(v.string()),
   receivedAt: v.number(),
+  senderClass: v.optional(senderClassValidator),
   sourceKind: v.optional(v.union(v.literal("attachment"), v.literal("body"))),
   ocrAmountCents: v.optional(v.number()),
   ocrDate: v.optional(v.number()),
@@ -997,6 +1167,8 @@ const reviewRow = v.object({
  * a human needs to act on — `needs_review` and `no_match` by default — newest
  * first, with a servable URL for the stored receipt so the reviewer can eyeball
  * it. Scoped to the caller's chapter via the resolved `chapterId` on each row.
+ * (Unknown-sender rows have no chapter and surface only in the org-wide view the
+ * CRM PR adds; they are never stranded — `by_status` reads them without a chapter.)
  */
 export const listInboundReceipts = query({
   args: {
@@ -1028,6 +1200,7 @@ export const listInboundReceipts = query({
         fromEmail: r.fromEmail,
         subject: r.subject,
         receivedAt: r.receivedAt,
+        senderClass: r.senderClass,
         sourceKind: r.sourceKind,
         ocrAmountCents: r.ocrAmountCents,
         ocrDate: r.ocrDate,
@@ -1047,10 +1220,13 @@ export const listInboundReceipts = query({
 /**
  * A bookkeeper manually attaches a `needs_review`/`no_match` inbound receipt to
  * a chosen transaction — the human resolution for everything the auto-matcher
- * declined. Requires bookkeeper+ in the row's chapter, the row to still be
- * open, a stored receipt file, and the target txn to be in the same chapter and
- * receipt-free. Reuses `attachMatchedReceipt` so the money-adjacent effect is
- * IDENTICAL to the auto path (attach + maybe-reconcile + card unlock).
+ * declined (an ambiguous match, an untrusted sender, an unknown chapter).
+ * Requires bookkeeper+ in the row's chapter, the row to still be open, a stored
+ * receipt file, and the target txn to be in the same chapter. Routes through the
+ * receipts layer: it reuses the `receipts` document the pipeline created (found
+ * via `by_inbound`), or creates one from the inbound row when none exists (a
+ * legacy row), then links it (`manual`) — so the money-adjacent effect (attach +
+ * maybe-reconcile + card unlock) is identical to the auto path.
  */
 export const manualMatchInboundReceipt = mutation({
   args: {
@@ -1090,18 +1266,42 @@ export const manualMatchInboundReceipt = mutation({
     if (!txn || txn.chapterId !== chapterId) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Transaction not found in your chapter." });
     }
-    const result = await applyReceiptAttachment(
-      ctx,
-      args.transactionId,
-      row.receiptStorageId,
-    );
-    if (!result.attached) {
-      throw new ConvexError({
-        code: "CONFLICT",
-        message: "That transaction already has a receipt.",
+
+    // Reuse the receipt document the pipeline created for this email (matched by
+    // its stored file), or mint one from the inbound row (legacy rows predating
+    // the receipts layer, or a test-seeded row). Canonical fields seed from the
+    // inbound OCR read.
+    const existing = await ctx.db
+      .query("receipts")
+      .withIndex("by_inbound", (q) => q.eq("inboundReceiptId", args.receiptId))
+      .take(50);
+    let receiptDocId =
+      existing.find((r) => r.storageId === row.receiptStorageId)?._id ??
+      existing[0]?._id;
+    if (!receiptDocId) {
+      receiptDocId = await createReceipt(ctx, {
+        chapterId: row.chapterId,
+        storageId: row.receiptStorageId,
+        source: "email",
+        inboundReceiptId: args.receiptId,
+        senderClass: row.senderClass,
+        ocrAmountCents: row.ocrAmountCents,
+        ocrDate: row.ocrDate,
+        ocrMerchant: row.ocrMerchant,
+        ocrConfidence: row.ocrConfidence,
+        ocrModel: row.ocrModel,
       });
     }
+
     const person = access.personId ?? undefined;
+    const result = await linkReceiptToTransaction(ctx, {
+      receiptId: receiptDocId,
+      transactionId: args.transactionId,
+      source: "manual",
+      linkedByPersonId: person,
+      reconcileIfCategorized: true,
+    });
+
     await ctx.db.patch(args.receiptId, {
       status: "matched",
       matchedTransactionId: args.transactionId,
@@ -1115,7 +1315,10 @@ export const manualMatchInboundReceipt = mutation({
 });
 
 /** Dismiss an inbound receipt row a bookkeeper has decided needs no action
- *  (spam, a duplicate, a non-receipt). Marks it `ignored`. Bookkeeper+. */
+ *  (spam, a duplicate, a non-receipt). Marks it `ignored` and — routing through
+ *  the new layer — deletes any UNLINKED receipt documents the pipeline created
+ *  from it (a linked one means a human already matched it, so the row wouldn't
+ *  be dismissable). Bookkeeper+. */
 export const dismissInboundReceipt = mutation({
   args: { receiptId: v.id("inboundReceipts") },
   returns: v.null(),
@@ -1137,6 +1340,16 @@ export const dismissInboundReceipt = mutation({
     }
     if (row.status === "matched") {
       throw new ConvexError({ code: "CONFLICT", message: "This receipt is attached; it can't be dismissed." });
+    }
+    // Clean up the unmatched receipt documents this email produced — a dismissed
+    // email must not leave orphan receipts in the "unmatched" view. Never touch
+    // a LINKED receipt (linkCount > 0): that's a human-made attachment.
+    const receiptDocs = await ctx.db
+      .query("receipts")
+      .withIndex("by_inbound", (q) => q.eq("inboundReceiptId", args.receiptId))
+      .take(50);
+    for (const doc of receiptDocs) {
+      if (doc.linkCount === 0) await ctx.db.delete(doc._id);
     }
     await ctx.db.patch(args.receiptId, {
       status: "ignored",

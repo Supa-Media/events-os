@@ -83,6 +83,7 @@ import type * as lib_placements from "../lib/placements.js";
 import type * as lib_platformGuides from "../lib/platformGuides.js";
 import type * as lib_projectActionPage from "../lib/projectActionPage.js";
 import type * as lib_readiness from "../lib/readiness.js";
+import type * as lib_receiptLinks from "../lib/receiptLinks.js";
 import type * as lib_reimburseApiRoutes from "../lib/reimburseApiRoutes.js";
 import type * as lib_reimbursePage from "../lib/reimbursePage.js";
 import type * as lib_reimbursementTxnFields from "../lib/reimbursementTxnFields.js";
@@ -143,6 +144,7 @@ import type * as migrations_0031_gift_method_sources from "../migrations/0031_gi
 import type * as migrations_0032_link_donor_people from "../migrations/0032_link_donor_people.js";
 import type * as migrations_0033_add_giving_power_defaults from "../migrations/0033_add_giving_power_defaults.js";
 import type * as migrations_0034_merge_duplicate_gb_guests from "../migrations/0034_merge_duplicate_gb_guests.js";
+import type * as migrations_0035_backfill_receipt_documents from "../migrations/0035_backfill_receipt_documents.js";
 import type * as migrations_index from "../migrations/index.js";
 import type * as modules from "../modules.js";
 import type * as moneyViews from "../moneyViews.js";
@@ -299,6 +301,7 @@ declare const fullApi: ApiFromModules<{
   "lib/platformGuides": typeof lib_platformGuides;
   "lib/projectActionPage": typeof lib_projectActionPage;
   "lib/readiness": typeof lib_readiness;
+  "lib/receiptLinks": typeof lib_receiptLinks;
   "lib/reimburseApiRoutes": typeof lib_reimburseApiRoutes;
   "lib/reimbursePage": typeof lib_reimbursePage;
   "lib/reimbursementTxnFields": typeof lib_reimbursementTxnFields;
@@ -359,6 +362,7 @@ declare const fullApi: ApiFromModules<{
   "migrations/0032_link_donor_people": typeof migrations_0032_link_donor_people;
   "migrations/0033_add_giving_power_defaults": typeof migrations_0033_add_giving_power_defaults;
   "migrations/0034_merge_duplicate_gb_guests": typeof migrations_0034_merge_duplicate_gb_guests;
+  "migrations/0035_backfill_receipt_documents": typeof migrations_0035_backfill_receipt_documents;
   "migrations/index": typeof migrations_index;
   modules: typeof modules;
   moneyViews: typeof moneyViews;

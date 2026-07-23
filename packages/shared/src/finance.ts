@@ -200,6 +200,57 @@ export const INBOUND_RECEIPT_STATUSES = [
 ] as const;
 export type InboundReceiptStatus = (typeof INBOUND_RECEIPT_STATUSES)[number];
 
+// ── Receipts (first-class receipt documents) ─────────────────────────────────
+// A `receipts` row is a first-class receipt DOCUMENT, linked many-to-many to
+// `transactions` via `receiptLinks`. `RECEIPT_SOURCES` is how the document
+// itself entered the system: from an inbound `email` (the OCR pipeline) or a
+// direct in-app `upload` (the mobile attach path + the backfill of legacy
+// `transactions.receiptStorageId` documents).
+export const RECEIPT_SOURCES = ["email", "upload"] as const;
+export type ReceiptSource = (typeof RECEIPT_SOURCES)[number];
+
+// How a SINGLE receipt↔transaction link was made (`receiptLinks.source`):
+//  - `auto_email`: the email→OCR pipeline auto-matched a unique candidate,
+//  - `manual`: a bookkeeper picked the transaction by hand,
+//  - `upload`: created alongside a direct in-app receipt upload,
+//  - `backfill`: reconstructed from a legacy `transactions.receiptStorageId`
+//    by the receipts-foundation migration.
+export const RECEIPT_LINK_SOURCES = [
+  "auto_email",
+  "manual",
+  "upload",
+  "backfill",
+] as const;
+export type ReceiptLinkSource = (typeof RECEIPT_LINK_SOURCES)[number];
+
+// How much a receipt EMAIL's sender is trusted — the axis the OCR pipeline's
+// AUTOMATION policy keys off (never a permission grant). The inbound endpoint is
+// public, so a `From:` header is spoofable: only a `team`/`roster` sender (one
+// that resolves to a known `people` row) may EVER trigger an auto-attach; an
+// `internal`/`external` email is always routed to human review, never
+// auto-attached and never reconciled.
+//  - `team`: resolves to a `people` row flagged `isTeamMember`,
+//  - `roster`: resolves to a `people` row (not core team),
+//  - `internal`: no person match, but the address is on the org email domain
+//    (`ALLOWED_EMAIL_DOMAIN`),
+//  - `external`: everything else (a stranger).
+export const RECEIPT_SENDER_CLASSES = [
+  "team",
+  "roster",
+  "internal",
+  "external",
+] as const;
+export type ReceiptSenderClass = (typeof RECEIPT_SENDER_CLASSES)[number];
+
+/** True iff a receipt-email sender is trusted enough to trigger an auto-attach
+ *  (a resolved roster/team member). `internal`/`external` senders are always
+ *  routed to human review — a spoofable From: must never move money. */
+export function receiptSenderCanAutoAttach(
+  senderClass: ReceiptSenderClass,
+): boolean {
+  return senderClass === "team" || senderClass === "roster";
+}
+
 // Flows that DON'T count toward category / budget spend. A reimbursement payout
 // is money leaving the account but the underlying expense was already booked
 // against its category on the line item, so counting the transfer too would
