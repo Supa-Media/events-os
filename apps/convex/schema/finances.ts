@@ -1137,6 +1137,22 @@ export const receipts = defineTable({
   // the "unmatched receipts" query via `by_chapter_and_linkCount` without a scan.
   linkCount: v.number(),
 
+  // ── CRM PR: duplicate detection ─────────────────────────────────────────────
+  // The stored file's content hash (from the `_storage` system table's own
+  // `sha256`, read at creation time — never computed by hand). Lets an EXACT
+  // re-submission of the same bytes be caught regardless of how it arrived
+  // (a mass-upload re-drop, or the same photo emailed twice) — see
+  // `lib/receiptLinks.ts#findDuplicateReceiptBySha256` (chapter-scoped lookup)
+  // and `receipts.ts#submitUploadedReceipts` / `receiptInbox.ts#commitInboundReceipts`
+  // (both stamp it at creation). Optional: legacy receipts (pre-dating this
+  // field) and any document whose storage metadata lookup failed have none.
+  fileSha256: v.optional(v.string()),
+  // Set when this receipt's file exactly duplicates an EARLIER receipt in the
+  // same chapter (same `fileSha256`) — points at the earlier (kept) receipt.
+  // A duplicate is still stored (never silently dropped — a human may still
+  // want to see it) but is never auto-attached and is flagged for review.
+  duplicateOfReceiptId: v.optional(v.id("receipts")),
+
   createdAt: v.number(),
   updatedAt: v.number(),
 })
@@ -1144,7 +1160,11 @@ export const receipts = defineTable({
   // The "unmatched receipts" query: a chapter's receipts with linkCount 0.
   .index("by_chapter_and_linkCount", ["chapterId", "linkCount"])
   // Find the receipt(s) extracted from a given inbound email (manual-match).
-  .index("by_inbound", ["inboundReceiptId"]);
+  .index("by_inbound", ["inboundReceiptId"])
+  // Exact-duplicate detection: find every receipt sharing a stored file's
+  // content hash (chapter-filtered in JS by the caller — bounded, since a
+  // real hash collision among a chapter's receipts is rare).
+  .index("by_sha256", ["fileSha256"]);
 
 /** ONE receipt↔transaction link — the many-to-many join that is the SOURCE OF
  *  TRUTH for which receipts back which charges. Written ONLY through

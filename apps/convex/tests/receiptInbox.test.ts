@@ -501,6 +501,58 @@ describe("processInboundReceipt", () => {
     expect(receipts[0].chapterId).toBeUndefined();
     expect(receipts[0].senderClass).toBe("external");
   });
+
+  // CRM PR: the SAME email body text (byte-identical stored file) arriving
+  // twice — even though a fresh, otherwise-unique candidate exists for the
+  // second one — must never auto-attach the second time. `fileSha256` catches
+  // it regardless of amount/date parsing (see `lib/receiptLinks.ts#findDuplicateReceiptBySha256`).
+  test("a byte-identical re-send never auto-attaches, even against a fresh unique candidate", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, { email: "jane@example.com" });
+    const txnA = await seedTxn(s, { amountCents: 4210, status: "categorized" });
+    const subject = "Home Depot receipt — Total: $42.10";
+
+    const first = await t.mutation(internal.receiptInbox.recordInboundReceipt, {
+      envelope: { emailId: "email_dup_1", fromEmail: "jane@example.com", subject },
+    });
+    await t.action(internal.receiptInbox.processInboundReceipt, {
+      receiptId: first.receiptId,
+    });
+    const firstRow = await run(t, (ctx) => ctx.db.get(first.receiptId));
+    expect(firstRow?.status).toBe("matched");
+    expect(firstRow?.matchedTransactionId).toBe(txnA);
+
+    // A second, genuinely unreceipted charge with the same amount now exists —
+    // a fresh unique candidate, IF the resend weren't a duplicate.
+    const txnB = await seedTxn(s, { amountCents: 4210, status: "categorized" });
+    const second = await t.mutation(internal.receiptInbox.recordInboundReceipt, {
+      envelope: { emailId: "email_dup_2", fromEmail: "jane@example.com", subject },
+    });
+    await t.action(internal.receiptInbox.processInboundReceipt, {
+      receiptId: second.receiptId,
+    });
+
+    const secondRow = await run(t, (ctx) => ctx.db.get(second.receiptId));
+    expect(secondRow?.status).toBe("needs_review");
+    expect(secondRow?.detail).toMatch(/duplicate/i);
+    expect(secondRow?.matchedTransactionId).toBeUndefined();
+
+    const receiptDocs = await run(t, (ctx) => ctx.db.query("receipts").collect());
+    expect(receiptDocs).toHaveLength(2);
+    const dupDoc = receiptDocs.find((r) => r.inboundReceiptId === second.receiptId);
+    const firstDoc = receiptDocs.find((r) => r.inboundReceiptId === first.receiptId);
+    expect(dupDoc?.duplicateOfReceiptId).toBe(firstDoc?._id);
+    expect(dupDoc?.fileSha256).toBeDefined();
+    expect(dupDoc?.fileSha256).toBe(firstDoc?.fileSha256);
+
+    // txnB was never touched — the would-be unique match was suppressed.
+    const txnBRow = await run(t, (ctx) => ctx.db.get(txnB));
+    expect(txnBRow?.receiptStorageId).toBeUndefined();
+    expect(txnBRow?.status).toBe("categorized");
+    const links = await run(t, (ctx) => ctx.db.query("receiptLinks").collect());
+    expect(links).toHaveLength(1); // only the first email's link
+  });
 });
 
 // ── manualMatchInboundReceipt (bookkeeper resolution) ────────────────────────
