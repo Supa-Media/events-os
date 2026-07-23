@@ -404,6 +404,59 @@ describe("attachMatchedReceipt", () => {
   });
 });
 
+// ── processInboundReceipt (end-to-end, keyless) ──────────────────────────────
+// With no RESEND/OPENROUTER keys in the test env, the attachment + body
+// fetches degrade and the SUBJECT becomes the body text — so this exercises
+// the real pipeline: sender gate → body stored as the receipt file → parse →
+// unique match → auto-attach + reconcile.
+describe("processInboundReceipt", () => {
+  test("a body-only email receipt auto-attaches and reconciles on a unique match", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, { email: "jane@example.com" });
+    const txn = await seedTxn(s, { amountCents: 4210, status: "categorized" });
+
+    const { receiptId } = await t.mutation(internal.receiptInbox.recordInboundReceipt, {
+      envelope: {
+        emailId: "email_body_1",
+        fromEmail: "Jane Doe <jane@example.com>",
+        subject: "Home Depot receipt — Total: $42.10",
+      },
+    });
+    await t.action(internal.receiptInbox.processInboundReceipt, { receiptId });
+
+    const row = await run(t, (ctx) => ctx.db.get(receiptId));
+    expect(row?.status).toBe("matched");
+    expect(row?.matchedTransactionId).toBe(txn);
+    expect(row?.sourceKind).toBe("body");
+    expect(row?.receiptStorageId).toBeDefined();
+    const txnRow = await run(t, (ctx) => ctx.db.get(txn));
+    expect(txnRow?.status).toBe("reconciled");
+    expect(txnRow?.receiptStorageId).toBe(row?.receiptStorageId);
+  });
+
+  test("an unknown sender is ignored without storing anything", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedTxn(s, { amountCents: 4210, status: "categorized" });
+    const { receiptId } = await t.mutation(internal.receiptInbox.recordInboundReceipt, {
+      envelope: {
+        emailId: "email_unknown_1",
+        fromEmail: "stranger@nowhere.com",
+        subject: "Total: $42.10",
+      },
+    });
+    await t.action(internal.receiptInbox.processInboundReceipt, { receiptId });
+    const row = await run(t, (ctx) => ctx.db.get(receiptId));
+    expect(row?.status).toBe("ignored");
+    expect(row?.receiptStorageId).toBeUndefined();
+    const txnRow = await run(t, (ctx) =>
+      ctx.db.query("transactions").take(5),
+    );
+    expect(txnRow[0]?.receiptStorageId).toBeUndefined();
+  });
+});
+
 // ── manualMatchInboundReceipt (bookkeeper resolution) ────────────────────────
 describe("manualMatchInboundReceipt", () => {
   async function seedInboundRow(

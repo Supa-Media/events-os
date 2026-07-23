@@ -44,7 +44,7 @@ import {
   internalMutation,
   internalAction,
 } from "./_generated/server";
-import type { MutationCtx } from "./_generated/server";
+import type { ActionCtx, MutationCtx } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
@@ -709,6 +709,38 @@ export const processInboundReceipt = internalAction({
     })) as Doc<"inboundReceipts"> | null;
     if (!row || row.status !== "pending") return null; // gone or already handled
 
+    // CRASH SAFETY: any unexpected throw below would otherwise strand the row
+    // in `pending` forever — invisible to every queue (nothing else ever sets
+    // `error`). Terminal-status patches are the LAST write in every branch and
+    // `replyToSender` swallows its own failures, so reaching this catch means
+    // the row really is still unresolved.
+    try {
+      await runPipeline(ctx, receiptId, row);
+    } catch (err) {
+      console.error(`[receiptInbox] pipeline errored for ${receiptId}: ${String(err)}`);
+      try {
+        await ctx.runMutation(internal.receiptInbox.updateInboundReceipt, {
+          receiptId,
+          patch: {
+            status: "error",
+            detail: `Pipeline error: ${String(err).slice(0, 500)}`,
+          },
+        });
+      } catch (patchErr) {
+        console.error(`[receiptInbox] could not mark ${receiptId} errored: ${String(patchErr)}`);
+      }
+    }
+    return null;
+  },
+});
+
+/** The pipeline body — separated so `processInboundReceipt`'s catch can mark
+ *  the row `error` on ANY throw (see the crash-safety comment there). */
+async function runPipeline(
+  ctx: ActionCtx,
+  receiptId: Id<"inboundReceipts">,
+  row: Doc<"inboundReceipts">,
+): Promise<null> {
     // 1. Sender must be on the roster (auth gate for a public endpoint).
     const sender = await ctx.runQuery(internal.receiptInbox.resolvePersonByEmail, {
       email: row.fromEmail,
@@ -744,10 +776,20 @@ export const processInboundReceipt = internalAction({
       usedModel = ocrModel();
       ocr = await ocrReceiptImage(dataUrl, usedModel);
     } else {
-      // No usable attachment — treat the email BODY as the receipt (ZERO LLM).
+      // No usable attachment — the email BODY is the receipt (ZERO LLM). The
+      // body is STORED as a file too: an email receipt saved as a document IS
+      // the receipt ("some of the receipts are just emails" — the whole point
+      // of the backfill), so a unique match can auto-attach it exactly like a
+      // photo. HTML is stored as text/html so the review UI renders it.
       sourceKind = "body";
       const full = await fetchReceivedEmailBody(row.emailId);
       const text = full ?? row.subject ?? "";
+      if (text.trim()) {
+        const isHtml = /<[a-z][\s\S]*>/i.test(text);
+        storageId = await ctx.storage.store(
+          new Blob([text], { type: isHtml ? "text/html" : "text/plain" }),
+        );
+      }
       const parsed = parseReceiptFromText(text);
       ocr = { ...parsed, confidence: parsed.amountCents != null ? 0.5 : 0 };
     }
@@ -872,8 +914,7 @@ export const processInboundReceipt = internalAction({
       merchant: only.merchantName ?? only.description ?? undefined,
     });
     return null;
-  },
-});
+}
 
 /**
  * Fetch the full received email's BODY text via the Resend API
@@ -919,11 +960,18 @@ async function replyToSender(
     subject = "Receipt received — needs a quick look";
     line = `Thanks — we've received your receipt${info.amountCents != null ? ` for ${amt}` : ""} and filed it for a bookkeeper to attach to the right charge.`;
   }
-  await sendEmail(
-    to,
-    subject,
-    `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:15px;line-height:1.6;color:#2b2320"><p>${line}</p><p style="color:#8a7d78;font-size:13px">— Public Worship finance</p></div>`,
-  );
+  try {
+    await sendEmail(
+      to,
+      subject,
+      `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:15px;line-height:1.6;color:#2b2320"><p>${line}</p><p style="color:#8a7d78;font-size:13px">— Public Worship finance</p></div>`,
+    );
+  } catch (err) {
+    // Best-effort by contract: `sendEmail` can still throw on a NETWORK error
+    // (its own catch only covers non-2xx). A failed courtesy reply must never
+    // fail the pipeline — the terminal status is already written by now.
+    console.log(`[receiptInbox] reply to sender failed: ${String(err)}`);
+  }
 }
 
 // ── Review-queue surface (in-app, bookkeeper+) ───────────────────────────────
