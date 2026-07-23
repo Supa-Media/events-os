@@ -1,6 +1,7 @@
 /**
  * One CONDENSED row of the manager cardholders table (WP owner report item 2):
- * avatar + name · last4, this-month spend, the lifecycle status chip, and a ⋯
+ * avatar + name · last4, this-month spend over the card's monthly cap, the
+ * lifecycle status chip, and a ⋯
  * menu with the manager actions (lock / unlock / edit controls). Pure
  * presentation — the mutations live in the parent so a single toast surfaces
  * every failure.
@@ -129,6 +130,15 @@ export function CardholderRow({
       <Cell width={96} align="right">
         <Text className="text-sm text-ink" style={{ fontVariant: ["tabular-nums"] }}>
           {formatCents(card.spentThisMonthCents)}
+        </Text>
+        {/* The card's monthly cap at a glance (edited via "Edit controls…"). */}
+        <Text
+          className="text-xs text-faint"
+          style={{ fontVariant: ["tabular-nums"] }}
+        >
+          {card.monthlyCapCents != null
+            ? `of ${formatCents(card.monthlyCapCents)}`
+            : "no cap"}
         </Text>
       </Cell>
 

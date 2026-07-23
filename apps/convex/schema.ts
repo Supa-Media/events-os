@@ -60,6 +60,7 @@ import {
   legacyAccounts,
   financeStripeCustomers,
   cardAuthorizations,
+  cardMerchantPolicy,
   approvalPolicy,
   approvals,
   reattributionAudit,
@@ -232,6 +233,8 @@ const schema = defineSchema({
   // Stripe Customer cache — the required `account_holder` for FC sessions.
   financeStripeCustomers,
   cardAuthorizations,
+  // Chapter merchant allow-list for real-time card-authorization decisions.
+  cardMerchantPolicy,
   approvalPolicy,
   approvals,
   // Append-only ledger of bulk reattribution / project-transfer operations (the

@@ -7,7 +7,11 @@
  * its receipts + reconciliation. There are only TWO hard controls — a monthly
  * safety cap (`monthlyCapCents`) and a validity window (`validFrom`/`validUntil`)
  * — plus the receipt auto-lock (a charge whose receipt is >7 days late locks the
- * card; a manager/cardholder unlock clears the grace window). Personal charges
+ * card; a manager/cardholder unlock clears the grace window). The one
+ * CHAPTER-LEVEL control is the merchant allow-list (`cardMerchantPolicy`, one
+ * row per chapter): when ENFORCED and NON-EMPTY, the real-time decision also
+ * declines any authorization whose merchant matches no allowed name substring
+ * or MCC — see `decideAgainstMerchantPolicy`. Personal charges
  * are flagged + repaid via the cardholder's own debit/ACH, which posts an
  * OFFSETTING `flow:"transfer"` credit — no reimbursement paperwork.
  *
@@ -227,6 +231,12 @@ const authDecisionValidator = v.object({
   reason: v.optional(v.string()),
 });
 
+const merchantPolicyValidator = v.object({
+  enforced: v.boolean(),
+  allowedMerchantNames: v.array(v.string()),
+  allowedMerchantCategories: v.array(v.string()),
+});
+
 // ── TS shapes (for action ↔ internal-mutation typing) ────────────────────────
 interface CardSummary {
   id: Id<"cards">;
@@ -265,6 +275,12 @@ interface RepaymentSummary {
   creditTransactionId: Id<"transactions"> | null;
   hasExternalAccount: boolean;
   payerAccountLast4: string | null;
+}
+
+interface MerchantPolicySummary {
+  enforced: boolean;
+  allowedMerchantNames: string[];
+  allowedMerchantCategories: string[];
 }
 
 interface UnfreezeCardResult {
@@ -994,6 +1010,130 @@ export const setCardControls = mutation({
   },
 });
 
+// ── Merchant allow-list (chapter policy) ─────────────────────────────────────
+
+// Bound the allow-list config doc: a modest, single-doc policy — the entry
+// count + per-entry length caps keep the arrays far from any document limit.
+const MERCHANT_ALLOWLIST_MAX_ENTRIES = 100;
+const MERCHANT_ALLOWLIST_ENTRY_MAX = 100;
+// Category entries are exactly the 4-digit MCC Increase sends on an
+// authorization (`merchant_category_code`).
+const MCC_RE = /^\d{4}$/;
+
+/** The chapter's merchant allow-list row, or null before one's ever been set. */
+async function readMerchantPolicy(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<Doc<"cardMerchantPolicy"> | null> {
+  return await ctx.db
+    .query("cardMerchantPolicy")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .first();
+}
+
+/** The read projection the allow-list UI renders. A missing row reads as the
+ *  safe default: enforcement off, nothing listed. */
+function toMerchantPolicySummary(
+  policy: Doc<"cardMerchantPolicy"> | null,
+): MerchantPolicySummary {
+  return {
+    enforced: policy?.enforced ?? false,
+    allowedMerchantNames: policy?.allowedMerchantNames ?? [],
+    allowedMerchantCategories: policy?.allowedMerchantCategories ?? [],
+  };
+}
+
+/** Trim, drop empties, enforce the per-entry length cap, and de-duplicate
+ *  case-insensitively (first casing wins — matching is case-insensitive
+ *  anyway, so "Costco" + "COSTCO" would be the same entry twice). */
+function normalizeAllowlistEntries(entries: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of entries) {
+    const entry = raw.trim();
+    if (!entry) continue;
+    if (entry.length > MERCHANT_ALLOWLIST_ENTRY_MAX) {
+      throw new ConvexError({
+        code: "ALLOWLIST_ENTRY_TOO_LONG",
+        message: `Allow-list entries are capped at ${MERCHANT_ALLOWLIST_ENTRY_MAX} characters.`,
+      });
+    }
+    const key = entry.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(entry);
+  }
+  return out;
+}
+
+/** The chapter's merchant allow-list (viewer+ — the same floor as `listCards`,
+ *  so the Cards tab can show the policy state). Safe defaults (enforcement
+ *  off, empty lists) before a manager ever saves one. */
+export const getMerchantPolicy = query({
+  args: {},
+  returns: merchantPolicyValidator,
+  handler: async (ctx): Promise<MerchantPolicySummary> => {
+    const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
+    if (!chapterId) return toMerchantPolicySummary(null);
+    await requireFinanceRole(ctx, chapterId, "viewer");
+    return toMerchantPolicySummary(await readMerchantPolicy(ctx, chapterId));
+  },
+});
+
+/**
+ * Replace the chapter's merchant allow-list + enforcement toggle (manager).
+ * Entries are normalized (trimmed, de-duplicated case-insensitively) and
+ * BOUNDED; category entries must be 4-digit MCCs — the finance manager pastes
+ * codes off the card network's list, and a malformed one would silently never
+ * match anything. Enforcement only bites when the list is non-empty (see
+ * `decideAgainstMerchantPolicy`), so flipping the toggle on an empty list can
+ * never brick every card at once.
+ */
+export const setMerchantPolicy = mutation({
+  args: {
+    enforced: v.boolean(),
+    allowedMerchantNames: v.array(v.string()),
+    allowedMerchantCategories: v.array(v.string()),
+  },
+  returns: merchantPolicyValidator,
+  handler: async (ctx, args): Promise<MerchantPolicySummary> => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const access = await requireFinanceManager(ctx, chapterId);
+
+    const names = normalizeAllowlistEntries(args.allowedMerchantNames);
+    const categories = normalizeAllowlistEntries(args.allowedMerchantCategories);
+    for (const code of categories) {
+      if (!MCC_RE.test(code)) {
+        throw new ConvexError({
+          code: "INVALID_MERCHANT_CATEGORY",
+          message: `"${code}" isn't a merchant category code — use the 4-digit MCC (e.g. 5411 for grocery stores).`,
+        });
+      }
+    }
+    if (names.length + categories.length > MERCHANT_ALLOWLIST_MAX_ENTRIES) {
+      throw new ConvexError({
+        code: "ALLOWLIST_TOO_LARGE",
+        message: `The allow-list is capped at ${MERCHANT_ALLOWLIST_MAX_ENTRIES} entries.`,
+      });
+    }
+
+    const existing = await readMerchantPolicy(ctx, chapterId);
+    const fields = {
+      enforced: args.enforced,
+      allowedMerchantNames: names,
+      allowedMerchantCategories: categories,
+      updatedByPersonId: access.personId ?? undefined,
+      updatedAt: Date.now(),
+    };
+    if (existing) {
+      await ctx.db.patch(existing._id, fields);
+    } else {
+      await ctx.db.insert("cardMerchantPolicy", { chapterId, ...fields });
+    }
+    return toMerchantPolicySummary(await readMerchantPolicy(ctx, chapterId));
+  },
+});
+
 // ── freezeCard / unfreezeCard (HOLDER-ONLY self-serve) ───────────────────────
 
 /**
@@ -1464,11 +1604,39 @@ function decideAgainstCard(
   return { approved: true };
 }
 
+/** The pure merchant decision: DECLINE when the chapter's allow-list is
+ *  ENFORCED and NON-EMPTY and the merchant matches no entry — name entries
+ *  are case-insensitive substrings of the merchant descriptor, category
+ *  entries exact 4-digit MCC matches; ANY one match approves. No policy row,
+ *  enforcement off, or an empty list never declines, so behavior without a
+ *  configured allow-list is exactly as before it existed. An authorization
+ *  carrying NO merchant data can't match an entry, so under an enforced
+ *  non-empty list it declines. */
+function decideAgainstMerchantPolicy(
+  policy: Doc<"cardMerchantPolicy"> | null,
+  merchantName: string | undefined,
+  merchantCategory: string | undefined,
+): { approved: boolean; reason?: string } {
+  if (!policy || !policy.enforced) return { approved: true };
+  const names = policy.allowedMerchantNames;
+  const categories = policy.allowedMerchantCategories;
+  if (names.length + categories.length === 0) return { approved: true };
+  const descriptor = (merchantName ?? "").toLowerCase();
+  if (descriptor && names.some((n) => descriptor.includes(n.toLowerCase()))) {
+    return { approved: true };
+  }
+  if (merchantCategory != null && categories.includes(merchantCategory)) {
+    return { approved: true };
+  }
+  return { approved: false, reason: "merchant not on allow-list" };
+}
+
 /**
  * The real-time card-authorization decision. The orchestrator's Increase
  * webhook (`card_authorization` / `real_time_decision`) calls this synchronously
  * and responds to Increase with the result. Looks the card up by
- * `increaseCardId`, decides against the two controls + lock state, and logs a
+ * `increaseCardId`, decides against the two controls + lock state + the
+ * chapter's merchant allow-list (`decideAgainstMerchantPolicy`), and logs a
  * `cardAuthorizations` row every time. NEVER throws — a thrown decision would
  * wrongly decline/hang the network — so any internal error defaults to DECLINE.
  * Idempotent per `increaseAuthId`: a retried authorization returns the same
@@ -1517,12 +1685,22 @@ export const decideCardAuthorization = internalMutation({
       // settled), NOT just settled transactions — otherwise a burst of
       // unsettled charges blows through the cap before any transaction posts.
       const monthAuthorizedCents = await cardMonthAuthorizedCents(ctx, card, now);
-      const decision = decideAgainstCard(
+      let decision = decideAgainstCard(
         card,
         args.amountCents,
         monthAuthorizedCents,
         now,
       );
+      // Chapter merchant allow-list — checked only once the card itself would
+      // approve, so a lock/validity/cap decline keeps its more specific reason.
+      if (decision.approved) {
+        const policy = await readMerchantPolicy(ctx, card.chapterId);
+        decision = decideAgainstMerchantPolicy(
+          policy,
+          args.merchantName,
+          args.merchantCategory,
+        );
+      }
 
       await ctx.db.insert("cardAuthorizations", {
         chapterId: card.chapterId,

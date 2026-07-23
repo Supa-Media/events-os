@@ -1,8 +1,9 @@
 /**
  * Manager perspective of the Cards tab — the finance manager's cardholders view.
  * Real data from `api.cards.listCards`: a KPI tile row, the cardholders table
- * (lock / unlock / edit-controls per row), an "Issue card" flow, and the static
- * card-philosophy explainer. Matches `finances.html` (§ Cards, manager-only).
+ * (lock / unlock / edit-controls per row), an "Issue card" flow, the merchant
+ * allow-list (`MerchantAllowlistSection`), and the static card-philosophy
+ * explainer. Matches `finances.html` (§ Cards, manager-only).
  *
  * "Personal to repay" is backed by `api.cards.personalRepaymentsOutstanding`
  * (D4) — the chapter-scope aggregate of not-yet-paid personal-charge
@@ -46,6 +47,7 @@ import { CardPhilosophy } from "./CardPhilosophy";
 import { CardholderRow } from "./CardholderRow";
 import { IssueCardModal } from "./IssueCardModal";
 import { CardControlsModal } from "./CardControlsModal";
+import { MerchantAllowlistSection } from "./MerchantAllowlistSection";
 import { RelayCardsSection } from "./RelayCardsSection";
 import { MyCardSection } from "./MyCardSection";
 import { hasReceiptDue, type CardSummary } from "./helpers";
@@ -277,6 +279,10 @@ export function ManagerCardsView() {
 
       {/* External (Relay) card linking — bind synced last-4s to a cardholder. */}
       <RelayCardsSection />
+
+      {/* Merchant allow-list — which merchants the chapter's cards may be
+          charged at (enforced in the real-time authorization decision). */}
+      <MerchantAllowlistSection />
 
       {/* Static philosophy + pay-it-back explainers. */}
       <SectionHeader title="Card philosophy" />

@@ -19,6 +19,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  *  - `decideCardAuthorization` APPROVES a normal charge within cap + validity on
  *    an active card, DECLINES when locked / out of the validity window / over the
  *    monthly cap, and logs a `cardAuthorizations` row every time,
+ *  - the merchant allow-list (`cardMerchantPolicy`) declines a non-matching
+ *    merchant ONLY when enforced + non-empty (name = case-insensitive
+ *    substring, category = exact MCC), and `setMerchantPolicy` gates on the
+ *    manager role + normalizes entries,
  *  - `flagPersonalCharge` sets `isPersonal` + creates ONE pending repayment
  *    (idempotent),
  *  - a settled repayment posts exactly one `flow:"transfer"` offsetting credit
@@ -176,6 +180,27 @@ async function seedApprovedAuth(
       amountCents,
       approved: true,
       createdAt: Date.now(),
+    }),
+  );
+}
+
+/** Seed the chapter's merchant allow-list policy row (one per chapter). */
+async function seedMerchantPolicy(
+  s: ChapterSetup,
+  opts: {
+    enforced: boolean;
+    names?: string[];
+    categories?: string[];
+    chapterId?: Id<"chapters">;
+  },
+): Promise<void> {
+  await run(s.t, (ctx) =>
+    ctx.db.insert("cardMerchantPolicy", {
+      chapterId: opts.chapterId ?? s.chapterId,
+      enforced: opts.enforced,
+      allowedMerchantNames: opts.names ?? [],
+      allowedMerchantCategories: opts.categories ?? [],
+      updatedAt: Date.now(),
     }),
   );
 }
@@ -340,6 +365,225 @@ describe("decideCardAuthorization", () => {
     });
     expect(a.approved).toBe(b.approved);
     expect((await authLogFor(s, "auth_idem")).length).toBe(1);
+  });
+});
+
+// ── Merchant allow-list (decideCardAuthorization) ────────────────────────────
+
+describe("merchant allow-list (decideCardAuthorization)", () => {
+  /** Seed an active card + run one decision against it. */
+  async function decide(
+    s: ChapterSetup,
+    increaseAuthId: string,
+    merchant: { merchantName?: string; merchantCategory?: string },
+  ) {
+    return await s.t.mutation(internal.cards.decideCardAuthorization, {
+      increaseCardId: "card_merchant",
+      increaseAuthId,
+      amountCents: 1000,
+      ...merchant,
+    });
+  }
+
+  async function setupCard(t: ReturnType<typeof newT>) {
+    const s = await setupChapter(t);
+    const holder = await seedPerson(s, { name: "Holder" });
+    await seedCard(s, {
+      cardholderPersonId: holder,
+      increaseCardId: "card_merchant",
+    });
+    return s;
+  }
+
+  test("APPROVES a case-insensitive name-substring match when enforced", async () => {
+    const t = newT();
+    const s = await setupCard(t);
+    await seedMerchantPolicy(s, { enforced: true, names: ["costco"] });
+
+    const d = await decide(s, "auth_name_match", {
+      merchantName: "COSTCO WHSE #1123",
+    });
+    expect(d.approved).toBe(true);
+    expect(d.reason).toBeUndefined();
+  });
+
+  test("APPROVES an exact MCC match even when no name entry matches", async () => {
+    const t = newT();
+    const s = await setupCard(t);
+    await seedMerchantPolicy(s, {
+      enforced: true,
+      names: ["costco"],
+      categories: ["5411"],
+    });
+
+    const d = await decide(s, "auth_mcc_match", {
+      merchantName: "TRADER JOE'S #552",
+      merchantCategory: "5411",
+    });
+    expect(d.approved).toBe(true);
+  });
+
+  test("DECLINES a non-matching merchant with the recorded reason", async () => {
+    const t = newT();
+    const s = await setupCard(t);
+    await seedMerchantPolicy(s, {
+      enforced: true,
+      names: ["costco"],
+      categories: ["5411"],
+    });
+
+    const d = await decide(s, "auth_no_match", {
+      merchantName: "CASINO ROYALE",
+      merchantCategory: "7995",
+    });
+    expect(d.approved).toBe(false);
+    expect(d.reason).toBe("merchant not on allow-list");
+
+    // The decline reason lands on the log row like every other decline.
+    const log = await authLogFor(s, "auth_no_match");
+    expect(log.length).toBe(1);
+    expect(log[0].approved).toBe(false);
+    expect(log[0].reason).toBe("merchant not on allow-list");
+  });
+
+  test("DECLINES an authorization carrying NO merchant data when enforced", async () => {
+    const t = newT();
+    const s = await setupCard(t);
+    await seedMerchantPolicy(s, { enforced: true, names: ["costco"] });
+
+    const d = await decide(s, "auth_no_merchant", {});
+    expect(d.approved).toBe(false);
+    expect(d.reason).toBe("merchant not on allow-list");
+  });
+
+  test("enforcement OFF leaves a non-matching merchant approved (unchanged behavior)", async () => {
+    const t = newT();
+    const s = await setupCard(t);
+    await seedMerchantPolicy(s, { enforced: false, names: ["costco"] });
+
+    const d = await decide(s, "auth_off", { merchantName: "CASINO ROYALE" });
+    expect(d.approved).toBe(true);
+  });
+
+  test("an enforced but EMPTY list never declines", async () => {
+    const t = newT();
+    const s = await setupCard(t);
+    await seedMerchantPolicy(s, { enforced: true });
+
+    const d = await decide(s, "auth_empty", { merchantName: "CASINO ROYALE" });
+    expect(d.approved).toBe(true);
+  });
+
+  test("a card-level decline keeps its own, more specific reason", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const holder = await seedPerson(s, { name: "Holder" });
+    await seedCard(s, {
+      cardholderPersonId: holder,
+      status: "locked",
+      increaseCardId: "card_merchant",
+    });
+    await seedMerchantPolicy(s, { enforced: true, names: ["costco"] });
+
+    const d = await decide(s, "auth_locked_first", {
+      merchantName: "CASINO ROYALE",
+    });
+    expect(d.approved).toBe(false);
+    expect(d.reason).toBe("card locked");
+  });
+
+  test("another chapter's policy never gates this chapter's card", async () => {
+    const t = newT();
+    const s = await setupCard(t);
+    const sB = await setupChapter(t, {
+      email: "b@publicworship.life",
+      chapterName: "Boston",
+    });
+    await seedMerchantPolicy(sB, { enforced: true, names: ["costco"] });
+
+    const d = await decide(s, "auth_cross_chapter", {
+      merchantName: "CASINO ROYALE",
+    });
+    expect(d.approved).toBe(true);
+  });
+});
+
+// ── getMerchantPolicy / setMerchantPolicy (gates + normalization) ────────────
+
+describe("getMerchantPolicy / setMerchantPolicy", () => {
+  test("defaults to enforcement off + empty lists before any row exists", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+
+    const policy = await s.as.query(api.cards.getMerchantPolicy, {});
+    expect(policy).toEqual({
+      enforced: false,
+      allowedMerchantNames: [],
+      allowedMerchantCategories: [],
+    });
+  });
+
+  test("a manager saves the policy; entries are trimmed + de-duplicated", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+
+    const saved = await s.as.mutation(api.cards.setMerchantPolicy, {
+      enforced: true,
+      // "COSTCO" duplicates "Costco" case-insensitively; blanks are dropped.
+      allowedMerchantNames: ["  Costco ", "COSTCO", "", "Home Depot"],
+      allowedMerchantCategories: ["5411", " 5411 "],
+    });
+    expect(saved).toEqual({
+      enforced: true,
+      allowedMerchantNames: ["Costco", "Home Depot"],
+      allowedMerchantCategories: ["5411"],
+    });
+
+    // Re-saving updates the SAME row (one per chapter), never a second one.
+    await s.as.mutation(api.cards.setMerchantPolicy, {
+      enforced: false,
+      allowedMerchantNames: ["Costco"],
+      allowedMerchantCategories: [],
+    });
+    const rows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("cardMerchantPolicy")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    );
+    expect(rows.length).toBe(1);
+    expect(rows[0].enforced).toBe(false);
+  });
+
+  test("rejects a malformed merchant category code", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+
+    await expect(
+      s.as.mutation(api.cards.setMerchantPolicy, {
+        enforced: true,
+        allowedMerchantNames: [],
+        allowedMerchantCategories: ["groceries"],
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("a viewer cannot save the policy", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const caller = await seedPerson(s, { name: "Viewer", userId: s.userId });
+    await grantRole(s, caller, "viewer");
+
+    await expect(
+      s.as.mutation(api.cards.setMerchantPolicy, {
+        enforced: true,
+        allowedMerchantNames: ["Costco"],
+        allowedMerchantCategories: [],
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
   });
 });
 
