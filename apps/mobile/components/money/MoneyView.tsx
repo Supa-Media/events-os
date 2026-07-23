@@ -71,8 +71,12 @@ export function MoneyView({
     }
   }
 
-  function openFinances() {
-    router.navigate("/finances" as never);
+  // Deep-links straight to this budget's own shareable detail page
+  // (`apps/mobile/app/(app)/finances/budgets/[id].tsx`) rather than the
+  // generic Finances dashboard — "View in Finances" used to drop you at the
+  // top of the dashboard with no way back to THIS budget specifically.
+  function openBudget(budgetId: Id<"budgets">) {
+    router.push(`/finances/budgets/${budgetId}` as never);
   }
 
   async function handleAddBudget() {
@@ -206,10 +210,10 @@ export function MoneyView({
               />
             ) : null}
             <Pressable
-              onPress={openFinances}
+              onPress={() => openBudget(budget.id)}
               className="flex-row items-center gap-1 active:opacity-70"
             >
-              <Text className="text-sm font-medium text-accent">View in Finances</Text>
+              <Text className="text-sm font-medium text-accent">Open budget</Text>
               <Icon name="chevron-right" size={14} color={colors.accent} />
             </Pressable>
           </View>
