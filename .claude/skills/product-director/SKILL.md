@@ -91,9 +91,14 @@ on green).
 ## Repo-specific invariants (verify, they drift)
 
 - Merging to `main` deploys the Convex backend — never merge on red.
-- `.claude/settings.json` may deny `merge_pull_request`/`delete_file` to
-  agents: open the PR, wait for CI, attempt merge once; if denied, hand the
-  green PR to the user explicitly.
+- Squash-merge on green is the norm, agents included (founder-confirmed
+  2026-07-23; `merge_pull_request` was removed from the settings deny list
+  for this). Verify green via CHECK RUNS on the head SHA, then merge —
+  don't hand green PRs back to the user unless a merge call is denied.
+- Merge order matters with parallel agent PRs: land stacked PRs right after
+  their base; expect PRs sharing hot files to go conflicted as siblings
+  merge — route each conflict back to its author agent (merge main in,
+  resolve, re-green) and merge on the next green.
 - Read `apps/convex/_generated/ai/guidelines.md` before writing Convex code.
 - Academy (packages/shared/src/academy/, streams/finances.ts) must track
   every user-facing change; run the academy integrity tests.
