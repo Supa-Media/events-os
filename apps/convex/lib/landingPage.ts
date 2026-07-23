@@ -51,7 +51,7 @@ type PublicPage = {
   coverFocalY: number;
   capacity: number | null;
   counts: { going: number; maybe: number; ticketsSold: number };
-  guests: Array<{ name: string; status: string }>;
+  guests: Array<{ name: string; status: string; ticketCount: number }>;
   ticketTypes: Array<{
     id: string;
     name: string;

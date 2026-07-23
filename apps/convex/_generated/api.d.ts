@@ -207,6 +207,7 @@ import type * as templateSync from "../templateSync.js";
 import type * as templates from "../templates.js";
 import type * as territories from "../territories.js";
 import type * as ticketing from "../ticketing.js";
+import type * as ticketingCountersBackfill from "../ticketingCountersBackfill.js";
 import type * as ticketingEmails from "../ticketingEmails.js";
 import type * as ticketingSms from "../ticketingSms.js";
 import type * as ticketingVerification from "../ticketingVerification.js";
@@ -420,6 +421,7 @@ declare const fullApi: ApiFromModules<{
   templates: typeof templates;
   territories: typeof territories;
   ticketing: typeof ticketing;
+  ticketingCountersBackfill: typeof ticketingCountersBackfill;
   ticketingEmails: typeof ticketingEmails;
   ticketingSms: typeof ticketingSms;
   ticketingVerification: typeof ticketingVerification;
