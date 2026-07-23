@@ -47,6 +47,7 @@ import { giftMethodSources } from "./0031_gift_method_sources";
 import { linkDonorPeople } from "./0032_link_donor_people";
 import { addGivingPowerDefaults } from "./0033_add_giving_power_defaults";
 import { mergeDuplicateGbGuests } from "./0034_merge_duplicate_gb_guests";
+import { backfillReceiptDocuments } from "./0035_backfill_receipt_documents";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -134,4 +135,10 @@ export const MIGRATIONS: Migration[] = [
   // One-time, hardcoded pairs; idempotent (already-merged pairs are
   // `skippedMissing` on re-run). See 0034.
   mergeDuplicateGbGuests,
+  // Receipts foundation — backfill the first-class `receipts` + `receiptLinks`
+  // layer from the legacy `transactions.receiptStorageId` cache (one document +
+  // one `backfill` link per receipted txn; email-matched txns get their inbound
+  // provenance + OCR read seeded into canonical). Idempotent (already-linked
+  // txns skipped); batched with scheduler continuation. See 0035.
+  backfillReceiptDocuments,
 ];

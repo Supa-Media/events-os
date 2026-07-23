@@ -18,11 +18,17 @@ import { verifyStandardWebhookSignature } from "../lib/standardWebhook";
  *  - `parseReceiptFromText` — the zero-LLM body-receipt total extractor,
  *  - `verifyStandardWebhookSignature` — the webhook auth gate,
  *  - `recordInboundReceipt` — the emailId dedup,
- *  - `resolvePersonByEmail` — the sender auth gate (case-insensitive, pwEmail),
+ *  - `resolvePersonByEmail` — sender resolution (case-insensitive, pwEmail),
+ *  - `classifySender` — the team/roster/internal/external AUTOMATION axis,
  *  - `findReceiptMatches` — the exact-cent + date-window matcher (unique /
  *    ambiguous / none / excludes receipted+non-spend / date bounds),
- *  - `attachMatchedReceipt` — attach + categorized→reconciled + no-clobber,
+ *  - `processInboundReceipt` — the end-to-end pipeline (roster auto-attach +
+ *    reconcile; an untrusted external sender is processed + stored but never
+ *    auto-attached),
  *  - `manualMatchInboundReceipt` — the bookkeeper resolution + its gate.
+ *
+ * The attach/link denorm behavior itself (create receipt → link → repoint) is
+ * covered directly in `tests/receiptLinks.test.ts`.
  */
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -30,7 +36,12 @@ const DAY = 24 * 60 * 60 * 1000;
 // ── Seed helpers ─────────────────────────────────────────────────────────────
 async function seedPerson(
   s: ChapterSetup,
-  opts: { email?: string; pwEmail?: string; linkUser?: boolean } = {},
+  opts: {
+    email?: string;
+    pwEmail?: string;
+    linkUser?: boolean;
+    isTeamMember?: boolean;
+  } = {},
 ): Promise<Id<"people">> {
   return await run(s.t, (ctx) =>
     ctx.db.insert("people", {
@@ -38,6 +49,7 @@ async function seedPerson(
       name: "Cardholder",
       email: opts.email,
       pwEmail: opts.pwEmail,
+      isTeamMember: opts.isTeamMember,
       userId: opts.linkUser ? s.userId : undefined,
       createdAt: Date.now(),
     }),
@@ -359,48 +371,50 @@ describe("findReceiptMatches", () => {
   });
 });
 
-// ── attachMatchedReceipt (the money write) ───────────────────────────────────
-describe("attachMatchedReceipt", () => {
-  test("attaches + flips categorized → reconciled", async () => {
+// ── classifySender (the team/roster/internal/external automation axis) ───────
+describe("classifySender", () => {
+  test("a core-team person → team", async () => {
     const t = newT();
     const s = await setupChapter(t);
-    const txn = await seedTxn(s, { status: "categorized" });
-    const storageId = await storeReceipt(s);
-    const res = await t.mutation(internal.receiptInbox.attachMatchedReceipt, {
-      transactionId: txn,
-      storageId,
+    await seedPerson(s, { email: "boss@publicworship.life", isTeamMember: true });
+    const c = await t.query(internal.receiptInbox.classifySender, {
+      email: "boss@publicworship.life",
     });
-    expect(res).toEqual({ attached: true, reconciled: true });
-    const row = await run(t, (ctx) => ctx.db.get(txn));
-    expect(row?.receiptStorageId).toBe(storageId);
-    expect(row?.status).toBe("reconciled");
+    expect(c.senderClass).toBe("team");
+    expect(c.personId).not.toBeNull();
+    expect(c.chapterId).not.toBeNull();
   });
 
-  test("attaches an unreviewed charge WITHOUT reconciling it", async () => {
+  test("a non-team roster person → roster", async () => {
     const t = newT();
     const s = await setupChapter(t);
-    const txn = await seedTxn(s, { status: "unreviewed" });
-    const storageId = await storeReceipt(s);
-    const res = await t.mutation(internal.receiptInbox.attachMatchedReceipt, {
-      transactionId: txn,
-      storageId,
+    await seedPerson(s, { email: "helper@example.com" });
+    const c = await t.query(internal.receiptInbox.classifySender, {
+      email: "helper@example.com",
     });
-    expect(res).toEqual({ attached: true, reconciled: false });
-    const row = await run(t, (ctx) => ctx.db.get(txn));
-    expect(row?.status).toBe("unreviewed");
-    expect(row?.receiptStorageId).toBe(storageId);
+    expect(c.senderClass).toBe("roster");
   });
 
-  test("refuses to clobber an existing receipt", async () => {
+  test("no person match but the org domain → internal", async () => {
     const t = newT();
-    const s = await setupChapter(t);
-    const txn = await seedTxn(s, { status: "categorized", hasReceipt: true });
-    const storageId = await storeReceipt(s);
-    const res = await t.mutation(internal.receiptInbox.attachMatchedReceipt, {
-      transactionId: txn,
-      storageId,
+    await setupChapter(t);
+    const c = await t.query(internal.receiptInbox.classifySender, {
+      email: "nobody@publicworship.life",
     });
-    expect(res.attached).toBe(false);
+    expect(c.senderClass).toBe("internal");
+    expect(c.personId).toBeNull();
+    expect(c.chapterId).toBeNull();
+  });
+
+  test("an unknown outside address → external", async () => {
+    const t = newT();
+    await setupChapter(t);
+    const c = await t.query(internal.receiptInbox.classifySender, {
+      email: "stranger@nowhere.com",
+    });
+    expect(c.senderClass).toBe("external");
+    expect(c.personId).toBeNull();
+    expect(c.chapterId).toBeNull();
   });
 });
 
@@ -410,7 +424,7 @@ describe("attachMatchedReceipt", () => {
 // the real pipeline: sender gate → body stored as the receipt file → parse →
 // unique match → auto-attach + reconcile.
 describe("processInboundReceipt", () => {
-  test("a body-only email receipt auto-attaches and reconciles on a unique match", async () => {
+  test("a roster body-only email auto-attaches, reconciles, and writes a receipt + link", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await seedPerson(s, { email: "jane@example.com" });
@@ -429,31 +443,63 @@ describe("processInboundReceipt", () => {
     expect(row?.status).toBe("matched");
     expect(row?.matchedTransactionId).toBe(txn);
     expect(row?.sourceKind).toBe("body");
+    expect(row?.senderClass).toBe("roster");
     expect(row?.receiptStorageId).toBeDefined();
     const txnRow = await run(t, (ctx) => ctx.db.get(txn));
     expect(txnRow?.status).toBe("reconciled");
     expect(txnRow?.receiptStorageId).toBe(row?.receiptStorageId);
+
+    // A first-class receipt document + a link were written (source auto_email).
+    const receipts = await run(t, (ctx) => ctx.db.query("receipts").take(5));
+    expect(receipts.length).toBe(1);
+    expect(receipts[0].source).toBe("email");
+    expect(receipts[0].senderClass).toBe("roster");
+    expect(receipts[0].linkCount).toBe(1);
+    const links = await run(t, (ctx) => ctx.db.query("receiptLinks").take(5));
+    expect(links.length).toBe(1);
+    expect(links[0].source).toBe("auto_email");
+    expect(links[0].transactionId).toBe(txn);
   });
 
-  test("an unknown sender is ignored without storing anything", async () => {
+  test("an EXTERNAL sender is processed + stored but NEVER auto-attached, even on a unique exact match", async () => {
     const t = newT();
     const s = await setupChapter(t);
-    await seedTxn(s, { amountCents: 4210, status: "categorized" });
+    // A perfect, unique candidate exists — a trusted sender would auto-attach.
+    const txn = await seedTxn(s, { amountCents: 4210, status: "categorized" });
+
     const { receiptId } = await t.mutation(internal.receiptInbox.recordInboundReceipt, {
       envelope: {
-        emailId: "email_unknown_1",
+        emailId: "email_external_1",
         fromEmail: "stranger@nowhere.com",
-        subject: "Total: $42.10",
+        subject: "Receipt — Total: $42.10",
       },
     });
     await t.action(internal.receiptInbox.processInboundReceipt, { receiptId });
+
     const row = await run(t, (ctx) => ctx.db.get(receiptId));
-    expect(row?.status).toBe("ignored");
-    expect(row?.receiptStorageId).toBeUndefined();
-    const txnRow = await run(t, (ctx) =>
-      ctx.db.query("transactions").take(5),
-    );
-    expect(txnRow[0]?.receiptStorageId).toBeUndefined();
+    // Processed end-to-end: the body was stored and OCR'd.
+    expect(row?.senderClass).toBe("external");
+    expect(row?.sourceKind).toBe("body");
+    expect(row?.receiptStorageId).toBeDefined();
+    expect(row?.ocrAmountCents).toBe(4210);
+    // But an untrusted From: never moves money → review, no chapter inferred.
+    expect(row?.status).toBe("needs_review");
+    expect(row?.chapterId).toBeUndefined();
+    expect(row?.matchedTransactionId).toBeUndefined();
+
+    // The transaction is untouched — no receipt attached, no reconcile.
+    const txnRow = await run(t, (ctx) => ctx.db.get(txn));
+    expect(txnRow?.receiptStorageId).toBeUndefined();
+    expect(txnRow?.status).toBe("categorized");
+
+    // A receipt DOCUMENT was still created (unlinked) — the CRM view surfaces it.
+    const links = await run(t, (ctx) => ctx.db.query("receiptLinks").take(5));
+    expect(links.length).toBe(0);
+    const receipts = await run(t, (ctx) => ctx.db.query("receipts").take(5));
+    expect(receipts.length).toBe(1);
+    expect(receipts[0].linkCount).toBe(0);
+    expect(receipts[0].chapterId).toBeUndefined();
+    expect(receipts[0].senderClass).toBe("external");
   });
 });
 

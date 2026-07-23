@@ -71,6 +71,8 @@ import {
   cardDetailsRevealAttempts,
   financeSettings,
   inboundReceipts,
+  receipts,
+  receiptLinks,
 } from "./schema/finances";
 import {
   donors,
@@ -254,6 +256,11 @@ const schema = defineSchema({
   financeSettings,
   // Inbound email → OCR → reconcile pipeline (receipt backfill). See receiptInbox.ts.
   inboundReceipts,
+  // First-class receipt DOCUMENTS + their many-to-many links to transactions.
+  // `receipts` is the source of truth a receipt is; `transactions.receiptStorageId`
+  // stays a denormalized cache. Written only through lib/receiptLinks.ts.
+  receipts,
+  receiptLinks,
 
   // Backer milestone ladder (giving-platform PRD §3) — dev-director-editable
   // "N backers → chapter commits to X" rungs. Global-only for now; seeded

@@ -317,6 +317,7 @@ const REGISTRY_NAMES = [
   "0032_link_donor_people",
   "0033_add_giving_power_defaults",
   "0034_merge_duplicate_gb_guests",
+  "0035_backfill_receipt_documents",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

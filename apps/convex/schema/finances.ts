@@ -24,6 +24,9 @@ import {
   PAYOUT_STATUSES,
   INCREASE_ONBOARDING_STATUSES,
   INBOUND_RECEIPT_STATUSES,
+  RECEIPT_SOURCES,
+  RECEIPT_LINK_SOURCES,
+  RECEIPT_SENDER_CLASSES,
   LEGACY_ACCOUNT_STATUSES,
   FINANCE_ROLES,
   FINANCE_ROLE_SCOPES,
@@ -998,11 +1001,21 @@ export const inboundReceipts = defineTable({
   subject: v.optional(v.string()),
   receivedAt: v.number(),
 
-  // Resolved sender (auth gate — only known roster senders are processed) +
-  // the chapter its transactions live in. Both absent until the action runs;
-  // an `ignored` row (unknown sender) never gets a `personId`.
+  // Resolved sender + the chapter its transactions live in. Both absent until
+  // the action runs; an UNKNOWN sender (no `people` match) is still processed
+  // end-to-end (owner decision, 2026-07-23 — the sender gate is open) but has no
+  // `personId` and, with no chapter to infer, no `chapterId` either. `ignored`
+  // now means a bookkeeper dismissed the row (or it was non-receipt mail), not
+  // "unknown sender".
   personId: v.optional(v.id("people")),
   chapterId: v.optional(v.id("chapters")),
+  // How much the sender is trusted — the AUTOMATION axis (never a permission).
+  // Only `team`/`roster` (a resolved roster member) may auto-attach; an
+  // `internal`/`external` email always routes to human review. Optional so
+  // legacy rows (predating classification) still validate.
+  senderClass: v.optional(
+    v.union(...RECEIPT_SENDER_CLASSES.map((c) => v.literal(c))),
+  ),
 
   // The stored receipt file (first image/PDF attachment, or a rendered body
   // when the email itself IS the receipt). Absent on an `ignored`/`error` row
@@ -1048,6 +1061,108 @@ export const inboundReceipts = defineTable({
   .index("by_status", ["status"])
   // Scope the review queue to one chapter once the sender is resolved.
   .index("by_chapter", ["chapterId"]);
+
+// ── Receipts (first-class documents, many-to-many with transactions) ─────────
+/** A first-class receipt DOCUMENT — the source of truth a receipt is, decoupled
+ *  from any single transaction. A receipt links to MANY transactions (a split
+ *  bill, a shared card charge) and a transaction can carry MANY receipts, via
+ *  `receiptLinks`. `transactions.receiptStorageId` survives as a DENORMALIZED
+ *  cache of "a" (the first-linked) receipt's file, so every existing reader —
+ *  the reconcile `missing_receipt` filter, the receipt reminders, the 7-day
+ *  card auto-lock, the `hasReceipt` display — keeps working unchanged; the
+ *  `receiptLinks` layer is the new source of truth those denorm writes flow
+ *  from (see `lib/receiptLinks.ts`, the ONLY write path).
+ *
+ *  CANONICAL vs OCR fields: the `ocr*` fields are IMMUTABLE provenance — exactly
+ *  what the model/parser read off the document, never edited after creation.
+ *  The canonical `amountCents`/`receiptDate`/`merchant`/`note` are the
+ *  HUMAN-CORRECTABLE truth: seeded FROM the OCR values at creation, then edited
+ *  only by a later correction mutation (NOT in this PR) which stamps
+ *  `correctedByPersonId`/`correctedAt` and touches canonical fields ALONE — the
+ *  `ocr*` provenance stays frozen so "what did the model see" is always
+ *  recoverable. `chapterId` mirrors `transactions.chapterId` (a real chapter or
+ *  the `"central"` sentinel). */
+export const receipts = defineTable({
+  // A real chapter or the `"central"` sentinel. OPTIONAL because an email from
+  // an UNKNOWN sender (no roster match) is still processed and stored (owner
+  // decision, 2026-07-23) but has no chapter to infer — those rows surface only
+  // in the org-wide receipt view, never a chapter-scoped read. Upload/backfill
+  // and resolved-sender email receipts always carry a chapter.
+  chapterId: v.optional(v.union(v.id("chapters"), v.literal("central"))),
+  // The stored receipt file (image/PDF, or a rendered email body).
+  storageId: v.id("_storage"),
+  // How the document entered the system (email pipeline vs in-app upload).
+  source: v.union(...RECEIPT_SOURCES.map((s) => v.literal(s))),
+  // Provenance when this document came from the inbound-email pipeline — the
+  // `inboundReceipts` row it was extracted from. Absent for direct uploads.
+  inboundReceiptId: v.optional(v.id("inboundReceipts")),
+  // Who uploaded it, when resolvable (the in-app upload path's caller).
+  uploadedByPersonId: v.optional(v.id("people")),
+  // For an email-sourced receipt: how much its sender was trusted (copied from
+  // the `inboundReceipts` row). Governs whether the pipeline auto-attached it or
+  // routed it to review. Absent for uploads/backfill. Optional for legacy rows.
+  senderClass: v.optional(
+    v.union(...RECEIPT_SENDER_CLASSES.map((c) => v.literal(c))),
+  ),
+
+  // ── CANONICAL (human-correctable) fields — seeded from OCR at creation ──────
+  // The receipt's TOTAL in integer cents, its DATE (ms, noon-local by the
+  // `transactionDate` convention), the merchant, and a freeform note. All
+  // optional: a backfilled legacy document has no read total (we never
+  // fabricate one), and a low-quality scan may yield none.
+  amountCents: v.optional(v.number()),
+  receiptDate: v.optional(v.number()),
+  merchant: v.optional(v.string()),
+  note: v.optional(v.string()),
+
+  // ── IMMUTABLE OCR provenance — exactly what the model/parser read ───────────
+  ocrAmountCents: v.optional(v.number()),
+  ocrDate: v.optional(v.number()),
+  ocrMerchant: v.optional(v.string()),
+  ocrConfidence: v.optional(v.number()),
+  ocrModel: v.optional(v.string()),
+
+  // Set by the (future) correction mutation when a human edits a canonical
+  // field away from its OCR seed — audit of who last corrected it, and when.
+  correctedByPersonId: v.optional(v.id("people")),
+  correctedAt: v.optional(v.number()),
+
+  // The match shortlist surfaced for review (per-receipt candidates the matcher
+  // returned) — bounded, so it can live inline. Mirrors the copy the pipeline
+  // keeps on `inboundReceipts.candidateTransactionIds` for the review queue.
+  candidateTransactionIds: v.optional(v.array(v.id("transactions"))),
+
+  // Denormalized count of `receiptLinks` rows pointing at this receipt — kept in
+  // lock-step by `lib/receiptLinks.ts` (Convex has no count operator). Powers
+  // the "unmatched receipts" query via `by_chapter_and_linkCount` without a scan.
+  linkCount: v.number(),
+
+  createdAt: v.number(),
+  updatedAt: v.number(),
+})
+  .index("by_chapter", ["chapterId"])
+  // The "unmatched receipts" query: a chapter's receipts with linkCount 0.
+  .index("by_chapter_and_linkCount", ["chapterId", "linkCount"])
+  // Find the receipt(s) extracted from a given inbound email (manual-match).
+  .index("by_inbound", ["inboundReceiptId"]);
+
+/** ONE receipt↔transaction link — the many-to-many join that is the SOURCE OF
+ *  TRUTH for which receipts back which charges. Written ONLY through
+ *  `lib/receiptLinks.ts` (`linkReceiptToTransaction`/`unlinkReceiptFromTransaction`),
+ *  which keeps `receipts.linkCount` and the `transactions.receiptStorageId`
+ *  denorm cache consistent. `chapterId` is denormalized from the transaction so
+ *  tenancy checks don't need to load either parent. */
+export const receiptLinks = defineTable({
+  receiptId: v.id("receipts"),
+  transactionId: v.id("transactions"),
+  // Denormalized from the linked transaction (a real chapter or "central").
+  chapterId: v.union(v.id("chapters"), v.literal("central")),
+  source: v.union(...RECEIPT_LINK_SOURCES.map((s) => v.literal(s))),
+  linkedByPersonId: v.optional(v.id("people")),
+  createdAt: v.number(),
+})
+  .index("by_receipt", ["receiptId"])
+  .index("by_transaction", ["transactionId"]);
 
 // ── Public reimbursement submit rate limit (deployment-wide) ─────────────────
 /** A single timestamped hit against the anonymous `submitPublicReimbursement`
