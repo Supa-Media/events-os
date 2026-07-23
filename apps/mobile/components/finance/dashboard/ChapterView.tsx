@@ -206,6 +206,27 @@ export function ChapterView({
   const otherTiles = data.tiles.filter((t) => t !== spentTile && t !== reviewTile);
   const periodSpendCents = spentTile?.subValueCents ?? 0;
 
+  // no-dead-numbers: the two "other" KPI tiles (the top project + the
+  // biggest monthly recurring bucket, whichever of the two exist) drill into
+  // the SAME budget they summarize — the "Events & projects"/"Recurring
+  // buckets" tables below already open this exact edit view from a row tap
+  // (`onEditBudget`), so this reuses that established target rather than a
+  // new surface. `topBucket` mirrors `finances.ts#dashboardChapter`'s own
+  // (now-deterministic — largest allocation, see that file's fix) pick of
+  // the tile's SOURCE data one-for-one, so the figure shown and the budget
+  // opened can never disagree.
+  const topProjectBudget = data.oneTimeBudgets[0];
+  const topBucketBudget = useMemo(() => {
+    const monthly = data.recurringBudgets.filter((b) => b.cadence === "monthly");
+    if (monthly.length === 0) return undefined;
+    return monthly.reduce((best, b) => (b.budgetCents > best.budgetCents ? b : best));
+  }, [data.recurringBudgets]);
+  function budgetIdForOtherTile(tile: ChapterTile): string | undefined {
+    if (topProjectBudget && tile.label === topProjectBudget.name) return topProjectBudget.id;
+    if (topBucketBudget && tile.label === topBucketBudget.name) return topBucketBudget.id;
+    return undefined;
+  }
+
   const rollup = useMemo(
     () => categoryRollup(data.oneTimeBudgets, data.recurringBudgets, periodSpendCents, period),
     [data.oneTimeBudgets, data.recurringBudgets, periodSpendCents, period],
@@ -314,10 +335,32 @@ export function ChapterView({
     <View>
       {/* 1. KPI band */}
       <TileRow>
-        {spentTile ? <SpentTile tile={spentTile} monthly={monthly} /> : null}
-        {otherTiles.map((t, i) => (
-          <Tile key={i} label={t.label} value={t.value} meta={t.meta} />
-        ))}
+        {spentTile ? (
+          <SpentTile
+            tile={spentTile}
+            monthly={monthly}
+            onPress={
+              isDrilldown
+                ? undefined
+                : () =>
+                    router.navigate(
+                      `/finances/reconcile?filter=spend&year=${year}&month=${month}&period=${period}` as never,
+                    )
+            }
+          />
+        ) : null}
+        {otherTiles.map((t, i) => {
+          const budgetId = budgetIdForOtherTile(t);
+          return (
+            <Tile
+              key={i}
+              label={t.label}
+              value={t.value}
+              meta={t.meta}
+              onPress={budgetId && !isDrilldown ? () => onEditBudget(budgetId) : undefined}
+            />
+          );
+        })}
         {reviewTile ? (
           <ReviewLinkTile
             tile={reviewTile}
@@ -434,21 +477,56 @@ export function ChapterView({
 // ── KPI tile variants ────────────────────────────────────────────────────────
 type ChapterTile = ChapterDash["tiles"][number];
 
-/** The "Spent · …" tile with its own sparkline in the top-right corner. */
-function SpentTile({ tile, monthly }: { tile: ChapterTile; monthly: MonthlySpend | undefined }) {
-  return (
-    <View className="min-w-[150px] flex-1 gap-1.5 rounded-lg border border-border bg-raised p-4 shadow-card">
+/**
+ * The "Spent · …" tile with its own sparkline in the top-right corner.
+ * no-dead-numbers: `onPress`, when provided, drills into Reconcile filtered
+ * to the EXACT rows that sum to this figure (`filter=spend`, the same
+ * period the tile is showing) — omitted (`undefined`) while peeking a
+ * different chapter (`isDrilldown`), mirroring every other write/nav
+ * affordance's drilldown gate on this view.
+ */
+function SpentTile({
+  tile,
+  monthly,
+  onPress,
+}: {
+  tile: ChapterTile;
+  monthly: MonthlySpend | undefined;
+  onPress?: () => void;
+}) {
+  const content = (
+    <>
       <View className="flex-row items-start justify-between gap-2">
         <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
           {tile.label}
         </Text>
         {monthly ? <SparkLine months={monthly.months} partialMonth={monthly.partialMonth} /> : null}
+        {onPress ? <Icon name="chevron-right" size={12} color={colors.accent} /> : null}
       </View>
-      <Text className="font-display text-2xl text-ink" style={{ fontVariant: ["tabular-nums"] }}>
+      <Text
+        className={`font-display text-2xl ${onPress ? "text-accent" : "text-ink"}`}
+        style={{ fontVariant: ["tabular-nums"] }}
+      >
         {tile.value}
       </Text>
       {tile.meta ? <Text className="text-xs text-muted">{tile.meta}</Text> : null}
-    </View>
+    </>
+  );
+  if (!onPress) {
+    return (
+      <View className="min-w-[150px] flex-1 gap-1.5 rounded-lg border border-border bg-raised p-4 shadow-card">
+        {content}
+      </View>
+    );
+  }
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      className="min-w-[150px] flex-1 gap-1.5 rounded-lg border border-border bg-raised p-4 shadow-card web:hover:border-accent"
+    >
+      {content}
+    </Pressable>
   );
 }
 

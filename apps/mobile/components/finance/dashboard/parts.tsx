@@ -85,33 +85,60 @@ export function TileRow({ children }: { children: ReactNode }) {
   return <View className="mb-2 flex-row flex-wrap gap-3">{children}</View>;
 }
 
-/** A single KPI tile: label · big value · meta. */
+/**
+ * A single KPI tile: label · big value · meta. Optionally press-through to
+ * whatever this figure summarizes (no-dead-numbers: every dashboard number a
+ * treasurer would want to audit should land on the rows that sum to it) — a
+ * trailing chevron signals it's tappable; a tile with no `onPress` stays a
+ * plain, non-interactive card exactly as before.
+ */
 export function Tile({
   label,
   value,
   meta,
   valueClassName = "text-ink",
   tooltip,
+  onPress,
 }: {
   label: string;
   value: string;
   meta?: string;
   valueClassName?: string;
   tooltip?: string;
+  onPress?: () => void;
 }) {
-  return (
-    <View className="min-w-[150px] flex-1 gap-1.5 rounded-lg border border-border bg-raised p-4 shadow-card">
-      <View className="flex-row items-center gap-1">
-        <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-          {label}
-        </Text>
-        {tooltip ? <InfoTooltip text={tooltip} size={12} /> : null}
+  const content = (
+    <>
+      <View className="flex-row items-center justify-between gap-2">
+        <View className="flex-row items-center gap-1">
+          <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+            {label}
+          </Text>
+          {tooltip ? <InfoTooltip text={tooltip} size={12} /> : null}
+        </View>
+        {onPress ? <Icon name="chevron-right" size={12} color={colors.accent} /> : null}
       </View>
       <Text className={`font-display text-2xl ${valueClassName}`} style={TABULAR}>
         {value}
       </Text>
       {meta ? <Text className="text-xs text-muted">{meta}</Text> : null}
-    </View>
+    </>
+  );
+  if (!onPress) {
+    return (
+      <View className="min-w-[150px] flex-1 gap-1.5 rounded-lg border border-border bg-raised p-4 shadow-card">
+        {content}
+      </View>
+    );
+  }
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      className="min-w-[150px] flex-1 gap-1.5 rounded-lg border border-border bg-raised p-4 shadow-card web:hover:border-accent"
+    >
+      {content}
+    </Pressable>
   );
 }
 

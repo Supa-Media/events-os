@@ -101,18 +101,37 @@ export default function ReconcileScreen() {
 
 const FILTER_KEYS = new Set<FilterKey>([
   "all",
+  "spend",
   "needs_budget",
   "missing_receipt",
   "uncategorized",
   "ready",
 ]);
 
+/** `Jul 2026` / `YTD through Jul 2026` — the period-scope pill's label. */
+function periodLabel(year: number, month: number, mode: "month" | "ytd"): string {
+  const name = new Date(2000, month - 1, 1).toLocaleDateString("en-US", { month: "long" });
+  return mode === "ytd" ? `YTD through ${name} ${year}` : `${name} ${year}`;
+}
+
 function ReconcileGrid() {
   // WP-dashboard-drill: optional deep-link params (e.g. from the central
   // dashboard's "Reconcile centrally →" affordance) — override the initial
   // state only; the pills/toggle remain fully interactive afterward. Unknown
   // or malformed values fall back to the existing defaults, never throw.
-  const params = useLocalSearchParams<{ filter?: string; scope?: string }>();
+  //
+  // no-dead-numbers: `year`/`month`/`period` — set by a dashboard "Spent"
+  // tile's drill-through (`?filter=spend&year=…&month=…&period=…`) — scope
+  // the grid to the SAME window that tile summed (see `listReconcile`'s own
+  // doc comment). Absent (the pre-existing deep links, and a plain visit to
+  // this tab) → the original all-time bounded-recent behavior, unchanged.
+  const params = useLocalSearchParams<{
+    filter?: string;
+    scope?: string;
+    year?: string;
+    month?: string;
+    period?: string;
+  }>();
   const router = useRouter();
   const initialFilter: FilterKey =
     params.filter && FILTER_KEYS.has(params.filter as FilterKey)
@@ -123,6 +142,18 @@ function ReconcileGrid() {
   const [query, setQuery] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  const parsedYear = params.year ? Number(params.year) : undefined;
+  const periodYear = parsedYear != null && !Number.isNaN(parsedYear) ? parsedYear : undefined;
+  const parsedMonth = params.month ? Number(params.month) : undefined;
+  const periodMonth =
+    parsedMonth != null && !Number.isNaN(parsedMonth) ? parsedMonth : undefined;
+  const periodMode: "month" | "ytd" = params.period === "ytd" ? "ytd" : "month";
+  const hasPeriodScope = periodYear != null;
+  // Fixed for the life of this deep-linked visit — there's no picker for it
+  // here (unlike the dashboards' own `MonthStepper`/`PeriodSwitch`); "Clear"
+  // drops back to the ordinary, unscoped Reconcile view.
+  const clearPeriodScope = () => router.replace("/finances/reconcile" as never);
 
   // WP-2.1: central-seat holders can switch this grid to reconcile CENTRAL-owned
   // txns. `mySeats` resolves their real seats; a central seat unlocks the toggle.
@@ -162,13 +193,19 @@ function ReconcileGrid() {
   const peekedChapterId = context?.kind === "peek" ? context.chapterId : undefined;
   const viewingPeekedChapter = peekedChapterId != null && !centralScope;
 
+  // no-dead-numbers: the optional period narrowing (see the module doc
+  // above) — spread in on top of the scope args below, never overriding
+  // them.
+  const periodArgs = hasPeriodScope
+    ? { year: periodYear as number, month: periodMonth, period: periodMode }
+    : {};
   const reconcile = useQuery(
     api.finances.listReconcile,
     centralScope
-      ? { filter, scope: "central" as const }
+      ? { filter, scope: "central" as const, ...periodArgs }
       : peekedChapterId
-        ? { filter, chapterId: peekedChapterId }
-        : { filter },
+        ? { filter, chapterId: peekedChapterId, ...periodArgs }
+        : { filter, ...periodArgs },
   );
   // The Chase-receipts destination, carrying this grid's CURRENT scope as
   // route params — mirrors the args object above (minus `filter`, which
@@ -342,6 +379,21 @@ function ReconcileGrid() {
                 : `${toClear} to clear`}
             </Text>
           </View>
+
+          {/* no-dead-numbers: the period-scope banner — only present when a
+              dashboard tile's drill-through set `year`/`month`/`period` (see
+              the module doc above). "Clear" drops back to the ordinary,
+              unscoped view; the rest of the grid (search, other pills, bulk
+              actions) stays fully interactive either way. */}
+          {hasPeriodScope ? (
+            <View className="mb-3 flex-row items-center gap-2">
+              <Pill
+                label={`Scoped to ${periodLabel(periodYear as number, periodMonth ?? 1, periodMode)} · Clear`}
+                selected
+                onPress={clearPeriodScope}
+              />
+            </View>
+          ) : null}
 
           {/* Scope toggle — central-seat holders switch between reconciling
               their chapter's money and CENTRAL-owned money (WP-2.1). */}

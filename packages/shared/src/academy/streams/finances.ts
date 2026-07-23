@@ -466,6 +466,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         headers: ["Filter", "What it catches"],
         rows: [
           ["All", "Every charge, unfiltered"],
+          ["Spend", "Every dollar that counts as actual spend — the exact rows behind the dashboard's \"Spent\" figure, so tapping it always lands here"],
           ["Needs budget", "Categorized but not linked to a budget yet"],
           ["Missing receipt", "No receipt uploaded"],
           ["Uncategorized", "No category assigned at all"],

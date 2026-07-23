@@ -308,8 +308,13 @@ const reconcileRow = v.object({
 });
 
 // The reconcile filter pills (server-side, correct across ALL rows).
+// `spend` (no-dead-numbers): the exact predicate the "Spent" KPI tile sums
+// (`isSpend` — outflow, not excluded, not personal) — the drill-down target
+// for that tile, distinct from `all` (which keeps inflow/transfer/personal
+// rows too, so it would NOT sum to the same figure).
 const reconcileFilterValidator = v.union(
   v.literal("all"),
+  v.literal("spend"),
   v.literal("needs_budget"),
   v.literal("missing_receipt"),
   v.literal("uncategorized"),
@@ -319,6 +324,7 @@ const reconcileFilterValidator = v.union(
 // Per-filter counts returned alongside the rows so each pill shows its number.
 const reconcileCounts = v.object({
   all: v.number(),
+  spend: v.number(),
   needs_budget: v.number(),
   missing_receipt: v.number(),
   uncategorized: v.number(),
@@ -2650,7 +2656,25 @@ export const dashboardChapter = query({
         meta: `per instance · ${topProject.pct}%`,
       });
     }
-    const topBucket = recurringBudgets.find((r) => r.cadence === "monthly");
+    // DETERMINISM FIX (no-dead-numbers, review finding — PR #368 rebase note
+    // below): was `.find(cadence === "monthly")`, the FIRST monthly recurring
+    // budget in `recurringBudgets`' insertion order — an arbitrary pick, not
+    // "the biggest bucket" the tile's position implies. Deterministic now:
+    // the monthly bucket with the largest allocation (`budgetCents`, ties
+    // keep the earliest by `reduce`'s left-to-right scan). The chapter
+    // dashboard (`ChapterView.tsx`) mirrors this EXACT rule client-side (from
+    // the same `recurringBudgets` array) so the tile it renders and the
+    // budget its own click-through opens can never disagree.
+    // REBASE NOTE: PR #368 (open, refactors this file into
+    // `lib/financeInternals/`) touches this same tile-construction region —
+    // this fix may need re-applying after that refactor lands; it's a
+    // single self-contained expression, not a structural change, so the
+    // rebase should be mechanical.
+    const monthlyBuckets = recurringBudgets.filter((r) => r.cadence === "monthly");
+    const topBucket =
+      monthlyBuckets.length > 0
+        ? monthlyBuckets.reduce((best, r) => (r.budgetCents > best.budgetCents ? r : best))
+        : undefined;
     if (topBucket) {
       tiles.push({
         label: topBucket.name,
@@ -7279,6 +7303,11 @@ export const listTransactions = query({
  * Filters (the `excluded` status is always dropped first — an intentional
  * exclusion never belongs in the inbox):
  *   - `all`            every non-excluded row
+ *   - `spend`          a row that counts as actual spend (`isSpend` — outflow,
+ *                       not personal) — the drill-down target for the
+ *                       dashboards' "Spent" KPI tile (no-dead-numbers): `all`
+ *                       also keeps inflow/transfer/personal rows, so it would
+ *                       NOT sum to that tile's figure the way this does
  *   - `needs_budget`   a spend row with no budget yet (`isSpend && budgetId == null`)
  *   - `missing_receipt` a chargeable (spend) row with no receipt attached AND
  *     not yet `reconciled` — a treasurer who closed a row receipt-less made a
@@ -7294,6 +7323,15 @@ export const listTransactions = query({
  * read yields both the newest-first ordering the grid wants AND every pill's
  * count in one pass, cheaper than a separate `by_chapter_and_status` query per
  * pill.
+ *
+ * OPTIONAL PERIOD SCOPE (no-dead-numbers): `year` (+ `month`/`period`) narrows
+ * the scan to the SAME {year, month, period} window a dashboard tile was
+ * showing when the caller drilled in — the same `loadPeriodTxns`/
+ * `inDashRange` machinery `dashboardChapter`/`dashboardCentral` use for their
+ * own period totals, so a linked-through "Spent" figure and the rows here
+ * agree. Omitting `year` keeps the ORIGINAL all-time bounded-recent behavior
+ * (every existing caller — the plain Reconcile tab, "Needs budget" links —
+ * is unaffected).
  */
 export const listReconcile = query({
   args: {
@@ -7310,6 +7348,12 @@ export const listReconcile = query({
     // when `scope:"central"` is also set (that branch wins — the two never
     // conflict since `chapterId` is only consulted in the `else` branch).
     chapterId: v.optional(v.id("chapters")),
+    // Optional period narrowing (no-dead-numbers) — see the module doc above.
+    // `year` gates the other two: `month` un-set + `period !== "ytd"` reads
+    // the whole year.
+    year: v.optional(v.number()),
+    month: v.optional(v.number()),
+    period: v.optional(v.union(v.literal("month"), v.literal("ytd"))),
   },
   returns: v.object({
     rows: v.array(reconcileRow),
@@ -7326,6 +7370,7 @@ export const listReconcile = query({
     const filter = args.filter ?? "all";
     const zero = {
       all: 0,
+      spend: 0,
       needs_budget: 0,
       missing_receipt: 0,
       uncategorized: 0,
@@ -7354,20 +7399,42 @@ export const listReconcile = query({
     }
 
     const sandboxMode = await readSandbox(ctx);
-    const all = (
-      await ctx.db
-        .query("transactions")
-        .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", scope))
-        .order("desc")
-        .take(ROLLUP_SCAN_LIMIT)
-    )
-      .filter((tr) => txnMatchesMode(tr, sandboxMode))
-      // An intentionally-excluded charge is never part of the reconcile inbox.
-      .filter((tr) => tr.status !== "excluded");
+    let all: Doc<"transactions">[];
+    if (args.year != null) {
+      // Period-scoped (no-dead-numbers): the SAME year/month/ytd window a
+      // dashboard tile summed, via the dashboards' own period helpers — see
+      // the module doc above. No `month` (or an explicit `period:"ytd"`)
+      // reads the WHOLE year (dp.month = 12, ytd = true), not just January.
+      const ytd = args.period === "ytd" || args.month == null;
+      const dp: DashPeriod = { year: args.year, month: args.month ?? 12, ytd };
+      const yearTxns = await loadPeriodTxns(
+        ctx,
+        scope,
+        args.year,
+        sandboxMode,
+        !ytd ? args.month : undefined,
+      );
+      all = yearTxns
+        .filter((tr) => inDashRange(tr.postedAt, dp))
+        .filter((tr) => tr.status !== "excluded")
+        .sort((a, b) => b.postedAt - a.postedAt);
+    } else {
+      all = (
+        await ctx.db
+          .query("transactions")
+          .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", scope))
+          .order("desc")
+          .take(ROLLUP_SCAN_LIMIT)
+      )
+        .filter((tr) => txnMatchesMode(tr, sandboxMode))
+        // An intentionally-excluded charge is never part of the reconcile inbox.
+        .filter((tr) => tr.status !== "excluded");
+    }
 
     // Per-filter counts in the same pass (spend/receipt/status predicates).
     const counts = { ...zero, all: all.length };
     for (const tr of all) {
+      if (isSpend(tr)) counts.spend += 1;
       if (needsBudget(tr)) counts.needs_budget += 1;
       if (isSpend(tr) && tr.receiptStorageId == null && tr.status !== "reconciled")
         counts.missing_receipt += 1;
@@ -7377,6 +7444,7 @@ export const listReconcile = query({
 
     const predicates: Record<string, (tr: Doc<"transactions">) => boolean> = {
       all: () => true,
+      spend: (tr) => isSpend(tr),
       needs_budget: (tr) => needsBudget(tr),
       missing_receipt: (tr) =>
         isSpend(tr) && tr.receiptStorageId == null && tr.status !== "reconciled",

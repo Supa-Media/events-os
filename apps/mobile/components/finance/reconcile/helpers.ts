@@ -28,6 +28,7 @@ export type TxnRow =
 /** Matches the backend `listReconcile` filter arg. */
 export type FilterKey =
   | "all"
+  | "spend"
   | "needs_budget"
   | "missing_receipt"
   | "uncategorized"
@@ -40,6 +41,11 @@ export type FilterCounts = FunctionReturnType<
 
 export const FILTERS: { key: FilterKey; label: string }[] = [
   { key: "all", label: "All" },
+  // no-dead-numbers: the dashboards' "Spent" KPI tile drills in here
+  // (`?filter=spend`) — shown as a real pill (not just a hidden deep-link
+  // target) so a treasurer landing on it can see which filter they're in
+  // and switch away cleanly.
+  { key: "spend", label: "Spend" },
   { key: "needs_budget", label: "Needs budget" },
   { key: "missing_receipt", label: "Missing receipt" },
   { key: "uncategorized", label: "Uncategorized" },
