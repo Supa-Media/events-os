@@ -5,10 +5,18 @@
  * (`api.finances.receiptChase` — groups by total DESC, charges within a group
  * by amount DESC, the no-cardholder "Unattributed" bucket pinned last). The
  * grouping resolves the cardholder exactly like the Reconcile grid's
- * Cardholder column, so this list can never disagree with the grid the FM
- * just came from; the chase predicate is deliberately NARROWER than the
- * grid's Missing-receipt pill (a `reconciled` row was closed receipt-less on
- * purpose — nobody left to chase). See the query's doc comment for both rules.
+ * Cardholder column, and the query's predicate is now IDENTICAL to the
+ * grid's Missing-receipt pill (`isSpend && no receipt && not reconciled`) —
+ * a `reconciled` row was closed receipt-less on purpose, so it's absent from
+ * both. See the query's doc comment for the exact rule.
+ *
+ * `scope`/`chapterId` route params (set by the Reconcile screen's
+ * "Chase receipts" button — see `reconcile.tsx`'s `chaseHref`) are forwarded
+ * straight to `receiptChase`, which resolves them exactly like
+ * `listReconcile` does. This is what actually keeps the two screens honest:
+ * without it, this page always read the caller's HOME chapter regardless of
+ * which scope the grid was showing, so a central/peeked-chapter pill could
+ * point at a different bucket than the count it displayed.
  *
  * READ-ONLY on purpose: the chasing itself happens off-app (a text, a tap on
  * the shoulder) and the automated day-1/day-3 nudges + day-7 card auto-lock
@@ -25,7 +33,9 @@
  */
 import { Text, View } from "react-native";
 import { useQuery } from "convex/react";
+import { useLocalSearchParams } from "expo-router";
 import { api } from "@events-os/convex/_generated/api";
+import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
   Avatar,
   BackLink,
@@ -90,7 +100,20 @@ function ReminderBadge({
 }
 
 function ReceiptChaseBody() {
-  const chase = useQuery(api.finances.receiptChase, {});
+  // Mirrors `reconcile.tsx`'s `chaseHref` — whichever scope the grid was
+  // showing when "Chase receipts" was tapped. Absent params (a direct nav,
+  // or a non-central caller whose `?scope=central` we ignore exactly like
+  // the grid's own toggle does) fall back to the caller's home chapter,
+  // same as before this pair of args existed.
+  const params = useLocalSearchParams<{ scope?: string; chapterId?: string }>();
+  const chase = useQuery(
+    api.finances.receiptChase,
+    params.scope === "central"
+      ? { scope: "central" as const }
+      : params.chapterId
+        ? { chapterId: params.chapterId as Id<"chapters"> }
+        : {},
+  );
 
   if (chase === undefined) {
     return (
