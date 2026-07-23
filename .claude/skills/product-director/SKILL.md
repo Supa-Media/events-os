@@ -90,6 +90,21 @@ on green).
 
 ## Repo-specific invariants (verify, they drift)
 
+- Merging to `main` deploys the Convex backend AND triggers separate
+  production deploys: `Deploy Web (production)` and `Deploy Mobile Update
+  (OTA)`. These run the Metro bundler, which the PR's CI (unit tests +
+  typecheck) does NOT. So a PR can be fully green and still break the web +
+  mobile deploys — never assume "CI green" == "deploys will pass." After
+  merging finance/mobile UI changes, verify the post-merge Deploy Web and
+  Deploy Mobile OTA runs on `main` actually succeed; if red, hotfix
+  immediately (the backend deploy is independent and usually still fine).
+- Bundler-only failure class to pre-empt: unresolved/mis-depthed relative
+  imports. When two PRs edit the same file's import block (a rebase/merge
+  reconciliation), grep the merged file for relative-import depth mistakes
+  (`../ui` vs `../../ui`) before merging — the sandbox can't run the bundler
+  (`pnpm install` 401s on `@supa-media/*`), so tsc/vitest won't catch what
+  Metro will. This exact bug (CategoryBars `../ui` → `../../ui`) broke both
+  production bundles on 2026-07-23 after #381×#389 merged.
 - Merging to `main` deploys the Convex backend — never merge on red.
 - Squash-merge on green is the norm, agents included (founder-confirmed
   2026-07-23; `merge_pull_request` was removed from the settings deny list
@@ -119,6 +134,21 @@ Before finishing a run of this skill, you MUST:
    run's PR.
 
 ## Learnings Log (newest first)
+
+### 2026-07-23 — Run 1 addendum 3 (post-merge deploy break)
+- Green CI is NOT green deploys. 10 PRs merged green, but two of them
+  (#381 tooltip import + #389 dashboard edit to the same file) combined into
+  a mis-depthed relative import (`../ui` should have been `../../ui`) that
+  only the Metro bundler catches — CI's unit/typecheck jobs don't bundle.
+  Result: `Deploy Web (production)` + `Deploy Mobile Update (OTA)` failed on
+  main while Convex deploy + CI stayed green. Hotfix #391 fixed it; verified
+  by checking the post-merge deploy workflow runs, not just CI.
+- Takeaways now encoded as invariants above: (1) always verify post-merge
+  Deploy Web/Mobile runs for UI changes; (2) when a merge reconciles two
+  PRs' imports, grep the file for import-depth mistakes before merging.
+- Mechanic: `actions_list` on main can exceed the token cap — slice the
+  saved tool-result file with python `read()[A:B]` and parse the JSON for
+  `name|conclusion|head_sha` instead of reading raw.
 
 ### 2026-07-23 — Run 1 addendum 2 (drive-to-green phase)
 - CI status sweeps must use CHECK RUNS (pull_request_read method
