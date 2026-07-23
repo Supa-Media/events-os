@@ -29,6 +29,7 @@ import {
   FREE_MODEL_FALLBACKS,
   AI_MODELS,
   DEFAULT_AI_MODEL,
+  OLLAMA_DEFAULT_CHAT_MODEL,
   PLAYBOOK_MD,
   dayKeyInTz,
   daysBetweenInTz,
@@ -39,8 +40,13 @@ import {
   zonedTimeToUtc,
   type AiCatalogModel,
 } from "@events-os/shared";
+import {
+  chatCompletion,
+  resolveEngineModel,
+  type AiEngineConfig,
+  type NormalizedUsage,
+} from "./lib/aiEngine";
 
-const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 const OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models";
 
 /** Max model round-trips in one turn (each may carry several tool calls). */
@@ -581,88 +587,62 @@ class OpenRouterError extends Error {
  * agent passes `DOC_TOOLS`. Throws {@link OpenRouterError} on failure so the
  * resilient wrapper can tell a transient 429 apart from a hard 400.
  */
-async function openRouterCall(
+/** Map the engine's normalized usage back onto the `OpenRouterUsage` shape the
+ *  cost/usage accounting in this file reads. `cost` is only present on
+ *  OpenRouter; for Ollama it's undefined → `callCost` estimates $0 (subscription). */
+function toActionsUsage(u: NormalizedUsage | undefined): OpenRouterUsage {
+  if (!u) return {};
+  return {
+    prompt_tokens: u.promptTokens,
+    completion_tokens: u.completionTokens,
+    cost: u.costUsd,
+    prompt_tokens_details:
+      u.cachedTokens != null ? { cached_tokens: u.cachedTokens } : undefined,
+  };
+}
+
+async function engineCall(
+  config: AiEngineConfig,
   slug: string,
   messages: ChatMessage[],
   opts: { tools?: unknown[]; maxTokens?: number; effort?: string } = {},
 ): Promise<{ message: ModelMessage; usage: OpenRouterUsage }> {
-  const tools = opts.tools;
-  const useTools = Array.isArray(tools) && tools.length > 0;
   // Prompt caching: the system message is by far the largest block (playbook +
   // live snapshot) and is stable within a turn's tool loop. Send it as a text
-  // block tagged `cache_control` so providers that support explicit caching
-  // (Anthropic, via OpenRouter's pass-through) reuse it; providers that don't
-  // simply ignore the field.
-  const wireMessages = messages.map((m) =>
-    m.role === "system" && typeof m.content === "string"
-      ? {
-          role: "system" as const,
-          content: [
-            {
-              type: "text",
-              text: m.content,
-              cache_control: { type: "ephemeral" },
-            },
-          ],
-        }
-      : m,
-  );
-  // A hung model call must not stall the whole action. Mirror the search
-  // helpers below, which all guard their fetches with an AbortController.
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), OPENROUTER_TIMEOUT_MS);
-  let res: Response;
-  try {
-    res = await fetch(OPENROUTER_URL, {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${process.env.OPENROUTER_API_KEY}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://events-os.app",
-        "X-OpenRouter-Title": "Chapter OS",
-      },
-      body: JSON.stringify({
-        model: slug,
-        messages: wireMessages,
-        ...(useTools ? { tools, tool_choice: "auto" } : {}),
-        reasoning: { effort: opts.effort ?? ASSISTANT_REASONING_EFFORT },
-        max_tokens: opts.maxTokens ?? ASSISTANT_MAX_TOKENS,
-        // Ask the gateway to return the exact billed cost + token details, so
-        // paid-model spend (and per-chat caps) are accounted from real numbers.
-        usage: { include: true },
-      }),
-    });
-  } catch (err) {
-    const aborted = err instanceof Error && err.name === "AbortError";
-    // Timeouts are transient → retryable.
-    throw new OpenRouterError(
-      aborted
-        ? `OpenRouter call timed out after ${OPENROUTER_TIMEOUT_MS / 1000}s.`
-        : "OpenRouter request failed.",
-      null,
-      true,
-    );
-  } finally {
-    clearTimeout(timer);
+  // block tagged `cache_control` so OpenRouter's pass-through caching (Anthropic
+  // etc.) reuses it. ONLY for OpenRouter — Ollama has no such field, so it gets
+  // the plain messages (identical OpenRouter behavior preserved).
+  const wireMessages =
+    config.provider === "openrouter"
+      ? messages.map((m) =>
+          m.role === "system" && typeof m.content === "string"
+            ? {
+                role: "system" as const,
+                content: [
+                  {
+                    type: "text",
+                    text: m.content,
+                    cache_control: { type: "ephemeral" },
+                  },
+                ],
+              }
+            : m,
+        )
+      : messages;
+  const result = await chatCompletion(config, {
+    model: slug,
+    messages: wireMessages,
+    tools: opts.tools,
+    maxTokens: opts.maxTokens ?? ASSISTANT_MAX_TOKENS,
+    reasoningEffort: opts.effort ?? ASSISTANT_REASONING_EFFORT,
+    timeoutMs: OPENROUTER_TIMEOUT_MS,
+  });
+  if (!result.ok) {
+    // Re-wrap the typed engine error as OpenRouterError so `resilientCall`'s
+    // retry/fallback logic (transient vs. hard) is UNCHANGED across providers.
+    throw new OpenRouterError(result.message, result.status, result.retryable);
   }
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    const retryable = res.status === 429 || res.status >= 500;
-    throw new OpenRouterError(
-      `OpenRouter call failed (${res.status}): ${body.slice(0, 300)}`,
-      res.status,
-      retryable,
-    );
-  }
-  const json: any = await res.json();
-  return {
-    message: (json?.choices?.[0]?.message ?? {
-      role: "assistant",
-      content: "",
-    }) as ModelMessage,
-    usage: (json?.usage ?? {}) as OpenRouterUsage,
-  };
+  return { message: result.message as ModelMessage, usage: toActionsUsage(result.usage) };
 }
 
 /**
@@ -678,12 +658,16 @@ async function openRouterCall(
  * the actual model used, so cost is billed against what really ran.
  */
 async function resilientCall(
+  config: AiEngineConfig,
   slug: string,
   messages: ChatMessage[],
   opts: { tools?: unknown[]; maxTokens?: number; effort?: string } = {},
 ): Promise<{ message: ModelMessage; usage: OpenRouterUsage; slug: string }> {
   const candidates = [slug];
-  if (isFreeModelSlug(slug)) {
+  // Free-model fallback is an OpenRouter concept (its shared free pools throttle
+  // constantly, and `FREE_MODEL_FALLBACKS` are OpenRouter slugs). On Ollama there
+  // is no fallback chain — just retry the chosen model.
+  if (config.provider === "openrouter" && isFreeModelSlug(slug)) {
     for (const fallback of FREE_MODEL_FALLBACKS) {
       if (fallback !== slug) candidates.push(fallback);
     }
@@ -693,7 +677,7 @@ async function resilientCall(
   for (const model of candidates) {
     for (let attempt = 0; attempt < RETRY_ATTEMPTS; attempt++) {
       try {
-        const { message, usage } = await openRouterCall(model, messages, opts);
+        const { message, usage } = await engineCall(config, model, messages, opts);
         return { message, usage, slug: model };
       } catch (err) {
         lastErr = err;
@@ -2025,11 +2009,18 @@ export const runAssistant = action({
       });
       return { ok: false };
     }
-    if (!process.env.OPENROUTER_API_KEY) {
+    // Resolve the active AI engine (provider + key + global model). No key for
+    // the active provider → degrade with a clear message (was hardcoded to
+    // OPENROUTER_API_KEY).
+    const config = (await ctx.runQuery(
+      internal.integrationSettings.readAiEngineConfig,
+      {},
+    )) as AiEngineConfig;
+    if (!config.apiKey) {
       await ctx.runMutation(internal.ai.appendMessage, {
         threadId,
         kind: "error",
-        text: "OPENROUTER_API_KEY is not configured.",
+        text: `No API key is configured for the ${config.provider} AI provider.`,
       });
       return { ok: false };
     }
@@ -2066,7 +2057,13 @@ export const runAssistant = action({
       });
       return { ok: false };
     }
-    const slug = chat?.model ?? DEFAULT_AI_MODEL;
+    // Model precedence: per-thread choice (the explicit per-call override) >
+    // stored global `aiModel` > per-provider default.
+    const slug = resolveEngineModel(config, {
+      override: chat?.model,
+      openrouterDefault: DEFAULT_AI_MODEL,
+      ollamaDefault: OLLAMA_DEFAULT_CHAT_MODEL,
+    });
     const spendLimitUsd = chat?.spendLimitUsd ?? null;
     let chatSpent = chat?.spentUsd ?? 0;
 
@@ -2102,7 +2099,7 @@ export const runAssistant = action({
           message,
           usage,
           slug: usedSlug,
-        } = await resilientCall(slug, messages, { tools: TOOLS });
+        } = await resilientCall(config, slug, messages, { tools: TOOLS });
 
         const cost = callCost(usedSlug, usage);
         totalCost += cost;
@@ -2281,10 +2278,14 @@ export const autofillItem = action({
         code: "AI_BUDGET",
         message: `AI budget reached (${budget.over}).`,
       });
-    if (!process.env.OPENROUTER_API_KEY)
+    const engineConfig = (await ctx.runQuery(
+      internal.integrationSettings.readAiEngineConfig,
+      {},
+    )) as AiEngineConfig;
+    if (!engineConfig.apiKey)
       throw new ConvexError({
-        code: "NO_OPENROUTER_KEY",
-        message: "OPENROUTER_API_KEY is not configured.",
+        code: "NO_AI_KEY",
+        message: `No API key is configured for the ${engineConfig.provider} AI provider.`,
       });
 
     // TENANT BOUNDARY: itemForAutofill only returns when the item is in the
@@ -2299,7 +2300,12 @@ export const autofillItem = action({
       throw new ConvexError({ code: "NOT_FOUND", message: "Item not found." });
 
     const cfg = await ctx.runQuery(api.ai.aiConfig, {});
-    const slug = cfg.activeModel;
+    // Model precedence: stored global `aiModel` > the deployment's active model
+    // (OpenRouter) / Ollama's soft default.
+    const slug = resolveEngineModel(engineConfig, {
+      openrouterDefault: cfg.activeModel,
+      ollamaDefault: OLLAMA_DEFAULT_CHAT_MODEL,
+    });
     const has = (k: string) => info.columnKeys.includes(k);
 
     const runId = await ctx.runMutation(internal.ai.startRun, {
@@ -2337,7 +2343,8 @@ export const autofillItem = action({
 
       // Cost — typical retail price estimate from the model.
       if (has("cost") && info.fields.cost == null) {
-        const { message, usage } = await openRouterCall(
+        const { message, usage } = await engineCall(
+          engineConfig,
           slug,
           [
             {
@@ -2561,11 +2568,15 @@ export const runDocAssistant = action({
       });
       return { ok: false };
     }
-    if (!process.env.OPENROUTER_API_KEY) {
+    const config = (await ctx.runQuery(
+      internal.integrationSettings.readAiEngineConfig,
+      {},
+    )) as AiEngineConfig;
+    if (!config.apiKey) {
       await ctx.runMutation(internal.ai.appendMessage, {
         threadId,
         kind: "error",
-        text: "OPENROUTER_API_KEY is not configured.",
+        text: `No API key is configured for the ${config.provider} AI provider.`,
       });
       return { ok: false };
     }
@@ -2618,7 +2629,11 @@ export const runDocAssistant = action({
       });
       return { ok: false };
     }
-    const slug = chat?.model ?? DEFAULT_AI_MODEL;
+    const slug = resolveEngineModel(config, {
+      override: chat?.model,
+      openrouterDefault: DEFAULT_AI_MODEL,
+      ollamaDefault: OLLAMA_DEFAULT_CHAT_MODEL,
+    });
 
     const history = await ctx.runQuery(api.ai.listMessages, { threadId });
     const priorTurns = docHistoryTurns(history);
@@ -2669,7 +2684,7 @@ export const runDocAssistant = action({
           message,
           usage,
           slug: usedSlug,
-        } = await resilientCall(slug, messages, {
+        } = await resilientCall(config, slug, messages, {
           tools: DOC_TOOLS,
           maxTokens: DOC_MAX_TOKENS,
         });
@@ -3209,11 +3224,15 @@ export const runInventoryAssistant = action({
       });
       return { ok: false };
     }
-    if (!process.env.OPENROUTER_API_KEY) {
+    const config = (await ctx.runQuery(
+      internal.integrationSettings.readAiEngineConfig,
+      {},
+    )) as AiEngineConfig;
+    if (!config.apiKey) {
       await ctx.runMutation(internal.ai.appendMessage, {
         threadId,
         kind: "error",
-        text: "OPENROUTER_API_KEY is not configured.",
+        text: `No API key is configured for the ${config.provider} AI provider.`,
       });
       return { ok: false };
     }
@@ -3242,7 +3261,11 @@ export const runInventoryAssistant = action({
       });
       return { ok: false };
     }
-    const slug = chat.model ?? DEFAULT_AI_MODEL;
+    const slug = resolveEngineModel(config, {
+      override: chat.model,
+      openrouterDefault: DEFAULT_AI_MODEL,
+      ollamaDefault: OLLAMA_DEFAULT_CHAT_MODEL,
+    });
     const spendLimitUsd = chat.spendLimitUsd ?? null;
     let chatSpent = chat.spentUsd ?? 0;
 
@@ -3298,7 +3321,9 @@ export const runInventoryAssistant = action({
           message,
           usage,
           slug: usedSlug,
-        } = await resilientCall(slug, messages, { tools: INVENTORY_TOOLS });
+        } = await resilientCall(config, slug, messages, {
+          tools: INVENTORY_TOOLS,
+        });
 
         const cost = callCost(usedSlug, usage);
         totalCost += cost;

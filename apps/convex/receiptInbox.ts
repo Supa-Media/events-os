@@ -61,8 +61,14 @@ import {
   FINANCE_TIMEZONE,
   financeRoleAtLeast,
   FINANCE_ROLE_LABELS,
+  OLLAMA_DEFAULT_OCR_MODEL,
   type ReceiptSenderClass,
 } from "@events-os/shared";
+import {
+  chatCompletion,
+  resolveEngineModel,
+  type AiEngineConfig,
+} from "./lib/aiEngine";
 import { ROLLUP_SCAN_LIMIT, txnMatchesMode, isSpend } from "./finances";
 import { readSandbox } from "./financeSettings";
 import { normalizeEmail, isAllowedEmail } from "./lib/access";
@@ -88,15 +94,32 @@ const MAX_CANDIDATES_SURFACED = 8;
 /** How many attachments we ever process off one email (bounded — a receipt
  *  email carries a handful of photos, not hundreds). */
 const MAX_ATTACHMENTS = 10;
-/** Abort a single OpenRouter OCR completion if it hangs longer than this. */
+/** Abort a single OCR completion if it hangs longer than this. */
 const OCR_TIMEOUT_MS = 60_000;
-const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
-/** The multimodal model receipt-image OCR calls. Config, not code: overridable
- *  via `RECEIPT_OCR_MODEL` so the owner can point it at a FREE/cheap vision
- *  model (the preference) or upgrade if scan quality is weak. Defaults to a
- *  low-cost vision-capable model. */
+/** The multimodal model receipt-image OCR calls WHEN the provider is OpenRouter.
+ *  Config, not code: overridable via `RECEIPT_OCR_MODEL` so the owner can point
+ *  it at a FREE/cheap vision model (the preference) or upgrade if scan quality
+ *  is weak. Defaults to a low-cost vision-capable model. (For Ollama, the soft
+ *  default is `glm-ocr` — see `resolveOcrModel`.) */
 export function ocrModel(): string {
   return process.env.RECEIPT_OCR_MODEL ?? "google/gemini-2.0-flash-001";
+}
+
+/**
+ * Resolve the OCR model for one call: per-call override > stored global
+ * `aiModel` > per-provider default (OpenRouter's `ocrModel()` env/hardcoded, or
+ * Ollama's `glm-ocr`). The `override` is the retry-UI hook (plumbed through
+ * `receipts.processUploadedReceipt`).
+ */
+export function resolveOcrModel(
+  config: Pick<AiEngineConfig, "provider" | "model">,
+  override?: string | null,
+): string {
+  return resolveEngineModel(config, {
+    override,
+    openrouterDefault: ocrModel(),
+    ollamaDefault: OLLAMA_DEFAULT_OCR_MODEL,
+  });
 }
 
 // ── Validators ───────────────────────────────────────────────────────────────
@@ -827,15 +850,22 @@ export function arrayBufferToBase64(buf: ArrayBuffer): string {
 }
 
 /**
- * OCR a receipt IMAGE with a multimodal model via OpenRouter (raw fetch, the
- * `aiActions.ts` convention). Returns { amountCents, date, merchant, confidence }
- * or null on any failure (no key, network, unparseable). This is the ONLY LLM
- * call in the pipeline, and it only runs for image/PDF attachments — body
- * receipts never reach it. PDF is passed as an image_url data URL too (the
- * cheap vision models accept single-page receipt PDFs); multipage PDFs degrade
- * to "couldn't read" → `needs_review`, which is acceptable for receipts.
+ * OCR a receipt IMAGE with a multimodal model through the switchable AI engine
+ * (`lib/aiEngine.chatCompletion` — OpenRouter or Ollama, per the global
+ * setting). Returns { amountCents, date, merchant, confidence } or null on any
+ * failure (no key, network, unparseable). This is the ONLY LLM call in the
+ * pipeline, and it only runs for image/PDF attachments — body receipts never
+ * reach it. PDF is passed as an image_url data URL too (the cheap vision models
+ * accept single-page receipt PDFs); multipage PDFs degrade to "couldn't read" →
+ * `needs_review`, which is acceptable for receipts.
+ *
+ * `config` is resolved by the caller (via `readAiEngineConfig`) and `model` via
+ * `resolveOcrModel`. On a typed engine error the human-readable reason is
+ * logged (the owner's complaint was silent failures) — the receipt still
+ * degrades to null/`needs_review`, no throw.
  */
 export async function ocrReceiptImage(
+  config: AiEngineConfig,
   dataUrl: string,
   model: string,
 ): Promise<{
@@ -844,58 +874,39 @@ export async function ocrReceiptImage(
   merchant: string | null;
   confidence: number | null;
 } | null> {
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) {
-    console.log("[receiptInbox] OPENROUTER_API_KEY unset — skipping image OCR.");
+  const result = await chatCompletion(config, {
+    model,
+    messages: [
+      {
+        role: "system",
+        content:
+          "You extract the payment TOTAL from a photo of a receipt. Reply " +
+          "with a SINGLE JSON object and nothing else: " +
+          '{"amount": <number, the grand total actually charged, in ' +
+          'dollars, e.g. 42.10>, "date": "<YYYY-MM-DD or null>", ' +
+          '"merchant": "<store name or null>", "confidence": <0-1>}. ' +
+          "The amount is the FINAL total paid (after tax/tip), not a " +
+          "subtotal or a single line item. If you cannot read a clear " +
+          "total, set amount to null and confidence to 0. Never guess.",
+      },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Extract the total from this receipt." },
+          { type: "image_url", image_url: { url: dataUrl } },
+        ],
+      },
+    ],
+    responseFormat: { type: "json_object" },
+    maxTokens: 200,
+    timeoutMs: OCR_TIMEOUT_MS,
+  });
+  if (!result.ok) {
+    console.log(`[receiptInbox] OCR call failed: ${result.message}`);
     return null;
   }
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), OCR_TIMEOUT_MS);
   try {
-    const res = await fetch(OPENROUTER_URL, {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://events-os.app",
-        "X-OpenRouter-Title": "Chapter OS",
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          {
-            role: "system",
-            content:
-              "You extract the payment TOTAL from a photo of a receipt. Reply " +
-              "with a SINGLE JSON object and nothing else: " +
-              '{"amount": <number, the grand total actually charged, in ' +
-              'dollars, e.g. 42.10>, "date": "<YYYY-MM-DD or null>", ' +
-              '"merchant": "<store name or null>", "confidence": <0-1>}. ' +
-              "The amount is the FINAL total paid (after tax/tip), not a " +
-              "subtotal or a single line item. If you cannot read a clear " +
-              "total, set amount to null and confidence to 0. Never guess.",
-          },
-          {
-            role: "user",
-            content: [
-              { type: "text", text: "Extract the total from this receipt." },
-              { type: "image_url", image_url: { url: dataUrl } },
-            ],
-          },
-        ],
-        response_format: { type: "json_object" },
-        max_tokens: 200,
-        usage: { include: true },
-      }),
-    });
-    if (!res.ok) {
-      console.log(`[receiptInbox] OCR call failed (${res.status}).`);
-      return null;
-    }
-    const json: any = await res.json();
-    const content: string = json?.choices?.[0]?.message?.content ?? "";
-    const parsed = extractJson(content);
+    const parsed = extractJson(result.content);
     if (!parsed) return null;
     const amountCents =
       typeof parsed.amount === "number" && parsed.amount > 0
@@ -920,10 +931,8 @@ export async function ocrReceiptImage(
         : null;
     return { amountCents, date, merchant, confidence };
   } catch (err) {
-    console.log(`[receiptInbox] OCR request errored: ${String(err)}`);
+    console.log(`[receiptInbox] OCR parse errored: ${String(err)}`);
     return null;
-  } finally {
-    clearTimeout(timer);
   }
 }
 
@@ -1022,12 +1031,18 @@ async function runPipeline(
   const extracted: ExtractedReceipt[] = [];
 
   if (attachments.length > 0) {
-    const model = ocrModel();
+    // Resolve the active AI engine (provider + key + global model) ONCE for the
+    // whole email, then the OCR model for this provider.
+    const config = await ctx.runQuery(
+      internal.integrationSettings.readAiEngineConfig,
+      {},
+    );
+    const model = resolveOcrModel(config);
     for (const att of attachments) {
       const storageId = await ctx.storage.store(att.blob);
       const buf = await att.blob.arrayBuffer();
       const dataUrl = `data:${att.contentType};base64,${arrayBufferToBase64(buf)}`;
-      const ocr = await ocrReceiptImage(dataUrl, model);
+      const ocr = await ocrReceiptImage(config, dataUrl, model);
       extracted.push({
         storageId,
         sourceKind: "attachment",

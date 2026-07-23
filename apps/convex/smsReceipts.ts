@@ -68,7 +68,7 @@ import {
 import {
   parseReceiptFromText,
   ocrReceiptImage,
-  ocrModel,
+  resolveOcrModel,
   arrayBufferToBase64,
 } from "./receiptInbox";
 
@@ -549,7 +549,13 @@ async function runSmsPipeline(
 
   if (args.media.length > 0) {
     const creds = await resolveTwilioCredentials(ctx);
-    const model = ocrModel();
+    // Resolve the active AI engine (provider + key + global model) once, then
+    // the OCR model for this provider.
+    const config = await ctx.runQuery(
+      internal.integrationSettings.readAiEngineConfig,
+      {},
+    );
+    const model = resolveOcrModel(config);
     for (const item of args.media.slice(0, MAX_MEDIA)) {
       const blob = await fetchTwilioMedia(item.url, creds);
       if (!blob) continue;
@@ -557,7 +563,7 @@ async function runSmsPipeline(
       const buf = await blob.arrayBuffer();
       const contentType = item.contentType ?? blob.type ?? "application/octet-stream";
       const dataUrl = `data:${contentType};base64,${arrayBufferToBase64(buf)}`;
-      const ocr = await ocrReceiptImage(dataUrl, model);
+      const ocr = await ocrReceiptImage(config, dataUrl, model);
       extracted.push({
         storageId,
         sourceKind: "attachment",

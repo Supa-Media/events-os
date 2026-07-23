@@ -54,7 +54,7 @@ import {
   candidateValidator,
   ocrReceiptImage,
   arrayBufferToBase64,
-  ocrModel,
+  resolveOcrModel,
 } from "./receiptInbox";
 
 // ── Validators ───────────────────────────────────────────────────────────────
@@ -834,11 +834,17 @@ export const applyUploadOcrAndAttach = internalMutation({
  * never strands invisibly (mirrors `receiptInbox.ts#processInboundReceipt`).
  */
 export const processUploadedReceipt = internalAction({
-  args: { receiptId: v.id("receipts") },
+  args: {
+    receiptId: v.id("receipts"),
+    // Per-call model override — the retry-UI hook (a follow-up PR wires the
+    // re-extract button to this). When set it wins over the stored global
+    // `aiModel` + the per-provider default (see `resolveOcrModel`).
+    modelOverride: v.optional(v.string()),
+  },
   returns: v.null(),
-  handler: async (ctx, { receiptId }) => {
+  handler: async (ctx, { receiptId, modelOverride }) => {
     try {
-      await runUploadPipeline(ctx, receiptId);
+      await runUploadPipeline(ctx, receiptId, modelOverride);
     } catch (err) {
       console.error(`[receipts] processUploadedReceipt errored for ${receiptId}: ${String(err)}`);
       try {
@@ -857,6 +863,7 @@ export const processUploadedReceipt = internalAction({
 async function runUploadPipeline(
   ctx: ActionCtx,
   receiptId: Id<"receipts">,
+  modelOverride?: string,
 ): Promise<void> {
   const receipt = (await ctx.runQuery(internal.receipts.getReceiptForProcessing, {
     receiptId,
@@ -884,13 +891,19 @@ async function runUploadPipeline(
     merchant: string | null;
     confidence: number | null;
   } | null = null;
-  // OPENROUTER_API_KEY unset (no key in this environment) → `ocrReceiptImage`
-  // itself returns `null` — the row stays unlinked with no candidates rather
-  // than crashing, exactly like the email pipeline's own keyless behavior.
+  // No engine key configured → `ocrReceiptImage` returns `null` (a typed no-key
+  // error, logged) — the row stays unlinked with no candidates rather than
+  // crashing, exactly like the email pipeline's own keyless behavior.
+  let usedModel: string | undefined;
   if (contentType.startsWith("image/") || contentType === "application/pdf") {
+    const config = await ctx.runQuery(
+      internal.integrationSettings.readAiEngineConfig,
+      {},
+    );
+    usedModel = resolveOcrModel(config, modelOverride);
     const buf = await blob.arrayBuffer();
     const dataUrl = `data:${contentType};base64,${arrayBufferToBase64(buf)}`;
-    ocr = await ocrReceiptImage(dataUrl, ocrModel());
+    ocr = await ocrReceiptImage(config, dataUrl, usedModel);
   }
 
   // Candidates are computed in a QUERY here (their own transaction), separate
@@ -919,7 +932,7 @@ async function runUploadPipeline(
     ocrDate: ocr?.date ?? undefined,
     ocrMerchant: ocr?.merchant ?? undefined,
     ocrConfidence: ocr?.confidence ?? undefined,
-    ocrModel: ocr ? ocrModel() : undefined,
+    ocrModel: ocr ? usedModel : undefined,
     candidateTransactionIds,
   });
 }

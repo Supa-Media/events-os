@@ -1,8 +1,13 @@
 import { useState } from "react";
-import { View, Text } from "react-native";
+import { View, Text, Pressable, ScrollView } from "react-native";
 import { Redirect } from "expo-router";
-import { useQuery, useMutation } from "convex/react";
+import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
+import {
+  AI_ENGINE_PROVIDERS,
+  AI_ENGINE_PROVIDER_LABELS,
+  type AiEngineProvider,
+} from "@events-os/shared";
 import { Screen, Card, Button, TextField, Icon } from "../../components/ui";
 import { colors } from "../../lib/theme";
 import { errorMessage } from "../../lib/errors";
@@ -39,6 +44,7 @@ export default function IntegrationsScreen() {
   const givebutter = status?.givebutter;
   const twilio = status?.twilio;
   const resendInbound = status?.resendInbound;
+  const aiEngine = status?.aiEngine;
 
   async function handleSave() {
     const trimmed = apiKey.trim();
@@ -166,12 +172,424 @@ export default function IntegrationsScreen() {
         </View>
       </Card>
 
+      <AiEngineCard aiEngine={aiEngine} loading={status === undefined} />
       <TwilioCard twilio={twilio} loading={status === undefined} />
       <ResendInboundCard
         resendInbound={resendInbound}
         loading={status === undefined}
       />
     </Screen>
+  );
+}
+
+/**
+ * AI engine card (switchable provider) — super-admins only. Picks the whole
+ * app's AI provider (OpenRouter or Ollama), the Ollama key + base URL, and the
+ * GLOBAL default model (used by OCR, finance auto-coding, and the assistant).
+ *
+ * The Ollama key is WRITE-ONLY (same discipline as the other cards: only a
+ * configured/last4 status is ever shown). The model picker is fed by the LIVE
+ * provider model list (`listAvailableModels`) — every id shown exactly as the
+ * API returns it (those are what the chat endpoint accepts) — plus a free-text
+ * override for when the cloud list lags. "Test connection" hits the provider's
+ * `/v1/models` so the owner can validate a live key from the app.
+ */
+function AiEngineCard({
+  aiEngine,
+  loading,
+}: {
+  aiEngine:
+    | {
+        provider: AiEngineProvider;
+        model: string | null;
+        ollamaConfigured: boolean;
+        ollamaLast4: string | null;
+        ollamaBaseUrl: string | null;
+        updatedAt: number | null;
+      }
+    | undefined;
+  loading: boolean;
+}) {
+  const setEngine = useMutation(api.integrationSettings.setAiEngine);
+  const setOllamaKey = useMutation(api.integrationSettings.setOllamaApiKey);
+  const listModels = useAction(api.aiEngine.listAvailableModels);
+  const testConnection = useAction(api.aiEngine.testAiConnection);
+
+  const [apiKey, setApiKey] = useState("");
+  const [baseUrl, setBaseUrl] = useState("");
+  const [modelInput, setModelInput] = useState("");
+  const [models, setModels] = useState<string[] | null>(null);
+  const [loadingModels, setLoadingModels] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<
+    { ok: boolean; text: string } | null
+  >(null);
+  const [testing, setTesting] = useState(false);
+
+  const provider = aiEngine?.provider ?? "openrouter";
+  const isOllama = provider === "ollama";
+
+  async function run(fn: () => Promise<unknown>, successMsg?: string) {
+    setError(null);
+    setNotice(null);
+    setBusy(true);
+    try {
+      await fn();
+      if (successMsg) setNotice(successMsg);
+    } catch (e) {
+      setError(errorMessage(e, "Couldn't save the AI engine settings."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function loadModels() {
+    setLoadingModels(true);
+    setError(null);
+    try {
+      const res = await listModels({});
+      if (res.ok) {
+        setModels(res.models);
+        if (res.models.length === 0) {
+          setNotice("The provider returned no models.");
+        }
+      } else {
+        setModels([]);
+        setError(res.error ?? "Couldn't load models.");
+      }
+    } catch (e) {
+      setError(errorMessage(e, "Couldn't load models."));
+    } finally {
+      setLoadingModels(false);
+    }
+  }
+
+  async function runTest() {
+    setTesting(true);
+    setError(null);
+    setTestResult(null);
+    try {
+      const res = await testConnection({});
+      setTestResult(
+        res.ok
+          ? {
+              ok: true,
+              text: `Connected — ${res.modelCount ?? 0} model(s) available.`,
+            }
+          : { ok: false, text: res.error ?? "Connection failed." },
+      );
+    } catch (e) {
+      setTestResult({ ok: false, text: errorMessage(e, "Connection failed.") });
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  return (
+    <Card padding="lg" className="mt-4">
+      <View className="mb-3 flex-row items-center gap-2">
+        <View className="h-7 w-7 items-center justify-center rounded-md bg-mint">
+          <Icon name="cpu" size={14} color="#1F5A41" />
+        </View>
+        <View className="flex-1">
+          <Text className="text-sm font-semibold text-ink">AI engine</Text>
+          <Text className="text-xs text-muted">
+            Powers receipt OCR, finance auto-coding, and the assistant.
+          </Text>
+        </View>
+      </View>
+
+      {loading ? (
+        <Text className="mb-3 text-xs text-muted">Loading status…</Text>
+      ) : (
+        <>
+          {/* Provider toggle */}
+          <Text className="mb-1.5 text-xs font-semibold text-muted">Provider</Text>
+          <View className="mb-3 flex-row gap-2">
+            {AI_ENGINE_PROVIDERS.map((p) => {
+              const active = provider === p;
+              return (
+                <Pressable
+                  key={p}
+                  onPress={() =>
+                    void run(async () => {
+                      await setEngine({ provider: p });
+                    }, `Switched to ${AI_ENGINE_PROVIDER_LABELS[p]}.`)
+                  }
+                  disabled={busy || active}
+                  className={`flex-1 items-center rounded-lg border px-3 py-2 ${
+                    active
+                      ? "border-accent bg-raised"
+                      : "border-border-strong bg-surface active:opacity-70"
+                  }`}
+                >
+                  <Text
+                    className={`text-sm font-semibold ${active ? "text-accent" : "text-ink"}`}
+                  >
+                    {AI_ENGINE_PROVIDER_LABELS[p]}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+
+          {/* Ollama key + base URL (only relevant when Ollama is the provider,
+              but shown so the owner can configure before switching). */}
+          {isOllama ? (
+            aiEngine?.ollamaConfigured ? (
+              <View className="mb-2 flex-row items-center gap-1.5">
+                <Icon name="check-circle" size={14} color={colors.success} />
+                <Text className="text-sm text-ink">
+                  Key configured — •••• {aiEngine.ollamaLast4}
+                  {aiEngine.updatedAt
+                    ? ` · updated ${formatDate(aiEngine.updatedAt)}`
+                    : ""}
+                </Text>
+              </View>
+            ) : (
+              <View className="mb-2 flex-row items-center gap-1.5">
+                <Icon name="alert-circle" size={14} color={colors.muted} />
+                <Text className="text-sm text-muted">Ollama key not configured.</Text>
+              </View>
+            )
+          ) : null}
+
+          {isOllama ? (
+            <>
+              <TextField
+                label="Ollama API key"
+                value={apiKey}
+                onChangeText={(t) => {
+                  setApiKey(t);
+                  if (error) setError(null);
+                  if (notice) setNotice(null);
+                }}
+                placeholder={
+                  aiEngine?.ollamaConfigured
+                    ? "Paste a new key to replace it"
+                    : "Paste your Ollama API key"
+                }
+                secureTextEntry
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={!busy}
+                hint="Stored server-side and never displayed again."
+              />
+              <View className="mb-3 flex-row gap-2">
+                <Button
+                  title="Save key"
+                  icon="check"
+                  onPress={() =>
+                    void run(async () => {
+                      await setOllamaKey({ apiKey: apiKey.trim() });
+                      setApiKey("");
+                    }, "Key saved.")
+                  }
+                  loading={busy}
+                  disabled={!apiKey.trim() || busy}
+                />
+                {aiEngine?.ollamaConfigured ? (
+                  <Button
+                    title="Clear key"
+                    icon="trash-2"
+                    variant="danger"
+                    onPress={() =>
+                      void run(async () => {
+                        await setOllamaKey({ apiKey: null });
+                      }, "Key cleared.")
+                    }
+                    loading={busy}
+                    disabled={busy}
+                  />
+                ) : null}
+              </View>
+
+              <TextField
+                label="Ollama base URL (optional)"
+                value={baseUrl}
+                onChangeText={(t) => {
+                  setBaseUrl(t);
+                  if (error) setError(null);
+                  if (notice) setNotice(null);
+                }}
+                placeholder={aiEngine?.ollamaBaseUrl ?? "https://ollama.com"}
+                autoCapitalize="none"
+                autoCorrect={false}
+                editable={!busy}
+                hint="Defaults to https://ollama.com. Point at a self-hosted Ollama if needed."
+              />
+              <View className="mb-3 flex-row gap-2">
+                <Button
+                  title="Save URL"
+                  icon="check"
+                  onPress={() =>
+                    void run(async () => {
+                      await setEngine({ baseUrl: baseUrl.trim() });
+                      setBaseUrl("");
+                    }, "Base URL saved.")
+                  }
+                  loading={busy}
+                  disabled={!baseUrl.trim() || busy}
+                />
+                {aiEngine?.ollamaBaseUrl ? (
+                  <Button
+                    title="Reset URL"
+                    icon="rotate-ccw"
+                    variant="secondary"
+                    onPress={() =>
+                      void run(async () => {
+                        await setEngine({ baseUrl: null });
+                      }, "Base URL reset.")
+                    }
+                    loading={busy}
+                    disabled={busy}
+                  />
+                ) : null}
+              </View>
+            </>
+          ) : null}
+
+          {/* Global model picker */}
+          <View className="mb-1.5 flex-row items-center justify-between">
+            <Text className="text-xs font-semibold text-muted">
+              Global model
+            </Text>
+            <Pressable
+              onPress={() => void loadModels()}
+              disabled={loadingModels}
+              className="active:opacity-70"
+            >
+              <Text className="text-2xs font-semibold text-accent">
+                {loadingModels ? "Loading…" : "Load models"}
+              </Text>
+            </Pressable>
+          </View>
+          <Text className="mb-2 text-sm text-ink">
+            {aiEngine?.model ? aiEngine.model : "Using each feature's default."}
+          </Text>
+
+          {models ? (
+            models.length > 0 ? (
+              <ScrollView
+                style={{ maxHeight: 180 }}
+                keyboardShouldPersistTaps="handled"
+                className="mb-2 rounded-lg border border-border"
+              >
+                {models.map((id) => {
+                  const active = aiEngine?.model === id;
+                  return (
+                    <Pressable
+                      key={id}
+                      onPress={() =>
+                        void run(async () => {
+                          await setEngine({ model: id });
+                        }, `Model set to ${id}.`)
+                      }
+                      disabled={busy || active}
+                      className={`flex-row items-center gap-2 px-2.5 py-2 active:opacity-70 ${
+                        active ? "bg-raised" : ""
+                      }`}
+                    >
+                      <Text className="flex-1 text-xs text-ink" numberOfLines={1}>
+                        {id}
+                      </Text>
+                      {active ? (
+                        <Icon name="check" size={14} color={colors.accent} />
+                      ) : null}
+                    </Pressable>
+                  );
+                })}
+              </ScrollView>
+            ) : null
+          ) : null}
+
+          {/* Free-text override (cloud lists can lag) */}
+          <TextField
+            label="Or enter a model id"
+            value={modelInput}
+            onChangeText={(t) => {
+              setModelInput(t);
+              if (error) setError(null);
+              if (notice) setNotice(null);
+            }}
+            placeholder={isOllama ? "e.g. glm-ocr" : "e.g. openai/gpt-oss-120b:free"}
+            autoCapitalize="none"
+            autoCorrect={false}
+            editable={!busy}
+          />
+          <View className="mb-3 flex-row gap-2">
+            <Button
+              title="Set model"
+              icon="check"
+              onPress={() =>
+                void run(async () => {
+                  await setEngine({ model: modelInput.trim() });
+                  setModelInput("");
+                }, "Model set.")
+              }
+              loading={busy}
+              disabled={!modelInput.trim() || busy}
+            />
+            {aiEngine?.model ? (
+              <Button
+                title="Use default"
+                icon="rotate-ccw"
+                variant="secondary"
+                onPress={() =>
+                  void run(async () => {
+                    await setEngine({ model: null });
+                  }, "Reverted to the default model.")
+                }
+                loading={busy}
+                disabled={busy}
+              />
+            ) : null}
+          </View>
+
+          {/* Test connection */}
+          <View className="flex-row items-center gap-2">
+            <Button
+              title="Test connection"
+              icon="zap"
+              variant="secondary"
+              onPress={() => void runTest()}
+              loading={testing}
+              disabled={testing || busy}
+            />
+            {testResult ? (
+              <View className="flex-1 flex-row items-center gap-1.5">
+                <Icon
+                  name={testResult.ok ? "check-circle" : "alert-circle"}
+                  size={14}
+                  color={testResult.ok ? colors.success : colors.danger}
+                />
+                <Text
+                  className={`flex-1 text-xs ${testResult.ok ? "text-success" : "text-danger"}`}
+                  numberOfLines={2}
+                >
+                  {testResult.text}
+                </Text>
+              </View>
+            ) : null}
+          </View>
+
+          {error ? (
+            <View className="mt-3 flex-row items-center gap-1.5">
+              <Icon name="alert-circle" size={14} color={colors.danger} />
+              <Text className="flex-1 text-sm text-danger">{error}</Text>
+            </View>
+          ) : null}
+          {notice ? (
+            <View className="mt-3 flex-row items-center gap-1.5">
+              <Icon name="check-circle" size={14} color={colors.success} />
+              <Text className="text-sm text-success">{notice}</Text>
+            </View>
+          ) : null}
+        </>
+      )}
+    </Card>
   );
 }
 

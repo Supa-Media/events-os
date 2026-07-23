@@ -36,6 +36,20 @@ export const integrationSettings = defineTable({
   // integrations by a superuser, resolved stored-setting-first, falling back
   // to the deployment `RESEND_INBOUND_WEBHOOK_SECRET` env var.
   resendInboundWebhookSecret: v.optional(v.string()),
+  // Switchable AI engine (Ollama vs OpenRouter) — the whole app's AI provider,
+  // configured in-app at profile > integrations by a superuser. `ollamaApiKey`
+  // is the SECRET (same write-only discipline as the Givebutter key / Twilio
+  // auth token: never returned to a client except its last4). `ollamaBaseUrl`
+  // (optional; defaults to https://ollama.com) lets the owner point at a
+  // self-hosted Ollama later. `aiProvider` absent = "openrouter" (full
+  // back-compat). `aiModel` is the GLOBAL default model for the active provider
+  // used across every AI call site (OCR, coding, assistant); absent = each call
+  // site's own env/hardcoded default. See `integrationSettings.readAiEngineConfig`
+  // (stored-first → env fallback) + `lib/aiEngine.ts`.
+  ollamaApiKey: v.optional(v.string()),
+  ollamaBaseUrl: v.optional(v.string()),
+  aiProvider: v.optional(v.union(v.literal("openrouter"), v.literal("ollama"))),
+  aiModel: v.optional(v.string()),
   updatedAt: v.number(),
   updatedBy: v.id("users"),
 });
