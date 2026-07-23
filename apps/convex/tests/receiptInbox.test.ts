@@ -8,6 +8,10 @@ import {
   parseReceiptFromText,
   isReceiptInboxAddress,
   extractEmailAddress,
+  isLikelyInlineAsset,
+  appendSkippedNote,
+  isMeaningfulPdfText,
+  isPdfContentType,
 } from "../receiptInbox";
 import { verifyStandardWebhookSignature } from "../lib/standardWebhook";
 
@@ -250,6 +254,92 @@ describe("extractEmailAddress", () => {
   });
 });
 
+// ── isLikelyInlineAsset (the duplicate-receipt fix's filter) ─────────────────
+describe("isLikelyInlineAsset", () => {
+  test("a small, asset-named image is skipped", () => {
+    expect(
+      isLikelyInlineAsset({ contentType: "image/png", filename: "logo.png", size: 4_000 }),
+    ).toBe(true);
+    expect(
+      isLikelyInlineAsset({ contentType: "image/png", filename: "signature.png", size: 2_000 }),
+    ).toBe(true);
+    expect(
+      isLikelyInlineAsset({ contentType: "image/gif", filename: "spacer.gif", size: 43 }),
+    ).toBe(true);
+    expect(
+      isLikelyInlineAsset({ contentType: "image/png", filename: "image001.png", size: 3_000 }),
+    ).toBe(true);
+  });
+
+  test("a PDF always passes, regardless of size or name", () => {
+    expect(
+      isLikelyInlineAsset({ contentType: "application/pdf", filename: "logo.pdf", size: 500 }),
+    ).toBe(false);
+    expect(
+      isLikelyInlineAsset({ contentType: "image/png", filename: "signature.pdf", size: 500 }),
+    ).toBe(false);
+  });
+
+  test("a normal-sized receipt photo passes even with an unlucky name", () => {
+    // Over the size floor — size alone (or combined with a coincidental name
+    // hit) never disqualifies it.
+    expect(
+      isLikelyInlineAsset({ contentType: "image/jpeg", filename: "logo-hardware-receipt.jpg", size: 250_000 }),
+    ).toBe(false);
+  });
+
+  test("a small photo with an unmatched (real camera) filename passes — size alone never disqualifies", () => {
+    expect(
+      isLikelyInlineAsset({ contentType: "image/jpeg", filename: "IMG_0341.jpg", size: 8_000 }),
+    ).toBe(false);
+    // Missing size metadata → never skipped (err toward processing).
+    expect(
+      isLikelyInlineAsset({ contentType: "image/jpeg", filename: "logo.jpg" }),
+    ).toBe(false);
+  });
+});
+
+describe("appendSkippedNote", () => {
+  test("no-op when nothing was skipped", () => {
+    expect(appendSkippedNote("Matched.", [])).toBe("Matched.");
+  });
+
+  test("appends a count + names, capped with a '+N more' tail", () => {
+    const note = appendSkippedNote("Matched.", ["logo.png"]);
+    expect(note).toBe("Matched. (Skipped 1 likely non-receipt attachment: logo.png.)");
+
+    const many = appendSkippedNote(
+      "No match.",
+      ["a.png", "b.png", "c.png", "d.png", "e.png", "f.png", "g.png"],
+    );
+    expect(many).toContain("Skipped 7 likely non-receipt attachments:");
+    expect(many).toContain("+2 more");
+  });
+});
+
+// ── PDF text-layer routing helpers (zero-LLM digital-PDF fix) ────────────────
+describe("isMeaningfulPdfText", () => {
+  test("real receipt-shaped text is meaningful", () => {
+    expect(isMeaningfulPdfText("Givebutter Receipt\nTotal: $33.80\nPaid Jul 3, 2026")).toBe(true);
+  });
+
+  test("empty or garbage/whitespace text from a scanned PDF is not", () => {
+    expect(isMeaningfulPdfText("")).toBe(false);
+    expect(isMeaningfulPdfText("   \n\n  ")).toBe(false);
+    expect(isMeaningfulPdfText("...---...")).toBe(false);
+    expect(isMeaningfulPdfText("ab")).toBe(false);
+  });
+});
+
+describe("isPdfContentType", () => {
+  test("detects by content-type or by filename extension", () => {
+    expect(isPdfContentType("application/pdf")).toBe(true);
+    expect(isPdfContentType("APPLICATION/PDF")).toBe(true);
+    expect(isPdfContentType("application/octet-stream", "receipt.PDF")).toBe(true);
+    expect(isPdfContentType("image/png", "photo.png")).toBe(false);
+  });
+});
+
 // ── recordInboundReceipt (dedup) ─────────────────────────────────────────────
 describe("recordInboundReceipt", () => {
   test("dedupes on emailId", async () => {
@@ -455,10 +545,41 @@ describe("processInboundReceipt", () => {
     expect(receipts[0].source).toBe("email");
     expect(receipts[0].senderClass).toBe("roster");
     expect(receipts[0].linkCount).toBe(1);
+    // A body-sourced receipt is stamped with the synthetic "email body" label
+    // (there's no attachment filename to carry), and a clean extraction never
+    // sets `ocrError`.
+    expect(receipts[0].filename).toBe("email body");
+    expect(receipts[0].ocrError).toBeUndefined();
     const links = await run(t, (ctx) => ctx.db.query("receiptLinks").take(5));
     expect(links.length).toBe(1);
     expect(links[0].source).toBe("auto_email");
     expect(links[0].transactionId).toBe(txn);
+  });
+
+  test("a body with no readable total sets ocrError on the receipt (the '—' bug fix)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, { email: "jane@example.com" });
+
+    const { receiptId } = await t.mutation(internal.receiptInbox.recordInboundReceipt, {
+      envelope: {
+        emailId: "email_no_total_1",
+        fromEmail: "jane@example.com",
+        subject: "Thanks for stopping by — see you next time!",
+      },
+    });
+    await t.action(internal.receiptInbox.processInboundReceipt, { receiptId });
+
+    const row = await run(t, (ctx) => ctx.db.get(receiptId));
+    expect(row?.status).toBe("needs_review");
+
+    const receipts = await run(t, (ctx) => ctx.db.query("receipts").take(5));
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0].ocrAmountCents).toBeUndefined();
+    // The historical bug: OCR failing left NO visible reason anywhere. Now the
+    // receipt document always carries a human-readable `ocrError`.
+    expect(receipts[0].ocrError).toBe("Couldn't find a total in the email body text.");
+    expect(receipts[0].filename).toBe("email body");
   });
 
   test("an EXTERNAL sender is processed + stored but NEVER auto-attached, even on a unique exact match", async () => {

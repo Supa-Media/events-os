@@ -159,6 +159,7 @@ import type * as profiles from "../profiles.js";
 import type * as projectActions from "../projectActions.js";
 import type * as projects from "../projects.js";
 import type * as receiptInbox from "../receiptInbox.js";
+import type * as receiptPdf from "../receiptPdf.js";
 import type * as receipts from "../receipts.js";
 import type * as reconcileSuggest from "../reconcileSuggest.js";
 import type * as reimbursementBackfill from "../reimbursementBackfill.js";
@@ -382,6 +383,7 @@ declare const fullApi: ApiFromModules<{
   projectActions: typeof projectActions;
   projects: typeof projects;
   receiptInbox: typeof receiptInbox;
+  receiptPdf: typeof receiptPdf;
   receipts: typeof receipts;
   reconcileSuggest: typeof reconcileSuggest;
   reimbursementBackfill: typeof reimbursementBackfill;

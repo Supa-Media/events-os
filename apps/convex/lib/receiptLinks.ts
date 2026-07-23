@@ -51,6 +51,12 @@ export async function createReceipt(
     ocrMerchant?: string;
     ocrConfidence?: number;
     ocrModel?: string;
+    // RECEIPT QUALITY PR: a human-readable reason extraction produced nothing
+    // (see `schema/finances.ts`'s doc comment on `receipts.ocrError`), and the
+    // original attachment filename (or a synthetic "email body"/"text
+    // message" label) — both optional, populated by every ingest path.
+    ocrError?: string;
+    filename?: string;
     note?: string;
     candidateTransactionIds?: Id<"transactions">[];
     // CRM PR: the stored file's content hash (from the `_storage` system
@@ -71,6 +77,8 @@ export async function createReceipt(
       ? { uploadedByPersonId: args.uploadedByPersonId }
       : {}),
     ...(args.senderClass ? { senderClass: args.senderClass } : {}),
+    ...(args.filename ? { filename: args.filename } : {}),
+    ...(args.ocrError ? { ocrError: args.ocrError } : {}),
     ...(args.fileSha256 ? { fileSha256: args.fileSha256 } : {}),
     ...(args.duplicateOfReceiptId
       ? { duplicateOfReceiptId: args.duplicateOfReceiptId }
