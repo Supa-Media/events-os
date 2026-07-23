@@ -611,14 +611,25 @@ http.route({
 // just under `svix-*` header names). We verify, DEDUPE + record the email
 // (`recordInboundReceipt`, idempotent on the provider's `email_id`), then
 // schedule the OCR→match pipeline and ack 200 fast. See `receiptInbox.ts`.
+//
+// The signing secret resolves stored-setting-first (`integrationSettings`,
+// set in-app at profile > integrations by a superuser), falling back to the
+// `RESEND_INBOUND_WEBHOOK_SECRET` env var — same discipline as
+// `givebutterSync.ts` / `lib/twilio.ts`.
 
 http.route({
   path: "/resend/inbound",
   method: "POST",
   handler: httpAction(async (ctx, req) => {
-    const secret = process.env.RESEND_INBOUND_WEBHOOK_SECRET;
+    const secret =
+      (await ctx.runQuery(
+        internal.integrationSettings.readResendInboundWebhookSecret,
+        {},
+      )) ?? process.env.RESEND_INBOUND_WEBHOOK_SECRET;
     if (!secret) {
-      console.error("[receiptInbox] RESEND_INBOUND_WEBHOOK_SECRET not set");
+      console.error(
+        "[receiptInbox] Resend inbound webhook secret not configured (stored setting or RESEND_INBOUND_WEBHOOK_SECRET)",
+      );
       return new Response("Not configured", { status: 500 });
     }
     const payload = await req.text();

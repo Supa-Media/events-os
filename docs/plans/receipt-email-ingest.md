@@ -64,11 +64,17 @@ Copy the webhook's **signing secret** (`whsec_…`).
 
 | Variable | Purpose |
 | --- | --- |
-| `RESEND_INBOUND_WEBHOOK_SECRET` | The `whsec_…` signing secret from step 2 (required — the route 500s without it). |
+| `RESEND_INBOUND_WEBHOOK_SECRET` | The `whsec_…` signing secret from step 2 (required — the route 500s without it, unless set in-app instead — see below). |
 | `RESEND_API_KEY` | Already set (outbound). Also used to fetch inbound attachments + reply. |
 | `OPENROUTER_API_KEY` | Already set (AI coding). Used for image OCR only. |
 | `RECEIPT_OCR_MODEL` | *Optional.* Override the OCR model. Defaults to a cheap vision model (`google/gemini-2.0-flash-001`). Point it at any OpenRouter vision model — free/cheap for a big backfill, stronger if scans read poorly. |
 | `RECEIPT_INBOUND_ADDRESSES` | *Optional.* Comma-separated allow-list of inbound addresses treated as the receipts inbox. Defaults to `receipts@reply.publicworship.life`. Mail to any other address on the domain is acknowledged but not processed. |
+
+The webhook signing secret can instead be set IN-APP at profile >
+integrations (superuser-only, "Receipt inbox (Resend)" section) rather than
+as a deployment env var — the stored setting wins over
+`RESEND_INBOUND_WEBHOOK_SECRET` when both are present, same resolution order
+as the Givebutter API key and Twilio credentials on that screen.
 
 Degrades gracefully: no `OPENROUTER_API_KEY` → image receipts route to review
 (the file is still stored); no `RESEND_API_KEY` → no attachment fetch/reply.

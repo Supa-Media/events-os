@@ -16,8 +16,9 @@ import { v } from "convex/values";
  * SECRETS (the auth token, the API key) are NEVER returned to clients —
  * `integrationSettings.getIntegrationsStatus` only ever projects status
  * (`configured`, non-secret last4/presence, `updatedAt`). The raw secret is
- * readable ONLY through the `readGivebutterApiKey` / `readTwilioCredentials`
- * internalQueries, reachable solely from the sending actions.
+ * readable ONLY through the `readGivebutterApiKey` / `readTwilioCredentials` /
+ * `readResendInboundWebhookSecret` internalQueries, reachable solely from the
+ * sending actions / webhook route.
  */
 export const integrationSettings = defineTable({
   givebutterApiKey: v.optional(v.string()),
@@ -29,6 +30,12 @@ export const integrationSettings = defineTable({
   twilioAccountSid: v.optional(v.string()),
   twilioAuthToken: v.optional(v.string()),
   twilioMessagingServiceSid: v.optional(v.string()),
+  // Resend inbound receipt webhook — the Svix `whsec_…` signing secret used
+  // to verify `/resend/inbound` deliveries (see `http.ts`). Same write-only
+  // discipline as the Givebutter key: settable in-app at profile >
+  // integrations by a superuser, resolved stored-setting-first, falling back
+  // to the deployment `RESEND_INBOUND_WEBHOOK_SECRET` env var.
+  resendInboundWebhookSecret: v.optional(v.string()),
   updatedAt: v.number(),
   updatedBy: v.id("users"),
 });

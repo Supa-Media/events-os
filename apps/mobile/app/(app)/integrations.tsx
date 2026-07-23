@@ -38,6 +38,7 @@ export default function IntegrationsScreen() {
 
   const givebutter = status?.givebutter;
   const twilio = status?.twilio;
+  const resendInbound = status?.resendInbound;
 
   async function handleSave() {
     const trimmed = apiKey.trim();
@@ -166,6 +167,10 @@ export default function IntegrationsScreen() {
       </Card>
 
       <TwilioCard twilio={twilio} loading={status === undefined} />
+      <ResendInboundCard
+        resendInbound={resendInbound}
+        loading={status === undefined}
+      />
     </Screen>
   );
 }
@@ -346,6 +351,156 @@ function TwilioCard({
           disabled={!canSave || saving || clearing}
         />
         {twilio?.configured ? (
+          <Button
+            title="Clear"
+            icon="trash-2"
+            variant="danger"
+            onPress={() => void handleClear()}
+            loading={clearing}
+            disabled={saving || clearing}
+          />
+        ) : null}
+      </View>
+    </Card>
+  );
+}
+
+/**
+ * Resend inbound receipt webhook card — the Svix `whsec_…` signing secret for
+ * `/resend/inbound` (see `http.ts`, `receiptInbox.ts`). Same write-only
+ * discipline as the Givebutter key: settable in-app instead of only via the
+ * deployment `RESEND_INBOUND_WEBHOOK_SECRET` env var, which the stored
+ * setting takes precedence over.
+ */
+function ResendInboundCard({
+  resendInbound,
+  loading,
+}: {
+  resendInbound:
+    | {
+        configured: boolean;
+        last4: string | null;
+        updatedAt: number | null;
+      }
+    | undefined;
+  loading: boolean;
+}) {
+  const setSecret = useMutation(
+    api.integrationSettings.setResendInboundWebhookSecret,
+  );
+  const [secret, setSecretValue] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  async function handleSave() {
+    const trimmed = secret.trim();
+    if (!trimmed) return;
+    setError(null);
+    setSaving(true);
+    try {
+      await setSecret({ secret: trimmed });
+      setSecretValue("");
+      setSavedAt(Date.now());
+    } catch (e) {
+      setError(errorMessage(e, "Couldn't save the webhook secret."));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleClear() {
+    setError(null);
+    setClearing(true);
+    try {
+      await setSecret({ secret: null });
+      setSavedAt(null);
+    } catch (e) {
+      setError(errorMessage(e, "Couldn't clear the webhook secret."));
+    } finally {
+      setClearing(false);
+    }
+  }
+
+  return (
+    <Card padding="lg" className="mt-4">
+      <View className="mb-3 flex-row items-center gap-2">
+        <View className="h-7 w-7 items-center justify-center rounded-md bg-mint">
+          <Icon name="mail" size={14} color="#1F5A41" />
+        </View>
+        <View className="flex-1">
+          <Text className="text-sm font-semibold text-ink">
+            Receipt inbox (Resend)
+          </Text>
+          <Text className="text-xs text-muted">
+            Verifies inbound receipt emails at /resend/inbound.
+          </Text>
+        </View>
+      </View>
+
+      {loading ? (
+        <Text className="mb-3 text-xs text-muted">Loading status…</Text>
+      ) : resendInbound?.configured ? (
+        <View className="mb-3 flex-row items-center gap-1.5">
+          <Icon name="check-circle" size={14} color={colors.success} />
+          <Text className="text-sm text-ink">
+            Configured — •••• {resendInbound.last4}
+            {resendInbound.updatedAt
+              ? ` · updated ${formatDate(resendInbound.updatedAt)}`
+              : ""}
+          </Text>
+        </View>
+      ) : (
+        <View className="mb-3 flex-row items-center gap-1.5">
+          <Icon name="alert-circle" size={14} color={colors.muted} />
+          <Text className="text-sm text-muted">Not configured.</Text>
+        </View>
+      )}
+
+      <TextField
+        label="Webhook signing secret"
+        value={secret}
+        onChangeText={(t) => {
+          setSecretValue(t);
+          if (error) setError(null);
+          if (savedAt) setSavedAt(null);
+        }}
+        placeholder={
+          resendInbound?.configured
+            ? "Paste a new secret to replace it"
+            : "whsec_…"
+        }
+        secureTextEntry
+        autoCapitalize="none"
+        autoCorrect={false}
+        editable={!saving && !clearing}
+        hint="Stored server-side and never displayed again — the field above stays blank after saving."
+      />
+
+      {error ? (
+        <View className="mb-3 flex-row items-center gap-1.5">
+          <Icon name="alert-circle" size={14} color={colors.danger} />
+          <Text className="flex-1 text-sm text-danger">{error}</Text>
+        </View>
+      ) : null}
+
+      {savedAt ? (
+        <View className="mb-3 flex-row items-center gap-1.5">
+          <Icon name="check-circle" size={14} color={colors.success} />
+          <Text className="text-sm text-success">Webhook secret saved.</Text>
+        </View>
+      ) : null}
+
+      <View className="flex-row gap-2">
+        <Button
+          title="Save"
+          icon="check"
+          onPress={() => void handleSave()}
+          loading={saving}
+          disabled={!secret.trim() || saving || clearing}
+        />
+        {resendInbound?.configured ? (
           <Button
             title="Clear"
             icon="trash-2"

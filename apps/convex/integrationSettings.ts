@@ -22,9 +22,17 @@
  * together; `getIntegrationsStatus` projects only `{configured, accountSid
  * last4, messagingServiceSid present, updatedAt}`.
  *
+ * The Resend inbound receipt webhook signing secret follows the SAME
+ * discipline: the secret (a Svix `whsec_…` value) never leaves the table
+ * except through `readResendInboundWebhookSecret`, reachable solely from
+ * `http.ts`'s `/resend/inbound` route (an httpAction, which — like an
+ * action — has no `ctx.db`). `setResendInboundWebhookSecret` sets/clears it;
+ * `getIntegrationsStatus` projects only `{configured, last4, updatedAt}`.
+ *
  * Resolution order for the actual sync/send (see `givebutterSync.ts` /
- * `lib/twilio.ts`): the stored setting, else the deployment env var(s), else a
- * logged no-op degrade — mirrors `financeSettings.readSandboxMode`.
+ * `lib/twilio.ts` / `http.ts`'s `/resend/inbound`): the stored setting, else
+ * the deployment env var(s), else a logged no-op degrade — mirrors
+ * `financeSettings.readSandboxMode`.
  */
 import { query, mutation, internalQuery } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
@@ -64,6 +72,11 @@ export const getIntegrationsStatus = query({
       messagingServiceConfigured: v.boolean(),
       updatedAt: v.union(v.number(), v.null()),
     }),
+    resendInbound: v.object({
+      configured: v.boolean(),
+      last4: v.union(v.string(), v.null()),
+      updatedAt: v.union(v.number(), v.null()),
+    }),
   }),
   handler: async (ctx) => {
     await requireSuperuser(ctx);
@@ -72,6 +85,7 @@ export const getIntegrationsStatus = query({
     const sid = settings?.twilioAccountSid;
     const token = settings?.twilioAuthToken;
     const messagingServiceSid = settings?.twilioMessagingServiceSid;
+    const resendSecret = settings?.resendInboundWebhookSecret;
     return {
       givebutter: {
         configured: !!key,
@@ -84,6 +98,11 @@ export const getIntegrationsStatus = query({
         configured: !!sid && !!token && !!messagingServiceSid,
         accountSidLast4: sid ? last4(sid) : null,
         messagingServiceConfigured: !!messagingServiceSid,
+        updatedAt: settings?.updatedAt ?? null,
+      },
+      resendInbound: {
+        configured: !!resendSecret,
+        last4: resendSecret ? last4(resendSecret) : null,
         updatedAt: settings?.updatedAt ?? null,
       },
     };
@@ -238,5 +257,68 @@ export const readTwilioCredentials = internalQuery({
     const messagingServiceSid = settings?.twilioMessagingServiceSid;
     if (!accountSid || !authToken || !messagingServiceSid) return null;
     return { accountSid, authToken, messagingServiceSid };
+  },
+});
+
+/**
+ * Set or clear the Resend inbound receipt webhook's signing secret (the Svix
+ * `whsec_…` value). SUPERUSER-ONLY. `secret: null` clears it (the route then
+ * falls back to `RESEND_INBOUND_WEBHOOK_SECRET` env, or 500s "Not configured"
+ * if that's unset too); a non-null value must be non-empty after trimming.
+ * Upserts the singleton, stamping `updatedBy` + `updatedAt` — same
+ * null-sentinel convention as `setGivebutterApiKey`.
+ */
+export const setResendInboundWebhookSecret = mutation({
+  args: { secret: v.union(v.string(), v.null()) },
+  returns: v.null(),
+  handler: async (ctx, { secret }) => {
+    await requireSuperuser(ctx);
+    const updatedBy = (await requireUserId(ctx)) as Id<"users">;
+
+    let trimmed: string | undefined;
+    if (secret !== null) {
+      trimmed = secret.trim();
+      if (!trimmed) {
+        throw new ConvexError({
+          code: "INVALID_ARGUMENT",
+          message: "Webhook secret can't be empty.",
+        });
+      }
+    }
+    // `trimmed === undefined` (the `secret: null` clear path) unsets the
+    // optional field on patch — same null-sentinel convention as the
+    // Givebutter key / Twilio credentials above.
+
+    const existing = await getSettings(ctx);
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        resendInboundWebhookSecret: trimmed,
+        updatedBy,
+        updatedAt: Date.now(),
+      });
+    } else {
+      await ctx.db.insert("integrationSettings", {
+        resendInboundWebhookSecret: trimmed,
+        updatedBy,
+        updatedAt: Date.now(),
+      });
+    }
+    return null;
+  },
+});
+
+/**
+ * Webhook-facing read of the raw Resend inbound signing secret (or `null`).
+ * `http.ts`'s `/resend/inbound` httpAction has no `ctx.db`, so it consults
+ * this via `ctx.runQuery` before falling back to
+ * `process.env.RESEND_INBOUND_WEBHOOK_SECRET`. NEVER exposed as a public
+ * function — this is the only place the raw secret ever leaves the table.
+ */
+export const readResendInboundWebhookSecret = internalQuery({
+  args: {},
+  returns: v.union(v.string(), v.null()),
+  handler: async (ctx): Promise<string | null> => {
+    const settings = await getSettings(ctx);
+    return settings?.resendInboundWebhookSecret ?? null;
   },
 });

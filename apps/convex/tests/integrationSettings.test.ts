@@ -18,6 +18,10 @@ import type { Id } from "../_generated/dataModel";
  *    when nothing is stored, and no-ops cleanly (no fetch, no timestamp
  *    stamp) when neither exists — extending the `givebutterSync.test.ts`
  *    "no-key degrade" coverage to the new resolution order.
+ *  - The Resend inbound webhook signing secret (`setResendInboundWebhookSecret`
+ *    / `readResendInboundWebhookSecret`) follows the SAME superuser gate,
+ *    write-only projection, trim/upsert/clear, and stored-setting-first
+ *    resolution discipline as the Givebutter key.
  */
 
 const SUPERUSER_EMAIL = "seyi@publicworship.life";
@@ -43,6 +47,17 @@ describe("superuser gate", () => {
     await expect(
       s.as.mutation(api.integrationSettings.setGivebutterApiKey, {
         apiKey: "sk_test_123",
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+    expect((await settingsRows(s)).length).toBe(0);
+  });
+
+  test("a non-superuser is rejected setting the Resend inbound webhook secret — no row written", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await expect(
+      s.as.mutation(api.integrationSettings.setResendInboundWebhookSecret, {
+        secret: "whsec_abc123",
       }),
     ).rejects.toBeInstanceOf(ConvexError);
     expect((await settingsRows(s)).length).toBe(0);
@@ -158,6 +173,120 @@ describe("readGivebutterApiKey (internalQuery, action-facing)", () => {
     expect(
       await t.query(internal.integrationSettings.readGivebutterApiKey, {}),
     ).toBe("sk_test_raw");
+  });
+});
+
+describe("setResendInboundWebhookSecret (superuser) → getIntegrationsStatus", () => {
+  test("set → status shows configured + correct last4 + updatedAt, and NEVER the secret itself", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: SUPERUSER_EMAIL });
+
+    await s.as.mutation(api.integrationSettings.setResendInboundWebhookSecret, {
+      secret: "whsec_ABCDwxyz9876",
+    });
+
+    const status = await s.as.query(
+      api.integrationSettings.getIntegrationsStatus,
+      {},
+    );
+    expect(status.resendInbound).toMatchObject({
+      configured: true,
+      last4: "9876",
+    });
+    expect(status.resendInbound.updatedAt).toBeTruthy();
+
+    // The full secret is NEVER present anywhere in the query result.
+    expect(JSON.stringify(status)).not.toContain("whsec_ABCDwxyz9876");
+    expect(
+      (status.resendInbound as Record<string, unknown>).resendInboundWebhookSecret,
+    ).toBeUndefined();
+    expect((status.resendInbound as Record<string, unknown>).secret).toBeUndefined();
+
+    // Upsert: exactly one row, stamped updatedBy — the raw secret IS on the
+    // row (it has to live somewhere), just never in a query response.
+    const rows = await settingsRows(s);
+    expect(rows.length).toBe(1);
+    expect(rows[0].updatedBy).toBe(s.userId);
+    expect(rows[0].resendInboundWebhookSecret).toBe("whsec_ABCDwxyz9876");
+  });
+
+  test("re-setting patches the SAME row (upsert, not a second insert)", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: SUPERUSER_EMAIL });
+    await s.as.mutation(api.integrationSettings.setResendInboundWebhookSecret, {
+      secret: "whsec_first111",
+    });
+    await s.as.mutation(api.integrationSettings.setResendInboundWebhookSecret, {
+      secret: "whsec_second222",
+    });
+    const rows = await settingsRows(s);
+    expect(rows.length).toBe(1);
+    expect(rows[0].resendInboundWebhookSecret).toBe("whsec_second222");
+  });
+
+  test("rejects an empty / whitespace-only secret — no row written", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: SUPERUSER_EMAIL });
+    await expect(
+      s.as.mutation(api.integrationSettings.setResendInboundWebhookSecret, {
+        secret: "   ",
+      }),
+    ).rejects.toBeInstanceOf(ConvexError);
+    expect((await settingsRows(s)).length).toBe(0);
+  });
+
+  test("trims whitespace around a valid secret", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: SUPERUSER_EMAIL });
+    await s.as.mutation(api.integrationSettings.setResendInboundWebhookSecret, {
+      secret: "  whsec_trimmed  ",
+    });
+    const rows = await settingsRows(s);
+    expect(rows[0].resendInboundWebhookSecret).toBe("whsec_trimmed");
+  });
+
+  test("clear (secret:null) removes the secret — status flips to not-configured", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: SUPERUSER_EMAIL });
+    await s.as.mutation(api.integrationSettings.setResendInboundWebhookSecret, {
+      secret: "whsec_toClear99",
+    });
+    let status = await s.as.query(
+      api.integrationSettings.getIntegrationsStatus,
+      {},
+    );
+    expect(status.resendInbound.configured).toBe(true);
+
+    await s.as.mutation(api.integrationSettings.setResendInboundWebhookSecret, {
+      secret: null,
+    });
+    status = await s.as.query(api.integrationSettings.getIntegrationsStatus, {});
+    expect(status.resendInbound).toMatchObject({
+      configured: false,
+      last4: null,
+    });
+
+    // Still ONE row (patched, not deleted) but the field itself is unset.
+    const rows = await settingsRows(s);
+    expect(rows.length).toBe(1);
+    expect(rows[0].resendInboundWebhookSecret).toBeUndefined();
+  });
+});
+
+describe("readResendInboundWebhookSecret (internalQuery, webhook-facing)", () => {
+  test("null when unset, the raw secret once set", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: SUPERUSER_EMAIL });
+    expect(
+      await t.query(internal.integrationSettings.readResendInboundWebhookSecret, {}),
+    ).toBeNull();
+
+    await s.as.mutation(api.integrationSettings.setResendInboundWebhookSecret, {
+      secret: "whsec_raw",
+    });
+    expect(
+      await t.query(internal.integrationSettings.readResendInboundWebhookSecret, {}),
+    ).toBe("whsec_raw");
   });
 });
 
