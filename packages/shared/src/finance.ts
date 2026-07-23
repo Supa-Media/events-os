@@ -184,6 +184,22 @@ export const TRANSACTION_STATUSES = [
 ] as const;
 export type TransactionStatus = (typeof TRANSACTION_STATUSES)[number];
 
+// ── Inbound email receipts (backfill pipeline) ───────────────────────────────
+// The lifecycle of ONE inbound email routed to the receipt-ingest webhook
+// (reply.publicworship.life via Resend). A row is created the moment a signed
+// `email.received` webhook lands and advances through OCR → match; its terminal
+// state is either an auto-attach (`matched`) or a human touch-point
+// (`needs_review`) / a dead end (`no_match`/`ignored`/`error`).
+export const INBOUND_RECEIPT_STATUSES = [
+  "pending", // received + deduped; OCR/match not run yet (scheduled)
+  "matched", // OCR'd + attached to exactly one transaction (auto)
+  "needs_review", // OCR'd but 0 or >1 candidates — a bookkeeper must pick
+  "no_match", // OCR'd, a clean amount read, but no unreceipted txn fits at all
+  "ignored", // sender not on the roster, or nothing to OCR (no attachment/body)
+  "error", // the pipeline threw (fetch/OCR/store) — retriable
+] as const;
+export type InboundReceiptStatus = (typeof INBOUND_RECEIPT_STATUSES)[number];
+
 // Flows that DON'T count toward category / budget spend. A reimbursement payout
 // is money leaving the account but the underlying expense was already booked
 // against its category on the line item, so counting the transfer too would

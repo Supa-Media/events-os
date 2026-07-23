@@ -52,6 +52,7 @@ import { EMAIL_ACTION_STATUSES, type EmailActionStatus } from "./projectActions"
 import { appUrl, rsvpPath, siteUrl } from "./lib/siteUrl";
 import { verifyStripeSignature } from "./stripe";
 import { verifyIncreaseSignature } from "./increase";
+import { verifyStandardWebhookSignature } from "./lib/standardWebhook";
 
 const http = httpRouter();
 
@@ -597,6 +598,83 @@ http.route({
         category: event.category,
         associatedObjectId: objectId,
       });
+    }
+    return new Response("ok", { status: 200 });
+  }),
+});
+
+// ── Resend inbound receipt webhook ───────────────────────────────────────────
+// Receipts emailed to `reply.publicworship.life` land here as Resend
+// `email.received` events (delivered via Svix / Standard Webhooks — the SAME
+// signature scheme as Increase, so both share `verifyStandardWebhookSignature`,
+// just under `svix-*` header names). We verify, DEDUPE + record the email
+// (`recordInboundReceipt`, idempotent on the provider's `email_id`), then
+// schedule the OCR→match pipeline and ack 200 fast. See `receiptInbox.ts`.
+
+http.route({
+  path: "/resend/inbound",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    const secret = process.env.RESEND_INBOUND_WEBHOOK_SECRET;
+    if (!secret) {
+      console.error("[receiptInbox] RESEND_INBOUND_WEBHOOK_SECRET not set");
+      return new Response("Not configured", { status: 500 });
+    }
+    const payload = await req.text();
+    const valid = await verifyStandardWebhookSignature(
+      payload,
+      {
+        id: req.headers.get("svix-id"),
+        timestamp: req.headers.get("svix-timestamp"),
+        signature: req.headers.get("svix-signature"),
+      },
+      secret,
+    );
+    if (!valid) return new Response("Invalid signature", { status: 400 });
+
+    // Resend inbound: { type:"email.received", data:{ email_id, from, to[],
+    // subject, ... } }. Attachments/body are fetched later via the Resend API
+    // (the webhook carries metadata only).
+    let event: {
+      type?: string;
+      data?: {
+        email_id?: string;
+        from?: string;
+        to?: string[] | string;
+        subject?: string;
+      };
+    };
+    try {
+      event = JSON.parse(payload);
+    } catch {
+      return new Response("Bad payload", { status: 400 });
+    }
+    // Ack anything that isn't an inbound email (Resend also delivers delivery/
+    // bounce events to the same webhook if subscribed) — 200 so it isn't retried.
+    if (event.type !== "email.received" || !event.data?.email_id || !event.data.from) {
+      return new Response("ok", { status: 200 });
+    }
+    const to = Array.isArray(event.data.to)
+      ? event.data.to[0]
+      : event.data.to ?? undefined;
+
+    const { isNew, receiptId } = await ctx.runMutation(
+      internal.receiptInbox.recordInboundReceipt,
+      {
+        envelope: {
+          emailId: event.data.email_id,
+          fromEmail: event.data.from,
+          toEmail: to,
+          subject: event.data.subject,
+        },
+      },
+    );
+    if (isNew) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.receiptInbox.processInboundReceipt,
+        { receiptId },
+      );
     }
     return new Response("ok", { status: 200 });
   }),

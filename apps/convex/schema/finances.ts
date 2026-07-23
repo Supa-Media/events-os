@@ -23,6 +23,7 @@ import {
   PAYOUT_PROVIDERS,
   PAYOUT_STATUSES,
   INCREASE_ONBOARDING_STATUSES,
+  INBOUND_RECEIPT_STATUSES,
   LEGACY_ACCOUNT_STATUSES,
   FINANCE_ROLES,
   FINANCE_ROLE_SCOPES,
@@ -967,6 +968,86 @@ export const webhookEvents = defineTable({
   processedAt: v.optional(v.number()),
   summary: v.optional(v.string()),
 }).index("by_provider_and_event", ["provider", "eventId"]);
+
+// ── Inbound email receipts (backfill pipeline) ───────────────────────────────
+/** ONE inbound email routed to the receipt-ingest webhook
+ *  (`reply.publicworship.life` → Resend `email.received` → `/resend/inbound`).
+ *  This table is BOTH the idempotency ledger (deduped on the provider's
+ *  `emailId` via `by_email_id`, the same first-sight guard `webhookEvents`
+ *  gives the Stripe/Increase handlers) AND the operational state of the
+ *  OCR→match pipeline, so a redelivery no-ops and a human can see every email
+ *  that ever came in and what became of it.
+ *
+ *  NOT strictly chapter-scoped at insert time: the webhook commits a `pending`
+ *  row BEFORE the sender is resolved to a person/chapter (mirrors
+ *  `webhookEvents`' "deduped before a chapter can be resolved" rule). Once the
+ *  `processInboundReceipt` action resolves the sender it stamps `chapterId`
+ *  (a real chapter — inbound card receipts are chapter-owned) so the review
+ *  queue can scope by chapter.
+ *
+ *  Money is only ever MOVED by the existing `attachReceipt`-equivalent path
+ *  (`receiptInbox.attachMatchedReceipt`); this table records provenance +
+ *  the AI's OCR read, never a categorization the model made on its own. */
+export const inboundReceipts = defineTable({
+  // Resend's unique id for the received email — the idempotent dedup key.
+  emailId: v.string(),
+  status: v.union(...INBOUND_RECEIPT_STATUSES.map((s) => v.literal(s))),
+  // Envelope, captured verbatim from the webhook for the review queue + audit.
+  fromEmail: v.string(),
+  toEmail: v.optional(v.string()),
+  subject: v.optional(v.string()),
+  receivedAt: v.number(),
+
+  // Resolved sender (auth gate — only known roster senders are processed) +
+  // the chapter its transactions live in. Both absent until the action runs;
+  // an `ignored` row (unknown sender) never gets a `personId`.
+  personId: v.optional(v.id("people")),
+  chapterId: v.optional(v.id("chapters")),
+
+  // The stored receipt file (first image/PDF attachment, or a rendered body
+  // when the email itself IS the receipt). Absent on an `ignored`/`error` row
+  // that never got as far as storing anything.
+  receiptStorageId: v.optional(v.id("_storage")),
+  // What kind of thing we OCR'd — an attachment vs the email body text — so the
+  // review UI can show "photo" vs "email text" without re-deriving it.
+  sourceKind: v.optional(v.union(v.literal("attachment"), v.literal("body"))),
+
+  // ── OCR result (the model reads the receipt; a human/auto-match uses it) ────
+  // Extracted TOTAL in integer cents (the invariant across finance), the
+  // receipt DATE (ms, noon-local by the `transactionDate` convention), and the
+  // merchant string. All optional — a low-quality scan may yield none.
+  ocrAmountCents: v.optional(v.number()),
+  ocrDate: v.optional(v.number()),
+  ocrMerchant: v.optional(v.string()),
+  ocrModel: v.optional(v.string()),
+  // The model's own confidence (0–1) that it read a real, complete total.
+  ocrConfidence: v.optional(v.number()),
+
+  // ── Match outcome ──────────────────────────────────────────────────────────
+  // The transaction the receipt was attached to (auto or via a manual pick).
+  matchedTransactionId: v.optional(v.id("transactions")),
+  // The candidates the matcher surfaced for a `needs_review` row (bounded —
+  // the matcher caps how many it returns), so the review UI can render the
+  // shortlist without re-scanning. 1:1 with what `findReceiptMatches` returned.
+  candidateTransactionIds: v.optional(v.array(v.id("transactions"))),
+  // Who resolved a `needs_review` row by hand, and when (audit).
+  resolvedByPersonId: v.optional(v.id("people")),
+  resolvedAt: v.optional(v.number()),
+
+  // A human-readable note on WHY a row landed where it did (e.g. "sender
+  // not on roster", "no unreceipted charge for $42.10 within 14 days",
+  // "OCR could not read a total"). Surfaced in the review queue.
+  detail: v.optional(v.string()),
+
+  createdAt: v.number(),
+  updatedAt: v.number(),
+})
+  // The idempotency guard: first-sight lookup by the provider's email id.
+  .index("by_email_id", ["emailId"])
+  // The review queue: "every inbound receipt in state X", newest first.
+  .index("by_status", ["status"])
+  // Scope the review queue to one chapter once the sender is resolved.
+  .index("by_chapter", ["chapterId"]);
 
 // ── Public reimbursement submit rate limit (deployment-wide) ─────────────────
 /** A single timestamped hit against the anonymous `submitPublicReimbursement`
