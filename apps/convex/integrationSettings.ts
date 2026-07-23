@@ -40,6 +40,19 @@ import { ConvexError, v } from "convex/values";
 import { Id } from "./_generated/dataModel";
 import { requireUserId } from "./lib/context";
 import { requireSuperuser } from "./lib/superuser";
+import {
+  AI_ENGINE_PROVIDERS,
+  DEFAULT_AI_PROVIDER,
+  DEFAULT_OLLAMA_BASE_URL,
+  OPENROUTER_BASE_URL,
+  type AiEngineProvider,
+} from "@events-os/shared";
+
+/** Validator for the AI provider union (the tuple-derived `EVENT_STATUSES`
+ *  pattern). */
+const aiProviderValidator = v.union(
+  ...AI_ENGINE_PROVIDERS.map((p) => v.literal(p)),
+);
 
 /** Read the singleton row (or `null` when never configured). */
 async function getSettings(ctx: QueryCtx) {
@@ -77,6 +90,18 @@ export const getIntegrationsStatus = query({
       last4: v.union(v.string(), v.null()),
       updatedAt: v.union(v.number(), v.null()),
     }),
+    aiEngine: v.object({
+      // The active provider + the GLOBAL default model (both non-secret, shown
+      // in the UI). The Ollama API KEY is the secret and is NEVER surfaced —
+      // only whether it's configured + its last4 (same discipline as the
+      // Givebutter key). `ollamaBaseUrl` is non-secret config.
+      provider: aiProviderValidator,
+      model: v.union(v.string(), v.null()),
+      ollamaConfigured: v.boolean(),
+      ollamaLast4: v.union(v.string(), v.null()),
+      ollamaBaseUrl: v.union(v.string(), v.null()),
+      updatedAt: v.union(v.number(), v.null()),
+    }),
   }),
   handler: async (ctx) => {
     await requireSuperuser(ctx);
@@ -86,6 +111,7 @@ export const getIntegrationsStatus = query({
     const token = settings?.twilioAuthToken;
     const messagingServiceSid = settings?.twilioMessagingServiceSid;
     const resendSecret = settings?.resendInboundWebhookSecret;
+    const ollamaKey = settings?.ollamaApiKey;
     return {
       givebutter: {
         configured: !!key,
@@ -103,6 +129,15 @@ export const getIntegrationsStatus = query({
       resendInbound: {
         configured: !!resendSecret,
         last4: resendSecret ? last4(resendSecret) : null,
+        updatedAt: settings?.updatedAt ?? null,
+      },
+      aiEngine: {
+        provider: (settings?.aiProvider ?? DEFAULT_AI_PROVIDER) as AiEngineProvider,
+        model: settings?.aiModel ?? null,
+        // The Ollama key is the secret: only configured + last4, never the key.
+        ollamaConfigured: !!ollamaKey,
+        ollamaLast4: ollamaKey ? last4(ollamaKey) : null,
+        ollamaBaseUrl: settings?.ollamaBaseUrl ?? null,
         updatedAt: settings?.updatedAt ?? null,
       },
     };
@@ -320,5 +355,161 @@ export const readResendInboundWebhookSecret = internalQuery({
   handler: async (ctx): Promise<string | null> => {
     const settings = await getSettings(ctx);
     return settings?.resendInboundWebhookSecret ?? null;
+  },
+});
+
+// ── Switchable AI engine (Ollama vs OpenRouter) ──────────────────────────────
+/**
+ * Set or clear the Ollama API key. SUPERUSER-ONLY. `apiKey: null` clears it (the
+ * engine then falls back to `OLLAMA_API_KEY`, or degrades to a typed no-key
+ * error); a non-null value must be non-empty after trimming. Same write-only
+ * SECRET discipline as the Givebutter key: it's stored on the singleton but only
+ * ever leaves through `readAiEngineConfig` (the action-facing internalQuery),
+ * never a status projection.
+ */
+export const setOllamaApiKey = mutation({
+  args: { apiKey: v.union(v.string(), v.null()) },
+  returns: v.null(),
+  handler: async (ctx, { apiKey }) => {
+    await requireSuperuser(ctx);
+    const updatedBy = (await requireUserId(ctx)) as Id<"users">;
+
+    let trimmed: string | undefined;
+    if (apiKey !== null) {
+      trimmed = apiKey.trim();
+      if (!trimmed) {
+        throw new ConvexError({
+          code: "INVALID_ARGUMENT",
+          message: "API key can't be empty.",
+        });
+      }
+    }
+
+    const existing = await getSettings(ctx);
+    if (existing) {
+      await ctx.db.patch(existing._id, {
+        ollamaApiKey: trimmed,
+        updatedBy,
+        updatedAt: Date.now(),
+      });
+    } else {
+      await ctx.db.insert("integrationSettings", {
+        ollamaApiKey: trimmed,
+        updatedBy,
+        updatedAt: Date.now(),
+      });
+    }
+    return null;
+  },
+});
+
+/**
+ * Set the active AI engine's non-secret config: the `provider` toggle, the
+ * GLOBAL default `model`, and the Ollama `baseUrl`. SUPERUSER-ONLY. Each field
+ * is independent — pass only what changes; `null` CLEARS that field (back to the
+ * default: provider → openrouter, model → per-feature default, baseUrl →
+ * https://ollama.com). Passing a field `undefined` (omitting it) leaves it as-is.
+ * A non-null `model`/`baseUrl` must be non-empty after trimming.
+ */
+export const setAiEngine = mutation({
+  args: {
+    provider: v.optional(aiProviderValidator),
+    model: v.optional(v.union(v.string(), v.null())),
+    baseUrl: v.optional(v.union(v.string(), v.null())),
+  },
+  returns: v.null(),
+  handler: async (ctx, { provider, model, baseUrl }) => {
+    await requireSuperuser(ctx);
+    const updatedBy = (await requireUserId(ctx)) as Id<"users">;
+
+    const patch: {
+      aiProvider?: AiEngineProvider;
+      aiModel?: string | undefined;
+      ollamaBaseUrl?: string | undefined;
+      updatedBy: Id<"users">;
+      updatedAt: number;
+    } = { updatedBy, updatedAt: Date.now() };
+
+    if (provider !== undefined) patch.aiProvider = provider;
+    if (model !== undefined) {
+      // `null` clears; a string must be non-empty after trimming.
+      if (model === null) {
+        patch.aiModel = undefined;
+      } else {
+        const trimmed = model.trim();
+        if (!trimmed) {
+          throw new ConvexError({
+            code: "INVALID_ARGUMENT",
+            message: "Model id can't be empty.",
+          });
+        }
+        patch.aiModel = trimmed;
+      }
+    }
+    if (baseUrl !== undefined) {
+      if (baseUrl === null) {
+        patch.ollamaBaseUrl = undefined;
+      } else {
+        const trimmed = baseUrl.trim();
+        if (!trimmed) {
+          throw new ConvexError({
+            code: "INVALID_ARGUMENT",
+            message: "Base URL can't be empty.",
+          });
+        }
+        patch.ollamaBaseUrl = trimmed;
+      }
+    }
+
+    const existing = await getSettings(ctx);
+    if (existing) {
+      await ctx.db.patch(existing._id, patch);
+    } else {
+      await ctx.db.insert("integrationSettings", patch);
+    }
+    return null;
+  },
+});
+
+/**
+ * Action-facing read of the resolved AI engine config — the ONLY path the raw
+ * Ollama key leaves the table. Every AI call site (`receiptInbox.ocrReceiptImage`,
+ * `aiCoding`, `aiActions`) consults this via `ctx.runQuery` to resolve
+ * `{provider, baseUrl, apiKey, model}`, STORED-FIRST → ENV FALLBACK:
+ *   - ollama key: stored `ollamaApiKey` → `OLLAMA_API_KEY`
+ *   - openrouter key: `OPENROUTER_API_KEY` (unchanged; never stored in-app)
+ *   - baseUrl: stored `ollamaBaseUrl` → `OLLAMA_BASE_URL` → https://ollama.com
+ *     (openrouter's origin is fixed)
+ *   - model: stored global `aiModel` (each call site layers its own per-call
+ *     override + per-feature default on top of this — see `resolveEngineModel`).
+ * NEVER exposed as a public function. `apiKey`/`model` are `null` when unset.
+ */
+export const readAiEngineConfig = internalQuery({
+  args: {},
+  returns: v.object({
+    provider: aiProviderValidator,
+    baseUrl: v.string(),
+    apiKey: v.union(v.string(), v.null()),
+    model: v.union(v.string(), v.null()),
+  }),
+  handler: async (ctx) => {
+    const settings = await getSettings(ctx);
+    const provider = (settings?.aiProvider ?? DEFAULT_AI_PROVIDER) as AiEngineProvider;
+    const model = settings?.aiModel ?? null;
+    if (provider === "ollama") {
+      const baseUrl =
+        settings?.ollamaBaseUrl ??
+        process.env.OLLAMA_BASE_URL ??
+        DEFAULT_OLLAMA_BASE_URL;
+      const apiKey = settings?.ollamaApiKey ?? process.env.OLLAMA_API_KEY ?? null;
+      return { provider, baseUrl, apiKey, model };
+    }
+    // OpenRouter: origin is fixed; the key is never stored in-app (env only).
+    return {
+      provider,
+      baseUrl: OPENROUTER_BASE_URL,
+      apiKey: process.env.OPENROUTER_API_KEY ?? null,
+      model,
+    };
   },
 });

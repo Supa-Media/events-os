@@ -97,6 +97,51 @@ export const AI_MODELS: Record<string, AiModel> = {
  */
 export const DEFAULT_AI_MODEL = "openai/gpt-oss-120b:free";
 
+// ── Switchable AI engine (provider) ──────────────────────────────────────────
+// The whole app's AI can run against OpenRouter (the historical default) OR
+// Ollama's cloud service — both speak the OpenAI chat-completions wire format,
+// so the provider only decides the base URL + auth header + a couple of
+// provider-specific request extras (see `apps/convex/lib/aiEngine.ts`). The
+// active provider, its key/base URL, and a GLOBAL default model are configured
+// in-app on the integrations screen (superuser only) via `integrationSettings`.
+
+/** The AI providers the engine can target. Tuple → the Convex schema/module
+ *  turn it into a `v.union(...map(v.literal))` validator (the `EVENT_STATUSES`
+ *  pattern), and the mobile provider toggle iterates it. */
+export const AI_ENGINE_PROVIDERS = ["openrouter", "ollama"] as const;
+export type AiEngineProvider = (typeof AI_ENGINE_PROVIDERS)[number];
+
+export const AI_ENGINE_PROVIDER_LABELS: Record<AiEngineProvider, string> = {
+  openrouter: "OpenRouter",
+  ollama: "Ollama",
+};
+
+/** Provider when none is stored — absent `aiProvider` means "openrouter", for
+ *  full back-compat with every deployment that predates the switch. */
+export const DEFAULT_AI_PROVIDER: AiEngineProvider = "openrouter";
+
+/** Ollama cloud origin. Stored `ollamaBaseUrl` overrides this so the owner can
+ *  point at a self-hosted Ollama later; the engine appends `/v1/...`. */
+export const DEFAULT_OLLAMA_BASE_URL = "https://ollama.com";
+
+/** OpenRouter origin (the `/v1/...` suffix is appended by the engine). Fixed —
+ *  there's no in-app base-URL field for OpenRouter. */
+export const OPENROUTER_BASE_URL = "https://openrouter.ai/api";
+
+/**
+ * SOFT model defaults for Ollama when no global `aiModel` is configured yet —
+ * clearly fallbacks, not a curated catalog (the live `/v1/models` list is
+ * authoritative for the picker; these families postdate this code's training
+ * data). `glm-ocr` is Ollama's dedicated multimodal document-OCR model (the
+ * standout for receipt extraction); `gemma4` is a capable vision/tools/thinking
+ * family for the coding + assistant call sites. Exact cloud model IDs (tag
+ * suffixes etc.) vary — if one of these isn't in the account's live list the
+ * chat call surfaces a typed error naming the model, never a silent failure, so
+ * the owner picks the right id from the dropdown.
+ */
+export const OLLAMA_DEFAULT_OCR_MODEL = "glm-ocr";
+export const OLLAMA_DEFAULT_CHAT_MODEL = "gemma4";
+
 /**
  * Fallback chain the agent walks when its chosen FREE model is rate-limited
  * upstream (OpenRouter 429). Free models share heavily throttled upstream pools,
