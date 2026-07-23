@@ -7258,7 +7258,13 @@ export const listTransactions = query({
  * exclusion never belongs in the inbox):
  *   - `all`            every non-excluded row
  *   - `needs_budget`   a spend row with no budget yet (`isSpend && budgetId == null`)
- *   - `missing_receipt` a chargeable (spend) row with no receipt attached
+ *   - `missing_receipt` a chargeable (spend) row with no receipt attached AND
+ *     not yet `reconciled` — a treasurer who closed a row receipt-less made a
+ *     call, so it drops out of the chase-worthy count (the row stays visible
+ *     under `all`/`ready`, just not counted here). Deliberately the SAME
+ *     predicate `receiptChase` uses (same scope resolution too), so this pill
+ *     and the Chase-receipts list it opens into never disagree — see that
+ *     query's doc comment.
  *   - `uncategorized`  status `unreviewed`
  *   - `ready`          status `reconciled`
  *
@@ -7331,7 +7337,8 @@ export const listReconcile = query({
     const counts = { ...zero, all: all.length };
     for (const tr of all) {
       if (needsBudget(tr)) counts.needs_budget += 1;
-      if (isSpend(tr) && tr.receiptStorageId == null) counts.missing_receipt += 1;
+      if (isSpend(tr) && tr.receiptStorageId == null && tr.status !== "reconciled")
+        counts.missing_receipt += 1;
       if (tr.status === "unreviewed") counts.uncategorized += 1;
       if (tr.status === "reconciled") counts.ready += 1;
     }
@@ -7339,7 +7346,8 @@ export const listReconcile = query({
     const predicates: Record<string, (tr: Doc<"transactions">) => boolean> = {
       all: () => true,
       needs_budget: (tr) => needsBudget(tr),
-      missing_receipt: (tr) => isSpend(tr) && tr.receiptStorageId == null,
+      missing_receipt: (tr) =>
+        isSpend(tr) && tr.receiptStorageId == null && tr.status !== "reconciled",
       uncategorized: (tr) => tr.status === "unreviewed",
       ready: (tr) => tr.status === "reconciled",
     };
@@ -7443,9 +7451,18 @@ const chaseGroup = v.object({
  *
  * "Needs a receipt" here = a SPEND charge (`isSpend` — transfers / excluded /
  * personal rows never owe one) with no receipt attached AND not yet
- * `reconciled`. Deliberately NARROWER than the reconcile grid's
- * `missing_receipt` pill (which keeps reconciled rows): a treasurer who
- * closed a row receipt-less made a call — there's nobody left to chase.
+ * `reconciled` (a treasurer who closed a row receipt-less made a call —
+ * there's nobody left to chase). This is EXACTLY `listReconcile`'s
+ * `missing_receipt` predicate — the two are kept in lockstep on purpose so
+ * the Reconcile pill's count and this list's `count` can never disagree; see
+ * that query's doc comment.
+ *
+ * `scope`/`chapterId` mirror `listReconcile`'s args and resolution byte for
+ * byte (central desk / central drill-down / caller's own chapter, same authz
+ * via `requireFinanceCentral`/`requireFinanceRole`) — the Reconcile screen
+ * passes through whatever scope it's currently viewing when it navigates
+ * here, so "Chase receipts" always opens into the SAME bucket the pill it was
+ * clicked from was counting.
  *
  * Grouping resolves the cardholder exactly like the reconcile Cardholder
  * column (`makeCardholderResolver`: the txn's `personId`, else the owner of
@@ -7458,22 +7475,41 @@ const chaseGroup = v.object({
  * `by_chapter_and_postedAt` (`ROLLUP_SCAN_LIMIT`, the reconcile inbox bound).
  */
 export const receiptChase = query({
-  args: {},
+  args: {
+    // Same meaning as `listReconcile`'s `scope`/`chapterId` — see that
+    // query's arg comments for the full authz story. Absent → the caller's
+    // own chapter, exactly as before this pair of args existed.
+    scope: v.optional(v.literal("central")),
+    chapterId: v.optional(v.id("chapters")),
+  },
   returns: v.object({
     groups: v.array(chaseGroup),
     totalCents: v.number(),
     count: v.number(),
   }),
-  handler: async (ctx) => {
-    const chapterId = await readChapterId(ctx);
-    if (!chapterId) return { groups: [], totalCents: 0, count: 0 };
-    await requireFinanceRole(ctx, chapterId, "viewer");
+  handler: async (ctx, args) => {
+    const homeChapterId = await readChapterId(ctx);
+    if (!homeChapterId) return { groups: [], totalCents: 0, count: 0 };
+    // Resolve the chase scope exactly like `listReconcile` — central,
+    // central drill-down into a different chapter, or the caller's own
+    // chapter. Keep this branch byte-for-byte in sync with `listReconcile`'s.
+    let scope: FinanceScope;
+    if (args.scope === "central") {
+      await requireFinanceCentral(ctx, homeChapterId);
+      scope = CENTRAL;
+    } else if (args.chapterId != null && args.chapterId !== homeChapterId) {
+      await requireFinanceCentral(ctx, homeChapterId);
+      scope = args.chapterId;
+    } else {
+      await requireFinanceRole(ctx, homeChapterId, "viewer");
+      scope = args.chapterId ?? homeChapterId;
+    }
 
     const sandboxMode = await readSandbox(ctx);
     const owing = (
       await ctx.db
         .query("transactions")
-        .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", chapterId))
+        .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", scope))
         .order("desc")
         .take(ROLLUP_SCAN_LIMIT)
     )

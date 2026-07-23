@@ -16,8 +16,11 @@ import type { Doc, Id } from "../_generated/dataModel";
  *    DESC, with Unattributed pinned LAST regardless of size.
  *  - "Needs a receipt" = a SPEND charge with no receipt and not yet
  *    `reconciled` — receipted / reconciled / excluded / personal / inflow /
- *    transfer rows never appear (deliberately narrower than the reconcile
- *    grid's `missing_receipt` pill, which keeps reconciled rows).
+ *    transfer rows never appear. This is the SAME predicate as the reconcile
+ *    grid's `missing_receipt` pill (kept in lockstep on purpose — see
+ *    `listReconcile`'s doc comment).
+ *  - `scope`/`chapterId` args mirror `listReconcile`'s (central / central
+ *    drill-down / caller's own chapter) — same authz.
  *  - Viewer+ gated, same floor as `listReconcile`.
  */
 
@@ -185,5 +188,99 @@ describe("finances.receiptChase", () => {
     }
     expect(caught).toBeInstanceOf(ConvexError);
     expect((caught as ConvexError<{ code: string }>).data.code).toBe("FORBIDDEN");
+  });
+});
+
+// ── scope/chapterId — mirrors `listReconcile`'s central drill-down exactly ──
+// (see `listReconcileChapterDrilldown.test.ts`) so the Reconcile screen's
+// "Chase receipts" button can carry the grid's current scope through and
+// always land on the SAME bucket the missing_receipt pill just counted.
+describe("finances.receiptChase: scope/chapterId (mirrors listReconcile's drill-down)", () => {
+  async function asCentralManager(s: ChapterSetup): Promise<Id<"people">> {
+    const personId = await seedPerson(s, { name: "Central FM", userId: s.userId });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeRoles", {
+        chapterId: s.chapterId,
+        personId,
+        role: "manager",
+        scope: "central",
+        createdAt: Date.now(),
+      }),
+    );
+    return personId;
+  }
+
+  async function makeChapter(s: ChapterSetup, name: string): Promise<Id<"chapters">> {
+    return await run(s.t, (ctx) =>
+      ctx.db.insert("chapters", { name, isActive: true, createdAt: Date.now() }),
+    );
+  }
+
+  async function seedOwingTxn(
+    s: ChapterSetup,
+    chapterId: Id<"chapters"> | "central",
+    merchantName: string,
+  ): Promise<Id<"transactions">> {
+    return await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 1500,
+        postedAt: Date.now(),
+        merchantName,
+        status: "unreviewed",
+        createdAt: Date.now(),
+      }),
+    );
+  }
+
+  test("a central manager CAN chase a different chapter's receipts via chapterId", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralManager(s);
+    const boston = await makeChapter(s, "Boston");
+    await seedOwingTxn(s, boston, "Boston charge");
+
+    const res = await s.as.query(api.finances.receiptChase, { chapterId: boston });
+    expect(res.count).toBe(1);
+    expect(res.groups[0].transactions[0].merchantName).toBe("Boston charge");
+  });
+
+  test("a chapter-scoped manager CANNOT chase a different chapter's receipts", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const me = await seedPerson(s, { name: "Chapter FM", userId: s.userId });
+    await grantRole(s, me, "manager");
+    const boston = await makeChapter(s, "Boston");
+    await seedOwingTxn(s, boston, "Boston charge");
+
+    await expect(
+      s.as.query(api.finances.receiptChase, { chapterId: boston }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("scope:\"central\" chases the CENTRAL-owned bucket", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralManager(s);
+    await seedOwingTxn(s, s.chapterId, "Home charge");
+    await seedOwingTxn(s, "central", "Central charge");
+
+    const res = await s.as.query(api.finances.receiptChase, { scope: "central" });
+    expect(res.count).toBe(1);
+    expect(res.groups[0].transactions[0].merchantName).toBe("Central charge");
+  });
+
+  test("omitting scope/chapterId still resolves the caller's own chapter (unchanged)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const me = await seedPerson(s, { name: "Chapter FM", userId: s.userId });
+    await grantRole(s, me, "manager");
+    await seedOwingTxn(s, s.chapterId, "Home charge");
+
+    const res = await s.as.query(api.finances.receiptChase, {});
+    expect(res.count).toBe(1);
+    expect(res.groups[0].transactions[0].merchantName).toBe("Home charge");
   });
 });
