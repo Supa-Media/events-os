@@ -647,23 +647,28 @@ function renderGuests(){
     box.appendChild(empty);return;
   }
   var row=el('div','avatars');
-  var shown=D.guests.slice(0,10);
-  shown.forEach(function(g){
-    var a=el('div','av',initialsOf(g.name));
-    a.style.background=pastel(g.name);
-    // Multi-ticket buyers read "Name · N tickets"; everyone else "Name · Going".
-    a.title=g.ticketCount>1?(g.name+' · '+g.ticketCount+' tickets'):(g.name+' · '+(STATUS_META[g.status]||{}).w);
-    row.appendChild(a);
+  // Expand a multi-ticket buyer into one card PER ticket — so buying N shows as
+  // N cards like everyone else, instead of singling the buyer out by name. The
+  // extra cards carry the buyer's colour/initials with a generic "guest N"
+  // tooltip (we don't have — and don't need — the extra attendees' names).
+  var entries=[];
+  D.guests.forEach(function(g){
+    var n=(g.ticketCount>1)?g.ticketCount:1;
+    for(var i=0;i<n;i++)entries.push({name:g.name,status:g.status,seat:i});
   });
-  if(total>shown.length){row.appendChild(el('div','av more','+'+(total-shown.length)));}
+  var shown=entries.slice(0,10);
+  var distinct={};
+  shown.forEach(function(e){
+    var a=el('div','av',initialsOf(e.name));
+    a.style.background=pastel(e.name);
+    a.title=e.seat>0?(e.name+' · guest '+(e.seat+1)):(e.name+' · '+(STATUS_META[e.status]||{}).w);
+    row.appendChild(a);
+    distinct[e.name]=1;
+  });
+  // "+N" counts the PEOPLE (going+maybe) not yet represented by a shown card.
+  var remaining=Math.max(0,total-Object.keys(distinct).length);
+  if(remaining>0){row.appendChild(el('div','av more','+'+remaining));}
   box.appendChild(row);
-  // Call out multi-ticket buyers by name (e.g. "Sayo Olujide · 4 tickets").
-  var multi=shown.filter(function(g){return g.ticketCount>1;});
-  if(multi.length){
-    var mt=el('div','gcount');
-    mt.textContent=multi.map(function(g){return g.name+' · '+g.ticketCount+' tickets';}).join(' · ');
-    box.appendChild(mt);
-  }
   var c=el('div','gcount');
   var bits=[];
   if(D.counts.going)bits.push('<b>'+D.counts.going+' going</b>');

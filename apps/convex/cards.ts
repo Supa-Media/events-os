@@ -3529,70 +3529,122 @@ export const advanceReceiptReminders = internalMutation({
   },
 });
 
-/** The cardholder contact + charge details `sendReceiptReminders` needs to
- *  compose a reminder email for one transaction. Null when the charge isn't
- *  card-linked or the cardholder has no reachable email. */
-export const getReceiptReminderContact = internalQuery({
-  args: { transactionId: v.id("transactions") },
-  returns: v.union(
+/** One line per missing-receipt charge in a cardholder's reminder digest. */
+const reminderChargeValidator = v.object({
+  amountCents: v.number(),
+  merchantName: v.union(v.string(), v.null()),
+  escalated: v.boolean(),
+});
+
+/**
+ * Group the charges that transitioned a reminder stage THIS pass by cardholder,
+ * so `sendReceiptReminders` sends ONE digest email per person listing all their
+ * still-missing receipts — never one email per charge (a cardholder with five
+ * un-receipted charges was getting five separate emails). A cardholder with no
+ * reachable email is dropped. `flagged`/`escalated` are disjoint per pass; a
+ * charge is tagged `escalated` when it hit the day-3 step.
+ */
+export const getReceiptReminderDigests = internalQuery({
+  args: {
+    flagged: v.array(v.id("transactions")),
+    escalated: v.array(v.id("transactions")),
+  },
+  returns: v.array(
     v.object({
       email: v.string(),
       cardholderName: v.string(),
-      merchantName: v.union(v.string(), v.null()),
-      amountCents: v.number(),
+      anyEscalated: v.boolean(),
+      charges: v.array(reminderChargeValidator),
     }),
-    v.null(),
   ),
   handler: async (ctx, args) => {
-    const tr = await ctx.db.get(args.transactionId);
-    if (!tr?.cardId) return null;
-    const card = await ctx.db.get(tr.cardId);
-    if (!card) return null;
-    const person = await ctx.db.get(card.cardholderPersonId);
-    const email = person?.pwEmail ?? person?.email;
-    if (!person || !email) return null;
-    return {
-      email,
-      cardholderName: person.name,
-      merchantName: tr.merchantName ?? null,
-      amountCents: tr.amountCents,
-    };
+    const escalatedSet = new Set(args.escalated.map((id) => id as string));
+    const seen = new Set<string>();
+    const byPerson = new Map<
+      string,
+      {
+        email: string;
+        cardholderName: string;
+        charges: Array<{ amountCents: number; merchantName: string | null; escalated: boolean }>;
+      }
+    >();
+    for (const txnId of [...args.flagged, ...args.escalated]) {
+      if (seen.has(txnId as string)) continue;
+      seen.add(txnId as string);
+      const tr = await ctx.db.get(txnId);
+      if (!tr?.cardId) continue;
+      const card = await ctx.db.get(tr.cardId);
+      if (!card) continue;
+      const person = await ctx.db.get(card.cardholderPersonId);
+      const email = person?.pwEmail ?? person?.email;
+      if (!person || !email) continue;
+      const key = card.cardholderPersonId as string;
+      const entry =
+        byPerson.get(key) ?? { email, cardholderName: person.name, charges: [] };
+      entry.charges.push({
+        amountCents: tr.amountCents,
+        merchantName: tr.merchantName ?? null,
+        escalated: escalatedSet.has(txnId as string),
+      });
+      byPerson.set(key, entry);
+    }
+    return [...byPerson.values()].map((e) => ({
+      ...e,
+      anyEscalated: e.charges.some((c) => c.escalated),
+    }));
   },
 });
 
-/** Best-effort reminder email for one transitioned charge — logs + no-ops
- *  without `RESEND_API_KEY` (dev), same degrade as `sendReimbursementReminders`. */
-async function notifyReceiptReminder(
+/** Best-effort digest email for ONE cardholder listing all their charges still
+ *  missing a receipt — logs + no-ops without `RESEND_API_KEY` (dev). */
+async function notifyReceiptDigest(
   ctx: ActionCtx,
-  transactionId: Id<"transactions">,
-  isEscalation: boolean,
+  digest: {
+    email: string;
+    cardholderName: string;
+    anyEscalated: boolean;
+    charges: Array<{ amountCents: number; merchantName: string | null; escalated: boolean }>;
+  },
 ): Promise<void> {
-  const contact = await ctx.runQuery(internal.cards.getReceiptReminderContact, {
-    transactionId,
-  });
-  if (!contact) return;
-  const dollars = `$${(contact.amountCents / 100).toFixed(2)}`;
-  const merchant = contact.merchantName ?? "a charge";
-  const subject = isEscalation
-    ? `Still missing: receipt for your ${dollars} charge at ${merchant}`
-    : `Add a receipt for your ${dollars} charge at ${merchant}`;
+  const count = digest.charges.length;
+  if (count === 0) return;
+  const fmt = (c: { amountCents: number; merchantName: string | null }) =>
+    `$${(c.amountCents / 100).toFixed(2)} at ${c.merchantName ?? "a charge"}`;
+  const subject =
+    count === 1
+      ? `${digest.anyEscalated ? "Still missing" : "Add"} a receipt for your ${fmt(digest.charges[0])}`
+      : `${count} charges still need receipts`;
   const daysLeft = RECEIPT_GRACE_DAYS - RECEIPT_ESCALATE_DAYS;
-  const message = isEscalation
-    ? `It's been ${RECEIPT_ESCALATE_DAYS} days and your ${dollars} charge at ${merchant} still needs a receipt. Your card locks in ${daysLeft} more day${daysLeft === 1 ? "" : "s"} without one.`
-    : `Don't forget to add a receipt for your ${dollars} charge at ${merchant}.`;
+  const intro =
+    count === 1
+      ? `You still need to add a receipt for your ${escapeHtml(fmt(digest.charges[0]))}.`
+      : `You have ${count} card charges still missing receipts:`;
+  const list =
+    count === 1
+      ? ""
+      : `<ul style="margin:0 0 16px;padding-left:18px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.7;color:#7A5A5A">${digest.charges
+          .map(
+            (c) =>
+              `<li>${escapeHtml(fmt(c))}${c.escalated ? " — <b>locks soon</b>" : ""}</li>`,
+          )
+          .join("")}</ul>`;
+  const lockNote = digest.anyEscalated
+    ? `<p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Add ${count === 1 ? "it" : "them"} soon — a charge still missing its receipt after ${RECEIPT_GRACE_DAYS} days locks your card (${daysLeft} more day${daysLeft === 1 ? "" : "s"} for the escalated one${count === 1 ? "" : "s"}).</p>`
+    : "";
   // The bookkeeper's missing-receipt queue — same filter pill the Reconcile
-  // grid's "Missing receipt" pill drives (`FILTER_KEYS` in
-  // `(app)/finances/reconcile.tsx`). Null (omitted) when APP_URL is unset.
+  // grid's "Missing receipt" pill drives. Null (omitted) when APP_URL is unset.
   const link = appUrl("/finances/reconcile?filter=missing_receipt");
   await sendEmail(
-    contact.email,
+    digest.email,
     subject,
     emailShell(`
-      <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">${escapeHtml(subject)}</h1>
-      <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(contact.cardholderName)} — ${escapeHtml(message)}</p>
+      <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">${escapeHtml(count === 1 ? subject : "Receipts still needed")}</h1>
+      <p style="margin:0 0 ${count === 1 ? 16 : 8}px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(digest.cardholderName)} — ${intro}</p>
+      ${list}
+      ${lockNote}
       ${
         link
-          ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${link}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">Add receipt →</a></div>`
+          ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${link}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">Add receipt${count === 1 ? "" : "s"} →</a></div>`
           : ""
       }`),
   );
@@ -3601,14 +3653,15 @@ async function notifyReceiptReminder(
 /**
  * The daily receipt-reminder cron: advances every card's missing-receipt
  * charges through the day-1/day-3 timeline (`advanceReceiptReminders`), then
- * emails the cardholder for whichever charges just transitioned. Terminal
- * day-7 locking stays in `autoLockOverdueCards` — this action never locks a
- * card. No-ops per email when `RESEND_API_KEY` is unset (local/dev).
+ * sends each cardholder ONE digest email listing all of their charges that
+ * transitioned this pass — not one email per charge (a cardholder with several
+ * un-receipted charges used to get one email each). Terminal day-7 locking
+ * stays in `autoLockOverdueCards` — this action never locks a card. No-ops per
+ * email when `RESEND_API_KEY` is unset (local/dev).
  *
- * Best-effort per email: a single rejected `notifyReceiptReminder` (e.g. a
- * Resend fetch failure) is logged and does NOT stop the loop — otherwise one
- * bad email mid-run would silently drop every remaining cardholder's
- * reminder for the day.
+ * Best-effort per email: a single rejected digest (e.g. a Resend fetch failure)
+ * is logged and does NOT stop the loop, so one bad email can't drop every
+ * remaining cardholder's reminder for the day.
  */
 export const sendReceiptReminders = internalAction({
   args: {},
@@ -3620,24 +3673,17 @@ export const sendReceiptReminders = internalAction({
       internal.cards.advanceReceiptReminders,
       {},
     );
-    for (const transactionId of flagged) {
+    const digests = await ctx.runQuery(internal.cards.getReceiptReminderDigests, {
+      flagged,
+      escalated,
+    });
+    for (const digest of digests) {
       try {
-        await notifyReceiptReminder(ctx, transactionId, false);
+        await notifyReceiptDigest(ctx, digest);
       } catch (err) {
         console.error(
-          "sendReceiptReminders: flag reminder email failed",
-          transactionId,
-          err,
-        );
-      }
-    }
-    for (const transactionId of escalated) {
-      try {
-        await notifyReceiptReminder(ctx, transactionId, true);
-      } catch (err) {
-        console.error(
-          "sendReceiptReminders: escalation reminder email failed",
-          transactionId,
+          "sendReceiptReminders: digest email failed",
+          digest.email,
           err,
         );
       }
