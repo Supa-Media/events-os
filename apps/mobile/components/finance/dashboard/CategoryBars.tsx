@@ -7,6 +7,7 @@
 import { Text, View } from "react-native";
 import { formatCents } from "@events-os/shared";
 import { GOLD } from "./chartColors";
+import { InfoTooltip } from "../ui";
 import type { CategoryRollupResult } from "./categoryRollup";
 
 export function CategoryBars({ rollup }: { rollup: CategoryRollupResult }) {
@@ -30,12 +31,17 @@ export function CategoryBars({ rollup }: { rollup: CategoryRollupResult }) {
         return (
           <View key={r.name} className="gap-1">
             <View className="flex-row items-center justify-between gap-2">
-              <Text
-                className={`flex-1 text-xs ${r.other ? "text-muted" : "text-ink"}`}
-                numberOfLines={1}
-              >
-                {r.name}
-              </Text>
+              <View className="flex-1 flex-row items-center gap-1">
+                <Text
+                  className={`flex-1 text-xs ${r.other ? "text-muted" : "text-ink"}`}
+                  numberOfLines={1}
+                >
+                  {r.name}
+                </Text>
+                {r.other ? (
+                  <InfoTooltip text="Includes spend with no category assigned, plus event/project budgets in month view (which are excluded from the recurring category breakdown)." size={12} />
+                ) : null}
+              </View>
               <Text
                 className={`text-xs font-semibold ${r.other ? "text-muted" : "text-ink"}`}
                 style={{ fontVariant: ["tabular-nums"] }}
