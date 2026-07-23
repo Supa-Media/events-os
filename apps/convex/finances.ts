@@ -3976,7 +3976,7 @@ export const budgetsGlance = query({
       // Only a budget with an in-force cap is advertised to the whole team:
       // approved (grandfathered included), or previously approved with an
       // increase mid-review (`approvedCents` — its old cap still governs).
-      if (!isAttributableBudget(b) && b.approvedCents == null) continue;
+      if (b.approvedCents == null && !isAttributableBudget(b)) continue;
       const isOneTime = effectiveType(b) === "one_time";
       const spentCents = yearTxns.reduce((sum, tr) => {
         const counts = isOneTime
