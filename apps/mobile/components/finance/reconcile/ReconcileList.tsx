@@ -211,6 +211,7 @@ function ReconcileRow({
   const attachReceipt = useMutation(api.finances.attachReceipt);
   const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
   const acceptSuggestion = useMutation(api.aiCodingData.acceptSuggestion);
+  const recordCodingOverride = useMutation(api.aiCodingData.recordCodingOverride);
   const flagPersonalCharge = useMutation(api.cards.flagPersonalCharge);
   const id = row.id as Id<"transactions">;
 
@@ -218,6 +219,48 @@ function ReconcileRow({
   const guard = (p: Promise<unknown>) => p.catch((err) => alertError(err));
 
   const [noteModalOpen, setNoteModalOpen] = useState(false);
+  // Accept feels TERMINAL: the moment a suggestion is accepted we show a brief
+  // "Accepted" state in the Suggested cell instead of letting an
+  // still-`isSuggestible` row (accepted the category but still needs a budget)
+  // immediately re-render a fresh "Suggest" button — testers misread that
+  // re-appearing button as "the suggestion didn't clear". Session-local (per
+  // row); a reload starts fresh.
+  const [justAccepted, setJustAccepted] = useState(false);
+
+  async function handleAccept() {
+    try {
+      await acceptSuggestion({ transactionId: id });
+      setJustAccepted(true);
+    } catch (err) {
+      alertError(err);
+    }
+  }
+
+  // Measurement (precision): when a human hand-codes a Category / For value that
+  // DIFFERS from a live suggestion's proposal for that dimension, log it as an
+  // override BEFORE `categorize` clears the suggestion server-side. Best-effort
+  // — a measurement write must never block or fail the actual coding edit.
+  async function recordOverrideIfConflicting(
+    dimension: "category" | "budget",
+    chosen: string | null,
+  ) {
+    const ai = row.aiSuggestion;
+    if (!ai) return;
+    const suggested = dimension === "category" ? ai.categoryId : ai.budgetId;
+    if (suggested == null) return; // the model didn't propose this dimension
+    if (chosen === suggested) return; // agreement, not an override
+    try {
+      await recordCodingOverride({
+        transactionId: id,
+        dimension,
+        ...(dimension === "category"
+          ? { chosenCategoryId: chosen as Id<"budgetCategories"> | null }
+          : { chosenBudgetId: chosen as Id<"budgets"> | null }),
+      });
+    } catch {
+      // swallow — never let measurement interfere with the coding edit
+    }
+  }
 
   async function handleMarkPersonal() {
     try {
@@ -232,7 +275,8 @@ function ReconcileRow({
   // The "For" picker's value is just `budgetId` (WP-U: one home per dollar) —
   // always a real, APPROVED budget already (item 5) — no summon/resolution
   // step needed.
-  function onForChange(value: string | null) {
+  async function onForChange(value: string | null) {
+    await recordOverrideIfConflicting("budget", value);
     guard(
       categorize({
         transactionId: id,
@@ -307,14 +351,15 @@ function ReconcileRow({
             value={row.categoryId}
             items={categoryItems}
             placeholder="Uncategorized"
-            onChange={(value) =>
+            onChange={async (value) => {
+              await recordOverrideIfConflicting("category", value);
               guard(
                 categorize({
                   transactionId: id,
                   categoryId: value as Id<"budgetCategories"> | null,
                 }),
-              )
-            }
+              );
+            }}
           />
         </Cell>
       ) : null}
@@ -357,8 +402,17 @@ function ReconcileRow({
               title="Accept"
               size="sm"
               variant="secondary"
-              onPress={() => guard(acceptSuggestion({ transactionId: id }))}
+              onPress={handleAccept}
             />
+          </View>
+        ) : justAccepted ? (
+          // Terminal state: the suggestion was just accepted this session. Show
+          // it as done rather than immediately re-offering "Suggest" on a row
+          // that still `isSuggestible` (accepted the category, still needs a
+          // budget) — which testers read as the suggestion not clearing.
+          <View className="flex-1 flex-row items-center gap-1 px-2 py-1.5">
+            <Icon name="check-circle" size={15} color={colors.success} />
+            <Text className="text-sm font-medium text-success">Accepted</Text>
           </View>
         ) : isSuggestible(row) ? (
           <View className="flex-1 px-2 py-1.5">

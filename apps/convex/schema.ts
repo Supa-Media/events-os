@@ -103,7 +103,11 @@ import {
   aiUsage,
   aiSettings,
 } from "./schema/ai";
-import { aiUsageEvents, aiCodingIngestState } from "./schema/aiUsage";
+import {
+  aiUsageEvents,
+  aiCodingIngestState,
+  aiCodingOutcomes,
+} from "./schema/aiUsage";
 import { academyProgress, courseCompletions } from "./schema/academy";
 import { schemaMigrations } from "./schema/migrations";
 import { integrationSettings } from "./schema/integrationSettings";
@@ -374,6 +378,9 @@ const schema = defineSchema({
   aiUsageEvents,
   // Debounce mutex for the on-ingest AI-coding suggestion trigger.
   aiCodingIngestState,
+  // Append-only human-decision log for AI coding suggestions — the substrate
+  // for measuring suggestion precision by dimension (fund/category/budget).
+  aiCodingOutcomes,
 
   // Academy (per-person curriculum progress + earned course badges).
   academyProgress,

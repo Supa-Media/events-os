@@ -114,3 +114,56 @@ export const aiCodingIngestState = defineTable({
   // pending sweep (if any) was scheduled.
   scheduledAt: v.optional(v.number()),
 });
+
+/**
+ * APPEND-ONLY outcome log for finance AI coding suggestions — the measurement
+ * substrate for "how good are the suggestions, really?" (the founder's
+ * "mostly wrong" report). One row is written the moment a human RESOLVES a
+ * transaction that carried a live suggestion:
+ *  - `accepted` — the human tapped Accept, taking the whole suggestion
+ *    (`aiCodingData.acceptSuggestion`);
+ *  - `overridden` — the human instead coded the row by hand (picked a
+ *    Category / For value) while a suggestion was on screen
+ *    (`aiCodingData.recordCodingOverride`, called from the Reconcile grid).
+ *
+ * Both the suggestion's proposed ids and the human's CHOSEN ids are snapshotted
+ * so precision is computable PER DIMENSION (fund / category / budget):
+ *  - an ACCEPT confirms every dimension the suggestion proposed (correct),
+ *  - an OVERRIDE resolves exactly ONE dimension by hand (`overriddenDimension`)
+ *    — correct if the human's chosen value for it equals the suggested value,
+ *    incorrect otherwise (a different pick OR a clear); dimensions the human
+ *    did NOT touch contribute nothing (unknown, not counted).
+ * `overriddenDimension` is what disambiguates "the human cleared this
+ * dimension" (a confirmed miss) from "the human never touched it" (unknown) —
+ * a cleared field leaves no `chosen*` id, so without the marker the two would
+ * be indistinguishable. Append-only (never updated/deleted) so the record is
+ * an honest audit trail — `aiCodingData.codingPrecision` reads it. Distinct
+ * from `aiUsageEvents` (which logs every OpenRouter CALL + a coarse accept
+ * flag); this logs the human DECISION with enough shape to measure quality.
+ */
+export const aiCodingOutcomes = defineTable({
+  chapterId: v.id("chapters"),
+  transactionId: v.id("transactions"),
+  outcome: v.union(v.literal("accepted"), v.literal("overridden")),
+  // What the suggestion proposed (only the dimensions it actually carried).
+  suggestedFundId: v.optional(v.id("funds")),
+  suggestedCategoryId: v.optional(v.id("budgetCategories")),
+  suggestedBudgetId: v.optional(v.id("budgets")),
+  // What the human's coding became. For an ACCEPT, mirrors the applied links.
+  // For an OVERRIDE, carries the new id of the resolved dimension (absent when
+  // the human cleared it — see `overriddenDimension`).
+  chosenFundId: v.optional(v.id("funds")),
+  chosenCategoryId: v.optional(v.id("budgetCategories")),
+  chosenBudgetId: v.optional(v.id("budgets")),
+  // OVERRIDE rows only: the single dimension the human resolved by hand in this
+  // action, so a clear-to-nothing still counts as a decision on that dimension.
+  overriddenDimension: v.optional(
+    v.union(v.literal("fund"), v.literal("category"), v.literal("budget")),
+  ),
+  // Carried from the suggestion for slicing precision by model / confidence.
+  confidence: v.optional(v.number()),
+  model: v.optional(v.string()),
+  createdAt: v.number(),
+})
+  .index("by_chapter_and_time", ["chapterId", "createdAt"])
+  .index("by_transaction", ["transactionId"]);
