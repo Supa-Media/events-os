@@ -1244,6 +1244,26 @@ export const cardDetailsRevealAttempts = defineTable({
   // window regardless of key.
   .index("by_time", ["createdAt"]);
 
+// ── Manual receipt-nudge rate limit (Chase Receipts "Send reminder") ────────
+/** A single timestamped hit against the FM-only manual chase nudge
+ *  (`cards.sendReceiptNudge`, called from the Chase Receipts page's "Send
+ *  reminder"/"Remind all" buttons) — SAME shape/index as
+ *  `cardDetailsRevealAttempts`/`reimbursementSubmitAttempts`: `key` is
+ *  `"person:<personId>"`, one row inserted per nudge actually SENT (email
+ *  attempted), checked+recorded atomically inside
+ *  `cards.beginManualNudgeAttempt`. Caps a cardholder at ONE manual nudge per
+ *  24h — a second click inside the window is a no-op the UI reads as
+ *  "Nudged today" rather than an error. Longer window than the other two
+ *  attempt tables (1h), so it is swept on its OWN schedule, not folded into
+ *  their shared sweep — see `maintenance.ts`. */
+export const receiptNudgeAttempts = defineTable({
+  key: v.string(),
+  createdAt: v.number(),
+})
+  .index("by_key_and_time", ["key", "createdAt"])
+  // TTL sweep (maintenance.ts): drop rows older than the 24h rate window.
+  .index("by_time", ["createdAt"]);
+
 /** Increase REVIEWS a Digital Card Profile before it can be attached to a
  *  card — it's minted `"pending"` and Increase (and/or the card network)
  *  resolves it to `"active"` (safe to attach) or `"rejected"` (re-upload art

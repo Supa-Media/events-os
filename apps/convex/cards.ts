@@ -121,6 +121,7 @@ import {
 import {
   requireFinanceRole,
   requireFinanceManager,
+  requireCentralFinanceRole,
   getFinanceRole,
   getChapterAccountForMode,
 } from "./lib/finance";
@@ -133,6 +134,7 @@ import {
 import { sendEmail, sendEmailReporting, emailShell } from "./ticketingEmails";
 import { escapeHtml } from "./lib/html";
 import { appUrl } from "./lib/siteUrl";
+import { normalizePhone, resolveTwilioCredentials, sendSms } from "./lib/twilio";
 
 const externalAccountFundingValidator = v.union(
   ...EXTERNAL_ACCOUNT_FUNDINGS.map((f) => v.literal(f)),
@@ -3689,6 +3691,391 @@ export const sendReceiptReminders = internalAction({
       }
     }
     return { flaggedCount: flagged.length, escalatedCount: escalated.length };
+  },
+});
+
+// ── Manual receipt nudge (Chase Receipts "Send reminder" / "Remind all") ────
+//
+// The tester-requested on-demand counterpart to the automated day-1/day-3
+// digest above: an FM/Treasurer viewing `/finances/receipt-chase` can nudge
+// ONE cardholder's group ("Send reminder") or every group at once ("Remind
+// all") without waiting for the next cron pass. Reuses `notifyReceiptDigest`
+// verbatim for the email (same subject/body shape the automated reminder
+// sends) and adds a best-effort SMS pointing at the text-to-receipt number
+// (`smsReceipts.ts`) — email is the required channel; SMS never blocks it.
+//
+// Manager-gated (`requireFinanceManager`, same floor as `lockCard`/
+// `cancelCard`) and RATE-LIMITED to one nudge per cardholder per
+// `MANUAL_NUDGE_WINDOW_MS` (24h) via `receiptNudgeAttempts` — the same
+// checked-and-recorded-atomically pattern `beginRevealCardDetails` uses for
+// its own rate limit, just with a "skip, don't error" outcome instead of a
+// thrown `RATE_LIMITED`: a second click inside the window comes back
+// `outcome:"already_nudged"` so the UI can show "Nudged today" instead of an
+// error toast.
+
+// Mirrors finances.ts's `ROLLUP_SCAN_LIMIT` (currently 5000) — duplicated as
+// a literal rather than imported: finances.ts already imports several
+// helpers FROM this file (`isMissingReceiptCharge` etc.), and importing back
+// from it here would add a second edge to that same cycle. Keep in sync by
+// hand if that constant's value ever changes.
+const RECEIPT_NUDGE_SCAN_LIMIT = 5000;
+// At most one manual nudge per cardholder per this window.
+const MANUAL_NUDGE_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
+// A Chase Receipts page realistically has, at most, a few dozen cardholder
+// groups — bounds the per-group nudge-status lookup defensively.
+const CHASE_NUDGE_STATUS_LIMIT = 200;
+
+/**
+ * MIRRORS finances.ts's `txnMatchesMode` (line ~855) exactly — duplicated for
+ * the same reason as `RECEIPT_NUDGE_SCAN_LIMIT` above (avoiding a fresh
+ * cards.ts↔finances.ts import edge). Any change to the mode-matching rule
+ * must be mirrored in both places.
+ */
+function chaseTxnMatchesMode(tr: Doc<"transactions">, sandboxMode: boolean): boolean {
+  if (tr.source !== "increase_card" && tr.source !== "increase_ach") return true;
+  return matchesMode(tr.externalId ?? tr.sourceAccountId ?? null, sandboxMode);
+}
+
+/**
+ * MIRRORS finances.ts's `receiptChase`/`isSpend` "still owed a receipt"
+ * predicate exactly (a SPEND charge — outflow, not excluded/personal — with
+ * no receipt attached and not yet reconciled). Duplicated rather than
+ * imported for the same reason as above; the two must be kept in sync.
+ */
+function isReceiptChaseOwing(tr: Doc<"transactions">): boolean {
+  return (
+    tr.flow === "outflow" &&
+    tr.status !== "excluded" &&
+    tr.isPersonal !== true &&
+    tr.status !== "reconciled" &&
+    tr.receiptStorageId == null
+  );
+}
+
+/**
+ * MIRRORS finances.ts's `makeCardholderResolver`: the txn's own `personId`,
+ * else the person who owns its `cardId`. Duplicated rather than imported for
+ * the same reason as the two helpers above.
+ */
+async function resolveChaseCardholderId(
+  ctx: QueryCtx,
+  tr: Doc<"transactions">,
+): Promise<Id<"people"> | null> {
+  if (tr.personId) return tr.personId;
+  if (!tr.cardId) return null;
+  const card = await ctx.db.get(tr.cardId);
+  return card?.cardholderPersonId ?? null;
+}
+
+/** One cardholder's current missing-receipt bundle, resolved for a manual
+ *  nudge — the SAME shape `getReceiptReminderDigests` builds for the
+ *  automated digest, plus `personId`/`phone` so the caller can rate-limit and
+ *  SMS. */
+type ManualNudgeTarget = {
+  personId: Id<"people">;
+  email: string | null;
+  phone: string | null;
+  cardholderName: string;
+  anyEscalated: boolean;
+  charges: Array<{ amountCents: number; merchantName: string | null; escalated: boolean }>;
+};
+
+const manualNudgeTargetValidator = v.object({
+  personId: v.id("people"),
+  email: v.union(v.string(), v.null()),
+  phone: v.union(v.string(), v.null()),
+  cardholderName: v.string(),
+  anyEscalated: v.boolean(),
+  charges: v.array(reminderChargeValidator),
+});
+
+/**
+ * Resolve who to nudge + what they currently owe: EVERY cardholder (or just
+ * `personId`, when given) with at least one charge still missing a receipt
+ * RIGHT NOW — the exact same "owing" set `finances.receiptChase` renders, so
+ * a manual nudge can never disagree with the list the FM is looking at. The
+ * "Unattributed" bucket (no resolvable cardholder) is silently skipped —
+ * mirrors `receiptChase`'s own doc comment: there's no one to chase for it.
+ *
+ * `scope`/`chapterId` are the SAME pair `receiptChase` takes (#383) — a
+ * manager nudging from a central/peeked-chapter Chase Receipts view must
+ * nudge THAT scope's cardholders, never silently the caller's own chapter.
+ * The branch structure below is `receiptChase`'s byte-for-byte, upgraded from
+ * its viewer floor to a MANAGER floor at every branch (nudging is a write,
+ * not a read) — `requireFinanceManager`/`requireCentralFinanceRole` resolve
+ * the caller's role via their OWN home chapter (which already unions in any
+ * central grant), never the peeked scope itself, exactly like
+ * `receiptChase`'s `requireFinanceCentral(ctx, homeChapterId)` calls.
+ *
+ * Manager-gated. Internal — only `sendReceiptNudge` (the public action)
+ * calls this.
+ */
+export const getManualNudgeTargets = internalQuery({
+  args: {
+    personId: v.optional(v.id("people")),
+    scope: v.optional(v.literal("central")),
+    chapterId: v.optional(v.id("chapters")),
+  },
+  returns: v.array(manualNudgeTargetValidator),
+  handler: async (
+    ctx,
+    { personId, scope: scopeArg, chapterId: chapterIdArg },
+  ): Promise<ManualNudgeTarget[]> => {
+    const homeChapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    let scope: Id<"chapters"> | "central";
+    if (scopeArg === "central") {
+      await requireCentralFinanceRole(ctx, homeChapterId, "manager");
+      scope = "central";
+    } else if (chapterIdArg != null && chapterIdArg !== homeChapterId) {
+      await requireCentralFinanceRole(ctx, homeChapterId, "manager");
+      scope = chapterIdArg;
+    } else {
+      await requireFinanceManager(ctx, homeChapterId);
+      scope = chapterIdArg ?? homeChapterId;
+    }
+
+    const sandboxMode = await readSandbox(ctx);
+    const owing = (
+      await ctx.db
+        .query("transactions")
+        .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", scope))
+        .order("desc")
+        .take(RECEIPT_NUDGE_SCAN_LIMIT)
+    )
+      .filter((tr) => chaseTxnMatchesMode(tr, sandboxMode))
+      .filter(isReceiptChaseOwing);
+
+    const byPerson = new Map<string, ManualNudgeTarget>();
+    for (const tr of owing) {
+      const holderId = await resolveChaseCardholderId(ctx, tr);
+      if (!holderId) continue; // Unattributed — nobody to nudge.
+      if (personId && holderId !== personId) continue;
+      const key = holderId as string;
+      let entry = byPerson.get(key);
+      if (!entry) {
+        const person = await ctx.db.get(holderId);
+        if (!person) continue;
+        entry = {
+          personId: holderId,
+          email: person.pwEmail ?? person.email ?? null,
+          phone: person.phone ?? null,
+          cardholderName: person.name,
+          anyEscalated: false,
+          charges: [],
+        };
+        byPerson.set(key, entry);
+      }
+      entry.charges.push({
+        amountCents: tr.amountCents,
+        merchantName: tr.merchantName ?? null,
+        escalated: tr.receiptReminderStage === "escalated",
+      });
+    }
+    return [...byPerson.values()].map((e) => ({
+      ...e,
+      anyEscalated: e.charges.some((c) => c.escalated),
+    }));
+  },
+});
+
+/**
+ * Checks-and-records the manual-nudge rate limit ATOMICALLY for ONE
+ * cardholder (same one-mutation check+insert shape as
+ * `beginRevealCardDetails`'s own rate limiter): returns `true` (and inserts
+ * the attempt row) iff no manual nudge was recorded for them in the last
+ * `MANUAL_NUDGE_WINDOW_MS`; returns `false` (no insert) otherwise, so the
+ * caller skips sending and reports `outcome:"already_nudged"` instead of
+ * throwing. Re-asserts the manager gate itself (defense in depth — mirrors
+ * every other `beginX` internal mutation in this file, e.g. `beginCancelCard`)
+ * even though its only caller already checked via `getManualNudgeTargets`.
+ */
+export const beginManualNudgeAttempt = internalMutation({
+  args: { personId: v.id("people") },
+  returns: v.boolean(),
+  handler: async (ctx, { personId }): Promise<boolean> => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireFinanceManager(ctx, chapterId);
+
+    const key = `person:${personId}`;
+    const windowStart = Date.now() - MANUAL_NUDGE_WINDOW_MS;
+    const recent = await ctx.db
+      .query("receiptNudgeAttempts")
+      .withIndex("by_key_and_time", (q) => q.eq("key", key).gte("createdAt", windowStart))
+      .first();
+    if (recent) return false;
+    // Swept daily by maintenance.sweepRateLimitAttempts (crons.ts) once older
+    // than MANUAL_NUDGE_WINDOW_MS.
+    await ctx.db.insert("receiptNudgeAttempts", { key, createdAt: Date.now() });
+    return true;
+  },
+});
+
+/** The Chase Receipts page's per-cardholder "already nudged" state: every
+ *  `personId` (from `personIds`) currently inside its 24h manual-nudge
+ *  window, with the timestamp of that nudge — lets the UI render "Nudged
+ *  today" for a group without the caller having to attempt (and get told
+ *  "already_nudged" by) `sendReceiptNudge` first. Manager-gated, same floor
+ *  as the nudge action itself; bounded to a page's worth of groups. */
+export const getManualNudgeStatus = query({
+  args: { personIds: v.array(v.id("people")) },
+  returns: v.array(v.object({ personId: v.id("people"), lastManualNudgeAt: v.number() })),
+  handler: async (ctx, { personIds }) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireFinanceManager(ctx, chapterId);
+
+    const windowStart = Date.now() - MANUAL_NUDGE_WINDOW_MS;
+    const out: Array<{ personId: Id<"people">; lastManualNudgeAt: number }> = [];
+    for (const personId of personIds.slice(0, CHASE_NUDGE_STATUS_LIMIT)) {
+      const key = `person:${personId}`;
+      const recent = await ctx.db
+        .query("receiptNudgeAttempts")
+        .withIndex("by_key_and_time", (q) => q.eq("key", key).gte("createdAt", windowStart))
+        .order("desc")
+        .first();
+      if (recent) out.push({ personId, lastManualNudgeAt: recent.createdAt });
+    }
+    return out;
+  },
+});
+
+/** Best-effort SMS nudge pointing at the text-to-receipt number
+ *  (`smsReceipts.ts`) — mirrors `replyToSmsSender`'s shape (no-op without
+ *  Twilio configured, swallows its own failures, never throws). Returns
+ *  whether it actually attempted (and didn't error on) a send. */
+async function sendManualNudgeSms(
+  ctx: ActionCtx,
+  phone: string,
+  charges: Array<{ amountCents: number; merchantName: string | null }>,
+): Promise<boolean> {
+  const creds = await resolveTwilioCredentials(ctx);
+  if (!creds) return false;
+  const to = normalizePhone(phone);
+  if (!to) return false;
+
+  const count = charges.length;
+  const fmt = (c: { amountCents: number; merchantName: string | null }) =>
+    `$${(c.amountCents / 100).toFixed(2)}${c.merchantName ? ` at ${c.merchantName}` : ""}`;
+  const body =
+    count === 1
+      ? `Reminder: you still owe a receipt for ${fmt(charges[0])}. Reply here with a photo to file it.`
+      : `Reminder: you still owe receipts for ${count} card charges (starting with ${fmt(charges[0])}). Reply here with a photo of each to file it.`;
+  try {
+    await sendSms(creds, { to, body });
+    return true;
+  } catch (err) {
+    console.log(`[cards] sendReceiptNudge: SMS failed: ${String(err)}`);
+    return false;
+  }
+}
+
+const nudgeResultValidator = v.object({
+  personId: v.id("people"),
+  cardholderName: v.string(),
+  outcome: v.union(
+    v.literal("sent"),
+    v.literal("already_nudged"),
+    v.literal("no_email"),
+  ),
+  emailSent: v.boolean(),
+  smsSent: v.boolean(),
+});
+type NudgeResult = typeof nudgeResultValidator.type;
+
+/**
+ * Manual, on-demand receipt nudge — the Chase Receipts page's "Send
+ * reminder" (`personId` set, one cardholder) and "Remind all" (`personId`
+ * omitted, every cardholder currently owing a receipt) buttons both call
+ * this SAME action.
+ *
+ * Per target cardholder:
+ *  1. Skip with `outcome:"no_email"` if they have no reachable email at all
+ *     — email is the required channel (mirrors `getReceiptReminderDigests`
+ *     dropping an unreachable cardholder from the automated digest); nothing
+ *     is sent and the 24h rate-limit slot is NOT consumed.
+ *  2. Otherwise check-and-record the 24h rate limit
+ *     (`beginManualNudgeAttempt`); `outcome:"already_nudged"` (no send) if
+ *     one was already recorded.
+ *  3. Send the SAME digest email `notifyReceiptDigest` sends for the
+ *     automated reminder (best-effort — a failed send still counts as
+ *     "sent" for rate-limiting purposes, matching how the automated digest
+ *     treats its own failures: logged, never thrown).
+ *  4. Best-effort SMS if a phone is on file + Twilio resolves
+ *     (`sendManualNudgeSms`) — never blocks or fails the email path.
+ *
+ * Manager-gated: `getManualNudgeTargets` (step 0) throws `FORBIDDEN` for a
+ * non-manager caller before anything else runs. `scope`/`chapterId` are
+ * forwarded straight through to it — the SAME pair the Chase Receipts page
+ * passes to `finances.receiptChase` (#383), so a nudge from a central/
+ * peeked-chapter view targets that scope, not the caller's own chapter.
+ */
+export const sendReceiptNudge = action({
+  args: {
+    personId: v.optional(v.id("people")),
+    scope: v.optional(v.literal("central")),
+    chapterId: v.optional(v.id("chapters")),
+  },
+  returns: v.object({ results: v.array(nudgeResultValidator) }),
+  handler: async (ctx, { personId, scope, chapterId }): Promise<{ results: NudgeResult[] }> => {
+    const targets: ManualNudgeTarget[] = await ctx.runQuery(
+      internal.cards.getManualNudgeTargets,
+      { personId, scope, chapterId },
+    );
+
+    const results: NudgeResult[] = [];
+    for (const target of targets) {
+      if (target.charges.length === 0) continue;
+
+      if (!target.email) {
+        results.push({
+          personId: target.personId,
+          cardholderName: target.cardholderName,
+          outcome: "no_email",
+          emailSent: false,
+          smsSent: false,
+        });
+        continue;
+      }
+
+      const ok: boolean = await ctx.runMutation(internal.cards.beginManualNudgeAttempt, {
+        personId: target.personId,
+      });
+      if (!ok) {
+        results.push({
+          personId: target.personId,
+          cardholderName: target.cardholderName,
+          outcome: "already_nudged",
+          emailSent: false,
+          smsSent: false,
+        });
+        continue;
+      }
+
+      let emailSent = false;
+      try {
+        await notifyReceiptDigest(ctx, {
+          email: target.email,
+          cardholderName: target.cardholderName,
+          anyEscalated: target.anyEscalated,
+          charges: target.charges,
+        });
+        emailSent = true;
+      } catch (err) {
+        console.error("[cards] sendReceiptNudge: email failed", target.email, err);
+      }
+
+      const smsSent = target.phone
+        ? await sendManualNudgeSms(ctx, target.phone, target.charges)
+        : false;
+
+      results.push({
+        personId: target.personId,
+        cardholderName: target.cardholderName,
+        outcome: "sent",
+        emailSent,
+        smsSent,
+      });
+    }
+    return { results };
   },
 });
 
