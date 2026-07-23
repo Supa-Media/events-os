@@ -115,6 +115,20 @@ Before finishing a run of this skill, you MUST:
 
 ## Learnings Log (newest first)
 
+### 2026-07-23 — Run 1 addendum 2 (drive-to-green phase)
+- CI status sweeps must use CHECK RUNS (pull_request_read method
+  get_check_runs), not get_status — the legacy commit-status API is empty on
+  Actions-based repos and reads as "pending, 0 checks" for fully green PRs.
+  When an agent's report contradicts known facts, spot-check one case
+  yourself before relaying, then send the agent back with the correction.
+- Route CI fixes back to the agent that authored the PR via SendMessage —
+  it retains full context and fixed a type-narrowing error in minutes.
+- Sandbox agents cannot pnpm install here (401 on @supa-media/* GitHub
+  Packages) — expect "manual review + CI is the real gate" in every agent
+  report; budget one CI-fix round trip per backend-touching PR.
+- Stacked PRs report mergeable_state "unstable" while their base PR is
+  unmerged — expected, not a failure; state the merge order in both bodies.
+
 ### 2026-07-23 — Run 1 addendum (dispatch phase)
 - `.gitignore` ignores `.claude/*` (only settings.json whitelisted) — this
   skill needed an explicit `!.claude/skills/` exception to be committable.
