@@ -53,6 +53,12 @@ export async function createReceipt(
     ocrModel?: string;
     note?: string;
     candidateTransactionIds?: Id<"transactions">[];
+    // CRM PR: the stored file's content hash (from the `_storage` system
+    // table), and — when a same-chapter earlier receipt already carries that
+    // hash — the id of the receipt this one duplicates. Both optional; a
+    // caller that hasn't computed a hash (or found no dupe) omits them.
+    fileSha256?: string;
+    duplicateOfReceiptId?: Id<"receipts">;
   },
 ): Promise<Id<"receipts">> {
   const now = Date.now();
@@ -65,6 +71,10 @@ export async function createReceipt(
       ? { uploadedByPersonId: args.uploadedByPersonId }
       : {}),
     ...(args.senderClass ? { senderClass: args.senderClass } : {}),
+    ...(args.fileSha256 ? { fileSha256: args.fileSha256 } : {}),
+    ...(args.duplicateOfReceiptId
+      ? { duplicateOfReceiptId: args.duplicateOfReceiptId }
+      : {}),
     // Canonical fields seeded from OCR (never fabricated — undefined stays
     // undefined so a backfilled legacy document keeps no read total).
     ...(args.ocrAmountCents != null ? { amountCents: args.ocrAmountCents } : {}),
@@ -210,4 +220,30 @@ export async function unlinkReceiptFromTransaction(
   }
 
   return { unlinked: true };
+}
+
+/**
+ * Find an EARLIER receipt in the same chapter whose stored file has the exact
+ * same content hash (`by_sha256`, then chapter-filtered in memory — a real
+ * hash collision among one chapter's receipts is rare, so this stays cheap).
+ * Used by both ingest paths (`receipts.ts#submitUploadedReceipts`,
+ * `receiptInbox.ts#commitInboundReceipts`) to catch the SAME bytes arriving
+ * twice, whether by re-upload or by re-forwarding an email — deliberately
+ * scoped to one chapter (a coincidental cross-chapter match is not a
+ * duplicate submission, just two chapters photographing similar receipts).
+ * A chapterless (unknown-sender) or central-owned receipt never dedupes
+ * (`chapterId` must be a real chapter id) — returns `null` immediately.
+ */
+export async function findDuplicateReceiptBySha256(
+  ctx: MutationCtx,
+  chapterId: ReceiptChapterId | undefined,
+  fileSha256: string,
+): Promise<Id<"receipts"> | null> {
+  if (chapterId == null || chapterId === "central") return null;
+  const matches = await ctx.db
+    .query("receipts")
+    .withIndex("by_sha256", (q) => q.eq("fileSha256", fileSha256))
+    .take(50);
+  const hit = matches.find((r) => r.chapterId === chapterId);
+  return hit ? hit._id : null;
 }

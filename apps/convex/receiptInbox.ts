@@ -68,7 +68,11 @@ import { readSandbox } from "./financeSettings";
 import { normalizeEmail, isAllowedEmail } from "./lib/access";
 import { getChapterIdOrNull } from "./lib/context";
 import { getFinanceRole, requireFinanceRole } from "./lib/finance";
-import { createReceipt, linkReceiptToTransaction } from "./lib/receiptLinks";
+import {
+  createReceipt,
+  linkReceiptToTransaction,
+  findDuplicateReceiptBySha256,
+} from "./lib/receiptLinks";
 import { sendEmail } from "./ticketingEmails";
 
 // ── Tuning constants ─────────────────────────────────────────────────────────
@@ -91,7 +95,7 @@ const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
  *  via `RECEIPT_OCR_MODEL` so the owner can point it at a FREE/cheap vision
  *  model (the preference) or upgrade if scan quality is weak. Defaults to a
  *  low-cost vision-capable model. */
-function ocrModel(): string {
+export function ocrModel(): string {
   return process.env.RECEIPT_OCR_MODEL ?? "google/gemini-2.0-flash-001";
 }
 
@@ -268,8 +272,10 @@ export const classifySender = internalQuery({
 });
 
 // ── The matcher ──────────────────────────────────────────────────────────────
-/** One candidate transaction the matcher surfaces. */
-const candidateValidator = v.object({
+/** One candidate transaction the matcher surfaces. Exported so `receipts.ts`
+ *  (`suggestMatches`) can share this exact return shape instead of redefining
+ *  it. */
+export const candidateValidator = v.object({
   transactionId: v.id("transactions"),
   amountCents: v.number(),
   postedAt: v.number(),
@@ -310,6 +316,75 @@ function merchantTokens(...texts: (string | null | undefined)[]): Set<string> {
  * date+receipt+spend predicates are cheap). Sandbox-filtered + `isSpend` so it
  * only ever sees the same charges the reconcile grid does.
  */
+export async function matchReceiptCandidates(
+  ctx: QueryCtx,
+  args: {
+    chapterId: Id<"chapters">;
+    amountCents: number;
+    receiptDate: number;
+    ocrMerchant?: string;
+    senderPersonId?: Id<"people">;
+  },
+): Promise<
+  {
+    transactionId: Id<"transactions">;
+    amountCents: number;
+    postedAt: number;
+    merchantName: string | undefined;
+    description: string | undefined;
+    status: string;
+    merchantOverlap: boolean;
+    isOwnCharge: boolean;
+  }[]
+> {
+  const sandboxMode = await readSandbox(ctx);
+  const rows = await ctx.db
+    .query("transactions")
+    .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", args.chapterId))
+    .order("desc")
+    .take(CANDIDATE_SCAN_LIMIT);
+
+  const targetTokens = merchantTokens(args.ocrMerchant);
+  const matches = rows
+    .filter(
+      (tr) =>
+        tr.amountCents === args.amountCents &&
+        tr.receiptStorageId == null &&
+        isSpend(tr) &&
+        txnMatchesMode(tr, sandboxMode) &&
+        Math.abs(tr.postedAt - args.receiptDate) <= MATCH_WINDOW_MS,
+    )
+    .map((tr) => {
+      const overlap =
+        targetTokens.size > 0 &&
+        [...merchantTokens(tr.merchantName, tr.description)].some((t) =>
+          targetTokens.has(t),
+        );
+      return {
+        transactionId: tr._id,
+        amountCents: tr.amountCents,
+        postedAt: tr.postedAt,
+        merchantName: tr.merchantName,
+        description: tr.description,
+        status: tr.status,
+        merchantOverlap: overlap,
+        isOwnCharge:
+          args.senderPersonId != null && tr.personId === args.senderPersonId,
+      };
+    });
+
+  // Best-first: own charge, then merchant overlap, then nearest date.
+  matches.sort((a, b) => {
+    if (a.isOwnCharge !== b.isOwnCharge) return a.isOwnCharge ? -1 : 1;
+    if (a.merchantOverlap !== b.merchantOverlap) return a.merchantOverlap ? -1 : 1;
+    return (
+      Math.abs(a.postedAt - args.receiptDate) -
+      Math.abs(b.postedAt - args.receiptDate)
+    );
+  });
+  return matches.slice(0, MAX_CANDIDATES_SURFACED);
+}
+
 export const findReceiptMatches = internalQuery({
   args: {
     chapterId: v.id("chapters"),
@@ -319,54 +394,7 @@ export const findReceiptMatches = internalQuery({
     senderPersonId: v.optional(v.id("people")),
   },
   returns: v.array(candidateValidator),
-  handler: async (ctx, args) => {
-    const sandboxMode = await readSandbox(ctx);
-    const rows = await ctx.db
-      .query("transactions")
-      .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", args.chapterId))
-      .order("desc")
-      .take(CANDIDATE_SCAN_LIMIT);
-
-    const targetTokens = merchantTokens(args.ocrMerchant);
-    const matches = rows
-      .filter(
-        (tr) =>
-          tr.amountCents === args.amountCents &&
-          tr.receiptStorageId == null &&
-          isSpend(tr) &&
-          txnMatchesMode(tr, sandboxMode) &&
-          Math.abs(tr.postedAt - args.receiptDate) <= MATCH_WINDOW_MS,
-      )
-      .map((tr) => {
-        const overlap =
-          targetTokens.size > 0 &&
-          [...merchantTokens(tr.merchantName, tr.description)].some((t) =>
-            targetTokens.has(t),
-          );
-        return {
-          transactionId: tr._id,
-          amountCents: tr.amountCents,
-          postedAt: tr.postedAt,
-          merchantName: tr.merchantName,
-          description: tr.description,
-          status: tr.status,
-          merchantOverlap: overlap,
-          isOwnCharge:
-            args.senderPersonId != null && tr.personId === args.senderPersonId,
-        };
-      });
-
-    // Best-first: own charge, then merchant overlap, then nearest date.
-    matches.sort((a, b) => {
-      if (a.isOwnCharge !== b.isOwnCharge) return a.isOwnCharge ? -1 : 1;
-      if (a.merchantOverlap !== b.merchantOverlap) return a.merchantOverlap ? -1 : 1;
-      return (
-        Math.abs(a.postedAt - args.receiptDate) -
-        Math.abs(b.postedAt - args.receiptDate)
-      );
-    });
-    return matches.slice(0, MAX_CANDIDATES_SURFACED);
-  },
+  handler: async (ctx, args) => matchReceiptCandidates(ctx, args),
 });
 
 // ── Commit: create receipt documents + auto-attach + write the inbound row ───
@@ -424,6 +452,19 @@ export const commitInboundReceipts = internalMutation({
     const reasons = new Set<string>();
 
     for (const ex of args.extracted) {
+      // Exact-dupe check: the same file bytes landing twice (a forwarded
+      // duplicate, a redelivered attachment) — caught via the `_storage`
+      // system table's own `sha256`, chapter-scoped (see
+      // `lib/receiptLinks.ts#findDuplicateReceiptBySha256`). Stamped either
+      // way so an upload of these SAME bytes later is caught too (both
+      // directions of the CRM PR's cross-source dedup).
+      const meta = await ctx.db.system.get("_storage", ex.storageId);
+      const fileSha256 = meta?.sha256;
+      const duplicateOfReceiptId = fileSha256
+        ? ((await findDuplicateReceiptBySha256(ctx, args.chapterId, fileSha256)) ??
+          undefined)
+        : undefined;
+
       const receiptId = await createReceipt(ctx, {
         chapterId: args.chapterId,
         storageId: ex.storageId,
@@ -438,8 +479,16 @@ export const commitInboundReceipts = internalMutation({
         candidateTransactionIds: ex.candidateTransactionIds.length
           ? ex.candidateTransactionIds
           : undefined,
+        fileSha256,
+        duplicateOfReceiptId,
       });
 
+      if (duplicateOfReceiptId) {
+        // A likely duplicate submission — never auto-attach it, regardless of
+        // how clean its OCR read or match would otherwise be. A human confirms.
+        reasons.add("duplicate");
+        continue;
+      }
       if (ex.ocrAmountCents == null) {
         reasons.add("unreadable");
         continue;
@@ -496,7 +545,10 @@ export const commitInboundReceipts = internalMutation({
           : `Attached ${matchedCount} receipt${matchedCount === 1 ? "" : "s"} to charges.`;
     } else if (reasons.size > 0) {
       status = "needs_review";
-      if (reasons.has("unknown")) {
+      if (reasons.has("duplicate")) {
+        detail =
+          "Looks like a duplicate of an already-submitted receipt — a bookkeeper should confirm.";
+      } else if (reasons.has("unknown")) {
         detail = "Sender unknown — pick the transaction manually.";
       } else if (reasons.has("untrusted")) {
         detail = "Sender not verified — a bookkeeper must confirm the match.";
@@ -761,8 +813,10 @@ async function fetchAllReceiptAttachments(
   return out;
 }
 
-/** Base64-encode an ArrayBuffer for a data: URL (chunked to avoid arg limits). */
-function arrayBufferToBase64(buf: ArrayBuffer): string {
+/** Base64-encode an ArrayBuffer for a data: URL (chunked to avoid arg limits).
+ *  Exported so `receipts.ts`'s upload OCR path builds the same data URL shape
+ *  `ocrReceiptImage` expects, instead of re-implementing the chunking. */
+export function arrayBufferToBase64(buf: ArrayBuffer): string {
   const bytes = new Uint8Array(buf);
   let bin = "";
   const CHUNK = 0x8000;
@@ -781,7 +835,7 @@ function arrayBufferToBase64(buf: ArrayBuffer): string {
  * cheap vision models accept single-page receipt PDFs); multipage PDFs degrade
  * to "couldn't read" → `needs_review`, which is acceptable for receipts.
  */
-async function ocrReceiptImage(
+export async function ocrReceiptImage(
   dataUrl: string,
   model: string,
 ): Promise<{
