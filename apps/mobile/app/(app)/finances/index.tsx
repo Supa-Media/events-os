@@ -163,15 +163,17 @@ function DashboardBody({ seats }: { seats: Seats }) {
     else if (kind === "needs_budget") router.navigate("/finances/reconcile" as never);
   }
 
-  // Defensive no-op mirroring `onAttentionAction` above — `ChapterView`
-  // already hides every "Edit budget" affordance while peeking
-  // (`isDrilldown`), so this shouldn't fire, but the modal's save resolves
-  // the CALLER's own chapter server-side regardless of which budget id it's
-  // opened with, so opening it here while peeking would still set up a
-  // guaranteed-to-fail edit.
+  // A budget row's body press now opens the shareable detail page instead of
+  // jumping straight into the edit modal — `BudgetDetailScreen`'s own "Edit"
+  // button is the new way into `BudgetCreateModal` (see
+  // `apps/mobile/app/(app)/finances/budgets/[id].tsx`). `ChapterView` still
+  // hides this affordance entirely while peeking (`isDrilldown`); this is a
+  // defensive no-op mirroring `onAttentionAction` above in case that guard
+  // ever drifts, since the detail page/edit modal both resolve the CALLER'S
+  // own chapter server-side regardless of which budget id they're opened with.
   function onEditBudget(id: string) {
     if (isPeeking) return;
-    setBudgetModal({ open: true, id: id as Id<"budgets">, central: false });
+    router.push(`/finances/budgets/${id}` as never);
   }
 
   // WP-wave4 (item 1): the central desk's own "Edit budget" — `central: true`
