@@ -44,7 +44,8 @@ const RSVP_HOST = "rsvp.publicworship.life";
 // client-script JSON APIs (/api/tickets/*, /api/reimburse/*, /api/give/*,
 // /api/auth/*, all under /api/), and the inbound webhooks
 // (/stripe/webhook, /increase/webhook, /resend/inbound — the receipt-email
-// ingest). /give is handled separately below
+// ingest, /twilio/receipts — the receipt-SMS ingest). /give is handled
+// separately below
 // since it's an exact-path route (the map) plus a pathPrefix route
 // (/give/<slug>), not a plain prefix. Exported so drift.test.ts can assert
 // against apps/convex/http.ts's literals.
@@ -60,6 +61,7 @@ export const CONVEX_PREFIXES = [
   "/stripe/",
   "/increase/",
   "/resend/",
+  "/twilio/",
 ] as const;
 
 function isConvexPath(pathname: string): boolean {

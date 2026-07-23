@@ -66,6 +66,62 @@ export async function resolveTwilioCredentials(
 }
 
 /**
+ * Verify an inbound Twilio webhook's `X-Twilio-Signature` header
+ * (https://www.twilio.com/docs/usage/webhooks/webhooks-security). Twilio signs
+ * HMAC-SHA1(authToken, url + sorted(key+value for every POST param)) and
+ * base64-encodes the MAC — NOT a Standard-Webhooks scheme, so this is its own
+ * implementation (`lib/standardWebhook.ts` doesn't apply here).
+ *
+ * `url` MUST be the EXACT URL Twilio posted to (scheme + host + path + query
+ * string) — see `smsReceipts.ts#resolveTwilioReceiptsWebhookUrl` for how the
+ * caller resolves that URL (the subtlety: it is NOT always `req.url` as the
+ * httpAction sees it — a proxied request rewrites the host). `params` are the
+ * POST body's form fields, already url-decoded (e.g. via
+ * `new URLSearchParams(body)`) — Twilio computes the signature over the
+ * DECODED values, not the raw encoded bytes.
+ *
+ * Returns `false` (never throws) on a missing signature, an empty auth token,
+ * or a mismatch. Constant-time compare on the final digest.
+ */
+export async function verifyTwilioSignature(
+  url: string,
+  params: Record<string, string>,
+  authToken: string,
+  signature: string | null,
+): Promise<boolean> {
+  if (!signature || !authToken) return false;
+
+  // Twilio's algorithm: sort param keys, then concatenate url + key1 + value1
+  // + key2 + value2 + ... (no separators at all — see Twilio's reference
+  // implementations, e.g. twilio-node's `validateRequest`).
+  let data = url;
+  for (const key of Object.keys(params).sort()) {
+    data += key + params[key];
+  }
+
+  const key = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(authToken),
+    { name: "HMAC", hash: "SHA-1" },
+    false,
+    ["sign"],
+  );
+  const mac = new Uint8Array(
+    await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(data)),
+  );
+  let bin = "";
+  for (const b of mac) bin += String.fromCharCode(b);
+  const expected = btoa(bin);
+
+  if (expected.length !== signature.length) return false;
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) {
+    diff |= expected.charCodeAt(i) ^ signature.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
+/**
  * Send one SMS via the Twilio REST API. `to` MUST already be E.164 (callers
  * normalize with `normalizePhone` first). Throws on a non-2xx response so
  * best-effort loops (blasts) can count failures; the thrown message NEVER
