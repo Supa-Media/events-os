@@ -104,6 +104,21 @@ export function hasReceiptDue(card: CardSummary): boolean {
   return card.receiptGraceEndsAt != null || card.status === "locked";
 }
 
+/**
+ * The Trained ✓ / Needs training chip for a card-prerequisite state (the
+ * org-wide "finish this Academy course before a card" gate). Returns `null`
+ * when there's no effective gate (`prerequisiteMet == null` — none configured,
+ * or the configured course fails open), so callers render nothing.
+ */
+export function trainingBadge(
+  prerequisiteMet: boolean | null | undefined,
+): StatusChip | null {
+  if (prerequisiteMet == null) return null;
+  return prerequisiteMet
+    ? { label: "Trained", tone: "success", icon: "award" }
+    : { label: "Needs training", tone: "warn", icon: "book-open" };
+}
+
 /** "45" → "45s"; "125" → "3m" (rounds up so the holder never retries a beat
  *  early). Used to turn `revealCardDetails`'s `retryAfterSeconds` into a
  *  readable "try again in …" string. */

@@ -14,6 +14,7 @@ import type { Id } from "@events-os/convex/_generated/dataModel";
 import type { CardType } from "@events-os/shared";
 import {
   Avatar,
+  Badge,
   Button,
   DateTimeField,
   Field,
@@ -25,6 +26,7 @@ import {
 } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
+import { trainingBadge } from "./helpers";
 
 const TYPE_OPTIONS = [
   { value: "virtual", label: "Virtual" },
@@ -53,6 +55,16 @@ export function IssueCardModal({ onClose }: { onClose: () => void }) {
     () => (people ?? []).find((p: any) => p._id === personId)?.name ?? null,
     [people, personId],
   );
+
+  // The org-wide card-prerequisite course + whether the PICKED person has
+  // completed it. `null` when no gate is configured (or nobody picked yet);
+  // issuance throws CARD_PREREQUISITE_INCOMPLETE if it's unmet, so this is the
+  // heads-up before the manager taps Issue.
+  const prerequisite = useQuery(
+    api.cards.cardPrerequisiteStatus,
+    personId ? { personId: personId as Id<"people"> } : "skip",
+  );
+  const trainingChip = prerequisite ? trainingBadge(prerequisite.met) : null;
 
   async function submit() {
     if (!personId) {
@@ -133,6 +145,24 @@ export function IssueCardModal({ onClose }: { onClose: () => void }) {
                   <Icon name="chevron-down" size={16} color={colors.muted} />
                 </Pressable>
               </Field>
+
+              {/* Card-prerequisite training status for the picked person —
+                  issuance is blocked server-side until the course is done. */}
+              {prerequisite && trainingChip ? (
+                <View className="mb-3 -mt-1 flex-row items-center gap-2">
+                  <Badge
+                    label={trainingChip.label}
+                    tone={trainingChip.tone}
+                    icon={trainingChip.icon}
+                  />
+                  {!prerequisite.met ? (
+                    <Text className="flex-1 text-xs text-warn">
+                      Must complete {prerequisite.title} before a card can be
+                      issued.
+                    </Text>
+                  ) : null}
+                </View>
+              ) : null}
 
               <Select
                 label="Card type"

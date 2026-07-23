@@ -97,6 +97,7 @@ import {
   matchesMode,
   isSandboxObjectId,
   isCardEligible,
+  getAcademyCourse,
   type CardType,
   type CardStatus,
   type CardSource,
@@ -104,7 +105,12 @@ import {
   type RepaymentMethod,
   type RepaymentStatus,
 } from "@events-os/shared";
-import { readSandbox, readNoReceiptAutoConvertDays } from "./financeSettings";
+import {
+  readSandbox,
+  readNoReceiptAutoConvertDays,
+  readCardPrerequisiteCourseSlug,
+} from "./financeSettings";
+import { hasCompletedCourse } from "./academy";
 import {
   requireChapterId,
   requireInChapter,
@@ -212,6 +218,24 @@ const cardRequestSummaryValidator = v.object({
   cardId: v.union(v.id("cards"), v.null()),
 });
 
+// The org-wide card-prerequisite state, `null` when no gate is configured:
+//  - `prerequisiteMet` on a row: `null` when no prerequisite is configured OR
+//    the configured course isn't in the catalog (fail-open — no effective
+//    gate); otherwise whether that person has completed it.
+// The list rows below reuse the base card/request validators + this one field
+// so the manager UI can badge Trained ✓ / Needs training per row.
+const prerequisiteMetValidator = v.union(v.boolean(), v.null());
+
+const cardRowValidator = v.object({
+  ...cardSummaryValidator.fields,
+  prerequisiteMet: prerequisiteMetValidator,
+});
+
+const cardRequestRowValidator = v.object({
+  ...cardRequestSummaryValidator.fields,
+  prerequisiteMet: prerequisiteMetValidator,
+});
+
 const repaymentSummaryValidator = v.object({
   id: v.id("personalRepayments"),
   transactionId: v.id("transactions"),
@@ -264,6 +288,12 @@ interface CardRequestSummary {
   decidedAt: number | null;
   cardId: Id<"cards"> | null;
 }
+
+// A `null` `prerequisiteMet` means "no effective card-prerequisite gate" (none
+// configured, or the configured course isn't in the catalog → fail-open); a
+// boolean is that person's completion of the configured course.
+type CardRow = CardSummary & { prerequisiteMet: boolean | null };
+type CardRequestRow = CardRequestSummary & { prerequisiteMet: boolean | null };
 
 interface RepaymentSummary {
   id: Id<"personalRepayments">;
@@ -551,6 +581,23 @@ async function toCardRequestSummary(
   };
 }
 
+/**
+ * The org-wide card-prerequisite course resolved to its catalog entry, or
+ * `null` when there is NO EFFECTIVE gate — either none is configured, or the
+ * configured slug isn't a real `ACADEMY_COURSES` course (fail-open, exactly
+ * like `beginIssueCard`: an unknown course can never be completed, so it can't
+ * be allowed to read as "everyone needs training"). Shared by the list queries
+ * and `cardPrerequisiteStatus` so they all agree on when a gate is in effect.
+ */
+async function effectivePrerequisiteCourse(
+  ctx: QueryCtx,
+): Promise<{ slug: string; title: string } | null> {
+  const slug = await readCardPrerequisiteCourseSlug(ctx);
+  if (slug === null) return null;
+  const course = getAcademyCourse(slug);
+  return course ? { slug: course.slug, title: course.title } : null;
+}
+
 // ── issueCard (action, manager) ──────────────────────────────────────────────
 
 /**
@@ -595,6 +642,32 @@ export const beginIssueCard = internalMutation({
         message:
           "Cards can only be issued to people with a @publicworship.life email.",
       });
+    }
+
+    // Academy-course prerequisite (org-wide, OFF by default). The single hard
+    // gate for BOTH issuance paths: `issueCard` (direct) and
+    // `decideCardRequest → issueCard` (approved request) both funnel here.
+    const prerequisiteSlug = await readCardPrerequisiteCourseSlug(ctx);
+    if (prerequisiteSlug !== null) {
+      const course = getAcademyCourse(prerequisiteSlug);
+      if (course === undefined) {
+        // FAIL-OPEN: an unknown / not-yet-authored course can NEVER be
+        // completed, so gating on it would brick ALL issuance for the whole
+        // org. The settings UI already warns about this misconfiguration, so
+        // we skip the gate rather than block everyone.
+      } else if (
+        !(await hasCompletedCourse(
+          ctx,
+          chapterId,
+          args.cardholderPersonId,
+          prerequisiteSlug,
+        ))
+      ) {
+        throw new ConvexError({
+          code: "CARD_PREREQUISITE_INCOMPLETE",
+          message: `${course.title} must be completed before a card can be issued.`,
+        });
+      }
     }
 
     // Mode-aware: issue on the chapter's CURRENT-environment account (never
@@ -775,8 +848,8 @@ export const issueCard = action({
 /** The chapter's cards (viewer+) — the manager card view. */
 export const listCards = query({
   args: {},
-  returns: v.array(cardSummaryValidator),
-  handler: async (ctx): Promise<CardSummary[]> => {
+  returns: v.array(cardRowValidator),
+  handler: async (ctx): Promise<CardRow[]> => {
     const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
     if (!chapterId) return [];
     await requireFinanceRole(ctx, chapterId, "viewer");
@@ -791,7 +864,19 @@ export const listCards = query({
         .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
         .take(CARD_SCAN_LIMIT)
     ).filter((c) => matchesMode(c.increaseCardId ?? null, sandboxMode));
-    return Promise.all(cards.map((c) => buildCardSummary(ctx, c)));
+    // Per-cardholder training status for the manager roster's Trained ✓ /
+    // Needs training badge — `null` on every row when there's no effective
+    // gate. `hasCompletedCourse` is a couple of indexed reads per card; the
+    // list is already bounded by CARD_SCAN_LIMIT.
+    const course = await effectivePrerequisiteCourse(ctx);
+    return Promise.all(
+      cards.map(async (c) => ({
+        ...(await buildCardSummary(ctx, c)),
+        prerequisiteMet: course
+          ? await hasCompletedCourse(ctx, chapterId, c.cardholderPersonId, course.slug)
+          : null,
+      })),
+    );
   },
 });
 
@@ -1451,8 +1536,8 @@ export const requestCard = mutation({
  *  forever would be noise) or when there's none/no chapter/roster row yet. */
 export const myCardRequest = query({
   args: {},
-  returns: v.union(cardRequestSummaryValidator, v.null()),
-  handler: async (ctx): Promise<CardRequestSummary | null> => {
+  returns: v.union(cardRequestRowValidator, v.null()),
+  handler: async (ctx): Promise<CardRequestRow | null> => {
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return null;
     const person = await viewerPerson(ctx, chapterId as Id<"chapters">);
@@ -1465,7 +1550,13 @@ export const myCardRequest = query({
     const mine = rows.filter((r) => r.chapterId === chapterId);
     const latest = mine[0];
     if (!latest || latest.status === "approved") return null;
-    return toCardRequestSummary(ctx, latest);
+    const course = await effectivePrerequisiteCourse(ctx);
+    return {
+      ...(await toCardRequestSummary(ctx, latest)),
+      prerequisiteMet: course
+        ? await hasCompletedCourse(ctx, chapterId as Id<"chapters">, person._id, course.slug)
+        : null,
+    };
   },
 });
 
@@ -1474,8 +1565,8 @@ export const myCardRequest = query({
  *  only a finance manager can actually decide one (`decideCardRequest`). */
 export const listCardRequests = query({
   args: {},
-  returns: v.array(cardRequestSummaryValidator),
-  handler: async (ctx): Promise<CardRequestSummary[]> => {
+  returns: v.array(cardRequestRowValidator),
+  handler: async (ctx): Promise<CardRequestRow[]> => {
     const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
     if (!chapterId) return [];
     await requireFinanceRole(ctx, chapterId, "viewer");
@@ -1485,7 +1576,65 @@ export const listCardRequests = query({
         q.eq("chapterId", chapterId).eq("status", "requested"),
       )
       .take(CARD_REQUEST_SCAN_LIMIT);
-    return Promise.all(rows.map((r) => toCardRequestSummary(ctx, r)));
+    // Whether each requester has finished the org's card-prerequisite course —
+    // so a manager sees Trained ✓ / Needs training before approving. `null`
+    // on every row when there's no effective gate.
+    const course = await effectivePrerequisiteCourse(ctx);
+    return Promise.all(
+      rows.map(async (r) => ({
+        ...(await toCardRequestSummary(ctx, r)),
+        prerequisiteMet: course
+          ? await hasCompletedCourse(ctx, chapterId, r.personId, course.slug)
+          : null,
+      })),
+    );
+  },
+});
+
+/**
+ * The org-wide card-prerequisite course + whether a person has completed it —
+ * the read behind the "Complete <course> to get a card" member note and the
+ * "Trained ✓ / Needs training" hint in the Issue-card flow. Returns `null`
+ * whenever there's NO EFFECTIVE gate (none configured, or the configured slug
+ * isn't a real course → fail-open, matching `beginIssueCard`).
+ *
+ * `personId` OMITTED → the CALLER's own status (any member, no finance role).
+ * `personId` GIVEN → that person's status; viewer+ gated and chapter-scoped,
+ * for the manager Issue-card flow inspecting a pickable cardholder. Card
+ * completion is already chapter-visible (see `courseCompleters`), so this
+ * exposes nothing new.
+ */
+export const cardPrerequisiteStatus = query({
+  args: { personId: v.optional(v.id("people")) },
+  returns: v.union(
+    v.object({ slug: v.string(), title: v.string(), met: v.boolean() }),
+    v.null(),
+  ),
+  handler: async (
+    ctx,
+    { personId },
+  ): Promise<{ slug: string; title: string; met: boolean } | null> => {
+    const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
+    if (!chapterId) return null;
+    const course = await effectivePrerequisiteCourse(ctx);
+    if (!course) return null;
+
+    let target: Id<"people">;
+    if (personId) {
+      await requireFinanceRole(ctx, chapterId, "viewer");
+      const person = await ctx.db.get(personId);
+      await requireInChapter(ctx, chapterId, person, "Person");
+      target = personId;
+    } else {
+      const me = await viewerPerson(ctx, chapterId);
+      if (!me) return null;
+      target = me._id;
+    }
+    return {
+      slug: course.slug,
+      title: course.title,
+      met: await hasCompletedCourse(ctx, chapterId, target, course.slug),
+    };
   },
 });
 

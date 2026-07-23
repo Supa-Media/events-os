@@ -29,6 +29,7 @@ import {
   cardStatusBadge,
   cardTypeLabel,
   receiptStatus,
+  trainingBadge,
   type CardSummary,
 } from "./helpers";
 
@@ -52,6 +53,9 @@ export function CardholderRow({
   const receipts = receiptStatus(card);
   const receiptDue = receipts.tone === "warn";
   const isCanceled = card.status === "canceled";
+  // Org-wide card-prerequisite training status — null (no chip) when there's
+  // no gate configured.
+  const training = trainingBadge(card.prerequisiteMet);
 
   // A card the HOLDER froze themselves (suspected foul play) — a manager's
   // unlock is the superset power that can still lift it (server behavior
@@ -115,12 +119,15 @@ export function CardholderRow({
             <Text className="text-sm font-semibold text-ink" numberOfLines={1}>
               {card.cardholderName ?? "Unknown"}
             </Text>
-            <View className="flex-row items-center gap-1">
+            <View className="flex-row items-center gap-1.5">
               <Text className="text-xs text-faint" numberOfLines={1}>
                 {cardTypeLabel(card.type)} ···{card.last4 ?? "••••"}
               </Text>
               {receiptDue ? (
                 <Icon name="flag" size={10} color={colors.warn} />
+              ) : null}
+              {training ? (
+                <Badge label={training.label} tone={training.tone} icon={training.icon} />
               ) : null}
             </View>
           </View>

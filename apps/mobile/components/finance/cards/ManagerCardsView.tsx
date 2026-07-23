@@ -33,14 +33,17 @@ import type { Id } from "@events-os/convex/_generated/dataModel";
 import { formatCents } from "@events-os/shared";
 import {
   Avatar,
+  Badge,
   Button,
   EmptyState,
   HeaderCell,
+  Icon,
   SectionHeader,
   Table,
   TableHeader,
   ToastView,
 } from "../../ui";
+import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
 import { CardTile } from "./CardTile";
 import { CardPhilosophy } from "./CardPhilosophy";
@@ -50,12 +53,16 @@ import { CardControlsModal } from "./CardControlsModal";
 import { MerchantAllowlistSection } from "./MerchantAllowlistSection";
 import { RelayCardsSection } from "./RelayCardsSection";
 import { MyCardSection } from "./MyCardSection";
-import { hasReceiptDue, type CardSummary } from "./helpers";
+import { hasReceiptDue, trainingBadge, type CardSummary } from "./helpers";
 
 export function ManagerCardsView() {
   const cards = useQuery(api.cards.listCards, {});
   const personalToRepay = useQuery(api.cards.personalRepaymentsOutstanding, {});
   const requests = useQuery(api.cards.listCardRequests, {});
+  // The org-wide card-prerequisite course (null when no gate is configured) —
+  // named once in the header caption; per-row Trained ✓ / Needs training chips
+  // come off each row's `prerequisiteMet`.
+  const prerequisite = useQuery(api.cards.cardPrerequisiteStatus, {});
   const lockCard = useMutation(api.cards.lockCard);
   const unlockCard = useMutation(api.cards.unlockCard);
   const cancelCard = useAction(api.cards.cancelCard);
@@ -133,6 +140,19 @@ export function ManagerCardsView() {
         gets one, and each holder owns their own receipts.
       </Text>
 
+      {/* Org-wide card-prerequisite course — issuance is gated on completing it
+          (see `beginIssueCard`). Named here once; the roster + request rows show
+          Trained ✓ / Needs training per person. */}
+      {prerequisite ? (
+        <View className="mb-4 flex-row items-center gap-2 rounded-md border border-border bg-sunken px-3 py-2">
+          <Icon name="book-open" size={13} color={colors.muted} />
+          <Text className="flex-1 text-xs text-muted">
+            New cards require completing{" "}
+            <Text className="font-semibold text-ink">{prerequisite.title}</Text>.
+          </Text>
+        </View>
+      ) : null}
+
       {/* Owner report item 1: a finance manager is a cardholder too — their
           OWN card visual, context-independent (see `MyCardSection`'s doc
           comment). Renders nothing when the manager has no card yet. */}
@@ -190,9 +210,17 @@ export function ManagerCardsView() {
               >
                 <Avatar name={req.personName ?? "?"} size={30} />
                 <View className="flex-1">
-                  <Text className="text-sm font-semibold text-ink" numberOfLines={1}>
-                    {req.personName ?? "Unknown"}
-                  </Text>
+                  <View className="flex-row items-center gap-1.5">
+                    <Text className="text-sm font-semibold text-ink" numberOfLines={1}>
+                      {req.personName ?? "Unknown"}
+                    </Text>
+                    {(() => {
+                      const t = trainingBadge(req.prerequisiteMet);
+                      return t ? (
+                        <Badge label={t.label} tone={t.tone} icon={t.icon} />
+                      ) : null;
+                    })()}
+                  </View>
                   {req.note ? (
                     <Text className="text-xs text-faint" numberOfLines={1}>
                       {req.note}
