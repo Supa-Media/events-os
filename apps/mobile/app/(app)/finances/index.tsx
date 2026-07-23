@@ -50,7 +50,6 @@ import { ChapterView } from "../../../components/finance/dashboard/ChapterView";
 import { CentralView } from "../../../components/finance/dashboard/CentralView";
 import { BudgetCreateModal } from "../../../components/finance/modals/BudgetCreateModal";
 import { ManualTransactionModal } from "../../../components/finance/modals/ManualTransactionModal";
-import { BackerCountModal } from "../../../components/finance/modals/BackerCountModal";
 import { TransferRecordModal } from "../../../components/finance/modals/TransferRecordModal";
 import { MilestoneLadderModal } from "../../../components/finance/modals/MilestoneLadderModal";
 
@@ -405,45 +404,30 @@ function ChapterSection({
   onChangePeriod: (next: { year: number; month: number; period: DashPeriodMode }) => void;
 }) {
   const data = useQuery(api.finances.dashboardChapter, { chapterId, ...ym, period });
-  // Separate query (WP-4.3): its own loading state never blocks the rest of
-  // the dashboard — `ChapterView`/`AffordabilityHeader` renders nothing until
-  // it resolves.
-  const affordability = useQuery(api.finances.chapterAffordability, { chapterId });
   // DASH-2: the spend-by-month chart + KPI sparkline. Skipped until
   // `chapterId` resolves (a central-only holder before entering Peek has no
-  // chapter scope to chart — `dashboardChapter`/`chapterAffordability` fall
-  // back to the caller's own chapter server-side, but `spendByMonth` takes a
-  // required `scope` arg with no such fallback).
+  // chapter scope to chart — `dashboardChapter` falls back to the caller's
+  // own chapter server-side, but `spendByMonth` takes a required `scope` arg
+  // with no such fallback).
   const monthly = useQuery(
     api.dashboardCharts.spendByMonth,
     chapterId ? { scope: chapterId, year: ym.year } : "skip",
   );
-  const [editingBackerCount, setEditingBackerCount] = useState(false);
 
   if (data === undefined) return <LoadingBlock />;
   return (
-    <>
-      <ChapterView
-        data={data}
-        affordability={affordability}
-        monthly={monthly}
-        year={ym.year}
-        month={ym.month}
-        period={period}
-        onNewBudget={onNewBudget}
-        onEditBudget={onEditBudget}
-        onAddTransaction={onAddTransaction}
-        onAttentionAction={onAttentionAction}
-        onEditBackerCount={() => setEditingBackerCount(true)}
-        onChangePeriod={onChangePeriod}
-        isDrilldown={isDrilldown}
-      />
-      {editingBackerCount ? (
-        <BackerCountModal
-          currentCount={affordability?.backerCount ?? 0}
-          onClose={() => setEditingBackerCount(false)}
-        />
-      ) : null}
-    </>
+    <ChapterView
+      data={data}
+      monthly={monthly}
+      year={ym.year}
+      month={ym.month}
+      period={period}
+      onNewBudget={onNewBudget}
+      onEditBudget={onEditBudget}
+      onAddTransaction={onAddTransaction}
+      onAttentionAction={onAttentionAction}
+      onChangePeriod={onChangePeriod}
+      isDrilldown={isDrilldown}
+    />
   );
 }
