@@ -137,7 +137,10 @@ function ReconcileGrid() {
   // R1b: "Mark personal" (cards.flagPersonalCharge's manager path) is a
   // manager-only action — a bookkeeper has full Reconcile access but not this.
   // A caller has at most one chapter seat (their home chapter, MVP — see
-  // `requireChapterId`), so this is unambiguous.
+  // `requireChapterId`), so this is unambiguous. `ReconcileList` ALSO widens
+  // the same button to a cardholder's OWN row (founder feedback review) via
+  // `reconcile.viewerPersonId` below — that's the other half of
+  // `flagPersonalCharge`'s server-side OR-gate, unrelated to this flag.
   const isManager = seats.some((s) => s.scope === "chapter" && s.role === "manager");
 
   // WP-dashboard-drill Phase 2: a central caller PEEKING into a chapter that
@@ -166,6 +169,15 @@ function ReconcileGrid() {
         ? { filter, chapterId: peekedChapterId }
         : { filter },
   );
+  // The Chase-receipts destination, carrying this grid's CURRENT scope as
+  // route params — mirrors the args object above (minus `filter`, which
+  // `receipt-chase.tsx` has no use for) so `receiptChase` resolves the exact
+  // same bucket `listReconcile` just counted for the missing_receipt pill.
+  const chaseHref = centralScope
+    ? "/finances/receipt-chase?scope=central"
+    : peekedChapterId
+      ? `/finances/receipt-chase?chapterId=${peekedChapterId}`
+      : "/finances/receipt-chase";
   // All chapter categories (no fund filter — coding is category + For only).
   const categories = useQuery(api.finances.listCategories, {}) ?? [];
   // The "For" picker's option groups (WP-U) — events/projects + recurring
@@ -387,7 +399,12 @@ function ReconcileGrid() {
 
           {/* Server-side filter pills, each with its live count — plus the
               jump to the by-cardholder Chase receipts list (who still owes a
-              receipt, biggest first) whenever any receipt is outstanding. */}
+              receipt, biggest first) whenever any receipt is outstanding.
+              `chaseHref` carries the grid's CURRENT scope (central / peeked
+              chapter / the caller's own chapter) through as route params —
+              `receiptChase` takes the same `scope`/`chapterId` args as
+              `listReconcile`, so the list this button opens always reads the
+              SAME bucket the pill's count just came from. */}
           <View className="mb-4 flex-row flex-wrap items-center gap-2">
             {FILTERS.map((f) => (
               <Pill
@@ -403,7 +420,7 @@ function ReconcileGrid() {
                 variant="ghost"
                 size="sm"
                 icon="bell"
-                onPress={() => router.navigate("/finances/receipt-chase" as never)}
+                onPress={() => router.navigate(chaseHref as never)}
               />
             ) : null}
           </View>
@@ -456,6 +473,7 @@ function ReconcileGrid() {
             onToggleAll={toggleAll}
             centralScope={centralScope}
             isManager={isManager}
+            viewerPersonId={reconcile?.viewerPersonId ?? null}
           />
         )}
       </Screen>

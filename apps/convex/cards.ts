@@ -121,6 +121,7 @@ import {
 import {
   requireFinanceRole,
   requireFinanceManager,
+  requireCentralFinanceRole,
   getFinanceRole,
   getChapterAccountForMode,
 } from "./lib/finance";
@@ -3796,21 +3797,48 @@ const manualNudgeTargetValidator = v.object({
  * "Unattributed" bucket (no resolvable cardholder) is silently skipped —
  * mirrors `receiptChase`'s own doc comment: there's no one to chase for it.
  *
+ * `scope`/`chapterId` are the SAME pair `receiptChase` takes (#383) — a
+ * manager nudging from a central/peeked-chapter Chase Receipts view must
+ * nudge THAT scope's cardholders, never silently the caller's own chapter.
+ * The branch structure below is `receiptChase`'s byte-for-byte, upgraded from
+ * its viewer floor to a MANAGER floor at every branch (nudging is a write,
+ * not a read) — `requireFinanceManager`/`requireCentralFinanceRole` resolve
+ * the caller's role via their OWN home chapter (which already unions in any
+ * central grant), never the peeked scope itself, exactly like
+ * `receiptChase`'s `requireFinanceCentral(ctx, homeChapterId)` calls.
+ *
  * Manager-gated. Internal — only `sendReceiptNudge` (the public action)
  * calls this.
  */
 export const getManualNudgeTargets = internalQuery({
-  args: { personId: v.optional(v.id("people")) },
+  args: {
+    personId: v.optional(v.id("people")),
+    scope: v.optional(v.literal("central")),
+    chapterId: v.optional(v.id("chapters")),
+  },
   returns: v.array(manualNudgeTargetValidator),
-  handler: async (ctx, { personId }): Promise<ManualNudgeTarget[]> => {
-    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    await requireFinanceManager(ctx, chapterId);
+  handler: async (
+    ctx,
+    { personId, scope: scopeArg, chapterId: chapterIdArg },
+  ): Promise<ManualNudgeTarget[]> => {
+    const homeChapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    let scope: Id<"chapters"> | "central";
+    if (scopeArg === "central") {
+      await requireCentralFinanceRole(ctx, homeChapterId, "manager");
+      scope = "central";
+    } else if (chapterIdArg != null && chapterIdArg !== homeChapterId) {
+      await requireCentralFinanceRole(ctx, homeChapterId, "manager");
+      scope = chapterIdArg;
+    } else {
+      await requireFinanceManager(ctx, homeChapterId);
+      scope = chapterIdArg ?? homeChapterId;
+    }
 
     const sandboxMode = await readSandbox(ctx);
     const owing = (
       await ctx.db
         .query("transactions")
-        .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", chapterId))
+        .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", scope))
         .order("desc")
         .take(RECEIPT_NUDGE_SCAN_LIMIT)
     )
@@ -3975,15 +4003,22 @@ type NudgeResult = typeof nudgeResultValidator.type;
  *     (`sendManualNudgeSms`) — never blocks or fails the email path.
  *
  * Manager-gated: `getManualNudgeTargets` (step 0) throws `FORBIDDEN` for a
- * non-manager caller before anything else runs.
+ * non-manager caller before anything else runs. `scope`/`chapterId` are
+ * forwarded straight through to it — the SAME pair the Chase Receipts page
+ * passes to `finances.receiptChase` (#383), so a nudge from a central/
+ * peeked-chapter view targets that scope, not the caller's own chapter.
  */
 export const sendReceiptNudge = action({
-  args: { personId: v.optional(v.id("people")) },
+  args: {
+    personId: v.optional(v.id("people")),
+    scope: v.optional(v.literal("central")),
+    chapterId: v.optional(v.id("chapters")),
+  },
   returns: v.object({ results: v.array(nudgeResultValidator) }),
-  handler: async (ctx, { personId }): Promise<{ results: NudgeResult[] }> => {
+  handler: async (ctx, { personId, scope, chapterId }): Promise<{ results: NudgeResult[] }> => {
     const targets: ManualNudgeTarget[] = await ctx.runQuery(
       internal.cards.getManualNudgeTargets,
-      { personId },
+      { personId, scope, chapterId },
     );
 
     const results: NudgeResult[] = [];

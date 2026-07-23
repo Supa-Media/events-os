@@ -174,6 +174,24 @@ interface SuggestionContext {
       budgetId: Id<"budgets"> | null;
     }[];
   };
+  // Grounding evidence from the chapter's recent HUMAN decisions (see
+  // `aiCodingData.gatherCodingEvidence` / `lib/codingEvidence.ts`). Labels are
+  // pre-resolved on the DB side — this action has no `ctx.db`. Rendered into
+  // its own prompt section below; never used to sanitize (the model must still
+  // echo a real id from the funds/categories/events/projects lists).
+  evidence: {
+    merchantHistory: {
+      kind: "category" | "budget";
+      label: string;
+      count: number;
+      exact: boolean;
+    }[];
+    candidateBudgetSpend: {
+      label: string;
+      nearbyCount: number;
+      similarMerchant: boolean;
+    }[];
+  };
 }
 
 /** How a coding attempt originated — threaded through to the `aiUsageEvents`
@@ -295,7 +313,8 @@ async function codeTransaction(
     return null;
   }
 
-  const { transaction, funds, categories, events, projects, person } = context;
+  const { transaction, funds, categories, events, projects, person, evidence } =
+    context;
 
   // Compact, id-labelled context so the model can only echo REAL ids back.
   const fundLines = funds
@@ -363,6 +382,44 @@ async function codeTransaction(
       ].join("\n")
     : "(no cardholder on file for this transaction)";
 
+  // EVIDENCE from the chapter's recent HUMAN decisions (merchant history) +
+  // tier-1/2 corroborating spend on the candidate budgets (see
+  // `aiCodingData.gatherCodingEvidence`). This is the strongest signal the
+  // model gets — "a human coded a charge like this one to X before" beats a
+  // same-name-only guess. Bounded upstream (top-k per signal) and hard-capped
+  // here so it can never dominate the prompt.
+  const EVIDENCE_CHAR_CAP = 1500;
+  const merchantHistoryLines = evidence.merchantHistory.map((e) => {
+    const times = `${e.count} time${e.count === 1 ? "" : "s"}`;
+    const how = e.exact ? "exact merchant match" : "similar merchant";
+    return `  - ${e.kind} "${e.label}" (${times}, ${how})`;
+  });
+  const candidateSpendLines = evidence.candidateBudgetSpend.map((e) => {
+    const bits: string[] = [];
+    if (e.nearbyCount > 0)
+      bits.push(
+        `${e.nearbyCount} charge${e.nearbyCount === 1 ? "" : "s"} nearby in time`,
+      );
+    if (e.similarMerchant) bits.push("a similar merchant was coded here");
+    return `  - budget "${e.label}": ${bits.join("; ")}`;
+  });
+  const hasEvidence =
+    merchantHistoryLines.length > 0 || candidateSpendLines.length > 0;
+  const evidenceSection = (
+    hasEvidence
+      ? [
+          merchantHistoryLines.length > 0
+            ? `charges like this were previously coded, BY A HUMAN, to:\n${merchantHistoryLines.join("\n")}`
+            : "",
+          candidateSpendLines.length > 0
+            ? `corroborating spend on candidate budgets:\n${candidateSpendLines.join("\n")}`
+            : "",
+        ]
+          .filter(Boolean)
+          .join("\n")
+      : "(no comparable past charges found in recent history)"
+  ).slice(0, EVIDENCE_CHAR_CAP);
+
   const systemPrompt =
     "You are a nonprofit bookkeeper's assistant. Given ONE card transaction, " +
     "the chapter's funds/budget categories, and its events/projects (each " +
@@ -378,7 +435,12 @@ async function codeTransaction(
     "without a budget), just not a valid `budgetId` value. A match to the " +
     "cardholder's own event/project, or a candidate close in time to the " +
     "charge, is a strong signal — weigh both over a same-name-only guess that " +
-    "is neither. Only ever reference ids that appear in the provided lists — " +
+    "is neither. The EVIDENCE section is your STRONGEST signal: it reports how " +
+    "a HUMAN coded charges like this one before (same/similar merchant) plus " +
+    "recent corroborating spend on candidate budgets — prefer a category/" +
+    "budget with real evidence over a plausible-looking guess with none, and " +
+    "lower your confidence when the evidence is thin or absent. Only ever " +
+    "reference ids that appear in the provided lists — " +
     'never invent an id. Reply with a SINGLE JSON object and nothing else: ' +
     '{"fundId"?, "categoryId"?, "budgetId"?, "confidence" (0-1), "rationale"}. ' +
     "Omit a field when you have no good match. You never move money — a " +
@@ -391,6 +453,8 @@ async function codeTransaction(
     `description: ${transaction.description ?? "(none)"}`,
     `amount: ${(transaction.amountCents / 100).toFixed(2)} (${transaction.flow})`,
     `postedAt: ${new Date(transaction.postedAt).toISOString()}`,
+    "",
+    `EVIDENCE (from this chapter's recent HUMAN codings — weigh heavily)\n${evidenceSection}`,
     "",
     `CARDHOLDER\n${personSection}`,
     "",

@@ -571,6 +571,34 @@ describe("listReconcile (server-side filters + counts + projections)", () => {
     expect(ready.rows.map((r) => r.id)).toEqual([t2]);
   });
 
+  test("missing_receipt excludes a reconciled-but-receiptless row — matches receiptChase's predicate", async () => {
+    // Regression test: the pill used to count a `reconciled` row with no
+    // receipt (the treasurer closed it receipt-less on purpose), which is
+    // exactly what `receiptChase` NEVER counted — the two surfaces disagreed.
+    // A treasurer closed this row without a receipt on purpose; it should
+    // stay visible under `all`/`ready` but drop out of `missing_receipt`.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+
+    const closedNoReceipt = await insertTxn(s, { status: "reconciled" });
+    const stillOwing = await insertTxn(s, { status: "unreviewed" });
+
+    const all = await s.as.query(api.finances.listReconcile, { filter: "all" });
+    expect(all.counts.missing_receipt).toBe(1);
+    expect(all.rows.map((r) => r.id)).toEqual(
+      expect.arrayContaining([closedNoReceipt, stillOwing]),
+    );
+
+    const missingReceipt = await s.as.query(api.finances.listReconcile, {
+      filter: "missing_receipt",
+    });
+    expect(missingReceipt.rows.map((r) => r.id)).toEqual([stillOwing]);
+
+    const ready = await s.as.query(api.finances.listReconcile, { filter: "ready" });
+    expect(ready.rows.map((r) => r.id)).toEqual([closedNoReceipt]);
+  });
+
   test("projects hasReceipt, cardLast4 and resolves the cardholder (personId OR card)", async () => {
     const t = newT();
     const s = await setupChapter(t);

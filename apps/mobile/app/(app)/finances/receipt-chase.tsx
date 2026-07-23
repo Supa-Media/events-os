@@ -5,10 +5,22 @@
  * (`api.finances.receiptChase` — groups by total DESC, charges within a group
  * by amount DESC, the no-cardholder "Unattributed" bucket pinned last). The
  * grouping resolves the cardholder exactly like the Reconcile grid's
- * Cardholder column, so this list can never disagree with the grid the FM
- * just came from; the chase predicate is deliberately NARROWER than the
- * grid's Missing-receipt pill (a `reconciled` row was closed receipt-less on
- * purpose — nobody left to chase). See the query's doc comment for both rules.
+ * Cardholder column, and the query's predicate is now IDENTICAL to the
+ * grid's Missing-receipt pill (`isSpend && no receipt && not reconciled`) —
+ * a `reconciled` row was closed receipt-less on purpose, so it's absent from
+ * both. See the query's doc comment for the exact rule.
+ *
+ * `scope`/`chapterId` route params (set by the Reconcile screen's
+ * "Chase receipts" button — see `reconcile.tsx`'s `chaseHref`) are forwarded
+ * straight to `receiptChase`, which resolves them exactly like
+ * `listReconcile` does. This is what actually keeps the two screens honest:
+ * without it, this page always read the caller's HOME chapter regardless of
+ * which scope the grid was showing, so a central/peeked-chapter pill could
+ * point at a different bucket than the count it displayed. The SAME
+ * `scope`/`chapterId` pair is also forwarded to `cards.sendReceiptNudge` (see
+ * `chaseArgs` below) — a manager nudging from a central/peeked-chapter view
+ * nudges THAT scope's cardholders, never silently falling back to the
+ * caller's own chapter.
  *
  * The automated day-1/day-3 nudges + day-7 card auto-lock already run on
  * their own (`cards.advanceReceiptReminders` / `autoLockOverdueCards`) — each
@@ -24,8 +36,9 @@
  * text-to-receipt number best-effort). Server-side rate-limited to one nudge
  * per cardholder per 24h (`api.cards.getManualNudgeStatus` drives the
  * "Nudged today" disabled state); manager-gated server-side too
- * (`requireFinanceManager`, mirroring `lockCard`/`cancelCard`) — hidden here
- * for a non-manager viewer as a UX nicety, not the real gate.
+ * (`requireFinanceManager`/`requireCentralFinanceRole`, mirroring
+ * `lockCard`/`cancelCard` and `receiptChase`'s own scope-branch gating) —
+ * hidden here for a non-manager viewer as a UX nicety, not the real gate.
  *
  * Reached from the Reconcile screen (not a tab of its own). Gated exactly like
  * Reconcile: real finance seats (`financeRoles.mySeats`) decide whether the
@@ -36,6 +49,7 @@
 import { useMemo, useState } from "react";
 import { Text, View } from "react-native";
 import { useAction, useQuery } from "convex/react";
+import { useLocalSearchParams } from "expo-router";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
@@ -113,11 +127,31 @@ function outcomeLabel(name: string, outcome: "sent" | "already_nudged" | "no_ema
 }
 
 function ReceiptChaseBody() {
-  const chase = useQuery(api.finances.receiptChase, {});
+  // Mirrors `reconcile.tsx`'s `chaseHref` — whichever scope the grid was
+  // showing when "Chase receipts" was tapped. Absent params (a direct nav,
+  // or a non-central caller whose `?scope=central` we ignore exactly like
+  // the grid's own toggle does) fall back to the caller's home chapter,
+  // same as before this pair of args existed. Reused as-is for the nudge
+  // action below so "Send reminder"/"Remind all" target the SAME scope
+  // `chase` just rendered — see the module doc.
+  const params = useLocalSearchParams<{ scope?: string; chapterId?: string }>();
+  const chaseArgs = useMemo(
+    () =>
+      params.scope === "central"
+        ? { scope: "central" as const }
+        : params.chapterId
+          ? { chapterId: params.chapterId as Id<"chapters"> }
+          : {},
+    [params.scope, params.chapterId],
+  );
+  const chase = useQuery(api.finances.receiptChase, chaseArgs);
+
   // MANAGER, not just any finance seat — the nudge buttons are gated a step
   // above the read-only list (`ReceiptChaseScreen` already required viewer+
   // to get this far). Hiding here is a UX nicety only; `sendReceiptNudge` /
-  // `getManualNudgeStatus` re-assert this server-side.
+  // `getManualNudgeStatus` re-assert this server-side (and re-check the
+  // SAME scope branch `receiptChase` used, at manager rank instead of
+  // viewer — see `cards.getManualNudgeTargets`).
   const seats = useQuery(api.financeRoles.mySeats, {});
   const isManager = (seats ?? []).some((s) => s.role === "manager");
 
@@ -153,7 +187,7 @@ function ReceiptChaseBody() {
     setSendingKey(key);
     setNotice(null);
     const res = await run(
-      () => sendReceiptNudge(personId ? { personId } : {}),
+      () => sendReceiptNudge(personId ? { ...chaseArgs, personId } : { ...chaseArgs }),
       { errorTitle: "Couldn't send reminder" },
     );
     setSendingKey(null);

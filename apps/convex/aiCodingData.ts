@@ -54,7 +54,13 @@ import { internal } from "./_generated/api";
 import { requireChapterId, requireInChapter } from "./lib/context";
 import { requireFinanceRole, requireCentralEdOrFm } from "./lib/finance";
 import { CENTRAL, TRANSACTION_STATUSES } from "@events-os/shared";
-import { isSuggestible } from "./finances";
+import { isSuggestible, txnMatchesMode } from "./finances";
+import { readSandbox } from "./financeSettings";
+import { budgetDisplayNameFor } from "./lib/forPickerCandidates";
+import {
+  buildCodingEvidence,
+  type EvidenceTxn,
+} from "./lib/codingEvidence";
 
 /** Cap on how many of each context list we hand the model — keeps reads bounded. */
 const CONTEXT_LIMIT = 100;
@@ -72,6 +78,18 @@ const EVENT_LIMIT = 50;
  * primary candidate list, so it doesn't need `CONTEXT_LIMIT`'s headroom.
  */
 const PERSON_LINK_LIMIT = 20;
+
+/**
+ * Evidence gathering (the merchant-history + candidate-budget-spend signals
+ * fed into the prompt — see `lib/codingEvidence.ts`). `EVIDENCE_SCAN_LIMIT`
+ * bounds the recent-chapter-transaction read the evidence is derived from
+ * (newest-first via `by_chapter_and_postedAt`); `EVIDENCE_TOP_K` caps how many
+ * rows of each signal reach the prompt so it stays small; `NEARBY_WINDOW_MS`
+ * mirrors `reconcileSuggest`'s tier-1 ±10-day "spending here lately" window.
+ */
+const EVIDENCE_SCAN_LIMIT = 500;
+const EVIDENCE_TOP_K = 5;
+const EVIDENCE_NEARBY_WINDOW_MS = 10 * 24 * 60 * 60 * 1000;
 
 /**
  * Sweep sizing — shared by BOTH triggers that run `runSuggestionSweep` (the
@@ -193,6 +211,30 @@ const suggestionContextValidator = v.object({
       ),
     }),
   ),
+  // Grounding evidence from the chapter's RECENT human decisions (see
+  // `lib/codingEvidence.ts`) — the strongest signal, previously absent from
+  // the prompt. `merchantHistory` = "a charge like this was coded, by a human,
+  // to X, n times" (labels pre-resolved here so the Node action has no db).
+  // `candidateBudgetSpend` = tier-1/2 corroboration (recent/similar spend) for
+  // the event/project budgets already in context. Both bounded to
+  // `EVIDENCE_TOP_K`.
+  evidence: v.object({
+    merchantHistory: v.array(
+      v.object({
+        kind: v.union(v.literal("category"), v.literal("budget")),
+        label: v.string(),
+        count: v.number(),
+        exact: v.boolean(),
+      }),
+    ),
+    candidateBudgetSpend: v.array(
+      v.object({
+        label: v.string(),
+        nearbyCount: v.number(),
+        similarMerchant: v.boolean(),
+      }),
+    ),
+  }),
 });
 
 /** The resolved context type both loaders return (matches the validator). */
@@ -378,6 +420,125 @@ async function resolvePersonContext(
   };
 }
 
+/** An event/project (chapter-wide or cardholder-associated) as it appears in
+ *  the assembled context — the evidence builder only needs its display name +
+ *  linked budget (or null), so it's structural over both ref kinds. */
+type RefWithBudget = { name: string; budgetId: Id<"budgets"> | null };
+
+/**
+ * Build the grounding evidence (`SuggestionContext["evidence"]`) for one
+ * transaction from the chapter's RECENT human decisions. A SINGLE bounded
+ * `by_chapter_and_postedAt` scan (newest-first, `EVIDENCE_SCAN_LIMIT`) feeds
+ * the pure `buildCodingEvidence` (`lib/codingEvidence.ts`); this wrapper is
+ * just the DB read + label resolution. Sandbox-mode + excluded/personal rows
+ * are filtered here so the evidence only ever reflects charges actually
+ * visible on the reconcile surface, mirroring `reconcileSuggest.loadBudgetTxns`.
+ */
+async function gatherCodingEvidence(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  txn: Doc<"transactions">,
+  lists: {
+    categories: { _id: Id<"budgetCategories">; name: string }[];
+    events: RefWithBudget[];
+    projects: RefWithBudget[];
+    person?: { events: RefWithBudget[]; projects: RefWithBudget[] };
+  },
+): Promise<SuggestionContext["evidence"]> {
+  // Budget → human-readable label (prefer the event/project name over the
+  // budget's own generic type word) and the set of candidate budget ids the
+  // model is being offered, both drawn from the already-assembled context.
+  const budgetLabel = new Map<string, string>();
+  const candidateBudgetIds = new Set<string>();
+  const refGroups = [
+    ...lists.events,
+    ...lists.projects,
+    ...(lists.person?.events ?? []),
+    ...(lists.person?.projects ?? []),
+  ];
+  for (const r of refGroups) {
+    if (r.budgetId == null) continue;
+    candidateBudgetIds.add(r.budgetId);
+    if (!budgetLabel.has(r.budgetId)) budgetLabel.set(r.budgetId, r.name);
+  }
+  const categoryName = new Map<string, string>(
+    lists.categories.map((c) => [c._id as string, c.name]),
+  );
+
+  const sandboxMode = await readSandbox(ctx);
+  const recent = await ctx.db
+    .query("transactions")
+    .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", chapterId))
+    .order("desc")
+    .take(EVIDENCE_SCAN_LIMIT);
+  const priorTxns: EvidenceTxn[] = recent
+    .filter(
+      (t) =>
+        t._id !== txn._id &&
+        t.status !== "excluded" &&
+        !t.isPersonal &&
+        txnMatchesMode(t, sandboxMode),
+    )
+    .map((t) => ({
+      id: t._id as string,
+      merchantName: t.merchantName,
+      description: t.description,
+      postedAt: t.postedAt,
+      status: t.status,
+      categoryId: (t.categoryId ?? null) as string | null,
+      budgetId: (t.budgetId ?? null) as string | null,
+    }));
+
+  const evidence = buildCodingEvidence({
+    subject: {
+      merchantName: txn.merchantName,
+      description: txn.description,
+      postedAt: txn.postedAt,
+    },
+    priorTxns,
+    candidateBudgetIds,
+    nearbyWindowMs: EVIDENCE_NEARBY_WINDOW_MS,
+    topK: EVIDENCE_TOP_K,
+  });
+
+  // Resolve any category/budget ids the context maps didn't already cover
+  // (e.g. a recurring budget not tied to an event/project, or a category past
+  // `CONTEXT_LIMIT`). Bounded — `EVIDENCE_TOP_K` entries per signal.
+  async function labelForCategory(id: string): Promise<string> {
+    const known = categoryName.get(id);
+    if (known) return known;
+    const doc = await ctx.db.get(id as Id<"budgetCategories">);
+    return doc?.name ?? "a category";
+  }
+  async function labelForBudget(id: string): Promise<string> {
+    const known = budgetLabel.get(id);
+    if (known) return known;
+    const doc = await ctx.db.get(id as Id<"budgets">);
+    return doc ? budgetDisplayNameFor(doc) : "a budget";
+  }
+
+  const merchantHistory = await Promise.all(
+    evidence.merchantHistory.map(async (e) => ({
+      kind: e.kind,
+      label:
+        e.kind === "category"
+          ? await labelForCategory(e.id)
+          : await labelForBudget(e.id),
+      count: e.count,
+      exact: e.exact,
+    })),
+  );
+  const candidateBudgetSpend = await Promise.all(
+    evidence.candidateBudgetEvidence.map(async (e) => ({
+      label: await labelForBudget(e.budgetId),
+      nearbyCount: e.nearbyCount,
+      similarMerchant: e.similarMerchant,
+    })),
+  );
+
+  return { merchantHistory, candidateBudgetSpend };
+}
+
 /**
  * Gather the coding context for one transaction: the chapter's funds and
  * budget categories, the events/projects it can attach to (R2 — ranked
@@ -462,6 +623,34 @@ async function gatherSuggestionContext(
       )
     : undefined;
 
+  const categoriesOut = categories.map((c) => ({
+    _id: c._id,
+    name: c.name,
+    fundId: c.fundId,
+    kind: c.kind,
+  }));
+  const eventsOut = events.map((e) => ({
+    _id: e._id,
+    name: e.name,
+    eventDate: e.eventDate,
+    budgetId: eventBudgetByRef.get(e._id as string) ?? null,
+  }));
+  const projectsOut = rankedProjects.map((p) => ({
+    _id: p._id,
+    name: p.name,
+    status: p.status,
+    budgetId: projectBudgetByRef.get(p._id as string) ?? null,
+  }));
+
+  const evidence = await gatherCodingEvidence(ctx, chapterId, txn, {
+    categories: categoriesOut,
+    events: eventsOut,
+    projects: projectsOut,
+    person: person
+      ? { events: person.events, projects: person.projects }
+      : undefined,
+  });
+
   return {
     transaction: {
       _id: txn._id,
@@ -482,25 +671,11 @@ async function gatherSuggestionContext(
       name: f.name,
       restriction: f.restriction,
     })),
-    categories: categories.map((c) => ({
-      _id: c._id,
-      name: c.name,
-      fundId: c.fundId,
-      kind: c.kind,
-    })),
-    events: events.map((e) => ({
-      _id: e._id,
-      name: e.name,
-      eventDate: e.eventDate,
-      budgetId: eventBudgetByRef.get(e._id as string) ?? null,
-    })),
-    projects: rankedProjects.map((p) => ({
-      _id: p._id,
-      name: p.name,
-      status: p.status,
-      budgetId: projectBudgetByRef.get(p._id as string) ?? null,
-    })),
+    categories: categoriesOut,
+    events: eventsOut,
+    projects: projectsOut,
     person,
+    evidence,
   };
 }
 
@@ -1077,6 +1252,95 @@ export const acceptSuggestion = mutation({
     // in a test, or written before this audit trail existed) is fine — the
     // accept itself still succeeds either way.
     await backfillUsageEventAccepted(ctx, args.transactionId);
+    // Append the precision-measurement outcome row: an ACCEPT means the human
+    // took every link the suggestion proposed (the applied `patch` values —
+    // any dangling id skipped above is deliberately omitted from `chosen*`, so
+    // that dimension counts as unconfirmed rather than as agreement). See
+    // `codingPrecision`.
+    await ctx.db.insert("aiCodingOutcomes", {
+      chapterId,
+      transactionId: args.transactionId,
+      outcome: "accepted",
+      suggestedFundId: suggestion.fundId,
+      suggestedCategoryId: suggestion.categoryId,
+      suggestedBudgetId: suggestion.budgetId,
+      chosenFundId: patch.fundId,
+      chosenCategoryId: patch.categoryId,
+      chosenBudgetId: patch.budgetId,
+      confidence: suggestion.confidence,
+      model: suggestion.model,
+      createdAt: Date.now(),
+    });
+    return null;
+  },
+});
+
+/**
+ * Record a human OVERRIDE of a live AI suggestion — the "rejected" half of the
+ * precision measurement (`acceptSuggestion` records the "accepted" half). The
+ * Reconcile grid calls this the moment a bookkeeper hand-codes a Category or
+ * For value on a row that STILL carries an on-screen suggestion, BEFORE the
+ * `finances.categorizeTransaction` write clears it. Bookkeeper+ (in the txn's
+ * chapter), like every other write on that grid.
+ *
+ * Robustness: the suggestion snapshot is read SERVER-SIDE off the live txn
+ * (never trusted from the client) — if there's no live, non-failed suggestion
+ * carrying a link, this is a silent no-op (nothing to measure against). Only
+ * the human's chosen value for the dimension they actually set is stored, so a
+ * category override says nothing about the budget suggestion and vice-versa
+ * (see `codingPrecision`'s per-dimension math). Append-only: writes one row,
+ * never mutates the suggestion or the transaction.
+ */
+export const recordCodingOverride = mutation({
+  args: {
+    transactionId: v.id("transactions"),
+    // Which dimension the human resolved by hand in this action, and to what
+    // (`null` when they CLEARED it). Exactly ONE is passed — the field the
+    // picker cell just committed.
+    dimension: v.union(v.literal("category"), v.literal("budget")),
+    chosenCategoryId: v.optional(v.union(v.id("budgetCategories"), v.null())),
+    chosenBudgetId: v.optional(v.union(v.id("budgets"), v.null())),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireFinanceRole(ctx, chapterId, "bookkeeper");
+
+    const txn = await ctx.db.get(args.transactionId);
+    if (!txn || txn.chapterId !== chapterId) return null; // not ours → no-op
+
+    const suggestion = txn.aiSuggestion;
+    // Only a REAL, live proposal is measurable — a failed-attempt marker or a
+    // links-less confidence/rationale-only reply isn't something a human can
+    // meaningfully agree/disagree with.
+    if (
+      !suggestion ||
+      suggestion.failed ||
+      (suggestion.fundId === undefined &&
+        suggestion.categoryId === undefined &&
+        suggestion.budgetId === undefined)
+    ) {
+      return null;
+    }
+
+    await ctx.db.insert("aiCodingOutcomes", {
+      chapterId,
+      transactionId: args.transactionId,
+      outcome: "overridden",
+      suggestedFundId: suggestion.fundId,
+      suggestedCategoryId: suggestion.categoryId,
+      suggestedBudgetId: suggestion.budgetId,
+      // The new id of the resolved dimension (absent when cleared — the
+      // `overriddenDimension` marker still records that it WAS decided).
+      chosenCategoryId:
+        args.chosenCategoryId === null ? undefined : args.chosenCategoryId,
+      chosenBudgetId:
+        args.chosenBudgetId === null ? undefined : args.chosenBudgetId,
+      overriddenDimension: args.dimension,
+      confidence: suggestion.confidence,
+      model: suggestion.model,
+      createdAt: Date.now(),
+    });
     return null;
   },
 });
@@ -1237,5 +1501,128 @@ export const getUsageSummary = query({
     );
 
     return { monthToDate, recentEvents };
+  },
+});
+
+/** Bounded newest-first scan for the precision report (same low-volume audit
+ *  posture as `USAGE_SCAN_LIMIT`). */
+const OUTCOME_SCAN_LIMIT = 5000;
+/** Default measurement window for `codingPrecision` when no `sinceDays` is
+ *  passed. */
+const DEFAULT_PRECISION_WINDOW_DAYS = 90;
+
+const dimensionStat = v.object({
+  // Outcomes in-window where the suggestion PROPOSED this dimension AND the
+  // human's decision on it is known (an accept, or an override of this exact
+  // dimension) — i.e. the measurable denominator.
+  claims: v.number(),
+  // Of those, how many the human's final value matched the suggestion.
+  correct: v.number(),
+  // `correct / claims`, or null when there are no measurable claims yet.
+  precision: v.union(v.number(), v.null()),
+});
+
+/**
+ * PRECISION REPORT for AI coding suggestions — the measurement the founder's
+ * "mostly wrong" report needs before an Accept-All could ever be justified.
+ * Reads the append-only `aiCodingOutcomes` log (accepts + hand-overrides) and
+ * returns, over a trailing window, the raw accept/override counts plus
+ * precision broken down BY DIMENSION (fund / category / budget).
+ *
+ * Per-dimension precision = (# outcomes where the suggestion proposed that
+ * dimension and the human's final value for it matched) / (# outcomes where
+ * the suggestion proposed it and the human's decision on it is known). An
+ * accept confirms every proposed dimension; an override of dimension D
+ * confirms-or-refutes only D (a different pick or a clear = refute), and says
+ * nothing about the dimensions the human left alone. No dashboard UI — this is
+ * queryable for a spot-check and its numbers go in the PR/readout. ED/FM-gated
+ * (org-wide), same as `getUsageSummary`.
+ */
+export const codingPrecision = query({
+  args: { sinceDays: v.optional(v.number()) },
+  returns: v.object({
+    periodDays: v.number(),
+    sampleSize: v.number(),
+    accepted: v.number(),
+    overridden: v.number(),
+    byDimension: v.object({
+      fund: dimensionStat,
+      category: dimensionStat,
+      budget: dimensionStat,
+    }),
+  }),
+  handler: async (ctx, args) => {
+    await requireCentralEdOrFm(ctx);
+
+    const periodDays = args.sinceDays ?? DEFAULT_PRECISION_WINDOW_DAYS;
+    const since = Date.now() - periodDays * 24 * 60 * 60 * 1000;
+    const rows = await ctx.db
+      .query("aiCodingOutcomes")
+      .order("desc")
+      .take(OUTCOME_SCAN_LIMIT);
+    const inWindow = rows.filter((r) => r.createdAt >= since);
+
+    const tally = {
+      fund: { claims: 0, correct: 0 },
+      category: { claims: 0, correct: 0 },
+      budget: { claims: 0, correct: 0 },
+    };
+    // For each dimension: an accept confirms whatever the suggestion proposed;
+    // an override resolves ONLY its `overriddenDimension`, correct iff the
+    // chosen id equals the suggested one.
+    const dims: {
+      key: "fund" | "category" | "budget";
+      suggested: (r: Doc<"aiCodingOutcomes">) => string | undefined;
+      chosen: (r: Doc<"aiCodingOutcomes">) => string | undefined;
+    }[] = [
+      {
+        key: "fund",
+        suggested: (r) => r.suggestedFundId,
+        chosen: (r) => r.chosenFundId,
+      },
+      {
+        key: "category",
+        suggested: (r) => r.suggestedCategoryId,
+        chosen: (r) => r.chosenCategoryId,
+      },
+      {
+        key: "budget",
+        suggested: (r) => r.suggestedBudgetId,
+        chosen: (r) => r.chosenBudgetId,
+      },
+    ];
+
+    for (const r of inWindow) {
+      for (const d of dims) {
+        const suggested = d.suggested(r);
+        if (suggested === undefined) continue; // model didn't claim this dim
+        if (r.outcome === "accepted") {
+          tally[d.key].claims += 1;
+          tally[d.key].correct += 1;
+        } else if (r.overriddenDimension === d.key) {
+          tally[d.key].claims += 1;
+          if (d.chosen(r) === suggested) tally[d.key].correct += 1;
+        }
+        // an override of a DIFFERENT dimension leaves this one unknown
+      }
+    }
+
+    const stat = (t: { claims: number; correct: number }) => ({
+      claims: t.claims,
+      correct: t.correct,
+      precision: t.claims > 0 ? t.correct / t.claims : null,
+    });
+
+    return {
+      periodDays,
+      sampleSize: inWindow.length,
+      accepted: inWindow.filter((r) => r.outcome === "accepted").length,
+      overridden: inWindow.filter((r) => r.outcome === "overridden").length,
+      byDimension: {
+        fund: stat(tally.fund),
+        category: stat(tally.category),
+        budget: stat(tally.budget),
+      },
+    };
   },
 });

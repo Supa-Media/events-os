@@ -63,6 +63,11 @@ import {
 import { readSandbox } from "./financeSettings";
 import { ROLLUP_SCAN_LIMIT, txnMatchesMode, isAttributableBudget } from "./finances";
 import { gatherForPickerCandidates, type PickerCandidate } from "./lib/forPickerCandidates";
+import {
+  normalizeMerchantText,
+  baseTokens,
+  merchantTokens,
+} from "./lib/merchantSimilarity";
 
 // ── Scan bounds ───────────────────────────────────────────────────────────
 // Top-level events/projects/budgets scans mirror `forPickerOptions`'s own
@@ -105,59 +110,16 @@ function fullMonthName(ts: number): string {
 type Candidate = PickerCandidate;
 
 // ── Tier 1/2 evidence: a candidate's OWN budget's already-categorized spend
-// (bounded per-budget `by_budget` index scan) ───────────────────────────────
-const MERCHANT_STOPWORDS = new Set([
-  "inc",
-  "llc",
-  "corp",
-  "co",
-  "the",
-  "sq",
-  "pos",
-  "payment",
-  "purchase",
-  "store",
-  "of",
-  "and",
-  "a",
-  "an",
-]);
-
-function normalizeMerchantText(text: string | null | undefined): string {
-  return (text ?? "").trim().toLowerCase();
-}
-
-/** Shared base tokenizer — lowercase, strip to alnum + space, split on
- *  whitespace. Deliberately applies NO stopword/length filtering: that's a
- *  policy decision each CALLER makes on top (merchant-similarity matching
- *  filters noise words to avoid false-positive fuzzy matches on things like
- *  "LLC"/"Inc"; label SEARCH must not — a literal word in an event/project
- *  name, even a common one like "The" or "And", still has to be matchable).
- *  Using one shared base keeps the two policies from silently drifting apart
- *  (the bug this fixes: label search used to reuse `merchantTokens`, which
- *  strips exactly the words a multi-word label match needed). */
-function baseTokens(text: string | null | undefined): string[] {
-  return (text ?? "")
-    .toLowerCase()
-    .replace(/[^a-z0-9\s]/g, " ")
-    .split(/\s+/)
-    .filter(Boolean);
-}
-
-/** Tier 2's OWN token policy (merchant/description similarity) — noise words
- *  and 1-char tokens filtered so "SQ *HOME DEPOT INC" fuzzy-matches "Home
- *  Depot Supply Co" without every merchant string spuriously overlapping on
- *  "inc"/"co"/"the". */
-function merchantTokens(...texts: (string | null | undefined)[]): Set<string> {
-  const combined = texts.filter(Boolean).join(" ");
-  return new Set(
-    baseTokens(combined).filter((t) => t.length > 1 && !MERCHANT_STOPWORDS.has(t)),
-  );
-}
+// (bounded per-budget `by_budget` index scan). The merchant tokenization /
+// similarity primitives (`normalizeMerchantText`, `baseTokens`,
+// `merchantTokens`) now live in `lib/merchantSimilarity.ts` so the LLM
+// auto-coding evidence builder reuses the EXACT same "same merchant" rule —
+// see that module's doc. ─────────────────────────────────────────────────────
 
 /** Search's label-token policy — NO stopword/length filtering (see
- *  `baseTokens`'s doc comment). Used for the ref's own label + its linked
- *  budget's label, never for merchant similarity. */
+ *  `baseTokens`'s doc comment in `lib/merchantSimilarity.ts`). Used for the
+ *  ref's own label + its linked budget's label, never for merchant
+ *  similarity. */
 function labelTokens(...texts: (string | null | undefined)[]): Set<string> {
   const combined = texts.filter(Boolean).join(" ");
   return new Set(baseTokens(combined));
