@@ -723,6 +723,31 @@ export const getPublicPage = query({
 
     const viewer = await getViewerRsvp(ctx, page.eventId, token);
     const hasRsvpd = !!viewer && viewer.status !== "not_going";
+    // Holding a valid ticket unlocks the gated address/activity on its OWN —
+    // buying IS the qualification (the locked pill even reads "Get tickets to
+    // see the full address"). Keying only off RSVP status stranded a real
+    // ticket-holder whose RSVP row isn't "going" (e.g. a Givebutter-synced or
+    // never-flipped placeholder), so a signed-in buyer still saw the address
+    // hidden. Bounded read — a viewer holds few orders/tickets.
+    let viewerHasTicket = false;
+    if (viewer) {
+      const vOrders = await ctx.db
+        .query("ticketOrders")
+        .withIndex("by_rsvp", (q) => q.eq("rsvpId", viewer._id))
+        .take(50);
+      for (const o of vOrders) {
+        const ts = await ctx.db
+          .query("tickets")
+          .withIndex("by_order", (q) => q.eq("orderId", o._id))
+          .take(50);
+        if (ts.some((t) => t.status !== "void")) {
+          viewerHasTicket = true;
+          break;
+        }
+      }
+    }
+    // Either an RSVP or a ticket grants access to the gated address + activity.
+    const hasAccess = hasRsvpd || viewerHasTicket;
 
     // Ticket tiers (active only, sorted).
     const allTypes = await ctx.db
@@ -803,10 +828,10 @@ export const getPublicPage = query({
 
     // Address gating (Partiful's "RSVP for full location").
     const addressLocked =
-      page.addressVisibility === "after_rsvp" && !hasRsvpd;
+      page.addressVisibility === "after_rsvp" && !hasAccess;
 
     // Activity feed gating.
-    const activityLocked = (page.activityRestricted ?? true) && !hasRsvpd;
+    const activityLocked = (page.activityRestricted ?? true) && !hasAccess;
     const activity = activityLocked
       ? null
       : await buildActivity(ctx, page.eventId, viewer, ticketsOnly);
