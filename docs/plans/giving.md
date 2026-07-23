@@ -1,6 +1,8 @@
 # Giving (M5.1) — donations on the Event page
 
-**Status: building (autonomous, 2026-07-14).** First roadmap feature after the
+**Status: shipped.** The `donations` table and `eventPages.donationsCents`/
+`donationsCount` rollups described below are live in `schema/ticketing.ts`.
+This was the first roadmap feature after the
 Academy redesign. Self-contained per rebrand plan §7a/§7d — records the money
 flow the schema couldn't (Eden's "donations QR + merch table": card + cash).
 

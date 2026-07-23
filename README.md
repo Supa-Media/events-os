@@ -19,4 +19,4 @@ npx convex dev
 pnpm dev
 ```
 
-See the spec for the full product scope.
+See `docs/plans/` for the product and feature specs.
