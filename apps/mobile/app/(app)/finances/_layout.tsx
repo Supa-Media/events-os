@@ -4,6 +4,7 @@ import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import { Pill } from "../../../components/ui";
 import { SandboxModeBanner } from "../../../components/finance/SandboxModeBanner";
+import { ScopeBadge } from "../../../components/finance/ScopeBadge";
 
 /**
  * Finance sub-navigation. The outer AppShell provides the app chrome; this
@@ -105,6 +106,16 @@ export default function FinancesLayout() {
             />
           ))}
         </ScrollView>
+      </View>
+      {/* Founder directive: finance scope must be unmistakable, even from a
+          bare screenshot of just this content column — see `ScopeBadge`'s
+          doc for the three distinct treatments (Central / chapter desk /
+          peek). Lives here (not inside a screen) so every finance tab, not
+          just the Dashboard, carries it. Its own horizontal inset matches
+          `Screen`'s content padding without touching the Slot wrapper below
+          (every screen manages its own padding via `Screen`/`Narrow`). */}
+      <View className="px-4 pt-3 sm:px-6">
+        <ScopeBadge />
       </View>
       <View className="flex-1">
         <Slot />

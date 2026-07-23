@@ -28,18 +28,33 @@
  *
  * Sub-nav tabs + the app chrome come from the finances `_layout`; this screen
  * renders only the Dashboard body.
+ *
+ * Founder directive (2026-07): URL = scope. This route now round-trips the
+ * active desk through `?scope=central` / `?scope=<chapterId>` — mirroring
+ * the convention `reconcile.tsx` already uses for its own `?scope=` — so a
+ * refresh, a shared link, or the back button lands back on the same desk
+ * instead of always resetting to the default. See `useFinanceScopeUrlSync`
+ * below for the read/write wiring, and `components/finance/ScopeBadge` (in
+ * the finance `_layout`) for the always-visible "whose money is this"
+ * identity strip that accompanies it.
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, View } from "react-native";
 import { useQuery } from "convex/react";
-import { Redirect, useRouter } from "expo-router";
+import { Redirect, useLocalSearchParams, useRouter } from "expo-router";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { CENTRAL } from "@events-os/shared";
 import { Button, EmptyState, Narrow, Screen } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
-import { useChapterContext } from "../../../lib/ChapterContext";
+import {
+  useChapterContext,
+  type ChapterContextValue,
+  type ChapterScope,
+  type PeekChapter,
+} from "../../../lib/ChapterContext";
+import type { Seat } from "../../../lib/financeSeats";
 import {
   FinanceBoundary,
   MonthStepper,
@@ -119,7 +134,20 @@ function DashboardBody({ seats }: { seats: Seats }) {
   // `FinancesScreen` already confirmed `seats.length > 0` before mounting
   // `DashboardBody`, and `ChapterContext` only returns null for a no-seat
   // caller (or while `mySeats` is still loading, which resolved above too).
-  const { context, enterPeek } = useChapterContext();
+  //
+  // Founder directive: URL = scope. `deskSeats`/`peekChapters` (renamed off
+  // `ChapterContextApi`'s own field names to avoid colliding with this
+  // screen's `seats` prop, the raw `financeRoles.mySeats` result) feed
+  // `useFinanceScopeUrlSync` below, which reads `?scope=` on mount and keeps
+  // it in sync with `context` afterward — see that hook's own doc.
+  const {
+    context,
+    enterPeek,
+    chooseSeat,
+    seats: deskSeats,
+    peekChapters,
+  } = useChapterContext();
+  useFinanceScopeUrlSync({ context, chooseSeat, enterPeek, deskSeats, peekChapters });
 
   const [budgetModal, setBudgetModal] = useState<{
     open: boolean;
@@ -317,6 +345,99 @@ function DashboardBody({ seats }: { seats: Seats }) {
       ) : null}
     </Screen>
   );
+}
+
+/**
+ * Founder directive: "URL = scope" — the Finances dashboard's `/finances`
+ * route now carries the active desk in a `?scope=` param, matching the
+ * convention `reconcile.tsx` already uses for its own `?scope=central`
+ * (WP-dashboard-drill). Two effects:
+ *
+ *  - READ (mount only): a `?scope=central`, `?scope=<own chapter id>`, or
+ *    `?scope=<peekable chapter id>` in the URL restores the desk a refresh,
+ *    shared link, or back-navigation into this screen should land on —
+ *    applied via the SAME `chooseSeat`/`enterPeek` calls the shell's
+ *    `ContextPill` makes, so it's one code path, not a second way to switch
+ *    desks. Applied at most once (`appliedRef`): after that, the URL follows
+ *    the context, never the other way — otherwise a stale `?scope=` left over
+ *    from an earlier visit would fight every later in-app switch.
+ *  - WRITE (every context change): keeps `?scope=` matched to the active
+ *    desk, including switches made from the shell's `ContextPill` (not just
+ *    this screen's own `onViewChapter` → `enterPeek` for the central "By
+ *    chapter" drill-down) — both flow through the SAME `context` this hook
+ *    watches.
+ *
+ * An unrecognized `?scope=` value (a stale link to a chapter the caller no
+ * longer holds a seat in or can peek into, a typo, someone else's chapter)
+ * is silently ignored — the default desk (central, or the caller's first
+ * chapter seat) applies instead, same as any other malformed deep link
+ * elsewhere in the app. Never throws, never blocks the dashboard from
+ * rendering.
+ */
+function useFinanceScopeUrlSync({
+  context,
+  chooseSeat,
+  enterPeek,
+  deskSeats,
+  peekChapters,
+}: {
+  context: ChapterContextValue | null;
+  chooseSeat: (scope: ChapterScope) => void;
+  enterPeek: (chapterId: Id<"chapters">, chapterName: string) => void;
+  deskSeats: Seat[];
+  peekChapters: PeekChapter[];
+}) {
+  const params = useLocalSearchParams<{ scope?: string }>();
+  const router = useRouter();
+  const appliedRef = useRef(false);
+
+  // READ — see doc above. Waits for `deskSeats`/`peekChapters` to actually
+  // resolve (both empty arrays while `ChapterContext` is still loading, same
+  // as everywhere else in this file) so a peekable chapter id isn't mistaken
+  // for "unrecognized" just because its query hasn't come back yet.
+  useEffect(() => {
+    if (appliedRef.current) return;
+    const scopeParam = params.scope;
+    if (!scopeParam || context == null) {
+      appliedRef.current = true;
+      return;
+    }
+    if (scopeParam === "central") {
+      appliedRef.current = true;
+      if (!(context.kind === "seat" && context.scope === "central")) {
+        chooseSeat("central");
+      }
+      return;
+    }
+    const ownSeat = deskSeats.find(
+      (s): s is Extract<Seat, { scope: "chapter" }> =>
+        s.scope === "chapter" && s.chapterId === scopeParam,
+    );
+    if (ownSeat) {
+      appliedRef.current = true;
+      chooseSeat(ownSeat.chapterId);
+      return;
+    }
+    const peekTarget = peekChapters.find((c) => c.chapterId === scopeParam);
+    if (peekTarget) {
+      appliedRef.current = true;
+      enterPeek(peekTarget.chapterId, peekTarget.name);
+    }
+    // Else: neither a known seat nor (yet) a peekable chapter — leave
+    // `appliedRef` false so a `peekChapters` query that resolves a beat later
+    // still gets a chance; the WRITE effect below only starts overwriting
+    // `?scope=` once `context` is non-null, so this can't spin forever
+    // visibly wrong.
+  }, [params.scope, context, deskSeats, peekChapters, chooseSeat, enterPeek]);
+
+  // WRITE — see doc above.
+  useEffect(() => {
+    if (!context) return;
+    const nextScope: string =
+      context.kind === "peek" ? context.chapterId : context.scope;
+    if (params.scope === nextScope) return;
+    router.setParams({ scope: nextScope });
+  }, [context, params.scope, router]);
 }
 
 // ── Query sections (each isolated so a finance-role throw is caught locally) ──
