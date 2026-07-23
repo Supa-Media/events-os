@@ -115,6 +115,23 @@ Before finishing a run of this skill, you MUST:
 
 ## Learnings Log (newest first)
 
+### 2026-07-23 — Run 1 addendum (dispatch phase)
+- `.gitignore` ignores `.claude/*` (only settings.json whitelisted) — this
+  skill needed an explicit `!.claude/skills/` exception to be committable.
+- This user declined a `send_later` self check-in for PR babysitting — rely
+  on PR webhook events; don't re-attempt scheduled wakeups unless asked.
+- Sequencing rule proven immediately: two workstreams both editing
+  ChapterView.tsx (backer-header removal + clickable-tiles) — hold the
+  second until the first's agent completes rather than launching both and
+  eating a self-inflicted merge conflict. Parallelize across files, serialize
+  within a file.
+- Removing a UI section shrinks other workstreams' scope (jargon tooltips no
+  longer need to explain floor/tier/under-water) — re-check queued briefs
+  when a removal lands mid-run.
+- "Remove X entirely" from a founder still needs a scope boundary: remove the
+  named surface, INVENTORY look-alike surfaces (e.g. a Backers column
+  elsewhere) in the PR body for confirmation instead of guessing.
+
 ### 2026-07-23 — Finance feedback triage (Kansi's annotated PDF, run 1)
 - Created this skill. Run: 4 parallel Explore agents (2 sonnet, 2 haiku)
   mapped dashboard provenance, reconcile/receipts, budgets/cards/reimburse,
