@@ -754,14 +754,52 @@ export const getPublicPage = query({
     // everyone (Partiful-style). `source === "ticket"` is set by both native and
     // Givebutter-synced ticket fulfillment.
     const ticketsOnly = page.rsvpEnabled === false;
-    const guests = page.showGuestList === false
-      ? []
-      : [...going, ...maybe]
-          .filter(
-            (r) =>
-              r.archivedAt == null && (!ticketsOnly || r.source === "ticket"),
-          )
-          .map((r) => ({ name: r.name, status: r.status }));
+    // A row is a real guest when it's not archived AND — for a ticket buyer
+    // (source "ticket") — only once the purchase actually completed (status
+    // "going"). `prepareOrder` pre-creates the buyer's RSVP as status "maybe";
+    // an abandoned/expired checkout leaves that placeholder behind forever, and
+    // it must never read as a guest. A genuine "maybe" RSVP (source "rsvp") on
+    // an RSVP event still shows.
+    const isRealGuest = (r: Doc<"rsvps">): boolean => {
+      if (r.archivedAt != null) return false;
+      if ((r.source ?? "rsvp") === "ticket") return r.status === "going";
+      return !ticketsOnly;
+    };
+    const guestRows =
+      page.showGuestList === false
+        ? []
+        : [...going, ...maybe].filter(isRealGuest);
+
+    // Per-guest ticket count so a multi-ticket buyer reads "Name · N tickets".
+    // Reuses `listRsvpsAdmin`'s tickets→order→rsvp join (void excluded, bounded
+    // reads); only computed when a shown guest is actually a ticket buyer, so a
+    // pure-RSVP page pays nothing for it.
+    const ticketCountByRsvpId = new Map<Id<"rsvps">, number>();
+    if (guestRows.some((r) => (r.source ?? "rsvp") === "ticket")) {
+      const orders = await ctx.db
+        .query("ticketOrders")
+        .withIndex("by_event", (q) => q.eq("eventId", page.eventId))
+        .take(500);
+      const rsvpIdByOrderId = new Map<Id<"ticketOrders">, Id<"rsvps">>();
+      for (const o of orders) {
+        if (o.rsvpId) rsvpIdByOrderId.set(o._id, o.rsvpId);
+      }
+      const soldTickets = await ctx.db
+        .query("tickets")
+        .withIndex("by_event", (q) => q.eq("eventId", page.eventId))
+        .take(1000);
+      for (const tk of soldTickets) {
+        if (tk.status === "void") continue;
+        const rid = rsvpIdByOrderId.get(tk.orderId);
+        if (!rid) continue;
+        ticketCountByRsvpId.set(rid, (ticketCountByRsvpId.get(rid) ?? 0) + 1);
+      }
+    }
+    const guests = guestRows.map((r) => ({
+      name: r.name,
+      status: r.status,
+      ticketCount: ticketCountByRsvpId.get(r._id) ?? 0,
+    }));
 
     // Address gating (Partiful's "RSVP for full location").
     const addressLocked =
@@ -976,6 +1014,24 @@ async function buildActivity(
     .order("desc")
     .take(60);
 
+  // Stable purchase time per ticket buyer: the earliest of the buyer's ticket
+  // orders. The mirror Givebutter order stores the TRUE purchase time in
+  // `createdAt` (see givebutterSync); a native order stores the checkout time.
+  // Using this instead of `rsvp.updatedAt` stops a later sign-in/verification
+  // or a Givebutter re-sync from re-floating an old purchase to the top.
+  const ticketOrders = await ctx.db
+    .query("ticketOrders")
+    .withIndex("by_event", (q) => q.eq("eventId", eventId))
+    .take(500);
+  const earliestOrderByRsvp = new Map<Id<"rsvps">, number>();
+  for (const o of ticketOrders) {
+    if (!o.rsvpId) continue;
+    const cur = earliestOrderByRsvp.get(o.rsvpId);
+    if (cur === undefined || o.createdAt < cur) {
+      earliestOrderByRsvp.set(o.rsvpId, o.createdAt);
+    }
+  }
+
   const topLevel = comments.filter((c) => !c.parentId && !c.replyToRsvpId);
   const byParent = new Map<string, Doc<"eventComments">[]>();
   for (const c of comments) {
@@ -1001,14 +1057,22 @@ async function buildActivity(
   });
 
   const items: Array<Record<string, unknown>> = [];
-  // Tickets-only events (RSVP off) show ONLY ticketed attendees in the feed —
-  // never leftover RSVP/import rows — mirroring the guest-list filter above.
-  for (const r of recentRsvps.filter(
-    (r) =>
-      r.status !== "not_going" &&
-      r.archivedAt == null &&
-      (!ticketsOnly || r.source === "ticket"),
-  )) {
+  // A ticket buyer's entry only appears once the purchase completed (status
+  // "going") — never for the "maybe" placeholder an abandoned checkout leaves.
+  // Tickets-only events (RSVP off) show ONLY ticketed attendees, never leftover
+  // RSVP/import rows, mirroring the guest-list filter above.
+  const showRsvpItem = (r: Doc<"rsvps">): boolean => {
+    if (r.archivedAt != null) return false;
+    if ((r.source ?? "rsvp") === "ticket") return r.status === "going";
+    return !ticketsOnly && r.status !== "not_going";
+  };
+  for (const r of recentRsvps.filter(showRsvpItem)) {
+    const isTicket = (r.source ?? "rsvp") === "ticket";
+    // Ticket rows use the stable purchase time (order.createdAt); RSVP rows keep
+    // using updatedAt (last status change ≈ the RSVP moment).
+    const activityTime = isTicket
+      ? (earliestOrderByRsvp.get(r._id) ?? r.createdAt)
+      : r.updatedAt;
     const replies = (byParent.get(`rsvp:${String(r._id)}`) ?? []).sort(
       (a, b) => a.createdAt - b.createdAt,
     );
@@ -1020,7 +1084,7 @@ async function buildActivity(
       status: r.status,
       // Lets the client say "bought a ticket" vs "RSVP'd" (legacy rows = "rsvp").
       source: r.source ?? "rsvp",
-      createdAt: r.updatedAt,
+      createdAt: activityTime,
       reactions: await reactionsFor(ctx, "rsvp", String(r._id), viewerKey),
       replies: await Promise.all(replies.map(commentShape)),
     });
@@ -1683,8 +1747,39 @@ export const cancelPendingOrder = internalMutation({
         q.eq("stripeCheckoutSessionId", sessionId),
       )
       .unique();
-    if (order && order.status === "pending") {
-      await ctx.db.patch(order._id, { status: "expired", updatedAt: Date.now() });
+    if (!order || order.status !== "pending") return null;
+    await ctx.db.patch(order._id, { status: "expired", updatedAt: Date.now() });
+
+    // Reconcile the placeholder RSVP `prepareOrder` created for this buyer.
+    // That row is inserted as source:"ticket" / status:"maybe" and bumps
+    // `maybeCount` for an UNPAID order; left behind by an abandoned checkout it
+    // becomes a permanent phantom "maybe". If this RSVP exists SOLELY because of
+    // this now-expired order — still status "maybe" (a paid order would have
+    // flipped it to "going"), with no OTHER live (pending/paid) order — revert
+    // it: decrement `maybeCount` and delete the placeholder. A legitimate
+    // pre-existing "maybe" RSVP is source:"rsvp" (prepareOrder never rewrites an
+    // existing row's source/status), so it's never touched here.
+    if (order.rsvpId) {
+      const rsvp = await ctx.db.get(order.rsvpId);
+      if (rsvp && rsvp.source === "ticket" && rsvp.status === "maybe") {
+        const otherOrders = await ctx.db
+          .query("ticketOrders")
+          .withIndex("by_rsvp", (q) => q.eq("rsvpId", rsvp._id))
+          .take(50);
+        const hasOtherLive = otherOrders.some(
+          (o) =>
+            o._id !== order._id &&
+            (o.status === "pending" || o.status === "paid"),
+        );
+        if (!hasOtherLive) {
+          const page = await ctx.db
+            .query("eventPages")
+            .withIndex("by_event", (q) => q.eq("eventId", order.eventId))
+            .unique();
+          if (page) await bumpRsvpCounters(ctx, page, "maybe", null);
+          await ctx.db.delete(rsvp._id);
+        }
+      }
     }
     return null;
   },

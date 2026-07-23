@@ -438,7 +438,10 @@ export const applyGivebutterTickets = internalMutation({
             // A completed purchase proves the buyer controls this email — same
             // rule as fulfill's Stripe path.
             emailVerified: true,
-            updatedAt: now,
+            // Deliberately do NOT bump `updatedAt` to `now`: the activity feed
+            // keys a ticket buyer's timestamp off the (stable) order purchase
+            // time, and a re-sync touching updatedAt used to re-float an old
+            // purchase to the top of the feed.
           });
         } else {
           rsvpId = await ctx.db.insert("rsvps", {
@@ -451,8 +454,10 @@ export const applyGivebutterTickets = internalMutation({
             token: newGuestToken(),
             source: "ticket",
             emailVerified: true,
-            createdAt: now,
-            updatedAt: now,
+            // Stamp the REAL Givebutter purchase time (not `now`) so a first-
+            // ever import doesn't post an old purchase as fresh in the feed.
+            createdAt: t.createdAt,
+            updatedAt: t.createdAt,
           });
           rsvpCounterDelta.going += 1;
         }
@@ -470,8 +475,10 @@ export const applyGivebutterTickets = internalMutation({
           status: "going",
           token: newGuestToken(),
           source: "ticket",
-          createdAt: now,
-          updatedAt: now,
+          // Stamp the REAL Givebutter purchase time (not `now`) so a first-ever
+          // import doesn't post an old purchase as fresh in the feed.
+          createdAt: t.createdAt,
+          updatedAt: t.createdAt,
         });
         rsvpCounterDelta.going += 1;
       }
