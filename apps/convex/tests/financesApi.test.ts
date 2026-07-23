@@ -534,6 +534,7 @@ describe("listReconcile (server-side filters + counts + projections)", () => {
     const all = await s.as.query(api.finances.listReconcile, { filter: "all" });
     expect(all.counts).toEqual({
       all: 3, // t1, t2, t4 (t3 excluded)
+      spend: 2, // t1, t2 (t4 is inflow, not spend)
       needs_budget: 1, // t1
       missing_receipt: 1, // t1
       uncategorized: 2, // t1, t4
@@ -569,6 +570,12 @@ describe("listReconcile (server-side filters + counts + projections)", () => {
       filter: "ready",
     });
     expect(ready.rows.map((r) => r.id)).toEqual([t2]);
+
+    // no-dead-numbers: `spend` is the "Spent" KPI tile's drill-down target
+    // — every outflow row regardless of budget/receipt/status, but NOT the
+    // inflow row (t4).
+    const spend = await s.as.query(api.finances.listReconcile, { filter: "spend" });
+    expect(spend.rows.map((r) => r.id).sort()).toEqual([t1, t2].sort());
   });
 
   test("missing_receipt excludes a reconciled-but-receiptless row — matches receiptChase's predicate", async () => {

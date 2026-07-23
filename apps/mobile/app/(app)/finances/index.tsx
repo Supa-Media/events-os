@@ -39,7 +39,7 @@
  * identity strip that accompanies it.
  */
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, View } from "react-native";
+import { ActivityIndicator, Text, View } from "react-native";
 import { useQuery } from "convex/react";
 import { Redirect, useLocalSearchParams, useRouter } from "expo-router";
 import type { FunctionReturnType } from "convex/server";
@@ -63,6 +63,7 @@ import {
 } from "../../../components/finance/dashboard/parts";
 import { ChapterView } from "../../../components/finance/dashboard/ChapterView";
 import { CentralView } from "../../../components/finance/dashboard/CentralView";
+import { usePreviousDefined } from "../../../components/finance/dashboard/usePreviousDefined";
 import { BudgetCreateModal } from "../../../components/finance/modals/BudgetCreateModal";
 import { ManualTransactionModal } from "../../../components/finance/modals/ManualTransactionModal";
 import { TransferRecordModal } from "../../../components/finance/modals/TransferRecordModal";
@@ -109,6 +110,22 @@ function LoadingBlock() {
   return (
     <View className="items-center justify-center py-16">
       <ActivityIndicator color={colors.accent} />
+    </View>
+  );
+}
+
+/**
+ * DASH bar-click teardown fix: the lightweight in-place affordance shown
+ * WHILE a period change's new data is still loading, with the previous
+ * period's dashboard staying rendered underneath (see
+ * `usePreviousDefined`) — never a full-screen `LoadingBlock` after the
+ * first load.
+ */
+function UpdatingBar() {
+  return (
+    <View className="mb-2 flex-row items-center gap-2">
+      <ActivityIndicator size="small" color={colors.accent} />
+      <Text className="text-2xs text-muted">Updating…</Text>
     </View>
   );
 }
@@ -469,12 +486,18 @@ function CentralSection({
     netCents: number,
   ) => void;
 }) {
-  const data = useQuery(api.finances.dashboardCentral, { ...ym, period });
+  const rawData = useQuery(api.finances.dashboardCentral, { ...ym, period });
   // DASH-3: the org-wide bar chart + KPI sparkline (the SAME query result
   // backs both — see `CentralView`'s module doc).
-  const monthly = useQuery(api.dashboardCharts.spendByMonth, { scope: "org", year: ym.year });
+  const rawMonthly = useQuery(api.dashboardCharts.spendByMonth, { scope: "org", year: ym.year });
   // DASH-3: the "Chapters at a glance" fleet panel.
-  const chapterHealth = useQuery(api.dashboardCharts.chapterHealth, {});
+  const rawChapterHealth = useQuery(api.dashboardCharts.chapterHealth, {});
+  // Bar-click teardown fix: hold each query's last resolved result across a
+  // period change (see `usePreviousDefined`'s own doc) — the central desk
+  // has no chapterId to reset on, so these never clear once first loaded.
+  const { data, loading } = usePreviousDefined(rawData);
+  const { data: monthly } = usePreviousDefined(rawMonthly);
+  const { data: chapterHealth } = usePreviousDefined(rawChapterHealth);
   if (data === undefined) return <LoadingBlock />;
   // The "By chapter" rollup leads with the Central row (chapterId === CENTRAL);
   // the transfer picker only wants the real chapters.
@@ -485,21 +508,24 @@ function CentralSection({
     )
     .map((c) => ({ chapterId: c.chapterId, chapterName: c.chapterName }));
   return (
-    <CentralView
-      data={data}
-      monthly={monthly}
-      chapterHealth={chapterHealth}
-      year={ym.year}
-      month={ym.month}
-      period={period}
-      onViewChapter={onViewChapter}
-      onEditBudget={onEditBudget}
-      onChangePeriod={onChangePeriod}
-      onRecordTransfer={() => onRecordTransfer(realChapters)}
-      onSettle={(chapterId, _chapterName, netCents) =>
-        onSettle(realChapters, chapterId, netCents)
-      }
-    />
+    <>
+      {loading ? <UpdatingBar /> : null}
+      <CentralView
+        data={data}
+        monthly={monthly}
+        chapterHealth={chapterHealth}
+        year={ym.year}
+        month={ym.month}
+        period={period}
+        onViewChapter={onViewChapter}
+        onEditBudget={onEditBudget}
+        onChangePeriod={onChangePeriod}
+        onRecordTransfer={() => onRecordTransfer(realChapters)}
+        onSettle={(chapterId, _chapterName, netCents) =>
+          onSettle(realChapters, chapterId, netCents)
+        }
+      />
+    </>
   );
 }
 
@@ -526,31 +552,42 @@ function ChapterSection({
    *  page's ‹ › picker / Month-YTD toggle drive. */
   onChangePeriod: (next: { year: number; month: number; period: DashPeriodMode }) => void;
 }) {
-  const data = useQuery(api.finances.dashboardChapter, { chapterId, ...ym, period });
+  const rawData = useQuery(api.finances.dashboardChapter, { chapterId, ...ym, period });
   // DASH-2: the spend-by-month chart + KPI sparkline. Skipped until
   // `chapterId` resolves (a central-only holder before entering Peek has no
   // chapter scope to chart — `dashboardChapter` falls back to the caller's
   // own chapter server-side, but `spendByMonth` takes a required `scope` arg
   // with no such fallback).
-  const monthly = useQuery(
+  const rawMonthly = useQuery(
     api.dashboardCharts.spendByMonth,
     chapterId ? { scope: chapterId, year: ym.year } : "skip",
   );
 
+  // Bar-click teardown fix: hold each query's last resolved result across a
+  // period change (see `usePreviousDefined`'s own doc) — keyed on
+  // `chapterId` so switching which chapter is being viewed (central
+  // drill-down) still resets to a real loading state instead of flashing a
+  // DIFFERENT chapter's stale figures.
+  const { data, loading } = usePreviousDefined(rawData, chapterId);
+  const { data: monthly } = usePreviousDefined(rawMonthly, chapterId);
+
   if (data === undefined) return <LoadingBlock />;
   return (
-    <ChapterView
-      data={data}
-      monthly={monthly}
-      year={ym.year}
-      month={ym.month}
-      period={period}
-      onNewBudget={onNewBudget}
-      onEditBudget={onEditBudget}
-      onAddTransaction={onAddTransaction}
-      onAttentionAction={onAttentionAction}
-      onChangePeriod={onChangePeriod}
-      isDrilldown={isDrilldown}
-    />
+    <>
+      {loading ? <UpdatingBar /> : null}
+      <ChapterView
+        data={data}
+        monthly={monthly}
+        year={ym.year}
+        month={ym.month}
+        period={period}
+        onNewBudget={onNewBudget}
+        onEditBudget={onEditBudget}
+        onAddTransaction={onAddTransaction}
+        onAttentionAction={onAttentionAction}
+        onChangePeriod={onChangePeriod}
+        isDrilldown={isDrilldown}
+      />
+    </>
   );
 }
