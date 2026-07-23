@@ -61,10 +61,12 @@ type ReceiptRow = FunctionReturnType<typeof api.receipts.listForTransaction>[num
 const SOURCE_LABEL: Record<ReceiptSource, string> = {
   email: "Email",
   upload: "Upload",
+  sms: "Text",
 };
-const SOURCE_ICON: Record<ReceiptSource, "mail" | "upload"> = {
+const SOURCE_ICON: Record<ReceiptSource, "mail" | "upload" | "message-circle"> = {
   email: "mail",
   upload: "upload",
+  sms: "message-circle",
 };
 const SENDER_CLASS_LABEL: Record<ReceiptSenderClass, string> = {
   team: "Team",

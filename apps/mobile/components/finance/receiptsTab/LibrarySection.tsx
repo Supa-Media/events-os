@@ -25,6 +25,7 @@ import {
 const SOURCE_LABEL: Record<ReceiptRow["source"], string> = {
   email: "Emailed",
   upload: "Uploaded",
+  sms: "Texted",
 };
 
 export function LibrarySection({
