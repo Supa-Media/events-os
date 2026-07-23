@@ -221,6 +221,7 @@ export default function MyTransactionsScreen() {
                       <ReceiptCell
                         hasReceipt={t.hasReceipt}
                         reminderStage={t.reminderStage}
+                        transactionId={t.id as Id<"transactions">}
                         onUpload={async (storageId) => {
                           await run(
                             () =>

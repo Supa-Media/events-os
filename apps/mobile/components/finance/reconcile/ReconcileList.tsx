@@ -53,6 +53,8 @@ import { View, Text, Pressable, Platform, ScrollView, TextInput } from "react-na
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
+// expo-image-picker is Expo Go-safe (classified `core`); only used on native.
+import * as ImagePicker from "expo-image-picker";
 import {
   Avatar,
   Badge,
@@ -67,6 +69,7 @@ import {
 import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
 import { TransactionNoteModal } from "../modals/TransactionNoteModal";
+import { ReceiptViewerModal } from "../receipts/ReceiptViewerModal";
 import {
   STATUS_OPTIONS,
   isSuggestible,
@@ -371,6 +374,7 @@ function ReconcileRow({
         <ReceiptCell
           hasReceipt={row.hasReceipt}
           reminderStage={row.reminderStage}
+          transactionId={id}
           onUpload={async (storageId) => {
             await guard(attachReceipt({ transactionId: id, storageId }));
           }}
@@ -739,48 +743,101 @@ function ForPickerCell({
 export function ReceiptCell({
   hasReceipt,
   reminderStage,
+  transactionId,
   onUpload,
   generateUploadUrl,
 }: {
   hasReceipt: boolean;
   reminderStage: "none" | "flagged" | "escalated";
+  /** Which transaction this cell's receipt(s) belong to — powers the
+   *  "Attached" chip's tap-to-view (`ReceiptViewerModal`, below). Optional so
+   *  an existing call site outside this PR's file boundary (`money/MoneyView.tsx`)
+   *  keeps compiling unchanged; omitting it just falls back to the old inert
+   *  chip rather than opening a viewer. */
+  transactionId?: Id<"transactions">;
   onUpload: (storageId: Id<"_storage">) => Promise<void>;
   generateUploadUrl: () => Promise<string>;
 }) {
   const [busy, setBusy] = useState(false);
+  const [viewerOpen, setViewerOpen] = useState(false);
+
+  async function uploadBlob(blob: Blob, contentType: string) {
+    setBusy(true);
+    try {
+      const uploadUrl = await generateUploadUrl();
+      const res = await fetch(uploadUrl, {
+        method: "POST",
+        headers: { "Content-Type": contentType },
+        body: blob,
+      });
+      const { storageId } = await res.json();
+      await onUpload(storageId as Id<"_storage">);
+    } finally {
+      setBusy(false);
+    }
+  }
 
   // Web file input → R2 upload → attach (mirrors the People avatar upload flow).
-  function pick() {
-    if (Platform.OS !== "web" || typeof document === "undefined") return;
+  function pickWeb() {
+    if (typeof document === "undefined") return;
     const input = document.createElement("input");
     input.type = "file";
     input.accept = "image/*,application/pdf";
-    input.onchange = async () => {
+    input.onchange = () => {
       const file = input.files?.[0];
-      if (!file) return;
-      setBusy(true);
-      try {
-        const uploadUrl = await generateUploadUrl();
-        const res = await fetch(uploadUrl, {
-          method: "POST",
-          headers: { "Content-Type": file.type || "application/octet-stream" },
-          body: file,
-        });
-        const { storageId } = await res.json();
-        await onUpload(storageId as Id<"_storage">);
-      } finally {
-        setBusy(false);
-      }
+      if (file) void uploadBlob(file, file.type || "application/octet-stream");
     };
     input.click();
   }
 
+  // Native picker (`expo-image-picker`) — mirrors `CoverPhotoPicker`/
+  // `RequestForm`'s own pick → blob → upload dance. Images only on native (no
+  // PDF picker available there — the same limitation those two call sites
+  // already accept); the web `pickWeb()` above still takes PDFs too.
+  async function pickNative() {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.9,
+    });
+    if (result.canceled || !result.assets?.length) return;
+    const asset = result.assets[0];
+    const resp = await fetch(asset.uri);
+    const blob = await resp.blob();
+    await uploadBlob(blob, asset.mimeType || blob.type || "image/jpeg");
+  }
+
+  function pick() {
+    if (Platform.OS === "web") pickWeb();
+    else void pickNative();
+  }
+
   if (hasReceipt) {
+    if (!transactionId) {
+      // No transaction to view receipts for (see the prop's own doc comment)
+      // — the old inert chip, unchanged.
+      return (
+        <View className="flex-1 flex-row items-center gap-1 px-2 py-1.5">
+          <Icon name="check-circle" size={15} color={colors.success} />
+          <Text className="text-sm font-medium text-success">Attached</Text>
+        </View>
+      );
+    }
     return (
-      <View className="flex-1 flex-row items-center gap-1 px-2 py-1.5">
-        <Icon name="check-circle" size={15} color={colors.success} />
-        <Text className="text-sm font-medium text-success">Attached</Text>
-      </View>
+      <>
+        <Pressable
+          onPress={() => setViewerOpen(true)}
+          className="flex-1 flex-row items-center gap-1 px-2 py-1.5 active:opacity-70 web:hover:opacity-90"
+        >
+          <Icon name="check-circle" size={15} color={colors.success} />
+          <Text className="text-sm font-medium text-success">Attached</Text>
+        </Pressable>
+        {viewerOpen ? (
+          <ReceiptViewerModal
+            transactionId={transactionId}
+            onClose={() => setViewerOpen(false)}
+          />
+        ) : null}
+      </>
     );
   }
   const escalated = reminderStage === "escalated";
