@@ -21,6 +21,7 @@
  */
 import type { MutationCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
+import { recordPersonEmail, repointPersonEmails } from "./personEmails";
 
 /**
  * Find a roster person in `chapterId` not yet linked to a user account whose
@@ -268,6 +269,14 @@ export async function repointPersonReferences(
     if (c.authorPersonId === fromId)
       await ctx.db.patch(c._id, { authorPersonId: toId });
   }
+
+  // Person-centric audiences Phase 2 (specs/person-centric-audiences.md) —
+  // this table's own `personId` reference needs the same merge attention as
+  // every other one above; a blind overwrite would silently create two rows
+  // for one address when both `fromId`/`toId` already know it. See
+  // `lib/personEmails.ts#repointPersonEmails`'s own doc for the full rule
+  // (shared with `dataHygiene.ts#mergePeople`'s equivalent merge path).
+  await repointPersonEmails(ctx, { dup: fromId, surv: toId });
 }
 
 // Default name a fresh linked row gets before a profile name is known. Treated
@@ -341,6 +350,21 @@ export async function mergePersonInto(
   if (dup.isTeamMember && !survivor.isTeamMember) patch.isTeamMember = true;
   if (Object.keys(patch).length) await ctx.db.patch(survivorId, patch);
 
+  // Person-centric audiences Phase 2 (specs/person-centric-audiences.md) —
+  // write-through: a CARRY_SCALAR-filled email/pwEmail (the duplicate's own
+  // value, adopted onto the survivor above because the survivor had none)
+  // must join the survivor's `personEmails` ledger exactly like a direct
+  // `people.update` edit would. Independent of `repointPersonEmails` below
+  // (which moves the duplicate's OWN ledger rows) — the duplicate may
+  // predate write-through entirely, so this is the only record of the
+  // address that actually got copied.
+  if (typeof patch.email === "string") {
+    await recordPersonEmail(ctx, { personId: survivorId, email: patch.email, source: "roster", verified: true });
+  }
+  if (typeof patch.pwEmail === "string") {
+    await recordPersonEmail(ctx, { personId: survivorId, email: patch.pwEmail, source: "pw", verified: true });
+  }
+
   await repointPersonReferences(ctx, chapterId, duplicateId, survivorId);
   await ctx.db.delete(duplicateId);
 }
@@ -365,7 +389,7 @@ export async function reconcilePersonForUser(
 
   if (candidates.length === 0) {
     const loginEmail = fields.email ?? undefined;
-    return await ctx.db.insert("people", {
+    const personId = await ctx.db.insert("people", {
       chapterId,
       userId,
       name: fields.name ?? PLACEHOLDER_PERSON_NAME,
@@ -377,6 +401,19 @@ export async function reconcilePersonForUser(
       status: "active",
       createdAt: Date.now(),
     });
+    // Person-centric audiences Phase 2 (specs/person-centric-audiences.md) —
+    // write-through: mirrors people.ts#create's own roster+pw recording.
+    // Both scalar fields get the SAME login address here (a brand-new row
+    // has no personal address to preserve separately yet); recording both
+    // sources converges onto ONE row labeled with the higher-trust source
+    // (`recordPersonEmail`'s upgrade-only rule — pw outranks roster), same
+    // as it would if a caller happened to pass equal email/pwEmail args to
+    // `people.ts#create`.
+    if (loginEmail) {
+      await recordPersonEmail(ctx, { personId, email: loginEmail, source: "roster", verified: true });
+      await recordPersonEmail(ctx, { personId, email: loginEmail, source: "pw", verified: true });
+    }
+    return personId;
   }
 
   // `by_chapter` returns rows in _creationTime order, so `[0]` is the oldest —
@@ -407,5 +444,17 @@ export async function reconcilePersonForUser(
     if ((fresh as Record<string, unknown>)[k] !== val) patch[k] = val;
   }
   if (Object.keys(patch).length) await ctx.db.patch(survivor._id, patch);
+
+  // Person-centric audiences Phase 2 — write-through: `claimFields` above can
+  // set/change `email`/`pwEmail` directly (the login address becoming the
+  // canonical `pwEmail`, or filling a still-blank personal `email`); record
+  // whichever of the two actually changed, same as a direct `people.update`.
+  if (typeof patch.email === "string") {
+    await recordPersonEmail(ctx, { personId: survivor._id, email: patch.email, source: "roster", verified: true });
+  }
+  if (typeof patch.pwEmail === "string") {
+    await recordPersonEmail(ctx, { personId: survivor._id, email: patch.pwEmail, source: "pw", verified: true });
+  }
+
   return survivor._id;
 }

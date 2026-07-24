@@ -148,6 +148,29 @@ Before finishing a run of this skill, you MUST:
 
 ## Learnings Log (newest first)
 
+### 2026-07-24 — Run 2 addendum 4 (Phase 1 identity backbone #401 shipped)
+- Contact/roster boundary needed THREE audit layers to get airtight:
+  implementer's own audit → adversarial verifier (found 3 leaks + the
+  docs-vs-code stamping gap) → systematic grep sweep (found 1 more leak +
+  4 judgment calls). For boundary-type changes (a flag every consumer must
+  respect), budget all three layers; none alone sufficed.
+- Verifier ran tests EMPIRICALLY this round, including a throwaway
+  origin/main git-worktree comparison — far higher signal than static
+  reading (it proved a "regression" reproduced only on-branch). Encourage
+  verifiers to attempt running the real suite; the pnpm/401 constraint may
+  not bind in all sandboxes — but require they leave the tree clean.
+- Grandchild-sweep pattern: implementation agent spawned its own sweep
+  whose report bubbled to the orchestrator; ruling on its judgment calls
+  centrally (fix vs deliberately-inclusive-with-comment) and sending
+  rulings back worked well — boundaries get ONE consistent policy.
+- New failure class: side-effectful helpers at insert sites flip pinned
+  import-preview expectations (canonicalImport donorMatch "new"→"email").
+  When adding insert-time side effects, grep tests for pinned preview/
+  disposition expectations on flows that traverse those inserts.
+- "Leave inclusive" sites must carry a comment stating the decision, or a
+  future sweep will "fix" them backwards (matchPerson SOD binding,
+  dataHygiene dedup).
+
 ### 2026-07-24 — Run 2 addendum 3 (approval gate #399 shipped; audience recon)
 - Approval-gate PR took FOUR CI/verify fix rounds (typecheck narrowing →
   pinned seat spec → pinned migration registry + email-block placement →

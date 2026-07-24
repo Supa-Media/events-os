@@ -2,6 +2,25 @@ import { defineTable } from "convex/server";
 import { v } from "convex/values";
 
 /**
+ * Where a `personEmails` row's address was learned from, in TRUST order
+ * (highest first) — `lib/personEmails.ts#SOURCE_RANK` is the same order,
+ * kept next to it so a future new source updates both together:
+ *  - `manual`  — a human explicitly attached this address (future UI; not
+ *                written by any Phase 2 path yet).
+ *  - `pw`      — `people.pwEmail` (core-team Public Worship address).
+ *  - `roster`  — `people.email` (the roster's own contact field).
+ *  - `donor`   — the linked `donors` row's email (`lib/givingDonors.ts#linkDonorToPerson`).
+ *  - `rsvp`    — a linked `rsvps` row's email (`lib/rsvpPeople.ts#linkRsvpToPerson`).
+ */
+export const PERSON_EMAIL_SOURCES = [
+  "roster",
+  "pw",
+  "donor",
+  "rsvp",
+  "manual",
+] as const;
+
+/**
  * Person / Volunteer — chapter roster with skills, vetting, and (via
  * roleAssignments) full participation history.
  */
@@ -41,6 +60,16 @@ export const people = defineTable({
   // (the pre-existing default; nothing before this field ever meant "contact
   // only", so `undefined`/`false` both read as "on the roster").
   isContactOnly: v.optional(v.boolean()),
+  // Person-centric audiences Phase 2 (specs/person-centric-audiences.md Phase
+  // 2 item 3) — a person-level marketing preference layered OVER the
+  // address-level `emailSuppressions` ledger, which stays authoritative and
+  // untouched (an unsubscribe/bounce/complaint still permanently suppresses
+  // that ADDRESS everywhere). `true` excludes this PERSON entirely from the
+  // "people" audience source's live resolution (`lib/audienceResolve.ts`),
+  // regardless of which address would have been chosen. Never gates
+  // transactional email (RSVP confirmations, receipts, etc. — those aren't
+  // campaign sends). Unset/false = the pre-existing default (reachable).
+  marketingOptOut: v.optional(v.boolean()),
   vettingStatus: v.optional(
     v.union(
       v.literal("unvetted"),
@@ -129,6 +158,45 @@ export const personAudit = defineTable({
   ),
   note: v.optional(v.string()),
 }).index("by_person", ["personId"]);
+
+/**
+ * Person Emails (person-centric audiences Phase 2, specs/person-centric-
+ * audiences.md Phase 2 item 1) — every email address KNOWN for a person, with
+ * enough provenance to deterministically pick one "best" send address
+ * (`lib/personEmails.ts#resolveSendAddress`) without ever collapsing a
+ * person down to a single `people.email` field or overwriting a lower-trust
+ * observation with a higher one's absence. Written ONLY via write-through
+ * (never a background job) — see `lib/personEmails.ts`'s header for the full,
+ * audited list of call sites (roster/pw edits, donor/rsvp linking, the AI
+ * assistant's add-person tool, and BOTH person-merge paths' blank-fill +
+ * repoint). That write-through is additive/upgrade-only
+ * (`lib/personEmails.ts#recordPersonEmail`) — a later observation can raise
+ * `verified`/`source` but never silently downgrades or deletes a row a human
+ * might be relying on. A person MERGE is the one path allowed to delete a row
+ * outright — `lib/personEmails.ts#repointPersonEmails`, when two rows collide
+ * on the same address, deletes the less-trustworthy one rather than carrying
+ * a duplicate.
+ *
+ * `isPrimary` is a soft "pick this one" override a human sets via
+ * `personEmails.ts#setPrimaryEmail`; AT MOST ONE row per person may carry
+ * `true` (enforced by that mutation and by `repointPersonEmails` — which
+ * always clears it on a row landing on a survivor via merge — not by the
+ * schema; Convex has no cross-row constraint).
+ * `verified`: `true` for every write-through source except `"rsvp"`, which
+ * mirrors `rsvps.emailVerified` (`false` = a pending unconfirmed code; the
+ * OTHER sources are staff/CRM-entered or import-matched, not an anonymous
+ * public-form capture, so they're trusted at write time).
+ */
+export const personEmails = defineTable({
+  personId: v.id("people"),
+  email: v.string(), // normalized lowercase — the `by_email` dedup key
+  source: v.union(...PERSON_EMAIL_SOURCES.map((s) => v.literal(s))),
+  verified: v.boolean(),
+  isPrimary: v.optional(v.boolean()),
+  addedAt: v.number(),
+})
+  .index("by_person", ["personId"])
+  .index("by_email", ["email"]);
 
 /**
  * Template Crew (placeholder people) — stand-in crew authored on a TEMPLATE,

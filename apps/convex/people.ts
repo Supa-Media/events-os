@@ -16,6 +16,7 @@ import {
 import { isChapterAdmin } from "./lib/org";
 import { isCardEligible } from "@events-os/shared";
 import { writePersonAudit, diffFields } from "./lib/givingAudit";
+import { recordPersonEmail } from "./lib/personEmails";
 
 const vettingStatus = v.union(
   v.literal("unvetted"),
@@ -316,7 +317,7 @@ export const create = mutation({
       await requireOwned(ctx, "people", args.managerId, "Manager");
     }
     const status = args.status ?? "active";
-    return await ctx.db.insert("people", {
+    const personId = await ctx.db.insert("people", {
       chapterId: chapterId as Id<"chapters">,
       name: args.name,
       email: args.email,
@@ -340,6 +341,17 @@ export const create = mutation({
       managerId: args.managerId,
       createdAt: Date.now(),
     });
+    // Person-centric audiences Phase 2 (specs/person-centric-audiences.md) —
+    // write-through: a fresh roster row's own contact fields seed its
+    // `personEmails` ledger immediately, same as every other automated
+    // person-creation path (`linkDonorToPerson`/`linkRsvpToPerson`).
+    if (args.email) {
+      await recordPersonEmail(ctx, { personId, email: args.email, source: "roster", verified: true });
+    }
+    if (args.pwEmail) {
+      await recordPersonEmail(ctx, { personId, email: args.pwEmail, source: "pw", verified: true });
+    }
+    return personId;
   },
 });
 
@@ -369,6 +381,9 @@ export const update = mutation({
     image: v.optional(v.union(v.id("_storage"), v.null())),
     socialLink: v.optional(v.union(v.string(), v.null())),
     managerId: v.optional(v.union(v.id("people"), v.null())),
+    // Person-centric audiences Phase 2 (specs/person-centric-audiences.md) —
+    // the person-level marketing opt-out, layered over `emailSuppressions`.
+    marketingOptOut: v.optional(v.boolean()),
     // Owner feedback #4: optional "why", recorded on the person-audit breadcrumb
     // when a contact field (name/email/phone) changes.
     why: v.optional(v.string()),
@@ -400,6 +415,19 @@ export const update = mutation({
     // no longer written (accept the arg from OTA-lagged clients, then drop it).
     delete fields.isActive;
     await ctx.db.patch(personId, fields);
+
+    // Person-centric audiences Phase 2 — write-through: a changed `email`/
+    // `pwEmail` value (a real string) seeds/upgrades the `personEmails`
+    // ledger. `pwEmail` can be explicitly cleared (`null`, this arg's own
+    // union validator) — that's NOT treated as "forget this address" either:
+    // the ledger keeps every address ever seen, so a cleared roster field
+    // doesn't silently drop known provenance.
+    if (typeof fields.email === "string" && fields.email) {
+      await recordPersonEmail(ctx, { personId, email: fields.email, source: "roster", verified: true });
+    }
+    if (typeof fields.pwEmail === "string" && fields.pwEmail) {
+      await recordPersonEmail(ctx, { personId, email: fields.pwEmail, source: "pw", verified: true });
+    }
 
     // Owner feedback #4: narrate a name/email/phone change on the person audit
     // trail (cheap, additive — only the three contact fields, mirroring the

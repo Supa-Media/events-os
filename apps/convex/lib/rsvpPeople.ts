@@ -47,6 +47,7 @@ import { MutationCtx } from "../_generated/server";
 import { normalizeEmail } from "./access";
 import { chapterRoster } from "./org";
 import { hasPersonIdentifier } from "./givingDonors";
+import { recordPersonEmail } from "./personEmails";
 
 /**
  * Pure match step, shared by the live linker (below) and the backfill's
@@ -105,6 +106,27 @@ export async function linkRsvpToPerson(
         isContactOnly: true,
         notes: "Added from RSVP",
         createdAt: Date.now(),
+      });
+    }
+
+    // Person-centric audiences Phase 2 (specs/person-centric-audiences.md
+    // item 1) — write-through: this rsvp's own email joins the linked
+    // person's `personEmails` ledger on EVERY link (matched OR freshly
+    // created), so a repeat guest's several rsvp rows converge on the SAME
+    // known address instead of only living on `people.email`. `verified`
+    // reads the JUST-INSERTED/patched rsvp row's OWN persisted
+    // `emailVerified` flag (a fresh `ctx.db.get`, not `args` — the caller may
+    // have constructed `args.email` before the verification flag settled):
+    // `false` = a pending unconfirmed code, `true`/`undefined` (legacy or
+    // imported rows) = verified — the same `!== false` gate
+    // `resolveGuests` uses elsewhere.
+    if (args.email) {
+      const rsvpDoc = await ctx.db.get(args.rsvpId);
+      await recordPersonEmail(ctx, {
+        personId,
+        email: args.email,
+        source: "rsvp",
+        verified: rsvpDoc?.emailVerified !== false,
       });
     }
 

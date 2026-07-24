@@ -18,6 +18,7 @@ import {
   engagements,
   templatePeople,
   personAudit,
+  personEmails,
 } from "./schema/people";
 import {
   projects,
@@ -196,6 +197,11 @@ const schema = defineSchema({
   templatePeople,
   // Person contact-field edit audit (name/email/phone) — narration only.
   personAudit,
+  // Person-centric audiences Phase 2 (specs/person-centric-audiences.md) —
+  // every known email address for a person, with provenance/verification for
+  // deterministic send-address resolution (`lib/personEmails.ts`). See
+  // `schema/people.ts`'s module doc.
+  personEmails,
 
   // Projects (nestable units of work, owned by people, optionally event-backed)
   // + their running comment history + email-action capability tokens.

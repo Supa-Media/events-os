@@ -1124,6 +1124,15 @@ function PersonDetailBody({
     }),
   );
   const router = useRouter();
+  // Person-centric audiences Phase 2 (specs/person-centric-audiences.md Phase
+  // 2 item 3) — the person-level marketing opt-out. Gated exactly like every
+  // other field in this sheet/grid (`api.people.update`'s own chapter-
+  // membership check; this app doesn't gate ordinary roster contact edits
+  // beyond that — see `people.ts`'s module doc). The full preference center
+  // (known addresses, per-list subscriptions) is a later phase; this is
+  // deliberately just the one toggle.
+  const updateMarketingPref = useMutation(api.people.update);
+  const marketingOptOut = person.marketingOptOut === true;
 
   return (
     <>
@@ -1159,6 +1168,34 @@ function PersonDetailBody({
             ) : null}
           </View>
         ) : null}
+
+        {/* Marketing preference (person-centric audiences Phase 2) — layered
+            OVER the address-level unsubscribe/bounce ledger, which stays
+            authoritative and untouched; this only ever excludes THIS person
+            from campaign sends (never transactional email). */}
+        <View className="mb-4">
+          <Text className="mb-2 text-2xs font-bold uppercase tracking-wider text-muted">
+            Marketing
+          </Text>
+          <Pressable
+            onPress={() =>
+              updateMarketingPref({ personId: person._id, marketingOptOut: !marketingOptOut })
+            }
+            accessibilityRole="switch"
+            accessibilityState={{ checked: !marketingOptOut }}
+            accessibilityLabel="Marketing emails"
+            className="flex-row items-center justify-between rounded-lg border border-border bg-raised p-3 active:opacity-70"
+          >
+            <View className="flex-row items-center gap-2">
+              <Icon name="mail" size={14} color={colors.muted} />
+              <Text className="text-sm text-ink">Marketing emails</Text>
+            </View>
+            <Badge
+              label={marketingOptOut ? "Off" : "On"}
+              tone={marketingOptOut ? "neutral" : "accent"}
+            />
+          </Pressable>
+        </View>
 
         {/* Giving (territories P5) — a heart/building mark linking to the
             donor record, shown only when this person is a marked giver

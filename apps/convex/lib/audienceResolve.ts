@@ -27,6 +27,7 @@ import { DAY_MS } from "@events-os/shared";
 import { normalizeEmail } from "./access";
 import { listActiveChapters } from "./chapters";
 import { suppressedEmailSet } from "../emailSuppressions";
+import { resolveSendAddress } from "./personEmails";
 import type { audienceFiltersValidator } from "../schema/campaigns";
 
 export type AudienceFilters = Infer<typeof audienceFiltersValidator>;
@@ -222,7 +223,23 @@ async function resolvePeople(
       // folded into the legacy roster-shaped source.
       if (p.isContactOnly === true) continue;
       if (p.status === "inactive") continue;
-      const raw = p.pwEmail ?? p.email;
+      // Person-centric audiences Phase 2 (specs/person-centric-audiences.md
+      // Phase 2 item 3) — a person-level marketing opt-out excludes them from
+      // this source ENTIRELY, layered OVER the address-level
+      // `emailSuppressions` ledger below (which stays authoritative and
+      // untouched — this is an ADDITIONAL exclusion, never a replacement).
+      if (p.marketingOptOut === true) continue;
+      // Phase 2 item 2 — the chosen send address now comes from
+      // `resolveSendAddress` (explicit primary > pwEmail > email > most-
+      // recently-added verified `personEmails` row), falling back to the
+      // pre-Phase-2 `pwEmail ?? email` behavior automatically when this
+      // person has no `personEmails` rows yet (pre-backfill or a row created
+      // outside every write-through path).
+      const personEmails = await ctx.db
+        .query("personEmails")
+        .withIndex("by_person", (q) => q.eq("personId", p._id))
+        .collect();
+      const raw = resolveSendAddress(p, personEmails);
       const email = raw ? normalizeEmail(raw) : null;
       if (!email || byEmail.has(email)) continue;
       byEmail.set(email, { email, name: p.name });

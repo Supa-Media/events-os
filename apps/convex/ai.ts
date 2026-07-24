@@ -57,6 +57,7 @@ import { eventActiveModules } from "./lib/templates";
 import { getBudgetForRef, syncBudgetIdentityForRef } from "./finances";
 import { phaseReadiness, statusColumnFor } from "./lib/readiness";
 import { toKey } from "./roles";
+import { recordPersonEmail } from "./lib/personEmails";
 
 /** Round a USD amount to whole cents. */
 function toCents(usd: number): number {
@@ -1163,7 +1164,7 @@ export const addPerson = internalMutation({
     phone: v.optional(v.string()),
   },
   handler: async (ctx, { chapterId, name, email, phone }) => {
-    return await ctx.db.insert("people", {
+    const personId = await ctx.db.insert("people", {
       chapterId,
       name,
       email,
@@ -1172,6 +1173,14 @@ export const addPerson = internalMutation({
       status: "active",
       createdAt: Date.now(),
     });
+    // Person-centric audiences Phase 2 (specs/person-centric-audiences.md) —
+    // write-through: mirrors people.ts#create's own roster-source recording,
+    // since this is the SAME kind of direct roster-add (the AI assistant's
+    // `add_person` tool), just via a different entry point.
+    if (email) {
+      await recordPersonEmail(ctx, { personId, email, source: "roster", verified: true });
+    }
+    return personId;
   },
 });
 
