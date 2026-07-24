@@ -1515,6 +1515,22 @@ describe("two-party approval — happy path", () => {
       const t = newT();
       const s = await asSuperuser(t);
       const campaignId = await seedDraftCampaign(s);
+      // A real "people"-source audience member with an email. `seedSelfPerson`/
+      // `seedReviewer` below deliberately have NO email (elsewhere in this
+      // suite that keeps `sendApprovalTestPair`'s submit-time copies a no-op)
+      // — without a real recipient, the audience resolves to ZERO matches and
+      // the send finalizes "failed" (zero-recipients is a RECORDED failure,
+      // not a thrown error — see `campaigns.ts#materializeRecipients`)
+      // instead of "sent", even though approval itself succeeded cleanly.
+      await run(s.t, (ctx) =>
+        ctx.db.insert("people", {
+          chapterId: s.chapterId,
+          name: "Reader Rae",
+          email: "reader@example.com",
+          status: "active",
+          createdAt: Date.now(),
+        }),
+      );
       await seedSelfPerson(s);
       const reviewer = await seedReviewer(s);
 
@@ -2129,6 +2145,14 @@ describe("two-party approval — notification emails", () => {
 
   test("submitting sends a [Test] copy to the submitter and a [For Approval] copy (with a bottom review link) to the reviewer", async () => {
     vi.useFakeTimers();
+    // `appUrl()` (`lib/siteUrl.ts`) needs APP_URL to render a real review
+    // link — unset in the vitest env by default (no other test in this repo
+    // configures it either; grepped for a precedent and found none — the
+    // budget-approval email tests deliberately sidestep this by asserting on
+    // the resolved CONTEXT data instead of the rendered HTML, but this test's
+    // whole point IS the rendered link, so it sets the env itself here).
+    const realAppUrl = process.env.APP_URL;
+    process.env.APP_URL = "https://app.publicworship.life";
     try {
       const t = newT();
       const s = await asSuperuser(t);
@@ -2175,6 +2199,9 @@ describe("two-party approval — notification emails", () => {
       // would be invalid HTML, content outside the document root entirely).
       const reviewHtml = reviewCopy?.html ?? "";
       expect(reviewHtml).toContain("Review this campaign");
+      // A real, clickable link — not just the label text — since APP_URL is
+      // configured in this test.
+      expect(reviewHtml).toMatch(/<a href="https:\/\/app\.publicworship\.life\/campaign\/[^"]+"[^>]*>Review this campaign/);
       // The document's root tag is still the very last thing in the string —
       // nothing was appended past it.
       expect(reviewHtml.trimEnd().endsWith("</html>")).toBe(true);
@@ -2188,6 +2215,8 @@ describe("two-party approval — notification emails", () => {
       expect(testCopy?.html).not.toContain("Review this campaign");
     } finally {
       vi.useRealTimers();
+      if (realAppUrl === undefined) delete process.env.APP_URL;
+      else process.env.APP_URL = realAppUrl;
     }
   });
 

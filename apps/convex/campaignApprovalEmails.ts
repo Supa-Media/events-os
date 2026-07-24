@@ -102,17 +102,26 @@ function injectBeforeBodyClose(html: string, insert: string): string {
  *  lands INSIDE the document). Plain inline styles matching the rest of this
  *  codebase's hand-rolled transactional HTML (`ticketingEmails.ts` /
  *  `budgetDecisionEmails.ts`) — no shared component, this is the only place
- *  it's needed. */
+ *  it's needed.
+ *
+ *  `reviewUrl` is `null` when `APP_URL` isn't configured (`lib/siteUrl.ts#appUrl`)
+ *  — an unusual, misconfigured deployment state, but this must NEVER silently
+ *  drop the call-to-action entirely (that would ship a "review" email with no
+ *  way to actually review). Degrades to plain, non-linked instructional text
+ *  instead — same visible label either way ("Review this campaign"), so a
+ *  caller checking for the label doesn't need to know which branch rendered. */
 function reviewBlock(reviewUrl: string | null): { html: string; text: string } {
   const lead =
     "You've been asked to approve this campaign. Review the audience, purpose, and recipient count, then decide:";
+  const ctaLabel = "Review this campaign →";
+  const ctaHtml = reviewUrl
+    ? `<a href="${reviewUrl}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">${ctaLabel}</a>`
+    : `${escapeHtml(ctaLabel)} Open the app and find it under Campaigns → Awaiting your approval.`;
   const html =
     `<hr style="margin:24px 0;border:none;border-top:1px solid #E4CFCB" />` +
     `<p style="margin:0 0 12px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:13px;line-height:1.6;color:#7A5A5A">${escapeHtml(lead)}</p>` +
-    (reviewUrl
-      ? `<p style="margin:0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${reviewUrl}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">Review this campaign →</a></p>`
-      : "");
-  const text = `\n\n---\n${lead}\n${reviewUrl ?? "(open the app to review)"}`;
+    `<p style="margin:0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600">${ctaHtml}</p>`;
+  const text = `\n\n---\n${lead}\n${reviewUrl ?? "(open the app to review — find it under Campaigns → Awaiting your approval)"}`;
   return { html, text };
 }
 
