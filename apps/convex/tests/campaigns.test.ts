@@ -478,6 +478,60 @@ describe("previewAudience — donors", () => {
     });
     expect(preview.count).toBe(3);
   });
+
+  // Data-trust fix (verifier finding): centralDonorsExcludedByChapterFilter
+  // must mirror whichever criteria the ACTUAL resolver for this source
+  // honors. The legacy `resolveDonors` (below) never applies `giftCountMin`
+  // — it's a Phase-3-only, person_filters criterion — so a `donors`-source
+  // audience with `giftCountMin` set must not have the counter (or the
+  // resolver) treat a 0-gift donor as excluded BY giftCountMin.
+  test("a donors-source audience ignores giftCountMin entirely — a chapter-scoped 0-gift donor is included AND the central-pool counter mirrors that", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    // Chapter-scoped donor: giftCount 0, would fail giftCountMin: 5 if that
+    // criterion were honored — but resolveDonors doesn't apply it.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("donors", {
+        scope: s.chapterId,
+        kind: "individual",
+        name: "Zero-Gift Chapter Donor",
+        email: "zero-gift-chapter@example.com",
+        status: "active",
+        lifetimeCents: 0,
+        giftCount: 0,
+        createdAt: Date.now(),
+      }),
+    );
+    // Central donor: same shape, unlinked, would normally be dropped by the
+    // chapter filter but IS what centralDonorsExcludedByChapterFilter counts.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("donors", {
+        scope: "central",
+        kind: "individual",
+        name: "Zero-Gift Central Donor",
+        email: "zero-gift-central@example.com",
+        status: "active",
+        lifetimeCents: 0,
+        giftCount: 0,
+        createdAt: Date.now(),
+      }),
+    );
+
+    const preview = await s.as.query(api.audiences.previewAudience, {
+      scope: "central",
+      source: "donors",
+      filters: { chapterId: s.chapterId, donorStatus: "active", giftCountMin: 5 },
+    });
+    // resolveDonors ignores giftCountMin — the 0-gift chapter donor still
+    // resolves as a recipient.
+    expect(preview.count).toBe(1);
+    expect(preview.sample[0].email).toBe("zero-gift-chapter@example.com");
+    // The central-pool counter must mirror the SAME (donorStatus-only)
+    // semantics — the 0-gift central donor WOULD also have matched, so it's
+    // counted, not silently zeroed out by a giftCountMin check the resolver
+    // never applies to this source.
+    expect(preview.centralDonorsExcludedByChapterFilter).toBe(1);
+  });
 });
 
 // ── People audience resolution ────────────────────────────────────────────

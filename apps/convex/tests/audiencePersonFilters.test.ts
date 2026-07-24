@@ -4,6 +4,7 @@ import { ConvexError } from "convex/values";
 import { api, internal } from "../_generated/api";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import type { Doc, Id } from "../_generated/dataModel";
+import { resolveAudienceRecipients } from "../lib/audienceResolve";
 
 /**
  * Person-centric audiences Phase 3 — the `person_filters` source
@@ -829,6 +830,80 @@ describe("person_filters — central scope + chapterId narrows away the central 
       filters: { donorStatus: "active" },
     });
     expect(noChapterId.centralDonorsExcludedByChapterFilter).toBe(0);
+  });
+});
+
+// ── includeDiagnostics gating (data-trust fix) ───────────────────────────
+
+describe("resolveAudienceRecipients — includeDiagnostics gates the transparency counters (data-trust fix)", () => {
+  test("both diagnostic counters stay at their zero default unless includeDiagnostics is true, even when the underlying data would produce a non-zero count", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const eventId = await seedEvent(s);
+    const linked = await seedPerson(s, { name: "Linked", email: "diag-linked@example.com" });
+    await seedRsvpForPerson(s, linked, eventId, { status: "going" });
+    // An unlinked RSVP — would surface via `unlinkedGuests` if diagnostics ran.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("rsvps", {
+        eventId,
+        chapterId: s.chapterId,
+        name: "Unlinked Guest",
+        email: "diag-unlinked@example.com",
+        status: "going",
+        token: `tok-diag-${Math.random()}`,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    // An unlinked central donor — would surface via
+    // `centralDonorsExcludedByChapterFilter` if diagnostics ran.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("donors", {
+        scope: "central",
+        kind: "individual",
+        name: "Central Donor",
+        email: "diag-central-donor@example.com",
+        status: "active",
+        lifetimeCents: 0,
+        giftCount: 0,
+        createdAt: Date.now(),
+      }),
+    );
+
+    const audience = {
+      scope: "central" as const,
+      source: "person_filters" as const,
+      filters: { chapterId: s.chapterId, attendedEventId: eventId, donorStatus: "active" as const },
+    };
+
+    // Default (send/liveAudienceCount shape): includeDiagnostics omitted.
+    const withoutDiagnostics = await run(s.t, (ctx) => resolveAudienceRecipients(ctx, audience));
+    expect(withoutDiagnostics.unlinkedGuests).toBe(0);
+    expect(withoutDiagnostics.unlinkedGuestsIsLowerBound).toBe(false);
+    expect(withoutDiagnostics.centralDonorsExcludedByChapterFilter).toBe(0);
+
+    // Same audience, same data, ONLY includeDiagnostics flipped — proves the
+    // zeros above are the gate, not an absence of matching data.
+    const withDiagnostics = await run(s.t, (ctx) =>
+      resolveAudienceRecipients(ctx, audience, undefined, true),
+    );
+    expect(withDiagnostics.unlinkedGuests).toBe(1);
+    expect(withDiagnostics.centralDonorsExcludedByChapterFilter).toBe(1);
+  });
+
+  test("resolveAudienceForSend's result shape never carries the diagnostic counters", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await seedPerson(s, { name: "A", email: "send-shape@example.com" });
+    const audienceId = await s.as.mutation(api.audiences.createAudience, {
+      scope: "central",
+      name: "Send Shape",
+      source: "person_filters",
+      filters: {},
+    });
+    const forSend = await t.query(internal.audiences.resolveAudienceForSend, { audienceId });
+    expect(forSend).not.toBeNull();
+    expect(Object.keys(forSend ?? {}).sort()).toEqual(["recipients", "truncated"]);
   });
 });
 
