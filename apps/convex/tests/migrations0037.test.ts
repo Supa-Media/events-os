@@ -25,6 +25,21 @@ import type { Doc, Id } from "../_generated/dataModel";
  * a tiny `pageSize` override (a test-only param on `linkRsvpPeoplePage`, not
  * exposed on the public mutation) to force page boundaries with a handful of
  * seeded rows instead of seeding thousands of rsvps.
+ *
+ * hotfix 0037-roster-reads (prod incident, 2026-07-24, the very next
+ * production attempt after the fix above): single-call pagination alone
+ * still crashed on the first real execute — `lib/rsvpPeople.ts#linkRsvpToPerson`
+ * self-loaded the chapter roster on EVERY row, on top of this file's OWN
+ * per-chapter roster cache, blowing Convex's 32,000-documents-read-per-
+ * execution cap partway through a page, with every failure silently
+ * miscounted as `skippedNoIdentifier` (that function catches every error —
+ * see its BEST-EFFORT BY DESIGN doc). Fixed via `linkRsvpToPersonWithRoster`,
+ * which reuses this file's cached roster instead of reloading it — see the
+ * "multi-chapter page" test below (one roster load per chapter, proven
+ * behaviorally: all rows across multiple chapters link in ONE invocation
+ * with `failed: 0`) and the "dry-run/execute parity" test (identical counts
+ * for the same seeded page — the prod incident's 64-vs-6 divergence was
+ * PURELY the crash, not a preview-logic bug, and this test guards that).
  */
 
 /**
@@ -382,5 +397,87 @@ describe("migration 0037 — link rsvp people backfill", () => {
     const everyone = await allPeople(s);
     expect(everyone).toHaveLength(1);
     expect(everyone[0]).toMatchObject({ name: "Alice Doe", email: "family@example.com" });
+  });
+
+  /**
+   * hotfix 0037-roster-reads: proves the fix behaviorally (`convex-test` has
+   * no read-count instrumentation to probe directly). Two DIFFERENT chapters
+   * each contribute rows to ONE page/invocation — if each linked/created row
+   * still paid for its own roster reload (the prod bug), a big-enough page
+   * would blow the documents-read cap; here the assertion is that ALL rows
+   * across BOTH chapters link successfully in ONE invocation with
+   * `failed: 0`, and that a chapter's rows only ever match/create against
+   * ITS OWN roster (never bleed into the other chapter's).
+   */
+  test("multi-chapter page: rows from two different chapters all link in one invocation, no failures", async () => {
+    const t = newT();
+    const chapterA = await setupChapter(t, { email: "leader-a@publicworship.life", chapterName: "Chapter A" });
+    const chapterB = await setupChapter(t, { email: "leader-b@publicworship.life", chapterName: "Chapter B" });
+    const eventA = await seedEvent(chapterA, "Chapter A Event");
+    const eventB = await seedEvent(chapterB, "Chapter B Event");
+
+    const rA1 = await seedRsvp(chapterA, eventA, { name: "A Guest One", email: "a1@example.com" });
+    const rA2 = await seedRsvp(chapterA, eventA, { name: "A Guest Two", email: "a2@example.com" });
+    const rB1 = await seedRsvp(chapterB, eventB, { name: "B Guest One", email: "b1@example.com" });
+    const rB2 = await seedRsvp(chapterB, eventB, { name: "B Guest Two", email: "b2@example.com" });
+
+    const result = await run(t, (ctx) => linkRsvpPeoplePage(ctx, { execute: true, cursor: null }));
+    expect(result.isDone).toBe(true);
+    expect(result.failed).toBe(0);
+    expect(result.linked).toBe(4);
+
+    const [rsvpA1, rsvpA2, rsvpB1, rsvpB2] = await Promise.all([
+      run(t, (ctx) => ctx.db.get(rA1)),
+      run(t, (ctx) => ctx.db.get(rA2)),
+      run(t, (ctx) => ctx.db.get(rB1)),
+      run(t, (ctx) => ctx.db.get(rB2)),
+    ]);
+    expect(rsvpA1?.personId).toBeTruthy();
+    expect(rsvpA2?.personId).toBeTruthy();
+    expect(rsvpB1?.personId).toBeTruthy();
+    expect(rsvpB2?.personId).toBeTruthy();
+
+    const [personA1, personB1] = await Promise.all([
+      run(t, (ctx) => ctx.db.get(rsvpA1!.personId!)),
+      run(t, (ctx) => ctx.db.get(rsvpB1!.personId!)),
+    ]);
+    // Each chapter's contact landed in ITS OWN chapter — never cross-matched.
+    expect(personA1?.chapterId).toBe(chapterA.chapterId);
+    expect(personB1?.chapterId).toBe(chapterB.chapterId);
+    const everyone = await run(t, (ctx) => ctx.db.query("people").collect());
+    expect(everyone).toHaveLength(4); // one contact per distinct email, no duplicates
+  });
+
+  /**
+   * hotfix 0037-roster-reads: the prod incident's dry-run-vs-execute
+   * divergence (64 linked vs 6 linked for the identical page) was PURELY the
+   * read-limit crash, not a preview-logic bug — this asserts the two paths
+   * agree exactly on an identical seeded page, with `failed: 0` on execute.
+   */
+  test("dry-run/execute parity: identical counts for the same seeded page", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const e1 = await seedEvent(s, "Parity Event One");
+    const e2 = await seedEvent(s, "Parity Event Two");
+    const e3 = await seedEvent(s, "Parity Event Three");
+    // A mix: a fresh contact, a cross-event repeat, a divergent-name group,
+    // and a no-identifier row — exercises every branch in one page.
+    await seedRsvp(s, e1, { name: "Fresh One", email: "fresh1@example.com" });
+    await seedRsvp(s, e1, { name: "Repeat Guest", email: "repeat-parity@example.com", createdAt: 1000 });
+    await seedRsvp(s, e2, { name: "Repeat Guest", email: "repeat-parity@example.com", createdAt: 2000 });
+    await seedRsvp(s, e2, { name: "Jane Parity", email: "family-parity@example.com", createdAt: 1000 });
+    await seedRsvp(s, e2, { name: "Jane Parity", email: "family-parity@example.com", createdAt: 2000 });
+    await seedRsvp(s, e3, { name: "John Parity", email: "family-parity@example.com", createdAt: 1500 });
+    await seedRsvp(s, e3, { name: "No Identifier" });
+
+    const dry = await run(s.t, (ctx) => linkRsvpPeoplePage(ctx, { execute: false, cursor: null }));
+    const execute = await run(s.t, (ctx) => linkRsvpPeoplePage(ctx, { execute: true, cursor: null }));
+
+    expect(execute.failed).toBe(0);
+    expect(execute.linked).toBe(dry.linked);
+    expect(execute.skippedNoIdentifier).toBe(dry.skippedNoIdentifier);
+    expect(execute.skippedDivergentName).toBe(dry.skippedDivergentName);
+    expect(execute.divergentGroups).toBe(dry.divergentGroups);
+    expect(execute.scanned).toBe(dry.scanned);
   });
 });
