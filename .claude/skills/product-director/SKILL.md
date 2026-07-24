@@ -148,6 +148,37 @@ Before finishing a run of this skill, you MUST:
 
 ## Learnings Log (newest first)
 
+### 2026-07-24 — Run 2 addendum 2 (dispatch → merged: #323 revival shipped)
+- Full arc in one run: recon → founder greenlight → revival agent (merge
+  main into 62-behind branch) → adversarial verify agent → 2 fix commits →
+  squash-merge #323 → all 5 post-merge deploy runs green. Reviving a
+  well-built stale branch beat rebuilding: ~2h wall-clock for a 12k-line
+  feature.
+- subscribe_pr_activity failed repeatedly ("Could not subscribe") on both
+  tool variants — fallback that worked: send_later check-ins (~6-8 min)
+  carrying explicit next-step instructions. The prior "user declined
+  send_later" learning is about unprompted babysitting; when the user says
+  "merge ASAP" and webhooks are broken, scheduled check-ins are the tool.
+- Merge-conflict failure class worth naming: git interleaves two
+  structurally-similar-but-distinct blocks (route pairs in http.ts, settings
+  fns, mobile cards) into one hunk. Instruction that worked: RECONSTRUCT
+  from verbatim parent-tip sources (`git show parent:file`), never trust the
+  raw diff; then have a separate verifier byte-compare each reconstructed
+  block against its originating parent.
+- Two defects escaped the (excellent) revival agent, caught by cheap layers:
+  (1) typecheck drift — main added a NEW call site (sendSignInPhoneCode) of
+  a function whose signature the branch widened; textually conflict-free,
+  CI caught it. Budget one CI round trip for exactly this class. (2) a
+  behavior bug (digest email subject ternary duplicated from the h1) found
+  only by the adversarial verifier's parent-diff spot-read — verify agents
+  earn their cost on merges; run them in parallel with CI, not after.
+- Orchestrator fixing 1-line CI/verifier findings directly beats
+  round-tripping to the author agent when the diagnosis is already in hand
+  — reserve SendMessage round trips for fixes needing the agent's context.
+- Retarget a stacked PR's base to main BEFORE the revival push (one
+  update_pull_request call), and close the superseded base PR with a
+  contained-in note.
+
 ### 2026-07-24 — Run 2 addendum (team chat: Mailchimp vs BCC vs native)
 - Team exchange (Charisma/Carolyn/founder) surfaced principles now encoded
   as 7 & 8 above: founder rejected BCC ("filters to spam", can't design),
