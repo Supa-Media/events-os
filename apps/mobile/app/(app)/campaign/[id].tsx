@@ -42,7 +42,7 @@ export default function CampaignDetailScreen() {
           <EmptyState
             icon="lock"
             title="Campaigns is available to org leadership"
-            message="Ask a central Executive Director or Financial Manager to grant you access."
+            message="Ask a central Executive Director, Financial Manager, or Marketing Director to grant you campaign compose or approve power."
           />
         </Narrow>
       </Screen>
@@ -110,6 +110,7 @@ function CampaignDetailBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
         <CampaignStatusCard
           campaign={campaign}
           audienceName={selectedAudience?.name ?? null}
+          audience={selectedAudience}
           preview={preview}
           run={run}
         />

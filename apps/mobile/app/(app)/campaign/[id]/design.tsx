@@ -14,8 +14,9 @@
  * `renderCampaignEmail` against a sample recipient) and a tap-to-copy
  * merge-tag row on the right — stacked below on narrow/native screens.
  *
- * Read-only once the campaign leaves "draft" (`updateCampaignDoc` throws
- * `NOT_DRAFT` server-side past that point — see `CampaignMetaCard`'s doc).
+ * Read-only once the campaign leaves `draft`/`changes_requested`
+ * (`updateCampaignDoc` throws `NOT_EDITABLE` server-side past that point —
+ * see `campaigns.ts#assertEditable`).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Platform, Text, View, useWindowDimensions } from "react-native";
@@ -88,7 +89,7 @@ export default function CampaignDesignScreen() {
           <EmptyState
             icon="lock"
             title="Campaigns is available to org leadership"
-            message="Ask a central Executive Director or Financial Manager to grant you access."
+            message="Ask a central Executive Director, Financial Manager, or Marketing Director to grant you campaign compose or approve power."
           />
         </Narrow>
       </Screen>
@@ -122,7 +123,9 @@ function CampaignDesignBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
   const historyRef = useRef<History<EmailDocument> | null>(null);
   historyRef.current = history;
 
-  const editable = campaign?.status === "draft";
+  // Editable in `draft` OR `changes_requested` (a reviewer sent it back —
+  // `campaigns.ts#assertEditable` enforces the same pair server-side).
+  const editable = campaign?.status === "draft" || campaign?.status === "changes_requested";
   const { width } = useWindowDimensions();
   const split = width >= SPLIT_BREAKPOINT;
 
@@ -311,7 +314,9 @@ function CampaignDesignBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
 
       {!editable ? (
         <Text className="mb-3 text-xs text-muted">
-          This campaign has been sent — the design is locked.
+          {campaign?.status === "pending_approval"
+            ? "Awaiting approval — the design is locked until a reviewer decides."
+            : "This campaign has been sent (or is on its way) — the design is locked."}
         </Text>
       ) : (
         <View className="mb-4">

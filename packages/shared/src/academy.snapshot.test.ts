@@ -102,6 +102,17 @@
  * reveal added paused as a second non-counting reason (prose only — no snapshot
  * change). No slugs, titles, minutes, or order moved beyond those two quiz bumps.
  *
+ * Two-party campaign approval (founder requirement, 2026-07-24):
+ * `dev-relationship-workflow` gained a rule ("A personal thank-you and a
+ * campaign are different tools") + one quiz question, contrasting the
+ * one-to-one donor relationship this lesson teaches with the one-to-many
+ * Campaigns desk, and teaching that Compose/Approve is the same
+ * per-role-power mechanism as Giving — even the ED needs a DIFFERENT chosen
+ * reviewer's approval to send a campaign. Quiz length 3→4 (bumped below);
+ * its minutes, title, and placement are unchanged. (`dev-donor-crm-basics`
+ * was considered too — its Giving-power quiz is already at the 5-question
+ * cap — so this landed one lesson over instead.)
+ *
  * Supplies ⇄ Inventory unification (docs/plans/inventory-supplies-unification.md,
  * the linking UI shipping): `tab-supplies` was rewritten for the provenance
  * Source model, the auto-derived Status (packed → Have it; "Event X ·
@@ -939,7 +950,7 @@ const EXPECTED_SECTIONS: {
     slug: "dev-relationship-workflow",
     title: "Owners, notes, and the top-donor list",
     minutes: 4,
-    quizLength: 3,
+    quizLength: 4,
     optional: false,
     capstoneKind: null,
   },

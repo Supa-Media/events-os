@@ -16,11 +16,11 @@
  * server-side (`campaigns.ts#validateSenderFields`) and surfaced here as a
  * plain save error.
  *
- * Read-only once `status !== "draft"`: `updateCampaignMeta`/`updateCampaignDoc`
- * both throw `NOT_DRAFT` server-side once a send has started or finished
- * (`campaigns.ts#assertDraft`) — a sent campaign's record should stay a
- * faithful account of what actually went out, so the fields render as plain
- * text instead of editable controls rather than letting an edit silently fail.
+ * Read-only outside `draft`/`changes_requested`: `updateCampaignMeta`/
+ * `updateCampaignDoc` both throw `NOT_EDITABLE` server-side once a campaign
+ * is submitted for approval (or a send has started/finished) —
+ * (`campaigns.ts#assertEditable`) — so the fields render as plain text
+ * instead of editable controls rather than letting an edit silently fail.
  */
 import { useEffect, useState } from "react";
 import { View, Text } from "react-native";
@@ -66,7 +66,7 @@ export function CampaignMetaCard({
 
   const senderDefaults = useQuery(api.campaigns.getSenderDefaults, {});
 
-  const editable = campaign.status === "draft";
+  const editable = campaign.status === "draft" || campaign.status === "changes_requested";
   const selectedAudience = audiences.find((a) => a._id === campaign.audienceId) ?? null;
 
   function saveName() {

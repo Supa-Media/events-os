@@ -22,6 +22,7 @@ import { colors } from "../../lib/theme";
 import { SeatActionsPanel } from "./SeatActions";
 import { RenameSeatControl, StructureEditActions } from "./StructureEditor";
 import { GivingPowerControl } from "./GivingPowerControl";
+import { CampaignPowerControl } from "./CampaignPowerControl";
 import {
   avatarNameFor,
   capabilityLabel,
@@ -272,6 +273,13 @@ export function SeatDetailPanel({
           Not shown for a derived seat (its holders/powers are computed). */}
       {detail.canEditPowers && !detail.derived ? (
         <GivingPowerControl seatDefId={detail.defId} capabilities={detail.capabilities} />
+      ) : null}
+
+      {/* Assignable campaign power (founder requirement, 2026-07-24) — the
+          Campaigns-desk analog of the giving control right above it, same
+          gate. */}
+      {detail.canEditPowers && !detail.derived ? (
+        <CampaignPowerControl seatDefId={detail.defId} capabilities={detail.capabilities} />
       ) : null}
 
       <SectionHeader title="Reports to" />

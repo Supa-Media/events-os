@@ -871,6 +871,13 @@ export const getCampaignApproval = query({
   returns: v.object({
     canDecide: v.boolean(),
     isSubmitter: v.boolean(),
+    // Resolved server-side (not via a chapter-scoped `people.get` the client
+    // could call itself — a submitter/reviewer's roster row may live in a
+    // DIFFERENT chapter than the caller's own, which `requireOwned` would
+    // reject) so the review card can show "by so-and-so" without a second,
+    // chapter-scoped round trip that might come back empty.
+    submitterName: v.union(v.string(), v.null()),
+    reviewerName: v.union(v.string(), v.null()),
     log: v.array(
       v.object({
         _id: v.id("campaignApprovalLog"),
@@ -910,12 +917,24 @@ export const getCampaignApproval = query({
       ownIds.has(campaign.reviewerPersonId);
     const isSubmitter =
       campaign.submittedByPersonId != null && ownIds.has(campaign.submittedByPersonId);
+    const submitter = campaign.submittedByPersonId
+      ? await ctx.db.get(campaign.submittedByPersonId)
+      : null;
+    const reviewer = campaign.reviewerPersonId
+      ? await ctx.db.get(campaign.reviewerPersonId)
+      : null;
     const log = await ctx.db
       .query("campaignApprovalLog")
       .withIndex("by_campaign", (q) => q.eq("campaignId", campaignId))
       .order("desc")
       .take(50);
-    return { canDecide, isSubmitter, log };
+    return {
+      canDecide,
+      isSubmitter,
+      submitterName: submitter?.name ?? null,
+      reviewerName: reviewer?.name ?? null,
+      log,
+    };
   },
 });
 

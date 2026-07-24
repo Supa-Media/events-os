@@ -288,6 +288,11 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
           },
         ],
       },
+      {
+        kind: "rule",
+        title: "A personal thank-you and a campaign are different tools",
+        text: "Notes and a personal thank-you are ONE-TO-ONE — you, this donor, this relationship. An email campaign (the Campaigns desk) is ONE-TO-MANY — one write-up, an audience of many. Because a campaign reaches a lot of people at once, it always needs a SECOND person's sign-off before it sends: the writer picks a reviewer from a dropdown of Compose/Approve-holders (never themselves), and that reviewer alone can approve it, request changes, or deny it — even when the writer is the Executive Director. Compose/Approve is a per-role power the ED assigns from the org chart, the same mechanism as the Giving-desk power above; out of the box the ED, Financial Manager, and Marketing Director all hold it.",
+      },
     ],
     quiz: [
       {
@@ -325,6 +330,18 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 1,
         explanation:
           "Everything about one donor — who they are, who owns the relationship, what they've given, what they're backing, and the story behind it — sits on one screen.",
+      },
+      {
+        prompt: "The Executive Director writes a mass email campaign. Who can approve it before it sends?",
+        options: [
+          "The ED themselves — they hold Compose/Approve power",
+          "A DIFFERENT person the ED picks as reviewer (e.g. the Marketing Director) — never themselves",
+          "Nobody — the ED can never send a mass email",
+          "Any signed-in member, automatically",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Two-party approval means a campaign always needs a DIFFERENT Compose/Approve-holder's sign-off, chosen at submit time — even the ED's own sends need someone else's approval.",
       },
     ],
   },
