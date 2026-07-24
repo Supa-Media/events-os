@@ -13,7 +13,11 @@ import { internalQuery, mutation, query } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { Id } from "./_generated/dataModel";
 import { requireUserId } from "./lib/context";
-import { hasCampaignsAccess, requireCampaignsAccess } from "./lib/campaignsAccess";
+import {
+  hasCampaignApprovalPower,
+  hasCampaignsAccess,
+  requireCampaignsAccess,
+} from "./lib/campaignsAccess";
 import {
   AUDIENCE_RESOLVE_LIMIT,
   resolveAudienceRecipients,
@@ -26,11 +30,16 @@ const sourceValidator = v.union(...AUDIENCE_SOURCES.map((s) => v.literal(s)));
 /** Soft visibility check for the campaigns nav entry — never throws, so a
  *  non-privileged user's screen just doesn't render the affordance instead of
  *  crashing. Every actual read/write below uses the throwing
- *  `requireCampaignsAccess` instead. */
+ *  `requireCampaignsAccess` instead. `canApprove` (two-party approval,
+ *  2026-07-24) lets the UI decide whether to offer the "pick a reviewer"
+ *  dropdown / the reviewer-only decision surface without a separate query. */
 export const myCampaignsAccess = query({
   args: {},
-  returns: v.object({ canView: v.boolean() }),
-  handler: async (ctx) => ({ canView: await hasCampaignsAccess(ctx) }),
+  returns: v.object({ canView: v.boolean(), canApprove: v.boolean() }),
+  handler: async (ctx) => ({
+    canView: await hasCampaignsAccess(ctx),
+    canApprove: await hasCampaignApprovalPower(ctx),
+  }),
 });
 
 export const listAudiences = query({

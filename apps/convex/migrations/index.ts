@@ -48,6 +48,7 @@ import { linkDonorPeople } from "./0032_link_donor_people";
 import { addGivingPowerDefaults } from "./0033_add_giving_power_defaults";
 import { mergeDuplicateGbGuests } from "./0034_merge_duplicate_gb_guests";
 import { backfillReceiptDocuments } from "./0035_backfill_receipt_documents";
+import { addCampaignPowerDefaults } from "./0036_add_campaign_power_defaults";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -141,4 +142,11 @@ export const MIGRATIONS: Migration[] = [
   // provenance + OCR read seeded into canonical). Idempotent (already-linked
   // txns skipped); batched with scheduler continuation. See 0035.
   backfillReceiptDocuments,
+  // Two-party campaign approval (founder requirement, 2026-07-24) — add
+  // campaigns.approve + campaigns.compose to executive_director/
+  // financial_manager/marketing_director's live seatDefs rows so
+  // already-seeded orgs pick up the same default campaign-approval access
+  // the template now grants a brand-new org automatically. Additive-only
+  // (see 0036's doc). Idempotent.
+  addCampaignPowerDefaults,
 ];

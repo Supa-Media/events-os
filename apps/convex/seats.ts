@@ -1199,6 +1199,81 @@ export const setSeatGivingPower = mutation({
   },
 });
 
+// ── Campaign power editor (founder requirement, 2026-07-24) ────────────────
+//
+// The sibling of `setSeatGivingPower` above, for the two-party campaign-
+// approval capabilities (`campaigns.compose`/`campaigns.approve` —
+// `apps/convex/lib/campaignsAccess.ts`). Same gate (`requireChartEditor`),
+// same self-lockout guard (`assertNoSelfLockout`), same "touch ONLY these
+// capabilities, preserve everything else verbatim" shape — see
+// `setSeatGivingPower`'s doc for the full rationale, which applies here
+// unchanged.
+
+/** The two campaign capabilities this editor owns — the ONLY caps it ever
+ *  touches. */
+const CAMPAIGN_CAPS: readonly SeatCapability[] = ["campaigns.compose", "campaigns.approve"];
+
+const campaignPowerValidator = v.union(
+  v.literal("none"),
+  v.literal("compose"),
+  v.literal("approve"),
+);
+
+/** The campaign capabilities a given power level grants. `approve` IMPLIES
+ *  `compose` (an approver can always do everything a composer can — see
+ *  `campaigns.compose`'s doc in `@events-os/shared`); `compose` grants just
+ *  itself; `none` strips both. */
+function campaignCapsForPower(power: "none" | "compose" | "approve"): SeatCapability[] {
+  if (power === "approve") return ["campaigns.approve", "campaigns.compose"];
+  if (power === "compose") return ["campaigns.compose"];
+  return [];
+}
+
+/**
+ * Set a seat's CAMPAIGN power to `none` / `compose` / `approve`, rewriting
+ * ONLY the two campaign capabilities on the def and leaving every other
+ * capability exactly as-is. `seatDefs` rows are shared across every chapter,
+ * so one edit applies everywhere the seat is occupied — but campaigns is
+ * central-only in practice (only central seats matter for this power today).
+ *
+ * Gate: `requireChartEditor` (superuser OR an `org.editChart` holder) +
+ * `assertNoSelfLockout` — identical to `setSeatGivingPower`. Rejects a
+ * `derived` seat. Returns the seat's FULL updated capabilities array.
+ */
+export const setSeatCampaignPower = mutation({
+  args: {
+    seatDefId: v.id("seatDefs"),
+    power: campaignPowerValidator,
+  },
+  returns: v.array(seatCapabilityValidator),
+  handler: async (ctx, { seatDefId, power }) => {
+    const editor = await requireChartEditor(ctx);
+
+    const def = await ctx.db.get(seatDefId);
+    if (!def) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "That seat doesn't exist." });
+    }
+    if (def.derived === true) {
+      throw new ConvexError({
+        code: "DERIVED_SEAT",
+        message:
+          "This seat's holders are computed automatically — its powers can't be edited.",
+      });
+    }
+
+    const preserved = def.capabilities.filter((c) => !CAMPAIGN_CAPS.includes(c));
+    const next: SeatCapability[] = [...preserved, ...campaignCapsForPower(power)];
+
+    const overrides = new Map<Id<"seatDefs">, DefOverride>([
+      [def._id, { ...def, capabilities: next }],
+    ]);
+    await assertNoSelfLockout(ctx, editor, overrides);
+
+    await ctx.db.patch(def._id, { capabilities: next, updatedAt: Date.now() });
+    return next;
+  },
+});
+
 // ── Bridge drift audit (READ-ONLY) ──────────────────────────────────────────
 //
 // Post-B10 (PR #195), `lib/finance.ts#getFinanceRole` / `#isCentralEdOrFm`

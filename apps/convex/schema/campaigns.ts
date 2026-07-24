@@ -36,6 +36,25 @@ import { DONOR_STATUSES } from "./givingPlatform";
  * (Resend inbound webhook, matched to a campaign via the `campaign+<id>@...`
  * plus-address reply-to) so a reply is visible in-app without a separate
  * mailbox.
+ *
+ * ── Two-party approval (founder requirement, 2026-07-24) ─────────────────────
+ * Every MASS send (never a test-send, never transactional mail, and event
+ * blasts are explicitly OUT of scope — see `schema/ticketing.ts#blasts`) now
+ * needs sign-off from a DIFFERENT person holding campaign-approval power
+ * before it can go out — even the Executive Director needs another
+ * approval-power holder (e.g. the Marketing Director) to approve their send.
+ * `draft → pending_approval → approved → sending` is the happy path;
+ * `changes_requested` and `denied` are the reviewer's two "no" outcomes (see
+ * `campaigns.ts`'s state-machine doc for the full mutation-by-mutation
+ * walkthrough). The reviewer is CHOSEN at submit time (`reviewerPersonId`) —
+ * not a broadcast to every approver — and only that person may decide.
+ * `approvedSnapshotHash` binds a decision to the EXACT content/audience-
+ * definition that was reviewed (recomputed and compared at approve time and
+ * again at send time — a content or audience-definition edit after approval
+ * invalidates it, forcing re-submission rather than silently shipping
+ * something the reviewer never actually saw). `campaignApprovalLog` (below)
+ * is the permanent, append-only decision history — mirrors
+ * `schema/finances.ts#budgetApprovalLog`.
  */
 
 const campaignsScope = v.union(v.id("chapters"), v.literal("central"));
@@ -75,7 +94,16 @@ export const audiences = defineTable({
   archived: v.optional(v.boolean()),
 }).index("by_scope", ["scope"]);
 
-export const CAMPAIGN_STATUSES = ["draft", "sending", "sent", "failed"] as const;
+export const CAMPAIGN_STATUSES = [
+  "draft",
+  "pending_approval",
+  "approved",
+  "sending",
+  "sent",
+  "failed",
+  "changes_requested",
+  "denied",
+] as const;
 
 /** A composed email + its send lifecycle. `doc` is an `EmailDocument`
  *  (`@events-os/shared`'s block model) — validated with `validateEmailDocument`
@@ -115,6 +143,36 @@ export const campaigns = defineTable({
   createdAt: v.number(),
   updatedAt: v.number(),
   sentAt: v.optional(v.number()),
+
+  // ── Two-party approval (all optional — back-compat with existing rows,
+  // which simply never populate them; see the module doc above) ────────────
+  /** Why this send is going out — required by `submitForApproval`, shown to
+   *  the reviewer alongside the audience + recipient count. */
+  purpose: v.optional(v.string()),
+  submittedByPersonId: v.optional(v.id("people")),
+  submittedAt: v.optional(v.number()),
+  /** The reviewer CHOSEN at submit time (a dropdown of `campaigns.approve`
+   *  holders, not a broadcast) — only this person may approve/deny/request
+   *  changes on this pending request. Cleared on cancel/revert-to-draft. */
+  reviewerPersonId: v.optional(v.id("people")),
+  /** The decider on the LAST decision (approved / changes_requested /
+   *  denied) — doubles across all three, same "last reviewer" convention
+   *  `budgets.approvedByPersonId` uses. */
+  approvedByPersonId: v.optional(v.id("people")),
+  approvedAt: v.optional(v.number()),
+  /** The reviewer's note — required for changes_requested/denied, optional
+   *  on an approval. */
+  reviewNote: v.optional(v.string()),
+  /** Deterministic hash over the content + audience DEFINITION a reviewer
+   *  signed off on (`campaigns.ts#computeCampaignSnapshotHash`) — stored at
+   *  submit time, checked again at approve time and at send time. A mismatch
+   *  means the campaign (or its audience's targeting) changed since the
+   *  hash was recorded. */
+  approvedSnapshotHash: v.optional(v.string()),
+  /** The live resolved recipient count at APPROVAL time — a durable record
+   *  of what the reviewer actually saw (the live composer/review count can
+   *  drift after the fact as the underlying data changes). */
+  approvedRecipientCount: v.optional(v.number()),
 })
   .index("by_scope", ["scope"])
   .index("by_status", ["status"]);
@@ -143,6 +201,34 @@ export const campaignRecipients = defineTable({
   .index("by_campaign_and_status", ["campaignId", "status"])
   .index("by_token", ["unsubscribeToken"])
   .index("by_email", ["email"]);
+
+export const CAMPAIGN_APPROVAL_ACTIONS = [
+  "submitted",
+  "approved",
+  "changes_requested",
+  "denied",
+] as const;
+
+/** APPEND-ONLY durable history of every campaign approval decision — mirrors
+ *  `schema/finances.ts#budgetApprovalLog` exactly (same rationale: the
+ *  campaign row's own approval fields are LAST-DECISION-ONLY, overwritten by
+ *  the next submit/decide, so this table is the only permanent record).
+ *  Written by `campaigns.ts`'s `submitForApproval` ("submitted"),
+ *  `approveCampaign` ("approved"), `requestCampaignChanges`
+ *  ("changes_requested"), and `denyCampaign` ("denied") — never by anything
+ *  else, never updated or deleted afterward. A self-service
+ *  `cancelApprovalRequest` (pending_approval → draft) deliberately does NOT
+ *  log a row — it's a withdrawal, not a decision, so it stays out of this
+ *  enum to keep it a record of actual reviewer/submitter DECISIONS only. */
+export const campaignApprovalLog = defineTable({
+  campaignId: v.id("campaigns"),
+  action: v.union(...CAMPAIGN_APPROVAL_ACTIONS.map((a) => v.literal(a))),
+  personId: v.id("people"),
+  note: v.optional(v.string()),
+  purpose: v.optional(v.string()),
+  recipientCount: v.optional(v.number()),
+  at: v.number(),
+}).index("by_campaign", ["campaignId"]);
 
 export const EMAIL_SUPPRESSION_REASONS = [
   "unsubscribe",

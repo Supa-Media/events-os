@@ -65,7 +65,23 @@ export const MULTI_HOLDER_CAP = 50 as const;
  *  surfaces the desk in navigation (mirrors `nav.finances`). Resolved by
  *  `apps/convex/lib/givingAccess.ts` off `lib/seats.ts#getSeatDerivedGivingCapabilities`
  *  — a central holder sees every scope, a chapter `giving.view` seat sees only
- *  its own chapter. */
+ *  its own chapter.
+ *
+ *  `campaigns.compose` / `campaigns.approve` (founder requirement, 2026-07-24
+ *  — two-party approval for mass email): `campaigns.compose` may open the
+ *  Campaigns desk, draft a campaign, submit it for approval, and send it once
+ *  a DIFFERENT approval-power holder has approved it. `campaigns.approve`
+ *  IMPLIES `campaigns.compose` (an approver can always do everything a
+ *  composer can) and additionally lets its holder be picked as a campaign's
+ *  reviewer and decide (approve / deny / request changes) on one — but never
+ *  on a campaign they themselves submitted, even for a single person holding
+ *  the seat that grants it (the Executive Director included — see
+ *  `apps/convex/campaigns.ts`'s state-machine doc for the separation-of-duties
+ *  enforcement). Resolved by `apps/convex/lib/campaignsAccess.ts`, mirroring
+ *  the giving trio's seat-derived, per-scope resolution shape (central-only
+ *  in practice — campaigns has no chapter surface). Test-sends and
+ *  transactional email are NOT gated by either capability — only a real mass
+ *  send is. */
 export const SEAT_CAPABILITIES = [
   "finance.manager",
   "finance.viewer",
@@ -78,6 +94,8 @@ export const SEAT_CAPABILITIES = [
   "giving.manage",
   "giving.view",
   "nav.giving",
+  "campaigns.compose",
+  "campaigns.approve",
 ] as const;
 export type SeatCapability = (typeof SEAT_CAPABILITIES)[number];
 
@@ -162,6 +180,11 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       "giving.manage",
       "giving.view",
       "nav.giving",
+      // Founder requirement (2026-07-24): the ED can compose/send campaigns,
+      // but every send still needs sign-off from a DIFFERENT approval-power
+      // holder (e.g. the Marketing Director) — see `campaigns.approve`'s doc.
+      "campaigns.approve",
+      "campaigns.compose",
     ],
     legacyTitle: "executive_director",
   },
@@ -190,6 +213,10 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       "nav.finances",
       "giving.view",
       "nav.giving",
+      // Founder requirement (2026-07-24): the FM is one of the org's
+      // valid campaign approvers alongside the ED and Marketing Director.
+      "campaigns.approve",
+      "campaigns.compose",
     ],
     legacyTitle: "finance_manager",
   },
@@ -288,7 +315,11 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       "Plan marketing campaigns",
       "Oversee the content calendar",
     ],
-    capabilities: [],
+    // Founder requirement (2026-07-24, verbatim): "ED approved by Marketing
+    // Director" — named as a valid second party for two-party campaign
+    // approval, so the Marketing Director gets full campaign power by
+    // default (compose implied by approve).
+    capabilities: ["campaigns.approve", "campaigns.compose"],
   },
   social_media_manager: {
     id: "social_media_manager",

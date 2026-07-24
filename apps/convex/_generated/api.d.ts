@@ -21,6 +21,7 @@ import type * as backerMilestones from "../backerMilestones.js";
 import type * as blasts from "../blasts.js";
 import type * as budgetDecisionEmails from "../budgetDecisionEmails.js";
 import type * as budgetLines from "../budgetLines.js";
+import type * as campaignApprovalEmails from "../campaignApprovalEmails.js";
 import type * as campaigns from "../campaigns.js";
 import type * as cards from "../cards.js";
 import type * as checkIns from "../checkIns.js";
@@ -154,6 +155,7 @@ import type * as migrations_0032_link_donor_people from "../migrations/0032_link
 import type * as migrations_0033_add_giving_power_defaults from "../migrations/0033_add_giving_power_defaults.js";
 import type * as migrations_0034_merge_duplicate_gb_guests from "../migrations/0034_merge_duplicate_gb_guests.js";
 import type * as migrations_0035_backfill_receipt_documents from "../migrations/0035_backfill_receipt_documents.js";
+import type * as migrations_0036_add_campaign_power_defaults from "../migrations/0036_add_campaign_power_defaults.js";
 import type * as migrations_index from "../migrations/index.js";
 import type * as modules from "../modules.js";
 import type * as moneyViews from "../moneyViews.js";
@@ -256,6 +258,7 @@ declare const fullApi: ApiFromModules<{
   blasts: typeof blasts;
   budgetDecisionEmails: typeof budgetDecisionEmails;
   budgetLines: typeof budgetLines;
+  campaignApprovalEmails: typeof campaignApprovalEmails;
   campaigns: typeof campaigns;
   cards: typeof cards;
   checkIns: typeof checkIns;
@@ -389,6 +392,7 @@ declare const fullApi: ApiFromModules<{
   "migrations/0033_add_giving_power_defaults": typeof migrations_0033_add_giving_power_defaults;
   "migrations/0034_merge_duplicate_gb_guests": typeof migrations_0034_merge_duplicate_gb_guests;
   "migrations/0035_backfill_receipt_documents": typeof migrations_0035_backfill_receipt_documents;
+  "migrations/0036_add_campaign_power_defaults": typeof migrations_0036_add_campaign_power_defaults;
   "migrations/index": typeof migrations_index;
   modules: typeof modules;
   moneyViews: typeof moneyViews;
