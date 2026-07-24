@@ -49,6 +49,7 @@ import { addGivingPowerDefaults } from "./0033_add_giving_power_defaults";
 import { mergeDuplicateGbGuests } from "./0034_merge_duplicate_gb_guests";
 import { backfillReceiptDocuments } from "./0035_backfill_receipt_documents";
 import { addCampaignPowerDefaults } from "./0036_add_campaign_power_defaults";
+import { backfillContactOnlyPeople } from "./0038_backfill_contact_only_people";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -149,4 +150,15 @@ export const MIGRATIONS: Migration[] = [
   // the template now grants a brand-new org automatically. Additive-only
   // (see 0036's doc). Idempotent.
   addCampaignPowerDefaults,
+  // Person-centric audiences Phase 1 — flag every EXISTING donor/import
+  // auto-created roster row (`isTeamMember: false`, notes "Added from
+  // Giving"/"Added from import") as `isContactOnly: true` so roster-facing
+  // surfaces (People tab default view, org-chart, manager derivation,
+  // reminder digests) stop showing them as phantom volunteers. New rows get
+  // the flag directly at insert time; this is the one-time catch-up for what
+  // already exists. Idempotent (already-flagged rows skipped). See 0038.
+  // NB: the SIBLING backfill for guest→people linkage (`rsvps.personId`,
+  // Phase 1 item 2/3) is `migrations/0037_link_rsvp_people.ts` — deliberately
+  // NOT in this registry (it needs a human dry-run first; see its own doc).
+  backfillContactOnlyPeople,
 ];

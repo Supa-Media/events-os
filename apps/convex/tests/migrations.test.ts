@@ -319,6 +319,7 @@ const REGISTRY_NAMES = [
   "0034_merge_duplicate_gb_guests",
   "0035_backfill_receipt_documents",
   "0036_add_campaign_power_defaults",
+  "0038_backfill_contact_only_people",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",
