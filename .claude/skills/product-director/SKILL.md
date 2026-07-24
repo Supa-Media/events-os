@@ -165,6 +165,35 @@ Before finishing a run of this skill, you MUST:
 
 ## Learnings Log (newest first)
 
+### 2026-07-24 — Run 3: email-targeting assessment (combinations/exclusions, clunky UI)
+- Assessment-only run (founder: "analyze and tell me the plan"). 3 recon
+  lanes (UI sonnet, backend sonnet, meta haiku); synthesis stayed here; no
+  implementation dispatched unbidden. Monitor ticker armed/stopped cleanly.
+- When lanes conflict, the deeper lane wins only after spot-verification:
+  meta lane claimed legacy guests audiences mis-resolve pending 0037;
+  backend lane proved legacy guests still resolve correctly (raw-email rsvp
+  scan, audienceResolve.ts:142-172) — the REAL hole is new attendance
+  filters silently under-matching (personAttendsMatch reads rsvps.by_person,
+  historical rows unlinked until manual 0037 runs in prod). Verified in code
+  before asserting.
+- New failure class named: SILENT AUDIENCE SHRINK — resolver paths that drop
+  people with no preview counter (unlinked historical RSVPs, verifiedEmailOnly
+  checking any-verified-address while resolveSendAddress may pick an
+  unverified one, central scope + chapterId filter dropping the
+  central-donor fallback, legacy `people` opt-out drops uncounted). Preview
+  must count every exclusion class or founders read low counts as "broken."
+- Founder symptom → schema gap was near-literal: "can't do combinations and
+  exclusions of properties" = flat AND-only filter object + person-id-only
+  excludes. Plan: additive `excludeFilters` (NOT) ships before OR-of-groups
+  (shape change; must update approval snapshot hash in lockstep — #399
+  drift lesson).
+- Spec'd-but-unwired control class again: `chapterId` is in the UI's
+  GROUP_FIELDS list yet no control renders it — grep GROUP_FIELDS-style
+  registries against actually-rendered controls.
+- UI clunkiness had an in-repo precedent fix: BlastComposerCard's 400ms
+  debounce vs AudiencesView's none — cite sibling patterns in briefs so
+  agents copy the house solution.
+
 ### 2026-07-24 — Run 2 addendum 6 (Phase 3 #407 shipped — workstream complete)
 - Full email workstream shipped in one session-day: #323 revival → #399
   approval gate → #401 identity backbone → 0039 hotfix (#405) → #402
@@ -356,40 +385,10 @@ Before finishing a run of this skill, you MUST:
 - Stacked PRs report mergeable_state "unstable" while their base PR is
   unmerged — expected, not a failure; state the merge order in both bodies.
 
-### 2026-07-23 — Run 1 addendum (dispatch phase)
-- `.gitignore` ignores `.claude/*` (only settings.json whitelisted) — this
-  skill needed an explicit `!.claude/skills/` exception to be committable.
-- [SUPERSEDED 2026-07-24 by the poll-every-5-minutes directive above — the
-  founder now REQUIRES scheduled polling; webhook subscription was broken
-  all session anyway.]
-- Sequencing rule proven immediately: two workstreams both editing
-  ChapterView.tsx (backer-header removal + clickable-tiles) — hold the
-  second until the first's agent completes rather than launching both and
-  eating a self-inflicted merge conflict. Parallelize across files, serialize
-  within a file.
-- Removing a UI section shrinks other workstreams' scope (jargon tooltips no
-  longer need to explain floor/tier/under-water) — re-check queued briefs
-  when a removal lands mid-run.
-- "Remove X entirely" from a founder still needs a scope boundary: remove the
-  named surface, INVENTORY look-alike surfaces (e.g. a Backers column
-  elsewhere) in the PR body for confirmation instead of guessing.
-
-### 2026-07-23 — Finance feedback triage (Kansi's annotated PDF, run 1)
-- Created this skill. Run: 4 parallel Explore agents (2 sonnet, 2 haiku)
-  mapped dashboard provenance, reconcile/receipts, budgets/cards/reimburse,
-  and in-flight PRs in ~5 min wall-clock; synthesis stayed with orchestrator.
-- Worked well: giving agents the tester's exact symptoms ("shows 11, should
-  be 59") produced ranked root causes with file:line anchors — the count
-  mismatch turned out to be a scope-threading bug (receiptChase ignores the
-  reconcile screen's scope), not arithmetic.
-- Recurring pattern: backend capability already existed but UI wasn't wired
-  (budget-approval emails, per-line reimbursement approval, card caps) —
-  always ask recon agents to list "schema-ready but UI-missing" gaps; they're
-  the cheapest roadmap wins.
-- Founder principles captured this run: "chapter view should be very clear in
-  the UI, maybe a watermark" → principle 1; "all numbers should be clickable
-  to the details" → principle 2; "accept-all on AI suggestions is dangerous
-  because most of it is wrong" → principle 4.
-- Coordination catch: PR #368 was mid-flight splitting apps/convex/finances.ts
-  into lib/financeInternals/* — every backend workstream had to be sequenced
-  after it. Always check open refactor PRs before assigning file-touching work.
+[Runs 1 and its addenda (2026-07-23) folded into the instructions above:
+parallel recon with exact symptoms, schema-ready-but-UI-missing gaps,
+principles 1/2/4, refactor-PR sequencing, `.gitignore` needs
+`!.claude/skills/` for this file to be committable, parallelize across
+files / serialize within a file, re-check queued briefs when a removal
+lands mid-run, "remove X entirely" → inventory look-alike surfaces in the
+PR body.]
