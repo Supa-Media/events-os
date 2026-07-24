@@ -21,7 +21,9 @@ import {
 import {
   AUDIENCE_RESOLVE_LIMIT,
   HAND_PICK_LOOKUP_LIMIT,
+  hasEffectiveExcludeCriteria,
   resolveAudienceRecipients,
+  type AudienceFilters,
 } from "./lib/audienceResolve";
 import { listActiveChapters } from "./lib/chapters";
 import { normalizeEmail } from "./lib/access";
@@ -61,6 +63,22 @@ function assertValidHandPicks(
       });
     }
   }
+}
+
+/** Write-time normalization for `excludeFilters` (verification-round finding
+ *  B): an INEFFECTIVE value — `undefined`, `{}`, or an object whose only set
+ *  field is `verifiedEmailOnly` (never evaluated for excludeFilters — see
+ *  `lib/audienceResolve.ts#hasEffectiveExcludeCriteria`'s doc) — is always
+ *  stored as `undefined`, never a "shaped but empty" object. This keeps the
+ *  picker UI's "seed an empty {} while a group is expanded but nothing's
+ *  picked yet" behavior from ever landing in the database as something that
+ *  LOOKS different from "no exclude block at all" — and, critically, keeps
+ *  `campaigns.ts#computeCampaignSnapshotHash`'s key-omission rule airtight:
+ *  that function only has to ask "is `excludeFilters` present," never
+ *  re-derive effectiveness itself, because a stored row can never be
+ *  present-but-ineffective. */
+function normalizeExcludeFilters(excludeFilters: AudienceFilters | undefined): AudienceFilters | undefined {
+  return hasEffectiveExcludeCriteria(excludeFilters) ? excludeFilters : undefined;
 }
 
 /** Soft visibility check for the campaigns nav entry — never throws, so a
@@ -136,7 +154,7 @@ export const createAudience = mutation({
       name: trimmed,
       source,
       filters,
-      excludeFilters,
+      excludeFilters: normalizeExcludeFilters(excludeFilters),
       includePersonIds,
       excludePersonIds,
       createdBy: userId,
@@ -183,7 +201,13 @@ export const updateAudience = mutation({
       patch.name = trimmed;
     }
     if (filters !== undefined) patch.filters = filters;
-    if (excludeFilters !== undefined) patch.excludeFilters = excludeFilters;
+    // A caller passing `{}` (the picker's "cleared the exclude section back
+    // to nothing" case) or a `verifiedEmailOnly`-only object must clear the
+    // stored field to `undefined`, not persist a "shaped but ineffective"
+    // object — see `normalizeExcludeFilters`'s doc. `ctx.db.patch` with an
+    // explicit `undefined` value clears an optional field (the `personId`/
+    // `isPrimary`-clearing precedent elsewhere in this codebase).
+    if (excludeFilters !== undefined) patch.excludeFilters = normalizeExcludeFilters(excludeFilters);
     if (includePersonIds !== undefined) patch.includePersonIds = includePersonIds;
     if (excludePersonIds !== undefined) patch.excludePersonIds = excludePersonIds;
     await ctx.db.patch(audienceId, patch);
