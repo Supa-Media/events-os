@@ -129,9 +129,14 @@ export const AUDIENCE_BACKER_STATUSES = ["active", "lapsed"] as const;
  *  - `teamOnly` — only roster rows (`isContactOnly !== true`).
  *  - `contactsOnly` — only contact rows (`isContactOnly === true`). Mutually
  *    exclusive with `teamOnly` in the UI; both unset = roster AND contacts.
- *  - `verifiedEmailOnly` — the person has AT LEAST ONE `personEmails` row
- *    with `verified: true` (a property of the PERSON, not necessarily the one
- *    address `resolveSendAddress` ultimately picks).
+ *  - `verifiedEmailOnly` — the address `resolveSendAddress` would ACTUALLY
+ *    send to has its own `personEmails` row with `verified: true` (data-trust
+ *    fix: previously this checked "the person has ANY verified address on
+ *    file," which could pass someone whose resolved send address was itself
+ *    unverified — see `lib/audienceResolve.ts#resolvedAddressIsVerified`'s
+ *    doc). A hand-pick bypasses this as a FILTER criterion (see
+ *    `resolvePersonFilters`'s doc) but is counted via the preview's
+ *    `handPickedUnverified` when it would have failed.
  */
 export const audienceFiltersValidator = v.object({
   eventId: v.optional(v.id("events")),
