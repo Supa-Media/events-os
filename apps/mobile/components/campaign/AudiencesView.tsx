@@ -19,11 +19,21 @@
  * moves most of them onto `person_filters` automatically; any that remain
  * (deliberately, for `"guests"` — see that migration's doc) keep working
  * exactly as before through `lib/audienceResolve.ts`'s legacy resolvers.
+ *
+ * UI-polish pass (founder feedback: the picker "looks and feels clunky"): a
+ * slim recipients count (`LiveRecipientsSummary`) is pinned above the filter
+ * + hand-pick stack and never blanks back to "Calculating…" once it's loaded
+ * once; the numeric filter fields and the hand-pick search box are debounced
+ * (`FILTER_DEBOUNCE_MS`) before they drive a query; and every query besides
+ * `listAudiences` itself (`previewAudience`, `searchPeopleForAudience`,
+ * `events.list`, `seats.chart`) is owned by a small leaf component wrapped in
+ * its own inline `ErrorBoundary`, so one query failing shows a scoped notice
+ * instead of taking down the whole form.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { View, Text, StyleSheet, Pressable } from "react-native";
 import { useQuery, useMutation } from "convex/react";
-import type { FunctionReturnType } from "convex/server";
+import type { FunctionArgs, FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
@@ -38,12 +48,19 @@ import {
   OptionTag,
   Icon,
 } from "../ui";
+import { ErrorBoundary } from "../ErrorBoundary";
 import { colors, spacing } from "../../lib/theme";
 import { useActionRunner } from "../../lib/useActionToast";
 import { confirmAction, describeAudience, pluralCount } from "./helpers";
 
+/** Debounce for both the numeric filter TextFields and the hand-pick search
+ *  box before they drive their query — matches the house pattern in
+ *  `BlastComposerCard.tsx` (`BODY_DEBOUNCE_MS`). */
+const FILTER_DEBOUNCE_MS = 400;
+
 type Audience = FunctionReturnType<typeof api.audiences.listAudiences>[number];
 type PreviewResult = FunctionReturnType<typeof api.audiences.previewAudience>;
+type PreviewArgs = FunctionArgs<typeof api.audiences.previewAudience>;
 type PersonFilters = Audience["filters"];
 type SearchResult = FunctionReturnType<typeof api.audiences.searchPeopleForAudience>[number];
 
@@ -117,6 +134,12 @@ export function AudiencesView() {
                 <Text style={styles.meta} numberOfLines={1}>
                   {summary}
                 </Text>
+                {a.source !== "person_filters" ? (
+                  <Text style={styles.legacyNote}>
+                    Previous-format audience — still works for sending, and will move to the new
+                    filter picker automatically.
+                  </Text>
+                ) : null}
               </Card>
             );
           })}
@@ -153,13 +176,17 @@ function AudienceForm({
   const isPersonFilters = source === "person_filters";
   const scope = initial?.scope ?? CENTRAL_SCOPE;
 
-  const preview = useQuery(api.audiences.previewAudience, {
+  // Passed to the two independent leaf components below that each own their
+  // OWN `previewAudience` subscription (Convex dedups identical query+args
+  // across components) — kept as leaves, each wrapped in its own inline
+  // ErrorBoundary, so a preview failure can't take down the rest of the form.
+  const previewArgs: PreviewArgs = {
     scope,
     source,
     filters,
     includePersonIds: includeIds.length ? includeIds : undefined,
     excludePersonIds: excludeIds.length ? excludeIds : undefined,
-  }) as PreviewResult | undefined;
+  };
 
   function rememberName(kind: "include" | "exclude", personId: Id<"people">, name_: string) {
     if (kind === "include") setIncludeNames((m) => ({ ...m, [personId]: name_ }));
@@ -229,37 +256,48 @@ function AudienceForm({
         <Badge label={sourceLabel(source)} tone="accent" />
         {!isPersonFilters ? (
           <Text className="mt-1 text-xs text-muted">
-            {describeAudience(source, filters)} — this audience predates the filter picker and keeps
-            its original targeting; only its name can be changed here.
+            {describeAudience(source, filters)} — this is a previous-format audience. It still works
+            for sending, and will move to the new filter picker automatically; until then, only its
+            name can be changed here.
           </Text>
         ) : null}
       </Field>
 
+      <ErrorBoundary inline>
+        <LiveRecipientsSummary args={previewArgs} />
+      </ErrorBoundary>
+
       {isPersonFilters ? (
         <>
-          <FilterChipsBuilder filters={filters} onChange={setFilters} />
-          <HandPickSection
-            includeIds={includeIds}
-            excludeIds={excludeIds}
-            includeNames={includeNames}
-            excludeNames={excludeNames}
-            onAddInclude={(p) => {
-              setIncludeIds((ids) => (ids.includes(p.personId) ? ids : [...ids, p.personId]));
-              setExcludeIds((ids) => ids.filter((id) => id !== p.personId));
-              rememberName("include", p.personId, p.name);
-            }}
-            onAddExclude={(p) => {
-              setExcludeIds((ids) => (ids.includes(p.personId) ? ids : [...ids, p.personId]));
-              setIncludeIds((ids) => ids.filter((id) => id !== p.personId));
-              rememberName("exclude", p.personId, p.name);
-            }}
-            onRemoveInclude={(id) => setIncludeIds((ids) => ids.filter((x) => x !== id))}
-            onRemoveExclude={(id) => setExcludeIds((ids) => ids.filter((x) => x !== id))}
-          />
+          <ErrorBoundary inline>
+            <FilterChipsBuilder filters={filters} onChange={setFilters} />
+          </ErrorBoundary>
+          <ErrorBoundary inline>
+            <HandPickSection
+              includeIds={includeIds}
+              excludeIds={excludeIds}
+              includeNames={includeNames}
+              excludeNames={excludeNames}
+              onAddInclude={(p) => {
+                setIncludeIds((ids) => (ids.includes(p.personId) ? ids : [...ids, p.personId]));
+                setExcludeIds((ids) => ids.filter((id) => id !== p.personId));
+                rememberName("include", p.personId, p.name);
+              }}
+              onAddExclude={(p) => {
+                setExcludeIds((ids) => (ids.includes(p.personId) ? ids : [...ids, p.personId]));
+                setIncludeIds((ids) => ids.filter((id) => id !== p.personId));
+                rememberName("exclude", p.personId, p.name);
+              }}
+              onRemoveInclude={(id) => setIncludeIds((ids) => ids.filter((x) => x !== id))}
+              onRemoveExclude={(id) => setExcludeIds((ids) => ids.filter((x) => x !== id))}
+            />
+          </ErrorBoundary>
         </>
       ) : null}
 
-      <AudiencePreviewCard preview={preview} />
+      <ErrorBoundary inline>
+        <AudiencePreviewCard args={previewArgs} />
+      </ErrorBoundary>
 
       <View className="mt-3 flex-row items-center justify-between gap-2">
         <View className="flex-row gap-2">
@@ -321,6 +359,79 @@ function dollarsStrToCents(str: string): number | undefined {
   return Math.round(n * 100);
 }
 
+function intToStr(n?: number | null): string {
+  return n != null ? String(n) : "";
+}
+
+function intStrToNumber(str: string): number | undefined {
+  const n = Number(str.trim());
+  return Number.isFinite(n) ? Math.round(n) : undefined;
+}
+
+/**
+ * A numeric TextField that only lands its value in `filters` after
+ * `FILTER_DEBOUNCE_MS` of no typing AND only once the entry parses cleanly —
+ * a stray non-numeric keystroke used to silently clear the whole criterion.
+ * Keeps the raw string in local state so a mid-typo digit never gets erased
+ * out from under the person typing it.
+ */
+function DebouncedNumberField({
+  label,
+  placeholder,
+  committedValue,
+  format,
+  parse,
+  onCommit,
+}: {
+  label: string;
+  placeholder?: string;
+  committedValue: number | undefined;
+  format: (n: number | undefined) => string;
+  parse: (raw: string) => number | undefined;
+  onCommit: (n: number | undefined) => void;
+}) {
+  const [raw, setRaw] = useState(() => format(committedValue));
+  const [invalid, setInvalid] = useState(false);
+
+  // The committed value can also change from OUTSIDE this field (its whole
+  // group gets collapsed/cleared) — stay in sync when that happens.
+  useEffect(() => {
+    setRaw(format(committedValue));
+    setInvalid(false);
+  }, [committedValue]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      const trimmed = raw.trim();
+      if (!trimmed) {
+        setInvalid(false);
+        if (committedValue !== undefined) onCommit(undefined);
+        return;
+      }
+      const parsed = parse(trimmed);
+      if (parsed === undefined) {
+        setInvalid(true);
+        return;
+      }
+      setInvalid(false);
+      if (parsed !== committedValue) onCommit(parsed);
+    }, FILTER_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [raw]);
+
+  return (
+    <TextField
+      label={label}
+      placeholder={placeholder}
+      keyboardType="numeric"
+      value={raw}
+      onChangeText={setRaw}
+      hint={invalid ? "Enter a number." : undefined}
+    />
+  );
+}
+
 const DONOR_STATUS_OPTIONS = [
   { value: "any", label: "Any status" },
   { value: "prospect", label: "Prospect" },
@@ -372,16 +483,6 @@ function FilterChipsBuilder({
   const [expanded, setExpanded] = useState<Set<FilterGroupKey>>(
     () => new Set((Object.keys(GROUP_FIELDS) as FilterGroupKey[]).filter((k) => groupHasData(filters, k))),
   );
-  const events = useQuery(api.events.list, { scope: "all" }) ?? [];
-  const chart = useQuery(api.seats.chart, expanded.has("role") ? {} : "skip");
-  const seatOptions =
-    chart === undefined || chart === null
-      ? []
-      : dedupeSeatOptions(
-          chart.kind === "full"
-            ? [...chart.central, ...(chart.chapters[0]?.seats ?? [])]
-            : chart.seats,
-        );
 
   function patch(fields: Partial<PersonFilters>) {
     onChange({ ...filters, ...fields });
@@ -413,43 +514,51 @@ function FilterChipsBuilder({
             key={key}
             label={FILTER_GROUP_LABELS[key]}
             selected={expanded.has(key)}
+            size="md"
+            // A single tap toggles the group open/closed either way — the chip
+            // no longer ALSO shows a redundant ✕ that did the exact same thing.
             onPress={() => toggleGroup(key)}
-            onRemove={expanded.has(key) ? () => toggleGroup(key) : undefined}
           />
         ))}
       </View>
+
+      {expanded.size === 0 ? (
+        <Text className="mt-2 text-xs text-faint">
+          Tap a category above to narrow this audience — leave everything off to target everyone.
+        </Text>
+      ) : null}
 
       {expanded.has("giving") ? (
         <View className="mt-3 gap-2 rounded-md border border-border bg-sunken p-3">
           <View className="flex-row gap-2">
             <View className="flex-1">
-              <TextField
+              <DebouncedNumberField
                 label="Lifetime giving ≥"
                 placeholder="$0"
-                keyboardType="numeric"
-                value={centsToDollarsStr(filters.givingLifetimeMinCents)}
-                onChangeText={(v) => patch({ givingLifetimeMinCents: dollarsStrToCents(v) })}
+                committedValue={filters.givingLifetimeMinCents}
+                format={centsToDollarsStr}
+                parse={dollarsStrToCents}
+                onCommit={(n) => patch({ givingLifetimeMinCents: n })}
               />
             </View>
             <View className="flex-1">
-              <TextField
+              <DebouncedNumberField
                 label="Lifetime giving ≤"
                 placeholder="No max"
-                keyboardType="numeric"
-                value={centsToDollarsStr(filters.givingLifetimeMaxCents)}
-                onChangeText={(v) => patch({ givingLifetimeMaxCents: dollarsStrToCents(v) })}
+                committedValue={filters.givingLifetimeMaxCents}
+                format={centsToDollarsStr}
+                parse={dollarsStrToCents}
+                onCommit={(n) => patch({ givingLifetimeMaxCents: n })}
               />
             </View>
           </View>
-          <TextField
+          <DebouncedNumberField
             label="Gift count ≥"
             placeholder="0"
-            keyboardType="numeric"
-            value={filters.giftCountMin != null ? String(filters.giftCountMin) : ""}
-            onChangeText={(v) => {
-              const n = Number(v.trim());
-              patch({ giftCountMin: v.trim() && Number.isFinite(n) ? Math.round(n) : undefined });
-            }}
+            committedValue={filters.giftCountMin}
+            format={intToStr}
+            parse={intStrToNumber}
+            onCommit={(n) => patch({ giftCountMin: n })}
           />
           <Select
             label="Donor status"
@@ -484,27 +593,19 @@ function FilterChipsBuilder({
 
       {expanded.has("attendance") ? (
         <View className="mt-3 gap-2 rounded-md border border-border bg-sunken p-3">
-          <Select
-            label="Event"
-            hint="Leave unset to match anyone who attended anything."
-            value={filters.attendedEventId ?? null}
-            options={[
-              { value: "", label: "Any event" },
-              ...events.map((e: { _id: string; name: string }) => ({ value: e._id, label: e.name })),
-            ]}
-            onChange={(v) =>
-              patch({ attendedEventId: v ? (v as Id<"events">) : undefined })
-            }
-          />
-          <TextField
+          <ErrorBoundary inline>
+            <EventPicker
+              value={filters.attendedEventId ?? null}
+              onChange={(v) => patch({ attendedEventId: v })}
+            />
+          </ErrorBoundary>
+          <DebouncedNumberField
             label="Attended within N days"
             placeholder="No limit"
-            keyboardType="numeric"
-            value={filters.attendedWithinDays != null ? String(filters.attendedWithinDays) : ""}
-            onChangeText={(v) => {
-              const n = Number(v.trim());
-              patch({ attendedWithinDays: v.trim() && Number.isFinite(n) ? Math.round(n) : undefined });
-            }}
+            committedValue={filters.attendedWithinDays}
+            format={intToStr}
+            parse={intStrToNumber}
+            onCommit={(n) => patch({ attendedWithinDays: n })}
           />
           <Select
             label="RSVP status"
@@ -519,16 +620,12 @@ function FilterChipsBuilder({
 
       {expanded.has("role") ? (
         <View className="mt-3 gap-2 rounded-md border border-border bg-sunken p-3">
-          <Select
-            label="Holds a seat"
-            hint="Matches anyone holding this role in any chapter or centrally."
-            value={filters.seatId ?? null}
-            options={[
-              { value: "", label: "Any role" },
-              ...seatOptions.map((o) => ({ value: o.value, label: o.label })),
-            ]}
-            onChange={(v) => patch({ seatId: v ? (v as Id<"seatDefs">) : undefined })}
-          />
+          <ErrorBoundary inline>
+            <RoleFilterSelect
+              value={filters.seatId ?? null}
+              onChange={(v) => patch({ seatId: v })}
+            />
+          </ErrorBoundary>
         </View>
       ) : null}
 
@@ -545,6 +642,12 @@ function FilterChipsBuilder({
               })
             }
           />
+          <ErrorBoundary inline>
+            <ChapterFilterSelect
+              value={filters.chapterId ?? null}
+              onChange={(v) => patch({ chapterId: v })}
+            />
+          </ErrorBoundary>
         </View>
       ) : null}
 
@@ -578,6 +681,87 @@ function dedupeSeatOptions(
   return [...seen.entries()].map(([value, label]) => ({ value, label }));
 }
 
+/** The Attendance group's event picker — every org event, so it's `searchable`
+ *  (Field.tsx's Select) rather than a plain unfiltered list; a leaf component
+ *  so its own `events.list` failure is scoped to just this control by the
+ *  inline ErrorBoundary at its call site. */
+function EventPicker({
+  value,
+  onChange,
+}: {
+  value: Id<"events"> | null;
+  onChange: (v: Id<"events"> | undefined) => void;
+}) {
+  const events = useQuery(api.events.list, { scope: "all" }) ?? [];
+  return (
+    <Select
+      label="Event"
+      hint="Leave unset to match anyone who attended anything."
+      searchable
+      value={value}
+      options={[
+        { value: "", label: "Any event" },
+        ...events.map((e: { _id: string; name: string }) => ({ value: e._id, label: e.name })),
+      ]}
+      onChange={(v) => onChange(v ? (v as Id<"events">) : undefined)}
+    />
+  );
+}
+
+/** The Role group's seat picker — a leaf component so a `seats.chart` failure
+ *  is scoped to just this control (see `EventPicker`'s doc). */
+function RoleFilterSelect({
+  value,
+  onChange,
+}: {
+  value: Id<"seatDefs"> | null;
+  onChange: (v: Id<"seatDefs"> | undefined) => void;
+}) {
+  const chart = useQuery(api.seats.chart, {});
+  const seatOptions =
+    chart === undefined
+      ? []
+      : dedupeSeatOptions(
+          chart.kind === "full" ? [...chart.central, ...(chart.chapters[0]?.seats ?? [])] : chart.seats,
+        );
+  return (
+    <Select
+      label="Holds a seat"
+      hint="Matches anyone holding this role in any chapter or centrally."
+      value={value}
+      options={[{ value: "", label: "Any role" }, ...seatOptions]}
+      onChange={(v) => onChange(v ? (v as Id<"seatDefs">) : undefined)}
+    />
+  );
+}
+
+/** The Type group's chapter picker — chapters come from `seats.chart`'s own
+ *  chapter enumeration (the org chart's pattern, see `ScopePills.tsx`), not a
+ *  separate `chapters.list` call. A leaf component for the same error-scoping
+ *  reason as `EventPicker`/`RoleFilterSelect`. */
+function ChapterFilterSelect({
+  value,
+  onChange,
+}: {
+  value: Id<"chapters"> | null;
+  onChange: (v: Id<"chapters"> | undefined) => void;
+}) {
+  const chart = useQuery(api.seats.chart, {});
+  const chapterOptions =
+    chart?.kind === "full"
+      ? chart.chapters.map((c) => ({ value: c.chapterId, label: c.chapterName }))
+      : [];
+  return (
+    <Select
+      label="Limit to chapter"
+      hint="Leave unset to include every chapter."
+      value={value}
+      options={[{ value: "", label: "All chapters" }, ...chapterOptions]}
+      onChange={(v) => onChange(v ? (v as Id<"chapters">) : undefined)}
+    />
+  );
+}
+
 // ── Hand-picked include/exclude (Phase 3) ────────────────────────────────
 
 function HandPickSection({
@@ -600,9 +784,14 @@ function HandPickSection({
   onRemoveExclude: (id: Id<"people">) => void;
 }) {
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), FILTER_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [search]);
   const results = useQuery(
     api.audiences.searchPeopleForAudience,
-    search.trim() ? { search: search.trim() } : "skip",
+    debouncedSearch.trim() ? { search: debouncedSearch.trim() } : "skip",
   );
 
   return (
@@ -615,9 +804,11 @@ function HandPickSection({
         value={search}
         onChangeText={setSearch}
       />
-      {search.trim() && results !== undefined ? (
+      {search.trim() ? (
         <View className="mt-2 gap-1">
-          {results.length === 0 ? (
+          {results === undefined ? (
+            <Text className="text-xs text-faint">Searching…</Text>
+          ) : results.length === 0 ? (
             <Text className="text-xs text-muted">No matches.</Text>
           ) : (
             results.map((p) => (
@@ -647,6 +838,7 @@ function HandPickSection({
                 key={id}
                 label={includeNames[id] ?? id}
                 color="green"
+                size="md"
                 onRemove={() => onRemoveInclude(id)}
               />
             ))}
@@ -665,6 +857,7 @@ function HandPickSection({
                 key={id}
                 label={excludeNames[id] ?? id}
                 color="red"
+                size="md"
                 onRemove={() => onRemoveExclude(id)}
               />
             ))}
@@ -675,9 +868,43 @@ function HandPickSection({
   );
 }
 
+// ── Live recipients summary (pinned) ────────────────────────────────────────
+
+/**
+ * A slim, always-visible recipient count pinned above the filter + hand-pick
+ * stack — the detailed `AudiencePreviewCard` sits below all of it, so it's
+ * easy to lose track of the count while adjusting criteria above it. Once a
+ * count has loaded once, this NEVER blanks back to "Calculating…" on a
+ * refetch — it keeps showing the last known count with a small "Updating…"
+ * indicator instead, so the number on screen is always meaningful.
+ */
+function LiveRecipientsSummary({ args }: { args: PreviewArgs }) {
+  const preview = useQuery(api.audiences.previewAudience, args) as PreviewResult | undefined;
+  const [lastKnown, setLastKnown] = useState<PreviewResult | null>(null);
+  useEffect(() => {
+    if (preview !== undefined) setLastKnown(preview);
+  }, [preview]);
+
+  const shown = preview ?? lastKnown;
+  const isUpdating = preview === undefined && lastKnown !== null;
+
+  return (
+    <View className="mb-3 flex-row items-center gap-2 rounded-md border border-border bg-sunken px-3 py-2">
+      <Icon name="users" size={15} color={colors.muted} />
+      {shown ? (
+        <Text className="text-sm font-semibold text-ink">{pluralCount(shown.count, "recipient")}</Text>
+      ) : (
+        <Text className="text-sm text-faint">Calculating…</Text>
+      )}
+      {isUpdating ? <Text className="text-xs text-muted">Updating…</Text> : null}
+    </View>
+  );
+}
+
 // ── Preview card ──────────────────────────────────────────────────────────
 
-function AudiencePreviewCard({ preview }: { preview: PreviewResult | undefined }) {
+function AudiencePreviewCard({ args }: { args: PreviewArgs }) {
+  const preview = useQuery(api.audiences.previewAudience, args) as PreviewResult | undefined;
   if (preview === undefined) {
     return (
       <Field label="Recipients">
@@ -701,7 +928,8 @@ function AudiencePreviewCard({ preview }: { preview: PreviewResult | undefined }
       ) : null}
       {preview.unlinkedCentralDonors > 0 ? (
         <Text className="mt-0.5 text-xs text-muted">
-          Includes {pluralCount(preview.unlinkedCentralDonors, "central donor")} (unlinked)
+          Also includes {pluralCount(preview.unlinkedCentralDonors, "org-level donor")} not yet in the
+          people list
         </Text>
       ) : null}
       {preview.truncated ? (
@@ -734,4 +962,5 @@ const styles = StyleSheet.create({
   },
   name: { fontSize: 16, fontWeight: "700", color: colors.text, flex: 1 },
   meta: { fontSize: 13, color: colors.muted, marginTop: spacing.sm },
+  legacyNote: { fontSize: 12, color: colors.faint, marginTop: spacing.xs },
 });
