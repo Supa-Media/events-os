@@ -159,15 +159,28 @@ export function CampaignMetaCard({
             <Text className="text-sm font-semibold text-ink">
               {pluralCount(preview.count, "recipient")}
             </Text>
-            {preview.excludedSuppressed > 0 || preview.excludedUnverified > 0 ? (
+            {preview.excludedSuppressed > 0 || preview.excludedUnverified > 0 || preview.excludedOptOut > 0 ? (
               <Text className="mt-0.5 text-xs text-muted">
-                {preview.excludedSuppressed > 0
-                  ? `${pluralCount(preview.excludedSuppressed, "suppressed contact")} excluded`
-                  : ""}
-                {preview.excludedSuppressed > 0 && preview.excludedUnverified > 0 ? " · " : ""}
-                {preview.excludedUnverified > 0
-                  ? `${pluralCount(preview.excludedUnverified, "unverified contact")} excluded`
-                  : ""}
+                {[
+                  preview.excludedSuppressed > 0
+                    ? `${pluralCount(preview.excludedSuppressed, "suppressed contact")} excluded`
+                    : null,
+                  preview.excludedUnverified > 0
+                    ? `${pluralCount(preview.excludedUnverified, "unverified contact")} excluded`
+                    : null,
+                  // Person-centric audiences Phase 3 — always 0 for legacy
+                  // sources (guests/donors/people), so this is additive-only.
+                  preview.excludedOptOut > 0
+                    ? `${pluralCount(preview.excludedOptOut, "person")} opted out`
+                    : null,
+                ]
+                  .filter(Boolean)
+                  .join(" · ")}
+              </Text>
+            ) : null}
+            {preview.unlinkedCentralDonors > 0 ? (
+              <Text className="mt-0.5 text-xs text-muted">
+                Includes {pluralCount(preview.unlinkedCentralDonors, "central donor")} (unlinked)
               </Text>
             ) : null}
             {preview.truncated ? (
