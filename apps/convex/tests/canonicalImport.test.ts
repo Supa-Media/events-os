@@ -258,7 +258,16 @@ describe("previewImport / importCanonical — ticket rows", () => {
         },
       ],
     });
-    expect(preview.rows[0]).toMatchObject({ disposition: "matched-order", donorMatch: "new" });
+    // Person-centric audiences Phase 1: `seedPaidTicketOrder` goes through the
+    // REAL `prepareOrder` insert site, which now best-effort links the buyer
+    // via `lib/rsvpPeople.ts#linkRsvpToPerson` — so "buyer@example.com" ALREADY
+    // has a contact-only `people` row by the time this preview runs. That's the
+    // whole point of unified identity: the canonical import's own matcher
+    // (`ensureRosterPool`/`matchIdentity`, deliberately unfiltered — see
+    // `lib/org.ts#excludeContacts`'s doc) finds it and reports an "email" match
+    // instead of "new". "No Match" has never been seen anywhere, so it's still
+    // genuinely new.
+    expect(preview.rows[0]).toMatchObject({ disposition: "matched-order", donorMatch: "email" });
     expect(preview.rows[1].disposition).toBe("history-only");
 
     // Commit: creates people, never donors/gifts.
@@ -279,7 +288,11 @@ describe("previewImport / importCanonical — ticket rows", () => {
         },
       ],
     });
-    expect(result.imported.people).toBe(2);
+    // Only ONE new person is created by THIS commit ("No Match") — the
+    // "buyer@example.com" contact already exists (created by `prepareOrder`'s
+    // live linking during `seedPaidTicketOrder` above), so `matchOrCreatePersonContact`
+    // matches it instead of inserting a duplicate (`isNew: false`, no `people++`).
+    expect(result.imported.people).toBe(1);
     expect(result.imported.gifts).toBe(0);
     expect(result.ticketHistoryLinked).toBe(1);
 
@@ -293,8 +306,10 @@ describe("previewImport / importCanonical — ticket rows", () => {
     expect(people.every((p) => p.isTeamMember === false)).toBe(true);
     const matched = people.find((p) => p.email === "buyer@example.com");
     expect(matched?.notes).toContain("Ticket history matched");
+    expect(matched?.isContactOnly).toBe(true); // stamped by prepareOrder's linkRsvpToPerson
     const unmatched = people.find((p) => p.email === "nomatch@example.com");
     expect(unmatched?.notes).toContain("Bought tickets");
+    expect(unmatched?.isContactOnly).toBe(true); // stamped by matchOrCreatePersonContact
 
     // Central scope: pure no-op — no people, no donors, no gifts, no counters bumped.
     const centralResult = await s.as.mutation(api.givingImport.importCanonical, {
