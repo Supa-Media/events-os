@@ -67,11 +67,16 @@ on green).
   against the actual repo/CI state, and (d) re-arms itself. Notifications
   are a bonus wake-up, not the mechanism. Don't duplicate agents' work
   while waiting — verify outcomes, don't redo them.
-- Polling mechanism: on surfaces where send_later prompts for permission on
-  every call (claude.ai/code gates CCR scheduling tools upstream of the repo
-  allowlist — settings.json already allows send_later and is ignored), use a
-  persistent Monitor ticker instead: `while true; do sleep 300; echo TICK;
-  done` — same 5-min cadence, zero prompts, stops via TaskStop.
+- **Polling mechanism — persistent Monitor ticker, NOT send_later (founder
+  directive 2026-07-24).** Arm ONE session-length ticker at the start of any
+  run with in-flight work: Monitor with `while true; do sleep 300; echo
+  "POLL TICK"; done`, persistent: true. Each tick = run the full poll cycle
+  above. Do NOT use send_later for polling: claude.ai/code gates CCR
+  scheduling tools upstream of the repo allowlist (settings.json already
+  allows send_later and is still prompted per-call), so every call
+  interrupts the founder with a permission dialog. send_later is
+  acceptable only where Monitor is unavailable AND the surface doesn't
+  prompt. Stop the ticker (TaskStop) when nothing is outstanding.
 
 ## Standing product principles (from the founders — apply to every plan)
 

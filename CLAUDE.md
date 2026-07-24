@@ -21,6 +21,16 @@ confirmed findings) → wait for CI → **squash-merge on green**. Merging to
 skip CI. This is the standing expectation; don't wait to be asked to PR or
 merge.
 
+**Polling while work is in flight (subagents, CI, deploys): use a
+persistent background Monitor ticker, never `send_later`.** Arm one
+session-length Monitor (`while true; do sleep 300; echo "POLL TICK"; done`,
+persistent) and on each tick check in-flight branches, CI check runs, and
+deploy workflows — never passively wait for completion notifications and
+never take a subagent's self-report on faith. `send_later` triggers a
+permission prompt on every call on claude.ai/code (the repo allowlist is
+ignored for CCR scheduling tools), which interrupts the founder — avoid it.
+Stop the ticker when nothing is outstanding.
+
 ## Supa Framework
 
 This repo is the first consumer of **Supa-Media/supa-framework** (`@supa-media/*`
