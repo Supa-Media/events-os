@@ -3638,7 +3638,7 @@ async function notifyReceiptDigest(
   const link = appUrl("/finances/reconcile?filter=missing_receipt");
   await sendEmail(ctx, {
     to: digest.email,
-    subject: count === 1 ? subject : "Receipts still needed",
+    subject,
     html: emailShell(`
       <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">${escapeHtml(count === 1 ? subject : "Receipts still needed")}</h1>
       <p style="margin:0 0 ${count === 1 ? 16 : 8}px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(digest.cardholderName)} — ${intro}</p>
