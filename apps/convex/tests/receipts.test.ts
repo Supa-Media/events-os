@@ -369,6 +369,37 @@ describe("markAsDuplicate", () => {
     expect(dupFilter.map((r) => r._id)).toEqual([dupe]);
   });
 
+  // BUG 2 REPRO (owner ask 2026-07-24 — "This is a duplicate does nothing"):
+  // the real-world case is two receipts that DO share amount+date (the soft-
+  // duplicate signal that surfaces the "This is a duplicate" button in the
+  // UI's `duplicateMatches` list in the first place) — not two receipts with
+  // deliberately different amounts. Confirms the backend end-to-end for the
+  // EXACT repro shape before looking at the UI.
+  test("same-amount+date receipts: marking one a duplicate excludes it from 'all', includes it in 'duplicates'", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    const day = Date.now();
+
+    const a = await newUploadReceipt(s, { amountCents: 4210, receiptDate: day });
+    const b = await newUploadReceipt(s, { amountCents: 4210, receiptDate: day });
+
+    await s.as.mutation(api.receipts.markAsDuplicate, {
+      receiptId: a,
+      primaryReceiptId: b,
+    });
+
+    const row = await run(t, (ctx) => ctx.db.get(a));
+    expect(row?.duplicateOfReceiptId).toBe(b);
+
+    const all = await s.as.query(api.receipts.listReceipts, { filter: "all" });
+    expect(all.map((r) => r._id)).not.toContain(a);
+    expect(all.map((r) => r._id)).toContain(b);
+
+    const dupFilter = await s.as.query(api.receipts.listReceipts, { filter: "duplicates" });
+    expect(dupFilter.map((r) => r._id)).toContain(a);
+  });
+
   test("getReceipt on the primary surfaces its confirmed duplicate", async () => {
     const t = newT();
     const s = await setupChapter(t);
