@@ -189,7 +189,13 @@ export const rsvps = defineTable({
   // Guest sign-in by phone (E.164) — the SMS counterpart of by_event_email.
   .index("by_event_phone", ["eventId", "phone"])
   .index("by_event_status", ["eventId", "status"])
-  .index("by_token", ["token"]);
+  .index("by_token", ["token"])
+  // Person-centric audiences Phase 3 (specs/person-centric-audiences.md) —
+  // "attended event" / "attended anything within N days" filters need a
+  // person → their rsvps lookup (`lib/audienceResolve.ts#resolvePersonFilters`).
+  // Absent before this: the only existing rsvp indexes are event-keyed. Bounded
+  // per-candidate reads (`.take()`), never a full-table scan.
+  .index("by_person", ["personId"]);
 
 /**
  * Pending email-verification code for an RSVP (at most one per RSVP). Only a

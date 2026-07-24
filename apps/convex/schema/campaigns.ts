@@ -1,6 +1,7 @@
 import { defineTable } from "convex/server";
 import { v } from "convex/values";
 import { DONOR_STATUSES } from "./givingPlatform";
+import { RSVP_STATUSES } from "./ticketing";
 
 /**
  * Email campaigns — the in-app newsletter/announcement composer, distinct
@@ -59,35 +60,115 @@ import { DONOR_STATUSES } from "./givingPlatform";
 
 const campaignsScope = v.union(v.id("chapters"), v.literal("central"));
 
-export const AUDIENCE_SOURCES = ["guests", "donors", "people"] as const;
+/**
+ * `"person_filters"` is the Phase 3 (specs/person-centric-audiences.md)
+ * founder-facing source — "the source is always the people table" — that
+ * REPLACES the source dropdown in the UI for every NEWLY created audience.
+ * `"guests"`/`"donors"`/`"people"` are the legacy sources, kept only for
+ * pre-existing rows (`source` is immutable after creation — see
+ * `audiences.ts#updateAudience` — so an existing row never silently
+ * reinterprets itself): `lib/audienceResolve.ts` keeps their resolvers alive
+ * until the migration (`migrations/0040_migrate_legacy_audiences.ts`) has
+ * moved every row it safely can, and the LAST legacy resolver is only deleted
+ * once zero legacy-sourced rows remain across every deployment (see that
+ * migration's doc for why "guests" rows are deliberately left unmigrated).
+ */
+export const AUDIENCE_SOURCES = ["guests", "donors", "people", "person_filters"] as const;
+
+/** Backer status per Phase 3's filter set — a `pledges` row's DERIVED
+ *  standing, not one of `PLEDGE_STATUSES` verbatim (that union has no
+ *  `"lapsed"` literal). `"active"` = the person's linked donor has a pledge
+ *  currently `status: "active"`. `"lapsed"` = the person's linked donor has
+ *  AT LEAST ONE pledge on file (any status) but NONE currently active — i.e.
+ *  backing that used to exist and doesn't right now (covers `past_due`,
+ *  `canceled`, `paused`, and `incomplete` alike; this app has no separate
+ *  "lapsed" billing state to distinguish among those, so they're grouped).
+ */
+export const AUDIENCE_BACKER_STATUSES = ["active", "lapsed"] as const;
 
 /**
  * Per-source optional filters, all in one object (a single audience only ever
  * uses the fields relevant to its own `source`; the rest sit unused rather
  * than needing a discriminated-union schema migration every time a new filter
- * is added):
+ * is added).
+ *
+ * Legacy fields (`guests`/`donors`/`people` sources only):
  *  - `eventId` — guests only: restrict to one event's RSVPs (else every
  *    active chapter's events).
- *  - `chapterId` — guests/donors/people: restrict resolution to one chapter
- *    even when the audience's own `scope` is `"central"` (the fan-out scope).
- *  - `donorStatus` — donors only.
- *  - `gaveWithinDays` — donors only: "has given in the last N days" as of
- *    resolution time (a rolling window, not a frozen timestamp — a saved
- *    "gave this month" audience stays "this month" every time it's used).
+ *  - `chapterId` — every source: restrict resolution to one chapter even when
+ *    the audience's own `scope` is `"central"` (the fan-out scope).
+ *  - `donorStatus` — donors AND person_filters.
+ *  - `gaveWithinDays` — donors AND person_filters: "has given in the last N
+ *    days" as of resolution time (a rolling window, not a frozen timestamp —
+ *    a saved "gave this month" audience stays "this month" every time it's
+ *    used).
+ *
+ * Phase 3 fields (`person_filters` only — specs/person-centric-audiences.md
+ * §"Phase 3", AND-combined; see `lib/audienceResolve.ts#resolvePersonFilters`
+ * for exactly how each is evaluated):
+ *  - `givingLifetimeMinCents`/`givingLifetimeMaxCents` — the linked donor
+ *    row's (chapter-scoped) `lifetimeCents`, the AUTHORITATIVE denormalized
+ *    rollup (never re-summed from `gifts` at read time — see
+ *    `schema/givingPlatform.ts#donors`'s doc on why that field is trustworthy).
+ *  - `giftCountMin` — the linked donor row's `giftCount`, same rollup.
+ *  - `backerStatus` — see `AUDIENCE_BACKER_STATUSES` above.
+ *  - `attendedEventId` — a specific event's RSVPs (via `rsvps.by_person`, the
+ *    Phase 1 person link — NOT `by_event`, since person_filters resolves
+ *    person-first).
+ *  - `attendedWithinDays` — "attended (RSVP'd to) anything in the last N
+ *    days," a rolling window read off `rsvps.createdAt` (when the guest
+ *    RSVP'd/was recorded — not the event's own date, mirroring
+ *    `gaveWithinDays`'s resolution-time-window shape).
+ *  - `rsvpStatus` — an optional modifier on `attendedEventId`/
+ *    `attendedWithinDays` (or, alone, "has ANY rsvp ever with this status").
+ *  - `seatId` — holds ANY `seatAssignments` row for this `seatDefId`,
+ *    REGARDLESS of assignment scope: the org chart's seat SHAPE is
+ *    chapter-agnostic (the same `seatDefId` is stamped onto every chapter's
+ *    chart — see `schema/seats.ts`'s doc), so "Worship Leader" should catch
+ *    every chapter's worship leader, not just one scope's holder.
+ *  - `teamOnly` — only roster rows (`isContactOnly !== true`).
+ *  - `contactsOnly` — only contact rows (`isContactOnly === true`). Mutually
+ *    exclusive with `teamOnly` in the UI; both unset = roster AND contacts.
+ *  - `verifiedEmailOnly` — the person has AT LEAST ONE `personEmails` row
+ *    with `verified: true` (a property of the PERSON, not necessarily the one
+ *    address `resolveSendAddress` ultimately picks).
  */
 export const audienceFiltersValidator = v.object({
   eventId: v.optional(v.id("events")),
   chapterId: v.optional(v.id("chapters")),
   donorStatus: v.optional(v.union(...DONOR_STATUSES.map((s) => v.literal(s)))),
   gaveWithinDays: v.optional(v.number()),
+
+  // ── Phase 3 — person_filters criteria (specs/person-centric-audiences.md) ──
+  givingLifetimeMinCents: v.optional(v.number()),
+  givingLifetimeMaxCents: v.optional(v.number()),
+  giftCountMin: v.optional(v.number()),
+  backerStatus: v.optional(v.union(...AUDIENCE_BACKER_STATUSES.map((s) => v.literal(s)))),
+  attendedEventId: v.optional(v.id("events")),
+  attendedWithinDays: v.optional(v.number()),
+  rsvpStatus: v.optional(v.union(...RSVP_STATUSES.map((s) => v.literal(s)))),
+  seatId: v.optional(v.id("seatDefs")),
+  teamOnly: v.optional(v.boolean()),
+  contactsOnly: v.optional(v.boolean()),
+  verifiedEmailOnly: v.optional(v.boolean()),
 });
 
-/** A saved, reusable recipient definition a campaign targets. */
+/** A saved, reusable recipient definition a campaign targets. `includePersonIds`/
+ *  `excludePersonIds` (Phase 3, `person_filters` only — always empty/unset for
+ *  legacy sources) are the "hand-picked" half of the picker: a person in
+ *  `includePersonIds` is a member REGARDLESS of `filters` (union, not another
+ *  AND-criterion); a person in `excludePersonIds` is removed regardless of
+ *  matching `filters` OR being in `includePersonIds` — see
+ *  `lib/audienceResolve.ts#resolvePersonFilters`'s doc for the full
+ *  precedence (suppression + `marketingOptOut` still beat BOTH lists — a
+ *  hand-pick is never consent). */
 export const audiences = defineTable({
   scope: campaignsScope,
   name: v.string(),
   source: v.union(...AUDIENCE_SOURCES.map((s) => v.literal(s))),
   filters: audienceFiltersValidator,
+  includePersonIds: v.optional(v.array(v.id("people"))),
+  excludePersonIds: v.optional(v.array(v.id("people"))),
   createdBy: v.id("users"),
   createdAt: v.number(),
   updatedAt: v.number(),
