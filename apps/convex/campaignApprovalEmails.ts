@@ -79,10 +79,29 @@ export const getReviewContacts = internalQuery({
   },
 });
 
+/**
+ * Insert `insert` immediately BEFORE the LAST `</body>` in `html` — used to
+ * land the reviewer's proof-of-read block INSIDE the document
+ * `renderCampaignEmail` returns (a full, self-contained `<html>…</html>`
+ * document, NOT a fragment `emailShell` wraps — see that function in
+ * `@events-os/shared`), rather than concatenated after its closing `</html>`
+ * (invalid HTML — content outside the document root entirely; the bug this
+ * fixes, 2026-07-24). `lastIndexOf` (not `indexOf`) so this is correct even
+ * if a campaign block's own content happened to contain the literal string
+ * `</body>` in escaped/quoted form. Falls back to a plain append (should
+ * never trigger against `renderCampaignEmail`'s fixed shape, but a missing
+ * `</body>` should never crash a best-effort notification send). */
+function injectBeforeBodyClose(html: string, insert: string): string {
+  const idx = html.lastIndexOf("</body>");
+  if (idx === -1) return html + insert;
+  return html.slice(0, idx) + insert + html.slice(idx);
+}
+
 /** A visible divider + a proof-of-read line + the review link, appended to
- *  the bottom of the REVIEWER's copy only. Plain inline styles matching the
- *  rest of this codebase's hand-rolled transactional HTML (`ticketingEmails.ts`
- *  / `budgetDecisionEmails.ts`) — no shared component, this is the only place
+ *  the bottom of the REVIEWER's copy only (via `injectBeforeBodyClose`, so it
+ *  lands INSIDE the document). Plain inline styles matching the rest of this
+ *  codebase's hand-rolled transactional HTML (`ticketingEmails.ts` /
+ *  `budgetDecisionEmails.ts`) — no shared component, this is the only place
  *  it's needed. */
 function reviewBlock(reviewUrl: string | null): { html: string; text: string } {
   const lead =
@@ -150,7 +169,11 @@ export const sendApprovalTestPair = internalAction({
         let text = renderCampaignText(doc, renderOpts);
         if (appendReview) {
           const block = reviewBlock(reviewUrl);
-          html += block.html;
+          // INSIDE the document, right before `</body>` — never after
+          // `</html>` (see `injectBeforeBodyClose`'s doc). The plain-text
+          // variant has no markup to violate, so a plain append already
+          // puts the review link on the last line, as intended.
+          html = injectBeforeBodyClose(html, block.html);
           text += block.text;
         }
         return { html, text };

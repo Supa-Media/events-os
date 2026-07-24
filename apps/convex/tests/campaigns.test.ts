@@ -2170,8 +2170,21 @@ describe("two-party approval — notification emails", () => {
       expect(testCopy?.subject).toBe("[Test] Hi");
       expect(reviewCopy?.subject).toBe("[For Approval] Hi");
       // The proof-of-read block is appended AFTER the real campaign content
-      // on the reviewer's copy only.
-      expect(reviewCopy?.html).toContain("Review this campaign");
+      // on the reviewer's copy only — and it must land INSIDE the document
+      // (before </body>), never concatenated after the closing </html> (that
+      // would be invalid HTML, content outside the document root entirely).
+      const reviewHtml = reviewCopy?.html ?? "";
+      expect(reviewHtml).toContain("Review this campaign");
+      // The document's root tag is still the very last thing in the string —
+      // nothing was appended past it.
+      expect(reviewHtml.trimEnd().endsWith("</html>")).toBe(true);
+      // The review block appears BEFORE the closing body/html tags, i.e.
+      // genuinely inside the body, not after it.
+      const reviewIndex = reviewHtml.indexOf("Review this campaign");
+      const bodyCloseIndex = reviewHtml.indexOf("</body>");
+      expect(reviewIndex).toBeGreaterThan(-1);
+      expect(bodyCloseIndex).toBeGreaterThan(-1);
+      expect(reviewIndex).toBeLessThan(bodyCloseIndex);
       expect(testCopy?.html).not.toContain("Review this campaign");
     } finally {
       vi.useRealTimers();
