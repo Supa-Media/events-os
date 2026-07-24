@@ -1144,3 +1144,134 @@ describe("person_filters — excludeFilters (property-level exclusions)", () => 
     expect(preview.handPickedExcludedByFilters).toBe(0);
   });
 });
+
+// ── verification round: excludeFilters vs. the central-donor fallback ──────
+
+describe("person_filters — excludeFilters vs. the central-donor fallback (verification round finding A)", () => {
+  test("VERIFIER REPRO: an unlinked central donor matching excludeFilters is excluded exactly like an identical linked donor", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const linkedPerson = await seedPerson(s, { name: "Linked $5k", email: "linked-5k@example.com" });
+    await seedDonorForPerson(s, linkedPerson, {
+      email: "linked-5k-d@example.com",
+      status: "active",
+      lifetimeCents: 500000, // $5,000
+      scope: "central",
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("donors", {
+        scope: "central",
+        kind: "individual",
+        name: "Unlinked $5k",
+        email: "unlinked-5k@example.com",
+        status: "active",
+        lifetimeCents: 500000, // identical $5,000 — but no personId to link into
+        giftCount: 0,
+        createdAt: Date.now(),
+      }),
+    );
+
+    // Before the fix: the linked donor is excluded (evaluated via
+    // personMatchesCriteria against unionIds) but the unlinked one bypasses
+    // excludeFilters entirely — it's added to the recipient set AFTER and
+    // OUTSIDE the exclude pass, never having entered unionIds at all.
+    const preview = await previewPersonFilters(s, {
+      scope: "central",
+      filters: { donorStatus: "active" },
+      excludeFilters: { givingLifetimeMinCents: 100000 }, // $1,000+
+    });
+
+    expect(preview.count).toBe(0);
+    expect(preview.sample).toEqual([]);
+    expect(preview.excludedByFilters).toBe(2); // both the linked AND the unlinked donor
+  });
+
+  test("a fallback donor STAYS when excludeFilters also names a person-scoped criterion — unprovable for a person-less row, so the AND doesn't match", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await run(s.t, (ctx) =>
+      ctx.db.insert("donors", {
+        scope: "central",
+        kind: "individual",
+        name: "Unlinked Active Donor",
+        email: "unlinked-conservative@example.com",
+        status: "active",
+        lifetimeCents: 0,
+        giftCount: 0,
+        createdAt: Date.now(),
+      }),
+    );
+
+    // `teamOnly` can never be verified for a person-less donor row — the
+    // exclude block must NOT match, so the fallback donor conservatively
+    // stays a recipient rather than being silently dropped on a criterion
+    // nobody could check.
+    const preview = await previewPersonFilters(s, {
+      scope: "central",
+      filters: { donorStatus: "active" },
+      excludeFilters: { donorStatus: "active", teamOnly: true },
+    });
+
+    expect(preview.sample.map((r) => r.email)).toEqual(["unlinked-conservative@example.com"]);
+    expect(preview.excludedByFilters).toBe(0);
+    expect(preview.unlinkedCentralDonors).toBe(1);
+  });
+});
+
+// ── verification round: verifiedEmailOnly is a footgun inside excludeFilters ─
+
+describe("person_filters — excludeFilters.verifiedEmailOnly is a no-op (verification round finding C)", () => {
+  test("a person with a VERIFIED address is NOT excluded — verifiedEmailOnly reads backwards inside excludeFilters, so the resolver ignores it entirely", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const verifiedPerson = await seedPerson(s, {
+      name: "Verified",
+      email: "verified-noop@example.com",
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("personEmails", {
+        personId: verifiedPerson,
+        email: "verified-noop@example.com",
+        source: "manual",
+        verified: true,
+        addedAt: Date.now(),
+      }),
+    );
+
+    // Without the fix, `verifiedEmailOnly: true` as an exclude criterion
+    // would (backwards from what an author would expect) exclude anyone
+    // whose resolved address IS verified.
+    const preview = await previewPersonFilters(s, {
+      excludeFilters: { verifiedEmailOnly: true },
+    });
+    expect(preview.sample.map((r) => r.email)).toEqual(["verified-noop@example.com"]);
+    expect(preview.excludedByFilters).toBe(0);
+  });
+
+  test("excludeFilters whose ONLY set field is verifiedEmailOnly is a full no-op, not 'exclude everyone'", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await seedPerson(s, { name: "A", email: "verified-only-a@example.com" });
+    await seedPerson(s, { name: "B", email: "verified-only-b@example.com" });
+
+    const preview = await previewPersonFilters(s, {
+      excludeFilters: { verifiedEmailOnly: true },
+    });
+    expect(preview.count).toBe(2);
+    expect(preview.excludedByFilters).toBe(0);
+  });
+
+  test("verifiedEmailOnly alongside a REAL exclude criterion: only the real criterion drives the exclusion", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const excluded = await seedPerson(s, { name: "Excluded", email: "mixed-excluded@example.com" });
+    await seedDonorForPerson(s, excluded, { email: "mixed-excluded-d@example.com", status: "active" });
+    const survivor = await seedPerson(s, { name: "Survivor", email: "mixed-survivor@example.com" });
+
+    const preview = await previewPersonFilters(s, {
+      excludeFilters: { donorStatus: "active", verifiedEmailOnly: true },
+    });
+    expect(preview.sample.map((r) => r.email)).toEqual(["mixed-survivor@example.com"]);
+    expect(preview.excludedByFilters).toBe(1);
+  });
+});
