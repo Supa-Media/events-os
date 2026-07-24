@@ -136,23 +136,35 @@ const RSVP_STATUS_TEXT: Record<string, string> = {
  *  block so their phrasing can never drift apart (mirrors
  *  `lib/audienceResolve.ts#personMatchesCriteria` being the one place that
  *  EVALUATES a criterion for both blocks). Doesn't include the hand-pick
- *  counts or the "everyone" fallback — callers add those. */
-function describeFilterCriteria(filters: {
-  chapterId?: string | null;
-  donorStatus?: string | null;
-  gaveWithinDays?: number | null;
-  givingLifetimeMinCents?: number | null;
-  givingLifetimeMaxCents?: number | null;
-  giftCountMin?: number | null;
-  backerStatus?: string | null;
-  attendedEventId?: string | null;
-  attendedWithinDays?: number | null;
-  rsvpStatus?: string | null;
-  seatId?: string | null;
-  teamOnly?: boolean | null;
-  contactsOnly?: boolean | null;
-  verifiedEmailOnly?: boolean | null;
-}): string[] {
+ *  counts or the "everyone" fallback — callers add those.
+ *
+ *  `includeVerifiedEmail` (default `true`) — pass `false` when describing an
+ *  `excludeFilters` block: "verified email" reads backwards there ("exclude
+ *  anyone whose address IS verified" — see
+ *  `lib/audienceResolve.ts#hasEffectiveExcludeCriteria`'s doc), so the
+ *  picker UI hides that criterion from the exclude section entirely
+ *  (`AudiencesView.tsx`'s `hiddenGroups`) and this description must match —
+ *  a stray legacy row that somehow still has it set must not surface the
+ *  confusing phrase either. */
+function describeFilterCriteria(
+  filters: {
+    chapterId?: string | null;
+    donorStatus?: string | null;
+    gaveWithinDays?: number | null;
+    givingLifetimeMinCents?: number | null;
+    givingLifetimeMaxCents?: number | null;
+    giftCountMin?: number | null;
+    backerStatus?: string | null;
+    attendedEventId?: string | null;
+    attendedWithinDays?: number | null;
+    rsvpStatus?: string | null;
+    seatId?: string | null;
+    teamOnly?: boolean | null;
+    contactsOnly?: boolean | null;
+    verifiedEmailOnly?: boolean | null;
+  },
+  includeVerifiedEmail = true,
+): string[] {
   const parts: string[] = [];
   if (filters.chapterId) parts.push("one chapter");
   if (filters.teamOnly) parts.push("team only");
@@ -169,7 +181,7 @@ function describeFilterCriteria(filters: {
     parts.push(`attended in the last ${filters.attendedWithinDays} days`);
   if (filters.rsvpStatus) parts.push(RSVP_STATUS_TEXT[filters.rsvpStatus] ?? filters.rsvpStatus);
   if (filters.seatId) parts.push("holds a role");
-  if (filters.verifiedEmailOnly) parts.push("verified email");
+  if (includeVerifiedEmail && filters.verifiedEmailOnly) parts.push("verified email");
   return parts;
 }
 
@@ -202,7 +214,7 @@ export function describeAudience(
     if (parts.length === 1) parts.push("everyone");
     let result = parts.join(" · ");
     if (excludeFilters) {
-      const excludeParts = describeFilterCriteria(excludeFilters);
+      const excludeParts = describeFilterCriteria(excludeFilters, /* includeVerifiedEmail */ false);
       if (excludeParts.length > 0) {
         result += ` · excluding: ${excludeParts.join("; ")}`;
       }

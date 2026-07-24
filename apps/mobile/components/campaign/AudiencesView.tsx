@@ -357,6 +357,12 @@ function AudienceForm({
               label="Exclude people who…"
               hint="Anyone matching these is removed from the audience, even if hand-picked."
               tone="exclude"
+              // Verification round finding C: "only verified email" reads
+              // backwards as an exclude criterion ("exclude anyone whose
+              // address IS verified") — hidden here entirely rather than
+              // offering a footgun; the resolver ignores it too, as
+              // defense in depth (see lib/audienceResolve.ts).
+              hiddenGroups={["email"]}
             />
           </ErrorBoundary>
           <ErrorBoundary inline>
@@ -596,6 +602,7 @@ function FilterChipsBuilder({
   label = "Filters",
   hint = "Every active filter must match (AND) — leave all off to target everyone.",
   tone = "include",
+  hiddenGroups = [],
 }: {
   filters: PersonFilters;
   onChange: (next: PersonFilters) => void;
@@ -604,9 +611,24 @@ function FilterChipsBuilder({
   label?: string;
   hint?: string;
   tone?: "include" | "exclude";
+  /** Chip groups this instance never renders — verification-round finding C:
+   *  the exclude-side instance hides `"email"` (`verifiedEmailOnly`) entirely,
+   *  since that criterion reads backwards inside `excludeFilters` ("exclude
+   *  anyone whose address IS verified" — see
+   *  `lib/audienceResolve.ts#hasEffectiveExcludeCriteria`'s doc, the
+   *  resolver-side belt to this UI's suspenders). */
+  hiddenGroups?: FilterGroupKey[];
 }) {
+  const visibleGroupKeys = (Object.keys(FILTER_GROUP_LABELS) as FilterGroupKey[]).filter(
+    (k) => !hiddenGroups.includes(k),
+  );
   const [expanded, setExpanded] = useState<Set<FilterGroupKey>>(
-    () => new Set((Object.keys(GROUP_FIELDS) as FilterGroupKey[]).filter((k) => groupHasData(filters, k))),
+    () =>
+      new Set(
+        (Object.keys(GROUP_FIELDS) as FilterGroupKey[]).filter(
+          (k) => !hiddenGroups.includes(k) && groupHasData(filters, k),
+        ),
+      ),
   );
 
   function patch(fields: Partial<PersonFilters>) {
@@ -634,7 +656,7 @@ function FilterChipsBuilder({
   const body = (
     <Field label={label} hint={hint}>
       <View className="flex-row flex-wrap gap-2">
-        {(Object.keys(FILTER_GROUP_LABELS) as FilterGroupKey[]).map((key) => (
+        {visibleGroupKeys.map((key) => (
           <OptionTag
             key={key}
             label={FILTER_GROUP_LABELS[key]}
@@ -786,7 +808,13 @@ function FilterChipsBuilder({
         </View>
       ) : null}
 
-      {expanded.has("email") ? (
+      {/* Defense in depth, mirroring `visibleGroupKeys` above: the chip that
+          expands this block is never rendered when "email" is hidden, so
+          `expanded` can't normally gain it here — but a stale legacy row
+          (excludeFilters.verifiedEmailOnly set before this fix existed)
+          could still seed `expanded` with "email" on mount; this guard keeps
+          the block from rendering even then. */}
+      {expanded.has("email") && !hiddenGroups.includes("email") ? (
         <View className="mt-3 gap-2 rounded-md border border-border bg-sunken p-3">
           <Pressable
             className="flex-row items-center gap-2"
