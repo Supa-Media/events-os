@@ -730,7 +730,16 @@ export const assignablePeople = query({
     }
 
     const eligible = people
-      .filter((p) => p.isPlaceholder !== true && p.isSamplePerson !== true)
+      .filter(
+        (p) =>
+          p.isPlaceholder !== true &&
+          p.isSamplePerson !== true &&
+          // Roster UX (seat assignment), not identity matching — a
+          // contact-only row (auto-created from a donor gift, an import, or a
+          // public RSVP) was never a real volunteer/team member and must
+          // never be offered as a seat candidate. See `lib/org.ts#excludeContacts`.
+          p.isContactOnly !== true,
+      )
       .sort((a, b) => a.name.localeCompare(b.name))
       .slice(0, MAX_ASSIGNABLE_PEOPLE);
 

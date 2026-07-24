@@ -83,14 +83,22 @@ type GiverMark = {
   isBacker: boolean;
 };
 
-// The segmented filter adds an "all" sentinel on top of the shared Persona set.
-type PersonaFilter = Persona | "all";
+// The segmented filter adds an "all" sentinel on top of the shared Persona
+// set, PLUS "contacts" (person-centric audiences Phase 1 item 1) — a
+// deliberate, explicit way to see contact-only rows (auto-created from a
+// donor gift, an import, or a public RSVP) that the default roster view
+// (`api.people.list` with `contactsOnly` unset) now excludes. "Contacts" is
+// NOT one of the shared `Persona` values: it's a UI-local view, not a
+// backend-derived persona (a contact never has a team/volunteer/vendor
+// signal — it's excluded from the roster entirely, not classified within it).
+type PersonaFilter = Persona | "all" | "contacts";
 
 const PERSONA_FILTERS: { key: PersonaFilter; label: string }[] = [
   { key: "all", label: "All" },
   { key: "team", label: "Team" },
   { key: "volunteer", label: "Volunteers" },
   { key: "vendor", label: "Vendors" },
+  { key: "contacts", label: "Contacts" },
 ];
 
 // Fixed column widths (px) — mirrors EditableGrid's chrome so columns stay put
@@ -140,20 +148,43 @@ function confirmRemove(name: string): boolean {
 
 /** PEOPLE roster — a spreadsheet-style editable grid with per-person history. */
 export default function PeopleScreen() {
-  const people = useQuery(api.people.list, {}) as Person[] | undefined;
+  // Roster (default `api.people.list` — excludes `isContactOnly` rows now,
+  // person-centric audiences Phase 1) and contacts (the deliberate
+  // `contactsOnly: true` view) are TWO separate queries, both kept live so
+  // the segmented control's counts stay stable regardless of which tab is
+  // active — see the "contacts" persona filter note above `PersonaFilter`.
+  const roster = useQuery(api.people.list, {}) as Person[] | undefined;
+  const contacts = useQuery(api.people.list, {
+    contactsOnly: true,
+  }) as Person[] | undefined;
   const org = useQuery(api.org.nav);
   const create = useMutation(api.people.create);
   // The Title column mirrors org-chart seat titles (the current model) —
   // `people.role` is only the fallback shown when someone holds no seat.
   const seatHoldings = useQuery(api.responsibilities.chapterSeatHoldings);
 
+  const [search, setSearch] = useState("");
+  const [skillFilter, setSkillFilter] = useState<string | null>(null);
+  // Default to the core Team — the common case (a lead manages their team, not
+  // the full roster of volunteers/vendors). "All" is one tap away.
+  const [persona, setPersona] = useState<PersonaFilter>("team");
+  // Givers overlay toggle — independent of the persona segments (a Team member
+  // can also be a giver), so it composes with whichever persona is selected.
+  const [giversOnly, setGiversOnly] = useState(false);
+
+  // The grid's data source: the roster for every persona except the
+  // deliberate "Contacts" tab, which shows the separate contacts-only query.
+  const people = persona === "contacts" ? contacts : roster;
+
   // Givers overlay (territories P5). Every roster row shares one `chapterId`
   // (the roster query is already hard-scoped to the caller's own chapter), so
   // the first row's is the current chapter — skip the query until the roster
-  // has loaded at least one row. Returns `[]` for a caller with no giving
-  // access at this chapter (quiet degrade, never a throw — see
-  // `givingPlatform.giverMarks`), so the overlay simply doesn't render below.
-  const chapterId = people && people.length > 0 ? people[0].chapterId : undefined;
+  // has loaded at least one row. Sourced from `roster` (not `people`) so it
+  // stays available even while the Contacts tab is active. Returns `[]` for a
+  // caller with no giving access at this chapter (quiet degrade, never a
+  // throw — see `givingPlatform.giverMarks`), so the overlay simply doesn't
+  // render below.
+  const chapterId = roster && roster.length > 0 ? roster[0].chapterId : undefined;
   const giverMarks = useQuery(
     api.givingPlatform.giverMarks,
     chapterId ? { chapterId } : "skip",
@@ -164,15 +195,6 @@ export default function PeopleScreen() {
     return map;
   }, [giverMarks]);
   const hasGiverOverlay = giverMarksByPerson.size > 0;
-
-  const [search, setSearch] = useState("");
-  const [skillFilter, setSkillFilter] = useState<string | null>(null);
-  // Default to the core Team — the common case (a lead manages their team, not
-  // the full roster of volunteers/vendors). "All" is one tap away.
-  const [persona, setPersona] = useState<PersonaFilter>("team");
-  // Givers overlay toggle — independent of the persona segments (a Team member
-  // can also be a giver), so it composes with whichever persona is selected.
-  const [giversOnly, setGiversOnly] = useState(false);
   // Cross-tab deep link (giving CRM v2's Donors grid "Linked person" column —
   // `router.navigate(\`/people?openId=\${personId}\`)`): opens straight to that
   // person's detail sheet, the same modal a row tap opens locally. Read once
@@ -185,10 +207,12 @@ export default function PeopleScreen() {
   // Admin-only duplicate review + merge (Attendance C).
   const [dupOpen, setDupOpen] = useState(false);
 
-  // Manager names by id — one map instead of a per-row roster scan.
+  // Manager names by id — one map instead of a per-row roster scan. Sourced
+  // from `roster` (not `people`): a contact-only row is never anyone's
+  // manager, and this must stay resolvable while the Contacts tab is active.
   const nameById = useMemo(
-    () => new Map((people ?? []).map((p) => [p._id, p.name])),
-    [people],
+    () => new Map((roster ?? []).map((p) => [p._id, p.name])),
+    [roster],
   );
 
   // Seat titles held, by person — the Title column's read-only mirror.
@@ -201,34 +225,41 @@ export default function PeopleScreen() {
   }, [seatHoldings]);
 
   // Per-persona counts for the segmented control, so the filtering model is
-  // legible at a glance (Team 12 · Volunteers 30 · Vendors 5) rather than a
-  // blind default. "all" is the full roster.
+  // legible at a glance (Team 12 · Volunteers 30 · Vendors 5 · Contacts 4)
+  // rather than a blind default. "all" is the full roster (still excluding
+  // contacts — see `PersonaFilter`'s doc). Sourced from `roster`/`contacts`
+  // directly (not `people`) so the counts never flicker between tabs.
   const personaCounts = useMemo(() => {
     const counts: Record<PersonaFilter, number> = {
-      all: (people ?? []).length,
+      all: (roster ?? []).length,
       team: 0,
       volunteer: 0,
       vendor: 0,
+      contacts: (contacts ?? []).length,
     };
-    for (const p of people ?? []) counts[personaOf(p)] += 1;
+    for (const p of roster ?? []) counts[personaOf(p)] += 1;
     return counts;
-  }, [people]);
+  }, [roster, contacts]);
 
-  // Distinct skills across the roster, for the filter bar.
+  // Distinct skills across the roster, for the filter bar. Roster-only —
+  // contact rows never carry `services`.
   const allSkills = useMemo(() => {
     const set = new Set<string>();
-    for (const p of people ?? []) {
+    for (const p of roster ?? []) {
       for (const s of p.services ?? []) set.add(s);
     }
     return Array.from(set).sort();
-  }, [people]);
+  }, [roster]);
 
   // Memoized so a re-render (e.g. typing in another field) doesn't re-scan the
   // whole roster — only persona / skill / search changes recompute the rows.
+  // `persona === "contacts"` skips the `personaOf` check: `people` is already
+  // the contacts-only query result in that case, not a slice to filter again.
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
     return (people ?? []).filter((p) => {
-      if (persona !== "all" && personaOf(p) !== persona) return false;
+      if (persona !== "all" && persona !== "contacts" && personaOf(p) !== persona)
+        return false;
       if (giversOnly && !giverMarksByPerson.has(p._id)) return false;
       if (skillFilter && !(p.services ?? []).includes(skillFilter))
         return false;
@@ -239,7 +270,16 @@ export default function PeopleScreen() {
 
   if (people === undefined) return <Screen loading />;
 
-  const openPerson = openId ? people.find((p) => p._id === openId) ?? null : null;
+  // Cross-tab deep link (see `openParam` above) can point at a CONTACT — e.g.
+  // the giving CRM's donor "Linked person" column, since a donor-linked row is
+  // now `isContactOnly` (person-centric audiences Phase 1). Search BOTH
+  // `roster` and `contacts`, never just the currently active `people` view, so
+  // the link still opens regardless of which persona tab happens to be active.
+  const openPerson = openId
+    ? ((roster ?? []).find((p) => p._id === openId) ??
+        (contacts ?? []).find((p) => p._id === openId) ??
+        null)
+    : null;
 
   async function handleAddRow() {
     await create({ name: "New person" });
@@ -266,7 +306,7 @@ export default function PeopleScreen() {
             </Pressable>
           ) : null}
           <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-            Roster ({people.length})
+            {persona === "contacts" ? "Contacts" : "Roster"} ({people.length})
           </Text>
         </View>
       </View>

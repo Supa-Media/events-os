@@ -172,7 +172,12 @@ export const classifySmsSender = internalQuery({
   }),
   handler: async (ctx, { phone }) => {
     const person = await lookupPersonByPhone(ctx, phone);
-    if (person) {
+    // A contact-only match (person-centric audiences Phase 1 — auto-created
+    // from a donor gift, an import, or a public RSVP) is NOT a cardholder or
+    // team member — classify it the same as no match at all, so a text from
+    // a guest's/donor's phone number gets human review instead of silently
+    // auto-attaching via `receiptSenderCanAutoAttach`'s roster/team trust.
+    if (person && person.isContactOnly !== true) {
       return {
         senderClass: person.isTeamMember ? ("team" as const) : ("roster" as const),
         personId: person._id,

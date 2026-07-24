@@ -161,7 +161,7 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "tip",
-        text: "**The giving desk isn't the only place a donor shows up.** A chapter-scope donor who's also on the roster gets a small mark right on the People tab — a heart for a giver, plus a building icon if they're also an active backer — so anyone looking up a volunteer or team member can see the giving relationship without switching desks. The roster deliberately shows icons only, never a dollar amount; tap the mark to jump to the donor's giving-desk record for the actual numbers. Only donors who've actually GIVEN get the mark (giftCount > 0); a prospect with no gift yet, or a contact who only ever bought an event ticket, never shows one — ticket buyers aren't donors (see the import lesson later in this course).",
+        text: "**The giving desk isn't the only place a donor shows up.** A chapter-scope donor who's also on the roster gets a small mark right on the People tab — a heart for a giver, plus a building icon if they're also an active backer — so anyone looking up a volunteer or team member can see the giving relationship without switching desks. The roster deliberately shows icons only, never a dollar amount; tap the mark to jump to the donor's giving-desk record for the actual numbers. Only donors who've actually GIVEN get the mark (giftCount > 0); a prospect with no gift yet, or a contact who only ever bought an event ticket, never shows one — ticket buyers aren't donors (see the import lesson later in this course). A donor with NO existing roster match still gets a minimal roster row auto-created to carry the link — but that row is a CONTACT, not a volunteer, so it lives under the People tab's \"Contacts\" filter, not the default Team/Volunteers/Vendors view. The heart still only ever shows on a REAL person (a volunteer, vendor, or team member) or under that Contacts filter — never invented on someone who never actually engaged.",
       },
       {
         kind: "rule",
@@ -368,7 +368,7 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "p",
-        text: "Don't confuse this with the EVENT attendance import (on an event's public page under Grow → Import attendance). That one only builds a single event's guest list — it writes RSVP rows and NEVER creates a donor or a roster contact — and it's where a name-only Partiful/spreadsheet/Givebutter guest export lands. This canonical import is the money-and-CRM path; the attendance import is the door-list path.",
+        text: "Don't confuse this with the EVENT attendance import (on an event's public page under Grow → Import attendance). That one only builds a single event's guest list and NEVER creates a donor — it's where a name-only Partiful/spreadsheet/Givebutter guest export lands. Each row it writes also best-effort links to a `people` row exactly like a public RSVP does (match an existing person by email/phone/name, or — only when the row carries an email or phone — spawn a minimal CONTACT row so a repeat guest links to the same person next time); a name-only row simply stays unlinked, same as any other guest with nothing to match on. This canonical import is the money-and-CRM path; the attendance import is the door-list path.",
       },
       {
         kind: "rule",

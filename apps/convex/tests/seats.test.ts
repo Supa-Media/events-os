@@ -1391,6 +1391,24 @@ describe("seats.assignablePeople", () => {
     expect(people.map((p) => p.personId)).toEqual([inChapter]);
   });
 
+  test("excludes contact-only rows (person-centric audiences Phase 1) — never a seat candidate", async () => {
+    const s = await superuserSetup();
+    const inChapter = await makePerson(s, s.chapterId, "In Chapter");
+    await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Auto-created Contact",
+        isContactOnly: true,
+        createdAt: Date.now(),
+      }),
+    );
+
+    const people = await s.as.query(api.seats.assignablePeople, {
+      scope: s.chapterId,
+    });
+    expect(people.map((p) => p.personId)).toEqual([inChapter]);
+  });
+
   test("central scope returns people org-wide, across every chapter", async () => {
     const s = await superuserSetup({ chapterName: "New York" });
     const nyPerson = await makePerson(s, s.chapterId, "NY Person");

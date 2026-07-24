@@ -286,6 +286,9 @@ export async function linkDonorToPerson(
 ): Promise<Id<"people"> | null> {
   if (donor.scope === "central") return null; // no chapter roster to link into
   const chapterId = donor.scope;
+  // Identity matching, not roster UX — deliberately UNFILTERED (a repeat
+  // donor's own prior contact-only row must stay matchable). See
+  // `lib/org.ts#excludeContacts`'s doc for the full roster-UX-vs-matching audit.
   const roster = await chapterRoster(ctx, chapterId);
 
   const email = normalizeEmail(donor.email) ?? undefined;
@@ -316,6 +319,12 @@ export async function linkDonorToPerson(
       ...(donor.email ? { email: donor.email } : {}),
       ...(donor.phone ? { phone: donor.phone } : {}),
       isTeamMember: false,
+      // Person-centric audiences Phase 1 — this row exists ONLY to carry the
+      // donor link, never a real volunteer/team member, so it's stamped a
+      // contact-only row at INSERT time (mirrors `lib/rsvpPeople.ts#linkRsvpToPerson`)
+      // and excluded from roster-facing surfaces immediately, not just after
+      // the one-time `0038_backfill_contact_only_people` catch-up migration.
+      isContactOnly: true,
       notes: "Added from Giving",
       createdAt: Date.now(),
     });

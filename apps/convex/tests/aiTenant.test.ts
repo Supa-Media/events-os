@@ -101,6 +101,49 @@ describe("ai.eventContext (read) tenant boundary", () => {
     });
     expect(ctx).toBeNull();
   });
+
+  test("the assignable-people vocabulary excludes placeholders, sample people, and contact-only rows", async () => {
+    const t = newT();
+    const { chapterId, userId } = await setupChapter(t);
+    const { eventId } = await seedEventWithItem(t, chapterId, userId);
+    const now = Date.now();
+    await run(t, async (ctx) => {
+      await ctx.db.insert("people", {
+        chapterId,
+        name: "Real Volunteer",
+        createdAt: now,
+      });
+      await ctx.db.insert("people", {
+        chapterId,
+        name: "A Placeholder",
+        isPlaceholder: true,
+        createdAt: now,
+      });
+      await ctx.db.insert("people", {
+        chapterId,
+        name: "A Sample Person",
+        isSamplePerson: true,
+        createdAt: now,
+      });
+      // Person-centric audiences Phase 1 — auto-created from a donor gift, an
+      // import, or a public RSVP; never a real assignee for `assign_role`/
+      // `set_workstream_owner`.
+      await ctx.db.insert("people", {
+        chapterId,
+        name: "Auto-created Contact",
+        isContactOnly: true,
+        createdAt: now,
+      });
+    });
+
+    const ctx = await t.query(internal.ai.eventContext, { eventId, chapterId });
+    expect(ctx).not.toBeNull();
+    const names = (ctx as any).people.map((p: any) => p.name);
+    expect(names).toContain("Real Volunteer");
+    expect(names).not.toContain("A Placeholder");
+    expect(names).not.toContain("A Sample Person");
+    expect(names).not.toContain("Auto-created Contact");
+  });
 });
 
 describe("ai.itemForAutofill (read) tenant boundary", () => {

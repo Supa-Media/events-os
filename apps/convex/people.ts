@@ -112,10 +112,22 @@ async function sandboxPeopleFilter(
 }
 
 /** List the chapter roster sorted by name. In a training sandbox (`eventId`
- *  of a training event), lists only the caller + placeholder people. */
+ *  of a training event), lists only the caller + placeholder people.
+ *
+ * `contactsOnly` (person-centric audiences Phase 1 item 1) flips the default
+ * roster-facing view: unset/false returns the ROSTER only (excludes
+ * `isContactOnly` rows — the fix for the People tab default list, every
+ * person picker/mention/duty-assignment surface, and the org-chart consumers
+ * that all call this same query with `{}`), `true` returns ONLY contacts —
+ * the People tab's deliberate "Contacts" persona filter, so a contact-only
+ * row (auto-created from a donor gift, an import, or a public RSVP) is still
+ * findable/editable, just never mixed into the default roster. */
 export const list = query({
-  args: { eventId: v.optional(v.id("events")) },
-  handler: async (ctx, { eventId }) => {
+  args: {
+    eventId: v.optional(v.id("events")),
+    contactsOnly: v.optional(v.boolean()),
+  },
+  handler: async (ctx, { eventId, contactsOnly }) => {
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return [];
     const people = await ctx.db
@@ -130,11 +142,17 @@ export const list = query({
     // are never touched here) — event-scoped stand-ins, not real roster
     // members, so keep them out of the People roster. Replacing one only
     // consumes that event's copy. Inside a training sandbox the rule flips:
-    // placeholders (+ the caller) are the ONLY people offered.
+    // placeholders (+ the caller) are the ONLY people offered — sandbox mode
+    // ignores `contactsOnly` (a training drill never shows contacts).
     const sorted = people
       .filter(
         sandbox ??
-          ((p) => p.isPlaceholder !== true && p.isSamplePerson !== true),
+          ((p) =>
+            p.isPlaceholder !== true &&
+            p.isSamplePerson !== true &&
+            (contactsOnly === true
+              ? p.isContactOnly === true
+              : p.isContactOnly !== true)),
       )
       .sort((a, b) => a.name.localeCompare(b.name));
     // Resolve each profile photo storageId to a servable URL for display.
@@ -168,6 +186,10 @@ export const cardEligible = query({
         (p) =>
           p.isPlaceholder !== true &&
           p.isSamplePerson !== true &&
+          // Roster UX (card issuance is a team-member action) — see
+          // `lib/org.ts#excludeContacts`'s doc. Belt-and-suspenders: a
+          // contact-only row practically never carries a `pwEmail` anyway.
+          p.isContactOnly !== true &&
           isCardEligible(p.pwEmail),
       )
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -199,6 +221,10 @@ export const teamMembers = query({
     const sandbox = eventId
       ? await sandboxPeopleFilter(ctx, chapterId as Id<"chapters">, eventId)
       : null;
+    // No explicit `isContactOnly` check needed: a contact-only row is always
+    // written with `isTeamMember: false` and no `userId` (see
+    // `lib/rsvpPeople.ts`/`lib/givingDonors.ts`), so it already fails the
+    // `isTeamMember === true || userId != null` test below.
     return people
       .filter(
         sandbox ??

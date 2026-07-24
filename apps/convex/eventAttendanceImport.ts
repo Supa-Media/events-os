@@ -42,6 +42,7 @@ import { normalizeEmail } from "./lib/access";
 import { requireEvent } from "./lib/context";
 import { newGuestToken } from "./ticketing";
 import { RSVP_STATUSES } from "./schema/ticketing";
+import { linkRsvpToPerson } from "./lib/rsvpPeople";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -478,10 +479,11 @@ export async function applyAttendanceRows(
     const createdAt = row.respondedAt ?? now;
     const phone = row.phone?.trim() || undefined;
     const note = buildNote(row);
-    await ctx.db.insert("rsvps", {
+    const name = row.name.trim() || "Guest";
+    const rsvpId = await ctx.db.insert("rsvps", {
       eventId,
       chapterId: page.chapterId,
-      name: row.name.trim() || "Guest",
+      name,
       ...(email ? { email } : {}),
       ...(phone ? { phone } : {}),
       status: target,
@@ -494,6 +496,17 @@ export async function applyAttendanceRows(
     });
     delta[target] += 1;
     counters.inserted++;
+    // Person-centric audiences Phase 1 item 2 — best-effort, never blocks the
+    // import (see `lib/rsvpPeople.ts`'s doc comment). Many imported rows are
+    // email-less/phone-less (legal for this source only, per the schema doc on
+    // `rsvps.email`) and simply stay unlinked — `linkRsvpToPerson` no-ops.
+    await linkRsvpToPerson(ctx, {
+      rsvpId,
+      chapterId: page.chapterId,
+      name,
+      email,
+      phone,
+    });
   }
 
   // ONE counter patch for the whole set (never per-row bumpRsvpCounters).

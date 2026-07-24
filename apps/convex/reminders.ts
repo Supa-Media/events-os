@@ -159,6 +159,11 @@ function reachablePredicate(
     return (
       !!p &&
       !p.isPlaceholder &&
+      // Person-centric audiences Phase 1 — a contact-only row (auto-created
+      // from a donor gift, an import, or a public RSVP) is never a real
+      // assignee; excluding it here keeps the digest/Work-page scan a ROSTER
+      // surface even on the rare chance one somehow ended up as an owner.
+      p.isContactOnly !== true &&
       p.status !== "inactive" &&
       !!(p.pwEmail ?? p.email)
     );

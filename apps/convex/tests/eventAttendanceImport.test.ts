@@ -6,14 +6,20 @@ import type { Doc, Id } from "../_generated/dataModel";
 
 /**
  * Event attendance import (PR A): the guest-list bulk importer that only ever
- * writes `rsvps` rows for one event — never donors, gifts, or roster people.
- * Covers the disposition matrix, the email→phone→name matching cascade
- * (incl. digits-normalized phone + name-only rows), distinct same-name
- * inserts + nameCollision reporting, idempotent re-runs, batched counter
- * correctness, the update path (counter shift + token/emailVerified
- * preservation + note merge), NO_PAGE gating, >100-row self-reschedule, that
- * imported rows never get a verification code, and that email-less imports
- * are excluded from email blasts without crashing.
+ * writes `rsvps` rows for one event — never donors or gifts. Covers the
+ * disposition matrix, the email→phone→name matching cascade (incl.
+ * digits-normalized phone + name-only rows), distinct same-name inserts +
+ * nameCollision reporting, idempotent re-runs, batched counter correctness,
+ * the update path (counter shift + token/emailVerified preservation + note
+ * merge), NO_PAGE gating, >100-row self-reschedule, that imported rows never
+ * get a verification code, and that email-less imports are excluded from
+ * email blasts without crashing.
+ *
+ * Person-centric audiences Phase 1: a NEW insert here also best-effort links
+ * `rsvps.personId` via `lib/rsvpPeople.ts#linkRsvpToPerson` (see
+ * `rsvpPeople.test.ts` for the helper's own match-order/gating coverage) —
+ * an email/phone-bearing row gets matched or spawns a contact-only `people`
+ * row; a name-only row (legal for THIS importer only) stays unlinked.
  */
 
 async function seedEvent(s: ChapterSetup): Promise<Id<"events">> {
@@ -195,7 +201,7 @@ describe("previewAttendanceImport", () => {
 // ── Commit ───────────────────────────────────────────────────────────────────
 
 describe("commitAttendanceImport", () => {
-  test("inserts create rsvps with correct source/emailVerified/note; never people/donors", async () => {
+  test("inserts create rsvps with correct source/emailVerified/note; never donors", async () => {
     const { s, eventId } = await setupPage();
     const res = await s.as.mutation(api.eventAttendanceImport.commitAttendanceImport, {
       eventId,
@@ -218,10 +224,18 @@ describe("commitAttendanceImport", () => {
     const plus = all.find((r) => r.name === "Plus One")!;
     expect(plus.note).toContain("+1 of Ticket Buyer");
 
-    // Never creates donors or roster people.
+    // Never creates donors. Person-centric audiences Phase 1: an email/phone
+    // row DOES best-effort link/create a contact-only `people` row now — only
+    // "Ticket Buyer" qualifies (the other two rows are name-only, no
+    // identifier to match or create from — see `hasPersonIdentifier`).
     const people = await run(s.t, (ctx) => ctx.db.query("people").collect());
     const donors = await run(s.t, (ctx) => ctx.db.query("donors").collect());
-    expect(people).toHaveLength(0);
+    expect(people).toHaveLength(1);
+    expect(people[0].name).toBe("Ticket Buyer");
+    expect(people[0].isContactOnly).toBe(true);
+    expect(tb.personId).toBe(people[0]._id);
+    expect(plain.personId).toBeUndefined();
+    expect(plus.personId).toBeUndefined();
     expect(donors).toHaveLength(0);
   });
 

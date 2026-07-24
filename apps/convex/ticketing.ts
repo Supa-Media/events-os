@@ -29,6 +29,7 @@ import { normalizeEmail } from "./lib/access";
 import { normalizePhone } from "./lib/twilio";
 import { requireEvent, requireOwned, requireUserId } from "./lib/context";
 import { beginEmailVerification, clearEmailCode } from "./lib/emailCodes";
+import { linkRsvpToPerson } from "./lib/rsvpPeople";
 import { createPaidDonationForOrder } from "./giving";
 import { RSVP_STATUSES } from "./schema/ticketing";
 
@@ -1244,6 +1245,15 @@ export const submitRsvp = mutation({
       updatedAt: now,
     });
     await bumpRsvpCounters(ctx, page, null, args.status);
+    // Person-centric audiences Phase 1 item 2 — best-effort, never blocks the
+    // RSVP (see `lib/rsvpPeople.ts`'s doc comment).
+    await linkRsvpToPerson(ctx, {
+      rsvpId,
+      chapterId: page.chapterId,
+      name,
+      email,
+      phone,
+    });
     await beginEmailVerification(ctx, { _id: rsvpId, email });
     if (args.status !== "not_going") {
       await ctx.scheduler.runAfter(0, internal.ticketingEmails.sendRsvpEmail, {
@@ -1554,6 +1564,15 @@ export const prepareOrder = internalMutation({
         updatedAt: now,
       });
       await bumpRsvpCounters(ctx, page, null, "maybe");
+      // Person-centric audiences Phase 1 item 2 — best-effort, never blocks
+      // checkout (see `lib/rsvpPeople.ts`'s doc comment).
+      await linkRsvpToPerson(ctx, {
+        rsvpId,
+        chapterId: page.chapterId,
+        name,
+        email,
+        phone: finalPhone,
+      });
     }
 
     const totalCents = lines.reduce(

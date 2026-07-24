@@ -369,7 +369,12 @@ export const classifySender = internalQuery({
   }),
   handler: async (ctx, { email }) => {
     const person = await lookupPersonByEmail(ctx, email);
-    if (person) {
+    // A contact-only match (person-centric audiences Phase 1 — auto-created
+    // from a donor gift, an import, or a public RSVP) is NOT a cardholder or
+    // team member — treat it the same as no roster match at all, so an email
+    // from a guest's/donor's address falls through to the domain check below
+    // instead of silently auto-attaching via the "roster" trust class.
+    if (person && person.isContactOnly !== true) {
       return {
         senderClass: person.isTeamMember ? "team" : "roster",
         personId: person._id,

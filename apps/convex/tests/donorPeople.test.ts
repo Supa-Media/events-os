@@ -164,6 +164,9 @@ describe("linkDonorToPerson via upsertDonor (create)", () => {
     expect(created?.email).toBe("bng@example.com");
     expect(created?.isTeamMember).toBe(false);
     expect(created?.notes).toBe("Added from Giving");
+    // Person-centric audiences Phase 1 — stamped at INSERT time, not just by
+    // the one-time 0038 backfill migration.
+    expect(created?.isContactOnly).toBe(true);
   });
 
   test("central-scope donors are never linked", async () => {

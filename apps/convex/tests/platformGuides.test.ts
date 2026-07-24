@@ -78,6 +78,60 @@ describe("platform guide seeding", () => {
     }
   });
 
+  test("author fallback skips contact-only rows — picks a real 'anyone' over an auto-created contact", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // No login-linked person, no team member — only a contact-only row (would
+    // have been picked by the old unconditional `people[0]` fallback, since it
+    // sorts oldest-first) and a genuine (if unremarkable) roster person.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Auto-created Contact",
+        isContactOnly: true,
+        createdAt: 1,
+      }),
+    );
+    const realPersonId = await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Just Some Volunteer",
+        createdAt: 2,
+      }),
+    );
+
+    const results = await t.mutation(internal.docs.seedPlatformGuides, {
+      chapterId: s.chapterId,
+    });
+    expect(results[0]?.seeded).toBe(true);
+
+    const docs = await run(t, (ctx) =>
+      ctx.db
+        .query("docs")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    );
+    expect(docs.every((d) => d.createdBy === realPersonId)).toBe(true);
+  });
+
+  test("a contacts-only chapter has no eligible author — seeding no-ops", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Auto-created Contact",
+        isContactOnly: true,
+        createdAt: Date.now(),
+      }),
+    );
+
+    const results = await t.mutation(internal.docs.seedPlatformGuides, {
+      chapterId: s.chapterId,
+    });
+    expect(results[0]).toMatchObject({ seeded: false });
+  });
+
   test("re-seed is idempotent and always overwrites drift with the platform version", async () => {
     const t = newT();
     const s = await setupChapter(t);

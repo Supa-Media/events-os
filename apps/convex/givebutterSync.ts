@@ -82,6 +82,7 @@ import { requireEvent } from "./lib/context";
 import { newGuestToken, newTicketCode } from "./ticketing";
 import { RSVP_STATUSES } from "./schema/ticketing";
 import { matchOrCreateDonor, recordGiftForDonor } from "./lib/givingDonors";
+import { linkRsvpToPerson } from "./lib/rsvpPeople";
 
 /** Givebutter API base. `Authorization: Bearer <GIVEBUTTER_API_KEY>`. */
 const GIVEBUTTER_API_BASE = "https://api.givebutter.com/v1";
@@ -460,6 +461,15 @@ export const applyGivebutterTickets = internalMutation({
             updatedAt: t.createdAt,
           });
           rsvpCounterDelta.going += 1;
+          // Person-centric audiences Phase 1 item 2 — best-effort (see
+          // `lib/rsvpPeople.ts`'s doc comment).
+          await linkRsvpToPerson(ctx, {
+            rsvpId,
+            chapterId,
+            name: t.attendeeName,
+            email,
+            phone: t.phone,
+          });
         }
       } else {
         // EMAIL-LESS Givebutter ticket. `rsvps.email` is optional (PR A landed),
@@ -481,6 +491,14 @@ export const applyGivebutterTickets = internalMutation({
           updatedAt: t.createdAt,
         });
         rsvpCounterDelta.going += 1;
+        // Person-centric audiences Phase 1 item 2 — matches by phone/name only
+        // (no email on this branch); best-effort (see `lib/rsvpPeople.ts`).
+        await linkRsvpToPerson(ctx, {
+          rsvpId,
+          chapterId,
+          name: t.attendeeName,
+          phone: t.phone,
+        });
       }
 
       // 4. Mirror order — paid, one line, NO Stripe fields.

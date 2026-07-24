@@ -212,6 +212,15 @@ async function resolvePeople(
       .take(PEOPLE_PER_CHAPTER_LIMIT);
     for (const p of rows) {
       if (p.isPlaceholder === true) continue;
+      // Person-centric audiences Phase 1 — a contact-only row (auto-created
+      // from a donor gift, an import, or a public RSVP; see
+      // `lib/org.ts#excludeContacts`'s doc) is NOT what an admin means by the
+      // "People" audience source: it preserves the pre-Phase-1 behavior where
+      // this source was implicitly roster-only. Contacts become reachable
+      // deliberately once Phase 3's filter model (specs/person-centric-
+      // audiences.md) lands, via an explicit criterion — never silently
+      // folded into the legacy roster-shaped source.
+      if (p.isContactOnly === true) continue;
       if (p.status === "inactive") continue;
       const raw = p.pwEmail ?? p.email;
       const email = raw ? normalizeEmail(raw) : null;
