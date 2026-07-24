@@ -55,10 +55,12 @@ import { confirmAction, describeAudience, pluralCount } from "./helpers";
 import {
   centsToDollarsStr,
   dollarsStrToCents,
+  EXCLUDE_FIELD_PREFIX,
   flushPendingNumberFields,
   intStrToNumber,
   intToStr,
   resolveNumberField,
+  splitExcludePatch,
   type PendingNumberField,
 } from "./audienceFilterFields";
 
@@ -128,10 +130,15 @@ export function AudiencesView() {
       ) : (
         <View style={styles.list}>
           {(audiences as Audience[]).map((a) => {
-            const summary = describeAudience(a.source, a.filters, {
-              includeCount: a.includePersonIds?.length,
-              excludeCount: a.excludePersonIds?.length,
-            });
+            const summary = describeAudience(
+              a.source,
+              a.filters,
+              {
+                includeCount: a.includePersonIds?.length,
+                excludeCount: a.excludePersonIds?.length,
+              },
+              a.excludeFilters,
+            );
             return (
               <Card key={a._id} onPress={() => setEditingId(a._id)}>
                 <View style={styles.cardTop}>
@@ -173,6 +180,12 @@ function AudienceForm({
 
   const [name, setName] = useState(initial?.name ?? "");
   const [filters, setFilters] = useState<PersonFilters>(initial?.filters ?? {});
+  // Property-level exclusions ("Exclude people who…") — same shape as
+  // `filters`, AND-combined the same way; see `helpers.ts#describeFilterCriteria`'s
+  // doc and `lib/audienceResolve.ts#personMatchesCriteria`'s doc for why the
+  // two blocks share every bit of logic except which side of the audience
+  // they land on.
+  const [excludeFilters, setExcludeFilters] = useState<PersonFilters>(initial?.excludeFilters ?? {});
   const [includeIds, setIncludeIds] = useState<Id<"people">[]>(initial?.includePersonIds ?? []);
   const [excludeIds, setExcludeIds] = useState<Id<"people">[]>(initial?.excludePersonIds ?? []);
   const [includeNames, setIncludeNames] = useState<Record<string, string>>({});
@@ -221,6 +234,7 @@ function AudienceForm({
     scope,
     source,
     filters,
+    excludeFilters,
     includePersonIds: includeIds.length ? includeIds : undefined,
     excludePersonIds: excludeIds.length ? excludeIds : undefined,
   };
@@ -239,11 +253,22 @@ function AudienceForm({
     // debounce happened to have committed (see `audienceFilterFields.ts`).
     // A still-malformed field blocks the whole save; its "Enter a number."
     // hint is already visible (computed live, not gated behind the
-    // debounce) so there's nothing extra to surface here.
-    const flushed = flushPendingNumberFields<PersonFilters>([...rawFieldsRef.current.values()]);
+    // debounce) so there's nothing extra to surface here. The Filters group
+    // AND the Exclude-people-who group's numeric fields share this ONE
+    // registry (the exclude side's fields register with an `exclude:`
+    // fieldKey prefix — see `FilterChipsBuilder`'s `keyPrefix` prop), so one
+    // flush covers both; `splitExcludePatch` routes the combined result back
+    // into the two separate patches.
+    const flushed = flushPendingNumberFields<Record<string, number | undefined>>([
+      ...rawFieldsRef.current.values(),
+    ]);
     if (!flushed.ok) return;
-    const finalFilters: PersonFilters = { ...filters, ...flushed.patch };
+    const { include: includePatch, exclude: excludePatch } =
+      splitExcludePatch<PersonFilters>(flushed.patch);
+    const finalFilters: PersonFilters = { ...filters, ...includePatch };
+    const finalExcludeFilters: PersonFilters = { ...excludeFilters, ...excludePatch };
     if (finalFilters !== filters) setFilters(finalFilters);
+    if (finalExcludeFilters !== excludeFilters) setExcludeFilters(finalExcludeFilters);
 
     setSaving(true);
     try {
@@ -257,6 +282,7 @@ function AudienceForm({
                 audienceId: initial._id,
                 name: trimmed,
                 filters: finalFilters,
+                excludeFilters: finalExcludeFilters,
                 includePersonIds: includeIds,
                 excludePersonIds: excludeIds,
               }),
@@ -269,6 +295,7 @@ function AudienceForm({
                 name: trimmed,
                 source: "person_filters",
                 filters: finalFilters,
+                excludeFilters: finalExcludeFilters,
                 includePersonIds: includeIds.length ? includeIds : undefined,
                 excludePersonIds: excludeIds.length ? excludeIds : undefined,
               }),
@@ -320,6 +347,17 @@ function AudienceForm({
         <>
           <ErrorBoundary inline>
             <FilterChipsBuilder filters={filters} onChange={setFilters} controller={numberFieldController} />
+          </ErrorBoundary>
+          <ErrorBoundary inline>
+            <FilterChipsBuilder
+              filters={excludeFilters}
+              onChange={setExcludeFilters}
+              controller={numberFieldController}
+              keyPrefix={EXCLUDE_FIELD_PREFIX}
+              label="Exclude people who…"
+              hint="Anyone matching these is removed from the audience, even if hand-picked."
+              tone="exclude"
+            />
           </ErrorBoundary>
           <ErrorBoundary inline>
             <HandPickSection
@@ -538,15 +576,34 @@ const TYPE_OPTIONS = [
  * ACTIVE chip's ✕ clears every field in that group. Groups AND-combine (see
  * `lib/audienceResolve.ts#resolvePersonFilters`); a group with no fields set
  * contributes nothing.
+ *
+ * Reused VERBATIM for both halves of the picker — the include-side "Filters"
+ * block (`keyPrefix=""`) and the exclude-side "Exclude people who…" block
+ * (`keyPrefix={EXCLUDE_FIELD_PREFIX}`, `tone="exclude"`) — so the two can
+ * never grow different chip groups, options, or numeric-field behavior.
+ * `keyPrefix` disambiguates each `DebouncedNumberField`'s `fieldKey` so both
+ * blocks' numeric fields can register into the SAME shared
+ * `controller.rawFieldsRef` (one WYSIWYG flush covers both — see
+ * `AudiencesView`'s `handleSave`/`splitExcludePatch`) without colliding.
+ * `tone="exclude"` only changes the wrapping container's left accent, for
+ * visual separation from the include block above it.
  */
 function FilterChipsBuilder({
   filters,
   onChange,
   controller,
+  keyPrefix = "",
+  label = "Filters",
+  hint = "Every active filter must match (AND) — leave all off to target everyone.",
+  tone = "include",
 }: {
   filters: PersonFilters;
   onChange: (next: PersonFilters) => void;
   controller: NumberFieldController;
+  keyPrefix?: string;
+  label?: string;
+  hint?: string;
+  tone?: "include" | "exclude";
 }) {
   const [expanded, setExpanded] = useState<Set<FilterGroupKey>>(
     () => new Set((Object.keys(GROUP_FIELDS) as FilterGroupKey[]).filter((k) => groupHasData(filters, k))),
@@ -574,8 +631,8 @@ function FilterChipsBuilder({
     });
   }
 
-  return (
-    <Field label="Filters" hint="Every active filter must match (AND) — leave all off to target everyone.">
+  const body = (
+    <Field label={label} hint={hint}>
       <View className="flex-row flex-wrap gap-2">
         {(Object.keys(FILTER_GROUP_LABELS) as FilterGroupKey[]).map((key) => (
           <OptionTag
@@ -592,7 +649,9 @@ function FilterChipsBuilder({
 
       {expanded.size === 0 ? (
         <Text className="mt-2 text-xs text-faint">
-          Tap a category above to narrow this audience — leave everything off to target everyone.
+          {tone === "exclude"
+            ? "Tap a category above to remove anyone matching it — leave everything off to exclude nobody."
+            : "Tap a category above to narrow this audience — leave everything off to target everyone."}
         </Text>
       ) : null}
 
@@ -601,7 +660,7 @@ function FilterChipsBuilder({
           <View className="flex-row gap-2">
             <View className="flex-1">
               <DebouncedNumberField
-                fieldKey="givingLifetimeMinCents"
+                fieldKey={`${keyPrefix}givingLifetimeMinCents`}
                 label="Lifetime giving ≥"
                 placeholder="$0"
                 committedValue={filters.givingLifetimeMinCents}
@@ -613,7 +672,7 @@ function FilterChipsBuilder({
             </View>
             <View className="flex-1">
               <DebouncedNumberField
-                fieldKey="givingLifetimeMaxCents"
+                fieldKey={`${keyPrefix}givingLifetimeMaxCents`}
                 label="Lifetime giving ≤"
                 placeholder="No max"
                 committedValue={filters.givingLifetimeMaxCents}
@@ -625,7 +684,7 @@ function FilterChipsBuilder({
             </View>
           </View>
           <DebouncedNumberField
-            fieldKey="giftCountMin"
+            fieldKey={`${keyPrefix}giftCountMin`}
             label="Gift count ≥"
             placeholder="0"
             committedValue={filters.giftCountMin}
@@ -674,7 +733,7 @@ function FilterChipsBuilder({
             />
           </ErrorBoundary>
           <DebouncedNumberField
-            fieldKey="attendedWithinDays"
+            fieldKey={`${keyPrefix}attendedWithinDays`}
             label="Attended within N days"
             placeholder="No limit"
             committedValue={filters.attendedWithinDays}
@@ -744,6 +803,14 @@ function FilterChipsBuilder({
       ) : null}
     </Field>
   );
+
+  // The exclude block gets a colored left rail so it reads as a clearly
+  // separate, "this removes people" section rather than another Filters
+  // group — the founder-requested "clear visual separation."
+  if (tone === "exclude") {
+    return <View style={styles.excludeSection}>{body}</View>;
+  }
+  return body;
 }
 
 function dedupeSeatOptions(
@@ -1004,6 +1071,12 @@ function AudiencePreviewCard({ args }: { args: PreviewArgs }) {
     preview.excludedSuppressed > 0 ? `${pluralCount(preview.excludedSuppressed, "suppressed contact")}` : null,
     preview.excludedUnverified > 0 ? `${pluralCount(preview.excludedUnverified, "unverified contact")}` : null,
     preview.excludedOptOut > 0 ? `${pluralCount(preview.excludedOptOut, "person")} opted out` : null,
+    // Property-level exclusions (`excludeFilters`) — a PRIMARY count, like
+    // the others above (never diagnostics-gated — see
+    // `lib/audienceResolve.ts#AudienceResolution`'s doc).
+    preview.excludedByFilters > 0
+      ? `${pluralCount(preview.excludedByFilters, "person")} matched an exclude filter`
+      : null,
   ].filter((b): b is string => b !== null);
 
   return (
@@ -1018,6 +1091,35 @@ function AudiencePreviewCard({ args }: { args: PreviewArgs }) {
         <Text className="mt-0.5 text-xs text-muted">
           Also includes {pluralCount(preview.unlinkedCentralDonors, "org-level donor")} not yet in the
           people list
+        </Text>
+      ) : null}
+      {/* Stitched-in #417 diagnostics — real data-trust signals that
+          landed with the preview payload but were never rendered anywhere
+          until now. Plain-language, matching the #418 copy style. */}
+      {preview.unlinkedGuests > 0 ? (
+        <Text className="mt-0.5 text-xs text-warn">
+          {pluralCount(preview.unlinkedGuests, "earlier guest")}{" "}
+          {preview.unlinkedGuests === 1 ? "isn't" : "aren't"} linked yet and can't be counted
+          {preview.unlinkedGuestsIsLowerBound ? " (at least)" : ""}.
+        </Text>
+      ) : null}
+      {preview.handPickedUnverified > 0 ? (
+        <Text className="mt-0.5 text-xs text-muted">
+          {pluralCount(preview.handPickedUnverified, "hand-picked person")}{" "}
+          {preview.handPickedUnverified === 1 ? "has" : "have"} no verified email.
+        </Text>
+      ) : null}
+      {preview.centralDonorsExcludedByChapterFilter > 0 ? (
+        <Text className="mt-0.5 text-xs text-muted">
+          {pluralCount(preview.centralDonorsExcludedByChapterFilter, "central donor")}{" "}
+          {preview.centralDonorsExcludedByChapterFilter === 1 ? "was" : "were"} left out by the chapter
+          filter.
+        </Text>
+      ) : null}
+      {preview.handPickedExcludedByFilters > 0 ? (
+        <Text className="mt-0.5 text-xs text-muted">
+          {pluralCount(preview.handPickedExcludedByFilters, "hand-picked person")}{" "}
+          {preview.handPickedExcludedByFilters === 1 ? "was" : "were"} removed by an exclude filter.
         </Text>
       ) : null}
       {preview.truncated ? (
@@ -1051,4 +1153,10 @@ const styles = StyleSheet.create({
   name: { fontSize: 16, fontWeight: "700", color: colors.text, flex: 1 },
   meta: { fontSize: 13, color: colors.muted, marginTop: spacing.sm },
   legacyNote: { fontSize: 12, color: colors.faint, marginTop: spacing.xs },
+  excludeSection: {
+    borderLeftWidth: 3,
+    borderLeftColor: colors.danger,
+    paddingLeft: spacing.sm,
+    marginTop: spacing.xs,
+  },
 });
