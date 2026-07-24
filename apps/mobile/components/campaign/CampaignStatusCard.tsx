@@ -453,6 +453,11 @@ function ReviewCard({
   // are always 0 for legacy sources, so this is additive-only for existing
   // campaigns' review cards.
   if (preview && preview.excludedOptOut > 0) excludedBits.push(`${preview.excludedOptOut} opted out`);
+  // Property-level exclusions (`excludeFilters`) — a primary count, same
+  // shape as the others above.
+  if (preview && preview.excludedByFilters > 0) {
+    excludedBits.push(`${preview.excludedByFilters} matched an exclude filter`);
+  }
 
   return (
     <View className="mt-2 gap-3">
@@ -460,10 +465,15 @@ function ReviewCard({
         <Text className="text-2xs font-bold uppercase tracking-wider text-faint">Audience</Text>
         <Text className="text-sm text-ink">
           {audience
-            ? describeAudience(audience.source, audience.filters, {
-                includeCount: audience.includePersonIds?.length,
-                excludeCount: audience.excludePersonIds?.length,
-              })
+            ? describeAudience(
+                audience.source,
+                audience.filters,
+                {
+                  includeCount: audience.includePersonIds?.length,
+                  excludeCount: audience.excludePersonIds?.length,
+                },
+                audience.excludeFilters,
+              )
             : "Audience deleted"}
         </Text>
         <Text className="text-sm text-muted">
