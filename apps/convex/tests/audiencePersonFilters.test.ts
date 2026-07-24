@@ -640,6 +640,198 @@ describe("createAudience/updateAudience — hand-pick guards", () => {
   });
 });
 
+// ── unlinked-guest visibility (data-trust fix) ───────────────────────────
+
+describe("person_filters — unlinked-guest visibility (data-trust fix)", () => {
+  test("an attendance filter under-matches an unlinked historical RSVP, but unlinkedGuests reports the gap", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const eventId = await seedEvent(s);
+    const linked = await seedPerson(s, { name: "Linked", email: "linked-attendee@example.com" });
+    await seedRsvpForPerson(s, linked, eventId, { status: "going" });
+
+    // Historical/migration-not-yet-run guest: an RSVP with NO personId — the
+    // exact gap migration 0037's backfill closes once it runs.
+    // `personAttendsMatch` only ever looks up via `rsvps.by_person`, so this
+    // row can never match no matter how good the filter is.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("rsvps", {
+        eventId,
+        chapterId: s.chapterId,
+        name: "Unlinked Guest",
+        email: "unlinked-guest@example.com",
+        status: "going",
+        token: `tok-unlinked-${Math.random()}`,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+
+    const preview = await previewPersonFilters(s, { filters: { attendedEventId: eventId } });
+    // Under-matches: only the linked attendee resolves to a recipient — the
+    // unlinked guest has no person row to send to.
+    expect(preview.sample.map((r) => r.email)).toEqual(["linked-attendee@example.com"]);
+    // ...but the drop is now VISIBLE instead of silent.
+    expect(preview.unlinkedGuests).toBe(1);
+    expect(preview.unlinkedGuestsIsLowerBound).toBe(false);
+  });
+
+  test("an archived unlinked RSVP is never counted (mirrors personAttendsMatch)", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const eventId = await seedEvent(s);
+    await run(s.t, (ctx) =>
+      ctx.db.insert("rsvps", {
+        eventId,
+        chapterId: s.chapterId,
+        name: "Archived Unlinked Guest",
+        email: "archived-unlinked@example.com",
+        status: "going",
+        token: `tok-archived-${Math.random()}`,
+        archivedAt: Date.now(),
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+
+    const preview = await previewPersonFilters(s, { filters: { attendedEventId: eventId } });
+    expect(preview.unlinkedGuests).toBe(0);
+  });
+});
+
+// ── verifiedEmailOnly checks the resolved send address (data-trust fix) ──
+
+describe("person_filters — verifiedEmailOnly checks the RESOLVED send address, not any address on file (data-trust fix)", () => {
+  test("a person whose resolved address is unverified is excluded, even though a DIFFERENT address of theirs is verified", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const personId = await seedPerson(s, { name: "Divergent", email: "resolved@example.com" });
+    // The RESOLVED address (person.email — the roster tier of
+    // resolveSendAddress's precedence, ahead of the personEmails "most
+    // recently verified" tier) has an UNVERIFIED personEmails row...
+    await run(s.t, (ctx) =>
+      ctx.db.insert("personEmails", {
+        personId,
+        email: "resolved@example.com",
+        source: "rsvp",
+        verified: false,
+        addedAt: Date.now(),
+      }),
+    );
+    // ...while a completely different address on file IS verified. The old
+    // buggy check (`hasAnyVerifiedEmail`) passed anyone with ANY verified
+    // row — even when it's not the address they'd actually be sent to.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("personEmails", {
+        personId,
+        email: "other-verified@example.com",
+        source: "manual",
+        verified: true,
+        addedAt: Date.now(),
+      }),
+    );
+
+    const preview = await previewPersonFilters(s, { filters: { verifiedEmailOnly: true } });
+    expect(preview.count).toBe(0);
+  });
+
+  test("handPickedUnverified counts only hand-picks whose resolved address fails verifiedEmailOnly", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const verifiedPick = await seedPerson(s, { name: "Verified Pick", email: "verified-pick@example.com" });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("personEmails", {
+        personId: verifiedPick,
+        email: "verified-pick@example.com",
+        source: "manual",
+        verified: true,
+        addedAt: Date.now(),
+      }),
+    );
+    const unverifiedPick = await seedPerson(s, {
+      name: "Unverified Pick",
+      email: "unverified-pick@example.com",
+    });
+
+    const preview = await previewPersonFilters(s, {
+      filters: { verifiedEmailOnly: true },
+      includePersonIds: [verifiedPick, unverifiedPick],
+    });
+    // Both hand-picks still get through — filter criteria never exclude a
+    // hand-pick.
+    expect(preview.sample.map((r) => r.email).sort()).toEqual([
+      "unverified-pick@example.com",
+      "verified-pick@example.com",
+    ]);
+    // But only the one whose resolved address would have failed the filter
+    // is counted.
+    expect(preview.handPickedUnverified).toBe(1);
+  });
+});
+
+// ── central scope + chapterId drops the central donor pool (data-trust fix) ─
+
+describe("person_filters — central scope + chapterId narrows away the central donor pool (data-trust fix)", () => {
+  test("a chapter filter on a central-scoped donor audience drops a matching central donor silently, but counts it", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    // An unlinked central donor that WOULD match donorStatus: active — but
+    // targetDonorScopes narrows to just s.chapterId the moment chapterId is
+    // set, even though scope is "central", so this pool is never scanned.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("donors", {
+        scope: "central",
+        kind: "individual",
+        name: "Central Donor",
+        email: "central-donor@example.com",
+        status: "active",
+        lifetimeCents: 0,
+        giftCount: 0,
+        createdAt: Date.now(),
+      }),
+    );
+
+    const preview = await previewPersonFilters(s, {
+      scope: "central",
+      filters: { chapterId: s.chapterId, donorStatus: "active" },
+    });
+    expect(preview.count).toBe(0);
+    expect(preview.centralDonorsExcludedByChapterFilter).toBe(1);
+  });
+
+  test("the counter stays 0 when scope/chapterId/donor-criteria don't all line up", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await run(s.t, (ctx) =>
+      ctx.db.insert("donors", {
+        scope: "central",
+        kind: "individual",
+        name: "Central Donor",
+        email: "central-donor-2@example.com",
+        status: "active",
+        lifetimeCents: 0,
+        giftCount: 0,
+        createdAt: Date.now(),
+      }),
+    );
+
+    // chapterId set, but no donor criteria at all.
+    const noDonorCriteria = await previewPersonFilters(s, {
+      scope: "central",
+      filters: { chapterId: s.chapterId },
+    });
+    expect(noDonorCriteria.centralDonorsExcludedByChapterFilter).toBe(0);
+
+    // donor criteria set, but no chapterId (org-wide central fan-out already
+    // includes the central pool via targetDonorScopes — nothing is dropped).
+    const noChapterId = await previewPersonFilters(s, {
+      scope: "central",
+      filters: { donorStatus: "active" },
+    });
+    expect(noChapterId.centralDonorsExcludedByChapterFilter).toBe(0);
+  });
+});
+
 // ── preview/send consistency ─────────────────────────────────────────────
 
 describe("person_filters — preview and send-time materialization agree", () => {
