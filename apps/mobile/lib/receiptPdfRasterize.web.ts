@@ -32,31 +32,29 @@ const MAX_PAGES = 10;
 // Scale 2 keeps small print legible for OCR without ballooning the PNG.
 const RENDER_SCALE = 2;
 
-// CRITICAL: this module must have ZERO top-level side effects. `pdfjs-dist` is
-// imported LAZILY (dynamic import, only when a user actually rasterizes a PDF),
-// and its worker is configured inside that same lazy load, wrapped in try/catch.
-// The previous version set `GlobalWorkerOptions.workerSrc = new URL(..., import.meta.url)`
-// at module scope; `import.meta.url` is undefined in the EAS web runtime, so
-// `new URL(spec, undefined)` threw AT IMPORT — and because this module is in the
-// startup bundle graph, that one throw blank-screened the entire web app
-// (publicworship.life/os). Everything that can throw now lives behind the lazy
-// load and degrades gracefully (a failed rasterize just uploads the original PDF).
+// CRITICAL: no `import.meta` may appear ANYWHERE in this file (not even inside
+// a function that never runs, not even in a try/catch). Metro emits the web
+// bundle as a classic script, so the token itself is a parse-time SyntaxError
+// that kills the ENTIRE entry bundle — this is what actually white-screened
+// publicworship.life/os (PRs #410/#415: the crash survived "lazy + caught"
+// because nothing ever executed). The babel `strip-import-meta` plugin
+// (babel.config.js) now scrubs the token from all bundled code as a backstop,
+// but this file must not reintroduce the pattern.
+//
+// Worker strategy: instead of `GlobalWorkerOptions.workerSrc` (which needs a
+// URL to a separate worker file — the thing that required `import.meta.url`),
+// we lazily import the worker MODULE and hang it on `globalThis.pdfjsWorker`.
+// pdfjs then takes its main-thread "fake worker" path (see PDFWorker
+// `#mainThreadWorkerMessageHandler` in pdf.mjs) and never touches workerSrc.
+// Main-thread rendering is fine here: receipts are capped at MAX_PAGES pages.
 let pdfjsPromise: Promise<typeof import("pdfjs-dist")> | null = null;
 function loadPdfjs(): Promise<typeof import("pdfjs-dist")> {
   if (!pdfjsPromise) {
-    pdfjsPromise = import("pdfjs-dist").then((pdfjs) => {
-      try {
-        // Point the worker at the bundled file (never a CDN — the egress proxy
-        // blocks external hosts). If URL resolution isn't available in this
-        // runtime, leave it unset and let pdfjs fall back rather than throw.
-        pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-          "pdfjs-dist/build/pdf.worker.min.mjs",
-          import.meta.url,
-        ).toString();
-      } catch {
-        // best-effort: rasterization may still work via pdfjs's fallback, and
-        // if it doesn't, `expandFiles` degrades to uploading the original PDF.
-      }
+    pdfjsPromise = Promise.all([
+      import("pdfjs-dist"),
+      import("pdfjs-dist/build/pdf.worker.min.mjs"),
+    ]).then(([pdfjs, worker]) => {
+      (globalThis as { pdfjsWorker?: unknown }).pdfjsWorker = worker;
       return pdfjs;
     });
   }
