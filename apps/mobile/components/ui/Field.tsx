@@ -1,5 +1,5 @@
-import { ReactNode, useState } from "react";
-import { View, Text, TextInput, Pressable, TextInputProps } from "react-native";
+import { ReactNode, useEffect, useState } from "react";
+import { View, Text, TextInput, Pressable, ScrollView, TextInputProps } from "react-native";
 import { Icon } from "./Icon";
 import { colors } from "../../lib/theme";
 
@@ -77,7 +77,9 @@ type Option = {
  * A lightweight select. RN-web has no native `<select>`, so this is a labelled
  * trigger that expands an inline option list. Class-driven hover/selected
  * states keep it web-safe. Options flagged `header` render as inert group
- * headings rather than pickable rows.
+ * headings rather than pickable rows. The option list scrolls internally
+ * past `max-h-64` instead of growing unbounded — long lists (every event in
+ * the org, etc.) used to push the rest of the form off-screen.
  */
 export function Select({
   label,
@@ -86,6 +88,7 @@ export function Select({
   options,
   onChange,
   placeholder = "Select…",
+  searchable = false,
 }: {
   label?: string;
   hint?: string;
@@ -93,10 +96,24 @@ export function Select({
   options: Option[];
   onChange: (value: string) => void;
   placeholder?: string;
+  /** Adds an inline filter box above the option list for long option sets —
+   *  opt-in so every other Select keeps its current look. */
+  searchable?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
+  const [filterText, setFilterText] = useState("");
   const current = options.find((o) => !o.header && o.value === value);
+
+  // Start each open with a clean filter rather than whatever was left typed
+  // from the last time this Select was opened.
+  useEffect(() => {
+    if (!open) setFilterText("");
+  }, [open]);
+
+  const q = filterText.trim().toLowerCase();
+  const visibleOptions =
+    searchable && q ? options.filter((o) => o.header || o.label.toLowerCase().includes(q)) : options;
 
   return (
     <Field label={label} hint={hint}>
@@ -115,25 +132,42 @@ export function Select({
       </Pressable>
       {open ? (
         <View className="mt-1 overflow-hidden rounded-md border border-border bg-raised shadow-raised">
-          {options.map((o) =>
-            o.header ? (
-              <View key={`h:${o.label}`} className="bg-sunken px-3 py-1.5">
-                <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-                  {o.label}
-                </Text>
-              </View>
-            ) : (
-              <SelectRow
-                key={o.value}
-                label={o.label}
-                selected={o.value === value}
-                onPress={() => {
-                  onChange(o.value);
-                  setOpen(false);
-                }}
+          {searchable ? (
+            <View className="border-b border-border px-3 py-2">
+              <TextInput
+                autoFocus
+                value={filterText}
+                onChangeText={setFilterText}
+                placeholder="Filter…"
+                placeholderTextColor={colors.faint}
+                className="text-sm text-ink"
               />
-            ),
-          )}
+            </View>
+          ) : null}
+          <ScrollView className="max-h-64" keyboardShouldPersistTaps="handled">
+            {visibleOptions.map((o) =>
+              o.header ? (
+                <View key={`h:${o.label}`} className="bg-sunken px-3 py-1.5">
+                  <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+                    {o.label}
+                  </Text>
+                </View>
+              ) : (
+                <SelectRow
+                  key={o.value}
+                  label={o.label}
+                  selected={o.value === value}
+                  onPress={() => {
+                    onChange(o.value);
+                    setOpen(false);
+                  }}
+                />
+              ),
+            )}
+            {searchable && q && visibleOptions.every((o) => o.header) ? (
+              <Text className="px-3 py-3 text-center text-xs text-muted">No matches.</Text>
+            ) : null}
+          </ScrollView>
         </View>
       ) : null}
     </Field>
