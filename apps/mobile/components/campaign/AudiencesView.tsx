@@ -30,7 +30,7 @@
  * its own inline `ErrorBoundary`, so one query failing shows a scoped notice
  * instead of taking down the whole form.
  */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, StyleSheet, Pressable } from "react-native";
 import { useQuery, useMutation } from "convex/react";
 import type { FunctionArgs, FunctionReturnType } from "convex/server";
@@ -52,6 +52,15 @@ import { ErrorBoundary } from "../ErrorBoundary";
 import { colors, spacing } from "../../lib/theme";
 import { useActionRunner } from "../../lib/useActionToast";
 import { confirmAction, describeAudience, pluralCount } from "./helpers";
+import {
+  centsToDollarsStr,
+  dollarsStrToCents,
+  flushPendingNumberFields,
+  intStrToNumber,
+  intToStr,
+  resolveNumberField,
+  type PendingNumberField,
+} from "./audienceFilterFields";
 
 /** Debounce for both the numeric filter TextFields and the hand-pick search
  *  box before they drive their query — matches the house pattern in
@@ -170,6 +179,34 @@ function AudienceForm({
   const [excludeNames, setExcludeNames] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
 
+  // Every mounted numeric filter field mirrors its raw typed text in here so
+  // `handleSave` can flush exactly what's on screen — see
+  // `audienceFilterFields.ts`'s doc on why Save must be WYSIWYG rather than
+  // reading `filters`, which only has whatever's already debounce-committed.
+  const rawFieldsRef = useRef<Map<string, PendingNumberField>>(new Map());
+  const [dirtyKeys, setDirtyKeys] = useState<Set<string>>(new Set());
+  const [invalidKeys, setInvalidKeys] = useState<Set<string>>(new Set());
+  const setFieldStatus = useCallback((key: string, dirty: boolean, invalid: boolean) => {
+    setDirtyKeys((prev) => {
+      if (prev.has(key) === dirty) return prev;
+      const next = new Set(prev);
+      if (dirty) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+    setInvalidKeys((prev) => {
+      if (prev.has(key) === invalid) return prev;
+      const next = new Set(prev);
+      if (invalid) next.add(key);
+      else next.delete(key);
+      return next;
+    });
+  }, []);
+  const numberFieldController: NumberFieldController = useMemo(
+    () => ({ rawFieldsRef, setFieldStatus }),
+    [setFieldStatus],
+  );
+
   // New audiences are ALWAYS person_filters (the source dropdown is gone —
   // see the file doc); an existing legacy-sourced row stays read-only.
   const source = initial?.source ?? "person_filters";
@@ -196,6 +233,18 @@ function AudienceForm({
   async function handleSave() {
     const trimmed = name.trim();
     if (!trimmed) return;
+
+    // Flush every mounted numeric field's RAW text synchronously — Save must
+    // persist what's on screen, not the last value each field's own 400ms
+    // debounce happened to have committed (see `audienceFilterFields.ts`).
+    // A still-malformed field blocks the whole save; its "Enter a number."
+    // hint is already visible (computed live, not gated behind the
+    // debounce) so there's nothing extra to surface here.
+    const flushed = flushPendingNumberFields<PersonFilters>([...rawFieldsRef.current.values()]);
+    if (!flushed.ok) return;
+    const finalFilters: PersonFilters = { ...filters, ...flushed.patch };
+    if (finalFilters !== filters) setFilters(finalFilters);
+
     setSaving(true);
     try {
       // `source` can only be set at creation — `updateAudience` has no source
@@ -207,7 +256,7 @@ function AudienceForm({
               update({
                 audienceId: initial._id,
                 name: trimmed,
-                filters,
+                filters: finalFilters,
                 includePersonIds: includeIds,
                 excludePersonIds: excludeIds,
               }),
@@ -219,7 +268,7 @@ function AudienceForm({
                 scope: CENTRAL_SCOPE,
                 name: trimmed,
                 source: "person_filters",
-                filters,
+                filters: finalFilters,
                 includePersonIds: includeIds.length ? includeIds : undefined,
                 excludePersonIds: excludeIds.length ? excludeIds : undefined,
               }),
@@ -264,13 +313,13 @@ function AudienceForm({
       </Field>
 
       <ErrorBoundary inline>
-        <LiveRecipientsSummary args={previewArgs} />
+        <LiveRecipientsSummary args={previewArgs} pendingEdit={dirtyKeys.size > 0} />
       </ErrorBoundary>
 
       {isPersonFilters ? (
         <>
           <ErrorBoundary inline>
-            <FilterChipsBuilder filters={filters} onChange={setFilters} />
+            <FilterChipsBuilder filters={filters} onChange={setFilters} controller={numberFieldController} />
           </ErrorBoundary>
           <ErrorBoundary inline>
             <HandPickSection
@@ -305,7 +354,7 @@ function AudienceForm({
             title={initial ? "Save" : "Create audience"}
             onPress={handleSave}
             loading={saving}
-            disabled={!name.trim()}
+            disabled={!name.trim() || invalidKeys.size > 0}
           />
           <Button title="Cancel" variant="secondary" onPress={onDone} />
         </View>
@@ -313,6 +362,11 @@ function AudienceForm({
           <Button title="Archive" variant="danger" onPress={handleArchive} />
         ) : null}
       </View>
+      {invalidKeys.size > 0 ? (
+        <Text className="mt-2 text-xs text-danger">
+          Fix the highlighted field{invalidKeys.size === 1 ? "" : "s"} above before saving.
+        </Text>
+      ) : null}
     </Card>
   );
 }
@@ -346,75 +400,87 @@ function groupHasData(filters: PersonFilters, key: FilterGroupKey): boolean {
   return GROUP_FIELDS[key].some((f) => filters[f] != null);
 }
 
-function centsToDollarsStr(cents?: number | null): string {
-  if (cents == null) return "";
-  return String(Math.round(cents) / 100);
-}
-
-function dollarsStrToCents(str: string): number | undefined {
-  const trimmed = str.trim();
-  if (!trimmed) return undefined;
-  const n = Number(trimmed);
-  if (!Number.isFinite(n)) return undefined;
-  return Math.round(n * 100);
-}
-
-function intToStr(n?: number | null): string {
-  return n != null ? String(n) : "";
-}
-
-function intStrToNumber(str: string): number | undefined {
-  const n = Number(str.trim());
-  return Number.isFinite(n) ? Math.round(n) : undefined;
-}
+/**
+ * `AudienceForm` owns one of these: a `rawFieldsRef` every mounted
+ * `DebouncedNumberField` mirrors its raw typed text into on every keystroke
+ * (so `handleSave` can flush the literal on-screen text synchronously — see
+ * `audienceFilterFields.ts`'s doc on why Save must be WYSIWYG), plus a
+ * `setFieldStatus` callback each field uses to report whether it currently
+ * has an uncommitted edit and/or invalid text, so the form can show a
+ * pending cue on the sticky summary and disable Save while anything's
+ * malformed.
+ */
+type NumberFieldController = {
+  rawFieldsRef: React.RefObject<Map<string, PendingNumberField>>;
+  setFieldStatus: (key: string, dirty: boolean, invalid: boolean) => void;
+};
 
 /**
- * A numeric TextField that only lands its value in `filters` after
- * `FILTER_DEBOUNCE_MS` of no typing AND only once the entry parses cleanly —
- * a stray non-numeric keystroke used to silently clear the whole criterion.
- * Keeps the raw string in local state so a mid-typo digit never gets erased
- * out from under the person typing it.
+ * A numeric TextField that keeps the raw typed string in local state and
+ * only lands a PARSED value into `filters` after `FILTER_DEBOUNCE_MS` of no
+ * typing — a stray non-numeric keystroke shows "Enter a number." (computed
+ * live off the raw text, not gated behind the debounce) instead of silently
+ * clearing the whole criterion. Also mirrors its raw text into the shared
+ * `controller.rawFieldsRef` so `handleSave` can flush exactly what's on
+ * screen even if the debounce hasn't fired yet — see the file doc.
  */
 function DebouncedNumberField({
+  fieldKey,
   label,
   placeholder,
   committedValue,
   format,
   parse,
   onCommit,
+  controller,
 }: {
+  fieldKey: string;
   label: string;
   placeholder?: string;
   committedValue: number | undefined;
   format: (n: number | undefined) => string;
   parse: (raw: string) => number | undefined;
   onCommit: (n: number | undefined) => void;
+  controller: NumberFieldController;
 }) {
   const [raw, setRaw] = useState(() => format(committedValue));
-  const [invalid, setInvalid] = useState(false);
 
   // The committed value can also change from OUTSIDE this field (its whole
   // group gets collapsed/cleared) — stay in sync when that happens.
   useEffect(() => {
     setRaw(format(committedValue));
-    setInvalid(false);
   }, [committedValue]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const resolution = resolveNumberField(raw, parse);
+  const isDirty = resolution.invalid || resolution.value !== committedValue;
+
+  // Mirror the CURRENT raw text into the shared ref map on every keystroke so
+  // a flush-on-save can read it synchronously (see the file doc).
+  useEffect(() => {
+    controller.rawFieldsRef.current.set(fieldKey, { key: fieldKey, raw, parse });
+    return () => {
+      controller.rawFieldsRef.current.delete(fieldKey);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fieldKey, raw, parse]);
+
+  // Report dirty/invalid status up only when it actually flips, so the
+  // sticky summary's pending cue and Save's disabled state stay accurate
+  // without re-rendering the whole form on every keystroke that doesn't
+  // change either.
+  useEffect(() => {
+    controller.setFieldStatus(fieldKey, isDirty, resolution.invalid);
+    return () => {
+      controller.setFieldStatus(fieldKey, false, false);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fieldKey, isDirty, resolution.invalid]);
 
   useEffect(() => {
     const timer = setTimeout(() => {
-      const trimmed = raw.trim();
-      if (!trimmed) {
-        setInvalid(false);
-        if (committedValue !== undefined) onCommit(undefined);
-        return;
+      if (!resolution.invalid && resolution.value !== committedValue) {
+        onCommit(resolution.value);
       }
-      const parsed = parse(trimmed);
-      if (parsed === undefined) {
-        setInvalid(true);
-        return;
-      }
-      setInvalid(false);
-      if (parsed !== committedValue) onCommit(parsed);
     }, FILTER_DEBOUNCE_MS);
     return () => clearTimeout(timer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -427,7 +493,7 @@ function DebouncedNumberField({
       keyboardType="numeric"
       value={raw}
       onChangeText={setRaw}
-      hint={invalid ? "Enter a number." : undefined}
+      hint={resolution.invalid ? "Enter a number." : undefined}
     />
   );
 }
@@ -476,9 +542,11 @@ const TYPE_OPTIONS = [
 function FilterChipsBuilder({
   filters,
   onChange,
+  controller,
 }: {
   filters: PersonFilters;
   onChange: (next: PersonFilters) => void;
+  controller: NumberFieldController;
 }) {
   const [expanded, setExpanded] = useState<Set<FilterGroupKey>>(
     () => new Set((Object.keys(GROUP_FIELDS) as FilterGroupKey[]).filter((k) => groupHasData(filters, k))),
@@ -533,32 +601,38 @@ function FilterChipsBuilder({
           <View className="flex-row gap-2">
             <View className="flex-1">
               <DebouncedNumberField
+                fieldKey="givingLifetimeMinCents"
                 label="Lifetime giving ≥"
                 placeholder="$0"
                 committedValue={filters.givingLifetimeMinCents}
                 format={centsToDollarsStr}
                 parse={dollarsStrToCents}
                 onCommit={(n) => patch({ givingLifetimeMinCents: n })}
+                controller={controller}
               />
             </View>
             <View className="flex-1">
               <DebouncedNumberField
+                fieldKey="givingLifetimeMaxCents"
                 label="Lifetime giving ≤"
                 placeholder="No max"
                 committedValue={filters.givingLifetimeMaxCents}
                 format={centsToDollarsStr}
                 parse={dollarsStrToCents}
                 onCommit={(n) => patch({ givingLifetimeMaxCents: n })}
+                controller={controller}
               />
             </View>
           </View>
           <DebouncedNumberField
+            fieldKey="giftCountMin"
             label="Gift count ≥"
             placeholder="0"
             committedValue={filters.giftCountMin}
             format={intToStr}
             parse={intStrToNumber}
             onCommit={(n) => patch({ giftCountMin: n })}
+            controller={controller}
           />
           <Select
             label="Donor status"
@@ -600,12 +674,14 @@ function FilterChipsBuilder({
             />
           </ErrorBoundary>
           <DebouncedNumberField
+            fieldKey="attendedWithinDays"
             label="Attended within N days"
             placeholder="No limit"
             committedValue={filters.attendedWithinDays}
             format={intToStr}
             parse={intStrToNumber}
             onCommit={(n) => patch({ attendedWithinDays: n })}
+            controller={controller}
           />
           <Select
             label="RSVP status"
@@ -877,8 +953,20 @@ function HandPickSection({
  * count has loaded once, this NEVER blanks back to "Calculating…" on a
  * refetch — it keeps showing the last known count with a small "Updating…"
  * indicator instead, so the number on screen is always meaningful.
+ *
+ * `pendingEdit` (true while any numeric filter field has an uncommitted
+ * keystroke sitting in it, mid-debounce) ALSO drives the "Updating…" cue —
+ * without it, the count would read as settled during the exact window where
+ * it's about to change once the debounce fires (or WOULD change, if the
+ * field weren't flushed straight into Save first — see `handleSave`).
  */
-function LiveRecipientsSummary({ args }: { args: PreviewArgs }) {
+function LiveRecipientsSummary({
+  args,
+  pendingEdit,
+}: {
+  args: PreviewArgs;
+  pendingEdit: boolean;
+}) {
   const preview = useQuery(api.audiences.previewAudience, args) as PreviewResult | undefined;
   const [lastKnown, setLastKnown] = useState<PreviewResult | null>(null);
   useEffect(() => {
@@ -886,7 +974,7 @@ function LiveRecipientsSummary({ args }: { args: PreviewArgs }) {
   }, [preview]);
 
   const shown = preview ?? lastKnown;
-  const isUpdating = preview === undefined && lastKnown !== null;
+  const isUpdating = pendingEdit || (preview === undefined && lastKnown !== null);
 
   return (
     <View className="mb-3 flex-row items-center gap-2 rounded-md border border-border bg-sunken px-3 py-2">
