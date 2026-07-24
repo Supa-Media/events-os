@@ -7,6 +7,13 @@
  * and closes on success. Same hand-rolled modal shape as its parent (nested —
  * RN supports stacked `Modal`s).
  *
+ * `centralScope` (the Reconcile grid's Central toggle) switches the search to
+ * the CENTRAL-owned receipt library instead — previously this picker always
+ * searched the caller's own chapter regardless of scope, so a central
+ * transaction's receipt was invisible here even when it existed (the bug
+ * this prop fixes; `linkReceipt` independently re-verifies scope server-side
+ * from the transaction itself, never trusting this client flag).
+ *
  * The search box filters the worklist client-side by merchant name and amount
  * (the query itself has no text-search term); the list is read at the max page
  * size so a search reaches the whole unlinked backlog, not just the first page.
@@ -25,14 +32,23 @@ import { receiptMatchesSearch } from "./receiptSearch";
 
 export function ReceiptAttachPicker({
   transactionId,
+  centralScope = false,
   onClose,
 }: {
   transactionId: Id<"transactions">;
+  /** Search the CENTRAL-owned receipt library instead of the caller's own
+   *  chapter — must match the scope of `transactionId`'s own transaction, or
+   *  `linkReceipt` rejects the pick server-side (see its own doc comment). */
+  centralScope?: boolean;
   onClose: () => void;
 }) {
   // Read at the max page size so the client-side search below can reach the
   // whole unlinked backlog, not just the default first page.
-  const unlinked = useQuery(api.receipts.listReceipts, { filter: "unlinked", limit: 500 });
+  const unlinked = useQuery(api.receipts.listReceipts, {
+    filter: "unlinked",
+    limit: 500,
+    ...(centralScope ? { scope: "central" as const } : {}),
+  });
   const linkReceipt = useMutation(api.receipts.linkReceipt);
   const { run, toast, dismiss } = useActionRunner();
   const [linkingId, setLinkingId] = useState<Id<"receipts"> | null>(null);
@@ -85,7 +101,9 @@ export function ReceiptAttachPicker({
               <Text className="py-6 text-center text-sm text-muted">Loading…</Text>
             ) : unlinked.length === 0 ? (
               <Text className="py-6 text-center text-sm text-muted">
-                No unattached receipts in your library.
+                {centralScope
+                  ? "No unattached receipts in the central library."
+                  : "No unattached receipts in your library."}
               </Text>
             ) : filtered.length === 0 ? (
               <Text className="py-6 text-center text-sm text-muted">

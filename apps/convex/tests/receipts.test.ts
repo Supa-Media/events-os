@@ -9,6 +9,7 @@ import {
   findDuplicateReceiptBySha256,
 } from "../lib/receiptLinks";
 import { transactionMatchesSearch } from "../receipts";
+import { CENTRAL } from "@events-os/shared";
 
 /**
  * The receipt CRM surface (`receipts.ts`): the query/mutation API the UI
@@ -967,6 +968,110 @@ describe("linkReceipt / unlinkReceipt", () => {
 
     await expect(
       s.as.mutation(api.receipts.linkReceipt, { receiptId, transactionId: otherTxn }),
+    ).rejects.toThrow(ConvexError);
+  });
+
+  // Founder feedback (2026-07-24): while viewing the Reconcile grid's Central
+  // toggle, the "attach existing receipt" picker couldn't find (or link) a
+  // receipt sitting right there in the CENTRAL-owned bucket — `listReceipts`/
+  // `linkReceipt` were hard-scoped to the caller's own chapter regardless of
+  // what the page was viewing. These pin the fix: central reach can link a
+  // CENTRAL txn to a CENTRAL receipt, and a caller WITHOUT central reach
+  // can't reach a central txn just because it's also their home chapter.
+  test("central reach links a CENTRAL-owned receipt to a CENTRAL-owned transaction", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const person = await seedPerson(s);
+    await grantRole(s, person, "bookkeeper");
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeRoles", {
+        chapterId: s.chapterId,
+        personId: person,
+        role: "bookkeeper",
+        scope: "central",
+        createdAt: Date.now(),
+      }),
+    );
+    const centralTxn = await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: CENTRAL,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 5000,
+        postedAt: Date.now(),
+        merchantName: "Central Vendor",
+        status: "categorized",
+        createdAt: Date.now(),
+      }),
+    );
+    const storageId = await storeBlobWithContent(s, `central-receipt-${Math.random()}`);
+    const centralReceiptId = await run(s.t, (ctx) =>
+      createReceipt(ctx, { chapterId: CENTRAL, storageId, source: "upload" }),
+    );
+
+    const res = await s.as.mutation(api.receipts.linkReceipt, {
+      receiptId: centralReceiptId,
+      transactionId: centralTxn,
+    });
+    expect(res).toEqual({ linked: true, reconciled: true });
+  });
+
+  test("a chapter-only bookkeeper (no central reach) can't link a CENTRAL-owned transaction", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s); // chapter-scoped grant only — no central reach
+    const centralTxn = await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: CENTRAL,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 5000,
+        postedAt: Date.now(),
+        merchantName: "Central Vendor",
+        status: "categorized",
+        createdAt: Date.now(),
+      }),
+    );
+    const receiptId = await newUploadReceipt(s); // chapter-scoped receipt
+
+    await expect(
+      s.as.mutation(api.receipts.linkReceipt, { receiptId, transactionId: centralTxn }),
+    ).rejects.toThrow(ConvexError);
+  });
+});
+
+// ── listReceipts scope:"central" ──────────────────────────────────────────────
+describe("listReceipts scope: central", () => {
+  test("a central-reach caller sees CENTRAL-owned receipts, not the chapter's own", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const person = await seedPerson(s);
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeRoles", {
+        chapterId: s.chapterId,
+        personId: person,
+        role: "bookkeeper",
+        scope: "central",
+        createdAt: Date.now(),
+      }),
+    );
+    await newUploadReceipt(s); // chapter-scoped — must NOT show up under scope:"central"
+    const centralStorageId = await storeBlobWithContent(s, `central-${Math.random()}`);
+    const centralReceiptId = await run(s.t, (ctx) =>
+      createReceipt(ctx, { chapterId: CENTRAL, storageId: centralStorageId, source: "upload" }),
+    );
+
+    const rows = await s.as.query(api.receipts.listReceipts, { scope: "central" });
+    expect(rows.map((r) => r._id)).toEqual([centralReceiptId]);
+  });
+
+  test("rejects scope:\"central\" for a caller without central reach", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s); // chapter-scoped only
+
+    await expect(
+      s.as.query(api.receipts.listReceipts, { scope: "central" }),
     ).rejects.toThrow(ConvexError);
   });
 });
