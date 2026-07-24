@@ -1,6 +1,9 @@
 /**
  * The receipt CRM surface — the query/mutation API the receipts UI consumes,
- * plus mass upload (the owner's backfill workflow) and duplicate detection.
+ * plus mass upload (the owner's backfill workflow), duplicate detection, and
+ * archiving (`archiveReceipt`/`unarchiveReceipt` — the founder's general
+ * "hide nonsense receipts, with a way back" ask; `markAsDuplicate` now
+ * archives too, so confirming a duplicate is the same act as resolving it).
  *
  * Builds entirely on the receipts foundation that already merged:
  *  - `receipts` documents + `receiptLinks` many-to-many links, written ONLY
@@ -186,6 +189,10 @@ const receiptSummary = v.object({
   ocrError: v.union(v.string(), v.null()),
   linkCount: v.number(),
   duplicateOfReceiptId: v.union(v.id("receipts"), v.null()),
+  // Founder feedback PR: whether this receipt is archived (a nonsense
+  // receipt hidden by hand, OR a confirmed duplicate — see
+  // `markAsDuplicate`'s doc). `false` for every pre-existing row.
+  archived: v.boolean(),
   createdAt: v.number(),
 });
 async function toReceiptSummary(ctx: QueryCtx, r: Doc<"receipts">) {
@@ -206,6 +213,7 @@ async function toReceiptSummary(ctx: QueryCtx, r: Doc<"receipts">) {
     ocrError: r.ocrError ?? null,
     linkCount: r.linkCount,
     duplicateOfReceiptId: r.duplicateOfReceiptId ?? null,
+    archived: r.archived === true,
     createdAt: r.createdAt,
   };
 }
@@ -224,6 +232,16 @@ async function toReceiptSummary(ctx: QueryCtx, r: Doc<"receipts">) {
  * — but STILL counts toward the collision group for everyone else: an
  * undismissed sibling sharing the same amount+date keeps flagging. Dismissal
  * is a per-receipt human assertion, not a group-wide mute.
+ *
+ * FOUNDER BUG FIX (2026-07-24): a row that's ARCHIVED or already a confirmed/
+ * derived duplicate (`duplicateOfReceiptId` set) is dropped BEFORE grouping —
+ * not just from the output, unlike `duplicateDismissed` above. Previously
+ * only `duplicateDismissed` was excluded, so once B was marked a duplicate of
+ * A, {A, B} still collided and kept flagging A's "possible duplicate" warning
+ * even though B was already resolved and hidden — exactly the owner's
+ * complaint: "when you mark something as duplicate the original still shows
+ * the duplicate warning." A resolved sibling shouldn't count toward anyone
+ * else's collision group either.
  */
 async function computeSoftDuplicates(
   ctx: QueryCtx,
@@ -237,6 +255,7 @@ async function computeSoftDuplicates(
   const byKey = new Map<string, Doc<"receipts">[]>();
   for (const r of scan) {
     if (r.amountCents == null || r.receiptDate == null) continue;
+    if (r.archived === true || r.duplicateOfReceiptId != null) continue;
     const key = `${r.amountCents}:${r.receiptDate}`;
     const arr = byKey.get(key);
     if (arr) arr.push(r);
@@ -260,6 +279,11 @@ async function computeSoftDuplicates(
  * its own dedicated `duplicateOf`/"jump to original" callout — repeating it
  * here would be noise, not a second signal). Bounded to
  * `MAX_DUPLICATE_MATCHES`, newest first.
+ *
+ * Also excludes any candidate that's already ARCHIVED or already a confirmed/
+ * derived duplicate of something else (same discipline as
+ * `computeSoftDuplicates`) — a resolved receipt shouldn't be offered back up
+ * as a live "This is a duplicate" target.
  */
 async function findSoftDuplicateMatches(
   ctx: QueryCtx,
@@ -278,6 +302,8 @@ async function findSoftDuplicateMatches(
         r._id !== receipt._id &&
         r.amountCents === receipt.amountCents &&
         r.receiptDate === receipt.receiptDate &&
+        r.archived !== true &&
+        r.duplicateOfReceiptId == null &&
         !(receipt.fileSha256 && r.fileSha256 === receipt.fileSha256),
     )
     .slice(0, MAX_DUPLICATE_MATCHES);
@@ -307,12 +333,14 @@ async function findDuplicatesOfReceipt(
 /** `"duplicates"` is the ONLY filter that surfaces a receipt with
  *  `duplicateOfReceiptId` set — every other filter EXCLUDES them by default
  *  (see the handler doc: hiding is never deleting, and this filter is how a
- *  confirmed/exact duplicate stays reachable). */
+ *  confirmed/exact duplicate stays reachable). `"archived"` is the mirror for
+ *  `archived` — the founder's general "archive the nonsense ones" ask. */
 const listFilterValidator = v.union(
   v.literal("all"),
   v.literal("unlinked"),
   v.literal("linked"),
   v.literal("duplicates"),
+  v.literal("archived"),
 );
 
 const listReceiptRow = v.object({
@@ -337,6 +365,14 @@ const listReceiptRow = v.object({
  * There's no other way to "merge" a duplicate today (owner ask), so hiding it
  * from the everyday library view — while keeping it one filter-tap away — is
  * the whole fix.
+ *
+ * ARCHIVE HIDING (founder ask, 2026-07-24): an `archived` receipt (a hand-
+ * archived nonsense receipt, OR a confirmed duplicate — `markAsDuplicate` now
+ * archives too) is likewise EXCLUDED from `"all"`/`"unlinked"`/`"linked"`, but
+ * `"duplicates"` deliberately does NOT exclude it — a confirmed duplicate
+ * should keep showing up there whether or not it's also archived, so "jump to
+ * the primary" stays reachable from one place. `"archived"` is the dedicated
+ * filter for browsing (and un-archiving) everything hidden this way.
  */
 export const listReceipts = query({
   args: {
@@ -361,7 +397,7 @@ export const listReceipts = query({
         )
         .order("desc")
         .take(limit);
-      rows = page.filter((r) => r.duplicateOfReceiptId == null);
+      rows = page.filter((r) => r.duplicateOfReceiptId == null && r.archived !== true);
     } else if (filter === "duplicates") {
       const page = await ctx.db
         .query("receipts")
@@ -369,13 +405,22 @@ export const listReceipts = query({
         .order("desc")
         .take(limit);
       rows = page.filter((r) => r.duplicateOfReceiptId != null);
+    } else if (filter === "archived") {
+      const page = await ctx.db
+        .query("receipts")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+        .order("desc")
+        .take(limit);
+      rows = page.filter((r) => r.archived === true);
     } else {
       const page = await ctx.db
         .query("receipts")
         .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
         .order("desc")
         .take(limit);
-      const undupedPage = page.filter((r) => r.duplicateOfReceiptId == null);
+      const undupedPage = page.filter(
+        (r) => r.duplicateOfReceiptId == null && r.archived !== true,
+      );
       rows = filter === "linked" ? undupedPage.filter((r) => r.linkCount > 0) : undupedPage;
     }
 
@@ -423,6 +468,10 @@ const receiptDetail = v.object({
   // whether `unmarkDuplicate` is even offered (see that mutation's doc).
   duplicateConfirmedByPersonId: v.union(v.id("people"), v.null()),
   duplicateConfirmedAt: v.union(v.number(), v.null()),
+  // `archived` itself rides along on `receiptSummary.fields` above — these
+  // are the "who/when" stamps, so the UI can render "Archived by X on Y".
+  archivedAt: v.union(v.number(), v.null()),
+  archivedByPersonId: v.union(v.id("people"), v.null()),
   softDuplicate: v.boolean(),
   linkedTransactions: v.array(txnRef),
   candidateTransactions: v.array(txnRef),
@@ -533,6 +582,8 @@ export const getReceipt = query({
       correctedAt: r.correctedAt ?? null,
       duplicateConfirmedByPersonId: r.duplicateConfirmedByPersonId ?? null,
       duplicateConfirmedAt: r.duplicateConfirmedAt ?? null,
+      archivedAt: r.archivedAt ?? null,
+      archivedByPersonId: r.archivedByPersonId ?? null,
       softDuplicate,
       linkedTransactions,
       candidateTransactions,
@@ -592,6 +643,14 @@ export const dismissDuplicateFlag = mutation({
  * automatic side effect of a duplicate confirmation. This mutation is a
  * review/visibility action only; it never edits money state.
  *
+ * FOUNDER FIX (2026-07-24): also ARCHIVES `receiptId` (the same three fields
+ * `archiveReceipt` sets) — "mark duplicate" and "archive the known duplicate"
+ * are now the same act, per the founder's ask that confirming a duplicate
+ * should be the way you resolve it. `listReceipts`'s `"archived"` filter and
+ * its `"duplicates"` filter both still reach the row (archiving doesn't
+ * change `duplicates` visibility — see that query's doc); `unmarkDuplicate`
+ * undoes both halves together.
+ *
  * Rejects marking a receipt a duplicate of itself. Bookkeeper+, both
  * receipts must be in the caller's own chapter.
  */
@@ -627,11 +686,15 @@ export const markAsDuplicate = mutation({
       });
     }
 
+    const now = Date.now();
     await ctx.db.patch(args.receiptId, {
       duplicateOfReceiptId: args.primaryReceiptId,
       duplicateConfirmedByPersonId: access.personId ?? undefined,
-      duplicateConfirmedAt: Date.now(),
-      updatedAt: Date.now(),
+      duplicateConfirmedAt: now,
+      archived: true,
+      archivedAt: now,
+      archivedByPersonId: access.personId ?? undefined,
+      updatedAt: now,
     });
     return null;
   },
@@ -645,6 +708,10 @@ export const markAsDuplicate = mutation({
  * `duplicateConfirmed*` stamp — is refused, because the bytes really are
  * identical; that isn't a human call to walk back here. A receipt that isn't
  * flagged a duplicate at all is a no-op. Bookkeeper+, chapter-only.
+ *
+ * FOUNDER FIX (2026-07-24): also clears the archive fields `markAsDuplicate`
+ * set alongside the duplicate stamps — one coherent undo, symmetric with that
+ * mutation now doing both halves together.
  */
 export const unmarkDuplicate = mutation({
   args: { receiptId: v.id("receipts") },
@@ -673,6 +740,91 @@ export const unmarkDuplicate = mutation({
       duplicateOfReceiptId: undefined,
       duplicateConfirmedByPersonId: undefined,
       duplicateConfirmedAt: undefined,
+      archived: undefined,
+      archivedAt: undefined,
+      archivedByPersonId: undefined,
+      updatedAt: Date.now(),
+    });
+    return null;
+  },
+});
+
+// ── archiveReceipt / unarchiveReceipt ─────────────────────────────────────────
+/**
+ * Archive a receipt — the founder's general "nonsense receipts" ask: a blank
+ * photo, a stray screenshot, anything worth clearing out of the everyday
+ * library view that ISN'T (necessarily) a duplicate. Same philosophy as
+ * `duplicateOfReceiptId`: this HIDES the row from `listReceipts`'s default
+ * filters (see that query's doc), it never DELETES it — the row, its stored
+ * file, and any existing `receiptLinks` all survive untouched. A linked-and-
+ * archived receipt stays linked; unlinking it is a separate, explicit choice
+ * (`unlinkReceipt`), never an automatic side effect of archiving. Bookkeeper+,
+ * chapter-only.
+ */
+export const archiveReceipt = mutation({
+  args: { receiptId: v.id("receipts") },
+  returns: v.null(),
+  handler: async (ctx, { receiptId }) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const access = await requireFinanceRole(ctx, chapterId, "bookkeeper");
+
+    const receipt = await ctx.db.get(receiptId);
+    if (!receipt || receipt.chapterId !== chapterId) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Receipt not found in your chapter.",
+      });
+    }
+
+    await ctx.db.patch(receiptId, {
+      archived: true,
+      archivedAt: Date.now(),
+      archivedByPersonId: access.personId ?? undefined,
+      updatedAt: Date.now(),
+    });
+    return null;
+  },
+});
+
+/**
+ * Restore an archived receipt back into the everyday library view. If the
+ * row was a HUMAN-confirmed duplicate (`duplicateConfirmedByPersonId` set —
+ * i.e. it got here via `markAsDuplicate`, not a direct `archiveReceipt`
+ * call), this ALSO clears the three duplicate fields — one coherent undo,
+ * matching `unmarkDuplicate`'s own archive-clearing symmetry, so a bookkeeper
+ * never ends up with a receipt that's back in the library but still silently
+ * pointing at a "primary" it no longer resembles being hidden for. A DERIVED
+ * sha256 pointer is untouched either way — the bytes are still identical,
+ * that was never a human assertion to retract (same rule `unmarkDuplicate`
+ * enforces). Bookkeeper+, chapter-only.
+ */
+export const unarchiveReceipt = mutation({
+  args: { receiptId: v.id("receipts") },
+  returns: v.null(),
+  handler: async (ctx, { receiptId }) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireFinanceRole(ctx, chapterId, "bookkeeper");
+
+    const receipt = await ctx.db.get(receiptId);
+    if (!receipt || receipt.chapterId !== chapterId) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Receipt not found in your chapter.",
+      });
+    }
+
+    const wasHumanConfirmedDuplicate = receipt.duplicateConfirmedByPersonId != null;
+    await ctx.db.patch(receiptId, {
+      archived: undefined,
+      archivedAt: undefined,
+      archivedByPersonId: undefined,
+      ...(wasHumanConfirmedDuplicate
+        ? {
+            duplicateOfReceiptId: undefined,
+            duplicateConfirmedByPersonId: undefined,
+            duplicateConfirmedAt: undefined,
+          }
+        : {}),
       updatedAt: Date.now(),
     });
     return null;
@@ -815,10 +967,12 @@ export const listInboundQueue = query({
       // library's default views (`listReceipts`'s doc), and it must not keep
       // demanding attention in the inbox either. Exclude it from the per-email
       // `receipts[]` list here; it's still reachable via the library's
-      // "Duplicates" filter, never deleted.
+      // "Duplicates" filter, never deleted. Same treatment for a hand-
+      // archived receipt (founder ask) — an archived nonsense receipt is
+      // resolved too, nothing left for the inbox to chase.
       const receipts = [];
       for (const rd of receiptDocs) {
-        if (rd.duplicateOfReceiptId != null) continue;
+        if (rd.duplicateOfReceiptId != null || rd.archived === true) continue;
         receipts.push({
           _id: rd._id,
           url: await ctx.storage.getUrl(rd.storageId),
@@ -829,12 +983,13 @@ export const listInboundQueue = query({
           duplicateOfReceiptId: rd.duplicateOfReceiptId ?? null,
         });
       }
-      // If EVERY receipt this email produced turned out to be a duplicate,
-      // the row itself is resolved — there's nothing left here for a human to
-      // act on, so drop the row entirely rather than leaving an empty-handed
-      // "needs a human" card in the queue. A row that never had any extracted
-      // receipts at all (an OCR/no-file failure) is unaffected — it still
-      // needs a human, so it's never dropped by this rule.
+      // If EVERY receipt this email produced turned out to be a duplicate (or
+      // got archived), the row itself is resolved — there's nothing left here
+      // for a human to act on, so drop the row entirely rather than leaving
+      // an empty-handed "needs a human" card in the queue. A row that never
+      // had any extracted receipts at all (an OCR/no-file failure) is
+      // unaffected — it still needs a human, so it's never dropped by this
+      // rule.
       if (receiptDocs.length > 0 && receipts.length === 0) continue;
       out.push({
         _id: r._id,
@@ -982,15 +1137,35 @@ export function transactionMatchesSearch(
 }
 
 /**
- * Free-text search over the chapter's UNRECEIPTED spend transactions — the
- * "search up a transaction to match this receipt to" box in the receipt panel,
- * for when the exact-amount `suggestMatches` list doesn't surface the right
- * charge (a mis-read amount, a receipt with none). Same scan the matcher uses
- * (`by_chapter_and_postedAt` newest-first, `isSpend`, sandbox-filtered,
- * `receiptStorageId == null`), filtered by `transactionMatchesSearch` instead
- * of an exact cent. Returns the same `candidateValidator` shape as
- * `suggestMatches` so the panel renders both lists identically (`merchantOverlap`
- * / `isOwnCharge` aren't meaningful for a free search — always false).
+ * Free-text search over the chapter's spend transactions — the "search up a
+ * transaction to match this receipt to" box in the receipt panel, for when
+ * the exact-amount `suggestMatches` list doesn't surface the right charge (a
+ * mis-read amount, a receipt with none). Same scan the matcher uses
+ * (`by_chapter_and_postedAt` newest-first, `isSpend`, sandbox-filtered),
+ * filtered by `transactionMatchesSearch` instead of an exact cent. Returns
+ * the same `candidateValidator` shape as `suggestMatches` so the panel
+ * renders both lists identically (`merchantOverlap` / `isOwnCharge` aren't
+ * meaningful for a free search — always false), PLUS `hasReceipt` so a
+ * bookkeeper can tell at a glance which results already carry one.
+ *
+ * FOUNDER FIX (2026-07-24): "right now searching through transactions, it
+ * doesn't let me search transactions that already have receipts, but some
+ * transactions may need multiple receipts associated." This used to hard-
+ * exclude any transaction with `receiptStorageId` set, which made it
+ * impossible to search up a charge that legitimately needs a SECOND receipt
+ * (a split purchase, a re-sent copy). Receipted transactions are now
+ * INCLUDED, tagged `hasReceipt: true` so the UI can badge them instead of
+ * hiding them — linking a second receipt onto an already-receipted
+ * transaction needs no backend change at all; `linkReceiptToTransaction`
+ * (`lib/receiptLinks.ts`) has always been many-to-many, it just never had a
+ * search path that could reach an already-receipted transaction to begin
+ * with.
+ *
+ * KEEP THE NAME: `searchUnreceiptedTransactions` reads as a misnomer now that
+ * receipted transactions are included too, but this is a PUBLIC query and
+ * renaming it would 404 on any mobile client still running an OTA-lagged
+ * bundle that calls it by the old name — leave the name alone.
+ *
  * Bookkeeper+, chapter-only, bounded.
  */
 export const searchUnreceiptedTransactions = query({
@@ -1011,7 +1186,6 @@ export const searchUnreceiptedTransactions = query({
 
     const results = [];
     for (const tr of rows) {
-      if (tr.receiptStorageId != null) continue;
       if (!isSpend(tr)) continue;
       if (!txnMatchesMode(tr, sandboxMode)) continue;
       if (!transactionMatchesSearch(tr, query ?? "")) continue;
@@ -1024,6 +1198,7 @@ export const searchUnreceiptedTransactions = query({
         status: tr.status,
         merchantOverlap: false,
         isOwnCharge: false,
+        hasReceipt: tr.receiptStorageId != null,
       });
       if (results.length >= cap) break;
     }
@@ -1780,12 +1955,13 @@ async function runSweepRetryPipeline(
  *  LAST — i.e. oldest-`_creationTime`-first among receipts with `ocrError`
  *  set that this sweep chain hasn't already touched (`afterCreationTime`,
  *  the chain's monotonic watermark). Excludes a receipt that's itself a
- *  duplicate (`duplicateOfReceiptId` set) — same as every other receipt read
- *  in this file, a duplicate is hidden, not something worth spending a rate-
- *  limited extraction call on. Mirrors `computeSoftDuplicates`' bounded-scan
- *  discipline (`SWEEP_SCAN_LIMIT`, same order of magnitude as
- *  `DUPLICATE_SCAN_LIMIT`) rather than a dedicated index — a chapter's
- *  receipt count fits comfortably in one bounded page at this scale. */
+ *  duplicate (`duplicateOfReceiptId` set) or ARCHIVED — same as every other
+ *  receipt read in this file, a duplicate or archived row is hidden, not
+ *  something worth spending a rate-limited extraction call on. Mirrors
+ *  `computeSoftDuplicates`' bounded-scan discipline (`SWEEP_SCAN_LIMIT`, same
+ *  order of magnitude as `DUPLICATE_SCAN_LIMIT`) rather than a dedicated
+ *  index — a chapter's receipt count fits comfortably in one bounded page at
+ *  this scale. */
 export const findNextFailedReceipt = internalQuery({
   args: {
     chapterId: v.id("chapters"),
@@ -1802,6 +1978,7 @@ export const findNextFailedReceipt = internalQuery({
       (r) =>
         r.ocrError != null &&
         r.duplicateOfReceiptId == null &&
+        r.archived !== true &&
         (afterCreationTime == null || r._creationTime > afterCreationTime),
     );
     return candidate ?? null;
@@ -1809,7 +1986,7 @@ export const findNextFailedReceipt = internalQuery({
 });
 
 /** Count of a chapter's currently-failed receipts (`ocrError` set, not a
- *  duplicate) within the same bounded `SWEEP_SCAN_LIMIT` window
+ *  duplicate or archived) within the same bounded `SWEEP_SCAN_LIMIT` window
  *  `findNextFailedReceipt` scans — powers `failedExtractionStatus`'s "Re-
  *  extract N failed" button label and `retryFailedExtractions`' short-circuit
  *  when there's nothing to do. A chapter with more receipts than the scan
@@ -1824,7 +2001,9 @@ async function countFailedExtractions(
     .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
     .order("desc")
     .take(SWEEP_SCAN_LIMIT);
-  return scan.filter((r) => r.ocrError != null && r.duplicateOfReceiptId == null).length;
+  return scan.filter(
+    (r) => r.ocrError != null && r.duplicateOfReceiptId == null && r.archived !== true,
+  ).length;
 }
 
 /** Read this chapter's `receiptSweepState` singleton row, if any. */

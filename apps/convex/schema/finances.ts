@@ -1224,6 +1224,24 @@ export const receipts = defineTable({
   // dismissible here. Absent (falsy) is the default — every existing row.
   duplicateDismissed: v.optional(v.boolean()),
 
+  // ── Founder feedback PR (2026-07-24): archiving ─────────────────────────────
+  // "we should just have a concept of archiving receipt entries, and the
+  // ability to unarchive." The GENERAL soft-hide for a nonsense receipt (a
+  // blank photo, a stray screenshot — nothing a duplicate/edit flow covers)
+  // AND — since the founder also flagged the duplicate flow as "weird" —
+  // the resolution mechanism a CONFIRMED duplicate now goes through too (see
+  // `receipts.markAsDuplicate`): archiving is set alongside the duplicate
+  // stamps, so "mark duplicate" and "archive the known duplicate" are the
+  // same act. Never deletes the row or its stored file — mirrors
+  // `duplicateOfReceiptId`'s philosophy exactly: hiding, not deleting.
+  // Existing `receiptLinks` are left untouched by archiving alone; a linked-
+  // and-archived receipt must be unlinked explicitly (see `getReceipt`'s
+  // `duplicateStillLinked`/UI "still attached" warning) — archiving is a
+  // visibility decision, not a money one. Absent (falsy) is the default.
+  archived: v.optional(v.boolean()),
+  archivedAt: v.optional(v.number()),
+  archivedByPersonId: v.optional(v.id("people")),
+
   createdAt: v.number(),
   updatedAt: v.number(),
 })

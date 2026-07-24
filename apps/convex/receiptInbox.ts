@@ -412,6 +412,12 @@ export const candidateValidator = v.object({
   merchantOverlap: v.boolean(),
   // Whether this is the sender's OWN card charge (a confidence booster).
   isOwnCharge: v.boolean(),
+  // Whether this transaction already has at least one receipt attached
+  // (`receiptStorageId` set). Optional: only `receipts.ts#searchUnreceiptedTransactions`
+  // populates it (a transaction can legitimately need a SECOND receipt — see
+  // that query's doc); `matchReceiptCandidates`/`suggestMatches` leave it
+  // unset since their callers already scope to unreceipted charges.
+  hasReceipt: v.optional(v.boolean()),
 });
 
 const MERCHANT_STOPWORDS = new Set([
