@@ -26,6 +26,7 @@ export { RolePicker } from "./RolePicker";
 export { Popover } from "./Popover";
 export { InfoTooltip } from "./InfoTooltip";
 export { Calendar } from "./Calendar";
+export { ImageLightbox } from "./ImageLightbox";
 export { DateTimeField } from "./DateTimeField";
 export {
   ContextMenu,
