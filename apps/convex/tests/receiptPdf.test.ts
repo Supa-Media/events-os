@@ -211,7 +211,13 @@ describe("PDF routing via retryExtraction (no vision-model call for a digital PD
 
       const row = await run(t, (ctx) => ctx.db.get(receiptId));
       expect(row?.ocrAmountCents).toBeUndefined();
-      expect(row?.ocrError).toMatch(/scanned pdf/i);
+      // RECEIPT QUALITY PR (fix 2): a keyless failure is a TRANSPORT problem,
+      // distinct from "scanned PDF, model found no total" — it gets its own
+      // specific, actionable message (never the generic scanned-PDF wording,
+      // which would wrongly imply the model tried and failed to read it).
+      expect(row?.ocrError).toBe(
+        "No AI engine key configured — set one in Settings → Integrations.",
+      );
       // ocrModel is the VISION model this time (the fallback was attempted),
       // never the text-layer sentinel.
       expect(row?.ocrModel).not.toBe(PDF_TEXT_LAYER_PROVENANCE);

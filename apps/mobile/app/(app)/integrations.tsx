@@ -184,15 +184,24 @@ export default function IntegrationsScreen() {
 
 /**
  * AI engine card (switchable provider) — super-admins only. Picks the whole
- * app's AI provider (OpenRouter or Ollama), the Ollama key + base URL, and the
- * GLOBAL default model (used by OCR, finance auto-coding, and the assistant).
+ * app's AI provider (OpenRouter or Ollama), the Ollama key + base URL, the
+ * GLOBAL default model (coding + the assistant), and a SEPARATE, DEDICATED
+ * receipt-OCR model.
+ *
+ * The global model and the OCR model are deliberately independent settings
+ * (RECEIPT QUALITY PR, fix 4): a general reasoning model tuned for
+ * conversation (e.g. the owner's `gemma4:31b`) can silently degrade a receipt
+ * read that a dedicated document-OCR model (`glm-ocr`, Ollama's default)
+ * handles fine — so OCR never falls back to the global model, only to its own
+ * per-provider default. See `receiptInbox.ts#resolveOcrModel`.
  *
  * The Ollama key is WRITE-ONLY (same discipline as the other cards: only a
- * configured/last4 status is ever shown). The model picker is fed by the LIVE
- * provider model list (`listAvailableModels`) — every id shown exactly as the
- * API returns it (those are what the chat endpoint accepts) — plus a free-text
- * override for when the cloud list lags. "Test connection" hits the provider's
- * `/v1/models` so the owner can validate a live key from the app.
+ * configured/last4 status is ever shown). Both model pickers are fed by the
+ * SAME LIVE provider model list (`listAvailableModels`) — every id shown
+ * exactly as the API returns it (those are what the chat endpoint accepts) —
+ * plus a free-text override for when the cloud list lags. "Test connection"
+ * hits the provider's `/v1/models` so the owner can validate a live key from
+ * the app.
  */
 function AiEngineCard({
   aiEngine,
@@ -202,6 +211,7 @@ function AiEngineCard({
     | {
         provider: AiEngineProvider;
         model: string | null;
+        ocrModel: string | null;
         ollamaConfigured: boolean;
         ollamaLast4: string | null;
         ollamaBaseUrl: string | null;
@@ -218,6 +228,7 @@ function AiEngineCard({
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
   const [modelInput, setModelInput] = useState("");
+  const [ocrModelInput, setOcrModelInput] = useState("");
   const [models, setModels] = useState<string[] | null>(null);
   const [loadingModels, setLoadingModels] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -296,7 +307,8 @@ function AiEngineCard({
         <View className="flex-1">
           <Text className="text-sm font-semibold text-ink">AI engine</Text>
           <Text className="text-xs text-muted">
-            Powers receipt OCR, finance auto-coding, and the assistant.
+            Global model powers finance auto-coding + the assistant; receipt OCR uses its own
+            dedicated model below.
           </Text>
         </View>
       </View>
@@ -541,6 +553,94 @@ function AiEngineCard({
                   void run(async () => {
                     await setEngine({ model: null });
                   }, "Reverted to the default model.")
+                }
+                loading={busy}
+                disabled={busy}
+              />
+            ) : null}
+          </View>
+
+          {/* Receipt OCR model — SEPARATE from the global model above (fix 4:
+              a general chat model must never silently become the OCR model). */}
+          <View className="mb-1.5 mt-1 flex-row items-center justify-between">
+            <Text className="text-xs font-semibold text-muted">Receipt OCR model</Text>
+          </View>
+          <Text className="mb-2 text-2xs text-faint">
+            Global model above powers coding + the assistant. This one — separate — powers
+            receipt OCR only. Defaults to {isOllama ? "glm-ocr" : "a cheap vision model"} when unset.
+          </Text>
+          <Text className="mb-2 text-sm text-ink">
+            {aiEngine?.ocrModel ? aiEngine.ocrModel : `Using the default (${isOllama ? "glm-ocr" : "vision default"}).`}
+          </Text>
+
+          {models && models.length > 0 ? (
+            <ScrollView
+              style={{ maxHeight: 180 }}
+              keyboardShouldPersistTaps="handled"
+              className="mb-2 rounded-lg border border-border"
+            >
+              {models.map((id) => {
+                const active = aiEngine?.ocrModel === id;
+                return (
+                  <Pressable
+                    key={id}
+                    onPress={() =>
+                      void run(async () => {
+                        await setEngine({ ocrModel: id });
+                      }, `OCR model set to ${id}.`)
+                    }
+                    disabled={busy || active}
+                    className={`flex-row items-center gap-2 px-2.5 py-2 active:opacity-70 ${
+                      active ? "bg-raised" : ""
+                    }`}
+                  >
+                    <Text className="flex-1 text-xs text-ink" numberOfLines={1}>
+                      {id}
+                    </Text>
+                    {active ? (
+                      <Icon name="check" size={14} color={colors.accent} />
+                    ) : null}
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          ) : null}
+
+          <TextField
+            label="Or enter an OCR model id"
+            value={ocrModelInput}
+            onChangeText={(t) => {
+              setOcrModelInput(t);
+              if (error) setError(null);
+              if (notice) setNotice(null);
+            }}
+            placeholder={isOllama ? "e.g. glm-ocr" : "e.g. google/gemini-2.0-flash-001"}
+            autoCapitalize="none"
+            autoCorrect={false}
+            editable={!busy}
+          />
+          <View className="mb-3 flex-row gap-2">
+            <Button
+              title="Set OCR model"
+              icon="check"
+              onPress={() =>
+                void run(async () => {
+                  await setEngine({ ocrModel: ocrModelInput.trim() });
+                  setOcrModelInput("");
+                }, "OCR model set.")
+              }
+              loading={busy}
+              disabled={!ocrModelInput.trim() || busy}
+            />
+            {aiEngine?.ocrModel ? (
+              <Button
+                title="Use default"
+                icon="rotate-ccw"
+                variant="secondary"
+                onPress={() =>
+                  void run(async () => {
+                    await setEngine({ ocrModel: null });
+                  }, "Reverted to the default OCR model.")
                 }
                 loading={busy}
                 disabled={busy}

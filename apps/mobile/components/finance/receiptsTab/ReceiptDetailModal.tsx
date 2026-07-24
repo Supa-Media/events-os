@@ -4,10 +4,13 @@
  * `api.receipts.getReceipt`. House modal shape (mirrors
  * `TransactionNoteModal`/`TransactionDetailModal`).
  *
- *  - Image (falls back to "Open file" via `Linking` when it fails to decode
- *    — the backend never tells us content-type, so a PDF/HTML-sourced
- *    receipt is detected by the `<Image>` failing to render, not sniffed
- *    ahead of time).
+ *  - Image preview, or — for a PDF (inferred from the filename extension;
+ *    the backend never surfaces a content-type) — an INLINE preview on web
+ *    (an `<iframe>`, same RN-web-renders-raw-HTML pattern as
+ *    `crew/BriefingView.tsx`'s video embed) since there's no RN PDF
+ *    renderer; native keeps the "Open file" (`Linking.openURL`) fallback.
+ *    A non-PDF file that fails to decode as an image also falls back to
+ *    "Open file".
  *  - Editable CANONICAL fields (amount/date/merchant/note) via
  *    `updateReceiptFields` — the immutable OCR read renders as read-only
  *    subtext underneath, never editable.
@@ -17,9 +20,11 @@
  *    manual refetch needed after a save).
  *  - A `duplicateOf` callout when flagged, tapping through to the original
  *    (re-keys this same modal via the parent's `onOpenReceipt`).
+ *  - Possible-duplicate MATCHES (the soft signal) as tappable rows + a "Not a
+ *    duplicate" dismiss (`dismissDuplicateFlag`).
  */
 import { useEffect, useState } from "react";
-import { Image, Linking, Modal, Pressable, ScrollView, Text, View } from "react-native";
+import { Image, Linking, Modal, Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
@@ -59,6 +64,7 @@ export function ReceiptDetailModal({
   const linkReceipt = useMutation(api.receipts.linkReceipt);
   const unlinkReceipt = useMutation(api.receipts.unlinkReceipt);
   const retryExtraction = useMutation(api.receipts.retryExtraction);
+  const dismissDuplicateFlag = useMutation(api.receipts.dismissDuplicateFlag);
 
   const [amountText, setAmountText] = useState("");
   const [date, setDate] = useState<number | null>(null);
@@ -71,6 +77,7 @@ export function ReceiptDetailModal({
   const [retrying, setRetrying] = useState(false);
   const [showModelInput, setShowModelInput] = useState(false);
   const [modelOverride, setModelOverride] = useState("");
+  const [dismissingDuplicate, setDismissingDuplicate] = useState(false);
 
   // Seed local edit state once per receipt (never stomps an in-progress edit
   // on a background live-query refresh of the SAME receipt).
@@ -87,6 +94,9 @@ export function ReceiptDetailModal({
 
   const amountCents = amountText.trim() === "" ? null : parseDollarsToCents(amountText);
   const amountInvalid = amountText.trim() !== "" && amountCents == null;
+  // No content-type from the backend — infer PDF from the filename extension
+  // (fix 5: inline PDF preview).
+  const isPdfReceipt = /\.pdf$/i.test(receipt?.filename ?? "");
 
   async function save() {
     if (amountInvalid) return;
@@ -138,6 +148,14 @@ export function ReceiptDetailModal({
     setRetrying(false);
   }
 
+  async function handleDismissDuplicate() {
+    setDismissingDuplicate(true);
+    await run(() => dismissDuplicateFlag({ receiptId }), {
+      errorTitle: "Couldn't dismiss the duplicate flag",
+    });
+    setDismissingDuplicate(false);
+  }
+
   const correctedByName = receipt?.correctedByPersonId
     ? (people?.find((p) => p._id === receipt.correctedByPersonId)?.name ?? "a bookkeeper")
     : null;
@@ -170,9 +188,33 @@ export function ReceiptDetailModal({
               </Text>
             ) : (
               <>
-                {/* File preview */}
-                <View className="mb-4 h-48 w-full items-center justify-center overflow-hidden rounded-lg border border-border bg-sunken">
-                  {receipt.url && !imgFailed ? (
+                {/* File preview: a PDF (inferred from the filename — no
+                    content-type from the backend) gets an INLINE preview on
+                    web; native has no RN PDF renderer, so it keeps the "Open
+                    file" fallback. A non-PDF renders as an image, falling
+                    back to "Open file" if it fails to decode. */}
+                <View
+                  className={`mb-4 w-full items-center justify-center overflow-hidden rounded-lg border border-border bg-sunken ${
+                    isPdfReceipt && Platform.OS === "web" ? "h-96" : "h-48"
+                  }`}
+                >
+                  {receipt.url && isPdfReceipt && Platform.OS === "web" ? (
+                    // RN-web renders this iframe directly in the DOM (same
+                    // pattern as `crew/BriefingView.tsx`'s video embed).
+                    <iframe
+                      src={receipt.url}
+                      title={receipt.filename ?? "Receipt PDF"}
+                      style={{ width: "100%", height: "100%", border: "0" }}
+                    />
+                  ) : receipt.url && isPdfReceipt ? (
+                    <Pressable
+                      onPress={() => receipt.url && Linking.openURL(receipt.url)}
+                      className="items-center gap-2 px-6 py-4"
+                    >
+                      <Icon name="file-text" size={24} color={colors.faint} />
+                      <Text className="text-sm font-semibold text-accent">Open PDF</Text>
+                    </Pressable>
+                  ) : receipt.url && !imgFailed ? (
                     <Image
                       source={{ uri: receipt.url }}
                       style={{ width: "100%", height: "100%" }}
@@ -225,6 +267,54 @@ export function ReceiptDetailModal({
                     </View>
                     <Icon name="chevron-right" size={16} color={colors.danger} />
                   </Pressable>
+                ) : null}
+
+                {/* Possible-duplicate matches (soft signal — same amount+date,
+                    a different file). Only shown when un-dismissed; an
+                    exact-file dupe already has its own callout above and
+                    never shows this too (see the `!receipt.duplicateOfReceiptId`
+                    guard). */}
+                {receipt.softDuplicate && !receipt.duplicateOfReceiptId ? (
+                  <View className="mb-4 gap-2 rounded-md border border-warn bg-warn-bg px-3 py-2.5">
+                    <View className="flex-row items-start gap-2">
+                      <Icon name="alert-triangle" size={16} color={colors.warn} />
+                      <Text className="flex-1 text-xs font-semibold text-warn">
+                        Possible duplicate — matches the same amount and date as{" "}
+                        {receipt.duplicateMatches.length}{" "}
+                        other receipt{receipt.duplicateMatches.length === 1 ? "" : "s"}
+                      </Text>
+                    </View>
+                    {receipt.duplicateMatches.length > 0 ? (
+                      <View className="gap-1.5">
+                        {receipt.duplicateMatches.map((m) => (
+                          <Pressable
+                            key={m._id}
+                            onPress={() => onOpenReceipt(m._id)}
+                            className="flex-row items-center justify-between rounded-md border border-border bg-raised px-2.5 py-2 active:opacity-80"
+                          >
+                            <View className="flex-1">
+                              <Text className="text-xs font-semibold text-ink" numberOfLines={1}>
+                                {m.merchant ?? "Unknown merchant"}
+                              </Text>
+                              <Text className="text-2xs text-muted">
+                                {m.amountCents != null ? formatCents(m.amountCents) : "no amount"}{" "}
+                                · {m.receiptDate != null ? formatDate(m.receiptDate) : "no date"}
+                              </Text>
+                            </View>
+                            <Icon name="chevron-right" size={14} color={colors.muted} />
+                          </Pressable>
+                        ))}
+                      </View>
+                    ) : null}
+                    <Button
+                      title="Not a duplicate"
+                      variant="secondary"
+                      size="sm"
+                      loading={dismissingDuplicate}
+                      onPress={() => void handleDismissDuplicate()}
+                      className="self-start"
+                    />
+                  </View>
                 ) : null}
 
                 {/* Editable canonical fields */}

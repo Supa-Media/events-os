@@ -97,6 +97,11 @@ export const getIntegrationsStatus = query({
       // Givebutter key). `ollamaBaseUrl` is non-secret config.
       provider: aiProviderValidator,
       model: v.union(v.string(), v.null()),
+      // The DEDICATED receipt-OCR model — `null` means "use the per-provider
+      // OCR default" (see `receiptInbox.ts#resolveOcrModel`), never the
+      // global `model` above (fix 4: OCR must not silently inherit the chat
+      // model).
+      ocrModel: v.union(v.string(), v.null()),
       ollamaConfigured: v.boolean(),
       ollamaLast4: v.union(v.string(), v.null()),
       ollamaBaseUrl: v.union(v.string(), v.null()),
@@ -134,6 +139,7 @@ export const getIntegrationsStatus = query({
       aiEngine: {
         provider: (settings?.aiProvider ?? DEFAULT_AI_PROVIDER) as AiEngineProvider,
         model: settings?.aiModel ?? null,
+        ocrModel: settings?.aiOcrModel ?? null,
         // The Ollama key is the secret: only configured + last4, never the key.
         ollamaConfigured: !!ollamaKey,
         ollamaLast4: ollamaKey ? last4(ollamaKey) : null,
@@ -405,26 +411,31 @@ export const setOllamaApiKey = mutation({
 
 /**
  * Set the active AI engine's non-secret config: the `provider` toggle, the
- * GLOBAL default `model`, and the Ollama `baseUrl`. SUPERUSER-ONLY. Each field
- * is independent — pass only what changes; `null` CLEARS that field (back to the
- * default: provider → openrouter, model → per-feature default, baseUrl →
- * https://ollama.com). Passing a field `undefined` (omitting it) leaves it as-is.
- * A non-null `model`/`baseUrl` must be non-empty after trimming.
+ * GLOBAL default `model` (coding + assistant), the DEDICATED `ocrModel`
+ * (receipts — fix 4: kept separate so a general chat model never silently
+ * becomes the OCR model), and the Ollama `baseUrl`. SUPERUSER-ONLY. Each field
+ * is independent — pass only what changes; `null` CLEARS that field (back to
+ * the default: provider → openrouter, model/ocrModel → per-feature default,
+ * baseUrl → https://ollama.com). Passing a field `undefined` (omitting it)
+ * leaves it as-is. A non-null `model`/`ocrModel`/`baseUrl` must be non-empty
+ * after trimming.
  */
 export const setAiEngine = mutation({
   args: {
     provider: v.optional(aiProviderValidator),
     model: v.optional(v.union(v.string(), v.null())),
+    ocrModel: v.optional(v.union(v.string(), v.null())),
     baseUrl: v.optional(v.union(v.string(), v.null())),
   },
   returns: v.null(),
-  handler: async (ctx, { provider, model, baseUrl }) => {
+  handler: async (ctx, { provider, model, ocrModel, baseUrl }) => {
     await requireSuperuser(ctx);
     const updatedBy = (await requireUserId(ctx)) as Id<"users">;
 
     const patch: {
       aiProvider?: AiEngineProvider;
       aiModel?: string | undefined;
+      aiOcrModel?: string | undefined;
       ollamaBaseUrl?: string | undefined;
       updatedBy: Id<"users">;
       updatedAt: number;
@@ -444,6 +455,20 @@ export const setAiEngine = mutation({
           });
         }
         patch.aiModel = trimmed;
+      }
+    }
+    if (ocrModel !== undefined) {
+      if (ocrModel === null) {
+        patch.aiOcrModel = undefined;
+      } else {
+        const trimmed = ocrModel.trim();
+        if (!trimmed) {
+          throw new ConvexError({
+            code: "INVALID_ARGUMENT",
+            message: "OCR model id can't be empty.",
+          });
+        }
+        patch.aiOcrModel = trimmed;
       }
     }
     if (baseUrl !== undefined) {
@@ -475,14 +500,20 @@ export const setAiEngine = mutation({
  * Action-facing read of the resolved AI engine config — the ONLY path the raw
  * Ollama key leaves the table. Every AI call site (`receiptInbox.ocrReceiptImage`,
  * `aiCoding`, `aiActions`) consults this via `ctx.runQuery` to resolve
- * `{provider, baseUrl, apiKey, model}`, STORED-FIRST → ENV FALLBACK:
+ * `{provider, baseUrl, apiKey, model, ocrModel}`, STORED-FIRST → ENV FALLBACK:
  *   - ollama key: stored `ollamaApiKey` → `OLLAMA_API_KEY`
  *   - openrouter key: `OPENROUTER_API_KEY` (unchanged; never stored in-app)
  *   - baseUrl: stored `ollamaBaseUrl` → `OLLAMA_BASE_URL` → https://ollama.com
  *     (openrouter's origin is fixed)
- *   - model: stored global `aiModel` (each call site layers its own per-call
- *     override + per-feature default on top of this — see `resolveEngineModel`).
- * NEVER exposed as a public function. `apiKey`/`model` are `null` when unset.
+ *   - model: stored global `aiModel` — coding + assistant call sites layer
+ *     their own per-call override + per-feature default on top of this (see
+ *     `resolveEngineModel`).
+ *   - ocrModel: stored DEDICATED `aiOcrModel` (fix 4) — ONLY
+ *     `receiptInbox.ts#resolveOcrModel` reads this; it deliberately never
+ *     falls back to `model` above (a general chat model must never silently
+ *     become the OCR model).
+ * NEVER exposed as a public function. `apiKey`/`model`/`ocrModel` are `null`
+ * when unset.
  */
 export const readAiEngineConfig = internalQuery({
   args: {},
@@ -491,18 +522,20 @@ export const readAiEngineConfig = internalQuery({
     baseUrl: v.string(),
     apiKey: v.union(v.string(), v.null()),
     model: v.union(v.string(), v.null()),
+    ocrModel: v.union(v.string(), v.null()),
   }),
   handler: async (ctx) => {
     const settings = await getSettings(ctx);
     const provider = (settings?.aiProvider ?? DEFAULT_AI_PROVIDER) as AiEngineProvider;
     const model = settings?.aiModel ?? null;
+    const ocrModel = settings?.aiOcrModel ?? null;
     if (provider === "ollama") {
       const baseUrl =
         settings?.ollamaBaseUrl ??
         process.env.OLLAMA_BASE_URL ??
         DEFAULT_OLLAMA_BASE_URL;
       const apiKey = settings?.ollamaApiKey ?? process.env.OLLAMA_API_KEY ?? null;
-      return { provider, baseUrl, apiKey, model };
+      return { provider, baseUrl, apiKey, model, ocrModel };
     }
     // OpenRouter: origin is fixed; the key is never stored in-app (env only).
     return {
@@ -510,6 +543,7 @@ export const readAiEngineConfig = internalQuery({
       baseUrl: OPENROUTER_BASE_URL,
       apiKey: process.env.OPENROUTER_API_KEY ?? null,
       model,
+      ocrModel,
     };
   },
 });

@@ -66,8 +66,8 @@ import {
 } from "@events-os/shared";
 import {
   chatCompletion,
-  resolveEngineModel,
   type AiEngineConfig,
+  type ChatErrorKind,
 } from "./lib/aiEngine";
 import { ROLLUP_SCAN_LIMIT, txnMatchesMode, isSpend } from "./finances";
 import { readSandbox } from "./financeSettings";
@@ -106,20 +106,23 @@ export function ocrModel(): string {
 }
 
 /**
- * Resolve the OCR model for one call: per-call override > stored global
- * `aiModel` > per-provider default (OpenRouter's `ocrModel()` env/hardcoded, or
- * Ollama's `glm-ocr`). The `override` is the retry-UI hook (plumbed through
- * `receipts.processUploadedReceipt`).
+ * Resolve the OCR model for one call: per-call override > stored DEDICATED
+ * `aiOcrModel` (fix 4 — NEVER the global `aiModel`, which is a general chat/
+ * coding model that can silently degrade a receipt read, e.g. `gemma4:31b`
+ * choking on a busy photo where `glm-ocr` wouldn't) > per-provider OCR
+ * default (OpenRouter's `ocrModel()` env/hardcoded, or Ollama's `glm-ocr`).
+ * The `override` is the retry-UI hook (plumbed through
+ * `receipts.processUploadedReceipt`). Deliberately does NOT call
+ * `resolveEngineModel` (which reads the global `model`) — OCR resolution is
+ * its own precedence chain, kept apart on purpose.
  */
 export function resolveOcrModel(
-  config: Pick<AiEngineConfig, "provider" | "model">,
+  config: Pick<AiEngineConfig, "provider" | "ocrModel">,
   override?: string | null,
 ): string {
-  return resolveEngineModel(config, {
-    override,
-    openrouterDefault: ocrModel(),
-    ollamaDefault: OLLAMA_DEFAULT_OCR_MODEL,
-  });
+  if (override && override.trim()) return override.trim();
+  if (config.ocrModel && config.ocrModel.trim()) return config.ocrModel.trim();
+  return config.provider === "ollama" ? OLLAMA_DEFAULT_OCR_MODEL : ocrModel();
 }
 
 // ── Validators ───────────────────────────────────────────────────────────────
@@ -181,6 +184,60 @@ export function extractEmailAddress(raw: string | null | undefined): string | nu
   if (!raw) return null;
   const angled = raw.match(/<([^>]+)>/);
   return normalizeEmail(angled ? angled[1] : raw);
+}
+
+/** Free mail hosts carry no merchant identity of their own — never worth
+ *  guessing a "merchant" off their domain label. */
+const GENERIC_EMAIL_DOMAINS = new Set([
+  "gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "icloud.com",
+  "aol.com", "protonmail.com", "me.com", "live.com",
+]);
+
+/**
+ * Best-effort MERCHANT FALLBACK derived from the email envelope itself — used
+ * only when extraction (body parse or vision OCR) found no merchant (see
+ * `runPipeline`'s "when extraction yields no merchant" step). Tries, in
+ * order:
+ *   1. A real RFC-5322 DISPLAY NAME ("Givebutter" <receipts@givebutter.com>"
+ *      → "Givebutter") — the highest-confidence signal, a sender chose it.
+ *   2. The sending domain's second-level label, title-cased
+ *      ("noreply@doordash.com" → "Doordash") — skipped for a generic mail
+ *      host (`GENERIC_EMAIL_DOMAINS`), which carries no merchant identity.
+ *   3. A "receipt from X" / "X receipt" fragment off the SUBJECT line.
+ * Returns `null` (never a guess) when none of these yield a confident
+ * candidate. Exported for direct unit testing.
+ */
+export function deriveMerchantFromEmail(
+  fromEmail: string,
+  subject?: string | null,
+): string | null {
+  const displayMatch = fromEmail.match(/^\s*"?([^"<]{2,60}?)"?\s*<[^>]+>\s*$/);
+  if (displayMatch) {
+    const name = displayMatch[1].trim();
+    if (name && !name.includes("@")) return name.slice(0, 200);
+  }
+
+  const addr = extractEmailAddress(fromEmail);
+  const domain = addr?.split("@")[1];
+  if (domain && !GENERIC_EMAIL_DOMAINS.has(domain)) {
+    const label = domain.split(".").slice(0, -1).join(" ") || domain;
+    const cleaned = label.replace(/[-_]/g, " ").trim();
+    if (cleaned.length >= 2 && cleaned.length <= 40) {
+      return cleaned
+        .split(/\s+/)
+        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+        .join(" ");
+    }
+  }
+
+  if (subject) {
+    const m =
+      subject.match(/receipt from ([a-z0-9 .,'&-]{2,40})/i) ??
+      subject.match(/^([a-z0-9 .,'&-]{2,40})\s+receipt\b/i);
+    if (m) return m[1].trim().slice(0, 200);
+  }
+
+  return null;
 }
 
 /**
@@ -684,6 +741,66 @@ export const updateInboundReceipt = internalMutation({
   },
 });
 
+// ── Merchant heuristic (ZERO LLM — plain-text receipt bodies) ────────────────
+/** Business-entity suffixes that strongly signal a merchant-name line (e.g.
+ *  "Givebutter, Inc.", "Trader Joe's Market", "Blue Bottle Coffee"). A line
+ *  carrying one of these is the highest-confidence candidate. */
+const MERCHANT_SUFFIX_RE =
+  /\b(Inc\.?|LLC|Co\.?|Ltd|Corp|Company|Restaurant|Store|Market|Coffee|Cafe|Grill)\b/i;
+/** Lines that are almost certainly NOT a merchant name — a label, a bare
+ *  number/date/total line, an order/invoice/reference id, a URL. Conservative
+ *  on purpose: a line matching this is SKIPPED as a candidate rather than
+ *  risked (a wrong merchant is worse than none). */
+const MERCHANT_SKIP_LINE_RE =
+  /^(order|invoice|receipt|ref(erence)?\s*#?|date|time|subtotal|tax|total|amount|balance|paid|charged|thank|thanks|#|http|www\.)/i;
+/** A line that's ENTIRELY digits/currency punctuation (no letters at all). */
+const MERCHANT_CURRENCY_ONLY_RE = /^\$?\s*[\d,.\s-]+$/;
+/** A line carrying an email address, a URL fragment, or a phone number — an
+ *  envelope/contact line, never a business name by itself. */
+const MERCHANT_CONTACT_RE = /@|\.(com|org|net|io)\b|\d{3}[-.\s]?\d{3}[-.\s]?\d{4}/i;
+/** A line carrying a dollar sign or a price-shaped figure (e.g. "Coffee
+ *  $4.50") — a LINE-ITEM, not a merchant name, even when it also contains
+ *  letters. */
+const MERCHANT_HAS_PRICE_RE = /\$|\d+\.\d{2}\b/;
+
+/** True iff `line` is a PLAUSIBLE merchant-name candidate: 2–40 chars, mostly
+ *  letters, not a label/number/date/currency/contact/price line. Deliberately
+ *  narrow — false negatives (missing a real merchant) are fine; false
+ *  positives (a wrong guess) are not. */
+function looksLikeMerchantLine(line: string): boolean {
+  const trimmed = line.trim();
+  if (trimmed.length < 2 || trimmed.length > 40) return false;
+  if (MERCHANT_SKIP_LINE_RE.test(trimmed)) return false;
+  if (MERCHANT_CURRENCY_ONLY_RE.test(trimmed)) return false;
+  if (MERCHANT_CONTACT_RE.test(trimmed)) return false;
+  if (MERCHANT_HAS_PRICE_RE.test(trimmed)) return false;
+  const letters = (trimmed.match(/[a-zA-Z]/g) ?? []).length;
+  return letters >= 2 && letters / trimmed.length >= 0.5;
+}
+
+/**
+ * Best-effort merchant name off the first ~15 non-empty lines of a receipt
+ * body: prefer a line carrying a business-entity suffix (`MERCHANT_SUFFIX_RE`
+ * — highest confidence, e.g. "Givebutter, Inc."), else the first plausible
+ * non-label line near the top (`looksLikeMerchantLine`). Returns `null` when
+ * nothing confident is found — deliberately conservative (see module doc: a
+ * wrong merchant is worse than none). Exported for direct unit testing.
+ */
+export function extractMerchantFromLines(lines: string[]): string | null {
+  const nonEmpty = lines.map((l) => l.trim()).filter(Boolean).slice(0, 15);
+  for (const line of nonEmpty) {
+    if (MERCHANT_SUFFIX_RE.test(line) && looksLikeMerchantLine(line)) {
+      return line.replace(/\s+/g, " ").trim().slice(0, 200);
+    }
+  }
+  for (const line of nonEmpty) {
+    if (looksLikeMerchantLine(line)) {
+      return line.replace(/\s+/g, " ").trim().slice(0, 200);
+    }
+  }
+  return null;
+}
+
 // ── Text-receipt parsing (ZERO LLM — the "just an email" receipts) ───────────
 /**
  * Best-effort extraction of a { amountCents, date?, merchant? } from an email
@@ -691,7 +808,9 @@ export const updateInboundReceipt = internalMutation({
  * labelled total ("total", "amount", "amount paid", "grand total", "charged")
  * and takes the LARGEST currency figure on such a line; if no labelled line is
  * found it falls back to the largest currency figure anywhere (receipts lead
- * with the total far more often than not). Returns `null` amount when it can't
+ * with the total far more often than not). The merchant comes from
+ * `extractMerchantFromLines` (a conservative heuristic — `null` when nothing
+ * confident is found, never a guess). Returns `null` amount when it can't
  * find a currency figure at all — the caller then routes to `needs_review`.
  *
  * Exported for direct unit testing (no ctx needed).
@@ -751,7 +870,7 @@ export function parseReceiptFromText(body: string): {
     }
   }
 
-  return { amountCents, date, merchant: null };
+  return { amountCents, date, merchant: extractMerchantFromLines(lines) };
 }
 
 /** Provenance marker stored in `ocrModel` for a receipt whose fields came
@@ -961,31 +1080,58 @@ export function arrayBufferToBase64(buf: ArrayBuffer): string {
   return btoa(bin);
 }
 
+/** Why an `ocrReceiptImage` call yielded no usable read — either a transport-
+ *  level `chatCompletion` failure (`ChatErrorKind` — no_key/http/network/
+ *  timeout/parse, preserving OpenRouter/Ollama's `status`) or a `"no_total"`:
+ *  the model replied fine but the JSON carried no clear total. Distinguishing
+ *  these is the whole point of the fix — "out of credits" and "couldn't read
+ *  the receipt" used to collapse into the same opaque null. */
+export type OcrFailureKind = ChatErrorKind | "no_total";
+
+/** A typed OCR failure reason — never thrown, always returned (mirrors
+ *  `lib/aiEngine.ts`'s ChatCompletionError contract one layer up). */
+export interface OcrImageFailure {
+  kind: OcrFailureKind;
+  status: number | null;
+  message: string;
+}
+
+/** `ocrReceiptImage`'s result: a successful read, or `{ error }` carrying WHY
+ *  it failed. Discriminate with `"error" in result` (no shared `ok` tag by
+ *  design — mirrors the shape the task calls for). */
+export type OcrImageResult =
+  | {
+      amountCents: number | null;
+      date: number | null;
+      merchant: string | null;
+      confidence: number | null;
+    }
+  | { error: OcrImageFailure };
+
 /**
  * OCR a receipt IMAGE with a multimodal model through the switchable AI engine
  * (`lib/aiEngine.chatCompletion` — OpenRouter or Ollama, per the global
- * setting). Returns { amountCents, date, merchant, confidence } or null on any
- * failure (no key, network, unparseable). This is the ONLY LLM call in the
- * pipeline, and it only runs for image/PDF attachments — body receipts never
- * reach it. PDF is passed as an image_url data URL too (the cheap vision models
- * accept single-page receipt PDFs); multipage PDFs degrade to "couldn't read" →
+ * setting). Returns `{ amountCents, date, merchant, confidence }` on a
+ * successful read, or `{ error }` PRESERVING the failure reason — a transport
+ * error (no key / rate-limited / out-of-credits / network / timeout) is never
+ * collapsed together with "the model replied but found no total" (`no_total`)
+ * — see `OcrImageFailure`. This is the ONLY LLM call in the pipeline, and it
+ * only runs for image/PDF attachments — body receipts never reach it. PDF is
+ * passed as an image_url data URL too (the cheap vision models accept
+ * single-page receipt PDFs); multipage PDFs degrade to `no_total` →
  * `needs_review`, which is acceptable for receipts.
  *
  * `config` is resolved by the caller (via `readAiEngineConfig`) and `model` via
  * `resolveOcrModel`. On a typed engine error the human-readable reason is
- * logged (the owner's complaint was silent failures) — the receipt still
- * degrades to null/`needs_review`, no throw.
+ * logged (the owner's complaint was silent failures) AND returned — the
+ * receipt still degrades to a recorded `ocrError`/`needs_review`, no throw
+ * (the keyless-degrade contract).
  */
 export async function ocrReceiptImage(
   config: AiEngineConfig,
   dataUrl: string,
   model: string,
-): Promise<{
-  amountCents: number | null;
-  date: number | null;
-  merchant: string | null;
-  confidence: number | null;
-} | null> {
+): Promise<OcrImageResult> {
   const result = await chatCompletion(config, {
     model,
     messages: [
@@ -1015,36 +1161,89 @@ export async function ocrReceiptImage(
   });
   if (!result.ok) {
     console.log(`[receiptInbox] OCR call failed: ${result.message}`);
-    return null;
+    return {
+      error: { kind: result.kind, status: result.status, message: result.message },
+    };
   }
+  const noTotal: OcrImageResult = {
+    error: {
+      kind: "no_total",
+      status: null,
+      message: "The model read the receipt but couldn't find a clear total.",
+    },
+  };
+  let parsed: any;
   try {
-    const parsed = extractJson(result.content);
-    if (!parsed) return null;
-    const amountCents =
-      typeof parsed.amount === "number" && parsed.amount > 0
-        ? Math.round(parsed.amount * 100)
-        : null;
-    let date: number | null = null;
-    if (typeof parsed.date === "string") {
-      const t = Date.parse(parsed.date);
-      if (Number.isFinite(t)) {
-        const d = new Date(t);
-        d.setHours(12, 0, 0, 0);
-        date = d.getTime();
-      }
-    }
-    const merchant =
-      typeof parsed.merchant === "string" && parsed.merchant.trim()
-        ? parsed.merchant.trim().slice(0, 200)
-        : null;
-    const confidence =
-      typeof parsed.confidence === "number"
-        ? Math.max(0, Math.min(1, parsed.confidence))
-        : null;
-    return { amountCents, date, merchant, confidence };
+    parsed = extractJson(result.content);
   } catch (err) {
     console.log(`[receiptInbox] OCR parse errored: ${String(err)}`);
-    return null;
+    return noTotal;
+  }
+  if (!parsed) return noTotal;
+  const amountCents =
+    typeof parsed.amount === "number" && parsed.amount > 0
+      ? Math.round(parsed.amount * 100)
+      : null;
+  if (amountCents == null) return noTotal;
+  let date: number | null = null;
+  if (typeof parsed.date === "string") {
+    const t = Date.parse(parsed.date);
+    if (Number.isFinite(t)) {
+      const d = new Date(t);
+      d.setHours(12, 0, 0, 0);
+      date = d.getTime();
+    }
+  }
+  const merchant =
+    typeof parsed.merchant === "string" && parsed.merchant.trim()
+      ? parsed.merchant.trim().slice(0, 200)
+      : null;
+  const confidence =
+    typeof parsed.confidence === "number"
+      ? Math.max(0, Math.min(1, parsed.confidence))
+      : null;
+  return { amountCents, date, merchant, confidence };
+}
+
+/**
+ * Translate an `OcrImageFailure` into the SPECIFIC, actionable `ocrError`
+ * string a bookkeeper sees on the receipt detail — the fix for "OCR read: —
+ * · — · —" with no explanation (and, before this PR, every transport failure
+ * ALSO collapsing into that same opaque message). `context` picks the
+ * `no_total` wording: a scanned PDF that reached vision OCR keeps its
+ * existing PDF-specific phrasing; a plain image gets the retry-oriented one.
+ */
+function ocrFailureMessage(
+  failure: OcrImageFailure,
+  provider: AiEngineConfig["provider"],
+  context: "image" | "scanned_pdf",
+): string {
+  const label = provider === "ollama" ? "Ollama" : "OpenRouter";
+  switch (failure.kind) {
+    case "no_key":
+      return "No AI engine key configured — set one in Settings → Integrations.";
+    case "http":
+      if (failure.status === 402) {
+        return `AI request failed — ${label} returned HTTP 402 (out of credits). Switch the AI engine to Ollama in Settings, or add credits.`;
+      }
+      if (failure.status === 429) {
+        return `AI request failed — ${label} returned HTTP 429 (rate limited) — try again shortly.`;
+      }
+      return `AI request failed — ${label} returned HTTP ${failure.status ?? "an error"}${
+        failure.message ? `: ${failure.message}` : ""
+      }`;
+    case "timeout":
+      return `AI request timed out contacting ${label} — try again shortly.`;
+    case "network":
+      return `AI request failed — couldn't reach ${label}. Check your connection and try again.`;
+    case "parse":
+      return `AI request failed — couldn't parse ${label}'s reply.`;
+    case "no_total":
+      return context === "scanned_pdf"
+        ? "Scanned PDF — the vision model could not read a total off it."
+        : "The model read the receipt but couldn't find a clear total — try Retry with a different model.";
+    default:
+      return `AI request failed — ${failure.message}`;
   }
 }
 
@@ -1133,18 +1332,18 @@ export async function extractReceiptFields(
     const buf = await blob.arrayBuffer();
     const dataUrl = `data:${contentType};base64,${arrayBufferToBase64(buf)}`;
     const ocr = await ocrReceiptImage(config, dataUrl, model);
-    if (ocr?.amountCents != null) {
+    if ("error" in ocr) {
       return {
-        ocrAmountCents: ocr.amountCents,
-        ocrDate: ocr.date ?? undefined,
-        ocrMerchant: ocr.merchant ?? undefined,
-        ocrConfidence: ocr.confidence ?? undefined,
         ocrModel: model,
+        ocrError: ocrFailureMessage(ocr.error, config.provider, "scanned_pdf"),
       };
     }
     return {
+      ocrAmountCents: ocr.amountCents ?? undefined,
+      ocrDate: ocr.date ?? undefined,
+      ocrMerchant: ocr.merchant ?? undefined,
+      ocrConfidence: ocr.confidence ?? undefined,
       ocrModel: model,
-      ocrError: "Scanned PDF — the vision model could not read a total off it.",
     };
   }
 
@@ -1152,20 +1351,18 @@ export async function extractReceiptFields(
   const buf = await blob.arrayBuffer();
   const dataUrl = `data:${contentType};base64,${arrayBufferToBase64(buf)}`;
   const ocr = await ocrReceiptImage(config, dataUrl, model);
-  if (ocr?.amountCents != null) {
+  if ("error" in ocr) {
     return {
-      ocrAmountCents: ocr.amountCents,
-      ocrDate: ocr.date ?? undefined,
-      ocrMerchant: ocr.merchant ?? undefined,
-      ocrConfidence: ocr.confidence ?? undefined,
       ocrModel: model,
+      ocrError: ocrFailureMessage(ocr.error, config.provider, "image"),
     };
   }
   return {
+    ocrAmountCents: ocr.amountCents ?? undefined,
+    ocrDate: ocr.date ?? undefined,
+    ocrMerchant: ocr.merchant ?? undefined,
+    ocrConfidence: ocr.confidence ?? undefined,
     ocrModel: model,
-    ocrError: process.env.OPENROUTER_API_KEY
-      ? "The vision model could not read a total off this receipt."
-      : "Vision OCR is not configured (no API key) — extraction was skipped.",
   };
 }
 
@@ -1297,6 +1494,7 @@ async function runPipeline(
         filename: "email body",
         ocrAmountCents: parsed.amountCents ?? undefined,
         ocrDate: parsed.date ?? undefined,
+        ocrMerchant: parsed.merchant ?? undefined,
         ocrConfidence: parsed.amountCents != null ? 0.5 : 0,
         ocrError:
           parsed.amountCents == null
@@ -1324,6 +1522,19 @@ async function runPipeline(
       },
     });
     return null;
+  }
+
+  // 3b. Merchant FALLBACK: when extraction (body parse or vision OCR) found no
+  //     merchant, derive one from the email envelope (`deriveMerchantFromEmail`
+  //     — display name > sending domain > subject fragment) so `ocrMerchant`
+  //     isn't left blank when the receipt itself carried no readable business
+  //     name (e.g. a bare Givebutter donation confirmation). NEVER overwrites a
+  //     real extracted merchant — only fills a gap.
+  for (const ex of extracted) {
+    if (!ex.ocrMerchant) {
+      const fallback = deriveMerchantFromEmail(row.fromEmail, row.subject);
+      if (fallback) ex.ocrMerchant = fallback;
+    }
   }
 
   // 4. Match each extracted receipt against the sender-chapter's unreceipted

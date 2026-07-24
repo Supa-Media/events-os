@@ -35,8 +35,16 @@ export interface AiEngineConfig {
    *  and `/v1/models`. */
   baseUrl: string;
   apiKey: string | null;
-  /** The global default model for the active provider, or null when unset. */
+  /** The GLOBAL default model for the active provider (coding + assistant
+   *  call sites), or null when unset. */
   model: string | null;
+  /** The DEDICATED receipt-OCR model (fix 4), or null when unset — a general
+   *  reasoning model set as the global `model` above must NEVER silently
+   *  become the OCR model (it's tuned for conversation, not document
+   *  extraction, and degrades badly on a busy receipt photo). Only
+   *  `receiptInbox.ts#resolveOcrModel` consults this field; `model` above is
+   *  untouched for every other call site. */
+  ocrModel: string | null;
 }
 
 /** A normalized token-usage read (provider-agnostic). `costUsd` is only present
@@ -147,10 +155,179 @@ function providerLabel(provider: AiEngineProvider): string {
   return provider === "ollama" ? "Ollama" : "OpenRouter";
 }
 
+// ── Ollama NATIVE image path (OpenAI-compat `image_url` doesn't reliably work) ─
+/** The OpenAI-compat content-part shape callers build (`chatUrl`'s wire
+ *  format) — narrow local types just for detecting/translating image parts,
+ *  not a full schema (the request body itself stays `unknown[]`). */
+interface OpenAiContentPart {
+  type?: string;
+  text?: string;
+  image_url?: { url?: string };
+}
+interface OpenAiMessage {
+  role?: string;
+  content?: string | OpenAiContentPart[];
+}
+
+/** True iff ANY message carries an `image_url` content part (OpenAI/OpenRouter
+ *  multimodal shape) — the signal that decides an Ollama call must reroute to
+ *  the native `/api/chat` endpoint (see `chatCompletion`'s doc). */
+function messagesContainImage(messages: unknown[]): boolean {
+  return messages.some((m) => {
+    const msg = m as OpenAiMessage;
+    if (!Array.isArray(msg?.content)) return false;
+    return msg.content.some(
+      (part) => part?.type === "image_url" && !!part.image_url?.url,
+    );
+  });
+}
+
+/** Strip a data URL's `data:<mime>;base64,` prefix — Ollama's native `images`
+ *  field wants BARE base64, unlike OpenAI-compat's `image_url.url` data URL. */
+function stripDataUrlPrefix(dataUrl: string): string {
+  const idx = dataUrl.indexOf("base64,");
+  return idx === -1 ? dataUrl : dataUrl.slice(idx + "base64,".length);
+}
+
+/** Translate OpenAI-compat messages (string content, or an array of text/
+ *  image_url parts) into Ollama's native chat shape: `content` is the
+ *  concatenated TEXT (a plain string, never an array), and an `images` array
+ *  of bare-base64 strings carries any image parts. A text-only message keeps
+ *  `{role, content}` with no `images` key. */
+function toOllamaNativeMessages(
+  messages: unknown[],
+): { role: string; content: string; images?: string[] }[] {
+  return messages.map((m) => {
+    const msg = m as OpenAiMessage;
+    const role = msg?.role ?? "user";
+    if (typeof msg?.content === "string") return { role, content: msg.content };
+    if (!Array.isArray(msg?.content)) return { role, content: "" };
+    const text = msg.content
+      .filter((p): p is OpenAiContentPart & { text: string } => p?.type === "text" && typeof p.text === "string")
+      .map((p) => p.text)
+      .join("\n");
+    const images = msg.content
+      .filter((p): p is OpenAiContentPart & { image_url: { url: string } } =>
+        p?.type === "image_url" && typeof p.image_url?.url === "string",
+      )
+      .map((p) => stripDataUrlPrefix(p.image_url.url));
+    return images.length ? { role, content: text, images } : { role, content: text };
+  });
+}
+
+/**
+ * Ollama's NATIVE `/api/chat` endpoint (not the OpenAI-compat
+ * `/v1/chat/completions`) — used ONLY for an image-bearing Ollama call, since
+ * Ollama's compat endpoint does not reliably ingest `image_url` content parts:
+ * it returns 200 as if no image were attached, so a real receipt photo
+ * silently reads as "no total" instead of a visible error (see
+ * `chatCompletion`'s doc for the full story). Same typed-error contract as
+ * the compat path (http/network/timeout), so callers can't tell the
+ * difference except by what actually reached the model.
+ */
+async function ollamaNativeChatCompletion(
+  config: AiEngineConfig,
+  request: ChatCompletionRequest,
+): Promise<ChatCompletionResult> {
+  const label = "Ollama";
+  const body: Record<string, unknown> = {
+    model: request.model,
+    messages: toOllamaNativeMessages(request.messages),
+    stream: false,
+  };
+  if (request.responseFormat?.type === "json_object") body.format = "json";
+
+  const timeoutMs = request.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let res: Response;
+  try {
+    res = await fetch(`${origin(config)}/api/chat`, {
+      method: "POST",
+      signal: controller.signal,
+      headers: requestHeaders(config),
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    const aborted = err instanceof Error && err.name === "AbortError";
+    return {
+      ok: false,
+      kind: aborted ? "timeout" : "network",
+      status: null,
+      retryable: true,
+      message: aborted
+        ? `The ${label} request timed out after ${Math.round(timeoutMs / 1000)}s.`
+        : `The ${label} request failed to reach the server (${String(err)}).`,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (!res.ok) {
+    const bodyText = await safeText(res);
+    const retryable = res.status === 429 || res.status >= 500;
+    return {
+      ok: false,
+      kind: "http",
+      status: res.status,
+      retryable,
+      bodySnippet: bodyText.slice(0, 300),
+      message: `${label} returned ${res.status} for model "${request.model}": ${
+        bodyText.slice(0, 200) || "(no body)"
+      }`,
+    };
+  }
+
+  let json: any;
+  try {
+    json = await res.json();
+  } catch {
+    return {
+      ok: false,
+      kind: "parse",
+      status: res.status,
+      retryable: false,
+      message: `Could not parse the ${label} response as JSON.`,
+    };
+  }
+
+  const message: Record<string, unknown> =
+    (json?.message as Record<string, unknown>) ?? { role: "assistant", content: "" };
+  const usage: NormalizedUsage | undefined =
+    json?.prompt_eval_count != null || json?.eval_count != null
+      ? {
+          promptTokens: json?.prompt_eval_count ?? 0,
+          completionTokens: json?.eval_count ?? 0,
+          raw: json,
+        }
+      : undefined;
+
+  return {
+    ok: true,
+    content: typeof message.content === "string" ? message.content : "",
+    reasoning: typeof message.thinking === "string" ? message.thinking : null,
+    toolCalls: Array.isArray(message.tool_calls)
+      ? (message.tool_calls as NormalizedToolCall[])
+      : undefined,
+    usage,
+    message,
+    model: request.model,
+  };
+}
+
 /**
  * One chat-completions call against the active provider. Returns a normalized
  * success or a typed error — NEVER throws for an API/network failure. A missing
  * key short-circuits to a `no_key` error (no fetch).
+ *
+ * OLLAMA + IMAGES: Ollama's OpenAI-compat `/v1/chat/completions` does not
+ * reliably ingest `image_url` content parts (a documented Ollama limitation)
+ * — it replies 200 as if no image were attached, so a real receipt photo
+ * silently reads as "the model found no total" rather than a visible error.
+ * An image-bearing Ollama request reroutes to `ollamaNativeChatCompletion`
+ * (Ollama's NATIVE `/api/chat`, which DOES accept images). OpenRouter's
+ * compat `image_url` support is unaffected and untouched; a text-only Ollama
+ * call also stays on the compat path below, unchanged.
  */
 export async function chatCompletion(
   config: AiEngineConfig,
@@ -165,6 +342,10 @@ export async function chatCompletion(
       retryable: false,
       message: `No API key is configured for the ${label} AI provider.`,
     };
+  }
+
+  if (config.provider === "ollama" && messagesContainImage(request.messages)) {
+    return await ollamaNativeChatCompletion(config, request);
   }
 
   const body: Record<string, unknown> = {

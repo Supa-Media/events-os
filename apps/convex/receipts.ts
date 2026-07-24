@@ -79,6 +79,9 @@ const DUPLICATE_SCAN_LIMIT = 500;
 /** `submitUploadedReceipts`' per-call cap — a mass-upload backfill batch, not
  *  an unbounded bulk import. */
 const MAX_UPLOAD_BATCH = 25;
+/** `findSoftDuplicateMatches`' cap — the "why is this flagged" list is a
+ *  quick-scan callout, not an exhaustive report. */
+const MAX_DUPLICATE_MATCHES = 5;
 
 // ── Small shared projections ─────────────────────────────────────────────────
 /** A linked/candidate/duplicate-of transaction, resolved to display fields. */
@@ -157,6 +160,12 @@ async function toReceiptSummary(ctx: QueryCtx, r: Doc<"receipts">) {
  * different photos of what's probably the same purchase). Bounded to
  * `DUPLICATE_SCAN_LIMIT`, so a very old collision outside the window is missed
  * — acceptable for a soft, review-only signal (never a hard block).
+ *
+ * A receipt with `duplicateDismissed` set ("I checked, not a duplicate") is
+ * EXCLUDED from the returned set — its own `softDuplicate` output goes false
+ * — but STILL counts toward the collision group for everyone else: an
+ * undismissed sibling sharing the same amount+date keeps flagging. Dismissal
+ * is a per-receipt human assertion, not a group-wide mute.
  */
 async function computeSoftDuplicates(
   ctx: QueryCtx,
@@ -167,19 +176,53 @@ async function computeSoftDuplicates(
     .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
     .order("desc")
     .take(DUPLICATE_SCAN_LIMIT);
-  const byKey = new Map<string, Id<"receipts">[]>();
+  const byKey = new Map<string, Doc<"receipts">[]>();
   for (const r of scan) {
     if (r.amountCents == null || r.receiptDate == null) continue;
     const key = `${r.amountCents}:${r.receiptDate}`;
     const arr = byKey.get(key);
-    if (arr) arr.push(r._id);
-    else byKey.set(key, [r._id]);
+    if (arr) arr.push(r);
+    else byKey.set(key, [r]);
   }
   const dupes = new Set<Id<"receipts">>();
-  for (const ids of byKey.values()) {
-    if (ids.length > 1) for (const id of ids) dupes.add(id);
+  for (const rows of byKey.values()) {
+    if (rows.length > 1) {
+      for (const r of rows) if (!r.duplicateDismissed) dupes.add(r._id);
+    }
   }
   return dupes;
+}
+
+/**
+ * The OTHER receipt(s) in this chapter that share `receipt`'s canonical
+ * amount+date — EXACTLY the `computeSoftDuplicates` collision criteria,
+ * surfaced so a flagged receipt's "why" is answerable (and actionable — the
+ * mobile detail view links straight to each one). Excludes itself and its
+ * own EXACT-file group (any receipt sharing `fileSha256`, which already has
+ * its own dedicated `duplicateOf`/"jump to original" callout — repeating it
+ * here would be noise, not a second signal). Bounded to
+ * `MAX_DUPLICATE_MATCHES`, newest first.
+ */
+async function findSoftDuplicateMatches(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  receipt: Doc<"receipts">,
+): Promise<Doc<"receipts">[]> {
+  if (receipt.amountCents == null || receipt.receiptDate == null) return [];
+  const scan = await ctx.db
+    .query("receipts")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .order("desc")
+    .take(DUPLICATE_SCAN_LIMIT);
+  return scan
+    .filter(
+      (r) =>
+        r._id !== receipt._id &&
+        r.amountCents === receipt.amountCents &&
+        r.receiptDate === receipt.receiptDate &&
+        !(receipt.fileSha256 && r.fileSha256 === receipt.fileSha256),
+    )
+    .slice(0, MAX_DUPLICATE_MATCHES);
 }
 
 // ── listReceipts (the library view) ──────────────────────────────────────────
@@ -257,6 +300,18 @@ const duplicateOfSummary = v.object({
   linkCount: v.number(),
 });
 
+/** A soft-duplicate MATCH — the other receipt(s) sharing this one's amount+
+ *  date (see `findSoftDuplicateMatches`), the "why is this flagged" list the
+ *  mobile detail view renders as tappable rows. */
+const duplicateMatchSummary = v.object({
+  _id: v.id("receipts"),
+  url: v.union(v.string(), v.null()),
+  amountCents: v.union(v.number(), v.null()),
+  receiptDate: v.union(v.number(), v.null()),
+  merchant: v.union(v.string(), v.null()),
+  linkCount: v.number(),
+});
+
 const receiptDetail = v.object({
   ...receiptSummary.fields,
   ocrModel: v.union(v.string(), v.null()),
@@ -266,6 +321,10 @@ const receiptDetail = v.object({
   linkedTransactions: v.array(txnRef),
   candidateTransactions: v.array(txnRef),
   duplicateOf: v.union(duplicateOfSummary, v.null()),
+  // Populated only when `softDuplicate` is true — every OTHER receipt this
+  // one collides with on amount+date (see `findSoftDuplicateMatches`), so
+  // "possible duplicate" is actionable instead of a dead-end badge.
+  duplicateMatches: v.array(duplicateMatchSummary),
 });
 
 /**
@@ -316,17 +375,63 @@ export const getReceipt = query({
     }
 
     const dupSet = await computeSoftDuplicates(ctx, chapterId);
+    const softDuplicate = dupSet.has(r._id);
+
+    const duplicateMatches = [];
+    if (softDuplicate) {
+      for (const d of await findSoftDuplicateMatches(ctx, chapterId, r)) {
+        duplicateMatches.push({
+          _id: d._id,
+          url: await ctx.storage.getUrl(d.storageId),
+          amountCents: d.amountCents ?? null,
+          receiptDate: d.receiptDate ?? null,
+          merchant: d.merchant ?? null,
+          linkCount: d.linkCount,
+        });
+      }
+    }
 
     return {
       ...(await toReceiptSummary(ctx, r)),
       ocrModel: r.ocrModel ?? null,
       correctedByPersonId: r.correctedByPersonId ?? null,
       correctedAt: r.correctedAt ?? null,
-      softDuplicate: dupSet.has(r._id),
+      softDuplicate,
       linkedTransactions,
       candidateTransactions,
       duplicateOf,
+      duplicateMatches,
     };
+  },
+});
+
+/**
+ * Dismiss the SOFT-duplicate flag on one receipt — a bookkeeper's "I
+ * checked, this isn't a duplicate." Additive + per-receipt (see
+ * `receipts.duplicateDismissed`'s schema doc and `computeSoftDuplicates`):
+ * only ever silences THIS receipt's own `softDuplicate` output; an
+ * undismissed sibling colliding on the same amount+date keeps flagging on
+ * its own. Never touches the EXACT-file `duplicateOfReceiptId` relationship
+ * — that's a stronger, different signal with its own "jump to original" UI,
+ * not dismissible here. Bookkeeper+, chapter-only.
+ */
+export const dismissDuplicateFlag = mutation({
+  args: { receiptId: v.id("receipts") },
+  returns: v.null(),
+  handler: async (ctx, { receiptId }) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireFinanceRole(ctx, chapterId, "bookkeeper");
+
+    const receipt = await ctx.db.get(receiptId);
+    if (!receipt || receipt.chapterId !== chapterId) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Receipt not found in your chapter.",
+      });
+    }
+
+    await ctx.db.patch(receiptId, { duplicateDismissed: true, updatedAt: Date.now() });
+    return null;
   },
 });
 

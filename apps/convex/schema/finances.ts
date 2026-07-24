@@ -1191,6 +1191,15 @@ export const receipts = defineTable({
   // A duplicate is still stored (never silently dropped — a human may still
   // want to see it) but is never auto-attached and is flagged for review.
   duplicateOfReceiptId: v.optional(v.id("receipts")),
+  // RECEIPT QUALITY PR: a bookkeeper's "I checked, this isn't a duplicate"
+  // — set by `receipts.dismissDuplicateFlag`. Additive + PER-RECEIPT: only
+  // ever silences THIS receipt's own `softDuplicate` output (see
+  // `computeSoftDuplicates`); an undismissed sibling that still collides on
+  // the same amount+date keeps flagging on its own. Never touches the
+  // EXACT-file `duplicateOfReceiptId` relationship above — that's a
+  // different, stronger signal with its own "jump to original" UI, not
+  // dismissible here. Absent (falsy) is the default — every existing row.
+  duplicateDismissed: v.optional(v.boolean()),
 
   createdAt: v.number(),
   updatedAt: v.number(),

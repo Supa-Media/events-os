@@ -507,6 +507,7 @@ describe("readAiEngineConfig (internalQuery) — stored-first → env fallback",
       baseUrl: "https://stored.host",
       apiKey: "stored_ollama_wins",
       model: "gemma4",
+      ocrModel: null,
     });
   });
 
