@@ -322,6 +322,7 @@ const REGISTRY_NAMES = [
   "0038_backfill_contact_only_people",
   "0039_backfill_person_emails",
   "0040_migrate_legacy_audiences",
+  "0041_migrate_guest_audiences",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",
