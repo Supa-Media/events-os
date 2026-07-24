@@ -78,16 +78,97 @@ const RENDER_SCALE = 2;
  * the hash and must update the import below (the render tests catch it: the
  * import fails to resolve and every scanned-PDF test goes red).
  */
-async function initPdfiumLibrary(): Promise<PDFiumLibrary> {
-  const { PDFiumLibrary: Lib } = await import("@hyzyla/pdfium");
+async function decodePdfiumWasm(): Promise<Uint8Array<ArrayBuffer>> {
   const { PDFIUM_WASM_BASE64 } = await import(
     "@hyzyla/pdfium/dist/pdfium.wasm.base64-B4io7kt4.js"
   );
-  const bin = atob(PDFIUM_WASM_BASE64);
-  const bytes = new Uint8Array(bin.length);
-  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  // `Buffer.from(..., "base64")` decodes without materializing an
+  // intermediate binary STRING the way `atob` does — the node action runs
+  // memory-throttled (512MB Lambda), so peak allocations during this decode
+  // matter. Buffer slices come from Node's shared pool, so copy into an
+  // exact-sized standalone ArrayBuffer before handing it to the wasm engine.
+  const decoded = Buffer.from(PDFIUM_WASM_BASE64, "base64");
+  const bytes = new Uint8Array(new ArrayBuffer(decoded.byteLength));
+  bytes.set(decoded);
+  return bytes;
+}
+
+async function initPdfiumLibrary(): Promise<PDFiumLibrary> {
+  const { PDFiumLibrary: Lib } = await import("@hyzyla/pdfium");
+  const bytes = await decodePdfiumWasm();
   return await Lib.init({ wasmBinary: bytes.buffer });
 }
+
+/**
+ * Staged production probe for the pdfium pipeline — exists because a hard
+ * process death in a Convex node action surfaces only as an opaque
+ * `InternalServerError` with every log line LOST (observed 2026-07-24: the
+ * render action died ~20s in with no output). Each invocation runs the
+ * pipeline only UP TO `stage` and returns a timing report, so the killer
+ * stage is identified by which invocation stops coming back rather than by
+ * logs that don't survive. Stages, in order: `imports` (module loads),
+ * `decode` (base64 → bytes), `compile` (raw `new WebAssembly.Module` —
+ * isolates V8's wasm compile from emscripten entirely), `init` (the
+ * package's emscripten glue), `render` (needs `storageId`: load + render
+ * page 1 + PNG-encode, nothing stored). Ops-only; nothing in the product
+ * pipeline calls this.
+ */
+export const pdfiumProbe = internalAction({
+  args: { stage: v.string(), storageId: v.optional(v.id("_storage")) },
+  returns: v.string(),
+  handler: async (ctx, { stage, storageId }) => {
+    const report: string[] = [];
+    const t0 = Date.now();
+    const mark = (label: string) => {
+      report.push(`${label}@${Date.now() - t0}ms`);
+    };
+    try {
+      const { PDFiumLibrary: Lib } = await import("@hyzyla/pdfium");
+      mark("imports-ok");
+      if (stage === "imports") return report.join(" ");
+
+      const bytes = await decodePdfiumWasm();
+      mark(`decode-ok:${bytes.byteLength}b`);
+      if (stage === "decode") return report.join(" ");
+
+      const module = new WebAssembly.Module(bytes);
+      mark(`compile-ok:${module ? "module" : "?"}`);
+      if (stage === "compile") return report.join(" ");
+
+      const library = await Lib.init({ wasmBinary: bytes.buffer });
+      mark("init-ok");
+      if (stage === "init" || !storageId) {
+        library.destroy();
+        mark("destroy-ok");
+        return report.join(" ");
+      }
+
+      const blob = await ctx.storage.get(storageId);
+      if (!blob) {
+        library.destroy();
+        return report.join(" ") + " blob-missing";
+      }
+      const doc = await library.loadDocument(new Uint8Array(await blob.arrayBuffer()));
+      mark(`load-ok:${doc.getPageCount()}p`);
+      const page = doc.getPage(0);
+      const rendered = await page.render({ scale: RENDER_SCALE, render: "bitmap" });
+      mark(`render-ok:${rendered.width}x${rendered.height}`);
+      const png = encodePng({
+        width: rendered.width,
+        height: rendered.height,
+        data: rendered.data,
+        channels: 4,
+      });
+      mark(`encode-ok:${png.length}b`);
+      doc.destroy();
+      library.destroy();
+      mark("destroy-ok");
+      return report.join(" ");
+    } catch (err) {
+      return report.join(" ") + ` ERROR: ${String(err)}`;
+    }
+  },
+});
 
 export const extractPdfText = internalAction({
   args: { storageId: v.id("_storage") },

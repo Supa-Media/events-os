@@ -1530,10 +1530,23 @@ export async function extractReceiptFields(
     // a native canvas addon that broke bundling); pdfium is pure WASM, so it
     // bundles, and a rendered `image/png` is a completely different payload
     // than the raw PDF bytes the invariant guards against.
-    const { pages } = await ctx.runAction(internal.receiptPdf.renderScannedPdfPages, {
-      storageId,
-      maxPages: SCANNED_PDF_RENDER_MAX_PAGES,
-    });
+    // The render action's own contract is degrade-to-`{pages: []}`, but a
+    // hard process death inside the node runtime (e.g. the wasm engine
+    // killing the worker — observed in prod 2026-07-24 as an opaque
+    // InternalServerError with no logs) surfaces HERE as a throw from
+    // `runAction`. That must degrade like every other failure in this
+    // pipeline — a receipt with a clear `ocrError`, never a crashed
+    // retry/pipeline run.
+    let pages: { storageId: Id<"_storage"> }[];
+    try {
+      ({ pages } = await ctx.runAction(internal.receiptPdf.renderScannedPdfPages, {
+        storageId,
+        maxPages: SCANNED_PDF_RENDER_MAX_PAGES,
+      }));
+    } catch (err) {
+      console.log(`[receiptInbox] scanned-PDF render action failed hard: ${String(err)}`);
+      return { ocrError: SCANNED_PDF_UNREADABLE_MESSAGE };
+    }
     if (pages.length === 0) {
       // Rendering couldn't help either — a malformed/unrenderable PDF, or a
       // pdfium init/render failure. Degrade to the same clear,
