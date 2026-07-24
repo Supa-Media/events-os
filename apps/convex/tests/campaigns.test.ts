@@ -2114,7 +2114,11 @@ describe("two-party approval — content drift", () => {
 describe("two-party approval — content drift (hand-picked audiences)", () => {
   async function seedPersonFiltersAudience(
     s: ChapterSetup,
-    opts: { includePersonIds?: Id<"people">[]; excludePersonIds?: Id<"people">[] } = {},
+    opts: {
+      includePersonIds?: Id<"people">[];
+      excludePersonIds?: Id<"people">[];
+      excludeFilters?: Record<string, unknown>;
+    } = {},
   ): Promise<Id<"audiences">> {
     return run(s.t, (ctx) =>
       ctx.db.insert("audiences", {
@@ -2122,6 +2126,7 @@ describe("two-party approval — content drift (hand-picked audiences)", () => {
         name: "Hand-picked",
         source: "person_filters",
         filters: {},
+        excludeFilters: opts.excludeFilters,
         includePersonIds: opts.includePersonIds,
         excludePersonIds: opts.excludePersonIds,
         createdBy: s.userId,
@@ -2263,6 +2268,105 @@ describe("two-party approval — content drift (hand-picked audiences)", () => {
       audienceId,
       includePersonIds: [],
       excludePersonIds: [],
+    });
+
+    await reviewer.as.mutation(api.campaigns.approveCampaign, { campaignId });
+    const campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
+    expect(campaign.status).toBe("approved");
+  });
+
+  // excludeFilters (property-level exclusions) is a NEW targeting dimension
+  // — `computeCampaignSnapshotHash` must bind it exactly like `filters`, or
+  // editing it post-submit/post-approval slips past both drift checks (the
+  // same #399x#407 cross-feature hole class the includePersonIds/
+  // excludePersonIds tests above pin).
+  test("editing excludeFilters while pending → approve throws CONTENT_DRIFT", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await configureResend(s);
+    const audienceId = await seedPersonFiltersAudience(s);
+    const campaignId = await s.as.mutation(api.campaigns.createCampaign, {
+      scope: "central",
+      name: "N",
+      subject: "Hi",
+      audienceId,
+      doc: heroDoc(),
+    });
+    await seedSelfPerson(s);
+    const reviewer = await seedReviewer(s);
+    await s.as.mutation(api.campaigns.submitForApproval, {
+      campaignId,
+      purpose: "P",
+      reviewerPersonId: reviewer.personId,
+    });
+
+    await s.as.mutation(api.audiences.updateAudience, {
+      audienceId,
+      excludeFilters: { donorStatus: "active" },
+    });
+
+    expect(
+      await errorCode(reviewer.as.mutation(api.campaigns.approveCampaign, { campaignId })),
+    ).toBe("CONTENT_DRIFT");
+  });
+
+  test("approved, then excludeFilters is edited afterward → send() RECORDS a changed-since-approval failure", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await configureResend(s);
+    const audienceId = await seedPersonFiltersAudience(s, { excludeFilters: { donorStatus: "active" } });
+    const campaignId = await s.as.mutation(api.campaigns.createCampaign, {
+      scope: "central",
+      name: "N",
+      subject: "Hi",
+      audienceId,
+      doc: heroDoc(),
+    });
+    await seedSelfPerson(s);
+    const reviewer = await seedReviewer(s);
+    await s.as.mutation(api.campaigns.submitForApproval, {
+      campaignId,
+      purpose: "P",
+      reviewerPersonId: reviewer.personId,
+    });
+    await reviewer.as.mutation(api.campaigns.approveCampaign, { campaignId });
+
+    await s.as.mutation(api.audiences.updateAudience, {
+      audienceId,
+      excludeFilters: { donorStatus: "lapsed" },
+    });
+
+    await s.as.mutation(api.campaigns.send, { campaignId });
+    const campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
+    expect(campaign.status).toBe("failed");
+    expect(campaign.error).toMatch(/changed since it was approved/);
+  });
+
+  test("hash stability: an unset excludeFilters and re-saving the SAME excludeFilters both hash identically (no false drift)", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await configureResend(s);
+    const audienceId = await seedPersonFiltersAudience(s, { excludeFilters: { donorStatus: "active" } });
+    const campaignId = await s.as.mutation(api.campaigns.createCampaign, {
+      scope: "central",
+      name: "N",
+      subject: "Hi",
+      audienceId,
+      doc: heroDoc(),
+    });
+    await seedSelfPerson(s);
+    const reviewer = await seedReviewer(s);
+    await s.as.mutation(api.campaigns.submitForApproval, {
+      campaignId,
+      purpose: "P",
+      reviewerPersonId: reviewer.personId,
+    });
+
+    // Re-saving the IDENTICAL excludeFilters value (e.g. the picker's Save
+    // flow round-tripping the same criteria) must not itself read as drift.
+    await s.as.mutation(api.audiences.updateAudience, {
+      audienceId,
+      excludeFilters: { donorStatus: "active" },
     });
 
     await reviewer.as.mutation(api.campaigns.approveCampaign, { campaignId });
