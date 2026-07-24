@@ -5,6 +5,7 @@ import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { createReceipt } from "../lib/receiptLinks";
 import { PDF_TEXT_LAYER_PROVENANCE } from "../receiptInbox";
+import { scannedPageRenderScale } from "../receiptPdf";
 
 /**
  * PDF text-layer extraction AND scanned-PDF rasterization (`receiptPdf.ts`,
@@ -319,6 +320,33 @@ describe("receiptPdf.renderScannedPdfPages", () => {
       maxPages: 3,
     });
     expect(uncapped.pages.length).toBe(2);
+  });
+});
+
+// ── scannedPageRenderScale (the bitmap-size guard) ───────────────────────────
+// A scale-2 render of a tall phone-scan page allocates a ~48MB RGBA bitmap
+// per page in the node worker's wasm memory — three pages of that OOM-killed
+// the 512MB prod worker as an uncatchable process death. The scale must cap
+// the LONGEST output dimension at 2000px while leaving normal receipt pages
+// at the full 2x.
+describe("scannedPageRenderScale", () => {
+  test("a normal receipt page keeps the full 2x", () => {
+    expect(scannedPageRenderScale(612, 792)).toBe(2); // US letter
+    expect(scannedPageRenderScale(300, 144)).toBe(2); // small digital receipt
+  });
+
+  test("an oversized scan page shrinks so the longest side is 2000px", () => {
+    // The prod-observed Costco scan: 1179x2556pt → 2x would be 5112px tall.
+    const scale = scannedPageRenderScale(1179, 2556);
+    expect(scale).toBeCloseTo(2000 / 2556, 5);
+    expect(Math.round(2556 * scale)).toBe(2000);
+    expect(scale).toBeLessThan(1);
+  });
+
+  test("degenerate page sizes fall back to the plain ceiling", () => {
+    expect(scannedPageRenderScale(0, 0)).toBe(2);
+    expect(scannedPageRenderScale(-5, Number.NaN)).toBe(2);
+    expect(scannedPageRenderScale(Number.POSITIVE_INFINITY, 10)).toBe(2);
   });
 });
 

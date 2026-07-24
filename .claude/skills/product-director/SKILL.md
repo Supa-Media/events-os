@@ -213,6 +213,14 @@ Before finishing a run of this skill, you MUST:
   logs. `_system/cli/*` UDFs are NOT runnable via `convex run`.
 - After any deploy that changes an action's behavior, re-probe the REAL
   failing artifact in prod before telling the user it's fixed.
+- Root cause landed one layer deeper than each hypothesis: not the wasm
+  asset (fixed, still died), not V8 compile, not emscripten init (staged
+  probe cleared both in <1s), but BITMAP SIZE — scale-2 rendering a tall
+  phone-scan page = ~48MB RGBA per page × 3 pages OOM-killed the 512MB
+  worker (uncatchable, log-less). Fixture-size blindness: local tests used
+  300×144pt PDFs; prod scans are 1179×2556pt. Cap OUTPUT DIMENSIONS (2000px
+  longest side), never use a fixed scale on user-supplied page sizes — and
+  test with production-shaped inputs, not toy fixtures.
 - Full email workstream shipped in one session-day: #323 revival → #399
   approval gate → #401 identity backbone → 0039 hotfix (#405) → #402
   personEmails → #407 audience picker. Pattern that converged: implement →

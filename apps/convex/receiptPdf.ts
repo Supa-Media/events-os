@@ -49,11 +49,36 @@ import { encode as encodePng } from "fast-png";
 import type { PDFiumLibrary } from "@hyzyla/pdfium";
 import type { Id } from "./_generated/dataModel";
 
-/** Render scale for a rasterized scanned-PDF page — matches the client
- *  rasterizer's own `RENDER_SCALE` (`apps/mobile/lib/receiptPdfRasterize.web.ts`)
- *  so a server-rendered page and a client-rendered one read at the same
- *  effective resolution for the vision model. */
+/** Preferred render scale for a rasterized scanned-PDF page — matches the
+ *  client rasterizer's own `RENDER_SCALE`
+ *  (`apps/mobile/lib/receiptPdfRasterize.web.ts`) so a server-rendered page
+ *  and a client-rendered one read at the same effective resolution for the
+ *  vision model. A CEILING, not a constant: see `scannedPageRenderScale`. */
 const RENDER_SCALE = 2;
+
+/** Longest output dimension a rendered page may have, in pixels. Plenty for
+ *  the vision model (which downscales large inputs anyway — small print on a
+ *  receipt is legible well below this), and the bound that keeps rendering
+ *  alive on the node worker: an RGBA bitmap is `w*h*4` bytes of wasm linear
+ *  memory PLUS JS-side copies, so a scale-2 render of a tall phone scan
+ *  (observed in prod: 2358×5112 = ~48MB per page, three pages per PDF)
+ *  OOM-kills the memory-capped worker as an uncatchable process death
+ *  (opaque InternalServerError, all logs lost — prod-verified 2026-07-24).
+ *  At 2000px the same page is ~7MB of bitmap. */
+const MAX_RENDER_DIM_PX = 2000;
+
+/**
+ * Per-page render scale: the preferred `RENDER_SCALE`, shrunk so the longest
+ * output dimension never exceeds `MAX_RENDER_DIM_PX`. A normal receipt PDF
+ * page (letter/A4, ≤1000pt) still gets the full 2x; only oversized scan pages
+ * scale down. Exported for unit tests; degenerate page sizes fall back to the
+ * plain ceiling rather than a zero/negative/infinite scale.
+ */
+export function scannedPageRenderScale(widthPt: number, heightPt: number): number {
+  const longest = Math.max(widthPt, heightPt);
+  if (!Number.isFinite(longest) || longest <= 0) return RENDER_SCALE;
+  return Math.min(RENDER_SCALE, MAX_RENDER_DIM_PX / longest);
+}
 
 /**
  * Instantiate the PDFium WASM module with the binary passed EXPLICITLY —
@@ -151,8 +176,10 @@ export const pdfiumProbe = internalAction({
       const doc = await library.loadDocument(new Uint8Array(await blob.arrayBuffer()));
       mark(`load-ok:${doc.getPageCount()}p`);
       const page = doc.getPage(0);
-      const rendered = await page.render({ scale: RENDER_SCALE, render: "bitmap" });
-      mark(`render-ok:${rendered.width}x${rendered.height}`);
+      const { originalWidth, originalHeight } = page.getOriginalSize();
+      const scale = scannedPageRenderScale(originalWidth, originalHeight);
+      const rendered = await page.render({ scale, render: "bitmap" });
+      mark(`render-ok:${rendered.width}x${rendered.height}@${scale.toFixed(3)}x`);
       const png = encodePng({
         width: rendered.width,
         height: rendered.height,
@@ -230,7 +257,11 @@ export const renderScannedPdfPages = internalAction({
         for (const page of doc.pages()) {
           if (index >= maxPages) break;
           index++;
-          const rendered = await page.render({ scale: RENDER_SCALE, render: "bitmap" });
+          const { originalWidth, originalHeight } = page.getOriginalSize();
+          const rendered = await page.render({
+            scale: scannedPageRenderScale(originalWidth, originalHeight),
+            render: "bitmap",
+          });
           const png = encodePng({
             width: rendered.width,
             height: rendered.height,
