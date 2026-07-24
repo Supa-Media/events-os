@@ -599,6 +599,11 @@ describe("previewAudience — people", () => {
     });
     expect(preview.count).toBe(1);
     expect(preview.sample.map((r) => r.email)).toEqual(["reachable@example.com"]);
+    // Data-trust fix: the legacy `people` resolver used to drop opted-out
+    // rows with no preview signal at all (unlike `person_filters`, which
+    // already counted this via `excludedOptOut`) — both sources must now
+    // explain their counts consistently.
+    expect(preview.excludedOptOut).toBe(1);
   });
 
   test("no personEmails rows yet — falls back to pwEmail ?? email (pre-Phase-2 behavior)", async () => {
