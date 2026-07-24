@@ -945,7 +945,9 @@ export const suggestMatches = query({
     return await matchReceiptCandidates(ctx, {
       chapterId,
       amountCents: receipt.amountCents,
-      receiptDate: receipt.receiptDate ?? receipt.createdAt,
+      // No canonical date → match on amount alone (never `createdAt`, which
+      // would wrongly window out older same-amount charges — the auto-match bug).
+      receiptDate: receipt.receiptDate ?? undefined,
       ocrMerchant: receipt.merchant ?? receipt.ocrMerchant,
     });
   },
@@ -1344,7 +1346,8 @@ async function runUploadPipeline(
     const candidates = await ctx.runQuery(internal.receiptInbox.findReceiptMatches, {
       chapterId: receipt.chapterId,
       amountCents: result.ocrAmountCents,
-      receiptDate: result.ocrDate ?? receipt.createdAt,
+      // No parsed date → match on amount alone (never the upload time).
+      receiptDate: result.ocrDate ?? undefined,
       ocrMerchant: result.ocrMerchant ?? undefined,
     });
     candidateTransactionIds = candidates.map((c) => c.transactionId);
@@ -1582,7 +1585,8 @@ async function computeRetryExtraction(
     const candidates = await ctx.runQuery(internal.receiptInbox.findReceiptMatches, {
       chapterId: receipt.chapterId,
       amountCents: result.ocrAmountCents,
-      receiptDate: result.ocrDate ?? receipt.createdAt,
+      // No parsed date → match on amount alone (never the upload time).
+      receiptDate: result.ocrDate ?? undefined,
       ocrMerchant: result.ocrMerchant ?? undefined,
     });
     candidateTransactionIds = candidates.map((c) => c.transactionId);
