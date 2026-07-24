@@ -148,6 +148,30 @@ Before finishing a run of this skill, you MUST:
 
 ## Learnings Log (newest first)
 
+### 2026-07-24 — Run 2 addendum 3 (approval gate #399 shipped; audience recon)
+- Approval-gate PR took FOUR CI/verify fix rounds (typecheck narrowing →
+  pinned seat spec → pinned migration registry + email-block placement →
+  missing link anchor + zero-recipient test). Rounds shrink but budget ~3-4
+  for a 3.5k-line feature PR, not 1.
+- Adversarial verifier with recon-informed prompts caught a REAL SOD bypass
+  (one userId owning two people rows self-approving via its second row) that
+  the implementation agent's own tests missed — always prompt verifiers with
+  the specific bypass classes the domain allows (multi-row identity here).
+- Pinned-spec test class: adding seat capabilities breaks
+  packages/shared/src/seats.test.ts EXPECTED_CAPABILITIES_BY_SEAT; adding a
+  migration breaks apps/convex/tests/migrations.test.ts REGISTRY_NAMES. Sweep
+  ALL pinned specs (grep toEqual on shared constants) when touching seat defs
+  or migrations.
+- Email-link assertions need process.env.APP_URL set in the test (no repo
+  precedent existed — house pattern was asserting context data, not HTML).
+  Conditional-link house pattern (`link ? <a> : ""`) silently ships CTA-less
+  email when env is missing — degrade loudly instead.
+- Founder direction captured: person-centric audiences (source is ALWAYS
+  people; donor/guest→person linkage; personEmails + prefs; filters incl.
+  giving amount/backer/attended-event; hand-picked include/exclude lists;
+  suppression overrides hand-picks). Full design: specs/person-centric-audiences.md
+  — phases there are the roadmap of record.
+
 ### 2026-07-24 — Run 2 addendum 2 (dispatch → merged: #323 revival shipped)
 - Full arc in one run: recon → founder greenlight → revival agent (merge
   main into 62-behind branch) → adversarial verify agent → 2 fix commits →
