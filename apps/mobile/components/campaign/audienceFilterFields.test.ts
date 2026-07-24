@@ -1,9 +1,11 @@
 import { describe, expect, test } from "@jest/globals";
 import {
   dollarsStrToCents,
+  EXCLUDE_FIELD_PREFIX,
   flushPendingNumberFields,
   intStrToNumber,
   resolveNumberField,
+  splitExcludePatch,
 } from "./audienceFilterFields";
 
 describe("resolveNumberField", () => {
@@ -71,5 +73,69 @@ describe("flushPendingNumberFields — the Save WYSIWYG invariant", () => {
       { key: "attendedWithinDays", raw: "", parse: intStrToNumber },
     ]);
     expect(flushed).toEqual({ ok: true, patch: { attendedWithinDays: undefined } });
+  });
+
+  test("the Filters group and the Exclude-people-who group's fields flush together, unambiguously", () => {
+    // Reproduces AudiencesView's shared rawFieldsRef: both the include-side
+    // "Filters" builder and the exclude-side "Exclude people who…" builder
+    // mount DebouncedNumberFields into the SAME registry, distinguished only
+    // by the exclude side's `exclude:` fieldKey prefix (`EXCLUDE_FIELD_PREFIX`).
+    // A single Save must flush both groups' raw text in one pass — see
+    // `splitExcludePatch`'s doc for why the flush itself doesn't need to know
+    // which group a field belongs to.
+    const pending = [
+      { key: "giftCountMin", raw: "3", parse: intStrToNumber },
+      { key: `${EXCLUDE_FIELD_PREFIX}giftCountMin`, raw: "10", parse: intStrToNumber },
+      { key: `${EXCLUDE_FIELD_PREFIX}givingLifetimeMinCents`, raw: "50", parse: dollarsStrToCents },
+    ];
+
+    const flushed = flushPendingNumberFields<Record<string, number | undefined>>(pending);
+    expect(flushed.ok).toBe(true);
+    if (!flushed.ok) return;
+
+    expect(flushed.patch).toEqual({
+      giftCountMin: 3,
+      "exclude:giftCountMin": 10,
+      "exclude:givingLifetimeMinCents": 5000,
+    });
+  });
+});
+
+describe("splitExcludePatch — routes a shared flush back to filters/excludeFilters", () => {
+  test("splits a combined patch into the include and exclude partitions, stripping the prefix", () => {
+    const { include, exclude } = splitExcludePatch<{
+      giftCountMin?: number;
+      givingLifetimeMinCents?: number;
+    }>({
+      giftCountMin: 3,
+      "exclude:giftCountMin": 10,
+      "exclude:givingLifetimeMinCents": 5000,
+    });
+
+    expect(include).toEqual({ giftCountMin: 3 });
+    expect(exclude).toEqual({ giftCountMin: 10, givingLifetimeMinCents: 5000 });
+  });
+
+  test("an empty patch splits into two empty partitions", () => {
+    expect(splitExcludePatch({})).toEqual({ include: {}, exclude: {} });
+  });
+
+  test("a patch with only include-side keys leaves the exclude partition empty", () => {
+    const { include, exclude } = splitExcludePatch<{ giftCountMin?: number }>({
+      giftCountMin: 3,
+    });
+    expect(include).toEqual({ giftCountMin: 3 });
+    expect(exclude).toEqual({});
+  });
+
+  test("a cleared exclude field (undefined value) still routes to the exclude partition", () => {
+    // Clearing an exclude-side field (blank text) must round-trip as
+    // `undefined`, not silently vanish from the patch — mirrors
+    // `flushPendingNumberFields`'s "clearing is a valid flush" case above.
+    const { exclude } = splitExcludePatch<{ attendedWithinDays?: number }>({
+      "exclude:attendedWithinDays": undefined,
+    });
+    expect(exclude).toEqual({ attendedWithinDays: undefined });
+    expect(Object.keys(exclude)).toEqual(["attendedWithinDays"]);
   });
 });

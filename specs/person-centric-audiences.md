@@ -113,6 +113,63 @@ shipped in order — later phases depend on earlier ones' data.
    keep the live count/exclusions/sample preview card and the
    create/save/archive flow unchanged. Approval-gate review cards
    (PR #399) automatically show the richer audience description.
+7. **Property-level exclusions (`excludeFilters`)**: the founder ask this
+   closes — "everyone matching X, EXCEPT anyone matching Y" — where Y is a
+   PROPERTY (not a hand-picked list). `excludeFilters` is the same shape as
+   `filters` (reuses `audienceFiltersValidator`, additive — an existing row's
+   `excludeFilters` is simply `undefined`, which resolves as a no-op),
+   `person_filters` only. Full audience = `(filters ∪ includePersonIds)`
+   MINUS everyone matching `excludeFilters` MINUS `excludePersonIds`, THEN
+   suppression/`marketingOptOut` (unchanged, still absolute and unconditional
+   — see the standing invariant below).
+   - **AND-within-exclude, mirroring include exactly**: every SET exclude
+     criterion must match, via the SAME per-criterion matcher `filters`
+     itself uses (`lib/audienceResolve.ts#personMatchesCriteria`) — the two
+     blocks can never apply different rules for the "same" criterion.
+   - **An explicit exclusion beats a hand-picked include**: curation is not
+     exemption from a property exclusion (consistent with "suppression beats
+     curation," extended to this new dimension). Counted via a diagnostic,
+     `handPickedExcludedByFilters`, when it happens.
+   - **Empty `excludeFilters` is a no-op**, the OPPOSITE of an empty
+     `filters` object (which is "match everyone") — an unset or `{}`
+     `excludeFilters` must never mean "exclude everyone." `verifiedEmailOnly`
+     counts as EFFECTIVELY unset for this purpose too (see below), so an
+     `excludeFilters` whose only set field is `verifiedEmailOnly` is also a
+     no-op, not "exclude everyone."
+   - **`verifiedEmailOnly` is EXCLUDED from `excludeFilters`, deliberately**:
+     as an exclude criterion it would read backwards ("exclude anyone whose
+     resolved address IS verified") — a footgun, not a real use case. The
+     picker UI never offers it in the exclude section; the resolver ignores
+     it there as defense in depth for a row written directly via the API.
+   - **The central-donor fallback (item 4 above) is NOT exempt**: an unlinked
+     central donor is still a member of the audience, so `excludeFilters`
+     must reach it too. Donor-derived criteria (giving amount, gift count,
+     backer status, donor status, gave-within-days) evaluate against the
+     donor row/aggregates directly. Any PERSON-scoped criterion (chapter,
+     attendance, seat, team-vs-contact) can never be verified for a row with
+     no linked `people` record — under AND semantics, an unprovable
+     criterion means the exclude block doesn't match, so the donor
+     conservatively STAYS rather than being silently dropped.
+   - **Read budget**: `excludeFilters` is evaluated ONLY against candidates
+     the include side already loaded (`filters ∪ includePersonIds`, plus the
+     central-donor fallback set) — never a fresh scan of the whole `people`
+     or `donors` table. Cheap, zero-read criteria (chapter, team-vs-contact,
+     donor-set membership — all already-loaded data) are checked before any
+     per-person indexed lookup (attendance, seat), so a candidate failing a
+     cheap criterion never pays for the expensive ones.
+   - **Snapshot-hash back-compat**: `campaigns.ts#computeCampaignSnapshotHash`
+     binds `excludeFilters` into the two-party-approval drift check like
+     every other targeting field — but the hash key is present ONLY when
+     `excludeFilters` has ≥1 effective criterion, so a campaign
+     approved/pending before this feature existed hashes identically to its
+     pre-feature payload (no false `CONTENT_DRIFT` from the deploy alone).
+   - **UI**: an "Exclude people who…" section below the include-side filter
+     chips, built from the exact same chip-group component (minus the
+     verified-email chip — see above), with its own visual separation and a
+     short explainer that a match here is removed even if hand-picked.
+     `excludedByFilters` (a primary, always-visible count, like
+     `excludedOptOut`) and `handPickedExcludedByFilters` (a preview-only
+     diagnostic) surface in the recipients preview.
 
 ## Product invariants (standing, from the founders)
 

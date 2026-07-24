@@ -159,7 +159,10 @@ export function CampaignMetaCard({
             <Text className="text-sm font-semibold text-ink">
               {pluralCount(preview.count, "recipient")}
             </Text>
-            {preview.excludedSuppressed > 0 || preview.excludedUnverified > 0 || preview.excludedOptOut > 0 ? (
+            {preview.excludedSuppressed > 0 ||
+            preview.excludedUnverified > 0 ||
+            preview.excludedOptOut > 0 ||
+            preview.excludedByFilters > 0 ? (
               <Text className="mt-0.5 text-xs text-muted">
                 {[
                   preview.excludedSuppressed > 0
@@ -172,6 +175,10 @@ export function CampaignMetaCard({
                   // sources (guests/donors/people), so this is additive-only.
                   preview.excludedOptOut > 0
                     ? `${pluralCount(preview.excludedOptOut, "person")} opted out`
+                    : null,
+                  // Property-level exclusions (excludeFilters) — same shape.
+                  preview.excludedByFilters > 0
+                    ? `${pluralCount(preview.excludedByFilters, "person")} matched an exclude filter`
                     : null,
                 ]
                   .filter(Boolean)

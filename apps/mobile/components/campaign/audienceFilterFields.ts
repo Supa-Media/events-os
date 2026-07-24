@@ -87,3 +87,34 @@ export function intStrToNumber(str: string): number | undefined {
   const n = Number(str.trim());
   return Number.isFinite(n) ? Math.round(n) : undefined;
 }
+
+/** Prefix `AudiencesView`'s Exclude-people-who group's `DebouncedNumberField`s
+ *  mangle onto their `fieldKey` (e.g. `"exclude:giftCountMin"`) so they
+ *  register into the SAME shared `rawFieldsRef` the Filters group's fields
+ *  use, without colliding on key — both groups' numeric fields flush
+ *  together on Save (one shared WYSIWYG registry, per the file doc), and
+ *  `splitExcludePatch` below is what routes the combined flush back into
+ *  the two separate `filters`/`excludeFilters` patches. */
+export const EXCLUDE_FIELD_PREFIX = "exclude:";
+
+/**
+ * Splits a flushed patch's keys into the include-side and exclude-side
+ * partitions, stripping `EXCLUDE_FIELD_PREFIX` off the exclude keys.
+ * `flushPendingNumberFields` itself is agnostic to WHICH group a field
+ * belongs to (it just resolves raw text → numbers) — this is the one place
+ * that routes the combined result back to `filters`/`excludeFilters`.
+ */
+export function splitExcludePatch<F>(
+  patch: Record<string, number | undefined>,
+): { include: Partial<F>; exclude: Partial<F> } {
+  const include: Record<string, number | undefined> = {};
+  const exclude: Record<string, number | undefined> = {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (key.startsWith(EXCLUDE_FIELD_PREFIX)) {
+      exclude[key.slice(EXCLUDE_FIELD_PREFIX.length)] = value;
+    } else {
+      include[key] = value;
+    }
+  }
+  return { include: include as Partial<F>, exclude: exclude as Partial<F> };
+}

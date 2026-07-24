@@ -67,7 +67,12 @@ function CampaignDetailBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
   const preview = useQuery(
     api.audiences.previewAudience,
     selectedAudience
-      ? { scope: selectedAudience.scope, source: selectedAudience.source, filters: selectedAudience.filters }
+      ? {
+          scope: selectedAudience.scope,
+          source: selectedAudience.source,
+          filters: selectedAudience.filters,
+          excludeFilters: selectedAudience.excludeFilters,
+        }
       : "skip",
   );
 

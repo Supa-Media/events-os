@@ -132,7 +132,7 @@ import { CAMPAIGN_STATUSES } from "./schema/campaigns";
 // `lib/finance.ts` for the reimbursement/budget precedent this mirrors.
 import { assertSeparationOfDuties } from "./lib/finance";
 import { sha256Hex } from "./lib/sha256";
-import { resolveAudienceRecipients } from "./lib/audienceResolve";
+import { hasEffectiveExcludeCriteria, resolveAudienceRecipients } from "./lib/audienceResolve";
 
 const scopeValidator = v.union(v.id("chapters"), v.literal("central"));
 
@@ -430,16 +430,20 @@ function assertCampaignTransition(
  * Deterministic hash over everything an approval decision BINDS: the
  * campaign's own content/sender fields, and its audience's TARGETING
  * DEFINITION (source/scope/filters, AND — person-centric audiences Phase 3
- * — its hand-picked includePersonIds/excludePersonIds) — deliberately NOT
- * the audience's live resolved MEMBERSHIP, which naturally drifts as
- * people/donors/guests come and go (a "matches everyone in Springfield"
- * audience gaining a new match overnight isn't content drift; someone
- * silently changing WHAT it targets is). A hand-pick list IS part of the
- * targeting DEFINITION, not live membership — `audiences.updateAudience`
- * can edit `includePersonIds`/`excludePersonIds` exactly like `filters`, so
- * omitting them here would let a hand-pick edit slip past both the approve-
- * time and send-time checks below (a reviewer approves audience X, the
- * campaign sends to X′). Recomputed and compared at three points: stored at
+ * — its hand-picked includePersonIds/excludePersonIds, AND its property-level
+ * excludeFilters) — deliberately NOT the audience's live resolved
+ * MEMBERSHIP, which naturally drifts as people/donors/guests come and go (a
+ * "matches everyone in Springfield" audience gaining a new match overnight
+ * isn't content drift; someone silently changing WHAT it targets is). A
+ * hand-pick list IS part of the targeting DEFINITION, not live membership —
+ * `audiences.updateAudience` can edit `includePersonIds`/`excludePersonIds`/
+ * `excludeFilters` exactly like `filters`, so omitting ANY of them here
+ * would let that edit slip past both the approve-time and send-time checks
+ * below (a reviewer approves audience X, the campaign sends to X′) — this
+ * is exactly the #399×#407 cross-feature hole class: a NEW targeting
+ * dimension added after two-party approval shipped, that must be bound into
+ * the hash the moment it exists or it's a silent approval-bypass. Recomputed
+ * and compared at three points: stored at
  * submit time (`approvedSnapshotHash`), recomputed and checked at approve
  * time (`approveCampaign`), and recomputed and checked again at send time
  * (`send`) — the last check catches an audience-definition edit made AFTER
@@ -456,6 +460,23 @@ function assertCampaignTransition(
  * deterministic here (not a general-purpose canonical serializer) because
  * every call builds the SAME object with the SAME key insertion order —
  * there's no need to sort keys for that to hash identically call to call.
+ *
+ * `audienceExcludeFilters` (verification-round finding B) is a DELIBERATE
+ * EXCEPTION to "every field always in the payload": the key is only added
+ * when `excludeFilters` is set AND `hasEffectiveExcludeCriteria` says it has
+ * ≥1 real criterion. Every campaign that was `pending_approval`/`approved`
+ * BEFORE this field existed was hashed under a payload shape that never had
+ * this key at all — unconditionally adding it (even as `null`) would have
+ * changed EVERY such campaign's hash the moment this code deployed, throwing
+ * `CONTENT_DRIFT` on its next `approveCampaign` or failing its next `send`
+ * from the deploy alone, not from any real edit. Omitting the key for the
+ * (overwhelmingly common, and after `audiences.ts`'s write-time
+ * normalization, the ONLY reachable) "no effective excludeFilters" case
+ * keeps the payload — and therefore the hash — byte-identical to the
+ * pre-this-PR shape for every campaign that doesn't use the feature. A
+ * campaign that DOES set a real `excludeFilters` still gets full drift
+ * protection: the key is present, and editing it after submit still changes
+ * the hash exactly like every other targeting field.
  */
 function normalizePersonIdList(ids: Id<"people">[] | undefined): string[] {
   return [...(ids ?? [])].map(String).sort();
@@ -466,7 +487,7 @@ async function computeCampaignSnapshotHash(
   campaign: Doc<"campaigns">,
 ): Promise<string> {
   const audience = await ctx.db.get(campaign.audienceId);
-  const payload = {
+  const payload: Record<string, unknown> = {
     doc: campaign.doc,
     subject: campaign.subject,
     previewText: campaign.previewText ?? null,
@@ -478,6 +499,12 @@ async function computeCampaignSnapshotHash(
     audienceIncludePersonIds: normalizePersonIdList(audience?.includePersonIds),
     audienceExcludePersonIds: normalizePersonIdList(audience?.excludePersonIds),
   };
+  // Key omitted entirely (not even `: null`) for every campaign that isn't
+  // using excludeFilters — see the doc above for why this is load-bearing,
+  // not cosmetic.
+  if (audience?.excludeFilters && hasEffectiveExcludeCriteria(audience.excludeFilters)) {
+    payload.audienceExcludeFilters = audience.excludeFilters;
+  }
   return sha256Hex(JSON.stringify(payload));
 }
 
