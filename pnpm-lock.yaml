@@ -30,7 +30,7 @@ importers:
         specifier: workspace:*
         version: link:../../packages/shared
       '@hyzyla/pdfium':
-        specifier: ^2.1.13
+        specifier: 2.1.13
         version: 2.1.13
       '@supa-media/convex':
         specifier: ^1.0.0

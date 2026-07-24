@@ -1,6 +1,3 @@
 {
-  "functions": "apps/convex",
-  "node": {
-    "externalPackages": ["@hyzyla/pdfium"]
-  }
+  "functions": "apps/convex"
 }

@@ -190,6 +190,29 @@ Before finishing a run of this skill, you MUST:
 - apps/mobile tests run under JEST, not vitest — brief the right command.
 - Monitor `persistent: true` still timed out at ~30 min in this harness —
   expect to re-arm the ticker on the timeout notification.
+
+### 2026-07-24 — Run 3 addendum (prod hotfix: wasm loading)
+- "Local + CI green" was NOT prod green: the founder's screenshot proved
+  scanned PDFs still dead-ended. Prod probing via the Run Convex Function
+  workflow (workflow_dispatch → `npx convex run` with the admin deploy key)
+  found the exact errors: Convex's deploy does NOT ship a package's `.wasm`
+  asset next to bundled JS (default pdfium build → ENOENT), and
+  `externalPackages` didn't preserve the layout either; the `browser/base64`
+  fallback is web-compiled and throws "not compiled for this environment" on
+  prod's real Node. The two-tier fallback passed vitest edge-runtime and
+  failed prod — different environments failed OPPOSITE tiers. Fix: import
+  the base64 wasm constant (plain JS, bundles anywhere) and pass
+  `wasmBinary` to `init()` explicitly; pin the dep EXACTLY (hashed chunk
+  filename). Research-agent claim "pdfium embeds its wasm in the JS" was
+  wrong — verify asset-loading claims empirically before shipping.
+- Prod-probe recipe that works: `increase:listChapterIdsForBackfill` (no
+  args) → `receipts:findNextFailedReceipt {chapterId}` →
+  `receipts:runRetryExtraction {receiptId}` → `receipts:getReceiptForProcessing`
+  read-back. `convex run` streams ONLY the direct function's log lines, not
+  nested ctx.runAction logs — probe the inner action directly to see its
+  logs. `_system/cli/*` UDFs are NOT runnable via `convex run`.
+- After any deploy that changes an action's behavior, re-probe the REAL
+  failing artifact in prod before telling the user it's fixed.
 - Full email workstream shipped in one session-day: #323 revival → #399
   approval gate → #401 identity backbone → 0039 hotfix (#405) → #402
   personEmails → #407 audience picker. Pattern that converged: implement →
