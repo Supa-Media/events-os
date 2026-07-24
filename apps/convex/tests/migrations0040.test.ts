@@ -1,7 +1,10 @@
 /// <reference types="vite/client" />
 import { describe, expect, test } from "vitest";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
-import { runMigrateLegacyAudiences } from "../migrations/0040_migrate_legacy_audiences";
+import {
+  runMigrateLegacyAudiences,
+  runMigrateLegacyAudiencesPage,
+} from "../migrations/0040_migrate_legacy_audiences";
 import { resolveAudienceRecipients } from "../lib/audienceResolve";
 import type { Doc, Id } from "../_generated/dataModel";
 
@@ -9,6 +12,17 @@ import type { Doc, Id } from "../_generated/dataModel";
  * Migration 0040 — legacy "people"/"donors" audiences → `person_filters`;
  * "guests" audiences are deliberately left unmigrated (see the migration's
  * own doc). Deterministic, auto-registered, idempotent.
+ *
+ * hotfix 0037-single-paginate sweep (2026-07-24): this file's own doc used to
+ * claim a single `.paginate()` call, but the implementation wrapped it in a
+ * `for(;;)` loop that called `.paginate()` again whenever `audiences` didn't
+ * fit in one page — the same bug class as `0037`/`0039`, just never exercised
+ * in prod (this migration sits after `0039` in the registry, and `0039`
+ * itself was crashing first). Now fixed the same way: one page per call, a
+ * scheduler continuation for the rest. The "single paginate per call" test
+ * below exercises that the ONLY way that actually catches a regression:
+ * separate `run()` calls (each its own execution) threading `continueCursor`,
+ * forced across pages via a `pageSize` override.
  */
 
 async function seedAudience(
@@ -166,5 +180,46 @@ describe("migration 0040 — migrate legacy audiences to person_filters", () => 
     expect(second.migratedFromDonors).toBe(0);
     expect(second.alreadyPersonFilters).toBe(2); // the two now-migrated rows
     expect(second.skippedGuests).toBe(1); // still deliberately skipped every run
+  });
+
+  /**
+   * hotfix 0037-single-paginate sweep: drives `runMigrateLegacyAudiencesPage`
+   * the way the scheduler continuation does in production — separate `run()`
+   * calls (each its own execution) threading `continueCursor` — forced across
+   * THREE pages via `pageSize: 1`, and asserts every row is eventually
+   * migrated with never more than one `.paginate()` per call.
+   */
+  test("runner invocation pattern: single paginate per call across pages", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const peopleId = await seedAudience(s, { source: "people", filters: {} });
+    const donorsId = await seedAudience(s, { source: "donors", filters: { donorStatus: "active" } });
+    const guestsId = await seedAudience(s, { source: "guests", filters: {} });
+
+    const call1 = await run(s.t, (ctx) => runMigrateLegacyAudiencesPage(ctx, null, 1));
+    expect(call1.scanned).toBe(1);
+    expect(call1.isDone).toBe(false);
+    expect(call1.continueCursor).toBeTruthy();
+
+    const call2 = await run(s.t, (ctx) =>
+      runMigrateLegacyAudiencesPage(ctx, call1.continueCursor, 1),
+    );
+    expect(call2.scanned).toBe(1);
+    expect(call2.isDone).toBe(false);
+
+    const call3 = await run(s.t, (ctx) =>
+      runMigrateLegacyAudiencesPage(ctx, call2.continueCursor, 1),
+    );
+    expect(call3.scanned).toBe(1);
+    expect(call3.isDone).toBe(true);
+    expect(call3.continueCursor).toBeNull();
+
+    expect(call1.migratedFromPeople + call2.migratedFromPeople + call3.migratedFromPeople).toBe(1);
+    expect(call1.migratedFromDonors + call2.migratedFromDonors + call3.migratedFromDonors).toBe(1);
+    expect(call1.skippedGuests + call2.skippedGuests + call3.skippedGuests).toBe(1);
+
+    expect((await getAudience(s, peopleId)).source).toBe("person_filters");
+    expect((await getAudience(s, donorsId)).source).toBe("person_filters");
+    expect((await getAudience(s, guestsId)).source).toBe("guests");
   });
 });

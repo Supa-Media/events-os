@@ -1,5 +1,6 @@
 import type { MutationCtx } from "../_generated/server";
 import type { Migration } from "./index";
+import { internal } from "../_generated/api";
 
 /**
  * Legacy audience → `person_filters` migration (person-centric audiences
@@ -79,20 +80,51 @@ import type { Migration } from "./index";
 
 /** Rows per page — bounded reads over the (small) audiences table.
  *
- * PRODUCTION CONSTRAINT (learned from the 0039 hotfix): Convex's runtime
- * enforces at most ONE `.paginate()` call per query/mutation execution —
- * `convex-test` does NOT enforce this, so a violation passes the local/CI
- * suite and only fails against a real deployment. This migration calls
- * `.paginate()` exactly ONCE, over exactly one table (`audiences`) — do NOT
- * add a second `.paginate()` call (over this or any other table) to this
- * function; if a future change needs a second source table, use a
- * stage-encoded cursor (drain table A to completion, then table B, resuming
- * via a single re-entrant cursor param) or split into a scheduler
- * continuation instead, the way `migrations/0035_backfill_receipt_documents.ts`
- * /`migrations.ts#continueReceiptBackfill` already does for a similar bound. */
+ * ============================================================================
+ * ONE `.paginate()` PER INVOCATION — hotfix 0037-single-paginate (prod
+ * incident, 2026-07-24, same sweep that caught this file): Convex hard-fails
+ * a query/mutation that calls `.paginate()` more than once during a SINGLE
+ * execution — `convex-test` does NOT enforce this, so a violation passes the
+ * local/CI suite and only fails against a real deployment (this is exactly
+ * how `0037`/`0039` broke). This file's comment used to CLAIM it only calls
+ * `.paginate()` once, but the surrounding `for(;;)` loop called it again on
+ * every iteration whenever `audiences` didn't fit in one page — the same bug
+ * class, just not yet exercised in prod (this migration sits AFTER `0039` in
+ * the registry, so `runPending` never reached it while `0039` was still
+ * crashing first). Fixed the same way as `0037`: `runMigrateLegacyAudiencesPage`
+ * now processes exactly one page per call; the registry entry
+ * (`runMigrateLegacyAudiences`) runs the first page and, if more remain,
+ * schedules `internal.migrations.continueMigrateLegacyAudiences` to drain the
+ * rest — the same scheduler-continuation shape
+ * `migrations/0035_backfill_receipt_documents.ts` established. Do NOT
+ * reintroduce a loop around `.paginate()` in this file.
+ * ============================================================================
+ */
 const PAGE_SIZE = 200;
 
-export async function runMigrateLegacyAudiences(ctx: MutationCtx) {
+export type LegacyAudiencesPageResult = {
+  scanned: number;
+  migratedFromPeople: number;
+  migratedFromDonors: number;
+  skippedGuests: number;
+  alreadyPersonFilters: number;
+  /** `true` only once the FINAL page has been processed. */
+  isDone: boolean;
+  /** What to pass as the next invocation's cursor; `null` iff `isDone`. */
+  continueCursor: string | null;
+};
+
+/** Process exactly ONE page — i.e. exactly one `.paginate()` call.
+ *  `pageSize` is a TEST-ONLY override (defaults to `PAGE_SIZE`; the scheduler
+ *  continuation never passes it) — lets `tests/migrations0040.test.ts` force a
+ *  page boundary with a handful of seeded rows instead of seeding hundreds. */
+export async function runMigrateLegacyAudiencesPage(
+  ctx: MutationCtx,
+  cursor: string | null,
+  pageSize?: number,
+): Promise<LegacyAudiencesPageResult> {
+  const page = await ctx.db.query("audiences").paginate({ numItems: pageSize ?? PAGE_SIZE, cursor });
+
   const result = {
     scanned: 0,
     migratedFromPeople: 0,
@@ -100,65 +132,84 @@ export async function runMigrateLegacyAudiences(ctx: MutationCtx) {
     skippedGuests: 0,
     alreadyPersonFilters: 0,
   };
-  let cursor: string | null = null;
 
-  for (;;) {
-    const page = await ctx.db.query("audiences").paginate({ numItems: PAGE_SIZE, cursor });
-
-    for (const audience of page.page) {
-      result.scanned++;
-      if (audience.source === "person_filters") {
-        result.alreadyPersonFilters++;
-        continue;
-      }
-      if (audience.source === "guests") {
-        // Deliberately unmigrated this run — see the module doc's "guests"
-        // section for why.
-        result.skippedGuests++;
-        continue;
-      }
-
-      if (audience.source === "people") {
-        await ctx.db.patch(audience._id, {
-          source: "person_filters",
-          filters: {
-            ...(audience.filters.chapterId ? { chapterId: audience.filters.chapterId } : {}),
-            teamOnly: true,
-          },
-        });
-        result.migratedFromPeople++;
-        continue;
-      }
-
-      if (audience.source === "donors") {
-        const hadDonorCriterion =
-          audience.filters.donorStatus != null || audience.filters.gaveWithinDays != null;
-        await ctx.db.patch(audience._id, {
-          source: "person_filters",
-          filters: {
-            ...(audience.filters.chapterId ? { chapterId: audience.filters.chapterId } : {}),
-            ...(audience.filters.donorStatus ? { donorStatus: audience.filters.donorStatus } : {}),
-            ...(audience.filters.gaveWithinDays != null
-              ? { gaveWithinDays: audience.filters.gaveWithinDays }
-              : {}),
-            // Inert sentinel forcing the donor scan when neither real
-            // criterion was set — see the module doc's "donors" section.
-            ...(hadDonorCriterion ? {} : { giftCountMin: 0 }),
-          },
-        });
-        result.migratedFromDonors++;
-        continue;
-      }
-      // Exhaustive per `AUDIENCE_SOURCES` at the time this migration was
-      // written (person_filters/guests/people/donors are all handled above)
-      // — nothing falls through to here.
+  for (const audience of page.page) {
+    result.scanned++;
+    if (audience.source === "person_filters") {
+      result.alreadyPersonFilters++;
+      continue;
+    }
+    if (audience.source === "guests") {
+      // Deliberately unmigrated this run — see the module doc's "guests"
+      // section for why.
+      result.skippedGuests++;
+      continue;
     }
 
-    if (page.isDone) break;
-    cursor = page.continueCursor;
+    if (audience.source === "people") {
+      await ctx.db.patch(audience._id, {
+        source: "person_filters",
+        filters: {
+          ...(audience.filters.chapterId ? { chapterId: audience.filters.chapterId } : {}),
+          teamOnly: true,
+        },
+      });
+      result.migratedFromPeople++;
+      continue;
+    }
+
+    if (audience.source === "donors") {
+      const hadDonorCriterion =
+        audience.filters.donorStatus != null || audience.filters.gaveWithinDays != null;
+      await ctx.db.patch(audience._id, {
+        source: "person_filters",
+        filters: {
+          ...(audience.filters.chapterId ? { chapterId: audience.filters.chapterId } : {}),
+          ...(audience.filters.donorStatus ? { donorStatus: audience.filters.donorStatus } : {}),
+          ...(audience.filters.gaveWithinDays != null
+            ? { gaveWithinDays: audience.filters.gaveWithinDays }
+            : {}),
+          // Inert sentinel forcing the donor scan when neither real
+          // criterion was set — see the module doc's "donors" section.
+          ...(hadDonorCriterion ? {} : { giftCountMin: 0 }),
+        },
+      });
+      result.migratedFromDonors++;
+      continue;
+    }
+    // Exhaustive per `AUDIENCE_SOURCES` at the time this migration was
+    // written (person_filters/guests/people/donors are all handled above)
+    // — nothing falls through to here.
   }
 
-  return result;
+  if (!page.isDone) {
+    await ctx.scheduler.runAfter(0, internal.migrations.continueMigrateLegacyAudiences, {
+      cursor: page.continueCursor,
+    });
+  }
+
+  return {
+    ...result,
+    isDone: page.isDone,
+    continueCursor: page.isDone ? null : page.continueCursor,
+  };
+}
+
+/**
+ * Registry entry point — runs ONLY the first page inside `runPending`'s
+ * transaction; when more work remains, `runMigrateLegacyAudiencesPage` (above)
+ * has already scheduled `internal.migrations.continueMigrateLegacyAudiences`
+ * to drain the rest. Same shape as
+ * `0035_backfill_receipt_documents.ts#runBackfillReceiptDocuments`:
+ * `migrations.runPending` ledgers this migration as applied once THIS call
+ * returns, not once the whole scan finishes — the scheduled continuation
+ * completes it afterward, and is itself idempotent/resumable (every branch
+ * above only touches a row whose CURRENT `source` still needs migrating), so
+ * that's safe even if a deploy's `runPending` invocation is the last thing
+ * that runs before something else goes wrong.
+ */
+export async function runMigrateLegacyAudiences(ctx: MutationCtx) {
+  return await runMigrateLegacyAudiencesPage(ctx, null);
 }
 
 export const migrateLegacyAudiences: Migration = {
