@@ -38,7 +38,7 @@ import { useRouter, type Router } from "expo-router";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { BUDGET_CADENCE_LABELS, CENTRAL, formatCents } from "@events-os/shared";
+import { BUDGET_CADENCE_LABELS, CENTRAL, formatCents, type BudgetRefKind } from "@events-os/shared";
 import { Cell, HeaderCell, Icon, Row, SectionHeader, Table, TableHeader } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { Money, Tile, TileRow, type DashPeriodMode } from "./parts";
@@ -47,6 +47,9 @@ import { MonthBars } from "./MonthBars";
 import { CategoryBars } from "./CategoryBars";
 import { RailRow } from "./AttentionRail";
 import { BudgetTableGroup, type BudgetTableRow } from "./BudgetTable";
+import { recurringDrilldownPeriod } from "./recurringDrilldownPeriod";
+import type { DrilldownTxn } from "./TransactionList";
+import { TransactionDetailModal, type TransactionDetailSource } from "./TransactionDetailModal";
 import { BudgetApprovalActions } from "./BudgetApprovalActions";
 import { TagDetailModal, type TagRollup } from "./TagRollup";
 import { ChapterFleet } from "./ChapterFleet";
@@ -129,6 +132,24 @@ export function CentralView({
   // `tagDrilldown` query only runs while the sheet is actually open.
   const [selectedTag, setSelectedTag] = useState<TagRollup | null>(null);
 
+  // Projects-category-breakdown: the category→transactions drill-down's own
+  // detail modal, mirroring `ChapterView`'s `detailSource` precedent. The
+  // rows below deliberately carry NO `refKind`/`scopeRefId` (so `refKind`/
+  // `scopeRefId` here are always null): a central budget's linked event/
+  // project can belong to ANY chapter, and the `/event/[id]`/`/project/[id]`
+  // screens are hard-scoped to the CALLER's own chapter via `requireOwned` —
+  // the same reason `onOpenRef` isn't wired on this view (see
+  // `BudgetTableGroup.onOpenRef`'s own doc comment).
+  const [detailSource, setDetailSource] = useState<TransactionDetailSource | null>(null);
+  function openDrilldownTxn(
+    txn: DrilldownTxn,
+    budgetName: string,
+    refKind: BudgetRefKind | null,
+    scopeRefId: string | null,
+  ) {
+    setDetailSource({ kind: "detail", txn, budgetName, refKind, scopeRefId });
+  }
+
   const centralBudgetRows: BudgetTableRow[] = useMemo(
     () =>
       data.centralBudgets.map((b) => ({
@@ -138,12 +159,23 @@ export function CentralView({
         spentCents: b.spentCents,
         budgetCents: b.budgetCents,
         pct: b.pct,
+        categories: b.categories,
         approvalStatus: b.approvalStatus,
         approvedCents: b.approvedCents,
         requestedCents: b.requestedCents,
         reviewNote: b.reviewNote,
+        // A recurring central card's figures widen to its own cadence window
+        // in month mode (`txnCountsTowardBudgetDash`) — its drill-down must
+        // request the SAME widened period or it under-sums vs. the bar it
+        // drills into (the ChapterView review-finding-#1 rule). One-time
+        // cards stay on the group-level default below, same as ChapterView's
+        // "Events & projects" table.
+        drilldownPeriod:
+          b.cadence === "monthly" || b.cadence === "quarterly" || b.cadence === "yearly"
+            ? recurringDrilldownPeriod(b.cadence, year, month, period)
+            : undefined,
       })),
-    [data.centralBudgets],
+    [data.centralBudgets, year, month, period],
   );
 
   const chapterRollupRows: BudgetTableRow[] = useMemo(
@@ -275,6 +307,13 @@ export function CentralView({
             emptyTitle="No budgets yet"
             emptyMessage="Create a central budget, or budget from a chapter, to see it here."
             onPressRow={onEditBudget}
+            // Projects-category-breakdown: the category→transactions
+            // drill-down, same wiring as ChapterView's tables. Only the
+            // central-budget rows carry `categories`; the chapter/tag rollup
+            // rows keep their own chevron navigation (`onChevronPress`) and
+            // never expand, so this is inert for them.
+            drilldownPeriod={{ year, month: period === "month" ? month : undefined }}
+            onOpenTransaction={openDrilldownTxn}
           />
         </View>
 
@@ -339,6 +378,20 @@ export function CentralView({
           month={month}
           period={period}
           onClose={() => setSelectedTag(null)}
+        />
+      ) : null}
+
+      {/* Projects-category-breakdown: the drill-down's detail modal (see
+          `openDrilldownTxn` above). READ-ONLY by design on the org dashboard:
+          `spendByMonth({scope:"org"})` deliberately reports
+          `canRecordTransactions: false` (every reconcile mutation resolves to
+          the CALLER's own chapter server-side — see that field's doc comment),
+          so the modal shows its explanatory line instead of dead buttons. */}
+      {detailSource ? (
+        <TransactionDetailModal
+          source={detailSource}
+          onClose={() => setDetailSource(null)}
+          canRecordTransactions={monthly?.canRecordTransactions ?? false}
         />
       ) : null}
     </View>

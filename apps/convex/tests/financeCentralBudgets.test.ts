@@ -512,6 +512,176 @@ describe("dashboardCentral: central budgets roll up org-wide", () => {
     expect(sandboxDash.centralBudgets.find((b) => b.id === centralBudget)?.spentCents).toBe(4000);
   });
 
+  // Projects-category-breakdown: central budget cards carry the same
+  // per-category mini-bar breakdown the chapter cards do, with category names
+  // resolved ACROSS chapters (a central budget's linked txns can come from any
+  // chapter, each with its own `budgetCategories` rows) and an "Uncategorized"
+  // bucket for a txn with no category. The breakdown must sum to the card's
+  // own `spentCents`.
+  test("a central budget card breaks its spend down by category across chapters", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "seyi@publicworship.life" });
+    const year = 2026;
+    const month = 5;
+    const when = tsInMonth(year, month);
+
+    const centralBudget = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 500000,
+      type: "recurring",
+      cadence: "yearly",
+      year,
+      central: true,
+      label: "Org Ads",
+    });
+    await approveBudgetDirect(s, centralBudget);
+
+    // NY: a $70 spend under NY's own "Supplies" category.
+    const nySupplies = await run(t, async (ctx) => {
+      const fundId = await ctx.db.insert("funds", {
+        chapterId: s.chapterId,
+        name: "General Fund",
+        restriction: "unrestricted",
+        sortOrder: 0,
+        createdAt: Date.now(),
+      });
+      return await ctx.db.insert("budgetCategories", {
+        chapterId: s.chapterId,
+        fundId,
+        name: "Supplies",
+        kind: "category",
+        createdAt: Date.now(),
+      });
+    });
+    await run(t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 7000,
+        postedAt: when,
+        budgetId: centralBudget,
+        categoryId: nySupplies,
+        status: "categorized",
+        createdAt: Date.now(),
+      }),
+    );
+    // Boston: a $30 spend under Boston's OWN "Travel" category — a different
+    // chapter's category table entirely.
+    await run(t, async (ctx) => {
+      const boston = await ctx.db.insert("chapters", {
+        name: "Boston",
+        isActive: true,
+        createdAt: Date.now(),
+      });
+      const bostonFund = await ctx.db.insert("funds", {
+        chapterId: boston,
+        name: "Boston Fund",
+        restriction: "unrestricted",
+        sortOrder: 0,
+        createdAt: Date.now(),
+      });
+      const bostonTravel = await ctx.db.insert("budgetCategories", {
+        chapterId: boston,
+        fundId: bostonFund,
+        name: "Travel",
+        kind: "category",
+        createdAt: Date.now(),
+      });
+      await ctx.db.insert("transactions", {
+        chapterId: boston,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 3000,
+        postedAt: when,
+        budgetId: centralBudget,
+        categoryId: bostonTravel,
+        status: "categorized",
+        createdAt: Date.now(),
+      });
+    });
+    // NY again: a $20 spend with NO category → the "Uncategorized" bucket.
+    await run(t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 2000,
+        postedAt: when,
+        budgetId: centralBudget,
+        status: "categorized",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const dash = await s.as.query(api.finances.dashboardCentral, { year, month });
+    const cb = dash.centralBudgets.find((b) => b.id === centralBudget);
+    expect(cb?.spentCents).toBe(12000);
+    // Sorted by spend, names resolved cross-chapter, summing to spentCents.
+    expect(cb?.categories).toEqual([
+      { name: "Supplies", spentCents: 7000, barPct: expect.any(Number) },
+      { name: "Travel", spentCents: 3000, barPct: expect.any(Number) },
+      { name: "Uncategorized", spentCents: 2000, barPct: expect.any(Number) },
+    ]);
+  });
+
+  // Projects-category-breakdown: a ONE-TIME central budget (the org
+  // dashboard's "project" rows) gets the same breakdown, on its lifetime
+  // matched set (`sumSpend(modeMatched)` — the card's own rule).
+  test("a one-time central budget card carries its category breakdown", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "seyi@publicworship.life" });
+    const year = 2026;
+    const month = 5;
+    const when = tsInMonth(year, month);
+
+    const centralBudget = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 300000,
+      type: "one_time",
+      cadence: "one_off",
+      year,
+      central: true,
+      label: "EP Launch",
+    });
+    await approveBudgetDirect(s, centralBudget);
+
+    const supplies = await run(t, async (ctx) => {
+      const fundId = await ctx.db.insert("funds", {
+        chapterId: s.chapterId,
+        name: "General Fund",
+        restriction: "unrestricted",
+        sortOrder: 0,
+        createdAt: Date.now(),
+      });
+      return await ctx.db.insert("budgetCategories", {
+        chapterId: s.chapterId,
+        fundId,
+        name: "Supplies",
+        kind: "category",
+        createdAt: Date.now(),
+      });
+    });
+    await run(t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 5000,
+        postedAt: when,
+        budgetId: centralBudget,
+        categoryId: supplies,
+        status: "categorized",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const dash = await s.as.query(api.finances.dashboardCentral, { year, month });
+    const cb = dash.centralBudgets.find((b) => b.id === centralBudget);
+    expect(cb?.spentCents).toBe(5000);
+    expect(cb?.categories).toEqual([
+      { name: "Supplies", spentCents: 5000, barPct: expect.any(Number) },
+    ]);
+  });
+
   // WP-0.3: the by-chapter rollup gains a "Central" row (chapterId:"central")
   // whose spend is the SAME central-linked total as the budget card above,
   // aggregated across every chapter — never per-chapter, never double-counted
