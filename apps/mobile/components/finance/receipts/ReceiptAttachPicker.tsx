@@ -1,21 +1,27 @@
 /**
  * ATTACH AN EXISTING RECEIPT — the sub-picker `ReceiptViewerModal`'s "Attach
- * existing" button opens. Lists the chapter's UNLINKED receipts
- * (`api.receipts.listReceipts({filter:"unlinked"})` — the bookkeeper's real
- * worklist, per that query's own doc comment) as a tap-to-link list; tapping
- * a row calls `api.receipts.linkReceipt` and closes on success. Same hand-
- * rolled modal shape as its parent (nested — RN supports stacked `Modal`s).
+ * existing" button and the Reconcile grid's receipt cell both open. Lists the
+ * chapter's UNLINKED receipts (`api.receipts.listReceipts({filter:"unlinked"})`
+ * — the bookkeeper's real worklist, per that query's own doc comment) as a
+ * searchable tap-to-link list; tapping a row calls `api.receipts.linkReceipt`
+ * and closes on success. Same hand-rolled modal shape as its parent (nested —
+ * RN supports stacked `Modal`s).
+ *
+ * The search box filters the worklist client-side by merchant name and amount
+ * (the query itself has no text-search term); the list is read at the max page
+ * size so a search reaches the whole unlinked backlog, not just the first page.
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { ActivityIndicator, Image, Modal, Pressable, ScrollView, Text, View } from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { formatCents } from "@events-os/shared";
-import { Icon, ToastView } from "../../ui";
+import { Icon, TextField, ToastView } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
 import { shortDate } from "../reconcile/helpers";
+import { receiptMatchesSearch } from "./receiptSearch";
 
 export function ReceiptAttachPicker({
   transactionId,
@@ -24,10 +30,20 @@ export function ReceiptAttachPicker({
   transactionId: Id<"transactions">;
   onClose: () => void;
 }) {
-  const unlinked = useQuery(api.receipts.listReceipts, { filter: "unlinked" });
+  // Read at the max page size so the client-side search below can reach the
+  // whole unlinked backlog, not just the default first page.
+  const unlinked = useQuery(api.receipts.listReceipts, { filter: "unlinked", limit: 500 });
   const linkReceipt = useMutation(api.receipts.linkReceipt);
   const { run, toast, dismiss } = useActionRunner();
   const [linkingId, setLinkingId] = useState<Id<"receipts"> | null>(null);
+  const [search, setSearch] = useState("");
+
+  // Filter by merchant OR amount (see `receiptMatchesSearch`: "16.36",
+  // "1636", and "$16.36" all match). Empty search shows the whole worklist.
+  const filtered = useMemo(
+    () => (unlinked ?? []).filter((r) => receiptMatchesSearch(r, search)),
+    [unlinked, search],
+  );
 
   async function handlePick(receiptId: Id<"receipts">) {
     setLinkingId(receiptId);
@@ -55,6 +71,15 @@ export function ReceiptAttachPicker({
             </Pressable>
           </View>
 
+          <View className="px-5 pt-3">
+            <TextField
+              value={search}
+              onChangeText={setSearch}
+              placeholder="Search by merchant or amount…"
+              autoCapitalize="none"
+            />
+          </View>
+
           <ScrollView className="max-h-[420px] px-5 py-4">
             {unlinked === undefined ? (
               <Text className="py-6 text-center text-sm text-muted">Loading…</Text>
@@ -62,9 +87,13 @@ export function ReceiptAttachPicker({
               <Text className="py-6 text-center text-sm text-muted">
                 No unattached receipts in your library.
               </Text>
+            ) : filtered.length === 0 ? (
+              <Text className="py-6 text-center text-sm text-muted">
+                No receipts match “{search.trim()}”.
+              </Text>
             ) : (
               <View className="gap-2">
-                {unlinked.map((r) => (
+                {filtered.map((r) => (
                   <Pressable
                     key={r._id}
                     onPress={() => void handlePick(r._id)}
