@@ -164,6 +164,7 @@ async function previewPersonFilters(
   args: {
     scope?: Id<"chapters"> | "central";
     filters?: Record<string, unknown>;
+    excludeFilters?: Record<string, unknown>;
     includePersonIds?: Id<"people">[];
     excludePersonIds?: Id<"people">[];
   } = {},
@@ -172,6 +173,7 @@ async function previewPersonFilters(
     scope: args.scope ?? s.chapterId,
     source: "person_filters",
     filters: args.filters ?? {},
+    excludeFilters: args.excludeFilters,
     includePersonIds: args.includePersonIds,
     excludePersonIds: args.excludePersonIds,
   });
@@ -934,5 +936,211 @@ describe("person_filters — preview and send-time materialization agree", () =>
     expect(new Set(forSend?.recipients.map((r) => r.email))).toEqual(
       new Set(preview.sample.map((r) => r.email)),
     );
+  });
+});
+
+// ── excludeFilters (property-level exclusions) ──────────────────────────
+
+describe("person_filters — excludeFilters (property-level exclusions)", () => {
+  test("empty excludeFilters is a no-op, not 'exclude everyone' — both unset and an explicit {}", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await seedPerson(s, { name: "A", email: "noop-a@example.com" });
+    await seedPerson(s, { name: "B", email: "noop-b@example.com" });
+
+    const unset = await previewPersonFilters(s);
+    const explicitEmpty = await previewPersonFilters(s, { excludeFilters: {} });
+
+    expect(unset.count).toBe(2);
+    expect(explicitEmpty.count).toBe(2);
+    expect(unset.excludedByFilters).toBe(0);
+    expect(explicitEmpty.excludedByFilters).toBe(0);
+  });
+
+  test("AND-within-exclude: every SET exclude criterion must match, mirroring include-side semantics exactly", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    // Matches BOTH exclude criteria (active donor AND team) — must be excluded.
+    const bothMatch = await seedPerson(s, { name: "Both", email: "excl-both@example.com" });
+    await seedDonorForPerson(s, bothMatch, { email: "excl-both-d@example.com", status: "active" });
+    // Matches donorStatus only (contact, not team) — teamOnly fails, so NOT excluded.
+    const contactDonor = await seedPerson(s, {
+      name: "ContactDonor",
+      email: "excl-contact@example.com",
+      isContactOnly: true,
+    });
+    await seedDonorForPerson(s, contactDonor, { email: "excl-contact-d@example.com", status: "active" });
+    // Matches teamOnly only (roster, no active donor) — donorStatus fails, so NOT excluded.
+    const rosterNoDonor = await seedPerson(s, { name: "RosterOnly", email: "excl-roster@example.com" });
+
+    const preview = await previewPersonFilters(s, {
+      excludeFilters: { donorStatus: "active", teamOnly: true },
+    });
+    expect(preview.sample.map((r) => r.email).sort()).toEqual([
+      "excl-contact@example.com",
+      "excl-roster@example.com",
+    ]);
+    expect(preview.excludedByFilters).toBe(1);
+  });
+
+  test("excludeFilters removes a FILTER match", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const matches = await seedPerson(s, { name: "Matches", email: "filter-match@example.com" });
+    await seedDonorForPerson(s, matches, { email: "filter-match-d@example.com", status: "active" });
+
+    const preview = await previewPersonFilters(s, {
+      filters: { donorStatus: "active" },
+      excludeFilters: { teamOnly: true },
+    });
+    expect(preview.count).toBe(0);
+    expect(preview.excludedByFilters).toBe(1);
+  });
+
+  test("INVARIANT: an explicit property exclusion beats a hand-picked include — curation is not exemption", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const pickedButExcluded = await seedPerson(s, {
+      name: "Picked But Excluded",
+      email: "picked-excluded@example.com",
+    });
+    await seedDonorForPerson(s, pickedButExcluded, {
+      email: "picked-excluded-d@example.com",
+      status: "active",
+    });
+
+    const preview = await previewPersonFilters(s, {
+      excludeFilters: { donorStatus: "active" },
+      includePersonIds: [pickedButExcluded],
+    });
+    expect(preview.count).toBe(0);
+    expect(preview.excludedByFilters).toBe(1);
+    // `handPickedExcludedByFilters` is the diagnostic slice of `excludedByFilters`
+    // that were ALSO a hand-pick — `previewAudience` always requests
+    // diagnostics, so it's populated here.
+    expect(preview.handPickedExcludedByFilters).toBe(1);
+  });
+
+  test("handPickedExcludedByFilters is 0 when the exclusion never touched a hand-pick", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const filterOnlyExcluded = await seedPerson(s, {
+      name: "Filter Only",
+      email: "filter-only-excluded@example.com",
+    });
+    await seedDonorForPerson(s, filterOnlyExcluded, {
+      email: "filter-only-excluded-d@example.com",
+      status: "active",
+    });
+
+    const preview = await previewPersonFilters(s, {
+      excludeFilters: { donorStatus: "active" },
+    });
+    expect(preview.excludedByFilters).toBe(1);
+    expect(preview.handPickedExcludedByFilters).toBe(0);
+  });
+
+  test("excludePersonIds still has the last word after excludeFilters — both blocks apply", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    // Excluded via excludeFilters (donor status).
+    const excludedByFilter = await seedPerson(s, { name: "ByFilter", email: "excl-by-filter@example.com" });
+    await seedDonorForPerson(s, excludedByFilter, { email: "excl-by-filter-d@example.com", status: "active" });
+    // Excluded via excludePersonIds (hand-pick), doesn't match excludeFilters at all.
+    const excludedByHandPick = await seedPerson(s, {
+      name: "ByHandPick",
+      email: "excl-by-handpick@example.com",
+    });
+    // Survives both.
+    const survivor = await seedPerson(s, { name: "Survivor", email: "survivor@example.com" });
+
+    const preview = await previewPersonFilters(s, {
+      excludeFilters: { donorStatus: "active" },
+      excludePersonIds: [excludedByHandPick],
+    });
+    expect(preview.sample.map((r) => r.email)).toEqual(["survivor@example.com"]);
+    expect(preview.excludedByFilters).toBe(1);
+    void excludedByFilter;
+  });
+
+  test("LIVENESS: a person who only later starts matching excludeFilters is auto-excluded on the next resolve, no re-save needed", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const person = await seedPerson(s, { name: "Later Donor", email: "later-donor@example.com" });
+
+    const before = await previewPersonFilters(s, { excludeFilters: { donorStatus: "active" } });
+    expect(before.sample.map((r) => r.email)).toEqual(["later-donor@example.com"]);
+    expect(before.excludedByFilters).toBe(0);
+
+    // The person starts matching the exclude criterion — no audience row was
+    // ever saved/snapshotted here; this is purely resolve-time evaluation.
+    await seedDonorForPerson(s, person, { email: "later-donor-d@example.com", status: "active" });
+
+    const after = await previewPersonFilters(s, { excludeFilters: { donorStatus: "active" } });
+    expect(after.count).toBe(0);
+    expect(after.excludedByFilters).toBe(1);
+  });
+
+  test("excludedByFilters is a PRIMARY count (unlike handPickedExcludedByFilters, NOT gated behind includeDiagnostics)", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const excluded = await seedPerson(s, { name: "Excluded", email: "primary-excluded@example.com" });
+    await seedDonorForPerson(s, excluded, { email: "primary-excluded-d@example.com", status: "active" });
+    const handPicked = await seedPerson(s, { name: "Picked", email: "primary-picked@example.com" });
+    await seedDonorForPerson(s, handPicked, { email: "primary-picked-d@example.com", status: "active" });
+
+    const audience = {
+      scope: s.chapterId as Id<"chapters"> | "central",
+      source: "person_filters" as const,
+      filters: {},
+      excludeFilters: { donorStatus: "active" as const },
+      includePersonIds: [handPicked],
+    };
+
+    const withoutDiagnostics = await run(s.t, (ctx) => resolveAudienceRecipients(ctx, audience));
+    expect(withoutDiagnostics.excludedByFilters).toBe(2); // excluded + handPicked, both dropped
+    expect(withoutDiagnostics.handPickedExcludedByFilters).toBe(0); // diagnostic-gated, stays 0
+
+    const withDiagnostics = await run(s.t, (ctx) =>
+      resolveAudienceRecipients(ctx, audience, undefined, true),
+    );
+    expect(withDiagnostics.excludedByFilters).toBe(2); // same primary count either way
+    expect(withDiagnostics.handPickedExcludedByFilters).toBe(1); // only the hand-pick, now visible
+  });
+
+  test("excludeFilters is ignored (harmlessly) for legacy sources", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Legacy Pool Person",
+        email: "legacy-pool@example.com",
+        status: "active",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const resolution = await run(s.t, (ctx) =>
+      resolveAudienceRecipients(ctx, {
+        scope: s.chapterId,
+        source: "people",
+        filters: {},
+        excludeFilters: { teamOnly: true },
+      }),
+    );
+    expect(resolution.excludedByFilters).toBe(0);
+  });
+
+  test("preview payload shape includes excludedByFilters and handPickedExcludedByFilters", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await seedPerson(s, { name: "A", email: "shape-a@example.com" });
+
+    const preview = await previewPersonFilters(s);
+    expect(preview).toHaveProperty("excludedByFilters");
+    expect(preview).toHaveProperty("handPickedExcludedByFilters");
+    expect(preview.excludedByFilters).toBe(0);
+    expect(preview.handPickedExcludedByFilters).toBe(0);
   });
 });
