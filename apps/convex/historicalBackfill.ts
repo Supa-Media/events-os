@@ -543,6 +543,8 @@ async function resolvePersonContact(
     if (res.skipped) return { isNew: false, skipped: "no-identifier" };
     return { isNew: res.isNew, personId: res.personId };
   }
+  // Identity matching, not roster UX — deliberately unfiltered. See
+  // `lib/org.ts#excludeContacts`.
   const roster = await chapterRoster(ctx, state.chapterId);
   if (matchIdentity(roster, opts).match) return { isNew: false };
   if (matchIdentity(state.pendingContacts, opts).match) return { isNew: false };

@@ -93,7 +93,14 @@ export async function viewerFromRoster(
   return roster.find((p) => p.userId === userId) ?? null;
 }
 
-/** The non-placeholder roster of a chapter. */
+/** The non-placeholder roster of a chapter. DELIBERATELY still includes
+ *  contact-only rows (`people.isContactOnly` — person-centric audiences Phase
+ *  1): `linkDonorToPerson`/`linkRsvpToPerson` and the import-preview matchers
+ *  all read this to find-or-create a person, and a repeat giver/guest's own
+ *  prior contact row must stay matchable or they'd spawn a duplicate every
+ *  time. Callers that show this list as ROSTER UX (org-chart, manager trees,
+ *  pickers) must filter with `excludeContacts` themselves — see that
+ *  function's doc for the full call-site audit. */
 export async function chapterRoster(
   ctx: QueryCtx,
   chapterId: Id<"chapters">,
@@ -105,6 +112,33 @@ export async function chapterRoster(
   return people.filter(
     (p) => p.isPlaceholder !== true && p.isSamplePerson !== true,
   );
+}
+
+/**
+ * Drop contact-only rows (`people.isContactOnly`) from an already-loaded
+ * roster — the ROSTER-UX view of `chapterRoster`'s output. Person-centric
+ * audiences Phase 1 item 1: a row auto-created from a donor gift, an import,
+ * or a public RSVP is a real contact for MATCHING purposes but was never a
+ * team member/volunteer/vendor, so it must not appear in the org chart, the
+ * manager tree, or anyone's "who can I manage" reach.
+ *
+ * Applied at (audited call-by-call, 2026-07):
+ *  - `hasEffectiveReports` / `manageablePersonIds` (below, this file) — the
+ *    org chart / management-reach primitives every write gate + read surface
+ *    shares.
+ *  - `readableCheckInSubject` (below, this file) — the 1:1 check-in roster.
+ *  - `org.ts#overview` / `org.ts#workload` — the Team tab's org-chart view.
+ *  - `checkIns.ts#listForSubtree` — the subtree check-in history list.
+ *  - `academy.ts#chapterProgress` — the "who's trained" manager panel.
+ * NOT applied (identity matching — contacts MUST stay visible, one-line
+ * comment left at each site too):
+ *  - `lib/givingDonors.ts#linkDonorToPerson` / `lib/rsvpPeople.ts#linkRsvpToPerson`
+ *    — the match-or-create primitives THIS field exists to feed.
+ *  - `givingImport.ts` (`ensureRosterPool` / `matchOrCreatePersonContact`) and
+ *    `historicalBackfill.ts` — CSV/historical import matching, same reason.
+ */
+export function excludeContacts(roster: Doc<"people">[]): Doc<"people">[] {
+  return roster.filter((p) => p.isContactOnly !== true);
 }
 
 /** Group a roster into a manager → direct-reports map. */
@@ -335,7 +369,13 @@ export async function hasEffectiveReports(
     chapterRoster(ctx, chapterId),
     loadSeatManagerIndex(ctx, chapterId),
   ]);
-  return (buildEffectiveChildrenOf(index, roster).get(personId) ?? []).length > 0;
+  // Roster UX (management structure), not identity matching — see
+  // `excludeContacts`'s doc. A contact-only row never legitimately holds a
+  // seat or a direct report, but keep the tree itself clean of them.
+  return (
+    (buildEffectiveChildrenOf(index, excludeContacts(roster)).get(personId) ?? [])
+      .length > 0
+  );
 }
 
 /**
@@ -376,7 +416,9 @@ export async function readableCheckInSubject(
   if (!chapterId) return null;
   const person = await ctx.db.get(personId);
   if (!person || person.chapterId !== chapterId) return null;
-  const roster = await chapterRoster(ctx, person.chapterId);
+  // Roster UX (1:1 check-in surfaces), not identity matching — see
+  // `excludeContacts`'s doc.
+  const roster = excludeContacts(await chapterRoster(ctx, person.chapterId));
   const viewer = await viewerFromRoster(ctx, roster);
   const manageable = await manageablePersonIds(ctx, person.chapterId, roster);
   if (manageable !== null) {
@@ -397,6 +439,11 @@ export async function readableCheckInSubject(
  * use, so a seat-only manager's WRITE reach (`checkIns.log`, `projects.remove`,
  * event-role reassignment — everything that calls this) never disagrees with
  * what they were just shown they could manage.
+ *
+ * Roster UX, not identity matching (see `excludeContacts`'s doc) — contacts
+ * are dropped here UNCONDITIONALLY, whether `roster` was passed in already
+ * filtered or loaded fresh, so no caller can accidentally grant "manage"
+ * reach over an auto-created contact row.
  */
 export async function manageablePersonIds(
   ctx: QueryCtx,
@@ -404,7 +451,7 @@ export async function manageablePersonIds(
   roster?: Doc<"people">[],
 ): Promise<Set<Id<"people">> | null> {
   if (await isChapterAdmin(ctx, chapterId)) return null;
-  const people = roster ?? (await chapterRoster(ctx, chapterId));
+  const people = excludeContacts(roster ?? (await chapterRoster(ctx, chapterId)));
   const viewer = await viewerFromRoster(ctx, people);
   if (!viewer) return new Set();
   const index = await loadSeatManagerIndex(ctx, chapterId);

@@ -286,6 +286,9 @@ export async function linkDonorToPerson(
 ): Promise<Id<"people"> | null> {
   if (donor.scope === "central") return null; // no chapter roster to link into
   const chapterId = donor.scope;
+  // Identity matching, not roster UX — deliberately UNFILTERED (a repeat
+  // donor's own prior contact-only row must stay matchable). See
+  // `lib/org.ts#excludeContacts`'s doc for the full roster-UX-vs-matching audit.
   const roster = await chapterRoster(ctx, chapterId);
 
   const email = normalizeEmail(donor.email) ?? undefined;

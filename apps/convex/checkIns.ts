@@ -23,6 +23,7 @@ import {
   isChapterAdmin,
   manageablePersonIds,
   chapterRoster,
+  excludeContacts,
   buildChildrenOf,
   subtreeIds,
   viewerPerson,
@@ -248,7 +249,9 @@ export const listForSubtree = query({
     const person = await ctx.db.get(personId);
     if (!person || person.chapterId !== chapterId) return null;
 
-    const roster = await chapterRoster(ctx, person.chapterId);
+    // Roster UX (subtree check-in history), not identity matching — see
+    // `lib/org.ts#excludeContacts`.
+    const roster = excludeContacts(await chapterRoster(ctx, person.chapterId));
     const childrenOf = buildChildrenOf(roster);
     const viewer = await viewerFromRoster(ctx, roster);
     const manageable = await manageablePersonIds(

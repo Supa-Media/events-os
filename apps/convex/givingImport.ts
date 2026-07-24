@@ -585,6 +585,8 @@ async function ensureRosterPool(
   const key = chapterId as unknown as string;
   const cached = cache.get(key);
   if (cached) return cached;
+  // Identity matching, not roster UX — deliberately unfiltered (a prior
+  // contact-only row must stay matchable). See `lib/org.ts#excludeContacts`.
   const roster = await chapterRoster(ctx, chapterId);
   const pool: IdentityLike[] = roster.map((p) => ({
     name: p.name,
@@ -812,6 +814,8 @@ export async function matchOrCreatePersonContact(
   | { personId: Id<"people">; isNew: boolean; skipped?: undefined }
   | { personId: null; isNew: false; skipped: "no-identifier" }
 > {
+  // Identity matching, not roster UX — deliberately unfiltered. See
+  // `lib/org.ts#excludeContacts`.
   const roster = await chapterRoster(ctx, chapterId);
   const { match } = matchIdentity(roster, args);
   if (match) return { personId: match._id, isNew: false };

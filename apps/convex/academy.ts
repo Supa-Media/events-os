@@ -61,6 +61,7 @@ import { statusColumnFor } from "./lib/readiness";
 import {
   isChapterAdmin,
   chapterRoster,
+  excludeContacts,
   viewerFromRoster,
   buildChildrenOf,
   subtreeIds,
@@ -826,7 +827,12 @@ export const chapterProgress = query({
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return null;
     const isAdmin = await isChapterAdmin(ctx, chapterId as Id<"chapters">);
-    const roster = await chapterRoster(ctx, chapterId as Id<"chapters">);
+    // Roster UX ("who's trained" manager panel), not identity matching — a
+    // contact-only row was never enrolled in Academy training. See
+    // `lib/org.ts#excludeContacts`.
+    const roster = excludeContacts(
+      await chapterRoster(ctx, chapterId as Id<"chapters">),
+    );
     const childrenOf = buildChildrenOf(roster);
     const viewer = await viewerFromRoster(ctx, roster);
     const hasReports =
