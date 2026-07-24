@@ -3,9 +3,12 @@
  * SAME receipts pipeline as `receiptInbox.ts` (email), just triggered by a
  * text message instead of an email. Reuses the email pipeline's matcher
  * (`findReceiptMatches`), zero-LLM body parser (`parseReceiptFromText`), image
- * OCR call (`ocrReceiptImage`), and row-lifecycle plumbing
- * (`getInboundReceipt`/`updateInboundReceipt`) rather than duplicating them —
- * see `receiptInbox.ts`'s module doc for the shared MONEY SAFETY contract.
+ * OCR call (`ocrReceiptImage`), PDF-aware routing (`extractReceiptFields` —
+ * text layer first, scanned-PDF render as a fallback, vision only ever sees a
+ * rendered `image/*`, never raw `application/pdf`), and row-lifecycle
+ * plumbing (`getInboundReceipt`/`updateInboundReceipt`) rather than
+ * duplicating them — see `receiptInbox.ts`'s module doc for the shared MONEY
+ * SAFETY contract.
  *
  * FLOW (see `http.ts`'s `/twilio/receipts` route for the entry point):
  *   1. Twilio POSTs an inbound-message webhook when a text lands on the
@@ -32,9 +35,11 @@
  *           `RECEIPT_SENDER_CLASSES`'s doc comment in `@events-os/shared`.
  *           Only team/roster may trigger an auto-attach.
  *        b. Gets the receipt content: every MMS media item (each fetched with
- *           Twilio's Basic-auth scheme and OCR'd independently, mirroring
- *           `fetchAllReceiptAttachments`), else the SMS `Body` text
- *           (`parseReceiptFromText`, ZERO LLM — same as an email body).
+ *           Twilio's Basic-auth scheme, mirroring `fetchAllReceiptAttachments`,
+ *           then routed independently — a PDF through `extractReceiptFields`'s
+ *           text-layer/render/vision routing, anything else straight to
+ *           `ocrReceiptImage`), else the SMS `Body` text (`parseReceiptFromText`,
+ *           ZERO LLM — same as an email body).
  *        c. Matches each via the SAME matcher email uses
  *           (`internal.receiptInbox.findReceiptMatches`).
  *        d. Creates `receipts` rows (source `"sms"`), auto-attaching a
@@ -70,6 +75,8 @@ import {
   ocrReceiptImage,
   resolveOcrModel,
   arrayBufferToBase64,
+  isPdfContentType,
+  extractReceiptFields,
 } from "./receiptInbox";
 
 // ── Tuning constants ─────────────────────────────────────────────────────────
@@ -565,15 +572,44 @@ async function runSmsPipeline(
       const blob = await fetchTwilioMedia(item.url, creds);
       if (!blob) continue;
       const storageId = await ctx.storage.store(blob);
-      const buf = await blob.arrayBuffer();
       const contentType = item.contentType ?? blob.type ?? "application/octet-stream";
+
+      // A PDF over MMS (Twilio does deliver these) must route through the
+      // SAME PDF-aware extraction the email/upload pipelines use — text
+      // layer first, scanned-PDF render as a fallback — never straight into
+      // `ocrReceiptImage` with the raw bytes: base64'ing a PDF into an
+      // `image_url` reproduces the exact pre-#406 bug (Ollama sniffs the
+      // bytes and 400s on `application/pdf` masquerading as an image; see
+      // `receiptInbox.ts`'s module doc for the full story).
+      if (isPdfContentType(contentType)) {
+        const result = await extractReceiptFields(ctx, {
+          storageId,
+          config,
+          blob,
+          contentType,
+          model,
+        });
+        extracted.push({
+          storageId,
+          sourceKind: "attachment",
+          ocrAmountCents: result.ocrAmountCents,
+          ocrDate: result.ocrDate,
+          ocrMerchant: result.ocrMerchant,
+          ocrConfidence: result.ocrConfidence,
+          ocrModel: result.ocrModel,
+          candidateTransactionIds: [],
+        });
+        continue;
+      }
+
+      const buf = await blob.arrayBuffer();
       const dataUrl = `data:${contentType};base64,${arrayBufferToBase64(buf)}`;
       // `ocrReceiptImage` now returns a typed `{ error }` (never a bare null)
       // on any failure (see `receiptInbox.ts`'s own doc) — this channel
       // doesn't surface the specific reason yet (out of scope here; email/
       // upload/retry do — see `receiptInbox.ts#extractReceiptFields`), so a
       // failure just degrades to blank OCR fields, same behavior as before.
-      const ocr = await ocrReceiptImage(config, dataUrl, model);
+      const ocr = await ocrReceiptImage(config, [dataUrl], model);
       const ocrOk = !("error" in ocr);
       extracted.push({
         storageId,

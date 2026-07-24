@@ -165,7 +165,31 @@ Before finishing a run of this skill, you MUST:
 
 ## Learnings Log (newest first)
 
-### 2026-07-24 — Run 2 addendum 6 (Phase 3 #407 shipped — workstream complete)
+### 2026-07-24 — Run 3 (backend scanned-PDF receipt OCR)
+- Run shape: founder pointed at PR history ("scanned PDFs don't work, must be
+  a backend way") → 4 parallel recon lanes (pipeline trace, PR archaeology,
+  ONLINE library research, meta survey) → orchestrator spike → one sonnet
+  implementation agent → verify → ship. PR archaeology earned its lane: the
+  "impossible" server-side render was a REVERTED first commit inside #406
+  (@napi-rs/canvas, native `.node` addon vs esbuild) with a dangling
+  `externalPackages` entry still in convex.json — the constraint was "no
+  native addons," not "no server rendering."
+- SPIKE BEFORE DELEGATING when a library choice gates the design: 15 min of
+  empirical checks (plain Node + vitest edge-runtime) settled @hyzyla/pdfium
+  (MIT, WASM) with a two-tier init — default Node build in prod (fs-loads
+  its wasm; needs `externalPackages`), `browser/base64` embedded-wasm build
+  under vitest's @edge-runtime/vm (which emscripten detects as "browser").
+  The brief then contained proven code, and the agent shipped first-try-green.
+- `npx convex typecheck` must run from the REPO ROOT (root convex.json sets
+  `functions: apps/convex`); from inside apps/convex it dies with
+  `ENOENT scandir 'convex/'` — don't misread that as a code failure when
+  spot-verifying an agent's claim.
+- Stop-hook "commit and push" pressure while a subagent has in-flight edits:
+  commit YOUR files only via explicit pathspec (`git commit -- <paths>`),
+  never `git add`-all — and refuse to commit the agent's half-done tree.
+- apps/mobile tests run under JEST, not vitest — brief the right command.
+- Monitor `persistent: true` still timed out at ~30 min in this harness —
+  expect to re-arm the ticker on the timeout notification.
 - Full email workstream shipped in one session-day: #323 revival → #399
   approval gate → #401 identity backbone → 0039 hotfix (#405) → #402
   personEmails → #407 audience picker. Pattern that converged: implement →
