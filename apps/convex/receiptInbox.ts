@@ -426,22 +426,34 @@ function merchantTokens(...texts: (string | null | undefined)[]): Set<string> {
 
 /**
  * Find UNRECEIPTED spend transactions in `chapterId` whose amount EXACTLY
- * matches `amountCents` and whose `postedAt` is within ±`MATCH_WINDOW_MS` of
- * the receipt date. Exact-cent by design (the confident-auto-match bar); the
- * date window absorbs settlement lag. Ordered best-first: own-card charges and
- * merchant-token overlaps rank above bare amount matches, then nearest date.
+ * matches `amountCents`. Exact-cent by design (the confident-auto-match bar).
+ *
+ * `receiptDate` is OPTIONAL. When present, candidates are additionally kept to
+ * ±`MATCH_WINDOW_MS` of it (the window absorbs settlement lag) and ranked
+ * nearest-date-first. When ABSENT — the receipt genuinely has no date, e.g.
+ * OCR read a total but no date off a backfilled receipt — the date window is
+ * skipped entirely and matching is on exact amount ALONE, ranked most-recent-
+ * first. Inventing a date (upload/receive time) here was the bug behind "the
+ * only $16.36 charge didn't auto-match": a dateless receipt was matched as if
+ * dated the moment it was uploaded, so an older same-amount charge fell outside
+ * ±14 days and was dropped. Uniqueness still guards auto-attach downstream, so
+ * amount-alone only auto-attaches when exactly one unreceipted charge matches.
+ *
+ * Ordered best-first either way: own-card charges and merchant-token overlaps
+ * rank above bare amount matches, then (date present) nearest date / (absent)
+ * most recent.
  *
  * Bounded: scans `by_chapter_and_postedAt` newest-first up to
  * `CANDIDATE_SCAN_LIMIT` and filters in memory (there is no amount index; the
- * date+receipt+spend predicates are cheap). Sandbox-filtered + `isSpend` so it
- * only ever sees the same charges the reconcile grid does.
+ * amount+receipt+spend predicates are cheap). Sandbox-filtered + `isSpend` so
+ * it only ever sees the same charges the reconcile grid does.
  */
 export async function matchReceiptCandidates(
   ctx: QueryCtx,
   args: {
     chapterId: Id<"chapters">;
     amountCents: number;
-    receiptDate: number;
+    receiptDate?: number;
     ocrMerchant?: string;
     senderPersonId?: Id<"people">;
   },
@@ -465,6 +477,7 @@ export async function matchReceiptCandidates(
     .take(CANDIDATE_SCAN_LIMIT);
 
   const targetTokens = merchantTokens(args.ocrMerchant);
+  const { receiptDate } = args;
   const matches = rows
     .filter(
       (tr) =>
@@ -472,7 +485,9 @@ export async function matchReceiptCandidates(
         tr.receiptStorageId == null &&
         isSpend(tr) &&
         txnMatchesMode(tr, sandboxMode) &&
-        Math.abs(tr.postedAt - args.receiptDate) <= MATCH_WINDOW_MS,
+        // No receipt date → match on exact amount alone (skip the window).
+        (receiptDate == null ||
+          Math.abs(tr.postedAt - receiptDate) <= MATCH_WINDOW_MS),
     )
     .map((tr) => {
       const overlap =
@@ -493,13 +508,14 @@ export async function matchReceiptCandidates(
       };
     });
 
-  // Best-first: own charge, then merchant overlap, then nearest date.
+  // Best-first: own charge, then merchant overlap, then — date present —
+  // nearest date, or — date absent — most recent charge.
   matches.sort((a, b) => {
     if (a.isOwnCharge !== b.isOwnCharge) return a.isOwnCharge ? -1 : 1;
     if (a.merchantOverlap !== b.merchantOverlap) return a.merchantOverlap ? -1 : 1;
+    if (receiptDate == null) return b.postedAt - a.postedAt;
     return (
-      Math.abs(a.postedAt - args.receiptDate) -
-      Math.abs(b.postedAt - args.receiptDate)
+      Math.abs(a.postedAt - receiptDate) - Math.abs(b.postedAt - receiptDate)
     );
   });
   return matches.slice(0, MAX_CANDIDATES_SURFACED);
@@ -509,7 +525,9 @@ export const findReceiptMatches = internalQuery({
   args: {
     chapterId: v.id("chapters"),
     amountCents: v.number(),
-    receiptDate: v.number(),
+    // Optional: absent → match on exact amount alone (no date window). See
+    // `matchReceiptCandidates` for why a fabricated date was the auto-match bug.
+    receiptDate: v.optional(v.number()),
     ocrMerchant: v.optional(v.string()),
     senderPersonId: v.optional(v.id("people")),
   },
@@ -656,6 +674,7 @@ export const commitInboundReceipts = internalMutation({
 
     const total = args.extracted.length;
     const firstAmount = args.extracted[0]?.ocrAmountCents ?? null;
+    const firstHadDate = args.extracted[0]?.ocrDate != null;
 
     // Aggregate status: `matched` only if EVERY receipt auto-matched; else the
     // most-actionable state (needs_review > no_match).
@@ -695,7 +714,9 @@ export const commitInboundReceipts = internalMutation({
       status = "no_match";
       detail =
         total === 1 && firstAmount != null
-          ? `No unreceipted charge for ${fmtUsd(firstAmount)} within ±14 days.`
+          ? `No unreceipted charge for ${fmtUsd(firstAmount)}${
+              firstHadDate ? " within ±14 days" : ""
+            }.`
           : "No matching charges found.";
     }
 
@@ -1686,7 +1707,9 @@ async function runPipeline(
           {
             chapterId: sender.chapterId,
             amountCents: ex.ocrAmountCents,
-            receiptDate: ex.ocrDate ?? row.receivedAt,
+            // No parsed date → match on amount alone (never the email's arrival
+            // time, which would wrongly window out older same-amount charges).
+            receiptDate: ex.ocrDate ?? undefined,
             ocrMerchant: ex.ocrMerchant,
             senderPersonId: sender.personId ?? undefined,
           },

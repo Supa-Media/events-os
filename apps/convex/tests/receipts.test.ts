@@ -884,6 +884,37 @@ describe("applyUploadOcrAndAttach", () => {
   });
 });
 
+// ── suggestMatches — dateless receipts (the "$16.36 didn't auto-match" fix) ──
+// A receipt whose OCR read a total but NO date must still surface a unique
+// exact-amount charge, however old — the modal's suggestions and the auto-match
+// pipeline share this matcher, so a fabricated createdAt date used to hide the
+// only matching charge behind the ±14-day window.
+describe("suggestMatches — no-date matching", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  test("a receipt with an amount but NO date surfaces a unique months-old exact-amount charge", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    const now = Date.now();
+    // The only unreceipted $16.36 charge is 6 months old.
+    const txn = await seedTxn(s, { amountCents: 1636, postedAt: now - 180 * DAY });
+    await seedTxn(s, { amountCents: 999, postedAt: now }); // wrong amount, ignore
+    const storageId = await storeBlobWithContent(s, "audible");
+    // ocrAmountCents seeds canonical amountCents; ocrDate omitted → receiptDate null.
+    const receiptId = await run(t, (ctx) =>
+      createReceipt(ctx, {
+        chapterId: s.chapterId,
+        storageId,
+        source: "upload",
+        ocrAmountCents: 1636,
+      }),
+    );
+
+    const matches = await s.as.query(api.receipts.suggestMatches, { receiptId });
+    expect(matches.map((m) => m.transactionId)).toEqual([txn]);
+  });
+});
+
 // ── listInboundQueue: hiding confirmed/exact duplicates (BUG FIX) ────────────
 // Confirming a receipt as a duplicate (`markAsDuplicate`) already hides it
 // from the library's default views, but the SAME resolved receipt used to

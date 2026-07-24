@@ -930,6 +930,58 @@ describe("findReceiptMatches", () => {
     expect(matches[0].transactionId).toBe(mine);
     expect(matches.map((m) => m.transactionId)).toContain(plain);
   });
+
+  // NO-DATE MATCHING (the "$16.36 didn't auto-match" fix): a receipt whose OCR
+  // found a total but NO date must match on exact amount ALONE — never against
+  // a fabricated upload/receive date, which used to window out older charges.
+  test("no receiptDate → matches a unique exact-amount charge even far outside ±14 days", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const now = Date.now();
+    // A single unreceipted $16.36 charge, 6 MONTHS old — a fabricated "now"
+    // date would have windowed this out; amount-alone matching keeps it.
+    const txn = await seedTxn(s, { amountCents: 1636, postedAt: now - 180 * DAY });
+    await seedTxn(s, { amountCents: 999, postedAt: now }); // wrong amount
+
+    const matches = await t.query(internal.receiptInbox.findReceiptMatches, {
+      chapterId: s.chapterId,
+      amountCents: 1636,
+      // receiptDate omitted — the dateless case.
+    });
+    expect(matches.map((m) => m.transactionId)).toEqual([txn]);
+  });
+
+  test("no receiptDate → still excludes receipted / non-spend / excluded charges", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const now = Date.now();
+    await seedTxn(s, { amountCents: 1636, postedAt: now, hasReceipt: true });
+    await seedTxn(s, { amountCents: 1636, postedAt: now, flow: "inflow" });
+    await seedTxn(s, { amountCents: 1636, postedAt: now, status: "excluded" });
+    await seedTxn(s, { amountCents: 1636, postedAt: now, isPersonal: true });
+    const matches = await t.query(internal.receiptInbox.findReceiptMatches, {
+      chapterId: s.chapterId,
+      amountCents: 1636,
+    });
+    expect(matches).toEqual([]);
+  });
+
+  test("no receiptDate → returns all same-amount charges (ambiguous → no auto-attach), most recent first", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const now = Date.now();
+    const older = await seedTxn(s, { amountCents: 1636, postedAt: now - 90 * DAY });
+    const newer = await seedTxn(s, { amountCents: 1636, postedAt: now - 10 * DAY });
+    const matches = await t.query(internal.receiptInbox.findReceiptMatches, {
+      chapterId: s.chapterId,
+      amountCents: 1636,
+    });
+    // Two candidates → downstream won't auto-attach (uniqueness guard holds).
+    expect(matches.length).toBe(2);
+    // Dateless ranking is most-recent-first.
+    expect(matches[0].transactionId).toBe(newer);
+    expect(matches[1].transactionId).toBe(older);
+  });
 });
 
 // ── classifySender (the team/roster/internal/external automation axis) ───────
