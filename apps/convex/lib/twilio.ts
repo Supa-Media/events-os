@@ -153,3 +153,59 @@ export async function sendSms(
     throw new Error(`Twilio send failed (${response.status}): ${await response.text()}`);
   }
 }
+
+/**
+ * Validate an inbound Twilio webhook request (`/twilio/webhook`, http.ts) per
+ * Twilio's request-validation spec
+ * (https://www.twilio.com/docs/usage/webhooks/webhooks-security): sort the
+ * POST params by key and append each `key` + `value` pair (no separator)
+ * directly onto the end of the full request URL, HMAC-SHA1 the result with
+ * the account's auth token, base64-encode, and compare (constant-time)
+ * against the `X-Twilio-Signature` header.
+ *
+ * `url` MUST be the exact URL Twilio was configured to POST to (scheme +
+ * host + path, no trailing modifications) — Twilio signs against that exact
+ * string, so a mismatched scheme/host/trailing-slash breaks every signature.
+ *
+ * Uses Web Crypto (`crypto.subtle`), not Node's `crypto` module — Convex
+ * actions/http actions run on V8 by default (no `"use node"` here), mirroring
+ * `verifyStripeSignature` (stripe.ts) and `verifyIncreaseSignature`
+ * (increase.ts).
+ */
+export async function validateTwilioSignature(
+  url: string,
+  params: Record<string, string>,
+  signatureHeader: string | null,
+  authToken: string,
+): Promise<boolean> {
+  if (!signatureHeader) return false;
+
+  let data = url;
+  for (const key of Object.keys(params).sort()) {
+    data += key + params[key];
+  }
+
+  const encoder = new TextEncoder();
+  const key = await crypto.subtle.importKey(
+    "raw",
+    encoder.encode(authToken),
+    { name: "HMAC", hash: "SHA-1" },
+    false,
+    ["sign"],
+  );
+  const mac = new Uint8Array(
+    await crypto.subtle.sign("HMAC", key, encoder.encode(data)),
+  );
+  let binary = "";
+  for (let i = 0; i < mac.length; i++) binary += String.fromCharCode(mac[i]);
+  const expected = btoa(binary);
+
+  // Constant-time comparison — a length mismatch alone must not short-circuit
+  // on an attacker-controlled early return before the loop.
+  if (expected.length !== signatureHeader.length) return false;
+  let diff = 0;
+  for (let i = 0; i < expected.length; i++) {
+    diff |= expected.charCodeAt(i) ^ signatureHeader.charCodeAt(i);
+  }
+  return diff === 0;
+}

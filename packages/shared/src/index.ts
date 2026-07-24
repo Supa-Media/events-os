@@ -1961,5 +1961,17 @@ export * from "./finance";
 // ── Org-chart seat taxonomy (template constants + capability vocabulary) ─────
 export * from "./seats";
 
+// ── SMS segment estimation + pricing (Attendance F cost preview/ledger) ──────
+export * from "./sms";
+
+// ── Name-formatting helpers (firstName salutations, display-name fallback) ───
+export * from "./names";
+
+// ── Email-campaign block document model (designer contract) ──────────────────
+export * from "./emailBlocks";
+
+// ── Email-campaign block renderer (HTML + plaintext) ──────────────────────────
+export * from "./emailRender";
+
 // ── @mention markup for plain-text notes fields ───────────────────────────────
 export * from "./mentions";

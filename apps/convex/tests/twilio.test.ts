@@ -1,10 +1,13 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { createHmac } from "node:crypto";
 import { ConvexError } from "convex/values";
 import { api, internal } from "../_generated/api";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import type { Id } from "../_generated/dataModel";
-import { normalizePhone } from "../lib/twilio";
+import { normalizePhone, validateTwilioSignature } from "../lib/twilio";
 import { hashPhoneCode } from "../lib/phoneCodes";
+import { deliverSmsBlast } from "../blasts";
+import type { ActionCtx } from "../_generated/server";
 
 /**
  * Twilio integration (Attendance F):
@@ -16,6 +19,8 @@ import { hashPhoneCode } from "../lib/phoneCodes";
  *  - SMS blast audience resolution: phoneVerified gate, dedup by normalized
  *    phone, email-less phone-only imported guests INCLUDED; not-configured →
  *    recorded error, configured → sent/failed counts.
+ *  - validateTwilioSignature — the /twilio/webhook security gate.
+ *  - /twilio/webhook — STOP/START opt-out handling + MessageSid dedup.
  */
 
 const SUPERUSER_EMAIL = "seyi@publicworship.life";
@@ -417,6 +422,91 @@ describe("phone verification mirrors the email flow", () => {
       }),
     ).rejects.toThrow(/already verified/);
   });
+
+  test("a sent verification code writes an smsUsageEvents row attributed to the RSVP's chapter/event", async () => {
+    vi.useFakeTimers();
+    const realSid = process.env.TWILIO_ACCOUNT_SID;
+    const realToken = process.env.TWILIO_AUTH_TOKEN;
+    const realMsid = process.env.TWILIO_MESSAGING_SERVICE_SID;
+    try {
+      process.env.TWILIO_ACCOUNT_SID = "ACenv";
+      process.env.TWILIO_AUTH_TOKEN = "tokenv";
+      process.env.TWILIO_MESSAGING_SERVICE_SID = "MGenv";
+      globalThis.fetch = (async () =>
+        ({ ok: true, status: 201, text: async () => "{}" }) as unknown as Response) as typeof fetch;
+
+      const { t, s, eventId, slug } = await setupPage();
+      const token = await seedPhoneRsvp(s, eventId, "9175550050", "tok-usage");
+      await t.mutation(api.ticketingVerification.beginRsvpPhoneVerification, {
+        slug,
+        token,
+      });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      const rows = await run(s.t, (ctx) => ctx.db.query("smsUsageEvents").collect());
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        purpose: "verification",
+        chapterId: s.chapterId,
+        eventId,
+        phoneLast4: "0050",
+        outcome: "sent",
+      });
+      expect(rows[0].segments).toBeGreaterThan(0);
+      expect(rows[0].costUsdMicros).toBeGreaterThan(0);
+    } finally {
+      vi.useRealTimers();
+      if (realSid === undefined) delete process.env.TWILIO_ACCOUNT_SID;
+      else process.env.TWILIO_ACCOUNT_SID = realSid;
+      if (realToken === undefined) delete process.env.TWILIO_AUTH_TOKEN;
+      else process.env.TWILIO_AUTH_TOKEN = realToken;
+      if (realMsid === undefined) delete process.env.TWILIO_MESSAGING_SERVICE_SID;
+      else process.env.TWILIO_MESSAGING_SERVICE_SID = realMsid;
+    }
+  });
+
+  test("ticketingSms.sendVerificationSms writes a purpose:'verification' smsUsageEvents row directly (FIX 7 coverage gap)", async () => {
+    // Called directly (not via beginRsvpPhoneVerification's scheduler hop)
+    // and with rsvpId omitted — the "defensive back-compat" path
+    // (ticketingSms.ts's doc comment) that falls back to chapterId
+    // "central", which the indirect RSVP-flow test above never exercises
+    // (it always has a real rsvpId).
+    const realSid = process.env.TWILIO_ACCOUNT_SID;
+    const realToken = process.env.TWILIO_AUTH_TOKEN;
+    const realMsid = process.env.TWILIO_MESSAGING_SERVICE_SID;
+    try {
+      process.env.TWILIO_ACCOUNT_SID = "ACenv";
+      process.env.TWILIO_AUTH_TOKEN = "tokenv";
+      process.env.TWILIO_MESSAGING_SERVICE_SID = "MGenv";
+      globalThis.fetch = (async () =>
+        ({ ok: true, status: 201, text: async () => "{}" }) as unknown as Response) as typeof fetch;
+
+      const t = newT();
+      await t.action(internal.ticketingSms.sendVerificationSms, {
+        phone: "9175550060",
+        code: "654321",
+      });
+
+      const rows = await run(t, (ctx) => ctx.db.query("smsUsageEvents").collect());
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        purpose: "verification",
+        chapterId: "central",
+        phoneLast4: "0060",
+        outcome: "sent",
+      });
+      expect(rows[0].eventId).toBeUndefined();
+      expect(rows[0].segments).toBeGreaterThan(0);
+      expect(rows[0].costUsdMicros).toBeGreaterThan(0);
+    } finally {
+      if (realSid === undefined) delete process.env.TWILIO_ACCOUNT_SID;
+      else process.env.TWILIO_ACCOUNT_SID = realSid;
+      if (realToken === undefined) delete process.env.TWILIO_AUTH_TOKEN;
+      else process.env.TWILIO_AUTH_TOKEN = realToken;
+      if (realMsid === undefined) delete process.env.TWILIO_MESSAGING_SERVICE_SID;
+      else process.env.TWILIO_MESSAGING_SERVICE_SID = realMsid;
+    }
+  });
 });
 
 // ── SMS blast audience resolution + sending ──────────────────────────────────
@@ -633,5 +723,417 @@ describe("previewBlastAudience", () => {
     expect(preview.smsRecipients).toBe(3);
     expect(preview.emailRecipients).toBe(1);
     expect(preview.smsConfigured).toBe(false);
+    // No draft body yet → no cost estimate, and nobody's opted out.
+    expect(preview.smsOptedOut).toBe(0);
+    expect(preview.estimatedSegments).toBe(0);
+    expect(preview.estimatedCostUsdMicros).toBe(0);
+  });
+
+  test("a draft body drives the segment + cost estimate (including the STOP suffix)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedSmsAudience(s, eventId); // 3 SMS recipients
+    const preview = await s.as.query(api.blasts.previewBlastAudience, {
+      eventId,
+      audience: "everyone",
+      body: "Doors at 6!",
+    });
+    // "Doors at 6!\n\nReply STOP to opt out." is well under 160 GSM-7 chars.
+    expect(preview.estimatedSegments).toBe(1);
+    expect(preview.estimatedCostUsdMicros).toBe(3 * 10_000); // 3 recipients × 1 segment × $0.01
+  });
+});
+
+// ── SMS opt-outs (defense-in-depth STOP mirror) ──────────────────────────────
+
+describe("SMS opt-out filtering", () => {
+  test("an opted-out number is excluded from the blast payload and counted in the preview", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedSmsAudience(s, eventId); // includes +19175550100 ("Imported")
+
+    await run(s.t, (ctx) =>
+      ctx.db.insert("smsOptOuts", {
+        phone: "+19175550100",
+        source: "stop_webhook",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const blastId = await insertBlast(s, eventId, "sms");
+    const payload = await s.t.query(internal.blasts.getBlastPayload, { blastId });
+    expect(payload?.phones).not.toContain("+19175550100");
+    expect(payload?.phones.sort()).toEqual(["+19175550101", "+19175550103"]);
+
+    const preview = await s.as.query(api.blasts.previewBlastAudience, {
+      eventId,
+      audience: "everyone",
+    });
+    expect(preview.smsRecipients).toBe(2);
+    expect(preview.smsOptedOut).toBe(1);
+  });
+
+  test("an opted-out number already excluded from the payload is never texted, and only 'sent' usage rows land for the rest", async () => {
+    vi.useFakeTimers();
+    const realSid = process.env.TWILIO_ACCOUNT_SID;
+    const realToken = process.env.TWILIO_AUTH_TOKEN;
+    const realMsid = process.env.TWILIO_MESSAGING_SERVICE_SID;
+    try {
+      process.env.TWILIO_ACCOUNT_SID = "ACenv";
+      process.env.TWILIO_AUTH_TOKEN = "tokenv";
+      process.env.TWILIO_MESSAGING_SERVICE_SID = "MGenv";
+
+      const t = newT();
+      const s = await setupChapter(t);
+      const eventId = await seedEvent(s);
+      await seedSmsAudience(s, eventId);
+      await run(s.t, (ctx) =>
+        ctx.db.insert("smsOptOuts", {
+          phone: "+19175550100",
+          source: "stop_webhook",
+          createdAt: Date.now(),
+        }),
+      );
+
+      const sentTo: string[] = [];
+      globalThis.fetch = (async (_url: string, init?: { body?: string }) => {
+        const body = new URLSearchParams(init?.body ?? "");
+        sentTo.push(body.get("To") ?? "");
+        return { ok: true, status: 201, text: async () => "{}" } as unknown as Response;
+      }) as typeof fetch;
+
+      await s.as.mutation(api.blasts.sendBlast, {
+        eventId,
+        channel: "sms",
+        body: "hey",
+        audience: "everyone",
+      });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      // Only the 2 non-opted-out numbers were actually texted.
+      expect(sentTo.sort()).toEqual(["+19175550101", "+19175550103"]);
+
+      const history = await s.as.query(api.blasts.listBlasts, { eventId });
+      expect(history[0].recipientCount).toBe(2); // opted-out never enters the payload
+      expect(history[0].sentCount).toBe(2);
+
+      const usageRows = await run(s.t, (ctx) => ctx.db.query("smsUsageEvents").collect());
+      // No usage row at all for the opted-out number — it never reached
+      // deliverSmsBlast (getBlastPayload filtered it out first).
+      expect(usageRows.some((r) => r.phoneLast4 === "0100")).toBe(false);
+      const sentRows = usageRows.filter((r) => r.outcome === "sent");
+      expect(sentRows).toHaveLength(2);
+      expect(sentRows.every((r) => r.purpose === "blast")).toBe(true);
+      expect(sentRows.every((r) => r.costUsdMicros > 0)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+      if (realSid === undefined) delete process.env.TWILIO_ACCOUNT_SID;
+      else process.env.TWILIO_ACCOUNT_SID = realSid;
+      if (realToken === undefined) delete process.env.TWILIO_AUTH_TOKEN;
+      else process.env.TWILIO_AUTH_TOKEN = realToken;
+      if (realMsid === undefined) delete process.env.TWILIO_MESSAGING_SERVICE_SID;
+      else process.env.TWILIO_MESSAGING_SERVICE_SID = realMsid;
+    }
+  });
+
+  test("everyone opting out between scheduling and delivery fails the blast with a clear error, not a silent 'sent'", async () => {
+    // `deliverBlast`'s own two sequential reads (getBlastPayload, then this
+    // recheck) can't be raced from outside a single scheduled-function
+    // execution, so this calls `deliverSmsBlast` directly with a payload
+    // that reflects what `getBlastPayload` would have returned AT SCHEDULE
+    // TIME (before the opt-out below lands) — exactly the real race, just
+    // driven explicitly instead of hoping for timing luck.
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const blastId = await insertBlast(s, eventId, "sms");
+    const blast = (await run(s.t, (ctx) => ctx.db.get(blastId)))!;
+
+    // The number opts out AFTER the payload below was "built".
+    await run(s.t, (ctx) =>
+      ctx.db.insert("smsOptOuts", {
+        phone: "+19175550200",
+        source: "stop_webhook",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const result = await t.action(async (rawCtx) => {
+      const ctx = rawCtx as unknown as ActionCtx;
+      return deliverSmsBlast(ctx, {
+        blast,
+        emails: [],
+        phones: ["+19175550200"],
+        eventName: "Night",
+        slug: null,
+        hostName: "Public Worship",
+      });
+    });
+
+    expect(result.sentCount).toBe(0);
+    expect(result.recipientCount).toBe(1);
+    expect(result.error).toMatch(/all 1 recipient had opted out by delivery time/i);
+
+    // finishBlast turns that into a "failed" row, not a silent "sent".
+    await t.mutation(internal.blasts.finishBlast, {
+      blastId,
+      recipientCount: result.recipientCount,
+      sentCount: result.sentCount,
+      error: result.error,
+    });
+    const history = await s.as.query(api.blasts.listBlasts, { eventId });
+    expect(history[0].status).toBe("failed");
+    expect(history[0].error).toBe(result.error);
+  });
+
+  test("listOptedOutPhones (the send-time recheck's data source) reflects the current opt-out table", async () => {
+    // `deliverSmsBlast` re-fetches the opt-out set right before sending via
+    // this internalQuery (see blasts.ts) rather than trusting the payload
+    // computed when the blast was scheduled. That data source is covered
+    // directly here; the end-to-end "already excluded" case is covered by
+    // the previous test (getBlastPayload's build-time filter already keeps a
+    // known opt-out from ever reaching `deliverSmsBlast`'s send loop).
+    const t = newT();
+    expect(await t.query(internal.smsOptOuts.listOptedOutPhones, {})).toEqual([]);
+    await run(t, (ctx) =>
+      ctx.db.insert("smsOptOuts", {
+        phone: "+19175550102",
+        source: "stop_webhook",
+        createdAt: Date.now(),
+      }),
+    );
+    expect(await t.query(internal.smsOptOuts.listOptedOutPhones, {})).toEqual([
+      "+19175550102",
+    ]);
+  });
+});
+
+// ── validateTwilioSignature ───────────────────────────────────────────────────
+
+/** Sign `url` + sorted POST `params` per Twilio's spec, matching
+ *  `validateTwilioSignature`'s own algorithm (independently reimplemented
+ *  with Node's `crypto` so this test doesn't just assert the function against
+ *  itself). */
+function signTwilioRequest(
+  url: string,
+  params: Record<string, string>,
+  authToken: string,
+): string {
+  let data = url;
+  for (const key of Object.keys(params).sort()) data += key + params[key];
+  return createHmac("sha1", authToken).update(data).digest("base64");
+}
+
+describe("validateTwilioSignature", () => {
+  const URL = "https://example.convex.site/twilio/webhook";
+  const TOKEN = "test_auth_token";
+  const PARAMS = { From: "+19175550000", Body: "STOP", MessageSid: "SM123" };
+
+  test("accepts a correctly signed request", async () => {
+    const sig = signTwilioRequest(URL, PARAMS, TOKEN);
+    expect(await validateTwilioSignature(URL, PARAMS, sig, TOKEN)).toBe(true);
+  });
+
+  test("rejects a tampered param", async () => {
+    const sig = signTwilioRequest(URL, PARAMS, TOKEN);
+    const tampered = { ...PARAMS, Body: "START" };
+    expect(await validateTwilioSignature(URL, tampered, sig, TOKEN)).toBe(false);
+  });
+
+  test("rejects the wrong auth token", async () => {
+    const sig = signTwilioRequest(URL, PARAMS, TOKEN);
+    expect(await validateTwilioSignature(URL, PARAMS, sig, "wrong_token")).toBe(
+      false,
+    );
+  });
+
+  test("rejects a mismatched URL (e.g. http vs https, or a different host)", async () => {
+    const sig = signTwilioRequest(URL, PARAMS, TOKEN);
+    expect(
+      await validateTwilioSignature(
+        "https://example.convex.site/twilio/webhook/",
+        PARAMS,
+        sig,
+        TOKEN,
+      ),
+    ).toBe(false);
+  });
+
+  test("rejects a missing signature header", async () => {
+    expect(await validateTwilioSignature(URL, PARAMS, null, TOKEN)).toBe(false);
+  });
+
+  test("params order doesn't matter — sorted internally", async () => {
+    const sig = signTwilioRequest(URL, PARAMS, TOKEN);
+    const reordered = { MessageSid: PARAMS.MessageSid, Body: PARAMS.Body, From: PARAMS.From };
+    expect(await validateTwilioSignature(URL, reordered, sig, TOKEN)).toBe(true);
+  });
+});
+
+// ── /twilio/webhook (http.ts) ─────────────────────────────────────────────────
+
+const WEBHOOK_URL = "https://some.convex.site/twilio/webhook"; // matches convex-test's t.fetch base
+
+async function postTwilioWebhook(
+  t: ReturnType<typeof newT>,
+  authToken: string,
+  params: Record<string, string>,
+  opts: { badSignature?: boolean } = {},
+) {
+  const body = new URLSearchParams(params).toString();
+  const signature = opts.badSignature
+    ? "forged=="
+    : signTwilioRequest(WEBHOOK_URL, params, authToken);
+  return t.fetch("/twilio/webhook", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "X-Twilio-Signature": signature,
+    },
+    body,
+  });
+}
+
+describe("/twilio/webhook", () => {
+  const realSid = process.env.TWILIO_ACCOUNT_SID;
+  const realToken = process.env.TWILIO_AUTH_TOKEN;
+  const realMsid = process.env.TWILIO_MESSAGING_SERVICE_SID;
+
+  function setEnvCreds() {
+    process.env.TWILIO_ACCOUNT_SID = "ACenv";
+    process.env.TWILIO_AUTH_TOKEN = "webhook_token";
+    process.env.TWILIO_MESSAGING_SERVICE_SID = "MGenv";
+  }
+  function restoreEnvCreds() {
+    if (realSid === undefined) delete process.env.TWILIO_ACCOUNT_SID;
+    else process.env.TWILIO_ACCOUNT_SID = realSid;
+    if (realToken === undefined) delete process.env.TWILIO_AUTH_TOKEN;
+    else process.env.TWILIO_AUTH_TOKEN = realToken;
+    if (realMsid === undefined) delete process.env.TWILIO_MESSAGING_SERVICE_SID;
+    else process.env.TWILIO_MESSAGING_SERVICE_SID = realMsid;
+  }
+
+  test("500s when Twilio isn't configured", async () => {
+    const t = newT();
+    const res = await postTwilioWebhook(t, "any_token", {
+      From: "+19175550000",
+      Body: "STOP",
+      MessageSid: "SM1",
+    });
+    expect(res.status).toBe(500);
+  });
+
+  test("400s on an invalid signature", async () => {
+    setEnvCreds();
+    try {
+      const t = newT();
+      const res = await postTwilioWebhook(
+        t,
+        "webhook_token",
+        { From: "+19175550000", Body: "STOP", MessageSid: "SM2" },
+        { badSignature: true },
+      );
+      expect(res.status).toBe(400);
+    } finally {
+      restoreEnvCreds();
+    }
+  });
+
+  test("STOP records an opt-out; START clears it", async () => {
+    setEnvCreds();
+    try {
+      const t = newT();
+      const res = await postTwilioWebhook(t, "webhook_token", {
+        From: "9175550099", // deliberately not pre-normalized — mirrors a real device
+        Body: "  stop  ", // lowercase + whitespace — must still match
+        MessageSid: "SM3",
+      });
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain("<Response/>");
+      const rows = await run(t, (ctx) => ctx.db.query("smsOptOuts").collect());
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ phone: "+19175550099", source: "stop_webhook" });
+
+      await postTwilioWebhook(t, "webhook_token", {
+        From: "9175550099",
+        Body: "START",
+        MessageSid: "SM4",
+      });
+      const rowsAfterStart = await run(t, (ctx) => ctx.db.query("smsOptOuts").collect());
+      expect(rowsAfterStart).toHaveLength(0);
+    } finally {
+      restoreEnvCreds();
+    }
+  });
+
+  test("a redelivered MessageSid is deduped — processed only once", async () => {
+    setEnvCreds();
+    try {
+      const t = newT();
+      const params = { From: "9175550098", Body: "STOP", MessageSid: "SM-dup" };
+      await postTwilioWebhook(t, "webhook_token", params);
+      // "Redeliver" the exact same webhook (Twilio does this on a timeout).
+      await postTwilioWebhook(t, "webhook_token", params);
+
+      const rows = await run(t, (ctx) => ctx.db.query("smsOptOuts").collect());
+      expect(rows).toHaveLength(1); // not double-inserted
+      const webhookRows = await run(t, (ctx) => ctx.db.query("webhookEvents").collect());
+      expect(webhookRows.filter((r) => r.provider === "twilio")).toHaveLength(1);
+    } finally {
+      restoreEnvCreds();
+    }
+  });
+
+  test("validates against CONVEX_SITE_URL when it differs from the request's actual URL", async () => {
+    setEnvCreds();
+    const realSiteUrl = process.env.CONVEX_SITE_URL;
+    // Deliberately a DIFFERENT origin than convex-test's t.fetch base
+    // (`WEBHOOK_URL`, "https://some.convex.site") — this is the whole point:
+    // Twilio signed against the canonical deployment URL, and req.url alone
+    // (the old behavior) would reject this as an invalid signature.
+    process.env.CONVEX_SITE_URL = "https://canonical-deployment.convex.site";
+    try {
+      const t = newT();
+      const params = { From: "9175550096", Body: "STOP", MessageSid: "SM-canonical" };
+      const signature = signTwilioRequest(
+        "https://canonical-deployment.convex.site/twilio/webhook",
+        params,
+        "webhook_token",
+      );
+      const res = await t.fetch("/twilio/webhook", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "X-Twilio-Signature": signature,
+        },
+        body: new URLSearchParams(params).toString(),
+      });
+      expect(res.status).toBe(200);
+      const rows = await run(t, (ctx) => ctx.db.query("smsOptOuts").collect());
+      expect(rows).toMatchObject([{ phone: "+19175550096" }]);
+    } finally {
+      if (realSiteUrl === undefined) delete process.env.CONVEX_SITE_URL;
+      else process.env.CONVEX_SITE_URL = realSiteUrl;
+      restoreEnvCreds();
+    }
+  });
+
+  test("an unrecognized message body is a silent no-op", async () => {
+    setEnvCreds();
+    try {
+      const t = newT();
+      const res = await postTwilioWebhook(t, "webhook_token", {
+        From: "9175550097",
+        Body: "Thanks so much!",
+        MessageSid: "SM5",
+      });
+      expect(res.status).toBe(200);
+      const rows = await run(t, (ctx) => ctx.db.query("smsOptOuts").collect());
+      expect(rows).toHaveLength(0);
+    } finally {
+      restoreEnvCreds();
+    }
   });
 });

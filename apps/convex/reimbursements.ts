@@ -2123,10 +2123,10 @@ export const sendReimbursementReminders = internalAction({
           : r.chapterSlug
             ? `${siteUrl()}/reimburse/${encodeURIComponent(r.chapterSlug)}?token=${encodeURIComponent(r.token)}`
             : null;
-        await sendEmail(
-          r.payeeEmail,
-          `Your reimbursement ${r.reference} is still pending`,
-          emailShell(`
+        await sendEmail(ctx, {
+          to: r.payeeEmail,
+          subject: `Your reimbursement ${r.reference} is still pending`,
+          html: emailShell(`
           <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">Reimbursement ${escapeHtml(r.reference)}</h1>
           <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(r.payeeName)} — your ${escapeHtml(dollars)} reimbursement is still open. ${reason}</p>
           ${
@@ -2134,7 +2134,7 @@ export const sendReimbursementReminders = internalAction({
               ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${link}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">View request →</a></div>`
               : ""
           }`),
-        );
+        });
       }
 
       // The one-shot planned-purchase receipt follow-up (see the doc above).
@@ -2156,10 +2156,10 @@ export const sendReimbursementReminders = internalAction({
           : r.chapterSlug
             ? `${siteUrl()}/reimburse/${encodeURIComponent(r.chapterSlug)}?token=${encodeURIComponent(r.token)}`
             : null;
-        await sendEmail(
-          r.payeeEmail,
-          `Your reimbursement ${r.reference} — time to submit your receipts`,
-          emailShell(`
+        await sendEmail(ctx, {
+          to: r.payeeEmail,
+          subject: `Your reimbursement ${r.reference} — time to submit your receipts`,
+          html: emailShell(`
           <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">Reimbursement ${escapeHtml(r.reference)}</h1>
           <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(r.payeeName)} — your planned purchase date (${escapeHtml(formatEmailDate(r.plannedPurchaseDate))}) has passed, and your ${escapeHtml(dollars)} pre-approved reimbursement is still waiting on receipts. Submit your receipts to complete the reimbursement.</p>
           ${
@@ -2167,7 +2167,7 @@ export const sendReimbursementReminders = internalAction({
               ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${link}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">Add receipts →</a></div>`
               : ""
           }`),
-        );
+        });
       }
     }
     return null;
@@ -2288,7 +2288,7 @@ export const sendReimbursementSubmittedEmail = internalAction({
         // recipients. Isolate each send so one bad address can't cost the
         // others their notification.
         try {
-          await sendEmail(email, subject, html);
+          await sendEmail(ctx, { to: email, subject, html });
         } catch (err) {
           console.error(
             "sendReimbursementSubmittedEmail: recipient send failed",

@@ -122,10 +122,10 @@ export const notifyBudgetSubmitter = internalAction({
     // when APP_URL is unset).
     const link = appUrl("/finances");
 
-    await sendEmail(
-      decision.submitterEmail,
+    await sendEmail(ctx, {
+      to: decision.submitterEmail,
       subject,
-      emailShell(`
+      html: emailShell(`
         <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">${heading}</h1>
         <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(decision.submitterName)} — ${lead}</p>
         ${noteBlock}
@@ -134,7 +134,7 @@ export const notifyBudgetSubmitter = internalAction({
             ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${link}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">Open the finance dashboard →</a></div>`
             : ""
         }`),
-    );
+    });
     return null;
   },
 });

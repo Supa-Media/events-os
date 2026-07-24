@@ -129,6 +129,97 @@ describe("blast audience resolution", () => {
   });
 });
 
+describe("email audience excludes emailSuppressions (campaigns integration)", () => {
+  test("a suppressed address is dropped from the email audience and reported separately", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEventWithGuests(s);
+    // "ann@example.com" is on the guest list (seedEventWithGuests) — suppress
+    // it as if she'd unsubscribed from an email campaign.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("emailSuppressions", {
+        email: "ann@example.com",
+        reason: "unsubscribe",
+        createdAt: Date.now(),
+      }),
+    );
+    const blastId = await insertBlast(s, eventId, "everyone");
+    const payload = await s.t.query(internal.blasts.getBlastPayload, { blastId });
+    expect(payload?.emails.sort()).toEqual([
+      "ben@example.com",
+      "cat@example.com",
+      "dan@example.com",
+    ]);
+
+    const preview = await s.as.query(api.blasts.previewBlastAudience, {
+      eventId,
+      audience: "everyone",
+    });
+    expect(preview.emailRecipients).toBe(3);
+    expect(preview.emailSuppressed).toBe(1);
+  });
+
+  test("suppression matching normalizes the rsvp email (trim + lowercase), not just lowercases it", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await run(s.t, async (ctx) => {
+      const now = Date.now();
+      const eventTypeId = await ctx.db.insert("eventTypes", {
+        chapterId: s.chapterId,
+        name: "Night",
+        slug: "night-padded",
+        version: 1,
+        createdBy: s.userId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const eventId = await ctx.db.insert("events", {
+        chapterId: s.chapterId,
+        eventTypeId,
+        templateVersion: 1,
+        name: "Night",
+        eventDate: now,
+        status: "planning",
+        createdBy: s.userId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      // A padded/mixed-case email — the kind that slips in from a pasted or
+      // imported address — while `emailSuppressions.email` is stored
+      // normalized (trim + lowercase, per the schema doc).
+      await ctx.db.insert("rsvps", {
+        eventId,
+        chapterId: s.chapterId,
+        name: "Padded Pat",
+        email: "  Pat@Example.com  ",
+        status: "going",
+        token: "tok-pat-padded",
+        createdAt: now,
+        updatedAt: now,
+      });
+      return eventId;
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("emailSuppressions", {
+        email: "pat@example.com",
+        reason: "unsubscribe",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const blastId = await insertBlast(s, eventId, "everyone");
+    const payload = await s.t.query(internal.blasts.getBlastPayload, { blastId });
+    expect(payload?.emails ?? []).toEqual([]);
+
+    const preview = await s.as.query(api.blasts.previewBlastAudience, {
+      eventId,
+      audience: "everyone",
+    });
+    expect(preview.emailRecipients).toBe(0);
+    expect(preview.emailSuppressed).toBe(1);
+  });
+});
+
 describe("sendBlast guardrails", () => {
   test("accepts the SMS channel now (Attendance F); delivery records the outcome", async () => {
     // The old SMS_NOT_CONNECTED refusal is gone — an unconfigured Twilio is a
@@ -194,6 +285,49 @@ describe("sendBlast guardrails", () => {
       });
     } finally {
       vi.useRealTimers();
+    }
+  });
+
+  test("a Resend outage marks the email blast 'failed', not silently 'sent' (FIX 1 regression)", async () => {
+    // Before FIX 1, `sendEmail`/`sendEmailReporting` swallowed EVERY Resend
+    // failure (bounce or outage alike) without throwing, so this per-recipient
+    // catch in `deliverEmailBlast` never fired and a full outage still landed
+    // as "sent" with sentCount:0. Now a transport-level failure propagates,
+    // so this catch actually catches it.
+    vi.useFakeTimers();
+    const realFetch = globalThis.fetch;
+    const realKey = process.env.RESEND_API_KEY;
+    const realFrom = process.env.AUTH_EMAIL_FROM;
+    try {
+      process.env.RESEND_API_KEY = "env_key_used";
+      process.env.AUTH_EMAIL_FROM = "env-from@used.com";
+      const t = newT();
+      const s = await setupChapter(t);
+      const eventId = await seedEventWithGuests(s);
+
+      globalThis.fetch = (async () => {
+        throw new Error("resend outage");
+      }) as unknown as typeof fetch;
+
+      await s.as.mutation(api.blasts.sendBlast, {
+        eventId,
+        channel: "email",
+        body: "hello",
+        audience: "going", // 2 recipients (ann@, ben@)
+      });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      const history = await s.as.query(api.blasts.listBlasts, { eventId });
+      expect(history[0].status).toBe("failed");
+      expect(history[0].sentCount).toBe(0);
+      expect(history[0].error).toMatch(/resend outage/);
+    } finally {
+      vi.useRealTimers();
+      globalThis.fetch = realFetch;
+      if (realKey === undefined) delete process.env.RESEND_API_KEY;
+      else process.env.RESEND_API_KEY = realKey;
+      if (realFrom === undefined) delete process.env.AUTH_EMAIL_FROM;
+      else process.env.AUTH_EMAIL_FROM = realFrom;
     }
   });
 });

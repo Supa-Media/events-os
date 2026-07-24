@@ -15,6 +15,7 @@
 import { Text, View } from "react-native";
 import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
+import { formatUsdMicros } from "@events-os/shared";
 import { Badge, Card, Icon, SectionHeader, type BadgeTone } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { formatDateTime } from "../../../lib/format";
@@ -42,14 +43,6 @@ const TRIGGERED_BY_LABEL: Record<"sweep" | "ingest" | "manual", string> = {
   ingest: "On arrival",
   manual: "Manual",
 };
-
-/** Micro-USD (1e-6 USD, see `aiUsageEvents.costUsdMicros`) as a dollar
- *  string. Per-call costs are often well under a cent, so this shows more
- *  precision than the usual `$X.XX` money formatting elsewhere in finance. */
-function formatMicroCost(micros: number): string {
-  const usd = micros / 1_000_000;
-  return usd === 0 ? "$0.00" : `$${usd.toFixed(usd < 0.01 ? 4 : 2)}`;
-}
 
 function StatCell({ label, value }: { label: string; value: string }) {
   return (
@@ -88,7 +81,7 @@ export function AiUsageSection() {
               />
               <StatCell
                 label="Est. cost (MTD)"
-                value={formatMicroCost(usage.monthToDate.costUsdMicros)}
+                value={formatUsdMicros(usage.monthToDate.costUsdMicros)}
               />
               <StatCell
                 label="Accept rate (MTD)"
@@ -130,7 +123,7 @@ export function AiUsageSection() {
                       <Text className="text-xs text-faint">
                         {formatDateTime(e.createdAt)} ·{" "}
                         {TRIGGERED_BY_LABEL[e.triggeredBy]} ·{" "}
-                        {e.model} · {formatMicroCost(e.costUsdMicros)}
+                        {e.model} · {formatUsdMicros(e.costUsdMicros)}
                       </Text>
                     </View>
                   );

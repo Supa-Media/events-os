@@ -1,12 +1,13 @@
 /**
  * Shared inbound-webhook dedup ledger.
  *
- * Both the Stripe webhook (`/stripe/webhook`, ticketing + Financial Connections)
- * and the Increase webhook (`/increase/webhook`, Phase 4) can be redelivered by
- * the provider. `recordWebhookEvent` is the idempotency gate every handler calls
- * first: it records the provider's unique `event.id` in `webhookEvents` and
- * returns whether this is the FIRST time we've seen it, so the handler can skip
- * re-processing a redelivery.
+ * The Stripe webhook (`/stripe/webhook`, ticketing + Financial Connections),
+ * the Increase webhook (`/increase/webhook`, Phase 4), and the Twilio inbound
+ * webhook (`/twilio/webhook`, Attendance F, keyed on `MessageSid`) can all be
+ * redelivered by the provider. `recordWebhookEvent` is the idempotency gate
+ * every handler calls first: it records the provider's unique event id in
+ * `webhookEvents` and returns whether this is the FIRST time we've seen it,
+ * so the handler can skip re-processing a redelivery.
  *
  * NOT chapter-scoped on purpose — a webhook is deduped before any chapter can be
  * resolved from its payload (see `schema/finances.ts`).
@@ -23,7 +24,12 @@ import { v } from "convex/values";
  */
 export const recordWebhookEvent = internalMutation({
   args: {
-    provider: v.union(v.literal("stripe"), v.literal("increase")),
+    provider: v.union(
+      v.literal("stripe"),
+      v.literal("increase"),
+      v.literal("twilio"),
+      v.literal("resend"),
+    ),
     eventId: v.string(),
     summary: v.optional(v.string()),
   },

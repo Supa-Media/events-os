@@ -33,6 +33,7 @@ import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { hasAccess, isAllowedEmail, normalizeEmail } from "./lib/access";
 import { requireSuperuser } from "./lib/superuser";
+import { sendEmail } from "./ticketingEmails";
 
 /**
  * Pre-flight access check for the login screen. Public + unauthenticated so the
@@ -187,15 +188,14 @@ export const listGuests = query({
 // ── Notification (internal action; fetch works in the default runtime) ───────
 
 /**
- * Email a guest that they've been granted access. Mirrors the auth OTP mailer:
- * uses Resend when `RESEND_API_KEY` is set, otherwise just logs (dev). Best
- * effort — a send failure is logged, never thrown, so it can't fail the grant.
+ * Email a guest that they've been granted access. Sends through the shared
+ * `ticketingEmails.sendEmail` chokepoint (Resend, own-key-or-env resolved via
+ * `lib/resend.ts`) — best effort, never throws, so it can't fail the grant;
+ * a no-op (just logs) when no Resend key resolves (dev).
  */
 export const sendAccessGrantedEmail = internalAction({
   args: { email: v.string() },
-  handler: async (_ctx, { email }) => {
-    const apiKey = process.env.RESEND_API_KEY;
-    const from = process.env.AUTH_EMAIL_FROM ?? "auth@events-os.com";
+  handler: async (ctx, { email }) => {
     const subject = "You've been given access to Chapter OS";
     const html = `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.5;color:#111">
   <h2 style="margin:0 0 12px">You're in 🎉</h2>
@@ -206,27 +206,7 @@ export const sendAccessGrantedEmail = internalAction({
   <p style="color:#666">See you inside.</p>
 </div>`;
 
-    if (!apiKey) {
-      console.log(
-        `[guests] access granted to ${email} (no RESEND_API_KEY — email skipped)`,
-      );
-      return null;
-    }
-
-    const response = await fetch("https://api.resend.com/emails", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({ from, to: email, subject, html }),
-    });
-    if (!response.ok) {
-      console.error(
-        "[guests] access-granted email failed:",
-        await response.text(),
-      );
-    }
+    await sendEmail(ctx, { to: email, subject, html });
     return null;
   },
 });

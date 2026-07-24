@@ -8,21 +8,24 @@
  * (`auth.addHttpRoutes`); the JSON APIs backing the public ticketing,
  * reimbursement, and giving client scripts (`/api/tickets/*`,
  * `/api/reimburse/*`, `/api/give/*`); the server-rendered public pages
- * (`/rsvp/` — the guest RSVP page, with `/event/` and `/e/` kept as back-compat
- * aliases, see the comment at its route below — `/t/`, `/give`, `/p/`,
- * `/reimburse/`); and the two
- * payment-provider webhook receivers (`/stripe/webhook`,
- * `/increase/webhook`).
+ * (`/rsvp/` — the guest RSVP page, with `/event/`, `/e/`, and `/r/` kept as
+ * back-compat aliases, see the comment at its route below — `/t/`, `/give`,
+ * `/p/`, `/reimburse/`); the payment-provider webhook receivers
+ * (`/stripe/webhook`, `/increase/webhook`, `/twilio/webhook`,
+ * `/twilio/receipts`); and the email-campaign surfaces (`/unsubscribe/`,
+ * `/resend/webhook`) alongside the pre-existing `/resend/inbound` receipt-OCR
+ * webhook — two distinct Resend webhook endpoints that must both stay wired.
  *
  * This module's default export is what Convex's HTTP actions router
  * dispatches on. Removing or misconfiguring it drops every public event
- * page, ticket page, giving page, and reimbursement page, and both webhooks
- * — whose signature verification (`verifyStripeSignature`,
- * `verifyIncreaseSignature`) happens exactly here.
+ * page, ticket page, giving page, and reimbursement page, and all three
+ * webhooks — whose signature verification (`verifyStripeSignature`,
+ * `verifyIncreaseSignature`, `validateTwilioSignature`) happens exactly here.
  */
 import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
 import { api, internal } from "./_generated/api";
+import type { Id } from "./_generated/dataModel";
 import { auth } from "./auth";
 import {
   renderIcs,
@@ -52,9 +55,20 @@ import { EMAIL_ACTION_STATUSES, type EmailActionStatus } from "./projectActions"
 import { appUrl, rsvpPath, siteUrl } from "./lib/siteUrl";
 import { verifyStripeSignature } from "./stripe";
 import { verifyIncreaseSignature } from "./increase";
+import {
+  normalizePhone,
+  resolveTwilioCredentials,
+  validateTwilioSignature,
+  verifyTwilioSignature,
+} from "./lib/twilio";
+import { verifyResendWebhookSignature } from "./lib/resend";
+import {
+  renderUnsubscribeConfirm,
+  renderUnsubscribeDone,
+  renderUnsubscribeNotFound,
+} from "./lib/unsubscribePage";
 import { verifyStandardWebhookSignature } from "./lib/standardWebhook";
 import { isReceiptInboxAddress } from "./receiptInbox";
-import { resolveTwilioCredentials, verifyTwilioSignature } from "./lib/twilio";
 import { resolveTwilioReceiptsWebhookUrl } from "./smsReceipts";
 
 const http = httpRouter();
@@ -616,6 +630,98 @@ http.route({
   }),
 });
 
+// ── Twilio inbound SMS webhook ────────────────────────────────────────────────
+// Point a Messaging Service's inbound webhook at
+// `https://<deployment>.convex.site/twilio/webhook` (see
+// docs/plans/sms-comms.md's OPS section). Handles the STOP/START keyword
+// family as a defense-in-depth mirror of Twilio's own Advanced Opt-Out
+// (`smsOptOuts.ts`) — everything else is a silent no-op. Always responds with
+// empty TwiML (`<Response/>`) so Twilio never auto-replies on our behalf.
+
+// Uses the `emptyTwiml` helper defined above (── Helpers ──) — a `Response`'s
+// body stream can only be read once, so a single shared instance can't
+// safely back more than one webhook reply (this route can return it from
+// more than one place per request, and is called on every redelivery).
+
+const STOP_KEYWORDS = new Set([
+  "STOP",
+  "STOPALL",
+  "UNSUBSCRIBE",
+  "CANCEL",
+  "END",
+  "QUIT",
+]);
+const START_KEYWORDS = new Set(["START", "UNSTOP", "YES"]);
+
+http.route({
+  path: "/twilio/webhook",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    const creds = await resolveTwilioCredentials(ctx);
+    if (!creds) {
+      console.error("[twilio] webhook received but Twilio isn't configured");
+      return new Response("Not configured", { status: 500 });
+    }
+
+    // Twilio POSTs application/x-www-form-urlencoded (From, Body, MessageSid…).
+    const rawBody = await req.text();
+    const form = new URLSearchParams(rawBody);
+    const params: Record<string, string> = {};
+    for (const [key, value] of form.entries()) params[key] = value;
+
+    // Twilio signs against the exact URL it was configured to POST to — per
+    // docs/plans/sms-comms.md's OPS section, that's the canonical
+    // `<deployment>.convex.site/twilio/webhook` URL, i.e. `CONVEX_SITE_URL`
+    // (Convex-provided) + this route's path. `req.url` is normally identical,
+    // but isn't guaranteed to be — a fronting proxy, an unexpected scheme, or
+    // a trailing slash can all make it diverge, which would silently reject
+    // every real STOP/START (a compliance risk, not just a bug). Try the
+    // canonical URL first when the env var is set, then fall back to
+    // `req.url` — the fallback is also what keeps convex-test's simulated
+    // `t.fetch` (which has no real CONVEX_SITE_URL-matching origin) working.
+    const signatureHeader = req.headers.get("X-Twilio-Signature");
+    const canonicalUrl = process.env.CONVEX_SITE_URL
+      ? `${process.env.CONVEX_SITE_URL.replace(/\/+$/, "")}/twilio/webhook`
+      : null;
+    const valid =
+      (canonicalUrl
+        ? await validateTwilioSignature(canonicalUrl, params, signatureHeader, creds.authToken)
+        : false) ||
+      (await validateTwilioSignature(req.url, params, signatureHeader, creds.authToken));
+    if (!valid) return new Response("Invalid signature", { status: 400 });
+
+    // Dedup on MessageSid — Twilio can redeliver the same inbound webhook.
+    const messageSid = params.MessageSid ?? params.SmsMessageSid ?? "";
+    if (messageSid) {
+      const { isNew } = await ctx.runMutation(
+        internal.webhooks.recordWebhookEvent,
+        {
+          provider: "twilio",
+          eventId: messageSid,
+          summary: (params.Body ?? "").slice(0, 80),
+        },
+      );
+      if (!isNew) return emptyTwiml();
+    }
+
+    const from = normalizePhone(params.From ?? "");
+    const keyword = (params.Body ?? "").trim().toUpperCase();
+    if (from) {
+      if (STOP_KEYWORDS.has(keyword)) {
+        await ctx.runMutation(internal.smsOptOuts.recordOptOut, {
+          phone: from,
+          source: "stop_webhook",
+        });
+      } else if (START_KEYWORDS.has(keyword)) {
+        await ctx.runMutation(internal.smsOptOuts.clearOptOut, { phone: from });
+      }
+      // Any other message (a reply, a stray text) is a silent no-op — nothing
+      // else in this app expects two-way SMS conversation.
+    }
+    return emptyTwiml();
+  }),
+});
+
 // ── Resend inbound receipt webhook ───────────────────────────────────────────
 // Receipts emailed to `reply.publicworship.life` land here as Resend
 // `email.received` events (delivered via Svix / Standard Webhooks — the SAME
@@ -623,6 +729,11 @@ http.route({
 // just under `svix-*` header names). We verify, DEDUPE + record the email
 // (`recordInboundReceipt`, idempotent on the provider's `email_id`), then
 // schedule the OCR→match pipeline and ack 200 fast. See `receiptInbox.ts`.
+//
+// NOTE: this is a DIFFERENT route from `/resend/webhook` below (campaign
+// bounce/complaint + reply-forwarding events) — both are Resend webhooks, but
+// point at different Resend endpoints/domains and must never be collapsed
+// into one handler.
 //
 // The signing secret resolves stored-setting-first (`integrationSettings`,
 // set in-app at profile > integrations by a superuser), falling back to the
@@ -729,6 +840,9 @@ http.route({
 // OCR→match pipeline and ack fast with an empty TwiML `<Response/>` (Twilio
 // errors on a non-2xx/non-TwiML reply and will retry). See `smsReceipts.ts`.
 //
+// NOTE: this is a DIFFERENT route from `/twilio/webhook` above (the STOP/START
+// opt-out handler) — same provider, disjoint paths, both must stay registered.
+//
 // The auth token resolves stored-setting-first (`integrationSettings`, set
 // in-app at profile > integrations by a superuser), falling back to the
 // `TWILIO_AUTH_TOKEN` env var — the SAME discipline (and the SAME trio) every
@@ -833,6 +947,170 @@ http.route({
         : html(renderReimburseNotFound(), 404);
     }
     return html(renderReimburseForm(chapter));
+  }),
+});
+
+// ── Email campaigns: /unsubscribe/<token> ────────────────────────────────────
+// Where a campaign email's unsubscribe link (and its `List-Unsubscribe`
+// header) lands. GET is read-only (mail scanners prefetch links); the actual
+// suppression write only happens on POST — either the page's own confirm
+// button, or a mail client's automatic RFC 8058 one-click
+// `List-Unsubscribe-Post: List-Unsubscribe=One-Click` POST (same handler,
+// same immediate effect — no separate confirmation step for either).
+
+http.route({
+  pathPrefix: "/unsubscribe/",
+  method: "GET",
+  handler: httpAction(async (ctx, req) => {
+    const url = new URL(req.url);
+    const segments = url.pathname.split("/").filter(Boolean); // ["unsubscribe", token]
+    const token = decodeURIComponent(segments[1] ?? "");
+    if (!token || segments.length > 2) return html(renderUnsubscribeNotFound(), 404);
+    const recipient = await ctx.runQuery(internal.campaigns.getRecipientByToken, { token });
+    if (!recipient) return html(renderUnsubscribeNotFound(), 404);
+    return html(renderUnsubscribeConfirm(recipient.email, token));
+  }),
+});
+
+http.route({
+  pathPrefix: "/unsubscribe/",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    const url = new URL(req.url);
+    const segments = url.pathname.split("/").filter(Boolean); // ["unsubscribe", token]
+    const token = decodeURIComponent(segments[1] ?? "");
+    if (!token || segments.length > 2) return html(renderUnsubscribeNotFound(), 404);
+    const result = await ctx.runMutation(internal.campaigns.unsubscribeByToken, { token });
+    if (!result) return html(renderUnsubscribeNotFound(), 404);
+    return html(renderUnsubscribeDone(result.email));
+  }),
+});
+
+// ── Resend webhook (bounces/complaints/inbound replies) ─────────────────────
+// Verified via Svix (`lib/resend.ts#verifyResendWebhookSignature`) against
+// the stored `resendWebhookSecret` (superuser-set,
+// `integrationSettings.setEmailCampaignSettings`) — unverifiable (no secret
+// on file) is a 401, never a silent accept. Deduped on the `svix-id` header
+// through the shared `webhookEvents` ledger.
+
+type ResendWebhookPayload = {
+  type?: string;
+  data?: {
+    to?: string[] | string;
+    from?: string;
+    subject?: string;
+    text?: string;
+    html?: string;
+  };
+};
+
+/** "Name <email>" → { name, email }; a bare address → { name: null, email }. */
+function parseFromHeader(raw: string): { name: string | null; email: string } {
+  const match = /^(.*)<(.+)>$/.exec(raw.trim());
+  if (match) {
+    const name = match[1].trim().replace(/^"|"$/g, "");
+    return { name: name || null, email: match[2].trim() };
+  }
+  return { name: null, email: raw.trim() };
+}
+
+/** Bare addresses from a `to` field — Resend may deliver each entry as a
+ *  bare address OR the same "Display Name <addr>" form `from` carries (e.g.
+ *  a reply sent via a mail client that copies the campaign's plus-address
+ *  into `To:` with a name attached), so this reuses `parseFromHeader`'s
+ *  angle-bracket stripping rather than matching on the raw string — an
+ *  unparsed "Jane <campaign+x@dom>" would never match the plus-address regex
+ *  in `findCampaignByPlusAddress`. */
+function toAddressList(to: string[] | string | undefined): string[] {
+  if (!to) return [];
+  const list = Array.isArray(to) ? to : [to];
+  return list.map((raw) => parseFromHeader(raw).email);
+}
+
+http.route({
+  path: "/resend/webhook",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    const secret = await ctx.runQuery(internal.integrationSettings.readResendWebhookSecret, {});
+    if (!secret) {
+      console.error("[resend] webhook received but resendWebhookSecret isn't set");
+      return new Response("Not configured", { status: 401 });
+    }
+    const payload = await req.text();
+    const valid = await verifyResendWebhookSignature(payload, {
+      svixId: req.headers.get("svix-id"),
+      svixTimestamp: req.headers.get("svix-timestamp"),
+      svixSignature: req.headers.get("svix-signature"),
+    }, secret);
+    if (!valid) return new Response("Invalid signature", { status: 401 });
+
+    const svixId = req.headers.get("svix-id") ?? "";
+    if (svixId) {
+      const { isNew } = await ctx.runMutation(internal.webhooks.recordWebhookEvent, {
+        provider: "resend",
+        eventId: svixId,
+      });
+      if (!isNew) return new Response("ok", { status: 200 });
+    }
+
+    const event = JSON.parse(payload) as ResendWebhookPayload;
+    const type = event.type ?? "";
+    const toList = toAddressList(event.data?.to);
+
+    if (type === "email.bounced" || type === "email.complained") {
+      const reason = type === "email.bounced" ? "bounce" : "complaint";
+      for (const address of toList) {
+        await ctx.runMutation(internal.emailSuppressions.recordSuppression, {
+          email: address,
+          reason,
+        });
+      }
+    } else if (type.includes("receiv") || type === "inbound" || type.startsWith("inbound.")) {
+      // Inbound reply — match the campaign via the `campaign+<id>@<domain>`
+      // plus-address the send set as reply-to (whichever `to` entry carries
+      // it; an inbound message may be addressed to more than one recipient).
+      let campaignId: Id<"campaigns"> | null = null;
+      for (const address of toList) {
+        campaignId = await ctx.runQuery(internal.campaigns.findCampaignByPlusAddress, {
+          address,
+        });
+        if (campaignId) break;
+      }
+      const from = parseFromHeader(event.data?.from ?? "");
+      try {
+        await ctx.runMutation(internal.campaigns.recordInboundReply, {
+          campaignId: campaignId ?? undefined,
+          fromEmail: from.email,
+          fromName: from.name ?? undefined,
+          subject: event.data?.subject,
+          textBody: event.data?.text,
+          htmlBody: event.data?.html,
+        });
+        if (campaignId) {
+          // Best-effort forward to the campaign's per-campaign sender
+          // (`fromEmail`), when it has one — SCHEDULED (not awaited inline)
+          // so the webhook response stays fast; `forwardReplyToSender`
+          // no-ops on its own when the campaign has no `fromEmail` and never
+          // throws (catches + logs internally).
+          await ctx.scheduler.runAfter(0, internal.campaigns.forwardReplyToSender, {
+            campaignId,
+            replyFromEmail: from.email,
+            replyFromName: from.name ?? undefined,
+            replyText: event.data?.text,
+          });
+        }
+      } catch (err) {
+        // A malformed/oversized payload should never turn into a Resend
+        // retry storm (Resend retries non-2xx webhook responses) — log and
+        // still 200, mirroring the other providers' swallow-and-log paths
+        // (e.g. `ingestIncreaseCardTransaction`).
+        console.error("[resend] failed to record inbound reply", err);
+      }
+    }
+    // Unknown event types (delivery, open/click tracking if ever enabled…)
+    // are a silent no-op — this route only cares about deliverability
+    // signals and inbound replies.
+    return new Response("ok", { status: 200 });
   }),
 });
 

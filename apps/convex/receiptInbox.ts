@@ -1591,7 +1591,7 @@ async function runPipeline(
         : result.status === "no_match"
           ? "no_match"
           : "needs_review";
-    await replyToSender(row.fromEmail, outcome, {
+    await replyToSender(ctx, row.fromEmail, outcome, {
       amountCents: result.amountCents,
       merchant: result.matchedMerchant ?? undefined,
     });
@@ -1627,6 +1627,7 @@ async function fetchReceivedEmailBody(emailId: string): Promise<string | null> {
  * called for team/roster senders (never a stranger).
  */
 async function replyToSender(
+  ctx: Pick<ActionCtx, "runQuery">,
   to: string,
   outcome: "matched" | "no_match" | "needs_review",
   info: { amountCents: number | null; merchant?: string },
@@ -1645,11 +1646,11 @@ async function replyToSender(
     line = `Thanks — we've received your receipt${info.amountCents != null ? ` for ${amt}` : ""} and filed it for a bookkeeper to attach to the right charge.`;
   }
   try {
-    await sendEmail(
+    await sendEmail(ctx, {
       to,
       subject,
-      `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:15px;line-height:1.6;color:#2b2320"><p>${line}</p><p style="color:#8a7d78;font-size:13px">— Public Worship finance</p></div>`,
-    );
+      html: `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:15px;line-height:1.6;color:#2b2320"><p>${line}</p><p style="color:#8a7d78;font-size:13px">— Public Worship finance</p></div>`,
+    });
   } catch (err) {
     // Best-effort by contract: `sendEmail` can still throw on a NETWORK error
     // (its own catch only covers non-2xx). A failed courtesy reply must never

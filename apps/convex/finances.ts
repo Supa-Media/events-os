@@ -5346,10 +5346,10 @@ export const notifyBudgetApprovers = internalAction({
     // null when APP_URL is unset, per `appUrl`'s contract.
     const link = appUrl("/finances");
     for (const approver of submission.approvers) {
-      await sendEmail(
-        approver.email,
-        `Budget awaiting your review: ${submission.budgetName}`,
-        emailShell(`
+      await sendEmail(ctx, {
+        to: approver.email,
+        subject: `Budget awaiting your review: ${submission.budgetName}`,
+        html: emailShell(`
           <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">Budget awaiting review</h1>
           <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(approver.name)} — the ${escapeHtml(scopeLabel)} "${escapeHtml(submission.budgetName)}" was just sent for review. Open the finance dashboard to approve it or request changes.</p>
           ${
@@ -5357,7 +5357,7 @@ export const notifyBudgetApprovers = internalAction({
               ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${link}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">Review budget →</a></div>`
               : ""
           }`),
-      );
+      });
     }
     return null;
   },

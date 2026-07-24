@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { View, Text, Pressable, ScrollView } from "react-native";
 import { Redirect } from "expo-router";
 import { useQuery, useMutation, useAction } from "convex/react";
@@ -12,6 +12,7 @@ import { Screen, Card, Button, TextField, Icon } from "../../components/ui";
 import { colors } from "../../lib/theme";
 import { errorMessage } from "../../lib/errors";
 import { formatDate } from "../../lib/format";
+import { TwilioUsageSummary } from "../../components/integrations/TwilioUsageSummary";
 
 /**
  * Integrations admin (Attendance E) — super-admins only. Lets a superuser set
@@ -43,6 +44,7 @@ export default function IntegrationsScreen() {
 
   const givebutter = status?.givebutter;
   const twilio = status?.twilio;
+  const resend = status?.resend;
   const resendInbound = status?.resendInbound;
   const aiEngine = status?.aiEngine;
 
@@ -174,6 +176,8 @@ export default function IntegrationsScreen() {
 
       <AiEngineCard aiEngine={aiEngine} loading={status === undefined} />
       <TwilioCard twilio={twilio} loading={status === undefined} />
+      <TwilioUsageSummary />
+      <ResendCard resend={resend} loading={status === undefined} />
       <ResendInboundCard
         resendInbound={resendInbound}
         loading={status === undefined}
@@ -869,6 +873,187 @@ function TwilioCard({
           disabled={!canSave || saving || clearing}
         />
         {twilio?.configured ? (
+          <Button
+            title="Clear"
+            icon="trash-2"
+            variant="danger"
+            onPress={() => void handleClear()}
+            loading={clearing}
+            disabled={saving || clearing}
+          />
+        ) : null}
+      </View>
+    </Card>
+  );
+}
+
+/**
+ * Resend card (own-key email integration) — lets a chapter send email from
+ * its own Resend account/domain instead of the shared default (so mail
+ * doesn't look like it comes from the framework's shared sender). The API
+ * key follows the same write-only discipline as Givebutter/Twilio; the
+ * from-address is NOT secret (it's the sender line every recipient already
+ * sees), so it's shown in full and can be edited on its own once a key is
+ * already saved — Save re-sends the key only when the field has something in
+ * it, otherwise it updates just the from-address.
+ */
+function ResendCard({
+  resend,
+  loading,
+}: {
+  resend:
+    | {
+        configured: boolean;
+        last4: string | null;
+        fromAddress: string | null;
+        updatedAt: number | null;
+      }
+    | undefined;
+  loading: boolean;
+}) {
+  const setSettings = useMutation(api.integrationSettings.setResendSettings);
+  const [apiKey, setApiKey] = useState("");
+  const [fromAddress, setFromAddress] = useState("");
+  const [fromInitialized, setFromInitialized] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  // Prefill the from-address (not secret) once status loads, so a superuser
+  // can see + tweak it without having to already know it or re-paste the key.
+  useEffect(() => {
+    if (!fromInitialized && resend !== undefined) {
+      setFromInitialized(true);
+      setFromAddress(resend.fromAddress ?? "");
+    }
+  }, [resend, fromInitialized]);
+
+  const trimmedKey = apiKey.trim();
+  const trimmedFrom = fromAddress.trim();
+  const fromChanged = trimmedFrom !== (resend?.fromAddress ?? "");
+  const canSave = trimmedKey !== "" || (!!resend?.configured && fromChanged);
+
+  async function handleSave() {
+    if (!canSave) return;
+    setError(null);
+    setSaving(true);
+    try {
+      await setSettings({
+        apiKey: trimmedKey === "" ? undefined : trimmedKey,
+        fromAddress: trimmedFrom,
+      });
+      setApiKey("");
+      setSavedAt(Date.now());
+    } catch (e) {
+      setError(errorMessage(e, "Couldn't save the Resend settings."));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleClear() {
+    setError(null);
+    setClearing(true);
+    try {
+      await setSettings({ apiKey: null, fromAddress: null });
+      setFromAddress("");
+      setSavedAt(null);
+    } catch (e) {
+      setError(errorMessage(e, "Couldn't clear the Resend settings."));
+    } finally {
+      setClearing(false);
+    }
+  }
+
+  return (
+    <Card padding="lg" className="mt-4">
+      <View className="mb-3 flex-row items-center gap-2">
+        <View className="h-7 w-7 items-center justify-center rounded-md bg-mint">
+          <Icon name="mail" size={14} color="#1F5A41" />
+        </View>
+        <View className="flex-1">
+          <Text className="text-sm font-semibold text-ink">Resend (email)</Text>
+          <Text className="text-xs text-muted">
+            Send email from your own Resend account and domain instead of the
+            shared default — e.g. Chapter OS &lt;os@publicworship.life&gt;.
+          </Text>
+        </View>
+      </View>
+
+      {loading ? (
+        <Text className="mb-3 text-xs text-muted">Loading status…</Text>
+      ) : resend?.configured ? (
+        <View className="mb-3 flex-row items-center gap-1.5">
+          <Icon name="check-circle" size={14} color={colors.success} />
+          <Text className="text-sm text-ink">
+            Configured — •••• {resend.last4}
+            {resend.fromAddress ? ` · from ${resend.fromAddress}` : ""}
+            {resend.updatedAt ? ` · updated ${formatDate(resend.updatedAt)}` : ""}
+          </Text>
+        </View>
+      ) : (
+        <View className="mb-3 flex-row items-center gap-1.5">
+          <Icon name="alert-circle" size={14} color={colors.muted} />
+          <Text className="text-sm text-muted">Not configured.</Text>
+        </View>
+      )}
+
+      <TextField
+        label="Resend API key"
+        value={apiKey}
+        onChangeText={(t) => {
+          setApiKey(t);
+          if (error) setError(null);
+          if (savedAt) setSavedAt(null);
+        }}
+        placeholder={
+          resend?.configured ? "Paste a new key to replace it" : "Paste your Resend API key"
+        }
+        secureTextEntry
+        autoCapitalize="none"
+        autoCorrect={false}
+        editable={!saving && !clearing}
+        hint="Stored server-side and never displayed again — the field above stays blank after saving."
+      />
+      <TextField
+        label="From address"
+        value={fromAddress}
+        onChangeText={(t) => {
+          setFromAddress(t);
+          if (error) setError(null);
+          if (savedAt) setSavedAt(null);
+        }}
+        placeholder="Chapter OS <os@publicworship.life>"
+        autoCapitalize="none"
+        autoCorrect={false}
+        editable={!saving && !clearing}
+        hint="Shown to every recipient — not secret. Leave blank to use the default sender."
+      />
+
+      {error ? (
+        <View className="mb-3 flex-row items-center gap-1.5">
+          <Icon name="alert-circle" size={14} color={colors.danger} />
+          <Text className="flex-1 text-sm text-danger">{error}</Text>
+        </View>
+      ) : null}
+
+      {savedAt ? (
+        <View className="mb-3 flex-row items-center gap-1.5">
+          <Icon name="check-circle" size={14} color={colors.success} />
+          <Text className="text-sm text-success">Settings saved.</Text>
+        </View>
+      ) : null}
+
+      <View className="flex-row gap-2">
+        <Button
+          title="Save"
+          icon="check"
+          onPress={() => void handleSave()}
+          loading={saving}
+          disabled={!canSave || saving || clearing}
+        />
+        {resend?.configured ? (
           <Button
             title="Clear"
             icon="trash-2"

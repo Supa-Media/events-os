@@ -42,10 +42,12 @@ const RSVP_HOST = "rsvp.publicworship.life";
 // /r/ alias and the pre-rename /event/ + /e/ prefixes all serving it, /t/, /p/,
 // /reimburse/), the
 // client-script JSON APIs (/api/tickets/*, /api/reimburse/*, /api/give/*,
-// /api/auth/*, all under /api/), and the inbound webhooks
+// /api/auth/*, all under /api/), the inbound webhooks
 // (/stripe/webhook, /increase/webhook, /resend/inbound — the receipt-email
-// ingest, /twilio/receipts — the receipt-SMS ingest). /give is handled
-// separately below
+// ingest, /twilio/receipts — the receipt-SMS ingest, /resend/webhook — the
+// email-campaigns bounce/complaint/reply webhook, /twilio/webhook — the SMS
+// STOP/START opt-out webhook), and the email-campaigns unsubscribe page
+// (/unsubscribe/<token>). /give is handled separately below
 // since it's an exact-path route (the map) plus a pathPrefix route
 // (/give/<slug>), not a plain prefix. Exported so drift.test.ts can assert
 // against apps/convex/http.ts's literals.
@@ -62,6 +64,7 @@ export const CONVEX_PREFIXES = [
   "/increase/",
   "/resend/",
   "/twilio/",
+  "/unsubscribe/",
 ] as const;
 
 function isConvexPath(pathname: string): boolean {

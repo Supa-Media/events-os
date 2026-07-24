@@ -1,14 +1,30 @@
 /**
  * Ticketing transactional emails — RSVP confirmations and ticket delivery.
  *
- * Same Resend-over-fetch pattern as `guests.sendAccessGrantedEmail`: best
- * effort (log, never throw), no-op without RESEND_API_KEY (dev). All emails
+ * `sendEmail`/`sendEmailReporting` are the shared chokepoint every email in
+ * this codebase sends through — including `accessAllowlist.ts`'s
+ * access-granted mailer, `reminders.ts`, `reimbursements.ts`, `cards.ts`, and
+ * `blasts.ts`. No-op when no Resend key resolves (dev). Best effort against a
+ * REJECTED response (a bad address, an invalid domain — logged, returns
+ * `false`, never throws), but a genuine transport failure (Resend fully down)
+ * PROPAGATES out of both — that distinction matters to `blasts.ts`'s
+ * per-recipient delivery loop, which needs a real throw to count a failure
+ * instead of quietly marking a blast "sent" during an outage. All emails
  * carry the Public Worship look: cream card, deep-red accents.
+ *
+ * The Resend key/from-address come from `lib/resend.ts`'s
+ * `resolveResendSettings` — the in-app superuser setting
+ * (`integrationSettings.setResendSettings`, profile > integrations) first,
+ * falling back to the deployment `RESEND_API_KEY`/`AUTH_EMAIL_FROM` env vars.
+ * That's why both helpers take `ctx` as their first argument now — resolving
+ * the stored setting needs `ctx.runQuery`.
  */
 import { internalAction } from "./_generated/server";
+import type { ActionCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { rsvpPageUrl, siteUrl } from "./lib/siteUrl";
+import { resolveResendSettings, sendResendEmail } from "./lib/resend";
 import { escapeHtml } from "./lib/html";
 
 const ACCENT = "#D23B3A";
@@ -42,55 +58,63 @@ export function emailShell(inner: string): string {
 }
 
 /**
- * Same best-effort send as `sendEmail`, but tells the caller whether delivery
- * actually landed — `true` only when `RESEND_API_KEY` was configured AND
- * Resend responded 2xx. Callers that need to report a delivery outcome
- * upstream (e.g. the Increase digital-wallet-authentication webhook) should
- * use this instead of `sendEmail`, which always resolves and never throws.
+ * Same send as `sendEmail`, but tells the caller whether delivery actually
+ * landed — `true` only when a Resend key resolved (stored setting or
+ * `RESEND_API_KEY` env) AND Resend responded 2xx. Callers that need to report
+ * a delivery outcome upstream (e.g. the Increase digital-wallet-authentication
+ * webhook, or `blasts.ts`'s per-recipient send loop) should use this instead
+ * of `sendEmail`.
+ *
+ * A non-2xx Resend response resolves to `false` (logged by
+ * `sendResendEmail`, never thrown) — a single bounced/rejected address isn't
+ * a system failure. A genuine transport error (network down, Resend
+ * unreachable) is deliberately NOT caught here: it propagates to the caller,
+ * so a full Resend outage surfaces as a real failure instead of silently
+ * resolving `false` alongside an ordinary bounce.
+ *
+ * `ctx` is the minimal shape `resolveResendSettings` needs (`runQuery`) —
+ * every call site already has a real `ActionCtx` in scope.
  */
 export async function sendEmailReporting(
-  to: string,
-  subject: string,
-  html: string,
+  ctx: Pick<ActionCtx, "runQuery">,
+  { to, subject, html }: { to: string; subject: string; html: string },
 ): Promise<boolean> {
-  const apiKey = process.env.RESEND_API_KEY;
-  const from = process.env.AUTH_EMAIL_FROM ?? "auth@events-os.com";
-  if (!apiKey) {
-    console.log(`[ticketing] email skipped (no RESEND_API_KEY): "${subject}" → ${to}`);
+  const settings = await resolveResendSettings(ctx);
+  if (!settings) {
+    console.log(`[ticketing] email skipped (no Resend key configured): "${subject}" → ${to}`);
     return false;
   }
-  const response = await fetch("https://api.resend.com/emails", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ from, to, subject, html }),
-  });
-  if (!response.ok) {
-    console.error(`[ticketing] email failed ("${subject}"):`, await response.text());
-    return false;
-  }
-  return true;
+  const result = await sendResendEmail(settings, { to, subject, html });
+  return result.ok;
 }
 
-export async function sendEmail(to: string, subject: string, html: string) {
-  await sendEmailReporting(to, subject, html);
+/** Best-effort against a rejected Resend response (returns without throwing —
+ *  see `sendEmailReporting`), but a transport-level failure (Resend
+ *  unreachable) still throws out of here, same as it does out of
+ *  `sendEmailReporting`. Every current caller besides `blasts.ts` is a
+ *  scheduled `internalAction` where an uncaught throw just fails that one
+ *  scheduled run (no retry storm) rather than looking like a delivered
+ *  email. */
+export async function sendEmail(
+  ctx: Pick<ActionCtx, "runQuery">,
+  args: { to: string; subject: string; html: string },
+) {
+  await sendEmailReporting(ctx, args);
 }
 
 /** The 6-digit email-verification code for an RSVP's email address. */
 export const sendVerificationEmail = internalAction({
   args: { email: v.string(), code: v.string() },
-  handler: async (_ctx, { email, code }) => {
-    await sendEmail(
-      email,
-      `${code} is your verification code`,
-      emailShell(`
+  handler: async (ctx, { email, code }) => {
+    await sendEmail(ctx, {
+      to: email,
+      subject: `${code} is your verification code`,
+      html: emailShell(`
       <h1 style="margin:0 0 12px;font-size:26px;line-height:1.2">Confirm your email</h1>
       <p style="margin:0 0 20px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:${MUTED}">Enter this code on the RSVP page so the host knows this address is really yours. It expires in 15 minutes.</p>
       <div style="background:#fff;border:1px dashed #E4CFCB;border-radius:14px;padding:18px;text-align:center;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:32px;font-weight:700;letter-spacing:0.28em;color:${ACCENT}">${code}</div>
       <p style="margin:16px 0 0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;line-height:1.6;color:${MUTED}">Didn't RSVP to a Public Worship event? You can safely ignore this email.</p>`),
-    );
+    });
     return null;
   },
 });
@@ -103,7 +127,7 @@ export const sendRsvpEmail = internalAction({
     email: v.string(),
     status: v.union(v.literal("going"), v.literal("maybe")),
   },
-  handler: async (_ctx, { slug, name, email, status }) => {
+  handler: async (ctx, { slug, name, email, status }) => {
     const url = rsvpPageUrl(slug);
     const firstName = name.split(/\s+/)[0];
     const heading =
@@ -112,14 +136,14 @@ export const sendRsvpEmail = internalAction({
       status === "going"
         ? "We can't wait to see you. The details live on the RSVP page — check back for updates from the host."
         : "No pressure — you can change your RSVP any time on the RSVP page.";
-    await sendEmail(
-      email,
-      status === "going" ? "You're on the list 🎉" : "Got your RSVP",
-      emailShell(`
+    await sendEmail(ctx, {
+      to: email,
+      subject: status === "going" ? "You're on the list 🎉" : "Got your RSVP",
+      html: emailShell(`
       <h1 style="margin:0 0 12px;font-size:26px;line-height:1.2">${heading}</h1>
       <p style="margin:0 0 20px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:${MUTED}">${line}</p>
       <a href="${url}" style="display:inline-block;background:${ACCENT};color:#fff;text-decoration:none;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-weight:600;font-size:14px;padding:12px 24px;border-radius:999px">Open the RSVP page</a>`),
-    );
+    });
     return null;
   },
 });
@@ -152,10 +176,10 @@ export const sendTicketsEmail = internalAction({
       )
       .join("");
 
-    await sendEmail(
-      order.email,
-      `Your ticket${tickets.length === 1 ? "" : "s"} to ${eventName}`,
-      emailShell(`
+    await sendEmail(ctx, {
+      to: order.email,
+      subject: `Your ticket${tickets.length === 1 ? "" : "s"} to ${eventName}`,
+      html: emailShell(`
       <h1 style="margin:0 0 6px;font-size:26px;line-height:1.2">${eventName}</h1>
       <p style="margin:0 0 20px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:${MUTED}">
         ${when}${venueName ? ` · ${venueName}` : ""}<br/>
@@ -163,7 +187,7 @@ export const sendTicketsEmail = internalAction({
       </p>
       ${ticketRows}
       <p style="margin:16px 0 0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;line-height:1.6;color:${MUTED}">Tap a ticket to open it — each has a QR code for the door. ${slug ? `Event details: <a href="${rsvpPageUrl(slug)}" style="color:${ACCENT}">${rsvpPageUrl(slug)}</a>` : ""}</p>`),
-    );
+    });
     return null;
   },
 });
@@ -180,15 +204,15 @@ export const sendDonationReceiptEmail = internalAction({
     const { email, name, amountCents, eventName, slug } = payload;
     const firstName = name.split(/\s+/)[0] || "friend";
     const amount = `$${(amountCents / 100).toFixed(amountCents % 100 === 0 ? 0 : 2)}`;
-    await sendEmail(
-      email,
-      `Thank you for your gift to ${eventName}`,
-      emailShell(`
+    await sendEmail(ctx, {
+      to: email,
+      subject: `Thank you for your gift to ${eventName}`,
+      html: emailShell(`
       <h1 style="margin:0 0 12px;font-size:26px;line-height:1.2">Thank you, ${firstName} 🙏</h1>
       <p style="margin:0 0 20px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:${MUTED}">Your gift of <b>${amount}</b> to <b>${eventName}</b> came through. It means the world — thank you for supporting the work.</p>
       <div style="background:#fff;border:1px dashed #E4CFCB;border-radius:14px;padding:18px;text-align:center;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:28px;font-weight:700;color:${ACCENT}">${amount}</div>
       ${slug ? `<p style="margin:16px 0 0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;line-height:1.6;color:${MUTED}">Event details: <a href="${rsvpPageUrl(slug)}" style="color:${ACCENT}">${rsvpPageUrl(slug)}</a></p>` : ""}`),
-    );
+    });
     return null;
   },
 });
@@ -211,15 +235,15 @@ export const sendPledgeReceiptEmail = internalAction({
     const firstName = name.split(/\s+/)[0] || "friend";
     const amount = `$${(amountCents / 100).toFixed(amountCents % 100 === 0 ? 0 : 2)}`;
     const city = chapterName ?? "Public Worship";
-    await sendEmail(
-      email,
-      `Your monthly gift to ${city}`,
-      emailShell(`
+    await sendEmail(ctx, {
+      to: email,
+      subject: `Your monthly gift to ${city}`,
+      html: emailShell(`
       <h1 style="margin:0 0 12px;font-size:26px;line-height:1.2">Thank you, ${firstName} 🙏</h1>
       <p style="margin:0 0 20px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:${MUTED}">Your monthly gift of <b>${amount}</b> to <b>${city}</b> came through. Backers like you are what make the work possible, month after month — thank you for standing with us.</p>
       <div style="background:#fff;border:1px dashed #E4CFCB;border-radius:14px;padding:18px;text-align:center;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:28px;font-weight:700;color:${ACCENT}">${amount}<span style="font-size:14px;font-weight:400;color:${MUTED}"> / month</span></div>
       <p style="margin:16px 0 0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;line-height:1.6;color:${MUTED}">Need to update your card or change your amount? Just reply to this email and we'll send you a secure link.</p>`),
-    );
+    });
     return null;
   },
 });

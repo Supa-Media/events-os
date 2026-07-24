@@ -22,16 +22,29 @@
  * together; `getIntegrationsStatus` projects only `{configured, accountSid
  * last4, messagingServiceSid present, updatedAt}`.
  *
+ * Resend email (own-key integration) follows the SAME discipline: the API KEY
+ * is the secret and never leaves the table except through
+ * `readResendSettings` (the sending actions/helpers in `lib/resend.ts`). The
+ * FROM ADDRESS is not secret — it's the sender line every recipient already
+ * sees — so `getIntegrationsStatus` returns it in full, not redacted.
+ * `setResendSettings` sets/clears both fields together: `apiKey: null` clears
+ * both (falls back to `RESEND_API_KEY`/`AUTH_EMAIL_FROM` env, or the logged
+ * no-op degrade); a non-null key may be saved with or without a from-address
+ * (blank/omitted from-address falls back to the env default at send time).
+ *
  * The Resend inbound receipt webhook signing secret follows the SAME
  * discipline: the secret (a Svix `whsec_…` value) never leaves the table
  * except through `readResendInboundWebhookSecret`, reachable solely from
  * `http.ts`'s `/resend/inbound` route (an httpAction, which — like an
  * action — has no `ctx.db`). `setResendInboundWebhookSecret` sets/clears it;
- * `getIntegrationsStatus` projects only `{configured, last4, updatedAt}`.
+ * `getIntegrationsStatus` projects only `{configured, last4, updatedAt}`. This
+ * is a DIFFERENT secret from the campaign webhook's `resendWebhookSecret`
+ * below — two independent Resend webhook endpoints.
  *
  * Resolution order for the actual sync/send (see `givebutterSync.ts` /
- * `lib/twilio.ts` / `http.ts`'s `/resend/inbound`): the stored setting, else
- * the deployment env var(s), else a logged no-op degrade — mirrors
+ * `lib/twilio.ts` / `lib/resend.ts` / `http.ts`'s `/resend/inbound`): the
+ * stored setting, else the deployment env var(s), else a logged no-op degrade
+ * — mirrors
  * `financeSettings.readSandboxMode`.
  */
 import { query, mutation, internalQuery } from "./_generated/server";
@@ -65,6 +78,25 @@ function last4(key: string): string {
 }
 
 /**
+ * Loosely validate + normalize a Resend "From" address: must look like an
+ * email (`addr@dom`) or the `"Name <addr@dom>"` form Resend also accepts —
+ * checked only by presence of `@`, not a full RFC 5322 parse (Resend itself
+ * is the source of truth on send). A blank value (after trim) means "unset",
+ * not an error — the caller falls back to the env default.
+ */
+function normalizeFromAddress(raw: string): string | undefined {
+  const trimmed = raw.trim();
+  if (!trimmed) return undefined;
+  if (!trimmed.includes("@")) {
+    throw new ConvexError({
+      code: "INVALID_ARGUMENT",
+      message: 'From address must be an email or "Name <email>", e.g. "Chapter OS <os@publicworship.life>".',
+    });
+  }
+  return trimmed;
+}
+
+/**
  * Superuser-only status projection for the in-app integrations screen. NEVER
  * returns the stored key — only whether it's configured, its last 4
  * characters, and when it was last updated.
@@ -85,6 +117,27 @@ export const getIntegrationsStatus = query({
       messagingServiceConfigured: v.boolean(),
       updatedAt: v.union(v.number(), v.null()),
     }),
+    resend: v.object({
+      configured: v.boolean(),
+      last4: v.union(v.string(), v.null()),
+      // NOT secret — the sender line every recipient already sees — so it's
+      // returned in full, unlike `last4`.
+      fromAddress: v.union(v.string(), v.null()),
+      updatedAt: v.union(v.number(), v.null()),
+    }),
+    // Email campaigns (`campaigns.ts`, `/resend/webhook`) — see
+    // `schema/integrationSettings.ts`'s module doc. `resendWebhookConfigured`
+    // is boolean-only (the Svix secret is write-only, same discipline as
+    // every other secret here); the inbound domain + mailing address are NOT
+    // secret and are returned in full.
+    campaigns: v.object({
+      resendWebhookConfigured: v.boolean(),
+      resendInboundDomain: v.union(v.string(), v.null()),
+      orgMailingAddress: v.union(v.string(), v.null()),
+      updatedAt: v.union(v.number(), v.null()),
+    }),
+    // The (unrelated) `/resend/inbound` receipt-OCR webhook's own signing
+    // secret — see the module doc's "two independent Resend webhooks" note.
     resendInbound: v.object({
       configured: v.boolean(),
       last4: v.union(v.string(), v.null()),
@@ -115,6 +168,7 @@ export const getIntegrationsStatus = query({
     const sid = settings?.twilioAccountSid;
     const token = settings?.twilioAuthToken;
     const messagingServiceSid = settings?.twilioMessagingServiceSid;
+    const resendKey = settings?.resendApiKey;
     const resendSecret = settings?.resendInboundWebhookSecret;
     const ollamaKey = settings?.ollamaApiKey;
     return {
@@ -129,6 +183,18 @@ export const getIntegrationsStatus = query({
         configured: !!sid && !!token && !!messagingServiceSid,
         accountSidLast4: sid ? last4(sid) : null,
         messagingServiceConfigured: !!messagingServiceSid,
+        updatedAt: settings?.updatedAt ?? null,
+      },
+      resend: {
+        configured: !!resendKey,
+        last4: resendKey ? last4(resendKey) : null,
+        fromAddress: settings?.resendFromAddress ?? null,
+        updatedAt: settings?.updatedAt ?? null,
+      },
+      campaigns: {
+        resendWebhookConfigured: !!settings?.resendWebhookSecret,
+        resendInboundDomain: settings?.resendInboundDomain ?? null,
+        orgMailingAddress: settings?.orgMailingAddress ?? null,
         updatedAt: settings?.updatedAt ?? null,
       },
       resendInbound: {
@@ -302,12 +368,229 @@ export const readTwilioCredentials = internalQuery({
 });
 
 /**
+ * Set or clear the Resend email settings (own-key integration). SUPERUSER-ONLY.
+ * `apiKey: null` clears BOTH fields (send then falls back to the
+ * `RESEND_API_KEY`/`AUTH_EMAIL_FROM` env vars, or the logged no-op degrade);
+ * a non-null `apiKey` must be non-empty after trimming and sets the key. The
+ * from-address can be set alongside the key, or updated on its own
+ * afterward (`apiKey` omitted) — but only once a key is already on file,
+ * since there's nothing to send with otherwise. At least one of `apiKey` /
+ * `fromAddress` must be provided. `fromAddress` is validated loosely (must
+ * look like an email or `"Name <email>"`); a blank value clears it rather
+ * than erroring, falling back to the env default at send time.
+ */
+export const setResendSettings = mutation({
+  args: {
+    apiKey: v.optional(v.union(v.string(), v.null())),
+    fromAddress: v.optional(v.union(v.string(), v.null())),
+  },
+  returns: v.null(),
+  handler: async (ctx, { apiKey, fromAddress }) => {
+    await requireSuperuser(ctx);
+    const updatedBy = (await requireUserId(ctx)) as Id<"users">;
+    const existing = await getSettings(ctx);
+
+    if (apiKey === undefined && fromAddress === undefined) {
+      throw new ConvexError({
+        code: "INVALID_ARGUMENT",
+        message: "Provide an API key or a from address to update.",
+      });
+    }
+
+    let key: string | undefined;
+    let from: string | undefined;
+
+    if (apiKey === null) {
+      // `apiKey: null` clears BOTH fields, regardless of `fromAddress`.
+      key = undefined;
+      from = undefined;
+    } else if (apiKey !== undefined) {
+      const trimmed = apiKey.trim();
+      if (!trimmed) {
+        throw new ConvexError({
+          code: "INVALID_ARGUMENT",
+          message: "API key can't be empty.",
+        });
+      }
+      key = trimmed;
+      from =
+        fromAddress === undefined
+          ? existing?.resendFromAddress
+          : fromAddress === null
+            ? undefined
+            : normalizeFromAddress(fromAddress);
+    } else {
+      // `apiKey` omitted — updating the from-address alone requires a key
+      // already on file.
+      if (!existing?.resendApiKey) {
+        throw new ConvexError({
+          code: "INVALID_ARGUMENT",
+          message: "Set a Resend API key before updating the from address.",
+        });
+      }
+      key = existing.resendApiKey;
+      from =
+        fromAddress === null ? undefined : normalizeFromAddress(fromAddress as string);
+    }
+
+    const fields = {
+      resendApiKey: key,
+      resendFromAddress: from,
+      updatedBy,
+      updatedAt: Date.now(),
+    };
+    if (existing) {
+      await ctx.db.patch(existing._id, fields);
+    } else {
+      await ctx.db.insert("integrationSettings", fields);
+    }
+    return null;
+  },
+});
+
+/**
+ * Action-facing read of the raw Resend settings (or `null` when no key is
+ * stored). The only path the API key ever leaves the table through —
+ * `lib/resend.ts`'s `resolveResendSettings` consults this via `ctx.runQuery`
+ * before falling back to the `RESEND_API_KEY`/`AUTH_EMAIL_FROM` env vars.
+ * NEVER exposed as a public function.
+ */
+export const readResendSettings = internalQuery({
+  args: {},
+  returns: v.union(
+    v.object({
+      apiKey: v.string(),
+      fromAddress: v.union(v.string(), v.null()),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx) => {
+    const settings = await getSettings(ctx);
+    const apiKey = settings?.resendApiKey;
+    if (!apiKey) return null;
+    return { apiKey, fromAddress: settings?.resendFromAddress ?? null };
+  },
+});
+
+/**
+ * Set or clear the email-campaigns Resend-webhook secret / inbound domain /
+ * org mailing address. SUPERUSER-ONLY. Each field is INDEPENDENTLY settable —
+ * unlike the Twilio trio, these don't need to move together (a deployment can
+ * turn on the webhook secret before it has an inbound domain, etc.):
+ * `undefined` leaves a field unchanged, `null` clears it, a non-null string
+ * sets it (trimmed; empty-after-trim is rejected as a no-op-looking mistake
+ * rather than silently clearing). At least one field must be provided.
+ */
+export const setEmailCampaignSettings = mutation({
+  args: {
+    resendWebhookSecret: v.optional(v.union(v.string(), v.null())),
+    resendInboundDomain: v.optional(v.union(v.string(), v.null())),
+    orgMailingAddress: v.optional(v.union(v.string(), v.null())),
+  },
+  returns: v.null(),
+  handler: async (ctx, { resendWebhookSecret, resendInboundDomain, orgMailingAddress }) => {
+    await requireSuperuser(ctx);
+    const updatedBy = (await requireUserId(ctx)) as Id<"users">;
+
+    if (
+      resendWebhookSecret === undefined &&
+      resendInboundDomain === undefined &&
+      orgMailingAddress === undefined
+    ) {
+      throw new ConvexError({
+        code: "INVALID_ARGUMENT",
+        message: "Provide at least one field to update.",
+      });
+    }
+
+    function resolveField(
+      value: string | null | undefined,
+      existing: string | undefined,
+      label: string,
+    ): string | undefined {
+      if (value === undefined) return existing;
+      if (value === null) return undefined;
+      const trimmed = value.trim();
+      if (!trimmed) {
+        throw new ConvexError({
+          code: "INVALID_ARGUMENT",
+          message: `${label} can't be empty.`,
+        });
+      }
+      return trimmed;
+    }
+
+    const existing = await getSettings(ctx);
+    const fields = {
+      resendWebhookSecret: resolveField(
+        resendWebhookSecret,
+        existing?.resendWebhookSecret,
+        "Webhook secret",
+      ),
+      resendInboundDomain: resolveField(
+        resendInboundDomain,
+        existing?.resendInboundDomain,
+        "Inbound domain",
+      ),
+      orgMailingAddress: resolveField(
+        orgMailingAddress,
+        existing?.orgMailingAddress,
+        "Mailing address",
+      ),
+      updatedBy,
+      updatedAt: Date.now(),
+    };
+    if (existing) {
+      await ctx.db.patch(existing._id, fields);
+    } else {
+      await ctx.db.insert("integrationSettings", fields);
+    }
+    return null;
+  },
+});
+
+/** Action-facing read of the raw Resend webhook secret (or `null`) — the only
+ *  path it ever leaves the table through. Consulted by `http.ts`'s
+ *  `/resend/webhook` route to verify the Svix signature. NEVER exposed as a
+ *  public function. */
+export const readResendWebhookSecret = internalQuery({
+  args: {},
+  returns: v.union(v.string(), v.null()),
+  handler: async (ctx) => {
+    const settings = await getSettings(ctx);
+    return settings?.resendWebhookSecret ?? null;
+  },
+});
+
+/** Action-facing read of the non-secret campaign mail settings (inbound
+ *  domain + org mailing address) — consulted by `campaigns.ts`'s delivery
+ *  action to build each recipient's reply-to address and CAN-SPAM footer.
+ *  NEVER exposed as a public function (use `getIntegrationsStatus` for the
+ *  client-facing projection). */
+export const readCampaignsMailSettings = internalQuery({
+  args: {},
+  returns: v.object({
+    resendInboundDomain: v.union(v.string(), v.null()),
+    orgMailingAddress: v.union(v.string(), v.null()),
+  }),
+  handler: async (ctx) => {
+    const settings = await getSettings(ctx);
+    return {
+      resendInboundDomain: settings?.resendInboundDomain ?? null,
+      orgMailingAddress: settings?.orgMailingAddress ?? null,
+    };
+  },
+});
+
+/**
  * Set or clear the Resend inbound receipt webhook's signing secret (the Svix
  * `whsec_…` value). SUPERUSER-ONLY. `secret: null` clears it (the route then
  * falls back to `RESEND_INBOUND_WEBHOOK_SECRET` env, or 500s "Not configured"
  * if that's unset too); a non-null value must be non-empty after trimming.
  * Upserts the singleton, stamping `updatedBy` + `updatedAt` — same
- * null-sentinel convention as `setGivebutterApiKey`.
+ * null-sentinel convention as `setGivebutterApiKey`. NOTE: this is a
+ * DIFFERENT secret from `setEmailCampaignSettings`'s `resendWebhookSecret`
+ * above — two independent Resend webhook endpoints.
  */
 export const setResendInboundWebhookSecret = mutation({
   args: { secret: v.union(v.string(), v.null()) },
