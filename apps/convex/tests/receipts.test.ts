@@ -4,6 +4,7 @@ import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { createReceipt, linkReceiptToTransaction } from "../lib/receiptLinks";
+import { transactionMatchesSearch } from "../receipts";
 
 /**
  * The receipt CRM surface (`receipts.ts`): the query/mutation API the UI
@@ -54,6 +55,8 @@ async function seedTxn(
     postedAt?: number;
     status?: "unreviewed" | "categorized" | "reconciled" | "excluded";
     hasReceipt?: boolean;
+    merchantName?: string;
+    flow?: "outflow" | "inflow" | "transfer";
   } = {},
 ): Promise<Id<"transactions">> {
   return await run(s.t, async (ctx) => {
@@ -65,10 +68,10 @@ async function seedTxn(
     return await ctx.db.insert("transactions", {
       chapterId: s.chapterId,
       source: "manual",
-      flow: "outflow",
+      flow: opts.flow ?? "outflow",
       amountCents: opts.amountCents ?? 4210,
       postedAt: opts.postedAt ?? Date.now(),
-      merchantName: "Office Depot",
+      merchantName: opts.merchantName ?? "Office Depot",
       status: opts.status ?? "unreviewed",
       receiptStorageId: storageId,
       createdAt: Date.now(),
@@ -912,6 +915,71 @@ describe("suggestMatches — no-date matching", () => {
 
     const matches = await s.as.query(api.receipts.suggestMatches, { receiptId });
     expect(matches.map((m) => m.transactionId)).toEqual([txn]);
+  });
+});
+
+// ── searchUnreceiptedTransactions (item 4: search a txn to match to) ──────────
+describe("transactionMatchesSearch", () => {
+  const audible = { merchantName: "Audible", description: null, amountCents: 1636 };
+  const costco = { merchantName: "Costco", description: "warehouse run", amountCents: 4210 };
+
+  test("empty query matches everything", () => {
+    expect(transactionMatchesSearch(audible, "")).toBe(true);
+    expect(transactionMatchesSearch(audible, "   ")).toBe(true);
+  });
+  test("matches merchant or description, case-insensitively", () => {
+    expect(transactionMatchesSearch(audible, "aud")).toBe(true);
+    expect(transactionMatchesSearch(costco, "COSTCO")).toBe(true);
+    expect(transactionMatchesSearch(costco, "warehouse")).toBe(true);
+    expect(transactionMatchesSearch(audible, "costco")).toBe(false);
+  });
+  test("matches amount as dollars, with $, or raw cents", () => {
+    expect(transactionMatchesSearch(audible, "16.36")).toBe(true);
+    expect(transactionMatchesSearch(audible, "$16.36")).toBe(true);
+    expect(transactionMatchesSearch(audible, "1636")).toBe(true);
+    expect(transactionMatchesSearch(audible, "16.37")).toBe(false);
+  });
+});
+
+describe("searchUnreceiptedTransactions", () => {
+  test("finds unreceipted spend by merchant or amount; excludes receipted/non-spend", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    const now = Date.now();
+    const audible = await seedTxn(s, { merchantName: "Audible", amountCents: 1636, postedAt: now });
+    await seedTxn(s, { merchantName: "Costco", amountCents: 4210, postedAt: now });
+    // Noise: same merchant but already receipted, and a non-spend inflow.
+    await seedTxn(s, { merchantName: "Audible", amountCents: 1636, postedAt: now, hasReceipt: true });
+    await seedTxn(s, { merchantName: "Audible", amountCents: 1636, postedAt: now, flow: "inflow" });
+
+    const byName = await s.as.query(api.receipts.searchUnreceiptedTransactions, { query: "audible" });
+    // Only the one unreceipted spend Audible charge — not the receipted or inflow ones.
+    expect(byName.map((r) => r.transactionId)).toEqual([audible]);
+
+    const byAmount = await s.as.query(api.receipts.searchUnreceiptedTransactions, { query: "$16.36" });
+    expect(byAmount.map((r) => r.transactionId)).toEqual([audible]);
+  });
+
+  test("a viewer can't search (bookkeeper+ gate)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const person = await seedPerson(s);
+    await grantRole(s, person, "viewer");
+    await expect(
+      s.as.query(api.receipts.searchUnreceiptedTransactions, {}),
+    ).rejects.toThrow(ConvexError);
+  });
+
+  test("empty query returns the chapter's unreceipted spend", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    const a = await seedTxn(s, { merchantName: "A", amountCents: 100 });
+    const b = await seedTxn(s, { merchantName: "B", amountCents: 200 });
+    await seedTxn(s, { merchantName: "C", amountCents: 300, hasReceipt: true }); // excluded
+    const all = await s.as.query(api.receipts.searchUnreceiptedTransactions, {});
+    expect(all.map((r) => r.transactionId).sort()).toEqual([a, b].sort());
   });
 });
 

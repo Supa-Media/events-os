@@ -57,6 +57,8 @@ import {
   deriveMerchantFromEmail,
   type OcrRoutingResult,
 } from "./receiptInbox";
+import { isSpend, txnMatchesMode } from "./finances";
+import { readSandbox } from "./financeSettings";
 
 // ── Validators ───────────────────────────────────────────────────────────────
 const receiptSourceValidator = v.union(
@@ -950,6 +952,82 @@ export const suggestMatches = query({
       receiptDate: receipt.receiptDate ?? undefined,
       ocrMerchant: receipt.merchant ?? receipt.ocrMerchant,
     });
+  },
+});
+
+// ── searchUnreceiptedTransactions ────────────────────────────────────────────
+const TXN_SEARCH_SCAN_LIMIT = 5000; // mirrors the matcher's CANDIDATE_SCAN_LIMIT
+const TXN_SEARCH_MAX_RESULTS = 25;
+
+/**
+ * Whether an unreceipted transaction matches a free-text search — merchant OR
+ * description text, OR the amount in any form a bookkeeper might type ("$16.36",
+ * "16.36", or the raw cents "1636"). Empty query matches everything (the panel
+ * then shows the most recent unreceipted charges). Pure + exported so it's
+ * unit-testable, same convention as the mobile `receiptMatchesSearch`.
+ */
+export function transactionMatchesSearch(
+  tr: { merchantName?: string | null; description?: string | null; amountCents: number },
+  query: string,
+): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  const text = `${tr.merchantName ?? ""} ${tr.description ?? ""}`.toLowerCase();
+  if (text.includes(q)) return true;
+  const qNum = q.replace(/[$,\s]/g, "");
+  if (!qNum) return false;
+  const cents = Math.abs(tr.amountCents);
+  const dollars = (cents / 100).toFixed(2);
+  return dollars.includes(qNum) || String(cents).includes(qNum);
+}
+
+/**
+ * Free-text search over the chapter's UNRECEIPTED spend transactions — the
+ * "search up a transaction to match this receipt to" box in the receipt panel,
+ * for when the exact-amount `suggestMatches` list doesn't surface the right
+ * charge (a mis-read amount, a receipt with none). Same scan the matcher uses
+ * (`by_chapter_and_postedAt` newest-first, `isSpend`, sandbox-filtered,
+ * `receiptStorageId == null`), filtered by `transactionMatchesSearch` instead
+ * of an exact cent. Returns the same `candidateValidator` shape as
+ * `suggestMatches` so the panel renders both lists identically (`merchantOverlap`
+ * / `isOwnCharge` aren't meaningful for a free search — always false).
+ * Bookkeeper+, chapter-only, bounded.
+ */
+export const searchUnreceiptedTransactions = query({
+  args: { query: v.optional(v.string()), limit: v.optional(v.number()) },
+  returns: v.array(candidateValidator),
+  handler: async (ctx, { query, limit }) => {
+    const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
+    if (!chapterId) return [];
+    await requireFinanceRole(ctx, chapterId, "bookkeeper");
+
+    const sandboxMode = await readSandbox(ctx);
+    const cap = Math.min(Math.max(Math.trunc(limit ?? TXN_SEARCH_MAX_RESULTS), 1), 100);
+    const rows = await ctx.db
+      .query("transactions")
+      .withIndex("by_chapter_and_postedAt", (qb) => qb.eq("chapterId", chapterId))
+      .order("desc")
+      .take(TXN_SEARCH_SCAN_LIMIT);
+
+    const results = [];
+    for (const tr of rows) {
+      if (tr.receiptStorageId != null) continue;
+      if (!isSpend(tr)) continue;
+      if (!txnMatchesMode(tr, sandboxMode)) continue;
+      if (!transactionMatchesSearch(tr, query ?? "")) continue;
+      results.push({
+        transactionId: tr._id,
+        amountCents: tr.amountCents,
+        postedAt: tr.postedAt,
+        merchantName: tr.merchantName,
+        description: tr.description,
+        status: tr.status,
+        merchantOverlap: false,
+        isOwnCharge: false,
+      });
+      if (results.length >= cap) break;
+    }
+    return results;
   },
 });
 
