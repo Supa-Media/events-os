@@ -117,6 +117,11 @@ export const sendApprovalTestPair = internalAction({
       if (!campaign) return null;
       const validated = validateEmailDocument(campaign.doc);
       if (!validated.ok) return null; // submitForApproval already validated this — defensive no-op only
+      // Captured into its own binding (not read off `validated.doc` inside
+      // the nested `render` closure below) — TS's control-flow narrowing on
+      // `validated.ok` doesn't propagate into a function DECLARED after the
+      // guard, only INTO code that reads `validated` directly at this level.
+      const doc = validated.doc;
 
       const settings = await resolveResendSettings(ctx);
       if (!settings) return null; // no RESEND_API_KEY configured — dev/CI degrade
@@ -141,8 +146,8 @@ export const sendApprovalTestPair = internalAction({
         const unsubscribeUrl = `${siteUrl()}/unsubscribe/test`;
         const recipient = { name, email: to };
         const renderOpts = { recipient, unsubscribeUrl, orgAddress: mailSettings.orgMailingAddress };
-        let html = renderCampaignEmail(validated.doc, renderOpts);
-        let text = renderCampaignText(validated.doc, renderOpts);
+        let html = renderCampaignEmail(doc, renderOpts);
+        let text = renderCampaignText(doc, renderOpts);
         if (appendReview) {
           const block = reviewBlock(reviewUrl);
           html += block.html;
