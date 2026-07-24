@@ -38,6 +38,7 @@ export { OptionTag } from "./OptionTag";
 export { statusTone } from "./status";
 export { ToastView } from "./Toast";
 export { useAnchor, type AnchorRect, type UseAnchor } from "./useAnchor";
+export { useResizableColumns } from "./useResizableColumns";
 export {
   InlineText,
   GridHeaderCell,

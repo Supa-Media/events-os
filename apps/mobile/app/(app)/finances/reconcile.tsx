@@ -407,6 +407,12 @@ function ReconcileGrid() {
                   onPress={() => {
                     setScope(s);
                     clearSelection();
+                    // Keep the URL in sync with the toggle (scope must be
+                    // unmistakable + deep-linkable/shareable/refresh-safe —
+                    // previously only the INITIAL `?scope=` was read; flipping
+                    // the toggle left the URL stale, a screenshot or refresh
+                    // could silently land back on "My chapter").
+                    router.setParams({ scope: s });
                   }}
                 />
               ))}

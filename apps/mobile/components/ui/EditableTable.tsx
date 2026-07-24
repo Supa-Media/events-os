@@ -14,7 +14,7 @@
  * variants (function-style Pressable `style` is ignored on web).
  */
 import { useEffect, useState } from "react";
-import { View, Text, TextInput, Pressable } from "react-native";
+import { View, Text, TextInput, Pressable, Platform } from "react-native";
 import { Icon } from "./Icon";
 import { OptionTag } from "./OptionTag";
 import { Popover } from "./Popover";
@@ -70,18 +70,52 @@ export function InlineText<T = string>({
 export function GridHeaderCell({
   label,
   width,
+  onResizeStart,
 }: {
   label: string;
   width: number;
+  /** Web-only drag-to-resize handle on the column's right edge — pass
+   *  `useResizableColumns`'s `startResize(key)` to make this column
+   *  resizable; omit for a fixed-width column (native, or one that
+   *  shouldn't resize, e.g. a checkbox column). A raw DOM `onMouseDown`
+   *  (RN-web forwards it) mirrors `SiteMapEditor`'s own drag-handle pattern —
+   *  `mousemove`/`mouseup` are tracked on `window` by the hook itself so the
+   *  drag keeps working once the cursor leaves this handle's few pixels. */
+  onResizeStart?: (clientX: number) => void;
 }) {
   return (
-    <View style={{ width }} className="px-2 py-2.5">
+    <View style={{ width }} className="flex-row items-center px-2 py-2.5">
       <Text
-        className="text-2xs font-bold uppercase tracking-wider text-muted"
+        className="flex-1 text-2xs font-bold uppercase tracking-wider text-muted"
         numberOfLines={1}
       >
         {label}
       </Text>
+      {onResizeStart && Platform.OS === "web" ? (
+        // Web-only resize handle; RN has no draggable-edge primitive, and a
+        // raw DOM node like this one isn't a valid native host component —
+        // the `Platform.OS` gate is load-bearing, not just a UX nicety (this
+        // renders only under react-native-web, mirroring `SiteMapEditor`'s
+        // own raw-`div` drag handles) rather than a `View`.
+        <div
+          onMouseDown={(e) => {
+            e.preventDefault();
+            onResizeStart(e.clientX);
+          }}
+          style={{
+            cursor: "col-resize",
+            width: 10,
+            marginRight: -6,
+            height: "100%",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            flexShrink: 0,
+          }}
+        >
+          <View className="h-4 w-px bg-border" />
+        </div>
+      ) : null}
     </View>
   );
 }

@@ -1,8 +1,9 @@
 /**
  * RECONCILE GRID — the inline-editable spreadsheet the bookkeeper codes charges
  * in, built on the shared EditableTable primitives (the `people.tsx` pattern):
- * fixed `COLS` widths, a `GridHeaderCell` header row, and per-row `Cell`-wrapped
- * cells that each commit ONE field via its own mutation.
+ * `DEFAULT_COLS` widths (user-adjustable + locally remembered on web via
+ * `useResizableColumns`), a `GridHeaderCell` header row, and per-row
+ * `Cell`-wrapped cells that each commit ONE field via its own mutation.
  *
  * Columns: [☐] Merchant · Date · Amount · Cardholder · Category▾ · For▾ ·
  * Suggested · Receipt · Status▾ · Actions. Category / For / Status edit
@@ -76,6 +77,7 @@ import {
   SelectCell,
   GridHeaderCell,
   useAnchor,
+  useResizableColumns,
 } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
@@ -102,9 +104,11 @@ const SEARCH_DEBOUNCE_MS = 200;
  *  renders as a small sublabel — "2 transactions nearby in June", etc. */
 export type PickerItem = { value: string; label: string; header?: boolean; reason?: string };
 
-// Fixed column widths (px) — the grid scrolls horizontally on narrow web while
-// columns stay put, mirroring the People roster grid.
-const COLS = {
+// Default column widths (px) — the grid scrolls horizontally on narrow web
+// while columns stay put, mirroring the People roster grid. These are only
+// the DEFAULTS: `useResizableColumns` (web only) lets a bookkeeper drag any
+// column but `check` wider/narrower, and remembers the result per-browser.
+const DEFAULT_COLS = {
   check: 40,
   merchant: 210,
   date: 118, // fits "Mar 15, 2026" — year added for multi-year history
@@ -114,14 +118,20 @@ const COLS = {
   category: 168,
   forCol: 200,
   suggested: 220,
-  receipt: 96,
+  // Founder feedback (2026-07-24): 96px clipped BOTH the "Upload" label+icon
+  // AND the "attach existing" search-icon affordance next to it — too tight
+  // to comfortably click either. The table already scrolls horizontally, so
+  // there's no shared budget to steal from another column for this.
+  receipt: 140,
   status: 148,
   // Wide enough for the note icon PLUS the "Personal" badge (its widest
   // combination — the note icon + the manager-only flag icon is narrower).
   // 76px clipped/overlapped the badge's text.
   actions: 112,
 } as const;
-const TABLE_WIDTH = Object.values(COLS).reduce((sum, w) => sum + w, 0);
+type ColKey = keyof typeof DEFAULT_COLS;
+type ColWidths = Record<ColKey, number>;
+const RECONCILE_COLUMNS_STORAGE_KEY = "reconcile-grid-columns";
 
 export function ReconcileList({
   rows,
@@ -154,9 +164,17 @@ export function ReconcileList({
   viewerPersonId?: Id<"people"> | null;
 }) {
   const allSelected = rows.length > 0 && rows.every((r) => selected.has(r.id));
+  // Founder feedback (2026-07-24): column widths are user-adjustable (drag
+  // the header edge, web only) and remembered per-browser — `widths` starts
+  // from `DEFAULT_COLS` and is overridden by whatever was last saved.
+  const { widths, startResize } = useResizableColumns<ColKey>(
+    RECONCILE_COLUMNS_STORAGE_KEY,
+    DEFAULT_COLS,
+  );
+  const tableWidth = (Object.values(widths) as number[]).reduce((sum, w) => sum + w, 0);
   // Drop the chapter-only Category column's width in central scope so the
   // grid doesn't leave dead space.
-  const width = centralScope ? TABLE_WIDTH - COLS.category : TABLE_WIDTH;
+  const width = centralScope ? tableWidth - widths.category : tableWidth;
 
   return (
     <View className="overflow-hidden rounded-lg border border-border bg-raised shadow-card">
@@ -165,23 +183,51 @@ export function ReconcileList({
           {/* Column header */}
           <View className="flex-row items-center border-b border-border bg-sunken">
             <View
-              style={{ width: COLS.check }}
+              style={{ width: widths.check }}
               className="items-center justify-center py-2.5"
             >
               <CheckBox checked={allSelected} onPress={onToggleAll} />
             </View>
-            <GridHeaderCell label="Merchant" width={COLS.merchant} />
-            <GridHeaderCell label="Date" width={COLS.date} />
-            <GridHeaderCell label="Amount" width={COLS.amount} />
-            <GridHeaderCell label="Cardholder" width={COLS.cardholder} />
+            <GridHeaderCell
+              label="Merchant"
+              width={widths.merchant}
+              onResizeStart={startResize("merchant")}
+            />
+            <GridHeaderCell label="Date" width={widths.date} onResizeStart={startResize("date")} />
+            <GridHeaderCell
+              label="Amount"
+              width={widths.amount}
+              onResizeStart={startResize("amount")}
+            />
+            <GridHeaderCell
+              label="Cardholder"
+              width={widths.cardholder}
+              onResizeStart={startResize("cardholder")}
+            />
             {!centralScope ? (
-              <GridHeaderCell label="Category" width={COLS.category} />
+              <GridHeaderCell
+                label="Category"
+                width={widths.category}
+                onResizeStart={startResize("category")}
+              />
             ) : null}
-            <GridHeaderCell label="For" width={COLS.forCol} />
-            <GridHeaderCell label="Suggested" width={COLS.suggested} />
-            <GridHeaderCell label="Receipt" width={COLS.receipt} />
-            <GridHeaderCell label="Status" width={COLS.status} />
-            <View style={{ width: COLS.actions }} />
+            <GridHeaderCell label="For" width={widths.forCol} onResizeStart={startResize("forCol")} />
+            <GridHeaderCell
+              label="Suggested"
+              width={widths.suggested}
+              onResizeStart={startResize("suggested")}
+            />
+            <GridHeaderCell
+              label="Receipt"
+              width={widths.receipt}
+              onResizeStart={startResize("receipt")}
+            />
+            <GridHeaderCell
+              label="Status"
+              width={widths.status}
+              onResizeStart={startResize("status")}
+            />
+            <View style={{ width: widths.actions }} />
           </View>
 
           {/* Body */}
@@ -197,6 +243,7 @@ export function ReconcileList({
               centralScope={centralScope}
               isManager={isManager}
               viewerPersonId={viewerPersonId}
+              widths={widths}
             />
           ))}
         </View>
@@ -215,6 +262,7 @@ function ReconcileRow({
   centralScope,
   isManager,
   viewerPersonId,
+  widths,
 }: {
   row: TxnRow;
   categoryItems: PickerItem[];
@@ -225,6 +273,7 @@ function ReconcileRow({
   centralScope: boolean;
   isManager: boolean;
   viewerPersonId: Id<"people"> | null;
+  widths: ColWidths;
 }) {
   const categorize = useMutation(api.finances.categorizeTransaction);
   const setStatus = useMutation(api.finances.setTransactionStatus);
@@ -320,14 +369,14 @@ function ReconcileRow({
     >
       {/* Select checkbox */}
       <View
-        style={{ width: COLS.check }}
+        style={{ width: widths.check }}
         className="items-center justify-center border-r border-border/60"
       >
         <CheckBox checked={selected} onPress={onToggle} />
       </View>
 
       {/* Merchant (read-only) */}
-      <Cell width={COLS.merchant}>
+      <Cell width={widths.merchant}>
         <Text
           className="flex-1 px-2 py-1.5 text-sm font-medium text-ink"
           numberOfLines={1}
@@ -337,14 +386,14 @@ function ReconcileRow({
       </Cell>
 
       {/* Date (read-only) */}
-      <Cell width={COLS.date}>
+      <Cell width={widths.date}>
         <Text className="flex-1 px-2 py-1.5 text-sm text-muted" style={NUM}>
           {shortDate(row.postedAt)}
         </Text>
       </Cell>
 
       {/* Amount (read-only, signed) */}
-      <Cell width={COLS.amount}>
+      <Cell width={widths.amount}>
         <Text
           className="flex-1 px-2 py-1.5 text-right text-sm font-semibold text-ink"
           style={NUM}
@@ -354,7 +403,7 @@ function ReconcileRow({
       </Cell>
 
       {/* Cardholder (read-only) */}
-      <Cell width={COLS.cardholder}>
+      <Cell width={widths.cardholder}>
         {row.cardholder ? (
           <View className="flex-1 flex-row items-center gap-2 px-2 py-1.5">
             <Avatar
@@ -373,7 +422,7 @@ function ReconcileRow({
 
       {/* Category (inline dropdown) — chapter-only; central txns have none. */}
       {!centralScope ? (
-        <Cell width={COLS.category}>
+        <Cell width={widths.category}>
           <PickerCell
             value={row.categoryId}
             items={categoryItems}
@@ -397,7 +446,7 @@ function ReconcileRow({
           RANKED per-row (nearby spend → similar merchant → upcoming date →
           everything else, budget-less demoted) via `reconcileSuggest.
           rankForPicker` — see `ForPickerCell`. */}
-      <Cell width={COLS.forCol}>
+      <Cell width={widths.forCol}>
         <ForPickerCell
           value={row.budgetId}
           transactionId={id}
@@ -415,7 +464,7 @@ function ReconcileRow({
           most new charges are suggested within seconds on arrival, but the
           batch cap / a cooling-down failed attempt / a stale charge that
           predates the feature can still leave one without one. */}
-      <Cell width={COLS.suggested}>
+      <Cell width={widths.suggested}>
         {row.aiSuggestion ? (
           <View className="flex-1 gap-1 px-2 py-1.5">
             <Badge
@@ -451,11 +500,12 @@ function ReconcileRow({
       </Cell>
 
       {/* Receipt (✓ or inline upload, escalating with the reminder timeline) */}
-      <Cell width={COLS.receipt}>
+      <Cell width={widths.receipt}>
         <ReceiptCell
           hasReceipt={row.hasReceipt}
           reminderStage={row.reminderStage}
           transactionId={id}
+          centralScope={centralScope}
           onUpload={async (storageId) => {
             await guard(attachReceipt({ transactionId: id, storageId }));
           }}
@@ -464,7 +514,7 @@ function ReconcileRow({
       </Cell>
 
       {/* Status (inline dropdown) */}
-      <Cell width={COLS.status}>
+      <Cell width={widths.status}>
         <SelectCell
           value={row.status}
           options={STATUS_OPTIONS}
@@ -479,7 +529,7 @@ function ReconcileRow({
           server-side cardholder-or-manager gate). A flagged charge shows its
           REAL repayment state ("Personal" until the cardholder pays it
           back, then "Repaid") from the row payload. */}
-      <Cell width={COLS.actions}>
+      <Cell width={widths.actions}>
         <View className="flex-1 flex-row items-center justify-center gap-2 px-1">
           <Pressable
             onPress={() => setNoteModalOpen(true)}
@@ -828,6 +878,7 @@ export function ReceiptCell({
   hasReceipt,
   reminderStage,
   transactionId,
+  centralScope = false,
   onUpload,
   generateUploadUrl,
 }: {
@@ -839,6 +890,14 @@ export function ReceiptCell({
    *  keeps compiling unchanged; omitting it just falls back to the old inert
    *  chip rather than opening a viewer. */
   transactionId?: Id<"transactions">;
+  /** Is this cell's transaction in the CENTRAL-owned bucket (the Reconcile
+   *  grid's Central toggle)? Widens the "attach existing" picker's search to
+   *  central receipts instead of the caller's own chapter — otherwise a
+   *  central transaction's receipt is invisible to the picker even though
+   *  it's sitting right there (the bug this prop fixes). Defaults `false` —
+   *  `TransactionDetailModal`'s call site doesn't track scope yet, so it
+   *  keeps today's chapter-only search unchanged. */
+  centralScope?: boolean;
   onUpload: (storageId: Id<"_storage">) => Promise<void>;
   generateUploadUrl: () => Promise<string>;
 }) {
@@ -968,6 +1027,7 @@ export function ReceiptCell({
       {attachOpen && transactionId ? (
         <ReceiptAttachPicker
           transactionId={transactionId}
+          centralScope={centralScope}
           onClose={() => setAttachOpen(false)}
         />
       ) : null}

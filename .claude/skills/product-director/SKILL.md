@@ -165,6 +165,73 @@ Before finishing a run of this skill, you MUST:
 
 ## Learnings Log (newest first)
 
+### 2026-07-24 — Run 5 (Reconcile: central receipt-link scope + resizable columns)
+- Founder UI feedback (screenshot + prose, no attachment beyond the image):
+  "central/chapter divide is confusing... can't link a receipt to a
+  historical purchase... RECEIPT column too narrow... columns should be
+  resizable + remember locally." 3 parallel recon lanes (scoping trace,
+  column-layout trace, meta/collision survey) → orchestrator implemented
+  directly (no delegated implementation agent — the orchestrator had already
+  loaded full context tracing the exact fix through 6+ files across two
+  recon rounds; re-deriving that in a subagent brief would have cost more
+  than just writing the diff). First-try-green: full backend suite (3167
+  tests) + mobile jest (252) + both typecheck targets, zero fix rounds.
+- Root cause was crisper than the user's framing suggested: recon's own
+  language ("it wont let me see the transactions outside the chapter") read
+  like a missing feature, but the actual bug was one query/mutation pair
+  (`listReceipts`/`linkReceipt`) NEVER threading the page's `centralScope`
+  toggle through at all — every OTHER Reconcile query already had this
+  exact scope-threading pattern (`listReconcile`'s `scope:"central"` +
+  `requireFinanceCentral`/`requireCentralFinanceRole`), so the fix was
+  "extend the established pattern to two functions that were missed," not
+  new architecture. When a bug report describes confusing/inconsistent
+  behavior on a page with several near-identical queries, check whether one
+  of them just didn't get the same treatment as its siblings — cheaper than
+  assuming a novel design gap.
+- SECURITY IMPROVEMENT ON THE ESTABLISHED PATTERN: rather than mirroring
+  `listReconcile`'s client-supplied `scope`/`chapterId` args for the WRITE
+  mutations (`linkReceipt`/`unlinkReceipt`), derived scope from the TARGET
+  TRANSACTION's own `chapterId` server-side instead (`attachReceipt` already
+  did exactly this for uploads — proved the pattern safe and correct before
+  reusing it). Client-supplied scope is right for a BROWSE/search query (no
+  target doc exists yet to derive from); doc-derived scope is strictly
+  better for a WRITE against a known target (smaller args surface, can't be
+  spoofed). Don't copy the read-path pattern onto a write path without
+  checking whether the write already has a better anchor available.
+- CAUGHT IN SELF-REVIEW, not by a subagent or CI: a raw `<div onMouseDown>`
+  web resize handle (mirroring `SiteMapEditor`'s own proven raw-DOM drag
+  pattern) rendered unconditionally whenever a `startResize` callback was
+  passed — but the callback itself no-ops on native via an internal
+  `Platform.OS` check, while the JSX around it had no such gate. `<div>` is
+  not a valid React Native host component; this would have been a genuine
+  release-blocking native crash that TYPECHECKS FINE and every test suite
+  passes clean (no test renders the native app tree). Lesson: when adding a
+  web-only raw-DOM affordance to a component that ALSO renders on native
+  (no `.web.tsx` split), the `Platform.OS==="web"` gate belongs on the JSX
+  branch itself, not just inside the handler function — re-read every
+  "web-only" diff asking "does this JSX ever mount on native," since neither
+  tsc nor RN's own test suites catch a native-only runtime crash.
+- Environment note: `pnpm install` + full typecheck + full vitest/jest
+  suites all worked in this sandbox this run (consistent with Run 2
+  addendum 5's "401 constraint lifted"). Standing up a LIVE Convex dev
+  deployment did not (`npx convex dev` → "Failed to fetch latest backend
+  version" — no network path to bootstrap a cloud dev deployment, no
+  `.env.local` credentials present). So: local static verification
+  (typecheck, unit/integration tests against convex-test) is reliable here;
+  a real running app with auth + seeded data is not, and manual/visual
+  browser verification for a UI change should be reported as "not possible
+  in this sandbox" rather than skipped silently or faked. Budget CI (which
+  runs in a real environment) as the actual visual/integration gate for web
+  UI changes when the sandbox can't launch a live deployment.
+- Academy: judged NOT training-worthy and said so explicitly in the PR
+  body — this PR fixes existing-but-broken behavior (the Central toggle
+  isn't newly introduced) and adds a generic UI mechanic (drag-resize
+  columns), neither of which is a domain/process concept the Academy
+  teaches. Named but deliberately left OUT OF SCOPE: the Reconcile lesson
+  doesn't teach the Central/My-chapter toggle AT ALL today (confirmed by
+  recon) — a real pre-existing Academy gap, but a separate, larger
+  authoring task from this bug-fix PR.
+
 ### 2026-07-24 — Run 4 (receipt archive + duplicate flow + txn search)
 - Founder feedback run: 3 recon lanes (duplicate-flow trace, search/linking
   trace, meta survey) → one sonnet implementation agent with recon-anchored

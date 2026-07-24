@@ -45,7 +45,7 @@ import {
   CENTRAL,
 } from "@events-os/shared";
 import { getChapterIdOrNull, requireChapterId } from "./lib/context";
-import { requireFinanceRole } from "./lib/finance";
+import { requireFinanceRole, requireCentralFinanceRole, type FinanceAccess } from "./lib/finance";
 import {
   createReceipt,
   linkReceiptToTransaction,
@@ -245,7 +245,7 @@ async function toReceiptSummary(ctx: QueryCtx, r: Doc<"receipts">) {
  */
 async function computeSoftDuplicates(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
+  chapterId: Id<"chapters"> | typeof CENTRAL,
 ): Promise<Set<Id<"receipts">>> {
   const scan = await ctx.db
     .query("receipts")
@@ -378,12 +378,24 @@ export const listReceipts = query({
   args: {
     filter: v.optional(listFilterValidator),
     limit: v.optional(v.number()),
+    // Central desk: browse CENTRAL-owned receipts (`chapterId:"central"`)
+    // instead of the caller's own chapter — mirrors `listReconcile`'s own
+    // `scope:"central"` (WP-2.1). Requires central reach; absent → the
+    // caller's own chapter, exactly as before.
+    scope: v.optional(v.literal("central")),
   },
   returns: v.array(listReceiptRow),
   handler: async (ctx, args) => {
-    const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
-    if (!chapterId) return [];
-    await requireFinanceRole(ctx, chapterId, "bookkeeper");
+    const homeChapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
+    if (!homeChapterId) return [];
+    let chapterId: Id<"chapters"> | typeof CENTRAL;
+    if (args.scope === "central") {
+      await requireCentralFinanceRole(ctx, homeChapterId, "bookkeeper");
+      chapterId = CENTRAL;
+    } else {
+      await requireFinanceRole(ctx, homeChapterId, "bookkeeper");
+      chapterId = homeChapterId;
+    }
 
     const filter = args.filter ?? "all";
     const limit = Math.min(Math.max(Math.trunc(args.limit ?? DEFAULT_LIST_LIMIT), 1), MAX_LIST_LIMIT);
@@ -1210,40 +1222,63 @@ export const searchUnreceiptedTransactions = query({
 const linkResult = v.object({ linked: v.boolean(), reconciled: v.boolean() });
 const unlinkResult = v.object({ unlinked: v.boolean() });
 
-/** Load + tenancy-check a receipt and a transaction, both required to be in
- *  the caller's own chapter (chapter-only — see module doc). */
+/** Load + tenancy-check a receipt and a transaction. A transaction owned by
+ *  the caller's own chapter needs bookkeeper reach there; a CENTRAL-owned
+ *  transaction (WP-2.1) needs central reach at bookkeeper rank instead —
+ *  mirrors `attachReceipt`'s own central branch, and derives scope from the
+ *  TRANSACTION itself (never a client-supplied claim) so it can't be spoofed.
+ *  Any other chapter (e.g. a central-peek target) is rejected outright: peek
+ *  stays read-only everywhere else in the app (see `reconcile.tsx`'s own doc
+ *  comment on `viewingPeekedChapter`), and linking doesn't carve out an
+ *  exception. The receipt must match the SAME resolved scope as the txn. */
 async function requireReceiptAndTxnInChapter(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
+  homeChapterId: Id<"chapters">,
   receiptId: Id<"receipts">,
   transactionId: Id<"transactions">,
-): Promise<{ receipt: Doc<"receipts">; txn: Doc<"transactions"> }> {
-  const receipt = await ctx.db.get(receiptId);
-  if (!receipt || receipt.chapterId !== chapterId) {
-    throw new ConvexError({
-      code: "NOT_FOUND",
-      message: "Receipt not found in your chapter.",
-    });
-  }
+): Promise<{ receipt: Doc<"receipts">; txn: Doc<"transactions">; access: FinanceAccess }> {
   const txn = await ctx.db.get(transactionId);
-  if (!txn || txn.chapterId !== chapterId) {
+  if (!txn) {
     throw new ConvexError({
       code: "NOT_FOUND",
       message: "Transaction not found in your chapter.",
     });
   }
-  return { receipt, txn };
+  let access: FinanceAccess;
+  if (txn.chapterId === CENTRAL) {
+    access = await requireCentralFinanceRole(ctx, homeChapterId, "bookkeeper");
+  } else if (txn.chapterId === homeChapterId) {
+    access = await requireFinanceRole(ctx, homeChapterId, "bookkeeper");
+  } else {
+    throw new ConvexError({
+      code: "NOT_FOUND",
+      message: "Transaction not found in your chapter.",
+    });
+  }
+  const receipt = await ctx.db.get(receiptId);
+  if (!receipt || receipt.chapterId !== txn.chapterId) {
+    throw new ConvexError({
+      code: "NOT_FOUND",
+      message: "Receipt not found in this scope.",
+    });
+  }
+  return { receipt, txn, access };
 }
 
 /** Manually attach a receipt to a transaction — the bookkeeper's "pick the
- *  right charge" action (`source: "manual"`). Bookkeeper+, chapter-only. */
+ *  right charge" action (`source: "manual"`). Bookkeeper+; chapter-only or
+ *  central, whichever scope the target transaction is actually in. */
 export const linkReceipt = mutation({
   args: { receiptId: v.id("receipts"), transactionId: v.id("transactions") },
   returns: linkResult,
   handler: async (ctx, args) => {
-    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    const access = await requireFinanceRole(ctx, chapterId, "bookkeeper");
-    await requireReceiptAndTxnInChapter(ctx, chapterId, args.receiptId, args.transactionId);
+    const homeChapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const { access } = await requireReceiptAndTxnInChapter(
+      ctx,
+      homeChapterId,
+      args.receiptId,
+      args.transactionId,
+    );
 
     return await linkReceiptToTransaction(ctx, {
       receiptId: args.receiptId,
@@ -1256,14 +1291,14 @@ export const linkReceipt = mutation({
 });
 
 /** Detach a receipt from a transaction. Never changes the txn's status (a
- *  human unlinked deliberately). Bookkeeper+, chapter-only. */
+ *  human unlinked deliberately). Bookkeeper+; chapter-only or central,
+ *  whichever scope the target transaction is actually in. */
 export const unlinkReceipt = mutation({
   args: { receiptId: v.id("receipts"), transactionId: v.id("transactions") },
   returns: unlinkResult,
   handler: async (ctx, args) => {
-    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    await requireFinanceRole(ctx, chapterId, "bookkeeper");
-    await requireReceiptAndTxnInChapter(ctx, chapterId, args.receiptId, args.transactionId);
+    const homeChapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireReceiptAndTxnInChapter(ctx, homeChapterId, args.receiptId, args.transactionId);
 
     return await unlinkReceiptFromTransaction(ctx, {
       receiptId: args.receiptId,
