@@ -194,10 +194,11 @@ export default function IntegrationsScreen() {
  *
  * The global model and the OCR model are deliberately independent settings
  * (RECEIPT QUALITY PR, fix 4): a general reasoning model tuned for
- * conversation (e.g. the owner's `gemma4:31b`) can silently degrade a receipt
- * read that a dedicated document-OCR model (`glm-ocr`, Ollama's default)
- * handles fine — so OCR never falls back to the global model, only to its own
- * per-provider default. See `receiptInbox.ts#resolveOcrModel`.
+ * conversation could silently degrade a receipt read — so OCR never falls
+ * back to the global model, only to its own per-provider default, `gemma4`
+ * on Ollama (cloud-hosted + vision-capable, confirmed working; NOT `glm-ocr`,
+ * which is local-only and 404s on Ollama's cloud service). See
+ * `receiptInbox.ts#resolveOcrModel`.
  *
  * The Ollama key is WRITE-ONLY (same discipline as the other cards: only a
  * configured/last4 status is ever shown). Both model pickers are fed by the
@@ -571,10 +572,10 @@ function AiEngineCard({
           </View>
           <Text className="mb-2 text-2xs text-faint">
             Global model above powers coding + the assistant. This one — separate — powers
-            receipt OCR only. Defaults to {isOllama ? "glm-ocr" : "a cheap vision model"} when unset.
+            receipt OCR only. Defaults to {isOllama ? "gemma4" : "a cheap vision model"} when unset.
           </Text>
           <Text className="mb-2 text-sm text-ink">
-            {aiEngine?.ocrModel ? aiEngine.ocrModel : `Using the default (${isOllama ? "glm-ocr" : "vision default"}).`}
+            {aiEngine?.ocrModel ? aiEngine.ocrModel : `Using the default (${isOllama ? "gemma4" : "vision default"}).`}
           </Text>
 
           {models && models.length > 0 ? (
@@ -618,7 +619,7 @@ function AiEngineCard({
               if (error) setError(null);
               if (notice) setNotice(null);
             }}
-            placeholder={isOllama ? "e.g. glm-ocr" : "e.g. google/gemini-2.0-flash-001"}
+            placeholder={isOllama ? "e.g. gemma4" : "e.g. google/gemini-2.0-flash-001"}
             autoCapitalize="none"
             autoCorrect={false}
             editable={!busy}

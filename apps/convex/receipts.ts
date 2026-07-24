@@ -225,11 +225,36 @@ async function findSoftDuplicateMatches(
     .slice(0, MAX_DUPLICATE_MATCHES);
 }
 
+/**
+ * The OTHER receipt(s) in this chapter whose `duplicateOfReceiptId` points at
+ * `receiptId` — i.e. `receiptId` is the kept PRIMARY of one or more hidden
+ * duplicates (derived sha256 matches AND human-confirmed ones alike; see
+ * `getReceipt`'s doc on `duplicates`). Bounded scan (same discipline as
+ * `findSoftDuplicateMatches`), newest first, capped at `MAX_DUPLICATE_MATCHES`.
+ */
+async function findDuplicatesOfReceipt(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  receiptId: Id<"receipts">,
+): Promise<Doc<"receipts">[]> {
+  const scan = await ctx.db
+    .query("receipts")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .order("desc")
+    .take(DUPLICATE_SCAN_LIMIT);
+  return scan.filter((r) => r.duplicateOfReceiptId === receiptId).slice(0, MAX_DUPLICATE_MATCHES);
+}
+
 // ── listReceipts (the library view) ──────────────────────────────────────────
+/** `"duplicates"` is the ONLY filter that surfaces a receipt with
+ *  `duplicateOfReceiptId` set — every other filter EXCLUDES them by default
+ *  (see the handler doc: hiding is never deleting, and this filter is how a
+ *  confirmed/exact duplicate stays reachable). */
 const listFilterValidator = v.union(
   v.literal("all"),
   v.literal("unlinked"),
   v.literal("linked"),
+  v.literal("duplicates"),
 );
 
 const listReceiptRow = v.object({
@@ -240,11 +265,20 @@ const listReceiptRow = v.object({
 /**
  * The receipts library: a chapter's receipts newest-first, bounded (default
  * `DEFAULT_LIST_LIMIT`). `unlinked` reads `by_chapter_and_linkCount` (a receipt
- * nobody's attached yet — the bookkeeper's real worklist); `all`/`linked` read
- * `by_chapter` and (for `linked`) filter the SAME bounded page in memory — a
- * chapter with hundreds of already-linked receipts may see fewer than `limit`
- * rows back on the `linked` filter (bounded-read tradeoff, not a full scan+
- * filter like `finances.listReconcile`'s admin grid).
+ * nobody's attached yet — the bookkeeper's real worklist); `all`/`linked`/
+ * `duplicates` read `by_chapter` and filter the SAME bounded page in memory —
+ * a chapter with hundreds of already-linked (or duplicate) receipts may see
+ * fewer than `limit` rows back (bounded-read tradeoff, not a full scan+filter
+ * like `finances.listReconcile`'s admin grid).
+ *
+ * DUPLICATE HIDING (owner ask, 2026-07-24): a receipt with `duplicateOfReceiptId`
+ * set — whether derived (exact-file sha256 match) or human-confirmed (see
+ * `markAsDuplicate`) — is EXCLUDED from `"all"`/`"unlinked"`/`"linked"` by
+ * default. This is HIDING, not deleting: the row, its file, and any
+ * `receiptLinks` all still exist; pass `filter: "duplicates"` to see them.
+ * There's no other way to "merge" a duplicate today (owner ask), so hiding it
+ * from the everyday library view — while keeping it one filter-tap away — is
+ * the whole fix.
  */
 export const listReceipts = query({
   args: {
@@ -262,20 +296,29 @@ export const listReceipts = query({
 
     let rows: Doc<"receipts">[];
     if (filter === "unlinked") {
-      rows = await ctx.db
+      const page = await ctx.db
         .query("receipts")
         .withIndex("by_chapter_and_linkCount", (q) =>
           q.eq("chapterId", chapterId).eq("linkCount", 0),
         )
         .order("desc")
         .take(limit);
+      rows = page.filter((r) => r.duplicateOfReceiptId == null);
+    } else if (filter === "duplicates") {
+      const page = await ctx.db
+        .query("receipts")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+        .order("desc")
+        .take(limit);
+      rows = page.filter((r) => r.duplicateOfReceiptId != null);
     } else {
       const page = await ctx.db
         .query("receipts")
         .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
         .order("desc")
         .take(limit);
-      rows = filter === "linked" ? page.filter((r) => r.linkCount > 0) : page;
+      const undupedPage = page.filter((r) => r.duplicateOfReceiptId == null);
+      rows = filter === "linked" ? undupedPage.filter((r) => r.linkCount > 0) : undupedPage;
     }
 
     const dupSet = await computeSoftDuplicates(ctx, chapterId);
@@ -317,6 +360,11 @@ const receiptDetail = v.object({
   ocrModel: v.union(v.string(), v.null()),
   correctedByPersonId: v.union(v.id("people"), v.null()),
   correctedAt: v.union(v.number(), v.null()),
+  // Set only on a HUMAN-confirmed duplicate (`markAsDuplicate`) — `null` for
+  // a derived exact-file (sha256) match. The mobile UI uses this to decide
+  // whether `unmarkDuplicate` is even offered (see that mutation's doc).
+  duplicateConfirmedByPersonId: v.union(v.id("people"), v.null()),
+  duplicateConfirmedAt: v.union(v.number(), v.null()),
   softDuplicate: v.boolean(),
   linkedTransactions: v.array(txnRef),
   candidateTransactions: v.array(txnRef),
@@ -325,6 +373,11 @@ const receiptDetail = v.object({
   // one collides with on amount+date (see `findSoftDuplicateMatches`), so
   // "possible duplicate" is actionable instead of a dead-end badge.
   duplicateMatches: v.array(duplicateMatchSummary),
+  // The OTHER receipt(s), if any, whose `duplicateOfReceiptId` points at
+  // THIS one — i.e. this receipt is the kept PRIMARY of one or more hidden
+  // duplicates (see `findDuplicatesOfReceipt`). Only ever populated when
+  // this receipt isn't itself somebody else's duplicate.
+  duplicates: v.array(duplicateOfSummary),
 });
 
 /**
@@ -391,16 +444,35 @@ export const getReceipt = query({
       }
     }
 
+    // Only worth chasing when this receipt ISN'T itself a duplicate — a
+    // duplicate-of-a-duplicate chain isn't a case this surfaces.
+    const duplicates = [];
+    if (!r.duplicateOfReceiptId) {
+      for (const d of await findDuplicatesOfReceipt(ctx, chapterId, r._id)) {
+        duplicates.push({
+          _id: d._id,
+          url: await ctx.storage.getUrl(d.storageId),
+          amountCents: d.amountCents ?? null,
+          receiptDate: d.receiptDate ?? null,
+          merchant: d.merchant ?? null,
+          linkCount: d.linkCount,
+        });
+      }
+    }
+
     return {
       ...(await toReceiptSummary(ctx, r)),
       ocrModel: r.ocrModel ?? null,
       correctedByPersonId: r.correctedByPersonId ?? null,
       correctedAt: r.correctedAt ?? null,
+      duplicateConfirmedByPersonId: r.duplicateConfirmedByPersonId ?? null,
+      duplicateConfirmedAt: r.duplicateConfirmedAt ?? null,
       softDuplicate,
       linkedTransactions,
       candidateTransactions,
       duplicateOf,
       duplicateMatches,
+      duplicates,
     };
   },
 });
@@ -431,6 +503,111 @@ export const dismissDuplicateFlag = mutation({
     }
 
     await ctx.db.patch(receiptId, { duplicateDismissed: true, updatedAt: Date.now() });
+    return null;
+  },
+});
+
+/**
+ * Confirm that one receipt IS a duplicate of another — the owner's ask:
+ * "when something is confirmed duplicate I cannot merge it — we shouldn't
+ * delete the duplicate, just mark it as such, point to the primary receipt,
+ * and hide it in the UI." Points `receiptId.duplicateOfReceiptId` at
+ * `primaryReceiptId` (the SAME field the derived sha256 exact-file path
+ * uses) and stamps `duplicateConfirmedByPersonId`/`duplicateConfirmedAt` so a
+ * human confirmation is distinguishable from a derived one (see the schema
+ * doc). The moment this lands, `listReceipts`'s default filters hide
+ * `receiptId` — see that query's doc; `filter: "duplicates"` still reaches
+ * it, and nothing is deleted.
+ *
+ * DELIBERATELY does NOT touch `receiptLinks`: if `receiptId` already carries
+ * links to transactions, they're left as-is — unlinking money records is a
+ * decision for a human to make explicitly (via `unlinkReceipt`), not an
+ * automatic side effect of a duplicate confirmation. This mutation is a
+ * review/visibility action only; it never edits money state.
+ *
+ * Rejects marking a receipt a duplicate of itself. Bookkeeper+, both
+ * receipts must be in the caller's own chapter.
+ */
+export const markAsDuplicate = mutation({
+  args: {
+    receiptId: v.id("receipts"),
+    primaryReceiptId: v.id("receipts"),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const access = await requireFinanceRole(ctx, chapterId, "bookkeeper");
+
+    if (args.receiptId === args.primaryReceiptId) {
+      throw new ConvexError({
+        code: "INVALID_ARGUMENT",
+        message: "A receipt can't be marked a duplicate of itself.",
+      });
+    }
+
+    const receipt = await ctx.db.get(args.receiptId);
+    if (!receipt || receipt.chapterId !== chapterId) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Receipt not found in your chapter.",
+      });
+    }
+    const primary = await ctx.db.get(args.primaryReceiptId);
+    if (!primary || primary.chapterId !== chapterId) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Primary receipt not found in your chapter.",
+      });
+    }
+
+    await ctx.db.patch(args.receiptId, {
+      duplicateOfReceiptId: args.primaryReceiptId,
+      duplicateConfirmedByPersonId: access.personId ?? undefined,
+      duplicateConfirmedAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    return null;
+  },
+});
+
+/**
+ * Clear a HUMAN-confirmed duplicate pointer (`markAsDuplicate`) — the
+ * "actually, not a duplicate after all" un-mark. ONLY clears a receipt whose
+ * `duplicateConfirmedByPersonId` is set (a human assertion, retractable); a
+ * DERIVED exact-file (sha256) duplicate — `duplicateOfReceiptId` set with no
+ * `duplicateConfirmed*` stamp — is refused, because the bytes really are
+ * identical; that isn't a human call to walk back here. A receipt that isn't
+ * flagged a duplicate at all is a no-op. Bookkeeper+, chapter-only.
+ */
+export const unmarkDuplicate = mutation({
+  args: { receiptId: v.id("receipts") },
+  returns: v.null(),
+  handler: async (ctx, { receiptId }) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireFinanceRole(ctx, chapterId, "bookkeeper");
+
+    const receipt = await ctx.db.get(receiptId);
+    if (!receipt || receipt.chapterId !== chapterId) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Receipt not found in your chapter.",
+      });
+    }
+    if (!receipt.duplicateOfReceiptId) return null;
+    if (!receipt.duplicateConfirmedByPersonId) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message:
+          "This receipt's file exactly matches an earlier one — that can't be un-marked, only a human-confirmed duplicate can.",
+      });
+    }
+
+    await ctx.db.patch(receiptId, {
+      duplicateOfReceiptId: undefined,
+      duplicateConfirmedByPersonId: undefined,
+      duplicateConfirmedAt: undefined,
+      updatedAt: Date.now(),
+    });
     return null;
   },
 });
@@ -874,12 +1051,15 @@ export const noteUploadError = internalMutation({
 });
 
 /**
- * Write an OCR read onto an uploaded receipt, seed its canonical fields (only
- * if nobody has corrected it yet), store the candidate shortlist the caller
- * already computed, and — for a UNIQUE candidate whose transaction carries NO
- * existing receipt link — auto-attach (in-app authenticated upload is
- * trusted, mirroring the email pipeline's `auto_email` bar:
- * `reconcileIfCategorized: true`).
+ * Write an OCR read onto an uploaded receipt, seed its canonical fields
+ * PER-FIELD (only a canonical `amountCents`/`receiptDate`/`merchant` that is
+ * still EMPTY gets filled from the fresh read — a field that already holds a
+ * value, human-corrected or not, is preserved; see the fix's doc on
+ * `applyRetryExtraction`, which shares this rule), store the candidate
+ * shortlist the caller already computed, and — for a UNIQUE candidate whose
+ * transaction carries NO existing receipt link — auto-attach (in-app
+ * authenticated upload is trusted, mirroring the email pipeline's
+ * `auto_email` bar: `reconcileIfCategorized: true`).
  *
  * `candidateTransactionIds` is PRECOMPUTED by the caller (`runUploadPipeline`,
  * via a separate `ctx.runQuery`) rather than recomputed here — deliberately,
@@ -916,13 +1096,21 @@ export const applyUploadOcrAndAttach = internalMutation({
     if (args.ocrMerchant) patch.ocrMerchant = args.ocrMerchant;
     if (args.ocrConfidence != null) patch.ocrConfidence = args.ocrConfidence;
     if (args.ocrModel) patch.ocrModel = args.ocrModel;
-    // Seed canonical from OCR — only ever true on a fresh upload row (nobody
-    // has corrected it yet, so `correctedAt` is unset); guards against a race
-    // where a human corrects a field while OCR is still in flight.
-    if (receipt.correctedAt == null) {
-      if (args.ocrAmountCents != null) patch.amountCents = args.ocrAmountCents;
-      if (args.ocrDate != null) patch.receiptDate = args.ocrDate;
-      if (args.ocrMerchant) patch.merchant = args.ocrMerchant;
+    // Seed canonical from OCR PER-FIELD: only a canonical field that is still
+    // EMPTY gets filled from the fresh read. A field that already holds a
+    // value (whether a human typed it or an earlier OCR pass seeded it) is
+    // preserved untouched — never overwritten. See `applyRetryExtraction`'s
+    // matching doc for the full rationale (this replaces the old all-or-
+    // nothing `correctedAt == null` gate, which wrongly left a BLANK field
+    // blank forever once ANY field on the receipt had been corrected).
+    if (receipt.amountCents == null && args.ocrAmountCents != null) {
+      patch.amountCents = args.ocrAmountCents;
+    }
+    if (receipt.receiptDate == null && args.ocrDate != null) {
+      patch.receiptDate = args.ocrDate;
+    }
+    if (!receipt.merchant && args.ocrMerchant) {
+      patch.merchant = args.ocrMerchant;
     }
     if (args.candidateTransactionIds.length) {
       patch.candidateTransactionIds = args.candidateTransactionIds;
@@ -1089,9 +1277,11 @@ async function runUploadPipeline(
  * NEVER auto-attaches (unlike the upload/email pipelines) — a human is
  * ALREADY looking at this receipt (that's why they clicked retry); the
  * refreshed candidates are surfaced for them to pick, not silently linked
- * behind their back. NEVER touches a canonical field the human has already
- * corrected (`correctedAt` set) — only the immutable `ocr*` provenance
- * refreshes; the canonical amount/date/merchant they entered stays put.
+ * behind their back. Canonical fields fill in PER-FIELD (see
+ * `applyRetryExtraction`'s doc): a still-EMPTY amount/date/merchant gets
+ * filled from the fresh read even on a receipt with `correctedAt` set (that
+ * flag no longer blanket-blocks every field); a field that already holds a
+ * value — human-corrected or not — is never overwritten.
  *
  * `model` is an OPTIONAL override threaded straight through to
  * `ocrReceiptImage`'s existing `model` parameter (untouched — see that
@@ -1124,11 +1314,20 @@ export const retryExtraction = mutation({
 /**
  * Write a retry's fresh OCR read: always refreshes `ocr*` + the candidate
  * shortlist, and always writes `ocrError` explicitly (a string on failure, or
- * `undefined` to clear a stale one on success). Canonical fields
- * (amount/date/merchant) are seeded from the fresh read ONLY when nobody has
- * corrected this receipt yet (`correctedAt` unset) — the same
- * human-correction guard `applyUploadOcrAndAttach` uses. NEVER auto-attaches
- * — see `retryExtraction`'s doc.
+ * `undefined` to clear a stale one on success).
+ *
+ * Canonical fields (amount/date/merchant) are seeded from the fresh read
+ * PER-FIELD, not all-or-nothing: a canonical field that is still EMPTY (null/
+ * unset) gets filled from the fresh read regardless of `correctedAt`; a
+ * canonical field that already holds a value is preserved untouched — a real
+ * human correction is never clobbered. This fixes the bug where a receipt
+ * with `correctedAt` set (from an EARLIER correction to some OTHER field, or
+ * a since-cleared field) would refuse to fill in a still-blank amount/date/
+ * merchant even on a successful retry — the old rule gated ALL three
+ * canonical fields on the single `correctedAt` flag, so "nobody has corrected
+ * THIS field" and "nobody has corrected the receipt AT ALL" got conflated.
+ * `applyUploadOcrAndAttach` uses the identical per-field rule. NEVER
+ * auto-attaches — see `retryExtraction`'s doc.
  */
 export const applyRetryExtraction = internalMutation({
   args: {
@@ -1159,11 +1358,17 @@ export const applyRetryExtraction = internalMutation({
     if (args.ocrMerchant) patch.ocrMerchant = args.ocrMerchant;
     if (args.ocrConfidence != null) patch.ocrConfidence = args.ocrConfidence;
     if (args.ocrModel) patch.ocrModel = args.ocrModel;
-    // Never touch a canonical field a human has already corrected.
-    if (receipt.correctedAt == null) {
-      if (args.ocrAmountCents != null) patch.amountCents = args.ocrAmountCents;
-      if (args.ocrDate != null) patch.receiptDate = args.ocrDate;
-      if (args.ocrMerchant) patch.merchant = args.ocrMerchant;
+    // Per-field fill: only a canonical field that is STILL EMPTY gets set
+    // from the fresh read. A field that already holds a value — a human's
+    // correction, or an earlier successful OCR seed — is left alone.
+    if (receipt.amountCents == null && args.ocrAmountCents != null) {
+      patch.amountCents = args.ocrAmountCents;
+    }
+    if (receipt.receiptDate == null && args.ocrDate != null) {
+      patch.receiptDate = args.ocrDate;
+    }
+    if (!receipt.merchant && args.ocrMerchant) {
+      patch.merchant = args.ocrMerchant;
     }
 
     await ctx.db.patch(args.receiptId, patch);

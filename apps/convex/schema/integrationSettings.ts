@@ -94,10 +94,11 @@ export const integrationSettings = defineTable({
   // RECEIPT QUALITY PR (fix 4): a DEDICATED OCR model, separate from the
   // global chat/coding `aiModel` above. A general reasoning model (e.g. the
   // owner's global `gemma4:31b`) is tuned for conversation, not document
-  // extraction, and silently chokes on a busy receipt photo — so `aiModel`
+  // extraction, and could silently degrade a busy receipt photo — so `aiModel`
   // must NEVER be the OCR fallback. Absent = the per-provider OCR default
-  // (`glm-ocr` on Ollama, `RECEIPT_OCR_MODEL` env/hardcoded on OpenRouter —
-  // see `receiptInbox.ts#resolveOcrModel`). Never a secret, just a model id.
+  // (`gemma4` on Ollama — the cloud-hosted, vision-capable model; `RECEIPT_OCR_MODEL`
+  // env/hardcoded on OpenRouter — see `receiptInbox.ts#resolveOcrModel`).
+  // Never a secret, just a model id.
   aiOcrModel: v.optional(v.string()),
   updatedAt: v.number(),
   updatedBy: v.id("users"),

@@ -21,11 +21,16 @@ export type InboundQueueRow = FunctionReturnType<typeof api.receipts.listInbound
 export type SuggestedCandidate = FunctionReturnType<typeof api.receipts.suggestMatches>[number];
 
 // ── Library filter (matches `receipts.listReceipts`'s `filter` arg) ──────────
-export type LibraryFilterKey = "all" | "unlinked" | "linked";
+// "duplicates" is the ONLY filter that surfaces a receipt with
+// `duplicateOfReceiptId` set (derived exact-file OR human-confirmed via
+// `markAsDuplicate`) — the other three EXCLUDE them by default (hiding, never
+// deleting; see `receipts.ts#listReceipts`'s doc).
+export type LibraryFilterKey = "all" | "unlinked" | "linked" | "duplicates";
 export const LIBRARY_FILTERS: { key: LibraryFilterKey; label: string }[] = [
   { key: "all", label: "All" },
   { key: "unlinked", label: "Unmatched" },
   { key: "linked", label: "Matched" },
+  { key: "duplicates", label: "Duplicates" },
 ];
 
 // ── Inbox status chips ─────────────────────────────────────────────────────

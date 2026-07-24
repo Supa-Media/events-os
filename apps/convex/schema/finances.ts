@@ -1193,11 +1193,27 @@ export const receipts = defineTable({
   // (both stamp it at creation). Optional: legacy receipts (pre-dating this
   // field) and any document whose storage metadata lookup failed have none.
   fileSha256: v.optional(v.string()),
-  // Set when this receipt's file exactly duplicates an EARLIER receipt in the
-  // same chapter (same `fileSha256`) — points at the earlier (kept) receipt.
-  // A duplicate is still stored (never silently dropped — a human may still
-  // want to see it) but is never auto-attached and is flagged for review.
+  // Set when this receipt duplicates an EARLIER (kept) receipt in the same
+  // chapter — points at that primary receipt. Written two ways: (1) derived,
+  // automatically, when this receipt's file exactly matches an earlier one's
+  // `fileSha256` (`lib/receiptLinks.ts#findDuplicateReceiptBySha256`) — no
+  // `duplicateConfirmed*` stamp; or (2) a HUMAN confirmation via
+  // `receipts.markAsDuplicate` — a bookkeeper who can't merge two receipts
+  // (e.g. a soft/possible-duplicate match that turns out to really be the
+  // same purchase) instead points this one at the primary, stamping
+  // `duplicateConfirmed*` below. Either way the record is never DELETED —
+  // hiding (see `listReceipts`'s default exclusion) is not deleting; the row,
+  // its file, and any existing `receiptLinks` all survive untouched (a
+  // confirmed duplicate is a review action, not a retroactive unlink).
   duplicateOfReceiptId: v.optional(v.id("receipts")),
+  // Set ONLY by `receipts.markAsDuplicate` (a human's confirmation) —
+  // distinguishes a HUMAN-confirmed duplicate from the derived sha256
+  // exact-file match above (which leaves these two fields unset). Governs
+  // `receipts.unmarkDuplicate`: only a human-confirmed duplicate (these two
+  // fields set) can be un-marked; a derived exact-file match cannot (it isn't
+  // a human assertion to retract — the bytes are still identical).
+  duplicateConfirmedByPersonId: v.optional(v.id("people")),
+  duplicateConfirmedAt: v.optional(v.number()),
   // RECEIPT QUALITY PR: a bookkeeper's "I checked, this isn't a duplicate"
   // — set by `receipts.dismissDuplicateFlag`. Additive + PER-RECEIPT: only
   // ever silences THIS receipt's own `softDuplicate` output (see
