@@ -22,17 +22,17 @@
  * caller then hands to the vision model as `image_url` PNGs. This is the
  * fix for a REVERTED first attempt (PR #406) that rendered server-side via
  * `@napi-rs/canvas` — a native addon that broke Convex's esbuild bundling;
- * `@hyzyla/pdfium` is pure WASM + JS, so it bundles (with its wasm file kept
- * out of the bundle via `convex.json`'s `externalPackages` — it fs-loads the
- * file itself at runtime). The #406 invariant still holds and is the whole
+ * `@hyzyla/pdfium` is pure WASM + JS, so it bundles — the wasm binary rides
+ * along as a base64 JS constant handed to `init` explicitly (see
+ * `initPdfiumLibrary`'s doc for why no other loading path survives every
+ * runtime this code runs in). The #406 invariant still holds and is the whole
  * point of both functions: raw `application/pdf` bytes must NEVER reach the
  * vision model (Ollama 400s on `image_url` with `application/pdf`) — a
  * rendered `image/png` is the fix, not a violation of that rule.
  *
  * NODE-ONLY: `unpdf`'s `getDocumentProxy`/`extractText` need pdf.js's Node
  * build (`DOMMatrix`/canvas-adjacent shims unavailable in the default V8
- * runtime), and `@hyzyla/pdfium`'s Node build fs-loads its own `.wasm` file —
- * hence `"use node"` and this file's total isolation from every query/
+ * runtime) — hence `"use node"` and this file's total isolation from every query/
  * mutation in the app (the guideline: never mix a Node action with a query/
  * mutation in the same file). Kept to the smallest possible surface (a
  * storage id in, raw text/rendered-image storage ids out) so the default-
@@ -56,30 +56,37 @@ import type { Id } from "./_generated/dataModel";
 const RENDER_SCALE = 2;
 
 /**
- * Instantiate the PDFium WASM module with a two-tier fallback. The default
- * build is what prod Node actually runs — cheap, because it fs-loads its
- * `.wasm` file straight off disk (the reason `convex.json` lists
- * `@hyzyla/pdfium` under `externalPackages`: esbuild must not try to inline a
- * WASM binary into the bundle). That same fs-load throws
- * `"wasmBinary is required for browser environment"` under vitest's test
- * sandbox, which runs Convex functions inside `@edge-runtime/vm` (see the
- * repo's Convex testing guideline) — a environment with no filesystem for the
- * default build to read from. The `browser/base64` build carries its wasm
- * inline instead, so it works in EITHER environment; it's only the fallback
- * (not the default) because decoding a base64'd wasm blob on every prod cold
- * start is needless overhead once the fs-backed build is available.
+ * Instantiate the PDFium WASM module with the binary passed EXPLICITLY —
+ * never trusting the package's own environment detection or file loading.
+ * Both of its automatic paths failed somewhere this code must run (verified
+ * against production logs, 2026-07-24):
+ *   - the default Node build fs-loads `pdfium.wasm` from its own package
+ *     directory, but Convex's deploy doesn't ship that asset next to the
+ *     bundled JS — prod threw `ENOENT ... modules/_deps/node/pdfium.wasm`
+ *     (and `externalPackages` did not preserve the layout either);
+ *   - the `browser/base64` build embeds the binary but its emscripten glue
+ *     is compiled web-only — prod's real Node runtime throws
+ *     `"not compiled for this environment"` (while vitest's `@edge-runtime/vm`
+ *     accepts it, which is exactly why the two-tier fallback passed tests and
+ *     still failed in prod).
+ * The one path that works EVERYWHERE: import the base64-encoded binary the
+ * package itself ships as a plain JS constant (bundles like any other JS —
+ * no `.wasm` asset for the bundler to lose), decode it, and hand it to
+ * `init({ wasmBinary })`, which every build accepts ahead of its own
+ * detection. The chunk filename is content-hashed by the package's build, so
+ * `@hyzyla/pdfium` is pinned EXACTLY in package.json — a version bump changes
+ * the hash and must update the import below (the render tests catch it: the
+ * import fails to resolve and every scanned-PDF test goes red).
  */
 async function initPdfiumLibrary(): Promise<PDFiumLibrary> {
-  try {
-    const { PDFiumLibrary: Lib } = await import("@hyzyla/pdfium");
-    return await Lib.init();
-  } catch (err) {
-    console.log(
-      `[receiptPdf] default pdfium init unavailable (${String(err)}) — falling back to the embedded-wasm build.`,
-    );
-    const { PDFiumLibrary: Lib } = await import("@hyzyla/pdfium/browser/base64");
-    return await Lib.init({ disableBase64Warning: true });
-  }
+  const { PDFiumLibrary: Lib } = await import("@hyzyla/pdfium");
+  const { PDFIUM_WASM_BASE64 } = await import(
+    "@hyzyla/pdfium/dist/pdfium.wasm.base64-B4io7kt4.js"
+  );
+  const bin = atob(PDFIUM_WASM_BASE64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return await Lib.init({ wasmBinary: bytes.buffer });
 }
 
 export const extractPdfText = internalAction({
