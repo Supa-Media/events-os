@@ -75,6 +75,7 @@ import {
   inboundReceipts,
   receipts,
   receiptLinks,
+  receiptSweepState,
 } from "./schema/finances";
 import {
   donors,
@@ -285,6 +286,9 @@ const schema = defineSchema({
   // stays a denormalized cache. Written only through lib/receiptLinks.ts.
   receipts,
   receiptLinks,
+  // Per-chapter "is a failed-extraction retry sweep running" marker — see
+  // `schema/finances.ts`'s doc + `receipts.ts#retryFailedExtractions`.
+  receiptSweepState,
 
   // Backer milestone ladder (giving-platform PRD §3) — dev-director-editable
   // "N backers → chapter commits to X" rungs. Global-only for now; seeded

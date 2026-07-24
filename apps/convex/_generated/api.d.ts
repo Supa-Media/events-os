@@ -20,6 +20,7 @@ import type * as auth from "../auth.js";
 import type * as backerMilestones from "../backerMilestones.js";
 import type * as blasts from "../blasts.js";
 import type * as budgetDecisionEmails from "../budgetDecisionEmails.js";
+import type * as budgetDetail from "../budgetDetail.js";
 import type * as budgetLines from "../budgetLines.js";
 import type * as campaignApprovalEmails from "../campaignApprovalEmails.js";
 import type * as campaigns from "../campaigns.js";
@@ -263,6 +264,7 @@ declare const fullApi: ApiFromModules<{
   backerMilestones: typeof backerMilestones;
   blasts: typeof blasts;
   budgetDecisionEmails: typeof budgetDecisionEmails;
+  budgetDetail: typeof budgetDetail;
   budgetLines: typeof budgetLines;
   campaignApprovalEmails: typeof campaignApprovalEmails;
   campaigns: typeof campaigns;

@@ -3,8 +3,14 @@
  * `apps/convex/receipts.ts` module (+ `receiptInbox.ts`'s
  * `dismissInboundReceipt`) as-is — this screen owns no new backend surface.
  *
- * Three pieces, top to bottom:
- *  - `UploadZone` — mass upload (the owner's backfill workflow).
+ * Four pieces, top to bottom:
+ *  - `UploadZone` — mass upload (the owner's backfill workflow); its
+ *    extractions are now STAGGERED server-side so a big batch can't trip the
+ *    AI provider's rate limit the way the original ~80-receipt mass upload
+ *    did.
+ *  - `RetryFailedBar` — "Re-extract failed (N)", the throttled bulk sweep
+ *    (`retryFailedExtractions`) that clears a backlog of "Extraction failed"
+ *    receipts one at a time instead of re-tripping that same rate limit.
  *  - `InboxSection` — every inbound email still needing a look
  *    (`listInboundQueue`).
  *  - `LibrarySection` — every receipt document, filterable
@@ -27,6 +33,7 @@ import { EmptyState, FULL_WIDTH, Narrow, Screen, ToastView } from "../../../comp
 import { useActionRunner } from "../../../lib/useActionToast";
 import { FinanceBoundary } from "../../../components/finance/dashboard/parts";
 import { UploadZone } from "../../../components/finance/receiptsTab/UploadZone";
+import { RetryFailedBar } from "../../../components/finance/receiptsTab/RetryFailedBar";
 import { InboxSection } from "../../../components/finance/receiptsTab/InboxSection";
 import { LibrarySection } from "../../../components/finance/receiptsTab/LibrarySection";
 import { ReceiptDetailModal } from "../../../components/finance/receiptsTab/ReceiptDetailModal";
@@ -84,6 +91,7 @@ function ReceiptsBody() {
 
           <View className="mb-4">
             <UploadZone run={run} onOpenReceipt={setOpenReceiptId} />
+            <RetryFailedBar run={run} />
             <InboxSection run={run} onOpenReceipt={setOpenReceiptId} />
             <LibrarySection
               filter={libraryFilter}

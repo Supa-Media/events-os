@@ -53,6 +53,10 @@ function mockFetch(response: {
   status?: number;
   json?: unknown;
   text?: string;
+  /** Response headers (e.g. `{ "Retry-After": "7" }`) — a real `Response`'s
+   *  `.headers.get` is case-insensitive; this stub is exact-key only, so
+   *  tests always pass the canonical `Retry-After` casing. */
+  headers?: Record<string, string>;
 }) {
   const calls: { url: string; init: any }[] = [];
   globalThis.fetch = (async (url: string, init?: any) => {
@@ -62,6 +66,7 @@ function mockFetch(response: {
       status: response.status ?? 200,
       json: async () => response.json ?? {},
       text: async () => response.text ?? JSON.stringify(response.json ?? {}),
+      headers: { get: (name: string) => response.headers?.[name] ?? null },
     };
   }) as unknown as typeof fetch;
   return calls;
@@ -281,6 +286,34 @@ describe("chatCompletion — normalized success + typed HTTP error", () => {
     const res = await chatCompletion(orConfig(), { model: "m", messages: [] });
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.retryable).toBe(true);
+  });
+
+  test("a 429 with a Retry-After header surfaces it as retryAfterSeconds", async () => {
+    mockFetch({ ok: false, status: 429, text: "rate limited", headers: { "Retry-After": "7" } });
+    const res = await chatCompletion(orConfig(), { model: "m", messages: [] });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.retryable).toBe(true);
+      expect(res.retryAfterSeconds).toBe(7);
+    }
+  });
+
+  test("a 429 with an HTTP-date Retry-After normalizes to seconds-from-now", async () => {
+    const future = new Date(Date.now() + 30_000).toUTCString();
+    mockFetch({ ok: false, status: 429, text: "rate limited", headers: { "Retry-After": future } });
+    const res = await chatCompletion(orConfig(), { model: "m", messages: [] });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.retryAfterSeconds).toBeGreaterThan(0);
+      expect(res.retryAfterSeconds).toBeLessThanOrEqual(31);
+    }
+  });
+
+  test("a 429 with no Retry-After header leaves retryAfterSeconds unset", async () => {
+    mockFetch({ ok: false, status: 429, text: "rate limited" });
+    const res = await chatCompletion(orConfig(), { model: "m", messages: [] });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.retryAfterSeconds).toBeFalsy();
   });
 });
 

@@ -1184,11 +1184,19 @@ export function arrayBufferToBase64(buf: ArrayBuffer): string {
 export type OcrFailureKind = ChatErrorKind | "no_total";
 
 /** A typed OCR failure reason — never thrown, always returned (mirrors
- *  `lib/aiEngine.ts`'s ChatCompletionError contract one layer up). */
+ *  `lib/aiEngine.ts`'s ChatCompletionError contract one layer up). `retryable`
+ *  and `retryAfterSeconds` are lifted straight off the underlying
+ *  `ChatCompletionError` for a transport failure (429/5xx/timeout/network);
+ *  `"no_total"` — the model replied fine but found nothing — is always
+ *  `retryable: false`, since re-running the SAME call won't fix a bad read.
+ *  Consumed by `receipts.ts`'s failed-extraction sweep to decide "back off and
+ *  retry" vs. "permanent failure, move on". */
 export interface OcrImageFailure {
   kind: OcrFailureKind;
   status: number | null;
   message: string;
+  retryable: boolean;
+  retryAfterSeconds?: number | null;
 }
 
 /** `ocrReceiptImage`'s result: a successful read, or `{ error }` carrying WHY
@@ -1273,12 +1281,19 @@ export async function ocrReceiptImage(
   if (!result.ok) {
     console.log(`[receiptInbox] OCR call failed: ${result.message}`);
     return {
-      error: { kind: result.kind, status: result.status, message: result.message },
+      error: {
+        kind: result.kind,
+        status: result.status,
+        message: result.message,
+        retryable: result.retryable,
+        retryAfterSeconds: result.retryAfterSeconds ?? null,
+      },
     };
   }
   const noTotal: OcrImageResult = {
     error: {
       kind: "no_total",
+      retryable: false,
       status: null,
       message: "The model read the receipt but couldn't find a clear total.",
     },
@@ -1383,7 +1398,17 @@ function extractJson(s: string): any | null {
 // ── Extraction routing (PDF text layer → vision OCR fallback) ────────────────
 /** What one file's extraction attempt yielded — `ocrError` is always a
  *  human-readable reason when `ocrAmountCents` came back empty (the fix for
- *  "OCR read: — · — · —" with no explanation). */
+ *  "OCR read: — · — · —" with no explanation).
+ *
+ *  `ocrRetryable`/`ocrRetryAfterSeconds` are ONLY ever set alongside an
+ *  `ocrError` that came from a transport failure against the vision model
+ *  (`ocrReceiptImage`'s `OcrImageFailure.retryable`) — a rate limit (429) or
+ *  a 5xx/timeout/network blip that a later attempt could plausibly succeed
+ *  at. A `"no_total"` read, an unsupported file type, or a PDF-text-layer
+ *  miss are never retryable — the SAME input would just fail the same way
+ *  again. `receipts.ts`'s failed-extraction sweep is the one consumer that
+ *  cares: it backs off + retries on `ocrRetryable`, and otherwise treats the
+ *  failure as PERMANENT and moves on to the next receipt. */
 export interface OcrRoutingResult {
   ocrAmountCents?: number;
   ocrDate?: number;
@@ -1391,6 +1416,8 @@ export interface OcrRoutingResult {
   ocrConfidence?: number;
   ocrModel?: string;
   ocrError?: string;
+  ocrRetryable?: boolean;
+  ocrRetryAfterSeconds?: number;
 }
 
 /**
@@ -1447,6 +1474,8 @@ export async function extractReceiptFields(
       return {
         ocrModel: model,
         ocrError: ocrFailureMessage(ocr.error, config.provider, "scanned_pdf"),
+        ocrRetryable: ocr.error.retryable,
+        ocrRetryAfterSeconds: ocr.error.retryAfterSeconds ?? undefined,
       };
     }
     return {
@@ -1466,6 +1495,8 @@ export async function extractReceiptFields(
     return {
       ocrModel: model,
       ocrError: ocrFailureMessage(ocr.error, config.provider, "image"),
+      ocrRetryable: ocr.error.retryable,
+      ocrRetryAfterSeconds: ocr.error.retryAfterSeconds ?? undefined,
     };
   }
   return {

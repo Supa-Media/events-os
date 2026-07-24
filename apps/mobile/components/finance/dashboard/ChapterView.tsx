@@ -34,7 +34,7 @@ import { useRouter } from "expo-router";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { formatCents, quarterOfMonth, type BudgetRefKind } from "@events-os/shared";
+import { formatCents, type BudgetRefKind } from "@events-os/shared";
 import { Button, Icon, SectionHeader } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { SignedMoney, Tile, TileRow, type DashPeriodMode } from "./parts";
@@ -46,6 +46,7 @@ import { extraApprovalsCount } from "./extraApprovals";
 import { CategoryBars } from "./CategoryBars";
 import { AttentionRail } from "./AttentionRail";
 import { BudgetTableGroup, type BudgetTableRow } from "./BudgetTable";
+import { recurringDrilldownPeriod } from "./recurringDrilldownPeriod";
 import type { DrilldownTxn } from "./TransactionList";
 import { TransactionDetailModal, type TransactionDetailSource } from "./TransactionDetailModal";
 
@@ -95,40 +96,6 @@ function monthHonestRecurring(
   return { pct, capLabelOverride };
 }
 
-/**
- * DASH-2.1 UI fix (review finding #1 — "drill must sum to the tapped bar"):
- * a recurring budget's own category mini-bars widen to the budget's effective
- * period in month mode (`finances.ts#budgetEffectivePeriod`, via
- * `txnCountsTowardBudgetDash`) — monthly cadence stays scoped to one month,
- * but quarterly widens to the whole quarter and yearly to the whole year,
- * regardless of which single month the dashboard is showing. A transactions
- * drill-down that only ever requested one month under-summed vs. that wider
- * bar. This returns the SAME widened period for `dashboardCharts.
- * budgetTransactions` to request (mirrors `budgetEffectivePeriod`'s own
- * switch, not re-deriving it — a budget with a FIXED `quarter` narrower than
- * `contextMonth`'s own quarter would only be VISIBLE on this dashboard when
- * they already agree — see that function's doc comment for why
- * `quarterOfMonth(month)` is always correct here). YTD mode already reads the
- * whole year for every cadence (`drilldownPeriod` below omits `month`
- * entirely there), so this only changes month-mode behavior.
- */
-function recurringDrilldownPeriod(
-  cadence: RecurringBudget["cadence"],
-  year: number,
-  month: number,
-  mode: DashPeriodMode,
-): { year: number; month?: number; quarter?: number; rangeNote?: string } {
-  if (mode !== "month") return { year };
-  switch (cadence) {
-    case "quarterly":
-      return { year, quarter: quarterOfMonth(month), rangeNote: "this quarter" };
-    case "yearly":
-      return { year, rangeNote: "this year" };
-    case "monthly":
-    default:
-      return { year, month };
-  }
-}
 type MonthlySpend = FunctionReturnType<typeof api.dashboardCharts.spendByMonth>;
 
 /** Below this width the two-column grid stacks to one column. */
