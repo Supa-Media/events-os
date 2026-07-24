@@ -87,6 +87,19 @@ on green).
 6. **Prior approval is the money rule.** Budgets are planned before spend;
    increases are two-party approved; the product should make the approved
    plan visible at the moment of spend.
+7. **Consent is non-negotiable in comms.** Every bulk email carries a
+   working one-click unsubscribe from send #1; transactional email
+   (verification, receipts, approvals) is never gated by it. No BCC blasts,
+   ever — "people can't unsubscribe yet" is a compliance and deliverability
+   defect, not a convenience. Suppression (bounce/complaint/unsubscribe) is
+   shared org-wide; list membership is granular.
+8. **No SaaS silos for data the platform owns.** When Chapter OS already
+   holds the contacts (donors, RSVPs, roster) and is ≥80% of the way to a
+   capability, don't stand up a vendor tool (Mailchimp etc.) that forks the
+   contact list — chapters especially must not create their own accounts.
+   "Rhythm before metrics" is a fine cultural rule (founder-endorsed:
+   consistency for the first months beats dashboard-watching), but the
+   system records metrics from send #1 regardless — collecting ≠ watching.
 
 ## Repo-specific invariants (verify, they drift)
 
@@ -134,6 +147,22 @@ Before finishing a run of this skill, you MUST:
    run's PR.
 
 ## Learnings Log (newest first)
+
+### 2026-07-24 — Run 2 addendum (team chat: Mailchimp vs BCC vs native)
+- Team exchange (Charisma/Carolyn/founder) surfaced principles now encoded
+  as 7 & 8 above: founder rejected BCC ("filters to spam", can't design),
+  leaned build-native over Mailchimp $20/mo ("pricing is brutal… build it
+  myself"); Carolyn's "consistency first 3 months, metrics later" endorsed
+  as culture but NOT as "skip unsubscribe" — the team briefly framed
+  no-unsubscribe as a feature of BCC; guidelines must preempt that framing
+  org-wide before chapters multiply.
+- Ops reality check for native sends: Resend free tier is 100 emails/day —
+  a 500-recipient newsletter needs a paid Resend plan (~$20/mo) or
+  multi-day batch pacing; cost-parity with Mailchimp, so the native
+  argument is data unity + control + chapter scale, not price.
+- Contact compilation ask ("Givebutter + any other emails") = the donors/
+  rsvps/people silos recon already mapped; a mailing-list import must
+  record provenance + set expectations in the first send.
 
 ### 2026-07-24 — Run 2: email-list/newsletter readiness assessment
 - Run shape: founder asked "what's the state of X, how ready are we" — an
