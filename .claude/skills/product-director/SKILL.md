@@ -165,6 +165,35 @@ Before finishing a run of this skill, you MUST:
 
 ## Learnings Log (newest first)
 
+### 2026-07-24 — Run 2 addendum 6 (Phase 3 #407 shipped — workstream complete)
+- Full email workstream shipped in one session-day: #323 revival → #399
+  approval gate → #401 identity backbone → 0039 hotfix (#405) → #402
+  personEmails → #407 audience picker. Pattern that converged: implement →
+  adversarial-verify (empirical probes) → consolidated fix round → local
+  full suite before push → PR → CI → squash-merge → verify deploys.
+  Local-suite-first made #402 and #407 first-try-green in CI.
+- Deploy-Convex runs migrations:runPending POST-deploy: a migration can
+  pass convex-test + CI and still fail prod (single-paginate rule is
+  unenforced locally — 0039). Deploy verification caught it; user impact
+  zero because the resolver had a designed fallback. Every migration now
+  needs the one-paginate-per-invocation review, and resolvers use bounded
+  take/collect scans only.
+- Same-day feature collision class: #399's snapshot hash didn't know about
+  #407's new hand-pick fields — verifier's cross-feature probe caught the
+  approval-integrity hole (post-approval hand-pick edits sailed through).
+  When two features land same-day on one surface, have the LATER PR's
+  verifier explicitly probe the EARLIER feature's invariants against the
+  new fields.
+- Founder ops directives now encoded: 5-min Monitor-ticker polling (never
+  send_later — blocks with permission prompts), never trust subagent
+  self-reports (verify against repo/CI), docs in CLAUDE.md + this skill.
+- OUTSTANDING for a future run: manual 0037 guest backfill in prod (founder
+  triggers; dry-run first) — until it runs, legacy guests audiences stay on
+  the legacy resolver (0040 deliberately skipped them); after it runs,
+  migrate them and retire the legacy resolvers. Also upstream candidates
+  per upstream-first: Monitor-ticker guidance → supa-framework claude
+  template; generic email-send primitive → @supa-media/convex.
+
 ### 2026-07-24 — Run 2 addendum 5 (Phase 2 personEmails #402 shipped)
 - pnpm vitest + tsc NOW WORK in the cloud sandbox (the 401-on-install
   constraint lifted mid-session). Require implementation agents to run the
