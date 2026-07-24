@@ -1633,6 +1633,123 @@ describe("two-party approval — reviewer eligibility & separation of duties", (
     ).toBe("SOD_VIOLATION");
   });
 
+  test("SOD_VIOLATION when a single user owns TWO people rows, both holding campaigns.approve, and picks the SECOND as reviewer", async () => {
+    // Regression for a bypass found in adversarial review (2026-07-24):
+    // `people.userId` has no uniqueness — one human can own several roster
+    // rows. `resolveCampaignCallerPersonId` auto-picks ONE of them as
+    // submitter; a same-id-only SOD check would then let the caller pass a
+    // DIFFERENT one of their OWN rows as reviewer and self-approve. The real
+    // guard rejects `reviewerPersonId` outright if it's ANY row the caller
+    // controls, not just the one that got auto-picked.
+    const t = newT();
+    const s = await asSuperuser(t);
+    const campaignId = await seedDraftCampaign(s);
+
+    // Row A — the one `resolveCampaignCallerPersonId` will auto-pick as
+    // submitter (first capability-holding row, insertion order).
+    const rowAId = await seedSelfPerson(s, "Row A");
+    const seatDefA = await run(s.t, (ctx) =>
+      ctx.db.insert("seatDefs", {
+        slug: "test_dual_a",
+        title: "Test Dual A",
+        chart: "central",
+        parentSlug: "root",
+        maxHolders: 1,
+        duties: [],
+        capabilities: ["campaigns.approve"],
+        sortOrder: 0,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("seatAssignments", {
+        seatDefId: seatDefA,
+        scope: "central",
+        personId: rowAId,
+        createdAt: Date.now(),
+      }),
+    );
+
+    // Row B — a SECOND people row for the SAME s.userId, also holding
+    // campaigns.approve.
+    const rowBId = await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Row B",
+        userId: s.userId,
+        createdAt: Date.now(),
+      }),
+    );
+    const seatDefB = await run(s.t, (ctx) =>
+      ctx.db.insert("seatDefs", {
+        slug: "test_dual_b",
+        title: "Test Dual B",
+        chart: "central",
+        parentSlug: "root",
+        maxHolders: 1,
+        duties: [],
+        capabilities: ["campaigns.approve"],
+        sortOrder: 0,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("seatAssignments", {
+        seatDefId: seatDefB,
+        scope: "central",
+        personId: rowBId,
+        createdAt: Date.now(),
+      }),
+    );
+
+    expect(
+      await errorCode(
+        s.as.mutation(api.campaigns.submitForApproval, {
+          campaignId,
+          purpose: "Self-approval laundered through a second row",
+          reviewerPersonId: rowBId,
+        }),
+      ),
+    ).toBe("SOD_VIOLATION");
+  });
+
+  test("SOD_VIOLATION at DECISION time when the submitter's OWN second people row ends up as the recorded reviewer", async () => {
+    // Defense in depth: exercises `assertCallerIsChosenReviewer`'s own
+    // independent check, bypassing `submitForApproval`'s guard entirely via
+    // a direct db write (a row linked/created AFTER submission, or any other
+    // path that could set `reviewerPersonId` outside the normal mutation).
+    const t = newT();
+    const s = await asSuperuser(t);
+    const campaignId = await seedDraftCampaign(s);
+    const submitterId = await seedSelfPerson(s, "Submitter Row");
+    const legitReviewer = await seedReviewer(s);
+    await s.as.mutation(api.campaigns.submitForApproval, {
+      campaignId,
+      purpose: "P",
+      reviewerPersonId: legitReviewer.personId,
+    });
+
+    // A SECOND people row for the SAME s.userId (the submitter's own user),
+    // holding campaigns.approve — then the campaign's `reviewerPersonId` is
+    // force-set to it directly, bypassing `submitForApproval`'s own guard
+    // entirely, to isolate the decision-time defense in depth.
+    const secondRowId = await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Submitter's Second Row",
+        userId: s.userId,
+        createdAt: Date.now(),
+      }),
+    );
+    await run(s.t, (ctx) => ctx.db.patch(campaignId, { reviewerPersonId: secondRowId }));
+
+    expect(
+      await errorCode(s.as.mutation(api.campaigns.approveCampaign, { campaignId })),
+    ).toBe("SOD_VIOLATION");
+  });
+
   test("INVALID_REVIEWER — a compose-only holder can't be picked as reviewer", async () => {
     const t = newT();
     const s = await asSuperuser(t);
@@ -1912,6 +2029,70 @@ describe("two-party approval — sendTest is ungated by status", () => {
     await expect(
       s.as.action(api.campaigns.sendTest, { campaignId, to: "preview@example.com" }),
     ).resolves.toBeNull();
+  });
+});
+
+describe("two-party approval — listPendingApprovals soft-gates on approval power", () => {
+  // Regression for a crash found in adversarial review (2026-07-24):
+  // `listPendingApprovals` used to THROW `FORBIDDEN` for a caller without
+  // approval power — unhandled by the mobile strip that calls it
+  // unconditionally, crashing the whole Campaigns tab for a compose-only
+  // caller (this PR's own new, lower access tier). It must soft-gate
+  // instead, mirroring `myCampaignsAccess`'s non-throwing shape.
+  test("a compose-only caller gets [] back, not a thrown FORBIDDEN", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "composer@publicworship.life" });
+    const composerId = await seedSelfPerson(s, "Composer");
+    const seatDefId = await run(s.t, (ctx) =>
+      ctx.db.insert("seatDefs", {
+        slug: "test_compose_only_lpa",
+        title: "Compose Only",
+        chart: "central",
+        parentSlug: "root",
+        maxHolders: 1,
+        duties: [],
+        capabilities: ["campaigns.compose"],
+        sortOrder: 0,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("seatAssignments", {
+        seatDefId,
+        scope: "central",
+        personId: composerId,
+        createdAt: Date.now(),
+      }),
+    );
+
+    await expect(s.as.query(api.campaigns.listPendingApprovals, {})).resolves.toEqual([]);
+  });
+
+  test("a caller with no campaigns access at all also gets [] back (not FORBIDDEN)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await expect(s.as.query(api.campaigns.listPendingApprovals, {})).resolves.toEqual([]);
+  });
+
+  test("a chosen reviewer sees their own pending campaign, and only that one", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const campaignId = await seedDraftCampaign(s, "Awaiting me");
+    await seedSelfPerson(s);
+    const reviewer = await seedReviewer(s);
+    await s.as.mutation(api.campaigns.submitForApproval, {
+      campaignId,
+      purpose: "Reach out",
+      reviewerPersonId: reviewer.personId,
+    });
+
+    const mine = await reviewer.as.query(api.campaigns.listPendingApprovals, {});
+    expect(mine.map((c) => c._id)).toEqual([campaignId]);
+
+    // The submitter (a different identity) sees none pending for THEM.
+    const submitterView = await s.as.query(api.campaigns.listPendingApprovals, {});
+    expect(submitterView).toEqual([]);
   });
 });
 

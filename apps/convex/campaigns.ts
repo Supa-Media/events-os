@@ -105,10 +105,11 @@ import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { requireUserId } from "./lib/context";
 import {
+  hasCampaignApprovalPower,
   holdsCampaignCapabilityAt,
-  requireCampaignApprovalPower,
   requireCampaignsAccess,
   resolveCampaignCallerPersonId,
+  resolveCampaignCallerPersonIds,
 } from "./lib/campaignsAccess";
 import { siteUrl } from "./lib/siteUrl";
 import {
@@ -512,12 +513,7 @@ export const listCampaignApprovers = query({
   returns: v.array(v.object({ personId: v.id("people"), name: v.string() })),
   handler: async (ctx) => {
     await requireCampaignsAccess(ctx);
-    const userId = (await requireUserId(ctx)) as Id<"users">;
-    const own = await ctx.db
-      .query("people")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
-      .collect();
-    const ownIds = new Set(own.map((p) => p._id));
+    const ownIds = await resolveCampaignCallerPersonIds(ctx);
 
     const assignments = await ctx.db
       .query("seatAssignments")
@@ -543,7 +539,16 @@ export const listCampaignApprovers = query({
 /** Assert the caller IS the campaign's chosen reviewer — the ONLY identity
  *  allowed to decide on a pending request (no superuser bypass; see the
  *  module doc). Returns the reviewer's personId (== `campaign.reviewerPersonId`)
- *  for the caller's convenience. */
+ *  for the caller's convenience.
+ *
+ *  DEFENSE IN DEPTH (2026-07-24 — SOD bypass via multiple `people` rows):
+ *  `submitForApproval` already refuses to let a submitter pick ANY of their
+ *  OWN rows as reviewer (see its own doc), but this checks it again here
+ *  independently — a `submittedByPersonId` that's ALSO one of the caller's
+ *  own rows is refused even if it somehow got there another way (a row
+ *  linked/created after submission, or a direct write) — one human owning
+ *  two `campaigns.approve` rows can never decide on their own submission,
+ *  full stop, regardless of which of their rows ended up as which field. */
 async function assertCallerIsChosenReviewer(
   ctx: MutationCtx,
   campaign: Doc<"campaigns">,
@@ -554,18 +559,17 @@ async function assertCallerIsChosenReviewer(
       message: "This campaign has no reviewer on file.",
     });
   }
-  const userId = (await requireUserId(ctx)) as Id<"users">;
-  const people = await ctx.db
-    .query("people")
-    .withIndex("by_user", (q) => q.eq("userId", userId))
-    .collect();
-  const isReviewer = people.some(
-    (p) => p.isPlaceholder !== true && p._id === campaign.reviewerPersonId,
-  );
-  if (!isReviewer) {
+  const ownPersonIds = await resolveCampaignCallerPersonIds(ctx);
+  if (!ownPersonIds.has(campaign.reviewerPersonId)) {
     throw new ConvexError({
       code: "NOT_CHOSEN_REVIEWER",
       message: "Only the reviewer picked when this campaign was submitted can decide on it.",
+    });
+  }
+  if (campaign.submittedByPersonId && ownPersonIds.has(campaign.submittedByPersonId)) {
+    throw new ConvexError({
+      code: "SOD_VIOLATION",
+      message: "You can't decide on a campaign you submitted.",
     });
   }
   return campaign.reviewerPersonId;
@@ -659,12 +663,26 @@ export const submitForApproval = mutation({
       });
     }
 
+    // SOD, the REAL check (2026-07-24): `people.userId` has no uniqueness —
+    // one human can own several `people` rows. Comparing just the resolved
+    // `submittedByPersonId` against `reviewerPersonId` (below) would miss a
+    // caller picking a DIFFERENT one of their OWN rows as reviewer — reject
+    // outright if `reviewerPersonId` is any row this caller controls, not
+    // just the one that would've been auto-picked as submitter.
+    const ownPersonIds = await resolveCampaignCallerPersonIds(ctx);
+    if (ownPersonIds.has(reviewerPersonId)) {
+      throw new ConvexError({
+        code: "SOD_VIOLATION",
+        message: "Pick a reviewer other than yourself.",
+      });
+    }
+
     const submittedByPersonId = await resolveCampaignCallerPersonId(ctx);
-    // Separation of duties AT SELECTION TIME — re-checked again at decision
-    // time by `assertCallerIsChosenReviewer` + the decision mutations'
-    // own `assertSeparationOfDuties` call (defense in depth: the two checks
-    // read different state — this one the FRESH argument, that one the
-    // STORED `reviewerPersonId`/`submittedByPersonId` pair).
+    // Same-id belt-and-suspenders (now implied by the set check above, since
+    // `submittedByPersonId` is always drawn from `ownPersonIds` — kept for
+    // the explicit "approver != requester" documentation `assertSeparationOfDuties`
+    // gives, and as a backstop if `resolveCampaignCallerPersonId`'s selection
+    // logic ever changes to not be a strict subset of `ownPersonIds`).
     assertSeparationOfDuties(reviewerPersonId, submittedByPersonId);
 
     const hash = await computeCampaignSnapshotHash(ctx, campaign);
@@ -903,14 +921,7 @@ export const getCampaignApproval = query({
     if (!campaign) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
     }
-    const userId = (await requireUserId(ctx)) as Id<"users">;
-    const people = await ctx.db
-      .query("people")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
-      .collect();
-    const ownIds = new Set(
-      people.filter((p) => p.isPlaceholder !== true).map((p) => p._id),
-    );
+    const ownIds = await resolveCampaignCallerPersonIds(ctx);
     const canDecide =
       campaign.status === "pending_approval" &&
       campaign.reviewerPersonId != null &&
@@ -939,23 +950,22 @@ export const getCampaignApproval = query({
 });
 
 /** Every `pending_approval` campaign where the CALLER is the chosen
- *  reviewer — feeds the "Awaiting your approval" strip. Gated on holding
- *  approval power AT ALL first (cheap short-circuit for the common "I hold
- *  no approval power" case); the per-row filter below is what actually
+ *  reviewer — feeds the "Awaiting your approval" strip. SOFT-gated on
+ *  holding approval power at all (`hasCampaignApprovalPower`, non-throwing —
+ *  mirrors `myCampaignsAccess`'s shape): a compose-only caller (this PR's own
+ *  lower access tier) gets `[]` back, NOT a thrown `FORBIDDEN` — this is a
+ *  list surface a widely-rendered strip calls unconditionally, so it must
+ *  degrade gracefully the same way a soft visibility check does, never crash
+ *  the screen for a caller who simply doesn't hold the power (2026-07-24 —
+ *  found in adversarial review: the mobile strip crashed the whole Campaigns
+ *  tab for compose-only callers). The per-row filter below is what actually
  *  decides which rows are the caller's to act on. */
 export const listPendingApprovals = query({
   args: {},
   returns: v.array(v.object({ _id: v.id("campaigns"), name: v.string(), purpose: v.optional(v.string()) })),
   handler: async (ctx) => {
-    await requireCampaignApprovalPower(ctx);
-    const userId = (await requireUserId(ctx)) as Id<"users">;
-    const people = await ctx.db
-      .query("people")
-      .withIndex("by_user", (q) => q.eq("userId", userId))
-      .collect();
-    const ownIds = new Set(
-      people.filter((p) => p.isPlaceholder !== true).map((p) => p._id),
-    );
+    if (!(await hasCampaignApprovalPower(ctx))) return [];
+    const ownIds = await resolveCampaignCallerPersonIds(ctx);
     const pending = await ctx.db
       .query("campaigns")
       .withIndex("by_status", (q) => q.eq("status", "pending_approval"))

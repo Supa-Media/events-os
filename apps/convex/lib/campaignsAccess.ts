@@ -27,7 +27,7 @@
  * chapter/scope context of its own to anchor a single roster row against.
  */
 import { ConvexError } from "convex/values";
-import type { Id } from "../_generated/dataModel";
+import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 import { isCentralEdOrFm } from "./finance";
 import { isSuperuser } from "./superuser";
@@ -125,12 +125,16 @@ export async function hasCampaignApprovalPower(ctx: QueryCtx): Promise<boolean> 
   return holdsCentralCampaignCapability(ctx, "campaigns.approve");
 }
 
-/** Assert `hasCampaignApprovalPower`, else throw. Used for surfaces gated on
- *  approval power IN GENERAL (e.g. `listPendingApprovals`, `listCampaignApprovers`'s
- *  underlying access) — the per-campaign "are YOU the chosen reviewer" check
- *  is separate (`campaigns.ts`'s `assertCallerIsChosenReviewer`), since
- *  holding approval power somewhere doesn't mean a particular campaign
- *  picked you. */
+/** Assert `hasCampaignApprovalPower`, else throw. For a HARD gate on
+ *  approval power IN GENERAL, where throwing is actually appropriate (an
+ *  explicit user action, not a passively-rendered list) — `listPendingApprovals`
+ *  (`campaigns.ts`) deliberately does NOT use this (it soft-gates via
+ *  `hasCampaignApprovalPower` directly instead, returning `[]`, since it
+ *  backs a strip a screen calls unconditionally and must never crash a
+ *  caller who simply lacks the power — see that query's own doc, 2026-07-24).
+ *  The per-campaign "are YOU the chosen reviewer" check is separate
+ *  (`campaigns.ts`'s `assertCallerIsChosenReviewer`), since holding approval
+ *  power somewhere doesn't mean a particular campaign picked you. */
 export async function requireCampaignApprovalPower(ctx: QueryCtx): Promise<void> {
   if (!(await hasCampaignApprovalPower(ctx))) {
     throw new ConvexError({
@@ -138,6 +142,39 @@ export async function requireCampaignApprovalPower(ctx: QueryCtx): Promise<void>
       message: "Approving campaigns requires campaign-approval power.",
     });
   }
+}
+
+/** Every non-placeholder `people` row the caller's userId owns. Factored out
+ *  so `resolveCampaignCallerPersonId` and `resolveCampaignCallerPersonIds`
+ *  (below) — and anything else that needs "every roster row this human
+ *  controls" — never duplicate the query. */
+async function ownPeopleRows(ctx: QueryCtx): Promise<Doc<"people">[]> {
+  const userId = (await requireUserId(ctx)) as Id<"users">;
+  const people = await ctx.db
+    .query("people")
+    .withIndex("by_user", (q) => q.eq("userId", userId))
+    .collect();
+  return people.filter((p) => p.isPlaceholder !== true);
+}
+
+/**
+ * Every non-placeholder `people` row id the caller's userId owns, as a Set —
+ * the SAME roster a person can hold MULTIPLE rows under (schema has no
+ * uniqueness on `people.userId`), so this is "every identity this one human
+ * could act as," not just one. Callers use this to exclude/reject "yourself"
+ * as a distinct entity: `listCampaignApprovers` (the reviewer-picker dropdown)
+ * excludes every id in this set from the candidate list, and
+ * `submitForApproval`/`assertCallerIsChosenReviewer` (`campaigns.ts`) reject a
+ * `reviewerPersonId` that's in this set OUTRIGHT — a single human holding two
+ * `campaigns.approve` rows can't launder self-approval through the SECOND row
+ * (a same-personId-only SOD check would miss that; see the SOD_VIOLATION
+ * fix, 2026-07-24).
+ */
+export async function resolveCampaignCallerPersonIds(
+  ctx: QueryCtx,
+): Promise<Set<Id<"people">>> {
+  const rows = await ownPeopleRows(ctx);
+  return new Set(rows.map((p) => p._id));
 }
 
 /**
@@ -156,12 +193,7 @@ export async function requireCampaignApprovalPower(ctx: QueryCtx): Promise<void>
 export async function resolveCampaignCallerPersonId(
   ctx: QueryCtx,
 ): Promise<Id<"people">> {
-  const userId = (await requireUserId(ctx)) as Id<"users">;
-  const people = await ctx.db
-    .query("people")
-    .withIndex("by_user", (q) => q.eq("userId", userId))
-    .collect();
-  const real = people.filter((p) => p.isPlaceholder !== true);
+  const real = await ownPeopleRows(ctx);
 
   for (const person of real) {
     if (

@@ -173,13 +173,24 @@ export function CampaignsListView() {
  * `orgchart/ProposalsInbox.tsx`'s shape (visible only when there's something
  * to act on). `campaigns.listPendingApprovals` already returns exactly
  * "every pending_approval campaign where the caller is the CHOSEN reviewer"
- * — no further filtering needed here. Renders nothing for a compose-only
- * caller (the query itself gates on holding approval power at all, so it
- * simply comes back empty for them) or once the caller has nothing pending.
+ * — no further filtering needed here.
+ *
+ * TWO INDEPENDENT guards keep this safe for a compose-only caller (this PR's
+ * own lower access tier) — found missing in adversarial review, 2026-07-24:
+ * `listPendingApprovals` itself now SOFT-gates (returns `[]` rather than
+ * throwing `FORBIDDEN` for a caller without approval power — mirrors
+ * `myCampaignsAccess`'s non-throwing shape), AND this component skips firing
+ * the query at all unless `myCampaignsAccess.canApprove` is already known
+ * true — no reason to round-trip a query we know will come back empty, and
+ * belt-and-suspenders against the backend gate ever regressing.
  */
 function PendingApprovalsStrip() {
   const router = useRouter();
-  const pending = useQuery(api.campaigns.listPendingApprovals, {});
+  const access = useQuery(api.audiences.myCampaignsAccess, {});
+  const pending = useQuery(
+    api.campaigns.listPendingApprovals,
+    access?.canApprove ? {} : "skip",
+  );
   if (!pending || pending.length === 0) return null;
 
   return (
