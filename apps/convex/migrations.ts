@@ -36,6 +36,7 @@ import {
   type PersonEmailsStage,
 } from "./migrations/0039_backfill_person_emails";
 import { runMigrateLegacyAudiencesPage } from "./migrations/0040_migrate_legacy_audiences";
+import { runMigrateGuestAudiencesPage } from "./migrations/0041_migrate_guest_audiences";
 
 /**
  * Backfill: ensure every template/event grid module has all of its current
@@ -745,6 +746,21 @@ export const continueMigrateLegacyAudiences = internalMutation({
   args: { cursor: v.union(v.string(), v.null()) },
   handler: async (ctx, { cursor }) =>
     await runMigrateLegacyAudiencesPage(ctx, cursor),
+});
+
+/**
+ * Scheduler continuation for the guest-audiences migration (`0041`). The
+ * registry entry (`runMigrateGuestAudiences`) processes only the first page
+ * inside `runPending`'s transaction; `runMigrateGuestAudiencesPage` itself
+ * schedules this to drain the rest, one bounded page at a time, until it
+ * reports `isDone` — same shape as `continueMigrateLegacyAudiences` above.
+ * Idempotent (see `migrations/0041_migrate_guest_audiences.ts`'s module
+ * doc), so a redundant fire is a no-op.
+ */
+export const continueMigrateGuestAudiences = internalMutation({
+  args: { cursor: v.union(v.string(), v.null()) },
+  handler: async (ctx, { cursor }) =>
+    await runMigrateGuestAudiencesPage(ctx, cursor),
 });
 
 /**

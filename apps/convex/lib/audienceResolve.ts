@@ -177,6 +177,18 @@ async function targetChapterIds(
 }
 
 // ── guests ────────────────────────────────────────────────────────────────
+//
+// `resolveGuests`/`resolveDonors`/`resolvePeople` (this section through
+// "people" below) are NOT dead code: `migrations/0040_migrate_legacy_
+// audiences.ts` and `migrations/0041_migrate_guest_audiences.ts` between them
+// move every pre-existing "people"/"donors" row, and every "guests" row that
+// carries a specific `filters.eventId`, onto `person_filters` — but a
+// "guests" row with no `eventId` ("attended anything, ever," across every
+// event in scope) has no faithful `person_filters` equivalent today (see
+// 0041's own doc) and keeps resolving through `resolveGuests` indefinitely.
+// Do NOT delete these three resolvers (or their `AUDIENCE_SOURCES` literals)
+// until zero legacy-sourced rows remain across every deployment — a
+// follow-up PR, verified in prod, not this one.
 
 async function resolveGuestEventIds(
   ctx: QueryCtx,
