@@ -351,7 +351,7 @@ describe("ocrReceiptImage — typed failure reasons", () => {
   }
 
   test("a missing key short-circuits to a no_key error (no fetch, no throw)", async () => {
-    const res = await ocrReceiptImage(config({ apiKey: null }), "data:image/png;base64,x", "m");
+    const res = await ocrReceiptImage(config({ apiKey: null }), ["data:image/png;base64,x"], "m");
     expect("error" in res && res.error.kind).toBe("no_key");
   });
 
@@ -363,7 +363,7 @@ describe("ocrReceiptImage — typed failure reasons", () => {
       json: async () => ({}),
     })) as unknown as typeof fetch;
 
-    const res = await ocrReceiptImage(config(), "data:image/png;base64,x", "m");
+    const res = await ocrReceiptImage(config(), ["data:image/png;base64,x"], "m");
     expect("error" in res).toBe(true);
     if ("error" in res) {
       expect(res.error.kind).toBe("http");
@@ -379,7 +379,7 @@ describe("ocrReceiptImage — typed failure reasons", () => {
       json: async () => ({}),
     })) as unknown as typeof fetch;
 
-    const res = await ocrReceiptImage(config(), "data:image/png;base64,x", "m");
+    const res = await ocrReceiptImage(config(), ["data:image/png;base64,x"], "m");
     expect("error" in res).toBe(true);
     if ("error" in res) {
       expect(res.error.kind).toBe("http");
@@ -399,7 +399,7 @@ describe("ocrReceiptImage — typed failure reasons", () => {
       text: async () => "",
     })) as unknown as typeof fetch;
 
-    const res = await ocrReceiptImage(config(), "data:image/png;base64,x", "m");
+    const res = await ocrReceiptImage(config(), ["data:image/png;base64,x"], "m");
     expect("error" in res).toBe(true);
     if ("error" in res) expect(res.error.kind).toBe("no_total");
   });
@@ -425,7 +425,7 @@ describe("ocrReceiptImage — typed failure reasons", () => {
       text: async () => "",
     })) as unknown as typeof fetch;
 
-    const res = await ocrReceiptImage(config(), "data:image/png;base64,x", "m");
+    const res = await ocrReceiptImage(config(), ["data:image/png;base64,x"], "m");
     expect("error" in res).toBe(false);
     if (!("error" in res)) {
       expect(res.amountCents).toBe(4210);
@@ -518,13 +518,16 @@ describe("extractReceiptFields — ocrError translation", () => {
 // file bytes and rejects them: "invalid image: expected image mime type, got
 // application/pdf" — the owner's ~25-receipts-in-one-upload bug): a scanned/
 // image-only PDF (no usable text layer) must NEVER reach `ocrReceiptImage`
-// carrying the raw PDF bytes. The guarantee is by construction — such a PDF
-// degrades to a clear, human-actionable `ocrError` and the vision model is
-// never called at all. (Rendering the page to an image so vision COULD read
-// it would need a native canvas backend that doesn't bundle into Convex — see
-// git history / PR #406 — so we don't attempt it.) These tests mock the
-// `ctx.runAction` boundary so `extractPdfText` always reports "no text layer"
-// (the scanned-PDF branch), then assert vision is never fetched.
+// carrying the raw PDF bytes. The guarantee is by construction — the routing
+// only ever hands vision a RENDERED `image/png` page
+// (`receiptPdf.ts#renderScannedPdfPages`, pdfium WASM), never the raw PDF.
+// These tests mock the `ctx.runAction` boundary so `extractPdfText` reports
+// "no text layer" AND `renderScannedPdfPages` reports "couldn't render
+// either" (`{ pages: [] }`) — i.e. BOTH routes to a usable image fail — so the
+// routing still bottoms out at the same dead-end `ocrError`, and vision is
+// never fetched. (The render-succeeds path — rendered pages actually reach
+// vision as `image/png` — is covered in `tests/receiptPdf.test.ts`, which can
+// exercise the real `renderScannedPdfPages` action end to end.)
 describe("extractReceiptFields — a scanned PDF never reaches a vision call", () => {
   const realFetch = globalThis.fetch;
   afterEach(() => {
@@ -550,8 +553,10 @@ describe("extractReceiptFields — a scanned PDF never reaches a vision call", (
   });
 
   /** A fake `ActionCtx` whose `runAction` answers `extractPdfText` with "no
-   *  text layer" — the scanned-PDF branch. No other action should ever be
-   *  called. */
+   *  text layer" (the scanned-PDF branch) and `renderScannedPdfPages` with
+   *  "couldn't render either" (`{ pages: [] }`) — the render fallback ALSO
+   *  fails, so the routing still bottoms out at the same dead-end `ocrError`
+   *  these tests pin. No other action should ever be called. */
   function fakeCtxNoTextLayer(): ActionCtx {
     return {
       // Function references are fresh Proxy objects on every property access
@@ -561,6 +566,9 @@ describe("extractReceiptFields — a scanned PDF never reaches a vision call", (
         const name = getFunctionName(ref as Parameters<typeof getFunctionName>[0]);
         if (name === getFunctionName(internal.receiptPdf.extractPdfText)) {
           return { text: "", pageCount: 1 };
+        }
+        if (name === getFunctionName(internal.receiptPdf.renderScannedPdfPages)) {
+          return { pages: [] };
         }
         throw new Error(`unexpected runAction call: ${name}`);
       }),

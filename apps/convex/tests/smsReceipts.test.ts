@@ -1,4 +1,4 @@
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
@@ -366,6 +366,95 @@ describe("processSmsReceipt", () => {
     expect(row?.sourceKind).toBe("body");
     expect(row?.status).toBe("matched");
     expect(row?.matchedTransactionId).toBe(txn);
+  });
+});
+
+// ── MMS PDF media routes through the SAME PDF-aware pipeline as email ───────
+// Before this fix, EVERY MMS media item — image or PDF — was base64'd
+// straight into `ocrReceiptImage` with no PDF gate at all, so a PDF texted in
+// would reproduce the pre-#406 Ollama 400 (`image_url` carrying
+// `application/pdf`). A PDF attachment must instead route through
+// `extractReceiptFields` — text layer first (zero LLM), scanned-PDF render as
+// a fallback — exactly like email/upload.
+describe("processSmsReceipt — an MMS PDF routes through the PDF pipeline, never raw application/pdf to the model", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  /** A minimal digital PDF with a real text layer (mirrors
+   *  `tests/receiptPdf.test.ts`'s `buildDigitalPdf` fixture, kept local to
+   *  avoid a cross-test-file import). */
+  function buildDigitalPdf(text: string): string {
+    const streamBody = `BT /F1 24 Tf 20 100 Td (${text}) Tj ET`;
+    const len = new TextEncoder().encode(streamBody).length;
+    return `%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> /MediaBox [0 0 300 144] /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length ${len} >>
+stream
+${streamBody}
+endstream
+endobj
+trailer
+<< /Size 6 /Root 1 0 R >>
+%%EOF`;
+  }
+
+  test("a PDF's text layer is read directly off MMS media — no vision call, never application/pdf reaching the model", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setTwilioSettings(s);
+
+    let visionCalled = false;
+    globalThis.fetch = (async (url: unknown) => {
+      const u = String(url);
+      if (u.includes("api.twilio.com/media")) {
+        return {
+          ok: true,
+          status: 200,
+          blob: async () =>
+            new Blob([buildDigitalPdf("Givebutter Total 42.10 paid")], {
+              type: "application/pdf",
+            }),
+        };
+      }
+      // A chat-completions call (OpenRouter compat or Ollama native) is the
+      // ONLY way the raw PDF bytes could reach a model — flag it so the
+      // assertion below can catch an unwanted vision attempt. Anything else
+      // (e.g. the best-effort SMS reply) gets a generic ok response.
+      if (u.includes("chat/completions") || u.includes("/api/chat")) {
+        visionCalled = true;
+      }
+      return { ok: true, status: 200, json: async () => ({}), text: async () => "" };
+    }) as unknown as typeof fetch;
+
+    const { receiptId } = await t.mutation(internal.smsReceipts.recordSmsReceipt, {
+      envelope: { messageSid: "SM_pdf_1", fromPhone: "+19995559999" },
+    });
+    await t.action(internal.smsReceipts.processSmsReceipt, {
+      receiptId,
+      body: undefined,
+      media: [
+        { url: "https://api.twilio.com/media/ME_pdf_1", contentType: "application/pdf" },
+      ],
+    });
+
+    const row = await run(t, (ctx) => ctx.db.get(receiptId));
+    expect(visionCalled).toBe(false);
+    expect(row?.sourceKind).toBe("attachment");
+    expect(row?.ocrAmountCents).toBe(4210);
   });
 });
 
