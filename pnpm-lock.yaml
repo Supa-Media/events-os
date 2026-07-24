@@ -29,9 +29,6 @@ importers:
       '@events-os/shared':
         specifier: workspace:*
         version: link:../../packages/shared
-      '@napi-rs/canvas':
-        specifier: ^0.1.100
-        version: 0.1.100
       '@supa-media/convex':
         specifier: ^1.0.0
         version: 1.0.0(@convex-dev/auth@0.0.90(@auth/core@0.37.4)(convex@1.41.0(react@19.1.0))(react@19.1.0))(convex@1.41.0(react@19.1.0))
@@ -9114,6 +9111,7 @@ snapshots:
       '@napi-rs/canvas-linux-x64-musl': 0.1.100
       '@napi-rs/canvas-win32-arm64-msvc': 0.1.100
       '@napi-rs/canvas-win32-x64-msvc': 0.1.100
+    optional: true
 
   '@napi-rs/wasm-runtime@1.1.5(@emnapi/core@1.10.0)(@emnapi/runtime@1.10.0)':
     dependencies:

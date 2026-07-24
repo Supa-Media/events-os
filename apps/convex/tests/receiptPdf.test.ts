@@ -239,20 +239,13 @@ describe("PDF routing via retryExtraction (no vision-model call for a digital PD
   // `image_url` as `application/pdf` and handed to the vision model — Ollama
   // rejects that with "HTTP 400: invalid image: expected image mime type,
   // got application/pdf" (the owner's ~25-receipts-on-one-upload bug). The
-  // fix renders page 1 to a PNG first (`receiptPdf.ts#renderPdfFirstPagePng`)
-  // and OCRs THAT. `@napi-rs/canvas` (the native rasterizer `renderPageAsImage`
-  // needs in Node) doesn't load under convex-test's `@edge-runtime/vm` — a
-  // browser-shaped sandbox, not real Node.js — so this end-to-end test
-  // exercises the OTHER half of the fix for real: when rendering genuinely
-  // isn't available, the routing degrades to a clear, human-actionable
-  // `ocrError` and — the guarantee this whole fix exists for — NEVER falls
-  // through to a raw-PDF vision call (proven by `ocrModel` staying unset: no
-  // vision call was ever attempted). See `receiptInbox.test.ts`'s
-  // "extractReceiptFields — scanned PDF renders to an image before OCR"
-  // block for the render-MOCKED tests that prove the success path (vision
-  // gets a real `image/png` data URL, never `application/pdf`) the sandbox
-  // can't exercise live.
-  test("a scanned PDF (no text layer) never reaches vision as a raw PDF — degrades to a clear ocrError when rendering isn't available", async () => {
+  // fix is by-construction: a PDF with no usable text layer NEVER reaches a
+  // vision call. Rendering the page to an image so vision COULD read it would
+  // need a native canvas backend that doesn't bundle into Convex (see git
+  // history / PR #406), so the routing degrades to a clear, human-actionable
+  // `ocrError` instead. This test proves the guarantee end to end: no vision
+  // call is ever attempted (proven by `ocrModel` staying unset).
+  test("a scanned PDF (no text layer) never reaches vision as a raw PDF — degrades to a clear ocrError", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await seedBookkeeper(s);
@@ -266,11 +259,12 @@ describe("PDF routing via retryExtraction (no vision-model call for a digital PD
     const row = await run(t, (ctx) => ctx.db.get(receiptId));
     expect(row?.ocrAmountCents).toBeUndefined();
     expect(row?.ocrError).toBe(
-      "Scanned PDF (no readable text layer) — couldn't OCR it as an image; " +
-        "re-upload as a photo/screenshot or enter the total manually.",
+      "Scanned PDF (no readable text layer) — couldn't read it " +
+        "automatically; re-upload as a photo/screenshot or enter the total " +
+        "manually.",
     );
-    // No vision call was ever attempted (rendering failed first) — `ocrModel`
-    // is neither the text-layer sentinel NOR a vision-model slug.
+    // No vision call was ever attempted — `ocrModel` is neither the text-layer
+    // sentinel NOR a vision-model slug.
     expect(row?.ocrModel).not.toBe(PDF_TEXT_LAYER_PROVENANCE);
     expect(row?.ocrModel).toBeUndefined();
   });

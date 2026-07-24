@@ -1424,22 +1424,19 @@ export interface OcrRoutingResult {
  * Route ONE stored file through extraction: a PDF tries its own TEXT LAYER
  * first (zero LLM — `receiptPdf.ts#extractPdfText`, an action→action call
  * across the Node boundary); when the PDF has no usable text layer (a
- * scanned/faxed receipt), it is RENDERED to a page-1 PNG
- * (`receiptPdf.ts#renderPdfFirstPagePng`, another Node-boundary call) and
- * THAT image is what reaches the vision model (`ocrReceiptImage`, untouched
- * — see that function's own doc) — a PDF is NEVER handed to a vision call as
+ * scanned/faxed receipt), it degrades to a clear, human-actionable `ocrError`
+ * (re-upload as a photo) — a PDF is NEVER handed to a vision call as
  * `application/pdf` (that's the fix: Ollama sniffs the bytes and 400s on a
- * raw PDF masquerading as an image). If rendering itself isn't available or
- * fails, this resolves a clear, human-actionable `ocrError` instead of
- * calling vision at all. Anything else (a plain image) goes straight to
- * vision, exactly as before. Always resolves an `ocrError` when extraction
- * produced no total — the point of the PR before this one: a receipt detail
- * that says WHY, not a silent "—".
+ * raw PDF masquerading as an image). Rendering a scanned PDF page to an image
+ * so vision COULD read it needs a native canvas backend that doesn't bundle
+ * into Convex (see git history / PR #406), so we don't attempt it. Anything
+ * else (a plain image) goes straight to vision, exactly as before. Always
+ * resolves an `ocrError` when extraction produced no total — the point of the
+ * PR before this one: a receipt detail that says WHY, not a silent "—".
  *
  * Shared by the email pipeline (`runPipeline`), the mass-upload pipeline
  * (`receipts.ts#runUploadPipeline`), and `receipts.ts#retryExtraction` — ONE
- * place decides "PDF text vs render-then-vision" so the three callers can't
- * drift apart.
+ * place decides "PDF text vs vision" so the three callers can't drift apart.
  */
 export async function extractReceiptFields(
   ctx: ActionCtx,
@@ -1473,68 +1470,18 @@ export async function extractReceiptFields(
       };
     }
     // A SCANNED pdf — no usable text layer. NEVER hand the raw PDF to the
-    // vision model (that's the `application/pdf` 400 this fix exists for —
-    // Ollama's `image_url` input requires a real image mime type). Render
-    // page 1 to a PNG first (`receiptPdf.ts#renderPdfFirstPagePng`, another
-    // action→action Node-boundary crossing, same as `extractPdfText` above)
-    // and OCR THAT — only ever an image content type reaches
-    // `ocrReceiptImage` from here on.
-    const rendered = await ctx.runAction(
-      internal.receiptPdf.renderPdfFirstPagePng,
-      { storageId },
-    );
-    if (!rendered.ok) {
-      // Rendering is unavailable or failed (e.g. the native canvas backend
-      // didn't load in this deployment, or a malformed page) — degrade to a
-      // clear, human-actionable error. Never fall through to a raw-PDF
-      // vision call; never throw.
-      console.log(`[receiptInbox] PDF page render unavailable: ${rendered.reason}`);
-      return {
-        ocrError:
-          "Scanned PDF (no readable text layer) — couldn't OCR it as an " +
-          "image; re-upload as a photo/screenshot or enter the total " +
-          "manually.",
-      };
-    }
-    const pngStorageId = rendered.storageId;
-    try {
-      const pngBlob = await ctx.storage.get(pngStorageId);
-      if (!pngBlob) {
-        return {
-          ocrError:
-            "Scanned PDF (no readable text layer) — couldn't OCR it as an " +
-            "image; re-upload as a photo/screenshot or enter the total " +
-            "manually.",
-        };
-      }
-      const pngBuf = await pngBlob.arrayBuffer();
-      const dataUrl = `data:image/png;base64,${arrayBufferToBase64(pngBuf)}`;
-      const ocr = await ocrReceiptImage(config, dataUrl, model);
-      if ("error" in ocr) {
-        return {
-          ocrModel: model,
-          ocrError: ocrFailureMessage(ocr.error, config.provider, "scanned_pdf"),
-          ocrRetryable: ocr.error.retryable,
-          ocrRetryAfterSeconds: ocr.error.retryAfterSeconds ?? undefined,
-        };
-      }
-      return {
-        ocrAmountCents: ocr.amountCents ?? undefined,
-        ocrDate: ocr.date ?? undefined,
-        ocrMerchant: ocr.merchant ?? undefined,
-        ocrConfidence: ocr.confidence ?? undefined,
-        ocrModel: model,
-      };
-    } finally {
-      // The rendered PNG is a scratch file for this one OCR call — clean it
-      // up regardless of outcome. Best-effort: a delete failure here must
-      // never mask the OCR result/error above.
-      try {
-        await ctx.storage.delete(pngStorageId);
-      } catch (err) {
-        console.log(`[receiptInbox] failed to delete scratch PNG: ${String(err)}`);
-      }
-    }
+    // vision model: Ollama's `image_url` input requires a real image mime
+    // type and 400s on `application/pdf` (the bug this branch guards). A
+    // scanned/image-only PDF can't be OCR'd here (rendering a PDF page to an
+    // image needs a native canvas backend that doesn't bundle into Convex —
+    // see git history / PR #406), so degrade to a clear, human-actionable
+    // error instead. Never a vision call with a PDF, never a throw.
+    return {
+      ocrError:
+        "Scanned PDF (no readable text layer) — couldn't read it " +
+        "automatically; re-upload as a photo/screenshot or enter the total " +
+        "manually.",
+    };
   }
 
   // An image (or anything else worth handing to the vision model).
