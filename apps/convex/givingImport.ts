@@ -832,6 +832,12 @@ export async function matchOrCreatePersonContact(
     ...(args.email ? { email: args.email } : {}),
     ...(args.phone ? { phone: args.phone } : {}),
     isTeamMember: false,
+    // Person-centric audiences Phase 1 — stamped a contact-only row at INSERT
+    // time (mirrors `lib/givingDonors.ts#linkDonorToPerson` and
+    // `lib/rsvpPeople.ts#linkRsvpToPerson`), so a NEW import-created contact is
+    // excluded from roster-facing surfaces immediately, not just retroactively
+    // by the one-time `0038_backfill_contact_only_people` migration.
+    isContactOnly: true,
     notes: "Added from import",
     createdAt: Date.now(),
   });

@@ -319,6 +319,12 @@ export async function linkDonorToPerson(
       ...(donor.email ? { email: donor.email } : {}),
       ...(donor.phone ? { phone: donor.phone } : {}),
       isTeamMember: false,
+      // Person-centric audiences Phase 1 — this row exists ONLY to carry the
+      // donor link, never a real volunteer/team member, so it's stamped a
+      // contact-only row at INSERT time (mirrors `lib/rsvpPeople.ts#linkRsvpToPerson`)
+      // and excluded from roster-facing surfaces immediately, not just after
+      // the one-time `0038_backfill_contact_only_people` catch-up migration.
+      isContactOnly: true,
       notes: "Added from Giving",
       createdAt: Date.now(),
     });
