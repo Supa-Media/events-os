@@ -4,6 +4,7 @@ import { api, internal } from "../_generated/api";
 import { newT, run, setupChapter, type ChapterSetup, type TestConvex } from "./setup.helpers";
 import type { Id } from "../_generated/dataModel";
 import { resolveAudienceRecipients } from "../lib/audienceResolve";
+import { sha256Hex } from "../lib/sha256";
 
 /**
  * Email campaigns (audiences.ts + campaigns.ts + the /unsubscribe and
@@ -2372,6 +2373,184 @@ describe("two-party approval — content drift (hand-picked audiences)", () => {
     await reviewer.as.mutation(api.campaigns.approveCampaign, { campaignId });
     const campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
     expect(campaign.status).toBe("approved");
+  });
+});
+
+// Verification-round finding B: `computeCampaignSnapshotHash` must NOT
+// unconditionally add an `audienceExcludeFilters` key — every campaign that
+// was pending_approval/approved BEFORE excludeFilters existed was hashed
+// under a payload shape that never had this key at all, so doing so
+// unconditionally would fail EVERY such campaign's next hash check (approve
+// → CONTENT_DRIFT, send → "changed since approved") from the deploy alone.
+describe("two-party approval — snapshot hash back-compat (verification round finding B)", () => {
+  test("a campaign whose audience has no excludeFilters hashes IDENTICALLY to the pre-excludeFilters payload shape", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await configureResend(s);
+    // A legacy "donors"-sourced audience — never had excludeFilters at all.
+    const audienceId = await seedAudience(s, "donors");
+    const campaignId = await s.as.mutation(api.campaigns.createCampaign, {
+      scope: "central",
+      name: "N",
+      subject: "Hi",
+      audienceId,
+      doc: heroDoc(),
+    });
+    await seedSelfPerson(s);
+    const reviewer = await seedReviewer(s);
+    await s.as.mutation(api.campaigns.submitForApproval, {
+      campaignId,
+      purpose: "P",
+      reviewerPersonId: reviewer.personId,
+    });
+
+    const campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
+    const audience = await s.as.query(api.audiences.getAudience, { audienceId });
+
+    // Replicates `computeCampaignSnapshotHash`'s PRE-excludeFilters payload
+    // shape byte-for-byte — no `audienceExcludeFilters` key at all, not even
+    // `null` — the exact shape every already-hashed campaign was bound to.
+    const oldShapePayload = {
+      doc: campaign.doc,
+      subject: campaign.subject,
+      previewText: campaign.previewText ?? null,
+      fromName: campaign.fromName ?? null,
+      fromEmail: campaign.fromEmail ?? null,
+      audienceSource: audience.source ?? null,
+      audienceScope: audience.scope ?? null,
+      audienceFilters: audience.filters ?? null,
+      audienceIncludePersonIds: [...(audience.includePersonIds ?? [])].map(String).sort(),
+      audienceExcludePersonIds: [...(audience.excludePersonIds ?? [])].map(String).sort(),
+    };
+    const expectedHash = sha256Hex(JSON.stringify(oldShapePayload));
+
+    expect(campaign.approvedSnapshotHash).toBe(expectedHash);
+  });
+
+  test("a campaign whose audience HAS an effective excludeFilters gets a DIFFERENT hash than the same campaign without it (the key isn't omitted when it matters)", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await configureResend(s);
+    const withoutAudienceId = await run(s.t, (ctx) =>
+      ctx.db.insert("audiences", {
+        scope: "central",
+        name: "Without",
+        source: "person_filters",
+        filters: {},
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const withAudienceId = await run(s.t, (ctx) =>
+      ctx.db.insert("audiences", {
+        scope: "central",
+        name: "With",
+        source: "person_filters",
+        filters: {},
+        excludeFilters: { donorStatus: "active" },
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const campaignWithout = await s.as.mutation(api.campaigns.createCampaign, {
+      scope: "central",
+      name: "N1",
+      subject: "Hi",
+      audienceId: withoutAudienceId,
+      doc: heroDoc(),
+    });
+    const campaignWith = await s.as.mutation(api.campaigns.createCampaign, {
+      scope: "central",
+      name: "N2",
+      subject: "Hi",
+      audienceId: withAudienceId,
+      doc: heroDoc(),
+    });
+    await seedSelfPerson(s);
+    const reviewer1 = await seedReviewer(s, "R1");
+    const reviewer2 = await seedReviewer(s, "R2");
+    await s.as.mutation(api.campaigns.submitForApproval, {
+      campaignId: campaignWithout,
+      purpose: "P",
+      reviewerPersonId: reviewer1.personId,
+    });
+    await s.as.mutation(api.campaigns.submitForApproval, {
+      campaignId: campaignWith,
+      purpose: "P",
+      reviewerPersonId: reviewer2.personId,
+    });
+
+    const gotWithout = await s.as.query(api.campaigns.getCampaign, { campaignId: campaignWithout });
+    const gotWith = await s.as.query(api.campaigns.getCampaign, { campaignId: campaignWith });
+    expect(gotWithout.approvedSnapshotHash).not.toBe(gotWith.approvedSnapshotHash);
+  });
+
+  test("an ineffective excludeFilters ({} or verifiedEmailOnly-only) hashes the SAME as no excludeFilters at all", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await configureResend(s);
+    const bareAudienceId = await run(s.t, (ctx) =>
+      ctx.db.insert("audiences", {
+        scope: "central",
+        name: "Bare",
+        source: "person_filters",
+        filters: {},
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    // Simulates a row written directly (bypassing audiences.ts's write-time
+    // normalization) with a "shaped but ineffective" excludeFilters — the
+    // hash function's OWN `hasEffectiveExcludeCriteria` check must still
+    // catch it, as defense in depth.
+    const verifiedOnlyAudienceId = await run(s.t, (ctx) =>
+      ctx.db.insert("audiences", {
+        scope: "central",
+        name: "VerifiedOnly",
+        source: "person_filters",
+        filters: {},
+        excludeFilters: { verifiedEmailOnly: true },
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const campaignBare = await s.as.mutation(api.campaigns.createCampaign, {
+      scope: "central",
+      name: "N1",
+      subject: "Hi",
+      audienceId: bareAudienceId,
+      doc: heroDoc(),
+    });
+    const campaignVerifiedOnly = await s.as.mutation(api.campaigns.createCampaign, {
+      scope: "central",
+      name: "N2",
+      subject: "Hi",
+      audienceId: verifiedOnlyAudienceId,
+      doc: heroDoc(),
+    });
+    await seedSelfPerson(s);
+    const reviewer1 = await seedReviewer(s, "R1");
+    const reviewer2 = await seedReviewer(s, "R2");
+    await s.as.mutation(api.campaigns.submitForApproval, {
+      campaignId: campaignBare,
+      purpose: "P",
+      reviewerPersonId: reviewer1.personId,
+    });
+    await s.as.mutation(api.campaigns.submitForApproval, {
+      campaignId: campaignVerifiedOnly,
+      purpose: "P",
+      reviewerPersonId: reviewer2.personId,
+    });
+
+    const gotBare = await s.as.query(api.campaigns.getCampaign, { campaignId: campaignBare });
+    const gotVerifiedOnly = await s.as.query(api.campaigns.getCampaign, {
+      campaignId: campaignVerifiedOnly,
+    });
+    expect(gotVerifiedOnly.approvedSnapshotHash).toBe(gotBare.approvedSnapshotHash);
   });
 });
 

@@ -132,7 +132,7 @@ import { CAMPAIGN_STATUSES } from "./schema/campaigns";
 // `lib/finance.ts` for the reimbursement/budget precedent this mirrors.
 import { assertSeparationOfDuties } from "./lib/finance";
 import { sha256Hex } from "./lib/sha256";
-import { resolveAudienceRecipients } from "./lib/audienceResolve";
+import { hasEffectiveExcludeCriteria, resolveAudienceRecipients } from "./lib/audienceResolve";
 
 const scopeValidator = v.union(v.id("chapters"), v.literal("central"));
 
@@ -460,6 +460,23 @@ function assertCampaignTransition(
  * deterministic here (not a general-purpose canonical serializer) because
  * every call builds the SAME object with the SAME key insertion order —
  * there's no need to sort keys for that to hash identically call to call.
+ *
+ * `audienceExcludeFilters` (verification-round finding B) is a DELIBERATE
+ * EXCEPTION to "every field always in the payload": the key is only added
+ * when `excludeFilters` is set AND `hasEffectiveExcludeCriteria` says it has
+ * ≥1 real criterion. Every campaign that was `pending_approval`/`approved`
+ * BEFORE this field existed was hashed under a payload shape that never had
+ * this key at all — unconditionally adding it (even as `null`) would have
+ * changed EVERY such campaign's hash the moment this code deployed, throwing
+ * `CONTENT_DRIFT` on its next `approveCampaign` or failing its next `send`
+ * from the deploy alone, not from any real edit. Omitting the key for the
+ * (overwhelmingly common, and after `audiences.ts`'s write-time
+ * normalization, the ONLY reachable) "no effective excludeFilters" case
+ * keeps the payload — and therefore the hash — byte-identical to the
+ * pre-this-PR shape for every campaign that doesn't use the feature. A
+ * campaign that DOES set a real `excludeFilters` still gets full drift
+ * protection: the key is present, and editing it after submit still changes
+ * the hash exactly like every other targeting field.
  */
 function normalizePersonIdList(ids: Id<"people">[] | undefined): string[] {
   return [...(ids ?? [])].map(String).sort();
@@ -470,7 +487,7 @@ async function computeCampaignSnapshotHash(
   campaign: Doc<"campaigns">,
 ): Promise<string> {
   const audience = await ctx.db.get(campaign.audienceId);
-  const payload = {
+  const payload: Record<string, unknown> = {
     doc: campaign.doc,
     subject: campaign.subject,
     previewText: campaign.previewText ?? null,
@@ -479,10 +496,15 @@ async function computeCampaignSnapshotHash(
     audienceSource: audience?.source ?? null,
     audienceScope: audience?.scope ?? null,
     audienceFilters: audience?.filters ?? null,
-    audienceExcludeFilters: audience?.excludeFilters ?? null,
     audienceIncludePersonIds: normalizePersonIdList(audience?.includePersonIds),
     audienceExcludePersonIds: normalizePersonIdList(audience?.excludePersonIds),
   };
+  // Key omitted entirely (not even `: null`) for every campaign that isn't
+  // using excludeFilters — see the doc above for why this is load-bearing,
+  // not cosmetic.
+  if (audience?.excludeFilters && hasEffectiveExcludeCriteria(audience.excludeFilters)) {
+    payload.audienceExcludeFilters = audience.excludeFilters;
+  }
   return sha256Hex(JSON.stringify(payload));
 }
 
