@@ -78,6 +78,8 @@ import {
   getChapterIdOrNull,
 } from "./lib/context";
 import { normalizeEmail, getUserEmail } from "./lib/access";
+import { verifyStandardWebhookSignature } from "./lib/standardWebhook";
+import { deriveReimbursementTxnFields } from "./lib/reimbursementTxnFields";
 import {
   requireFinanceRole,
   requireFinanceManager,
@@ -823,6 +825,12 @@ async function postReimbursementTransfer(
     return existing._id;
   }
   const now = Date.now();
+  // Inherit the reimbursement's own description / merchant / "For" / purpose /
+  // category / receipt so the payout row is self-explanatory in Reconcile
+  // instead of an "Unlabeled charge / Uncategorized / For: None / missing
+  // receipt". The row stays `flow:"transfer"` (excluded from spend), so these
+  // are display + attribution only and can never double-count.
+  const ported = await deriveReimbursementTxnFields(ctx, req);
   const txnId = await ctx.db.insert("transactions", {
     chapterId,
     source: "reimbursement",
@@ -834,6 +842,7 @@ async function postReimbursementTransfer(
     reimbursementId: req._id,
     status: "reconciled",
     createdAt: now,
+    ...ported,
   });
   await ctx.db.patch(payout._id, { transactionId: txnId, updatedAt: now });
   return txnId;
@@ -2751,12 +2760,6 @@ function base64ToBytes(b64: string): Uint8Array<ArrayBuffer> {
   return out;
 }
 
-function bytesToBase64(bytes: Uint8Array): string {
-  let bin = "";
-  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
-  return btoa(bin);
-}
-
 /** The three Standard Webhooks headers Increase sends (`webhook-id`,
  *  `webhook-timestamp`, `webhook-signature`). The orchestrator reads them off
  *  the request and passes them here. */
@@ -2789,62 +2792,20 @@ export async function verifyIncreaseSignature(
   headers: IncreaseWebhookHeaders,
   secret: string,
 ): Promise<boolean> {
-  const { webhookId, webhookTimestamp, webhookSignature } = headers;
-  if (!webhookId || !webhookTimestamp || !webhookSignature) return false;
-
-  const ts = Number(webhookTimestamp);
-  if (!Number.isFinite(ts)) return false;
-  if (Math.abs(Date.now() / 1000 - ts) > 300) return false;
-
-  // Build the candidate HMAC keys (see KEY AMBIGUITY above). Each is a fresh
-  // ArrayBuffer-backed copy so it's a valid `BufferSource` for `importKey`.
-  const withoutPrefix = secret.startsWith("whsec_") ? secret.slice(6) : secret;
-  const candidateKeys: Uint8Array<ArrayBuffer>[] = [
-    new Uint8Array(new TextEncoder().encode(secret)),
-  ];
-  if (withoutPrefix !== secret) {
-    candidateKeys.push(new Uint8Array(new TextEncoder().encode(withoutPrefix)));
-  }
-  try {
-    candidateKeys.push(base64ToBytes(withoutPrefix));
-  } catch {
-    // Not valid base64 — skip the decoded-key candidate.
-  }
-
-  const signedContent = new TextEncoder().encode(
-    `${webhookId}.${webhookTimestamp}.${rawBody}`,
+  // Increase's webhooks ARE Standard Webhooks — the verification is identical
+  // to Svix's (which is how Resend delivers inbound email), so both share the
+  // one implementation in `lib/standardWebhook.ts` and can never drift. This
+  // wrapper just maps Increase's `webhook-*` header names onto the generic
+  // `{ id, timestamp, signature }` shape.
+  return verifyStandardWebhookSignature(
+    rawBody,
+    {
+      id: headers.webhookId,
+      timestamp: headers.webhookTimestamp,
+      signature: headers.webhookSignature,
+    },
+    secret,
   );
-  const tokens = webhookSignature.split(" ");
-
-  for (const keyBytes of candidateKeys) {
-    const key = await crypto.subtle.importKey(
-      "raw",
-      keyBytes,
-      { name: "HMAC", hash: "SHA-256" },
-      false,
-      ["sign"],
-    );
-    const mac = new Uint8Array(
-      await crypto.subtle.sign("HMAC", key, signedContent),
-    );
-    const expected = bytesToBase64(mac);
-
-    // `webhook-signature` = space-separated `v1,<base64sig>` tokens.
-    for (const token of tokens) {
-      const comma = token.indexOf(",");
-      if (comma === -1) continue;
-      const version = token.slice(0, comma);
-      const candidate = token.slice(comma + 1);
-      if (version !== "v1") continue;
-      if (candidate.length !== expected.length) continue;
-      let diff = 0;
-      for (let i = 0; i < expected.length; i++) {
-        diff |= expected.charCodeAt(i) ^ candidate.charCodeAt(i);
-      }
-      if (diff === 0) return true;
-    }
-  }
-  return false;
 }
 
 // ── listPayouts (query, viewer) ──────────────────────────────────────────────

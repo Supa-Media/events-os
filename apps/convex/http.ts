@@ -8,10 +8,13 @@
  * (`auth.addHttpRoutes`); the JSON APIs backing the public ticketing,
  * reimbursement, and giving client scripts (`/api/tickets/*`,
  * `/api/reimburse/*`, `/api/give/*`); the server-rendered public pages
- * (`/event/` — with `/e/` kept as a backward-compat alias, see the comment at
- * its route below — `/t/`, `/give`, `/p/`, `/reimburse/`); and the three
- * provider webhook receivers (`/stripe/webhook`, `/increase/webhook`,
- * `/twilio/webhook`).
+ * (`/rsvp/` — the guest RSVP page, with `/event/`, `/e/`, and `/r/` kept as
+ * back-compat aliases, see the comment at its route below — `/t/`, `/give`,
+ * `/p/`, `/reimburse/`); the payment-provider webhook receivers
+ * (`/stripe/webhook`, `/increase/webhook`, `/twilio/webhook`,
+ * `/twilio/receipts`); and the email-campaign surfaces (`/unsubscribe/`,
+ * `/resend/webhook`) alongside the pre-existing `/resend/inbound` receipt-OCR
+ * webhook — two distinct Resend webhook endpoints that must both stay wired.
  *
  * This module's default export is what Convex's HTTP actions router
  * dispatches on. Removing or misconfiguring it drops every public event
@@ -49,13 +52,14 @@ import {
   renderProjectActionResult,
 } from "./lib/projectActionPage";
 import { EMAIL_ACTION_STATUSES, type EmailActionStatus } from "./projectActions";
-import { appUrl, siteUrl } from "./lib/siteUrl";
+import { appUrl, rsvpPath, siteUrl } from "./lib/siteUrl";
 import { verifyStripeSignature } from "./stripe";
 import { verifyIncreaseSignature } from "./increase";
 import {
   normalizePhone,
   resolveTwilioCredentials,
   validateTwilioSignature,
+  verifyTwilioSignature,
 } from "./lib/twilio";
 import { verifyResendWebhookSignature } from "./lib/resend";
 import {
@@ -63,6 +67,9 @@ import {
   renderUnsubscribeDone,
   renderUnsubscribeNotFound,
 } from "./lib/unsubscribePage";
+import { verifyStandardWebhookSignature } from "./lib/standardWebhook";
+import { isReceiptInboxAddress } from "./receiptInbox";
+import { resolveTwilioReceiptsWebhookUrl } from "./smsReceipts";
 
 const http = httpRouter();
 
@@ -87,24 +94,38 @@ function html(body: string, status = 200): Response {
   });
 }
 
-// ── Public event pages: /event/<slug>[/cover|/calendar.ics] ─────────────────
-// Served under the branded "/event/" prefix; the legacy "/e/" prefix is kept
-// as an alias (same handler) so already-shared links and OG-cached cover URLs
-// keep resolving. The handler derives slug/sub from the trailing path segments,
-// so it works unchanged under either prefix.
+/** An empty TwiML `<Response/>` — Twilio expects TwiML (or a 2xx no-body) back
+ *  from an inbound-message webhook; an empty `<Response/>` tells it "received,
+ *  no auto-reply" without Twilio itself sending anything. */
+function emptyTwiml(status = 200): Response {
+  return new Response("<Response/>", {
+    status,
+    headers: { "Content-Type": "text/xml" },
+  });
+}
 
-const publicEventPage = httpAction(async (ctx, req) => {
+// ── Public RSVP pages: /rsvp/<slug>[/cover|/calendar.ics] ───────────────────
+// The guest-facing event page — renamed to the "RSVP page" (Events-director
+// vocabulary). Served under the branded "/rsvp/" prefix; the older "/event/"
+// and legacy "/e/" prefixes are kept as aliases (same handler) so already-
+// shared links and OG-cached cover URLs keep resolving. The handler derives
+// slug/sub from the trailing path segments, so it works unchanged under any of
+// the three prefixes.
+
+const publicRsvpPage = httpAction(async (ctx, req) => {
     const url = new URL(req.url);
-    const segments = url.pathname.split("/").filter(Boolean); // ["event"|"e", slug, ...]
+    const segments = url.pathname.split("/").filter(Boolean); // ["rsvp"|"r"|"event"|"e", slug, ...]
     const slug = decodeURIComponent(segments[1] ?? "");
     const sub = segments[2] ?? null;
+    // Admin draft preview: `?preview=<token>` renders an unpublished page.
+    const previewToken = url.searchParams.get("preview") ?? undefined;
     if (!slug) return html(renderNotFound(), 404);
 
     // Cover image — public so OG scrapers (iMessage) can fetch it.
     if (sub === "cover") {
       const storageId = await ctx.runQuery(
         internal.ticketing.getCoverStorageId,
-        { slug },
+        { slug, previewToken },
       );
       if (!storageId) return new Response("Not found", { status: 404 });
       const blob = await ctx.storage.get(storageId);
@@ -117,7 +138,10 @@ const publicEventPage = httpAction(async (ctx, req) => {
       });
     }
 
-    const page = await ctx.runQuery(api.ticketing.getPublicPage, { slug });
+    const page = await ctx.runQuery(api.ticketing.getPublicPage, {
+      slug,
+      previewToken,
+    });
     if (!page) return html(renderNotFound(), 404);
 
     if (sub === "calendar.ics") {
@@ -143,9 +167,14 @@ const publicEventPage = httpAction(async (ctx, req) => {
     return html(renderLandingPage(page, siteUrl()));
 });
 
-http.route({ pathPrefix: "/event/", method: "GET", handler: publicEventPage });
-// Backward-compat alias for links shared before the "/event/" rename.
-http.route({ pathPrefix: "/e/", method: "GET", handler: publicEventPage });
+http.route({ pathPrefix: "/rsvp/", method: "GET", handler: publicRsvpPage });
+// Aliases (same handler) so every prefix resolves identically: "/r/" is the
+// short form of "/rsvp/"; "/event/" and its short "/e/" are the pre-rename
+// prefixes, kept so already-shared/emailed links never break. Canonical URLs
+// (OG tags, emails, ICS, Stripe returns) point at "/rsvp/".
+http.route({ pathPrefix: "/r/", method: "GET", handler: publicRsvpPage });
+http.route({ pathPrefix: "/event/", method: "GET", handler: publicRsvpPage });
+http.route({ pathPrefix: "/e/", method: "GET", handler: publicRsvpPage });
 
 // ── Public ticket page: /t/<code> ────────────────────────────────────────────
 
@@ -163,6 +192,45 @@ http.route({
   }),
 });
 
+// ── Public upcoming-events feed: GET /api/events/upcoming ────────────────────
+// Same-origin JSON the marketing site's "Important Links" section (apps/landing)
+// fetches at runtime to auto-list published RSVP pages — so publishing an event
+// in the OS surfaces it on publicworship.life with no rebuild, and it drops off
+// once the event is over. Read-only, no PII; a short cache keeps it fresh
+// without hammering the backend on every homepage view.
+
+http.route({
+  path: "/api/events/upcoming",
+  method: "GET",
+  handler: httpAction(async (ctx, req) => {
+    const url = new URL(req.url);
+    const limitParam = Number(url.searchParams.get("limit"));
+    const events = await ctx.runQuery(api.ticketing.listPublishedUpcoming, {
+      ...(Number.isFinite(limitParam) && limitParam > 0
+        ? { limit: Math.floor(limitParam) }
+        : {}),
+    });
+    const body = events.map((e) => ({
+      title: e.eventName,
+      tagline: e.tagline,
+      venueName: e.venueName,
+      startDate: e.startDate,
+      endDate: e.endDate,
+      href: rsvpPath(e.slug),
+      coverUrl: e.hasCover ? rsvpPath(e.slug, "cover") : null,
+      coverFocalX: e.coverFocalX,
+      coverFocalY: e.coverFocalY,
+    }));
+    return new Response(JSON.stringify(body), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "public, max-age=60",
+      },
+    });
+  }),
+});
+
 // ── Public giving map: /give (the map) + /give/<slug> (a territory's page) ───
 // Territories (docs/plans/giving-territories.md): the map is aggregates-only,
 // no auth (`api.territories.getPublicMapData`/`getPublicTerritory` never expose
@@ -175,12 +243,17 @@ http.route({
 http.route({
   path: "/give",
   method: "GET",
-  handler: httpAction(async (ctx) => {
-    const territories = await ctx.runQuery(
-      api.territories.getPublicMapData,
-      {},
+  handler: httpAction(async (ctx, req) => {
+    // A central (no-slug) one-time gift returns here with `?donated=1` — show a
+    // thank-you banner (the territory page handles its own thank-you states).
+    const thankYou = new URL(req.url).searchParams.get("donated") === "1";
+    const [territories, interestStats] = await Promise.all([
+      ctx.runQuery(api.territories.getPublicMapData, {}),
+      ctx.runQuery(api.givingInterest.publicInterestStats, {}),
+    ]);
+    return html(
+      renderGiveMapPage(territories, interestStats, thankYou, siteUrl()),
     );
-    return html(renderGiveMapPage(territories, siteUrl()));
   }),
 });
 
@@ -189,15 +262,53 @@ http.route({
   method: "GET",
   handler: httpAction(async (ctx, req) => {
     const url = new URL(req.url);
-    const segments = url.pathname.split("/").filter(Boolean); // ["give", slug]
+    const segments = url.pathname.split("/").filter(Boolean); // ["give", slug, sub?]
     const slug = decodeURIComponent(segments[1] ?? "");
-    if (!slug || segments.length > 2) return html(renderGiveNotFound(), 404);
-    const data = await ctx.runQuery(api.territories.getPublicTerritory, {
-      slug,
-    });
+    const sub = segments[2];
+    if (!slug) return html(renderGiveNotFound(), 404);
+
+    // Share-card image: GET /give/<slug>/og — the uploaded OG card, served from
+    // Convex storage so social scrapers (iMessage/X/etc.) get a real PNG.
+    // Public so OG scrapers can fetch it; 404 when the territory has no card.
+    if (sub === "og" && segments.length === 3) {
+      const storageId = await ctx.runQuery(
+        internal.territories.getTerritoryOgStorageId,
+        { slug },
+      );
+      if (!storageId) return new Response("Not found", { status: 404 });
+      const blob = await ctx.storage.get(storageId);
+      if (!blob) return new Response("Not found", { status: 404 });
+      return new Response(blob, {
+        headers: {
+          "Content-Type": blob.type || "image/png",
+          "Cache-Control": "public, max-age=300",
+        },
+      });
+    }
+    if (segments.length > 2) return html(renderGiveNotFound(), 404);
+
+    const [data, interestStats, activity] = await Promise.all([
+      ctx.runQuery(api.territories.getPublicTerritory, { slug }),
+      ctx.runQuery(api.givingInterest.publicInterestStats, {}),
+      ctx.runQuery(api.givingActivity.getTerritoryActivity, { slug }),
+    ]);
     if (!data) return html(renderGiveNotFound(), 404);
-    const pledgeParam = url.searchParams.get("pledge");
-    return html(renderGiveTerritoryPage(data, siteUrl(), pledgeParam));
+    // A one-time gift returns with `?donated=1`; a recurring backer with
+    // `?pledge=success|canceled`. Fold the former into the same `pledgeParam`
+    // the renderer switches on (it treats `"donated"` as the gift thank-you).
+    const pledgeParam =
+      url.searchParams.get("donated") === "1"
+        ? "donated"
+        : url.searchParams.get("pledge");
+    return html(
+      renderGiveTerritoryPage(
+        data,
+        interestStats,
+        activity,
+        siteUrl(),
+        pledgeParam,
+      ),
+    );
   }),
 });
 
@@ -291,6 +402,8 @@ http.route({
           customer?: string | null;
           subscription?: string | null;
           metadata?: Record<string, string> | null;
+          // checkout.session.completed (one-time give): the settled total.
+          amount_total?: number;
           // invoice.paid / invoice.payment_failed:
           amount_paid?: number;
           // customer.subscription.updated / .deleted:
@@ -321,8 +434,28 @@ http.route({
       }
     } else if (event.type === "checkout.session.completed") {
       const obj = event.data.object;
-      const pledgeId = obj.metadata?.pledgeId;
-      if (pledgeId) {
+      if (obj.metadata?.giveDonation === "1") {
+        // A one-time "give" checkout — settle it via the single gifts write
+        // path (`recordGiveDonationPaid`, idempotent on the session id). Amount
+        // is read from the session's own `amount_total`, never a client value.
+        // Handled BEFORE the pledge/order/donation fan-out: a give session
+        // carries no pledgeId and is neither an order nor an event donation, so
+        // without this branch it would fall through to the "unknown session"
+        // error log.
+        await ctx.runMutation(internal.givingDonations.recordGiveDonationPaid, {
+          sessionId: obj.id,
+          amountTotalCents: obj.amount_total ?? 0,
+          donorId: obj.metadata.giveDonorId ?? "",
+          scope: obj.metadata.giveScope ?? "",
+        });
+        // Flip the giver's optional activity-wall entry visible with the SETTLED
+        // one-time amount (no-op if they didn't opt in). See givingActivity.ts.
+        await ctx.runMutation(internal.givingActivity.markActivityVisible, {
+          refKey: `give:${obj.id}`,
+          amountCents: obj.amount_total ?? 0,
+        });
+      } else if (obj.metadata?.pledgeId) {
+        const pledgeId = obj.metadata.pledgeId;
         // A BACKER (subscription) checkout — identified by our pledge id in the
         // session metadata (a ticket/donation session carries none). Activate
         // the pledge + link its Stripe customer/subscription. Idempotent, and a
@@ -337,6 +470,12 @@ http.route({
               : {}),
           },
         );
+        // Flip the backer's optional activity-wall entry visible. No amount is
+        // passed — the wall shows the recurring MONTHLY pledge amount stored at
+        // pending time (a subscription session's `amount_total` is $0/prorated).
+        await ctx.runMutation(internal.givingActivity.markActivityVisible, {
+          refKey: String(pledgeId),
+        });
       } else {
         const paymentIntentId = obj.payment_intent ?? undefined;
         // One shared session id is either a ticket order OR a donation. Try the
@@ -499,16 +638,10 @@ http.route({
 // (`smsOptOuts.ts`) — everything else is a silent no-op. Always responds with
 // empty TwiML (`<Response/>`) so Twilio never auto-replies on our behalf.
 
-// A fresh `Response` per call — a `Response`'s body stream can only be read
-// once, so a single shared instance can't safely back more than one webhook
-// reply (this route can return it from more than one place per request, and
-// is called on every redelivery).
-function emptyTwiml(): Response {
-  return new Response("<Response/>", {
-    status: 200,
-    headers: { "Content-Type": "text/xml; charset=utf-8" },
-  });
-}
+// Uses the `emptyTwiml` helper defined above (── Helpers ──) — a `Response`'s
+// body stream can only be read once, so a single shared instance can't
+// safely back more than one webhook reply (this route can return it from
+// more than one place per request, and is called on every redelivery).
 
 const STOP_KEYWORDS = new Set([
   "STOP",
@@ -584,6 +717,194 @@ http.route({
       }
       // Any other message (a reply, a stray text) is a silent no-op — nothing
       // else in this app expects two-way SMS conversation.
+    }
+    return emptyTwiml();
+  }),
+});
+
+// ── Resend inbound receipt webhook ───────────────────────────────────────────
+// Receipts emailed to `reply.publicworship.life` land here as Resend
+// `email.received` events (delivered via Svix / Standard Webhooks — the SAME
+// signature scheme as Increase, so both share `verifyStandardWebhookSignature`,
+// just under `svix-*` header names). We verify, DEDUPE + record the email
+// (`recordInboundReceipt`, idempotent on the provider's `email_id`), then
+// schedule the OCR→match pipeline and ack 200 fast. See `receiptInbox.ts`.
+//
+// NOTE: this is a DIFFERENT route from `/resend/webhook` below (campaign
+// bounce/complaint + reply-forwarding events) — both are Resend webhooks, but
+// point at different Resend endpoints/domains and must never be collapsed
+// into one handler.
+//
+// The signing secret resolves stored-setting-first (`integrationSettings`,
+// set in-app at profile > integrations by a superuser), falling back to the
+// `RESEND_INBOUND_WEBHOOK_SECRET` env var — same discipline as
+// `givebutterSync.ts` / `lib/twilio.ts`.
+
+http.route({
+  path: "/resend/inbound",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    const secret =
+      (await ctx.runQuery(
+        internal.integrationSettings.readResendInboundWebhookSecret,
+        {},
+      )) ?? process.env.RESEND_INBOUND_WEBHOOK_SECRET;
+    if (!secret) {
+      console.error(
+        "[receiptInbox] Resend inbound webhook secret not configured (stored setting or RESEND_INBOUND_WEBHOOK_SECRET)",
+      );
+      return new Response("Not configured", { status: 500 });
+    }
+    const payload = await req.text();
+    const valid = await verifyStandardWebhookSignature(
+      payload,
+      {
+        id: req.headers.get("svix-id"),
+        timestamp: req.headers.get("svix-timestamp"),
+        signature: req.headers.get("svix-signature"),
+      },
+      secret,
+    );
+    if (!valid) return new Response("Invalid signature", { status: 400 });
+
+    // Resend inbound: { type:"email.received", data:{ email_id, from, to[],
+    // cc[], subject, ... } }. Attachments/body are fetched later via the
+    // Resend API (the webhook carries metadata only).
+    let event: {
+      type?: string;
+      data?: {
+        email_id?: string;
+        from?: string;
+        to?: string[] | string;
+        cc?: string[] | string;
+        subject?: string;
+      };
+    };
+    try {
+      event = JSON.parse(payload);
+    } catch {
+      return new Response("Bad payload", { status: 400 });
+    }
+    // Ack anything that isn't an inbound email (Resend also delivers delivery/
+    // bounce events to the same webhook if subscribed) — 200 so it isn't retried.
+    if (event.type !== "email.received" || !event.data?.email_id || !event.data.from) {
+      return new Response("ok", { status: 200 });
+    }
+    // Only mail addressed (To or Cc) to the RECEIPTS inbox is a receipt — the
+    // inbound domain will carry other addresses for other purposes, so
+    // everything else is ack'd WITHOUT recording (see `isReceiptInboxAddress`).
+    const toList = Array.isArray(event.data.to)
+      ? event.data.to
+      : event.data.to
+        ? [event.data.to]
+        : [];
+    const ccList = Array.isArray(event.data.cc)
+      ? event.data.cc
+      : event.data.cc
+        ? [event.data.cc]
+        : [];
+    if (!isReceiptInboxAddress([...toList, ...ccList])) {
+      return new Response("ok", { status: 200 });
+    }
+    const to = toList[0];
+
+    const { isNew, receiptId } = await ctx.runMutation(
+      internal.receiptInbox.recordInboundReceipt,
+      {
+        envelope: {
+          emailId: event.data.email_id,
+          fromEmail: event.data.from,
+          toEmail: to,
+          subject: event.data.subject,
+        },
+      },
+    );
+    if (isNew) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.receiptInbox.processInboundReceipt,
+        { receiptId },
+      );
+    }
+    return new Response("ok", { status: 200 });
+  }),
+});
+
+// ── Twilio inbound SMS/MMS receipt webhook ───────────────────────────────────
+// Receipts texted to the org's dedicated receipts number land here as a
+// Twilio inbound-message webhook (form-encoded: `MessageSid`, `From`, `Body`,
+// `NumMedia`, `MediaUrl{N}`, `MediaContentType{N}`). We verify Twilio's own
+// signature scheme (`X-Twilio-Signature` — NOT Standard Webhooks, hence its
+// own `verifyTwilioSignature`), DEDUPE + record the message
+// (`recordSmsReceipt`, idempotent on `MessageSid`), then schedule the
+// OCR→match pipeline and ack fast with an empty TwiML `<Response/>` (Twilio
+// errors on a non-2xx/non-TwiML reply and will retry). See `smsReceipts.ts`.
+//
+// NOTE: this is a DIFFERENT route from `/twilio/webhook` above (the STOP/START
+// opt-out handler) — same provider, disjoint paths, both must stay registered.
+//
+// The auth token resolves stored-setting-first (`integrationSettings`, set
+// in-app at profile > integrations by a superuser), falling back to the
+// `TWILIO_AUTH_TOKEN` env var — the SAME discipline (and the SAME trio) every
+// other Twilio call in this repo uses (`lib/twilio.ts#resolveTwilioCredentials`).
+//
+// SIGNATURE SUBTLETY: Twilio signs the EXACT URL it posted to. If the number's
+// webhook points directly at this Convex deployment's site origin (the
+// documented setup — see `docs/plans/receipt-email-ingest.md`'s SMS section),
+// `req.url` here already matches. If it were instead pointed at the
+// `pw-router`-proxied `publicworship.life` path, the Worker rewrites the
+// request's host before forwarding, so `req.url` would differ from what
+// Twilio signed — `TWILIO_RECEIPTS_WEBHOOK_URL` exists to override the
+// default for that case (see `smsReceipts.ts#resolveTwilioReceiptsWebhookUrl`).
+
+http.route({
+  path: "/twilio/receipts",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    const creds = await resolveTwilioCredentials(ctx);
+    if (!creds) {
+      console.error(
+        "[smsReceipts] Twilio not configured (stored setting or TWILIO_* env) — can't verify inbound signature.",
+      );
+      return new Response("Not configured", { status: 500 });
+    }
+
+    const bodyText = await req.text();
+    const params = Object.fromEntries(new URLSearchParams(bodyText));
+    const url = resolveTwilioReceiptsWebhookUrl(req);
+    const signature = req.headers.get("X-Twilio-Signature");
+    const valid = await verifyTwilioSignature(url, params, creds.authToken, signature);
+    if (!valid) return new Response("Invalid signature", { status: 403 });
+
+    const messageSid = params.MessageSid;
+    const from = params.From;
+    if (!messageSid || !from) {
+      // Malformed/unexpected payload from an otherwise-authenticated request —
+      // ack anyway so Twilio doesn't retry-storm a request it will never fix.
+      return emptyTwiml();
+    }
+
+    const numMedia = Math.max(0, parseInt(params.NumMedia ?? "0", 10) || 0);
+    const media: { url: string; contentType?: string }[] = [];
+    for (let i = 0; i < numMedia; i++) {
+      const mediaUrl = params[`MediaUrl${i}`];
+      if (mediaUrl) {
+        media.push({ url: mediaUrl, contentType: params[`MediaContentType${i}`] });
+      }
+    }
+
+    const { isNew, receiptId } = await ctx.runMutation(
+      internal.smsReceipts.recordSmsReceipt,
+      {
+        envelope: { messageSid, fromPhone: from, body: params.Body },
+      },
+    );
+    if (isNew) {
+      await ctx.scheduler.runAfter(0, internal.smsReceipts.processSmsReceipt, {
+        receiptId,
+        body: params.Body,
+        media,
+      });
     }
     return emptyTwiml();
   }),

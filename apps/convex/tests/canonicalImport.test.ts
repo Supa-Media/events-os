@@ -134,6 +134,7 @@ async function seedPaidTicketOrder(
     slug: admin.page!.slug,
     name: "Terry Ticket",
     email,
+    phone: "5551234567",
     items: [{ ticketTypeId, quantity: 1 }],
   });
   await s.t.mutation(internal.ticketing.attachStripeSession, {
@@ -399,10 +400,10 @@ describe("previewImport / importCanonical — recurring rows", () => {
     });
     expect(preview.rows[0].disposition).toBe("duplicate");
 
-    // Sub-floor amount → invalid.
+    // Sub-floor amount → invalid ($3, below the $5 floor).
     preview = await s.as.query(api.givingImport.previewImport, {
       scope: s.chapterId,
-      rows: [{ rowType: "recurring", name: "Tiny", recurringMonthlyCents: 1000 }],
+      rows: [{ rowType: "recurring", name: "Tiny", recurringMonthlyCents: 300 }],
     });
     expect(preview.rows[0].disposition).toBe("invalid");
   });

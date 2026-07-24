@@ -9,6 +9,8 @@ import { View, Text, TextInput } from "react-native";
 import { Icon } from "../../ui/Icon";
 import { CopyButton } from "../../ui/CopyButton";
 import { colors } from "../../../lib/theme";
+import { useMentionData } from "../../mentions/MentionDataProvider";
+import { MentionInlineText } from "../../mentions/MentionInlineText";
 
 /**
  * Inline title editor — reads as the plain card title until focused; commits on
@@ -88,6 +90,7 @@ export function CopyEditor({
 }) {
   const [value, setValue] = useState(initial);
   const [focused, setFocused] = useState(false);
+  const mentionData = useMentionData();
 
   const commit = () => {
     setFocused(false);
@@ -106,20 +109,45 @@ export function CopyEditor({
         </View>
         {value.trim() ? <CopyButton text={value} label /> : null}
       </View>
-      <TextInput
-        value={value}
-        onChangeText={setValue}
-        onFocus={() => setFocused(true)}
-        onBlur={commit}
-        placeholder={placeholder}
-        placeholderTextColor={colors.faint}
-        multiline
-        textAlignVertical="top"
-        className={`rounded-md border bg-sunken px-2.5 py-2 text-xs text-ink ${
-          focused ? "border-accent" : "border-border"
-        }`}
-        style={{ minHeight: 44 }}
-      />
+      {mentionData ? (
+        <View
+          className={`rounded-md border bg-sunken px-2.5 py-2 ${
+            focused ? "border-accent" : "border-border"
+          }`}
+          style={{ minHeight: 44 }}
+        >
+          <MentionInlineText
+            value={value}
+            onCommit={(t) => {
+              setValue(t);
+              const next = String(t).trim();
+              if (next !== initial.trim()) onSave(next);
+            }}
+            placeholder={placeholder}
+            multiline
+            people={mentionData.people}
+            seatHoldings={mentionData.seatHoldings}
+            seatOptions={mentionData.seatOptions}
+            inputClassName="text-xs text-ink"
+            onFocusChange={setFocused}
+          />
+        </View>
+      ) : (
+        <TextInput
+          value={value}
+          onChangeText={setValue}
+          onFocus={() => setFocused(true)}
+          onBlur={commit}
+          placeholder={placeholder}
+          placeholderTextColor={colors.faint}
+          multiline
+          textAlignVertical="top"
+          className={`rounded-md border bg-sunken px-2.5 py-2 text-xs text-ink ${
+            focused ? "border-accent" : "border-border"
+          }`}
+          style={{ minHeight: 44 }}
+        />
+      )}
     </View>
   );
 }

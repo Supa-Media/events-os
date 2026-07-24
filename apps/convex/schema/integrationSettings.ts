@@ -22,9 +22,10 @@ import { v } from "convex/values";
  * `integrationSettings.getIntegrationsStatus` only ever projects status
  * (`configured`, non-secret last4/presence, `updatedAt`). The raw secret is
  * readable ONLY through the `readGivebutterApiKey` / `readTwilioCredentials` /
- * `readResendSettings` internalQueries, reachable solely from the sending
- * actions. The Resend FROM ADDRESS is not secret (it's the sender line every
- * recipient already sees) — it's returned in full by `getIntegrationsStatus`.
+ * `readResendSettings` / `readResendInboundWebhookSecret` internalQueries,
+ * reachable solely from the sending actions / webhook routes. The Resend FROM
+ * ADDRESS is not secret (it's the sender line every recipient already sees)
+ * — it's returned in full by `getIntegrationsStatus`.
  *
  * Email campaigns (`campaigns.ts`, `http.ts`'s `/resend/webhook`) add three
  * more fields, all Resend-adjacent but independently settable from the
@@ -41,6 +42,11 @@ import { v } from "convex/values";
  *  - `orgMailingAddress` — NOT secret, the CAN-SPAM-required physical mailing
  *    address rendered in every campaign email's footer
  *    (`@events-os/shared`'s `renderCampaignEmail`).
+ *
+ * Separately, `resendInboundWebhookSecret` is the Svix signing secret for the
+ * UNRELATED `/resend/inbound` receipt-OCR webhook (see `http.ts`) — a
+ * different Resend endpoint/domain from the campaign webhook above; both
+ * secrets coexist independently.
  */
 export const integrationSettings = defineTable({
   givebutterApiKey: v.optional(v.string()),
@@ -65,6 +71,26 @@ export const integrationSettings = defineTable({
   resendWebhookSecret: v.optional(v.string()),
   resendInboundDomain: v.optional(v.string()),
   orgMailingAddress: v.optional(v.string()),
+  // Resend inbound receipt webhook — the Svix `whsec_…` signing secret used
+  // to verify `/resend/inbound` deliveries (see `http.ts`). Same write-only
+  // discipline as the Givebutter key: settable in-app at profile >
+  // integrations by a superuser, resolved stored-setting-first, falling back
+  // to the deployment `RESEND_INBOUND_WEBHOOK_SECRET` env var.
+  resendInboundWebhookSecret: v.optional(v.string()),
+  // Switchable AI engine (Ollama vs OpenRouter) — the whole app's AI provider,
+  // configured in-app at profile > integrations by a superuser. `ollamaApiKey`
+  // is the SECRET (same write-only discipline as the Givebutter key / Twilio
+  // auth token: never returned to a client except its last4). `ollamaBaseUrl`
+  // (optional; defaults to https://ollama.com) lets the owner point at a
+  // self-hosted Ollama later. `aiProvider` absent = "openrouter" (full
+  // back-compat). `aiModel` is the GLOBAL default model for the active provider
+  // used across every AI call site (OCR, coding, assistant); absent = each call
+  // site's own env/hardcoded default. See `integrationSettings.readAiEngineConfig`
+  // (stored-first → env fallback) + `lib/aiEngine.ts`.
+  ollamaApiKey: v.optional(v.string()),
+  ollamaBaseUrl: v.optional(v.string()),
+  aiProvider: v.optional(v.union(v.literal("openrouter"), v.literal("ollama"))),
+  aiModel: v.optional(v.string()),
   updatedAt: v.number(),
   updatedBy: v.id("users"),
 });

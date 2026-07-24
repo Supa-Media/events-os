@@ -1,0 +1,37 @@
+---
+// Reminder block: the four compensation paths and the cash conditional.
+import { asset } from "../../lib/asset";
+---
+
+<div class="mt-2 rounded-xl bg-pink-softer/40 border border-pink-soft/60 p-5">
+  <p class="font-display font-normal text-base text-ink">Your four paths</p>
+  <ul class="mt-3 list-disc pl-5 space-y-1.5 text-sm text-ink/85">
+    <li>
+      <strong class="font-semibold">Cash fee</strong> at the published rate.
+      Available <em>when funded</em> for this specific release — we'll tell
+      you what's funded before you choose.
+    </li>
+    <li>
+      <strong class="font-semibold">Master income participation</strong> at
+      the published equity rate, in lieu of cash. Always available, paid
+      from net master income over time.
+    </li>
+    <li>
+      <strong class="font-semibold">In-kind donation</strong> through
+      Global Echo Charitable Co. (Public Worship's 501(c)(3) parent).
+      Always available. (Note: under IRS rules, the value of donated
+      services isn't deductible — only out-of-pocket expenses and
+      tangible property donated.)
+    </li>
+    <li>
+      <strong class="font-semibold">Decline</strong> the release. Always
+      honored; doesn't affect future invitations.
+    </li>
+  </ul>
+  <p class="mt-3 text-xs text-ink/70">
+    The full picture is in the
+    <a href={asset("/music-policy#four-paths")} class="text-red-500 underline-offset-2 hover:underline">
+      policy
+    </a>.
+  </p>
+</div>

@@ -1,0 +1,30 @@
+---
+import SparkleIcon from "../icons/SparkleIcon.astro";
+import PrayIcon from "../icons/PrayIcon.astro";
+
+export interface Props {
+  /** Visual variant. Source uses a 16px chip on most sections and a small
+   * inline 14px label on the FAQ heading only. */
+  size?: "chip" | "sm";
+  icon?: "sparkle" | "pray" | "image";
+  iconSrc?: string;
+  class?: string;
+}
+
+const {
+  size = "chip",
+  icon = "sparkle",
+  iconSrc,
+  class: className = "",
+} = Astro.props;
+
+const wrapperClass = size === "sm" ? "pw-eyebrow-sm" : "pw-eyebrow";
+const iconSize = size === "sm" ? "h-3.5 w-3.5" : "h-4 w-4";
+---
+
+<span class={`${wrapperClass} ${className}`}>
+  {icon === "pray" && <PrayIcon class={iconSize} />}
+  {icon === "sparkle" && <SparkleIcon class={iconSize} />}
+  {icon === "image" && iconSrc && <img src={iconSrc} alt="" class={iconSize} />}
+  <slot />
+</span>

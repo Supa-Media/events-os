@@ -85,7 +85,11 @@ export const people = defineTable({
 })
   .index("by_chapter", ["chapterId"])
   .index("by_user", ["userId"])
-  .index("by_manager", ["managerId"]);
+  .index("by_manager", ["managerId"])
+  // Resolve an inbound email's sender address to a roster person (the receipt-
+  // ingest pipeline's auth gate — see `receiptInbox.resolvePersonByEmail`).
+  // Normalized (lowercased/trimmed) addresses are written by `people.update`.
+  .index("by_email", ["email"]);
 
 /**
  * Person field AUDIT (owner feedback #4) — a lightweight, additive breadcrumb

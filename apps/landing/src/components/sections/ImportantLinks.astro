@@ -1,0 +1,211 @@
+---
+import { getCollection } from "astro:content";
+import Container from "../ui/Container.astro";
+import Eyebrow from "../ui/Eyebrow.astro";
+import LinkCard from "../ui/LinkCard.astro";
+
+// Fixed cards come from links.yaml. Between the `lead` card (Donate) and the
+// `trail` cards (socials + Zelle) we inject up to two currently-published event
+// RSVP pages, fetched live from the OS at runtime (see the <script> below and
+// GET /api/events/upcoming) — so the section tracks the OS with no rebuild.
+const entries = await getCollection("links");
+const lead = entries.filter((e) => e.data.slot === "lead");
+const trail = entries.filter((e) => e.data.slot !== "lead");
+
+// Reserve two grid slots for the auto-inserted events so the trailing cards'
+// entrance stagger stays continuous whether or not any events are live.
+const MAX_EVENTS = 2;
+const delayFor = (i: number) => `--delay: ${i * 60}ms`;
+---
+
+<section id="links" class="py-20 sm:py-28 scroll-mt-16">
+  <Container size="wide">
+    <div
+      class="flex flex-col items-center gap-3 text-center mb-12 sm:mb-14"
+      data-animate="fade-up"
+    >
+      <Eyebrow icon="sparkle">Public Worship</Eyebrow>
+      {/* Source H2: 52px / 1.08 / Corben 400. */}
+      <h2
+        class="font-display font-normal leading-[1.08] text-3xl sm:text-[42px] md:text-[52px]"
+      >
+        Important <span class="text-red-500">Links</span>
+      </h2>
+    </div>
+
+    <div class="grid gap-4 sm:gap-5 sm:grid-cols-2 lg:grid-cols-3">
+      {
+        lead.map((entry, i) => (
+          <div data-animate="fade-up" style={delayFor(i)}>
+            <LinkCard
+              title={entry.data.title}
+              subtitle={entry.data.subtitle}
+              url={entry.data.url}
+              thumbnail={entry.data.thumbnail}
+              bgImage={entry.data.bgImage}
+              cta={entry.data.cta}
+              copy={entry.data.copy}
+              align={entry.data.align}
+            />
+          </div>
+        ))
+      }
+
+      {/* Live event cards inject here (display:contents → children become grid
+          items in place). Populated by the script below; empty = no live events. */}
+      <div
+        id="pw-live-events"
+        class="contents"
+        data-lead-count={lead.length}
+        data-max-events={MAX_EVENTS}
+      >
+      </div>
+
+      {
+        trail.map((entry, i) => (
+          <div
+            data-animate="fade-up"
+            style={delayFor(lead.length + MAX_EVENTS + i)}
+          >
+            <LinkCard
+              title={entry.data.title}
+              subtitle={entry.data.subtitle}
+              url={entry.data.url}
+              thumbnail={entry.data.thumbnail}
+              bgImage={entry.data.bgImage}
+              cta={entry.data.cta}
+              copy={entry.data.copy}
+              align={entry.data.align}
+            />
+          </div>
+        ))
+      }
+    </div>
+  </Container>
+</section>
+
+<script>
+  // Pull currently-published event RSVP pages from the OS (same origin, routed
+  // to Convex by pw-router) and drop them into the Important Links grid between
+  // Donate and the socials. All-or-nothing best effort: if the fetch fails
+  // (e.g. `astro dev` with no backend) the grid just shows the fixed cards.
+  type LiveEvent = {
+    title: string;
+    tagline: string | null;
+    venueName: string | null;
+    startDate: number;
+    endDate: number | null;
+    href: string;
+    coverUrl: string | null;
+    coverFocalX?: number | null;
+    coverFocalY?: number | null;
+  };
+
+  const CARD_CLASS =
+    "group relative block w-full min-h-[150px] cursor-pointer appearance-none " +
+    "overflow-hidden rounded-2xl bg-pink-softer transition-transform hover:-translate-y-0.5";
+
+  function formatDate(ms: number): string {
+    try {
+      return new Date(ms).toLocaleDateString(undefined, {
+        weekday: "short",
+        month: "short",
+        day: "numeric",
+      });
+    } catch {
+      return "";
+    }
+  }
+
+  function buildCard(ev: LiveEvent): HTMLAnchorElement {
+    const a = document.createElement("a");
+    a.href = ev.href;
+    a.className = CARD_CLASS;
+    a.setAttribute("aria-label", ev.title);
+
+    if (ev.coverUrl) {
+      // Poster-style card: full-bleed cover, no text overlay (matches how the
+      // fixed poster cards render in LinkCard.astro's bgImage branch).
+      const img = document.createElement("img");
+      img.src = ev.coverUrl;
+      img.alt = ev.title;
+      img.loading = "lazy";
+      img.decoding = "async";
+      img.className = "absolute inset-0 h-full w-full object-cover";
+      // Honor the host's chosen crop focal point (percent) so this card frames
+      // the cover the same way the event landing page does. Default centered.
+      const fx = typeof ev.coverFocalX === "number" ? ev.coverFocalX : 50;
+      const fy = typeof ev.coverFocalY === "number" ? ev.coverFocalY : 50;
+      img.style.objectPosition = `${fx}% ${fy}%`;
+      a.appendChild(img);
+    } else {
+      // Text card: title + date, mirroring LinkCard.astro's no-image branch.
+      const inner = document.createElement("div");
+      inner.className =
+        "relative z-[1] flex h-full flex-col items-center justify-center gap-1 " +
+        "text-center p-8 sm:p-12";
+      const h3 = document.createElement("h3");
+      h3.className = "font-display text-xl sm:text-2xl text-link-blue";
+      h3.textContent = ev.title;
+      inner.appendChild(h3);
+      const when = formatDate(ev.startDate);
+      if (when) {
+        const p = document.createElement("p");
+        p.className = "text-sm sm:text-base text-link-blue";
+        p.textContent = when;
+        inner.appendChild(p);
+      }
+      a.appendChild(inner);
+    }
+    return a;
+  }
+
+  async function hydrateLiveEvents(): Promise<void> {
+    const host = document.getElementById("pw-live-events");
+    if (!host) return;
+    const leadCount = Number(host.dataset.leadCount ?? "1");
+    const max = Number(host.dataset.maxEvents ?? "2");
+
+    let events: LiveEvent[] = [];
+    try {
+      const res = await fetch(`/api/events/upcoming?limit=${max}`, {
+        headers: { Accept: "application/json" },
+      });
+      if (!res.ok) return;
+      events = (await res.json()) as LiveEvent[];
+    } catch {
+      return; // No backend reachable (e.g. local dev) — leave the fixed cards.
+    }
+    if (!Array.isArray(events) || events.length === 0) return;
+
+    const reduceMotion = window.matchMedia(
+      "(prefers-reduced-motion: reduce)",
+    ).matches;
+
+    events.slice(0, max).forEach((ev, i) => {
+      const wrapper = document.createElement("div");
+      wrapper.setAttribute("data-animate", "fade-up");
+      wrapper.style.setProperty("--delay", `${(leadCount + i) * 60}ms`);
+      wrapper.appendChild(buildCard(ev));
+      host.appendChild(wrapper);
+      // These cards mount after the IntersectionObserver in scroll-animate.ts
+      // has already taken its census, so it never sees them — flip them into
+      // view ourselves (next frame so the fade-up transition still plays).
+      if (reduceMotion) {
+        wrapper.setAttribute("data-animate-in", "true");
+      } else {
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() =>
+            wrapper.setAttribute("data-animate-in", "true"),
+          ),
+        );
+      }
+    });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", hydrateLiveEvents);
+  } else {
+    void hydrateLiveEvents();
+  }
+</script>

@@ -7,7 +7,11 @@
  * its receipts + reconciliation. There are only TWO hard controls — a monthly
  * safety cap (`monthlyCapCents`) and a validity window (`validFrom`/`validUntil`)
  * — plus the receipt auto-lock (a charge whose receipt is >7 days late locks the
- * card; a manager/cardholder unlock clears the grace window). Personal charges
+ * card; a manager/cardholder unlock clears the grace window). The one
+ * CHAPTER-LEVEL control is the merchant allow-list (`cardMerchantPolicy`, one
+ * row per chapter): when ENFORCED and NON-EMPTY, the real-time decision also
+ * declines any authorization whose merchant matches no allowed name substring
+ * or MCC — see `decideAgainstMerchantPolicy`. Personal charges
  * are flagged + repaid via the cardholder's own debit/ACH, which posts an
  * OFFSETTING `flow:"transfer"` credit — no reimbursement paperwork.
  *
@@ -93,6 +97,7 @@ import {
   matchesMode,
   isSandboxObjectId,
   isCardEligible,
+  getAcademyCourse,
   type CardType,
   type CardStatus,
   type CardSource,
@@ -100,7 +105,12 @@ import {
   type RepaymentMethod,
   type RepaymentStatus,
 } from "@events-os/shared";
-import { readSandbox } from "./financeSettings";
+import {
+  readSandbox,
+  readNoReceiptAutoConvertDays,
+  readCardPrerequisiteCourseSlug,
+} from "./financeSettings";
+import { hasCompletedCourse } from "./academy";
 import {
   requireChapterId,
   requireInChapter,
@@ -111,6 +121,7 @@ import {
 import {
   requireFinanceRole,
   requireFinanceManager,
+  requireCentralFinanceRole,
   getFinanceRole,
   getChapterAccountForMode,
 } from "./lib/finance";
@@ -123,6 +134,7 @@ import {
 import { sendEmail, sendEmailReporting, emailShell } from "./ticketingEmails";
 import { escapeHtml } from "./lib/html";
 import { appUrl } from "./lib/siteUrl";
+import { normalizePhone, resolveTwilioCredentials, sendSms } from "./lib/twilio";
 
 const externalAccountFundingValidator = v.union(
   ...EXTERNAL_ACCOUNT_FUNDINGS.map((f) => v.literal(f)),
@@ -208,6 +220,24 @@ const cardRequestSummaryValidator = v.object({
   cardId: v.union(v.id("cards"), v.null()),
 });
 
+// The org-wide card-prerequisite state, `null` when no gate is configured:
+//  - `prerequisiteMet` on a row: `null` when no prerequisite is configured OR
+//    the configured course isn't in the catalog (fail-open — no effective
+//    gate); otherwise whether that person has completed it.
+// The list rows below reuse the base card/request validators + this one field
+// so the manager UI can badge Trained ✓ / Needs training per row.
+const prerequisiteMetValidator = v.union(v.boolean(), v.null());
+
+const cardRowValidator = v.object({
+  ...cardSummaryValidator.fields,
+  prerequisiteMet: prerequisiteMetValidator,
+});
+
+const cardRequestRowValidator = v.object({
+  ...cardRequestSummaryValidator.fields,
+  prerequisiteMet: prerequisiteMetValidator,
+});
+
 const repaymentSummaryValidator = v.object({
   id: v.id("personalRepayments"),
   transactionId: v.id("transactions"),
@@ -225,6 +255,12 @@ const repaymentSummaryValidator = v.object({
 const authDecisionValidator = v.object({
   approved: v.boolean(),
   reason: v.optional(v.string()),
+});
+
+const merchantPolicyValidator = v.object({
+  enforced: v.boolean(),
+  allowedMerchantNames: v.array(v.string()),
+  allowedMerchantCategories: v.array(v.string()),
 });
 
 // ── TS shapes (for action ↔ internal-mutation typing) ────────────────────────
@@ -255,6 +291,12 @@ interface CardRequestSummary {
   cardId: Id<"cards"> | null;
 }
 
+// A `null` `prerequisiteMet` means "no effective card-prerequisite gate" (none
+// configured, or the configured course isn't in the catalog → fail-open); a
+// boolean is that person's completion of the configured course.
+type CardRow = CardSummary & { prerequisiteMet: boolean | null };
+type CardRequestRow = CardRequestSummary & { prerequisiteMet: boolean | null };
+
 interface RepaymentSummary {
   id: Id<"personalRepayments">;
   transactionId: Id<"transactions">;
@@ -265,6 +307,12 @@ interface RepaymentSummary {
   creditTransactionId: Id<"transactions"> | null;
   hasExternalAccount: boolean;
   payerAccountLast4: string | null;
+}
+
+interface MerchantPolicySummary {
+  enforced: boolean;
+  allowedMerchantNames: string[];
+  allowedMerchantCategories: string[];
 }
 
 interface UnfreezeCardResult {
@@ -535,6 +583,23 @@ async function toCardRequestSummary(
   };
 }
 
+/**
+ * The org-wide card-prerequisite course resolved to its catalog entry, or
+ * `null` when there is NO EFFECTIVE gate — either none is configured, or the
+ * configured slug isn't a real `ACADEMY_COURSES` course (fail-open, exactly
+ * like `beginIssueCard`: an unknown course can never be completed, so it can't
+ * be allowed to read as "everyone needs training"). Shared by the list queries
+ * and `cardPrerequisiteStatus` so they all agree on when a gate is in effect.
+ */
+async function effectivePrerequisiteCourse(
+  ctx: QueryCtx,
+): Promise<{ slug: string; title: string } | null> {
+  const slug = await readCardPrerequisiteCourseSlug(ctx);
+  if (slug === null) return null;
+  const course = getAcademyCourse(slug);
+  return course ? { slug: course.slug, title: course.title } : null;
+}
+
 // ── issueCard (action, manager) ──────────────────────────────────────────────
 
 /**
@@ -579,6 +644,32 @@ export const beginIssueCard = internalMutation({
         message:
           "Cards can only be issued to people with a @publicworship.life email.",
       });
+    }
+
+    // Academy-course prerequisite (org-wide, OFF by default). The single hard
+    // gate for BOTH issuance paths: `issueCard` (direct) and
+    // `decideCardRequest → issueCard` (approved request) both funnel here.
+    const prerequisiteSlug = await readCardPrerequisiteCourseSlug(ctx);
+    if (prerequisiteSlug !== null) {
+      const course = getAcademyCourse(prerequisiteSlug);
+      if (course === undefined) {
+        // FAIL-OPEN: an unknown / not-yet-authored course can NEVER be
+        // completed, so gating on it would brick ALL issuance for the whole
+        // org. The settings UI already warns about this misconfiguration, so
+        // we skip the gate rather than block everyone.
+      } else if (
+        !(await hasCompletedCourse(
+          ctx,
+          chapterId,
+          args.cardholderPersonId,
+          prerequisiteSlug,
+        ))
+      ) {
+        throw new ConvexError({
+          code: "CARD_PREREQUISITE_INCOMPLETE",
+          message: `${course.title} must be completed before a card can be issued.`,
+        });
+      }
     }
 
     // Mode-aware: issue on the chapter's CURRENT-environment account (never
@@ -759,8 +850,8 @@ export const issueCard = action({
 /** The chapter's cards (viewer+) — the manager card view. */
 export const listCards = query({
   args: {},
-  returns: v.array(cardSummaryValidator),
-  handler: async (ctx): Promise<CardSummary[]> => {
+  returns: v.array(cardRowValidator),
+  handler: async (ctx): Promise<CardRow[]> => {
     const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
     if (!chapterId) return [];
     await requireFinanceRole(ctx, chapterId, "viewer");
@@ -775,7 +866,19 @@ export const listCards = query({
         .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
         .take(CARD_SCAN_LIMIT)
     ).filter((c) => matchesMode(c.increaseCardId ?? null, sandboxMode));
-    return Promise.all(cards.map((c) => buildCardSummary(ctx, c)));
+    // Per-cardholder training status for the manager roster's Trained ✓ /
+    // Needs training badge — `null` on every row when there's no effective
+    // gate. `hasCompletedCourse` is a couple of indexed reads per card; the
+    // list is already bounded by CARD_SCAN_LIMIT.
+    const course = await effectivePrerequisiteCourse(ctx);
+    return Promise.all(
+      cards.map(async (c) => ({
+        ...(await buildCardSummary(ctx, c)),
+        prerequisiteMet: course
+          ? await hasCompletedCourse(ctx, chapterId, c.cardholderPersonId, course.slug)
+          : null,
+      })),
+    );
   },
 });
 
@@ -991,6 +1094,130 @@ export const setCardControls = mutation({
     }
     await ctx.db.patch(card._id, patch);
     return buildCardSummary(ctx, (await ctx.db.get(card._id))!);
+  },
+});
+
+// ── Merchant allow-list (chapter policy) ─────────────────────────────────────
+
+// Bound the allow-list config doc: a modest, single-doc policy — the entry
+// count + per-entry length caps keep the arrays far from any document limit.
+const MERCHANT_ALLOWLIST_MAX_ENTRIES = 100;
+const MERCHANT_ALLOWLIST_ENTRY_MAX = 100;
+// Category entries are exactly the 4-digit MCC Increase sends on an
+// authorization (`merchant_category_code`).
+const MCC_RE = /^\d{4}$/;
+
+/** The chapter's merchant allow-list row, or null before one's ever been set. */
+async function readMerchantPolicy(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<Doc<"cardMerchantPolicy"> | null> {
+  return await ctx.db
+    .query("cardMerchantPolicy")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .first();
+}
+
+/** The read projection the allow-list UI renders. A missing row reads as the
+ *  safe default: enforcement off, nothing listed. */
+function toMerchantPolicySummary(
+  policy: Doc<"cardMerchantPolicy"> | null,
+): MerchantPolicySummary {
+  return {
+    enforced: policy?.enforced ?? false,
+    allowedMerchantNames: policy?.allowedMerchantNames ?? [],
+    allowedMerchantCategories: policy?.allowedMerchantCategories ?? [],
+  };
+}
+
+/** Trim, drop empties, enforce the per-entry length cap, and de-duplicate
+ *  case-insensitively (first casing wins — matching is case-insensitive
+ *  anyway, so "Costco" + "COSTCO" would be the same entry twice). */
+function normalizeAllowlistEntries(entries: string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const raw of entries) {
+    const entry = raw.trim();
+    if (!entry) continue;
+    if (entry.length > MERCHANT_ALLOWLIST_ENTRY_MAX) {
+      throw new ConvexError({
+        code: "ALLOWLIST_ENTRY_TOO_LONG",
+        message: `Allow-list entries are capped at ${MERCHANT_ALLOWLIST_ENTRY_MAX} characters.`,
+      });
+    }
+    const key = entry.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(entry);
+  }
+  return out;
+}
+
+/** The chapter's merchant allow-list (viewer+ — the same floor as `listCards`,
+ *  so the Cards tab can show the policy state). Safe defaults (enforcement
+ *  off, empty lists) before a manager ever saves one. */
+export const getMerchantPolicy = query({
+  args: {},
+  returns: merchantPolicyValidator,
+  handler: async (ctx): Promise<MerchantPolicySummary> => {
+    const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
+    if (!chapterId) return toMerchantPolicySummary(null);
+    await requireFinanceRole(ctx, chapterId, "viewer");
+    return toMerchantPolicySummary(await readMerchantPolicy(ctx, chapterId));
+  },
+});
+
+/**
+ * Replace the chapter's merchant allow-list + enforcement toggle (manager).
+ * Entries are normalized (trimmed, de-duplicated case-insensitively) and
+ * BOUNDED; category entries must be 4-digit MCCs — the finance manager pastes
+ * codes off the card network's list, and a malformed one would silently never
+ * match anything. Enforcement only bites when the list is non-empty (see
+ * `decideAgainstMerchantPolicy`), so flipping the toggle on an empty list can
+ * never brick every card at once.
+ */
+export const setMerchantPolicy = mutation({
+  args: {
+    enforced: v.boolean(),
+    allowedMerchantNames: v.array(v.string()),
+    allowedMerchantCategories: v.array(v.string()),
+  },
+  returns: merchantPolicyValidator,
+  handler: async (ctx, args): Promise<MerchantPolicySummary> => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const access = await requireFinanceManager(ctx, chapterId);
+
+    const names = normalizeAllowlistEntries(args.allowedMerchantNames);
+    const categories = normalizeAllowlistEntries(args.allowedMerchantCategories);
+    for (const code of categories) {
+      if (!MCC_RE.test(code)) {
+        throw new ConvexError({
+          code: "INVALID_MERCHANT_CATEGORY",
+          message: `"${code}" isn't a merchant category code — use the 4-digit MCC (e.g. 5411 for grocery stores).`,
+        });
+      }
+    }
+    if (names.length + categories.length > MERCHANT_ALLOWLIST_MAX_ENTRIES) {
+      throw new ConvexError({
+        code: "ALLOWLIST_TOO_LARGE",
+        message: `The allow-list is capped at ${MERCHANT_ALLOWLIST_MAX_ENTRIES} entries.`,
+      });
+    }
+
+    const existing = await readMerchantPolicy(ctx, chapterId);
+    const fields = {
+      enforced: args.enforced,
+      allowedMerchantNames: names,
+      allowedMerchantCategories: categories,
+      updatedByPersonId: access.personId ?? undefined,
+      updatedAt: Date.now(),
+    };
+    if (existing) {
+      await ctx.db.patch(existing._id, fields);
+    } else {
+      await ctx.db.insert("cardMerchantPolicy", { chapterId, ...fields });
+    }
+    return toMerchantPolicySummary(await readMerchantPolicy(ctx, chapterId));
   },
 });
 
@@ -1311,8 +1538,8 @@ export const requestCard = mutation({
  *  forever would be noise) or when there's none/no chapter/roster row yet. */
 export const myCardRequest = query({
   args: {},
-  returns: v.union(cardRequestSummaryValidator, v.null()),
-  handler: async (ctx): Promise<CardRequestSummary | null> => {
+  returns: v.union(cardRequestRowValidator, v.null()),
+  handler: async (ctx): Promise<CardRequestRow | null> => {
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return null;
     const person = await viewerPerson(ctx, chapterId as Id<"chapters">);
@@ -1325,7 +1552,13 @@ export const myCardRequest = query({
     const mine = rows.filter((r) => r.chapterId === chapterId);
     const latest = mine[0];
     if (!latest || latest.status === "approved") return null;
-    return toCardRequestSummary(ctx, latest);
+    const course = await effectivePrerequisiteCourse(ctx);
+    return {
+      ...(await toCardRequestSummary(ctx, latest)),
+      prerequisiteMet: course
+        ? await hasCompletedCourse(ctx, chapterId as Id<"chapters">, person._id, course.slug)
+        : null,
+    };
   },
 });
 
@@ -1334,8 +1567,8 @@ export const myCardRequest = query({
  *  only a finance manager can actually decide one (`decideCardRequest`). */
 export const listCardRequests = query({
   args: {},
-  returns: v.array(cardRequestSummaryValidator),
-  handler: async (ctx): Promise<CardRequestSummary[]> => {
+  returns: v.array(cardRequestRowValidator),
+  handler: async (ctx): Promise<CardRequestRow[]> => {
     const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
     if (!chapterId) return [];
     await requireFinanceRole(ctx, chapterId, "viewer");
@@ -1345,7 +1578,65 @@ export const listCardRequests = query({
         q.eq("chapterId", chapterId).eq("status", "requested"),
       )
       .take(CARD_REQUEST_SCAN_LIMIT);
-    return Promise.all(rows.map((r) => toCardRequestSummary(ctx, r)));
+    // Whether each requester has finished the org's card-prerequisite course —
+    // so a manager sees Trained ✓ / Needs training before approving. `null`
+    // on every row when there's no effective gate.
+    const course = await effectivePrerequisiteCourse(ctx);
+    return Promise.all(
+      rows.map(async (r) => ({
+        ...(await toCardRequestSummary(ctx, r)),
+        prerequisiteMet: course
+          ? await hasCompletedCourse(ctx, chapterId, r.personId, course.slug)
+          : null,
+      })),
+    );
+  },
+});
+
+/**
+ * The org-wide card-prerequisite course + whether a person has completed it —
+ * the read behind the "Complete <course> to get a card" member note and the
+ * "Trained ✓ / Needs training" hint in the Issue-card flow. Returns `null`
+ * whenever there's NO EFFECTIVE gate (none configured, or the configured slug
+ * isn't a real course → fail-open, matching `beginIssueCard`).
+ *
+ * `personId` OMITTED → the CALLER's own status (any member, no finance role).
+ * `personId` GIVEN → that person's status; viewer+ gated and chapter-scoped,
+ * for the manager Issue-card flow inspecting a pickable cardholder. Card
+ * completion is already chapter-visible (see `courseCompleters`), so this
+ * exposes nothing new.
+ */
+export const cardPrerequisiteStatus = query({
+  args: { personId: v.optional(v.id("people")) },
+  returns: v.union(
+    v.object({ slug: v.string(), title: v.string(), met: v.boolean() }),
+    v.null(),
+  ),
+  handler: async (
+    ctx,
+    { personId },
+  ): Promise<{ slug: string; title: string; met: boolean } | null> => {
+    const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
+    if (!chapterId) return null;
+    const course = await effectivePrerequisiteCourse(ctx);
+    if (!course) return null;
+
+    let target: Id<"people">;
+    if (personId) {
+      await requireFinanceRole(ctx, chapterId, "viewer");
+      const person = await ctx.db.get(personId);
+      await requireInChapter(ctx, chapterId, person, "Person");
+      target = personId;
+    } else {
+      const me = await viewerPerson(ctx, chapterId);
+      if (!me) return null;
+      target = me._id;
+    }
+    return {
+      slug: course.slug,
+      title: course.title,
+      met: await hasCompletedCourse(ctx, chapterId, target, course.slug),
+    };
   },
 });
 
@@ -1464,11 +1755,39 @@ function decideAgainstCard(
   return { approved: true };
 }
 
+/** The pure merchant decision: DECLINE when the chapter's allow-list is
+ *  ENFORCED and NON-EMPTY and the merchant matches no entry — name entries
+ *  are case-insensitive substrings of the merchant descriptor, category
+ *  entries exact 4-digit MCC matches; ANY one match approves. No policy row,
+ *  enforcement off, or an empty list never declines, so behavior without a
+ *  configured allow-list is exactly as before it existed. An authorization
+ *  carrying NO merchant data can't match an entry, so under an enforced
+ *  non-empty list it declines. */
+function decideAgainstMerchantPolicy(
+  policy: Doc<"cardMerchantPolicy"> | null,
+  merchantName: string | undefined,
+  merchantCategory: string | undefined,
+): { approved: boolean; reason?: string } {
+  if (!policy || !policy.enforced) return { approved: true };
+  const names = policy.allowedMerchantNames;
+  const categories = policy.allowedMerchantCategories;
+  if (names.length + categories.length === 0) return { approved: true };
+  const descriptor = (merchantName ?? "").toLowerCase();
+  if (descriptor && names.some((n) => descriptor.includes(n.toLowerCase()))) {
+    return { approved: true };
+  }
+  if (merchantCategory != null && categories.includes(merchantCategory)) {
+    return { approved: true };
+  }
+  return { approved: false, reason: "merchant not on allow-list" };
+}
+
 /**
  * The real-time card-authorization decision. The orchestrator's Increase
  * webhook (`card_authorization` / `real_time_decision`) calls this synchronously
  * and responds to Increase with the result. Looks the card up by
- * `increaseCardId`, decides against the two controls + lock state, and logs a
+ * `increaseCardId`, decides against the two controls + lock state + the
+ * chapter's merchant allow-list (`decideAgainstMerchantPolicy`), and logs a
  * `cardAuthorizations` row every time. NEVER throws — a thrown decision would
  * wrongly decline/hang the network — so any internal error defaults to DECLINE.
  * Idempotent per `increaseAuthId`: a retried authorization returns the same
@@ -1517,12 +1836,22 @@ export const decideCardAuthorization = internalMutation({
       // settled), NOT just settled transactions — otherwise a burst of
       // unsettled charges blows through the cap before any transaction posts.
       const monthAuthorizedCents = await cardMonthAuthorizedCents(ctx, card, now);
-      const decision = decideAgainstCard(
+      let decision = decideAgainstCard(
         card,
         args.amountCents,
         monthAuthorizedCents,
         now,
       );
+      // Chapter merchant allow-list — checked only once the card itself would
+      // approve, so a lock/validity/cap decline keeps its more specific reason.
+      if (decision.approved) {
+        const policy = await readMerchantPolicy(ctx, card.chapterId);
+        decision = decideAgainstMerchantPolicy(
+          policy,
+          args.merchantName,
+          args.merchantCategory,
+        );
+      }
 
       await ctx.db.insert("cardAuthorizations", {
         chapterId: card.chapterId,
@@ -2181,6 +2510,57 @@ export const cardBillingAddress = action({
   },
 });
 
+/**
+ * SHARED conversion core: turn a card charge into a `pending` personal
+ * repayment owned by the cardholder, and back-link the txn
+ * (`isPersonal`/`repaymentId`). IDEMPOTENT — one repayment per transaction: if
+ * the charge already carries a `personalRepayments` row it's reused (healing
+ * the txn's back-links if they ever drifted), and `created:false` is returned
+ * so a caller can skip first-time-only side effects (the flag notification;
+ * the sweep's converted-count).
+ *
+ * Extracted so the insert-`personalRepayments` + patch core lives in ONE place
+ * and is shared by BOTH `flagPersonalCharge` (manual — cardholder or manager)
+ * and `autoConvertOverdueReceipts` (the no-receipt sweep). The CALLER owns
+ * authorization, chapter verification, and any notification — this helper only
+ * touches the two rows. Exported so the member-facing `finances.submitOwnCharge`
+ * can flag-personal through the same core without duplicating the insert.
+ */
+export async function convertChargeToPersonalRepayment(
+  ctx: MutationCtx,
+  txn: Doc<"transactions">,
+  cardholderPersonId: Id<"people">,
+): Promise<{ repayment: Doc<"personalRepayments">; created: boolean }> {
+  const existing = await ctx.db
+    .query("personalRepayments")
+    .withIndex("by_transaction", (q) => q.eq("transactionId", txn._id))
+    .first();
+  if (existing) {
+    if (txn.isPersonal !== true || txn.repaymentId == null) {
+      await ctx.db.patch(txn._id, {
+        isPersonal: true,
+        repaymentId: existing._id,
+      });
+    }
+    return { repayment: existing, created: false };
+  }
+  const now = Date.now();
+  const repaymentId = await ctx.db.insert("personalRepayments", {
+    // A card charge is always chapter-scoped (central issues no cards).
+    chapterId: txn.chapterId as Id<"chapters">,
+    transactionId: txn._id,
+    payerPersonId: cardholderPersonId,
+    amountCents: txn.amountCents,
+    // The method is chosen when the payer initiates repayment; default until.
+    method: "ach",
+    status: "pending",
+    createdAt: now,
+    updatedAt: now,
+  });
+  await ctx.db.patch(txn._id, { isPersonal: true, repaymentId });
+  return { repayment: (await ctx.db.get(repaymentId))!, created: true };
+}
+
 // ── flagPersonalCharge (cardholder or manager) ───────────────────────────────
 
 /**
@@ -2226,45 +2606,26 @@ export const flagPersonalCharge = mutation({
       });
     }
 
-    // IDEMPOTENT: one repayment per transaction.
-    const existing = await ctx.db
-      .query("personalRepayments")
-      .withIndex("by_transaction", (q) => q.eq("transactionId", transactionId))
-      .first();
-    if (existing) {
-      if (transaction.isPersonal !== true || transaction.repaymentId == null) {
-        await ctx.db.patch(transactionId, {
-          isPersonal: true,
-          repaymentId: existing._id,
-        });
-      }
-      return toRepaymentSummary(existing);
-    }
+    // IDEMPOTENT: one repayment per transaction — the shared conversion core
+    // (also used by the no-receipt sweep) handles the insert + back-link.
+    const { repayment, created } = await convertChargeToPersonalRepayment(
+      ctx,
+      transaction,
+      cardholderPersonId,
+    );
 
-    const now = Date.now();
-    const repaymentId = await ctx.db.insert("personalRepayments", {
-      chapterId,
-      transactionId,
-      payerPersonId: cardholderPersonId,
-      amountCents: transaction.amountCents,
-      // The method is chosen when the payer initiates repayment; default until.
-      method: "ach",
-      status: "pending",
-      createdAt: now,
-      updatedAt: now,
-    });
-    await ctx.db.patch(transactionId, { isPersonal: true, repaymentId });
-
-    // Manager flagging SOMEONE ELSE's charge → notify the cardholder. Scheduled
-    // (not awaited) so a slow/failing Resend call never blocks the flag itself;
-    // the action below is best-effort and degrades silently without a key.
-    if (!isCardholder) {
+    // Manager flagging SOMEONE ELSE's charge → notify the cardholder, but ONLY
+    // on the FIRST conversion (`created`) — a repeat flag of an already-personal
+    // charge is a no-op and must not re-email. Scheduled (not awaited) so a
+    // slow/failing Resend call never blocks the flag itself; the action is
+    // best-effort and degrades silently without a key.
+    if (created && !isCardholder) {
       await ctx.scheduler.runAfter(0, internal.cards.notifyPersonalChargeFlagged, {
-        repaymentId,
+        repaymentId: repayment._id,
       });
     }
 
-    return toRepaymentSummary((await ctx.db.get(repaymentId))!);
+    return toRepaymentSummary(repayment);
   },
 });
 
@@ -2299,12 +2660,15 @@ export const getPersonalChargeFlagContact = internalQuery({
 });
 
 /** Best-effort "a charge on your card was marked personal" email — logs +
- *  no-ops without `RESEND_API_KEY` (same degrade as `notifyReceiptReminder`).
+ *  no-ops without `RESEND_API_KEY` (same degrade as `notifyReceiptDigest`).
  *  Never throws past itself (it's a scheduled fire-and-forget job off the
  *  flagging mutation, so a Resend failure here must not surface anywhere). */
 export const notifyPersonalChargeFlagged = internalAction({
-  args: { repaymentId: v.id("personalRepayments") },
-  handler: async (ctx, { repaymentId }) => {
+  // `auto` distinguishes the no-receipt sweep's auto-conversion
+  // (`autoConvertOverdueReceipts`) from a manager's manual flag — same email
+  // machinery, different reason copy.
+  args: { repaymentId: v.id("personalRepayments"), auto: v.optional(v.boolean()) },
+  handler: async (ctx, { repaymentId, auto }) => {
     try {
       const contact = await ctx.runQuery(
         internal.cards.getPersonalChargeFlagContact,
@@ -2313,7 +2677,12 @@ export const notifyPersonalChargeFlagged = internalAction({
       if (!contact) return null;
       const dollars = `$${(contact.amountCents / 100).toFixed(2)}`;
       const merchant = contact.merchantName ?? "a charge on your card";
-      const subject = `A charge on your card was marked personal — you owe ${dollars}`;
+      const subject = auto
+        ? `A charge with no receipt became a personal charge — you owe ${dollars}`
+        : `A charge on your card was marked personal — you owe ${dollars}`;
+      const reason = auto
+        ? `${escapeHtml(merchant)} (${escapeHtml(dollars)}) passed the receipt deadline with no receipt attached, so it was automatically converted to a personal charge.`
+        : `a finance manager marked ${escapeHtml(merchant)} (${escapeHtml(dollars)}) as a personal charge.`;
       // The Cards tab's member view (`MemberCardsView`) owns the per-charge
       // flag/pay-back list this charge lives in — not Reimbursements (which
       // only shows the aggregate "you owe" total). Null when APP_URL is unset.
@@ -2323,7 +2692,7 @@ export const notifyPersonalChargeFlagged = internalAction({
         subject,
         html: emailShell(`
           <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">${escapeHtml(subject)}</h1>
-          <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(contact.cardholderName)} — a finance manager marked ${escapeHtml(merchant)} (${escapeHtml(dollars)}) as a personal charge. Pay it back from the Cards tab in the app.</p>
+          <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(contact.cardholderName)} — ${reason} Pay it back from the Cards tab in the app.</p>
           ${
             link
               ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${link}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">Pay it back →</a></div>`
@@ -2854,6 +3223,13 @@ export const initiateRepayment = action({
  * Exported so the chapter dashboard's "cards nearing auto-lock" queue reuses the
  * exact same predicate as this auto-lock sweep — only the grace-window
  * comparison differs (nearing = still within grace, overdue = past it).
+ *
+ * A PERSONAL charge (`isPersonal` — flagged or auto-converted to a personal
+ * repayment) is EXCLUDED: it's no longer an org expense awaiting a receipt but
+ * money the cardholder owes back, so it must not keep a card auto-locked or
+ * surface as "missing receipt" anywhere. This is the single predicate the
+ * lock/unlock/nearing paths all read, so excluding it here removes converted
+ * charges from every one of them at once.
  */
 export function isMissingReceiptCharge(
   tr: Doc<"transactions">,
@@ -2864,6 +3240,7 @@ export function isMissingReceiptCharge(
     tr.flow === "outflow" &&
     tr.status !== "excluded" &&
     tr.status !== "reconciled" &&
+    tr.isPersonal !== true &&
     !tr.receiptStorageId
   );
 }
@@ -2976,6 +3353,78 @@ export const autoLockOverdueCards = internalMutation({
   },
 });
 
+// ── autoConvertOverdueReceipts (no-receipt → personal repayment) ─────────────
+
+/**
+ * The org-wide no-receipt auto-conversion sweep the daily cron calls — the
+ * TERMINAL step past the day-1/day-3 receipt reminders and the day-7 auto-lock.
+ *
+ * Reads the org-wide deadline (`financeSettings.noReceiptAutoConvertDays` via
+ * `readNoReceiptAutoConvertDays`). `null` (the default — central finance never
+ * picked a number) → NO-OP. Otherwise every card charge still missing its
+ * receipt PAST that many days is converted into a `pending` personal repayment
+ * the cardholder owes back (via the shared `convertChargeToPersonalRepayment`,
+ * so the flag/pay-back machinery is identical to a manual flag).
+ *
+ * Same age basis (`postedAt`) and eligibility predicate as the auto-lock sweep:
+ * `isOverdueReceiptCharge`, which (since this WP excludes `isPersonal`) also
+ * skips an already-converted charge — so a converted charge is never re-swept
+ * and, critically, no longer keeps its card auto-locked. Bounded + idempotent
+ * like the reminder sweep: at most `REMINDER_BATCH_LIMIT` conversions per run,
+ * globally oldest-first, so a backlog drains gradually instead of converting
+ * (and emailing) everyone in one burst. Each first-time conversion best-effort
+ * emails the cardholder (scheduled, degrades without a Resend key).
+ */
+export const autoConvertOverdueReceipts = internalMutation({
+  args: {},
+  returns: v.object({ convertedCount: v.number() }),
+  handler: async (ctx): Promise<{ convertedCount: number }> => {
+    const days = await readNoReceiptAutoConvertDays(ctx);
+    // Policy OFF (the default) — nothing auto-converts.
+    if (days == null) return { convertedCount: 0 };
+    const now = Date.now();
+    const cutoff = now - days * DAY_MS;
+    const cards = await ctx.db.query("cards").take(AUTOLOCK_LIMIT);
+
+    // Gather every eligible charge across ALL cards first, so the batch cap
+    // below picks the globally oldest — mirrors `advanceReceiptReminders`.
+    const candidates: { tr: Doc<"transactions">; card: Doc<"cards"> }[] = [];
+    for (const card of cards) {
+      if (card.status === "canceled") continue;
+      const txns = await ctx.db
+        .query("transactions")
+        .withIndex("by_card", (q) => q.eq("cardId", card._id))
+        .order("desc")
+        .take(CARD_TXN_LIMIT);
+      for (const tr of txns) {
+        if (isOverdueReceiptCharge(tr, card, cutoff)) {
+          candidates.push({ tr, card });
+        }
+      }
+    }
+    candidates.sort((a, b) => a.tr.postedAt - b.tr.postedAt);
+    const batch = candidates.slice(0, REMINDER_BATCH_LIMIT);
+
+    let convertedCount = 0;
+    for (const { tr, card } of batch) {
+      const { repayment, created } = await convertChargeToPersonalRepayment(
+        ctx,
+        tr,
+        card.cardholderPersonId,
+      );
+      // Idempotent: a charge already converted (created:false) isn't recounted
+      // or re-emailed on a later run.
+      if (!created) continue;
+      convertedCount++;
+      await ctx.scheduler.runAfter(0, internal.cards.notifyPersonalChargeFlagged, {
+        repaymentId: repayment._id,
+        auto: true,
+      });
+    }
+    return { convertedCount };
+  },
+});
+
 // ── advanceReceiptReminders (day-1 flag / day-3 escalate) ────────────────────
 
 /**
@@ -3082,70 +3531,122 @@ export const advanceReceiptReminders = internalMutation({
   },
 });
 
-/** The cardholder contact + charge details `sendReceiptReminders` needs to
- *  compose a reminder email for one transaction. Null when the charge isn't
- *  card-linked or the cardholder has no reachable email. */
-export const getReceiptReminderContact = internalQuery({
-  args: { transactionId: v.id("transactions") },
-  returns: v.union(
+/** One line per missing-receipt charge in a cardholder's reminder digest. */
+const reminderChargeValidator = v.object({
+  amountCents: v.number(),
+  merchantName: v.union(v.string(), v.null()),
+  escalated: v.boolean(),
+});
+
+/**
+ * Group the charges that transitioned a reminder stage THIS pass by cardholder,
+ * so `sendReceiptReminders` sends ONE digest email per person listing all their
+ * still-missing receipts — never one email per charge (a cardholder with five
+ * un-receipted charges was getting five separate emails). A cardholder with no
+ * reachable email is dropped. `flagged`/`escalated` are disjoint per pass; a
+ * charge is tagged `escalated` when it hit the day-3 step.
+ */
+export const getReceiptReminderDigests = internalQuery({
+  args: {
+    flagged: v.array(v.id("transactions")),
+    escalated: v.array(v.id("transactions")),
+  },
+  returns: v.array(
     v.object({
       email: v.string(),
       cardholderName: v.string(),
-      merchantName: v.union(v.string(), v.null()),
-      amountCents: v.number(),
+      anyEscalated: v.boolean(),
+      charges: v.array(reminderChargeValidator),
     }),
-    v.null(),
   ),
   handler: async (ctx, args) => {
-    const tr = await ctx.db.get(args.transactionId);
-    if (!tr?.cardId) return null;
-    const card = await ctx.db.get(tr.cardId);
-    if (!card) return null;
-    const person = await ctx.db.get(card.cardholderPersonId);
-    const email = person?.pwEmail ?? person?.email;
-    if (!person || !email) return null;
-    return {
-      email,
-      cardholderName: person.name,
-      merchantName: tr.merchantName ?? null,
-      amountCents: tr.amountCents,
-    };
+    const escalatedSet = new Set(args.escalated.map((id) => id as string));
+    const seen = new Set<string>();
+    const byPerson = new Map<
+      string,
+      {
+        email: string;
+        cardholderName: string;
+        charges: Array<{ amountCents: number; merchantName: string | null; escalated: boolean }>;
+      }
+    >();
+    for (const txnId of [...args.flagged, ...args.escalated]) {
+      if (seen.has(txnId as string)) continue;
+      seen.add(txnId as string);
+      const tr = await ctx.db.get(txnId);
+      if (!tr?.cardId) continue;
+      const card = await ctx.db.get(tr.cardId);
+      if (!card) continue;
+      const person = await ctx.db.get(card.cardholderPersonId);
+      const email = person?.pwEmail ?? person?.email;
+      if (!person || !email) continue;
+      const key = card.cardholderPersonId as string;
+      const entry =
+        byPerson.get(key) ?? { email, cardholderName: person.name, charges: [] };
+      entry.charges.push({
+        amountCents: tr.amountCents,
+        merchantName: tr.merchantName ?? null,
+        escalated: escalatedSet.has(txnId as string),
+      });
+      byPerson.set(key, entry);
+    }
+    return [...byPerson.values()].map((e) => ({
+      ...e,
+      anyEscalated: e.charges.some((c) => c.escalated),
+    }));
   },
 });
 
-/** Best-effort reminder email for one transitioned charge — logs + no-ops
- *  without `RESEND_API_KEY` (dev), same degrade as `sendReimbursementReminders`. */
-async function notifyReceiptReminder(
+/** Best-effort digest email for ONE cardholder listing all their charges still
+ *  missing a receipt — logs + no-ops without `RESEND_API_KEY` (dev). */
+async function notifyReceiptDigest(
   ctx: ActionCtx,
-  transactionId: Id<"transactions">,
-  isEscalation: boolean,
+  digest: {
+    email: string;
+    cardholderName: string;
+    anyEscalated: boolean;
+    charges: Array<{ amountCents: number; merchantName: string | null; escalated: boolean }>;
+  },
 ): Promise<void> {
-  const contact = await ctx.runQuery(internal.cards.getReceiptReminderContact, {
-    transactionId,
-  });
-  if (!contact) return;
-  const dollars = `$${(contact.amountCents / 100).toFixed(2)}`;
-  const merchant = contact.merchantName ?? "a charge";
-  const subject = isEscalation
-    ? `Still missing: receipt for your ${dollars} charge at ${merchant}`
-    : `Add a receipt for your ${dollars} charge at ${merchant}`;
+  const count = digest.charges.length;
+  if (count === 0) return;
+  const fmt = (c: { amountCents: number; merchantName: string | null }) =>
+    `$${(c.amountCents / 100).toFixed(2)} at ${c.merchantName ?? "a charge"}`;
+  const subject =
+    count === 1
+      ? `${digest.anyEscalated ? "Still missing" : "Add"} a receipt for your ${fmt(digest.charges[0])}`
+      : `${count} charges still need receipts`;
   const daysLeft = RECEIPT_GRACE_DAYS - RECEIPT_ESCALATE_DAYS;
-  const message = isEscalation
-    ? `It's been ${RECEIPT_ESCALATE_DAYS} days and your ${dollars} charge at ${merchant} still needs a receipt. Your card locks in ${daysLeft} more day${daysLeft === 1 ? "" : "s"} without one.`
-    : `Don't forget to add a receipt for your ${dollars} charge at ${merchant}.`;
+  const intro =
+    count === 1
+      ? `You still need to add a receipt for your ${escapeHtml(fmt(digest.charges[0]))}.`
+      : `You have ${count} card charges still missing receipts:`;
+  const list =
+    count === 1
+      ? ""
+      : `<ul style="margin:0 0 16px;padding-left:18px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.7;color:#7A5A5A">${digest.charges
+          .map(
+            (c) =>
+              `<li>${escapeHtml(fmt(c))}${c.escalated ? " — <b>locks soon</b>" : ""}</li>`,
+          )
+          .join("")}</ul>`;
+  const lockNote = digest.anyEscalated
+    ? `<p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Add ${count === 1 ? "it" : "them"} soon — a charge still missing its receipt after ${RECEIPT_GRACE_DAYS} days locks your card (${daysLeft} more day${daysLeft === 1 ? "" : "s"} for the escalated one${count === 1 ? "" : "s"}).</p>`
+    : "";
   // The bookkeeper's missing-receipt queue — same filter pill the Reconcile
-  // grid's "Missing receipt" pill drives (`FILTER_KEYS` in
-  // `(app)/finances/reconcile.tsx`). Null (omitted) when APP_URL is unset.
+  // grid's "Missing receipt" pill drives. Null (omitted) when APP_URL is unset.
   const link = appUrl("/finances/reconcile?filter=missing_receipt");
   await sendEmail(ctx, {
-    to: contact.email,
-    subject,
+    to: digest.email,
+    subject: count === 1 ? subject : "Receipts still needed",
     html: emailShell(`
-      <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">${escapeHtml(subject)}</h1>
-      <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(contact.cardholderName)} — ${escapeHtml(message)}</p>
+      <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">${escapeHtml(count === 1 ? subject : "Receipts still needed")}</h1>
+      <p style="margin:0 0 ${count === 1 ? 16 : 8}px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(digest.cardholderName)} — ${intro}</p>
+      ${list}
+      ${lockNote}
       ${
         link
-          ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${link}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">Add receipt →</a></div>`
+          ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${link}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">Add receipt${count === 1 ? "" : "s"} →</a></div>`
           : ""
       }`),
   });
@@ -3154,14 +3655,15 @@ async function notifyReceiptReminder(
 /**
  * The daily receipt-reminder cron: advances every card's missing-receipt
  * charges through the day-1/day-3 timeline (`advanceReceiptReminders`), then
- * emails the cardholder for whichever charges just transitioned. Terminal
- * day-7 locking stays in `autoLockOverdueCards` — this action never locks a
- * card. No-ops per email when `RESEND_API_KEY` is unset (local/dev).
+ * sends each cardholder ONE digest email listing all of their charges that
+ * transitioned this pass — not one email per charge (a cardholder with several
+ * un-receipted charges used to get one email each). Terminal day-7 locking
+ * stays in `autoLockOverdueCards` — this action never locks a card. No-ops per
+ * email when `RESEND_API_KEY` is unset (local/dev).
  *
- * Best-effort per email: a single rejected `notifyReceiptReminder` (e.g. a
- * Resend fetch failure) is logged and does NOT stop the loop — otherwise one
- * bad email mid-run would silently drop every remaining cardholder's
- * reminder for the day.
+ * Best-effort per email: a single rejected digest (e.g. a Resend fetch failure)
+ * is logged and does NOT stop the loop, so one bad email can't drop every
+ * remaining cardholder's reminder for the day.
  */
 export const sendReceiptReminders = internalAction({
   args: {},
@@ -3173,29 +3675,407 @@ export const sendReceiptReminders = internalAction({
       internal.cards.advanceReceiptReminders,
       {},
     );
-    for (const transactionId of flagged) {
+    const digests = await ctx.runQuery(internal.cards.getReceiptReminderDigests, {
+      flagged,
+      escalated,
+    });
+    for (const digest of digests) {
       try {
-        await notifyReceiptReminder(ctx, transactionId, false);
+        await notifyReceiptDigest(ctx, digest);
       } catch (err) {
         console.error(
-          "sendReceiptReminders: flag reminder email failed",
-          transactionId,
-          err,
-        );
-      }
-    }
-    for (const transactionId of escalated) {
-      try {
-        await notifyReceiptReminder(ctx, transactionId, true);
-      } catch (err) {
-        console.error(
-          "sendReceiptReminders: escalation reminder email failed",
-          transactionId,
+          "sendReceiptReminders: digest email failed",
+          digest.email,
           err,
         );
       }
     }
     return { flaggedCount: flagged.length, escalatedCount: escalated.length };
+  },
+});
+
+// ── Manual receipt nudge (Chase Receipts "Send reminder" / "Remind all") ────
+//
+// The tester-requested on-demand counterpart to the automated day-1/day-3
+// digest above: an FM/Treasurer viewing `/finances/receipt-chase` can nudge
+// ONE cardholder's group ("Send reminder") or every group at once ("Remind
+// all") without waiting for the next cron pass. Reuses `notifyReceiptDigest`
+// verbatim for the email (same subject/body shape the automated reminder
+// sends) and adds a best-effort SMS pointing at the text-to-receipt number
+// (`smsReceipts.ts`) — email is the required channel; SMS never blocks it.
+//
+// Manager-gated (`requireFinanceManager`, same floor as `lockCard`/
+// `cancelCard`) and RATE-LIMITED to one nudge per cardholder per
+// `MANUAL_NUDGE_WINDOW_MS` (24h) via `receiptNudgeAttempts` — the same
+// checked-and-recorded-atomically pattern `beginRevealCardDetails` uses for
+// its own rate limit, just with a "skip, don't error" outcome instead of a
+// thrown `RATE_LIMITED`: a second click inside the window comes back
+// `outcome:"already_nudged"` so the UI can show "Nudged today" instead of an
+// error toast.
+
+// Mirrors finances.ts's `ROLLUP_SCAN_LIMIT` (currently 5000) — duplicated as
+// a literal rather than imported: finances.ts already imports several
+// helpers FROM this file (`isMissingReceiptCharge` etc.), and importing back
+// from it here would add a second edge to that same cycle. Keep in sync by
+// hand if that constant's value ever changes.
+const RECEIPT_NUDGE_SCAN_LIMIT = 5000;
+// At most one manual nudge per cardholder per this window.
+const MANUAL_NUDGE_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
+// A Chase Receipts page realistically has, at most, a few dozen cardholder
+// groups — bounds the per-group nudge-status lookup defensively.
+const CHASE_NUDGE_STATUS_LIMIT = 200;
+
+/**
+ * MIRRORS finances.ts's `txnMatchesMode` (line ~855) exactly — duplicated for
+ * the same reason as `RECEIPT_NUDGE_SCAN_LIMIT` above (avoiding a fresh
+ * cards.ts↔finances.ts import edge). Any change to the mode-matching rule
+ * must be mirrored in both places.
+ */
+function chaseTxnMatchesMode(tr: Doc<"transactions">, sandboxMode: boolean): boolean {
+  if (tr.source !== "increase_card" && tr.source !== "increase_ach") return true;
+  return matchesMode(tr.externalId ?? tr.sourceAccountId ?? null, sandboxMode);
+}
+
+/**
+ * MIRRORS finances.ts's `receiptChase`/`isSpend` "still owed a receipt"
+ * predicate exactly (a SPEND charge — outflow, not excluded/personal — with
+ * no receipt attached and not yet reconciled). Duplicated rather than
+ * imported for the same reason as above; the two must be kept in sync.
+ */
+function isReceiptChaseOwing(tr: Doc<"transactions">): boolean {
+  return (
+    tr.flow === "outflow" &&
+    tr.status !== "excluded" &&
+    tr.isPersonal !== true &&
+    tr.status !== "reconciled" &&
+    tr.receiptStorageId == null
+  );
+}
+
+/**
+ * MIRRORS finances.ts's `makeCardholderResolver`: the txn's own `personId`,
+ * else the person who owns its `cardId`. Duplicated rather than imported for
+ * the same reason as the two helpers above.
+ */
+async function resolveChaseCardholderId(
+  ctx: QueryCtx,
+  tr: Doc<"transactions">,
+): Promise<Id<"people"> | null> {
+  if (tr.personId) return tr.personId;
+  if (!tr.cardId) return null;
+  const card = await ctx.db.get(tr.cardId);
+  return card?.cardholderPersonId ?? null;
+}
+
+/** One cardholder's current missing-receipt bundle, resolved for a manual
+ *  nudge — the SAME shape `getReceiptReminderDigests` builds for the
+ *  automated digest, plus `personId`/`phone` so the caller can rate-limit and
+ *  SMS. */
+type ManualNudgeTarget = {
+  personId: Id<"people">;
+  email: string | null;
+  phone: string | null;
+  cardholderName: string;
+  anyEscalated: boolean;
+  charges: Array<{ amountCents: number; merchantName: string | null; escalated: boolean }>;
+};
+
+const manualNudgeTargetValidator = v.object({
+  personId: v.id("people"),
+  email: v.union(v.string(), v.null()),
+  phone: v.union(v.string(), v.null()),
+  cardholderName: v.string(),
+  anyEscalated: v.boolean(),
+  charges: v.array(reminderChargeValidator),
+});
+
+/**
+ * Resolve who to nudge + what they currently owe: EVERY cardholder (or just
+ * `personId`, when given) with at least one charge still missing a receipt
+ * RIGHT NOW — the exact same "owing" set `finances.receiptChase` renders, so
+ * a manual nudge can never disagree with the list the FM is looking at. The
+ * "Unattributed" bucket (no resolvable cardholder) is silently skipped —
+ * mirrors `receiptChase`'s own doc comment: there's no one to chase for it.
+ *
+ * `scope`/`chapterId` are the SAME pair `receiptChase` takes (#383) — a
+ * manager nudging from a central/peeked-chapter Chase Receipts view must
+ * nudge THAT scope's cardholders, never silently the caller's own chapter.
+ * The branch structure below is `receiptChase`'s byte-for-byte, upgraded from
+ * its viewer floor to a MANAGER floor at every branch (nudging is a write,
+ * not a read) — `requireFinanceManager`/`requireCentralFinanceRole` resolve
+ * the caller's role via their OWN home chapter (which already unions in any
+ * central grant), never the peeked scope itself, exactly like
+ * `receiptChase`'s `requireFinanceCentral(ctx, homeChapterId)` calls.
+ *
+ * Manager-gated. Internal — only `sendReceiptNudge` (the public action)
+ * calls this.
+ */
+export const getManualNudgeTargets = internalQuery({
+  args: {
+    personId: v.optional(v.id("people")),
+    scope: v.optional(v.literal("central")),
+    chapterId: v.optional(v.id("chapters")),
+  },
+  returns: v.array(manualNudgeTargetValidator),
+  handler: async (
+    ctx,
+    { personId, scope: scopeArg, chapterId: chapterIdArg },
+  ): Promise<ManualNudgeTarget[]> => {
+    const homeChapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    let scope: Id<"chapters"> | "central";
+    if (scopeArg === "central") {
+      await requireCentralFinanceRole(ctx, homeChapterId, "manager");
+      scope = "central";
+    } else if (chapterIdArg != null && chapterIdArg !== homeChapterId) {
+      await requireCentralFinanceRole(ctx, homeChapterId, "manager");
+      scope = chapterIdArg;
+    } else {
+      await requireFinanceManager(ctx, homeChapterId);
+      scope = chapterIdArg ?? homeChapterId;
+    }
+
+    const sandboxMode = await readSandbox(ctx);
+    const owing = (
+      await ctx.db
+        .query("transactions")
+        .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", scope))
+        .order("desc")
+        .take(RECEIPT_NUDGE_SCAN_LIMIT)
+    )
+      .filter((tr) => chaseTxnMatchesMode(tr, sandboxMode))
+      .filter(isReceiptChaseOwing);
+
+    const byPerson = new Map<string, ManualNudgeTarget>();
+    for (const tr of owing) {
+      const holderId = await resolveChaseCardholderId(ctx, tr);
+      if (!holderId) continue; // Unattributed — nobody to nudge.
+      if (personId && holderId !== personId) continue;
+      const key = holderId as string;
+      let entry = byPerson.get(key);
+      if (!entry) {
+        const person = await ctx.db.get(holderId);
+        if (!person) continue;
+        entry = {
+          personId: holderId,
+          email: person.pwEmail ?? person.email ?? null,
+          phone: person.phone ?? null,
+          cardholderName: person.name,
+          anyEscalated: false,
+          charges: [],
+        };
+        byPerson.set(key, entry);
+      }
+      entry.charges.push({
+        amountCents: tr.amountCents,
+        merchantName: tr.merchantName ?? null,
+        escalated: tr.receiptReminderStage === "escalated",
+      });
+    }
+    return [...byPerson.values()].map((e) => ({
+      ...e,
+      anyEscalated: e.charges.some((c) => c.escalated),
+    }));
+  },
+});
+
+/**
+ * Checks-and-records the manual-nudge rate limit ATOMICALLY for ONE
+ * cardholder (same one-mutation check+insert shape as
+ * `beginRevealCardDetails`'s own rate limiter): returns `true` (and inserts
+ * the attempt row) iff no manual nudge was recorded for them in the last
+ * `MANUAL_NUDGE_WINDOW_MS`; returns `false` (no insert) otherwise, so the
+ * caller skips sending and reports `outcome:"already_nudged"` instead of
+ * throwing. Re-asserts the manager gate itself (defense in depth — mirrors
+ * every other `beginX` internal mutation in this file, e.g. `beginCancelCard`)
+ * even though its only caller already checked via `getManualNudgeTargets`.
+ */
+export const beginManualNudgeAttempt = internalMutation({
+  args: { personId: v.id("people") },
+  returns: v.boolean(),
+  handler: async (ctx, { personId }): Promise<boolean> => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireFinanceManager(ctx, chapterId);
+
+    const key = `person:${personId}`;
+    const windowStart = Date.now() - MANUAL_NUDGE_WINDOW_MS;
+    const recent = await ctx.db
+      .query("receiptNudgeAttempts")
+      .withIndex("by_key_and_time", (q) => q.eq("key", key).gte("createdAt", windowStart))
+      .first();
+    if (recent) return false;
+    // Swept daily by maintenance.sweepRateLimitAttempts (crons.ts) once older
+    // than MANUAL_NUDGE_WINDOW_MS.
+    await ctx.db.insert("receiptNudgeAttempts", { key, createdAt: Date.now() });
+    return true;
+  },
+});
+
+/** The Chase Receipts page's per-cardholder "already nudged" state: every
+ *  `personId` (from `personIds`) currently inside its 24h manual-nudge
+ *  window, with the timestamp of that nudge — lets the UI render "Nudged
+ *  today" for a group without the caller having to attempt (and get told
+ *  "already_nudged" by) `sendReceiptNudge` first. Manager-gated, same floor
+ *  as the nudge action itself; bounded to a page's worth of groups. */
+export const getManualNudgeStatus = query({
+  args: { personIds: v.array(v.id("people")) },
+  returns: v.array(v.object({ personId: v.id("people"), lastManualNudgeAt: v.number() })),
+  handler: async (ctx, { personIds }) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireFinanceManager(ctx, chapterId);
+
+    const windowStart = Date.now() - MANUAL_NUDGE_WINDOW_MS;
+    const out: Array<{ personId: Id<"people">; lastManualNudgeAt: number }> = [];
+    for (const personId of personIds.slice(0, CHASE_NUDGE_STATUS_LIMIT)) {
+      const key = `person:${personId}`;
+      const recent = await ctx.db
+        .query("receiptNudgeAttempts")
+        .withIndex("by_key_and_time", (q) => q.eq("key", key).gte("createdAt", windowStart))
+        .order("desc")
+        .first();
+      if (recent) out.push({ personId, lastManualNudgeAt: recent.createdAt });
+    }
+    return out;
+  },
+});
+
+/** Best-effort SMS nudge pointing at the text-to-receipt number
+ *  (`smsReceipts.ts`) — mirrors `replyToSmsSender`'s shape (no-op without
+ *  Twilio configured, swallows its own failures, never throws). Returns
+ *  whether it actually attempted (and didn't error on) a send. */
+async function sendManualNudgeSms(
+  ctx: ActionCtx,
+  phone: string,
+  charges: Array<{ amountCents: number; merchantName: string | null }>,
+): Promise<boolean> {
+  const creds = await resolveTwilioCredentials(ctx);
+  if (!creds) return false;
+  const to = normalizePhone(phone);
+  if (!to) return false;
+
+  const count = charges.length;
+  const fmt = (c: { amountCents: number; merchantName: string | null }) =>
+    `$${(c.amountCents / 100).toFixed(2)}${c.merchantName ? ` at ${c.merchantName}` : ""}`;
+  const body =
+    count === 1
+      ? `Reminder: you still owe a receipt for ${fmt(charges[0])}. Reply here with a photo to file it.`
+      : `Reminder: you still owe receipts for ${count} card charges (starting with ${fmt(charges[0])}). Reply here with a photo of each to file it.`;
+  try {
+    await sendSms(creds, { to, body });
+    return true;
+  } catch (err) {
+    console.log(`[cards] sendReceiptNudge: SMS failed: ${String(err)}`);
+    return false;
+  }
+}
+
+const nudgeResultValidator = v.object({
+  personId: v.id("people"),
+  cardholderName: v.string(),
+  outcome: v.union(
+    v.literal("sent"),
+    v.literal("already_nudged"),
+    v.literal("no_email"),
+  ),
+  emailSent: v.boolean(),
+  smsSent: v.boolean(),
+});
+type NudgeResult = typeof nudgeResultValidator.type;
+
+/**
+ * Manual, on-demand receipt nudge — the Chase Receipts page's "Send
+ * reminder" (`personId` set, one cardholder) and "Remind all" (`personId`
+ * omitted, every cardholder currently owing a receipt) buttons both call
+ * this SAME action.
+ *
+ * Per target cardholder:
+ *  1. Skip with `outcome:"no_email"` if they have no reachable email at all
+ *     — email is the required channel (mirrors `getReceiptReminderDigests`
+ *     dropping an unreachable cardholder from the automated digest); nothing
+ *     is sent and the 24h rate-limit slot is NOT consumed.
+ *  2. Otherwise check-and-record the 24h rate limit
+ *     (`beginManualNudgeAttempt`); `outcome:"already_nudged"` (no send) if
+ *     one was already recorded.
+ *  3. Send the SAME digest email `notifyReceiptDigest` sends for the
+ *     automated reminder (best-effort — a failed send still counts as
+ *     "sent" for rate-limiting purposes, matching how the automated digest
+ *     treats its own failures: logged, never thrown).
+ *  4. Best-effort SMS if a phone is on file + Twilio resolves
+ *     (`sendManualNudgeSms`) — never blocks or fails the email path.
+ *
+ * Manager-gated: `getManualNudgeTargets` (step 0) throws `FORBIDDEN` for a
+ * non-manager caller before anything else runs. `scope`/`chapterId` are
+ * forwarded straight through to it — the SAME pair the Chase Receipts page
+ * passes to `finances.receiptChase` (#383), so a nudge from a central/
+ * peeked-chapter view targets that scope, not the caller's own chapter.
+ */
+export const sendReceiptNudge = action({
+  args: {
+    personId: v.optional(v.id("people")),
+    scope: v.optional(v.literal("central")),
+    chapterId: v.optional(v.id("chapters")),
+  },
+  returns: v.object({ results: v.array(nudgeResultValidator) }),
+  handler: async (ctx, { personId, scope, chapterId }): Promise<{ results: NudgeResult[] }> => {
+    const targets: ManualNudgeTarget[] = await ctx.runQuery(
+      internal.cards.getManualNudgeTargets,
+      { personId, scope, chapterId },
+    );
+
+    const results: NudgeResult[] = [];
+    for (const target of targets) {
+      if (target.charges.length === 0) continue;
+
+      if (!target.email) {
+        results.push({
+          personId: target.personId,
+          cardholderName: target.cardholderName,
+          outcome: "no_email",
+          emailSent: false,
+          smsSent: false,
+        });
+        continue;
+      }
+
+      const ok: boolean = await ctx.runMutation(internal.cards.beginManualNudgeAttempt, {
+        personId: target.personId,
+      });
+      if (!ok) {
+        results.push({
+          personId: target.personId,
+          cardholderName: target.cardholderName,
+          outcome: "already_nudged",
+          emailSent: false,
+          smsSent: false,
+        });
+        continue;
+      }
+
+      let emailSent = false;
+      try {
+        await notifyReceiptDigest(ctx, {
+          email: target.email,
+          cardholderName: target.cardholderName,
+          anyEscalated: target.anyEscalated,
+          charges: target.charges,
+        });
+        emailSent = true;
+      } catch (err) {
+        console.error("[cards] sendReceiptNudge: email failed", target.email, err);
+      }
+
+      const smsSent = target.phone
+        ? await sendManualNudgeSms(ctx, target.phone, target.charges)
+        : false;
+
+      results.push({
+        personId: target.personId,
+        cardholderName: target.cardholderName,
+        outcome: "sent",
+        emailSent,
+        smsSent,
+      });
+    }
+    return { results };
   },
 });
 

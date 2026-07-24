@@ -1972,3 +1972,6 @@ export * from "./emailBlocks";
 
 // ── Email-campaign block renderer (HTML + plaintext) ──────────────────────────
 export * from "./emailRender";
+
+// ── @mention markup for plain-text notes fields ───────────────────────────────
+export * from "./mentions";

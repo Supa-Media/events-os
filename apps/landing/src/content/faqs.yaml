@@ -1,0 +1,33 @@
+# =====================================================================
+# FAQs — homepage "Burning Questions" accordion
+# =====================================================================
+# Markdown is supported in `answer`. Use \n for line breaks.
+# =====================================================================
+
+- id: how-to-get-involved
+  question: How can I get involved?
+  answer: |
+    We welcome individuals who are passionate about worship and Jesus to
+    join us! You can get involved by volunteering your time, donating to
+    support our programs, or keeping track with our events and amplifying
+    them on your social media pages.
+
+    See [how you can serve](https://publicworship.life/serve/) for current
+    needs and to let us know you're interested.
+
+- id: how-donations-used
+  question: How are donations used?
+  answer: |
+    Your donations play a crucial role in supporting our mission. They
+    are used to fund our various projects we execute on to reach people
+    through worship. This includes things such as purchasing equipment,
+    transportation, and food for volunteers.
+
+- id: church-affiliation
+  question: Are you a part of a church?
+  answer: |
+    We're not affiliated with any specific church, denomination, or
+    political group. We're a nonprofit that is rooted in Biblical
+    Christianity. However many of our founding members are active church
+    leaders in FOUNT NYC. If you want to learn more, visit
+    [www.fount.nyc](https://fount.nyc).

@@ -1,0 +1,18 @@
+# =====================================================================
+# Impact stats — homepage "Transformative Impact" section
+# =====================================================================
+
+- id: reach
+  value: "700,000+"
+  label: People Reached
+  sublabel: Our worship has reached the hearts of many individuals on social media platforms such as Instagram & TikTok
+
+- id: events
+  value: "15+"
+  label: Worship Events
+  sublabel: We have put on a multitude of public worship events and recordings all across the NYC area
+
+- id: team
+  value: "10+"
+  label: Team Members
+  sublabel: We have built an amazing team of creatives, and mission driven people to help us execute on this vision, and we are still growing!

@@ -8,6 +8,7 @@ import { Popover } from "../../../components/ui/Popover";
 import { MarkdownEditor, MarkdownView } from "../../../components/markdown";
 import { DocAssistantPanel } from "../../../components/ai/DocAssistantPanel";
 import { colors } from "../../../lib/theme";
+import { webAppUrl } from "../../../lib/appUrl";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 
 // How-To kinds, shared between the in-cell switcher (grid/cells) and this
@@ -190,7 +191,7 @@ export default function DocEditorScreen() {
   // `(app)` group adds no URL segment) and would bounce recipients to login.
   const webUrl =
     Platform.OS === "web" && typeof window !== "undefined"
-      ? `${window.location.origin}/d/${doc.shareId}`
+      ? webAppUrl(`/d/${doc.shareId}`)
       : `/d/${doc.shareId}`;
   const deepLink = `eventsos://d/${doc.shareId}`;
   const isInternal = doc.visibility === "internal";

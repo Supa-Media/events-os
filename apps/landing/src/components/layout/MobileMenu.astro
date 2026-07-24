@@ -1,0 +1,73 @@
+---
+import CloseIcon from "../icons/CloseIcon.astro";
+import Logo from "../icons/Logo.astro";
+import Button from "../ui/Button.astro";
+import { asset } from "../../lib/asset";
+
+export interface Props {
+  brand?: "public-worship" | "global-echo";
+}
+
+const { brand = "public-worship" } = Astro.props;
+const home = asset(brand === "global-echo" ? "/ge" : "/");
+
+const navLinks = [
+  { label: "About", href: `${home}#about` },
+  { label: "Impact", href: `${home}#impact` },
+  { label: "Links", href: `${home}#links` },
+  { label: "FAQ", href: `${home}#faq` },
+  { label: "Statement of Beliefs", href: asset("/beliefs") },
+  { label: "Volunteer", href: asset("/serve") },
+  { label: "Collaborate", href: asset("/collaborate") },
+  { label: "Artists", href: asset("/artists") },
+];
+---
+
+<div
+  id="mobile-menu-panel"
+  data-mobile-menu-panel
+  aria-hidden="true"
+  class="fixed inset-0 z-40 bg-cream translate-x-full transition-transform duration-200 ease-out md:hidden flex flex-col"
+  role="dialog"
+  aria-modal="true"
+  aria-label="Mobile navigation"
+>
+  <div class="flex items-center justify-between px-5 py-5 border-b border-ink/5">
+    <Logo brand={brand} />
+    <button
+      type="button"
+      data-mobile-menu-close
+      aria-label="Close menu"
+      class="inline-flex h-11 w-11 items-center justify-center rounded-full border border-red-500 text-red-500"
+    >
+      <CloseIcon class="h-5 w-5" />
+    </button>
+  </div>
+
+  <nav class="flex-1 overflow-y-auto px-5 py-8" aria-label="Mobile primary">
+    <ul class="flex flex-col gap-5">
+      {
+        navLinks.map((l) => (
+          <li>
+            <a
+              href={l.href}
+              class="block py-2 font-display text-2xl font-normal text-ink hover:text-red-500"
+            >
+              {l.label}
+            </a>
+          </li>
+        ))
+      }
+    </ul>
+  </nav>
+
+  <div class="border-t border-ink/5 px-5 py-6">
+    <Button
+      href="mailto:hello@publicworship.life"
+      variant="primary"
+      class="w-full"
+    >
+      Contact Us
+    </Button>
+  </div>
+</div>

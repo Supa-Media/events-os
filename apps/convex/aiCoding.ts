@@ -27,7 +27,17 @@ import type { ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { v } from "convex/values";
 import { Id } from "./_generated/dataModel";
-import { aiCostUsd, type TransactionStatus } from "@events-os/shared";
+import {
+  aiCostUsd,
+  OLLAMA_DEFAULT_CHAT_MODEL,
+  type AiEngineProvider,
+  type TransactionStatus,
+} from "@events-os/shared";
+import {
+  chatCompletion,
+  resolveEngineModel,
+  type AiEngineConfig,
+} from "./lib/aiEngine";
 
 /**
  * The OpenRouter model finance auto-coding calls on. Config, not code:
@@ -70,6 +80,7 @@ async function logUsageEvent(
     transactionId: Id<"transactions">;
     cardholderPersonId: Id<"people"> | undefined;
     triggeredBy: TriggeredBy;
+    provider: AiEngineProvider;
     model: string;
     outcome: "suggested" | "failed" | "no_suggestion";
     usage: OpenRouterUsage | undefined;
@@ -77,14 +88,19 @@ async function logUsageEvent(
 ): Promise<void> {
   const promptTokens = p.usage?.prompt_tokens ?? 0;
   const completionTokens = p.usage?.completion_tokens ?? 0;
+  // Cost: Ollama is subscription-based (no per-call charge) — log the token
+  // counts but ZERO cost. OpenRouter prefers the gateway's exact billed
+  // `usage.cost`, else the curated price-table estimate.
   const costUsd =
-    typeof p.usage?.cost === "number"
-      ? p.usage.cost
-      : aiCostUsd(p.model, {
-          inputTokens: promptTokens,
-          outputTokens: completionTokens,
-          cachedTokens: p.usage?.prompt_tokens_details?.cached_tokens,
-        });
+    p.provider === "ollama"
+      ? 0
+      : typeof p.usage?.cost === "number"
+        ? p.usage.cost
+        : aiCostUsd(p.model, {
+            inputTokens: promptTokens,
+            outputTokens: completionTokens,
+            cachedTokens: p.usage?.prompt_tokens_details?.cached_tokens,
+          });
   try {
     await ctx.runMutation(internal.aiCodingData.recordUsageEvent, {
       feature: "finance_auto_coding",
@@ -174,6 +190,24 @@ interface SuggestionContext {
       budgetId: Id<"budgets"> | null;
     }[];
   };
+  // Grounding evidence from the chapter's recent HUMAN decisions (see
+  // `aiCodingData.gatherCodingEvidence` / `lib/codingEvidence.ts`). Labels are
+  // pre-resolved on the DB side — this action has no `ctx.db`. Rendered into
+  // its own prompt section below; never used to sanitize (the model must still
+  // echo a real id from the funds/categories/events/projects lists).
+  evidence: {
+    merchantHistory: {
+      kind: "category" | "budget";
+      label: string;
+      count: number;
+      exact: boolean;
+    }[];
+    candidateBudgetSpend: {
+      label: string;
+      nearbyCount: number;
+      similarMerchant: boolean;
+    }[];
+  };
 }
 
 /** How a coding attempt originated — threaded through to the `aiUsageEvents`
@@ -182,8 +216,6 @@ interface SuggestionContext {
  *  (`aiCodingData.ingestSuggestionSweep`); "manual" = a bookkeeper tapping
  *  the Reconcile grid's per-row "Suggest" button. */
 type TriggeredBy = "sweep" | "ingest" | "manual";
-
-const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 /** Abort a hung completion — a coding suggestion is best-effort, never a stall. */
 const OPENROUTER_TIMEOUT_MS = 30_000;
@@ -277,6 +309,7 @@ async function codeTransaction(
   transactionId: Id<"transactions">,
   context: SuggestionContext,
   triggeredBy: TriggeredBy,
+  modelOverride?: string,
 ): Promise<null | {
   fundId: Id<"funds"> | undefined;
   categoryId: Id<"budgetCategories"> | undefined;
@@ -286,16 +319,22 @@ async function codeTransaction(
   model: string;
   suggestedAt: number;
 }> {
-  // No key → degrade gracefully: no network, no write, no suggestion.
-  const apiKey = process.env.OPENROUTER_API_KEY;
-  if (!apiKey) {
+  // Resolve the active AI engine (provider + key + global model), stored-first
+  // → env fallback. No key → degrade gracefully: no network, no write, no
+  // suggestion (same as before, now provider-aware).
+  const config = (await ctx.runQuery(
+    internal.integrationSettings.readAiEngineConfig,
+    {},
+  )) as AiEngineConfig;
+  if (!config.apiKey) {
     console.log(
-      "[aiCoding] OPENROUTER_API_KEY unset — skipping AI coding suggestion.",
+      `[aiCoding] No ${config.provider} API key configured — skipping AI coding suggestion.`,
     );
     return null;
   }
 
-  const { transaction, funds, categories, events, projects, person } = context;
+  const { transaction, funds, categories, events, projects, person, evidence } =
+    context;
 
   // Compact, id-labelled context so the model can only echo REAL ids back.
   const fundLines = funds
@@ -363,6 +402,44 @@ async function codeTransaction(
       ].join("\n")
     : "(no cardholder on file for this transaction)";
 
+  // EVIDENCE from the chapter's recent HUMAN decisions (merchant history) +
+  // tier-1/2 corroborating spend on the candidate budgets (see
+  // `aiCodingData.gatherCodingEvidence`). This is the strongest signal the
+  // model gets — "a human coded a charge like this one to X before" beats a
+  // same-name-only guess. Bounded upstream (top-k per signal) and hard-capped
+  // here so it can never dominate the prompt.
+  const EVIDENCE_CHAR_CAP = 1500;
+  const merchantHistoryLines = evidence.merchantHistory.map((e) => {
+    const times = `${e.count} time${e.count === 1 ? "" : "s"}`;
+    const how = e.exact ? "exact merchant match" : "similar merchant";
+    return `  - ${e.kind} "${e.label}" (${times}, ${how})`;
+  });
+  const candidateSpendLines = evidence.candidateBudgetSpend.map((e) => {
+    const bits: string[] = [];
+    if (e.nearbyCount > 0)
+      bits.push(
+        `${e.nearbyCount} charge${e.nearbyCount === 1 ? "" : "s"} nearby in time`,
+      );
+    if (e.similarMerchant) bits.push("a similar merchant was coded here");
+    return `  - budget "${e.label}": ${bits.join("; ")}`;
+  });
+  const hasEvidence =
+    merchantHistoryLines.length > 0 || candidateSpendLines.length > 0;
+  const evidenceSection = (
+    hasEvidence
+      ? [
+          merchantHistoryLines.length > 0
+            ? `charges like this were previously coded, BY A HUMAN, to:\n${merchantHistoryLines.join("\n")}`
+            : "",
+          candidateSpendLines.length > 0
+            ? `corroborating spend on candidate budgets:\n${candidateSpendLines.join("\n")}`
+            : "",
+        ]
+          .filter(Boolean)
+          .join("\n")
+      : "(no comparable past charges found in recent history)"
+  ).slice(0, EVIDENCE_CHAR_CAP);
+
   const systemPrompt =
     "You are a nonprofit bookkeeper's assistant. Given ONE card transaction, " +
     "the chapter's funds/budget categories, and its events/projects (each " +
@@ -378,7 +455,12 @@ async function codeTransaction(
     "without a budget), just not a valid `budgetId` value. A match to the " +
     "cardholder's own event/project, or a candidate close in time to the " +
     "charge, is a strong signal — weigh both over a same-name-only guess that " +
-    "is neither. Only ever reference ids that appear in the provided lists — " +
+    "is neither. The EVIDENCE section is your STRONGEST signal: it reports how " +
+    "a HUMAN coded charges like this one before (same/similar merchant) plus " +
+    "recent corroborating spend on candidate budgets — prefer a category/" +
+    "budget with real evidence over a plausible-looking guess with none, and " +
+    "lower your confidence when the evidence is thin or absent. Only ever " +
+    "reference ids that appear in the provided lists — " +
     'never invent an id. Reply with a SINGLE JSON object and nothing else: ' +
     '{"fundId"?, "categoryId"?, "budgetId"?, "confidence" (0-1), "rationale"}. ' +
     "Omit a field when you have no good match. You never move money — a " +
@@ -392,6 +474,8 @@ async function codeTransaction(
     `amount: ${(transaction.amountCents / 100).toFixed(2)} (${transaction.flow})`,
     `postedAt: ${new Date(transaction.postedAt).toISOString()}`,
     "",
+    `EVIDENCE (from this chapter's recent HUMAN codings — weigh heavily)\n${evidenceSection}`,
+    "",
     `CARDHOLDER\n${personSection}`,
     "",
     `FUNDS\n${fundLines || "(none)"}`,
@@ -403,78 +487,56 @@ async function codeTransaction(
     `EVENTS (ranked nearest the charge date first)\n${eventLines || "(none)"}`,
   ].join("\n");
 
-  // Raw OpenRouter fetch (mirrors aiActions.ts). Best-effort: ANY network /
-  // parse failure returns null rather than throwing into the caller.
-  const model = codingModel();
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), OPENROUTER_TIMEOUT_MS);
-  let content: string;
-  let usage: OpenRouterUsage | undefined;
-  try {
-    const res = await fetch(OPENROUTER_URL, {
-      method: "POST",
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-        "HTTP-Referer": "https://events-os.app",
-        "X-OpenRouter-Title": "Chapter OS",
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
-        response_format: { type: "json_object" },
-        max_tokens: 500,
-        // Ask the gateway to return the exact billed cost + token details, so
-        // the audit trail (`aiUsageEvents`) accounts real numbers, not just
-        // an estimate — same flag `aiActions.ts` uses for the assistant.
-        usage: { include: true },
-      }),
-    });
-    if (!res.ok) {
-      console.log(`[aiCoding] OpenRouter call failed (${res.status}).`);
-      await logUsageEvent(ctx, {
-        chapterId: transaction.chapterId,
-        transactionId,
-        cardholderPersonId: person?._id,
-        triggeredBy,
-        model,
-        outcome: "failed",
-        usage: undefined,
-      });
-      return await recordFailedAttempt(
-        ctx,
-        transactionId,
-        `OpenRouter call failed (${res.status}).`,
-        model,
-      );
-    }
-    const json: any = await res.json();
-    content = json?.choices?.[0]?.message?.content ?? "";
-    usage = json?.usage as OpenRouterUsage | undefined;
-  } catch (err) {
-    console.log(`[aiCoding] OpenRouter request errored: ${String(err)}`);
+  // One completion through the switchable AI engine (OpenRouter or Ollama, per
+  // the global setting). Best-effort: ANY network / API / parse failure returns
+  // null (after logging a failed audit row) rather than throwing. Model: per-call
+  // override > stored global `aiModel` > per-provider default.
+  const model = resolveEngineModel(config, {
+    override: modelOverride,
+    openrouterDefault: codingModel(),
+    ollamaDefault: OLLAMA_DEFAULT_CHAT_MODEL,
+  });
+  const result = await chatCompletion(config, {
+    model,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: userPrompt },
+    ],
+    responseFormat: { type: "json_object" },
+    maxTokens: 500,
+    timeoutMs: OPENROUTER_TIMEOUT_MS,
+  });
+  if (!result.ok) {
+    // The typed error carries a human-readable reason (status + body snippet) —
+    // persist it so the failure isn't silent (the owner's complaint).
+    console.log(`[aiCoding] AI coding call failed: ${result.message}`);
     await logUsageEvent(ctx, {
       chapterId: transaction.chapterId,
       transactionId,
       cardholderPersonId: person?._id,
       triggeredBy,
+      provider: config.provider,
       model,
       outcome: "failed",
       usage: undefined,
     });
-    return await recordFailedAttempt(
-      ctx,
-      transactionId,
-      `OpenRouter request errored: ${String(err)}`,
-      model,
-    );
-  } finally {
-    clearTimeout(timer);
+    return await recordFailedAttempt(ctx, transactionId, result.message, model);
   }
+  const content = result.content;
+  // Map the normalized usage back onto the `OpenRouterUsage` shape the audit
+  // logger reads (cost is only present for OpenRouter; Ollama → undefined →
+  // logged as $0).
+  const usage: OpenRouterUsage | undefined = result.usage
+    ? {
+        prompt_tokens: result.usage.promptTokens,
+        completion_tokens: result.usage.completionTokens,
+        cost: result.usage.costUsd,
+        prompt_tokens_details:
+          result.usage.cachedTokens != null
+            ? { cached_tokens: result.usage.cachedTokens }
+            : undefined,
+      }
+    : undefined;
 
   const proposal = parseModelJson(content);
   if (!proposal) {
@@ -486,6 +548,7 @@ async function codeTransaction(
       transactionId,
       cardholderPersonId: person?._id,
       triggeredBy,
+      provider: config.provider,
       model,
       outcome: "failed",
       usage,
@@ -553,6 +616,7 @@ async function codeTransaction(
     transactionId,
     cardholderPersonId: person?._id,
     triggeredBy,
+    provider: config.provider,
     model,
     outcome: "suggested",
     usage,
@@ -588,7 +652,12 @@ async function codeTransaction(
 }
 
 export const suggestCoding = action({
-  args: { transactionId: v.id("transactions") },
+  args: {
+    transactionId: v.id("transactions"),
+    // Per-call model override — the retry-UI hook (plumbed now for a follow-up
+    // PR). Wins over the stored global `aiModel` + the per-provider default.
+    modelOverride: v.optional(v.string()),
+  },
   returns: v.union(v.null(), suggestionValidator),
   handler: async (ctx, args) => {
     // Load the transaction + its chapter's funds/categories/projects + the
@@ -597,7 +666,13 @@ export const suggestCoding = action({
       internal.aiCodingData.loadForSuggestion,
       { transactionId: args.transactionId },
     );
-    return await codeTransaction(ctx, args.transactionId, context, "manual");
+    return await codeTransaction(
+      ctx,
+      args.transactionId,
+      context,
+      "manual",
+      args.modelOverride,
+    );
   },
 });
 
@@ -616,6 +691,7 @@ export const suggestCodingSystem = internalAction({
   args: {
     transactionId: v.id("transactions"),
     triggeredBy: v.optional(v.union(v.literal("sweep"), v.literal("ingest"))),
+    modelOverride: v.optional(v.string()),
   },
   returns: v.union(v.null(), suggestionValidator),
   handler: async (ctx, args) => {
@@ -628,6 +704,7 @@ export const suggestCodingSystem = internalAction({
       args.transactionId,
       context,
       args.triggeredBy ?? "sweep",
+      args.modelOverride,
     );
   },
 });

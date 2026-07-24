@@ -14,6 +14,7 @@ import {
   Screen,
   Narrow,
   FULL_WIDTH,
+  BackLink,
   Card,
   Button,
   SectionHeader,
@@ -31,6 +32,7 @@ import { PlanSections } from "../../../components/event/PlanSections";
 import { EventTodos } from "../../../components/event/EventTodos";
 import { GuidesSection } from "../../../components/event/GuidesSection";
 import { SandboxScope } from "../../../components/event/SandboxScope";
+import { MentionDataProvider } from "../../../components/mentions/MentionDataProvider";
 import {
   ModuleRollupRow,
   confirmRemoveModule,
@@ -94,6 +96,13 @@ export default function EventDetailScreen() {
   const eventRolesRaw = useQuery(api.roles.listForEvent, { eventId });
   const moduleData = useQuery(api.modules.listForEvent, { eventId });
   const summaries = useQuery(api.events.moduleSummaries, { eventId });
+  // Just enough of the ticketing page to know whether this event is
+  // tickets-only (RSVPs off) — drives the "RSVP page" → "Event page" copy
+  // switch below and in EventTools. Same query TicketingTab itself uses, so
+  // this is a shared subscription, not a second fetch.
+  const ticketingData = useQuery(api.ticketing.getAdminPage, { eventId });
+  const rsvpEnabled = ticketingData?.page?.rsvpEnabled !== false;
+  const ticketsLabel = rsvpEnabled ? "RSVP page" : "Event page";
   const myWork = useQuery(
     api.events.myWork,
     meView ? { eventId } : "skip",
@@ -318,7 +327,7 @@ export default function EventDetailScreen() {
   // tab). Selecting a section drills in to `?tab=<key>`; unknown/missing/legacy
   // (`?tab=overview`) keys fall back to the overview.
   const PLAN = "plan";
-  // Tickets (the public event page) and Money (the ONE money surface for
+  // Tickets (the public RSVP page) and Money (the ONE money surface for
   // this event, retiring the old separate Budget tab) are operational TOOLS,
   // not areas — they open from the overview tools row but live at
   // `?tab=tickets|money` so deep links and back/forward keep working.
@@ -339,10 +348,11 @@ export default function EventDetailScreen() {
   // The plan overview is a MOBILE-only surface; on desktop a real section is
   // always active, so `isOverview` is never true there.
   const isOverview = isMobile && activeTab === PLAN;
-  // Label shown on a drilled-in section's back bar.
+  // Label shown on a drilled-in section's back bar. "RSVP page" leads with
+  // ticketing language once RSVPs are off (see `ticketsLabel` above).
   const activeSectionLabel =
     activeTab === "tickets"
-      ? "Event page"
+      ? ticketsLabel
       : activeTab === "money"
         ? "Money"
         : (tabs.find((t) => t.key === activeTab)?.label ?? "Section");
@@ -540,6 +550,12 @@ export default function EventDetailScreen() {
     // Training sandboxes scope every person picker below (roles, grid cells,
     // crew) to the learner + placeholder people — enforced server-side; the
     // scope just carries the event id down to the pickers.
+    //
+    // MentionDataProvider: fetched once here, it makes every free-text grid
+    // cell on this screen (Tasks details, Comms/Run of Show/Supplies/Permits/
+    // Debrief notes, Crew expectations…) @mention-aware. Template editors
+    // deliberately don't mount it, so their identical grids stay plain.
+    <MentionDataProvider>
     <SandboxScope value={event.isTraining === true ? String(eventId) : null}>
       <Stack.Screen options={{ headerShown: false }} />
       <View className="flex-1 flex-row">
@@ -547,14 +563,13 @@ export default function EventDetailScreen() {
           <Screen maxWidth={FULL_WIDTH}>
         <Narrow>
         <ToastView toast={toast} onDismiss={dismiss} />
-        {/* Breadcrumb / back */}
-        <Pressable
-          onPress={() => router.replace("/")}
-          className="mb-4 flex-row items-center gap-1.5 self-start active:opacity-70"
-        >
-          <Icon name="arrow-left" size={15} color={colors.muted} />
-          <Text className="text-sm font-medium text-muted">Events</Text>
-        </Pressable>
+        {/* Breadcrumb / back. Tab switches (`?tab=`) update via
+            `router.setParams`, which merges params on the CURRENT route
+            rather than pushing a new history entry (confirmed against
+            expo-router's routing internals) — so `canGoBack`/`back` here
+            steps straight past tab noise to wherever actually navigated to
+            this event, never through the tabs themselves. */}
+        <BackLink fallback="/" />
 
         {/* Header + What's-next show on desktop (always) and on the mobile plan
             overview. A drilled-in mobile section shows a compact back bar
@@ -706,6 +721,7 @@ export default function EventDetailScreen() {
                 onDayOf={() => router.push(`/event/${eventId}/day-of`)}
                 onTickets={() => router.setParams({ tab: "tickets" })}
                 ticketsActive={activeTab === "tickets"}
+                ticketsLabel={ticketsLabel}
                 onMoney={() => router.setParams({ tab: "money" })}
                 moneyActive={activeTab === "money"}
                 isTraining={event.isTraining === true}
@@ -742,6 +758,7 @@ export default function EventDetailScreen() {
                 onDayOf={() => router.push(`/event/${eventId}/day-of`)}
                 onTickets={() => router.setParams({ tab: "tickets" })}
                 ticketsActive={false}
+                ticketsLabel={ticketsLabel}
                 onMoney={() => router.setParams({ tab: "money" })}
                 moneyActive={false}
                 isTraining={event.isTraining === true}
@@ -954,6 +971,7 @@ export default function EventDetailScreen() {
         onClose={() => setOwnerOpen(false)}
       />
     </SandboxScope>
+    </MentionDataProvider>
   );
 }
 

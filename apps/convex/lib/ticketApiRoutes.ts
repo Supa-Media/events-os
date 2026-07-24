@@ -51,12 +51,22 @@ function optStr(value: unknown): string | undefined {
 /** Coerce an untrusted cart payload into checkout line items (validated server-side). */
 function toCartItems(
   raw: unknown,
-): Array<{ ticketTypeId: Id<"ticketTypes">; quantity: number }> {
+): Array<{
+  ticketTypeId: Id<"ticketTypes">;
+  quantity: number;
+  attendeeNames?: string[];
+}> {
   if (!Array.isArray(raw)) return [];
-  return raw.map((item) => ({
-    ticketTypeId: (item as { ticketTypeId: Id<"ticketTypes"> }).ticketTypeId,
-    quantity: Number((item as { quantity: unknown }).quantity),
-  }));
+  return raw.map((item) => {
+    const names = (item as { attendeeNames?: unknown }).attendeeNames;
+    return {
+      ticketTypeId: (item as { ticketTypeId: Id<"ticketTypes"> }).ticketTypeId,
+      quantity: Number((item as { quantity: unknown }).quantity),
+      ...(Array.isArray(names)
+        ? { attendeeNames: names.map((n) => String(n ?? "")) }
+        : {}),
+    };
+  });
 }
 
 export function registerTicketApiRoutes(http: HttpRouter): void {
@@ -165,6 +175,42 @@ export function registerTicketApiRoutes(http: HttpRouter): void {
     ),
   });
 
+  // Guest sign-in: look up a guest by email/phone, send a code, then trade the
+  // code for their guest token. `start` always returns {ok:true} (no
+  // enumeration); `verify` returns {token} or the same generic 400 as a wrong
+  // code. `method` is coerced to the "email"|"phone" union the mutation accepts.
+  http.route({
+    path: "/api/tickets/signin-start",
+    method: "POST",
+    handler: jsonPost((ctx, body) =>
+      ctx.runMutation(api.ticketingVerification.startGuestSignIn, {
+        slug: String(body.slug ?? ""),
+        method: body.method === "phone" ? "phone" : "email",
+        contact: String(body.contact ?? ""),
+      }),
+    ),
+  });
+
+  http.route({
+    path: "/api/tickets/signin-verify",
+    method: "POST",
+    handler: jsonPost(async (ctx, body) => {
+      const result = await ctx.runMutation(
+        api.ticketingVerification.verifyGuestSignIn,
+        {
+          slug: String(body.slug ?? ""),
+          method: body.method === "phone" ? "phone" : "email",
+          contact: String(body.contact ?? ""),
+          code: String(body.code ?? ""),
+        },
+      );
+      // Wrong/expired code (or unknown contact) is a soft failure so attempt
+      // counts persist — surface it as the same 400 shape as thrown errors.
+      if (!result.ok) throw new ConvexError({ message: result.error });
+      return result;
+    }),
+  });
+
   http.route({
     path: "/api/tickets/comment",
     method: "POST",
@@ -201,8 +247,15 @@ export function registerTicketApiRoutes(http: HttpRouter): void {
         slug: String(body.slug ?? ""),
         name: String(body.name ?? ""),
         email: String(body.email ?? ""),
+        phone: optStr(body.phone),
         token: optStr(body.token),
         items: toCartItems(body.items),
+        // Optional add-on gift bundled into the SAME checkout (the "also
+        // donate?" upsell) — undefined/absent means tickets only.
+        donationCents:
+          body.donationCents === undefined
+            ? undefined
+            : Math.floor(Number(body.donationCents)),
       }),
     ),
   });

@@ -4,6 +4,7 @@ import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import { Pill } from "../../../components/ui";
 import { SandboxModeBanner } from "../../../components/finance/SandboxModeBanner";
+import { ScopeBadge } from "../../../components/finance/ScopeBadge";
 
 /**
  * Finance sub-navigation. The outer AppShell provides the app chrome; this
@@ -13,7 +14,7 @@ import { SandboxModeBanner } from "../../../components/finance/SandboxModeBanner
  *
  * The tab SET itself branches on the caller's REAL finance seats
  * (`financeRoles.mySeats`, WP-0.2): a seat holder gets the manager tab bar
- * (Dashboard · Reconcile · Cards · Reimbursements) — the desk each of those
+ * (Dashboard · Reconcile · Receipts · Cards · Reimbursements) — the desk each of those
  * renders (central / chapter) still resolves INSIDE the screen. A caller with
  * NO finance seat (the member/cardholder case, D3) gets the reduced member
  * set instead — My Card · My Transactions · Reimbursements — so they never
@@ -30,9 +31,19 @@ import { SandboxModeBanner } from "../../../components/finance/SandboxModeBanner
  */
 const ACCOUNTS_TAB = { label: "Accounts", path: "/finances/accounts" };
 
+// Budgets — "budgets at a glance" — is the one tab BOTH sets carry: read-only
+// spent-vs-room-left visibility is deliberately open to every team member
+// (the FM's top ask — cardholders shouldn't have to ask her), and seat
+// holders get the same tab so both personas are looking at one shared page
+// when a cardholder asks about it. Backed by the ungated-by-design
+// `finances.budgetsGlance` (see its doc comment).
+const BUDGETS_TAB = { label: "Budgets", path: "/finances/budgets" };
+
 const SEAT_TABS: { label: string; path: string }[] = [
   { label: "Dashboard", path: "/finances" },
   { label: "Reconcile", path: "/finances/reconcile" },
+  { label: "Receipts", path: "/finances/receipts" },
+  BUDGETS_TAB,
   { label: "Cards", path: "/finances/cards" },
   { label: "Reimbursements", path: "/finances/reimbursements" },
 ];
@@ -40,6 +51,7 @@ const SEAT_TABS: { label: string; path: string }[] = [
 const MEMBER_TABS: { label: string; path: string }[] = [
   { label: "My Card", path: "/finances/cards" },
   { label: "My Transactions", path: "/finances/my-transactions" },
+  BUDGETS_TAB,
   { label: "Reimbursements", path: "/finances/reimbursements" },
 ];
 
@@ -94,6 +106,16 @@ export default function FinancesLayout() {
             />
           ))}
         </ScrollView>
+      </View>
+      {/* Founder directive: finance scope must be unmistakable, even from a
+          bare screenshot of just this content column — see `ScopeBadge`'s
+          doc for the three distinct treatments (Central / chapter desk /
+          peek). Lives here (not inside a screen) so every finance tab, not
+          just the Dashboard, carries it. Its own horizontal inset matches
+          `Screen`'s content padding without touching the Slot wrapper below
+          (every screen manages its own padding via `Screen`/`Narrow`). */}
+      <View className="px-4 pt-3 sm:px-6">
+        <ScopeBadge />
       </View>
       <View className="flex-1">
         <Slot />

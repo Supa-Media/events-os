@@ -22,16 +22,13 @@ import { FONTS, FAVICON } from "./landingPageStyles";
 // ── Types the render fns accept (structural — the orchestrator passes query
 //    results straight through) ────────────────────────────────────────────────
 
-/** Chapter display data for the form (from api.lib.reimburseApiRoutes.chapterForReimburse). */
+/** Chapter display data for the form (from api.lib.reimburseApiRoutes.chapterForReimburse).
+ *  Deliberately just name + slug — NO funds/categories (owner mandate,
+ *  public-page privacy): categorizing a line is a finance manager's
+ *  review-time job, not something a logged-out claimant sees or picks. */
 export type ReimburseChapterView = {
   slug: string;
   name: string;
-  categories: Array<{
-    id: string;
-    name: string;
-    fundId: string;
-    fundName: string | null;
-  }>;
 };
 
 /** Claimant status view (from api.reimbursements.getPublicReimbursement). */
@@ -139,9 +136,10 @@ select.forminput{appearance:none;-webkit-appearance:none;background-image:url("d
 .badge svg{width:11px;height:11px;stroke:currentColor;}
 .badge.success{background:var(--success-bg);color:var(--success);}.badge.warn{background:var(--warn-bg);color:var(--warn);}
 .badge.info{background:var(--info-bg);color:var(--info);}.badge.neutral{background:var(--sunken);color:var(--muted);}.badge.accent{background:var(--accent-soft);color:var(--accent);}
-.li-head{display:grid;grid-template-columns:1fr 150px 96px 34px;gap:8px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);padding:0 2px;}
-.li-row{display:grid;grid-template-columns:1fr 150px 96px 34px;gap:8px;align-items:center;}
+.li-head{display:grid;grid-template-columns:1fr 130px 96px 34px;gap:8px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);padding:0 2px;}
+.li-row{display:grid;grid-template-columns:1fr 130px 96px 34px;gap:8px;align-items:center;}
 .li-receipt{grid-column:1 / -1;}
+.li-receipt.missing .dropzone{border-color:var(--accent);color:var(--accent-hover);}
 .dropzone{border:1px dashed var(--border-strong);border-radius:var(--r-md);background:var(--sunken);padding:10px 12px;display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13px;cursor:pointer;width:100%;text-align:left;}
 .dropzone svg{width:17px;height:17px;stroke:var(--muted);flex:0 0 17px;}
 .receipt-chip{display:inline-flex;align-items:center;gap:6px;background:var(--success-bg);color:var(--success);border-radius:var(--r-sm);padding:3px 8px;font-size:12px;font-weight:600;}
@@ -170,7 +168,7 @@ select.forminput{appearance:none;-webkit-appearance:none;background-image:url("d
 .summ .sr:last-child{border-bottom:none;background:var(--sunken);}
 .hide{display:none;}
 .footnote{text-align:center;color:var(--faint);font-size:12px;margin-top:24px;}
-@media (max-width:640px){.two{grid-template-columns:1fr;}.li-head,.li-row{grid-template-columns:1fr 96px 34px;}.li-head span:nth-child(2),.li-row .catcell{display:none;}}
+@media (max-width:640px){.two{grid-template-columns:1fr;}.li-head,.li-row{grid-template-columns:1fr 96px 34px;}.li-head span:nth-child(2){display:none;}.li-row .datecell{grid-column:1/-1;order:3;}}
 `;
 
 const ICON_ATTRS = `fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"`;
@@ -198,15 +196,22 @@ function pubbar(chapterName: string): string {
 
 /**
  * The blank submission form for a chapter. The client script populates the
- * line-items grid (starting with one row), tracks receipt files in memory,
- * computes the live total, and on submit calls /api/reimburse/submit, uploads
- * each line's receipt, then redirects to ?token=<token> (the status state).
+ * line-items grid (starting with one row), and for EACH line requires a
+ * description, amount, receipt, and transaction date. Receipts now upload
+ * BEFORE submit (via `/api/reimburse/pre-upload-url`, no token) — the client
+ * uploads every line's receipt first, then calls /api/reimburse/submit with
+ * each line's `receiptStorageId` + `transactionDate` already attached, plus
+ * the required bank destination (routing + account + type). An optional
+ * planned purchase date (in the pre-approval callout) rides along ONLY when
+ * the claimant taps "Ask for pre-approval" — it tells the approver when the
+ * spend is coming and drives the post-date receipt follow-up email. No
+ * category picker here — categorization is a finance manager's review-time
+ * job.
  */
 export function renderReimburseForm(chapter: ReimburseChapterView): string {
   const init = JSON.stringify({
     slug: chapter.slug,
     name: chapter.name,
-    categories: chapter.categories,
   }).replace(/</g, "\\u003c");
 
   return `<!doctype html>
@@ -230,26 +235,41 @@ ${pubbar(chapter.name)}
 
       <div class="field">
         <span class="fl">What's this for?</span>
-        <input id="f_purpose" class="forminput" placeholder="Event or project (e.g. Worship with Strangers · July)">
-        <span class="xs faint">Tell finance where it goes. Pick a category per line below and the fund fills in automatically.</span>
+        <textarea id="f_purpose" class="forminput" rows="2" placeholder="What was this spend for? (e.g. Snacks + gaffer tape for Worship with Strangers · July)"></textarea>
+        <span class="xs faint">A finance manager will file this under the right budget when they review it.</span>
       </div>
 
       <div class="field">
         <span class="fl">Line items</span>
-        <div class="li-head"><span>Description</span><span class="catcell">Category</span><span style="text-align:right">Amount</span><span></span></div>
+        <div class="li-head"><span>Description</span><span>Date</span><span style="text-align:right">Amount</span><span></span></div>
         <div class="col gap12" id="lines"></div>
         <button id="addline" class="btn btn-ghost sm mt4" style="align-self:flex-start"><svg ${ICON_ATTRS}><use href="#i-plus"/></svg>Add line item</button>
+        <span class="xs faint">Every line needs a receipt (photo or PDF) and the date you paid.</span>
       </div>
 
       <div class="field">
         <span class="fl">Pay to — your bank</span>
-        <input id="f_bank" class="forminput" inputmode="numeric" maxlength="4" placeholder="Last 4 digits (e.g. 3391)">
-        <span class="xs faint">We only store the last four digits.</span>
+        <div class="two">
+          <div class="field"><span class="fl" style="font-size:10px">Routing number</span><input id="f_routing" class="forminput" inputmode="numeric" maxlength="9" placeholder="9 digits"></div>
+          <div class="field"><span class="fl" style="font-size:10px">Account number</span><input id="f_account" class="forminput" inputmode="numeric" placeholder="Account number"></div>
+        </div>
+        <div class="two mt8">
+          <div class="field"><span class="fl" style="font-size:10px">Name on the account</span><input id="f_holder" class="forminput" placeholder="Defaults to your name above"></div>
+          <div class="field"><span class="fl" style="font-size:10px">Account type</span>
+            <select id="f_funding" class="forminput">
+              <option value="checking">Checking</option>
+              <option value="savings">Savings</option>
+            </select>
+          </div>
+        </div>
+        <span class="xs faint">We verify these with our bank partner and store only a reference id + the last 4 digits — never the full account number.</span>
       </div>
 
       <div class="field"><span class="fl">Notes (optional)</span><textarea id="f_notes" class="forminput" rows="2" placeholder="Anything the finance team should know…"></textarea></div>
 
-      <div class="callout"><b>Was this pre-approved?</b> If it wasn't already in the budget, tap "Ask for pre-approval" instead — surprises can be sent back.</div>
+      <div class="callout"><b>Was this pre-approved?</b> If it wasn't already in the budget, tap "Ask for pre-approval" instead — surprises can be sent back.
+        <div class="field mt8"><span class="fl" style="font-size:10px">Asking for pre-approval? When do you plan to buy? (optional)</span><input id="f_planned" type="date" class="forminput" style="max-width:220px"></div>
+      </div>
 
       <div class="callout err hide" id="formerr"></div>
 
@@ -399,12 +419,12 @@ ${SYMBOLS}
 
 // ── Client scripts (vanilla JS, no template literals) ─────────────────────────
 
-/** Form-state browser script: line-item grid, receipts, total, submit. */
+/** Form-state browser script: line-item grid, PRE-SUBMIT receipt upload,
+ *  required per-line date, required bank destination, total, submit. */
 const REIMBURSE_FORM_SCRIPT = `
 (function(){
 "use strict";
 var R=window.__REIMB__;
-var CATS=R.categories||[];
 
 function $(id){return document.getElementById(id);}
 function el(tag,cls){var n=document.createElement(tag);if(cls)n.className=cls;return n;}
@@ -413,6 +433,15 @@ function centsOf(s){var t=(''+s).replace(/[^0-9.]/g,'');var n=parseFloat(t);if(!
 function money(c){return '$'+((c||0)/100).toFixed(2);}
 function showErr(msg){var e=$('formerr');e.textContent=msg;e.classList.remove('hide');window.scrollTo({top:document.body.scrollHeight,behavior:'smooth'});}
 function clearErr(){$('formerr').classList.add('hide');}
+/* "YYYY-MM-DD" (a <input type=date> value, local) → a ms timestamp at noon
+   local time (avoids UTC-midnight rollover reading as "yesterday"). */
+function dateToMs(s){
+  if(!s)return null;
+  var parts=s.split('-');if(parts.length!==3)return null;
+  var d=new Date(Number(parts[0]),Number(parts[1])-1,Number(parts[2]),12,0,0,0);
+  var t=d.getTime();
+  return isFinite(t)?t:null;
+}
 
 /* ── line rows ── */
 function addLine(){
@@ -420,17 +449,17 @@ function addLine(){
   var line=el('div','line');
   var row=el('div','li-row');
   var desc=el('input','forminput desc');desc.placeholder='What did you buy?';
-  var cat=el('select','forminput catcell cat');
-  var opt0=el('option');opt0.value='';opt0.textContent='Category…';cat.appendChild(opt0);
-  CATS.forEach(function(c){var o=el('option');o.value=c.id;o.setAttribute('data-fund',c.fundId);o.textContent=c.name;cat.appendChild(o);});
+  var dateWrap=el('div','datecell');
+  var date=el('input','forminput date');date.type='date';
+  dateWrap.appendChild(date);
   var amt=el('input','forminput amt');amt.style.textAlign='right';amt.inputMode='decimal';amt.placeholder='$0.00';
   amt.addEventListener('input',recalc);
   var rm=el('button','btn btn-ghost sm rm');rm.style.padding='6px';rm.innerHTML=svg('i-x');
   rm.addEventListener('click',function(){line.remove();recalc();});
-  row.appendChild(desc);row.appendChild(cat);row.appendChild(amt);row.appendChild(rm);
-  var rc=el('div','li-receipt mt8');
+  row.appendChild(desc);row.appendChild(dateWrap);row.appendChild(amt);row.appendChild(rm);
+  var rc=el('div','li-receipt mt8 missing');
   var file=el('input');file.type='file';file.accept='image/*,application/pdf';file.className='rfile';file.style.display='none';
-  var drop=el('button','dropzone');drop.type='button';drop.innerHTML=svg('i-upload')+'Add a receipt for this line — photo or PDF';
+  var drop=el('button','dropzone');drop.type='button';drop.innerHTML=svg('i-upload')+'Add a receipt for this line — photo or PDF (required)';
   drop.addEventListener('click',function(){file.click();});
   file.addEventListener('change',function(){renderReceipt(rc,file,drop);});
   rc.appendChild(file);rc.appendChild(drop);
@@ -442,14 +471,15 @@ function renderReceipt(rc,file,drop){
   var old=rc.querySelector('.receipt-chip');if(old)old.remove();
   if(file.files&&file.files[0]){
     drop.style.display='none';
+    rc.classList.remove('missing');
     var chip=el('span','receipt-chip');
     chip.innerHTML=svg('i-check')+'<span></span>';
     chip.querySelector('span').textContent=file.files[0].name;
     var x=el('button');x.type='button';x.innerHTML=svg('i-x');
-    x.addEventListener('click',function(){file.value='';chip.remove();drop.style.display='';});
+    x.addEventListener('click',function(){file.value='';chip.remove();drop.style.display='';rc.classList.add('missing');});
     chip.appendChild(x);
     rc.appendChild(chip);
-  }else{drop.style.display='';}
+  }else{drop.style.display='';rc.classList.add('missing');}
 }
 function eachLine(fn){var ls=document.querySelectorAll('#lines .line');for(var i=0;i<ls.length;i++)fn(ls[i],i);}
 function recalc(){
@@ -463,79 +493,94 @@ function api(path,body){
   return fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.error||'Something went wrong');return j;});});
 }
-function uploadFile(token,file){
-  return api('/api/reimburse/upload-url',{token:token}).then(function(r){
+function uploadFile(file){
+  return api('/api/reimburse/pre-upload-url',{chapterSlug:R.slug}).then(function(r){
     return fetch(r.uploadUrl,{method:'POST',headers:{'Content-Type':file.type||'application/octet-stream'},body:file})
       .then(function(res){if(!res.ok)throw new Error('Upload failed');return res.json();})
       .then(function(j){return j.storageId;});
   });
 }
 
-/* ── submit ── */
+/* ── collect + validate ── */
 function collect(){
-  var lines=[];var files=[];
+  var lines=[];var ok=true;var firstErr=null;
   eachLine(function(l){
     var desc=l.querySelector('.desc').value.trim();
     var amt=centsOf(l.querySelector('.amt').value);
-    if(!desc&&amt===0)return; /* skip blank rows */
-    var sel=l.querySelector('.cat');
-    var opt=sel.options[sel.selectedIndex];
-    var line={description:desc,amountCents:amt};
-    if(sel.value){line.categoryId=sel.value;var f=opt&&opt.getAttribute('data-fund');if(f)line.fundId=f;}
-    lines.push(line);
-    var fi=l.querySelector('.rfile');
-    files.push(fi&&fi.files&&fi.files[0]?fi.files[0]:null);
+    var dateVal=l.querySelector('.date').value;
+    var file=l.querySelector('.rfile');
+    file=file&&file.files&&file.files[0]?file.files[0]:null;
+    if(!desc&&amt===0&&!dateVal&&!file)return; /* skip a fully-blank row */
+    if(!desc&&!firstErr)firstErr='Every line needs a description.';
+    if(amt<=0&&!firstErr)firstErr='Every line needs an amount greater than $0.';
+    if(!dateVal&&!firstErr)firstErr='Every line needs the date you paid.';
+    if(!file&&!firstErr)firstErr='Every line needs a receipt (photo or PDF).';
+    if(!desc||amt<=0||!dateVal||!file){ok=false;return;}
+    lines.push({description:desc,amountCents:amt,transactionDate:dateToMs(dateVal),file:file});
   });
-  return {lines:lines,files:files};
+  if(ok&&lines.length===0){ok=false;firstErr='Add at least one line item.';}
+  return {ok:ok,error:firstErr,lines:lines};
 }
+
+/* ── submit ── */
 function submit(preApproval){
   clearErr();
   var name=$('f_name').value.trim();
   if(!name)return showErr('Please add your name.');
   var email=$('f_email').value.trim();
-  var c=collect();
-  if(c.lines.length===0)return showErr('Add at least one line item with an amount.');
-  for(var i=0;i<c.lines.length;i++){if(c.lines[i].amountCents<=0)return showErr('Every line needs an amount greater than $0.');if(!c.lines[i].description)return showErr('Every line needs a description.');}
-  var bank=$('f_bank').value.replace(/[^0-9]/g,'').slice(-4);
-  var payload={
-    chapterSlug:R.slug,
-    payeeName:name,
-    payeeEmail:email||undefined,
-    purpose:$('f_purpose').value.trim()||undefined,
-    bankAccountLast4:bank||undefined,
-    requestPreApproval:!!preApproval,
-    lines:c.lines
-  };
+  if(!email)return showErr('Please add your email.');
+  var purpose=$('f_purpose').value.trim();
   var notes=$('f_notes').value.trim();
-  if(notes)payload.purpose=(payload.purpose?payload.purpose+' — ':'')+notes;
+  if(notes)purpose=(purpose?purpose+' — ':'')+notes;
+  if(!purpose)return showErr("Tell us what this reimbursement is for.");
+  var c=collect();
+  if(!c.ok)return showErr(c.error||'Please fix the highlighted line items.');
+  var routing=$('f_routing').value.replace(/[^0-9]/g,'');
+  var account=$('f_account').value.replace(/[^0-9]/g,'');
+  if(routing.length!==9)return showErr('Routing number must be exactly 9 digits.');
+  if(account.length<4)return showErr('Please enter your full account number.');
+  var holder=$('f_holder').value.trim();
+  var funding=$('f_funding').value||'checking';
+  /* Planned purchase date rides only with "Ask for pre-approval" — the
+     backend rejects one on a plain submission. */
+  var planned=preApproval?dateToMs($('f_planned').value):null;
+
   var btnP=$('submit'),btnA=$('preapprove');
   btnP.disabled=true;btnA.disabled=true;
-  api('/api/reimburse/submit',payload).then(function(res){
-    var token=res.token;
-    /* upload each line's receipt (best-effort), matched to lines by order */
-    return getLineIds(token).then(function(ids){
-      var chain=Promise.resolve();
-      c.files.forEach(function(file,i){
-        if(!file||!ids||!ids[i])return;
-        var lineId=ids[i].lineId;
-        chain=chain.then(function(){
-          return uploadFile(token,file).then(function(storageId){
-            return api('/api/reimburse/attach-receipt',{token:token,lineId:lineId,receiptStorageId:storageId});
-          }).catch(function(){/* a failed receipt shouldn't block the request */});
-        });
+
+  /* Upload every line's receipt FIRST, then submit with each line already
+     carrying its receiptStorageId. */
+  var chain=Promise.resolve();
+  c.lines.forEach(function(line){
+    chain=chain.then(function(){
+      return uploadFile(line.file).then(function(storageId){
+        line.receiptStorageId=storageId;
       });
-      return chain.then(function(){return token;});
     });
-  }).then(function(token){
-    window.location.href=window.location.pathname+'?token='+encodeURIComponent(token);
+  });
+  chain.then(function(){
+    var payload={
+      chapterSlug:R.slug,
+      payeeName:name,
+      payeeEmail:email,
+      purpose:purpose,
+      requestPreApproval:!!preApproval,
+      plannedPurchaseDate:planned==null?undefined:planned,
+      lines:c.lines.map(function(l){
+        return {description:l.description,amountCents:l.amountCents,transactionDate:l.transactionDate,receiptStorageId:l.receiptStorageId};
+      }),
+      routingNumber:routing,
+      accountNumber:account,
+      accountHolderName:holder||undefined,
+      funding:funding
+    };
+    return api('/api/reimburse/submit',payload);
+  }).then(function(res){
+    window.location.href=window.location.pathname+'?token='+encodeURIComponent(res.token);
   }).catch(function(err){
     btnP.disabled=false;btnA.disabled=false;
     showErr(err.message||'Something went wrong. Please try again.');
   });
-}
-function getLineIds(token){
-  return fetch('/api/reimburse/lines?token='+encodeURIComponent(token))
-    .then(function(r){return r.ok?r.json():null;}).catch(function(){return null;});
 }
 
 /* ── wire up ── */

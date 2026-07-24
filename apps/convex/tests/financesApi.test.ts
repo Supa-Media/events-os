@@ -534,6 +534,7 @@ describe("listReconcile (server-side filters + counts + projections)", () => {
     const all = await s.as.query(api.finances.listReconcile, { filter: "all" });
     expect(all.counts).toEqual({
       all: 3, // t1, t2, t4 (t3 excluded)
+      spend: 2, // t1, t2 (t4 is inflow, not spend)
       needs_budget: 1, // t1
       missing_receipt: 1, // t1
       uncategorized: 2, // t1, t4
@@ -569,6 +570,40 @@ describe("listReconcile (server-side filters + counts + projections)", () => {
       filter: "ready",
     });
     expect(ready.rows.map((r) => r.id)).toEqual([t2]);
+
+    // no-dead-numbers: `spend` is the "Spent" KPI tile's drill-down target
+    // — every outflow row regardless of budget/receipt/status, but NOT the
+    // inflow row (t4).
+    const spend = await s.as.query(api.finances.listReconcile, { filter: "spend" });
+    expect(spend.rows.map((r) => r.id).sort()).toEqual([t1, t2].sort());
+  });
+
+  test("missing_receipt excludes a reconciled-but-receiptless row — matches receiptChase's predicate", async () => {
+    // Regression test: the pill used to count a `reconciled` row with no
+    // receipt (the treasurer closed it receipt-less on purpose), which is
+    // exactly what `receiptChase` NEVER counted — the two surfaces disagreed.
+    // A treasurer closed this row without a receipt on purpose; it should
+    // stay visible under `all`/`ready` but drop out of `missing_receipt`.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+
+    const closedNoReceipt = await insertTxn(s, { status: "reconciled" });
+    const stillOwing = await insertTxn(s, { status: "unreviewed" });
+
+    const all = await s.as.query(api.finances.listReconcile, { filter: "all" });
+    expect(all.counts.missing_receipt).toBe(1);
+    expect(all.rows.map((r) => r.id)).toEqual(
+      expect.arrayContaining([closedNoReceipt, stillOwing]),
+    );
+
+    const missingReceipt = await s.as.query(api.finances.listReconcile, {
+      filter: "missing_receipt",
+    });
+    expect(missingReceipt.rows.map((r) => r.id)).toEqual([stillOwing]);
+
+    const ready = await s.as.query(api.finances.listReconcile, { filter: "ready" });
+    expect(ready.rows.map((r) => r.id)).toEqual([closedNoReceipt]);
   });
 
   test("projects hasReceipt, cardLast4 and resolves the cardholder (personId OR card)", async () => {

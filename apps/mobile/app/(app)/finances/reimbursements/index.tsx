@@ -49,7 +49,8 @@ import { useMemo, useState } from "react";
 import { View, Text, Platform, Alert, Share } from "react-native";
 import * as Linking from "expo-linking";
 import { useRouter } from "expo-router";
-import { useQuery, useMutation } from "convex/react";
+import { webAppUrl } from "../../../../lib/appUrl";
+import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import type { FunctionReturnType } from "convex/server";
@@ -96,16 +97,35 @@ function notify(title: string, message: string) {
   else Alert.alert(title, message);
 }
 
-/** The `/reimburse-request` share-link page's URL. Web: the current origin —
- *  the page lives in this SAME Expo app, so wherever it's being viewed from
- *  IS where the link resolves (mirrors `EventHeader.tsx`'s `shareCrew` link).
- *  Native has no equivalent "this app's own web origin" signal, so it falls
- *  back to the app's own URL scheme (`Linking.createURL` — openable only by
- *  someone who already has the app installed; there's no universal-link
- *  domain configured yet, see `app.config.js`'s `intentFilters`). */
+/** After a successful `api.increase.payReimbursement` call, tell the manager
+ *  plainly whether the ACH transfer actually started or the request degraded
+ *  to the manual fallback (no linked destination / no active Increase account
+ *  / Increase env not wired) — never a fake "paid". Shared by the auto-pay
+ *  follow-up in `handleApprove` and the explicit "Pay by ACH" retry. */
+function notifyPayoutOutcome(payout: { provider: string; status: string }) {
+  if (payout.provider === "increase" && payout.status === "processing") {
+    notify(
+      "Paying",
+      "ACH transfer initiated from the chapter's Increase account.",
+    );
+  } else {
+    notify(
+      "Couldn't pay by ACH automatically",
+      "This request needs a manual payout — send the transfer from the chapter's Increase account, then use \"Mark paid\" (or retry \"Pay by ACH\" once the destination/account issue is fixed).",
+    );
+  }
+}
+
+/** The `/reimburse-request` share-link page's URL. Web: the current origin
+ *  plus the app's `/os` base path (`webAppUrl` — mirrors `EventHeader.tsx`'s
+ *  `shareCrew` link). Native has no equivalent "this app's own web origin"
+ *  signal, so it falls back to the app's own URL scheme (`Linking.createURL`
+ *  — openable only by someone who already has the app installed; there's no
+ *  universal-link domain configured yet, see `app.config.js`'s
+ *  `intentFilters`). */
 function reimburseRequestUrl(): string {
   if (Platform.OS === "web" && typeof window !== "undefined") {
-    return `${window.location.origin}/reimburse-request`;
+    return webAppUrl("/reimburse-request");
   }
   return Linking.createURL("/reimburse-request");
 }
@@ -296,6 +316,14 @@ function ManagerReimbursementsScreen() {
   // Payouts (viewer read) — used only to show a payout provider/status hint on
   // requests that have already been paid or are paying. Keyed by reimbursement.
   const payouts = useQuery(api.increase.listPayouts, {});
+
+  // Whether "Approve & pay" should auto-initiate the ACH payout right after
+  // approving (`approvalPolicy.autoPayOnApproval`, defaults ON — see
+  // `api.reimbursements.autoPayEnabled`'s doc comment). `undefined` while
+  // loading; `handleApprove` treats that the same as `true` (auto-pay is the
+  // default, and the query resolves almost immediately after `mySeats`/`list`
+  // already have).
+  const autoPayEnabled = useQuery(api.reimbursements.autoPayEnabled, {});
   const payoutByReimbursement = useMemo(() => {
     const map = new Map<
       Id<"reimbursementRequests">,
@@ -312,6 +340,7 @@ function ManagerReimbursementsScreen() {
   const preApprove = useMutation(api.reimbursements.preApprove);
   const reject = useMutation(api.reimbursements.reject);
   const markPaid = useMutation(api.increase.markPaidManually);
+  const payReimbursement = useAction(api.increase.payReimbursement);
   const { run, toast, dismiss } = useActionRunner();
 
   // Header "N open · $X" — non-terminal requests in the current view.
@@ -323,19 +352,35 @@ function ManagerReimbursementsScreen() {
     };
   }, [rows]);
 
+  // Approve (full "Approve & pay" or a partial "Approve lines…" selection),
+  // then — unless the chapter has opted out via
+  // `approvalPolicy.autoPayOnApproval:false` — immediately follow with
+  // `api.increase.payReimbursement` to auto-initiate the ACH payout. The
+  // approve step already committed independently by the time we get here:
+  // if the payout call fails (Increase down, no env key, no linked
+  // destination) it degrades to a `manual`/`pending` payout server-side and
+  // the request STAYS `approved` — `run`'s error toast (or
+  // `notifyPayoutOutcome`'s honest fallback notice) tells the manager to use
+  // "Mark paid" / retry "Pay by ACH" instead of silently pretending it paid.
   const handleApprove = (
     id: Id<"reimbursementRequests">,
     approvedLineIds?: Id<"reimbursementLineItems">[],
   ) =>
     run(() => approve({ reimbursementId: id, approvedLineIds }), {
       errorTitle: "Couldn't approve",
-    }).then((res) => {
-      if (res !== undefined) {
+    }).then(async (res) => {
+      if (res === undefined) return; // approve itself failed — already surfaced.
+      if (autoPayEnabled === false) {
         notify(
           "Approved",
-          "The ACH payout runs in a later phase — nothing has moved yet.",
+          "Automatic ACH payout is turned off for this chapter — send the transfer from the chapter's Increase account, then use \"Mark paid\".",
         );
+        return;
       }
+      const payout = await run(() => payReimbursement({ reimbursementId: id }), {
+        errorTitle: "Approved, but the ACH payout couldn't start",
+      });
+      if (payout !== undefined) notifyPayoutOutcome(payout);
     });
 
   const handlePreApprove = (id: Id<"reimbursementRequests">) =>
@@ -348,14 +393,26 @@ function ManagerReimbursementsScreen() {
       errorTitle: "Couldn't reject",
     }).then(() => {});
 
-  // Pay an approved request. The working Phase-4 path is a manual payout
-  // (`markPaidManually`): it marks the request `paid` and posts the ledger
-  // transfer, so the list re-queries the card into a read-only paid state.
-  // ACH auto-payout via Increase is a follow-up (destination-bank capture).
+  // Pay an approved request by hand — the fallback for when auto-pay (above)
+  // couldn't start the ACH transfer (no linked destination, no active
+  // Increase account, or Increase itself unreachable). Marks the request
+  // `paid` and posts the ledger transfer, so the list re-queries the card
+  // into a read-only paid state.
   const handleMarkPaid = (id: Id<"reimbursementRequests">) =>
     run(() => markPaid({ reimbursementId: id }), {
       errorTitle: "Couldn't mark paid",
     }).then(() => {});
+
+  // Retry the ACH payout on a request stuck `approved` because auto-pay
+  // didn't take the real branch (idempotent — `beginPayout` never double-pays,
+  // so this is safe to press again after fixing whatever degraded it, e.g.
+  // linking a destination or bringing Increase back).
+  const handleRetryPayout = (id: Id<"reimbursementRequests">) =>
+    run(() => payReimbursement({ reimbursementId: id }), {
+      errorTitle: "Couldn't start the ACH payout",
+    }).then((payout) => {
+      if (payout !== undefined) notifyPayoutOutcome(payout);
+    });
 
   const loading = rows === undefined;
 
@@ -391,8 +448,9 @@ function ManagerReimbursementsScreen() {
             </View>
           </View>
           <Text className="mb-4 text-sm text-muted">
-            Approve what volunteers and card-less team members spent, then pay
-            them by ACH from the chapter's Increase account.
+            Approve what volunteers and card-less team members spent — the ACH
+            payout to their bank starts automatically from the chapter's
+            Increase account.
           </Text>
 
           {/* "Personal charges outstanding" (D4) — same aggregate as the
@@ -439,7 +497,7 @@ function ManagerReimbursementsScreen() {
               title="No requests in this view"
               message={
                 activeFilter === "all"
-                  ? "Submitted reimbursements appear here for a finance manager to approve and pay by ACH."
+                  ? "Submitted reimbursements appear here for a finance manager to approve — the ACH payout starts automatically once approved."
                   : "Nothing matches this filter right now. Try another."
               }
             />
@@ -454,6 +512,7 @@ function ManagerReimbursementsScreen() {
                   onPreApprove={handlePreApprove}
                   onReject={handleReject}
                   onMarkPaid={handleMarkPaid}
+                  onRetryPayout={handleRetryPayout}
                 />
               ))}
             </View>

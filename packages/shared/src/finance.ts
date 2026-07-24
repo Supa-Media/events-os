@@ -184,6 +184,81 @@ export const TRANSACTION_STATUSES = [
 ] as const;
 export type TransactionStatus = (typeof TRANSACTION_STATUSES)[number];
 
+// ── Inbound email receipts (backfill pipeline) ───────────────────────────────
+// The lifecycle of ONE inbound email routed to the receipt-ingest webhook
+// (reply.publicworship.life via Resend). A row is created the moment a signed
+// `email.received` webhook lands and advances through OCR → match; its terminal
+// state is either an auto-attach (`matched`) or a human touch-point
+// (`needs_review`) / a dead end (`no_match`/`ignored`/`error`).
+export const INBOUND_RECEIPT_STATUSES = [
+  "pending", // received + deduped; OCR/match not run yet (scheduled)
+  "matched", // OCR'd + attached to exactly one transaction (auto)
+  "needs_review", // OCR'd but 0 or >1 candidates — a bookkeeper must pick
+  "no_match", // OCR'd, a clean amount read, but no unreceipted txn fits at all
+  "ignored", // sender not on the roster, or nothing to OCR (no attachment/body)
+  "error", // the pipeline threw (fetch/OCR/store) — retriable
+] as const;
+export type InboundReceiptStatus = (typeof INBOUND_RECEIPT_STATUSES)[number];
+
+// ── Receipts (first-class receipt documents) ─────────────────────────────────
+// A `receipts` row is a first-class receipt DOCUMENT, linked many-to-many to
+// `transactions` via `receiptLinks`. `RECEIPT_SOURCES` is how the document
+// itself entered the system: from an inbound `email` (the OCR pipeline), an
+// inbound `sms`/MMS text (the Twilio pipeline, `smsReceipts.ts` — the SAME
+// OCR→match→auto-attach policy, just fed by a text instead of an email), or a
+// direct in-app `upload` (the mobile attach path + the backfill of legacy
+// `transactions.receiptStorageId` documents).
+export const RECEIPT_SOURCES = ["email", "sms", "upload"] as const;
+export type ReceiptSource = (typeof RECEIPT_SOURCES)[number];
+
+// How a SINGLE receipt↔transaction link was made (`receiptLinks.source`):
+//  - `auto_email`: the email→OCR pipeline auto-matched a unique candidate,
+//  - `auto_sms`: the SMS/MMS→OCR pipeline auto-matched a unique candidate
+//    (`smsReceipts.ts`) — kept distinct from `auto_email` so the provenance
+//    of an auto-attach is never misattributed to the wrong channel,
+//  - `manual`: a bookkeeper picked the transaction by hand,
+//  - `upload`: created alongside a direct in-app receipt upload,
+//  - `backfill`: reconstructed from a legacy `transactions.receiptStorageId`
+//    by the receipts-foundation migration.
+export const RECEIPT_LINK_SOURCES = [
+  "auto_email",
+  "auto_sms",
+  "manual",
+  "upload",
+  "backfill",
+] as const;
+export type ReceiptLinkSource = (typeof RECEIPT_LINK_SOURCES)[number];
+
+// How much a receipt sender is trusted — the axis both the email and SMS OCR
+// pipelines' AUTOMATION policy keys off (never a permission grant). Both
+// inbound endpoints are public, so a `From:`/phone number is spoofable: only a
+// `team`/`roster` sender (one that resolves to a known `people` row) may EVER
+// trigger an auto-attach; every other class is always routed to human review,
+// never auto-attached and never reconciled.
+//  - `team`: resolves to a `people` row flagged `isTeamMember`,
+//  - `roster`: resolves to a `people` row (not core team),
+//  - `internal`: EMAIL ONLY — no person match, but the address is on the org
+//    email domain (`ALLOWED_EMAIL_DOMAIN`). A phone number has no equivalent
+//    "org domain" to trust, so `smsReceipts.ts#classifySmsSender` never
+//    returns this class — an unresolved phone is always `external`,
+//  - `external`: everything else (a stranger).
+export const RECEIPT_SENDER_CLASSES = [
+  "team",
+  "roster",
+  "internal",
+  "external",
+] as const;
+export type ReceiptSenderClass = (typeof RECEIPT_SENDER_CLASSES)[number];
+
+/** True iff a receipt-email sender is trusted enough to trigger an auto-attach
+ *  (a resolved roster/team member). `internal`/`external` senders are always
+ *  routed to human review — a spoofable From: must never move money. */
+export function receiptSenderCanAutoAttach(
+  senderClass: ReceiptSenderClass,
+): boolean {
+  return senderClass === "team" || senderClass === "roster";
+}
+
 // Flows that DON'T count toward category / budget spend. A reimbursement payout
 // is money leaving the account but the underlying expense was already booked
 // against its category on the line item, so counting the transfer too would
@@ -677,18 +752,20 @@ export const BACKER_UNIT_CENTS = 5000;
  *  affordability header and the transfer automation read the rate from. */
 export const CENTRAL_SKIM_PCT = 0.15;
 
-/** Monthly operating floor's FIXED component, in cents ($520). Covers the
- *  playbook's headcount-independent line items (WWS film $200 · WWS food $160
- *  · transport $100 · meeting food $100 · storage $60 · software $150 —
- *  actually $770 total at 5 teammates once the per-teammate component below is
- *  added; see the module doc comment for the full breakdown). */
-export const OPERATING_FLOOR_FIXED_CENTS = 52_000;
+/** Monthly operating floor's FIXED (headcount-independent) component, in cents
+ *  ($570). The City Launch Playbook's "fixed base": WWS film $200 · WWS event
+ *  food $160 · equipment transport $100 · storage $60 · software $50. Meeting
+ *  food is the PER-TEAMMATE component below (it scales with team size), not part
+ *  of this base. (Updated 2026-07-21 to the leaner software stack — was $520
+ *  with a $150 software line and meeting food folded into the base.) */
+export const OPERATING_FLOOR_FIXED_CENTS = 57_000;
 
-/** Monthly operating floor's PER-TEAMMATE component, in cents ($50/teammate).
- *  Sanity check against the playbook's stated $770 floor for a 5-person team:
+/** Monthly operating floor's PER-TEAMMATE component, in cents ($20/teammate) —
+ *  the monthly team-meeting meal at $20/person. Sanity check against the
+ *  playbook's stated $670 floor for a 5-person team:
  *  `OPERATING_FLOOR_FIXED_CENTS + 5 * OPERATING_FLOOR_PER_TEAMMATE_CENTS`
- *  = $520 + 5×$50 = $770. ✓ */
-export const OPERATING_FLOOR_PER_TEAMMATE_CENTS = 5000;
+ *  = $570 + 5×$20 = $670. ✓ (30 backers/~6 team → $690; 50/~7 → $710.) */
+export const OPERATING_FLOOR_PER_TEAMMATE_CENTS = 2000;
 
 /**
  * Backer-count tier thresholds (the playbook's deep-dive numbers, owner-
@@ -703,6 +780,101 @@ export const AFFORDABILITY_TIERS: readonly {
   { minBackers: 50, label: "+LTN" },
   { minBackers: 30, label: "+Eden" },
   { minBackers: 20, label: "WWS" },
+];
+
+// ── City Launch Playbook: public transparency breakdowns ─────────────────────
+// Single-sourced figures for the public `/give` page's "where your giving goes"
+// sections, so the page can NEVER drift from the real model. Every number below
+// is from the City Launch Playbook (Backer Model, Chapter Budget & Finances,
+// Chapter Team & Roles). Amounts are integer cents. Keep these truthful — the
+// giving page renders them verbatim.
+
+/** One labeled money line in a transparency breakdown. */
+export interface MoneyLine {
+  label: string;
+  amountCents: number;
+  note?: string;
+}
+
+/**
+ * The ~$670/mo monthly operating floor for a 5-person, 20-backer chapter — what
+ * recurring backers sustain every month. Sums to
+ * `OPERATING_FLOOR_FIXED_CENTS + 5 * OPERATING_FLOOR_PER_TEAMMATE_CENTS` = $670.
+ */
+export const MONTHLY_OPERATING_LINES: readonly MoneyLine[] = [
+  { label: "Film crew & editing (Worship With Strangers)", amountCents: 20_000 },
+  { label: "Food — team, musicians & volunteers", amountCents: 16_000 },
+  { label: "Equipment transport (gas + rideshare)", amountCents: 10_000 },
+  { label: "Monthly team-meeting meal ($20 × 5)", amountCents: 10_000 },
+  { label: "Storage unit (5×5)", amountCents: 6_000 },
+  { label: "Software & subscriptions", amountCents: 5_000 },
+];
+
+/**
+ * The one-time starter EQUIPMENT package (~$4,287) the central City Launch Fund
+ * buys so a new city owns its production kit from day one — the "what we're
+ * trying to buy" list. Durable, one-time; the chapter keeps it for years.
+ */
+export const LAUNCH_EQUIPMENT_LINES: readonly MoneyLine[] = [
+  { label: "4× Shure SM58 microphones", amountCents: 44_000 },
+  { label: "Keyboard", amountCents: 50_000 },
+  { label: "Guitar", amountCents: 50_000 },
+  { label: "Mixer", amountCents: 50_000 },
+  { label: "2× Speakers", amountCents: 100_000 },
+  { label: "200W battery", amountCents: 20_000 },
+  { label: "2000W battery", amountCents: 50_000 },
+  { label: "XLR cables, ties & accessories", amountCents: 20_000 },
+  { label: "Storage racks", amountCents: 10_000 },
+  { label: "Tax & shipping (est.)", amountCents: 34_700 },
+];
+
+/**
+ * The one-time NYC TRAINING TRIP (~$3,700) — the founding team of five comes to
+ * the mothership to learn the model firsthand before launching locally. Carried
+ * by central, never the new city's monthly budget.
+ */
+export const LAUNCH_TRAINING_TRIP_LINES: readonly MoneyLine[] = [
+  { label: "Flights (5 × ~$300 round-trip)", amountCents: 150_000 },
+  { label: "Lodging (shared, ~4 nights)", amountCents: 120_000 },
+  { label: "Local transit & meals (5 people)", amountCents: 100_000 },
+];
+
+/** A public backer tier — the canon event(s) a chapter GUARANTEES its backers at
+ *  each headcount, and the monthly revenue that headcount represents. */
+export interface PublicBackerTier {
+  minBackers: number;
+  monthlyCents: number;
+  commitment: string;
+}
+
+/**
+ * The three backer tiers as guarantees (not ceilings): the canon Public Worship
+ * identity a chapter commits to deliver at each backer headcount. 20 → WWS,
+ * 30 → +Eden, 50 → +Love Thy Neighbor. Monthly = headcount × `BACKER_UNIT_CENTS`.
+ */
+export const PUBLIC_BACKER_TIERS: readonly PublicBackerTier[] = [
+  { minBackers: 20, monthlyCents: 100_000, commitment: "Worship With Strangers, every month" },
+  { minBackers: 30, monthlyCents: 150_000, commitment: "+ Eden, the annual worship-and-picnic gathering" },
+  { minBackers: 50, monthlyCents: 250_000, commitment: "+ Love Thy Neighbor, the neighborhood block party" },
+];
+
+/** A chapter's 5-person volunteer core-team role and what it owns. */
+export interface ChapterCoreRole {
+  role: string;
+  owns: string;
+}
+
+/**
+ * The 5-person volunteer core team every chapter runs on — each role mirrors a
+ * central director. Leadership is volunteer; there is no chapter-level payroll.
+ * Grows to ~10 (adds +3 events, +2 music) for Eden / Love Thy Neighbor scale.
+ */
+export const CHAPTER_CORE_ROLES: readonly ChapterCoreRole[] = [
+  { role: "Chapter Director", owns: "Vision, alignment, leadership, fundraising & backers" },
+  { role: "Music Lead", owns: "Worship, musicians, sound" },
+  { role: "Event / Production Lead", owns: "Logistics, production, run of show" },
+  { role: "Marketing Lead", owns: "Reach, content, turnout" },
+  { role: "Treasurer", owns: "Budget, records, reimbursements" },
 ];
 
 /** Tier label shown below the lowest threshold in `AFFORDABILITY_TIERS`

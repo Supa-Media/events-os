@@ -216,11 +216,29 @@ export function CentralView({
       {/* 1. KPI band */}
       <TileRow>
         {spentTile ? (
-          <SpentTile label={spentTile.label} value={spentTile.value} meta={spentTile.meta} monthly={monthly} />
+          <SpentTile
+            label={spentTile.label}
+            value={spentTile.value}
+            meta={spentTile.meta}
+            monthly={monthly}
+            onPress={() =>
+              router.navigate(
+                `/finances/reconcile?scope=central&filter=spend&year=${year}&month=${month}&period=${period}` as never,
+              )
+            }
+          />
         ) : null}
-        {otherTiles.map((t, i) => (
-          <Tile key={i} label={t.label} value={t.value} meta={t.meta} />
-        ))}
+        {otherTiles.map((t, i) => {
+          // no-dead-numbers: the top-tag tile drills into the SAME
+          // `TagDetailModal` the "By tag" table row already opens
+          // (`tagRollupTableRows`'s own `onChevronPress`) — both read
+          // `data.tagRollups[0]`, so the tile's figure and the modal it
+          // opens can never disagree.
+          const topTag = data.tagRollups[0];
+          const onPress =
+            topTag && t.label === topTag.tagName ? () => setSelectedTag(topTag) : undefined;
+          return <Tile key={i} label={t.label} value={t.value} meta={t.meta} onPress={onPress} />;
+        })}
         {reviewTile ? (
           <ReviewLinkTile
             tile={reviewTile}
@@ -284,7 +302,18 @@ export function CentralView({
           <View>
             <SectionHeader title="Where it went" />
             <View className="rounded-lg border border-border bg-raised p-4 shadow-card">
-              <CategoryBars rollup={orgCategoryRollup} />
+              {/* no-dead-numbers: each row IS a tag rollup entry
+                  (`orgCategoryRollup` reshapes `data.tagRollups` one-for-one
+                  — see `tagRollupCategoryBars.ts`'s doc comment), so a tap
+                  opens the SAME `TagDetailModal` the "By tag" table row
+                  already does, for the matching tag by name. */}
+              <CategoryBars
+                rollup={orgCategoryRollup}
+                onPressRow={(name) => {
+                  const tag = data.tagRollups.find((t) => t.tagName === name);
+                  if (tag) setSelectedTag(tag);
+                }}
+              />
             </View>
           </View>
         </View>
@@ -487,31 +516,58 @@ function fakeRowId(key: string): Id<"budgets"> {
 // ── KPI tile variants ────────────────────────────────────────────────────────
 type CentralTile = CentralDash["tiles"][number];
 
-/** The "Spent · …" tile with its own org-wide sparkline in the top-right
- *  corner — mirrors `ChapterView`'s own `SpentTile` (not exported from
- *  there, so reimplemented here rather than reaching into that file). */
+/**
+ * The "Spent · …" tile with its own org-wide sparkline in the top-right
+ * corner — mirrors `ChapterView`'s own `SpentTile` (not exported from
+ * there, so reimplemented here rather than reaching into that file).
+ * no-dead-numbers: `onPress` drills into Reconcile (central scope) filtered
+ * to the exact rows that sum to this figure — see `filter:"spend"`'s own
+ * doc comment in `finances.ts`.
+ */
 function SpentTile({
   label,
   value,
   meta,
   monthly,
+  onPress,
 }: {
   label: string;
   value: string;
   meta: string;
   monthly: MonthlySpend | undefined;
+  onPress?: () => void;
 }) {
-  return (
-    <View className="min-w-[150px] flex-1 gap-1.5 rounded-lg border border-border bg-raised p-4 shadow-card">
+  const content = (
+    <>
       <View className="flex-row items-start justify-between gap-2">
         <Text className="text-2xs font-bold uppercase tracking-wider text-muted">{label}</Text>
         {monthly ? <SparkLine months={monthly.months} partialMonth={monthly.partialMonth} /> : null}
+        {onPress ? <Icon name="chevron-right" size={12} color={colors.accent} /> : null}
       </View>
-      <Text className="font-display text-2xl text-ink" style={{ fontVariant: ["tabular-nums"] }}>
+      <Text
+        className={`font-display text-2xl ${onPress ? "text-accent" : "text-ink"}`}
+        style={{ fontVariant: ["tabular-nums"] }}
+      >
         {value}
       </Text>
       {meta ? <Text className="text-xs text-muted">{meta}</Text> : null}
-    </View>
+    </>
+  );
+  if (!onPress) {
+    return (
+      <View className="min-w-[150px] flex-1 gap-1.5 rounded-lg border border-border bg-raised p-4 shadow-card">
+        {content}
+      </View>
+    );
+  }
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      className="min-w-[150px] flex-1 gap-1.5 rounded-lg border border-border bg-raised p-4 shadow-card web:hover:border-accent"
+    >
+      {content}
+    </Pressable>
   );
 }
 
@@ -546,7 +602,14 @@ function CityLaunchFundTile({ fund }: { fund: CityLaunchFund }) {
     : fund.periodNetCents !== 0
       ? `${fund.periodNetCents > 0 ? "+" : ""}${formatCents(fund.periodNetCents)} this period`
       : "15% skim of chapter revenue";
-  return <Tile label="City Launch Fund" value={formatCents(fund.positionCents)} meta={meta} />;
+  return (
+    <Tile
+      label="City Launch Fund"
+      value={formatCents(fund.positionCents)}
+      meta={meta}
+      tooltip="15% of chapter backer revenue routed here each month to fund the next city's launch."
+    />
+  );
 }
 
 // ── Right-column attention rail sections ─────────────────────────────────────
@@ -683,6 +746,7 @@ function UnattributedRail({
         detail={<Money cents={cents} className="text-2xs font-semibold text-ink" />}
         actionLabel={expanded ? "Hide" : "Review"}
         onPress={() => setExpanded((e) => !e)}
+        tooltip="This period's spend across every chapter with no budget linked. Only explicit links count — there's no automatic matching."
       />
       {expanded ? (
         <View className="ml-2 mt-2 gap-2 border-l border-border pl-3">

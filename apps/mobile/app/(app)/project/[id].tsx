@@ -18,7 +18,7 @@ import {
   Screen,
   Narrow,
   EmptyState,
-  Button,
+  BackLink,
   Icon,
   Avatar,
   SectionHeader,
@@ -100,12 +100,7 @@ export default function ProjectScreen() {
             message="It may have been deleted, or it belongs to another chapter."
           />
           <View className="mt-4 items-start">
-            <Button
-              title="Back to Work"
-              variant="secondary"
-              icon="arrow-left"
-              onPress={() => router.navigate("/team" as any)}
-            />
+            <BackLink fallback="/team" />
           </View>
         </Narrow>
       </Screen>
@@ -125,13 +120,7 @@ export default function ProjectScreen() {
   return (
     <Screen>
       <Narrow>
-        <Pressable
-          onPress={() => router.navigate("/team" as any)}
-          className="mb-4 flex-row items-center gap-1 self-start active:opacity-70"
-        >
-          <Icon name="arrow-left" size={15} color={colors.muted} />
-          <Text className="text-sm text-muted">Work</Text>
-        </Pressable>
+        <BackLink fallback="/team" />
 
         {/* Page header — the title/owner/date you'd read out when sharing. */}
         <View className="mb-4">

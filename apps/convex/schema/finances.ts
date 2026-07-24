@@ -23,6 +23,10 @@ import {
   PAYOUT_PROVIDERS,
   PAYOUT_STATUSES,
   INCREASE_ONBOARDING_STATUSES,
+  INBOUND_RECEIPT_STATUSES,
+  RECEIPT_SOURCES,
+  RECEIPT_LINK_SOURCES,
+  RECEIPT_SENDER_CLASSES,
   LEGACY_ACCOUNT_STATUSES,
   FINANCE_ROLES,
   FINANCE_ROLE_SCOPES,
@@ -483,9 +487,26 @@ export const reimbursementRequests = defineTable({
   identityVerified: v.optional(v.boolean()),
 
   purpose: v.optional(v.string()),
-  // What the spend was for (categorization is per line item).
+  // Pre-approval-to-spend: when the claimant PLANS to make the purchase (ms
+  // timestamp, noon-local by convention like line `transactionDate`). Only
+  // ever set on a request created with `requestPreApproval` (enforced in
+  // `createReimbursement`) — a normal submission is for money already spent,
+  // so a "planned" date is meaningless there.
+  plannedPurchaseDate: v.optional(v.number()),
+  // When the ONE-SHOT "your planned purchase date has passed — submit your
+  // receipts" follow-up email was sent (the daily reimbursement-reminder
+  // cron). `undefined` = not sent yet; its presence is what makes the
+  // follow-up fire exactly once (the recurring staleness nag is separate and
+  // keeps applying afterwards).
+  purchaseFollowUpSentAt: v.optional(v.number()),
+  // What the spend was for (categorization is per line item). Mutually
+  // exclusive (enforced in `createReimbursement`): at most ONE of
+  // event/project/budget. `budgetId` must be a RECURRING budget belonging to
+  // this chapter (an event/project's own budget is reached via
+  // `eventId`/`projectId` instead, never `budgetId` directly).
   eventId: v.optional(v.id("events")),
   projectId: v.optional(v.id("projects")),
+  budgetId: v.optional(v.id("budgets")),
 
   // Denormalized sum of line-item amounts (integer cents), and the approved
   // subtotal once a manager approves (supports partial approval).
@@ -534,7 +555,16 @@ export const reimbursementLineItems = defineTable({
   categoryId: v.optional(v.id("budgetCategories")),
   eventId: v.optional(v.id("events")),
   projectId: v.optional(v.id("projects")),
+  // REQUIRED (server-enforced in `createReimbursement`) for any line created
+  // through the submit mutations — `v.optional` only so a pre-existing legacy
+  // row (created before this field existed) still validates.
   receiptStorageId: v.optional(v.id("_storage")),
+  // The date the money was actually spent — REQUIRED (server-enforced in
+  // `createReimbursement`, sanity-checked: a finite ms timestamp, not more
+  // than 48h in the future, not older than 3 years) for any line created
+  // through the submit mutations. `v.optional` only so a pre-existing legacy
+  // row (created before this field existed) still validates.
+  transactionDate: v.optional(v.number()),
   // Partial approval: a line can be individually approved or rejected.
   approved: v.optional(v.boolean()),
   matchedTransactionId: v.optional(v.id("transactions")),
@@ -733,8 +763,9 @@ export const financeStripeCustomers = defineTable({
 
 // ── Card authorizations (real-time-decision log) ─────────────────────────────
 /** The log of Increase `card_authorization` real-time decisions (approve /
- *  decline from the monthly cap + validity + receipt-lock rules). Kept for
- *  audit + to reconcile against the eventual posted transaction. */
+ *  decline from the monthly cap + validity + receipt-lock + merchant
+ *  allow-list rules). Kept for audit + to reconcile against the eventual
+ *  posted transaction. */
 export const cardAuthorizations = defineTable({
   chapterId: v.id("chapters"),
   cardId: v.id("cards"),
@@ -750,6 +781,27 @@ export const cardAuthorizations = defineTable({
   .index("by_chapter", ["chapterId"])
   .index("by_card", ["cardId"])
   .index("by_increase_auth", ["increaseAuthId"]);
+
+// ── Card merchant allow-list (chapter policy) ────────────────────────────────
+/** The chapter's merchant allow-list for real-time card authorizations. ONE
+ *  row per chapter (the `approvalPolicy` shape), managed by a finance manager.
+ *  When `enforced` is true AND the list is non-empty,
+ *  `cards.decideCardAuthorization` DECLINES any authorization whose merchant
+ *  matches NO entry — name entries are case-insensitive substrings of the
+ *  merchant descriptor, category entries exact 4-digit MCC matches. Unenforced
+ *  (or empty) the list changes nothing. The arrays live on this one config doc
+ *  deliberately: they're BOUNDED SMALL (entry-count + per-entry length caps in
+ *  `cards.setMerchantPolicy`), far from any document limit. */
+export const cardMerchantPolicy = defineTable({
+  chapterId: v.id("chapters"),
+  enforced: v.boolean(),
+  // Case-insensitive substrings matched against the merchant descriptor.
+  allowedMerchantNames: v.array(v.string()),
+  // Exact 4-digit merchant category codes (MCCs).
+  allowedMerchantCategories: v.array(v.string()),
+  updatedByPersonId: v.optional(v.id("people")),
+  updatedAt: v.number(),
+}).index("by_chapter", ["chapterId"]);
 
 // ── Approval policy + audit ──────────────────────────────────────────────────
 /** Per-chapter approval thresholds. One row per chapter. */
@@ -927,6 +979,257 @@ export const webhookEvents = defineTable({
   summary: v.optional(v.string()),
 }).index("by_provider_and_event", ["provider", "eventId"]);
 
+// ── Inbound email receipts (backfill pipeline) ───────────────────────────────
+/** ONE inbound email routed to the receipt-ingest webhook
+ *  (`reply.publicworship.life` → Resend `email.received` → `/resend/inbound`).
+ *  This table is BOTH the idempotency ledger (deduped on the provider's
+ *  `emailId` via `by_email_id`, the same first-sight guard `webhookEvents`
+ *  gives the Stripe/Increase handlers) AND the operational state of the
+ *  OCR→match pipeline, so a redelivery no-ops and a human can see every email
+ *  that ever came in and what became of it.
+ *
+ *  NOT strictly chapter-scoped at insert time: the webhook commits a `pending`
+ *  row BEFORE the sender is resolved to a person/chapter (mirrors
+ *  `webhookEvents`' "deduped before a chapter can be resolved" rule). Once the
+ *  `processInboundReceipt` action resolves the sender it stamps `chapterId`
+ *  (a real chapter — inbound card receipts are chapter-owned) so the review
+ *  queue can scope by chapter.
+ *
+ *  Money is only ever MOVED by the existing `attachReceipt`-equivalent path
+ *  (`receiptInbox.attachMatchedReceipt`); this table records provenance +
+ *  the AI's OCR read, never a categorization the model made on its own. */
+export const inboundReceipts = defineTable({
+  // The PROVIDER'S unique message id — the idempotent dedup key. Resend's
+  // `email_id` for an `email`-channel row; Twilio's `MessageSid` for an
+  // `sms`-channel row (also mirrored onto `smsMessageSid` below, which carries
+  // its own dedup index — belt-and-suspenders, since this field predates the
+  // SMS channel and other code still keys off it as "the" provider id).
+  emailId: v.string(),
+  status: v.union(...INBOUND_RECEIPT_STATUSES.map((s) => v.literal(s))),
+  // Envelope, captured verbatim from the webhook for the review queue + audit.
+  // For an `sms` row `fromEmail` holds the sender's PHONE NUMBER (kept for
+  // back-compat with every reader of this required field) — `fromPhone` below
+  // is the honestly-typed field new code should read.
+  fromEmail: v.string(),
+  toEmail: v.optional(v.string()),
+  subject: v.optional(v.string()),
+  receivedAt: v.number(),
+
+  // ── SMS/MMS channel (Twilio) ────────────────────────────────────────────────
+  // Absent = `email` (the original, still-default channel — see `receiptInbox.ts`).
+  // `sms` = the Twilio inbound webhook (`http.ts`'s `/twilio/receipts`,
+  // `smsReceipts.ts`).
+  channel: v.optional(v.union(v.literal("email"), v.literal("sms"))),
+  // Twilio's `MessageSid` — the SMS-specific dedup key (`by_sms_sid`), kept
+  // alongside the `emailId` reuse above so an SMS-specific lookup never has to
+  // reason about the shared field's dual meaning.
+  smsMessageSid: v.optional(v.string()),
+  // The sender's phone number (E.164 or whatever Twilio's `From` sent) — the
+  // honest field for an `sms` row. See `fromEmail`'s doc comment above for why
+  // the phone is ALSO mirrored there.
+  fromPhone: v.optional(v.string()),
+
+  // Resolved sender + the chapter its transactions live in. Both absent until
+  // the action runs; an UNKNOWN sender (no `people` match) is still processed
+  // end-to-end (owner decision, 2026-07-23 — the sender gate is open) but has no
+  // `personId` and, with no chapter to infer, no `chapterId` either. `ignored`
+  // now means a bookkeeper dismissed the row (or it was non-receipt mail), not
+  // "unknown sender".
+  personId: v.optional(v.id("people")),
+  chapterId: v.optional(v.id("chapters")),
+  // How much the sender is trusted — the AUTOMATION axis (never a permission).
+  // Only `team`/`roster` (a resolved roster member) may auto-attach; an
+  // `internal`/`external` email always routes to human review. Optional so
+  // legacy rows (predating classification) still validate.
+  senderClass: v.optional(
+    v.union(...RECEIPT_SENDER_CLASSES.map((c) => v.literal(c))),
+  ),
+
+  // The stored receipt file (first image/PDF attachment, or a rendered body
+  // when the email itself IS the receipt). Absent on an `ignored`/`error` row
+  // that never got as far as storing anything.
+  receiptStorageId: v.optional(v.id("_storage")),
+  // What kind of thing we OCR'd — an attachment vs the email body text — so the
+  // review UI can show "photo" vs "email text" without re-deriving it.
+  sourceKind: v.optional(v.union(v.literal("attachment"), v.literal("body"))),
+
+  // ── OCR result (the model reads the receipt; a human/auto-match uses it) ────
+  // Extracted TOTAL in integer cents (the invariant across finance), the
+  // receipt DATE (ms, noon-local by the `transactionDate` convention), and the
+  // merchant string. All optional — a low-quality scan may yield none.
+  ocrAmountCents: v.optional(v.number()),
+  ocrDate: v.optional(v.number()),
+  ocrMerchant: v.optional(v.string()),
+  ocrModel: v.optional(v.string()),
+  // The model's own confidence (0–1) that it read a real, complete total.
+  ocrConfidence: v.optional(v.number()),
+
+  // ── Match outcome ──────────────────────────────────────────────────────────
+  // The transaction the receipt was attached to (auto or via a manual pick).
+  matchedTransactionId: v.optional(v.id("transactions")),
+  // The candidates the matcher surfaced for a `needs_review` row (bounded —
+  // the matcher caps how many it returns), so the review UI can render the
+  // shortlist without re-scanning. 1:1 with what `findReceiptMatches` returned.
+  candidateTransactionIds: v.optional(v.array(v.id("transactions"))),
+  // Who resolved a `needs_review` row by hand, and when (audit).
+  resolvedByPersonId: v.optional(v.id("people")),
+  resolvedAt: v.optional(v.number()),
+
+  // A human-readable note on WHY a row landed where it did (e.g. "sender
+  // not on roster", "no unreceipted charge for $42.10 within 14 days",
+  // "OCR could not read a total"). Surfaced in the review queue.
+  detail: v.optional(v.string()),
+
+  createdAt: v.number(),
+  updatedAt: v.number(),
+})
+  // The idempotency guard: first-sight lookup by the provider's email id.
+  .index("by_email_id", ["emailId"])
+  // The idempotency guard for the SMS channel: first-sight lookup by Twilio's
+  // MessageSid (`smsReceipts.ts#recordSmsReceipt`).
+  .index("by_sms_sid", ["smsMessageSid"])
+  // The review queue: "every inbound receipt in state X", newest first.
+  .index("by_status", ["status"])
+  // Scope the review queue to one chapter once the sender is resolved.
+  .index("by_chapter", ["chapterId"]);
+
+// ── Receipts (first-class documents, many-to-many with transactions) ─────────
+/** A first-class receipt DOCUMENT — the source of truth a receipt is, decoupled
+ *  from any single transaction. A receipt links to MANY transactions (a split
+ *  bill, a shared card charge) and a transaction can carry MANY receipts, via
+ *  `receiptLinks`. `transactions.receiptStorageId` survives as a DENORMALIZED
+ *  cache of "a" (the first-linked) receipt's file, so every existing reader —
+ *  the reconcile `missing_receipt` filter, the receipt reminders, the 7-day
+ *  card auto-lock, the `hasReceipt` display — keeps working unchanged; the
+ *  `receiptLinks` layer is the new source of truth those denorm writes flow
+ *  from (see `lib/receiptLinks.ts`, the ONLY write path).
+ *
+ *  CANONICAL vs OCR fields: the `ocr*` fields are IMMUTABLE provenance — exactly
+ *  what the model/parser read off the document, never edited after creation.
+ *  The canonical `amountCents`/`receiptDate`/`merchant`/`note` are the
+ *  HUMAN-CORRECTABLE truth: seeded FROM the OCR values at creation, then edited
+ *  only by a later correction mutation (NOT in this PR) which stamps
+ *  `correctedByPersonId`/`correctedAt` and touches canonical fields ALONE — the
+ *  `ocr*` provenance stays frozen so "what did the model see" is always
+ *  recoverable. `chapterId` mirrors `transactions.chapterId` (a real chapter or
+ *  the `"central"` sentinel). */
+export const receipts = defineTable({
+  // A real chapter or the `"central"` sentinel. OPTIONAL because an email from
+  // an UNKNOWN sender (no roster match) is still processed and stored (owner
+  // decision, 2026-07-23) but has no chapter to infer — those rows surface only
+  // in the org-wide receipt view, never a chapter-scoped read. Upload/backfill
+  // and resolved-sender email receipts always carry a chapter.
+  chapterId: v.optional(v.union(v.id("chapters"), v.literal("central"))),
+  // The stored receipt file (image/PDF, or a rendered email body).
+  storageId: v.id("_storage"),
+  // How the document entered the system (email pipeline vs in-app upload).
+  source: v.union(...RECEIPT_SOURCES.map((s) => v.literal(s))),
+  // Provenance when this document came from the inbound-email pipeline — the
+  // `inboundReceipts` row it was extracted from. Absent for direct uploads.
+  inboundReceiptId: v.optional(v.id("inboundReceipts")),
+  // Who uploaded it, when resolvable (the in-app upload path's caller).
+  uploadedByPersonId: v.optional(v.id("people")),
+  // For an email-sourced receipt: how much its sender was trusted (copied from
+  // the `inboundReceipts` row). Governs whether the pipeline auto-attached it or
+  // routed it to review. Absent for uploads/backfill. Optional for legacy rows.
+  senderClass: v.optional(
+    v.union(...RECEIPT_SENDER_CLASSES.map((c) => v.literal(c))),
+  ),
+
+  // ── CANONICAL (human-correctable) fields — seeded from OCR at creation ──────
+  // The receipt's TOTAL in integer cents, its DATE (ms, noon-local by the
+  // `transactionDate` convention), the merchant, and a freeform note. All
+  // optional: a backfilled legacy document has no read total (we never
+  // fabricate one), and a low-quality scan may yield none.
+  amountCents: v.optional(v.number()),
+  receiptDate: v.optional(v.number()),
+  merchant: v.optional(v.string()),
+  note: v.optional(v.string()),
+
+  // ── IMMUTABLE OCR provenance — exactly what the model/parser read ───────────
+  ocrAmountCents: v.optional(v.number()),
+  ocrDate: v.optional(v.number()),
+  ocrMerchant: v.optional(v.string()),
+  ocrConfidence: v.optional(v.number()),
+  ocrModel: v.optional(v.string()),
+  // RECEIPT QUALITY PR: a human-readable reason extraction produced NOTHING —
+  // a model/network error, an unsupported file type, a scanned PDF with no
+  // text layer and an unreadable scan, an empty email body. Historically these
+  // failures only ever hit `console.log` and the receipt detail just showed
+  // blank OCR fields with no explanation (the "OCR read: — · — · —" bug).
+  // Cleared (patched to `undefined`) the moment a LATER extraction (a retry,
+  // or — for the upload path — the original pipeline run) succeeds, so a
+  // stale failure never lingers next to a fresh, successful read.
+  ocrError: v.optional(v.string()),
+  // The ORIGINAL attachment filename this receipt came from (e.g.
+  // "receipt.pdf"), or a synthetic label when there was no file name to carry
+  // — "email body" (the message text itself was the receipt) / "text
+  // message" (the SMS channel's body). Absent on legacy rows that predate
+  // this field. Purely descriptive — never used for routing.
+  filename: v.optional(v.string()),
+
+  // Set by the (future) correction mutation when a human edits a canonical
+  // field away from its OCR seed — audit of who last corrected it, and when.
+  correctedByPersonId: v.optional(v.id("people")),
+  correctedAt: v.optional(v.number()),
+
+  // The match shortlist surfaced for review (per-receipt candidates the matcher
+  // returned) — bounded, so it can live inline. Mirrors the copy the pipeline
+  // keeps on `inboundReceipts.candidateTransactionIds` for the review queue.
+  candidateTransactionIds: v.optional(v.array(v.id("transactions"))),
+
+  // Denormalized count of `receiptLinks` rows pointing at this receipt — kept in
+  // lock-step by `lib/receiptLinks.ts` (Convex has no count operator). Powers
+  // the "unmatched receipts" query via `by_chapter_and_linkCount` without a scan.
+  linkCount: v.number(),
+
+  // ── CRM PR: duplicate detection ─────────────────────────────────────────────
+  // The stored file's content hash (from the `_storage` system table's own
+  // `sha256`, read at creation time — never computed by hand). Lets an EXACT
+  // re-submission of the same bytes be caught regardless of how it arrived
+  // (a mass-upload re-drop, or the same photo emailed twice) — see
+  // `lib/receiptLinks.ts#findDuplicateReceiptBySha256` (chapter-scoped lookup)
+  // and `receipts.ts#submitUploadedReceipts` / `receiptInbox.ts#commitInboundReceipts`
+  // (both stamp it at creation). Optional: legacy receipts (pre-dating this
+  // field) and any document whose storage metadata lookup failed have none.
+  fileSha256: v.optional(v.string()),
+  // Set when this receipt's file exactly duplicates an EARLIER receipt in the
+  // same chapter (same `fileSha256`) — points at the earlier (kept) receipt.
+  // A duplicate is still stored (never silently dropped — a human may still
+  // want to see it) but is never auto-attached and is flagged for review.
+  duplicateOfReceiptId: v.optional(v.id("receipts")),
+
+  createdAt: v.number(),
+  updatedAt: v.number(),
+})
+  .index("by_chapter", ["chapterId"])
+  // The "unmatched receipts" query: a chapter's receipts with linkCount 0.
+  .index("by_chapter_and_linkCount", ["chapterId", "linkCount"])
+  // Find the receipt(s) extracted from a given inbound email (manual-match).
+  .index("by_inbound", ["inboundReceiptId"])
+  // Exact-duplicate detection: find every receipt sharing a stored file's
+  // content hash (chapter-filtered in JS by the caller — bounded, since a
+  // real hash collision among a chapter's receipts is rare).
+  .index("by_sha256", ["fileSha256"]);
+
+/** ONE receipt↔transaction link — the many-to-many join that is the SOURCE OF
+ *  TRUTH for which receipts back which charges. Written ONLY through
+ *  `lib/receiptLinks.ts` (`linkReceiptToTransaction`/`unlinkReceiptFromTransaction`),
+ *  which keeps `receipts.linkCount` and the `transactions.receiptStorageId`
+ *  denorm cache consistent. `chapterId` is denormalized from the transaction so
+ *  tenancy checks don't need to load either parent. */
+export const receiptLinks = defineTable({
+  receiptId: v.id("receipts"),
+  transactionId: v.id("transactions"),
+  // Denormalized from the linked transaction (a real chapter or "central").
+  chapterId: v.union(v.id("chapters"), v.literal("central")),
+  source: v.union(...RECEIPT_LINK_SOURCES.map((s) => v.literal(s))),
+  linkedByPersonId: v.optional(v.id("people")),
+  createdAt: v.number(),
+})
+  .index("by_receipt", ["receiptId"])
+  .index("by_transaction", ["transactionId"]);
+
 // ── Public reimbursement submit rate limit (deployment-wide) ─────────────────
 /** A single timestamped hit against the anonymous `submitPublicReimbursement`
  *  rate limiter. NOT chapter-scoped — the same abuse (a bot hammering the
@@ -961,6 +1264,26 @@ export const cardDetailsRevealAttempts = defineTable({
   .index("by_key_and_time", ["key", "createdAt"])
   // Deployment-wide TTL sweep (maintenance.ts): drop rows older than the rate
   // window regardless of key.
+  .index("by_time", ["createdAt"]);
+
+// ── Manual receipt-nudge rate limit (Chase Receipts "Send reminder") ────────
+/** A single timestamped hit against the FM-only manual chase nudge
+ *  (`cards.sendReceiptNudge`, called from the Chase Receipts page's "Send
+ *  reminder"/"Remind all" buttons) — SAME shape/index as
+ *  `cardDetailsRevealAttempts`/`reimbursementSubmitAttempts`: `key` is
+ *  `"person:<personId>"`, one row inserted per nudge actually SENT (email
+ *  attempted), checked+recorded atomically inside
+ *  `cards.beginManualNudgeAttempt`. Caps a cardholder at ONE manual nudge per
+ *  24h — a second click inside the window is a no-op the UI reads as
+ *  "Nudged today" rather than an error. Longer window than the other two
+ *  attempt tables (1h), so it is swept on its OWN schedule, not folded into
+ *  their shared sweep — see `maintenance.ts`. */
+export const receiptNudgeAttempts = defineTable({
+  key: v.string(),
+  createdAt: v.number(),
+})
+  .index("by_key_and_time", ["key", "createdAt"])
+  // TTL sweep (maintenance.ts): drop rows older than the 24h rate window.
   .index("by_time", ["createdAt"]);
 
 /** Increase REVIEWS a Digital Card Profile before it can be attached to a
@@ -1016,4 +1339,14 @@ export const financeSettings = defineTable({
   updatedAt: v.number(),
   cardArt: v.optional(cardArtConfigValidator),
   cardArtSandbox: v.optional(cardArtConfigValidator),
+  // Org-wide receipt policy: after this many days a card charge still missing a
+  // receipt auto-converts to a personal repayment (the cardholder owes it back).
+  // `undefined` = OFF (no auto-conversion) until central finance picks a number.
+  // Enforced by the daily `cards.autoConvertOverdueReceipts` sweep.
+  noReceiptAutoConvertDays: v.optional(v.number()),
+  // Org-wide card prerequisite: the Academy course slug a member must complete
+  // before a card can be issued/activated. `undefined` = no prerequisite gate
+  // (issuance unaffected), so cards keep working until central finance points
+  // this at Kansi's card-prerequisite course.
+  cardPrerequisiteCourseSlug: v.optional(v.string()),
 });

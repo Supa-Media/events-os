@@ -71,6 +71,64 @@ async function chapterRow(s: ChapterSetup, id: Id<"chapters">) {
   return run(s.t, (ctx) => ctx.db.get(id));
 }
 
+/** A published event page (fundraiser or not) on `chapterId` — mirrors the
+ *  minimal-row pattern from `historicalBackfill.test.ts`'s `createEvent`. */
+async function seedEventPage(
+  s: ChapterSetup,
+  chapterId: Id<"chapters">,
+  opts: {
+    name?: string;
+    slug: string;
+    eventDate: number;
+    published?: boolean;
+    goalCents?: number;
+    revenueCents?: number;
+    donationsCents?: number;
+    externalGiftsCents?: number;
+  },
+): Promise<Id<"eventPages">> {
+  return run(s.t, async (ctx) => {
+    const now = Date.now();
+    const eventTypeId = await ctx.db.insert("eventTypes", {
+      chapterId,
+      name: "Type",
+      slug: `type-${opts.slug}`,
+      version: 1,
+      createdBy: s.userId,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const eventId = await ctx.db.insert("events", {
+      chapterId,
+      eventTypeId,
+      templateVersion: 1,
+      name: opts.name ?? "Worship Night",
+      eventDate: opts.eventDate,
+      status: "planning",
+      createdBy: s.userId,
+      createdAt: now,
+      updatedAt: now,
+    });
+    return await ctx.db.insert("eventPages", {
+      eventId,
+      chapterId,
+      slug: opts.slug,
+      published: opts.published ?? true,
+      goingCount: 0,
+      maybeCount: 0,
+      notGoingCount: 0,
+      ticketsSoldCount: 0,
+      revenueCents: opts.revenueCents ?? 0,
+      donationsCents: opts.donationsCents,
+      externalGiftsCents: opts.externalGiftsCents,
+      goalCents: opts.goalCents,
+      createdBy: s.userId,
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
+}
+
 // ── saveTerritory ────────────────────────────────────────────────────────────
 
 describe("saveTerritory", () => {
@@ -98,6 +156,73 @@ describe("saveTerritory", () => {
       (a, b) => a.minBackers - b.minBackers,
     )[0];
     expect(territory?.targetBackers).toBe(lowest.minBackers);
+  });
+
+  test("share-card image: stores, flags on the public page, serves via storage id, and clears", async () => {
+    const s = await devDirectorSetup();
+    // convex-test's run ctx provides `storage.store` at runtime, but the
+    // mutation-ctx storage type doesn't declare it — cast just for the test.
+    const storageId = (await run(s.t, (ctx) =>
+      (
+        ctx.storage as unknown as {
+          store: (b: Blob) => Promise<Id<"_storage">>;
+        }
+      ).store(new Blob([new Uint8Array([1, 2, 3, 4])], { type: "image/png" })),
+    )) as Id<"_storage">;
+    const id = await s.as.mutation(api.territories.saveTerritory, {
+      name: "Philly",
+      region: "PA",
+      lat: 39.95,
+      lng: -75.16,
+      slug: "philly-pa",
+      publiclyVisible: true,
+      ogImageStorageId: storageId,
+    });
+    // Public page flags it; the internal serve query returns the id.
+    const pub = await s.as.query(api.territories.getPublicTerritory, {
+      slug: "philly-pa",
+    });
+    expect(pub?.hasOgImage).toBe(true);
+    const served = await s.t.query(
+      internal.territories.getTerritoryOgStorageId,
+      { slug: "philly-pa" },
+    );
+    expect(served).toBe(storageId);
+    // Admin row exposes the id + a resolved url.
+    const rows = await s.as.query(api.territories.listTerritoriesAdmin, {});
+    const row = rows.find((r) => r._id === id);
+    expect(row?.ogImageStorageId).toBe(storageId);
+    expect(typeof row?.ogImageUrl).toBe("string");
+    // An unrelated edit (omitting ogImageStorageId) leaves the card in place.
+    await s.as.mutation(api.territories.saveTerritory, {
+      territoryId: id,
+      name: "Philadelphia",
+      region: "PA",
+      lat: 39.95,
+      lng: -75.16,
+      slug: "philly-pa",
+      publiclyVisible: true,
+    });
+    expect(
+      await s.t.query(internal.territories.getTerritoryOgStorageId, {
+        slug: "philly-pa",
+      }),
+    ).toBe(storageId);
+    // Passing null clears it.
+    await s.as.mutation(api.territories.saveTerritory, {
+      territoryId: id,
+      name: "Philadelphia",
+      region: "PA",
+      lat: 39.95,
+      lng: -75.16,
+      slug: "philly-pa",
+      publiclyVisible: true,
+      ogImageStorageId: null,
+    });
+    const pub2 = await s.as.query(api.territories.getPublicTerritory, {
+      slug: "philly-pa",
+    });
+    expect(pub2?.hasOgImage).toBe(false);
   });
 
   test("dual slug uniqueness: rejects a slug taken by another territory OR a chapter", async () => {
@@ -586,6 +711,193 @@ describe("public territory reads", () => {
     expect(
       await s.t.query(api.territories.getPublicTerritory, { slug: "hidden-ny" }),
     ).toBeNull();
+  });
+
+  test("getPublicTerritory: upcomingFundraisers surfaces a published future goal event, soonest first", async () => {
+    const s = await devDirectorSetup();
+    const id = await s.as.mutation(api.territories.saveTerritory, {
+      name: "Queens",
+      region: "NY",
+      lat: 40.7282,
+      lng: -73.7949,
+      slug: "queens-ny",
+      publiclyVisible: true,
+    });
+    const chapterId = (await territoryRow(s, id))!.chapterId;
+    const now = Date.now();
+    const day = 24 * 60 * 60 * 1000;
+
+    // A published, future fundraiser with a goal — should appear.
+    await seedEventPage(s, chapterId, {
+      name: "Eden Fundraiser",
+      slug: "eden-fundraiser",
+      eventDate: now + 10 * day,
+      published: true,
+      goalCents: 100000,
+      revenueCents: 5000,
+      donationsCents: 3000,
+      externalGiftsCents: 2000,
+    });
+    // A sooner published fundraiser with a goal — should sort first.
+    await seedEventPage(s, chapterId, {
+      name: "Love Thy Neighbor Fundraiser",
+      slug: "ltn-fundraiser",
+      eventDate: now + 3 * day,
+      published: true,
+      goalCents: 50000,
+      revenueCents: 1000,
+    });
+
+    const data = await s.t.query(api.territories.getPublicTerritory, {
+      slug: "queens-ny",
+    });
+    expect(data!.upcomingFundraisers).toHaveLength(2);
+    expect(data!.upcomingFundraisers.map((f) => f.slug)).toEqual([
+      "ltn-fundraiser",
+      "eden-fundraiser",
+    ]);
+    const eden = data!.upcomingFundraisers.find(
+      (f) => f.slug === "eden-fundraiser",
+    )!;
+    expect(eden.goalCents).toBe(100000);
+    // raisedCents mirrors the RSVP page's progress bar exactly: revenue +
+    // on-page giving + externally-attached gifts.
+    expect(eden.raisedCents).toBe(5000 + 3000 + 2000);
+    expect(eden.name).toBe("Eden Fundraiser");
+    expect(typeof eden.startDate).toBe("number");
+  });
+
+  test("getPublicTerritory: upcomingFundraisers is empty for an unpublished, past, or goal-less event", async () => {
+    const s = await devDirectorSetup();
+    const id = await s.as.mutation(api.territories.saveTerritory, {
+      name: "Queens",
+      region: "NY",
+      lat: 40.7282,
+      lng: -73.7949,
+      slug: "queens-ny",
+      publiclyVisible: true,
+    });
+    const chapterId = (await territoryRow(s, id))!.chapterId;
+    const now = Date.now();
+    const day = 24 * 60 * 60 * 1000;
+
+    // Launched with no goal set — never counts as a fundraiser.
+    await seedEventPage(s, chapterId, {
+      slug: "no-goal-event",
+      eventDate: now + 5 * day,
+      published: true,
+    });
+    // Unpublished draft with a goal.
+    await seedEventPage(s, chapterId, {
+      slug: "unpublished-goal-event",
+      eventDate: now + 5 * day,
+      published: false,
+      goalCents: 20000,
+    });
+    // Past event with a goal.
+    await seedEventPage(s, chapterId, {
+      slug: "past-goal-event",
+      eventDate: now - 5 * day,
+      published: true,
+      goalCents: 20000,
+    });
+
+    const data = await s.t.query(api.territories.getPublicTerritory, {
+      slug: "queens-ny",
+    });
+    expect(data!.upcomingFundraisers).toEqual([]);
+  });
+
+  test("getPublicTerritory: sponsorshipCount counts only committed/active sponsorships scoped to this chapter", async () => {
+    const s = await devDirectorSetup();
+    const id = await s.as.mutation(api.territories.saveTerritory, {
+      name: "Queens",
+      region: "NY",
+      lat: 40.7282,
+      lng: -73.7949,
+      slug: "queens-ny",
+      publiclyVisible: true,
+    });
+    const chapterId = (await territoryRow(s, id))!.chapterId;
+
+    expect(
+      (await s.t.query(api.territories.getPublicTerritory, {
+        slug: "queens-ny",
+      }))!.sponsorshipCount,
+    ).toBe(0);
+
+    await run(s.t, async (ctx) => {
+      const now = Date.now();
+      const pkgId = await ctx.db.insert("sponsorPackages", {
+        name: "LTN Gold",
+        tierRank: 1,
+        audience: "church",
+        pricing: { kind: "annual", amountCents: 500000 },
+        scope: { kind: "annual" },
+        benefits: ["Logo on flyers"],
+        commitments: ["Stage mention"],
+        active: true,
+        createdAt: now,
+        updatedAt: now,
+        updatedBy: s.userId,
+      });
+      // A donor scoped to THIS chapter, committed — counts.
+      const chapterDonorId = await ctx.db.insert("donors", {
+        scope: chapterId,
+        kind: "church",
+        name: "Queens Church",
+        status: "active",
+        lifetimeCents: 0,
+        giftCount: 0,
+        createdAt: now,
+      });
+      await ctx.db.insert("sponsorships", {
+        donorId: chapterDonorId,
+        packageId: pkgId,
+        status: "committed",
+        createdAt: now,
+        updatedAt: now,
+      });
+      // A donor scoped to THIS chapter, but only prospect — doesn't count.
+      const prospectDonorId = await ctx.db.insert("donors", {
+        scope: chapterId,
+        kind: "business",
+        name: "Queens Biz",
+        status: "active",
+        lifetimeCents: 0,
+        giftCount: 0,
+        createdAt: now,
+      });
+      await ctx.db.insert("sponsorships", {
+        donorId: prospectDonorId,
+        packageId: pkgId,
+        status: "prospect",
+        createdAt: now,
+        updatedAt: now,
+      });
+      // A central-scoped donor, active — doesn't count for THIS chapter.
+      const centralDonorId = await ctx.db.insert("donors", {
+        scope: "central",
+        kind: "foundation",
+        name: "National Foundation",
+        status: "active",
+        lifetimeCents: 0,
+        giftCount: 0,
+        createdAt: now,
+      });
+      await ctx.db.insert("sponsorships", {
+        donorId: centralDonorId,
+        packageId: pkgId,
+        status: "active",
+        createdAt: now,
+        updatedAt: now,
+      });
+    });
+
+    const data = await s.t.query(api.territories.getPublicTerritory, {
+      slug: "queens-ny",
+    });
+    expect(data!.sponsorshipCount).toBe(1);
   });
 });
 

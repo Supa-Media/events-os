@@ -1,0 +1,46 @@
+# =====================================================================
+# IMPORTANT LINKS — homepage Links section
+# =====================================================================
+# These are the FIXED links. Between the `lead` card (Donate) and the
+# `trail` cards (socials + Zelle), the site auto-inserts up to two of our
+# currently-published event RSVP pages — pulled live from the OS at runtime
+# (GET /api/events/upcoming), soonest event first, dropping off once an
+# event is over. Publish/unpublish an event's page in the OS and this
+# section updates itself; nothing here needs editing for events.
+#
+# How to add a FIXED link:
+#   1. Drop the thumbnail/photo into /public/links/ (any format).
+#   2. Add a new block below — copy/paste an existing one and edit the
+#      fields. The id should be a short slug, unique across links.
+#   3. Reorder by moving the block up or down (within its slot).
+#   4. Commit. The site rebuilds automatically (~30s).
+#
+# Required: id, title, url
+# Optional: subtitle, thumbnail (small logo above text), bgImage
+#           (full-bleed photo background — used for poster cards),
+#           cta (a small line under subtitle), align ("center" | "topLeft"),
+#           featured (true | false),
+#           slot ("lead" = before the auto events, "trail" = after; default trail)
+# =====================================================================
+
+- id: give
+  title: Donate
+  subtitle: "(Card, Apple Pay & Google Pay)"
+  url: /give
+  slot: lead
+
+- id: instagram
+  title: Instagram
+  url: https://instagram.com/publicworship.life
+  thumbnail: /links/instagram-photo.png
+
+- id: tiktok
+  title: TikTok
+  url: https://www.tiktok.com/@publicworship.life
+  thumbnail: /links/tiktok-photo.png
+
+- id: zelle
+  title: Donate Through Zelle
+  subtitle: give@publicworship.life
+  copy: give@publicworship.life
+  cta: "(Click to Copy)"

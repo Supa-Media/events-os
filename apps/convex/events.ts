@@ -63,6 +63,8 @@ import {
   syncBudgetIdentityForRef,
 } from "./finances";
 import { getFinanceRole, type FinanceAccess, type FinanceScope } from "./lib/finance";
+import { requireGivingView, type GivingScope } from "./lib/givingAccess";
+import { listActiveChapters } from "./lib/chapters";
 
 /**
  * An event's money-attribution scope: "central" or "chapter" — an event's ROW
@@ -245,16 +247,23 @@ export const createFromTemplate = mutation({
   },
 });
 
-/** List chapter events (default upcoming) with readiness + task counts. */
+/**
+ * List chapter events (default upcoming) with readiness + task counts.
+ *
+ * `chapterId` optionally peeks into a DIFFERENT chapter than the caller's own
+ * (central reach required — see `resolvePeekChapterId`); absent (or the
+ * caller's own chapter) behaves exactly as before.
+ */
 export const list = query({
   args: {
     scope: v.optional(v.union(v.literal("upcoming"), v.literal("all"))),
     // Academy training events are sandboxes — hidden from every operational
     // list (both scopes) unless a caller explicitly opts in.
     includeTraining: v.optional(v.boolean()),
+    chapterId: v.optional(v.id("chapters")),
   },
-  handler: async (ctx, { scope, includeTraining }) => {
-    const chapterId = await getChapterIdOrNull(ctx);
+  handler: async (ctx, { scope, includeTraining, chapterId: requestedChapterId }) => {
+    const chapterId = await resolvePeekChapterId(ctx, requestedChapterId);
     if (!chapterId) return [];
     const now = Date.now();
     const all = (
@@ -1617,5 +1626,50 @@ export const dayOf = query({
       tasks,
       permitsNeedingFallback,
     };
+  },
+});
+
+/**
+ * Minimal events picker for the donor-CRM "attach gift to event" flow
+ * (Givebutter-imported / offline gifts given "toward the fundraiser" that
+ * land unattached — see `givingPlatform.ts#attachGiftToEvent`). Gated on the
+ * giving CRM's OWN access model (`requireGivingView`), not the operational
+ * chapter gate `list`/`current` use — a central giving holder may attach a
+ * gift to ANY chapter's event, not just their own. `scope === "central"`
+ * returns the newest events across every active chapter; a chapter scope
+ * returns only that chapter's. Cancelled events and training sandboxes are
+ * excluded (nothing real to attach a gift to). Bounded, newest-first — a
+ * lightweight `{_id, name, eventDate}` shape, not the enriched card
+ * `list`/`current` return.
+ */
+export const listForGiftAttach = query({
+  args: { scope: v.union(v.id("chapters"), v.literal("central")) },
+  handler: async (ctx, { scope }) => {
+    const typedScope = scope as GivingScope;
+    await requireGivingView(ctx, typedScope);
+
+    const chapterIds: Id<"chapters">[] =
+      typedScope === "central"
+        ? (await listActiveChapters(ctx)).map((c) => c._id)
+        : [typedScope];
+
+    const PER_CHAPTER_CAP = 50;
+    const rows: Doc<"events">[] = [];
+    for (const chapterId of chapterIds) {
+      const page = await ctx.db
+        .query("events")
+        .withIndex("by_chapter_date", (q) => q.eq("chapterId", chapterId))
+        .order("desc")
+        .take(PER_CHAPTER_CAP);
+      for (const e of page) {
+        if (e.status !== "cancelled" && isOperationalEvent(e)) rows.push(e);
+      }
+    }
+    rows.sort((a, b) => b.eventDate - a.eventDate);
+    return rows.slice(0, PER_CHAPTER_CAP).map((e) => ({
+      _id: e._id,
+      name: e.name,
+      eventDate: e.eventDate,
+    }));
   },
 });

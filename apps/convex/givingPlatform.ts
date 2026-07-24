@@ -50,7 +50,9 @@ import {
   dualWriteGiftForDonation,
   linkDonorToPerson,
   isSystemWrittenGift,
+  bumpEventExternalGifts,
 } from "./lib/givingDonors";
+import { syncDonorIdentity } from "./lib/donorIdentity";
 import {
   writeGiftAudit,
   auditCents,
@@ -793,6 +795,21 @@ export const listGifts = query({
       if (donor) donorNames.set(id, donor.name);
     }
 
+    // Batch-resolve attached-event names (gift→event attach feature) — dedup
+    // first so a page with many gifts on the same event only reads it once.
+    const eventIds = [
+      ...new Set(
+        rows
+          .map((r) => r.gift.eventId)
+          .filter((id): id is Id<"events"> => id !== undefined),
+      ),
+    ];
+    const eventNames = new Map<string, string>();
+    for (const id of eventIds) {
+      const event = await ctx.db.get(id);
+      if (event) eventNames.set(id, event.name);
+    }
+
     return {
       allScopes: allScopes === true,
       gifts: await Promise.all(
@@ -811,6 +828,14 @@ export const listGifts = query({
           // A gift whose money is owned elsewhere (event donation / Stripe /
           // sponsorship / bank-credit) — the client hides destructive edits.
           systemWritten: isSystemWrittenGift(r.gift),
+          // Gift→event attach (fundraiser attribution) — null when unattached.
+          eventId: r.gift.eventId ?? null,
+          eventName: r.gift.eventId
+            ? (eventNames.get(r.gift.eventId) ?? "Unknown event")
+            : null,
+          // Whether this attachment came from the on-page donation dual-write
+          // (locked — see `attachGiftToEvent`) vs a manual attach.
+          hasEventSource: r.gift.donationId !== undefined,
         })),
       ),
     };
@@ -832,6 +857,7 @@ export const getGift = query({
     }
     await requireGivingView(ctx, gift.scope);
     const donor = await ctx.db.get(gift.donorId);
+    const event = gift.eventId ? await ctx.db.get(gift.eventId) : null;
 
     const receiptUrls = gift.receiptStorageIds
       ? (
@@ -865,6 +891,7 @@ export const getGift = query({
     return {
       gift: { ...gift, receiptUrls },
       donorName: donor?.name ?? "Unknown donor",
+      eventName: event?.name ?? null,
       bookLabel: await bookLabel(ctx, gift.scope),
       systemWritten: isSystemWrittenGift(gift),
       audit: auditRows.map((a) => ({
@@ -1011,6 +1038,79 @@ export const listOrgDonorsByIdentity = query({
 });
 
 /**
+ * ORG-WIDE donors grouped by the PERSISTENT cross-chapter IDENTITY layer
+ * (donor-identity, 2026-07) — the same "one underlying person across books"
+ * roll-up as `listOrgDonorsByIdentity`, but read from the stored
+ * `donorIdentities` table instead of grouped in memory at read time. Central
+ * reach only (`requireGivingView(ctx, "central")`) — chapter separation is
+ * preserved: a chapter-only caller never reaches this org-wide view and stays
+ * on the per-scope `listDonors`.
+ *
+ * Reads the strongest-lifetime identities (`by_lifetime` desc, bounded), then
+ * for each resolves its underlying per-scope `donors` rows (`by_identity`,
+ * bounded) into a per-book breakdown — so the UI can show ONE person with the
+ * chapters they're part of AND drill into each scope's own row. The identity's
+ * denormalized aggregate is authoritative for the headline totals; each row's
+ * own per-scope rollup is surfaced untouched in the breakdown.
+ */
+export const listDonorIdentities = query({
+  args: {},
+  handler: async (ctx) => {
+    await requireGivingView(ctx, "central");
+    const chapterNames = new Map<string, string>();
+    for (const c of await listActiveChapters(ctx, FLEET_CHAPTER_LIMIT)) {
+      chapterNames.set(c._id, c.name);
+    }
+
+    const identities = await ctx.db
+      .query("donorIdentities")
+      .withIndex("by_lifetime")
+      .order("desc")
+      .take(ORG_DONORS_LIMIT);
+
+    const donors = await Promise.all(
+      identities.map(async (identity) => {
+        const rows = await ctx.db
+          .query("donors")
+          .withIndex("by_identity", (q) => q.eq("identityId", identity._id))
+          .take(ORG_DONORS_PER_SCOPE);
+        const books = await Promise.all(
+          rows
+            .slice()
+            .sort((a, b) => b.lifetimeCents - a.lifetimeCents)
+            .map(async (d) => ({
+              donorId: d._id,
+              scope: d.scope,
+              bookLabel: await bookLabel(ctx, d.scope, chapterNames),
+              lifetimeCents: d.lifetimeCents,
+              giftCount: d.giftCount,
+              status: d.status,
+            })),
+        );
+        return {
+          identityId: identity._id,
+          key: identity.key,
+          name: identity.name,
+          email: identity.email ?? null,
+          lifetimeCents: identity.lifetimeCents,
+          giftCount: identity.giftCount,
+          lastGiftAt: identity.lastGiftAt ?? null,
+          // The distinct books this person is part of / has given to — the
+          // labels for the "what chapters" cell (order matches the stored set).
+          scopeLabels: await Promise.all(
+            identity.scopes.map((s) => bookLabel(ctx, s as GivingScope, chapterNames)),
+          ),
+          bookCount: books.length,
+          books,
+        };
+      }),
+    );
+
+    return { donors };
+  },
+});
+
+/**
  * Preview a manual donor merge (owner request #5) — "what will move" before
  * `dataHygiene.mergeDonors` runs. Both donors must be in `scope` (manage-gated).
  * Reports the duplicate's gift/pledge/sponsorship counts + lifetime that will
@@ -1140,6 +1240,11 @@ export const upsertDonor = mutation({
         });
       }
       await ctx.db.patch(args.donorId, patch);
+      // Cross-chapter identity layer: a name/email/phone edit may re-key this
+      // donor onto a different identity (email is the primary key) — re-attach
+      // + refresh the old and new identity aggregates. Additive; per-scope
+      // rollups are untouched.
+      await syncDonorIdentity(ctx, args.donorId);
       // Owner feedback #4: narrate a name/email/phone change on the donor audit
       // trail (the identity fields — never the address/notes churn). `patch`
       // only carries fields the caller sent, so an untouched field's "after" is
@@ -1197,6 +1302,11 @@ export const upsertDonor = mutation({
       ownerPersonId: args.ownerPersonId,
     });
     await ctx.db.patch(donorId, patch);
+    // Cross-chapter identity layer: `matchOrCreateDonor` already attached the
+    // identity from the match keys, but the explicit `patch` above may have set
+    // a name/email/phone the match step didn't have — re-sync so the identity
+    // key + aggregate reflect the final donor fields.
+    await syncDonorIdentity(ctx, donorId);
     // `matchOrCreateDonor` already tried to link a BRAND-NEW donor (email,
     // phone, and name all considered — `phone` is passed through above so it
     // participates in that first match). This is a belt-and-suspenders retry
@@ -1263,6 +1373,11 @@ export const setDonorPerson = mutation({
       }
       if (donor.personId === personId) return null; // already linked here
       await ctx.db.patch(donorId, { personId });
+      // Cross-chapter identity layer: `personId` is a linking signal, NOT the
+      // identity key (email is), so the grouping is unchanged — but ensure the
+      // donor is attached to its identity (attaches lazily if it predates the
+      // layer) so a person-link never leaves an identity stale.
+      await syncDonorIdentity(ctx, donorId);
       await writeDonorAudit(ctx, {
         donorId,
         scope: donor.scope,
@@ -1751,6 +1866,106 @@ export const moveGiftScope = mutation({
       action: "movedScope",
       changes: [{ field: "Book", from: fromLabel, to: toLabel }],
       note: args.reason,
+    });
+    return null;
+  },
+});
+
+/**
+ * Attach (or detach, `eventId: null`) a gift to an event — the fundraiser
+ * attribution flow. Some Givebutter-imported/offline gifts were given "toward
+ * the fundraiser" but land unattached; this lets an admin tag which event's
+ * goal a gift counts toward. Manage-gated at the gift's OWN scope (same reach
+ * as `editGift`) — attaching doesn't move money across books, only tags it.
+ *
+ * DOUBLE-COUNT GUARD (the CONTRACT invariant): a SYSTEM-WRITTEN on-page
+ * donation (`donationId` set) is refused with `GIFT_HAS_EVENT_SOURCE` — its
+ * `eventId` is already stamped by the dual-write and it's already counted in
+ * that event's `donationsCents`; re-pointing it here would ALSO land it in
+ * `externalGiftsCents`, double-counting the same dollar. Only a
+ * `donationId === undefined` gift (manual entry, CSV import, bank-credit
+ * match, etc.) is eligible.
+ *
+ * A chapter-scope gift may only attach to an event in that SAME chapter (an
+ * event belongs to exactly one chapter, and a chapter caller's reach stops
+ * there — mirrors `listForGiftAttach`'s picker); a central-scope gift may
+ * attach to any active chapter's event (central-wide reach).
+ *
+ * Rollup bookkeeping goes entirely through `bumpEventExternalGifts`: the OLD
+ * event (if any) loses `amountCents`/1, the NEW event (if any) gains it — so a
+ * re-attach (old → new) nets to exactly the right totals on both events, never
+ * touching `donationsCents`. Stamps `editedAt`/`editedBy` and a `edited` audit
+ * breadcrumb, like `editGift`.
+ */
+export const attachGiftToEvent = mutation({
+  args: {
+    giftId: v.id("gifts"),
+    eventId: v.union(v.id("events"), v.null()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const gift = await ctx.db.get(args.giftId);
+    if (!gift) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Gift not found." });
+    }
+    await requireGivingManage(ctx, gift.scope);
+
+    if (gift.donationId !== undefined) {
+      throw new ConvexError({
+        code: "GIFT_HAS_EVENT_SOURCE",
+        message:
+          "This gift is an on-page donation — it's already auto-attributed to its event and can't be re-attached here.",
+      });
+    }
+
+    const oldEventId = gift.eventId;
+    const newEventId = args.eventId ?? undefined;
+    if (oldEventId === newEventId) return null; // no-op transition
+
+    let newEvent: Doc<"events"> | null = null;
+    if (newEventId !== undefined) {
+      newEvent = await ctx.db.get(newEventId);
+      if (!newEvent) {
+        throw new ConvexError({ code: "NOT_FOUND", message: "Event not found." });
+      }
+      // A chapter-scope gift stays within its own chapter's events; central
+      // reach may attach to any active chapter's event.
+      if (gift.scope !== "central" && newEvent.chapterId !== gift.scope) {
+        throw new ConvexError({
+          code: "INVALID_INPUT",
+          message: "Pick an event in this gift's own chapter.",
+        });
+      }
+    }
+
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    const oldEvent = oldEventId !== undefined ? await ctx.db.get(oldEventId) : null;
+
+    if (oldEventId !== undefined) {
+      await bumpEventExternalGifts(ctx, oldEventId, -gift.amountCents, -1);
+    }
+    if (newEventId !== undefined) {
+      await bumpEventExternalGifts(ctx, newEventId, gift.amountCents, 1);
+    }
+
+    await ctx.db.patch(args.giftId, {
+      eventId: newEventId,
+      editedAt: Date.now(),
+      editedBy: userId,
+    });
+
+    await writeGiftAudit(ctx, {
+      giftId: args.giftId,
+      scope: gift.scope as GivingScope,
+      actorUserId: userId,
+      action: "edited",
+      changes: [
+        {
+          field: "Event",
+          from: oldEvent?.name ?? "—",
+          to: newEvent?.name ?? "—",
+        },
+      ],
     });
     return null;
   },

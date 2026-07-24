@@ -235,6 +235,99 @@ describe("events.current / events.past: central peek authz", () => {
   });
 });
 
+describe("events.list: central peek authz", () => {
+  test("a central admin (superuser) CAN read a different chapter's events", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "seyi@publicworship.life" });
+    const boston = await makeChapter(s, "Boston");
+    const eventTypeId = await seedEventType(s, boston, "Service");
+    await seedEvent(s, boston, eventTypeId, {
+      name: "Boston Sunday Service",
+      eventDate: Date.now() + 7 * DAY_MS,
+    });
+
+    const events = await s.as.query(api.events.list, {
+      scope: "all",
+      chapterId: boston,
+    });
+    expect(events.map((e) => e.name)).toEqual(["Boston Sunday Service"]);
+  });
+
+  test("a PLAIN person with a genuine scope:\"central\" financeRoles grant CAN read a different chapter's events (not the superuser short-circuit)", async () => {
+    const t = newT();
+    const s = await setupChapter(t); // default non-superuser email
+    await asCentralManager(s);
+    const boston = await makeChapter(s, "Boston");
+    const eventTypeId = await seedEventType(s, boston, "Service");
+    await seedEvent(s, boston, eventTypeId, {
+      name: "Boston Old Service",
+      eventDate: Date.now() - (PAST_EVENT_GRACE_MS + 10 * DAY_MS),
+    });
+
+    const events = await s.as.query(api.events.list, {
+      scope: "all",
+      chapterId: boston,
+    });
+    expect(events.map((e) => e.name)).toEqual(["Boston Old Service"]);
+  });
+
+  test("a chapter-scoped manager CANNOT read a different chapter's events", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const boston = await makeChapter(s, "Boston");
+
+    await expect(
+      s.as.query(api.events.list, { scope: "all", chapterId: boston }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("passing the caller's OWN chapterId is unchanged", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventTypeId = await seedEventType(s, s.chapterId, "Service");
+    await seedEvent(s, s.chapterId, eventTypeId, {
+      name: "Home Event",
+      eventDate: Date.now() + 7 * DAY_MS,
+    });
+
+    const events = await s.as.query(api.events.list, {
+      scope: "all",
+      chapterId: s.chapterId,
+    });
+    expect(events.map((e) => e.name)).toEqual(["Home Event"]);
+  });
+
+  test("no chapterId arg still resolves the caller's own chapter", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventTypeId = await seedEventType(s, s.chapterId, "Service");
+    await seedEvent(s, s.chapterId, eventTypeId, {
+      name: "Home Event",
+      eventDate: Date.now() + 7 * DAY_MS,
+    });
+
+    const events = await s.as.query(api.events.list, { scope: "all" });
+    expect(events.map((e) => e.name)).toEqual(["Home Event"]);
+  });
+
+  test("a caller with no home chapter passing a foreign chapterId gets NO_CHAPTER, not a silent fallback to the target chapter's central-ness", async () => {
+    const t2 = newT();
+    // A user authenticated but with no userChapters membership at all.
+    const userId = await run(t2, (ctx) =>
+      ctx.db.insert("users", { email: "nobody@publicworship.life" }),
+    );
+    const as = t2.withIdentity({ subject: `${userId}|session`, issuer: "test" });
+    const boston = await run(t2, (ctx) =>
+      ctx.db.insert("chapters", { name: "Boston", isActive: true, createdAt: Date.now() }),
+    );
+
+    await expect(
+      as.query(api.events.list, { scope: "all", chapterId: boston }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+});
+
 // ── Projects: list/get central peek authz ───────────────────────────────────
 
 describe("projects.list: central peek authz", () => {

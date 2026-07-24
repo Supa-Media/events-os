@@ -1,0 +1,20 @@
+---
+export interface Props {
+  value: string;
+  label: string;
+  sublabel?: string;
+  accent?: "red" | "ink";
+}
+
+const { value, label, sublabel, accent = "red" } = Astro.props;
+const valueClass = accent === "red" ? "text-red-500" : "text-ink";
+---
+
+{/* Source: large-number 44px Corben (not 60px), label 16px DM Sans regular. */}
+<div class="flex flex-col items-center text-center sm:items-start sm:text-left">
+  <span class={`font-display text-4xl sm:text-[44px] font-normal leading-[1.08] ${valueClass}`}>
+    {value}
+  </span>
+  <span class="mt-2 font-body text-base font-normal text-ink">{label}</span>
+  {sublabel && <span class="mt-1 text-sm text-ink/65">{sublabel}</span>}
+</div>

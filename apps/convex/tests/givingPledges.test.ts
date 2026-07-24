@@ -124,11 +124,11 @@ describe("preparePledge", () => {
     const donor = await run(s.t, (ctx) => ctx.db.get(pledge!.donorId));
     expect(donor?.email).toBe("ada@example.com");
 
-    // Below the $20 floor is rejected.
+    // Below the $5 floor is rejected ($4).
     await expect(
       t.mutation(internal.givingPledges.preparePledge, {
         chapterId: s.chapterId,
-        amountCents: 1000,
+        amountCents: 400,
         name: "Too Small",
         email: "small@example.com",
       }),

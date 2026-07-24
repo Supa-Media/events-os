@@ -60,6 +60,7 @@ import {
   legacyAccounts,
   financeStripeCustomers,
   cardAuthorizations,
+  cardMerchantPolicy,
   approvalPolicy,
   approvals,
   reattributionAudit,
@@ -68,10 +69,15 @@ import {
   webhookEvents,
   reimbursementSubmitAttempts,
   cardDetailsRevealAttempts,
+  receiptNudgeAttempts,
   financeSettings,
+  inboundReceipts,
+  receipts,
+  receiptLinks,
 } from "./schema/finances";
 import {
   donors,
+  donorIdentities,
   gifts,
   giftAudit,
   donorAudit,
@@ -82,6 +88,8 @@ import {
 } from "./schema/givingPlatform";
 import { sponsorPackages, sponsorships } from "./schema/sponsorships";
 import { territories } from "./schema/territories";
+import { givingInterest } from "./schema/givingInterest";
+import { givingActivity } from "./schema/givingActivity";
 import { seatDefs, seatAssignments } from "./schema/seats";
 import { seatStructureLog } from "./schema/seatStructureLog";
 import { seatProposals } from "./schema/seatProposals";
@@ -96,7 +104,11 @@ import {
   aiUsage,
   aiSettings,
 } from "./schema/ai";
-import { aiUsageEvents, aiCodingIngestState } from "./schema/aiUsage";
+import {
+  aiUsageEvents,
+  aiCodingIngestState,
+  aiCodingOutcomes,
+} from "./schema/aiUsage";
 import { academyProgress, courseCompletions } from "./schema/academy";
 import { schemaMigrations } from "./schema/migrations";
 import { integrationSettings } from "./schema/integrationSettings";
@@ -239,6 +251,8 @@ const schema = defineSchema({
   // Stripe Customer cache — the required `account_holder` for FC sessions.
   financeStripeCustomers,
   cardAuthorizations,
+  // Chapter merchant allow-list for real-time card-authorization decisions.
+  cardMerchantPolicy,
   approvalPolicy,
   approvals,
   // Append-only ledger of bulk reattribution / project-transfer operations (the
@@ -253,7 +267,17 @@ const schema = defineSchema({
   reimbursementSubmitAttempts,
   // WP-C.3: rate limiter for the HOLDER-ONLY card-details reveal (add-to-wallet).
   cardDetailsRevealAttempts,
+  // Rate limiter for the FM-only manual Chase Receipts "Send reminder"/
+  // "Remind all" nudge — at most one per cardholder per 24h.
+  receiptNudgeAttempts,
   financeSettings,
+  // Inbound email → OCR → reconcile pipeline (receipt backfill). See receiptInbox.ts.
+  inboundReceipts,
+  // First-class receipt DOCUMENTS + their many-to-many links to transactions.
+  // `receipts` is the source of truth a receipt is; `transactions.receiptStorageId`
+  // stays a denormalized cache. Written only through lib/receiptLinks.ts.
+  receipts,
+  receiptLinks,
 
   // Backer milestone ladder (giving-platform PRD §3) — dev-director-editable
   // "N backers → chapter commits to X" rungs. Global-only for now; seeded
@@ -267,6 +291,13 @@ const schema = defineSchema({
   // Money is integer cents; `transactions` stays the only actuals ledger (see
   // docs/plans/giving-platform.md §1 + schema/givingPlatform.ts).
   donors,
+  // Cross-chapter donor IDENTITY layer (donor-identity, 2026-07): the ONE
+  // underlying person behind the scope-partitioned `donors` rows. ADDITIVE —
+  // groups rows by normalized email (else phone/name) and carries a `scopes`
+  // list of the books that person is part of, without collapsing rows or
+  // touching per-scope money rollups. See schema/givingPlatform.ts +
+  // lib/donorIdentity.ts.
+  donorIdentities,
   gifts,
   // Gifts ledger: the human-edit audit breadcrumb trail (per-gift, newest-first
   // via by_gift). Written by the desk mutations, never affects a money rollup.
@@ -305,6 +336,19 @@ const schema = defineSchema({
   // here. Supersedes `cityCampaigns` (see schema/territories.ts + territories.ts
   // + docs/plans/giving-territories.md).
   territories,
+
+  // Interest capture + suggest-a-space (giving-territories addendum, the
+  // `/give` redesign) — lead capture (no payment rail) from the public `/give`
+  // page's "want this in my city" / volunteer / join team / fund / suggest-a-
+  // space CTAs, triaged centrally. See schema/givingInterest.ts +
+  // givingInterest.ts.
+  givingInterest,
+
+  // Public per-territory activity wall (the `/give` redesign) — recurring
+  // backers + one-time givers who opted to share a message/display name; every
+  // row required a real Stripe payment (spam deterrent), flipped visible on
+  // settle. See schema/givingActivity.ts + givingActivity.ts.
+  givingActivity,
 
   // Org chart (seats) — a tree of seats shared by the central chart + every
   // chapter's identical chapter chart; occupancy is per-scope (see
@@ -347,6 +391,9 @@ const schema = defineSchema({
   aiUsageEvents,
   // Debounce mutex for the on-ingest AI-coding suggestion trigger.
   aiCodingIngestState,
+  // Append-only human-decision log for AI coding suggestions — the substrate
+  // for measuring suggestion precision by dimension (fund/category/budget).
+  aiCodingOutcomes,
 
   // Academy (per-person curriculum progress + earned course badges).
   academyProgress,

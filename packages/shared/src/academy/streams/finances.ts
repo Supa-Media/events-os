@@ -20,6 +20,34 @@
  * corrected — the Giving page is shipped, not future. Every other Finances
  * teaching in this file is unchanged; see `streams/development.ts` for the
  * full backer-model lesson this touch-up points to.
+ *
+ * Auto-ACH + submission-email touch-up (reimbursement flow shipped three
+ * changes at once): `finance-reimbursements-and-flags` now teaches that
+ * approval itself fires the ACH payout automatically (no separate manual
+ * send step), and that submitting a request already emails every finance
+ * approver in the chapter — the old "there's no notification, call your
+ * Treasurer" tip was rewritten so the direct nudge is framed as making an
+ * already-notified approver move faster, not as the only signal that
+ * exists. `finance-monthly-close`'s "queue triaged" bullet got one clause
+ * noting the email is a nudge, not a substitute for clearing the queue.
+ * No quiz answers changed truth value — none of the existing questions
+ * asserted "no notification" or "manual payout" as fact. Titles, minutes,
+ * and quiz lengths are unchanged, so the snapshot test needed no updates.
+ *
+ * Review fix: `finance-reimbursements-and-flags`'s auto-ACH line now notes
+ * the manual-payout fallback for a chapter whose Increase account isn't set
+ * up yet, so it no longer reads as an unconditional guarantee. No titles,
+ * minutes, or quiz content changed.
+ *
+ * Budget-decision email touch-up (founder feedback review — the two-party
+ * approval workflow now emails BOTH directions): `finance-approving-budgets`
+ * and `finance-budget-lifecycle` each gained a clause on their "send" and
+ * "approve/request changes" bullets — submitting already emailed the scope's
+ * approvers before this touch-up (unchanged); approving or requesting
+ * changes now ALSO emails the submitter back (new), note included on a
+ * Changes requested decision. Mirrors the reimbursement touch-up above.
+ * Neither section's title, minutes, or quiz length changed, so the snapshot
+ * test needed no updates.
  */
 
 import type {
@@ -195,6 +223,10 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         caption:
           "Uploading the receipt is the only move that matters — it clears the reminder and the lock, whichever stage you're at.",
       },
+      {
+        kind: "tip",
+        text: "**Don't have the app handy?** Forward or take a photo and email the receipt to **receipts@reply.publicworship.life** — it lands in the same place as an in-app upload. Your chapter's bookkeepers see and manage every receipt — emailed or uploaded — in one place: Finances → Receipts.",
+      },
     ],
     quiz: [
       {
@@ -238,7 +270,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 0,
         explanation:
-          "My Transactions is your mini-reconcile — attach receipts and flag charges on your own transactions without needing a finance seat.",
+          "My Transactions is your mini-reconcile — attach receipts, add a category and a short note on who and why, and flag charges on your own transactions, all without needing a finance seat. What you add pre-fills the finance team's review.",
       },
       {
         prompt:
@@ -270,7 +302,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "bullets",
         items: [
-          "**Reimbursement — Public Worship owes you:** submit the request in-app with line items and a receipt for each one; it moves through submitted → approved → paying → paid. Someone else — never you — has to approve it.",
+          "**Reimbursement — Public Worship owes you:** submit the request in-app with a short note on WHY it was needed, a transaction date on every line, and a receipt for every line — none of that is optional, the app blocks submission until all three are there. Your full bank details (routing + account, not just a last-4) are captured up front too, so the moment someone approves it, the ACH payout fires automatically from the chapter's Increase account — no one has to separately go send it (unless that account isn't set up yet for the chapter, in which case the Treasurer pays it manually instead). It then moves through submitted → approved → paying → paid. Someone else — never you — has to approve it.",
           "**Personal-charge flag — you owe Public Worship:** flag your own charge as personal on My Transactions, or a manager flags it for you. It opens an owed balance, tracked the same way, just pointed the other direction.",
           "**Both directions live in one place:** the Reimbursements tab shows \"Public Worship owes you\" and \"you owe Public Worship\" side by side, so nothing nets out silently.",
           "**Don't recognize a charge at all?** That's different from a personal charge you remember making — flagging it \"personal\" says YOU made it. If a charge on the Public Worship card is a genuine mystery, freeze the card yourself right away (instant, self-serve, reversible), then tell your Treasurer or the Financial Manager immediately so they can look into it. Don't guess by flagging an unrecognized charge as personal.",
@@ -283,7 +315,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "tip",
-        text: "**Something time-sensitive?** There's no in-app \"urgent\" flag or fast lane — a request sits in the same queue whether it's due in an hour or next month. Submit it the moment you know, then reach your Treasurer (or the Financial Manager, if they're the one who'd have to approve it) directly — a call or a text — and ask them to check the queue. The app keeps the record; a direct nudge to the person who can actually approve it is what makes it fast.",
+        text: "**Something time-sensitive?** There's no in-app \"urgent\" flag or fast lane — a request sits in the same queue whether it's due in an hour or next month. Submitting already emails every approver who could act on it — your chapter's Treasurer(s) and the central Financial Manager(s) — so nobody has to be checking the queue on faith. If it's genuinely urgent, that email is your baseline, not your whole plan: also reach your Treasurer (or the Financial Manager, if they're the one who'd have to approve it) directly — a call or a text — and ask them to check the queue now. A direct nudge to the person who can actually approve it is what turns \"they'll see it eventually\" into \"they saw it today.\"",
       },
       {
         kind: "try_status",
@@ -311,7 +343,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
             text: "Pay with your own card, then submit a reimbursement request for it",
             correct: true,
             feedback:
-              "Right. Paying out of pocket happens — the fix is tracking it, not hiding it. Submit the reimbursement with your receipt and it moves through the normal approve → paid flow.",
+              "Right. Paying out of pocket happens — the fix is tracking it, not hiding it. Submit the reimbursement with your receipt, the transaction date, and why it was needed, and it moves through the normal approve → paid flow.",
           },
           {
             text: "Skip the purchase entirely and try again another day",
@@ -358,14 +390,14 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         prompt: "You paid for event supplies with your own card. What do you do?",
         options: [
-          "Submit a reimbursement request with the line items",
+          "Submit a reimbursement request with the line items, a receipt and date on each, and why it was needed",
           "Nothing — it evens out eventually",
           "Ask your Treasurer to send you cash directly",
           "Put it on your Public Worship card retroactively",
         ],
         answerIndex: 0,
         explanation:
-          "A reimbursement request is the front door for out-of-pocket mission spending — it's how \"Public Worship owes you\" gets tracked to paid.",
+          "A reimbursement request is the front door for out-of-pocket mission spending — every line needs its own receipt and transaction date, and the request itself needs a short note on why, or it won't submit. That's how \"Public Worship owes you\" gets tracked to paid.",
       },
       {
         prompt: "A personal charge accidentally hit your Public Worship card. What's true?",
@@ -434,6 +466,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         headers: ["Filter", "What it catches"],
         rows: [
           ["All", "Every charge, unfiltered"],
+          ["Spend", "Every dollar that counts as actual spend — the exact rows behind the dashboard's \"Spent\" figure, so tapping it always lands here"],
           ["Needs budget", "Categorized but not linked to a budget yet"],
           ["Missing receipt", "No receipt uploaded"],
           ["Uncategorized", "No category assigned at all"],
@@ -527,7 +560,11 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "You chase the exceptions, not everyone",
-        text: "Most receipts show up before the reminders even matter. Reconcile's Missing receipt filter is your actual worklist — a handful of stragglers each month, not the whole roster.",
+        text: "Most receipts show up before the reminders even matter. Chase Receipts (reached from Reconcile) is your actual worklist, grouped by cardholder — a handful of stragglers each month, not the whole roster.",
+      },
+      {
+        kind: "p",
+        text: "For that handful, you don't have to text them yourself anymore. Chase Receipts has a **Send reminder** button on each cardholder's group (and a **Remind all** for the whole list) — one click re-sends the same reminder email the automated timeline sends, plus a text if they have a phone on file. It's capped at once per cardholder per day, so mashing the button can't spam anyone; a nudge already sent today just reads \"Nudged today\" instead of firing again.",
       },
       {
         kind: "reveal",
@@ -566,13 +603,26 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt: "What's the Treasurer's actual daily worklist for receipts?",
         options: [
           "Personally message every cardholder every day",
-          "The Missing receipt filter in Reconcile — the handful of stragglers, not the whole roster",
+          "Chase Receipts — the handful of stragglers each month, not the whole roster",
           "A shared spreadsheet outside the app",
           "There isn't one; it's fully automatic",
         ],
         answerIndex: 1,
         explanation:
-          "The reminder timeline handles the routine cases; the filter is where you spend your actual attention.",
+          "The reminder timeline handles the routine cases; Chase Receipts is where you spend your actual attention.",
+      },
+      {
+        prompt:
+          "A straggler hasn't uploaded a receipt and you don't want to wait for the next automated reminder. What do you do?",
+        options: [
+          "Text them yourself, outside the app",
+          "Click Send reminder on their group in Chase Receipts",
+          "Manually lock their card early",
+          "Nothing can be done before the next scheduled reminder",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Send reminder (and Remind all for the whole list) fires the same reminder email — plus a text if they have a phone on file — right from Chase Receipts, capped at once per cardholder per day.",
       },
     ],
   },
@@ -597,7 +647,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "bullets",
         items: [
           "**Reconcile at Ready:** every charge has a receipt, a category, and a budget link — the Ready filter's count climbs toward all of them.",
-          "**Reimbursement queue triaged:** nothing sitting unreviewed that's actually yours to act on.",
+          "**Reimbursement queue triaged:** nothing sitting unreviewed that's actually yours to act on — the submission email is a nudge, not a substitute for actually clearing the queue.",
           "**Report up:** the central Financial Manager should be able to open your chapter's numbers and trust them without a conversation — that trust IS the north-star metric this whole system is built around.",
         ],
       },
@@ -743,7 +793,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "bullets",
         items: [
-          "**How it works:** whoever plans a budget taps **Submit for approval** right on its card. It then shows **Awaiting approval** to anyone who can act on it — tap **Approve** or **Request changes** (with a reason) straight from that same card.",
+          "**How it works:** whoever plans a budget taps **Submit for approval** right on its card. It then shows **Awaiting approval** to anyone who can act on it — AND emails them, so the approver doesn't have to be watching the app. Tap **Approve** or **Request changes** (with a reason) straight from that same card, and the submitter gets an email back either way, note included on a Request changes.",
           "**Who approves what:** a chapter budget is approved by you (the Chapter Director); your Treasurer can also approve one if you were the one who submitted it — separation of duties always picks whoever ISN'T the requester, even a dual-hat holder acting on their own submission.",
           "**Central budgets are the mirror image:** approved by the Executive Director, or the Financial Manager if the ED submitted it.",
           "**Over the approved cap:** spending past what a budget allows raises a loud warning right on the card — it doesn't block the card yet.",
@@ -827,7 +877,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "p",
-        text: "The chapter operating formula is $520 fixed + $50 per teammate, plus a conference sinking fund per funded seat (~$275÷12 for a driving city, ~$500÷12 for a flight). For a 5-person team that floor lands around $770/month — film, food, transport, storage, software, the ordinary costs of running the mission.",
+        text: "The chapter operating formula is $570 fixed + $20 per teammate, plus a conference sinking fund per funded seat (~$275÷12 for a driving city, ~$500÷12 for a flight). For a 5-person team that floor lands around $670/month — film, food, transport, storage, software, the ordinary costs of running the mission.",
       },
       {
         kind: "rule",
@@ -1090,6 +1140,10 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         text: "**Three new card-lifecycle features are now live (WP-C.1):** A cardholder can self-serve freeze their own card instantly (suspected foul play) — it's instant and reversible by them alone. An FM or Treasurer can permanently cancel/close a card (a member who had one canceled can request a replacement). And any member can request a card (one open request at a time); you approve it (which issues the card) or deny it. The old direct-issuance flow still works as a manager shortcut.",
       },
       {
+        kind: "tip",
+        text: "**Card prerequisite (org-wide, optional):** central finance can require a member to finish a specific finance Academy course before a card is issued — set it in the Accounts screen's *Receipt & card policy* section. It's OFF by default. When it's set, requesting a card still works; the gate is at ISSUANCE, so a member can request, finish the course, then be approved. In the cards admin an untrained cardholder reads **Needs training**, so you can see at a glance who's ready. (If the configured course doesn't exist, the gate stays off rather than blocking everyone.)",
+      },
+      {
         kind: "reveal",
         prompt:
           "A member emails asking you to freeze their card because their phone was stolen. What do you tell them?",
@@ -1145,6 +1199,19 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 0,
         explanation:
           "All three shipped together in WP-C.1: a cardholder can self-serve freeze/unfreeze their own card instantly (reversible), an FM or Treasurer can permanently cancel/close a card, and any member can submit a card request (with at most one open request at a time) for you to approve or deny.",
+      },
+      {
+        prompt:
+          "Central finance has set a required Academy course before a card can be issued. A member who hasn't finished it requests a card. What happens?",
+        options: [
+          "Their request is blocked — they can't even submit it until they finish",
+          "The request goes through; you just can't issue/approve the card until they complete the course, and they show as 'Needs training' until then",
+          "The card is issued anyway — the requirement only applies to direct issuance",
+          "Their existing card is locked until they finish",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The prerequisite gates ISSUANCE, not the request. A member can request now, finish the course, and then be approved — and the cards admin flags an untrained cardholder as 'Needs training' so you can see who's ready. The requirement is off by default and set on the Accounts screen.",
       },
     ],
   },
@@ -1400,8 +1467,8 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "bullets",
         items: [
           "**Draft** — the amount and line items are yours to edit freely. Nobody outside your own head has weighed in yet, and nothing you type here spends anything.",
-          "**Send for review** — a deliberate tap, never an autosave. The moment you send it, the budget is Awaiting approval and visible to whoever can act on it.",
-          "**Approve or Request changes** — the approver either clears it (Approved) or kicks it back with a reason (Changes requested), which reopens it for editing and a fresh send.",
+          "**Send for review** — a deliberate tap, never an autosave. The moment you send it, the budget is Awaiting approval, visible to whoever can act on it — and they get an email too, not just a badge in the app.",
+          "**Approve or Request changes** — the approver either clears it (Approved) or kicks it back with a reason (Changes requested), which reopens it for editing and a fresh send. Either decision emails the submitter back, so a Changes requested reason doesn't just sit waiting to be noticed.",
           "**Who approves what** — a chapter budget's approver is its Treasurer or Chapter Director; a central budget's is the Executive Director or Financial Manager.",
         ],
       },

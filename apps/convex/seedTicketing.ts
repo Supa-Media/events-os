@@ -5,9 +5,9 @@
  *   npx convex run seedTicketing:seedTicketingCover   (adds a cover photo)
  *
  * Grabs the first event in the database, dresses it with a published public
- * page, ticket tiers, RSVPs, comments and reactions so /event/<slug> renders a
- * fully-populated Posh/Partiful-style landing page (the legacy /e/<slug> alias
- * still resolves). Idempotent by slug.
+ * page, ticket tiers, RSVPs, comments and reactions so /rsvp/<slug> renders a
+ * fully-populated Posh/Partiful-style RSVP page (the older /event/<slug> and
+ * legacy /e/<slug> aliases still resolve). Idempotent by slug.
  */
 import { internalAction, internalMutation } from "./_generated/server";
 import { v } from "convex/values";
@@ -190,7 +190,7 @@ export const seedTicketingDemo = internalMutation({
       ticketsSoldCount: 43,
       revenueCents: 43 * 1500,
     });
-    return { slug: SLUG, url: `/event/${SLUG}`, going, maybe };
+    return { slug: SLUG, url: `/rsvp/${SLUG}`, going, maybe };
   },
 });
 

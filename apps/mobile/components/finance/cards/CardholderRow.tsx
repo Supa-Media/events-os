@@ -1,6 +1,7 @@
 /**
  * One CONDENSED row of the manager cardholders table (WP owner report item 2):
- * avatar + name · last4, this-month spend, the lifecycle status chip, and a ⋯
+ * avatar + name · last4, this-month spend over the card's monthly cap, the
+ * lifecycle status chip, and a ⋯
  * menu with the manager actions (lock / unlock / edit controls). Pure
  * presentation — the mutations live in the parent so a single toast surfaces
  * every failure.
@@ -10,6 +11,14 @@
  * has real Increase-issued controls (caps/validity/lock). A receipt overdue/
  * due-soon isn't a separate table column anymore (condensed); it's folded
  * into the name subtitle as a small inline flag instead.
+ *
+ * MONTHLY-CAP DISCOVERABILITY (founder feedback review): `CardControlsModal`
+ * (cap + validity window) used to be reachable only through the ⋯ menu's
+ * "Edit controls…" item — a manager scanning this table for who's near their
+ * cap had no direct way to act on what they were looking at. The cap cell
+ * itself is now a second, obvious entry point to the SAME modal (a small
+ * pencil affordance next to the cap figure); the ⋯ menu item stays too, so
+ * nothing about how it's wired changes, just how it's discovered.
  */
 import { Alert, Pressable, Text, View } from "react-native";
 import { formatCents } from "@events-os/shared";
@@ -28,6 +37,7 @@ import {
   cardStatusBadge,
   cardTypeLabel,
   receiptStatus,
+  trainingBadge,
   type CardSummary,
 } from "./helpers";
 
@@ -51,6 +61,9 @@ export function CardholderRow({
   const receipts = receiptStatus(card);
   const receiptDue = receipts.tone === "warn";
   const isCanceled = card.status === "canceled";
+  // Org-wide card-prerequisite training status — null (no chip) when there's
+  // no gate configured.
+  const training = trainingBadge(card.prerequisiteMet);
 
   // A card the HOLDER froze themselves (suspected foul play) — a manager's
   // unlock is the superset power that can still lift it (server behavior
@@ -114,12 +127,15 @@ export function CardholderRow({
             <Text className="text-sm font-semibold text-ink" numberOfLines={1}>
               {card.cardholderName ?? "Unknown"}
             </Text>
-            <View className="flex-row items-center gap-1">
+            <View className="flex-row items-center gap-1.5">
               <Text className="text-xs text-faint" numberOfLines={1}>
                 {cardTypeLabel(card.type)} ···{card.last4 ?? "••••"}
               </Text>
               {receiptDue ? (
                 <Icon name="flag" size={10} color={colors.warn} />
+              ) : null}
+              {training ? (
+                <Badge label={training.label} tone={training.tone} icon={training.icon} />
               ) : null}
             </View>
           </View>
@@ -130,6 +146,38 @@ export function CardholderRow({
         <Text className="text-sm text-ink" style={{ fontVariant: ["tabular-nums"] }}>
           {formatCents(card.spentThisMonthCents)}
         </Text>
+        {/* The card's monthly cap at a glance — a direct entry point to
+            `CardControlsModal` (same "Edit controls…" the ⋯ menu opens), not
+            just a read-only figure. Canceled cards keep the ⋯ menu empty
+            (see `actions` above) so this stays plain text there too. */}
+        {isCanceled ? (
+          <Text
+            className="text-xs text-faint"
+            style={{ fontVariant: ["tabular-nums"] }}
+          >
+            {card.monthlyCapCents != null
+              ? `of ${formatCents(card.monthlyCapCents)}`
+              : "no cap"}
+          </Text>
+        ) : (
+          <Pressable
+            onPress={onEditControls}
+            hitSlop={6}
+            accessibilityRole="button"
+            accessibilityLabel="Edit monthly cap"
+            className="flex-row items-center justify-end gap-0.5 active:opacity-70 web:hover:opacity-80"
+          >
+            <Text
+              className="text-xs text-faint"
+              style={{ fontVariant: ["tabular-nums"] }}
+            >
+              {card.monthlyCapCents != null
+                ? `of ${formatCents(card.monthlyCapCents)}`
+                : "no cap"}
+            </Text>
+            <Icon name="edit-2" size={9} color={colors.faint} />
+          </Pressable>
+        )}
       </Cell>
 
       <Cell width={132} align="right">

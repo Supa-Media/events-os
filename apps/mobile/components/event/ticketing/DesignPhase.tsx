@@ -10,7 +10,7 @@
  * immediately.
  */
 import { useState } from "react";
-import { View } from "react-native";
+import { Text, View } from "react-native";
 import { useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Doc, Id } from "@events-os/convex/_generated/dataModel";
@@ -22,6 +22,7 @@ import { SetupCard } from "./SetupCard";
 import { EventPagePreview } from "./EventPagePreview";
 import { TicketTypesCard } from "./TicketTypesCard";
 import { GivebutterSyncCard } from "./GivebutterSyncCard";
+import { parseDollars } from "./helpers";
 
 type CardKey = "cover" | "location" | "rsvp" | "tickets" | "giving";
 
@@ -55,6 +56,9 @@ export function DesignPhase({
   const [capacity, setCapacity] = useState(
     page.capacity != null ? String(page.capacity) : "",
   );
+  const [goalInput, setGoalInput] = useState(
+    page.goalCents != null ? String(page.goalCents / 100) : "",
+  );
   const [saving, setSaving] = useState(false);
   const [openCard, setOpenCard] = useState<CardKey | null>("cover");
 
@@ -71,6 +75,8 @@ export function DesignPhase({
     const capTrimmed = capacity.trim();
     const capParsed =
       capTrimmed === "" ? null : Math.max(0, Math.floor(Number(capTrimmed)));
+    const goalTrimmed = goalInput.trim();
+    const goalParsed = goalTrimmed === "" ? null : parseDollars(goalTrimmed);
     setSaving(true);
     await patchPage({
       tagline: tagline.trim(),
@@ -80,6 +86,11 @@ export function DesignPhase({
       givingPrompt: givingPrompt.trim() || null,
       ...(capParsed === null || !Number.isNaN(capParsed)
         ? { capacity: capParsed }
+        : {}),
+      // Blank clears the goal; an unparsable non-blank value is left alone
+      // (skipped) so a typo doesn't silently wipe an existing goal.
+      ...(goalTrimmed === "" || goalParsed !== null
+        ? { goalCents: goalParsed }
         : {}),
     });
     setSaving(false);
@@ -187,9 +198,19 @@ export function DesignPhase({
           open={openCard === "rsvp"}
           onToggleOpen={() => toggle("rsvp")}
         >
+          {!rsvpOn ? (
+            <Text className="mb-2 text-xs text-muted">
+              RSVPs are off — this reads as a ticket/event page instead of an
+              RSVP page. Ticket buyers get in without RSVPing first.
+            </Text>
+          ) : null}
           <ToggleRow
             label="Let guests RSVP"
-            hint="Going / maybe / can't go."
+            hint={
+              rsvpOn
+                ? "Going / maybe / can't go."
+                : "Off — turn on if you also want a Going/Maybe/Can't go headcount."
+            }
             value={rsvpOn}
             onToggle={(next) => void patchPage({ rsvpEnabled: next })}
           />
@@ -276,6 +297,14 @@ export function DesignPhase({
             multiline
             numberOfLines={2}
             style={{ minHeight: 60, textAlignVertical: "top" }}
+          />
+          <TextField
+            label="Fundraising goal"
+            value={goalInput}
+            onChangeText={setGoalInput}
+            placeholder="No goal set"
+            keyboardType="decimal-pad"
+            hint="Optional — shows a $raised / $goal progress bar on the page and the live pulse. Blank clears it. Saved with the button below."
           />
         </SetupCard>
       </View>

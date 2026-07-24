@@ -7,6 +7,17 @@ import {
   type SeatManagerSeatDef,
 } from "./seatManagers";
 
+/**
+ * `seatManagers.ts` is the pure algorithm that turns the org chart's shape
+ * (seat defs + who currently holds each seat) into "who manages this
+ * person" — powering 1:1 check-ins and manager-visibility gates. It mirrors
+ * the mobile Org Chart tab's client-side walk, and encodes several
+ * owner-approved, non-obvious rulings (self-held ancestors don't count,
+ * mutual-pair seniority tie-breaks, the intentional "blanket" seniority
+ * filter over a narrower cycle-scoped one). If this drifts from those
+ * rulings, people gain or lose visibility into check-ins they shouldn't.
+ */
+
 // A trimmed slice of the real taxonomy, enough to exercise chapter→central
 // rollup, multi-holder parents, and self-held ancestors without dragging in
 // the full SEAT_DEFS template.

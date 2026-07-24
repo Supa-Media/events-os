@@ -9,6 +9,8 @@
  *
  * Gating (finance-role ladder viewer < bookkeeper < manager):
  *  - reads                          → requireFinanceRole(..., "viewer")
+ *    (EXCEPTIONS, member-visible by design: `personTransactions`' own-rows
+ *    path and `budgetsGlance` — see their doc comments)
  *  - transaction writes             → requireFinanceRole(..., "bookkeeper")
  *  - fund/category/team/budget CRUD → requireFinanceManager
  *  - central roll-up                → requireFinanceCentral
@@ -50,6 +52,7 @@ import {
   TRANSACTION_SOURCES,
   TRANSACTION_FLOWS,
   TRANSACTION_STATUSES,
+  REPAYMENT_STATUSES,
   BUDGET_SCOPE_LABELS,
   BUDGET_TYPE_LABELS,
   CENTRAL,
@@ -75,8 +78,13 @@ import {
 import { readSandbox } from "./financeSettings";
 import { MAX_MILESTONES } from "./backerMilestones";
 import { gatherForPickerCandidates } from "./lib/forPickerCandidates";
-import { isMissingReceiptCharge, unlockCardIfReceiptsResolved } from "./cards";
+import {
+  isMissingReceiptCharge,
+  unlockCardIfReceiptsResolved,
+  convertChargeToPersonalRepayment,
+} from "./cards";
 import { queueSuggestionOnIngest } from "./aiCodingData";
+import { createReceipt, linkReceiptToTransaction } from "./lib/receiptLinks";
 import {
   getChapterIdOrNull,
   requireChapterId,
@@ -125,6 +133,9 @@ const sourceValidator = v.union(...TRANSACTION_SOURCES.map((s) => v.literal(s)))
 const flowValidator = v.union(...TRANSACTION_FLOWS.map((f) => v.literal(f)));
 const statusValidator = v.union(
   ...TRANSACTION_STATUSES.map((s) => v.literal(s)),
+);
+const repaymentStatusValidator = v.union(
+  ...REPAYMENT_STATUSES.map((s) => v.literal(s)),
 );
 
 // ── Row-shape validators (the read projections) ──────────────────────────────
@@ -229,6 +240,13 @@ const txnSummaryFields = {
   // True iff a receipt is attached (`receiptStorageId != null`) — the truthful
   // signal behind the reconcile "Missing receipt" filter + Receipt column.
   hasReceipt: v.boolean(),
+  // The personal-charge flag (`cards.flagPersonalCharge` / `flagPersonal`) —
+  // an accidental personal charge, excluded from every SPEND total until
+  // repaid. Surfaced (R1b follow-up) so the Reconcile grid + member "My
+  // transactions" can SHOW the flag from the payload instead of tracking
+  // "what did I just flag" in session-local state, which forgot the flag on
+  // every reload and never showed a manager-flagged charge at all.
+  isPersonal: v.boolean(),
   // The card's last-4 (parsed out of the sync description), for display.
   cardLast4: v.union(v.string(), v.null()),
   // Receipt-reminder timeline stage ("none" until a day-1/day-3 nudge fires;
@@ -282,11 +300,21 @@ const reconcileRow = v.object({
   ...txnSummaryFields,
   cardholder: v.union(cardholderRef, v.null()),
   aiSuggestion: v.union(reconcileAiSuggestion, v.null()),
+  // The linked personal repayment's LIVE status (`personalRepayments` via
+  // `repaymentId`) — `null` for an unflagged charge (or a flagged one whose
+  // repayment row vanished). Lets the grid's Personal badge distinguish
+  // "awaiting repayment" from "repaid" instead of one undated flag forever.
+  repaymentStatus: v.union(repaymentStatusValidator, v.null()),
 });
 
 // The reconcile filter pills (server-side, correct across ALL rows).
+// `spend` (no-dead-numbers): the exact predicate the "Spent" KPI tile sums
+// (`isSpend` — outflow, not excluded, not personal) — the drill-down target
+// for that tile, distinct from `all` (which keeps inflow/transfer/personal
+// rows too, so it would NOT sum to the same figure).
 const reconcileFilterValidator = v.union(
   v.literal("all"),
+  v.literal("spend"),
   v.literal("needs_budget"),
   v.literal("missing_receipt"),
   v.literal("uncategorized"),
@@ -296,6 +324,7 @@ const reconcileFilterValidator = v.union(
 // Per-filter counts returned alongside the rows so each pill shows its number.
 const reconcileCounts = v.object({
   all: v.number(),
+  spend: v.number(),
   needs_budget: v.number(),
   missing_receipt: v.number(),
   uncategorized: v.number(),
@@ -649,6 +678,7 @@ function toTxnSummary(tr: Doc<"transactions">) {
     budgetId: tr.budgetId ?? null,
     needsBudget: needsBudget(tr),
     hasReceipt: tr.receiptStorageId != null,
+    isPersonal: tr.isPersonal === true,
     cardLast4: tr.cardLast4 ?? null,
     reminderStage: tr.receiptReminderStage ?? ("none" as const),
   };
@@ -1169,7 +1199,7 @@ function tagAllocationForDash(
  * that doesn't (or no longer) resolves, same rule `dashboardChapter`'s
  * `codedTo.refKind` already applies to the recent-transactions digest.
  */
-async function resolveBudgetRef(
+export async function resolveBudgetRef(
   b: Doc<"budgets">,
   getEvent: (id: Id<"events">) => Promise<Doc<"events"> | null>,
   getProject: (id: Id<"projects">) => Promise<Doc<"projects"> | null>,
@@ -1972,8 +2002,9 @@ function monthEquivalentBudgetCents(
   }
 }
 
-/** A tiny read-through name cache for a table's display name. */
-function nameCache<
+/** A tiny read-through name cache for a table's display name. Exported for
+ *  `budgetDecisionEmails.ts`'s own `resolveBudgetRef` call. */
+export function nameCache<
   T extends
     | "events"
     | "projects"
@@ -1982,7 +2013,8 @@ function nameCache<
     | "eventTypes"
     | "funds"
     | "budgetCategories"
-    | "budgets",
+    | "budgets"
+    | "personalRepayments",
 >(
   ctx: QueryCtx,
   table: T,
@@ -1994,6 +2026,43 @@ function nameCache<
     const doc = (await ctx.db.get(id)) as Doc<T> | null;
     cache.set(id, doc);
     return doc;
+  };
+}
+
+/**
+ * A per-query cardholder resolver: the `personId` on the txn, else the person
+ * who owns its `cardId`, resolved to `{ personId, name, imageUrl }` with
+ * read-through caching for people / cards / avatar urls across rows. Factored
+ * out of `listReconcile` so the missing-receipt chase view (`receiptChase`)
+ * resolves the SAME "whose charge is this" answer the reconcile Cardholder
+ * column shows — the chase list must never attribute a charge to a different
+ * person than the grid the FM just came from.
+ */
+function makeCardholderResolver(ctx: QueryCtx) {
+  const getPerson = nameCache(ctx, "people");
+  const getCard = nameCache(ctx, "cards");
+  const imageUrlCache = new Map<Id<"_storage">, string | null>();
+  return async (
+    tr: Doc<"transactions">,
+  ): Promise<{ personId: Id<"people">; name: string; imageUrl: string | null } | null> => {
+    let personId = tr.personId ?? null;
+    if (!personId && tr.cardId) {
+      const card = await getCard(tr.cardId);
+      personId = card?.cardholderPersonId ?? null;
+    }
+    if (!personId) return null;
+    const person = await getPerson(personId);
+    if (!person) return null;
+    let imageUrl: string | null = null;
+    if (person.image) {
+      if (imageUrlCache.has(person.image)) {
+        imageUrl = imageUrlCache.get(person.image)!;
+      } else {
+        imageUrl = await ctx.storage.getUrl(person.image);
+        imageUrlCache.set(person.image, imageUrl);
+      }
+    }
+    return { personId, name: person.name, imageUrl };
   };
 }
 
@@ -2587,7 +2656,25 @@ export const dashboardChapter = query({
         meta: `per instance · ${topProject.pct}%`,
       });
     }
-    const topBucket = recurringBudgets.find((r) => r.cadence === "monthly");
+    // DETERMINISM FIX (no-dead-numbers, review finding — PR #368 rebase note
+    // below): was `.find(cadence === "monthly")`, the FIRST monthly recurring
+    // budget in `recurringBudgets`' insertion order — an arbitrary pick, not
+    // "the biggest bucket" the tile's position implies. Deterministic now:
+    // the monthly bucket with the largest allocation (`budgetCents`, ties
+    // keep the earliest by `reduce`'s left-to-right scan). The chapter
+    // dashboard (`ChapterView.tsx`) mirrors this EXACT rule client-side (from
+    // the same `recurringBudgets` array) so the tile it renders and the
+    // budget its own click-through opens can never disagree.
+    // REBASE NOTE: PR #368 (open, refactors this file into
+    // `lib/financeInternals/`) touches this same tile-construction region —
+    // this fix may need re-applying after that refactor lands; it's a
+    // single self-contained expression, not a structural change, so the
+    // rebase should be mechanical.
+    const monthlyBuckets = recurringBudgets.filter((r) => r.cadence === "monthly");
+    const topBucket =
+      monthlyBuckets.length > 0
+        ? monthlyBuckets.reduce((best, r) => (r.budgetCents > best.budgetCents ? r : best))
+        : undefined;
     if (topBucket) {
       tiles.push({
         label: topBucket.name,
@@ -3835,6 +3922,165 @@ export const personTransactions = query({
   },
 });
 
+/**
+ * Member-visible spend-category list for the caller's OWN chapter — powers the
+ * cardholder's `submitOwnCharge` category picker on the "My transactions" tab.
+ * DELIBERATELY NOT finance-role gated (same posture as `budgetsGlance`): a
+ * cardholder with no finance seat still needs a category list to pre-fill the
+ * bookkeeper's review, and membership (`readChapterId`) is the only gate.
+ * Returns id + name only (active categories, sorted) — no spend/attribution
+ * detail; `listCategories` (viewer-gated, richer) stays the reconcile surface.
+ */
+export const myChargeCategories = query({
+  args: {},
+  returns: v.array(v.object({ id: v.id("budgetCategories"), name: v.string() })),
+  handler: async (
+    ctx,
+  ): Promise<{ id: Id<"budgetCategories">; name: string }[]> => {
+    const chapterId = await readChapterId(ctx);
+    if (!chapterId) return [];
+    const cats = await ctx.db
+      .query("budgetCategories")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .take(ROLLUP_SCAN_LIMIT);
+    return cats
+      .filter((c) => c.isActive !== false)
+      .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+      .map((c) => ({ id: c._id, name: c.name }));
+  },
+});
+
+// ── Budgets at a glance (member-visible, read-only) ──────────────────────────
+
+// One budget's glance row: name/scope, the cap, spend to date, and the room
+// left. `capCents` is ALWAYS the EFFECTIVE cap (`effectiveCapCents`, B1) — a
+// pending increase is never advertised as already-spendable room.
+const glanceBudgetRow = v.object({
+  id: v.id("budgets"),
+  name: v.string(),
+  // The linked event/project's date (one-time budgets with a live ref only).
+  dateLabel: v.union(v.string(), v.null()),
+  type: typeValidator,
+  cadence: cadenceValidator,
+  capCents: v.number(),
+  spentCents: v.number(),
+  remainingCents: v.number(),
+  pct: v.number(),
+  status: okWarnValidator,
+});
+
+/**
+ * BUDGETS AT A GLANCE — the whole chapter's "how much has been spent on X and
+ * how much room is left", readable by ANY signed-in team member (the FM's top
+ * ask: cardholders shouldn't have to ask her before swiping).
+ *
+ * DELIBERATELY NOT finance-role gated — the one finance read that isn't.
+ * Membership (`readChapterId` — auth + a chapter roster) is the only gate:
+ * this is read-only spend-vs-cap visibility for the ~16 volunteers holding
+ * cards, not a reconcile/edit surface, and per the owner every team member
+ * should see it without holding a `financeRoles` grant. Everything else about
+ * a budget (creating, approving, editing, the transaction detail behind the
+ * numbers) stays on the gated surfaces.
+ *
+ * Shows only budgets with an IN-FORCE cap: approved (`isAttributableBudget`
+ * — the same gate that decides what the "For" picker offers), OR a
+ * previously-approved budget whose increase is mid-review (`approvedCents`
+ * recorded — the `effectiveCapCents` special case; its OLD cap is still the
+ * one in force, and vanishing from the team's view because the FM asked for
+ * more room would read as "the budget's gone"). A never-approved
+ * draft/submission isn't spendable yet, so advertising it would invite
+ * spending against room that doesn't exist. Zero-cap zero-spend stragglers
+ * are hidden (the same WP-wave4 item-9 belt the dashboard cards apply).
+ *
+ * Spend math REUSES the dashboard's own rules, so this view can never
+ * disagree with what the FM sees:
+ *  - one_time (event/project) → LIFETIME linked spend (`budgetId` link +
+ *    `isSpend` — the `oneTimeCardBreakdown`/`actualsForRef` rule);
+ *  - recurring → the CURRENT cadence window via `txnCountsTowardBudget`
+ *    (monthly → this month, quarterly → this quarter, yearly → the year),
+ *    against the full cadence cap.
+ * Current-Eastern-year budgets only, one bounded `loadPeriodTxns` read.
+ */
+export const budgetsGlance = query({
+  args: {},
+  returns: v.object({
+    year: v.number(),
+    month: v.number(),
+    oneTime: v.array(glanceBudgetRow),
+    recurring: v.array(glanceBudgetRow),
+  }),
+  handler: async (ctx) => {
+    const now = easternParts(Date.now());
+    const empty = { year: now.year, month: now.month, oneTime: [], recurring: [] };
+    const chapterId = await readChapterId(ctx);
+    if (!chapterId) return empty;
+    // No requireFinanceRole here — see the doc comment above (member-visible
+    // by design; membership is the gate).
+
+    const sandboxMode = await readSandbox(ctx);
+    const yearTxns = await loadPeriodTxns(ctx, chapterId, now.year, sandboxMode);
+    const budgets = await ctx.db
+      .query("budgets")
+      .withIndex("by_chapter_and_period", (q) =>
+        q.eq("chapterId", chapterId).eq("year", now.year),
+      )
+      .take(ROLLUP_SCAN_LIMIT);
+
+    const getEvent = nameCache(ctx, "events");
+    const getProject = nameCache(ctx, "projects");
+    const oneTime: (typeof glanceBudgetRow.type & { refDate: number | null })[] = [];
+    const recurring: (typeof glanceBudgetRow.type)[] = [];
+    for (const b of budgets) {
+      // Only a budget with an in-force cap is advertised to the whole team:
+      // approved (grandfathered included), or previously approved with an
+      // increase mid-review (`approvedCents` — its old cap still governs).
+      if (b.approvedCents == null && !isAttributableBudget(b)) continue;
+      const isOneTime = effectiveType(b) === "one_time";
+      const spentCents = yearTxns.reduce((sum, tr) => {
+        const counts = isOneTime
+          ? tr.budgetId === b._id && isSpend(tr)
+          : txnCountsTowardBudget(tr, b, now.month);
+        return counts ? sum + tr.amountCents : sum;
+      }, 0);
+      const capCents = effectiveCapCents(b);
+      // WP-wave4 (item 9) mirror: hide the "$0.00 / $0.00" stragglers.
+      if (capCents === 0 && spentCents === 0) continue;
+      const pct = pctOf(spentCents, capCents);
+      const { name, dateLabel, refDate } = await resolveBudgetRef(b, getEvent, getProject);
+      const row = {
+        id: b._id,
+        name,
+        dateLabel,
+        type: effectiveType(b),
+        cadence: b.cadence,
+        capCents,
+        spentCents,
+        remainingCents: capCents - spentCents,
+        pct,
+        status: statusFor(pct),
+      };
+      if (isOneTime) oneTime.push({ ...row, refDate });
+      else recurring.push(row);
+    }
+
+    // One-time: newest ref date first (the events/projects people are spending
+    // on NOW), date-less rows last. Recurring: alphabetical — a short, stable
+    // list of standing buckets.
+    oneTime.sort((a, b) => {
+      if ((a.refDate == null) !== (b.refDate == null)) return a.refDate == null ? 1 : -1;
+      return (b.refDate ?? 0) - (a.refDate ?? 0);
+    });
+    recurring.sort((a, b) => a.name.localeCompare(b.name));
+
+    return {
+      year: now.year,
+      month: now.month,
+      oneTime: oneTime.map(({ refDate: _refDate, ...row }) => row),
+      recurring,
+    };
+  },
+});
+
 // ── Funds ────────────────────────────────────────────────────────────────────
 // No `listFunds` query — the funds UI was removed in WP-1.4/#145 (funds are
 // backend-only; see `lib/finance.ts#defaultFundId`'s doc comment).
@@ -4905,6 +5151,14 @@ export const updateBudget = mutation({
 //     director's seat can't widen central approval.
 // Either scope: approver ≠ submitter (identity, not role) — a dual-hat holder
 // who submitted as one seat cannot approve their own submission as the other.
+//
+// Notifications (founder feedback review): `submitBudgetForApproval` emails
+// the scope's approvers (`notifyBudgetApprovers`, below); `approveBudget`/
+// `requestBudgetChanges` each email the SUBMITTER back
+// (`budgetDecisionEmails.ts#notifyBudgetSubmitter`), including the reviewer's
+// `reviewNote` on a changes-requested decision. Both directions are
+// best-effort, scheduled Resend sends — never awaited inline, never block
+// the mutation.
 
 /** Assert a budget's EFFECTIVE approval status permits `action`. */
 function assertBudgetTransition(
@@ -5188,6 +5442,12 @@ export const approveBudget = mutation({
       party: approvalParty,
       note,
     });
+    // Notify the submitter back — best-effort email (never awaited inline; a
+    // mutation can't call Resend itself). See `budgetDecisionEmails.ts`'s
+    // module doc for why this lives in its own file instead of here.
+    await ctx.scheduler.runAfter(0, internal.budgetDecisionEmails.notifyBudgetSubmitter, {
+      budgetId,
+    });
     return null;
   },
 });
@@ -5223,6 +5483,13 @@ export const requestBudgetChanges = mutation({
     await logBudgetDecision(ctx, budgetId, "changes_requested", callerPersonId, {
       party: "two_party",
       note,
+    });
+    // Notify the submitter back — best-effort email, including the `note`
+    // (the "why" on a changes-requested decision). See
+    // `budgetDecisionEmails.ts`'s module doc for why this lives in its own
+    // file instead of here.
+    await ctx.scheduler.runAfter(0, internal.budgetDecisionEmails.notifyBudgetSubmitter, {
+      budgetId,
     });
     return null;
   },
@@ -7036,8 +7303,19 @@ export const listTransactions = query({
  * Filters (the `excluded` status is always dropped first — an intentional
  * exclusion never belongs in the inbox):
  *   - `all`            every non-excluded row
+ *   - `spend`          a row that counts as actual spend (`isSpend` — outflow,
+ *                       not personal) — the drill-down target for the
+ *                       dashboards' "Spent" KPI tile (no-dead-numbers): `all`
+ *                       also keeps inflow/transfer/personal rows, so it would
+ *                       NOT sum to that tile's figure the way this does
  *   - `needs_budget`   a spend row with no budget yet (`isSpend && budgetId == null`)
- *   - `missing_receipt` a chargeable (spend) row with no receipt attached
+ *   - `missing_receipt` a chargeable (spend) row with no receipt attached AND
+ *     not yet `reconciled` — a treasurer who closed a row receipt-less made a
+ *     call, so it drops out of the chase-worthy count (the row stays visible
+ *     under `all`/`ready`, just not counted here). Deliberately the SAME
+ *     predicate `receiptChase` uses (same scope resolution too), so this pill
+ *     and the Chase-receipts list it opens into never disagree — see that
+ *     query's doc comment.
  *   - `uncategorized`  status `unreviewed`
  *   - `ready`          status `reconciled`
  *
@@ -7045,6 +7323,15 @@ export const listTransactions = query({
  * read yields both the newest-first ordering the grid wants AND every pill's
  * count in one pass, cheaper than a separate `by_chapter_and_status` query per
  * pill.
+ *
+ * OPTIONAL PERIOD SCOPE (no-dead-numbers): `year` (+ `month`/`period`) narrows
+ * the scan to the SAME {year, month, period} window a dashboard tile was
+ * showing when the caller drilled in — the same `loadPeriodTxns`/
+ * `inDashRange` machinery `dashboardChapter`/`dashboardCentral` use for their
+ * own period totals, so a linked-through "Spent" figure and the rows here
+ * agree. Omitting `year` keeps the ORIGINAL all-time bounded-recent behavior
+ * (every existing caller — the plain Reconcile tab, "Needs budget" links —
+ * is unaffected).
  */
 export const listReconcile = query({
   args: {
@@ -7061,19 +7348,36 @@ export const listReconcile = query({
     // when `scope:"central"` is also set (that branch wins — the two never
     // conflict since `chapterId` is only consulted in the `else` branch).
     chapterId: v.optional(v.id("chapters")),
+    // Optional period narrowing (no-dead-numbers) — see the module doc above.
+    // `year` gates the other two: `month` un-set + `period !== "ytd"` reads
+    // the whole year.
+    year: v.optional(v.number()),
+    month: v.optional(v.number()),
+    period: v.optional(v.union(v.literal("month"), v.literal("ytd"))),
   },
-  returns: v.object({ rows: v.array(reconcileRow), counts: reconcileCounts }),
+  returns: v.object({
+    rows: v.array(reconcileRow),
+    counts: reconcileCounts,
+    // The caller's OWN roster person id (home-chapter scoped, `null` for a
+    // superuser with no roster row) — founder feedback review: lets the grid
+    // widen "Mark personal" to a cardholder viewing their OWN charge, not
+    // just a manager (`cards.flagPersonalCharge` already allows either
+    // server-side; the UI just didn't offer it here). Resolved ONCE per
+    // query rather than per row since it never varies row to row.
+    viewerPersonId: v.union(v.id("people"), v.null()),
+  }),
   handler: async (ctx, args) => {
     const filter = args.filter ?? "all";
     const zero = {
       all: 0,
+      spend: 0,
       needs_budget: 0,
       missing_receipt: 0,
       uncategorized: 0,
       ready: 0,
     };
     const homeChapterId = await readChapterId(ctx);
-    if (!homeChapterId) return { rows: [], counts: zero };
+    if (!homeChapterId) return { rows: [], counts: zero, viewerPersonId: null };
     // Resolve the reconcile scope: central (org-wide reach), a DIFFERENT
     // chapter via central drill-down, or the caller's own chapter (viewer).
     // Central-owned txns key on the `"central"` sentinel.
@@ -7095,62 +7399,75 @@ export const listReconcile = query({
     }
 
     const sandboxMode = await readSandbox(ctx);
-    const all = (
-      await ctx.db
-        .query("transactions")
-        .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", scope))
-        .order("desc")
-        .take(ROLLUP_SCAN_LIMIT)
-    )
-      .filter((tr) => txnMatchesMode(tr, sandboxMode))
-      // An intentionally-excluded charge is never part of the reconcile inbox.
-      .filter((tr) => tr.status !== "excluded");
+    let all: Doc<"transactions">[];
+    if (args.year != null) {
+      // Period-scoped (no-dead-numbers): the SAME year/month/ytd window a
+      // dashboard tile summed, via the dashboards' own period helpers — see
+      // the module doc above. No `month` (or an explicit `period:"ytd"`)
+      // reads the WHOLE year (dp.month = 12, ytd = true), not just January.
+      const ytd = args.period === "ytd" || args.month == null;
+      const dp: DashPeriod = { year: args.year, month: args.month ?? 12, ytd };
+      const yearTxns = await loadPeriodTxns(
+        ctx,
+        scope,
+        args.year,
+        sandboxMode,
+        !ytd ? args.month : undefined,
+      );
+      all = yearTxns
+        .filter((tr) => inDashRange(tr.postedAt, dp))
+        .filter((tr) => tr.status !== "excluded")
+        .sort((a, b) => b.postedAt - a.postedAt);
+    } else {
+      all = (
+        await ctx.db
+          .query("transactions")
+          .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", scope))
+          .order("desc")
+          .take(ROLLUP_SCAN_LIMIT)
+      )
+        .filter((tr) => txnMatchesMode(tr, sandboxMode))
+        // An intentionally-excluded charge is never part of the reconcile inbox.
+        .filter((tr) => tr.status !== "excluded");
+    }
 
     // Per-filter counts in the same pass (spend/receipt/status predicates).
     const counts = { ...zero, all: all.length };
     for (const tr of all) {
+      if (isSpend(tr)) counts.spend += 1;
       if (needsBudget(tr)) counts.needs_budget += 1;
-      if (isSpend(tr) && tr.receiptStorageId == null) counts.missing_receipt += 1;
+      if (isSpend(tr) && tr.receiptStorageId == null && tr.status !== "reconciled")
+        counts.missing_receipt += 1;
       if (tr.status === "unreviewed") counts.uncategorized += 1;
       if (tr.status === "reconciled") counts.ready += 1;
     }
 
     const predicates: Record<string, (tr: Doc<"transactions">) => boolean> = {
       all: () => true,
+      spend: (tr) => isSpend(tr),
       needs_budget: (tr) => needsBudget(tr),
-      missing_receipt: (tr) => isSpend(tr) && tr.receiptStorageId == null,
+      missing_receipt: (tr) =>
+        isSpend(tr) && tr.receiptStorageId == null && tr.status !== "reconciled",
       uncategorized: (tr) => tr.status === "unreviewed",
       ready: (tr) => tr.status === "reconciled",
     };
     const selected = all.filter(predicates[filter]);
 
     // Resolve the cardholder only for the rows we actually return (bounded
-    // `storage.getUrl` calls), caching people / cards / image urls across rows.
-    const getPerson = nameCache(ctx, "people");
-    const getCard = nameCache(ctx, "cards");
+    // `storage.getUrl` calls), caching people / cards / image urls across rows
+    // (`makeCardholderResolver` — shared with the `receiptChase` view).
+    const resolveCardholder = makeCardholderResolver(ctx);
     // Same read-through caching for the AI suggestion's resolved display names.
     const getFund = nameCache(ctx, "funds");
     const getCategory = nameCache(ctx, "budgetCategories");
-    const imageUrlCache = new Map<Id<"_storage">, string | null>();
-    const resolveCardholder = async (tr: Doc<"transactions">) => {
-      let personId = tr.personId ?? null;
-      if (!personId && tr.cardId) {
-        const card = await getCard(tr.cardId);
-        personId = card?.cardholderPersonId ?? null;
-      }
-      if (!personId) return null;
-      const person = await getPerson(personId);
-      if (!person) return null;
-      let imageUrl: string | null = null;
-      if (person.image) {
-        if (imageUrlCache.has(person.image)) {
-          imageUrl = imageUrlCache.get(person.image)!;
-        } else {
-          imageUrl = await ctx.storage.getUrl(person.image);
-          imageUrlCache.set(person.image, imageUrl);
-        }
-      }
-      return { personId, name: person.name, imageUrl };
+    // The linked personal repayment's live status (`repaymentId` →
+    // `personalRepayments.status`) — resolved per returned row so the grid's
+    // Personal badge can read "Repaid" once the repayment settles.
+    const getRepayment = nameCache(ctx, "personalRepayments");
+    const resolveRepaymentStatus = async (tr: Doc<"transactions">) => {
+      if (!tr.repaymentId) return null;
+      const rep = await getRepayment(tr.repaymentId);
+      return rep?.status ?? null;
     };
 
     // The AI suggestion, resolved to display names — only for a still-
@@ -7189,9 +7506,170 @@ export const listReconcile = query({
         ...toTxnSummary(tr),
         cardholder: await resolveCardholder(tr),
         aiSuggestion: await resolveAiSuggestion(tr),
+        repaymentStatus: await resolveRepaymentStatus(tr),
       });
     }
-    return { rows, counts };
+    // Resolved off the caller's HOME chapter (not `scope`, which can be a
+    // central/peeked chapter the caller may not have a roster row in) — the
+    // grid compares this against each row's `cardholder.personId` to decide
+    // "is this MY charge," which is unaffected by which chapter's queue is
+    // currently on screen. `null` for a superuser with no roster row at all.
+    const viewer = await viewerPerson(ctx, homeChapterId);
+    return { rows, counts, viewerPersonId: viewer?._id ?? null };
+  },
+});
+
+// ── Missing-receipt chase (the FM's "who do I nudge" list) ───────────────────
+
+// One charge still owed a receipt, projected for the chase list — read-only
+// display fields plus the reminder-timeline stage (same meaning as
+// `txnSummaryFields.reminderStage`) so the list can show how loudly each
+// charge has already been nudged.
+const chaseTxn = v.object({
+  id: v.id("transactions"),
+  postedAt: v.number(),
+  amountCents: v.number(),
+  merchantName: v.union(v.string(), v.null()),
+  description: v.union(v.string(), v.null()),
+  cardLast4: v.union(v.string(), v.null()),
+  reminderStage: v.union(
+    v.literal("none"),
+    v.literal("flagged"),
+    v.literal("escalated"),
+  ),
+});
+
+// One cardholder's bundle of receipt-owing charges. `personId` is `null` for
+// the "Unattributed" group (a charge that resolves to no cardholder at all).
+const chaseGroup = v.object({
+  personId: v.union(v.id("people"), v.null()),
+  name: v.string(),
+  imageUrl: v.union(v.string(), v.null()),
+  totalCents: v.number(),
+  transactions: v.array(chaseTxn),
+});
+
+/**
+ * MISSING-RECEIPT CHASE — every charge still owed a receipt, grouped by
+ * cardholder: the FM's ready-made "who do I nudge, and for what" list, so
+ * chasing 16 volunteers doesn't mean re-deriving the same answer from the
+ * reconcile grid's flat Missing-receipt filter each week.
+ *
+ * "Needs a receipt" here = a SPEND charge (`isSpend` — transfers / excluded /
+ * personal rows never owe one) with no receipt attached AND not yet
+ * `reconciled` (a treasurer who closed a row receipt-less made a call —
+ * there's nobody left to chase). This is EXACTLY `listReconcile`'s
+ * `missing_receipt` predicate — the two are kept in lockstep on purpose so
+ * the Reconcile pill's count and this list's `count` can never disagree; see
+ * that query's doc comment.
+ *
+ * `scope`/`chapterId` mirror `listReconcile`'s args and resolution byte for
+ * byte (central desk / central drill-down / caller's own chapter, same authz
+ * via `requireFinanceCentral`/`requireFinanceRole`) — the Reconcile screen
+ * passes through whatever scope it's currently viewing when it navigates
+ * here, so "Chase receipts" always opens into the SAME bucket the pill it was
+ * clicked from was counting.
+ *
+ * Grouping resolves the cardholder exactly like the reconcile Cardholder
+ * column (`makeCardholderResolver`: the txn's `personId`, else the owner of
+ * its `cardId`); a charge resolving to nobody lands in the "Unattributed"
+ * group (`personId: null`). Within a group charges sort by amount DESC (chase
+ * the big ones first); groups sort by their total DESC, with Unattributed
+ * pinned LAST regardless of size — there's no one to chase for it.
+ *
+ * Viewer+ gated (the same floor as `listReconcile`), single bounded scan over
+ * `by_chapter_and_postedAt` (`ROLLUP_SCAN_LIMIT`, the reconcile inbox bound).
+ */
+export const receiptChase = query({
+  args: {
+    // Same meaning as `listReconcile`'s `scope`/`chapterId` — see that
+    // query's arg comments for the full authz story. Absent → the caller's
+    // own chapter, exactly as before this pair of args existed.
+    scope: v.optional(v.literal("central")),
+    chapterId: v.optional(v.id("chapters")),
+  },
+  returns: v.object({
+    groups: v.array(chaseGroup),
+    totalCents: v.number(),
+    count: v.number(),
+  }),
+  handler: async (ctx, args) => {
+    const homeChapterId = await readChapterId(ctx);
+    if (!homeChapterId) return { groups: [], totalCents: 0, count: 0 };
+    // Resolve the chase scope exactly like `listReconcile` — central,
+    // central drill-down into a different chapter, or the caller's own
+    // chapter. Keep this branch byte-for-byte in sync with `listReconcile`'s.
+    let scope: FinanceScope;
+    if (args.scope === "central") {
+      await requireFinanceCentral(ctx, homeChapterId);
+      scope = CENTRAL;
+    } else if (args.chapterId != null && args.chapterId !== homeChapterId) {
+      await requireFinanceCentral(ctx, homeChapterId);
+      scope = args.chapterId;
+    } else {
+      await requireFinanceRole(ctx, homeChapterId, "viewer");
+      scope = args.chapterId ?? homeChapterId;
+    }
+
+    const sandboxMode = await readSandbox(ctx);
+    const owing = (
+      await ctx.db
+        .query("transactions")
+        .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", scope))
+        .order("desc")
+        .take(ROLLUP_SCAN_LIMIT)
+    )
+      .filter((tr) => txnMatchesMode(tr, sandboxMode))
+      .filter(
+        (tr) =>
+          isSpend(tr) && tr.status !== "reconciled" && tr.receiptStorageId == null,
+      );
+
+    const resolveCardholder = makeCardholderResolver(ctx);
+    const byHolder = new Map<string, typeof chaseGroup.type>();
+    for (const tr of owing) {
+      const holder = await resolveCardholder(tr);
+      const key = holder?.personId ?? "unattributed";
+      let group = byHolder.get(key);
+      if (!group) {
+        group = {
+          personId: holder?.personId ?? null,
+          name: holder?.name ?? "Unattributed",
+          imageUrl: holder?.imageUrl ?? null,
+          totalCents: 0,
+          transactions: [],
+        };
+        byHolder.set(key, group);
+      }
+      group.totalCents += tr.amountCents;
+      group.transactions.push({
+        id: tr._id,
+        postedAt: tr.postedAt,
+        amountCents: tr.amountCents,
+        merchantName: tr.merchantName ?? null,
+        description: tr.description ?? null,
+        cardLast4: tr.cardLast4 ?? null,
+        reminderStage: tr.receiptReminderStage ?? ("none" as const),
+      });
+    }
+
+    const groups = [...byHolder.values()];
+    for (const g of groups) {
+      g.transactions.sort((a, b) => b.amountCents - a.amountCents);
+    }
+    groups.sort((a, b) => {
+      // Unattributed last, always (nobody to chase); otherwise biggest total first.
+      if ((a.personId == null) !== (b.personId == null)) {
+        return a.personId == null ? 1 : -1;
+      }
+      return b.totalCents - a.totalCents;
+    });
+
+    return {
+      groups,
+      totalCents: groups.reduce((s, g) => s + g.totalCents, 0),
+      count: owing.length,
+    };
   },
 });
 
@@ -7678,17 +8156,28 @@ export const attachReceipt = mutation({
         }
       }
     }
-    await ctx.db.patch(args.transactionId, {
-      receiptStorageId: args.storageId,
-      // The reminder timeline is moot once a receipt is attached.
-      receiptReminderStage: undefined,
-      lastReminderSentAt: undefined,
+    // First-class document + link (the receipts layer is now the source of
+    // truth; `transactions.receiptStorageId` is the denormalized cache the link
+    // maintains — see lib/receiptLinks.ts). The reminder-clear + card-unlock
+    // side effects live in `linkReceiptToTransaction`.
+    //
+    // BEHAVIOR PRESERVED: the in-app upload path historically did NOT flip a
+    // `categorized` charge to `reconciled` (reconcile is a deliberate later
+    // step here), so we opt out via `reconcileIfCategorized: false`.
+    const uploader = await viewerPerson(ctx, chapterId);
+    const receiptId = await createReceipt(ctx, {
+      chapterId: txn.chapterId,
+      storageId: args.storageId,
+      source: "upload",
+      ...(uploader ? { uploadedByPersonId: uploader._id } : {}),
     });
-    // If this charge was the (or a) reason the card auto-locked, re-check
-    // eligibility right away — don't wait for the next daily cron sweep.
-    if (txn.cardId) {
-      await unlockCardIfReceiptsResolved(ctx, txn.cardId);
-    }
+    await linkReceiptToTransaction(ctx, {
+      receiptId,
+      transactionId: args.transactionId,
+      source: "upload",
+      ...(uploader ? { linkedByPersonId: uploader._id } : {}),
+      reconcileIfCategorized: false,
+    });
     return null;
   },
 });
@@ -7797,6 +8286,141 @@ export const setTransactionCategory = mutation({
     // mirrors `categorizeTransaction`'s own rule.
     patch.aiSuggestion = undefined;
     await ctx.db.patch(args.transactionId, patch);
+    return null;
+  },
+});
+
+/**
+ * CARDHOLDER SELF-SERVICE ("Concur-style" pre-fill) — the cardholder who OWNS
+ * a card charge sets its spend `categoryId` and a freeform `note` (the who/why
+ * explanation), and optionally flags it personal, to PRE-FILL the bookkeeper's
+ * Reconcile review before they ever see the row.
+ *
+ * Deliberately far NARROWER than `categorizeTransaction` (bookkeeper-gated,
+ * reattributes fund/team/budget): this path can ONLY touch `categoryId` and
+ * `note` of the caller's OWN charge — never `fundId`/`teamId`/`budgetId`/
+ * `amountCents`, and `status` only via the same unreviewed→categorized advance
+ * the reconcile paths do. It is NOT finance-role gated (a bookkeeper already
+ * has `categorizeTransaction`; this is additive for a plain member).
+ *
+ * AUTH mirrors `cards.flagPersonalCharge`'s cardholder check: the caller must
+ * be the `cardholderPersonId` of the charge's card (get card → cardholder →
+ * compare to the caller's finance `access.personId`). Only a card charge
+ * (`cardId` set) owned by the caller qualifies — anything else is
+ * NOT_A_CARD_CHARGE / FORBIDDEN.
+ *
+ * RECONCILED LOCK: a `status:"reconciled"` row is refused (the Treasurer has
+ * closed it) — the same precedent `setTransactionCategory` documents for its
+ * event-lead path. The personal flag REUSES `cards`'s shared
+ * `convertChargeToPersonalRepayment` (no duplicate `personalRepayments`
+ * insert) and is idempotent.
+ */
+export const submitOwnCharge = mutation({
+  args: {
+    transactionId: v.id("transactions"),
+    // `undefined` leaves the field unchanged; `null` clears it; an id sets it
+    // (a spend category in the CALLER's own chapter).
+    categoryId: v.optional(v.union(v.id("budgetCategories"), v.null())),
+    note: v.optional(v.union(v.string(), v.null())),
+    flagPersonal: v.optional(v.boolean()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const access = await getFinanceRole(ctx, chapterId);
+
+    const txn = (await ctx.db.get(args.transactionId)) as Doc<"transactions"> | null;
+    if (!txn || txn.chapterId !== chapterId) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Transaction not found in your chapter.",
+      });
+    }
+    if (!txn.cardId) {
+      throw new ConvexError({
+        code: "NOT_A_CARD_CHARGE",
+        message: "Only a card charge can be submitted this way.",
+      });
+    }
+    const card = await ctx.db.get(txn.cardId);
+    if (!card || card.chapterId !== chapterId) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Card not found in your chapter.",
+      });
+    }
+    // Auth: the cardholder themselves ONLY (mirrors `flagPersonalCharge`'s
+    // `isCardholder`) — this is the member's own-charge surface, not a
+    // manager tool. A bookkeeper reattributes via `categorizeTransaction`.
+    const isCardholder =
+      access.personId != null && access.personId === card.cardholderPersonId;
+    if (!isCardholder) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message: "Only the cardholder can submit details for this charge.",
+      });
+    }
+    // RECONCILED LOCK: the Treasurer has closed this row.
+    if (txn.status === "reconciled") {
+      throw new ConvexError({
+        code: "RECONCILED_LOCKED",
+        message:
+          "This charge is closed by your treasurer — ask them to reopen it before changing it.",
+      });
+    }
+
+    const patch: {
+      categoryId?: Id<"budgetCategories">;
+      note?: string;
+      status?: "categorized";
+      aiSuggestion?: undefined;
+    } = {};
+    if (args.categoryId !== undefined) {
+      if (args.categoryId) {
+        // Category must belong to the caller's OWN chapter (never central, never
+        // another chapter's) — the same verify pattern the reconcile paths use.
+        await requireInCallerChapter(
+          ctx,
+          chapterId,
+          "budgetCategories",
+          args.categoryId,
+          "Category",
+        );
+        patch.categoryId = args.categoryId;
+      } else {
+        patch.categoryId = undefined; // clear
+      }
+      // A human just coded this manually — clear any stored AI suggestion so it
+      // can't later resurface via `acceptSuggestion` and clobber it (mirrors
+      // `categorizeTransaction`/`setTransactionCategory`).
+      patch.aiSuggestion = undefined;
+    }
+    if (args.note !== undefined) {
+      const trimmed = args.note?.trim() || null;
+      if (trimmed && trimmed.length > MAX_NOTE_LENGTH) {
+        throw new ConvexError({
+          code: "NOTE_TOO_LONG",
+          message: `A note can't be longer than ${MAX_NOTE_LENGTH} characters.`,
+        });
+      }
+      patch.note = trimmed ?? undefined;
+    }
+    // Advance unreviewed → categorized once a category makes the row "coded" —
+    // the SAME (and only) status transition `categorizeTransaction`/
+    // `setTransactionCategory` do; never any other.
+    const nextCategoryId = "categoryId" in patch ? patch.categoryId : txn.categoryId;
+    if (nextCategoryId && txn.status === "unreviewed") patch.status = "categorized";
+    if (Object.keys(patch).length > 0) {
+      await ctx.db.patch(args.transactionId, patch);
+    }
+
+    // Optional personal flag — REUSE the shared conversion core (no duplicate
+    // `personalRepayments` insert). Idempotent: re-submitting an already
+    // personal charge is a no-op. Re-read so the helper sees the patch above.
+    if (args.flagPersonal === true) {
+      const fresh = (await ctx.db.get(args.transactionId)) as Doc<"transactions">;
+      await convertChargeToPersonalRepayment(ctx, fresh, card.cardholderPersonId);
+    }
     return null;
   },
 });

@@ -83,6 +83,7 @@ import { useChapterContext } from "../../../lib/ChapterContext";
 import { SignedMoney, txnStatusTone } from "./parts";
 import { STATUS_OPTIONS, shortDate } from "../reconcile/helpers";
 import { ReceiptCell } from "../reconcile/ReconcileList";
+import { ReceiptViewerModal } from "../receipts/ReceiptViewerModal";
 import type { DrilldownTxn } from "./TransactionList";
 
 const TABULAR = { fontVariant: ["tabular-nums" as const] };
@@ -321,6 +322,9 @@ function TransactionDetailBody({
   const [isPersonal, setIsPersonalState] = useState(txn.isPersonal);
   const [noteValue, setNoteValue] = useState(txn.note ?? "");
   const [savedNote, setSavedNote] = useState(txn.note ?? "");
+  // Read-only (peek / below-bookkeeper role) still allows VIEWING receipts —
+  // only the mutating actions inside the viewer are hidden (`readOnly` below).
+  const [readOnlyViewerOpen, setReadOnlyViewerOpen] = useState(false);
   useEffect(() => {
     setCategoryIdState(txn.categoryId);
     setCategoryNameState(txn.categoryName);
@@ -481,15 +485,38 @@ function TransactionDetailBody({
         )}
       </View>
 
-      {/* Receipt */}
+      {/* Receipt — read-only (peek / below-bookkeeper) still lets a caller
+          VIEW the receipt(s); only the viewer's mutating actions are hidden
+          (`readOnly` passed through), so this is never a dead disabled
+          button, just a narrower one. */}
       <View>
         <FieldLabel label="Receipt" />
         {readOnly ? (
-          <Text className="text-sm text-ink">{hasReceipt ? "Attached" : "Not attached"}</Text>
+          hasReceipt ? (
+            <>
+              <Pressable
+                onPress={() => setReadOnlyViewerOpen(true)}
+                accessibilityRole="button"
+                className="self-start active:opacity-70 web:hover:opacity-90"
+              >
+                <Text className="text-sm font-medium text-ink underline">Attached</Text>
+              </Pressable>
+              {readOnlyViewerOpen ? (
+                <ReceiptViewerModal
+                  transactionId={txn.id}
+                  onClose={() => setReadOnlyViewerOpen(false)}
+                  readOnly
+                />
+              ) : null}
+            </>
+          ) : (
+            <Text className="text-sm text-ink">Not attached</Text>
+          )
         ) : (
           <ReceiptCell
             hasReceipt={hasReceipt}
             reminderStage={txn.reminderStage}
+            transactionId={txn.id}
             onUpload={async (storageId) => {
               await editReceipt(storageId);
             }}

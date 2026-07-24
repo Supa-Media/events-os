@@ -32,13 +32,26 @@
  * exists but describes ticket TYPES (tiers), not sold tickets — not used here.
  *
  * ── MONEY INVARIANT ──────────────────────────────────────────────────────────
- * A synced Givebutter order is DISPLAY ATTRIBUTION ONLY. It touches EXACTLY three
- * things: `eventPages` rollups (`ticketsSoldCount` / `revenueCents` / RSVP
- * status counters), `ticketTypes.soldCount`, and `rsvps`. It NEVER writes to
- * `transactions`, `gifts`, `donations`, `donors`, or `people` — Givebutter is
- * the system of record for that money; double-booking it into the ledger would
- * corrupt every budget/reconcile total. Synced orders carry NO Stripe fields;
- * they are marked `externalProvider:"givebutter"` + `externalRef` instead.
+ * TICKETS are DISPLAY ATTRIBUTION ONLY. A synced Givebutter ticket touches
+ * EXACTLY three things: `eventPages` ticket rollups (`ticketsSoldCount` /
+ * `revenueCents` / RSVP status counters), `ticketTypes.soldCount`, and `rsvps`.
+ * The ticket path NEVER writes to `transactions`, `donations`, or the finance
+ * ledger — Givebutter is the system of record for that money; double-booking a
+ * TICKET into the ledger would corrupt every budget/reconcile total. Synced
+ * orders carry NO Stripe fields; they are marked `externalProvider:"givebutter"`
+ * + `externalRef` instead.
+ *
+ * DONATIONS are the ONE deliberate exception (see `applyGivebutterDonations`).
+ * A Givebutter transaction's DONATION portion (the `subtype:"donation"` line
+ * items nested on its sub-transactions — tickets and processing fees excluded)
+ * is recorded as a
+ * donor-CRM `gifts` row via the shared `recordGiftForDonor` primitive, tagged
+ * with the event id, so it rolls into the event's `externalGiftsCents`/
+ * `externalGiftsCount` "Given" total (Revenue stays ticket-only). This still
+ * never touches `transactions` (the actuals ledger) — a `gifts` row is giving
+ * HISTORY, not an actual — so budgets/reconcile are unaffected. Idempotency +
+ * the no-double-count guard live in `applyGivebutterDonations`; the donation
+ * amount derivation is documented on `donationCentsFromTransaction`.
  *
  * ── REFUNDS (v1 limitation) ──────────────────────────────────────────────────
  * The transaction sweep now skips transactions Givebutter has marked refunded
@@ -68,6 +81,7 @@ import { normalizeEmail } from "./lib/access";
 import { requireEvent } from "./lib/context";
 import { newGuestToken, newTicketCode } from "./ticketing";
 import { RSVP_STATUSES } from "./schema/ticketing";
+import { matchOrCreateDonor, recordGiftForDonor } from "./lib/givingDonors";
 
 /** Givebutter API base. `Authorization: Bearer <GIVEBUTTER_API_KEY>`. */
 const GIVEBUTTER_API_BASE = "https://api.givebutter.com/v1";
@@ -123,6 +137,32 @@ type GbTicket = {
   priceCents: number;
   checkedInAt: number | null;
   createdAt: number;
+};
+
+/**
+ * The normalized shape of ONE Givebutter DONATION (the gift portion of a
+ * transaction) the action hands the donation apply mutation. `externalId` is
+ * the Givebutter TRANSACTION id (the gift dedup key, `gifts.externalRef`);
+ * `donationCents` is the integer-cents donation portion (see
+ * `donationCentsFromTransaction`); the donor identity fields feed
+ * `matchOrCreateDonor`. Money is integer cents; `receivedAt` is ms.
+ */
+const gbDonationValidator = v.object({
+  externalId: v.string(),
+  donationCents: v.number(),
+  donorName: v.string(),
+  email: v.union(v.string(), v.null()),
+  phone: v.union(v.string(), v.null()),
+  receivedAt: v.number(),
+});
+
+type GbDonation = {
+  externalId: string;
+  donationCents: number;
+  donorName: string;
+  email: string | null;
+  phone: string | null;
+  receivedAt: number;
 };
 
 // ── Config reads (internalQuery) ─────────────────────────────────────────────
@@ -239,8 +279,14 @@ export const setResolvedCampaignId = internalMutation({
  *     counter/money changes. (This is also the seam a future REFUND
  *     reconciliation pass would hook into — see the file-header note — but v1
  *     has no refund signal from Givebutter, so a refunded ticket stays `paid`.)
- *  2. NEW → find-or-create the MIRROR `ticketTypes` row (matched by
- *     `externalProvider:"givebutter"` + normalized name; `isActive:false`).
+ *  2. NEW → match an EXISTING ACTIVE NATIVE `ticketTypes` row by normalized
+ *     name first (so a native sellable tier and its Givebutter sales share
+ *     ONE tier — never flips that row's `isActive`); only when no active
+ *     native tier matches does this fall back to find-or-create the MIRROR
+ *     `ticketTypes` row (matched by `externalProvider:"givebutter"` +
+ *     normalized name; `isActive:false`). The admin promotes an old mirror to
+ *     sellable via `setTicketTypeSellable`, after which future syncs match it
+ *     natively (step 2's first branch) instead of minting more mirrors.
  *  3. RSVP: match-or-create by email (email-less → see the branch below).
  *  4. Insert the mirror `ticketOrders` row (`paid`, no Stripe fields).
  *  5. Insert the `tickets` row with a REAL native code (door scanner works).
@@ -310,37 +356,62 @@ export const applyGivebutterTickets = internalMutation({
         continue;
       }
 
-      // 2. Mirror ticket type — match-or-create.
+      // 2. Ticket type — match an ACTIVE NATIVE tier first (so native +
+      //    Givebutter sales share ONE sellable tier once the admin has
+      //    promoted/created one of this name), else find-or-create the
+      //    inactive mirror as before.
       const siblings = await ctx.db
         .query("ticketTypes")
         .withIndex("by_event", (q) => q.eq("eventId", eventId))
         .take(100);
       const wantName = normalizeName(t.ticketTypeName);
-      let mirror = siblings.find(
+      const nativeMatch = siblings.find(
         (tt) =>
-          tt.externalProvider === "givebutter" &&
+          tt.isActive &&
+          tt.externalProvider === undefined &&
           normalizeName(tt.name) === wantName,
       );
       let mirrorTypeId: Id<"ticketTypes">;
-      if (mirror) {
-        mirrorTypeId = mirror._id;
+      if (nativeMatch) {
+        // Native tier absorbs the synced sale as-is — never flip its
+        // `isActive`, never mint a mirror alongside it.
+        //
+        // Intentionally NOT capacity-checked: the sale already happened on
+        // Givebutter (the external system of record for it), so we must record
+        // it here — dropping it would leave a real, paid attendee unable to be
+        // scanned in at the door. `capacity` caps NATIVE checkout only (see
+        // `remainingFor` in ticketing.ts); a matched native tier can therefore
+        // read `soldCount > capacity` after a sync burst, which is truthful
+        // (that many people really are coming) — the native page just shows
+        // "0 left" and stops selling natively.
+        mirrorTypeId = nativeMatch._id;
       } else {
-        const now = Date.now();
-        mirrorTypeId = await ctx.db.insert("ticketTypes", {
-          eventId,
-          chapterId,
-          name: t.ticketTypeName,
-          priceCents: t.priceCents,
-          currency: "usd",
-          soldCount: 0,
-          sortOrder: siblings.length,
-          // A mirror type is NEVER natively sellable — it only anchors synced
-          // tickets so the scanner + rollups work for Givebutter buyers.
-          isActive: false,
-          externalProvider: "givebutter",
-          createdAt: now,
-          updatedAt: now,
-        });
+        let mirror = siblings.find(
+          (tt) =>
+            tt.externalProvider === "givebutter" &&
+            normalizeName(tt.name) === wantName,
+        );
+        if (mirror) {
+          mirrorTypeId = mirror._id;
+        } else {
+          const now = Date.now();
+          mirrorTypeId = await ctx.db.insert("ticketTypes", {
+            eventId,
+            chapterId,
+            name: t.ticketTypeName,
+            priceCents: t.priceCents,
+            currency: "usd",
+            soldCount: 0,
+            sortOrder: siblings.length,
+            // A mirror type is NEVER natively sellable — it only anchors synced
+            // tickets so the scanner + rollups work for Givebutter buyers,
+            // until (if ever) the admin promotes it via setTicketTypeSellable.
+            isActive: false,
+            externalProvider: "givebutter",
+            createdAt: now,
+            updatedAt: now,
+          });
+        }
       }
 
       // 3. RSVP — match-or-create by email.
@@ -367,7 +438,10 @@ export const applyGivebutterTickets = internalMutation({
             // A completed purchase proves the buyer controls this email — same
             // rule as fulfill's Stripe path.
             emailVerified: true,
-            updatedAt: now,
+            // Deliberately do NOT bump `updatedAt` to `now`: the activity feed
+            // keys a ticket buyer's timestamp off the (stable) order purchase
+            // time, and a re-sync touching updatedAt used to re-float an old
+            // purchase to the top of the feed.
           });
         } else {
           rsvpId = await ctx.db.insert("rsvps", {
@@ -380,8 +454,10 @@ export const applyGivebutterTickets = internalMutation({
             token: newGuestToken(),
             source: "ticket",
             emailVerified: true,
-            createdAt: now,
-            updatedAt: now,
+            // Stamp the REAL Givebutter purchase time (not `now`) so a first-
+            // ever import doesn't post an old purchase as fresh in the feed.
+            createdAt: t.createdAt,
+            updatedAt: t.createdAt,
           });
           rsvpCounterDelta.going += 1;
         }
@@ -399,8 +475,10 @@ export const applyGivebutterTickets = internalMutation({
           status: "going",
           token: newGuestToken(),
           source: "ticket",
-          createdAt: now,
-          updatedAt: now,
+          // Stamp the REAL Givebutter purchase time (not `now`) so a first-ever
+          // import doesn't post an old purchase as fresh in the feed.
+          createdAt: t.createdAt,
+          updatedAt: t.createdAt,
         });
         rsvpCounterDelta.going += 1;
       }
@@ -488,6 +566,89 @@ export const applyGivebutterTickets = internalMutation({
   },
 });
 
+/**
+ * Apply one batch of normalized Givebutter DONATIONS (the gift portion of
+ * transactions) to the donor-CRM ledger, attributed to `eventId`. This is the
+ * ONE place the sync records MONEY as a gift — see the file-header MONEY
+ * INVARIANT. Pure DB, testable without hitting Givebutter (mirrors
+ * `applyGivebutterTickets`).
+ *
+ * IDEMPOTENT / NO DOUBLE-COUNT (the money-critical invariant):
+ *  - Dedup by the Givebutter TRANSACTION id via `gifts.by_externalRef` — the
+ *    SAME dedup key the CSV/canonical import uses (a Givebutter export row's
+ *    `externalRef` IS its transaction id), so importing the CSV and running
+ *    this sync are mutually idempotent and never double-record the same gift.
+ *    A transaction whose gift already exists is skipped; only NEW rows add to
+ *    the rollup, so re-running the sync leaves totals unchanged.
+ *  - Each new gift is recorded via `recordGiftForDonor` with `eventId` set and
+ *    NO `donationId`, so it bumps the event's `externalGiftsCents`/
+ *    `externalGiftsCount` EXACTLY once (via that helper's event-rollup branch).
+ *    A donation synced here NEVER carries `donationId` (that field is reserved
+ *    for the native on-page donation dual-write, already counted in
+ *    `donationsCents`), so the same dollar can never land in both rollups.
+ *
+ * The donor is match-or-created in the event's chapter scope (`page.chapterId`)
+ * by email → phone → name, exactly like the CSV import + event dual-write.
+ * Skips any donation with a non-positive amount. No-op (skips all) when the
+ * event has no `eventPages` row.
+ */
+export const applyGivebutterDonations = internalMutation({
+  args: {
+    eventId: v.id("events"),
+    donations: v.array(gbDonationValidator),
+  },
+  returns: v.object({ inserted: v.number(), skipped: v.number() }),
+  handler: async (ctx, { eventId, donations }) => {
+    const page = await ctx.db
+      .query("eventPages")
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
+      .unique();
+    if (!page) return { inserted: 0, skipped: donations.length };
+    const scope = page.chapterId;
+
+    let inserted = 0;
+    let skipped = 0;
+    for (const d of donations) {
+      if (!Number.isInteger(d.donationCents) || d.donationCents <= 0) {
+        skipped += 1;
+        continue;
+      }
+      const externalRef = d.externalId;
+      // Dedup on the transaction id — a gift already recorded for this
+      // transaction (by this sync OR a CSV import) is left untouched, so a
+      // re-run only ever ADDS genuinely new donations.
+      const existing = await ctx.db
+        .query("gifts")
+        .withIndex("by_externalRef", (q) => q.eq("externalRef", externalRef))
+        .first();
+      if (existing) {
+        skipped += 1;
+        continue;
+      }
+
+      const donorId = await matchOrCreateDonor(ctx, {
+        scope,
+        name: d.donorName,
+        email: d.email ?? undefined,
+        phone: d.phone ?? undefined,
+        source: "givebutter-import",
+      });
+      // `recordGiftForDonor` bumps the event's externalGiftsCents/Count because
+      // `eventId` is set and `donationId` is NOT (the double-count firewall).
+      await recordGiftForDonor(ctx, {
+        donorId,
+        amountCents: d.donationCents,
+        receivedAt: d.receivedAt,
+        method: "givebutter",
+        eventId,
+        externalRef,
+      });
+      inserted += 1;
+    }
+    return { inserted, skipped };
+  },
+});
+
 // ── Fetch + normalize (the network side, no "use node") ──────────────────────
 
 /** Raw Givebutter ticket object (the fields we read). NO campaign reference —
@@ -513,8 +674,26 @@ interface GivebutterTicketsPage {
   meta?: { current_page?: number; last_page?: number };
 }
 
+/** One Givebutter line item, found on a NESTED sub-transaction
+ *  (`transaction.transactions[].line_items[]` — the LIST endpoint has NO
+ *  top-level `line_items`; it lives one level down, verified against the live
+ *  API). `subtype` is "donation" | "ticket" | "fee" and is the discriminator we
+ *  use to isolate the donation portion (see `donationCentsFromTransaction`).
+ *  Amounts are decimal dollars; `total` is the per-line amount after any promo
+ *  discount. */
+interface GivebutterLineItemRaw {
+  type?: string | null;
+  subtype?: string | null;
+  price?: number | string | null;
+  discount?: number | string | null;
+  total?: number | string | null;
+  quantity?: number | string | null;
+}
+
 /** Raw Givebutter transaction object (the fields we read). Carries the
- *  `campaign_id` a ticket lacks — this is the join key. */
+ *  `campaign_id` a ticket lacks — this is the join key — plus donor identity and
+ *  the NESTED `transactions[]` sub-transactions that hold the `line_items` money
+ *  breakdown (the DONATION sync reads them). */
 interface GivebutterTransactionRaw {
   id?: number | string;
   campaign_id?: number | string | null;
@@ -524,7 +703,22 @@ interface GivebutterTransactionRaw {
   // (see `isRefundedTransaction`) so either encoding is caught.
   status?: string | null;
   refunded?: boolean | string | null;
-  transactions?: Array<{ refunded?: boolean | string | null }>;
+  // Nested sub-transactions. Each carries its own `refunded` flag (read by
+  // `isRefundedTransaction`) AND the populated `line_items` — the ONLY place the
+  // list endpoint exposes the ticket/donation/fee money split (there is no
+  // top-level `line_items` on the list payload).
+  transactions?: Array<{
+    refunded?: boolean | string | null;
+    line_items?: GivebutterLineItemRaw[] | null;
+  }>;
+  // Donor identity for the donation gift's match-or-create.
+  first_name?: string | null;
+  last_name?: string | null;
+  name?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  created_at?: string | null;
+  transacted_at?: string | null;
 }
 
 interface GivebutterTransactionsPage {
@@ -684,21 +878,28 @@ async function validateNumericCampaignId(
 
 /**
  * Sweep `GET /v1/transactions` (Laravel-paginated, follows `links.next`,
- * capped at `GIVEBUTTER_MAX_PAGES`) and return the set of `String(id)` for
- * transactions belonging to `campaignId` — the join key a ticket lacks (see
- * the file-header note). Skips transactions Givebutter has marked refunded
- * in any encoding (see `isRefundedTransaction`).
+ * capped at `GIVEBUTTER_MAX_PAGES`) for `campaignId`. Returns BOTH halves of
+ * the campaign sync in ONE pass over the account-wide feed:
+ *  - `ids` — the set of `String(id)` for the campaign's transactions, the join
+ *    key a ticket lacks (see the file-header note), used by the ticket sweep;
+ *  - `donations` — one normalized `GbDonation` per transaction that carries a
+ *    donation portion (`normalizeTransactionDonation`), used by the donation
+ *    apply. A tickets-only transaction yields no donation.
+ * Skips transactions Givebutter has marked refunded in any encoding
+ * (`isRefundedTransaction`) — a refunded transaction contributes NEITHER
+ * tickets nor a donation gift.
  *
  * `truncated` is true when the cap was hit with more pages remaining — the
  * caller surfaces that as a warning, since a capped ACCOUNT-WIDE sweep means
  * this campaign's rows past the cap were silently missed (unlike the old
  * campaign-scoped endpoint, the cap no longer bounds just this campaign).
  */
-async function sweepCampaignTransactionIds(
+async function sweepCampaignTransactions(
   key: string,
   campaignId: string,
-): Promise<{ ids: Set<string>; truncated: boolean }> {
+): Promise<{ ids: Set<string>; donations: GbDonation[]; truncated: boolean }> {
   const ids = new Set<string>();
+  const donations: GbDonation[] = [];
   let url: string | null = `${GIVEBUTTER_API_BASE}/transactions`;
   for (let page = 0; page < GIVEBUTTER_MAX_PAGES && url; page++) {
     const res = await gbGet(key, url);
@@ -713,13 +914,15 @@ async function sweepCampaignTransactionIds(
       if (String(txn.campaign_id) !== campaignId) continue;
       if (isRefundedTransaction(txn)) continue;
       ids.add(String(txn.id));
+      const donation = normalizeTransactionDonation(txn);
+      if (donation) donations.push(donation);
     }
     url = nextPageUrl(body.links?.next);
   }
   console.log(
-    `[givebutter] transaction sweep for campaign ${campaignId}: ${ids.size} matching ids`,
+    `[givebutter] transaction sweep for campaign ${campaignId}: ${ids.size} matching ids, ${donations.length} with a donation portion`,
   );
-  return { ids, truncated: url !== null };
+  return { ids, donations, truncated: url !== null };
 }
 
 /**
@@ -771,6 +974,84 @@ function normalizeTicket(raw: GivebutterTicketRaw): GbTicket | null {
 }
 
 /**
+ * Derive the DONATION (gift) portion of a Givebutter transaction, in integer
+ * cents. Returns 0 for a tickets-only order.
+ *
+ * ── DERIVATION (money-critical — verified against the LIVE API) ──────────────
+ * On the `GET /v1/transactions` LIST payload the line items are NOT top-level —
+ * each transaction has a nested `transactions[]` array of sub-transactions, and
+ * every sub-transaction carries its own `line_items[]`, each typed by a
+ * `subtype` of "donation" | "ticket" | "fee". We walk every sub-transaction's
+ * items and sum the `total` (per-line amount, after any promo discount) of ONLY
+ * the `subtype:"donation"` lines. This EXPLICITLY:
+ *   - INCLUDES the donation the giver added (→ the event's Given total), and
+ *   - EXCLUDES ticket lines (`subtype:"ticket"` — already counted as ticket
+ *     `revenueCents` by the ticket sweep, so counting them here would overlap),
+ *     and the processing-fee line (`subtype:"fee"`).
+ * Confirmed live examples: a ticket($25)+donation($75)+fee($3.30) transaction
+ * (`amount`=100) yields exactly 75; a pure donation ($100 + $2.24 fee) yields
+ * 100; a pure ticket ($25 + $1.06 fee) yields 0.
+ *
+ * Do NOT use the top-level `amount`/`donated`/`fair_market_value_amount`/
+ * `tax_deductible_amount` scalars: on a ticket+donation transaction both
+ * `amount` and `donated` equal the FULL 100 (ticket included), so any of them
+ * would double-count the ticket against `revenueCents`. Only the nested
+ * `subtype:"donation"` line `total` isolates the gift.
+ *
+ * GROSS vs NET: `total` is the donation the giver chose, BEFORE Givebutter's
+ * processing fee (its own separate `subtype:"fee"` line, so naturally excluded
+ * — no fee/ticket subtraction needed). This is CONSISTENT with the rest of the
+ * "raised" total: ticket `revenueCents` and native on-page `donationsCents` are
+ * both gross, so all three legs of the goal numerator are gross/pre-fee.
+ *
+ * Money in / out: Givebutter amounts are decimal dollars; `Math.round(x * 100)`
+ * → integer cents (mirrors `normalizeTicket`).
+ */
+function donationCentsFromTransaction(txn: GivebutterTransactionRaw): number {
+  let dollars = 0;
+  for (const sub of txn.transactions ?? []) {
+    for (const li of sub.line_items ?? []) {
+      if ((li.subtype ?? "").toLowerCase() !== "donation") continue;
+      const raw = li.total ?? li.price ?? 0;
+      const amount = typeof raw === "number" ? raw : Number(raw);
+      if (Number.isFinite(amount) && amount > 0) dollars += amount;
+    }
+  }
+  return Math.round(dollars * 100);
+}
+
+/**
+ * Build a normalized donation from one raw transaction, or null when it carries
+ * no donation portion (tickets-only, or an unparseable/idless row). The
+ * transaction id is the gift dedup key (`gifts.externalRef`). Callers must have
+ * already excluded refunded transactions (see `isRefundedTransaction`).
+ */
+function normalizeTransactionDonation(
+  txn: GivebutterTransactionRaw,
+): GbDonation | null {
+  if (txn.id === undefined || txn.id === null || txn.id === "") return null;
+  const donationCents = donationCentsFromTransaction(txn);
+  if (donationCents <= 0) return null;
+  const nameFromParts = `${txn.first_name ?? ""} ${txn.last_name ?? ""}`.trim();
+  const donorName = (txn.name?.trim() || nameFromParts) || "Anonymous";
+  const phone =
+    txn.phone !== undefined && txn.phone !== null && String(txn.phone).trim()
+      ? String(txn.phone).trim()
+      : null;
+  return {
+    externalId: String(txn.id),
+    donationCents,
+    donorName,
+    email: normalizeEmail(txn.email),
+    phone,
+    receivedAt:
+      parseTimestamp(txn.created_at) ??
+      parseTimestamp(txn.transacted_at) ??
+      Date.now(),
+  };
+}
+
+/**
  * Sync ONE campaign into native mirror rows — the shared body behind both the
  * manual button (`syncGivebutterCampaign`) and the cron
  * (`syncAllGivebutterCampaigns`). Pure helper (not registered) so the cron calls
@@ -801,6 +1082,12 @@ function normalizeTicket(raw: GivebutterTicketRaw): GbTicket | null {
  * `/v1/tickets` and keep only tickets whose `transaction_id` is in that set.
  * If the transaction sweep comes back empty, the ticket sweep is skipped
  * entirely (nothing could match).
+ *
+ * DONATION FETCH: the SAME transaction sweep also yields each transaction's
+ * donation portion (`line_items` with `subtype:"donation"`); those are applied
+ * via `applyGivebutterDonations` into the event's `externalGiftsCents` "Given"
+ * total (Revenue stays ticket-only). Idempotent + no-double-count — see that
+ * mutation + `donationCentsFromTransaction`.
  */
 async function syncOneCampaign(
   ctx: ActionCtx,
@@ -845,8 +1132,11 @@ async function syncOneCampaign(
       campaignId = lookedUp;
     }
 
-    const { ids: transactionIds, truncated: txnTruncated } =
-      await sweepCampaignTransactionIds(key, campaignId);
+    const {
+      ids: transactionIds,
+      donations,
+      truncated: txnTruncated,
+    } = await sweepCampaignTransactions(key, campaignId);
     let ticketsTruncated = false;
     let matched = 0;
     if (transactionIds.size > 0) {
@@ -887,6 +1177,24 @@ async function syncOneCampaign(
         `[givebutter] ticket sweep for event ${eventId}: ${matched} tickets matched campaign ${campaignId}`,
       );
     }
+
+    // Donation portions of this campaign's transactions → the event's Given
+    // total (`externalGiftsCents`). Applied whether or not the campaign sold
+    // tickets (a pure-donation campaign has no ticket rows), and idempotently
+    // (dedup on the transaction id — see `applyGivebutterDonations`). This runs
+    // AFTER the ticket sweep so a mixed transaction's ticket half is mirrored
+    // first, but the two never overlap (tickets → revenueCents, donation →
+    // externalGiftsCents).
+    if (donations.length > 0) {
+      const donationResult = await ctx.runMutation(
+        internal.givebutterSync.applyGivebutterDonations,
+        { eventId, donations },
+      );
+      console.log(
+        `[givebutter] donation apply for event ${eventId}: ${donationResult.inserted} recorded, ${donationResult.skipped} skipped`,
+      );
+    }
+
     // A capped ACCOUNT-WIDE sweep means rows past the cap were silently
     // missed — surface it as a sync warning instead of reporting clean
     // success with under-counted rollups. (Everything swept so far IS

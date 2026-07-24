@@ -1,7 +1,7 @@
 /**
  * Stripe integration — Checkout Sessions over Stripe's REST API via `fetch`
  * (default Convex runtime; no SDK, no "use node"). Card details never touch
- * our code: buyers pay on Stripe-hosted Checkout and return to the event page.
+ * our code: buyers pay on Stripe-hosted Checkout and return to the RSVP page.
  *
  * Flow: landing page → `createCheckout` (validates cart, pending order) →
  * Stripe-hosted payment → `checkout.session.completed` webhook (http.ts) →
@@ -13,7 +13,7 @@
 import { action } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
-import { eventPageUrl } from "./lib/siteUrl";
+import { rsvpPageUrl } from "./lib/siteUrl";
 
 const STRIPE_API = "https://api.stripe.com/v1";
 
@@ -32,23 +32,37 @@ export const createCheckout = action({
     slug: v.string(),
     name: v.string(),
     email: v.string(),
+    // Buyer phone — required for tickets (validated/normalized in prepareOrder).
+    phone: v.optional(v.string()),
     token: v.optional(v.string()),
     items: v.array(
-      v.object({ ticketTypeId: v.id("ticketTypes"), quantity: v.number() }),
+      v.object({
+        ticketTypeId: v.id("ticketTypes"),
+        quantity: v.number(),
+        // Per-admission recipient names (index-aligned to quantity). Passed
+        // straight through to prepareOrder; never sent to Stripe.
+        attendeeNames: v.optional(v.array(v.string())),
+      }),
     ),
+    // Optional add-on gift bundled into this SAME checkout (the "also want
+    // to donate?" upsell) — one card charge, split on fulfillment into ticket
+    // revenue + a gift. Absent/0 = tickets only (today's behavior).
+    donationCents: v.optional(v.number()),
   },
   handler: async (ctx, args): Promise<CheckoutResult> => {
     const prepared = await ctx.runMutation(internal.ticketing.prepareOrder, {
       slug: args.slug,
       name: args.name,
       email: args.email,
+      phone: args.phone,
       token: args.token,
       items: args.items,
+      donationCents: args.donationCents,
     });
 
-    // Free cart → issue tickets immediately, no Stripe round-trip. No payment
-    // proves the email, so the client may still prompt for the code.
-    if (prepared.totalCents === 0) {
+    // Free path only when there's truly nothing to charge — a $0 cart with an
+    // add-on donation still needs a real Stripe charge for the donation.
+    if (prepared.totalCents === 0 && prepared.donationCents === 0) {
       await ctx.runMutation(internal.ticketing.fulfillOrder, {
         orderId: prepared.orderId,
       });
@@ -74,9 +88,9 @@ export const createCheckout = action({
     body.set("customer_email", args.email.trim().toLowerCase());
     body.set(
       "success_url",
-      `${eventPageUrl(args.slug)}?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
+      `${rsvpPageUrl(args.slug)}?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
     );
-    body.set("cancel_url", `${eventPageUrl(args.slug)}?checkout=canceled`);
+    body.set("cancel_url", `${rsvpPageUrl(args.slug)}?checkout=canceled`);
     body.set("metadata[orderId]", String(prepared.orderId));
     prepared.lines.forEach((line, i) => {
       body.set(`line_items[${i}][quantity]`, String(line.quantity));
@@ -90,6 +104,22 @@ export const createCheckout = action({
         `${prepared.eventName} — ${line.name}`,
       );
     });
+    // Add-on donation: ONE extra line item in the SAME session, same shape as
+    // `createDonationCheckout`'s line — kept split so the buyer sees exactly
+    // what they're paying for even though it settles as one card charge.
+    if (prepared.donationCents > 0) {
+      const i = prepared.lines.length;
+      body.set(`line_items[${i}][quantity]`, "1");
+      body.set(`line_items[${i}][price_data][currency]`, "usd");
+      body.set(
+        `line_items[${i}][price_data][unit_amount]`,
+        String(prepared.donationCents),
+      );
+      body.set(
+        `line_items[${i}][price_data][product_data][name]`,
+        `Donation — ${prepared.eventName}`,
+      );
+    }
 
     const response = await fetch(`${STRIPE_API}/checkout/sessions`, {
       method: "POST",
@@ -154,8 +184,8 @@ export const createDonationCheckout = action({
     const body = new URLSearchParams();
     body.set("mode", "payment");
     body.set("customer_email", args.email.trim().toLowerCase());
-    body.set("success_url", `${eventPageUrl(args.slug)}?donated=1`);
-    body.set("cancel_url", eventPageUrl(args.slug));
+    body.set("success_url", `${rsvpPageUrl(args.slug)}?donated=1`);
+    body.set("cancel_url", rsvpPageUrl(args.slug));
     body.set("metadata[donationId]", String(prepared.donationId));
     body.set("line_items[0][quantity]", "1");
     body.set("line_items[0][price_data][currency]", "usd");

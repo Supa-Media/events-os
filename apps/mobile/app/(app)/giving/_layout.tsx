@@ -17,7 +17,10 @@ import { Pill } from "../../../components/ui";
  * Territories is the launch-map desk (see `apps/convex/territories.ts`).
  * Territories P6 adds Import (the canonical preview/commit bulk-import flow,
  * `import.tsx` — replaces the old CSV backfill + the inline recurring-import
- * form that used to live on Backers). The tabs render only for a caller who
+ * form that used to live on Backers). The `/give` redesign adds Interest (the
+ * lead-capture triage inbox for "want this in my city"/volunteer/join team/
+ * fund/suggest-a-space submissions, `interest.tsx` — see
+ * `apps/convex/schema/givingInterest.ts`). The tabs render only for a caller who
  * can see the desk (`myGivingAccess.canView`) — the same `nav.giving` gate
  * the AppShell nav entry uses; each screen keeps its own backend
  * `requireGivingView`/`requireGivingManage` gate. (Sponsorships, Territories,
@@ -34,6 +37,7 @@ const TABS: { label: string; path: string }[] = [
   { label: "Sponsorships", path: "/giving/sponsorships" },
   { label: "Territories", path: "/giving/territories" },
   { label: "Import", path: "/giving/import" },
+  { label: "Interest", path: "/giving/interest" },
 ];
 
 /** Active when the pathname is the tab's route (exact for the index, prefix for

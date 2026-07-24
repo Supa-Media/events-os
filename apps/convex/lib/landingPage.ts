@@ -5,12 +5,13 @@ import {
   LANDING_CSS,
 } from "./landingPageStyles";
 import { LANDING_SCRIPT } from "./landingPageClient";
-import { eventPath } from "./siteUrl";
+import { rsvpPath } from "./siteUrl";
 
 /**
- * Public event landing page — server-rendered HTML (Posh/Partiful-style),
- * served by http.ts at /event/<slug> (the legacy /e/<slug> alias still
- * resolves). Self-contained: inline CSS + vanilla JS
+ * Public RSVP page (the guest-facing event page) — server-rendered HTML
+ * (Posh/Partiful-style), served by http.ts at /rsvp/<slug> (the older
+ * /event/<slug> and legacy /e/<slug> aliases still resolve). Self-contained:
+ * inline CSS + vanilla JS
  * that talks to same-origin /api/tickets/* httpActions, so link previews
  * (og:*) work for iMessage/WhatsApp and the page needs no separate hosting.
  *
@@ -20,6 +21,7 @@ import { eventPath } from "./siteUrl";
  */
 
 type PublicPage = {
+  isPreview: boolean;
   slug: string;
   eventName: string;
   startDate: number;
@@ -38,9 +40,18 @@ type PublicPage = {
   suggestedAmountsCents: number[];
   donationsCents: number;
   donationsCount: number;
+  // Fundraising goal + everything the progress bar needs.
+  goalCents: number | null;
+  revenueCents: number;
+  externalGiftsCents: number;
+  externalGiftsCount: number;
+  raisedCents: number;
+  // Cover crop focal point (percent, 0-100).
+  coverFocalX: number;
+  coverFocalY: number;
   capacity: number | null;
   counts: { going: number; maybe: number; ticketsSold: number };
-  guests: Array<{ name: string; status: string }>;
+  guests: Array<{ name: string; status: string; ticketCount: number }>;
   ticketTypes: Array<{
     id: string;
     name: string;
@@ -54,11 +65,23 @@ type PublicPage = {
   viewer: {
     name: string;
     email: string | null; // imported name-only guests may have no email
+    phone: string | null;
     status: string;
     emailVerified: boolean;
   } | null;
   activityLocked: boolean;
   activity: unknown[] | null;
+  // Signed-in guest's own tickets (QR + check-in code). Empty/absent when
+  // not signed in (no viewer) or the viewer holds no tickets. Optional here
+  // because getPublicPage's rollout may lag this renderer; the client script
+  // already treats a missing array as empty (`D.myTickets||[]`).
+  myTickets?: Array<{
+    code: string;
+    ticketTypeName: string;
+    attendeeName: string;
+    status: "valid" | "checked_in" | "void";
+    checkedInAt: number | null;
+  }>;
 };
 
 /** HTML-escape untrusted strings for element content / attributes. */
@@ -99,6 +122,12 @@ function fmtShort(ts: number): string {
   });
 }
 
+/** Clamp a focal-point percentage into [0, 100], defaulting to centered. */
+function clampPct(n: number | null | undefined): number {
+  if (typeof n !== "number" || !isFinite(n)) return 50;
+  return Math.max(0, Math.min(100, n));
+}
+
 
 /**
  * Render the full landing page. `initial` is the anonymous query result —
@@ -109,16 +138,27 @@ export function renderLandingPage(
   siteUrl: string,
 ): string {
   const p = initial;
-  const coverUrl = p.hasCover ? `${siteUrl}${eventPath(p.slug, "cover")}` : null;
-  const pageUrl = `${siteUrl}${eventPath(p.slug)}`;
+  const coverUrl = p.hasCover ? `${siteUrl}${rsvpPath(p.slug, "cover")}` : null;
+  const pageUrl = `${siteUrl}${rsvpPath(p.slug)}`;
   const dateLine = `${fmtDateLine(p.startDate)} · ${fmtTime(p.startDate)}${
     p.endDate ? ` – ${fmtTime(p.endDate)}` : ""
   }`;
+  // Tickets are the primary ask; only fall back to RSVP wording when tickets
+  // aren't the story, and never mention RSVP for a tickets-only event.
+  const ctaWord = p.ticketsEnabled
+    ? "Get tickets"
+    : p.rsvpEnabled
+      ? "RSVP"
+      : p.givingEnabled
+        ? "Support this event"
+        : "Details";
   const ogDescription =
     p.tagline ??
     `${fmtShort(p.startDate)} · ${fmtTime(p.startDate)}${
       p.venueName ? ` · ${p.venueName}` : ""
-    } — RSVP${p.ticketsEnabled ? " & get tickets" : ""}`;
+    } — ${ctaWord}`;
+  const focalX = clampPct(p.coverFocalX);
+  const focalY = clampPct(p.coverFocalY);
 
   // Initial data for the client script; <-escape to survive </script>.
   const initialJson = JSON.stringify(p).replace(/</g, "\\u003c");
@@ -152,14 +192,20 @@ ${BASE_CSS}${LANDING_CSS}
 </style>
 </head>
 <body>
-${coverUrl ? `<div class="backdrop" style="background-image:url('${coverUrl}')"></div>` : ""}
+${coverUrl ? `<div class="backdrop" style="background-image:url('${coverUrl}');background-position:${focalX}% ${focalY}%"></div>` : ""}
 <main>
-  <div class="topbar"><div class="wordmark">✦ ${esc(p.hostName.toUpperCase())} ✦</div></div>
+  ${p.isPreview ? `<div class="previewbar"><span class="previewpill">👀 Draft preview — not published yet</span></div>` : ""}
+  <div class="topbar"><div class="wordmark">✦ ${esc(p.hostName.toUpperCase())} ✦</div><div id="signinbar"></div></div>
   <div class="grid">
     <div class="left">
+      <div class="card" id="myticketscard" style="display:none"></div>
       <span class="hostchip"><span class="dot">${esc(p.hostName[0] ?? "P")}</span> Hosted by ${esc(p.hostName)}</span>
       <h1 class="title serif">${esc(p.eventName)}</h1>
       ${p.tagline ? `<p class="tagline">${esc(p.tagline)}</p>` : ""}
+
+      <div id="socialproof" class="proofrow" style="display:none"></div>
+      <div class="goalcard" id="goalbar" style="display:none"></div>
+      <div id="herocta" class="herocta" style="display:none"></div>
 
       <div class="metacard">
         <div class="ic">🗓️</div>
@@ -176,18 +222,18 @@ ${coverUrl ? `<div class="backdrop" style="background-image:url('${coverUrl}')">
             p.address
               ? `<a href="https://maps.apple.com/?q=${encodeURIComponent(p.address)}" target="_blank" rel="noopener">${esc(p.address)}</a>`
               : p.addressLocked
-                ? `<span class="lockpill">🔒 RSVP to see the full address</span>`
+                ? `<span class="lockpill">🔒 ${p.rsvpEnabled ? "RSVP" : "Get tickets"} to see the full address</span>`
                 : `<span>Details coming soon</span>`
           }</div>
         </div>
       </div>
 
-      ${p.description ? `<section><div class="sectitle serif">About</div><div class="about">${esc(p.description)}</div></section>` : ""}
-
       <section id="guestsec">
         <div class="sectitle serif">Guest list</div>
         <div id="guests"></div>
       </section>
+
+      ${p.description ? `<section><div class="sectitle serif">About</div><div class="about">${esc(p.description)}</div></section>` : ""}
 
       <section id="activitysec">
         <div class="sectitle serif">Activity</div>
@@ -199,7 +245,7 @@ ${coverUrl ? `<div class="backdrop" style="background-image:url('${coverUrl}')">
       <div class="coverwrap">
         ${
           coverUrl
-            ? `<img class="cover" src="${coverUrl}" alt="${esc(p.eventName)} cover">`
+            ? `<img class="cover" src="${coverUrl}" alt="${esc(p.eventName)} cover" style="object-position:${focalX}% ${focalY}%">`
             : `<div class="coverph"><div class="st">${esc(fmtShort(p.startDate).toUpperCase())}</div><div class="init">${esc(initials)}</div><div class="st">${esc(p.hostName.toUpperCase())}</div></div>`
         }
       </div>
@@ -208,28 +254,44 @@ ${coverUrl ? `<div class="backdrop" style="background-image:url('${coverUrl}')">
       <div class="card" id="rsvpcard" style="display:none"></div>
     </aside>
   </div>
-  <footer>Made with <span class="hearts">♥</span> by ${esc(p.hostName)} · RSVP &amp; tickets by Chapter OS</footer>
+  <footer>Made with <span class="hearts">♥</span> by ${esc(p.hostName)} · tickets &amp; giving by Chapter OS</footer>
 </main>
 
 <div class="overlay" id="overlay">
   <div class="sheet">
     <button class="x" id="sheetclose">✕</button>
-    <h3 id="sheettitle" class="serif">You’re going!</h3>
+    <h3 id="sheettitle" class="serif">One more step</h3>
     <div class="sub" id="sheetsub">Leave your details so the host can keep you posted.</div>
+    <div id="donatefields" style="display:none">
+      <div class="amtgrid" id="donateamts"></div>
+      <div class="amtcustom"><span class="cur">$</span><input id="doncustom" type="text" inputmode="decimal" placeholder="Custom amount"></div>
+    </div>
     <div id="idfields">
       <div class="fld"><label for="f_name">Your name</label><input id="f_name" autocomplete="name" placeholder="First and last name"></div>
       <div class="fld"><label for="f_email">Email</label><input id="f_email" type="email" autocomplete="email" placeholder="you@example.com"></div>
+      <div class="fld" id="phonefld" style="display:none"><label for="f_phone">Phone number</label><input id="f_phone" type="tel" inputmode="tel" autocomplete="tel" placeholder="(555) 123-4567"></div>
+      <div class="smsconsent" id="smsconsent" style="display:none">By adding your number you agree to receive a verification code and recurring texts about this and future Public Worship events. Msg &amp; data rates may apply; frequency varies. Reply STOP to opt out, HELP for help. See our <a href="https://publicworship.life/privacy" target="_blank" rel="noopener noreferrer">Privacy Policy</a> and <a href="https://publicworship.life/sms-terms" target="_blank" rel="noopener noreferrer">SMS Terms</a>.</div>
+      <div class="doublecheck" id="doublecheck" style="display:none">Double-check your email and number — you'll use them to pull up your ticket later.</div>
+    </div>
+    <div id="recipientfields" style="display:none"></div>
+    <div id="signinfields" style="display:none">
+      <div class="signintoggle">
+        <button type="button" class="signinmethod sel" id="signin_m_email" data-m="email">Email</button>
+        <button type="button" class="signinmethod" id="signin_m_phone" data-m="phone">Phone</button>
+      </div>
+      <div class="fld"><label for="f_signin">Email or phone</label><input id="f_signin" type="email" autocomplete="email" placeholder="you@example.com"></div>
     </div>
     <div id="codefields" style="display:none">
       <div class="fld"><label for="f_code">6-digit code</label><input id="f_code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="123456"></div>
       <button id="resendcode" type="button" style="background:none;border:none;padding:4px 0;color:var(--accent);font-size:13px;font-weight:600;cursor:pointer;text-decoration:underline">Resend code</button>
     </div>
-    <button class="sheetbtn" id="sheetgo">Count me in</button>
+    <button class="sheetbtn" id="sheetgo">Continue</button>
     <div class="sheeterr" id="sheeterr"></div>
   </div>
 </div>
 <div id="toast"></div>
 
+<script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
 <script>window.__INIT__=${initialJson};window.__CFG__={slug:${JSON.stringify(p.slug)}};</script>
 <script>
 ${LANDING_SCRIPT}
@@ -319,7 +381,7 @@ ${FAVICON}${FONTS}
     <div class="type">${esc(t.ticketTypeName)}</div>
     ${statusBadge}
   </div>
-  <div class="foot">Show this at the door.${t.slug ? ` <a href="${siteUrl}${eventPath(esc(t.slug))}">Event details</a>` : ""}</div>
+  <div class="foot">Show this at the door.${t.slug ? ` <a href="${siteUrl}${rsvpPath(esc(t.slug))}">Event details</a>` : ""}</div>
 </div></div>
 <script src="https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/qrcode.min.js"></script>
 <script>
@@ -354,7 +416,7 @@ export function renderIcs(args: {
   const escapeIcs = (s: string) =>
     s.replace(/\\/g, "\\\\").replace(/;/g, "\\;").replace(/,/g, "\\,").replace(/\n/g, "\\n");
   const location = [args.venueName, args.address].filter(Boolean).join(", ");
-  const url = `${args.siteUrl}${eventPath(args.slug)}`;
+  const url = `${args.siteUrl}${rsvpPath(args.slug)}`;
   return [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",

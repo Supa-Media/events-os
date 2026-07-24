@@ -1,5 +1,5 @@
 /**
- * Admin "Event page" tab — the whole shareable-event-page control panel, framed
+ * Admin "RSVP page" tab — the whole shareable-RSVP-page control panel, framed
  * as a four-phase LAUNCH FLOW instead of one long scroll of equal cards:
  *
  *   Design → Publish → Grow → Run
@@ -11,7 +11,7 @@
  * numbers start to mean something. Rendered by event/[id].tsx when active.
  */
 import { useState } from "react";
-import { Text, View } from "react-native";
+import { Linking, Text, View } from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Doc, Id } from "@events-os/convex/_generated/dataModel";
@@ -21,6 +21,7 @@ import {
   Card,
   CopyButton,
   EmptyState,
+  ProgressBar,
   TextField,
 } from "../../ui";
 import { ToastView } from "../../ui/Toast";
@@ -40,7 +41,7 @@ import {
   defaultOpenPhase,
   type LaunchPhaseKey,
 } from "./launchPhases";
-import { eventPageUrl, formatMoney } from "./helpers";
+import { rsvpPageUrl, formatMoney } from "./helpers";
 
 export default function TicketingTab({ eventId }: { eventId: Id<"events"> }) {
   const { run, toast, dismiss } = useActionRunner();
@@ -75,10 +76,10 @@ export default function TicketingTab({ eventId }: { eventId: Id<"events"> }) {
         <EmptyState
           icon="globe"
           title="Put this event on the map"
-          message="Create a shareable event page with RSVPs, tickets & a guest feed — one link your whole audience can open."
+          message="Create a shareable RSVP page with RSVPs, tickets & a guest feed — one link your whole audience can open."
           action={
             <Button
-              title="Create event page"
+              title="Create RSVP page"
               icon="plus"
               loading={creating}
               onPress={() => {
@@ -139,7 +140,11 @@ export default function TicketingTab({ eventId }: { eventId: Id<"events"> }) {
               <BlastComposerCard eventId={eventId} run={run} />
             </PhaseBlock>
             <PhaseBlock label="Guest list">
-              <GuestListCard eventId={eventId} initialFilter={guestFilter} />
+              <GuestListCard
+                eventId={eventId}
+                page={pageRow}
+                initialFilter={guestFilter}
+              />
             </PhaseBlock>
             <PhaseBlock label="Import attendance">
               <ImportAttendanceCard eventId={eventId} />
@@ -183,7 +188,25 @@ export default function TicketingTab({ eventId }: { eventId: Id<"events"> }) {
             onPress={() => goToGuestFilter("ticket")}
           />
           <StatCard label="Revenue" value={formatMoney(page.revenueCents)} />
-          <StatCard label="Given" value={formatMoney(page.donationsCents ?? 0)} />
+          {/* "Given" = on-page donations + external gifts (Givebutter/offline
+              donations attributed to the event) — mirrors the schema's
+              externalGiftsCents doc and the Goal card's raised total. */}
+          <StatCard
+            label="Given"
+            value={formatMoney(
+              (page.donationsCents ?? 0) + (page.externalGiftsCents ?? 0),
+            )}
+          />
+          {page.goalCents != null ? (
+            <GoalStatCard
+              raisedCents={
+                page.revenueCents +
+                (page.donationsCents ?? 0) +
+                (page.externalGiftsCents ?? 0)
+              }
+              goalCents={page.goalCents}
+            />
+          ) : null}
         </View>
       ) : null}
 
@@ -253,6 +276,32 @@ function StatCard({
   );
 }
 
+/** Compact "$raised / $goal" tile + bar in the pulse strip — only shown once
+ *  a fundraising goal is set (Accept donations → Fundraising goal). Wider
+ *  than the plain stat tiles so the bar has room to read at a glance. */
+function GoalStatCard({
+  raisedCents,
+  goalCents,
+}: {
+  raisedCents: number;
+  goalCents: number;
+}) {
+  const fraction = goalCents > 0 ? raisedCents / goalCents : 0;
+  return (
+    <Card padding="sm" className="min-w-[160px] flex-1">
+      <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+        Goal
+      </Text>
+      <Text className="mt-1 font-display text-xl text-ink">
+        {formatMoney(raisedCents)} / {formatMoney(goalCents)}
+      </Text>
+      <View className="mt-2">
+        <ProgressBar fraction={fraction} />
+      </View>
+    </Card>
+  );
+}
+
 /** Publish toggle, the public link with copy, and slug editing. */
 function PublishShareCard({
   page,
@@ -262,9 +311,11 @@ function PublishShareCard({
   run: ActionRunner["run"];
 }) {
   const updatePage = useMutation(api.ticketing.updatePage);
+  const ensurePreviewToken = useMutation(api.ticketing.ensurePreviewToken);
   const [slugInput, setSlugInput] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
   const slugValue = slugInput !== null ? slugInput : page.slug;
-  const link = eventPageUrl(page.slug);
+  const link = rsvpPageUrl(page.slug);
 
   async function saveSlug() {
     const next = slugValue.trim();
@@ -276,6 +327,18 @@ function PublishShareCard({
       errorTitle: "Couldn't change link",
     });
     setSlugInput(null);
+  }
+
+  /** Mint (or reuse) the page's secret preview token and open the draft-safe
+   *  link — works whether the page is published or not, since it bypasses
+   *  the "published" gate the plain link is subject to. */
+  async function openPreview() {
+    setPreviewLoading(true);
+    const token = await run(() => ensurePreviewToken({ pageId: page._id }), {
+      errorTitle: "Couldn't open preview",
+    });
+    setPreviewLoading(false);
+    if (token) void Linking.openURL(`${link}?preview=${token}`);
   }
 
   return (
@@ -314,6 +377,30 @@ function PublishShareCard({
         {page.published
           ? "Your page is live — share the link far and wide."
           : "Publish to make the link live."}
+      </Text>
+
+      <View className="mt-2 flex-row flex-wrap gap-2">
+        <Button
+          title="Open preview"
+          icon="eye"
+          variant="secondary"
+          size="sm"
+          loading={previewLoading}
+          onPress={() => void openPreview()}
+        />
+        {page.published ? (
+          <Button
+            title="Open page"
+            icon="external-link"
+            variant="ghost"
+            size="sm"
+            onPress={() => void Linking.openURL(link)}
+          />
+        ) : null}
+      </View>
+      <Text className="mt-1.5 text-xs text-faint">
+        Preview works even before you publish — it opens the page with a
+        secret link only you can share.
       </Text>
 
       <View className="mt-3">

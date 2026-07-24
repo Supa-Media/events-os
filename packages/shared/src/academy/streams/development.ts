@@ -97,7 +97,7 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
           "Only Stripe payments count",
           "Only recurring monthly pledges count",
           "Any mission giving with nothing given back — through any channel — counts; a ticket purchase does NOT, because the buyer got a seat in return",
-          "Only donations made through an event page count",
+          "Only donations made through an RSVP page count",
         ],
         answerIndex: 2,
         explanation:
@@ -589,7 +589,7 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "A pledge can start as low as $20/month — but only a pledge at or above $50/month makes its donor a BACKER. Below that floor, they're a valued recurring donor; they just don't count toward a chapter's tier the way a full backer does.",
+        text: "A pledge can start as low as $20/month — but only a pledge at or above $50/month makes its donor a BACKER. Below that floor, they're a valued recurring giver; they just don't count toward a chapter's tier the way a full backer does.",
       },
       {
         kind: "table",

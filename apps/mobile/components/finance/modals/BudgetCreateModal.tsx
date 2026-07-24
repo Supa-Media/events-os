@@ -646,7 +646,7 @@ export function BudgetCreateModal({
  * Newest first; nothing to show for a budget with no decisions yet (a
  * brand-new draft that's never been sent).
  */
-function ApprovalHistory({ budgetId }: { budgetId: Id<"budgets"> }) {
+export function ApprovalHistory({ budgetId }: { budgetId: Id<"budgets"> }) {
   const log = useQuery(api.finances.listBudgetApprovalLog, { budgetId }) ?? [];
   if (log.length === 0) return null;
   return (

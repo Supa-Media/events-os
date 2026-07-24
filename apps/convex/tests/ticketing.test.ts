@@ -208,6 +208,7 @@ describe("orders & tickets", () => {
       slug,
       name: "Ben Buyer",
       email: "ben@example.com",
+      phone: "5551234567",
       items: [{ ticketTypeId: freeId, quantity: 2 }],
     });
     expect(prepared.totalCents).toBe(0);
@@ -256,6 +257,7 @@ describe("orders & tickets", () => {
       slug,
       name: "Ben Buyer",
       email: "ben@example.com",
+      phone: "5551234567",
       items: [{ ticketTypeId: freeId, quantity: 1 }],
     });
     await t.mutation(internal.ticketing.fulfillOrder, {
@@ -280,6 +282,95 @@ describe("orders & tickets", () => {
       code: "PW-XXXX-XXXX",
     });
     expect(missing.result).toBe("not_found");
+  });
+});
+
+describe("event mode (RSVP vs ticketed are exclusive)", () => {
+  test("switching to ticketed archives free RSVPs, keeps buyers, blocks switch-back once sold", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const { pageId, slug } = await publishPage(s, eventId);
+
+    // Two free RSVPs while the event is in RSVP mode (the default).
+    await t.mutation(api.ticketing.submitRsvp, {
+      slug,
+      name: "Rita RSVP",
+      email: "rita@example.com",
+      status: "going",
+    });
+    await t.mutation(api.ticketing.submitRsvp, {
+      slug,
+      name: "Maya Maybe",
+      email: "maya@example.com",
+      status: "maybe",
+    });
+    let pub = await t.query(api.ticketing.getPublicPage, { slug });
+    expect(pub?.counts).toMatchObject({ going: 1, maybe: 1 });
+    expect(pub?.guests).toHaveLength(2);
+
+    // Enabling tickets flips the event to ticketed mode: RSVP is turned off and
+    // the free-RSVP guests are archived out of the counts, guest list, and feed.
+    await s.as.mutation(api.ticketing.updatePage, {
+      pageId,
+      patch: { ticketsEnabled: true },
+    });
+    pub = await t.query(api.ticketing.getPublicPage, { slug });
+    expect(pub?.rsvpEnabled).toBe(false);
+    expect(pub?.counts).toMatchObject({ going: 0, maybe: 0 });
+    expect(pub?.guests).toHaveLength(0);
+    // The rows are archived (recoverable), not deleted.
+    const admin = await s.as.query(api.ticketing.listRsvpsAdmin, { eventId });
+    expect(admin).toHaveLength(0);
+    const stillThere = await run(s.t, (ctx) =>
+      ctx.db
+        .query("rsvps")
+        .withIndex("by_event", (q) => q.eq("eventId", eventId))
+        .collect(),
+    );
+    expect(stillThere).toHaveLength(2);
+    expect(stillThere.every((r) => r.archivedAt != null)).toBe(true);
+
+    // A ticket buyer is kept — never archived.
+    const freeId = (await s.as.mutation(api.ticketing.createTicketType, {
+      eventId,
+      name: "Community",
+      priceCents: 0,
+    })) as Id<"ticketTypes">;
+    const prepared = await t.mutation(internal.ticketing.prepareOrder, {
+      slug,
+      name: "Ben Buyer",
+      email: "ben@example.com",
+      phone: "5551234567",
+      items: [{ ticketTypeId: freeId, quantity: 1 }],
+    });
+    await t.mutation(internal.ticketing.fulfillOrder, {
+      orderId: prepared.orderId,
+    });
+    pub = await t.query(api.ticketing.getPublicPage, { slug });
+    expect(pub?.counts).toMatchObject({ going: 1, ticketsSold: 1 });
+    expect(pub?.guests).toHaveLength(1);
+
+    // Once a ticket has sold, the event can't be switched back to RSVP.
+    await expect(
+      s.as.mutation(api.ticketing.updatePage, {
+        pageId,
+        patch: { rsvpEnabled: true },
+      }),
+    ).rejects.toThrow();
+  });
+
+  test("enabling both RSVP and tickets at once is rejected", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const { pageId } = await publishPage(s, eventId);
+    await expect(
+      s.as.mutation(api.ticketing.updatePage, {
+        pageId,
+        patch: { rsvpEnabled: true, ticketsEnabled: true },
+      }),
+    ).rejects.toThrow();
   });
 });
 
@@ -309,6 +400,7 @@ describe("stripe webhook fulfillment", () => {
       slug,
       name: "Ben Buyer",
       email: "ben@example.com",
+      phone: "5551234567",
       items: [{ ticketTypeId: paidId, quantity: 2 }],
     });
     expect(prepared.totalCents).toBe(5000);
@@ -351,6 +443,154 @@ describe("stripe webhook fulfillment", () => {
     ).toHaveLength(2);
   });
 
+  test("combined checkout: paid order with an add-on donation splits revenue vs. giving on fulfillment", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const { slug, paidId } = await paidSetup(s, eventId);
+
+    const prepared = await t.mutation(internal.ticketing.prepareOrder, {
+      slug,
+      name: "Ben Buyer",
+      email: "ben@example.com",
+      phone: "5551234567",
+      items: [{ ticketTypeId: paidId, quantity: 1 }],
+      donationCents: 1500,
+    });
+    expect(prepared.totalCents).toBe(2500);
+    expect(prepared.donationCents).toBe(1500);
+
+    await t.mutation(internal.ticketing.attachStripeSession, {
+      orderId: prepared.orderId,
+      sessionId: "cs_test_combined",
+    });
+    await t.mutation(internal.ticketing.markSessionPaid, {
+      sessionId: "cs_test_combined",
+      paymentIntentId: "pi_combined",
+    });
+
+    // Ticket revenue and the donation rollup land in their own buckets — the
+    // money invariant never mixes them.
+    const admin = await s.as.query(api.ticketing.getAdminPage, { eventId });
+    expect(admin.page?.revenueCents).toBe(2500);
+    expect(admin.page?.donationsCents).toBe(1500);
+    expect(admin.page?.donationsCount).toBe(1);
+
+    const donations = await s.as.query(api.giving.listDonationsAdmin, {
+      eventId,
+    });
+    expect(donations).toHaveLength(1);
+    expect(donations[0]).toMatchObject({
+      amountCents: 1500,
+      status: "paid",
+      method: "card",
+      email: "ben@example.com",
+    });
+
+    // Dual-written into the donor CRM (gifts ledger), not hand-rolled.
+    const gift = await run(t, async (ctx) =>
+      ctx.db
+        .query("gifts")
+        .withIndex("by_donation", (q) => q.eq("donationId", donations[0]._id))
+        .first(),
+    );
+    expect(gift?.amountCents).toBe(1500);
+
+    // A duplicate webhook delivery must not double-create the donation (the
+    // order's own `status === "paid"` guard short-circuits `fulfill`).
+    await t.mutation(internal.ticketing.markSessionPaid, {
+      sessionId: "cs_test_combined",
+      paymentIntentId: "pi_combined",
+    });
+    expect(
+      await s.as.query(api.giving.listDonationsAdmin, { eventId }),
+    ).toHaveLength(1);
+    const adminAfter = await s.as.query(api.ticketing.getAdminPage, {
+      eventId,
+    });
+    expect(adminAfter.page?.donationsCents).toBe(1500);
+  });
+
+  test("prepareOrder rejects a negative or fractional donationCents", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const { slug, paidId } = await paidSetup(s, eventId);
+
+    await expect(
+      t.mutation(internal.ticketing.prepareOrder, {
+        slug,
+        name: "Ben Buyer",
+        email: "ben@example.com",
+        items: [{ ticketTypeId: paidId, quantity: 1 }],
+        donationCents: -100,
+      }),
+    ).rejects.toThrow();
+    await expect(
+      t.mutation(internal.ticketing.prepareOrder, {
+        slug,
+        name: "Ben Buyer",
+        email: "ben@example.com",
+        items: [{ ticketTypeId: paidId, quantity: 1 }],
+        donationCents: 12.5,
+      }),
+    ).rejects.toThrow();
+  });
+
+  test("prepareOrder requires a phone; a returning guest reuses one on file", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const { slug, paidId } = await paidSetup(s, eventId);
+
+    // No phone at all → rejected.
+    await expect(
+      t.mutation(internal.ticketing.prepareOrder, {
+        slug,
+        name: "No Phone",
+        email: "nophone@example.com",
+        items: [{ ticketTypeId: paidId, quantity: 1 }],
+      }),
+    ).rejects.toThrow();
+
+    // A number that can't be normalized → rejected.
+    await expect(
+      t.mutation(internal.ticketing.prepareOrder, {
+        slug,
+        name: "Bad Phone",
+        email: "bad@example.com",
+        phone: "123",
+        items: [{ ticketTypeId: paidId, quantity: 1 }],
+      }),
+    ).rejects.toThrow();
+
+    // A valid number is normalized to E.164 and stored on the buyer's rsvp.
+    const prepared = await t.mutation(internal.ticketing.prepareOrder, {
+      slug,
+      name: "Pat Phone",
+      email: "pat@example.com",
+      phone: "(555) 867-5309",
+      items: [{ ticketTypeId: paidId, quantity: 1 }],
+    });
+    const rsvp = await run(t, async (ctx) =>
+      ctx.db
+        .query("rsvps")
+        .withIndex("by_token", (q) => q.eq("token", prepared.guestToken))
+        .unique(),
+    );
+    expect(rsvp?.phone).toBe("+15558675309");
+
+    // The returning guest (same token) can buy again WITHOUT re-entering it.
+    const again = await t.mutation(internal.ticketing.prepareOrder, {
+      slug,
+      name: "Pat Phone",
+      email: "pat@example.com",
+      token: prepared.guestToken,
+      items: [{ ticketTypeId: paidId, quantity: 1 }],
+    });
+    expect(again.orderId).toBeDefined();
+  });
+
   test("cancelPendingOrder expires an unpaid order without issuing tickets", async () => {
     const t = newT();
     const s = await setupChapter(t);
@@ -361,6 +601,7 @@ describe("stripe webhook fulfillment", () => {
       slug,
       name: "Cara",
       email: "cara@example.com",
+      phone: "5559990000",
       items: [{ ticketTypeId: paidId, quantity: 1 }],
     });
     await t.mutation(internal.ticketing.attachStripeSession, {
@@ -376,5 +617,247 @@ describe("stripe webhook fulfillment", () => {
     expect(
       await s.as.query(api.ticketing.listTicketsAdmin, { eventId }),
     ).toHaveLength(0);
+  });
+});
+
+describe("ticket recipients", () => {
+  /** Publish a ticketed page with two free tiers (big capacity) + a paid tier. */
+  async function recipientSetup(s: ChapterSetup, eventId: Id<"events">) {
+    const { pageId, slug } = await publishPage(s, eventId);
+    await s.as.mutation(api.ticketing.updatePage, {
+      pageId,
+      patch: { ticketsEnabled: true },
+    });
+    const freeId = (await s.as.mutation(api.ticketing.createTicketType, {
+      eventId,
+      name: "Community",
+      priceCents: 0,
+      capacity: 20,
+    })) as Id<"ticketTypes">;
+    const vipId = (await s.as.mutation(api.ticketing.createTicketType, {
+      eventId,
+      name: "VIP",
+      priceCents: 0,
+      capacity: 20,
+    })) as Id<"ticketTypes">;
+    const paidId = (await s.as.mutation(api.ticketing.createTicketType, {
+      eventId,
+      name: "Supporter",
+      priceCents: 2500,
+    })) as Id<"ticketTypes">;
+    return { slug, freeId, vipId, paidId };
+  }
+
+  /** Tickets for an order in issuance order (by_order = ascending creation). */
+  async function orderTicketNames(
+    t: ReturnType<typeof newT>,
+    orderId: Id<"ticketOrders">,
+  ) {
+    const rows = await run(t, (ctx) =>
+      ctx.db
+        .query("tickets")
+        .withIndex("by_order", (q) => q.eq("orderId", orderId))
+        .collect(),
+    );
+    return rows.map((r) => r.attendeeName);
+  }
+
+  test("mixed recipients: per-admission names land on tickets, blanks inherit buyer", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const { slug, freeId } = await recipientSetup(s, eventId);
+
+    const prepared = await t.mutation(internal.ticketing.prepareOrder, {
+      slug,
+      name: "Ben Buyer",
+      email: "ben@example.com",
+      phone: "5551234567",
+      items: [
+        {
+          ticketTypeId: freeId,
+          quantity: 3,
+          attendeeNames: ["", "Jordan Lee", "Sam Poe"],
+        },
+      ],
+    });
+    await t.mutation(internal.ticketing.fulfillOrder, {
+      orderId: prepared.orderId,
+    });
+
+    expect(await orderTicketNames(t, prepared.orderId)).toEqual([
+      "Ben Buyer",
+      "Jordan Lee",
+      "Sam Poe",
+    ]);
+  });
+
+  test("all 'for me': no attendeeNames means every ticket is the purchaser", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const { slug, freeId } = await recipientSetup(s, eventId);
+
+    const prepared = await t.mutation(internal.ticketing.prepareOrder, {
+      slug,
+      name: "Ben Buyer",
+      email: "ben@example.com",
+      phone: "5551234567",
+      items: [{ ticketTypeId: freeId, quantity: 2 }],
+    });
+    await t.mutation(internal.ticketing.fulfillOrder, {
+      orderId: prepared.orderId,
+    });
+
+    expect(await orderTicketNames(t, prepared.orderId)).toEqual([
+      "Ben Buyer",
+      "Ben Buyer",
+    ]);
+  });
+
+  test("recipients never spawn extra rsvps: one purchaser identity holds all tickets", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const { slug, freeId } = await recipientSetup(s, eventId);
+
+    const prepared = await t.mutation(internal.ticketing.prepareOrder, {
+      slug,
+      name: "Ben Buyer",
+      email: "ben@example.com",
+      phone: "5551234567",
+      items: [
+        {
+          ticketTypeId: freeId,
+          quantity: 3,
+          attendeeNames: ["", "Jordan Lee", "Sam Poe"],
+        },
+      ],
+    });
+    await t.mutation(internal.ticketing.fulfillOrder, {
+      orderId: prepared.orderId,
+    });
+
+    const rsvpRows = await run(t, (ctx) =>
+      ctx.db
+        .query("rsvps")
+        .withIndex("by_event", (q) => q.eq("eventId", eventId))
+        .collect(),
+    );
+    expect(rsvpRows).toHaveLength(1);
+    expect(rsvpRows[0].name).toBe("Ben Buyer");
+    expect(rsvpRows[0].source).toBe("ticket");
+  });
+
+  test("multi-line orders keep each tier's names index-aligned to its own tickets", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const { slug, freeId, vipId } = await recipientSetup(s, eventId);
+
+    const prepared = await t.mutation(internal.ticketing.prepareOrder, {
+      slug,
+      name: "Ben Buyer",
+      email: "ben@example.com",
+      phone: "5551234567",
+      items: [
+        { ticketTypeId: freeId, quantity: 2, attendeeNames: ["Ann Aa", "Bob Bb"] },
+        { ticketTypeId: vipId, quantity: 2, attendeeNames: ["Cid Cc", "Dee Dd"] },
+      ],
+    });
+    await t.mutation(internal.ticketing.fulfillOrder, {
+      orderId: prepared.orderId,
+    });
+
+    const rows = await run(t, (ctx) =>
+      ctx.db
+        .query("tickets")
+        .withIndex("by_order", (q) => q.eq("orderId", prepared.orderId))
+        .collect(),
+    );
+    const byTier = (tierId: Id<"ticketTypes">) =>
+      rows
+        .filter((r) => r.ticketTypeId === tierId)
+        .map((r) => r.attendeeName)
+        .sort();
+    expect(byTier(freeId)).toEqual(["Ann Aa", "Bob Bb"]);
+    expect(byTier(vipId)).toEqual(["Cid Cc", "Dee Dd"]);
+  });
+
+  test("names are clamped to quantity: extras dropped, shortfall inherits buyer", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const { slug, freeId } = await recipientSetup(s, eventId);
+
+    // More names than seats: the extra "C" is dropped.
+    const over = await t.mutation(internal.ticketing.prepareOrder, {
+      slug,
+      name: "Ben Buyer",
+      email: "ben@example.com",
+      phone: "5551234567",
+      items: [{ ticketTypeId: freeId, quantity: 2, attendeeNames: ["A", "B", "C"] }],
+    });
+    await t.mutation(internal.ticketing.fulfillOrder, { orderId: over.orderId });
+    expect(await orderTicketNames(t, over.orderId)).toEqual(["A", "B"]);
+
+    // Fewer names than seats: the unassigned seat inherits the purchaser.
+    const under = await t.mutation(internal.ticketing.prepareOrder, {
+      slug,
+      name: "Ben Buyer",
+      email: "ben@example.com",
+      phone: "5551234567",
+      items: [{ ticketTypeId: freeId, quantity: 2, attendeeNames: ["Solo"] }],
+    });
+    await t.mutation(internal.ticketing.fulfillOrder, { orderId: under.orderId });
+    expect(await orderTicketNames(t, under.orderId)).toEqual(["Solo", "Ben Buyer"]);
+  });
+
+  test("retrieval: paid order surfaces assigned names on myTickets and the public ticket", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const { slug, paidId } = await recipientSetup(s, eventId);
+
+    const prepared = await t.mutation(internal.ticketing.prepareOrder, {
+      slug,
+      name: "Ben Buyer",
+      email: "ben@example.com",
+      phone: "5551234567",
+      items: [
+        { ticketTypeId: paidId, quantity: 2, attendeeNames: ["", "Gift Guest"] },
+      ],
+    });
+    await t.mutation(internal.ticketing.attachStripeSession, {
+      orderId: prepared.orderId,
+      sessionId: "cs_test_recipients",
+    });
+    await t.mutation(internal.ticketing.markSessionPaid, {
+      sessionId: "cs_test_recipients",
+      paymentIntentId: "pi_recipients",
+    });
+
+    // myTickets (retrieval by guest token) carries the assigned names.
+    const pub = await t.query(api.ticketing.getPublicPage, {
+      slug,
+      token: prepared.guestToken,
+    });
+    expect(pub?.myTickets).toHaveLength(2);
+    const myNames = (pub?.myTickets ?? [])
+      .map((x) => x.attendeeName)
+      .sort();
+    expect(myNames).toEqual(["Ben Buyer", "Gift Guest"]);
+
+    // The public /t/<code> page shows the gifted recipient's name.
+    const gifted = await run(t, (ctx) =>
+      ctx.db
+        .query("tickets")
+        .withIndex("by_order", (q) => q.eq("orderId", prepared.orderId))
+        .collect(),
+    ).then((rows) => rows.find((r) => r.attendeeName === "Gift Guest")!);
+    const ticketPage = await t.query(api.ticketing.getPublicTicket, {
+      code: gifted.code,
+    });
+    expect(ticketPage?.attendeeName).toBe("Gift Guest");
   });
 });

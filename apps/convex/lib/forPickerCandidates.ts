@@ -69,8 +69,10 @@ export function pickerRefLabel(name: string, ts: number): string {
 }
 
 /** A budget's v2 `type`, tolerant of un-migrated legacy rows (derives from
- *  legacy `scope` when `type` is unset). */
-function effectiveBudgetType(b: Doc<"budgets">): BudgetType {
+ *  legacy `scope` when `type` is unset). Exported so callers that need to
+ *  assert a specific type (e.g. `reimbursements.ts#createReimbursement`
+ *  requiring `budgetId` to name a RECURRING budget) don't re-derive this. */
+export function effectiveBudgetType(b: Doc<"budgets">): BudgetType {
   if (b.type) return b.type;
   return b.scope === "event" || b.scope === "project" ? "one_time" : "recurring";
 }

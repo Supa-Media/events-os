@@ -60,11 +60,11 @@ describe("chapterAffordability (pure math, packages/shared)", () => {
     expect(result.monthlyRevenueCents).toBe(20 * 5000);
   });
 
-  test("the playbook's stated $770 floor for a 5-person team", () => {
+  test("the playbook's stated $670 floor for a 5-person team", () => {
     const result = chapterAffordability(0, 5);
-    expect(result.floorCents).toBe(77_000);
+    expect(result.floorCents).toBe(67_000);
     expect(OPERATING_FLOOR_FIXED_CENTS + 5 * OPERATING_FLOOR_PER_TEAMMATE_CENTS).toBe(
-      77_000,
+      67_000,
     );
   });
 
@@ -88,20 +88,20 @@ describe("chapterAffordability (pure math, packages/shared)", () => {
   });
 
   test("discretionary = revenue - floor - skim (comfortably positive)", () => {
-    // 50 backers @ 5-person team: revenue $2,500, floor $770, skim $375.
+    // 50 backers @ 5-person team: revenue $2,500, floor $670, skim $375.
     const result = chapterAffordability(50, 5);
     expect(result.monthlyRevenueCents).toBe(250_000);
-    expect(result.floorCents).toBe(77_000);
+    expect(result.floorCents).toBe(67_000);
     expect(result.skimCents).toBe(37_500);
-    expect(result.discretionaryCents).toBe(250_000 - 77_000 - 37_500);
+    expect(result.discretionaryCents).toBe(250_000 - 67_000 - 37_500);
     expect(result.discretionaryCents).toBeGreaterThan(0);
   });
 
   test("discretionary goes negative ('under water') when revenue can't cover floor + skim", () => {
-    // 5 backers, 5-person team: revenue $250, floor $770, skim $37.50 → deep negative.
+    // 5 backers, 5-person team: revenue $250, floor $670, skim $37.50 → deep negative.
     const result = chapterAffordability(5, 5);
     expect(result.discretionaryCents).toBeLessThan(0);
-    expect(result.discretionaryCents).toBe(25_000 - 77_000 - Math.round(25_000 * 0.15));
+    expect(result.discretionaryCents).toBe(25_000 - 67_000 - Math.round(25_000 * 0.15));
   });
 
   test("0 backers, 0 teammates: revenue and skim are 0, discretionary is -floor", () => {

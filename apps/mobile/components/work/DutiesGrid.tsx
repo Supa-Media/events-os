@@ -72,6 +72,8 @@ import {
   HowToDocCell,
   type HowToDocSummary,
 } from "../team/HowToDocCell";
+import { MentionText } from "../mentions/MentionText";
+import { MentionInlineText } from "../mentions/MentionInlineText";
 import { colors, spacing } from "../../lib/theme";
 import { alertError } from "../../lib/errors";
 import { confirmAction } from "../event/ticketing/helpers";
@@ -369,6 +371,9 @@ export function DutiesGrid({
                   isLast={i === filtered.length - 1}
                   onOpenPicker={() => setPickerForRow(r._id)}
                   onOpenSeatPicker={() => setSeatPickerForRow(r._id)}
+                  people={people ?? []}
+                  seatHoldings={seatHoldings ?? []}
+                  seatOptions={seatOptions ?? []}
                 />
               ))
             )}
@@ -461,6 +466,9 @@ function ResponsibilityRow({
   isLast,
   onOpenPicker,
   onOpenSeatPicker,
+  people,
+  seatHoldings,
+  seatOptions,
 }: {
   row: Responsibility;
   nameById: Map<Id<"people">, string>;
@@ -470,6 +478,11 @@ function ResponsibilityRow({
   isLast: boolean;
   onOpenPicker: () => void;
   onOpenSeatPicker: () => void;
+  /** The Notes column's `@mention` picker + resolver reuse these — data the
+   *  grid already fetches for its own rendering (see the file doc comment). */
+  people: { _id: Id<"people">; name: string }[];
+  seatHoldings: { personId: Id<"people">; seatDefId: Id<"seatDefs"> }[];
+  seatOptions: { seatDefId: Id<"seatDefs">; title: string }[];
 }) {
   const updateMutation = useMutation(api.responsibilities.update);
   const removeMutation = useMutation(api.responsibilities.remove);
@@ -638,17 +651,33 @@ function ResponsibilityRow({
         )}
       </Cell>
 
-      {/* Notes */}
+      {/* Notes — a foreign (read-only) row's @mentions render as tappable
+          links (MentionText); an editable row uses the display/edit toggle
+          (MentionInlineText), so its own mentions ALSO render as links until
+          tapped, then flip to the @-trigger input. See components/mentions/. */}
       <Cell width={COLS.notes}>
         {isForeign ? (
-          <Text className="px-2 text-sm text-ink" numberOfLines={1}>
-            {row.notes || "—"}
-          </Text>
+          row.notes ? (
+            <MentionText
+              text={row.notes}
+              people={people}
+              seatHoldings={seatHoldings}
+              numberOfLines={1}
+            />
+          ) : (
+            <Text className="px-2 text-sm text-ink" numberOfLines={1}>
+              —
+            </Text>
+          )
         ) : (
-          <InlineText
+          <MentionInlineText
             value={row.notes ?? ""}
             placeholder="—"
-            onCommit={(t) => update({ notes: t.trim() || null })}
+            numberOfLines={1}
+            people={people}
+            seatHoldings={seatHoldings}
+            seatOptions={seatOptions}
+            onCommit={(t) => update({ notes: String(t).trim() || null })}
           />
         )}
       </Cell>

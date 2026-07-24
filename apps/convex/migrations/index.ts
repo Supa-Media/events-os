@@ -46,6 +46,8 @@ import { backfillLaunchFund } from "./0030_backfill_launch_fund";
 import { giftMethodSources } from "./0031_gift_method_sources";
 import { linkDonorPeople } from "./0032_link_donor_people";
 import { addGivingPowerDefaults } from "./0033_add_giving_power_defaults";
+import { mergeDuplicateGbGuests } from "./0034_merge_duplicate_gb_guests";
+import { backfillReceiptDocuments } from "./0035_backfill_receipt_documents";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -126,4 +128,17 @@ export const MIGRATIONS: Migration[] = [
   // two seats the owner's default-access list was missing. Additive-only, so
   // it never clobbers a runtime giving-power edit (see 0033's doc). Idempotent.
   addGivingPowerDefaults,
+  // Field Day duplicate-guest merge — 4 buyers whose live Givebutter email
+  // differs from their CSV-backfill email ended up with two guest rows each
+  // on that event; merge the stale backfilled row into the live synced row
+  // (phone/note folded over, stale deleted) and decrement goingCount by 4.
+  // One-time, hardcoded pairs; idempotent (already-merged pairs are
+  // `skippedMissing` on re-run). See 0034.
+  mergeDuplicateGbGuests,
+  // Receipts foundation — backfill the first-class `receipts` + `receiptLinks`
+  // layer from the legacy `transactions.receiptStorageId` cache (one document +
+  // one `backfill` link per receipted txn; email-matched txns get their inbound
+  // provenance + OCR read seeded into canonical). Idempotent (already-linked
+  // txns skipped); batched with scheduler continuation. See 0035.
+  backfillReceiptDocuments,
 ];

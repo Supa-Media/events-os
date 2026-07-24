@@ -52,8 +52,16 @@ export const LANDING_CSS = `
   mask-image:linear-gradient(#000 40%,transparent);
 }
 main{max-width:1080px;margin:0 auto;padding:20px 20px 96px;position:relative}
-.topbar{display:flex;justify-content:center;padding:10px 0 26px}
+.previewbar{display:flex;justify-content:center;padding-top:10px}
+.previewpill{display:inline-flex;align-items:center;gap:6px;background:var(--warn);color:#fff;
+  font-size:12px;font-weight:700;letter-spacing:.02em;border-radius:999px;padding:6px 14px;box-shadow:var(--shadow)}
+.topbar{display:flex;justify-content:center;align-items:center;position:relative;padding:10px 0 26px}
 .wordmark{font-weight:700;font-size:12px;letter-spacing:.22em;color:var(--accent)}
+#signinbar{position:absolute;right:0;top:50%;transform:translateY(-50%)}
+.signinbtn{display:inline-flex;align-items:center;gap:6px;background:var(--raised);
+  border:1px solid var(--border);border-radius:999px;padding:7px 14px;
+  font-size:12.5px;font-weight:600;color:var(--accent);box-shadow:var(--shadow);white-space:nowrap}
+.signinbtn:hover{background:var(--accent-soft)}
 .grid{display:grid;grid-template-columns:minmax(0,1fr) 400px;gap:52px;align-items:start}
 @media(max-width:880px){
   .grid{grid-template-columns:1fr;gap:28px}
@@ -67,9 +75,28 @@ main{max-width:1080px;margin:0 auto;padding:20px 20px 96px;position:relative}
   background:radial-gradient(circle at 30% 30%,#F5D3D0,var(--accent));
   display:flex;align-items:center;justify-content:center;color:#fff;font-size:11px;font-weight:700}
 h1.title{font-size:clamp(38px,6.5vw,60px);line-height:1.08;font-weight:700;margin:18px 0 8px;letter-spacing:-.01em}
-.tagline{font-size:18px;color:var(--muted);margin-bottom:26px}
+.tagline{font-size:18px;color:var(--muted);margin-bottom:14px}
+/* social proof + goal + hero CTA — the "buy a ticket" ask, high on the page */
+.proofrow{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 0}
+.proofchip{display:inline-flex;align-items:center;background:var(--raised);border:1px solid var(--border);
+  border-radius:999px;padding:6px 14px;font-size:13px;font-weight:600;color:var(--muted);box-shadow:var(--shadow)}
+.goalcard{background:var(--raised);border:1px solid var(--border);border-radius:16px;
+  padding:14px 16px;margin-top:12px;box-shadow:var(--shadow)}
+.goalrow{display:flex;justify-content:space-between;align-items:baseline;font-size:13.5px;color:var(--muted);margin-bottom:8px;gap:8px}
+.goalraised{color:var(--accent);font-weight:700;font-size:16px}
+.goaltarget{font-weight:500;white-space:nowrap}
+.goaltrack{height:8px;border-radius:999px;background:var(--sunken);overflow:hidden}
+.goalfill{height:100%;border-radius:999px;background:linear-gradient(90deg,var(--accent),var(--accent-hover));transition:width .4s ease}
+.herocta{display:flex;gap:10px;margin-top:16px;flex-wrap:wrap}
+.ctabtn{flex:1;min-width:150px;border-radius:999px;padding:14px 20px;font-weight:700;
+  font-size:15.5px;text-align:center;transition:all .15s}
+.ctabtn.primary{background:var(--accent);color:#fff;box-shadow:0 6px 18px rgba(210,59,58,.35)}
+.ctabtn.primary:hover{background:var(--accent-hover)}
+.ctabtn.secondary{background:var(--raised);color:var(--accent);border:1.5px solid var(--accent)}
+.ctabtn.secondary:hover{background:var(--accent-soft)}
 .metacard{display:flex;gap:14px;align-items:flex-start;background:var(--raised);
-  border:1px solid var(--border);border-radius:16px;padding:14px 16px;margin-bottom:12px;box-shadow:var(--shadow)}
+  border:1px solid var(--border);border-radius:16px;padding:14px 16px;margin:18px 0 12px;box-shadow:var(--shadow)}
+.metacard + .metacard{margin-top:0}
 .metacard .ic{width:44px;height:44px;border-radius:12px;background:var(--accent-soft);
   display:flex;align-items:center;justify-content:center;font-size:20px;flex-shrink:0}
 .metacard .t{font-weight:600;font-size:15px}
@@ -102,6 +129,8 @@ section{margin-top:36px}
   align-items:center;justify-content:center;text-align:center;padding:20px}
 .locked .veil .lk{font-size:26px}
 .locked .veil p{font-size:14.5px;color:var(--muted);max-width:260px}
+.signinlink{background:none;border:none;color:var(--accent);font-size:13px;font-weight:600;
+  text-decoration:underline;margin-top:2px;padding:4px 8px}
 .composer{display:flex;gap:10px;margin-bottom:18px}
 .composer input{flex:1;background:var(--raised);border:1.5px solid var(--border);
   border-radius:999px;padding:11px 18px;outline:none;transition:border .15s}
@@ -187,6 +216,24 @@ section{margin-top:36px}
   font-size:15.5px;border-radius:999px;padding:14px;transition:background .15s;box-shadow:0 6px 18px rgba(210,59,58,.35)}
 .buybtn:hover{background:var(--accent-hover)}
 .buybtn:disabled{background:var(--border-strong);box-shadow:none;pointer-events:none}
+/* my tickets */
+.mytix-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.mytix-head .cardtitle{margin-bottom:0}
+.signoutlink{font-size:12.5px;font-weight:600;color:var(--muted);text-decoration:underline}
+.signoutlink:hover{color:var(--accent)}
+.mytix{display:flex;gap:14px;align-items:center;padding:14px 0;border-bottom:1px solid var(--border)}
+.mytix:last-child{border-bottom:0}
+.mytix-qr{width:64px;height:64px;flex-shrink:0;display:flex;align-items:center;justify-content:center}
+.mytix-qr img{width:100%;height:100%;border-radius:8px;display:block}
+.mytix-inf{flex:1;min-width:0}
+.mytix-inf .nm{font-weight:600;font-size:14.5px}
+.mytix-inf .code{font-family:'SF Mono',Menlo,Consolas,monospace;font-size:13px;color:var(--muted);
+  letter-spacing:.03em;margin-top:2px;word-break:break-all}
+.statuschip{display:inline-block;margin-top:6px;border-radius:999px;padding:2.5px 10px;
+  font-size:11.5px;font-weight:700}
+.statuschip.st-valid{background:#EAF6F0;color:var(--success)}
+.statuschip.st-checked_in{background:var(--sky);color:#2C4A86}
+.statuschip.st-void{background:var(--accent-soft);color:var(--accent)}
 /* giving */
 .giveprompt{font-size:13.5px;color:var(--muted);line-height:1.5;margin-bottom:12px}
 .raised{background:var(--sunken);border-radius:14px;padding:10px 14px;font-size:14px;
@@ -215,6 +262,12 @@ section{margin-top:36px}
 .sheet .sub{font-size:13.5px;color:var(--muted);margin-bottom:18px}
 .sheet .x{position:absolute;top:18px;right:18px;width:32px;height:32px;border-radius:50%;
   background:var(--sunken);color:var(--muted);font-size:15px;display:flex;align-items:center;justify-content:center}
+.signintoggle{display:flex;gap:8px;margin-bottom:14px}
+.signinmethod{flex:1;border:1.5px solid var(--border-strong);border-radius:14px;padding:10px 4px;
+  font-weight:700;font-size:14px;color:var(--muted);transition:all .12s}
+.signinmethod:hover{border-color:var(--accent);color:var(--accent)}
+.signinmethod.sel{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);
+  box-shadow:0 0 0 3px rgba(210,59,58,.14)}
 .fld{margin-bottom:12px}
 .fld label{display:block;font-size:12.5px;font-weight:600;color:var(--muted);margin-bottom:5px}
 .fld input{width:100%;background:var(--raised);border:1.5px solid var(--border);
@@ -225,6 +278,30 @@ section{margin-top:36px}
 .sheetbtn:hover{background:var(--accent-hover)}
 .sheetbtn:disabled{opacity:.6;pointer-events:none}
 .sheeterr{color:var(--accent);font-size:13px;margin-top:10px;text-align:center;min-height:16px}
+/* SMS consent disclosure — shown with the phone field; entering a number is
+   the opt-in, so the disclosure carries the A2P-required elements (program,
+   frequency, rates, STOP/HELP, links). */
+.smsconsent{font-size:11.5px;line-height:1.5;color:var(--muted);margin:-2px 0 12px}
+.smsconsent a{color:var(--accent);text-decoration:underline}
+/* "Double-check your info" nudge — shown with the phone field, reminding
+   buyers they'll use email/number to pull their ticket up later. */
+.doublecheck{font-size:11.5px;line-height:1.5;color:var(--muted);margin:-2px 0 12px}
+/* Per-ticket recipient assignment ("for me" / "for someone else"). One block
+   per admission with a two-button toggle and (when gifting) name inputs. */
+.rcp{border:1px solid var(--border);border-radius:14px;padding:12px;margin-bottom:10px}
+.rcp-head{font-size:12.5px;font-weight:700;color:var(--muted);margin-bottom:8px}
+.rcp-toggle{display:flex;gap:8px;margin-bottom:8px}
+.rcp-opt{flex:1;border:1.5px solid var(--border-strong);border-radius:12px;padding:8px 4px;
+  font-weight:700;font-size:13px;color:var(--muted);transition:all .12s;cursor:pointer}
+.rcp-opt:hover{border-color:var(--accent);color:var(--accent)}
+.rcp-opt.sel{background:var(--accent-soft);border-color:var(--accent);color:var(--accent);
+  box-shadow:0 0 0 3px rgba(210,59,58,.14)}
+.rcp-names{display:flex;gap:8px}
+.rcp-names input{flex:1;background:var(--raised);border:1.5px solid var(--border);
+  border-radius:12px;padding:10px 14px;outline:none;transition:border .15s}
+.rcp-names input:focus{border-color:var(--accent)}
+/* Recipient name shown under a ticket in "Your tickets". */
+.rcp-name{font-size:12.5px;color:var(--muted);margin-top:1px}
 /* toast */
 #toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%) translateY(20px);
   background:var(--ink);color:var(--cream);border-radius:999px;padding:11px 22px;

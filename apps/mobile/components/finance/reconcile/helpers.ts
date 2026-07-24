@@ -6,9 +6,9 @@
  * stay presentational. Everything money-shaped runs through `formatCents`.
  *
  * DATA NOTE: the grid's data source is `listReconcile` (its `reconcileRow`
- * projection), which resolves `hasReceipt`, `cardLast4`, `reminderStage`, and a
- * `cardholder` on top of the txn summary and filters SERVER-SIDE across all
- * rows. `reminderStage` ("none" | "flagged" | "escalated") reflects the real
+ * projection), which resolves `hasReceipt`, `cardLast4`, `reminderStage`,
+ * `isPersonal` + the linked repayment's `repaymentStatus`, and a `cardholder`
+ * on top of the txn summary and filters SERVER-SIDE across all rows. `reminderStage` ("none" | "flagged" | "escalated") reflects the real
  * day-1/day-3 receipt-reminder timeline advanced by
  * `cards.advanceReceiptReminders` (Phase 3) — the day-7 terminal auto-lock is
  * a card-level state shown in the Cards tab, not this grid.
@@ -28,6 +28,7 @@ export type TxnRow =
 /** Matches the backend `listReconcile` filter arg. */
 export type FilterKey =
   | "all"
+  | "spend"
   | "needs_budget"
   | "missing_receipt"
   | "uncategorized"
@@ -40,6 +41,11 @@ export type FilterCounts = FunctionReturnType<
 
 export const FILTERS: { key: FilterKey; label: string }[] = [
   { key: "all", label: "All" },
+  // no-dead-numbers: the dashboards' "Spent" KPI tile drills in here
+  // (`?filter=spend`) — shown as a real pill (not just a hidden deep-link
+  // target) so a treasurer landing on it can see which filter they're in
+  // and switch away cleanly.
+  { key: "spend", label: "Spend" },
   { key: "needs_budget", label: "Needs budget" },
   { key: "missing_receipt", label: "Missing receipt" },
   { key: "uncategorized", label: "Uncategorized" },

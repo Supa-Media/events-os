@@ -87,6 +87,55 @@ async function createTerritory(
 async function giftRow(s: ChapterSetup, giftId: Id<"gifts">) {
   return run(s.t, (ctx) => ctx.db.get(giftId));
 }
+
+/** Seed a minimal event + its `eventPages` row (externalGiftsCents starts
+ *  unset) — the gift→event attach rollup's target. */
+async function seedEventWithPage(
+  s: ChapterSetup,
+): Promise<{ eventId: Id<"events">; pageId: Id<"eventPages"> }> {
+  return run(s.t, async (ctx) => {
+    const now = Date.now();
+    const eventTypeId = await ctx.db.insert("eventTypes", {
+      chapterId: s.chapterId,
+      name: "Gala",
+      slug: "gala",
+      version: 1,
+      createdBy: s.userId,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const eventId = await ctx.db.insert("events", {
+      chapterId: s.chapterId,
+      eventTypeId,
+      templateVersion: 1,
+      name: "Gala",
+      eventDate: now + 14 * 24 * 60 * 60 * 1000,
+      status: "planning",
+      createdBy: s.userId,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const pageId = await ctx.db.insert("eventPages", {
+      eventId,
+      chapterId: s.chapterId,
+      slug: "gala",
+      published: true,
+      goingCount: 0,
+      maybeCount: 0,
+      notGoingCount: 0,
+      ticketsSoldCount: 0,
+      revenueCents: 0,
+      createdBy: s.userId,
+      createdAt: now,
+      updatedAt: now,
+    });
+    return { eventId, pageId };
+  });
+}
+
+async function eventPageRow(s: ChapterSetup, pageId: Id<"eventPages">) {
+  return run(s.t, (ctx) => ctx.db.get(pageId));
+}
 async function donorRow(s: ChapterSetup, donorId: Id<"donors">) {
   return run(s.t, (ctx) => ctx.db.get(donorId));
 }
@@ -395,6 +444,266 @@ describe("receipts bound", () => {
 // exercise. See `migrations/0031_gift_method_sources.ts`'s module doc for how
 // the migration itself stays compiling (a `string` cast on read, since the
 // comparison can now never match).
+
+// ── Gift→event attach (fundraiser attribution) ──────────────────────────────
+//
+// `attachGiftToEvent` tags an EXTERNAL gift (no `donationId`) with an event so
+// it counts toward that event's `externalGiftsCents`/`externalGiftsCount` —
+// kept strictly separate from `donationsCents` (the on-page giving flow's own
+// rollup) so the same dollar never counts twice (see
+// `schema/ticketing.ts`'s `externalGiftsCents` doc + the CONTRACT).
+
+describe("attachGiftToEvent", () => {
+  test("attach bumps externalGiftsCents/Count; detach reverses them", async () => {
+    const s = await devDirectorSetup();
+    const { eventId, pageId } = await seedEventWithPage(s);
+    const donorId = (await s.as.mutation(api.givingPlatform.upsertDonor, {
+      scope: "central",
+      name: "External Gift Donor",
+    })) as Id<"donors">;
+    const giftId = (await s.as.mutation(api.givingPlatform.recordGift, {
+      donorId,
+      amountCents: 7500,
+      method: "wire",
+    })) as Id<"gifts">;
+
+    // Unattached to start — no rollup yet.
+    let page = await eventPageRow(s, pageId);
+    expect(page?.externalGiftsCents ?? 0).toBe(0);
+    expect(page?.externalGiftsCount ?? 0).toBe(0);
+
+    // Attach — the event's external-gifts rollup bumps by the gift's amount.
+    await s.as.mutation(api.givingPlatform.attachGiftToEvent, {
+      giftId,
+      eventId,
+    });
+    page = await eventPageRow(s, pageId);
+    expect(page?.externalGiftsCents).toBe(7500);
+    expect(page?.externalGiftsCount).toBe(1);
+    const gift = await giftRow(s, giftId);
+    expect(gift?.eventId).toBe(eventId);
+    expect(gift?.editedAt).toBeGreaterThan(0);
+
+    // Detach (`eventId: null`) — the rollup un-bumps back to zero, clamped.
+    await s.as.mutation(api.givingPlatform.attachGiftToEvent, {
+      giftId,
+      eventId: null,
+    });
+    page = await eventPageRow(s, pageId);
+    expect(page?.externalGiftsCents).toBe(0);
+    expect(page?.externalGiftsCount).toBe(0);
+    expect((await giftRow(s, giftId))?.eventId).toBeUndefined();
+  });
+
+  test("re-attaching to a different event moves the rollup, not double-counts it", async () => {
+    const s = await devDirectorSetup();
+    const { eventId: eventA, pageId: pageA } = await seedEventWithPage(s);
+    const { eventId: eventB, pageId: pageB } = await seedEventWithPage(s);
+    const donorId = (await s.as.mutation(api.givingPlatform.upsertDonor, {
+      scope: "central",
+      name: "Re-attach Donor",
+    })) as Id<"donors">;
+    const giftId = (await s.as.mutation(api.givingPlatform.recordGift, {
+      donorId,
+      amountCents: 2000,
+      method: "check",
+    })) as Id<"gifts">;
+
+    await s.as.mutation(api.givingPlatform.attachGiftToEvent, {
+      giftId,
+      eventId: eventA,
+    });
+    await s.as.mutation(api.givingPlatform.attachGiftToEvent, {
+      giftId,
+      eventId: eventB,
+    });
+
+    expect((await eventPageRow(s, pageA))?.externalGiftsCents).toBe(0);
+    expect((await eventPageRow(s, pageB))?.externalGiftsCents).toBe(2000);
+    expect((await giftRow(s, giftId))?.eventId).toBe(eventB);
+  });
+
+  test("removing an attached external gift reverses the event rollup", async () => {
+    const s = await devDirectorSetup();
+    const { eventId, pageId } = await seedEventWithPage(s);
+    const donorId = (await s.as.mutation(api.givingPlatform.upsertDonor, {
+      scope: "central",
+      name: "Removed Gift Donor",
+    })) as Id<"donors">;
+    const giftId = (await s.as.mutation(api.givingPlatform.recordGift, {
+      donorId,
+      amountCents: 1200,
+      method: "cash",
+    })) as Id<"gifts">;
+    await s.as.mutation(api.givingPlatform.attachGiftToEvent, {
+      giftId,
+      eventId,
+    });
+    expect((await eventPageRow(s, pageId))?.externalGiftsCents).toBe(1200);
+
+    await s.as.mutation(api.givingPlatform.removeGift, {
+      giftId,
+      why: "Duplicate entry",
+    });
+    expect((await eventPageRow(s, pageId))?.externalGiftsCents).toBe(0);
+    expect((await eventPageRow(s, pageId))?.externalGiftsCount).toBe(0);
+  });
+
+  test("editing the amount of an attached gift keeps externalGiftsCents in lockstep", async () => {
+    const s = await devDirectorSetup();
+    const { eventId, pageId } = await seedEventWithPage(s);
+    const donorId = (await s.as.mutation(api.givingPlatform.upsertDonor, {
+      scope: "central",
+      name: "Amount-Edit Donor",
+    })) as Id<"donors">;
+    const giftId = (await s.as.mutation(api.givingPlatform.recordGift, {
+      donorId,
+      amountCents: 7500,
+      method: "wire",
+    })) as Id<"gifts">;
+    await s.as.mutation(api.givingPlatform.attachGiftToEvent, { giftId, eventId });
+    expect((await eventPageRow(s, pageId))?.externalGiftsCents).toBe(7500);
+
+    // Correcting the amount UP must move the event rollup with it...
+    await s.as.mutation(api.givingPlatform.editGift, { giftId, amountCents: 15000 });
+    expect((await eventPageRow(s, pageId))?.externalGiftsCents).toBe(15000);
+    // ...and DOWN.
+    await s.as.mutation(api.givingPlatform.editGift, { giftId, amountCents: 5000 });
+    expect((await eventPageRow(s, pageId))?.externalGiftsCents).toBe(5000);
+    expect((await eventPageRow(s, pageId))?.externalGiftsCount).toBe(1);
+
+    // Detaching now reverses the CURRENT amount exactly, back to zero.
+    await s.as.mutation(api.givingPlatform.attachGiftToEvent, { giftId, eventId: null });
+    expect((await eventPageRow(s, pageId))?.externalGiftsCents).toBe(0);
+    expect((await eventPageRow(s, pageId))?.externalGiftsCount).toBe(0);
+  });
+
+  test("a donation-linked gift is refused with GIFT_HAS_EVENT_SOURCE (double-count guard)", async () => {
+    const s = await devDirectorSetup();
+    const { eventId } = await seedEventWithPage(s);
+    const donorId = (await s.as.mutation(api.givingPlatform.upsertDonor, {
+      scope: "central",
+      name: "On-page Donor",
+    })) as Id<"donors">;
+    const giftId = (await s.as.mutation(api.givingPlatform.recordGift, {
+      donorId,
+      amountCents: 3300,
+      method: "stripe",
+    })) as Id<"gifts">;
+
+    // Simulate the on-page donation dual-write: `donationId` set (already
+    // counted in `donationsCents` elsewhere) — this is the exact case
+    // `attachGiftToEvent` must never let into `externalGiftsCents` too.
+    await run(s.t, async (ctx) => {
+      const donationId = await ctx.db.insert("donations", {
+        chapterId: s.chapterId,
+        eventId,
+        name: "X",
+        amountCents: 3300,
+        currency: "usd",
+        method: "card",
+        status: "paid",
+        createdAt: Date.now(),
+      });
+      await ctx.db.patch(giftId, { donationId, eventId });
+    });
+
+    await expect(
+      s.as.mutation(api.givingPlatform.attachGiftToEvent, {
+        giftId,
+        eventId,
+      }),
+    ).rejects.toThrow(/GIFT_HAS_EVENT_SOURCE/);
+  });
+});
+
+// ── recordGiftForDonor event "Given" rollup (the closed rollup gap) ──────────
+//
+// A gift BORN with an `eventId` (manual recordGift, the Givebutter donation
+// sync) must roll into that event's externalGiftsCents/Count immediately —
+// UNLESS it also carries a `donationId` (a native on-page donation, already
+// counted in donationsCents), which is the double-count firewall.
+
+describe("recordGiftForDonor event rollup gap", () => {
+  test("a gift with eventId and no donationId bumps externalGiftsCents/Count", async () => {
+    const s = await devDirectorSetup();
+    const { eventId, pageId } = await seedEventWithPage(s);
+    await run(s.t, async (ctx) => {
+      const donorId = await matchOrCreateDonor(ctx, {
+        scope: s.chapterId,
+        name: "Direct Event Giver",
+      });
+      await recordGiftForDonor(ctx, {
+        donorId,
+        amountCents: 4200,
+        receivedAt: Date.now(),
+        method: "givebutter",
+        eventId,
+      });
+    });
+    const page = await eventPageRow(s, pageId);
+    expect(page?.externalGiftsCents).toBe(4200);
+    expect(page?.externalGiftsCount).toBe(1);
+  });
+
+  test("a gift with a donationId does NOT bump externalGiftsCents (double-count guard)", async () => {
+    const s = await devDirectorSetup();
+    const { eventId, pageId } = await seedEventWithPage(s);
+    await run(s.t, async (ctx) => {
+      const donationId = await ctx.db.insert("donations", {
+        chapterId: s.chapterId,
+        eventId,
+        name: "On-page Giver",
+        amountCents: 4200,
+        currency: "usd",
+        method: "card",
+        status: "paid",
+        createdAt: Date.now(),
+      });
+      const donorId = await matchOrCreateDonor(ctx, {
+        scope: s.chapterId,
+        name: "On-page Giver",
+      });
+      await recordGiftForDonor(ctx, {
+        donorId,
+        amountCents: 4200,
+        receivedAt: Date.now(),
+        method: "stripe",
+        eventId,
+        donationId,
+      });
+    });
+    const page = await eventPageRow(s, pageId);
+    expect(page?.externalGiftsCents ?? 0).toBe(0);
+    expect(page?.externalGiftsCount ?? 0).toBe(0);
+  });
+
+  test("removing an eventId gift reverses the externalGiftsCents bump", async () => {
+    const s = await devDirectorSetup();
+    const { eventId, pageId } = await seedEventWithPage(s);
+    const giftId = await run(s.t, async (ctx) => {
+      const donorId = await matchOrCreateDonor(ctx, {
+        scope: s.chapterId,
+        name: "Reversible Giver",
+      });
+      return recordGiftForDonor(ctx, {
+        donorId,
+        amountCents: 3000,
+        receivedAt: Date.now(),
+        method: "givebutter",
+        eventId,
+      });
+    });
+    expect((await eventPageRow(s, pageId))?.externalGiftsCents).toBe(3000);
+
+    await s.as.mutation(api.givingPlatform.removeGift, {
+      giftId,
+      why: "Test reversal",
+    });
+    expect((await eventPageRow(s, pageId))?.externalGiftsCents).toBe(0);
+    expect((await eventPageRow(s, pageId))?.externalGiftsCount).toBe(0);
+  });
+});
 
 // ── Widened-source record path ────────────────────────────────────────────────
 

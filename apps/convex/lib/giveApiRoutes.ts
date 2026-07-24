@@ -44,6 +44,7 @@ function jsonPost(run: (ctx: ActionCtx, body: JsonBody) => Promise<unknown>) {
 }
 
 export function registerGiveApiRoutes(http: HttpRouter): void {
+  // Recurring backer / recurring-giver subscription (mode=subscription).
   http.route({
     path: "/api/give/pledge",
     method: "POST",
@@ -58,12 +59,78 @@ export function registerGiveApiRoutes(http: HttpRouter): void {
           message: "This territory isn't available for backing right now.",
         });
       }
+      const publicName = String(body.publicName ?? "").trim();
+      const message = String(body.message ?? "").trim();
       return ctx.runAction(api.givingPledges.startPledgeCheckout, {
         chapterId: resolved.chapterId,
         amountCents: Math.floor(Number(body.amountCents)),
         name: String(body.name ?? ""),
         email: String(body.email ?? ""),
+        // Optional public activity-wall opt-in.
+        ...(body.shareOnWall ? { shareOnWall: true } : {}),
+        ...(publicName ? { publicName } : {}),
+        ...(message ? { message } : {}),
       });
+    }),
+  });
+
+  // One-time gift (mode=payment). `slug` present → gift scopes to that
+  // territory's chapter; absent/empty → the general ministry (`central`). The
+  // action resolves the scope + validates; settlement happens on the webhook.
+  http.route({
+    path: "/api/give/donate",
+    method: "POST",
+    handler: jsonPost(async (ctx, body) => {
+      const slug = String(body.slug ?? "").trim() || undefined;
+      const publicName = String(body.publicName ?? "").trim();
+      const message = String(body.message ?? "").trim();
+      return ctx.runAction(api.givingDonations.startGiveDonationCheckout, {
+        ...(slug ? { slug } : {}),
+        amountCents: Math.floor(Number(body.amountCents)),
+        name: String(body.name ?? ""),
+        email: String(body.email ?? ""),
+        // Optional public activity-wall opt-in (ignored for central/no-slug gifts).
+        ...(body.shareOnWall ? { shareOnWall: true } : {}),
+        ...(publicName ? { publicName } : {}),
+        ...(message ? { message } : {}),
+      });
+    }),
+  });
+
+  // Interest + suggest-a-space capture (no payment). Unauthenticated public
+  // endpoint — mirrors the pledge/donation flow's trust model; validation +
+  // caps live in `givingInterest.submitInterest`.
+  http.route({
+    path: "/api/give/interest",
+    method: "POST",
+    handler: jsonPost(async (ctx, body) => {
+      const toStrArray = (v: unknown): string[] =>
+        Array.isArray(v) ? v.map((x) => String(x).trim()).filter(Boolean) : [];
+      const kinds = toStrArray(body.kinds);
+      const roles = toStrArray(body.roles);
+      const name = String(body.name ?? "").trim();
+      const email = String(body.email ?? "").trim();
+      const phone = String(body.phone ?? "").trim();
+      const socialHandle = String(body.socialHandle ?? "").trim();
+      const location = String(body.location ?? "").trim();
+      const message = String(body.message ?? "").trim();
+      const skills = String(body.skills ?? "").trim();
+      const church = String(body.church ?? "").trim();
+      const territorySlug = String(body.territorySlug ?? "").trim();
+      await ctx.runMutation(api.givingInterest.submitInterest, {
+        kinds,
+        ...(name ? { name } : {}),
+        ...(email ? { email } : {}),
+        ...(phone ? { phone } : {}),
+        ...(socialHandle ? { socialHandle } : {}),
+        ...(location ? { location } : {}),
+        ...(message ? { message } : {}),
+        ...(roles.length ? { roles } : {}),
+        ...(skills ? { skills } : {}),
+        ...(church ? { church } : {}),
+        ...(territorySlug ? { territorySlug } : {}),
+      });
+      return { ok: true };
     }),
   });
 }

@@ -1,0 +1,65 @@
+---
+import Container from "../ui/Container.astro";
+import Logo from "../icons/Logo.astro";
+import { asset } from "../../lib/asset";
+
+export interface Props {
+  brand?: "public-worship" | "global-echo";
+}
+
+const { brand = "public-worship" } = Astro.props;
+const home = asset(brand === "global-echo" ? "/ge" : "/");
+const beliefsHref = asset("/beliefs");
+
+const navLinks = [
+  { label: "About", href: `${home}#about` },
+  { label: "Impact", href: `${home}#impact` },
+  { label: "Links", href: `${home}#links` },
+  { label: "FAQ", href: `${home}#faq` },
+];
+---
+
+{/* Source: footer-content is position:relative + overflow:hidden with an
+ * absolute Wavy Texture Section.svg (1342x2286) using object-fit:cover.
+ * The image's tall aspect crops to a wide pink wavy band behind the content. */}
+<footer class="mt-32 sm:mt-44">
+  <Container size="wide">
+    <div class="relative overflow-hidden rounded-2xl bg-pink-softer/40 py-12 sm:py-16 px-6 sm:px-10">
+      <img
+        src={asset("/decor/wavy-texture-section.svg")}
+        alt=""
+        aria-hidden="true"
+        class="absolute inset-0 h-full w-full object-cover opacity-70 z-0 pointer-events-none"
+      />
+
+      <div class="relative z-10 flex flex-col items-center gap-8">
+        <a href={home} aria-label="Home">
+          <Logo brand={brand} class="h-9" />
+        </a>
+        <nav
+          class="flex flex-wrap items-center justify-center gap-x-8 gap-y-3"
+          aria-label="Footer navigation"
+        >
+          {
+            navLinks.map((l) => (
+              <a href={l.href} class="text-base text-ink hover:text-red-500">
+                {l.label}
+              </a>
+            ))
+          }
+        </nav>
+      </div>
+
+      <div
+        class="relative z-10 mt-10 flex flex-col sm:flex-row items-center justify-between gap-3 text-sm text-ink"
+      >
+        <span>© 2025, All Rights Reserved</span>
+        <a
+          href={beliefsHref}
+          class="text-red-accentDark underline-offset-2 hover:underline"
+          >Statement of Beliefs</a
+        >
+      </div>
+    </div>
+  </Container>
+</footer>

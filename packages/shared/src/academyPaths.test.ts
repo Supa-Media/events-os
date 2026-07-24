@@ -10,6 +10,15 @@ import {
   rolePathProgress,
 } from "./academyPaths";
 
+/**
+ * `academyPaths.ts` maps each org-chart seat / event hat to the ordered
+ * Academy course playlist a person in that role is expected to complete,
+ * and derives progress against it. The Roles view (and any "what should
+ * this person learn next" prompt) reads straight off these lookups, so a
+ * broken (kind, seatSlug) identity, a stale progress fraction, or a wrong
+ * "next module" pick would silently mis-route someone's training.
+ */
+
 // Every real path now carries the Foundations trio, so none has an empty
 // `courseSlugs`. This hand-built path exercises the "no written courses yet"
 // behavior (empty required set → fraction 0, no next module) that a

@@ -1,0 +1,100 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import Container from "../components/ui/Container.astro";
+import SectionHeading from "../components/ui/SectionHeading.astro";
+
+const updated = "July 21, 2026";
+---
+
+<BaseLayout
+  title="Privacy Policy"
+  description="How Public Worship collects, uses, and protects your information."
+>
+  <section class="py-12 sm:py-16">
+    <Container size="default">
+      <SectionHeading eyebrow="Legal" align="left" as="h1">
+        Privacy <span class="text-red-500">Policy</span>
+      </SectionHeading>
+    </Container>
+  </section>
+
+  <section class="pb-16">
+    <Container size="default" class="max-w-3xl">
+      <div class="flex flex-col gap-5 text-ink/85 leading-relaxed">
+        <p class="text-ink/60 text-sm">Last updated {updated}</p>
+
+        <p>
+          Public Worship is a worship initiative of Global Echo Charitable Co., a
+          501(c)(3) nonprofit ("we," "us"). This policy explains what
+          information we collect when you use our event pages and messaging, how
+          we use it, and the choices you have.
+        </p>
+
+        <h2 class="font-display text-xl mt-4">Information we collect</h2>
+        <p>
+          When you RSVP for or buy tickets to an event, we collect the details
+          you provide — typically your name, email address, and, if you choose
+          to add it, your mobile phone number. If you purchase tickets or
+          donate, payment is processed by our payment providers; we do not store
+          your full card details.
+        </p>
+
+        <h2 class="font-display text-xl mt-4">How we use your information</h2>
+        <p>We use the information you give us to:</p>
+        <ul class="list-disc pl-6 flex flex-col gap-2">
+          <li>register your RSVP or ticket order and send receipts;</li>
+          <li>
+            verify ownership of your phone number with a one-time code;
+          </li>
+          <li>
+            send you announcements, reminders, and invitations about current and
+            future Public Worship events (see our <a
+              href="/sms-terms"
+              class="text-red-500 underline-offset-2 hover:underline"
+              >SMS Terms</a
+            >); and
+          </li>
+          <li>operate, secure, and improve our events and services.</li>
+        </ul>
+
+        <h2 class="font-display text-xl mt-4">Text messaging</h2>
+        <p>
+          If you provide your mobile number, you consent to receive text
+          messages as described in our <a
+            href="/sms-terms"
+            class="text-red-500 underline-offset-2 hover:underline"
+            >SMS Terms</a
+          >. You can opt out at any time by replying STOP.
+          <strong
+            >We do not sell, rent, or share your mobile information with third
+            parties or affiliates for their marketing or promotional
+            purposes.</strong
+          > Mobile opt-in data is never shared with anyone for those purposes.
+        </p>
+
+        <h2 class="font-display text-xl mt-4">Sharing</h2>
+        <p>
+          We share information only with service providers who help us run our
+          events (for example, hosting, payment, and messaging providers) and
+          only as needed to provide those services, or where required by law. We
+          do not sell your personal information.
+        </p>
+
+        <h2 class="font-display text-xl mt-4">Your choices</h2>
+        <p>
+          You can reply STOP to any text to stop messages, or email us to ask
+          what information we hold about you or to request deletion.
+        </p>
+
+        <h2 class="font-display text-xl mt-4">Contact</h2>
+        <p>
+          Questions about this policy? Email <a
+            href="mailto:hello@publicworship.life"
+            class="text-red-500 underline-offset-2 hover:underline"
+            >hello@publicworship.life</a
+          >.
+        </p>
+      </div>
+    </Container>
+  </section>
+</BaseLayout>

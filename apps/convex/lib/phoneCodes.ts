@@ -101,6 +101,23 @@ export async function beginPhoneVerification(
   await scheduleCodeSms(ctx, rsvp._id, rsvp.phone, code);
 }
 
+/**
+ * Text a fresh code for GUEST SIGN-IN (restoring identity by proving you own
+ * the number). Unlike `beginPhoneVerification` it does NOT flip `phoneVerified`.
+ * Rate-limited (one send/min); silently no-ops if a code was just sent. If SMS
+ * isn't configured the send is a logged no-op (see `ticketingSms`), so the guest
+ * can fall back to email sign-in.
+ */
+export async function sendSignInPhoneCode(
+  ctx: MutationCtx,
+  rsvp: VerifiablePhoneRsvp,
+): Promise<void> {
+  const existing = await pendingPhoneCodeFor(ctx, rsvp._id);
+  if (sentRecently(existing)) return;
+  const code = await writeFreshCode(ctx, rsvp._id, existing);
+  await scheduleCodeSms(ctx, rsvp.phone, code);
+}
+
 /** Explicit "Resend code" request — throws when rate-limited. */
 export async function resendPhoneCode(
   ctx: MutationCtx,

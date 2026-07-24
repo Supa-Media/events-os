@@ -1,0 +1,80 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import Container from "../components/ui/Container.astro";
+import Eyebrow from "../components/ui/Eyebrow.astro";
+import Button from "../components/ui/Button.astro";
+import GeAbout from "../components/sections/GeAbout.astro";
+import DonateCta from "../components/sections/DonateCta.astro";
+import { asset } from "../lib/asset";
+---
+
+<BaseLayout
+  brand="global-echo"
+  title="Partner with us"
+  description="The 501(c)(3) nonprofit behind Public Worship and other initiatives around the globe — resourcing bold, public expressions of faith."
+>
+  <section class="relative pt-6 pb-12 sm:pt-12 sm:pb-20 overflow-hidden">
+    <img
+      src={asset("/decor/flag.svg")}
+      alt=""
+      aria-hidden="true"
+      data-animate="hero-object"
+      style="--rot: -20deg;"
+      class="hidden md:block absolute left-[10%] top-[10%] h-[110px] w-auto lg:h-[130px]"
+    />
+    <img
+      src={asset("/decor/idea.svg")}
+      alt=""
+      aria-hidden="true"
+      data-animate="hero-object"
+      style="--rot: 30deg;"
+      class="hidden md:block absolute right-[12%] top-[12%] h-[110px] w-auto lg:h-[130px]"
+    />
+    <img
+      src={asset("/decor/heart.svg")}
+      alt=""
+      aria-hidden="true"
+      data-animate="hero-object"
+      style="--rot: 15deg;"
+      class="hidden md:block absolute left-[8%] top-[55%] h-[120px] w-auto lg:h-[150px]"
+    />
+    <img
+      src={asset("/decor/sunny.svg")}
+      alt=""
+      aria-hidden="true"
+      data-animate="hero-object"
+      style="--rot: -15deg;"
+      class="hidden md:block absolute right-[10%] top-[55%] h-[110px] w-auto lg:h-[140px]"
+    />
+
+    <Container size="default" class="relative">
+      <div class="flex flex-col items-center text-center gap-6">
+        <Eyebrow>Partner with us</Eyebrow>
+
+        <h1
+          class="font-display font-normal text-ink leading-[1.05] text-4xl sm:text-5xl md:text-6xl max-w-3xl"
+        >
+          Global <span class="text-red-500">Echo</span> Charitable CO
+        </h1>
+
+        <p class="max-w-prose text-base sm:text-lg text-ink/70">
+          The nonprofit behind Public Worship, and other initiatives around the
+          globe. Resourcing bold, public expressions of faith that lead people
+          into powerful encounters with Jesus.
+        </p>
+
+        <div class="flex flex-wrap items-center justify-center gap-3 pt-2">
+          <Button
+            href={asset("/give")}
+            variant="primary"
+            size="lg">Make a Donation</Button
+          >
+          <Button href={asset("/")} variant="outline" size="lg">Public Worship</Button>
+        </div>
+      </div>
+    </Container>
+  </section>
+
+  <GeAbout />
+  <DonateCta showCards={true} />
+</BaseLayout>

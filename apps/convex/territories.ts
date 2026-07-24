@@ -114,6 +114,128 @@ async function activePledgeMonthlyCents(
   return active.reduce((sum, p) => sum + p.amountCents, 0);
 }
 
+/** Cap on the territory page's "upcoming fundraisers" list (F3-data). */
+const MAX_UPCOMING_FUNDRAISERS = 5;
+
+/** Bounded look-ahead window over a chapter's future events when hunting for
+ *  published fundraiser pages — generous over any realistic gap between "now"
+ *  and the soonest 5 fundraisers (most chapters don't even have 50 events
+ *  scheduled into the future at once). */
+const FUTURE_EVENT_SCAN_LIMIT = 50;
+
+/**
+ * A chapter's published, FUTURE fundraiser event pages (`eventPages.goalCents`
+ * set and positive), soonest first, capped at `MAX_UPCOMING_FUNDRAISERS` — the
+ * territory page's "here's how the team still delivers" section (F3). Reads
+ * `events` via the bounded `by_chapter_date` index (ascending from now, so the
+ * scan is naturally soonest-first and never touches past events), then joins
+ * each candidate's `eventPages` row 1:1 via `by_event`. Training-sandbox
+ * events are skipped — they must never reach a public surface (mirrors
+ * `ticketing.ts#listPublishedUpcoming`).
+ *
+ * `raisedCents` is computed EXACTLY like the RSVP page's progress bar
+ * (`ticketing.ts`'s `getBySlug`: `revenueCents + donationsCents +
+ * externalGiftsCents` — ticket revenue, on-page giving, and gifts manually
+ * attached to the fundraiser, the three sources that count toward `goalCents`)
+ * so the two pages never disagree on "how much is raised." PII-free: only
+ * page-level display fields, no donor/attendee data.
+ */
+async function upcomingFundraisersForChapter(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<
+  Array<{
+    name: string;
+    slug: string;
+    goalCents: number;
+    raisedCents: number;
+    startDate: number;
+  }>
+> {
+  const now = Date.now();
+  const futureEvents = await ctx.db
+    .query("events")
+    .withIndex("by_chapter_date", (q) =>
+      q.eq("chapterId", chapterId).gte("eventDate", now),
+    )
+    .order("asc")
+    .take(FUTURE_EVENT_SCAN_LIMIT);
+
+  const out: Array<{
+    name: string;
+    slug: string;
+    goalCents: number;
+    raisedCents: number;
+    startDate: number;
+  }> = [];
+  for (const event of futureEvents) {
+    if (out.length >= MAX_UPCOMING_FUNDRAISERS) break;
+    if (event.isTraining) continue;
+    const page = await ctx.db
+      .query("eventPages")
+      .withIndex("by_event", (q) => q.eq("eventId", event._id))
+      .unique();
+    if (!page || !page.published) continue;
+    if (!page.goalCents || page.goalCents <= 0) continue;
+    out.push({
+      name: event.name,
+      slug: page.slug,
+      goalCents: page.goalCents,
+      raisedCents:
+        page.revenueCents +
+        (page.donationsCents ?? 0) +
+        (page.externalGiftsCents ?? 0),
+      startDate: event.eventDate,
+    });
+  }
+  return out;
+}
+
+/** Committed/active sponsorships only — `prospect`/`pitched` aren't real
+ *  partnerships yet, `lapsed`/`declined` are done (F3-data's "whether it has
+ *  sponsorships" reads as *live* backing, not the whole pipeline). */
+const SPONSORSHIP_COUNT_STATUSES = ["committed", "active"] as const;
+
+/** Bounded scan per status — mirrors `sponsorships.ts`'s own
+ *  `SPONSORSHIP_LIST_LIMIT_PER_STATUS`: the agreement pipeline is
+ *  dev-director-authored and small by nature. */
+const SPONSORSHIP_COUNT_SCAN_LIMIT = 500;
+
+/**
+ * Count of committed/active sponsorships attributable to a chapter.
+ *
+ * `sponsorships` rows carry NO `chapterId`/scope field of their own — per
+ * `schema/sponsorships.ts`'s module doc, the agreement pipeline is a
+ * "CENTRAL LENS ONLY" surface. What IS chapter-scoped is the sponsorship's
+ * ORG: `sponsorship.donorId` points at a normal `donors` row, and every donor
+ * carries a `scope` (a chapter id, or the `"central"` sentinel) — that's the
+ * one real, already-documented link from an agreement back to a chapter, not
+ * an invented one. A sponsorship counts for this chapter when its donor's
+ * `scope` IS `chapterId`; a central-scoped donor's sponsorship (or any other
+ * chapter's) does not.
+ *
+ * Bounded: reads at most `SPONSORSHIP_COUNT_SCAN_LIMIT` rows per status via
+ * the `by_status` index (the whole pipeline, not per-chapter, so this stays
+ * flat as chapters are added), then one `ctx.db.get` per row for its donor.
+ */
+async function sponsorshipCountForChapter(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<number> {
+  let count = 0;
+  for (const status of SPONSORSHIP_COUNT_STATUSES) {
+    const rows = await ctx.db
+      .query("sponsorships")
+      .withIndex("by_status", (q) => q.eq("status", status))
+      .take(SPONSORSHIP_COUNT_SCAN_LIMIT);
+    for (const sponsorship of rows) {
+      const donor = await ctx.db.get(sponsorship.donorId);
+      if (donor?.scope === chapterId) count++;
+    }
+  }
+  return count;
+}
+
 /** `<slug>` — lowercase letters/digits, dash-separated, no leading/trailing/
  *  double dashes. The `/give/<slug>` URL segment. */
 const SLUG_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
@@ -264,6 +386,10 @@ const territoryAdminValidator = v.object({
   launchFundCents: v.number(),
   launchFundTargetCents: v.number(),
   launchedAt: v.union(v.number(), v.null()),
+  // The share-card image: the raw storage id + a resolved preview URL (null
+  // when unset), so the admin form can show + replace the current card.
+  ogImageStorageId: v.union(v.id("_storage"), v.null()),
+  ogImageUrl: v.union(v.string(), v.null()),
   // Joined from the linked chapter — the single source of truth for the count.
   backerCount: v.number(),
   chapterIsActive: v.boolean(),
@@ -288,6 +414,10 @@ async function toAdminRow(ctx: QueryCtx, row: Doc<"territories">) {
     launchFundCents: row.launchFundCents,
     launchFundTargetCents: row.launchFundTargetCents,
     launchedAt: row.launchedAt ?? null,
+    ogImageStorageId: row.ogImageStorageId ?? null,
+    ogImageUrl: row.ogImageStorageId
+      ? await ctx.storage.getUrl(row.ogImageStorageId)
+      : null,
     backerCount: chapter?.backerCount ?? 0,
     chapterIsActive: chapter?.isActive === true,
     createdAt: row.createdAt,
@@ -334,6 +464,9 @@ export const saveTerritory = mutation({
     story: v.optional(v.string()),
     publiclyVisible: v.boolean(),
     launchFundTargetCents: v.optional(v.number()),
+    // The share-card image. Omit to leave unchanged; `null` clears it; an id
+    // sets it. Uploaded via `api.storage.generateUploadUrl` in the admin form.
+    ogImageStorageId: v.optional(v.union(v.id("_storage"), v.null())),
   },
   returns: v.id("territories"),
   handler: async (ctx, args) => {
@@ -387,6 +520,11 @@ export const saveTerritory = mutation({
         story,
         publiclyVisible: args.publiclyVisible,
         launchFundTargetCents,
+        // Omitted → unchanged; `null` → cleared (undefined removes the field);
+        // an id → set.
+        ...(args.ogImageStorageId === undefined
+          ? {}
+          : { ogImageStorageId: args.ogImageStorageId ?? undefined }),
         updatedAt: now,
       });
       // Keep the linked chapter's display name in step with a rename.
@@ -426,6 +564,9 @@ export const saveTerritory = mutation({
       targetBackers,
       story,
       publiclyVisible: args.publiclyVisible,
+      ...(args.ogImageStorageId
+        ? { ogImageStorageId: args.ogImageStorageId }
+        : {}),
       launchFundCents: 0,
       launchFundTargetCents,
       createdAt: now,
@@ -574,6 +715,9 @@ const publicTerritoryValidator = v.union(
     backerCount: v.number(),
     targetBackers: v.number(),
     story: v.union(v.string(), v.null()),
+    // Whether a share-card image is set — the page emits an `og:image`
+    // (`/give/<slug>/og`) only when true.
+    hasOgImage: v.boolean(),
     milestones: v.array(milestoneRungValidator),
     nextMilestone: v.union(milestoneRungValidator, v.null()),
     // The pre-launch launch pot (docs/plans/giving-territories.md §D3), or
@@ -590,6 +734,20 @@ const publicTerritoryValidator = v.union(
       }),
       v.null(),
     ),
+    // F3-data: how the chapter still sustains its mission when it isn't fully
+    // backed — its upcoming fundraiser events (with money goals) and whether
+    // it has sponsorships. See `upcomingFundraisersForChapter` /
+    // `sponsorshipCountForChapter` above for exactly how each is computed.
+    upcomingFundraisers: v.array(
+      v.object({
+        name: v.string(),
+        slug: v.string(),
+        goalCents: v.number(),
+        raisedCents: v.number(),
+        startDate: v.number(),
+      }),
+    ),
+    sponsorshipCount: v.number(),
   }),
   v.null(),
 );
@@ -668,6 +826,11 @@ export const getPublicTerritory = query({
       };
     }
 
+    const [upcomingFundraisers, sponsorshipCount] = await Promise.all([
+      upcomingFundraisersForChapter(ctx, territory.chapterId),
+      sponsorshipCountForChapter(ctx, territory.chapterId),
+    ]);
+
     return {
       name: territory.name,
       region: territory.region,
@@ -676,10 +839,31 @@ export const getPublicTerritory = query({
       backerCount,
       targetBackers: territory.targetBackers,
       story: territory.story ?? null,
+      hasOgImage: territory.ogImageStorageId != null,
       milestones,
       nextMilestone,
       launchFund,
+      upcomingFundraisers,
+      sponsorshipCount,
     };
+  },
+});
+
+/**
+ * The share-card image's storage id for a `publiclyVisible` territory slug (or
+ * null). Internal — `http.ts` serves the bytes at `/give/<slug>/og`. No PII;
+ * gated only by `publiclyVisible` (a hidden territory's card isn't reachable).
+ */
+export const getTerritoryOgStorageId = internalQuery({
+  args: { slug: v.string() },
+  returns: v.union(v.id("_storage"), v.null()),
+  handler: async (ctx, { slug }) => {
+    const territory = await ctx.db
+      .query("territories")
+      .withIndex("by_slug", (q) => q.eq("slug", slug))
+      .first();
+    if (!territory || !territory.publiclyVisible) return null;
+    return territory.ogImageStorageId ?? null;
   },
 });
 

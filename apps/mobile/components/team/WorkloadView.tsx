@@ -30,6 +30,7 @@ import {
   Narrow,
   Avatar,
   Badge,
+  BackLink,
   Button,
   Icon,
   EmptyState,
@@ -291,13 +292,7 @@ export function WorkloadView({
           />
           {showBack ? (
             <View className="mt-4 items-start">
-              <Button
-                title="Back to Team"
-                variant="secondary"
-                size="sm"
-                icon="chevron-left"
-                onPress={() => router.navigate("/team" as any)}
-              />
+              <BackLink fallback="/team" />
             </View>
           ) : null}
         </Narrow>
@@ -324,15 +319,7 @@ export function WorkloadView({
     <Screen>
       <Narrow>
         {lead}
-        {showBack ? (
-          <Pressable
-            onPress={() => router.navigate("/team" as any)}
-            className="mb-4 flex-row items-center gap-1 self-start active:opacity-70"
-          >
-            <Icon name="chevron-left" size={16} color={colors.muted} />
-            <Text className="text-sm font-medium text-muted">Team</Text>
-          </Pressable>
-        ) : null}
+        {showBack ? <BackLink fallback="/team" /> : null}
 
         {/* Identity */}
         <View className="mb-2 flex-row items-center gap-3">

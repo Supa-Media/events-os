@@ -1,5 +1,5 @@
 /**
- * Giving — donations on the public event page. Mirrors the ticket-order money
+ * Giving — donations on the public RSVP page. Mirrors the ticket-order money
  * machinery 1:1 (no parallel system):
  *
  *   - ADMIN (requireEvent / requireOwned): record a manual cash/other donation,
@@ -150,6 +150,65 @@ export const removeDonation = mutation({
     return null;
   },
 });
+
+// ── COMBINED CHECKOUT: paid donation from a ticket order's add-on gift ──────
+
+/**
+ * Create + settle a PAID donation for the ticket-checkout's optional add-on
+ * gift (the "would you also like to donate?" upsell). The SAME Stripe charge
+ * that paid for the tickets already collected this amount — there is no
+ * separate pending→paid step like the standalone donation checkout — so this
+ * inserts straight to `paid` and runs the same rollup + CRM dual-write
+ * (`bumpGivingRollup`, `dualWriteGiftForDonation`) and receipt-email scheduling
+ * that `fulfillDonation` runs for a card donation. Money invariant: this ONLY
+ * touches `donations`/`donationsCents`/`gifts` — never `revenueCents` or the
+ * order itself (the caller does that separately for the ticket portion).
+ *
+ * Called by `ticketing.ts#fulfill` directly (same-ctx helper, not a
+ * registered mutation) so both writes land in the SAME mutation transaction
+ * as the ticket issuance. NOT idempotent on its own — the caller's
+ * `order.status === "paid"` early-return is what guarantees this runs at
+ * most once per order (webhook redelivery re-enters `fulfill`, which no-ops
+ * before ever reaching this call).
+ */
+export async function createPaidDonationForOrder(
+  ctx: MutationCtx,
+  args: {
+    eventId: Id<"events">;
+    chapterId: Id<"chapters">;
+    rsvpId?: Id<"rsvps">;
+    name: string;
+    email: string;
+    amountCents: number;
+  },
+): Promise<Id<"donations">> {
+  const now = Date.now();
+  const donationId = await ctx.db.insert("donations", {
+    chapterId: args.chapterId,
+    eventId: args.eventId,
+    name: args.name,
+    email: args.email,
+    amountCents: args.amountCents,
+    currency: "usd",
+    method: "card",
+    status: "paid",
+    rsvpId: args.rsvpId,
+    createdAt: now,
+  });
+  await bumpGivingRollup(ctx, args.eventId, args.amountCents, 1);
+  // F-6 P1: mirror into the donor CRM exactly like every other paid donation —
+  // reuse the same dual-write helper `fulfillDonation` uses, never hand-roll a
+  // second one.
+  const donation = await ctx.db.get(donationId);
+  if (donation) await dualWriteGiftForDonation(ctx, donation);
+
+  await ctx.scheduler.runAfter(
+    0,
+    internal.ticketingEmails.sendDonationReceiptEmail,
+    { donationId },
+  );
+  return donationId;
+}
 
 // ── INTERNAL: card donation lifecycle (shared by stripe.ts + webhook) ─────────
 

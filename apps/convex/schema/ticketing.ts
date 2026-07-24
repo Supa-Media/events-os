@@ -3,10 +3,10 @@ import { v } from "convex/values";
 
 /**
  * Ticketing — the public, attendee-facing layer of an event (Posh/Partiful
- * style). One `eventPages` row per event turns on a shareable landing page
- * (served by an httpAction at /event/<slug>, with the legacy /e/<slug> prefix
- * kept as an alias) with RSVPs, ticket sales via Stripe, comments + reactions,
- * and email blasts.
+ * style). One `eventPages` row per event turns on a shareable RSVP page
+ * (served by an httpAction at /rsvp/<slug>, with the older /event/<slug> and
+ * legacy /e/<slug> prefixes kept as aliases) with RSVPs, ticket sales via
+ * Stripe, comments + reactions, and email blasts.
  *
  * Public attendees have NO account: an RSVP row doubles as a lightweight guest
  * identity. Its secret `token` (random, returned once to the browser and kept
@@ -21,13 +21,19 @@ export const RSVP_STATUSES = ["going", "maybe", "not_going"] as const;
 export const eventPages = defineTable({
   eventId: v.id("events"),
   chapterId: v.id("chapters"),
-  // URL slug for the public page (/event/<slug>). Unique across the deployment.
+  // URL slug for the public page (/rsvp/<slug>). Unique across the deployment.
   slug: v.string(),
   // Nothing is publicly readable until the page is explicitly published.
   published: v.boolean(),
   // Cover/flyer image — the hero of the landing page AND the OG/iMessage
-  // preview image (served publicly via /event/<slug>/cover).
+  // preview image (served publicly via /rsvp/<slug>/cover).
   coverImage: v.optional(v.id("_storage")),
+  // Focal point (0–100, percent) for cropping `coverImage` — maps to the CSS
+  // `object-position` of the hero crop so the admin controls what stays in
+  // frame on the landing page instead of a hardcoded center crop. Unset (the
+  // legacy default) = centered (50/50).
+  coverFocalX: v.optional(v.number()),
+  coverFocalY: v.optional(v.number()),
   // Short line under the title (e.g. "A night of worship on the rooftop").
   tagline: v.optional(v.string()),
   // Longer "About this event" body (plain text, newlines preserved).
@@ -51,6 +57,10 @@ export const eventPages = defineTable({
   givingEnabled: v.optional(v.boolean()), // default false
   givingPrompt: v.optional(v.string()), // custom "support this event" copy
   suggestedAmountsCents: v.optional(v.array(v.number())), // preset buttons (ints)
+  // Fundraising goal (integer cents). When set, the page shows a progress bar
+  // and "$X of $Y raised" — where "raised" combines ticket revenue AND giving
+  // (see the `*Cents` rollups below). Unset = no goal shown.
+  goalCents: v.optional(v.number()),
   showGuestList: v.optional(v.boolean()), // default true
   // Partiful-style gate: activity feed visible only after you RSVP.
   activityRestricted: v.optional(v.boolean()), // default true
@@ -62,8 +72,20 @@ export const eventPages = defineTable({
   ticketsSoldCount: v.number(),
   revenueCents: v.number(),
   // Giving rollup (siblings of revenueCents; default 0 when unset).
+  // `donationsCents` = money given THROUGH this event page (the on-page "Give"
+  // flow: Stripe card donations + manually-recorded cash/other, each also
+  // dual-written into the donor-CRM `gifts` ledger).
   donationsCents: v.optional(v.number()),
   donationsCount: v.optional(v.number()),
+  // `externalGiftsCents` = donor-CRM `gifts` MANUALLY attached to this event
+  // (Givebutter-imported or offline gifts given "toward the fundraiser"). Kept
+  // separate from `donationsCents` so the two never double-count: an on-page
+  // donation is already a `gifts` row (via `donationId`) and is EXCLUDED here —
+  // only `donationId`-less gifts land in this rollup (see giving attach flow).
+  // The event's total "given" = donationsCents + externalGiftsCents, and both
+  // count toward `goalCents` alongside ticket `revenueCents`.
+  externalGiftsCents: v.optional(v.number()),
+  externalGiftsCount: v.optional(v.number()),
   // Givebutter live ticket sync (poll-only, PR B). When a campaign id is set,
   // the manual "Sync now" button + the 15-min cron pull that campaign's tickets
   // into native mirror orders/tickets/RSVPs (display attribution only — never
@@ -71,13 +93,21 @@ export const eventPages = defineTable({
   givebutterCampaignId: v.optional(v.string()),
   givebutterLastSyncedAt: v.optional(v.number()),
   givebutterLastSyncError: v.optional(v.string()),
+  // Secret token for the admin "Open preview" link: appends `?preview=<token>`
+  // to the public URL so the page renders even while `published` is false
+  // (and before go-live). Lazily minted by `ensurePreviewToken`; never returned
+  // by any public/list query.
+  previewToken: v.optional(v.string()),
   createdBy: v.id("users"),
   createdAt: v.number(),
   updatedAt: v.number(),
 })
   .index("by_event", ["eventId"])
   .index("by_slug", ["slug"])
-  .index("by_chapter", ["chapterId"]);
+  .index("by_chapter", ["chapterId"])
+  // Public marketing feed (GET /api/events/upcoming): read only published
+  // pages, newest-created first, without scanning drafts.
+  .index("by_published", ["published"]);
 
 /** A purchasable (or free/claimable) ticket tier for an event. */
 export const ticketTypes = defineTable({
@@ -138,11 +168,18 @@ export const rsvps = defineTable({
   // handle, "Panelist", "+1 of X", ticket type/price, etc.). Never shown on
   // the public page; admin-only context on the guest list.
   note: v.optional(v.string()),
+  // Set when a free-RSVP row is archived because its event switched to ticketed
+  // mode (events are single-mode: RSVP or ticketed, never both). Archived rows
+  // are kept (recoverable) but excluded from every count, guest list, and feed.
+  // Ticket-buyer rows (source === "ticket") are never archived.
+  archivedAt: v.optional(v.number()),
   createdAt: v.number(),
   updatedAt: v.number(),
 })
   .index("by_event", ["eventId"])
   .index("by_event_email", ["eventId", "email"])
+  // Guest sign-in by phone (E.164) — the SMS counterpart of by_event_email.
+  .index("by_event_phone", ["eventId", "phone"])
   .index("by_event_status", ["eventId", "status"])
   .index("by_token", ["token"]);
 
@@ -188,9 +225,20 @@ export const ticketOrders = defineTable({
       name: v.string(),
       quantity: v.number(),
       unitPriceCents: v.number(),
+      // Per-admission assigned attendee names for this line, index-aligned to
+      // the `quantity` tickets fulfill() issues. Entry i blank/absent = the
+      // ticket is "for the purchaser" and inherits order.name. Length <= quantity.
+      attendeeNames: v.optional(v.array(v.string())),
     }),
   ),
   totalCents: v.number(),
+  // Optional add-on gift bundled into the SAME checkout as the tickets (the
+  // "would you also like to donate?" upsell). Carried on the pending order so
+  // the webhook can split the one Stripe charge: tickets → revenue, this →
+  // a `donations` row (giving). Absent/0 = tickets only. Not included in
+  // `totalCents` (which is the ticket line-item subtotal) — it's added to the
+  // Stripe session as its own line so the money stays cleanly attributed.
+  donationCents: v.optional(v.number()),
   currency: v.string(),
   status: v.union(
     v.literal("pending"),
@@ -212,7 +260,9 @@ export const ticketOrders = defineTable({
 })
   .index("by_event", ["eventId"])
   .index("by_stripe_session", ["stripeCheckoutSessionId"])
-  .index("by_external_ref", ["externalRef"]);
+  .index("by_external_ref", ["externalRef"])
+  // A guest's own orders — powers the signed-in "your tickets" list.
+  .index("by_rsvp", ["rsvpId"]);
 
 /**
  * A donation to an event — the money flow the schema couldn't record before

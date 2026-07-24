@@ -1,0 +1,48 @@
+---
+import Eyebrow from "./Eyebrow.astro";
+
+export interface Props {
+  eyebrow?: string;
+  eyebrowIcon?: "sparkle" | "pray";
+  /** Visual style for the eyebrow. Source uses a chip on most sections and a
+   * small inline label only on the FAQ heading. */
+  eyebrowSize?: "chip" | "sm";
+  align?: "left" | "center";
+  as?: "h1" | "h2";
+  class?: string;
+}
+
+const {
+  eyebrow,
+  eyebrowIcon = "sparkle",
+  eyebrowSize = "chip",
+  align = "center",
+  as: Tag = "h2",
+  class: className = "",
+} = Astro.props;
+
+const alignClass =
+  align === "center" ? "items-center text-center" : "items-start text-left";
+// Source: H1 68px / lh 1.08, H2 52px / lh 1.08.
+const headingSize =
+  Tag === "h1"
+    ? "text-4xl sm:text-5xl md:text-[68px]"
+    : "text-3xl sm:text-[42px] md:text-[52px]";
+const headingLeading =
+  Tag === "h1" ? "leading-[1.08]" : "leading-[1.08]";
+const eyebrowGap = eyebrowSize === "sm" ? "gap-1" : "gap-3";
+---
+
+<div class={`flex flex-col ${eyebrowGap} ${alignClass} ${className}`}>
+  {eyebrow && <Eyebrow icon={eyebrowIcon} size={eyebrowSize}>{eyebrow}</Eyebrow>}
+  <Tag class={`font-display font-normal ${headingLeading} ${headingSize}`}>
+    <slot />
+  </Tag>
+  {
+    Astro.slots.has("description") && (
+      <p class="max-w-prose text-base text-ink/70 sm:text-lg">
+        <slot name="description" />
+      </p>
+    )
+  }
+</div>

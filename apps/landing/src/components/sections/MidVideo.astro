@@ -1,0 +1,28 @@
+---
+import Container from "../ui/Container.astro";
+import { asset } from "../../lib/asset";
+---
+
+{/* Source: "Gone Public" video at y=5296, 1142x673 (aspect ~1.7:1).
+ * Sits between Impact stats and FAQ. */}
+<section class="py-12 sm:py-16">
+  <Container size="wide">
+    <div
+      class="overflow-hidden rounded-2xl aspect-[1142/673] bg-ink/10"
+      data-animate="fade-up"
+    >
+      <video
+        class="block h-full w-full object-cover"
+        autoplay
+        muted
+        loop
+        playsinline
+        preload="metadata"
+        aria-hidden="true"
+      >
+        <source src={asset("/videos/gone-public.webm")} type="video/webm" />
+        <source src={asset("/videos/gone-public.mp4")} type="video/mp4" />
+      </video>
+    </div>
+  </Container>
+</section>

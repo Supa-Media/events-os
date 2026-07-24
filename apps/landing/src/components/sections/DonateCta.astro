@@ -1,0 +1,106 @@
+---
+import Container from "../ui/Container.astro";
+import SectionHeading from "../ui/SectionHeading.astro";
+import Button from "../ui/Button.astro";
+import { asset } from "../../lib/asset";
+
+export interface Props {
+  eyebrow?: string;
+  heading?: string;
+  cards?: "icons" | "illustrations";
+}
+
+const {
+  eyebrow = "Join the Movement",
+  heading,
+  cards,
+} = Astro.props;
+
+// Be Bold variant: 3 flat icons on pink-softer 286x286 cards (16px radius, 32px padding).
+// Source asset sizes: 176x176 SVGs; cards laid out in flex row with 16px gap.
+const iconCards = [
+  asset("/icons/pencil.svg"),
+  asset("/icons/medal.svg"),
+  asset("/icons/react.svg"),
+];
+
+// Support variant: 3 floating illustrations (no card bg) in a flex row.
+// Source rendered sizes ~280x240 with subtle rotation.
+const illustrationCards = [
+  { src: asset("/icons/comment-bubble.svg"), rot: "-rotate-3" },
+  { src: asset("/icons/unknown.svg"), rot: "rotate-1" },
+  { src: asset("/icons/sandtimer.svg"), rot: "rotate-2" },
+];
+---
+
+<section class="py-20 sm:py-28">
+  <Container size="default">
+    <div class="flex flex-col items-center text-center gap-6" data-animate="fade-up">
+      <SectionHeading eyebrow={eyebrow} align="center">
+        {
+          heading ? (
+            <Fragment set:html={heading} />
+          ) : (
+            <Fragment>
+              Be Bold,{" "}
+              <span class="text-red-500">Make a Difference</span>
+            </Fragment>
+          )
+        }
+      </SectionHeading>
+
+      <Button
+        href={asset("/give")}
+        variant="primary"
+        size="lg"
+        class="mt-2"
+      >
+        Make a Donation
+      </Button>
+    </div>
+
+    {
+      cards === "icons" && (
+        <div class="mt-14 flex flex-wrap justify-center gap-4">
+          {iconCards.map((src, i) => (
+            <div
+              class="bg-pink-softer rounded-2xl p-8 flex items-center justify-center w-[286px] h-[286px]"
+              data-animate="fade-up"
+              style={`--delay: ${i * 80}ms`}
+            >
+              <img
+                src={src}
+                alt=""
+                aria-hidden="true"
+                class="h-[176px] w-[176px] object-contain"
+                loading="lazy"
+                decoding="async"
+                width="176"
+                height="176"
+              />
+            </div>
+          ))}
+        </div>
+      )
+    }
+
+    {
+      cards === "illustrations" && (
+        <div class="mt-14 flex flex-wrap items-end justify-center gap-8 sm:gap-12">
+          {illustrationCards.map(({ src, rot }, i) => (
+            <img
+              src={src}
+              alt=""
+              aria-hidden="true"
+              class={`h-auto w-[220px] sm:w-[280px] object-contain transform-gpu ${rot}`}
+              data-animate="fade-up"
+              style={`--delay: ${i * 80}ms`}
+              loading="lazy"
+              decoding="async"
+            />
+          ))}
+        </div>
+      )
+    }
+  </Container>
+</section>

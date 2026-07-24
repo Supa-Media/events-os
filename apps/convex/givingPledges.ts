@@ -54,12 +54,15 @@ import { auditCents } from "./lib/giftAudit";
 
 const STRIPE_API = "https://api.stripe.com/v1";
 
-/** The monthly pledge FLOOR, in cents ($20 — the schema's `≥ 2000`, PRD §2's
- *  smallest preset). A pledge below `BACKER_UNIT_CENTS` still counts the donor
- *  as a donor, just not as a backer (see `recomputeChapterBackerCount`).
- *  Exported for `givingImport.ts` (territories P6), which enforces the same
- *  floor on a canonical `recurring` row's `recurringMonthlyCents`. */
-export const PLEDGE_FLOOR_CENTS = 2000;
+/** The monthly pledge FLOOR, in cents ($5 — a fee-sane processing minimum;
+ *  Stripe's ~$0.45 on a $5/mo charge nets ~91%). Lowered from $20 (2026-07-21,
+ *  owner request) so a "recurring giver" can give a genuinely small monthly
+ *  amount — the public `/give` copy no longer advertises a lower bound. A pledge
+ *  below `BACKER_UNIT_CENTS` still counts the donor as a donor, just not as a
+ *  backer (see `recomputeChapterBackerCount`). Exported for `givingImport.ts`
+ *  (territories P6), which enforces the same floor on a canonical `recurring`
+ *  row's `recurringMonthlyCents`. */
+export const PLEDGE_FLOOR_CENTS = 500;
 
 /** Bounded read for the derived backer-count recompute — mirrors the
  *  `GIFT_WINDOW_LIMIT` bounded-recompute precedent in `givingPlatform.ts`. A
@@ -113,12 +116,12 @@ async function logPledgeStatus(
 
 // ── Guards ────────────────────────────────────────────────────────────────────
 
-/** Guard: a monthly pledge is a whole number of cents at/above the $20 floor. */
+/** Guard: a monthly pledge is a whole number of cents at/above the $5 floor. */
 function assertPledgeFloor(amountCents: number): void {
   if (!Number.isInteger(amountCents) || amountCents < PLEDGE_FLOOR_CENTS) {
     throw new ConvexError({
       code: "INVALID_AMOUNT",
-      message: "A monthly pledge must be at least $20.",
+      message: "A monthly pledge must be at least $5.",
     });
   }
 }
@@ -327,6 +330,13 @@ export const startPledgeCheckout = action({
     amountCents: v.number(),
     name: v.string(),
     email: v.string(),
+    // Wave 2 (F6, activity wall): opt in to a public, PII-free echo of this
+    // backing on the territory's `/give/<slug>` activity wall — see
+    // `givingActivity.ts`. All three are optional and additive; omitting them
+    // (the pre-wave-2 client) behaves exactly as before.
+    shareOnWall: v.optional(v.boolean()),
+    publicName: v.optional(v.string()),
+    message: v.optional(v.string()),
   },
   handler: async (ctx, args): Promise<{ url: string }> => {
     const prepared: {
@@ -395,6 +405,24 @@ export const startPledgeCheckout = action({
       });
     }
     const session = (await response.json()) as { id: string; url: string };
+
+    // Wave 2 (F6, activity wall): record a PENDING wall entry — never shown
+    // until the webhook settles it (`markActivityVisible`). A pledge always
+    // backs a real chapter (never `"central"` — see `preparePledge`), so
+    // there's no scope guard needed here (unlike the one-time gift flow).
+    // `recordPendingActivity` itself skips silently if the giver left both
+    // name and message blank.
+    if (args.shareOnWall) {
+      await ctx.runMutation(internal.givingActivity.recordPendingActivity, {
+        refKey: String(prepared.pledgeId),
+        scope: args.chapterId,
+        kind: "backer",
+        amountCents: prepared.amountCents,
+        ...(args.publicName ? { displayName: args.publicName } : {}),
+        ...(args.message ? { message: args.message } : {}),
+      });
+    }
+
     return { url: session.url };
   },
 });

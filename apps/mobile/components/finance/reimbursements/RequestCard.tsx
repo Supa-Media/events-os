@@ -5,17 +5,24 @@
  * manager actions:
  *   - submitted / preapproved → Reject · Approve lines… · Approve & pay
  *   - pending_preapproval      → Decline · Pre-approve
- *   - approved                 → Mark paid (`markPaidManually`), with a note
- *                                that ACH auto-payout via Increase is coming
+ *   - approved                 → Pay by ACH (retry) · Mark paid
+ *                                (`markPaidManually`) — this state is now the
+ *                                FALLBACK: the parent auto-initiates the ACH
+ *                                payout right after approval succeeds, so a
+ *                                request only sits here when that couldn't
+ *                                start (no linked destination, no active
+ *                                Increase account, or Increase unreachable)
  *   - everything else          → read-only (a status note)
  *
  * "Approve lines…" opens an inline per-line checkbox selector that submits
  * `approve({ approvedLineIds })` (partial approval); "Approve & pay" submits
- * `approve({})` (all lines). Both surface the server-side separation-of-duties
- * error via the parent's action runner.
+ * `approve({})` (all lines) — the parent (`index.tsx`'s `handleApprove`)
+ * follows either with `api.increase.payReimbursement` to auto-pay. Both
+ * surface the server-side separation-of-duties error via the parent's action
+ * runner.
  */
 import { useMemo, useState } from "react";
-import { View, Text, Pressable } from "react-native";
+import { View, Text, Pressable, Linking } from "react-native";
 import { useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
@@ -33,10 +40,26 @@ import {
   shortDate,
   type ReimbursementRow,
   type ReimbursementDetail,
+  type ReimbursementLine,
 } from "./helpers";
 
 /** A payout summary as returned by `api.increase.listPayouts` (optional hint). */
 type Payout = FunctionReturnType<typeof api.increase.listPayouts>[number];
+
+/** `get`'s per-line shape, extended locally with `transactionDate` — a field
+ *  the backend contract adds (every line now carries the date it was
+ *  actually paid) but that hasn't landed in the generated return type yet
+ *  (a sibling agent owns `apps/convex` and is adding it concurrently). Kept
+ *  optional so the column degrades to an em dash until it does. */
+type ReimbursementLineWithDate = ReimbursementLine & { transactionDate?: number };
+
+/** `list`'s row shape, extended locally with `plannedPurchaseDate` (a
+ *  pre-approval ask's "when the claimant plans to buy") — same generated-type
+ *  lag as `ReimbursementLineWithDate` above. Kept optional so the row simply
+ *  omits the line until the regenerated type carries it. */
+type ReimbursementRowWithPlanned = ReimbursementRow & {
+  plannedPurchaseDate?: number | null;
+};
 
 type Props = {
   row: ReimbursementRow;
@@ -49,8 +72,12 @@ type Props = {
   ) => Promise<void>;
   onPreApprove: (id: Id<"reimbursementRequests">) => Promise<void>;
   onReject: (id: Id<"reimbursementRequests">) => Promise<void>;
-  /** Mark an approved request paid (`markPaidManually`). */
+  /** Mark an approved request paid by hand (`markPaidManually`) — the
+   *  fallback when auto-pay couldn't start the ACH transfer. */
   onMarkPaid: (id: Id<"reimbursementRequests">) => Promise<void>;
+  /** Retry the ACH payout (`payReimbursement`) on a request stuck `approved`
+   *  because auto-pay didn't take the real branch. Idempotent. */
+  onRetryPayout: (id: Id<"reimbursementRequests">) => Promise<void>;
 };
 
 export function RequestCard({
@@ -60,6 +87,7 @@ export function RequestCard({
   onPreApprove,
   onReject,
   onMarkPaid,
+  onRetryPayout,
 }: Props) {
   // `expanded` shows the read-only line table; `selecting` swaps it for the
   // per-line checkbox approve selector. Either mode needs the request's lines.
@@ -75,6 +103,9 @@ export function RequestCard({
   const status = STATUS_BADGE[row.status];
   const receipts = RECEIPTS_BADGE[row.receiptsState];
   const actionable = isActionable(row.status);
+  // A pre-approval ask's planned purchase date (see the local type above).
+  const plannedPurchaseDate = (row as ReimbursementRowWithPlanned)
+    .plannedPurchaseDate;
   const partiallyApproved =
     row.approvedCents != null && row.approvedCents !== row.totalCents;
 
@@ -112,6 +143,17 @@ export function RequestCard({
                 {row.verifiedRosterName === row.requesterName
                   ? "Verified roster identity"
                   : `Roster: ${row.verifiedRosterName}`}
+              </Text>
+            ) : null}
+            {/* Pre-approval-to-spend: when the claimant plans to buy — shown
+                only while the pre-approval decision / spend is still ahead
+                (pending_preapproval, or preapproved awaiting receipts), so an
+                approver can gauge how urgent the ask is. */}
+            {plannedPurchaseDate != null &&
+            (row.status === "pending_preapproval" ||
+              row.status === "preapproved") ? (
+              <Text className="mt-0.5 text-xs text-muted">
+                Plans to buy {shortDate(plannedPurchaseDate)}
               </Text>
             ) : null}
           </View>
@@ -179,14 +221,15 @@ export function RequestCard({
         </View>
       ) : null}
 
-      {/* Pay note — approved requests are paid manually for now; ACH is next. */}
+      {/* Pay note — `approved` is now the FALLBACK state: auto-pay already
+          tried and couldn't start the ACH transfer for this request. */}
       {canMarkPaid(row.status) ? (
         <View className="mt-3 flex-row items-center gap-2 rounded-md bg-info-bg px-3 py-2">
           <Icon name="info" size={14} color={colors.info} />
           <Text className="flex-1 text-xs text-info">
-            Send the ACH transfer from the chapter's Increase account, then mark
-            it paid here. Auto-payout via Increase is coming — destination bank
-            capture is a follow-up.
+            Automatic ACH payout couldn't start for this request — send the
+            transfer from the chapter's Increase account, then mark it paid
+            here, or retry "Pay by ACH" below.
           </Text>
         </View>
       ) : null}
@@ -243,14 +286,24 @@ export function RequestCard({
               />
             </>
           ) : canMarkPaid(row.status) ? (
-            <Button
-              title={`Mark paid ${formatCents(row.approvedCents ?? row.totalCents)}`}
-              variant="primary"
-              size="sm"
-              icon="check-circle"
-              loading={busy}
-              onPress={() => runBusy(() => onMarkPaid(row._id))}
-            />
+            <>
+              <Button
+                title="Pay by ACH"
+                variant="secondary"
+                size="sm"
+                icon="refresh-cw"
+                disabled={busy}
+                onPress={() => runBusy(() => onRetryPayout(row._id))}
+              />
+              <Button
+                title={`Mark paid ${formatCents(row.approvedCents ?? row.totalCents)}`}
+                variant="primary"
+                size="sm"
+                icon="check-circle"
+                loading={busy}
+                onPress={() => runBusy(() => onMarkPaid(row._id))}
+              />
+            </>
           ) : (
             <ReadOnlyNote status={row.status} payout={payout} />
           )}
@@ -291,8 +344,20 @@ function LineTable({
   }
   return (
     <View className="mt-3">
-      {/* The request-level "For" tag (an event or project, purely
-          informational — see `reimbursements.ts#forLabel`), when set. */}
+      {/* The required "why" — every request now carries one at submit. Shown
+          prominently, above the "For" tag and the line table, since it's the
+          first thing an approver should read. */}
+      {detail.purpose ? (
+        <View className="mb-3 rounded-md bg-sunken px-3 py-2.5">
+          <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+            Purpose
+          </Text>
+          <Text className="mt-0.5 text-sm text-ink">{detail.purpose}</Text>
+        </View>
+      ) : null}
+      {/* The request-level "For" tag (an event, a project, or a recurring
+          budget, purely informational — see `reimbursements.ts#forLabel`),
+          when set. */}
       {detail.forLabel ? (
         <View className="mb-2 flex-row items-center gap-1.5">
           <Icon name="tag" size={12} color={colors.muted} />
@@ -304,6 +369,9 @@ function LineTable({
           <Text className="flex-1 text-2xs font-bold uppercase tracking-wider text-muted">
             Line item
           </Text>
+          <Text className="w-20 text-2xs font-bold uppercase tracking-wider text-muted">
+            Date
+          </Text>
           <Text className="w-16 text-center text-2xs font-bold uppercase tracking-wider text-muted">
             Receipt
           </Text>
@@ -311,31 +379,47 @@ function LineTable({
             Amount
           </Text>
         </View>
-        {detail.lines.map((line) => (
-          <View
-            key={line._id}
-            className="flex-row items-center border-t border-border px-3 py-2"
-          >
-            <View className="flex-1 pr-2">
-              <Text className="text-sm font-medium text-ink">
-                {line.description}
+        {detail.lines.map((line) => {
+          const dated = line as ReimbursementLineWithDate;
+          return (
+            <View
+              key={line._id}
+              className="flex-row items-center border-t border-border px-3 py-2"
+            >
+              <View className="flex-1 pr-2">
+                <Text className="text-sm font-medium text-ink">
+                  {line.description}
+                </Text>
+                {line.category ? (
+                  <Text className="text-xs text-muted">{line.category}</Text>
+                ) : null}
+              </View>
+              <Text className="w-20 text-xs text-muted">
+                {dated.transactionDate != null ? shortDate(dated.transactionDate) : "—"}
               </Text>
-              {line.category ? (
-                <Text className="text-xs text-muted">{line.category}</Text>
-              ) : null}
+              <View className="w-16 items-center">
+                {line.hasReceipt && line.receiptUrl ? (
+                  <Pressable
+                    hitSlop={6}
+                    onPress={() => Linking.openURL(line.receiptUrl as string)}
+                    className="active:opacity-70"
+                  >
+                    <Icon name="check" size={15} color={colors.success} />
+                  </Pressable>
+                ) : line.hasReceipt ? (
+                  // Receipt attached but no servable URL (e.g. the stored
+                  // file was deleted from storage) — not tappable.
+                  <Icon name="check" size={15} color={colors.success} />
+                ) : (
+                  <Icon name="minus" size={15} color={colors.faint} />
+                )}
+              </View>
+              <Text className="w-24 text-right text-sm font-semibold text-ink">
+                {formatCents(line.amountCents)}
+              </Text>
             </View>
-            <View className="w-16 items-center">
-              {line.hasReceipt ? (
-                <Icon name="check" size={15} color={colors.success} />
-              ) : (
-                <Icon name="minus" size={15} color={colors.faint} />
-              )}
-            </View>
-            <Text className="w-24 text-right text-sm font-semibold text-ink">
-              {formatCents(line.amountCents)}
-            </Text>
-          </View>
-        ))}
+          );
+        })}
       </View>
     </View>
   );

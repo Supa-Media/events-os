@@ -1,11 +1,12 @@
 /**
- * Ticketing — public event pages, RSVPs, ticket sales, comments & reactions.
+ * Ticketing — public RSVP pages, RSVPs, ticket sales, comments & reactions.
  *
  * Three surfaces:
  *   - ADMIN (requireAccess via chapter helpers): page setup, ticket types,
  *     guest list, orders, check-in. Used by the Tickets tab in the app.
- *   - PUBLIC, no-auth: everything the landing page (/event/<slug>, served from
- *     http.ts — the legacy /e/<slug> alias still resolves) needs. Guests are
+ *   - PUBLIC, no-auth: everything the RSVP page (/rsvp/<slug>, served from
+ *     http.ts — the older /event/<slug> and legacy /e/<slug> aliases still
+ *     resolve) needs. Guests are
  *     identified by their RSVP row's secret
  *     `token` — never by auth. Mirrors `setlists.publicBoard`.
  *   - INTERNAL: order preparation/fulfillment shared by the Stripe checkout
@@ -25,8 +26,10 @@ import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { normalizeEmail } from "./lib/access";
+import { normalizePhone } from "./lib/twilio";
 import { requireEvent, requireOwned, requireUserId } from "./lib/context";
 import { beginEmailVerification, clearEmailCode } from "./lib/emailCodes";
+import { createPaidDonationForOrder } from "./giving";
 import { RSVP_STATUSES } from "./schema/ticketing";
 
 // ── Small helpers ────────────────────────────────────────────────────────────
@@ -219,6 +222,7 @@ export const createPage = mutation({
       notGoingCount: 0,
       ticketsSoldCount: 0,
       revenueCents: 0,
+      previewToken: newGuestToken(),
       createdBy: userId as Id<"users">,
       createdAt: now,
       updatedAt: now,
@@ -247,6 +251,11 @@ export const updatePage = mutation({
       givingEnabled: v.optional(v.boolean()),
       givingPrompt: v.optional(v.union(v.string(), v.null())),
       suggestedAmountsCents: v.optional(v.union(v.array(v.number()), v.null())),
+      // Fundraising goal in whole cents (null clears it).
+      goalCents: v.optional(v.union(v.number(), v.null())),
+      // Cover crop focal point, 0–100 percent (null resets to centered).
+      coverFocalX: v.optional(v.union(v.number(), v.null())),
+      coverFocalY: v.optional(v.union(v.number(), v.null())),
       showGuestList: v.optional(v.boolean()),
       activityRestricted: v.optional(v.boolean()),
       capacity: v.optional(v.union(v.number(), v.null())),
@@ -272,7 +281,7 @@ export const updatePage = mutation({
       if (clash && clash._id !== pageId) {
         throw new ConvexError({
           code: "SLUG_TAKEN",
-          message: `"${slug}" is already used by another event page.`,
+          message: `"${slug}" is already used by another RSVP page.`,
         });
       }
       patch.slug = slug;
@@ -291,6 +300,50 @@ export const updatePage = mutation({
       });
     }
 
+    // Goal is a whole number of cents ≥ 0 (same guard as prices/amounts).
+    if (
+      patch.goalCents != null &&
+      (patch.goalCents < 0 || !Number.isInteger(patch.goalCents))
+    ) {
+      throw new ConvexError({
+        code: "INVALID_PRICE",
+        message: "The goal must be a whole number of cents ≥ 0.",
+      });
+    }
+
+    // Focal point percents are clamped to 0–100 (null resets to centered).
+    for (const key of ["coverFocalX", "coverFocalY"] as const) {
+      const val = patch[key];
+      if (val != null && (val < 0 || val > 100)) {
+        throw new ConvexError({
+          code: "INVALID_FOCAL",
+          message: "Cover focal point must be between 0 and 100.",
+        });
+      }
+    }
+
+    // Single-mode events: RSVP and ticketing are mutually exclusive (a free
+    // ticket is a $0 ticket type, not RSVP). Enabling one clears the other.
+    // Switching to RSVP is blocked once a ticket has sold; switching to
+    // ticketed archives the free-RSVP guests (done after the patch, below).
+    const enablingTickets = patch.ticketsEnabled === true;
+    const enablingRsvp = patch.rsvpEnabled === true;
+    if (enablingTickets && enablingRsvp) {
+      throw new ConvexError({
+        code: "MODE_CONFLICT",
+        message: "An event is either RSVP or ticketed — pick one.",
+      });
+    }
+    if (enablingRsvp && page.ticketsSoldCount > 0) {
+      throw new ConvexError({
+        code: "MODE_LOCKED",
+        message:
+          "Tickets have already sold — this event can't switch back to RSVP.",
+      });
+    }
+    if (enablingTickets) patch.rsvpEnabled = false;
+    else if (enablingRsvp) patch.ticketsEnabled = false;
+
     // v.null() sentinels → unset the optional field.
     const {
       coverImage,
@@ -299,6 +352,9 @@ export const updatePage = mutation({
       givingPrompt,
       suggestedAmountsCents,
       givebutterCampaignId,
+      goalCents,
+      coverFocalX,
+      coverFocalY,
       ...rest
     } = patch;
     await ctx.db.patch(pageId, {
@@ -315,9 +371,69 @@ export const updatePage = mutation({
       ...(givebutterCampaignId !== undefined
         ? { givebutterCampaignId: givebutterCampaignId ?? undefined }
         : {}),
+      ...(goalCents !== undefined ? { goalCents: goalCents ?? undefined } : {}),
+      ...(coverFocalX !== undefined
+        ? { coverFocalX: coverFocalX ?? undefined }
+        : {}),
+      ...(coverFocalY !== undefined
+        ? { coverFocalY: coverFocalY ?? undefined }
+        : {}),
       updatedAt: Date.now(),
     });
+    // Switching to ticketed drops the free-RSVP guests (recoverable archive),
+    // so the page reads as ticketed and stale RSVPs don't linger.
+    if (enablingTickets) await archiveFreeRsvps(ctx, page);
     return null;
+  },
+});
+
+/**
+ * Archive every free-RSVP row on a page (source !== "ticket" and not already
+ * archived), keeping ticket buyers untouched. Rows are kept for recoverability;
+ * counters are decremented in ONE aggregate patch (never per-row
+ * `bumpRsvpCounters`), mirroring the batch idiom in eventAttendanceImport.
+ */
+async function archiveFreeRsvps(
+  ctx: MutationCtx,
+  page: Doc<"eventPages">,
+): Promise<void> {
+  const now = Date.now();
+  const rows = await ctx.db
+    .query("rsvps")
+    .withIndex("by_event", (q) => q.eq("eventId", page.eventId))
+    .take(2000);
+  let dGoing = 0;
+  let dMaybe = 0;
+  for (const r of rows) {
+    if (r.archivedAt != null || r.source === "ticket") continue;
+    await ctx.db.patch(r._id, { archivedAt: now, updatedAt: now });
+    if (r.status === "going") dGoing++;
+    else if (r.status === "maybe") dMaybe++;
+  }
+  if (dGoing || dMaybe) {
+    const fresh = (await ctx.db.get(page._id))!;
+    await ctx.db.patch(page._id, {
+      goingCount: Math.max(0, fresh.goingCount - dGoing),
+      maybeCount: Math.max(0, fresh.maybeCount - dMaybe),
+      updatedAt: now,
+    });
+  }
+}
+
+/**
+ * Return (minting on first use) the secret preview token for a page, so the
+ * composer's "Open preview" button can build `…/rsvp/<slug>?preview=<token>`
+ * that renders even while the page is a draft. Pages created before this field
+ * existed get one lazily here.
+ */
+export const ensurePreviewToken = mutation({
+  args: { pageId: v.id("eventPages") },
+  handler: async (ctx, { pageId }) => {
+    const page = await requireOwned(ctx, "eventPages", pageId, "Page");
+    if (page.previewToken) return page.previewToken;
+    const previewToken = newGuestToken();
+    await ctx.db.patch(pageId, { previewToken, updatedAt: Date.now() });
+    return previewToken;
   },
 });
 
@@ -407,6 +523,41 @@ export const updateTicketType = mutation({
   },
 });
 
+/**
+ * Promote a Givebutter mirror ticket type into a real, natively-sellable tier —
+ * the "make it one and the same" action. A synced tier is created `isActive:
+ * false` + `externalProvider: "givebutter"` (so it shows "Off" and can't be
+ * bought on the page); this flips it on and drops the external marker, keeping
+ * its `soldCount` so native + Givebutter sales accumulate on ONE tier. From
+ * then on the sync matches this tier by name instead of minting a new mirror
+ * (see `givebutterSync.ts`). Optionally sets the sell price at the same time.
+ */
+export const setTicketTypeSellable = mutation({
+  args: {
+    ticketTypeId: v.id("ticketTypes"),
+    priceCents: v.optional(v.number()),
+  },
+  handler: async (ctx, { ticketTypeId, priceCents }) => {
+    await requireOwned(ctx, "ticketTypes", ticketTypeId, "Ticket type");
+    if (
+      priceCents !== undefined &&
+      (priceCents < 0 || !Number.isInteger(priceCents))
+    ) {
+      throw new ConvexError({
+        code: "INVALID_PRICE",
+        message: "Price must be a whole number of cents ≥ 0.",
+      });
+    }
+    await ctx.db.patch(ticketTypeId, {
+      isActive: true,
+      externalProvider: undefined,
+      ...(priceCents !== undefined ? { priceCents } : {}),
+      updatedAt: Date.now(),
+    });
+    return null;
+  },
+});
+
 /** Hard-delete only if nothing sold; otherwise deactivate to keep history. */
 export const deleteTicketType = mutation({
   args: { ticketTypeId: v.id("ticketTypes") },
@@ -433,17 +584,47 @@ export const listRsvpsAdmin = query({
       .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .order("desc")
       .take(1000);
-    return rows.map((r) => ({
-      id: r._id,
-      name: r.name,
-      // Imported name-only guests may have no email — project null, never
-      // undefined (the guest list renders phone/name for those rows).
-      email: r.email ?? null,
-      phone: r.phone ?? null,
-      status: r.status,
-      source: r.source ?? "rsvp",
-      createdAt: r.createdAt,
-    }));
+
+    // A buyer holding multiple admissions (e.g. a Givebutter sync of a 2-pack)
+    // gets one ticketOrders/tickets row per admission, all sharing the buyer's
+    // rsvpId — so counting per-guest tickets means joining through orderId.
+    // Bounded reads mirror this file's other admin lists (by_event, take).
+    const orders = await ctx.db
+      .query("ticketOrders")
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
+      .take(500);
+    const rsvpIdByOrderId = new Map<Id<"ticketOrders">, Id<"rsvps">>();
+    for (const o of orders) {
+      if (o.rsvpId) rsvpIdByOrderId.set(o._id, o.rsvpId);
+    }
+    const tickets = await ctx.db
+      .query("tickets")
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
+      .take(1000);
+    const ticketCountByRsvpId = new Map<Id<"rsvps">, number>();
+    for (const t of tickets) {
+      if (t.status === "void") continue;
+      const rsvpId = rsvpIdByOrderId.get(t.orderId);
+      if (!rsvpId) continue;
+      ticketCountByRsvpId.set(rsvpId, (ticketCountByRsvpId.get(rsvpId) ?? 0) + 1);
+    }
+
+    // Archived free-RSVP rows (from a switch to ticketed mode) are kept for
+    // recoverability but never shown in the guest list.
+    return rows
+      .filter((r) => r.archivedAt == null)
+      .map((r) => ({
+        id: r._id,
+        name: r.name,
+        // Imported name-only guests may have no email — project null, never
+        // undefined (the guest list renders phone/name for those rows).
+        email: r.email ?? null,
+        phone: r.phone ?? null,
+        status: r.status,
+        source: r.source ?? "rsvp",
+        createdAt: r.createdAt,
+        ticketCount: ticketCountByRsvpId.get(r._id) ?? 0,
+      }));
   },
 });
 
@@ -514,16 +695,59 @@ export const checkInTicket = mutation({
  * viewer's RSVP, unlocks gated address/activity.
  */
 export const getPublicPage = query({
-  args: { slug: v.string(), token: v.optional(v.string()) },
-  handler: async (ctx, { slug, token }) => {
-    const page = await getPublishedPage(ctx, slug);
-    if (!page) return null;
+  args: {
+    slug: v.string(),
+    token: v.optional(v.string()),
+    // Admin "Open preview" secret — renders an unpublished page (see
+    // `ensurePreviewToken`). Ignored once the page is published.
+    previewToken: v.optional(v.string()),
+  },
+  handler: async (ctx, { slug, token, previewToken }) => {
+    const raw = await ctx.db
+      .query("eventPages")
+      .withIndex("by_slug", (q) => q.eq("slug", slug))
+      .unique();
+    if (!raw) return null;
+    // Access = published, OR a matching preview token (drafts stay private).
+    const isPreview = !raw.published;
+    if (
+      isPreview &&
+      !(previewToken && raw.previewToken && previewToken === raw.previewToken)
+    ) {
+      return null;
+    }
+    const page = raw;
     const event = await ctx.db.get(page.eventId);
     if (!event) return null;
     const now = Date.now();
 
     const viewer = await getViewerRsvp(ctx, page.eventId, token);
     const hasRsvpd = !!viewer && viewer.status !== "not_going";
+    // Holding a valid ticket unlocks the gated address/activity on its OWN —
+    // buying IS the qualification (the locked pill even reads "Get tickets to
+    // see the full address"). Keying only off RSVP status stranded a real
+    // ticket-holder whose RSVP row isn't "going" (e.g. a Givebutter-synced or
+    // never-flipped placeholder), so a signed-in buyer still saw the address
+    // hidden. Bounded read — a viewer holds few orders/tickets.
+    let viewerHasTicket = false;
+    if (viewer) {
+      const vOrders = await ctx.db
+        .query("ticketOrders")
+        .withIndex("by_rsvp", (q) => q.eq("rsvpId", viewer._id))
+        .take(50);
+      for (const o of vOrders) {
+        const ts = await ctx.db
+          .query("tickets")
+          .withIndex("by_order", (q) => q.eq("orderId", o._id))
+          .take(50);
+        if (ts.some((t) => t.status !== "void")) {
+          viewerHasTicket = true;
+          break;
+        }
+      }
+    }
+    // Either an RSVP or a ticket grants access to the gated address + activity.
+    const hasAccess = hasRsvpd || viewerHasTicket;
 
     // Ticket tiers (active only, sorted).
     const allTypes = await ctx.db
@@ -550,21 +774,102 @@ export const getPublicPage = query({
       )
       .order("desc")
       .take(6);
-    const guests = page.showGuestList === false
-      ? []
-      : [...going, ...maybe].map((r) => ({ name: r.name, status: r.status }));
+    // Tickets-only events (RSVP turned off) show ONLY ticketed attendees in the
+    // guest list — never leftover RSVP/import rows. When RSVP is on, show
+    // everyone (Partiful-style). `source === "ticket"` is set by both native and
+    // Givebutter-synced ticket fulfillment.
+    const ticketsOnly = page.rsvpEnabled === false;
+    // A row is a real guest when it's not archived AND — for a ticket buyer
+    // (source "ticket") — only once the purchase actually completed (status
+    // "going"). `prepareOrder` pre-creates the buyer's RSVP as status "maybe";
+    // an abandoned/expired checkout leaves that placeholder behind forever, and
+    // it must never read as a guest. A genuine "maybe" RSVP (source "rsvp") on
+    // an RSVP event still shows.
+    const isRealGuest = (r: Doc<"rsvps">): boolean => {
+      if (r.archivedAt != null) return false;
+      if ((r.source ?? "rsvp") === "ticket") return r.status === "going";
+      return !ticketsOnly;
+    };
+    const guestRows =
+      page.showGuestList === false
+        ? []
+        : [...going, ...maybe].filter(isRealGuest);
+
+    // Per-guest ticket count so a multi-ticket buyer reads "Name · N tickets".
+    // Reuses `listRsvpsAdmin`'s tickets→order→rsvp join (void excluded, bounded
+    // reads); only computed when a shown guest is actually a ticket buyer, so a
+    // pure-RSVP page pays nothing for it.
+    const ticketCountByRsvpId = new Map<Id<"rsvps">, number>();
+    if (guestRows.some((r) => (r.source ?? "rsvp") === "ticket")) {
+      const orders = await ctx.db
+        .query("ticketOrders")
+        .withIndex("by_event", (q) => q.eq("eventId", page.eventId))
+        .take(500);
+      const rsvpIdByOrderId = new Map<Id<"ticketOrders">, Id<"rsvps">>();
+      for (const o of orders) {
+        if (o.rsvpId) rsvpIdByOrderId.set(o._id, o.rsvpId);
+      }
+      const soldTickets = await ctx.db
+        .query("tickets")
+        .withIndex("by_event", (q) => q.eq("eventId", page.eventId))
+        .take(1000);
+      for (const tk of soldTickets) {
+        if (tk.status === "void") continue;
+        const rid = rsvpIdByOrderId.get(tk.orderId);
+        if (!rid) continue;
+        ticketCountByRsvpId.set(rid, (ticketCountByRsvpId.get(rid) ?? 0) + 1);
+      }
+    }
+    const guests = guestRows.map((r) => ({
+      name: r.name,
+      status: r.status,
+      ticketCount: ticketCountByRsvpId.get(r._id) ?? 0,
+    }));
 
     // Address gating (Partiful's "RSVP for full location").
     const addressLocked =
-      page.addressVisibility === "after_rsvp" && !hasRsvpd;
+      page.addressVisibility === "after_rsvp" && !hasAccess;
 
     // Activity feed gating.
-    const activityLocked = (page.activityRestricted ?? true) && !hasRsvpd;
+    const activityLocked = (page.activityRestricted ?? true) && !hasAccess;
     const activity = activityLocked
       ? null
-      : await buildActivity(ctx, page.eventId, viewer);
+      : await buildActivity(ctx, page.eventId, viewer, ticketsOnly);
+
+    // The signed-in guest's own issued tickets — `code` backs both the QR and
+    // the human check-in code shown on the page. Bounded (a guest holds few
+    // orders/tickets); empty when not signed in.
+    const myTickets: Array<{
+      code: string;
+      ticketTypeName: string;
+      attendeeName: string;
+      status: Doc<"tickets">["status"];
+      checkedInAt: number | null;
+    }> = [];
+    if (viewer) {
+      const myOrders = await ctx.db
+        .query("ticketOrders")
+        .withIndex("by_rsvp", (q) => q.eq("rsvpId", viewer._id))
+        .take(50);
+      for (const order of myOrders) {
+        const ts = await ctx.db
+          .query("tickets")
+          .withIndex("by_order", (q) => q.eq("orderId", order._id))
+          .take(50);
+        for (const t of ts) {
+          myTickets.push({
+            code: t.code,
+            ticketTypeName: t.ticketTypeName,
+            attendeeName: t.attendeeName,
+            status: t.status,
+            checkedInAt: t.checkedInAt ?? null,
+          });
+        }
+      }
+    }
 
     return {
+      isPreview,
       slug: page.slug,
       eventName: event.name,
       startDate: event.eventDate,
@@ -583,6 +888,20 @@ export const getPublicPage = query({
       suggestedAmountsCents: page.suggestedAmountsCents ?? [],
       donationsCents: page.donationsCents ?? 0,
       donationsCount: page.donationsCount ?? 0,
+      // Fundraising goal + everything the progress bar needs. "Raised" toward
+      // the goal is ticket revenue + on-page giving + gifts attached to the
+      // event (all three surfaced so the client can render "$X of $Y").
+      goalCents: page.goalCents ?? null,
+      revenueCents: page.revenueCents,
+      externalGiftsCents: page.externalGiftsCents ?? 0,
+      externalGiftsCount: page.externalGiftsCount ?? 0,
+      raisedCents:
+        page.revenueCents +
+        (page.donationsCents ?? 0) +
+        (page.externalGiftsCents ?? 0),
+      // Cover crop focal point (percent); default centered.
+      coverFocalX: page.coverFocalX ?? 50,
+      coverFocalY: page.coverFocalY ?? 50,
       capacity: page.capacity ?? null,
       counts: {
         going: page.goingCount,
@@ -591,11 +910,15 @@ export const getPublicPage = query({
       },
       guests,
       ticketTypes,
+      myTickets,
       viewer: viewer
         ? {
             name: viewer.name,
             // An imported guest viewing via token may lack an email — null it.
             email: viewer.email ?? null,
+            // Lets the client skip the identity sheet on a repeat ticket
+            // purchase only when a phone is already on file.
+            phone: viewer.phone ?? null,
             status: viewer.status,
             // Legacy rows (undefined) predate verification — treat as verified.
             emailVerified: viewer.emailVerified !== false,
@@ -604,6 +927,69 @@ export const getPublicPage = query({
       activityLocked,
       activity,
     };
+  },
+});
+
+/**
+ * Public, unauthenticated list of published UPCOMING event pages — the source
+ * for the marketing site's "Important Links" section (apps/landing), fetched
+ * same-origin via GET /api/events/upcoming (registered in http.ts). Returns
+ * only page-level, non-PII fields.
+ *
+ * "Upcoming" = the event hasn't ended yet (`endDate ?? eventDate >= now`), so a
+ * page drops off the homepage on its own once the event is over — no manual
+ * cleanup. Training-sandbox events are always excluded (they must never reach a
+ * public surface). Ordered soonest-first, capped by `limit`.
+ *
+ * Read cost stays flat as historical published pages accumulate: we read the
+ * most-recently-created published pages first (upcoming events are always among
+ * them) and bound the scan, rather than reading every published page ever.
+ */
+export const listPublishedUpcoming = query({
+  args: { limit: v.optional(v.number()) },
+  handler: async (ctx, { limit }) => {
+    const now = Date.now();
+    const max = Math.max(1, Math.min(limit ?? 6, 24));
+
+    const pages = await ctx.db
+      .query("eventPages")
+      .withIndex("by_published", (q) => q.eq("published", true))
+      .order("desc")
+      .take(100);
+
+    const upcoming: Array<{
+      slug: string;
+      eventName: string;
+      startDate: number;
+      endDate: number | null;
+      tagline: string | null;
+      venueName: string | null;
+      hasCover: boolean;
+      coverFocalX: number;
+      coverFocalY: number;
+    }> = [];
+    for (const page of pages) {
+      const event = await ctx.db.get(page.eventId);
+      // Skip orphaned pages and the Academy's training sandbox events.
+      if (!event || event.isTraining) continue;
+      const endsAt = page.endDate ?? event.eventDate;
+      if (endsAt < now) continue;
+      upcoming.push({
+        slug: page.slug,
+        eventName: event.name,
+        startDate: event.eventDate,
+        endDate: page.endDate ?? null,
+        tagline: page.tagline ?? null,
+        venueName: page.venueName ?? null,
+        hasCover: !!page.coverImage,
+        // Cover crop focal point (percent) so marketing surfaces (the
+        // "Important Links" card) crop the same way the landing page does.
+        coverFocalX: page.coverFocalX ?? 50,
+        coverFocalY: page.coverFocalY ?? 50,
+      });
+    }
+    upcoming.sort((a, b) => a.startDate - b.startDate);
+    return upcoming.slice(0, max);
   },
 });
 
@@ -638,6 +1024,7 @@ async function buildActivity(
   ctx: QueryCtx,
   eventId: Id<"events">,
   viewer: Doc<"rsvps"> | null,
+  ticketsOnly: boolean,
 ) {
   const viewerKey = viewer ? String(viewer._id) : null;
 
@@ -651,6 +1038,24 @@ async function buildActivity(
     .withIndex("by_event", (q) => q.eq("eventId", eventId))
     .order("desc")
     .take(60);
+
+  // Stable purchase time per ticket buyer: the earliest of the buyer's ticket
+  // orders. The mirror Givebutter order stores the TRUE purchase time in
+  // `createdAt` (see givebutterSync); a native order stores the checkout time.
+  // Using this instead of `rsvp.updatedAt` stops a later sign-in/verification
+  // or a Givebutter re-sync from re-floating an old purchase to the top.
+  const ticketOrders = await ctx.db
+    .query("ticketOrders")
+    .withIndex("by_event", (q) => q.eq("eventId", eventId))
+    .take(500);
+  const earliestOrderByRsvp = new Map<Id<"rsvps">, number>();
+  for (const o of ticketOrders) {
+    if (!o.rsvpId) continue;
+    const cur = earliestOrderByRsvp.get(o.rsvpId);
+    if (cur === undefined || o.createdAt < cur) {
+      earliestOrderByRsvp.set(o.rsvpId, o.createdAt);
+    }
+  }
 
   const topLevel = comments.filter((c) => !c.parentId && !c.replyToRsvpId);
   const byParent = new Map<string, Doc<"eventComments">[]>();
@@ -677,7 +1082,22 @@ async function buildActivity(
   });
 
   const items: Array<Record<string, unknown>> = [];
-  for (const r of recentRsvps.filter((r) => r.status !== "not_going")) {
+  // A ticket buyer's entry only appears once the purchase completed (status
+  // "going") — never for the "maybe" placeholder an abandoned checkout leaves.
+  // Tickets-only events (RSVP off) show ONLY ticketed attendees, never leftover
+  // RSVP/import rows, mirroring the guest-list filter above.
+  const showRsvpItem = (r: Doc<"rsvps">): boolean => {
+    if (r.archivedAt != null) return false;
+    if ((r.source ?? "rsvp") === "ticket") return r.status === "going";
+    return !ticketsOnly && r.status !== "not_going";
+  };
+  for (const r of recentRsvps.filter(showRsvpItem)) {
+    const isTicket = (r.source ?? "rsvp") === "ticket";
+    // Ticket rows use the stable purchase time (order.createdAt); RSVP rows keep
+    // using updatedAt (last status change ≈ the RSVP moment).
+    const activityTime = isTicket
+      ? (earliestOrderByRsvp.get(r._id) ?? r.createdAt)
+      : r.updatedAt;
     const replies = (byParent.get(`rsvp:${String(r._id)}`) ?? []).sort(
       (a, b) => a.createdAt - b.createdAt,
     );
@@ -687,7 +1107,9 @@ async function buildActivity(
       authorName: r.name,
       isViewer: !!viewer && r._id === viewer._id,
       status: r.status,
-      createdAt: r.updatedAt,
+      // Lets the client say "bought a ticket" vs "RSVP'd" (legacy rows = "rsvp").
+      source: r.source ?? "rsvp",
+      createdAt: activityTime,
       reactions: await reactionsFor(ctx, "rsvp", String(r._id), viewerKey),
       replies: await Promise.all(replies.map(commentShape)),
     });
@@ -731,7 +1153,7 @@ export const submitRsvp = mutation({
   handler: async (ctx, args) => {
     const page = await getPublishedPage(ctx, args.slug);
     if (!page) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Event page not found." });
+      throw new ConvexError({ code: "NOT_FOUND", message: "RSVP page not found." });
     }
     if (page.rsvpEnabled === false) {
       throw new ConvexError({ code: "RSVP_CLOSED", message: "RSVPs are closed." });
@@ -743,6 +1165,17 @@ export const submitRsvp = mutation({
       throw new ConvexError({
         code: "INVALID_INPUT",
         message: "A name and valid email are required.",
+      });
+    }
+    // Normalize the phone to E.164 on the way in (same as `prepareOrder`), so a
+    // phone captured here is stored identically to one captured at checkout —
+    // otherwise guest sign-in by phone (which looks up the normalized number)
+    // would never match a raw RSVP-entered value.
+    const phone = args.phone ? normalizePhone(args.phone) : null;
+    if (args.phone && !phone) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "Enter a valid phone number.",
       });
     }
     if (
@@ -769,14 +1202,20 @@ export const submitRsvp = mutation({
 
     if (rsvp) {
       const emailChanged = email !== rsvp.email;
-      if (rsvp.status !== args.status) {
+      const wasArchived = rsvp.archivedAt != null;
+      if (wasArchived) {
+        // The row was archived out of the counters on a switch to ticketed;
+        // re-activating it re-adds a fresh count for its new status.
+        await bumpRsvpCounters(ctx, page, null, args.status);
+      } else if (rsvp.status !== args.status) {
         await bumpRsvpCounters(ctx, page, rsvp.status, args.status);
       }
       await ctx.db.patch(rsvp._id, {
         name,
         email,
-        ...(args.phone !== undefined ? { phone: args.phone } : {}),
+        ...(args.phone !== undefined ? { phone: phone ?? undefined } : {}),
         status: args.status,
+        ...(wasArchived ? { archivedAt: undefined } : {}),
         updatedAt: now,
       });
       // A changed email must be re-verified; an unchanged one keeps its state.
@@ -796,7 +1235,7 @@ export const submitRsvp = mutation({
       chapterId: page.chapterId,
       name,
       email,
-      phone: args.phone,
+      phone: phone ?? undefined,
       status: args.status,
       token,
       source: "rsvp",
@@ -830,7 +1269,7 @@ export const addComment = mutation({
   handler: async (ctx, args) => {
     const page = await getPublishedPage(ctx, args.slug);
     if (!page) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Event page not found." });
+      throw new ConvexError({ code: "NOT_FOUND", message: "RSVP page not found." });
     }
     const viewer = await getViewerRsvp(ctx, page.eventId, args.token);
     if (!viewer) {
@@ -882,7 +1321,7 @@ export const toggleReaction = mutation({
   handler: async (ctx, args) => {
     const page = await getPublishedPage(ctx, args.slug);
     if (!page) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Event page not found." });
+      throw new ConvexError({ code: "NOT_FOUND", message: "RSVP page not found." });
     }
     const viewer = await getViewerRsvp(ctx, page.eventId, args.token);
     if (!viewer) {
@@ -974,10 +1413,23 @@ export const prepareOrder = internalMutation({
     slug: v.string(),
     name: v.string(),
     email: v.string(),
+    // Buyer's phone — required for ticket purchases (the door + SMS blasts need
+    // a way to reach ticket holders). Normalized to E.164; stored on the rsvp.
+    phone: v.optional(v.string()),
     token: v.optional(v.string()),
     items: v.array(
-      v.object({ ticketTypeId: v.id("ticketTypes"), quantity: v.number() }),
+      v.object({
+        ticketTypeId: v.id("ticketTypes"),
+        quantity: v.number(),
+        // Per-admission recipient names for this line (index-aligned to
+        // quantity). Blank/absent entry = the ticket is for the purchaser.
+        attendeeNames: v.optional(v.array(v.string())),
+      }),
     ),
+    // Optional add-on gift bundled into the SAME checkout (the "also
+    // donate?" upsell) — stashed on the pending order so the webhook can
+    // split the one Stripe charge. Absent/0 = tickets only.
+    donationCents: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     const page = await getPublishedPage(ctx, args.slug);
@@ -992,8 +1444,25 @@ export const prepareOrder = internalMutation({
         message: "A name and valid email are required.",
       });
     }
+    // Phone is required to buy a ticket. Reuse an already-stored number for a
+    // returning guest (their rsvp may already carry one) so we never block a
+    // repeat buyer; otherwise a valid number must be supplied.
+    const phone = args.phone ? normalizePhone(args.phone) : null;
+    if (args.phone && !phone) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "Enter a valid phone number.",
+      });
+    }
     if (args.items.length === 0 || args.items.length > 10) {
       throw new ConvexError({ code: "INVALID_CART", message: "Pick some tickets first." });
+    }
+    const donationCents = args.donationCents ?? 0;
+    if (!Number.isInteger(donationCents) || donationCents < 0) {
+      throw new ConvexError({
+        code: "INVALID_AMOUNT",
+        message: "Donation amount must be a whole number of cents.",
+      });
     }
 
     const now = Date.now();
@@ -1002,6 +1471,7 @@ export const prepareOrder = internalMutation({
       name: string;
       quantity: number;
       unitPriceCents: number;
+      attendeeNames?: string[];
     }> = [];
     for (const item of args.items) {
       const tt = await ctx.db.get(item.ticketTypeId);
@@ -1025,11 +1495,18 @@ export const prepareOrder = internalMutation({
           message: `Only ${remaining} ${tt.name} ticket${remaining === 1 ? "" : "s"} left.`,
         });
       }
+      // Normalize per-admission names to exactly `qty` trimmed, bounded
+      // entries; only attach the array when at least one name is assigned.
+      const rawNames = item.attendeeNames ?? [];
+      const attendeeNames = Array.from({ length: qty }, (_, i) =>
+        (rawNames[i] ?? "").trim().slice(0, 120),
+      );
       lines.push({
         ticketTypeId: tt._id,
         name: tt.name,
         quantity: qty,
         unitPriceCents: tt.priceCents,
+        ...(attendeeNames.some((n) => n.length > 0) ? { attendeeNames } : {}),
       });
     }
 
@@ -1043,6 +1520,15 @@ export const prepareOrder = internalMutation({
         )
         .first();
     }
+    // A phone must be on file for a ticket buyer — the one just entered, or one
+    // this guest already gave on a prior RSVP/purchase.
+    const finalPhone = phone ?? rsvp?.phone ?? null;
+    if (!finalPhone) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "A phone number is required to get tickets.",
+      });
+    }
     let rsvpId: Id<"rsvps">;
     let guestToken: string;
     let needsEmailVerification: boolean;
@@ -1050,7 +1536,7 @@ export const prepareOrder = internalMutation({
       rsvpId = rsvp._id;
       guestToken = rsvp.token;
       needsEmailVerification = rsvp.emailVerified === false;
-      await ctx.db.patch(rsvp._id, { name, updatedAt: now });
+      await ctx.db.patch(rsvp._id, { name, phone: finalPhone, updatedAt: now });
     } else {
       guestToken = newGuestToken();
       needsEmailVerification = true;
@@ -1059,6 +1545,7 @@ export const prepareOrder = internalMutation({
         chapterId: page.chapterId,
         name,
         email,
+        phone: finalPhone,
         status: "maybe", // flips to "going" when the order is fulfilled
         token: guestToken,
         source: "ticket",
@@ -1086,6 +1573,7 @@ export const prepareOrder = internalMutation({
       email,
       items: lines,
       totalCents,
+      ...(donationCents > 0 ? { donationCents } : {}),
       currency: "usd",
       status: "pending",
       createdAt: now,
@@ -1096,6 +1584,7 @@ export const prepareOrder = internalMutation({
     return {
       orderId,
       totalCents,
+      donationCents,
       guestToken,
       needsEmailVerification,
       eventName: event?.name ?? "Event",
@@ -1149,13 +1638,16 @@ async function fulfill(
         .withIndex("by_code", (q) => q.eq("code", code))
         .unique();
       if (clash) code = newTicketCode();
+      // Prefer the per-admission assigned name; blank/absent falls back to the
+      // purchaser (order.name). Purchaser email stays on every ticket.
+      const assigned = line.attendeeNames?.[i]?.trim();
       await ctx.db.insert("tickets", {
         eventId: order.eventId,
         chapterId: order.chapterId,
         orderId,
         ticketTypeId: line.ticketTypeId,
         ticketTypeName: line.name,
-        attendeeName: order.name,
+        attendeeName: assigned || order.name,
         attendeeEmail: order.email,
         code,
         status: "valid",
@@ -1215,6 +1707,22 @@ async function fulfill(
     }
   }
 
+  // Combined checkout add-on: the SAME Stripe charge included an optional
+  // "also donate?" gift. Split it out now — ticket money already landed on
+  // revenueCents above; this only ever touches donationsCents/gifts (money
+  // invariant). Guarded by the `order.status === "paid"` early-return above,
+  // so a webhook redelivery never double-creates this donation.
+  if (order.donationCents && order.donationCents > 0) {
+    await createPaidDonationForOrder(ctx, {
+      eventId: order.eventId,
+      chapterId: order.chapterId,
+      rsvpId: order.rsvpId,
+      name: order.name,
+      email: order.email,
+      amountCents: order.donationCents,
+    });
+  }
+
   await ctx.scheduler.runAfter(0, internal.ticketingEmails.sendTicketsEmail, {
     orderId,
   });
@@ -1264,8 +1772,39 @@ export const cancelPendingOrder = internalMutation({
         q.eq("stripeCheckoutSessionId", sessionId),
       )
       .unique();
-    if (order && order.status === "pending") {
-      await ctx.db.patch(order._id, { status: "expired", updatedAt: Date.now() });
+    if (!order || order.status !== "pending") return null;
+    await ctx.db.patch(order._id, { status: "expired", updatedAt: Date.now() });
+
+    // Reconcile the placeholder RSVP `prepareOrder` created for this buyer.
+    // That row is inserted as source:"ticket" / status:"maybe" and bumps
+    // `maybeCount` for an UNPAID order; left behind by an abandoned checkout it
+    // becomes a permanent phantom "maybe". If this RSVP exists SOLELY because of
+    // this now-expired order — still status "maybe" (a paid order would have
+    // flipped it to "going"), with no OTHER live (pending/paid) order — revert
+    // it: decrement `maybeCount` and delete the placeholder. A legitimate
+    // pre-existing "maybe" RSVP is source:"rsvp" (prepareOrder never rewrites an
+    // existing row's source/status), so it's never touched here.
+    if (order.rsvpId) {
+      const rsvp = await ctx.db.get(order.rsvpId);
+      if (rsvp && rsvp.source === "ticket" && rsvp.status === "maybe") {
+        const otherOrders = await ctx.db
+          .query("ticketOrders")
+          .withIndex("by_rsvp", (q) => q.eq("rsvpId", rsvp._id))
+          .take(50);
+        const hasOtherLive = otherOrders.some(
+          (o) =>
+            o._id !== order._id &&
+            (o.status === "pending" || o.status === "paid"),
+        );
+        if (!hasOtherLive) {
+          const page = await ctx.db
+            .query("eventPages")
+            .withIndex("by_event", (q) => q.eq("eventId", order.eventId))
+            .unique();
+          if (page) await bumpRsvpCounters(ctx, page, "maybe", null);
+          await ctx.db.delete(rsvp._id);
+        }
+      }
     }
     return null;
   },
@@ -1292,6 +1831,7 @@ export const getOrderEmailPayload = internalQuery({
       tickets: tickets.map((t) => ({
         code: t.code,
         ticketTypeName: t.ticketTypeName,
+        attendeeName: t.attendeeName,
       })),
       eventName: event?.name ?? "Event",
       startDate: event?.eventDate ?? null,
@@ -1301,11 +1841,22 @@ export const getOrderEmailPayload = internalQuery({
   },
 });
 
-/** Resolve a published page's cover image for the public /event/<slug>/cover route. */
+/** Resolve a published page's cover image for the public /rsvp/<slug>/cover route. */
 export const getCoverStorageId = internalQuery({
-  args: { slug: v.string() },
-  handler: async (ctx, { slug }) => {
-    const page = await getPublishedPage(ctx, slug);
-    return page?.coverImage ?? null;
+  args: { slug: v.string(), previewToken: v.optional(v.string()) },
+  handler: async (ctx, { slug, previewToken }) => {
+    const page = await ctx.db
+      .query("eventPages")
+      .withIndex("by_slug", (q) => q.eq("slug", slug))
+      .unique();
+    if (!page) return null;
+    // Cover is public once published, or with a matching draft preview token.
+    if (
+      !page.published &&
+      !(previewToken && page.previewToken && previewToken === page.previewToken)
+    ) {
+      return null;
+    }
+    return page.coverImage ?? null;
   },
 });

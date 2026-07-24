@@ -30,6 +30,7 @@ import {
 import { MIGRATIONS } from "./migrations/index";
 import { runCleanupRenamedGuideSlugs } from "./migrations/0007_cleanup_renamed_guide_slugs";
 import { scanColumnTypes } from "./migrations/0015_audit_column_types";
+import { backfillReceiptDocumentsPage } from "./migrations/0035_backfill_receipt_documents";
 
 /**
  * Backfill: ensure every template/event grid module has all of its current
@@ -679,6 +680,19 @@ export const fixColumnTypes = internalMutation({
     }
     return { target, templateColumnsFixed, eventColumnsFixed };
   },
+});
+
+/**
+ * Scheduler continuation for the receipts backfill (`0035`). The registry entry
+ * processes the first page inside `runPending`'s transaction and, when more
+ * transactions remain, schedules this to drain the tail one bounded page at a
+ * time — keeping every mutation within Convex's per-transaction limits. Shares
+ * one body with the registry entry; idempotent, so a redundant fire is a no-op.
+ */
+export const continueReceiptBackfill = internalMutation({
+  args: { cursor: v.union(v.string(), v.null()) },
+  handler: async (ctx, { cursor }) =>
+    await backfillReceiptDocumentsPage(ctx, cursor),
 });
 
 /**

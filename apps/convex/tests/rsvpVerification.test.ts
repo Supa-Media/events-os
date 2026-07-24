@@ -3,6 +3,7 @@ import { api, internal } from "../_generated/api";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import type { Id } from "../_generated/dataModel";
 import { hashEmailCode } from "../lib/emailCodes";
+import { hashPhoneCode } from "../lib/phoneCodes";
 
 /**
  * RSVP email verification: a 6-digit code (stored hashed) confirms the guest
@@ -305,6 +306,7 @@ describe("checkout and verification", () => {
       slug,
       name: "Ben Buyer",
       email: "ben@example.com",
+      phone: "5551234567",
       items: [{ ticketTypeId: paidId, quantity: 1 }],
     });
     expect(prepared.needsEmailVerification).toBe(true);
@@ -340,6 +342,7 @@ describe("checkout and verification", () => {
       slug,
       name: "Cara Claim",
       email: "cara@example.com",
+      phone: "5551234567",
       items: [{ ticketTypeId: freeId, quantity: 1 }],
     });
     expect(prepared.needsEmailVerification).toBe(true);
@@ -350,5 +353,128 @@ describe("checkout and verification", () => {
       orderId: prepared.orderId,
     });
     expect((await rsvpByToken(s, prepared.guestToken))!.emailVerified).toBe(false);
+  });
+});
+
+describe("guest sign-in", () => {
+  test("email: start sends a code; verifying it returns the guest token", async () => {
+    const { t, s, slug } = await setupPage();
+    const ada = await submitAda(t, slug); // rsvp, emailVerified:false, code row
+
+    // Start is always ok and never un-verifies; it reuses/refreshes the code.
+    expect(
+      await t.mutation(api.ticketingVerification.startGuestSignIn, {
+        slug,
+        method: "email",
+        contact: "ADA@example.com", // normalized to match
+      }),
+    ).toEqual({ ok: true });
+
+    const rsvp = await rsvpByToken(s, ada.token);
+    await plantCode(s, rsvp!._id, "424242");
+
+    // Wrong code → soft failure, no token leaked.
+    const bad = await t.mutation(api.ticketingVerification.verifyGuestSignIn, {
+      slug,
+      method: "email",
+      contact: "ada@example.com",
+      code: "000000",
+    });
+    expect(bad.ok).toBe(false);
+
+    // Right code → token handed back; email marked verified; code cleared.
+    expect(
+      await t.mutation(api.ticketingVerification.verifyGuestSignIn, {
+        slug,
+        method: "email",
+        contact: "ada@example.com",
+        code: "424242",
+      }),
+    ).toEqual({ ok: true, token: ada.token });
+    expect((await rsvpByToken(s, ada.token))!.emailVerified).toBe(true);
+    expect(await codeRowFor(s, rsvp!._id)).toBeNull();
+  });
+
+  test("an unknown contact never reveals itself", async () => {
+    const { t, slug } = await setupPage();
+    expect(
+      await t.mutation(api.ticketingVerification.startGuestSignIn, {
+        slug,
+        method: "email",
+        contact: "nobody@example.com",
+      }),
+    ).toEqual({ ok: true });
+    const res = await t.mutation(api.ticketingVerification.verifyGuestSignIn, {
+      slug,
+      method: "email",
+      contact: "nobody@example.com",
+      code: "123456",
+    });
+    expect(res.ok).toBe(false);
+  });
+
+  test("phone: start texts a code; verifying returns the token", async () => {
+    const { t, s, slug } = await setupPage();
+    const ada = await submitAda(t, slug);
+    const rsvp = await rsvpByToken(s, ada.token);
+    // Phone sign-in needs a number on file (E.164).
+    await run(s.t, (ctx) => ctx.db.patch(rsvp!._id, { phone: "+15558675309" }));
+
+    expect(
+      await t.mutation(api.ticketingVerification.startGuestSignIn, {
+        slug,
+        method: "phone",
+        contact: "(555) 867-5309", // normalized to +1555…
+      }),
+    ).toEqual({ ok: true });
+
+    const prow = await run(s.t, (ctx) =>
+      ctx.db
+        .query("rsvpPhoneCodes")
+        .withIndex("by_rsvp", (q) => q.eq("rsvpId", rsvp!._id))
+        .unique(),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.patch(prow!._id, { codeHash: hashPhoneCode("999111") }),
+    );
+
+    expect(
+      await t.mutation(api.ticketingVerification.verifyGuestSignIn, {
+        slug,
+        method: "phone",
+        contact: "5558675309",
+        code: "999111",
+      }),
+    ).toEqual({ ok: true, token: ada.token });
+    expect((await rsvpByToken(s, ada.token))!.phoneVerified).toBe(true);
+  });
+
+  test("a known guest with no usable code fails identically to an unknown one", async () => {
+    const { t, s, slug } = await setupPage();
+    const ada = await submitAda(t, slug);
+    const rsvp = await rsvpByToken(s, ada.token);
+    // Drop the pending code — mimics an already-verified/expired guest. Verify
+    // must NOT throw a distinct NO_CODE error (that would leak that this email
+    // is on the guest list); it returns the same generic result as an unknown.
+    const row = await codeRowFor(s, rsvp!._id);
+    await run(s.t, (ctx) => ctx.db.delete(row!._id));
+
+    const known = await t.mutation(api.ticketingVerification.verifyGuestSignIn, {
+      slug,
+      method: "email",
+      contact: "ada@example.com",
+      code: "123456",
+    });
+    const unknown = await t.mutation(api.ticketingVerification.verifyGuestSignIn, {
+      slug,
+      method: "email",
+      contact: "nobody@example.com",
+      code: "123456",
+    });
+    expect(known.ok).toBe(false);
+    expect(unknown.ok).toBe(false);
+    expect((known as { error: string }).error).toBe(
+      (unknown as { error: string }).error,
+    );
   });
 });

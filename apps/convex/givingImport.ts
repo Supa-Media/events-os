@@ -556,7 +556,7 @@ async function previewRecurringRow(
     return {
       donorMatch: via,
       disposition: "invalid",
-      reason: "Monthly amount must be a whole number of cents, at least $20.",
+      reason: "Monthly amount must be a whole number of cents, at least $5.",
     };
   }
 

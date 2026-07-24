@@ -15,6 +15,7 @@ import { normalizeEmail } from "./access";
 import type { GivingScope } from "./givingAccess";
 import { territoryForChapter } from "../territories";
 import { chapterRoster } from "./org";
+import { syncDonorIdentity } from "./donorIdentity";
 
 /** The 90-day lapse window (the AJ donor system's rule, PRD §1). */
 export const LAPSE_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
@@ -362,7 +363,13 @@ export async function matchOrCreateDonor(
     phone,
     name,
   });
-  if (existing) return existing._id;
+  if (existing) {
+    // Cross-chapter identity layer: keep the existing donor attached to its
+    // identity (attaches it lazily if it predates the layer / the backfill).
+    // Additive — never touches the donor's own per-scope rollups.
+    await syncDonorIdentity(ctx, existing._id);
+    return existing._id;
+  }
 
   const now = Date.now();
   const donorId = await ctx.db.insert("donors", {
@@ -386,6 +393,11 @@ export async function matchOrCreateDonor(
     const inserted = await ctx.db.get(donorId);
     if (inserted) await linkDonorToPerson(ctx, inserted);
   }
+  // Cross-chapter identity layer: attach the brand-new donor to its identity
+  // (creating the identity if this is the first row for the person), adding this
+  // scope to the identity's `scopes`. Done after the person-link so the fresh
+  // donor doc is read inside `syncDonorIdentity`.
+  await syncDonorIdentity(ctx, donorId);
   return donorId;
 }
 
@@ -413,7 +425,16 @@ async function recomputeDonorStatus(
 /**
  * Insert a gift for a donor and bump every rollup: the donor's lifetime/count/
  * first/last, the donor's derived status, and the scope aggregates. The single
- * write path for recorded gifts (manual entry, CSV import, event dual-write).
+ * write path for recorded gifts (manual entry, CSV import, event dual-write,
+ * Givebutter donation sync).
+ *
+ * EVENT "GIVEN" ROLLUP: a gift TAGGED to an event that is NOT an on-page
+ * donation (`eventId` set, `donationId` unset) also rolls into that event's
+ * `externalGiftsCents`/`externalGiftsCount` — see the guarded bump at the end.
+ * This is the fix for the historical gap where a gift carrying an `eventId`
+ * (manual `recordGift`, the Givebutter donation sync) never actually counted
+ * toward the event's Given total unless it was later run through
+ * `attachGiftToEvent`.
  */
 export async function recordGiftForDonor(
   ctx: MutationCtx,
@@ -485,6 +506,10 @@ export async function recordGiftForDonor(
     giftDelta: 1,
   });
   await recomputeDonorStatus(ctx, donor, { giftCount, lastGiftAt });
+  // Cross-chapter identity layer: the donor's lifetime/count/lastGift just
+  // moved, so refresh its identity's recomputed aggregate. Additive — the
+  // donor's own rollups above are untouched.
+  await syncDonorIdentity(ctx, args.donorId);
 
   // Territories launch pot: a gift landing on a pre-launch territory's chapter
   // accrues 100% to that territory's `launchFundCents`. `applyLaunchFundDelta`
@@ -497,6 +522,23 @@ export async function recordGiftForDonor(
   );
   if (countedInLaunchFund) {
     await ctx.db.patch(giftId, { countedInLaunchFund: true });
+  }
+
+  // Event fundraiser "Given" rollup: a gift TAGGED to an event that is NOT an
+  // on-page donation dual-write (`eventId` set, `donationId` UNSET) rolls into
+  // that event's `externalGiftsCents`/`externalGiftsCount` — the SAME rollup
+  // `attachGiftToEvent` maintains — so a gift born with an `eventId` (manual
+  // `recordGift`, the Givebutter donation sync) counts toward the event's Given
+  // total immediately, closing the gap where it only counted after a manual
+  // re-attach. The `donationId` guard is the double-count firewall: an on-page
+  // donation's dual-written gift is already in `donationsCents`, so it must
+  // never also land here (mirrors `bumpEventExternalGifts`'s contract +
+  // `attachGiftToEvent`'s guard). `removeGiftRow` reverses this exact
+  // (eventId && !donationId) case, and `attachGiftToEvent`'s same-event no-op
+  // guard prevents a later re-attach from double-bumping. See
+  // `schema/ticketing.ts`'s `externalGiftsCents` doc.
+  if (args.eventId !== undefined && args.donationId === undefined) {
+    await bumpEventExternalGifts(ctx, args.eventId, args.amountCents, 1);
   }
   return giftId;
 }
@@ -544,6 +586,9 @@ export async function removeGiftRow(
     giftDelta: -1,
   });
   await recomputeDonorStatus(ctx, donor, { giftCount, lastGiftAt });
+  // Cross-chapter identity layer: the donor's aggregate just shrank — refresh
+  // its identity's recomputed totals to match.
+  await syncDonorIdentity(ctx, donor._id);
 
   // Territories launch pot: reverse ONLY a gift that was actually counted into
   // its territory's pot (`countedInLaunchFund`). `applyLaunchFundDelta` no-ops
@@ -552,6 +597,15 @@ export async function removeGiftRow(
   // deleted row's history, which is fine). See §D3.
   if (gift.countedInLaunchFund) {
     await applyLaunchFundDelta(ctx, gift.scope, -gift.amountCents);
+  }
+
+  // Gift→event attach: a MANUALLY attached external gift (`eventId` set, NO
+  // `donationId` — an on-page donation's dual-write is never un-bumped here,
+  // it's owned by `giving.ts#bumpGivingRollup`/`removeDonation` instead) was
+  // counted in that event's `externalGiftsCents`/`externalGiftsCount` — reverse
+  // it so a delete stays consistent with `attachGiftToEvent`'s bookkeeping.
+  if (gift.eventId !== undefined && gift.donationId === undefined) {
+    await bumpEventExternalGifts(ctx, gift.eventId, -gift.amountCents, -1);
   }
 }
 
@@ -648,6 +702,15 @@ export async function editGiftRow(
     if (gift.countedInLaunchFund) {
       await applyLaunchFundDelta(ctx, gift.scope, delta);
     }
+    // An event-attached external gift's amount also feeds the event's
+    // `externalGiftsCents` fundraiser rollup — keep it in lockstep so the public
+    // "raised" total doesn't drift (and a later detach reverses the right
+    // amount). Count is unchanged (still one gift). A `donationId` gift is
+    // system-written and can't reach this branch (blocked above), so the only
+    // gifts here that carry `eventId` are manually-attached external ones.
+    if (gift.eventId && gift.donationId === undefined) {
+      await bumpEventExternalGifts(ctx, gift.eventId, delta, 0);
+    }
     changed = true;
   }
 
@@ -722,6 +785,13 @@ export async function editGiftRow(
       lastGiftAt: donorPatch.lastGiftAt,
     });
   }
+
+  // Cross-chapter identity layer: a money-field edit (amount or date) moved the
+  // donor's lifetime / lastGift — refresh its identity aggregate. Note/receipt/
+  // method-only edits don't touch the aggregate, so they skip this.
+  if (amountChanging || receivedAtChanging) {
+    await syncDonorIdentity(ctx, donor._id);
+  }
 }
 
 /**
@@ -757,6 +827,10 @@ async function recomputeDonorAfterGiftLeft(
     firstGiftAt: oldest?.receivedAt,
   });
   await recomputeDonorStatus(ctx, donor, { giftCount, lastGiftAt });
+  // Cross-chapter identity layer: this donor lost a gift (reassigned/moved) —
+  // refresh its identity aggregate (a scope may drop out if this was the
+  // donor's only tie, once the row's own totals recompute).
+  await syncDonorIdentity(ctx, donor._id);
 }
 
 /**
@@ -785,6 +859,9 @@ async function applyGiftToDonor(
     firstGiftAt,
   });
   await recomputeDonorStatus(ctx, donor, { giftCount, lastGiftAt });
+  // Cross-chapter identity layer: this donor gained a gift (reassigned/moved
+  // in) — refresh its identity aggregate + `scopes`.
+  await syncDonorIdentity(ctx, donor._id);
 }
 
 /**
@@ -985,6 +1062,38 @@ export async function dualWriteGiftForDonation(
     donationId: donation._id,
     ...(donation.note ? { note: donation.note } : {}),
     ...(donation.recordedBy ? { recordedBy: donation.recordedBy } : {}),
+  });
+}
+
+/**
+ * Bump `eventPages.externalGiftsCents`/`externalGiftsCount` by the given
+ * deltas (clamped ≥ 0), for an event's `by_event` page row. Mirrors
+ * `giving.ts#bumpGivingRollup`'s pattern exactly, but for the SIBLING counter
+ * that tracks donor-CRM gifts attributed to an event (Givebutter donations /
+ * offline gifts given "toward the fundraiser"), never the on-page donation
+ * flow's `donationsCents`. Callers: `recordGiftForDonor` (a gift born with an
+ * `eventId`), `attachGiftToEvent`/detach, `editGiftRow` (amount change), and
+ * `removeGiftRow` (reversal). Callers MUST only invoke this for a gift with
+ * `donationId === undefined` — an on-page donation's dual-written gift is
+ * already counted in `donationsCents`, and folding it into `externalGiftsCents`
+ * too would double-count (see `schema/ticketing.ts`'s `externalGiftsCents`
+ * doc). No-op (no write) if the event has no `eventPages` row.
+ */
+export async function bumpEventExternalGifts(
+  ctx: MutationCtx,
+  eventId: Id<"events">,
+  deltaCents: number,
+  deltaCount: number,
+): Promise<void> {
+  const page = await ctx.db
+    .query("eventPages")
+    .withIndex("by_event", (q) => q.eq("eventId", eventId))
+    .unique();
+  if (!page) return;
+  await ctx.db.patch(page._id, {
+    externalGiftsCents: Math.max(0, (page.externalGiftsCents ?? 0) + deltaCents),
+    externalGiftsCount: Math.max(0, (page.externalGiftsCount ?? 0) + deltaCount),
+    updatedAt: Date.now(),
   });
 }
 

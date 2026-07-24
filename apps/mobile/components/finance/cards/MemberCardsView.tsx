@@ -42,10 +42,12 @@ import {
   Badge,
   Button,
   EmptyState,
+  Icon,
   SectionHeader,
   TextField,
   ToastView,
 } from "../../ui";
+import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
 import { CardPhilosophy } from "./CardPhilosophy";
 import { OwedBanner } from "./OwedBanner";
@@ -59,6 +61,10 @@ export function MemberCardsView() {
   const txns = useQuery(api.finances.personTransactions, {});
   const myRepayments = useQuery(api.cards.myPersonalRepayments, {});
   const myRequest = useQuery(api.cards.myCardRequest, {});
+  // The org-wide card-prerequisite course + whether the caller has finished it
+  // (null when there's no gate). When a prerequisite is set and unmet, the
+  // no-card flow tells the member exactly what to complete to get a card.
+  const prerequisite = useQuery(api.cards.cardPrerequisiteStatus, {});
   const flag = useMutation(api.cards.flagPersonalCharge);
   // A member may only INITIATE a repayment (choose a method + kick it off) — the
   // offsetting credit is posted by a manager confirming receipt, never here.
@@ -140,6 +146,16 @@ export function MemberCardsView() {
           <View className="mb-3 rounded-md border border-border bg-sunken px-3 py-2">
             <Text className="text-xs text-muted">
               Your previous card was canceled — request a replacement below.
+            </Text>
+          </View>
+        ) : null}
+        {prerequisite && !prerequisite.met ? (
+          <View className="mb-3 flex-row items-center gap-2 rounded-md border border-warn bg-warn-bg px-3 py-2">
+            <Icon name="book-open" size={14} color={colors.warn} />
+            <Text className="flex-1 text-xs text-warn">
+              Complete{" "}
+              <Text className="font-semibold">{prerequisite.title}</Text> in the
+              Academy to get a card.
             </Text>
           </View>
         ) : null}

@@ -4,6 +4,7 @@ export { Screen, Narrow, FULL_WIDTH, NARROW_WIDTH } from "./Screen";
 export { AppShell } from "./AppShell";
 export { SidebarNavItem } from "./SidebarNav";
 export { PageHeader } from "./PageHeader";
+export { BackLink } from "./BackLink";
 export { Card } from "./Card";
 export { Button } from "./Button";
 export { Badge, type BadgeTone } from "./Badge";
@@ -23,6 +24,7 @@ export { Table, TableHeader, HeaderCell, Row, Cell } from "./Table";
 export { PersonPicker } from "./PersonPicker";
 export { RolePicker } from "./RolePicker";
 export { Popover } from "./Popover";
+export { InfoTooltip } from "./InfoTooltip";
 export { Calendar } from "./Calendar";
 export { DateTimeField } from "./DateTimeField";
 export {

@@ -17,6 +17,8 @@ import { useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
+  Image,
+  Platform,
   View,
   Text,
   Pressable,
@@ -26,12 +28,15 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { formatCents } from "@events-os/shared";
+// expo-image-picker is Expo Go-safe (classified `core`); only used on native.
+import * as ImagePicker from "expo-image-picker";
 import {
   Badge,
   type BadgeTone,
   Button,
   Card,
   EmptyState,
+  Field,
   Icon,
   Narrow,
   Screen,
@@ -60,6 +65,8 @@ type TerritoryRow = {
   launchedAt: number | null;
   backerCount: number;
   chapterIsActive: boolean;
+  ogImageStorageId: Id<"_storage"> | null;
+  ogImageUrl: string | null;
 };
 
 function stageTone(stage: TerritoryStage): BadgeTone {
@@ -215,6 +222,7 @@ function TerritoryForm({
   onDone: () => void;
 }) {
   const save = useMutation(api.territories.saveTerritory);
+  const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
   const [name, setName] = useState(territory?.name ?? "");
   const [region, setRegion] = useState(territory?.region ?? "");
   const [lat, setLat] = useState(territory ? String(territory.lat) : "");
@@ -234,8 +242,78 @@ function TerritoryForm({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
+  // Share-card image (the /give/<slug> og:image). `ogStorageId` starts
+  // `undefined` (unchanged); it only becomes non-undefined once the giver
+  // uploads a new image or removes the existing one, which is also when we
+  // flip `ogChanged` — that's the flag `submit()` uses to decide whether to
+  // include `ogImageStorageId` in the save call at all (omit = leave as-is).
+  const [ogStorageId, setOgStorageId] = useState<Id<"_storage"> | null | undefined>(
+    territory?.ogImageStorageId ?? undefined,
+  );
+  const [ogPreviewUri, setOgPreviewUri] = useState<string | null>(
+    territory?.ogImageUrl ?? null,
+  );
+  const [ogChanged, setOgChanged] = useState(false);
+  const [ogUploading, setOgUploading] = useState(false);
+  const [ogError, setOgError] = useState<string | null>(null);
+
   function onNameOrRegionChange(nextName: string, nextRegion: string) {
     if (!slugTouched) setSlug(slugify(nextName, nextRegion));
+  }
+
+  async function uploadOgImage(blob: Blob, contentType: string, previewUri: string) {
+    setOgUploading(true);
+    setOgError(null);
+    try {
+      const uploadUrl = await generateUploadUrl();
+      const res = await fetch(uploadUrl, {
+        method: "POST",
+        headers: { "Content-Type": contentType },
+        body: blob,
+      });
+      const { storageId } = await res.json();
+      setOgStorageId(storageId);
+      setOgPreviewUri(previewUri);
+      setOgChanged(true);
+    } catch {
+      setOgError("Couldn't upload image.");
+    } finally {
+      setOgUploading(false);
+    }
+  }
+
+  function pickOgImageWeb() {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "image/*";
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (file) void uploadOgImage(file, file.type || "image/jpeg", URL.createObjectURL(file));
+    };
+    input.click();
+  }
+
+  async function pickOgImageNative() {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.9,
+    });
+    if (result.canceled || !result.assets?.length) return;
+    const asset = result.assets[0];
+    const resp = await fetch(asset.uri);
+    const blob = await resp.blob();
+    await uploadOgImage(blob, asset.mimeType || blob.type || "image/jpeg", asset.uri);
+  }
+
+  function pickOgImage() {
+    if (Platform.OS === "web") pickOgImageWeb();
+    else void pickOgImageNative();
+  }
+
+  function removeOgImage() {
+    setOgStorageId(null);
+    setOgPreviewUri(null);
+    setOgChanged(true);
   }
 
   async function submit() {
@@ -268,6 +346,7 @@ function TerritoryForm({
         ...(dollarsToCents(launchFundTarget) !== undefined
           ? { launchFundTargetCents: dollarsToCents(launchFundTarget) }
           : {}),
+        ...(ogChanged ? { ogImageStorageId: ogStorageId ?? null } : {}),
       });
       onDone();
     } catch {
@@ -353,6 +432,54 @@ function TerritoryForm({
           numberOfLines={4}
           placeholder="What's the story of this territory so far?"
         />
+
+        <Field
+          label="Share card image"
+          hint="1080×1080 works best — the shareable /give/<slug> preview card."
+        >
+          <View className="flex-row items-center gap-3">
+            <View
+              className="w-24 items-center justify-center overflow-hidden rounded-lg border border-border bg-sunken"
+              style={{ aspectRatio: 1 }}
+            >
+              {ogUploading ? (
+                <ActivityIndicator color={colors.accent} />
+              ) : ogPreviewUri ? (
+                <Image
+                  source={{ uri: ogPreviewUri }}
+                  style={{ width: "100%", height: "100%" }}
+                  resizeMode="cover"
+                />
+              ) : (
+                <Icon name="image" size={20} color={colors.faint} />
+              )}
+            </View>
+            <View className="flex-1 gap-2">
+              <View className="flex-row flex-wrap gap-2">
+                <Button
+                  title={ogPreviewUri ? "Change image" : "Upload image"}
+                  size="sm"
+                  variant="secondary"
+                  onPress={pickOgImage}
+                  disabled={ogUploading}
+                />
+                {ogPreviewUri ? (
+                  <Button
+                    title="Remove"
+                    size="sm"
+                    variant="ghost"
+                    onPress={removeOgImage}
+                    disabled={ogUploading}
+                  />
+                ) : null}
+              </View>
+              {ogError ? (
+                <Text className="text-xs text-danger">{ogError}</Text>
+              ) : null}
+            </View>
+          </View>
+        </Field>
+
         <Pressable
           className="mb-3 flex-row items-center gap-2"
           onPress={() => setPubliclyVisible((v) => !v)}
