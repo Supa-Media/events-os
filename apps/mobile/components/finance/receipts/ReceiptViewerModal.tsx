@@ -53,6 +53,9 @@ import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
 import { shortDate } from "../reconcile/helpers";
 import { ReceiptAttachPicker } from "./ReceiptAttachPicker";
+// Web-only pdfjs rasterization (native = passthrough stub): a scanned PDF is
+// rendered to page images before upload so the server's image-OCR path reads it.
+import { expandScannedPdfs } from "../../../lib/receiptPdfRasterize";
 
 const TABULAR = { fontVariant: ["tabular-nums" as const] };
 
@@ -116,7 +119,16 @@ export function ReceiptViewerModal({
     input.accept = "image/*,application/pdf";
     input.onchange = () => {
       const file = input.files?.[0];
-      if (file) onPicked(file, file.type || "application/octet-stream");
+      if (!file) return;
+      // A scanned PDF is rendered to page images first (a single receipt is
+      // page 1); a digital PDF or an image passes through unchanged. This flow
+      // attaches ONE receipt, so we take the first result.
+      void expandScannedPdfs([
+        { blob: file as Blob, contentType: file.type || "application/octet-stream", name: file.name },
+      ]).then((expanded) => {
+        const first = expanded[0];
+        if (first) onPicked(first.blob, first.contentType);
+      });
     };
     input.click();
   }

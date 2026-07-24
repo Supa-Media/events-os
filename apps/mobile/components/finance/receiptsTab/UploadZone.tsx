@@ -24,6 +24,11 @@ import * as ImagePicker from "expo-image-picker";
 import { Badge, Icon } from "../../ui";
 import { colors } from "../../../lib/theme";
 import type { ActionRunner } from "../../../lib/useActionToast";
+// Web resolves `.web.ts` (real pdfjs rasterization); native gets a passthrough
+// stub. A SCANNED PDF picked on web is rendered to page images here so it flows
+// through the server's image-OCR path (a scanned PDF has no text layer the
+// backend can read — see PR #406). Digital PDFs pass through untouched.
+import { expandScannedPdfs } from "../../../lib/receiptPdfRasterize";
 
 /** `receipts.submitUploadedReceipts`'s own per-call cap — mirrored here so a
  *  big batch splits into legal-sized chunks rather than throwing. */
@@ -94,11 +99,14 @@ export function UploadZone({
       const fileList = input.files;
       if (!fileList || fileList.length === 0) return;
       const files = Array.from(fileList).map((f) => ({
-        blob: f,
+        blob: f as Blob,
         contentType: f.type || "image/jpeg",
         name: f.name,
       }));
-      void uploadFiles(files);
+      // Rasterize any scanned PDFs to page images before upload (digital PDFs
+      // and non-PDFs pass through). Never blocks on failure — expandScannedPdfs
+      // degrades to the original file.
+      void expandScannedPdfs(files).then(uploadFiles);
     };
     input.click();
   }
