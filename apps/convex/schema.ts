@@ -117,6 +117,7 @@ import { smsUsageEvents } from "./schema/smsUsage";
 import {
   audiences,
   campaigns,
+  campaignApprovalLog,
   campaignRecipients,
   emailSuppressions,
   emailReplies,
@@ -427,6 +428,11 @@ const schema = defineSchema({
   // routes in http.ts.
   audiences,
   campaigns,
+  // Two-party campaign approval (founder requirement, 2026-07-24) — the
+  // permanent decision history alongside `campaigns`' own last-decision-only
+  // fields. See schema/campaigns.ts's module doc + campaigns.ts's
+  // state-machine doc.
+  campaignApprovalLog,
   campaignRecipients,
   emailSuppressions,
   emailReplies,

@@ -3,11 +3,14 @@
  * (`schema/campaigns.ts#campaigns`). CENTRAL-only (`lib/campaignsAccess.ts`).
  *
  * Lifecycle: `createCampaign` (draft) → `updateCampaignMeta`/`updateCampaignDoc`
- * while still draft → `send` validates (audience exists, the block document
- * is non-empty, Resend is configured — any failure is a RECORDED failure on
- * the campaign row, never a thrown error, mirroring `blasts.ts#finishBlast`'s
- * philosophy) and flips `status` to "sending", scheduling
- * `materializeRecipients` (an internalAction — it resolves the audience via
+ * while still `draft`/`changes_requested` → `submitForApproval` (below) →
+ * `approveCampaign`/`requestCampaignChanges`/`denyCampaign` → `send` (only
+ * from `approved` or `failed` now — see the "Two-party approval" section)
+ * validates (audience exists, the block document is non-empty, Resend is
+ * configured — any failure is a RECORDED failure on the campaign row, never a
+ * thrown error, mirroring `blasts.ts#finishBlast`'s philosophy) and flips
+ * `status` to "sending", scheduling `materializeRecipients` (an
+ * internalAction — it resolves the audience via
  * `audiences.ts#resolveAudienceForSend` and writes one `campaignRecipients`
  * row per address in batches of 100, the house `backfillGiftsFromDonations`
  * slice pattern; `setRecipientCount`, its final write, schedules the first
@@ -26,6 +29,52 @@
  * "sending" campaign that's gone quiet (a crash mid-action, before it ever
  * reaches a mutation, is the one gap that leaves nothing scheduled).
  *
+ * ── Two-party approval (founder requirement, 2026-07-24) ─────────────────────
+ * Every MASS send needs sign-off from a DIFFERENT person holding campaign-
+ * approval power before it can go out — even the Executive Director needs
+ * another approval-power holder (e.g. the Marketing Director) to sign off on
+ * theirs. `sendTest` and every transactional email elsewhere in the app are
+ * UNCHANGED — only a real mass send is gated. Event blasts (`blasts.ts`) are
+ * explicitly OUT of scope (deferred).
+ *
+ * State machine: `draft`/`changes_requested` → `submitForApproval` (purpose
+ * required, a REVIEWER is CHOSEN from a dropdown of `campaigns.approve`
+ * holders — not a broadcast — see `listCampaignApprovers`; everything `send`
+ * validates today is re-validated here, loudly, since nothing is in flight
+ * yet) → `pending_approval`. Submitting schedules
+ * `campaignApprovalEmails.sendApprovalTestPair`, which renders the campaign
+ * exactly like `sendTest` and sends TWO copies — one to the submitter
+ * ("[Test] "), one to the chosen reviewer ("[For Approval] ", with a review
+ * link appended at the very BOTTOM of the rendered email, after every real
+ * block — a deliberate proof-of-read placement per the founder's spec: the
+ * reviewer scrolls through the whole email to reach the decision link).
+ * From `pending_approval`, ONLY the chosen reviewer
+ * (`assertCallerIsChosenReviewer`) may decide, via exactly one of:
+ *   - `approveCampaign` → `approved`. Recomputes the content+audience-
+ *     definition snapshot hash (`computeCampaignSnapshotHash`) and compares
+ *     it to the submit-time value stored in `approvedSnapshotHash` —
+ *     mismatch throws `CONTENT_DRIFT` (the campaign or its audience's
+ *     targeting changed while pending; `audiences.updateAudience` isn't
+ *     status-locked, so this is the only thing that catches an audience edit
+ *     made mid-review). Stamps a live `approvedRecipientCount`.
+ *   - `requestCampaignChanges` (note REQUIRED) → `changes_requested`.
+ *     Content editing re-opens (`assertEditable`); the submitter resubmits
+ *     (same or a different reviewer — the whole approval cycle restarts,
+ *     including a fresh test pair).
+ *   - `denyCampaign` (note REQUIRED) → `denied`. TERMINAL for sending — not
+ *     editable, not re-submittable. `revertToDraft` copies the content back
+ *     to an editable `draft` so it can be reused.
+ * `cancelApprovalRequest` lets the submitter (or any access holder) withdraw
+ * a still-pending request back to `draft` — no log row (a withdrawal isn't a
+ * decision; see `campaignApprovalLog`'s doc).
+ * NO SUPERUSER BYPASS anywhere in this chain (unlike budgets'
+ * `approvalParty: "single"` relaxation) — a stuck pending request is resolved
+ * by the writer canceling and re-picking a reviewer, not an admin override.
+ * `send` itself re-verifies the snapshot hash ONE more time right before
+ * materializing (an `approved → sending` or a `failed → sending` retry both
+ * re-check it — a transport-failure retry isn't a content change, but the
+ * hash is cheap insurance against an audience edit that landed in between).
+ *
  * Per-campaign sender ("send as a person"): `fromName`/`fromEmail`
  * (`schema/campaigns.ts`), validated at write time by `validateSenderFields`
  * — `fromEmail`, when set, must be a bare address on the SAME domain as the
@@ -39,7 +88,8 @@
  * against the caller's own name/email and a dummy unsubscribe URL, and sends
  * exactly one email with a "[Test] " subject prefix, so a composer can
  * preview the real Resend render without touching any audience or the
- * `campaignRecipients` ledger.
+ * `campaignRecipients` ledger. Deliberately UNGATED by approval — a preview
+ * send was never the founder's concern, only a real mass send is.
  */
 import {
   action,
@@ -49,12 +99,18 @@ import {
   mutation,
   query,
 } from "./_generated/server";
-import type { ActionCtx, MutationCtx } from "./_generated/server";
+import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { requireUserId } from "./lib/context";
-import { requireCampaignsAccess } from "./lib/campaignsAccess";
+import {
+  hasCampaignApprovalPower,
+  holdsCampaignCapabilityAt,
+  requireCampaignsAccess,
+  resolveCampaignCallerPersonId,
+  resolveCampaignCallerPersonIds,
+} from "./lib/campaignsAccess";
 import { siteUrl } from "./lib/siteUrl";
 import {
   emailDomain,
@@ -71,6 +127,12 @@ import {
   validateEmailDocument,
 } from "@events-os/shared";
 import { CAMPAIGN_STATUSES } from "./schema/campaigns";
+// Reused rather than re-implemented — same SOD_VIOLATION error code, pure
+// (no ctx) so it's trivially testable either way. See its own doc in
+// `lib/finance.ts` for the reimbursement/budget precedent this mirrors.
+import { assertSeparationOfDuties } from "./lib/finance";
+import { sha256Hex } from "./lib/sha256";
+import { resolveAudienceRecipients } from "./lib/audienceResolve";
 
 const scopeValidator = v.union(v.id("chapters"), v.literal("central"));
 
@@ -246,14 +308,17 @@ export const createCampaign = mutation({
   },
 });
 
-/** Assert `campaign.status === "draft"` — every metadata/content edit is
- *  blocked once a send has started (or finished), so a campaign's history
- *  stays a faithful record of what was actually sent. */
-function assertDraft(campaign: Doc<"campaigns">): void {
-  if (campaign.status !== "draft") {
+/** Assert `campaign.status` is `"draft"` or `"changes_requested"` — every
+ *  metadata/content edit is blocked once a campaign is submitted for
+ *  approval (or has started/finished sending), so a campaign's history stays
+ *  a faithful record of what a reviewer actually approved / what was
+ *  actually sent. `changes_requested` is editable so the submitter can act
+ *  on the reviewer's note before resubmitting. */
+function assertEditable(campaign: Doc<"campaigns">): void {
+  if (campaign.status !== "draft" && campaign.status !== "changes_requested") {
     throw new ConvexError({
-      code: "NOT_DRAFT",
-      message: "Only a draft campaign can be edited.",
+      code: "NOT_EDITABLE",
+      message: "Only a draft (or changes-requested) campaign can be edited.",
     });
   }
 }
@@ -280,7 +345,7 @@ export const updateCampaignMeta = mutation({
     if (!existing) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
     }
-    assertDraft(existing);
+    assertEditable(existing);
 
     const patch: Record<string, unknown> = { updatedAt: Date.now() };
     if (name !== undefined) {
@@ -330,13 +395,584 @@ export const updateCampaignDoc = mutation({
     if (!existing) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
     }
-    assertDraft(existing);
+    assertEditable(existing);
     const validated = validateEmailDocument(doc);
     if (!validated.ok) {
       throw new ConvexError({ code: "INVALID_DOC", message: validated.error });
     }
     await ctx.db.patch(campaignId, { doc: validated.doc, updatedAt: Date.now() });
     return null;
+  },
+});
+
+// ── Two-party approval (founder requirement, 2026-07-24) ─────────────────────
+// See the module doc's "Two-party approval" section for the full state
+// machine. This block: the snapshot-hash helper, the transition/reviewer
+// guards, the append-only log helper, then the five mutations + three
+// queries in submit→decide order.
+
+/** Assert a campaign's status permits `action` — mirrors
+ *  `finances.ts#assertBudgetTransition` exactly (same shape, same intent). */
+function assertCampaignTransition(
+  current: (typeof CAMPAIGN_STATUSES)[number],
+  allowedFrom: readonly (typeof CAMPAIGN_STATUSES)[number][],
+  action: string,
+): void {
+  if (!allowedFrom.includes(current)) {
+    throw new ConvexError({
+      code: "ILLEGAL_TRANSITION",
+      message: `Can't ${action} a campaign that's "${current}".`,
+    });
+  }
+}
+
+/**
+ * Deterministic hash over everything an approval decision BINDS: the
+ * campaign's own content/sender fields, and its audience's TARGETING
+ * DEFINITION (source/scope/filters) — deliberately NOT the audience's live
+ * resolved MEMBERSHIP, which naturally drifts as people/donors/guests come
+ * and go (a "matches everyone in Springfield" audience gaining a new match
+ * overnight isn't content drift; someone silently changing WHAT it targets
+ * is). Recomputed and compared at three points: stored at submit time
+ * (`approvedSnapshotHash`), recomputed and checked at approve time
+ * (`approveCampaign`), and recomputed and checked again at send time
+ * (`send`) — the last check catches an audience-definition edit made AFTER
+ * approval but before the send actually runs (`audiences.updateAudience`
+ * isn't status-locked, so this is the only thing that catches that case).
+ *
+ * Plain `JSON.stringify` over a freshly-built object literal is
+ * deterministic here (not a general-purpose canonical serializer) because
+ * every call builds the SAME object with the SAME key insertion order —
+ * there's no need to sort keys for that to hash identically call to call.
+ */
+async function computeCampaignSnapshotHash(
+  ctx: QueryCtx | MutationCtx,
+  campaign: Doc<"campaigns">,
+): Promise<string> {
+  const audience = await ctx.db.get(campaign.audienceId);
+  const payload = {
+    doc: campaign.doc,
+    subject: campaign.subject,
+    previewText: campaign.previewText ?? null,
+    fromName: campaign.fromName ?? null,
+    fromEmail: campaign.fromEmail ?? null,
+    audienceSource: audience?.source ?? null,
+    audienceScope: audience?.scope ?? null,
+    audienceFilters: audience?.filters ?? null,
+  };
+  return sha256Hex(JSON.stringify(payload));
+}
+
+/** Live resolved recipient count for `audienceId` — reuses
+ *  `resolveAudienceRecipients` (the exact same primitive
+ *  `audiences.ts#previewAudience` and `resolveAudienceForSend` already call)
+ *  rather than duplicating audience resolution here. `undefined` when the
+ *  audience no longer exists. */
+async function liveAudienceCount(
+  ctx: QueryCtx | MutationCtx,
+  audienceId: Id<"audiences">,
+): Promise<number | undefined> {
+  const audience = await ctx.db.get(audienceId);
+  if (!audience) return undefined;
+  const resolution = await resolveAudienceRecipients(ctx, audience);
+  return resolution.recipients.length;
+}
+
+/** Append one durable row to `campaignApprovalLog` — see that table's schema
+ *  doc for why this is append-only and never touched again. Called ONLY by
+ *  `submitForApproval`/`approveCampaign`/`requestCampaignChanges`/
+ *  `denyCampaign` — `cancelApprovalRequest` deliberately does NOT log (a
+ *  withdrawal, not a decision). */
+async function logCampaignDecision(
+  ctx: MutationCtx,
+  campaignId: Id<"campaigns">,
+  action: "submitted" | "approved" | "changes_requested" | "denied",
+  personId: Id<"people">,
+  extra: { note?: string; purpose?: string; recipientCount?: number } = {},
+): Promise<void> {
+  await ctx.db.insert("campaignApprovalLog", {
+    campaignId,
+    action,
+    personId,
+    at: Date.now(),
+    ...extra,
+  });
+}
+
+/**
+ * Every `campaigns.approve` holder at central, as `{personId, name}`,
+ * EXCLUDING every one of the CALLER's own non-placeholder `people` rows —
+ * feeds the "pick a reviewer" dropdown on the submit-for-approval modal. A
+ * submitter must not be able to pick themselves even if they hold approval
+ * power under a different roster row (`submitForApproval`'s own
+ * `assertSeparationOfDuties` call is the actual enforcement; this list is
+ * just the UI's candidate set, kept consistent with it).
+ */
+export const listCampaignApprovers = query({
+  args: {},
+  returns: v.array(v.object({ personId: v.id("people"), name: v.string() })),
+  handler: async (ctx) => {
+    await requireCampaignsAccess(ctx);
+    const ownIds = await resolveCampaignCallerPersonIds(ctx);
+
+    const assignments = await ctx.db
+      .query("seatAssignments")
+      .withIndex("by_scope", (q) => q.eq("scope", "central"))
+      .collect();
+    const approverIds = new Set<Id<"people">>();
+    for (const a of assignments) {
+      const def = await ctx.db.get(a.seatDefId);
+      if (def?.derived) continue;
+      if (def?.capabilities.includes("campaigns.approve")) approverIds.add(a.personId);
+    }
+
+    const approvers: { personId: Id<"people">; name: string }[] = [];
+    for (const personId of approverIds) {
+      if (ownIds.has(personId)) continue;
+      const p = await ctx.db.get(personId);
+      if (p) approvers.push({ personId, name: p.name });
+    }
+    return approvers;
+  },
+});
+
+/** Assert the caller IS the campaign's chosen reviewer — the ONLY identity
+ *  allowed to decide on a pending request (no superuser bypass; see the
+ *  module doc). Returns the reviewer's personId (== `campaign.reviewerPersonId`)
+ *  for the caller's convenience.
+ *
+ *  DEFENSE IN DEPTH (2026-07-24 — SOD bypass via multiple `people` rows):
+ *  `submitForApproval` already refuses to let a submitter pick ANY of their
+ *  OWN rows as reviewer (see its own doc), but this checks it again here
+ *  independently — a `submittedByPersonId` that's ALSO one of the caller's
+ *  own rows is refused even if it somehow got there another way (a row
+ *  linked/created after submission, or a direct write) — one human owning
+ *  two `campaigns.approve` rows can never decide on their own submission,
+ *  full stop, regardless of which of their rows ended up as which field. */
+async function assertCallerIsChosenReviewer(
+  ctx: MutationCtx,
+  campaign: Doc<"campaigns">,
+): Promise<Id<"people">> {
+  if (!campaign.reviewerPersonId) {
+    throw new ConvexError({
+      code: "NO_REVIEWER",
+      message: "This campaign has no reviewer on file.",
+    });
+  }
+  const ownPersonIds = await resolveCampaignCallerPersonIds(ctx);
+  if (!ownPersonIds.has(campaign.reviewerPersonId)) {
+    throw new ConvexError({
+      code: "NOT_CHOSEN_REVIEWER",
+      message: "Only the reviewer picked when this campaign was submitted can decide on it.",
+    });
+  }
+  if (campaign.submittedByPersonId && ownPersonIds.has(campaign.submittedByPersonId)) {
+    throw new ConvexError({
+      code: "SOD_VIOLATION",
+      message: "You can't decide on a campaign you submitted.",
+    });
+  }
+  return campaign.reviewerPersonId;
+}
+
+/** Load a campaign for a reviewer decision (approve/deny/request-changes):
+ *  fetch it, then assert the caller is its chosen reviewer. Shared so the
+ *  three decision mutations can never gate differently. */
+async function loadCampaignForReviewerDecision(
+  ctx: MutationCtx,
+  campaignId: Id<"campaigns">,
+): Promise<Doc<"campaigns">> {
+  const campaign = await ctx.db.get(campaignId);
+  if (!campaign) {
+    throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
+  }
+  await assertCallerIsChosenReviewer(ctx, campaign);
+  return campaign;
+}
+
+export const submitForApproval = mutation({
+  args: {
+    campaignId: v.id("campaigns"),
+    purpose: v.string(),
+    reviewerPersonId: v.id("people"),
+  },
+  returns: v.null(),
+  handler: async (ctx, { campaignId, purpose, reviewerPersonId }) => {
+    await requireCampaignsAccess(ctx);
+    const campaign = await ctx.db.get(campaignId);
+    if (!campaign) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
+    }
+    // `"failed"` is included so a hash mismatch caught at send-time (an
+    // audience edit made after approval) has a way back INTO review without
+    // needing content to be edited first — content itself is locked outside
+    // draft/changes_requested, so only the audience's own definition could
+    // have drifted; re-submitting just re-signs the current state.
+    assertCampaignTransition(
+      campaign.status,
+      ["draft", "changes_requested", "failed"],
+      "submit",
+    );
+
+    const trimmedPurpose = purpose.trim();
+    if (!trimmedPurpose) {
+      throw new ConvexError({
+        code: "EMPTY",
+        message: "Say why this campaign is being sent before submitting it.",
+      });
+    }
+
+    // Everything `send` validates today — fail LOUDLY here (a thrown
+    // ConvexError, not `recordSendFailure`) since nothing is in flight yet;
+    // unlike `send`, a submit that can't proceed shouldn't silently flip the
+    // campaign to a recorded failure.
+    const audience = await ctx.db.get(campaign.audienceId);
+    if (!audience) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "The target audience no longer exists." });
+    }
+    const validated = validateEmailDocument(campaign.doc);
+    if (!validated.ok) {
+      throw new ConvexError({ code: "INVALID_DOC", message: `Invalid email content: ${validated.error}` });
+    }
+    if (validated.doc.blocks.length === 0) {
+      throw new ConvexError({ code: "EMPTY", message: "Write the email first." });
+    }
+    const settings = await ctx.db.query("integrationSettings").first();
+    const resendReady = !!settings?.resendApiKey || !!process.env.RESEND_API_KEY;
+    if (!resendReady) {
+      throw new ConvexError({
+        code: "NOT_CONFIGURED",
+        message: "Resend isn't connected — configure it in Profile → Integrations.",
+      });
+    }
+
+    const reviewer = await ctx.db.get(reviewerPersonId);
+    if (!reviewer) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Reviewer not found." });
+    }
+    const reviewerEligible = await holdsCampaignCapabilityAt(
+      ctx,
+      reviewerPersonId,
+      "central",
+      "campaigns.approve",
+    );
+    if (!reviewerEligible) {
+      throw new ConvexError({
+        code: "INVALID_REVIEWER",
+        message: "Pick a reviewer who holds campaign-approval power.",
+      });
+    }
+
+    // SOD, the REAL check (2026-07-24): `people.userId` has no uniqueness —
+    // one human can own several `people` rows. Comparing just the resolved
+    // `submittedByPersonId` against `reviewerPersonId` (below) would miss a
+    // caller picking a DIFFERENT one of their OWN rows as reviewer — reject
+    // outright if `reviewerPersonId` is any row this caller controls, not
+    // just the one that would've been auto-picked as submitter.
+    const ownPersonIds = await resolveCampaignCallerPersonIds(ctx);
+    if (ownPersonIds.has(reviewerPersonId)) {
+      throw new ConvexError({
+        code: "SOD_VIOLATION",
+        message: "Pick a reviewer other than yourself.",
+      });
+    }
+
+    const submittedByPersonId = await resolveCampaignCallerPersonId(ctx);
+    // Same-id belt-and-suspenders (now implied by the set check above, since
+    // `submittedByPersonId` is always drawn from `ownPersonIds` — kept for
+    // the explicit "approver != requester" documentation `assertSeparationOfDuties`
+    // gives, and as a backstop if `resolveCampaignCallerPersonId`'s selection
+    // logic ever changes to not be a strict subset of `ownPersonIds`).
+    assertSeparationOfDuties(reviewerPersonId, submittedByPersonId);
+
+    const hash = await computeCampaignSnapshotHash(ctx, campaign);
+    const now = Date.now();
+    await ctx.db.patch(campaignId, {
+      status: "pending_approval",
+      purpose: trimmedPurpose,
+      submittedByPersonId,
+      submittedAt: now,
+      reviewerPersonId,
+      approvedSnapshotHash: hash,
+      // Fresh review cycle — clear any PRIOR decision's leftovers so a
+      // resubmit-after-changes-requested doesn't show a stale note/decider.
+      approvedByPersonId: undefined,
+      approvedAt: undefined,
+      reviewNote: undefined,
+      approvedRecipientCount: undefined,
+      error: undefined,
+      updatedAt: now,
+    });
+
+    const recipientCount = await liveAudienceCount(ctx, campaign.audienceId);
+    await logCampaignDecision(ctx, campaignId, "submitted", submittedByPersonId, {
+      purpose: trimmedPurpose,
+      recipientCount,
+    });
+
+    // Best-effort, scheduled (never awaited inline — Resend needs an action
+    // context). Sends the submitter+reviewer test pair — see the module doc.
+    await ctx.scheduler.runAfter(0, internal.campaignApprovalEmails.sendApprovalTestPair, {
+      campaignId,
+    });
+    return null;
+  },
+});
+
+/** Withdraw a still-pending request back to `draft`. No log row (see
+ *  `campaignApprovalLog`'s doc — a withdrawal isn't a decision). Any access
+ *  holder may cancel, not just the original submitter — mirrors how any
+ *  access holder may edit a draft. */
+export const cancelApprovalRequest = mutation({
+  args: { campaignId: v.id("campaigns") },
+  returns: v.null(),
+  handler: async (ctx, { campaignId }) => {
+    await requireCampaignsAccess(ctx);
+    const campaign = await ctx.db.get(campaignId);
+    if (!campaign) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
+    }
+    assertCampaignTransition(campaign.status, ["pending_approval"], "cancel the approval request on");
+    await ctx.db.patch(campaignId, {
+      status: "draft",
+      submittedByPersonId: undefined,
+      submittedAt: undefined,
+      reviewerPersonId: undefined,
+      approvedSnapshotHash: undefined,
+      updatedAt: Date.now(),
+    });
+    return null;
+  },
+});
+
+export const approveCampaign = mutation({
+  args: { campaignId: v.id("campaigns"), note: v.optional(v.string()) },
+  returns: v.null(),
+  handler: async (ctx, { campaignId, note }) => {
+    const campaign = await loadCampaignForReviewerDecision(ctx, campaignId);
+    assertCampaignTransition(campaign.status, ["pending_approval"], "approve");
+    const reviewerPersonId = campaign.reviewerPersonId as Id<"people">; // asserted by loadCampaignForReviewerDecision
+    assertSeparationOfDuties(reviewerPersonId, campaign.submittedByPersonId);
+
+    const freshHash = await computeCampaignSnapshotHash(ctx, campaign);
+    if (freshHash !== campaign.approvedSnapshotHash) {
+      throw new ConvexError({
+        code: "CONTENT_DRIFT",
+        message:
+          "The campaign or its audience changed since it was submitted — cancel the request and re-submit for a fresh review.",
+      });
+    }
+
+    const recipientCount = await liveAudienceCount(ctx, campaign.audienceId);
+    const trimmedNote = note?.trim() || undefined;
+    await ctx.db.patch(campaignId, {
+      status: "approved",
+      approvedByPersonId: reviewerPersonId,
+      approvedAt: Date.now(),
+      reviewNote: trimmedNote,
+      approvedRecipientCount: recipientCount,
+      updatedAt: Date.now(),
+    });
+    await logCampaignDecision(ctx, campaignId, "approved", reviewerPersonId, {
+      note: trimmedNote,
+      recipientCount,
+    });
+    await ctx.scheduler.runAfter(0, internal.campaignApprovalEmails.notifyCampaignDecision, {
+      campaignId,
+    });
+    return null;
+  },
+});
+
+export const requestCampaignChanges = mutation({
+  args: { campaignId: v.id("campaigns"), note: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { campaignId, note }) => {
+    const campaign = await loadCampaignForReviewerDecision(ctx, campaignId);
+    assertCampaignTransition(campaign.status, ["pending_approval"], "request changes on");
+    const trimmedNote = note.trim();
+    if (!trimmedNote) {
+      throw new ConvexError({
+        code: "EMPTY",
+        message: "Say what needs to change before requesting changes.",
+      });
+    }
+    const reviewerPersonId = campaign.reviewerPersonId as Id<"people">;
+    assertSeparationOfDuties(reviewerPersonId, campaign.submittedByPersonId);
+
+    await ctx.db.patch(campaignId, {
+      status: "changes_requested",
+      approvedByPersonId: reviewerPersonId,
+      approvedAt: Date.now(),
+      reviewNote: trimmedNote,
+      updatedAt: Date.now(),
+    });
+    await logCampaignDecision(ctx, campaignId, "changes_requested", reviewerPersonId, {
+      note: trimmedNote,
+    });
+    await ctx.scheduler.runAfter(0, internal.campaignApprovalEmails.notifyCampaignDecision, {
+      campaignId,
+    });
+    return null;
+  },
+});
+
+export const denyCampaign = mutation({
+  args: { campaignId: v.id("campaigns"), note: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { campaignId, note }) => {
+    const campaign = await loadCampaignForReviewerDecision(ctx, campaignId);
+    assertCampaignTransition(campaign.status, ["pending_approval"], "deny");
+    const trimmedNote = note.trim();
+    if (!trimmedNote) {
+      throw new ConvexError({
+        code: "EMPTY",
+        message: "Say why this campaign is being denied.",
+      });
+    }
+    const reviewerPersonId = campaign.reviewerPersonId as Id<"people">;
+    assertSeparationOfDuties(reviewerPersonId, campaign.submittedByPersonId);
+
+    await ctx.db.patch(campaignId, {
+      status: "denied",
+      approvedByPersonId: reviewerPersonId,
+      approvedAt: Date.now(),
+      reviewNote: trimmedNote,
+      updatedAt: Date.now(),
+    });
+    await logCampaignDecision(ctx, campaignId, "denied", reviewerPersonId, { note: trimmedNote });
+    await ctx.scheduler.runAfter(0, internal.campaignApprovalEmails.notifyCampaignDecision, {
+      campaignId,
+    });
+    return null;
+  },
+});
+
+/** Copy a `denied` campaign's content back to an editable `draft`, clearing
+ *  every approval field — the writer's escape hatch to reuse the content
+ *  instead of starting a new campaign from scratch. */
+export const revertToDraft = mutation({
+  args: { campaignId: v.id("campaigns") },
+  returns: v.null(),
+  handler: async (ctx, { campaignId }) => {
+    await requireCampaignsAccess(ctx);
+    const campaign = await ctx.db.get(campaignId);
+    if (!campaign) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
+    }
+    assertCampaignTransition(campaign.status, ["denied"], "move back to draft");
+    await ctx.db.patch(campaignId, {
+      status: "draft",
+      purpose: undefined,
+      submittedByPersonId: undefined,
+      submittedAt: undefined,
+      reviewerPersonId: undefined,
+      approvedByPersonId: undefined,
+      approvedAt: undefined,
+      reviewNote: undefined,
+      approvedSnapshotHash: undefined,
+      approvedRecipientCount: undefined,
+      updatedAt: Date.now(),
+    });
+    return null;
+  },
+});
+
+/**
+ * Approval-surface read for one campaign: whether the CALLER is its chosen
+ * reviewer (able to act right now — only true while `pending_approval`),
+ * whether they're its submitter, and its full decision log (newest first) —
+ * so the UI doesn't have to guess either from the raw campaign row alone.
+ */
+export const getCampaignApproval = query({
+  args: { campaignId: v.id("campaigns") },
+  returns: v.object({
+    canDecide: v.boolean(),
+    isSubmitter: v.boolean(),
+    // Resolved server-side (not via a chapter-scoped `people.get` the client
+    // could call itself — a submitter/reviewer's roster row may live in a
+    // DIFFERENT chapter than the caller's own, which `requireOwned` would
+    // reject) so the review card can show "by so-and-so" without a second,
+    // chapter-scoped round trip that might come back empty.
+    submitterName: v.union(v.string(), v.null()),
+    reviewerName: v.union(v.string(), v.null()),
+    log: v.array(
+      v.object({
+        _id: v.id("campaignApprovalLog"),
+        _creationTime: v.number(),
+        campaignId: v.id("campaigns"),
+        action: v.union(
+          v.literal("submitted"),
+          v.literal("approved"),
+          v.literal("changes_requested"),
+          v.literal("denied"),
+        ),
+        personId: v.id("people"),
+        note: v.optional(v.string()),
+        purpose: v.optional(v.string()),
+        recipientCount: v.optional(v.number()),
+        at: v.number(),
+      }),
+    ),
+  }),
+  handler: async (ctx, { campaignId }) => {
+    await requireCampaignsAccess(ctx);
+    const campaign = await ctx.db.get(campaignId);
+    if (!campaign) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
+    }
+    const ownIds = await resolveCampaignCallerPersonIds(ctx);
+    const canDecide =
+      campaign.status === "pending_approval" &&
+      campaign.reviewerPersonId != null &&
+      ownIds.has(campaign.reviewerPersonId);
+    const isSubmitter =
+      campaign.submittedByPersonId != null && ownIds.has(campaign.submittedByPersonId);
+    const submitter = campaign.submittedByPersonId
+      ? await ctx.db.get(campaign.submittedByPersonId)
+      : null;
+    const reviewer = campaign.reviewerPersonId
+      ? await ctx.db.get(campaign.reviewerPersonId)
+      : null;
+    const log = await ctx.db
+      .query("campaignApprovalLog")
+      .withIndex("by_campaign", (q) => q.eq("campaignId", campaignId))
+      .order("desc")
+      .take(50);
+    return {
+      canDecide,
+      isSubmitter,
+      submitterName: submitter?.name ?? null,
+      reviewerName: reviewer?.name ?? null,
+      log,
+    };
+  },
+});
+
+/** Every `pending_approval` campaign where the CALLER is the chosen
+ *  reviewer — feeds the "Awaiting your approval" strip. SOFT-gated on
+ *  holding approval power at all (`hasCampaignApprovalPower`, non-throwing —
+ *  mirrors `myCampaignsAccess`'s shape): a compose-only caller (this PR's own
+ *  lower access tier) gets `[]` back, NOT a thrown `FORBIDDEN` — this is a
+ *  list surface a widely-rendered strip calls unconditionally, so it must
+ *  degrade gracefully the same way a soft visibility check does, never crash
+ *  the screen for a caller who simply doesn't hold the power (2026-07-24 —
+ *  found in adversarial review: the mobile strip crashed the whole Campaigns
+ *  tab for compose-only callers). The per-row filter below is what actually
+ *  decides which rows are the caller's to act on. */
+export const listPendingApprovals = query({
+  args: {},
+  returns: v.array(v.object({ _id: v.id("campaigns"), name: v.string(), purpose: v.optional(v.string()) })),
+  handler: async (ctx) => {
+    if (!(await hasCampaignApprovalPower(ctx))) return [];
+    const ownIds = await resolveCampaignCallerPersonIds(ctx);
+    const pending = await ctx.db
+      .query("campaigns")
+      .withIndex("by_status", (q) => q.eq("status", "pending_approval"))
+      .take(200);
+    return pending
+      .filter((c) => c.reviewerPersonId != null && ownIds.has(c.reviewerPersonId))
+      .map((c) => ({ _id: c._id, name: c.name, purpose: c.purpose }));
   },
 });
 
@@ -447,10 +1083,15 @@ export const send = mutation({
     if (!campaign) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
     }
-    if (campaign.status !== "draft" && campaign.status !== "failed") {
+    // Two-party approval gate: `draft → sending` is no longer possible — a
+    // campaign must clear `submitForApproval` → `approveCampaign` first. A
+    // `"failed"` retry keeps its approval (a transport failure isn't a
+    // content change) but still re-verifies the snapshot hash below.
+    if (campaign.status !== "approved" && campaign.status !== "failed") {
       throw new ConvexError({
-        code: "ALREADY_SENDING",
-        message: "This campaign has already been sent (or is sending now).",
+        code: "NOT_APPROVED",
+        message:
+          "This campaign isn't approved to send yet — submit it for approval first.",
       });
     }
 
@@ -459,6 +1100,22 @@ export const send = mutation({
       await recordSendFailure(ctx, campaignId, "The target audience no longer exists.");
       return null;
     }
+
+    // Re-verify the approval snapshot hash ONE more time right before
+    // materializing — see `computeCampaignSnapshotHash`'s doc. No hash on
+    // record at all means this campaign (or this attempt) never actually
+    // cleared approval — closes the gap for any row from before this
+    // feature shipped, not just a genuine content-drift case.
+    const freshHash = await computeCampaignSnapshotHash(ctx, campaign);
+    if (!campaign.approvedSnapshotHash || freshHash !== campaign.approvedSnapshotHash) {
+      await recordSendFailure(
+        ctx,
+        campaignId,
+        "This campaign's content or audience changed since it was approved — submit it for approval again before sending.",
+      );
+      return null;
+    }
+
     const validated = validateEmailDocument(campaign.doc);
     if (!validated.ok) {
       await recordSendFailure(ctx, campaignId, `Invalid email content: ${validated.error}`);

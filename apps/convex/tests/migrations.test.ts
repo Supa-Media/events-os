@@ -318,6 +318,7 @@ const REGISTRY_NAMES = [
   "0033_add_giving_power_defaults",
   "0034_merge_duplicate_gb_guests",
   "0035_backfill_receipt_documents",
+  "0036_add_campaign_power_defaults",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

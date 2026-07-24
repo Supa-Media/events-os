@@ -321,6 +321,10 @@ export const CAPABILITY_LABELS: Record<string, string> = {
   "giving.view": "See donors & giving",
   "giving.manage": "Manage donors & gifts",
   "nav.giving": "Giving desk tab",
+  // Campaigns desk (two-party approval, 2026-07-24) — the assignable
+  // campaign power's two capabilities.
+  "campaigns.compose": "Compose email campaigns",
+  "campaigns.approve": "Approve email campaigns",
 };
 
 export function capabilityLabel(id: string): string {

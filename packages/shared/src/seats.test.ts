@@ -172,6 +172,9 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
   // runtime, so this pin tracks what a fresh org is STAMPED with, not the live
   // per-org state.
   const EXPECTED_CAPABILITIES_BY_SEAT: Record<SeatId, readonly string[]> = {
+    // 2026-07-24: added campaigns.approve + campaigns.compose (founder
+    // requirement — two-party campaign approval; the ED can compose/send,
+    // but every send needs a DIFFERENT approval-power holder's sign-off).
     executive_director: [
       "finance.central",
       "finance.accounts",
@@ -181,9 +184,14 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
       "giving.manage",
       "giving.view",
       "nav.giving",
+      "campaigns.approve",
+      "campaigns.compose",
     ],
     // 2026-07-19: added giving.view + nav.giving (owner decision — FM gets
-    // central-lens donor READ as an assignable power default).
+    // central-lens donor READ as an assignable power default). 2026-07-24:
+    // added campaigns.approve + campaigns.compose (founder requirement — the
+    // FM is one of the org's valid campaign approvers alongside the ED and
+    // Marketing Director).
     financial_manager: [
       "finance.manager",
       "finance.central",
@@ -192,6 +200,8 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
       "nav.finances",
       "giving.view",
       "nav.giving",
+      "campaigns.approve",
+      "campaigns.compose",
     ],
     development_director: ["giving.manage", "giving.view", "nav.giving"],
     partnership_associate: ["giving.view", "nav.giving"],
@@ -201,7 +211,10 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
     artists: [],
     musicians: [],
     songwriters: [],
-    marketing_director: [],
+    // 2026-07-24: added campaigns.approve + campaigns.compose (founder
+    // requirement, verbatim: "ED approved by Marketing Director" — named as
+    // a valid second party for two-party campaign approval).
+    marketing_director: ["campaigns.approve", "campaigns.compose"],
     social_media_manager: [],
     graphic_designer: [],
     marketing_associate: [],

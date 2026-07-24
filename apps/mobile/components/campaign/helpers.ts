@@ -6,21 +6,40 @@
 import { Alert, Platform } from "react-native";
 import type { BadgeTone } from "../ui";
 
-/** A campaign's lifecycle status, per the `campaigns` contract. */
-export type CampaignStatus = "draft" | "sending" | "sent" | "failed";
+/** A campaign's lifecycle status, per the `campaigns` contract. Two-party
+ *  approval (founder requirement, 2026-07-24) added `pending_approval` /
+ *  `approved` / `changes_requested` / `denied` between `draft` and
+ *  `sending` — see `campaigns.ts`'s state-machine doc. */
+export type CampaignStatus =
+  | "draft"
+  | "pending_approval"
+  | "approved"
+  | "sending"
+  | "sent"
+  | "failed"
+  | "changes_requested"
+  | "denied";
 
 const STATUS_LABEL: Record<CampaignStatus, string> = {
   draft: "Draft",
+  pending_approval: "Awaiting approval",
+  approved: "Approved — ready to send",
   sending: "Sending",
   sent: "Sent",
   failed: "Failed",
+  changes_requested: "Changes requested",
+  denied: "Denied",
 };
 
 const STATUS_TONE: Record<CampaignStatus, BadgeTone> = {
   draft: "neutral",
+  pending_approval: "warn",
+  approved: "success",
   sending: "warn",
   sent: "success",
   failed: "danger",
+  changes_requested: "danger",
+  denied: "danger",
 };
 
 export function campaignStatusLabel(status: string): string {
@@ -81,4 +100,32 @@ export function formatSenderDisplay(
 ): string {
   const trimmed = name?.trim();
   return trimmed ? `${trimmed} <${email}>` : email;
+}
+
+const AUDIENCE_SOURCE_LABEL: Record<string, string> = {
+  guests: "Guests",
+  donors: "Donors",
+  people: "People (roster)",
+};
+
+/** A short "who this targets" description for the approval review card —
+ *  the audience's SOURCE + its own filters, plain-language. Deliberately
+ *  doesn't resolve event/chapter ids to names (no extra round-trip); good
+ *  enough for a reviewer to sanity-check the shape of the audience, with the
+ *  live recipient count (from `previewAudience`) carrying the real number. */
+export function describeAudience(
+  source: string,
+  filters: {
+    eventId?: string | null;
+    chapterId?: string | null;
+    donorStatus?: string | null;
+    gaveWithinDays?: number | null;
+  },
+): string {
+  const parts = [AUDIENCE_SOURCE_LABEL[source] ?? source];
+  if (filters.eventId) parts.push("one event");
+  if (filters.chapterId) parts.push("one chapter");
+  if (filters.donorStatus) parts.push(`status: ${filters.donorStatus}`);
+  if (filters.gaveWithinDays != null) parts.push(`gave within ${filters.gaveWithinDays}d`);
+  return parts.join(" · ");
 }

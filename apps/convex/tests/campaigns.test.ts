@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { ConvexError } from "convex/values";
 import { api, internal } from "../_generated/api";
-import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
+import { newT, run, setupChapter, type ChapterSetup, type TestConvex } from "./setup.helpers";
 import type { Id } from "../_generated/dataModel";
 import { resolveAudienceRecipients } from "../lib/audienceResolve";
 
@@ -38,22 +38,112 @@ async function asSuperuser(t: ReturnType<typeof newT>): Promise<ChapterSetup> {
   return setupChapter(t, { email: SUPERUSER_EMAIL });
 }
 
+// ── Two-party approval helpers ───────────────────────────────────────────────
+// `send()` now only accepts `approved`/`failed` (see `campaigns.ts`'s
+// state-machine doc) — every pre-existing "create a draft, send it" test
+// below needs to actually clear approval first. These three helpers drive
+// that through the REAL mutations (not a direct `ctx.db.patch` to
+// "approved") so the snapshot-hash binding is exercised honestly.
+
+/** `resolveCampaignCallerPersonId` needs a roster profile for the caller's
+ *  own userId — `setupChapter` doesn't seed one (most tests never needed a
+ *  personId at all before this feature). Mirrors
+ *  `givingPower.test.ts#seedSelfPerson`. */
+async function seedSelfPerson(s: ChapterSetup, name = "Caller"): Promise<Id<"people">> {
+  return run(s.t, (ctx) =>
+    ctx.db.insert("people", {
+      chapterId: s.chapterId,
+      name,
+      userId: s.userId,
+      createdAt: Date.now(),
+    }),
+  );
+}
+
+/** A fresh user + person + an ad-hoc CENTRAL seat carrying `campaigns.approve`
+ *  — a distinct identity from `s`'s own, eligible as a reviewer. Returns an
+ *  authenticated client for them. */
+async function seedReviewer(
+  s: ChapterSetup,
+  name = "Reviewer",
+): Promise<{ personId: Id<"people">; as: ReturnType<TestConvex["withIdentity"]> }> {
+  const reviewerUserId = await run(s.t, (ctx) =>
+    ctx.db.insert("users", { email: `${name.toLowerCase().replace(/\s+/g, "")}@publicworship.life` }),
+  );
+  const reviewerPersonId = await run(s.t, (ctx) =>
+    ctx.db.insert("people", {
+      chapterId: s.chapterId,
+      name,
+      userId: reviewerUserId,
+      createdAt: Date.now(),
+    }),
+  );
+  const seatDefId = await run(s.t, (ctx) =>
+    ctx.db.insert("seatDefs", {
+      slug: `test_reviewer_${reviewerUserId}`,
+      title: "Test Reviewer",
+      chart: "central",
+      parentSlug: "root",
+      maxHolders: 1,
+      duties: [],
+      capabilities: ["campaigns.approve"],
+      sortOrder: 0,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }),
+  );
+  await run(s.t, (ctx) =>
+    ctx.db.insert("seatAssignments", {
+      seatDefId,
+      scope: "central",
+      personId: reviewerPersonId,
+      createdAt: Date.now(),
+    }),
+  );
+  const as = s.t.withIdentity({ subject: `${reviewerUserId}|session`, issuer: "test" });
+  return { personId: reviewerPersonId, as };
+}
+
+/** Drive a `draft` campaign all the way to `approved` via the real
+ *  `submitForApproval`/`approveCampaign` mutations — seeds the caller's own
+ *  roster profile + a distinct reviewer, submits, and approves. Requires
+ *  Resend already configured (`submitForApproval` validates it, same as
+ *  `send`). Returns the reviewer identity for tests that also want to deny /
+ *  request changes on the SAME reviewer. */
+async function approveCampaignViaFlow(
+  s: ChapterSetup,
+  campaignId: Id<"campaigns">,
+  opts: { purpose?: string } = {},
+): Promise<{ personId: Id<"people">; as: ReturnType<TestConvex["withIdentity"]> }> {
+  await seedSelfPerson(s);
+  const reviewer = await seedReviewer(s);
+  await s.as.mutation(api.campaigns.submitForApproval, {
+    campaignId,
+    purpose: opts.purpose ?? "Sending the update",
+    reviewerPersonId: reviewer.personId,
+  });
+  await reviewer.as.mutation(api.campaigns.approveCampaign, { campaignId });
+  return reviewer;
+}
+
 // ── Access ────────────────────────────────────────────────────────────────
 
 describe("myCampaignsAccess", () => {
-  test("a superuser can view", async () => {
+  test("a superuser can view and approve", async () => {
     const t = newT();
     const s = await asSuperuser(t);
     expect(await s.as.query(api.audiences.myCampaignsAccess, {})).toEqual({
       canView: true,
+      canApprove: true,
     });
   });
 
-  test("a non-privileged user cannot view (soft — no throw)", async () => {
+  test("a non-privileged user cannot view or approve (soft — no throw)", async () => {
     const t = newT();
     const s = await setupChapter(t);
     expect(await s.as.query(api.audiences.myCampaignsAccess, {})).toEqual({
       canView: false,
+      canApprove: false,
     });
   });
 });
@@ -565,6 +655,7 @@ describe("send pipeline", () => {
         return { ok: true, status: 200, text: async () => "{}" };
       }) as unknown as typeof fetch;
 
+      await approveCampaignViaFlow(s, campaignId);
       await s.as.mutation(api.campaigns.send, { campaignId });
       await t.finishAllScheduledFunctions(vi.runAllTimers);
 
@@ -677,6 +768,15 @@ describe("send pipeline", () => {
         audienceId,
         doc: heroDoc(),
       });
+      // `submitForApproval` ALSO requires Resend configured (it validates
+      // everything `send` does) — so approval has to happen WHILE it's
+      // connected, then Resend gets disconnected right before the send
+      // itself, to isolate this test's actual target: `send`'s OWN
+      // independent resend-ready re-check.
+      await configureResend(s);
+      await approveCampaignViaFlow(s, campaignId);
+      await s.as.mutation(api.integrationSettings.setResendSettings, { apiKey: null });
+
       await s.as.mutation(api.campaigns.send, { campaignId });
       const campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
       expect(campaign.status).toBe("failed");
@@ -701,6 +801,7 @@ describe("send pipeline", () => {
         audienceId,
         doc: heroDoc(),
       });
+      await approveCampaignViaFlow(s, campaignId);
       await s.as.mutation(api.campaigns.send, { campaignId });
       await t.finishAllScheduledFunctions(vi.runAllTimers);
       const campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
@@ -752,8 +853,13 @@ describe("send pipeline", () => {
         audienceId,
         doc: heroDoc(),
       });
-      // Simulate a prior failed attempt that got as far as materializing one
-      // (now-stale) row before failing.
+      // Approve first (stamps `approvedSnapshotHash` from the CURRENT
+      // content/audience — nothing changes after, so a retry's re-check
+      // still matches), THEN simulate a prior failed attempt that got as far
+      // as materializing one (now-stale) row before failing — only the
+      // `status`/`error`/stray-row parts of "a prior failed send" are being
+      // simulated here, not a lapsed approval.
+      await approveCampaignViaFlow(s, campaignId);
       await run(s.t, async (ctx) => {
         await ctx.db.patch(campaignId, { status: "failed", error: "boom" });
         await ctx.db.insert("campaignRecipients", {
@@ -814,6 +920,7 @@ describe("send pipeline", () => {
         audienceId,
         doc: heroDoc(),
       });
+      await approveCampaignViaFlow(s, campaignId);
 
       let requestCount = 0;
       let lastBatch: Array<{ to: string; headers: Record<string, string> }> = [];
@@ -865,6 +972,7 @@ describe("send pipeline", () => {
         audienceId,
         doc: heroDoc(),
       });
+      await approveCampaignViaFlow(s, campaignId);
 
       globalThis.fetch = (async () => ({
         ok: false,
@@ -1018,6 +1126,7 @@ describe("per-campaign sender", () => {
         fromName: "AJ",
         fromEmail: "aj@publicworship.life",
       });
+      await approveCampaignViaFlow(s, campaignId);
 
       let lastBatch: Array<{ from: string }> = [];
       globalThis.fetch = (async (_url: string, init?: { body?: string }) => {
@@ -1145,6 +1254,7 @@ describe("audience cap surfaced", () => {
         audienceId,
         doc: heroDoc(),
       });
+      await approveCampaignViaFlow(s, campaignId);
       globalThis.fetch = (async () => ({
         ok: true,
         status: 200,
@@ -1371,6 +1481,780 @@ describe("sendTest", () => {
     await expect(
       s.as.action(api.campaigns.sendTest, { campaignId, to: "x@example.com" }),
     ).rejects.toBeInstanceOf(ConvexError);
+  });
+});
+
+// ── Two-party approval (founder requirement, 2026-07-24) ─────────────────────
+
+async function errorCode(p: Promise<unknown>): Promise<string> {
+  try {
+    await p;
+  } catch (err) {
+    return (err as ConvexError<{ code?: string }>).data?.code ?? "ConvexError";
+  }
+  throw new Error("expected a rejection, but the call resolved");
+}
+
+/** Draft campaign + audience, ready to submit. */
+async function seedDraftCampaign(s: ChapterSetup, name = "N"): Promise<Id<"campaigns">> {
+  await configureResend(s);
+  const audienceId = await seedAudience(s, "people");
+  return s.as.mutation(api.campaigns.createCampaign, {
+    scope: "central",
+    name,
+    subject: "Hi",
+    audienceId,
+    doc: heroDoc(),
+  });
+}
+
+describe("two-party approval — happy path", () => {
+  test("draft → submit (purpose+reviewer required) → approve (by a different person) → send", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await asSuperuser(t);
+      const campaignId = await seedDraftCampaign(s);
+      // A real "people"-source audience member with an email. `seedSelfPerson`/
+      // `seedReviewer` below deliberately have NO email (elsewhere in this
+      // suite that keeps `sendApprovalTestPair`'s submit-time copies a no-op)
+      // — without a real recipient, the audience resolves to ZERO matches and
+      // the send finalizes "failed" (zero-recipients is a RECORDED failure,
+      // not a thrown error — see `campaigns.ts#materializeRecipients`)
+      // instead of "sent", even though approval itself succeeded cleanly.
+      await run(s.t, (ctx) =>
+        ctx.db.insert("people", {
+          chapterId: s.chapterId,
+          name: "Reader Rae",
+          email: "reader@example.com",
+          status: "active",
+          createdAt: Date.now(),
+        }),
+      );
+      await seedSelfPerson(s);
+      const reviewer = await seedReviewer(s);
+
+      await s.as.mutation(api.campaigns.submitForApproval, {
+        campaignId,
+        purpose: "Announce the fall retreat",
+        reviewerPersonId: reviewer.personId,
+      });
+      let campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
+      expect(campaign.status).toBe("pending_approval");
+      expect(campaign.purpose).toBe("Announce the fall retreat");
+      expect(campaign.reviewerPersonId).toBe(reviewer.personId);
+
+      const approvalAsReviewer = await reviewer.as.query(api.campaigns.getCampaignApproval, {
+        campaignId,
+      });
+      expect(approvalAsReviewer.canDecide).toBe(true);
+      expect(approvalAsReviewer.isSubmitter).toBe(false);
+
+      await reviewer.as.mutation(api.campaigns.approveCampaign, { campaignId });
+      campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
+      expect(campaign.status).toBe("approved");
+      expect(campaign.approvedByPersonId).toBe(reviewer.personId);
+      expect(campaign.approvedRecipientCount).toBeDefined();
+
+      globalThis.fetch = (async () => ({
+        ok: true,
+        status: 200,
+        text: async () => "{}",
+      })) as unknown as typeof fetch;
+      await s.as.mutation(api.campaigns.send, { campaignId });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
+      expect(campaign.status).toBe("sent");
+
+      const log = await run(s.t, (ctx) =>
+        ctx.db
+          .query("campaignApprovalLog")
+          .withIndex("by_campaign", (q) => q.eq("campaignId", campaignId))
+          .collect(),
+      );
+      expect(log.map((l) => l.action)).toEqual(["submitted", "approved"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("submitForApproval requires a non-empty purpose", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const campaignId = await seedDraftCampaign(s);
+    await seedSelfPerson(s);
+    const reviewer = await seedReviewer(s);
+    expect(
+      await errorCode(
+        s.as.mutation(api.campaigns.submitForApproval, {
+          campaignId,
+          purpose: "   ",
+          reviewerPersonId: reviewer.personId,
+        }),
+      ),
+    ).toBe("EMPTY");
+  });
+
+  test("draft → sending is no longer possible — send() throws NOT_APPROVED on a plain draft", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const campaignId = await seedDraftCampaign(s);
+    expect(await errorCode(s.as.mutation(api.campaigns.send, { campaignId }))).toBe(
+      "NOT_APPROVED",
+    );
+  });
+});
+
+describe("two-party approval — reviewer eligibility & separation of duties", () => {
+  test("SOD_VIOLATION when the submitter picks THEMSELVES as reviewer — even the ED", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const campaignId = await seedDraftCampaign(s);
+    // The caller (superuser) IS itself an eligible reviewer once seated as
+    // ED — this is the "even the Executive Director" case the founder named
+    // verbatim: holding approval power doesn't let you approve your own send.
+    const edPersonId = await seedSelfPerson(s, "Executive Director (self)");
+    const seatDefId = await run(s.t, (ctx) =>
+      ctx.db.insert("seatDefs", {
+        slug: "test_ed_self",
+        title: "Test ED",
+        chart: "central",
+        parentSlug: "root",
+        maxHolders: 1,
+        duties: [],
+        capabilities: ["campaigns.approve"],
+        sortOrder: 0,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("seatAssignments", {
+        seatDefId,
+        scope: "central",
+        personId: edPersonId,
+        createdAt: Date.now(),
+      }),
+    );
+
+    expect(
+      await errorCode(
+        s.as.mutation(api.campaigns.submitForApproval, {
+          campaignId,
+          purpose: "Self-send attempt",
+          reviewerPersonId: edPersonId,
+        }),
+      ),
+    ).toBe("SOD_VIOLATION");
+  });
+
+  test("SOD_VIOLATION when a single user owns TWO people rows, both holding campaigns.approve, and picks the SECOND as reviewer", async () => {
+    // Regression for a bypass found in adversarial review (2026-07-24):
+    // `people.userId` has no uniqueness — one human can own several roster
+    // rows. `resolveCampaignCallerPersonId` auto-picks ONE of them as
+    // submitter; a same-id-only SOD check would then let the caller pass a
+    // DIFFERENT one of their OWN rows as reviewer and self-approve. The real
+    // guard rejects `reviewerPersonId` outright if it's ANY row the caller
+    // controls, not just the one that got auto-picked.
+    const t = newT();
+    const s = await asSuperuser(t);
+    const campaignId = await seedDraftCampaign(s);
+
+    // Row A — the one `resolveCampaignCallerPersonId` will auto-pick as
+    // submitter (first capability-holding row, insertion order).
+    const rowAId = await seedSelfPerson(s, "Row A");
+    const seatDefA = await run(s.t, (ctx) =>
+      ctx.db.insert("seatDefs", {
+        slug: "test_dual_a",
+        title: "Test Dual A",
+        chart: "central",
+        parentSlug: "root",
+        maxHolders: 1,
+        duties: [],
+        capabilities: ["campaigns.approve"],
+        sortOrder: 0,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("seatAssignments", {
+        seatDefId: seatDefA,
+        scope: "central",
+        personId: rowAId,
+        createdAt: Date.now(),
+      }),
+    );
+
+    // Row B — a SECOND people row for the SAME s.userId, also holding
+    // campaigns.approve.
+    const rowBId = await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Row B",
+        userId: s.userId,
+        createdAt: Date.now(),
+      }),
+    );
+    const seatDefB = await run(s.t, (ctx) =>
+      ctx.db.insert("seatDefs", {
+        slug: "test_dual_b",
+        title: "Test Dual B",
+        chart: "central",
+        parentSlug: "root",
+        maxHolders: 1,
+        duties: [],
+        capabilities: ["campaigns.approve"],
+        sortOrder: 0,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("seatAssignments", {
+        seatDefId: seatDefB,
+        scope: "central",
+        personId: rowBId,
+        createdAt: Date.now(),
+      }),
+    );
+
+    expect(
+      await errorCode(
+        s.as.mutation(api.campaigns.submitForApproval, {
+          campaignId,
+          purpose: "Self-approval laundered through a second row",
+          reviewerPersonId: rowBId,
+        }),
+      ),
+    ).toBe("SOD_VIOLATION");
+  });
+
+  test("SOD_VIOLATION at DECISION time when the submitter's OWN second people row ends up as the recorded reviewer", async () => {
+    // Defense in depth: exercises `assertCallerIsChosenReviewer`'s own
+    // independent check, bypassing `submitForApproval`'s guard entirely via
+    // a direct db write (a row linked/created AFTER submission, or any other
+    // path that could set `reviewerPersonId` outside the normal mutation).
+    const t = newT();
+    const s = await asSuperuser(t);
+    const campaignId = await seedDraftCampaign(s);
+    const submitterId = await seedSelfPerson(s, "Submitter Row");
+    const legitReviewer = await seedReviewer(s);
+    await s.as.mutation(api.campaigns.submitForApproval, {
+      campaignId,
+      purpose: "P",
+      reviewerPersonId: legitReviewer.personId,
+    });
+
+    // A SECOND people row for the SAME s.userId (the submitter's own user),
+    // holding campaigns.approve — then the campaign's `reviewerPersonId` is
+    // force-set to it directly, bypassing `submitForApproval`'s own guard
+    // entirely, to isolate the decision-time defense in depth.
+    const secondRowId = await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Submitter's Second Row",
+        userId: s.userId,
+        createdAt: Date.now(),
+      }),
+    );
+    await run(s.t, (ctx) => ctx.db.patch(campaignId, { reviewerPersonId: secondRowId }));
+
+    expect(
+      await errorCode(s.as.mutation(api.campaigns.approveCampaign, { campaignId })),
+    ).toBe("SOD_VIOLATION");
+  });
+
+  test("INVALID_REVIEWER — a compose-only holder can't be picked as reviewer", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const campaignId = await seedDraftCampaign(s);
+    await seedSelfPerson(s);
+    const composeOnlyUserId = await run(s.t, (ctx) =>
+      ctx.db.insert("users", { email: "composer@publicworship.life" }),
+    );
+    const composeOnlyPersonId = await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Compose Only",
+        userId: composeOnlyUserId,
+        createdAt: Date.now(),
+      }),
+    );
+    const seatDefId = await run(s.t, (ctx) =>
+      ctx.db.insert("seatDefs", {
+        slug: "test_compose_only",
+        title: "Compose Only",
+        chart: "central",
+        parentSlug: "root",
+        maxHolders: 1,
+        duties: [],
+        capabilities: ["campaigns.compose"],
+        sortOrder: 0,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("seatAssignments", {
+        seatDefId,
+        scope: "central",
+        personId: composeOnlyPersonId,
+        createdAt: Date.now(),
+      }),
+    );
+
+    expect(
+      await errorCode(
+        s.as.mutation(api.campaigns.submitForApproval, {
+          campaignId,
+          purpose: "Needs an approver",
+          reviewerPersonId: composeOnlyPersonId,
+        }),
+      ),
+    ).toBe("INVALID_REVIEWER");
+  });
+
+  test("NOT_CHOSEN_REVIEWER — a DIFFERENT approval-power holder can't decide on someone else's pick", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const campaignId = await seedDraftCampaign(s);
+    await seedSelfPerson(s);
+    const chosenReviewer = await seedReviewer(s, "Chosen Reviewer");
+    const otherReviewer = await seedReviewer(s, "Other Reviewer");
+
+    await s.as.mutation(api.campaigns.submitForApproval, {
+      campaignId,
+      purpose: "P",
+      reviewerPersonId: chosenReviewer.personId,
+    });
+
+    expect(
+      await errorCode(
+        otherReviewer.as.mutation(api.campaigns.approveCampaign, { campaignId }),
+      ),
+    ).toBe("NOT_CHOSEN_REVIEWER");
+  });
+});
+
+describe("two-party approval — content drift", () => {
+  test("editing the audience's filters while pending → approve throws CONTENT_DRIFT", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const audienceId = await seedAudience(s, "donors");
+    await configureResend(s);
+    const campaignId = await s.as.mutation(api.campaigns.createCampaign, {
+      scope: "central",
+      name: "N",
+      subject: "Hi",
+      audienceId,
+      doc: heroDoc(),
+    });
+    await seedSelfPerson(s);
+    const reviewer = await seedReviewer(s);
+    await s.as.mutation(api.campaigns.submitForApproval, {
+      campaignId,
+      purpose: "P",
+      reviewerPersonId: reviewer.personId,
+    });
+
+    // `audiences.updateAudience` is NOT status-locked — this is the gap the
+    // hash exists to catch.
+    await s.as.mutation(api.audiences.updateAudience, {
+      audienceId,
+      filters: { donorStatus: "active" },
+    });
+
+    expect(
+      await errorCode(reviewer.as.mutation(api.campaigns.approveCampaign, { campaignId })),
+    ).toBe("CONTENT_DRIFT");
+  });
+
+  test("approved, then the audience is edited afterward → send() RECORDS a failure (doesn't throw)", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const audienceId = await seedAudience(s, "donors");
+    await configureResend(s);
+    const campaignId = await s.as.mutation(api.campaigns.createCampaign, {
+      scope: "central",
+      name: "N",
+      subject: "Hi",
+      audienceId,
+      doc: heroDoc(),
+    });
+    await seedSelfPerson(s);
+    const reviewer = await seedReviewer(s);
+    await s.as.mutation(api.campaigns.submitForApproval, {
+      campaignId,
+      purpose: "P",
+      reviewerPersonId: reviewer.personId,
+    });
+    await reviewer.as.mutation(api.campaigns.approveCampaign, { campaignId });
+
+    await s.as.mutation(api.audiences.updateAudience, {
+      audienceId,
+      filters: { donorStatus: "lapsed" },
+    });
+
+    await s.as.mutation(api.campaigns.send, { campaignId });
+    const campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
+    expect(campaign.status).toBe("failed");
+    expect(campaign.error).toMatch(/changed since it was approved/);
+  });
+});
+
+describe("two-party approval — changes requested & deny", () => {
+  test("requestCampaignChanges requires a note, re-enables editing, and resubmitting (a different reviewer) works", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const campaignId = await seedDraftCampaign(s);
+    await seedSelfPerson(s);
+    const reviewer1 = await seedReviewer(s, "Reviewer One");
+    await s.as.mutation(api.campaigns.submitForApproval, {
+      campaignId,
+      purpose: "P",
+      reviewerPersonId: reviewer1.personId,
+    });
+
+    expect(
+      await errorCode(
+        reviewer1.as.mutation(api.campaigns.requestCampaignChanges, {
+          campaignId,
+          note: "",
+        }),
+      ),
+    ).toBe("EMPTY");
+
+    await reviewer1.as.mutation(api.campaigns.requestCampaignChanges, {
+      campaignId,
+      note: "Fix the subject line",
+    });
+    let campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
+    expect(campaign.status).toBe("changes_requested");
+    expect(campaign.reviewNote).toBe("Fix the subject line");
+
+    // Editing re-enabled.
+    await s.as.mutation(api.campaigns.updateCampaignMeta, { campaignId, subject: "Fixed!" });
+
+    // Resubmit with a DIFFERENT reviewer — the whole cycle restarts.
+    const reviewer2 = await seedReviewer(s, "Reviewer Two");
+    await s.as.mutation(api.campaigns.submitForApproval, {
+      campaignId,
+      purpose: "P again",
+      reviewerPersonId: reviewer2.personId,
+    });
+    campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
+    expect(campaign.status).toBe("pending_approval");
+    expect(campaign.reviewerPersonId).toBe(reviewer2.personId);
+
+    await reviewer2.as.mutation(api.campaigns.approveCampaign, { campaignId });
+    campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
+    expect(campaign.status).toBe("approved");
+  });
+
+  test("denyCampaign requires a note and is terminal; revertToDraft restores editability", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const campaignId = await seedDraftCampaign(s);
+    await seedSelfPerson(s);
+    const reviewer = await seedReviewer(s);
+    await s.as.mutation(api.campaigns.submitForApproval, {
+      campaignId,
+      purpose: "P",
+      reviewerPersonId: reviewer.personId,
+    });
+
+    expect(
+      await errorCode(
+        reviewer.as.mutation(api.campaigns.denyCampaign, { campaignId, note: "" }),
+      ),
+    ).toBe("EMPTY");
+
+    await reviewer.as.mutation(api.campaigns.denyCampaign, {
+      campaignId,
+      note: "Wrong audience entirely",
+    });
+    let campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
+    expect(campaign.status).toBe("denied");
+    expect(campaign.reviewNote).toBe("Wrong audience entirely");
+
+    // Terminal: not editable, not submittable, not sendable.
+    await expect(
+      s.as.mutation(api.campaigns.updateCampaignMeta, { campaignId, name: "x" }),
+    ).rejects.toBeInstanceOf(ConvexError);
+    expect(await errorCode(s.as.mutation(api.campaigns.send, { campaignId }))).toBe(
+      "NOT_APPROVED",
+    );
+
+    await s.as.mutation(api.campaigns.revertToDraft, { campaignId });
+    campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
+    expect(campaign.status).toBe("draft");
+    expect(campaign.reviewNote).toBeUndefined();
+    expect(campaign.reviewerPersonId).toBeUndefined();
+    // Editable again.
+    await s.as.mutation(api.campaigns.updateCampaignMeta, { campaignId, name: "Reused" });
+  });
+
+  test("cancelApprovalRequest withdraws back to draft without logging a decision", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const campaignId = await seedDraftCampaign(s);
+    await seedSelfPerson(s);
+    const reviewer = await seedReviewer(s);
+    await s.as.mutation(api.campaigns.submitForApproval, {
+      campaignId,
+      purpose: "P",
+      reviewerPersonId: reviewer.personId,
+    });
+    await s.as.mutation(api.campaigns.cancelApprovalRequest, { campaignId });
+    const campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
+    expect(campaign.status).toBe("draft");
+    expect(campaign.reviewerPersonId).toBeUndefined();
+
+    const log = await run(s.t, (ctx) =>
+      ctx.db
+        .query("campaignApprovalLog")
+        .withIndex("by_campaign", (q) => q.eq("campaignId", campaignId))
+        .collect(),
+    );
+    expect(log.map((l) => l.action)).toEqual(["submitted"]); // no "withdrawn" entry
+  });
+});
+
+describe("two-party approval — sendTest is ungated by status", () => {
+  test("sendTest succeeds even while a campaign is pending_approval", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const campaignId = await seedDraftCampaign(s);
+    await seedSelfPerson(s);
+    const reviewer = await seedReviewer(s);
+    await s.as.mutation(api.campaigns.submitForApproval, {
+      campaignId,
+      purpose: "P",
+      reviewerPersonId: reviewer.personId,
+    });
+    const campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
+    expect(campaign.status).toBe("pending_approval");
+
+    globalThis.fetch = (async () => ({
+      ok: true,
+      status: 200,
+      text: async () => "{}",
+    })) as unknown as typeof fetch;
+    await expect(
+      s.as.action(api.campaigns.sendTest, { campaignId, to: "preview@example.com" }),
+    ).resolves.toBeNull();
+  });
+});
+
+describe("two-party approval — listPendingApprovals soft-gates on approval power", () => {
+  // Regression for a crash found in adversarial review (2026-07-24):
+  // `listPendingApprovals` used to THROW `FORBIDDEN` for a caller without
+  // approval power — unhandled by the mobile strip that calls it
+  // unconditionally, crashing the whole Campaigns tab for a compose-only
+  // caller (this PR's own new, lower access tier). It must soft-gate
+  // instead, mirroring `myCampaignsAccess`'s non-throwing shape.
+  test("a compose-only caller gets [] back, not a thrown FORBIDDEN", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "composer@publicworship.life" });
+    const composerId = await seedSelfPerson(s, "Composer");
+    const seatDefId = await run(s.t, (ctx) =>
+      ctx.db.insert("seatDefs", {
+        slug: "test_compose_only_lpa",
+        title: "Compose Only",
+        chart: "central",
+        parentSlug: "root",
+        maxHolders: 1,
+        duties: [],
+        capabilities: ["campaigns.compose"],
+        sortOrder: 0,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("seatAssignments", {
+        seatDefId,
+        scope: "central",
+        personId: composerId,
+        createdAt: Date.now(),
+      }),
+    );
+
+    await expect(s.as.query(api.campaigns.listPendingApprovals, {})).resolves.toEqual([]);
+  });
+
+  test("a caller with no campaigns access at all also gets [] back (not FORBIDDEN)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await expect(s.as.query(api.campaigns.listPendingApprovals, {})).resolves.toEqual([]);
+  });
+
+  test("a chosen reviewer sees their own pending campaign, and only that one", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const campaignId = await seedDraftCampaign(s, "Awaiting me");
+    await seedSelfPerson(s);
+    const reviewer = await seedReviewer(s);
+    await s.as.mutation(api.campaigns.submitForApproval, {
+      campaignId,
+      purpose: "Reach out",
+      reviewerPersonId: reviewer.personId,
+    });
+
+    const mine = await reviewer.as.query(api.campaigns.listPendingApprovals, {});
+    expect(mine.map((c) => c._id)).toEqual([campaignId]);
+
+    // The submitter (a different identity) sees none pending for THEM.
+    const submitterView = await s.as.query(api.campaigns.listPendingApprovals, {});
+    expect(submitterView).toEqual([]);
+  });
+});
+
+describe("two-party approval — legacy rows", () => {
+  test("a legacy campaign row with none of the new fields is still readable", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const audienceId = await seedAudience(s);
+    const campaignId = await run(s.t, (ctx) =>
+      ctx.db.insert("campaigns", {
+        scope: "central",
+        name: "Legacy",
+        subject: "Old newsletter",
+        audienceId,
+        doc: heroDoc(),
+        status: "sent",
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
+    expect(campaign.status).toBe("sent");
+    expect(campaign.purpose).toBeUndefined();
+    expect(campaign.reviewerPersonId).toBeUndefined();
+  });
+});
+
+describe("two-party approval — notification emails", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+  });
+
+  test("submitting sends a [Test] copy to the submitter and a [For Approval] copy (with a bottom review link) to the reviewer", async () => {
+    vi.useFakeTimers();
+    // `appUrl()` (`lib/siteUrl.ts`) needs APP_URL to render a real review
+    // link — unset in the vitest env by default (no other test in this repo
+    // configures it either; grepped for a precedent and found none — the
+    // budget-approval email tests deliberately sidestep this by asserting on
+    // the resolved CONTEXT data instead of the rendered HTML, but this test's
+    // whole point IS the rendered link, so it sets the env itself here).
+    const realAppUrl = process.env.APP_URL;
+    process.env.APP_URL = "https://app.publicworship.life";
+    try {
+      const t = newT();
+      const s = await asSuperuser(t);
+      const campaignId = await seedDraftCampaign(s, "Fall Newsletter");
+
+      // The caller's OWN roster profile, WITH an email —
+      // `resolveCampaignCallerPersonId` picks this as the submitter.
+      await run(s.t, (ctx) =>
+        ctx.db.insert("people", {
+          chapterId: s.chapterId,
+          name: "Sender Sam",
+          email: "sam@publicworship.life",
+          userId: s.userId,
+          createdAt: Date.now(),
+        }),
+      );
+      const reviewer = await seedReviewer(s, "Reviewer Rae");
+      await run(s.t, (ctx) =>
+        ctx.db.patch(reviewer.personId, { email: "rae@publicworship.life" }),
+      );
+
+      const sent: { to: string; subject: string; html: string }[] = [];
+      globalThis.fetch = (async (_url: string, init?: { body?: string }) => {
+        const body = init?.body ? JSON.parse(init.body) : {};
+        sent.push({ to: body.to, subject: body.subject, html: body.html });
+        return { ok: true, status: 200, text: async () => "{}" };
+      }) as unknown as typeof fetch;
+
+      await s.as.mutation(api.campaigns.submitForApproval, {
+        campaignId,
+        purpose: "Announce it",
+        reviewerPersonId: reviewer.personId,
+      });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      expect(sent).toHaveLength(2);
+      const testCopy = sent.find((item) => item.to === "sam@publicworship.life");
+      const reviewCopy = sent.find((item) => item.to === "rae@publicworship.life");
+      expect(testCopy?.subject).toBe("[Test] Hi");
+      expect(reviewCopy?.subject).toBe("[For Approval] Hi");
+      // The proof-of-read block is appended AFTER the real campaign content
+      // on the reviewer's copy only — and it must land INSIDE the document
+      // (before </body>), never concatenated after the closing </html> (that
+      // would be invalid HTML, content outside the document root entirely).
+      const reviewHtml = reviewCopy?.html ?? "";
+      expect(reviewHtml).toContain("Review this campaign");
+      // A real, clickable link — not just the label text — since APP_URL is
+      // configured in this test.
+      expect(reviewHtml).toMatch(/<a href="https:\/\/app\.publicworship\.life\/campaign\/[^"]+"[^>]*>Review this campaign/);
+      // The document's root tag is still the very last thing in the string —
+      // nothing was appended past it.
+      expect(reviewHtml.trimEnd().endsWith("</html>")).toBe(true);
+      // The review block appears BEFORE the closing body/html tags, i.e.
+      // genuinely inside the body, not after it.
+      const reviewIndex = reviewHtml.indexOf("Review this campaign");
+      const bodyCloseIndex = reviewHtml.indexOf("</body>");
+      expect(reviewIndex).toBeGreaterThan(-1);
+      expect(bodyCloseIndex).toBeGreaterThan(-1);
+      expect(reviewIndex).toBeLessThan(bodyCloseIndex);
+      expect(testCopy?.html).not.toContain("Review this campaign");
+    } finally {
+      vi.useRealTimers();
+      if (realAppUrl === undefined) delete process.env.APP_URL;
+      else process.env.APP_URL = realAppUrl;
+    }
+  });
+
+  test("approveCampaign/requestCampaignChanges/denyCampaign each email the submitter back", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await asSuperuser(t);
+      await run(s.t, (ctx) =>
+        ctx.db.insert("people", {
+          chapterId: s.chapterId,
+          name: "Sender Sam",
+          email: "sam@publicworship.life",
+          userId: s.userId,
+          createdAt: Date.now(),
+        }),
+      );
+      const reviewer = await seedReviewer(s);
+
+      const decisionSubjects: string[] = [];
+      globalThis.fetch = (async (_url: string, init?: { body?: string }) => {
+        const body = init?.body ? JSON.parse(init.body) : {};
+        if (body.to === "sam@publicworship.life") decisionSubjects.push(body.subject as string);
+        return { ok: true, status: 200, text: async () => "{}" };
+      }) as unknown as typeof fetch;
+
+      const campaignId = await seedDraftCampaign(s, "Approve me");
+      await s.as.mutation(api.campaigns.submitForApproval, {
+        campaignId,
+        purpose: "P",
+        reviewerPersonId: reviewer.personId,
+      });
+      await reviewer.as.mutation(api.campaigns.approveCampaign, { campaignId });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      expect(decisionSubjects.some((s2) => s2.includes("Campaign approved"))).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

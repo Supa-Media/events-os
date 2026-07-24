@@ -17,7 +17,7 @@ export default function RepliesScreen() {
           <EmptyState
             icon="lock"
             title="Campaigns is available to org leadership"
-            message="Ask a central Executive Director or Financial Manager to grant you access."
+            message="Ask a central Executive Director, Financial Manager, or Marketing Director to grant you campaign compose or approve power."
           />
         </Narrow>
       </Screen>

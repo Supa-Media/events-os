@@ -20,7 +20,7 @@ import { useQuery, useMutation } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { Card, Button, Badge, TextField, Select, EmptyState, ToastView } from "../ui";
+import { Card, Button, Badge, SectionHeader, TextField, Select, EmptyState, ToastView } from "../ui";
 import { colors, spacing } from "../../lib/theme";
 import { useActionRunner } from "../../lib/useActionToast";
 import { formatDateTime } from "../../lib/format";
@@ -88,6 +88,8 @@ export function CampaignsListView() {
     <>
       <ToastView toast={toast} onDismiss={dismiss} />
 
+      <PendingApprovalsStrip />
+
       {audiences.length === 0 ? (
         <Card style={styles.creator}>
           <Text className="text-sm text-muted">
@@ -151,7 +153,7 @@ export function CampaignsListView() {
                 ) : null}
                 <Text style={styles.meta}>
                   {audienceName(c.audienceId) ?? "Audience deleted"}
-                  {c.status !== "draft"
+                  {c.status === "sending" || c.status === "sent" || c.status === "failed"
                     ? ` · ${pluralCount(sentCount, "sent")} / ${pluralCount(recipientCount, "recipient")}`
                     : ""}
                   {replyCount > 0 ? ` · ${pluralReply(replyCount)}` : ""}
@@ -163,6 +165,52 @@ export function CampaignsListView() {
         </View>
       )}
     </>
+  );
+}
+
+/**
+ * "Awaiting your approval (N)" strip — mirrors
+ * `orgchart/ProposalsInbox.tsx`'s shape (visible only when there's something
+ * to act on). `campaigns.listPendingApprovals` already returns exactly
+ * "every pending_approval campaign where the caller is the CHOSEN reviewer"
+ * — no further filtering needed here.
+ *
+ * TWO INDEPENDENT guards keep this safe for a compose-only caller (this PR's
+ * own lower access tier) — found missing in adversarial review, 2026-07-24:
+ * `listPendingApprovals` itself now SOFT-gates (returns `[]` rather than
+ * throwing `FORBIDDEN` for a caller without approval power — mirrors
+ * `myCampaignsAccess`'s non-throwing shape), AND this component skips firing
+ * the query at all unless `myCampaignsAccess.canApprove` is already known
+ * true — no reason to round-trip a query we know will come back empty, and
+ * belt-and-suspenders against the backend gate ever regressing.
+ */
+function PendingApprovalsStrip() {
+  const router = useRouter();
+  const access = useQuery(api.audiences.myCampaignsAccess, {});
+  const pending = useQuery(
+    api.campaigns.listPendingApprovals,
+    access?.canApprove ? {} : "skip",
+  );
+  if (!pending || pending.length === 0) return null;
+
+  return (
+    <View style={{ marginBottom: spacing.md }}>
+      <SectionHeader title="Awaiting your approval" count={pending.length} />
+      <View style={{ gap: spacing.sm }}>
+        {pending.map((c) => (
+          <Card key={c._id} onPress={() => router.push(`/campaign/${c._id}` as never)}>
+            <Text style={styles.name} numberOfLines={1}>
+              {c.name}
+            </Text>
+            {c.purpose ? (
+              <Text style={styles.desc} numberOfLines={2}>
+                {c.purpose}
+              </Text>
+            ) : null}
+          </Card>
+        ))}
+      </View>
+    </View>
   );
 }
 
