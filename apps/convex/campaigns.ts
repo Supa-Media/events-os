@@ -430,16 +430,20 @@ function assertCampaignTransition(
  * Deterministic hash over everything an approval decision BINDS: the
  * campaign's own content/sender fields, and its audience's TARGETING
  * DEFINITION (source/scope/filters, AND — person-centric audiences Phase 3
- * — its hand-picked includePersonIds/excludePersonIds) — deliberately NOT
- * the audience's live resolved MEMBERSHIP, which naturally drifts as
- * people/donors/guests come and go (a "matches everyone in Springfield"
- * audience gaining a new match overnight isn't content drift; someone
- * silently changing WHAT it targets is). A hand-pick list IS part of the
- * targeting DEFINITION, not live membership — `audiences.updateAudience`
- * can edit `includePersonIds`/`excludePersonIds` exactly like `filters`, so
- * omitting them here would let a hand-pick edit slip past both the approve-
- * time and send-time checks below (a reviewer approves audience X, the
- * campaign sends to X′). Recomputed and compared at three points: stored at
+ * — its hand-picked includePersonIds/excludePersonIds, AND its property-level
+ * excludeFilters) — deliberately NOT the audience's live resolved
+ * MEMBERSHIP, which naturally drifts as people/donors/guests come and go (a
+ * "matches everyone in Springfield" audience gaining a new match overnight
+ * isn't content drift; someone silently changing WHAT it targets is). A
+ * hand-pick list IS part of the targeting DEFINITION, not live membership —
+ * `audiences.updateAudience` can edit `includePersonIds`/`excludePersonIds`/
+ * `excludeFilters` exactly like `filters`, so omitting ANY of them here
+ * would let that edit slip past both the approve-time and send-time checks
+ * below (a reviewer approves audience X, the campaign sends to X′) — this
+ * is exactly the #399×#407 cross-feature hole class: a NEW targeting
+ * dimension added after two-party approval shipped, that must be bound into
+ * the hash the moment it exists or it's a silent approval-bypass. Recomputed
+ * and compared at three points: stored at
  * submit time (`approvedSnapshotHash`), recomputed and checked at approve
  * time (`approveCampaign`), and recomputed and checked again at send time
  * (`send`) — the last check catches an audience-definition edit made AFTER
@@ -475,6 +479,7 @@ async function computeCampaignSnapshotHash(
     audienceSource: audience?.source ?? null,
     audienceScope: audience?.scope ?? null,
     audienceFilters: audience?.filters ?? null,
+    audienceExcludeFilters: audience?.excludeFilters ?? null,
     audienceIncludePersonIds: normalizePersonIdList(audience?.includePersonIds),
     audienceExcludePersonIds: normalizePersonIdList(audience?.excludePersonIds),
   };
