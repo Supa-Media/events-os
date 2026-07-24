@@ -160,6 +160,7 @@ import type * as migrations_0035_backfill_receipt_documents from "../migrations/
 import type * as migrations_0036_add_campaign_power_defaults from "../migrations/0036_add_campaign_power_defaults.js";
 import type * as migrations_0037_link_rsvp_people from "../migrations/0037_link_rsvp_people.js";
 import type * as migrations_0038_backfill_contact_only_people from "../migrations/0038_backfill_contact_only_people.js";
+import type * as migrations_0039_backfill_person_emails from "../migrations/0039_backfill_person_emails.js";
 import type * as migrations_index from "../migrations/index.js";
 import type * as modules from "../modules.js";
 import type * as moneyViews from "../moneyViews.js";
@@ -402,6 +403,7 @@ declare const fullApi: ApiFromModules<{
   "migrations/0036_add_campaign_power_defaults": typeof migrations_0036_add_campaign_power_defaults;
   "migrations/0037_link_rsvp_people": typeof migrations_0037_link_rsvp_people;
   "migrations/0038_backfill_contact_only_people": typeof migrations_0038_backfill_contact_only_people;
+  "migrations/0039_backfill_person_emails": typeof migrations_0039_backfill_person_emails;
   "migrations/index": typeof migrations_index;
   modules: typeof modules;
   moneyViews: typeof moneyViews;

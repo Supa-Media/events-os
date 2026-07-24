@@ -50,6 +50,7 @@ import { mergeDuplicateGbGuests } from "./0034_merge_duplicate_gb_guests";
 import { backfillReceiptDocuments } from "./0035_backfill_receipt_documents";
 import { addCampaignPowerDefaults } from "./0036_add_campaign_power_defaults";
 import { backfillContactOnlyPeople } from "./0038_backfill_contact_only_people";
+import { backfillPersonEmails } from "./0039_backfill_person_emails";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -161,4 +162,12 @@ export const MIGRATIONS: Migration[] = [
   // Phase 1 item 2/3) is `migrations/0037_link_rsvp_people.ts` — deliberately
   // NOT in this registry (it needs a human dry-run first; see its own doc).
   backfillContactOnlyPeople,
+  // Person-centric audiences Phase 2 — populate `personEmails` from every
+  // pre-existing signal (`people.email`/`pwEmail`, linked donors' emails,
+  // linked rsvps' emails), deduped by (person, email) keeping the
+  // highest-trust source. New signals get a row for free at write time via
+  // `lib/personEmails.ts#recordPersonEmail`; this is the one-time catch-up
+  // for what already exists. Idempotent (already-present pairs skipped). See
+  // 0039.
+  backfillPersonEmails,
 ];

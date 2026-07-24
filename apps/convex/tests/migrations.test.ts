@@ -320,6 +320,7 @@ const REGISTRY_NAMES = [
   "0035_backfill_receipt_documents",
   "0036_add_campaign_power_defaults",
   "0038_backfill_contact_only_people",
+  "0039_backfill_person_emails",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",
