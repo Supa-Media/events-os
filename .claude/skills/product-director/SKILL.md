@@ -165,6 +165,30 @@ Before finishing a run of this skill, you MUST:
 
 ## Learnings Log (newest first)
 
+### 2026-07-24 — Run 4 (receipt archive + duplicate flow + txn search)
+- Founder feedback run: 3 recon lanes (duplicate-flow trace, search/linking
+  trace, meta survey) → one sonnet implementation agent with recon-anchored
+  brief → first-try-green (3120 tests). The duplicate-warning bug had a
+  crisp root cause recon nailed before implementation: computeSoftDuplicates
+  grouped amount+date collisions but only excluded `duplicateDismissed`
+  rows — resolved duplicates kept flagging their primary. Recon also found
+  the linking layer was ALREADY many-to-many (pinned test existed) — the
+  "can't attach second receipt" complaint was one `continue` line in a
+  search query. Trace before designing; the fix is often smaller than the
+  feedback implies.
+- Two-program .d.ts visibility class: apps/mobile's typecheck compiles
+  ../convex files reached via generated api types but loads only .d.ts
+  files its OWN tsconfig names — an ambient declaration satisfying
+  `npx convex typecheck` broke root `pnpm typecheck` (mobile task). CI
+  missed it because the mobile job was path-skipped on convex-only PRs.
+  Fix: name the declaration in apps/mobile tsconfig include. A triple-slash
+  reference in the importing .ts did NOT fix it. Root `pnpm typecheck` is
+  part of the local gate for a reason — run it from the repo ROOT (from
+  /home/user it fails with NO_IMPORTER_MANIFEST).
+- Stop-hook nuance: unverified-commit warnings on GitHub's own squash
+  commits (noreply@github.com, branch reset onto main) are false positives —
+  never rebase main's history; only reset-author YOUR unpushed commits.
+
 ### 2026-07-24 — Run 3 (backend scanned-PDF receipt OCR)
 - Run shape: founder pointed at PR history ("scanned PDFs don't work, must be
   a backend way") → 4 parallel recon lanes (pipeline trace, PR archaeology,

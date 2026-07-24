@@ -11,6 +11,7 @@
   "include": [
     "**/*.ts",
     "**/*.tsx",
-    "nativewind-env.d.ts"
+    "nativewind-env.d.ts",
+    "../convex/pdfiumWasm.d.ts"
   ]
 }
