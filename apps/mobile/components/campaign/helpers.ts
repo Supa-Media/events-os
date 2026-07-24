@@ -130,6 +130,49 @@ const RSVP_STATUS_TEXT: Record<string, string> = {
   not_going: "RSVP'd not going",
 };
 
+/** One filter set's ("filters" OR "excludeFilters" — same shape) criteria,
+ *  as plain-language fragments — the ONE place that turns a `person_filters`
+ *  criterion into words, called for BOTH the include block and the exclude
+ *  block so their phrasing can never drift apart (mirrors
+ *  `lib/audienceResolve.ts#personMatchesCriteria` being the one place that
+ *  EVALUATES a criterion for both blocks). Doesn't include the hand-pick
+ *  counts or the "everyone" fallback — callers add those. */
+function describeFilterCriteria(filters: {
+  chapterId?: string | null;
+  donorStatus?: string | null;
+  gaveWithinDays?: number | null;
+  givingLifetimeMinCents?: number | null;
+  givingLifetimeMaxCents?: number | null;
+  giftCountMin?: number | null;
+  backerStatus?: string | null;
+  attendedEventId?: string | null;
+  attendedWithinDays?: number | null;
+  rsvpStatus?: string | null;
+  seatId?: string | null;
+  teamOnly?: boolean | null;
+  contactsOnly?: boolean | null;
+  verifiedEmailOnly?: boolean | null;
+}): string[] {
+  const parts: string[] = [];
+  if (filters.chapterId) parts.push("one chapter");
+  if (filters.teamOnly) parts.push("team only");
+  if (filters.contactsOnly) parts.push("contacts only");
+  if (filters.givingLifetimeMinCents != null || filters.givingLifetimeMaxCents != null) {
+    parts.push("giving amount");
+  }
+  if (filters.giftCountMin != null) parts.push(`${filters.giftCountMin} or more gifts`);
+  if (filters.donorStatus) parts.push(DONOR_STATUS_TEXT[filters.donorStatus] ?? filters.donorStatus);
+  if (filters.gaveWithinDays != null) parts.push(`gave in the last ${filters.gaveWithinDays} days`);
+  if (filters.backerStatus) parts.push(BACKER_STATUS_TEXT[filters.backerStatus] ?? filters.backerStatus);
+  if (filters.attendedEventId) parts.push("attended one event");
+  if (filters.attendedWithinDays != null)
+    parts.push(`attended in the last ${filters.attendedWithinDays} days`);
+  if (filters.rsvpStatus) parts.push(RSVP_STATUS_TEXT[filters.rsvpStatus] ?? filters.rsvpStatus);
+  if (filters.seatId) parts.push("holds a role");
+  if (filters.verifiedEmailOnly) parts.push("verified email");
+  return parts;
+}
+
 /** A short "who this targets" description for the approval review card —
  *  the audience's SOURCE + its own filters, plain-language. Deliberately
  *  doesn't resolve event/chapter/seat ids to names (no extra round-trip);
@@ -139,50 +182,32 @@ const RSVP_STATUS_TEXT: Record<string, string> = {
  *  "Phase 3" item 6) — `person_filters`'s richer criteria + hand-picks are
  *  summarized here too, automatically, so the two-party approval review card
  *  (PR #399) shows the new picker's shape without any changes on its own
- *  side — see `CampaignStatusCard.tsx`'s call site. */
+ *  side — see `CampaignStatusCard.tsx`'s call site.
+ *
+ *  `excludeFilters` (property-level exclusions) renders as a trailing
+ *  "· excluding: …" clause, built via the SAME `describeFilterCriteria` the
+ *  include block uses — one source of truth for how a criterion reads,
+ *  whichever side of the audience it's on. */
 export function describeAudience(
   source: string,
-  filters: {
-    eventId?: string | null;
-    chapterId?: string | null;
-    donorStatus?: string | null;
-    gaveWithinDays?: number | null;
-    givingLifetimeMinCents?: number | null;
-    givingLifetimeMaxCents?: number | null;
-    giftCountMin?: number | null;
-    backerStatus?: string | null;
-    attendedEventId?: string | null;
-    attendedWithinDays?: number | null;
-    rsvpStatus?: string | null;
-    seatId?: string | null;
-    teamOnly?: boolean | null;
-    contactsOnly?: boolean | null;
-    verifiedEmailOnly?: boolean | null;
-  },
+  filters: Parameters<typeof describeFilterCriteria>[0] & { eventId?: string | null },
   handPicks?: { includeCount?: number; excludeCount?: number },
+  excludeFilters?: Parameters<typeof describeFilterCriteria>[0] | null,
 ): string {
   const parts = [AUDIENCE_SOURCE_LABEL[source] ?? source];
   if (source === "person_filters") {
-    if (filters.chapterId) parts.push("one chapter");
-    if (filters.teamOnly) parts.push("team only");
-    if (filters.contactsOnly) parts.push("contacts only");
-    if (filters.givingLifetimeMinCents != null || filters.givingLifetimeMaxCents != null) {
-      parts.push("giving amount");
-    }
-    if (filters.giftCountMin != null) parts.push(`${filters.giftCountMin} or more gifts`);
-    if (filters.donorStatus) parts.push(DONOR_STATUS_TEXT[filters.donorStatus] ?? filters.donorStatus);
-    if (filters.gaveWithinDays != null) parts.push(`gave in the last ${filters.gaveWithinDays} days`);
-    if (filters.backerStatus) parts.push(BACKER_STATUS_TEXT[filters.backerStatus] ?? filters.backerStatus);
-    if (filters.attendedEventId) parts.push("attended one event");
-    if (filters.attendedWithinDays != null)
-      parts.push(`attended in the last ${filters.attendedWithinDays} days`);
-    if (filters.rsvpStatus) parts.push(RSVP_STATUS_TEXT[filters.rsvpStatus] ?? filters.rsvpStatus);
-    if (filters.seatId) parts.push("holds a role");
-    if (filters.verifiedEmailOnly) parts.push("verified email");
+    parts.push(...describeFilterCriteria(filters));
     if (handPicks?.includeCount) parts.push(`+${handPicks.includeCount} hand-picked`);
     if (handPicks?.excludeCount) parts.push(`−${handPicks.excludeCount} excluded`);
     if (parts.length === 1) parts.push("everyone");
-    return parts.join(" · ");
+    let result = parts.join(" · ");
+    if (excludeFilters) {
+      const excludeParts = describeFilterCriteria(excludeFilters);
+      if (excludeParts.length > 0) {
+        result += ` · excluding: ${excludeParts.join("; ")}`;
+      }
+    }
+    return result;
   }
   if (filters.eventId) parts.push("one event");
   if (filters.chapterId) parts.push("one chapter");
