@@ -293,6 +293,11 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         title: "A personal thank-you and a campaign are different tools",
         text: "Notes and a personal thank-you are ONE-TO-ONE — you, this donor, this relationship. An email campaign (the Campaigns desk) is ONE-TO-MANY — one write-up, an audience of many. Because a campaign reaches a lot of people at once, it always needs a SECOND person's sign-off before it sends: the writer picks a reviewer from a dropdown of Compose/Approve-holders (never themselves), and that reviewer alone can approve it, request changes, or deny it — even when the writer is the Executive Director. Compose/Approve is a per-role power the ED assigns from the org chart, the same mechanism as the Giving-desk power above; out of the box the ED, Financial Manager, and Marketing Director all hold it.",
       },
+      {
+        kind: "rule",
+        title: "An audience is filters, hand-picked people, or both — and it's always live",
+        text: "Building a campaign's audience isn't a fixed source dropdown anymore — it's robust filter chips (giving amount, backer status, attended-event, role, team-vs-contact, verified email) that AND-combine, plus an optional hand-picked list you build by searching for people by name or email. Both can be used together: filters catch everyone who matches a pattern, hand-picks add (or remove) specific individuals the filters wouldn't otherwise catch. Audiences are LIVE — someone who starts matching the criteria tomorrow (a new donor crosses the giving threshold, a guest RSVPs to a qualifying event) is included automatically the next time the audience is used, with no re-save needed. One thing hand-picking can NEVER do: override consent. If a person has unsubscribed (their address is suppressed) or opted out of marketing, they're excluded even if you explicitly added them to the include list — the composer's live preview always shows exactly who was dropped and why.",
+      },
     ],
     quiz: [
       {
@@ -342,6 +347,19 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 1,
         explanation:
           "Two-party approval means a campaign always needs a DIFFERENT Compose/Approve-holder's sign-off, chosen at submit time — even the ED's own sends need someone else's approval.",
+      },
+      {
+        prompt:
+          "You hand-pick someone into a campaign's audience, but they've unsubscribed from every campaign. What happens?",
+        options: [
+          "They're excluded — a hand-pick is not consent, suppression always wins",
+          "They're included — hand-picking always overrides suppression",
+          "The campaign can't be saved until you remove them",
+          "They receive the campaign, but marked as a bounce afterward",
+        ],
+        answerIndex: 0,
+        explanation:
+          "Suppression (and a person's own marketing opt-out) beats BOTH filters and hand-picks — explicitly adding someone to the include list is curation, not consent, and the composer's live preview shows exactly who was dropped and why.",
       },
     ],
   },
