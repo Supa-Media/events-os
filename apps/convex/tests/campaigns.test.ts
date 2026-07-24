@@ -738,7 +738,10 @@ describe("previewAudience — people", () => {
 
 // ── Campaign CRUD ─────────────────────────────────────────────────────────
 
-async function seedAudience(s: ChapterSetup, source: "guests" | "donors" | "people" = "people") {
+async function seedAudience(
+  s: ChapterSetup,
+  source: "guests" | "donors" | "people" | "person_filters" = "people",
+) {
   return await run(s.t, (ctx) =>
     ctx.db.insert("audiences", {
       scope: "central",
@@ -2103,6 +2106,46 @@ describe("two-party approval — content drift", () => {
     const campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
     expect(campaign.status).toBe("failed");
     expect(campaign.error).toMatch(/changed since it was approved/);
+  });
+});
+
+// Targeting v2 — `computeCampaignSnapshotHash` binds `audienceTargeting` the
+// moment the field is present (key-omission rule, mirroring
+// `audienceExcludeFilters`): adopting or editing v2 targeting after
+// submission is drift a reviewer must re-approve, while every
+// legacy-shaped audience keeps hashing byte-identically to before the field
+// existed.
+describe("two-party approval — content drift (targeting v2)", () => {
+  test("adding targeting to the audience while pending → approve throws CONTENT_DRIFT", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const audienceId = await seedAudience(s, "person_filters");
+    await configureResend(s);
+    const campaignId = await s.as.mutation(api.campaigns.createCampaign, {
+      scope: "central",
+      name: "N",
+      subject: "Hi",
+      audienceId,
+      doc: heroDoc(),
+    });
+    await seedSelfPerson(s);
+    const reviewer = await seedReviewer(s);
+    await s.as.mutation(api.campaigns.submitForApproval, {
+      campaignId,
+      purpose: "P",
+      reviewerPersonId: reviewer.personId,
+    });
+
+    await s.as.mutation(api.audiences.updateAudience, {
+      audienceId,
+      targeting: {
+        groups: [{ conditions: [{ field: "donor_status", op: "is", status: "any" }] }],
+      },
+    });
+
+    expect(
+      await errorCode(reviewer.as.mutation(api.campaigns.approveCampaign, { campaignId })),
+    ).toBe("CONTENT_DRIFT");
   });
 });
 

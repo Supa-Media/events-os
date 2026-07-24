@@ -53,6 +53,7 @@ import { backfillContactOnlyPeople } from "./0038_backfill_contact_only_people";
 import { backfillPersonEmails } from "./0039_backfill_person_emails";
 import { migrateLegacyAudiences } from "./0040_migrate_legacy_audiences";
 import { migrateGuestAudiences } from "./0041_migrate_guest_audiences";
+import { wrapTargeting } from "./0042_wrap_targeting";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -186,4 +187,12 @@ export const MIGRATIONS: Migration[] = [
   // legacy source (see 0041's own doc). Idempotent (already-migrated rows,
   // unscoped "guests" rows, and non-"guests" rows are all skipped). See 0041.
   migrateGuestAudiences,
+  // Targeting v2 (specs/audience-targeting-v2.md) — stamp a translated
+  // `targeting` block onto every audience row that lacks one (person_filters
+  // criteria → one include group; effective excludeFilters → one exclude
+  // group; unscoped "guests" rows → the new attended_any primitive). Legacy
+  // fields stay in place; audiences referenced by an in-flight approval are
+  // skipped (hash-drift protection) for a later manual re-run. Idempotent
+  // (wrapped rows skipped). See 0042.
+  wrapTargeting,
 ];

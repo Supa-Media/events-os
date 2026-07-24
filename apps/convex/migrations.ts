@@ -37,6 +37,7 @@ import {
 } from "./migrations/0039_backfill_person_emails";
 import { runMigrateLegacyAudiencesPage } from "./migrations/0040_migrate_legacy_audiences";
 import { runMigrateGuestAudiencesPage } from "./migrations/0041_migrate_guest_audiences";
+import { runWrapTargetingPage } from "./migrations/0042_wrap_targeting";
 
 /**
  * Backfill: ensure every template/event grid module has all of its current
@@ -761,6 +762,28 @@ export const continueMigrateGuestAudiences = internalMutation({
   args: { cursor: v.union(v.string(), v.null()) },
   handler: async (ctx, { cursor }) =>
     await runMigrateGuestAudiencesPage(ctx, cursor),
+});
+
+/**
+ * Scheduler continuation for the targeting-v2 wrap (`0042`) — same shape as
+ * `continueMigrateGuestAudiences` above; idempotent (see
+ * `migrations/0042_wrap_targeting.ts`'s module doc), so a redundant fire is a
+ * no-op.
+ */
+export const continueWrapTargeting = internalMutation({
+  args: { cursor: v.union(v.string(), v.null()) },
+  handler: async (ctx, { cursor }) => await runWrapTargetingPage(ctx, cursor),
+});
+
+/**
+ * Manual re-run entry for `0042` — for AFTER the in-flight-approval campaigns
+ * that made the auto-run skip their audiences have sent/closed (see the
+ * migration's `skippedPendingApproval` doc). Safe to invoke any time:
+ * idempotent, only rows still missing `targeting` are touched.
+ */
+export const runWrapTargeting = internalMutation({
+  args: {},
+  handler: async (ctx) => await runWrapTargetingPage(ctx, null),
 });
 
 /**

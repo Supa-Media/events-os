@@ -27,7 +27,18 @@ import {
 } from "./lib/audienceResolve";
 import { listActiveChapters } from "./lib/chapters";
 import { normalizeEmail } from "./lib/access";
-import { AUDIENCE_SOURCES, audienceFiltersValidator } from "./schema/campaigns";
+import {
+  AUDIENCE_SOURCES,
+  audienceConditionValidator,
+  audienceFiltersValidator,
+  audienceTargetingValidator,
+} from "./schema/campaigns";
+import {
+  explainTargetingForPerson,
+  normalizeTargeting,
+  validateTargeting,
+} from "./lib/audienceTargeting";
+import { suppressedEmailSet } from "./emailSuppressions";
 
 const scopeValidator = v.union(v.id("chapters"), v.literal("central"));
 const sourceValidator = v.union(...AUDIENCE_SOURCES.map((s) => v.literal(s)));
@@ -134,12 +145,17 @@ export const createAudience = mutation({
     // block ("everyone matching filters, EXCEPT anyone matching
     // excludeFilters") — see `schema/campaigns.ts#audiences`'s doc.
     excludeFilters: v.optional(audienceFiltersValidator),
+    // Targeting v2 (specs/audience-targeting-v2.md): when present it fully
+    // defines property-based membership (`filters`/`excludeFilters` are
+    // ignored by resolution — see `lib/audienceResolve.ts`); validated
+    // structurally via `validateTargeting` before anything is stored.
+    targeting: v.optional(audienceTargetingValidator),
     includePersonIds: v.optional(v.array(v.id("people"))),
     excludePersonIds: v.optional(v.array(v.id("people"))),
   },
   handler: async (
     ctx,
-    { scope, name, source, filters, excludeFilters, includePersonIds, excludePersonIds },
+    { scope, name, source, filters, excludeFilters, targeting, includePersonIds, excludePersonIds },
   ) => {
     await requireCampaignsAccess(ctx);
     const userId = (await requireUserId(ctx)) as Id<"users">;
@@ -148,6 +164,7 @@ export const createAudience = mutation({
       throw new ConvexError({ code: "EMPTY", message: "Name the audience first." });
     }
     assertValidHandPicks(includePersonIds, excludePersonIds);
+    if (targeting) validateTargeting(targeting);
     const now = Date.now();
     return await ctx.db.insert("audiences", {
       scope,
@@ -155,6 +172,7 @@ export const createAudience = mutation({
       source,
       filters,
       excludeFilters: normalizeExcludeFilters(excludeFilters),
+      targeting: targeting ? normalizeTargeting(targeting) : undefined,
       includePersonIds,
       excludePersonIds,
       createdBy: userId,
@@ -173,6 +191,10 @@ export const updateAudience = mutation({
     // explicitly to clear every exclude criterion back to a no-op (same
     // "full replace" convention `filters` itself uses).
     excludeFilters: v.optional(audienceFiltersValidator),
+    // Targeting v2 — `undefined` leaves the stored targeting untouched (no
+    // way to CLEAR it back to the legacy model by design: once a row is on
+    // v2 it stays there; migration 0042 only ever moves forward).
+    targeting: v.optional(audienceTargetingValidator),
     // Phase 3 — `undefined` leaves the stored list untouched; pass `[]`
     // explicitly to clear it (the same "must pass empty array, not omit"
     // convention `filters` doesn't need since it's always a full replace).
@@ -181,7 +203,7 @@ export const updateAudience = mutation({
   },
   handler: async (
     ctx,
-    { audienceId, name, filters, excludeFilters, includePersonIds, excludePersonIds },
+    { audienceId, name, filters, excludeFilters, targeting, includePersonIds, excludePersonIds },
   ) => {
     await requireCampaignsAccess(ctx);
     const existing = await ctx.db.get(audienceId);
@@ -208,6 +230,10 @@ export const updateAudience = mutation({
     // explicit `undefined` value clears an optional field (the `personId`/
     // `isPrimary`-clearing precedent elsewhere in this codebase).
     if (excludeFilters !== undefined) patch.excludeFilters = normalizeExcludeFilters(excludeFilters);
+    if (targeting !== undefined) {
+      validateTargeting(targeting);
+      patch.targeting = normalizeTargeting(targeting);
+    }
     if (includePersonIds !== undefined) patch.includePersonIds = includePersonIds;
     if (excludePersonIds !== undefined) patch.excludePersonIds = excludePersonIds;
     await ctx.db.patch(audienceId, patch);
@@ -245,6 +271,9 @@ export const previewAudience = query({
     // the preview reflects it before the audience is even saved. Same shape
     // as `filters`, `person_filters` only — see `schema/campaigns.ts#audiences`.
     excludeFilters: v.optional(audienceFiltersValidator),
+    // Targeting v2 — a live builder draft's groups, previewed before saving
+    // (validated structurally first, same as create/update).
+    targeting: v.optional(audienceTargetingValidator),
     // Phase 3 — a live composer draft's hand-picks, so the preview reflects
     // includes/excludes before the audience is even saved.
     includePersonIds: v.optional(v.array(v.id("people"))),
@@ -252,7 +281,15 @@ export const previewAudience = query({
   },
   returns: v.object({
     count: v.number(),
-    sample: v.array(v.object({ name: v.optional(v.string()), email: v.string() })),
+    // `groups` — targeting-v2 drafts only: which include-group indexes this
+    // sample row matched (empty for hand-pick-only members and legacy rows).
+    sample: v.array(
+      v.object({
+        name: v.optional(v.string()),
+        email: v.string(),
+        groups: v.optional(v.array(v.number())),
+      }),
+    ),
     excludedSuppressed: v.number(),
     excludedUnverified: v.number(),
     // `person_filters` AND `people` (data-trust fix — previously always 0 for
@@ -280,12 +317,19 @@ export const previewAudience = query({
     // `audienceTruncated` (see `schema/campaigns.ts`).
     truncated: v.boolean(),
     truncatedCount: v.number(),
+    // Targeting-v2 drafts only (always `[]` for legacy shapes): per-group
+    // match counts for the builder's group cards, and per-exclude-group
+    // removal counts for its skip lists. Groups overlap — the sum can exceed
+    // `count`; the UI labels that.
+    perGroupCounts: v.array(v.number()),
+    perExcludeGroupCounts: v.array(v.number()),
   }),
   handler: async (
     ctx,
-    { scope, source, filters, excludeFilters, includePersonIds, excludePersonIds },
+    { scope, source, filters, excludeFilters, targeting, includePersonIds, excludePersonIds },
   ) => {
     await requireCampaignsAccess(ctx);
+    if (targeting) validateTargeting(targeting);
     // `includeDiagnostics: true` — this is the ONLY caller that should pay
     // for the extra data-trust transparency scans (`unlinkedGuests`/
     // `centralDonorsExcludedByChapterFilter`); the send path
@@ -294,13 +338,16 @@ export const previewAudience = query({
     // `lib/audienceResolve.ts#resolveAudienceRecipients`'s doc.
     const resolution = await resolveAudienceRecipients(
       ctx,
-      { scope, source, filters, excludeFilters, includePersonIds, excludePersonIds },
+      { scope, source, filters, excludeFilters, targeting, includePersonIds, excludePersonIds },
       AUDIENCE_RESOLVE_LIMIT,
       true,
     );
     return {
       count: resolution.recipients.length,
-      sample: resolution.recipients.slice(0, 10),
+      sample: resolution.recipients.slice(0, 10).map((r) => ({
+        ...r,
+        groups: targeting ? (resolution.matchedGroupsByEmail[r.email] ?? []) : undefined,
+      })),
       excludedSuppressed: resolution.excludedSuppressed,
       excludedUnverified: resolution.excludedUnverified,
       excludedOptOut: resolution.excludedOptOut,
@@ -313,6 +360,8 @@ export const previewAudience = query({
       handPickedExcludedByFilters: resolution.handPickedExcludedByFilters,
       truncated: resolution.truncated,
       truncatedCount: resolution.truncatedCount,
+      perGroupCounts: resolution.perGroupCounts,
+      perExcludeGroupCounts: resolution.perExcludeGroupCounts,
     };
   },
 });
@@ -382,6 +431,59 @@ export const searchPeopleForAudience = query({
  *  you're looking for," not exhaustive results. */
 const SEARCH_SCAN_PER_CHAPTER_LIMIT = 1000;
 const SEARCH_RESULT_LIMIT = 20;
+
+const groupVerdictValidator = v.object({
+  matched: v.boolean(),
+  conditions: v.array(v.object({ condition: audienceConditionValidator, pass: v.boolean() })),
+});
+
+/**
+ * "Check a person" (targeting v2's trust feature — spec §"Explainability"):
+ * per-condition pass/fail for ONE person against a (possibly unsaved draft)
+ * targeting shape, plus the final verdict in the same decision order the real
+ * resolution applies — powered by `lib/audienceTargeting.ts#
+ * explainTargetingForPerson`, the SAME evaluator resolution uses, so this can
+ * never disagree with the actual send. Single-person read cost (see that
+ * function's doc) — fine for a live search box.
+ */
+export const explainAudiencePerson = query({
+  args: {
+    scope: scopeValidator,
+    targeting: audienceTargetingValidator,
+    includePersonIds: v.optional(v.array(v.id("people"))),
+    excludePersonIds: v.optional(v.array(v.id("people"))),
+    personId: v.id("people"),
+  },
+  returns: v.object({
+    verdict: v.union(
+      v.literal("recipient"),
+      v.literal("no_match"),
+      v.literal("excluded"),
+      v.literal("hand_pick_excluded"),
+      v.literal("opted_out"),
+      v.literal("suppressed"),
+      v.literal("no_address"),
+    ),
+    groups: v.array(groupVerdictValidator),
+    excludeGroups: v.array(groupVerdictValidator),
+    handPicked: v.boolean(),
+  }),
+  handler: async (ctx, { scope, targeting, includePersonIds, excludePersonIds, personId }) => {
+    await requireCampaignsAccess(ctx);
+    validateTargeting(targeting);
+    const person = await ctx.db.get(personId);
+    if (!person || person.isPlaceholder === true) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Person not found." });
+    }
+    const suppressed = await suppressedEmailSet(ctx);
+    return explainTargetingForPerson(
+      ctx,
+      { scope, targeting, includePersonIds, excludePersonIds },
+      person,
+      suppressed,
+    );
+  },
+});
 
 /**
  * Send-time resolution: `campaigns.ts#materializeRecipients` (an action, no
