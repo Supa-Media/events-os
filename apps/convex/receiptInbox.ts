@@ -96,6 +96,11 @@ const MAX_CANDIDATES_SURFACED = 8;
 const MAX_ATTACHMENTS = 10;
 /** Abort a single OCR completion if it hangs longer than this. */
 const OCR_TIMEOUT_MS = 60_000;
+/** How many pages of a SCANNED pdf `extractReceiptFields` will render and
+ *  hand to vision in one call. A receipt is almost always a single page;
+ *  bounding it keeps a stray multi-page fax/statement from ballooning the
+ *  vision payload (and the render cost) unboundedly. */
+export const SCANNED_PDF_RENDER_MAX_PAGES = 3;
 /** The multimodal model receipt-image OCR calls WHEN the provider is OpenRouter.
  *  Config, not code: overridable via `RECEIPT_OCR_MODEL` so the owner can point
  *  it at a FREE/cheap vision model (the preference) or upgrade if scan quality
@@ -1240,10 +1245,19 @@ export type OcrImageResult =
  * error (no key / rate-limited / out-of-credits / network / timeout) is never
  * collapsed together with "the model replied but found no total" (`no_total`)
  * — see `OcrImageFailure`. This is the ONLY LLM call in the pipeline, and it
- * only runs for image/PDF attachments — body receipts never reach it. PDF is
- * passed as an image_url data URL too (the cheap vision models accept
- * single-page receipt PDFs); multipage PDFs degrade to `no_total` →
- * `needs_review`, which is acceptable for receipts.
+ * only runs for image/PDF attachments — body receipts never reach it.
+ *
+ * `dataUrls` takes ONE OR MORE `image_url` data URLs in a single user message
+ * — a plain photo passes exactly one; a rendered scanned PDF
+ * (`receiptPdf.ts#renderScannedPdfPages`) passes one PNG per page, bounded to
+ * `SCANNED_PDF_RENDER_MAX_PAGES`, so a multipage scanned receipt still gets
+ * read in ONE model call instead of degrading on page 2+. Both providers
+ * handle a multi-image user message: OpenRouter's OpenAI-compat endpoint
+ * natively, and Ollama's native `/api/chat` path via `toOllamaNativeMessages`
+ * (`lib/aiEngine.ts`), which collects every `image_url` part into its
+ * `images` array. Never a raw `application/pdf` — every entry here MUST
+ * already be a rendered `image/*` data URL (see `extractReceiptFields`'s and
+ * `receiptPdf.ts`'s module docs for why that invariant matters).
  *
  * `config` is resolved by the caller (via `readAiEngineConfig`) and `model` via
  * `resolveOcrModel`. On a typed engine error the human-readable reason is
@@ -1253,7 +1267,7 @@ export type OcrImageResult =
  */
 export async function ocrReceiptImage(
   config: AiEngineConfig,
-  dataUrl: string,
+  dataUrls: string[],
   model: string,
 ): Promise<OcrImageResult> {
   const result = await chatCompletion(config, {
@@ -1282,7 +1296,10 @@ export async function ocrReceiptImage(
           "and fall back to the delivery platform's own name only if no " +
           "restaurant/store name appears anywhere on the receipt. Only " +
           "return null for merchant if genuinely no business name is " +
-          "visible on the receipt at all.",
+          "visible on the receipt at all. You may be shown MULTIPLE " +
+          "images that are separate PAGES of the SAME receipt (a " +
+          "multipage scanned PDF) — treat them as one document and find " +
+          "the total across all of them, not per-page.",
       },
       {
         role: "user",
@@ -1291,7 +1308,10 @@ export async function ocrReceiptImage(
             type: "text",
             text: "Extract the total and merchant name from this receipt.",
           },
-          { type: "image_url", image_url: { url: dataUrl } },
+          ...dataUrls.map((dataUrl) => ({
+            type: "image_url" as const,
+            image_url: { url: dataUrl },
+          })),
         ],
       },
     ],
@@ -1441,16 +1461,29 @@ export interface OcrRoutingResult {
   ocrRetryAfterSeconds?: number;
 }
 
+/** The clear, human-actionable message a scanned PDF still degrades to when
+ *  NEITHER route can produce a total: rendering itself failed (a malformed/
+ *  unrenderable PDF), or every rendered page vanished from storage before it
+ *  could be read. Kept as one constant so the two dead-end returns in
+ *  `extractReceiptFields` below can't drift apart. */
+const SCANNED_PDF_UNREADABLE_MESSAGE =
+  "Scanned PDF (no readable text layer) — couldn't read it " +
+  "automatically; re-upload as a photo/screenshot or enter the total " +
+  "manually.";
+
 /**
  * Route ONE stored file through extraction: a PDF tries its own TEXT LAYER
  * first (zero LLM — `receiptPdf.ts#extractPdfText`, an action→action call
- * across the Node boundary); when the PDF has no usable text layer (a
- * scanned/faxed receipt), it degrades to a clear, human-actionable `ocrError`
- * (re-upload as a photo) — a PDF is NEVER handed to a vision call as
- * `application/pdf` (that's the fix: Ollama sniffs the bytes and 400s on a
- * raw PDF masquerading as an image). Rendering a scanned PDF page to an image
- * so vision COULD read it needs a native canvas backend that doesn't bundle
- * into Convex (see git history / PR #406), so we don't attempt it. Anything
+ * across the Node boundary). When the PDF has no usable text layer (a
+ * scanned/faxed receipt), it renders each page to a PNG
+ * (`receiptPdf.ts#renderScannedPdfPages`, pdfium WASM — up to
+ * `SCANNED_PDF_RENDER_MAX_PAGES` pages) and hands vision THOSE rendered
+ * images instead — a PDF is NEVER handed to a vision call as
+ * `application/pdf` (that's the #406 invariant: Ollama sniffs the bytes and
+ * 400s on a raw PDF masquerading as an image; a rendered `image/png` is the
+ * fix, not a violation of that rule). If rendering itself can't produce a
+ * page (a malformed/unrenderable PDF), this degrades to the same clear,
+ * human-actionable `ocrError` a scanned PDF has always produced. Anything
  * else (a plain image) goes straight to vision, exactly as before. Always
  * resolves an `ocrError` when extraction produced no total — the point of the
  * PR before this one: a receipt detail that says WHY, not a silent "—".
@@ -1492,23 +1525,63 @@ export async function extractReceiptFields(
     }
     // A SCANNED pdf — no usable text layer. NEVER hand the raw PDF to the
     // vision model: Ollama's `image_url` input requires a real image mime
-    // type and 400s on `application/pdf` (the bug this branch guards). A
-    // scanned/image-only PDF can't be OCR'd here (rendering a PDF page to an
-    // image needs a native canvas backend that doesn't bundle into Convex —
-    // see git history / PR #406), so degrade to a clear, human-actionable
-    // error instead. Never a vision call with a PDF, never a throw.
-    return {
-      ocrError:
-        "Scanned PDF (no readable text layer) — couldn't read it " +
-        "automatically; re-upload as a photo/screenshot or enter the total " +
-        "manually.",
-    };
+    // type and 400s on `application/pdf` (the bug this branch guards). Render
+    // each page to a PNG instead — rendering isn't the #406 mistake (that was
+    // a native canvas addon that broke bundling); pdfium is pure WASM, so it
+    // bundles, and a rendered `image/png` is a completely different payload
+    // than the raw PDF bytes the invariant guards against.
+    const { pages } = await ctx.runAction(internal.receiptPdf.renderScannedPdfPages, {
+      storageId,
+      maxPages: SCANNED_PDF_RENDER_MAX_PAGES,
+    });
+    if (pages.length === 0) {
+      // Rendering couldn't help either — a malformed/unrenderable PDF, or a
+      // pdfium init/render failure. Degrade to the same clear,
+      // human-actionable error a scanned PDF has always produced. Never a
+      // vision call with the raw PDF, never a throw.
+      return { ocrError: SCANNED_PDF_UNREADABLE_MESSAGE };
+    }
+    try {
+      const dataUrls: string[] = [];
+      for (const page of pages) {
+        const pageBlob = await ctx.storage.get(page.storageId);
+        if (!pageBlob) continue;
+        const pageBuf = await pageBlob.arrayBuffer();
+        dataUrls.push(`data:image/png;base64,${arrayBufferToBase64(pageBuf)}`);
+      }
+      if (dataUrls.length === 0) return { ocrError: SCANNED_PDF_UNREADABLE_MESSAGE };
+
+      const ocr = await ocrReceiptImage(config, dataUrls, model);
+      if ("error" in ocr) {
+        return {
+          ocrModel: model,
+          ocrError: ocrFailureMessage(ocr.error, config.provider, "scanned_pdf"),
+          ocrRetryable: ocr.error.retryable,
+          ocrRetryAfterSeconds: ocr.error.retryAfterSeconds ?? undefined,
+        };
+      }
+      return {
+        ocrAmountCents: ocr.amountCents ?? undefined,
+        ocrDate: ocr.date ?? undefined,
+        ocrMerchant: ocr.merchant ?? undefined,
+        ocrConfidence: ocr.confidence ?? undefined,
+        ocrModel: model,
+      };
+    } finally {
+      // The rendered pages are scratch artifacts the vision call consumed —
+      // not the receipt document itself (the ORIGINAL PDF `storageId` stays
+      // the canonical receipt file). Clean them up regardless of how the OCR
+      // call went, so a retry doesn't accumulate orphaned page images.
+      for (const page of pages) {
+        await ctx.storage.delete(page.storageId);
+      }
+    }
   }
 
   // An image (or anything else worth handing to the vision model).
   const buf = await blob.arrayBuffer();
   const dataUrl = `data:${contentType};base64,${arrayBufferToBase64(buf)}`;
-  const ocr = await ocrReceiptImage(config, dataUrl, model);
+  const ocr = await ocrReceiptImage(config, [dataUrl], model);
   if ("error" in ocr) {
     return {
       ocrModel: model,
