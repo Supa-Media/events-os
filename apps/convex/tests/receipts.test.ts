@@ -222,6 +222,114 @@ describe("softDuplicate", () => {
     const detail = await s.as.query(api.receipts.getReceipt, { receiptId: a });
     expect(detail?.softDuplicate).toBe(true);
   });
+
+  // FIX 3: "possible duplicate" is actionable — getReceipt surfaces exactly
+  // WHY a receipt is flagged (the other receipt(s) it collides with).
+  test("getReceipt surfaces the other colliding receipt(s) as duplicateMatches", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    const day = Date.now();
+
+    const a = await newUploadReceipt(s, { amountCents: 4210, receiptDate: day });
+    const b = await newUploadReceipt(s, { amountCents: 4210, receiptDate: day });
+    const c = await newUploadReceipt(s, { amountCents: 999, receiptDate: day });
+
+    const detailA = await s.as.query(api.receipts.getReceipt, { receiptId: a });
+    expect(detailA?.softDuplicate).toBe(true);
+    expect(detailA?.duplicateMatches.map((m) => m._id)).toEqual([b]);
+
+    // A receipt with no collision gets an empty list, not a stale one.
+    const detailC = await s.as.query(api.receipts.getReceipt, { receiptId: c });
+    expect(detailC?.softDuplicate).toBe(false);
+    expect(detailC?.duplicateMatches).toEqual([]);
+  });
+
+  test("duplicateMatches excludes the receipt's own exact-file (sha256) group", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    const day = Date.now();
+
+    // Two receipts from the SAME uploaded bytes (an exact-file dupe) that
+    // ALSO happen to share amount+date with a third, genuinely different
+    // receipt — the exact-file sibling should never show up in
+    // `duplicateMatches` (it already has its own `duplicateOf` callout).
+    const storageId = await storeBlobWithContent(s, "same-bytes");
+    const original = await run(s.t, (ctx) =>
+      createReceipt(ctx, {
+        chapterId: s.chapterId,
+        storageId,
+        source: "upload",
+        ocrAmountCents: 4210,
+        ocrDate: day,
+        fileSha256: "same-hash",
+      }),
+    );
+    const exactDupe = await run(s.t, (ctx) =>
+      createReceipt(ctx, {
+        chapterId: s.chapterId,
+        storageId,
+        source: "upload",
+        ocrAmountCents: 4210,
+        ocrDate: day,
+        fileSha256: "same-hash",
+        duplicateOfReceiptId: original,
+      }),
+    );
+    const different = await newUploadReceipt(s, { amountCents: 4210, receiptDate: day });
+
+    const detail = await s.as.query(api.receipts.getReceipt, { receiptId: original });
+    const matchIds = detail?.duplicateMatches.map((m) => m._id) ?? [];
+    expect(matchIds).toContain(different);
+    expect(matchIds).not.toContain(exactDupe);
+  });
+});
+
+// ── dismissDuplicateFlag ──────────────────────────────────────────────────────
+describe("dismissDuplicateFlag", () => {
+  test("flips softDuplicate off for THIS receipt only — an undismissed sibling keeps flagging", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    const day = Date.now();
+
+    const a = await newUploadReceipt(s, { amountCents: 4210, receiptDate: day });
+    const b = await newUploadReceipt(s, { amountCents: 4210, receiptDate: day });
+
+    await s.as.mutation(api.receipts.dismissDuplicateFlag, { receiptId: a });
+
+    const rows = await s.as.query(api.receipts.listReceipts, {});
+    const byId = new Map(rows.map((r) => [r._id, r]));
+    expect(byId.get(a)?.softDuplicate).toBe(false);
+    // b never dismissed its own flag — still flagged (dismissal isn't a
+    // group-wide mute).
+    expect(byId.get(b)?.softDuplicate).toBe(true);
+
+    const detailA = await s.as.query(api.receipts.getReceipt, { receiptId: a });
+    expect(detailA?.softDuplicate).toBe(false);
+
+    const row = await run(t, (ctx) => ctx.db.get(a));
+    expect(row?.duplicateDismissed).toBe(true);
+  });
+
+  test("requires bookkeeper+ and chapter ownership", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const other = await setupChapter(t, { email: "other@publicworship.life", chapterName: "LA" });
+    await seedBookkeeper(other);
+    const receiptId = await newUploadReceipt(s, { amountCents: 4210, receiptDate: Date.now() });
+
+    // No bookkeeper grant in `s` at all → role gate rejects.
+    await expect(
+      s.as.mutation(api.receipts.dismissDuplicateFlag, { receiptId }),
+    ).rejects.toThrow(ConvexError);
+
+    // A bookkeeper in a DIFFERENT chapter can't touch this receipt.
+    await expect(
+      other.as.mutation(api.receipts.dismissDuplicateFlag, { receiptId }),
+    ).rejects.toThrow(ConvexError);
+  });
 });
 
 // ── updateReceiptFields ──────────────────────────────────────────────────────

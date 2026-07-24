@@ -43,13 +43,21 @@ export const integrationSettings = defineTable({
   // (optional; defaults to https://ollama.com) lets the owner point at a
   // self-hosted Ollama later. `aiProvider` absent = "openrouter" (full
   // back-compat). `aiModel` is the GLOBAL default model for the active provider
-  // used across every AI call site (OCR, coding, assistant); absent = each call
-  // site's own env/hardcoded default. See `integrationSettings.readAiEngineConfig`
+  // used across coding + assistant call sites; absent = each call site's own
+  // env/hardcoded default. See `integrationSettings.readAiEngineConfig`
   // (stored-first → env fallback) + `lib/aiEngine.ts`.
   ollamaApiKey: v.optional(v.string()),
   ollamaBaseUrl: v.optional(v.string()),
   aiProvider: v.optional(v.union(v.literal("openrouter"), v.literal("ollama"))),
   aiModel: v.optional(v.string()),
+  // RECEIPT QUALITY PR (fix 4): a DEDICATED OCR model, separate from the
+  // global chat/coding `aiModel` above. A general reasoning model (e.g. the
+  // owner's global `gemma4:31b`) is tuned for conversation, not document
+  // extraction, and silently chokes on a busy receipt photo — so `aiModel`
+  // must NEVER be the OCR fallback. Absent = the per-provider OCR default
+  // (`glm-ocr` on Ollama, `RECEIPT_OCR_MODEL` env/hardcoded on OpenRouter —
+  // see `receiptInbox.ts#resolveOcrModel`). Never a secret, just a model id.
+  aiOcrModel: v.optional(v.string()),
   updatedAt: v.number(),
   updatedBy: v.id("users"),
 });

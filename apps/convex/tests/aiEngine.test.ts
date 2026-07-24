@@ -32,6 +32,7 @@ function orConfig(over: Partial<AiEngineConfig> = {}): AiEngineConfig {
     baseUrl: "https://openrouter.ai/api",
     apiKey: "test-key",
     model: null,
+    ocrModel: null,
     ...over,
   };
 }
@@ -41,6 +42,7 @@ function olConfig(over: Partial<AiEngineConfig> = {}): AiEngineConfig {
     baseUrl: "https://ollama.com",
     apiKey: "test-key",
     model: null,
+    ocrModel: null,
     ...over,
   };
 }
@@ -105,6 +107,97 @@ describe("chatCompletion — provider routing", () => {
       messages: [],
     });
     expect(calls[0].url).toBe("http://localhost:11434/v1/chat/completions");
+  });
+});
+
+// ── Ollama + images: reroute to the NATIVE /api/chat endpoint ────────────────
+// Root cause of the "could not read a total" bug on a plainly-legible photo:
+// Ollama's OpenAI-compat /v1/chat/completions doesn't reliably ingest
+// `image_url` content parts — it replies 200 as if no image were sent. An
+// image-bearing Ollama call must reroute to Ollama's NATIVE /api/chat, which
+// DOES accept images (via a bare-base64 `images` array, not `image_url`).
+describe("chatCompletion — Ollama + images reroutes to native /api/chat", () => {
+  function imageMessages() {
+    return [
+      { role: "system", content: "You extract totals." },
+      {
+        role: "user",
+        content: [
+          { type: "text", text: "Extract the total." },
+          {
+            type: "image_url",
+            image_url: { url: "data:image/png;base64,QUJD" }, // "ABC"
+          },
+        ],
+      },
+    ];
+  }
+
+  test("an Ollama image request hits /api/chat, strips the base64 prefix into images[], sets stream:false, and parses message.content", async () => {
+    const calls = mockFetch({
+      json: {
+        message: { content: '{"amount": 303.86}' },
+        prompt_eval_count: 120,
+        eval_count: 8,
+      },
+    });
+    const res = await chatCompletion(olConfig(), {
+      model: "glm-ocr",
+      messages: imageMessages(),
+      responseFormat: { type: "json_object" },
+    });
+
+    expect(calls[0].url).toBe("https://ollama.com/api/chat");
+    const body = JSON.parse(calls[0].init.body);
+    expect(body.stream).toBe(false);
+    expect(body.format).toBe("json");
+    expect(body.model).toBe("glm-ocr");
+    // System message: plain text, no `images` key.
+    expect(body.messages[0]).toEqual({ role: "system", content: "You extract totals." });
+    // User message: text parts concatenated, image stripped of its data-URL prefix.
+    expect(body.messages[1].role).toBe("user");
+    expect(body.messages[1].content).toBe("Extract the total.");
+    expect(body.messages[1].images).toEqual(["QUJD"]);
+
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.content).toBe('{"amount": 303.86}');
+  });
+
+  test("an OpenRouter image request still hits /v1/chat/completions with image_url untouched", async () => {
+    const calls = mockFetch({ json: { choices: [{ message: { content: "ok" } }] } });
+    await chatCompletion(orConfig(), {
+      model: "google/gemini-2.0-flash-001",
+      messages: imageMessages(),
+      responseFormat: { type: "json_object" },
+    });
+
+    expect(calls[0].url).toBe("https://openrouter.ai/api/v1/chat/completions");
+    const body = JSON.parse(calls[0].init.body);
+    expect(body.messages).toEqual(imageMessages());
+    expect(body.response_format).toEqual({ type: "json_object" });
+  });
+
+  test("a text-only Ollama request still uses /v1/chat/completions (unchanged)", async () => {
+    const calls = mockFetch({ json: { choices: [{ message: { content: "hi" } }] } });
+    await chatCompletion(olConfig(), {
+      model: "gemma4",
+      messages: [{ role: "user", content: "just text, no image" }],
+    });
+    expect(calls[0].url).toBe("https://ollama.com/v1/chat/completions");
+  });
+
+  test("a non-2xx from /api/chat surfaces as a typed http error naming Ollama", async () => {
+    mockFetch({ ok: false, status: 500, text: "model crashed" });
+    const res = await chatCompletion(olConfig(), {
+      model: "glm-ocr",
+      messages: imageMessages(),
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.kind).toBe("http");
+      expect(res.status).toBe(500);
+      expect(res.message).toContain("Ollama");
+    }
   });
 });
 

@@ -1,19 +1,25 @@
-import { describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { ConvexError } from "convex/values";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { internal } from "../_generated/api";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
+import type { ActionCtx } from "../_generated/server";
 import {
   parseReceiptFromText,
   isReceiptInboxAddress,
   extractEmailAddress,
+  deriveMerchantFromEmail,
   isLikelyInlineAsset,
   appendSkippedNote,
   isMeaningfulPdfText,
   isPdfContentType,
+  ocrReceiptImage,
+  extractReceiptFields,
+  resolveOcrModel,
 } from "../receiptInbox";
 import { verifyStandardWebhookSignature } from "../lib/standardWebhook";
+import type { AiEngineConfig } from "../lib/aiEngine";
 
 /**
  * Inbound-email → OCR → reconcile pipeline (`receiptInbox.ts`). The network
@@ -147,6 +153,268 @@ describe("parseReceiptFromText", () => {
     const r = parseReceiptFromText("Total: $10.00\nDate: 2026-03-14");
     expect(r.date).not.toBeNull();
     expect(new Date(r.date!).getUTCFullYear()).toBe(2026);
+  });
+
+  // ── merchant heuristic ───────────────────────────────────────────────────
+  test("a business-suffix line (the Givebutter case) becomes the merchant", () => {
+    const r = parseReceiptFromText(
+      "Givebutter, Inc.\nThank you for your donation!\nReceipt #12345\nTotal: $50.00\n",
+    );
+    expect(r.merchant).toBe("Givebutter, Inc.");
+  });
+
+  test("an ambiguous body (no plausible merchant line) yields null", () => {
+    const r = parseReceiptFromText("Coffee $4.50\nBagel $3.25\nThanks!");
+    expect(r.merchant).toBeNull();
+  });
+
+  test("a body of pure labels/totals (no business-name line at all) yields null", () => {
+    const r = parseReceiptFromText(
+      "Order #55123456\nSubtotal: $18.00\nTax: $1.62\nTotal: $19.62\n",
+    );
+    expect(r.merchant).toBeNull();
+  });
+});
+
+// ── deriveMerchantFromEmail (the email merchant fallback) ────────────────────
+describe("deriveMerchantFromEmail", () => {
+  test("prefers a real RFC-5322 display name", () => {
+    expect(deriveMerchantFromEmail('"Givebutter" <receipts@givebutter.com>')).toBe(
+      "Givebutter",
+    );
+  });
+
+  test("falls back to the sending domain's label, title-cased", () => {
+    expect(deriveMerchantFromEmail("noreply@doordash.com")).toBe("Doordash");
+  });
+
+  test("skips a generic mail host (no merchant identity of its own)", () => {
+    expect(deriveMerchantFromEmail("someone@gmail.com")).toBeNull();
+  });
+
+  test("falls back to a 'receipt from X' subject fragment when the domain is generic", () => {
+    expect(
+      deriveMerchantFromEmail("someone@gmail.com", "Your receipt from Blue Bottle Coffee"),
+    ).toBe("Blue Bottle Coffee");
+  });
+
+  test("a display name that's itself just the address isn't useful — falls through", () => {
+    expect(deriveMerchantFromEmail("<receipts@givebutter.com>")).toBe("Givebutter");
+  });
+});
+
+// ── resolveOcrModel (fix 4: a DEDICATED OCR model, never the global chat one) ─
+// The root cause: the owner's global `aiModel` (a general reasoning model,
+// e.g. "gemma4:31b") was silently doubling as the OCR model and choking on a
+// busy receipt photo. OCR must resolve its own model, never fall back to the
+// global one.
+describe("resolveOcrModel", () => {
+  test("prefers the per-call override over everything else", () => {
+    expect(
+      resolveOcrModel({ provider: "ollama", ocrModel: "stored-ocr-model" }, "override-model"),
+    ).toBe("override-model");
+  });
+
+  test("prefers the stored dedicated aiOcrModel over the per-provider default", () => {
+    expect(resolveOcrModel({ provider: "ollama", ocrModel: "glm-vision-custom" })).toBe(
+      "glm-vision-custom",
+    );
+  });
+
+  test("with nothing stored, Ollama falls back to glm-ocr — NOT a global chat model", () => {
+    expect(resolveOcrModel({ provider: "ollama", ocrModel: null })).toBe("glm-ocr");
+  });
+
+  test("with nothing stored, OpenRouter falls back to its own OCR default (env or hardcoded)", () => {
+    const result = resolveOcrModel({ provider: "openrouter", ocrModel: null });
+    // Not asserting the exact hardcoded id (env-overridable) — just that it's
+    // NOT empty and NOT accidentally a global chat model slug.
+    expect(result).toBeTruthy();
+  });
+});
+
+// ── ocrReceiptImage / extractReceiptFields — failure-reason mapping ──────────
+// The DoorDash "could not read" fix: a transport failure (no key / rate-
+// limited / out-of-credits) must never collapse into the same opaque message
+// as "the model replied but found no total".
+describe("ocrReceiptImage — typed failure reasons", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    vi.restoreAllMocks();
+  });
+
+  function config(over: Partial<AiEngineConfig> = {}): AiEngineConfig {
+    return {
+      provider: "openrouter",
+      baseUrl: "https://openrouter.ai/api",
+      apiKey: "test-key",
+      model: null,
+      ocrModel: null,
+      ...over,
+    };
+  }
+
+  test("a missing key short-circuits to a no_key error (no fetch, no throw)", async () => {
+    const res = await ocrReceiptImage(config({ apiKey: null }), "data:image/png;base64,x", "m");
+    expect("error" in res && res.error.kind).toBe("no_key");
+  });
+
+  test("a 402 (out of credits) response is preserved as a typed http error", async () => {
+    globalThis.fetch = (async () => ({
+      ok: false,
+      status: 402,
+      text: async () => "insufficient credits",
+      json: async () => ({}),
+    })) as unknown as typeof fetch;
+
+    const res = await ocrReceiptImage(config(), "data:image/png;base64,x", "m");
+    expect("error" in res).toBe(true);
+    if ("error" in res) {
+      expect(res.error.kind).toBe("http");
+      expect(res.error.status).toBe(402);
+    }
+  });
+
+  test("a 429 (rate limited) response is preserved as a typed http error", async () => {
+    globalThis.fetch = (async () => ({
+      ok: false,
+      status: 429,
+      text: async () => "rate limited",
+      json: async () => ({}),
+    })) as unknown as typeof fetch;
+
+    const res = await ocrReceiptImage(config(), "data:image/png;base64,x", "m");
+    expect("error" in res).toBe(true);
+    if ("error" in res) {
+      expect(res.error.kind).toBe("http");
+      expect(res.error.status).toBe(429);
+    }
+  });
+
+  test("a clean reply with no usable amount is a distinct no_total error", async () => {
+    globalThis.fetch = (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [
+          { message: { content: JSON.stringify({ amount: null, confidence: 0 }) } },
+        ],
+      }),
+      text: async () => "",
+    })) as unknown as typeof fetch;
+
+    const res = await ocrReceiptImage(config(), "data:image/png;base64,x", "m");
+    expect("error" in res).toBe(true);
+    if ("error" in res) expect(res.error.kind).toBe("no_total");
+  });
+
+  test("a clean reply with a real amount succeeds", async () => {
+    globalThis.fetch = (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({
+                amount: 42.1,
+                date: "2026-03-14",
+                merchant: "Home Depot",
+                confidence: 0.9,
+              }),
+            },
+          },
+        ],
+      }),
+      text: async () => "",
+    })) as unknown as typeof fetch;
+
+    const res = await ocrReceiptImage(config(), "data:image/png;base64,x", "m");
+    expect("error" in res).toBe(false);
+    if (!("error" in res)) {
+      expect(res.amountCents).toBe(4210);
+      expect(res.merchant).toBe("Home Depot");
+    }
+  });
+});
+
+describe("extractReceiptFields — ocrError translation", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    vi.restoreAllMocks();
+  });
+
+  function config(over: Partial<AiEngineConfig> = {}): AiEngineConfig {
+    return {
+      provider: "openrouter",
+      baseUrl: "https://openrouter.ai/api",
+      apiKey: "test-key",
+      model: null,
+      ocrModel: null,
+      ...over,
+    };
+  }
+  // Image content-type never touches `ctx` (only the PDF branch does) — an
+  // unused stub is enough for a direct unit test.
+  const fakeCtx = {} as ActionCtx;
+  const blob = new Blob(["x"], { type: "image/png" });
+
+  test("no_key → the Settings-pointing message", async () => {
+    const result = await extractReceiptFields(fakeCtx, {
+      storageId: "storage_id" as unknown as Id<"_storage">,
+      config: config({ apiKey: null }),
+      blob,
+      contentType: "image/png",
+      model: "m",
+    });
+    expect(result.ocrError).toBe(
+      "No AI engine key configured — set one in Settings → Integrations.",
+    );
+  });
+
+  test("HTTP 402 → the out-of-credits message naming the provider", async () => {
+    globalThis.fetch = (async () => ({
+      ok: false,
+      status: 402,
+      text: async () => "insufficient credits",
+      json: async () => ({}),
+    })) as unknown as typeof fetch;
+
+    const result = await extractReceiptFields(fakeCtx, {
+      storageId: "storage_id" as unknown as Id<"_storage">,
+      config: config(),
+      blob,
+      contentType: "image/png",
+      model: "m",
+    });
+    expect(result.ocrError).toContain("HTTP 402");
+    expect(result.ocrError).toContain("out of credits");
+  });
+
+  test("read-but-no-total is distinct from a transport failure", async () => {
+    globalThis.fetch = (async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        choices: [
+          { message: { content: JSON.stringify({ amount: null, confidence: 0 }) } },
+        ],
+      }),
+      text: async () => "",
+    })) as unknown as typeof fetch;
+
+    const result = await extractReceiptFields(fakeCtx, {
+      storageId: "storage_id" as unknown as Id<"_storage">,
+      config: config(),
+      blob,
+      contentType: "image/png",
+      model: "m",
+    });
+    expect(result.ocrError).toBe(
+      "The model read the receipt but couldn't find a clear total — try Retry with a different model.",
+    );
   });
 });
 
@@ -673,6 +941,58 @@ describe("processInboundReceipt", () => {
     expect(txnBRow?.status).toBe("categorized");
     const links = await run(t, (ctx) => ctx.db.query("receiptLinks").collect());
     expect(links).toHaveLength(1); // only the first email's link
+  });
+
+  // FIX 1 (merchant extraction): when neither the body parse nor OCR yields a
+  // merchant, the pipeline falls back to one derived from the sender email —
+  // here, a Givebutter-style display name — so `ocrMerchant` isn't left
+  // blank just because the receipt text itself carried no business name.
+  test("no extracted merchant falls back to the sender's display name", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, { email: "receipts@givebutter.com" });
+
+    const { receiptId } = await t.mutation(internal.receiptInbox.recordInboundReceipt, {
+      envelope: {
+        emailId: "email_merchant_fallback_1",
+        fromEmail: '"Givebutter" <receipts@givebutter.com>',
+        // A subject with a total but no plausible merchant-name line — the
+        // body parser's own heuristic finds no merchant here.
+        subject: "Receipt — Total: $75.00",
+      },
+    });
+    await t.action(internal.receiptInbox.processInboundReceipt, { receiptId });
+
+    const receipts = await run(t, (ctx) => ctx.db.query("receipts").take(5));
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0].ocrMerchant).toBe("Givebutter");
+    expect(receipts[0].merchant).toBe("Givebutter");
+  });
+
+  // A real extracted merchant is NEVER overwritten by the email fallback —
+  // the sender domain here ("differentcompany.com") would derive a DIFFERENT
+  // merchant than the one the body text itself confidently names, so this
+  // fails loudly if the fallback ever clobbers a real read.
+  test("a real extracted merchant is never overwritten by the sender fallback", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, { email: "billing@differentcompany.com" });
+
+    const { receiptId } = await t.mutation(internal.receiptInbox.recordInboundReceipt, {
+      envelope: {
+        emailId: "email_merchant_fallback_2",
+        fromEmail: "billing@differentcompany.com",
+        // A confident merchant line on its own (no price on the same line —
+        // see the merchant heuristic's price-line guard), plus a total on a
+        // separate line.
+        subject: "Givebutter, Inc.\nTotal: $75.00",
+      },
+    });
+    await t.action(internal.receiptInbox.processInboundReceipt, { receiptId });
+
+    const receipts = await run(t, (ctx) => ctx.db.query("receipts").take(5));
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0].ocrMerchant).toBe("Givebutter, Inc.");
   });
 });
 

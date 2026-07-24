@@ -563,14 +563,20 @@ async function runSmsPipeline(
       const buf = await blob.arrayBuffer();
       const contentType = item.contentType ?? blob.type ?? "application/octet-stream";
       const dataUrl = `data:${contentType};base64,${arrayBufferToBase64(buf)}`;
+      // `ocrReceiptImage` now returns a typed `{ error }` (never a bare null)
+      // on any failure (see `receiptInbox.ts`'s own doc) — this channel
+      // doesn't surface the specific reason yet (out of scope here; email/
+      // upload/retry do — see `receiptInbox.ts#extractReceiptFields`), so a
+      // failure just degrades to blank OCR fields, same behavior as before.
       const ocr = await ocrReceiptImage(config, dataUrl, model);
+      const ocrOk = !("error" in ocr);
       extracted.push({
         storageId,
         sourceKind: "attachment",
-        ocrAmountCents: ocr?.amountCents ?? undefined,
-        ocrDate: ocr?.date ?? undefined,
-        ocrMerchant: ocr?.merchant ?? undefined,
-        ocrConfidence: ocr?.confidence ?? undefined,
+        ocrAmountCents: ocrOk ? (ocr.amountCents ?? undefined) : undefined,
+        ocrDate: ocrOk ? (ocr.date ?? undefined) : undefined,
+        ocrMerchant: ocrOk ? (ocr.merchant ?? undefined) : undefined,
+        ocrConfidence: ocrOk ? (ocr.confidence ?? undefined) : undefined,
         ocrModel: model,
         candidateTransactionIds: [],
       });
@@ -592,6 +598,7 @@ async function runSmsPipeline(
         sourceKind: "body",
         ocrAmountCents: parsed.amountCents ?? undefined,
         ocrDate: parsed.date ?? undefined,
+        ocrMerchant: parsed.merchant ?? undefined,
         ocrConfidence: parsed.amountCents != null ? 0.5 : 0,
         candidateTransactionIds: [],
       });
