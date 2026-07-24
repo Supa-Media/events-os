@@ -52,6 +52,7 @@ import { addCampaignPowerDefaults } from "./0036_add_campaign_power_defaults";
 import { backfillContactOnlyPeople } from "./0038_backfill_contact_only_people";
 import { backfillPersonEmails } from "./0039_backfill_person_emails";
 import { migrateLegacyAudiences } from "./0040_migrate_legacy_audiences";
+import { migrateGuestAudiences } from "./0041_migrate_guest_audiences";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -177,4 +178,12 @@ export const MIGRATIONS: Migration[] = [
   // on the legacy source (see 0040's own doc for why). Idempotent (rows
   // already `person_filters`, and every "guests" row, are skipped). See 0040.
   migrateLegacyAudiences,
+  // Person-centric audiences Phase 3 (cont'd) — 0037's rsvp→people backfill
+  // has now run in prod, so this repoints "guests"-sourced audiences that
+  // carry a specific `filters.eventId` onto `person_filters`
+  // {attendedEventId}; a "guests" row with no `eventId` ("attended anything,
+  // ever") has no faithful person_filters equivalent today and stays on the
+  // legacy source (see 0041's own doc). Idempotent (already-migrated rows,
+  // unscoped "guests" rows, and non-"guests" rows are all skipped). See 0041.
+  migrateGuestAudiences,
 ];
