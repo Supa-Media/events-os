@@ -57,9 +57,16 @@ on green).
   implementation, most recon.
 - **opus**: only genuinely complex reasoning — e.g. AI-quality evaluation
   design, gnarly cross-system migrations. Prefer sonnet when in doubt.
-- Launch independent agents in one message; run them in the background and
-  synthesize as notifications arrive. Don't poll; don't duplicate their work
-  while waiting.
+- Launch independent agents in one message and run them in the background.
+- **Poll every 5 minutes, always (founder directive 2026-07-24).** Never
+  passively wait for completion notifications and never just trust a
+  subagent's self-report: while ANY subagent, CI run, or deploy is
+  outstanding, keep a 5-minute send_later check-in armed that (a) checks
+  each in-flight branch for new commits (`git fetch` + `git log`), (b)
+  checks CI/deploy runs on open PRs, (c) spot-verifies subagent claims
+  against the actual repo/CI state, and (d) re-arms itself. Notifications
+  are a bonus wake-up, not the mechanism. Don't duplicate agents' work
+  while waiting — verify outcomes, don't redo them.
 
 ## Standing product principles (from the founders — apply to every plan)
 
@@ -313,8 +320,9 @@ Before finishing a run of this skill, you MUST:
 ### 2026-07-23 — Run 1 addendum (dispatch phase)
 - `.gitignore` ignores `.claude/*` (only settings.json whitelisted) — this
   skill needed an explicit `!.claude/skills/` exception to be committable.
-- This user declined a `send_later` self check-in for PR babysitting — rely
-  on PR webhook events; don't re-attempt scheduled wakeups unless asked.
+- [SUPERSEDED 2026-07-24 by the poll-every-5-minutes directive above — the
+  founder now REQUIRES scheduled polling; webhook subscription was broken
+  all session anyway.]
 - Sequencing rule proven immediately: two workstreams both editing
   ChapterView.tsx (backer-header removal + clickable-tiles) — hold the
   second until the first's agent completes rather than launching both and
