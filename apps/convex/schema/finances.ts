@@ -1237,6 +1237,31 @@ export const receipts = defineTable({
   // real hash collision among a chapter's receipts is rare).
   .index("by_sha256", ["fileSha256"]);
 
+// ── Failed-extraction sweep marker (RATE-LIMIT-SAFE bulk re-extract) ────────
+/** ONE row per chapter — is a `receipts.ts#runFailedRetrySweep` chain
+ *  currently running? The owner's mass-upload (~80 receipts) scheduled every
+ *  extraction at `runAfter(0)` and tripped Ollama's rate limit; the sweep
+ *  fixes that by re-extracting FAILED receipts one at a time with a throttle,
+ *  self-rescheduling until done. This row exists purely so a double-tap on
+ *  "Re-extract failed" (or two bookkeepers clicking it seconds apart) can't
+ *  spin up a SECOND overlapping chain that would double the request rate
+ *  right back into the same rate limit — see `receipts.ts#retryFailedExtractions`.
+ *
+ *  `inProgress` is cleared by the sweep's own terminal step (no failures
+ *  left, its scan cap hit, or its consecutive-backoff cap hit — see
+ *  `finishFailedRetrySweep`). `updatedAt` is a HEARTBEAT the sweep bumps on
+ *  every self-reschedule (`touchFailedRetrySweep`), not just at start/end —
+ *  `retryFailedExtractions` treats an `inProgress` row whose `updatedAt` is
+ *  older than `SWEEP_STALE_MS` as an abandoned chain (the action crashed past
+ *  its own try/catch) and lets a fresh sweep start rather than blocking
+ *  forever on a marker nothing will ever clear. */
+export const receiptSweepState = defineTable({
+  chapterId: v.id("chapters"),
+  inProgress: v.boolean(),
+  startedAt: v.number(),
+  updatedAt: v.number(),
+}).index("by_chapter", ["chapterId"]);
+
 /** ONE receipt↔transaction link — the many-to-many join that is the SOURCE OF
  *  TRUTH for which receipts back which charges. Written ONLY through
  *  `lib/receiptLinks.ts` (`linkReceiptToTransaction`/`unlinkReceiptFromTransaction`),

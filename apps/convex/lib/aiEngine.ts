@@ -83,7 +83,12 @@ export type ChatErrorKind = "no_key" | "http" | "network" | "timeout" | "parse";
 /** A typed failure — never thrown, always returned. `retryable` marks the
  *  transient failures (429 / 5xx / timeout) an aiActions-style loop backs off
  *  on; `message` is human-readable and NAMES the model + provider so a persisted
- *  failure reason is actionable ("model X not available", not "AI error"). */
+ *  failure reason is actionable ("model X not available", not "AI error").
+ *  `retryAfterSeconds` carries a provider-declared `Retry-After` header
+ *  (seconds, or an HTTP-date normalized to seconds-from-now) when the
+ *  provider sent one on a non-ok response — `null`/absent when it didn't. A
+ *  caller backing off (e.g. `receipts.ts`'s failed-extraction sweep) should
+ *  treat this as a FLOOR on its own backoff delay, never shortening below it. */
 export interface ChatCompletionError {
   ok: false;
   kind: ChatErrorKind;
@@ -91,6 +96,7 @@ export interface ChatCompletionError {
   message: string;
   bodySnippet?: string;
   retryable: boolean;
+  retryAfterSeconds?: number | null;
 }
 
 export type ChatCompletionResult = ChatCompletionSuccess | ChatCompletionError;
@@ -128,6 +134,26 @@ async function safeText(res: Response): Promise<string> {
 /** Trim a trailing slash so `${base}/v1/...` never doubles up. */
 function origin(config: AiEngineConfig): string {
   return config.baseUrl.replace(/\/+$/, "");
+}
+
+/** Parse a `Retry-After` response header into whole seconds-from-now.
+ *  Accepts either form the spec allows: a delay in seconds ("120") or an
+ *  HTTP-date ("Wed, 21 Oct 2026 07:28:00 GMT"), normalizing the latter to
+ *  seconds-from-now. Returns `null` when the header is absent, unparseable,
+ *  or non-positive — callers fall back to their own backoff schedule. */
+function parseRetryAfterSeconds(res: Response): number | null {
+  const header = res.headers?.get?.("Retry-After");
+  if (!header) return null;
+  const asSeconds = Number(header);
+  if (Number.isFinite(asSeconds)) {
+    return asSeconds > 0 ? Math.ceil(asSeconds) : null;
+  }
+  const asDate = Date.parse(header);
+  if (Number.isFinite(asDate)) {
+    const deltaSeconds = Math.ceil((asDate - Date.now()) / 1000);
+    return deltaSeconds > 0 ? deltaSeconds : null;
+  }
+  return null;
 }
 
 function chatUrl(config: AiEngineConfig): string {
@@ -271,6 +297,7 @@ async function ollamaNativeChatCompletion(
       kind: "http",
       status: res.status,
       retryable,
+      retryAfterSeconds: parseRetryAfterSeconds(res),
       bodySnippet: bodyText.slice(0, 300),
       message: `${label} returned ${res.status} for model "${request.model}": ${
         bodyText.slice(0, 200) || "(no body)"
@@ -398,6 +425,7 @@ export async function chatCompletion(
       kind: "http",
       status: res.status,
       retryable,
+      retryAfterSeconds: parseRetryAfterSeconds(res),
       bodySnippet: bodyText.slice(0, 300),
       message: `${label} returned ${res.status} for model "${request.model}": ${
         bodyText.slice(0, 200) || "(no body)"

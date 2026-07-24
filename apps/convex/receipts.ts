@@ -84,6 +84,61 @@ const MAX_UPLOAD_BATCH = 25;
  *  quick-scan callout, not an exhaustive report. */
 const MAX_DUPLICATE_MATCHES = 5;
 
+// ── Throttled bulk re-extract (RATE-LIMIT-SAFE) ─────────────────────────────
+/**
+ * The owner mass-uploaded ~80 receipts; `submitUploadedReceipts` scheduled
+ * every one of them at `runAfter(0)` — ~80 concurrent extraction calls hit
+ * Ollama's rate limit (HTTP 429) at once, leaving most receipts stuck with
+ * `ocrError` set. Two fixes share this one constant:
+ *  - `submitUploadedReceipts` STAGGERS its scheduled extractions
+ *    `i * THROTTLE_MS` apart instead of firing all at `runAfter(0)` — a small
+ *    latency cost (a 25-file batch finishes ~100s later instead of instantly)
+ *    for staying under a subscription rate limit.
+ *  - `runFailedRetrySweep` (the "re-extract all failed" bulk retry) processes
+ *    exactly ONE failed receipt per invocation, then self-reschedules the next
+ *    one `THROTTLE_MS` later via `scheduler.runAfter` — SERIAL, never
+ *    concurrent, so a bulk retry can never reproduce the original incident.
+ * 4s is conservative: comfortably under one call every few seconds, which
+ * stays well clear of any sane per-minute subscription cap while still
+ * clearing an 80-receipt backlog in a few minutes.
+ */
+const THROTTLE_MS = 4000;
+/** `runFailedRetrySweep`'s backoff schedule after a 429/retryable extraction
+ *  failure: exponential starting at `SWEEP_BACKOFF_BASE_MS`, doubling per
+ *  consecutive backoff, capped at `SWEEP_BACKOFF_CAP_MS`. A provider-declared
+ *  `Retry-After` (threaded through `aiEngine.ts` → `receiptInbox.ts`'s
+ *  `ocrRetryAfterSeconds`) is respected as a FLOOR — the exponential delay
+ *  only ever lengthens it, never shortens it. 30s→60s→120s→240s→300s(capped)
+ *  comfortably outlasts a typical per-minute rate-limit window without
+ *  hammering the engine while it's still cooling down. */
+const SWEEP_BACKOFF_BASE_MS = 30_000;
+const SWEEP_BACKOFF_CAP_MS = 5 * 60_000;
+/** Stop the sweep after this many CONSECUTIVE backoffs (429s in a row, with
+ *  no successful/permanent-failure receipt in between) — at that point the
+ *  engine is very likely down/misconfigured, not just momentarily busy.
+ *  Leaves the remaining failed receipts for a later manual re-run instead of
+ *  looping (and rescheduling) for hours. Resets to 0 on every receipt that
+ *  actually completes (success OR a permanent, non-retryable failure). */
+const SWEEP_MAX_CONSECUTIVE_BACKOFFS = 6;
+/** Bound one sweep CHAIN's total work — a backfill session (mirrors
+ *  `MAX_UPLOAD_BATCH`'s "a batch, not an unbounded bulk import" discipline),
+ *  not an unbounded background job. A chapter with more failures than this
+ *  needs the button clicked again once the first chain finishes. */
+const SWEEP_MAX_RECEIPTS = 300;
+/** Bounded scan for "find the next failed receipt after `cursor`" / "count
+ *  failed receipts" — mirrors `DUPLICATE_SCAN_LIMIT`'s "generous but bounded"
+ *  discipline; a chapter with more receipts than this only sees the count/
+ *  next-candidate within its most-recent `SWEEP_SCAN_LIMIT` receipts. */
+const SWEEP_SCAN_LIMIT = 500;
+/** An `inProgress` sweep marker whose heartbeat (`updatedAt`) is older than
+ *  this is treated as an ABANDONED chain (the action crashed past its own
+ *  try/catch, or the deployment restarted mid-sweep) — `retryFailedExtractions`
+ *  lets a fresh sweep start rather than blocking forever on a marker nothing
+ *  will ever clear. Generous vs. the heartbeat cadence (every `THROTTLE_MS` in
+ *  the normal case, every backoff step at worst `SWEEP_BACKOFF_CAP_MS` apart
+ *  — so 15 minutes is several backoff-steps of slack). */
+const SWEEP_STALE_MS = 15 * 60_000;
+
 // ── Small shared projections ─────────────────────────────────────────────────
 /** A linked/candidate/duplicate-of transaction, resolved to display fields. */
 const txnRef = v.object({
@@ -981,7 +1036,13 @@ const uploadOutcome = v.object({
  * want to see it) but flagged `duplicateOfReceiptId` and NEVER scheduled for
  * OCR/matching — there's nothing new to learn from re-processing the same
  * bytes. Everything else schedules `processUploadedReceipt` (OCR → candidate
- * match → maybe auto-attach) to run right after this mutation commits.
+ * match → maybe auto-attach) — STAGGERED `THROTTLE_MS` apart (the i-th
+ * scheduled extraction runs at `i * THROTTLE_MS`) instead of all at once. A
+ * mass upload of ~80 receipts once scheduled every extraction at `runAfter(0)`
+ * — ~80 concurrent calls tripped Ollama's rate limit (HTTP 429), leaving most
+ * receipts stuck with `ocrError` set. Staggering trades a little latency (the
+ * last file in a full `MAX_UPLOAD_BATCH` batch starts ~96s after this mutation
+ * returns) for never firing more than one extraction call at a time.
  */
 export const submitUploadedReceipts = mutation({
   args: {
@@ -1010,6 +1071,14 @@ export const submitUploadedReceipts = mutation({
     }
 
     const results: (typeof uploadOutcome.type)[] = [];
+    // STAGGERED scheduling (the fix for the mass-upload rate-limit incident):
+    // only receipts that actually get scheduled (a dupe never does — see
+    // below) advance this counter, so the gap between two REAL extraction
+    // calls is always exactly `THROTTLE_MS`, never widened by a run of
+    // duplicates in the batch. Trades a little latency (a 25-file batch's
+    // last extraction starts up to 24 * THROTTLE_MS ≈ 96s after this mutation
+    // returns) for never firing more than one extraction call at once.
+    let scheduledCount = 0;
     for (let i = 0; i < args.storageIds.length; i++) {
       const storageId = args.storageIds[i];
       const filename = args.filenames?.[i] ?? undefined;
@@ -1030,9 +1099,12 @@ export const submitUploadedReceipts = mutation({
       });
 
       if (!duplicateOfReceiptId) {
-        await ctx.scheduler.runAfter(0, internal.receipts.processUploadedReceipt, {
-          receiptId,
-        });
+        await ctx.scheduler.runAfter(
+          scheduledCount * THROTTLE_MS,
+          internal.receipts.processUploadedReceipt,
+          { receiptId },
+        );
+        scheduledCount++;
       }
       results.push({ storageId, receiptId, duplicate: duplicateOfReceiptId != null });
     }
@@ -1426,25 +1498,31 @@ export const runRetryExtraction = internalAction({
   },
 });
 
-async function runRetryPipeline(
-  ctx: ActionCtx,
-  receiptId: Id<"receipts">,
-  model: string | undefined,
-): Promise<void> {
-  const receipt = (await ctx.runQuery(internal.receipts.getReceiptForProcessing, {
-    receiptId,
-  })) as Doc<"receipts"> | null;
-  if (!receipt) return;
+/** Either a re-extraction READ (never yet committed to the receipt — the
+ *  caller decides whether/how to persist it) or a signal that the stored
+ *  file itself is gone. Shared by `runRetryPipeline` (the single-receipt
+ *  retry, which always commits) and `runSweepRetryPipeline` (the bulk sweep,
+ *  which withholds the commit on a RETRYABLE failure — see that function's
+ *  doc) so the two never drift on what "re-run extraction" means. */
+type RetryExtractionComputation =
+  | { missingFile: true }
+  | { missingFile?: false; result: OcrRoutingResult; candidateTransactionIds: Id<"transactions">[] };
 
+/**
+ * Re-run extraction on ONE receipt's already-stored file: redo the SAME
+ * routing every ingest path uses (`extractReceiptFields`), apply the email
+ * merchant fallback, and refresh the candidate shortlist — WITHOUT writing
+ * anything. `runRetryPipeline` and `runSweepRetryPipeline` both call this and
+ * then decide independently how (or whether) to persist the read.
+ */
+async function computeRetryExtraction(
+  ctx: ActionCtx,
+  receipt: Doc<"receipts">,
+  model: string | undefined,
+): Promise<RetryExtractionComputation> {
   const blob = await ctx.storage.get(receipt.storageId);
-  if (!blob) {
-    await ctx.runMutation(internal.receipts.applyRetryExtraction, {
-      receiptId,
-      candidateTransactionIds: receipt.candidateTransactionIds ?? [],
-      ocrError: "The stored file could not be found — it may have been deleted.",
-    });
-    return;
-  }
+  if (!blob) return { missingFile: true };
+
   const contentType =
     (await ctx.runQuery(internal.receipts.getStorageContentType, {
       storageId: receipt.storageId,
@@ -1510,6 +1588,30 @@ async function runRetryPipeline(
     candidateTransactionIds = candidates.map((c) => c.transactionId);
   }
 
+  return { result, candidateTransactionIds };
+}
+
+async function runRetryPipeline(
+  ctx: ActionCtx,
+  receiptId: Id<"receipts">,
+  model: string | undefined,
+): Promise<void> {
+  const receipt = (await ctx.runQuery(internal.receipts.getReceiptForProcessing, {
+    receiptId,
+  })) as Doc<"receipts"> | null;
+  if (!receipt) return;
+
+  const computed = await computeRetryExtraction(ctx, receipt, model);
+  if (computed.missingFile) {
+    await ctx.runMutation(internal.receipts.applyRetryExtraction, {
+      receiptId,
+      candidateTransactionIds: receipt.candidateTransactionIds ?? [],
+      ocrError: "The stored file could not be found — it may have been deleted.",
+    });
+    return;
+  }
+
+  const { result, candidateTransactionIds } = computed;
   await ctx.runMutation(internal.receipts.applyRetryExtraction, {
     receiptId,
     ocrAmountCents: result.ocrAmountCents,
@@ -1521,3 +1623,388 @@ async function runRetryPipeline(
     candidateTransactionIds,
   });
 }
+
+// ── Bulk re-extract of FAILED receipts (rate-limit-safe sweep) ──────────────
+/**
+ * One receipt's outcome from a sweep attempt:
+ *  - `"success"` — extraction found a usable read; `ocrError` is cleared.
+ *  - `"permanent_failure"` — extraction failed for a reason a retry can't fix
+ *    (no_total, unsupported file type, missing file, a non-retryable engine
+ *    error) — `ocrError` IS written (the real reason), and the sweep moves on
+ *    to the next receipt.
+ *  - `"retryable_failure"` — a 429 or another transient transport error
+ *    (`OcrRoutingResult.ocrRetryable`). Deliberately NEVER persisted — see
+ *    `runSweepRetryPipeline`'s doc — so the sweep backs off and retries the
+ *    SAME receipt rather than recording a transient blip as if it were final.
+ */
+type SweepAttemptOutcome =
+  | { status: "success" }
+  | { status: "permanent_failure" }
+  | { status: "retryable_failure"; retryAfterSeconds?: number };
+
+/**
+ * The bulk sweep's per-receipt worker: reuses `computeRetryExtraction`
+ * (the SAME routing + email-merchant fallback + candidate match as the
+ * single-receipt retry), but — unlike `runRetryPipeline` — does NOT always
+ * commit the read. On a RETRYABLE failure (a rate limit or other transient
+ * transport error), the receipt's `ocrError` is left exactly as it was; only
+ * a SUCCESS or a PERMANENT failure gets written via `applyRetryExtraction`.
+ * This is what "don't clear/overwrite ocrError as a permanent failure" (the
+ * rate-limit-handling requirement) means in practice: a 429 never looks like
+ * a settled verdict on the receipt, and the sweep's caller (`runFailedRetrySweep`)
+ * decides how long to wait before trying this exact receipt again.
+ */
+async function runSweepRetryPipeline(
+  ctx: ActionCtx,
+  receiptId: Id<"receipts">,
+  model: string | undefined,
+): Promise<SweepAttemptOutcome> {
+  const receipt = (await ctx.runQuery(internal.receipts.getReceiptForProcessing, {
+    receiptId,
+  })) as Doc<"receipts"> | null;
+  // Gone (deleted mid-sweep) — nothing to retry; the sweep's cursor already
+  // advances past it once `findNextFailedReceipt` stops returning it.
+  if (!receipt) return { status: "permanent_failure" };
+
+  const computed = await computeRetryExtraction(ctx, receipt, model);
+  if (computed.missingFile) {
+    await ctx.runMutation(internal.receipts.applyRetryExtraction, {
+      receiptId,
+      candidateTransactionIds: receipt.candidateTransactionIds ?? [],
+      ocrError: "The stored file could not be found — it may have been deleted.",
+    });
+    return { status: "permanent_failure" };
+  }
+
+  const { result, candidateTransactionIds } = computed;
+  if (result.ocrError && result.ocrRetryable) {
+    return { status: "retryable_failure", retryAfterSeconds: result.ocrRetryAfterSeconds };
+  }
+
+  await ctx.runMutation(internal.receipts.applyRetryExtraction, {
+    receiptId,
+    ocrAmountCents: result.ocrAmountCents,
+    ocrDate: result.ocrDate,
+    ocrMerchant: result.ocrMerchant,
+    ocrConfidence: result.ocrConfidence,
+    ocrModel: result.ocrModel,
+    ocrError: result.ocrError,
+    candidateTransactionIds,
+  });
+  return { status: result.ocrError ? "permanent_failure" : "success" };
+}
+
+/** Bounded scan for the next failed receipt in a chapter, newest-attempted
+ *  LAST — i.e. oldest-`_creationTime`-first among receipts with `ocrError`
+ *  set that this sweep chain hasn't already touched (`afterCreationTime`,
+ *  the chain's monotonic watermark). Excludes a receipt that's itself a
+ *  duplicate (`duplicateOfReceiptId` set) — same as every other receipt read
+ *  in this file, a duplicate is hidden, not something worth spending a rate-
+ *  limited extraction call on. Mirrors `computeSoftDuplicates`' bounded-scan
+ *  discipline (`SWEEP_SCAN_LIMIT`, same order of magnitude as
+ *  `DUPLICATE_SCAN_LIMIT`) rather than a dedicated index — a chapter's
+ *  receipt count fits comfortably in one bounded page at this scale. */
+export const findNextFailedReceipt = internalQuery({
+  args: {
+    chapterId: v.id("chapters"),
+    afterCreationTime: v.optional(v.number()),
+  },
+  returns: v.union(v.any(), v.null()),
+  handler: async (ctx, { chapterId, afterCreationTime }) => {
+    const scan = await ctx.db
+      .query("receipts")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .order("asc")
+      .take(SWEEP_SCAN_LIMIT);
+    const candidate = scan.find(
+      (r) =>
+        r.ocrError != null &&
+        r.duplicateOfReceiptId == null &&
+        (afterCreationTime == null || r._creationTime > afterCreationTime),
+    );
+    return candidate ?? null;
+  },
+});
+
+/** Count of a chapter's currently-failed receipts (`ocrError` set, not a
+ *  duplicate) within the same bounded `SWEEP_SCAN_LIMIT` window
+ *  `findNextFailedReceipt` scans — powers `failedExtractionStatus`'s "Re-
+ *  extract N failed" button label and `retryFailedExtractions`' short-circuit
+ *  when there's nothing to do. A chapter with more receipts than the scan
+ *  window undercounts (bounded-read tradeoff, same discipline as
+ *  `computeSoftDuplicates`) rather than doing an unbounded count. */
+async function countFailedExtractions(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<number> {
+  const scan = await ctx.db
+    .query("receipts")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .order("desc")
+    .take(SWEEP_SCAN_LIMIT);
+  return scan.filter((r) => r.ocrError != null && r.duplicateOfReceiptId == null).length;
+}
+
+/** Read this chapter's `receiptSweepState` singleton row, if any. */
+async function getSweepState(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<Doc<"receiptSweepState"> | null> {
+  return await ctx.db
+    .query("receiptSweepState")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .unique();
+}
+
+/** True iff this chapter's sweep marker says a chain is running AND its
+ *  heartbeat is still fresh (see `SWEEP_STALE_MS`'s doc — a stale marker is
+ *  treated as an abandoned chain, not a real one). */
+function sweepIsActive(state: Doc<"receiptSweepState"> | null): boolean {
+  return !!state?.inProgress && Date.now() - state.updatedAt < SWEEP_STALE_MS;
+}
+
+/**
+ * `{ failedCount, sweepInProgress }` — powers the mobile Receipts screen's
+ * "Re-extract N failed" control: shown (enabled) when `failedCount > 0`,
+ * disabled/spinning while `sweepInProgress`. Bookkeeper+, chapter-only; a
+ * caller with no chapter yet sees the all-zero/false default rather than an
+ * error (mirrors every other `getChapterIdOrNull`-based read here).
+ */
+export const failedExtractionStatus = query({
+  args: {},
+  returns: v.object({ failedCount: v.number(), sweepInProgress: v.boolean() }),
+  handler: async (ctx) => {
+    const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
+    if (!chapterId) return { failedCount: 0, sweepInProgress: false };
+    await requireFinanceRole(ctx, chapterId, "bookkeeper");
+
+    const [failedCount, state] = await Promise.all([
+      countFailedExtractions(ctx, chapterId),
+      getSweepState(ctx, chapterId),
+    ]);
+    return { failedCount, sweepInProgress: sweepIsActive(state) };
+  },
+});
+
+/**
+ * Kick off (or no-op into) a THROTTLED bulk re-extraction of every currently
+ * failed receipt in the caller's chapter — the fix for the mass-upload
+ * rate-limit incident: re-extracting ~80 failures at once would just trip
+ * the SAME 429s that created them. Instead this schedules exactly ONE
+ * self-chaining internal action (`runFailedRetrySweep`) that processes
+ * failed receipts ONE AT A TIME, `THROTTLE_MS` apart, backing off
+ * exponentially on a rate-limited attempt (see that action's doc).
+ *
+ * IDEMPOTENT: if a sweep for this chapter is already active
+ * (`sweepIsActive`), this is a no-op (`started: false`) — a double-tap on
+ * the UI button, or two bookkeepers clicking it seconds apart, can't spin up
+ * a second overlapping chain that would double the request rate right back
+ * into the rate limit. A STALE marker (a crashed chain — see `SWEEP_STALE_MS`)
+ * is treated as not-running, so this can't wedge forever.
+ *
+ * `model` is the SAME optional per-call override `retryExtraction` (the
+ * single-receipt retry) takes — threaded through every extraction in the
+ * sweep, not just the first. Bookkeeper+, chapter-only.
+ */
+export const retryFailedExtractions = mutation({
+  args: { model: v.optional(v.string()) },
+  returns: v.object({ started: v.boolean(), failedCount: v.number() }),
+  handler: async (ctx, args) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireFinanceRole(ctx, chapterId, "bookkeeper");
+
+    const failedCount = await countFailedExtractions(ctx, chapterId);
+    if (failedCount === 0) return { started: false, failedCount: 0 };
+
+    const state = await getSweepState(ctx, chapterId);
+    if (sweepIsActive(state)) {
+      // Already running — don't double the request rate against the engine.
+      return { started: false, failedCount };
+    }
+
+    const now = Date.now();
+    if (state) {
+      await ctx.db.patch(state._id, { inProgress: true, startedAt: now, updatedAt: now });
+    } else {
+      await ctx.db.insert("receiptSweepState", {
+        chapterId,
+        inProgress: true,
+        startedAt: now,
+        updatedAt: now,
+      });
+    }
+
+    const model = args.model?.trim() ? args.model.trim() : undefined;
+    await ctx.scheduler.runAfter(0, internal.receipts.runFailedRetrySweep, {
+      chapterId,
+      model,
+    });
+    return { started: true, failedCount };
+  },
+});
+
+/** Bump this chapter's sweep-state heartbeat (`updatedAt`) — called on every
+ *  `runFailedRetrySweep` self-reschedule (both the normal-pace and backoff
+ *  paths) so a long but healthy chain never reads as stale mid-run; only a
+ *  chain that stops rescheduling entirely (a crash) goes quiet. */
+export const touchFailedRetrySweep = internalMutation({
+  args: { chapterId: v.id("chapters") },
+  returns: v.null(),
+  handler: async (ctx, { chapterId }) => {
+    const state = await ctx.db
+      .query("receiptSweepState")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .unique();
+    if (state) await ctx.db.patch(state._id, { updatedAt: Date.now() });
+    return null;
+  },
+});
+
+/** Clear this chapter's `inProgress` marker — the sweep's terminal step
+ *  (no failures left, its scan cap hit, or its consecutive-backoff cap hit).
+ *  A no-op if the row is already gone/clear. */
+export const finishFailedRetrySweep = internalMutation({
+  args: { chapterId: v.id("chapters") },
+  returns: v.null(),
+  handler: async (ctx, { chapterId }) => {
+    const state = await ctx.db
+      .query("receiptSweepState")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .unique();
+    if (state) await ctx.db.patch(state._id, { inProgress: false, updatedAt: Date.now() });
+    return null;
+  },
+});
+
+/**
+ * The SELF-CHAINING sweep: find the next failed receipt after `cursor`
+ * (`findNextFailedReceipt`), re-run extraction on exactly ONE of them
+ * (`runSweepRetryPipeline`), then reschedule itself for the next — SERIAL,
+ * never concurrent, so a bulk retry can't reproduce the rate-limit incident
+ * it exists to fix.
+ *
+ * Three outcomes per receipt:
+ *  - `"success"` / `"permanent_failure"` — the receipt is DONE (its `ocrError`
+ *    is written, cleared on success); `cursor` advances past it
+ *    (`_creationTime`) and `attempt` resets to 0. Reschedules at the normal
+ *    `THROTTLE_MS` pace.
+ *  - `"retryable_failure"` (a 429/transient transport error) — `cursor`
+ *    does NOT advance (the SAME receipt is retried next) and `attempt`
+ *    increments. The delay is exponential (`SWEEP_BACKOFF_BASE_MS *
+ *    2^attempt`, capped at `SWEEP_BACKOFF_CAP_MS`), or the provider's own
+ *    `Retry-After` when longer — never shorter than the exponential floor.
+ *    After `SWEEP_MAX_CONSECUTIVE_BACKOFFS` in a row, the sweep STOPS
+ *    (logs it) and leaves the rest for a later manual re-run — the engine is
+ *    very likely down, not just momentarily busy.
+ *
+ * Stops (clearing the `inProgress` marker) when `findNextFailedReceipt`
+ * finds nothing left, when the chain hits its `SWEEP_MAX_RECEIPTS` total-work
+ * cap (logged), or when the consecutive-backoff cap is hit (logged).
+ */
+export const runFailedRetrySweep = internalAction({
+  args: {
+    chapterId: v.id("chapters"),
+    model: v.optional(v.string()),
+    // The watermark: only a failed receipt with `_creationTime` strictly
+    // after this has NOT yet been attempted by this chain.
+    cursor: v.optional(v.number()),
+    // Consecutive-backoff counter — resets to 0 whenever a receipt actually
+    // completes (success or permanent failure); stops the chain at
+    // `SWEEP_MAX_CONSECUTIVE_BACKOFFS`.
+    attempt: v.optional(v.number()),
+    // Total receipts this CHAIN has completed so far — bounds one chain's
+    // total work at `SWEEP_MAX_RECEIPTS`.
+    processed: v.optional(v.number()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { chapterId, model, cursor } = args;
+    const attempt = args.attempt ?? 0;
+    const processed = args.processed ?? 0;
+
+    await ctx.runMutation(internal.receipts.touchFailedRetrySweep, { chapterId });
+
+    if (processed >= SWEEP_MAX_RECEIPTS) {
+      console.log(
+        `[receipts] failed-retry sweep for chapter ${chapterId} hit its ${SWEEP_MAX_RECEIPTS}-receipt cap after processing ${processed}; stopping — re-run "Re-extract failed" to continue.`,
+      );
+      await ctx.runMutation(internal.receipts.finishFailedRetrySweep, { chapterId });
+      return null;
+    }
+
+    const next = (await ctx.runQuery(internal.receipts.findNextFailedReceipt, {
+      chapterId,
+      afterCreationTime: cursor,
+    })) as Doc<"receipts"> | null;
+    if (!next) {
+      await ctx.runMutation(internal.receipts.finishFailedRetrySweep, { chapterId });
+      return null;
+    }
+
+    let outcome: SweepAttemptOutcome;
+    try {
+      outcome = await runSweepRetryPipeline(ctx, next._id, model);
+    } catch (err) {
+      // Crash safety: an unexpected throw mid-attempt is treated as a
+      // permanent failure for THIS receipt (never stalls the whole chain on
+      // one bad row) but is logged loudly since it's unexpected.
+      console.error(
+        `[receipts] failed-retry sweep errored on receipt ${next._id}: ${String(err)}`,
+      );
+      try {
+        await ctx.runMutation(internal.receipts.applyRetryExtraction, {
+          receiptId: next._id,
+          candidateTransactionIds: next.candidateTransactionIds ?? [],
+          ocrError: `Retry failed: ${String(err).slice(0, 300)}`,
+        });
+      } catch (patchErr) {
+        console.error(
+          `[receipts] could not note sweep error on ${next._id}: ${String(patchErr)}`,
+        );
+      }
+      outcome = { status: "permanent_failure" };
+    }
+
+    if (outcome.status === "retryable_failure") {
+      const nextAttempt = attempt + 1;
+      if (nextAttempt >= SWEEP_MAX_CONSECUTIVE_BACKOFFS) {
+        console.log(
+          `[receipts] failed-retry sweep for chapter ${chapterId} hit ${SWEEP_MAX_CONSECUTIVE_BACKOFFS} consecutive rate-limit backoffs; stopping — the AI engine is likely down or misconfigured. Re-run "Re-extract failed" manually once it's back.`,
+        );
+        await ctx.runMutation(internal.receipts.finishFailedRetrySweep, { chapterId });
+        return null;
+      }
+      const exponentialMs = Math.min(
+        SWEEP_BACKOFF_CAP_MS,
+        SWEEP_BACKOFF_BASE_MS * 2 ** attempt,
+      );
+      // A provider-declared Retry-After is a FLOOR, never a ceiling — take
+      // whichever delay is LONGER so a server-declared cooldown is always
+      // respected, but a short/zero Retry-After never shortens our own
+      // exponential schedule below its normal step.
+      const retryAfterMs =
+        outcome.retryAfterSeconds != null ? outcome.retryAfterSeconds * 1000 : 0;
+      const delay = Math.min(SWEEP_BACKOFF_CAP_MS, Math.max(exponentialMs, retryAfterMs));
+      await ctx.scheduler.runAfter(delay, internal.receipts.runFailedRetrySweep, {
+        chapterId,
+        model,
+        cursor, // unchanged — retry the SAME receipt next time
+        attempt: nextAttempt,
+        processed,
+      });
+      return null;
+    }
+
+    // Success or a permanent failure — this receipt is done. Advance the
+    // watermark past it, reset the backoff counter, and move on at the
+    // normal throttled pace.
+    await ctx.scheduler.runAfter(THROTTLE_MS, internal.receipts.runFailedRetrySweep, {
+      chapterId,
+      model,
+      cursor: next._creationTime,
+      attempt: 0,
+      processed: processed + 1,
+    });
+    return null;
+  },
+});
