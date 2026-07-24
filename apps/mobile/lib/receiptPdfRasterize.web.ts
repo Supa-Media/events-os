@@ -18,7 +18,6 @@
  * usable text layer is uploaded untouched so the server's zero-LLM extraction
  * still handles it.
  */
-import * as pdfjs from "pdfjs-dist";
 import {
   expandFiles,
   hasMeaningfulText,
@@ -27,19 +26,42 @@ import {
 
 export type { UploadFile } from "./receiptPdfRasterize.shared";
 
-// Load the worker from the BUNDLED package — never a CDN (the app's egress
-// proxy blocks external hosts). `new URL(specifier, import.meta.url)` is
-// pdfjs's documented bundler setup.
-pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-  "pdfjs-dist/build/pdf.worker.min.mjs",
-  import.meta.url,
-).toString();
-
 // A receipt is short; cap runaway multi-page scans so one giant PDF can't
 // render hundreds of pages.
 const MAX_PAGES = 10;
 // Scale 2 keeps small print legible for OCR without ballooning the PNG.
 const RENDER_SCALE = 2;
+
+// CRITICAL: this module must have ZERO top-level side effects. `pdfjs-dist` is
+// imported LAZILY (dynamic import, only when a user actually rasterizes a PDF),
+// and its worker is configured inside that same lazy load, wrapped in try/catch.
+// The previous version set `GlobalWorkerOptions.workerSrc = new URL(..., import.meta.url)`
+// at module scope; `import.meta.url` is undefined in the EAS web runtime, so
+// `new URL(spec, undefined)` threw AT IMPORT — and because this module is in the
+// startup bundle graph, that one throw blank-screened the entire web app
+// (publicworship.life/os). Everything that can throw now lives behind the lazy
+// load and degrades gracefully (a failed rasterize just uploads the original PDF).
+let pdfjsPromise: Promise<typeof import("pdfjs-dist")> | null = null;
+function loadPdfjs(): Promise<typeof import("pdfjs-dist")> {
+  if (!pdfjsPromise) {
+    pdfjsPromise = import("pdfjs-dist").then((pdfjs) => {
+      try {
+        // Point the worker at the bundled file (never a CDN — the egress proxy
+        // blocks external hosts). If URL resolution isn't available in this
+        // runtime, leave it unset and let pdfjs fall back rather than throw.
+        pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+          "pdfjs-dist/build/pdf.worker.min.mjs",
+          import.meta.url,
+        ).toString();
+      } catch {
+        // best-effort: rasterization may still work via pdfjs's fallback, and
+        // if it doesn't, `expandFiles` degrades to uploading the original PDF.
+      }
+      return pdfjs;
+    });
+  }
+  return pdfjsPromise;
+}
 
 /**
  * Render a SCANNED PDF to one PNG `UploadFile` per page. Returns `null` when
@@ -48,6 +70,7 @@ const RENDER_SCALE = 2;
  * which `expandFiles` catches and degrades to uploading the original PDF.
  */
 async function rasterizePdf(file: UploadFile): Promise<UploadFile[] | null> {
+  const pdfjs = await loadPdfjs();
   const buf = await file.blob.arrayBuffer();
   const pdf = await pdfjs.getDocument({ data: new Uint8Array(buf) }).promise;
   try {
