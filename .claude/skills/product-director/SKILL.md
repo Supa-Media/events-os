@@ -135,6 +135,29 @@ Before finishing a run of this skill, you MUST:
 
 ## Learnings Log (newest first)
 
+### 2026-07-24 — Run 2: email-list/newsletter readiness assessment
+- Run shape: founder asked "what's the state of X, how ready are we" — an
+  assessment run, no attachments. 4 recon lanes (branch archaeology, main
+  inventory, framework capabilities, PR history) in one parallel launch;
+  synthesis-only deliverable, no implementation dispatched unbidden.
+- "I think I had a branch for this" → check OPEN PRs first, not just
+  branches: the remembered work was two still-open stacked PRs (#322→#323,
+  a complete ~12k-line campaigns system), not a rotted branch. PR-history
+  lane found intent/state; git lane found mergeability.
+- Git archaeology mechanics: the cloud clone is SHALLOW — `git fetch
+  --unshallow` before any merge-base/ancestry work, else false "no merge
+  base". `git merge-tree --write-tree origin/main <branch>` gives a
+  conflict-file list without touching the working tree — cheap, decisive
+  staleness evidence (62 behind / 9 conflict files ≠ "rotted").
+- Recon lanes disagree usefully: framework lane said "no email infra
+  upstream", branch lane said "branch built lib/resend.ts app-local" —
+  that intersection IS the upstream-first decision to surface, not resolve
+  silently.
+- Product gap worth naming precisely: #323's unsubscribe = deployment-wide
+  suppression (transactional exempt — matches founder ask) but NOT
+  per-list; founder said "mailing lists" plural. Flag granularity deltas
+  between remembered work and current ask explicitly.
+
 ### 2026-07-23 — Run 1 addendum 3 (post-merge deploy break)
 - Green CI is NOT green deploys. 10 PRs merged green, but two of them
   (#381 tooltip import + #389 dashboard edit to the same file) combined into
