@@ -126,6 +126,27 @@ export interface AudienceResolution {
    *  intentional curation). Always 0 for every other source or when
    *  `verifiedEmailOnly` is unset. */
   handPickedUnverified: number;
+  /** `person_filters` only: how many people who would otherwise be members
+   *  (matched `filters`, were hand-picked via `includePersonIds`, or both)
+   *  were removed because they satisfy every SET `excludeFilters` criterion
+   *  — the property-level counterpart of `excludePersonIds`. A PRIMARY
+   *  number, like `excludedOptOut`, NOT gated behind `includeDiagnostics`:
+   *  it costs nothing extra (evaluated only against candidates the
+   *  resolution already loaded — see `resolvePersonFilters`'s doc), so a
+   *  real send materializes the exact same exclusion a preview showed.
+   *  Always 0 when `excludeFilters` is unset or has no criteria set (a
+   *  no-op, not "exclude everyone" — an empty `filters` object means "match
+   *  everyone," but an empty `excludeFilters` must never mean "exclude
+   *  everyone"). */
+  excludedByFilters: number;
+  /** `person_filters` only: of `excludedByFilters`, how many were ALSO a
+   *  hand-picked `includePersonIds` member — i.e. cases where an explicit
+   *  property exclusion beat a manual include (curation is not exemption
+   *  from an exclusion; see `resolvePersonFilters`'s doc). DIAGNOSTIC-ONLY
+   *  (see `resolveAudienceRecipients`'s `includeDiagnostics` doc): always 0
+   *  unless the caller opted in, mirroring `unlinkedGuests`/
+   *  `centralDonorsExcludedByChapterFilter`. */
+  handPickedExcludedByFilters: number;
   /** True when the deduped, suppression-filtered match count exceeded
    *  `limit` and `recipients` was truncated to it — surfaced (not silent) so
    *  a send/preview against an audience bigger than the cap says so. */
@@ -756,30 +777,113 @@ async function countCentralDonorsExcludedByChapterFilter(
   return count;
 }
 
+/** True iff `filters` has at least one criterion actually SET. An empty
+ *  `filters` object is deliberately "match everyone" (see
+ *  `FilterChipsBuilder`'s "leave all off to target everyone" copy) — but
+ *  that same emptiness must mean the OPPOSITE thing for `excludeFilters`
+ *  ("exclude nobody," a no-op), never "exclude everyone." Callers on the
+ *  exclude side must check this BEFORE treating an unset/empty
+ *  `excludeFilters` as anything other than a no-op. */
+function hasAnyCriteria(filters: AudienceFilters | undefined): boolean {
+  if (!filters) return false;
+  return Object.values(filters).some((v) => v !== undefined);
+}
+
+/**
+ * True iff `person` satisfies every criterion actually SET on `filters` —
+ * the ONE per-criterion matcher `resolvePersonFilters` calls for BOTH the
+ * include-side `filters` block and the exclude-side `excludeFilters` block,
+ * so the two can never drift apart (property exclusions must mirror
+ * inclusion's AND semantics exactly). `donorMatchedPersonIds` is the
+ * donor/pledge match set for THIS SPECIFIC `filters` object (computed once
+ * by the caller via `matchDonorFilters` — a fresh set per filters object,
+ * since `filters` and `excludeFilters` can name entirely different donor
+ * criteria). `personEmailsById` is the shared cache-through map so neither
+ * block re-fetches a person's `personEmails` rows the other already loaded.
+ *
+ * `chapterId`/`teamOnly`/`contactsOnly` are checked directly against the
+ * person row here (rather than relying on the caller's scan already being
+ * pre-scoped to one chapter, the include side's historical shortcut) so this
+ * matcher is correct standalone against ANY candidate, including one the
+ * exclude side is re-checking outside its own chapter fan-out. For the
+ * include side, where the scan IS already pre-scoped, this is a no-op
+ * re-check (every scanned row already satisfies it) — see
+ * `targetPersonFilterChapters`'s doc.
+ */
+async function personMatchesCriteria(
+  ctx: QueryCtx,
+  person: Doc<"people">,
+  filters: AudienceFilters,
+  ctxHelpers: {
+    donorMatchedPersonIds: Set<Id<"people">>;
+    personEmailsById: Map<Id<"people">, Doc<"personEmails">[]>;
+  },
+): Promise<boolean> {
+  if (filters.chapterId && person.chapterId !== filters.chapterId) return false;
+  if (filters.teamOnly === true && person.isContactOnly === true) return false;
+  if (filters.contactsOnly === true && person.isContactOnly !== true) return false;
+  if (hasDonorCriteria(filters) && !ctxHelpers.donorMatchedPersonIds.has(person._id)) return false;
+  const hasAttendanceCriteria =
+    filters.attendedEventId != null || filters.attendedWithinDays != null || filters.rsvpStatus != null;
+  if (hasAttendanceCriteria && !(await personAttendsMatch(ctx, person._id, filters))) return false;
+  if (filters.seatId && !(await personHoldsSeat(ctx, person._id, filters.seatId))) return false;
+  if (filters.verifiedEmailOnly) {
+    const emails = await getEmailsCached(ctx, ctxHelpers.personEmailsById, person._id);
+    if (!resolvedAddressIsVerified(person, emails)) return false;
+  }
+  return true;
+}
+
 /**
  * Resolve a `person_filters` audience — the Phase 3 "robust filters + hand-
- * picked" model (specs/person-centric-audiences.md "Phase 3"). Filters
- * AND-combine; `includePersonIds` UNIONS in regardless of filter match;
- * `excludePersonIds` always wins over both. `marketingOptOut` (Phase 2) is
- * checked for EVERY final candidate REGARDLESS of how they entered the set —
- * a hand-pick is not consent (spec §3.3's non-negotiable invariant) — and is
- * counted via `excludedOptOut` rather than folded silently into
- * `excludedSuppressed`. `verifiedEmailOnly`, by contrast, is a FILTER
- * criterion: it's only enforced against people who matched via FILTERS —
- * a person who is ALSO (or ONLY) hand-picked is never excluded by it, mirroring
- * the general "hand-pick bypasses filter criteria, never bypasses consent
- * gates" split this function documents throughout.
+ * picked" model (specs/person-centric-audiences.md "Phase 3"), extended
+ * with `excludeFilters` (property-level exclusions, "everyone matching X,
+ * EXCEPT anyone matching Y" — `schema/campaigns.ts#audiences`'s doc). Order
+ * of operations: `filters` AND-combine into a match set; `includePersonIds`
+ * UNIONS in regardless of filter match; `excludeFilters` then removes anyone
+ * (from that union) satisfying every SET exclude criterion — via
+ * `personMatchesCriteria`, the SAME matcher `filters` itself uses, so
+ * inclusion and exclusion can never apply different rules for the "same"
+ * criterion; a hand-pick is not exemption from an explicit exclusion, so
+ * this beats `includePersonIds` too; `excludePersonIds` always wins over
+ * everything that's left. `marketingOptOut` (Phase 2) is checked for EVERY
+ * final candidate REGARDLESS of how they entered the set — a hand-pick is
+ * not consent (spec §3.3's non-negotiable invariant) — and is counted via
+ * `excludedOptOut` rather than folded silently into `excludedSuppressed`.
+ * `verifiedEmailOnly`, by contrast, is a FILTER criterion: on the INCLUDE
+ * side it's only enforced against people who matched via FILTERS (a person
+ * who is ALSO/ONLY hand-picked is never excluded by it); this function
+ * documents that "hand-pick bypasses filter criteria, never bypasses
+ * consent gates" split throughout — `excludeFilters` does NOT get this same
+ * hand-pick exemption, by design (see the exclusion-beats-hand-pick rule
+ * above).
  *
- * `includeDiagnostics` gates the DIAGNOSTIC-ONLY `unlinkedGuests` counter
- * (`countUnlinkedGuests` — an extra bounded scan on top of everything else
- * this function reads): true only from `previewAudience`, false from the
- * send path and `liveAudienceCount` — see `resolveAudienceRecipients`'s doc.
+ * Read budget: `excludeFilters` is evaluated ONLY against the
+ * `filterMatchedIds ∪ includeIds` union this function already built for the
+ * include side — never a fresh scan of the people table. Its own
+ * donor/pledge match set (when it has donor criteria) is a SECOND bounded
+ * `matchDonorFilters` scan of the SAME already-bounded scopes the include
+ * side scans (no new unbounded reads, no second `.paginate()` — this file
+ * never uses `.paginate()` at all, see the module doc); attendance/seat/
+ * verified-email criteria reuse the exact same per-person bounded helpers
+ * (`personAttendsMatch`/`personHoldsSeat`/`resolvedAddressIsVerified`) the
+ * include side already pays for.
+ *
+ * `includeDiagnostics` gates the DIAGNOSTIC-ONLY `unlinkedGuests` and
+ * `handPickedExcludedByFilters` counters (an extra bounded scan for the
+ * former; free but preview-only signal for the latter): true only from
+ * `previewAudience`, false from the send path and `liveAudienceCount` — see
+ * `resolveAudienceRecipients`'s doc. `excludedByFilters` itself is NOT
+ * gated — like `excludedOptOut`, it's a primary count computed unconditionally
+ * (candidates are already loaded, so it costs nothing extra) so a real send
+ * and a preview always agree on how many were dropped.
  */
 async function resolvePersonFilters(
   ctx: QueryCtx,
   audience: {
     scope: AudienceScope;
     filters: AudienceFilters;
+    excludeFilters?: AudienceFilters;
     includePersonIds?: Id<"people">[];
     excludePersonIds?: Id<"people">[];
   },
@@ -791,27 +895,30 @@ async function resolvePersonFilters(
   unlinkedGuests: number;
   unlinkedGuestsIsLowerBound: boolean;
   handPickedUnverified: number;
+  excludedByFilters: number;
+  handPickedExcludedByFilters: number;
 }> {
-  const { filters } = audience;
+  const { filters, excludeFilters } = audience;
   const includeIds = audience.includePersonIds ?? [];
+  const includeIdSet = new Set(includeIds);
   const excludeSet = new Set(audience.excludePersonIds ?? []);
+  const excludeFiltersActive = hasAnyCriteria(excludeFilters);
 
   const donorMatch = hasDonorCriteria(filters)
     ? await matchDonorFilters(ctx, audience)
     : { matchedPersonIds: new Set<Id<"people">>(), centralFallbackDonors: [] };
-  const hasAttendanceCriteria =
-    filters.attendedEventId != null || filters.attendedWithinDays != null || filters.rsvpStatus != null;
 
   // ── Phase 1: scan the target chapters' roster+contacts, evaluating every
-  // SET filter criterion per candidate into `filterMatchedIds`.
-  // `personEmailsById` is populated as we go (only when `verifiedEmailOnly`
-  // needs it) so phase 2's final address resolution never re-fetches a row
-  // it already has. `verifiedEmailOnly` is deliberately checked HERE, not in
-  // phase 2 — a candidate that fails it simply never joins `filterMatchedIds`,
-  // so a hand-picked person (added to the final set independently, in phase
-  // 2, via `includeIds`) is never excluded by a filter criterion they didn't
-  // go through — see the function doc's "hand-pick bypasses filter criteria"
-  // split. ──
+  // SET filter criterion per candidate into `filterMatchedIds` via the
+  // shared `personMatchesCriteria` matcher. `personEmailsById` is populated
+  // as we go (only when `verifiedEmailOnly` needs it) so later phases never
+  // re-fetch a row they already have. Filter criteria are deliberately
+  // checked HERE, not in phase 2 — a candidate that fails them simply never
+  // joins `filterMatchedIds`, so a hand-picked person (added to the final
+  // set independently, in phase 2, via `includeIds`) is never excluded by a
+  // FILTER criterion they didn't go through — see the function doc's
+  // "hand-pick bypasses filter criteria" split (which does NOT apply to
+  // `excludeFilters` — see phase 2a). ──
   const personEmailsById = new Map<Id<"people">, Doc<"personEmails">[]>();
   const personById = new Map<Id<"people">, Doc<"people">>();
   const filterMatchedIds = new Set<Id<"people">>();
@@ -825,18 +932,15 @@ async function resolvePersonFilters(
     for (const p of rows) {
       if (p.isPlaceholder === true) continue;
       if (p.status === "inactive") continue;
-      if (filters.teamOnly === true && p.isContactOnly === true) continue;
-      if (filters.contactsOnly === true && p.isContactOnly !== true) continue;
       personById.set(p._id, p);
-
-      if (hasDonorCriteria(filters) && !donorMatch.matchedPersonIds.has(p._id)) continue;
-      if (hasAttendanceCriteria && !(await personAttendsMatch(ctx, p._id, filters))) continue;
-      if (filters.seatId && !(await personHoldsSeat(ctx, p._id, filters.seatId))) continue;
-      if (filters.verifiedEmailOnly) {
-        const emails = await getEmailsCached(ctx, personEmailsById, p._id);
-        if (!resolvedAddressIsVerified(p, emails)) continue;
+      if (
+        await personMatchesCriteria(ctx, p, filters, {
+          donorMatchedPersonIds: donorMatch.matchedPersonIds,
+          personEmailsById,
+        })
+      ) {
+        filterMatchedIds.add(p._id);
       }
-      filterMatchedIds.add(p._id);
     }
   }
 
@@ -852,10 +956,52 @@ async function resolvePersonFilters(
     ? await countUnlinkedGuests(ctx, filters, new Set(chapterIds))
     : { count: 0, isLowerBound: false };
 
-  // ── Phase 2: union filter matches + hand-picks, subtract excludes, then
-  // resolve each survivor to a send address (consent gates apply here,
-  // uniformly, regardless of provenance). ──
-  const finalIds = new Set<Id<"people">>([...filterMatchedIds, ...includeIds]);
+  // ── Phase 2a: property-level exclusions (`excludeFilters`) — evaluated
+  // ONLY against the `filterMatchedIds ∪ includeIds` union (never a fresh
+  // table scan), via the SAME `personMatchesCriteria` matcher phase 1 used,
+  // so the two blocks can never apply different rules for the "same"
+  // criterion. Beats a hand-pick include on purpose (curation is not
+  // exemption from an explicit property exclusion) — counted via
+  // `handPickedExcludedByFilters` when it does. ──
+  const excludeDonorMatchedIds =
+    excludeFiltersActive && excludeFilters && hasDonorCriteria(excludeFilters)
+      ? (await matchDonorFilters(ctx, { scope: audience.scope, filters: excludeFilters })).matchedPersonIds
+      : new Set<Id<"people">>();
+
+  const unionIds = new Set<Id<"people">>([...filterMatchedIds, ...includeIds]);
+  let excludedByFilters = 0;
+  let handPickedExcludedByFilters = 0;
+  const survivingIds = new Set<Id<"people">>();
+  for (const id of unionIds) {
+    if (excludeFiltersActive && excludeFilters) {
+      let person = personById.get(id);
+      if (!person) {
+        const fetched = await ctx.db.get(id);
+        if (fetched) {
+          personById.set(id, fetched);
+          person = fetched;
+        }
+      }
+      if (
+        person &&
+        (await personMatchesCriteria(ctx, person, excludeFilters, {
+          donorMatchedPersonIds: excludeDonorMatchedIds,
+          personEmailsById,
+        }))
+      ) {
+        excludedByFilters++;
+        if (includeDiagnostics && includeIdSet.has(id)) handPickedExcludedByFilters++;
+        continue;
+      }
+    }
+    survivingIds.add(id);
+  }
+
+  // ── Phase 2b: hand-picked `excludePersonIds` — the last word, subtracted
+  // from whatever `excludeFilters` left standing — then resolve each
+  // survivor to a send address (consent gates apply here, uniformly,
+  // regardless of provenance). ──
+  const finalIds = survivingIds;
   for (const id of excludeSet) finalIds.delete(id);
 
   // `finalIds` is already bounded: `filterMatchedIds` by the chapter fan-out's
@@ -917,6 +1063,8 @@ async function resolvePersonFilters(
     unlinkedGuests,
     unlinkedGuestsIsLowerBound,
     handPickedUnverified,
+    excludedByFilters,
+    handPickedExcludedByFilters,
   };
 }
 
@@ -952,6 +1100,10 @@ export async function resolveAudienceRecipients(
     scope: AudienceScope;
     source: AudienceSource;
     filters: AudienceFilters;
+    // `person_filters` only — see `schema/campaigns.ts#audiences`'s doc.
+    // Ignored (harmlessly) for every legacy source, mirroring `filters`'
+    // own "fields the source ignores sit unused" shape.
+    excludeFilters?: AudienceFilters;
     includePersonIds?: Id<"people">[];
     excludePersonIds?: Id<"people">[];
   },
@@ -965,6 +1117,8 @@ export async function resolveAudienceRecipients(
   let unlinkedGuests = 0;
   let unlinkedGuestsIsLowerBound = false;
   let handPickedUnverified = 0;
+  let excludedByFilters = 0;
+  let handPickedExcludedByFilters = 0;
 
   if (audience.source === "guests") {
     const result = await resolveGuests(ctx, audience.filters);
@@ -980,6 +1134,8 @@ export async function resolveAudienceRecipients(
     unlinkedGuests = result.unlinkedGuests;
     unlinkedGuestsIsLowerBound = result.unlinkedGuestsIsLowerBound;
     handPickedUnverified = result.handPickedUnverified;
+    excludedByFilters = result.excludedByFilters;
+    handPickedExcludedByFilters = result.handPickedExcludedByFilters;
   } else {
     const result = await resolvePeople(ctx, audience.filters);
     raw = result.raw;
@@ -1029,6 +1185,8 @@ export async function resolveAudienceRecipients(
     unlinkedGuests,
     unlinkedGuestsIsLowerBound,
     handPickedUnverified,
+    excludedByFilters,
+    handPickedExcludedByFilters,
     truncated,
     truncatedCount,
   };

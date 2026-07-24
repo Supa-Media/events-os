@@ -166,12 +166,28 @@ export const audienceFiltersValidator = v.object({
  *  matching `filters` OR being in `includePersonIds` — see
  *  `lib/audienceResolve.ts#resolvePersonFilters`'s doc for the full
  *  precedence (suppression + `marketingOptOut` still beat BOTH lists — a
- *  hand-pick is never consent). */
+ *  hand-pick is never consent).
+ *
+ * `excludeFilters` (property-level exclusions, `person_filters` only) is the
+ * PROPERTY-shaped counterpart of `excludePersonIds`: instead of naming
+ * individuals, it names a Y such that "everyone matching X, EXCEPT anyone
+ * matching Y" is expressible. Same shape as `filters` (reuses
+ * `audienceFiltersValidator` — ADDITIVE, no migration needed: an existing
+ * row simply has it `undefined`, which resolves as a no-op, the same "fields
+ * the source ignores sit unused" pattern `filters` itself already relies on
+ * for legacy sources). AND-combined internally exactly like `filters` (every
+ * SET exclude criterion must match) via the SAME per-criterion matcher
+ * `lib/audienceResolve.ts` uses for `filters`, so the two can never drift.
+ * Evaluated ONLY against the `filters`/`includePersonIds` union (never a
+ * fresh full-table scan) — an explicit property exclusion beats a hand-pick
+ * include (curation is not exemption from an exclusion), but suppression/
+ * `marketingOptOut` still beat everything, unchanged. */
 export const audiences = defineTable({
   scope: campaignsScope,
   name: v.string(),
   source: v.union(...AUDIENCE_SOURCES.map((s) => v.literal(s))),
   filters: audienceFiltersValidator,
+  excludeFilters: v.optional(audienceFiltersValidator),
   includePersonIds: v.optional(v.array(v.id("people"))),
   excludePersonIds: v.optional(v.array(v.id("people"))),
   createdBy: v.id("users"),
