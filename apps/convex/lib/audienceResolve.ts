@@ -30,6 +30,16 @@
  * per-person cap is exempt from that constraint and is the house pattern
  * here for exactly that reason — keep it that way; do not introduce
  * `.paginate()` into this file.
+ *
+ * Data-trust TRANSPARENCY counters (`unlinkedGuests`,
+ * `centralDonorsExcludedByChapterFilter`) are each an EXTRA bounded scan on
+ * top of the above — real, but only worth paying for in a live composer
+ * preview. `resolveAudienceRecipients`'s `includeDiagnostics` flag (default
+ * `false`) gates both: `previewAudience` passes `true`;
+ * `resolveAudienceForSend` and `campaigns.ts#liveAudienceCount` do not, so a
+ * real send or a polled live count never carries the extra read cost (see
+ * `resolveAudienceRecipients`'s doc — the read-budget incident class hotfix
+ * #414 addressed).
  */
 import type { Infer } from "convex/values";
 import type { Doc, Id } from "../_generated/dataModel";
@@ -81,8 +91,13 @@ export interface AudienceResolution {
    *  which means the org-wide `"central"` donor pool is never scanned at all
    *  for that resolution (product ruling: correct, a chapter filter means
    *  that chapter). This is how many `"central"`-scope donors WOULD have
-   *  matched the same donor criteria had the pool been scanned — surfaced so
-   *  the drop is visible instead of silent. Always 0 otherwise. */
+   *  matched — using whichever criteria THAT source actually honors (the
+   *  legacy `donors` resolver only ever applies `donorStatus`/
+   *  `gaveWithinDays`; `person_filters` applies the full Phase-3 set — see
+   *  `countCentralDonorsExcludedByChapterFilter`'s doc) — had the pool been
+   *  scanned. DIAGNOSTIC-ONLY (see `resolveAudienceRecipients`'s
+   *  `includeDiagnostics` doc): always 0 unless the caller opted in. Always 0
+   *  otherwise. */
   centralDonorsExcludedByChapterFilter: number;
   /** `person_filters` only, when an attendance criterion
    *  (`attendedEventId`/`attendedWithinDays`/`rsvpStatus`) is set: how many
@@ -91,8 +106,10 @@ export interface AudienceResolution {
    *  yet) — these guests can never match via `rsvps.by_person`
    *  (`personAttendsMatch`), so they silently never appear in an
    *  attendance-filtered audience with no signal today. See
-   *  `countUnlinkedGuests`'s doc for the bounded-read shape. Always 0 when no
-   *  attendance criterion is set, and always 0 for every other source. */
+   *  `countUnlinkedGuests`'s doc for the bounded-read shape.
+   *  DIAGNOSTIC-ONLY (see `resolveAudienceRecipients`'s `includeDiagnostics`
+   *  doc): always 0 unless the caller opted in. Always 0 when no attendance
+   *  criterion is set, and always 0 for every other source. */
   unlinkedGuests: number;
   /** True when `unlinkedGuests` hit its scan cap without exhausting every
    *  matching unlinked row — i.e. `unlinkedGuests` is a LOWER bound, not an
@@ -392,6 +409,12 @@ async function personAttendsMatch(
  * attendance-filtered `person_filters` audience today. Archived rows are
  * excluded, mirroring `personAttendsMatch`.
  *
+ * DIAGNOSTIC-ONLY, caller-gated: `resolvePersonFilters` only calls this when
+ * `includeDiagnostics` is true (preview only — see
+ * `resolveAudienceRecipients`'s doc). A real send or `liveAudienceCount`
+ * must never pay for this extra bounded scan on top of everything else it
+ * already reads.
+ *
  * Bounded reads, ONE scan for the whole call:
  *  - `attendedEventId` set: the SAME `rsvps.by_event` index/cap
  *    (`RSVPS_PER_EVENT_LIMIT`) `resolveGuests` (the legacy source) already
@@ -639,6 +662,29 @@ async function matchDonorFilters(
   return { matchedPersonIds, centralFallbackDonors };
 }
 
+/** True iff donor row `d` satisfies every criterion the LEGACY `donors`
+ *  source resolver (`resolveDonors`) actually honors: `donorStatus` (already
+ *  applied by the caller's index-query choice — never re-checked here) and
+ *  `gaveWithinDays` (via `recentGiftDonorIds`, mirroring `resolveDonors`'s
+ *  own `gifts` lookup), plus the same `!d.email` skip `resolveDonors` applies
+ *  before a row can become a recipient at all. `resolveDonors` silently
+ *  ignores every Phase-3-only criterion (`givingLifetimeMinCents`/`Max`,
+ *  `giftCountMin`, `backerStatus`) — so
+ *  `countCentralDonorsExcludedByChapterFilter`'s `"donors"`-source branch
+ *  must ignore them too, or it reports a drop using criteria that were never
+ *  actually applied (the exact mismatch a verifier caught: a `giftCountMin`
+ *  filter that `resolveDonors` never enforces made the counter claim a
+ *  0-gift donor was "excluded by the chapter filter" when in truth
+ *  `giftCountMin` never touches this source at all). */
+function donorMatchesLegacyCriteria(
+  d: Doc<"donors">,
+  recentGiftDonorIds: Set<Id<"donors">> | null,
+): boolean {
+  if (!d.email) return false;
+  if (recentGiftDonorIds && !recentGiftDonorIds.has(d._id)) return false;
+  return true;
+}
+
 /**
  * Data-trust counter (fix #3): `targetDonorScopes` narrows to JUST
  * `filters.chapterId` the instant it's set — even for a `scope: "central"`
@@ -647,19 +693,31 @@ async function matchDonorFilters(
  * the SAME donor criteria silently vanishes with no signal. Product ruling
  * (2026-07-24): don't include them (a chapter filter means that chapter) —
  * but DO count them, via one extra bounded `by_scope`/`by_scope_and_status`
- * scan of JUST the `"central"` pool, reusing `donorMatchesFilters` so the
- * count reflects the exact same criteria `matchDonorFilters` would have
- * applied had the pool been in scope. Zero-cost (no query at all) unless
- * every one of the three gating conditions holds. */
+ * scan of JUST the `"central"` pool.
+ *
+ * SOURCE-AWARE matching (fix for a verifier-caught bug): the two sources
+ * that reach this function honor DIFFERENT criteria sets, so the count must
+ * mirror whichever one is actually resolving —
+ *  - `"person_filters"` — the full Phase-3 criteria, via `donorMatchesFilters`
+ *    (the EXACT predicate `matchDonorFilters` applies for this source).
+ *  - `"donors"` — ONLY what the legacy `resolveDonors` resolver honors
+ *    (`donorStatus`/`gaveWithinDays`), via `donorMatchesLegacyCriteria`.
+ *    Using the full Phase-3 predicate here would report a chapter-filter
+ *    "exclusion" driven by criteria (`givingLifetimeMinCents`/`giftCountMin`/
+ *    `backerStatus`) that `resolveDonors` never applies to ANY donor, chapter
+ *    or central — actively misleading, not merely imprecise.
+ *
+ * DIAGNOSTIC-ONLY: only ever called when `includeDiagnostics` is true (see
+ * `resolveAudienceRecipients`'s doc) — the send path and
+ * `campaigns.ts#liveAudienceCount` never pay for this. Zero-cost even then
+ * (no query at all) unless every one of the three gating conditions holds.
+ */
 async function countCentralDonorsExcludedByChapterFilter(
   ctx: QueryCtx,
-  audience: { scope: AudienceScope; filters: AudienceFilters },
+  audience: { scope: AudienceScope; source: AudienceSource; filters: AudienceFilters },
 ): Promise<number> {
-  const { scope, filters } = audience;
+  const { scope, source, filters } = audience;
   if (scope !== "central" || !filters.chapterId || !hasDonorCriteria(filters)) return 0;
-
-  const pledgeIdx = await buildPledgeIndexes(ctx, ["central"], filters);
-  const gaveCutoff = filters.gaveWithinDays != null ? Date.now() - filters.gaveWithinDays * DAY_MS : null;
 
   const donors: Doc<"donors">[] = filters.donorStatus
     ? await ctx.db
@@ -671,6 +729,26 @@ async function countCentralDonorsExcludedByChapterFilter(
         .withIndex("by_scope", (q) => q.eq("scope", "central"))
         .take(DONORS_PER_SCOPE_LIMIT);
 
+  if (source === "donors") {
+    let recentGiftDonorIds: Set<Id<"donors">> | null = null;
+    if (filters.gaveWithinDays != null) {
+      const sinceTs = Date.now() - filters.gaveWithinDays * DAY_MS;
+      recentGiftDonorIds = new Set();
+      const gifts = await ctx.db
+        .query("gifts")
+        .withIndex("by_scope_and_received", (q) => q.eq("scope", "central").gte("receivedAt", sinceTs))
+        .take(GIFTS_PER_SCOPE_LIMIT);
+      for (const g of gifts) recentGiftDonorIds.add(g.donorId);
+    }
+    let count = 0;
+    for (const d of donors) {
+      if (donorMatchesLegacyCriteria(d, recentGiftDonorIds)) count++;
+    }
+    return count;
+  }
+
+  const pledgeIdx = await buildPledgeIndexes(ctx, ["central"], filters);
+  const gaveCutoff = filters.gaveWithinDays != null ? Date.now() - filters.gaveWithinDays * DAY_MS : null;
   let count = 0;
   for (const d of donors) {
     if (donorMatchesFilters(d, filters, pledgeIdx, gaveCutoff)) count++;
@@ -691,6 +769,11 @@ async function countCentralDonorsExcludedByChapterFilter(
  * a person who is ALSO (or ONLY) hand-picked is never excluded by it, mirroring
  * the general "hand-pick bypasses filter criteria, never bypasses consent
  * gates" split this function documents throughout.
+ *
+ * `includeDiagnostics` gates the DIAGNOSTIC-ONLY `unlinkedGuests` counter
+ * (`countUnlinkedGuests` — an extra bounded scan on top of everything else
+ * this function reads): true only from `previewAudience`, false from the
+ * send path and `liveAudienceCount` — see `resolveAudienceRecipients`'s doc.
  */
 async function resolvePersonFilters(
   ctx: QueryCtx,
@@ -700,6 +783,7 @@ async function resolvePersonFilters(
     includePersonIds?: Id<"people">[];
     excludePersonIds?: Id<"people">[];
   },
+  includeDiagnostics: boolean,
 ): Promise<{
   raw: ResolvedRecipient[];
   excludedOptOut: number;
@@ -759,12 +843,14 @@ async function resolvePersonFilters(
   // Data-trust counter (top priority): unlinked historical RSVPs that an
   // attendance criterion would have matched, had they been linked to a
   // person — see `countUnlinkedGuests`'s doc. Scoped to the same chapters
-  // this resolution just fanned across.
-  const { count: unlinkedGuests, isLowerBound: unlinkedGuestsIsLowerBound } = await countUnlinkedGuests(
-    ctx,
-    filters,
-    new Set(chapterIds),
-  );
+  // this resolution just fanned across. DIAGNOSTIC-ONLY: skipped entirely
+  // (no extra reads at all) unless `includeDiagnostics` — the send path and
+  // `campaigns.ts#liveAudienceCount` must never pay for a preview-only
+  // signal (see `resolveAudienceRecipients`'s doc — the incident class
+  // hotfix #414 addressed).
+  const { count: unlinkedGuests, isLowerBound: unlinkedGuestsIsLowerBound } = includeDiagnostics
+    ? await countUnlinkedGuests(ctx, filters, new Set(chapterIds))
+    : { count: 0, isLowerBound: false };
 
   // ── Phase 2: union filter matches + hand-picks, subtract excludes, then
   // resolve each survivor to a send address (consent gates apply here,
@@ -840,6 +926,25 @@ async function resolvePersonFilters(
  * Resolve an audience (or a not-yet-saved draft with the same shape, for a
  * live composer preview) to its deduped, suppression-filtered recipient list,
  * bounded at `limit` (default `AUDIENCE_RESOLVE_LIMIT`).
+ *
+ * `includeDiagnostics` (default `false`) gates the data-trust TRANSPARENCY
+ * counters (`unlinkedGuests`/`unlinkedGuestsIsLowerBound`/
+ * `centralDonorsExcludedByChapterFilter`) — each is an EXTRA bounded scan on
+ * top of everything this function already reads (`countUnlinkedGuests`: up
+ * to `RSVPS_PER_EVENT_LIMIT`/`UNLINKED_GUESTS_SCAN_CAP` rows;
+ * `countCentralDonorsExcludedByChapterFilter`: up to `DONORS_PER_SCOPE_LIMIT`
+ * donors plus, when `backerStatus` is set, up to 4 ×
+ * `PLEDGES_PER_SCOPE_LIMIT` pledge reads — several thousand reads worst
+ * case). This function is shared by THREE callers with very different cost
+ * budgets: `previewAudience` (a live composer query, where the extra reads
+ * are the entire point), `resolveAudienceForSend` (a real send's
+ * materialization), and `campaigns.ts#liveAudienceCount` (polled
+ * repeatedly). Only `previewAudience` passes `includeDiagnostics: true` — a
+ * send or a live count must never pay for a preview-only signal on top of
+ * its own bounded reads (the exact read-budget incident class hotfix #414
+ * addressed). When `false`, every diagnostic field on the returned
+ * `AudienceResolution` is its zero/false default — the recipient list and
+ * every non-diagnostic count are unaffected either way.
  */
 export async function resolveAudienceRecipients(
   ctx: QueryCtx,
@@ -851,6 +956,7 @@ export async function resolveAudienceRecipients(
     excludePersonIds?: Id<"people">[];
   },
   limit: number = AUDIENCE_RESOLVE_LIMIT,
+  includeDiagnostics: boolean = false,
 ): Promise<AudienceResolution> {
   let raw: ResolvedRecipient[];
   let excludedUnverified = 0;
@@ -867,7 +973,7 @@ export async function resolveAudienceRecipients(
   } else if (audience.source === "donors") {
     raw = await resolveDonors(ctx, audience);
   } else if (audience.source === "person_filters") {
-    const result = await resolvePersonFilters(ctx, audience);
+    const result = await resolvePersonFilters(ctx, audience, includeDiagnostics);
     raw = result.raw;
     excludedOptOut = result.excludedOptOut;
     centralFallbackEmails = result.centralFallbackEmails;
@@ -883,9 +989,10 @@ export async function resolveAudienceRecipients(
   // Data-trust counter (fix #3): only `donors`/`person_filters` ever consult
   // the `donors` table, and the count is zero-cost (no query) unless scope,
   // chapterId, and an active donor criterion all line up — see the
-  // function's doc.
+  // function's doc. DIAGNOSTIC-ONLY: gated by `includeDiagnostics` first —
+  // never runs on the send path or `liveAudienceCount`.
   const centralDonorsExcludedByChapterFilter =
-    audience.source === "donors" || audience.source === "person_filters"
+    includeDiagnostics && (audience.source === "donors" || audience.source === "person_filters")
       ? await countCentralDonorsExcludedByChapterFilter(ctx, audience)
       : 0;
 

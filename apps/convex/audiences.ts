@@ -233,13 +233,18 @@ export const previewAudience = query({
   }),
   handler: async (ctx, { scope, source, filters, includePersonIds, excludePersonIds }) => {
     await requireCampaignsAccess(ctx);
-    const resolution = await resolveAudienceRecipients(ctx, {
-      scope,
-      source,
-      filters,
-      includePersonIds,
-      excludePersonIds,
-    });
+    // `includeDiagnostics: true` — this is the ONLY caller that should pay
+    // for the extra data-trust transparency scans (`unlinkedGuests`/
+    // `centralDonorsExcludedByChapterFilter`); the send path
+    // (`resolveAudienceForSend` below) and `campaigns.ts#liveAudienceCount`
+    // deliberately leave it at its `false` default — see
+    // `lib/audienceResolve.ts#resolveAudienceRecipients`'s doc.
+    const resolution = await resolveAudienceRecipients(
+      ctx,
+      { scope, source, filters, includePersonIds, excludePersonIds },
+      AUDIENCE_RESOLVE_LIMIT,
+      true,
+    );
     return {
       count: resolution.recipients.length,
       sample: resolution.recipients.slice(0, 10),
@@ -329,6 +334,14 @@ const SEARCH_RESULT_LIMIT = 20;
  * suppression-filtered recipient list to materialize into `campaignRecipients`
  * rows. NEVER exposed as a public function — a send always goes through the
  * `campaigns.send` mutation's access gate first.
+ *
+ * Deliberately leaves `resolveAudienceRecipients`'s `includeDiagnostics` at
+ * its `false` default — the data-trust transparency counters are a preview
+ * affordance, not a send-time one, and the extra bounded scans they cost
+ * have no business running against a real send's read budget (see that
+ * function's doc — the read-budget incident class hotfix #414 addressed).
+ * The returned shape only ever carries `recipients`/`truncated` anyway, so
+ * the diagnostic fields wouldn't even be surfaced if computed.
  */
 export const resolveAudienceForSend = internalQuery({
   args: { audienceId: v.id("audiences") },
