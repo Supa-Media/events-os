@@ -31,6 +31,10 @@ import { MIGRATIONS } from "./migrations/index";
 import { runCleanupRenamedGuideSlugs } from "./migrations/0007_cleanup_renamed_guide_slugs";
 import { scanColumnTypes } from "./migrations/0015_audit_column_types";
 import { backfillReceiptDocumentsPage } from "./migrations/0035_backfill_receipt_documents";
+import {
+  runBackfillPersonEmailsPage,
+  type PersonEmailsStage,
+} from "./migrations/0039_backfill_person_emails";
 
 /**
  * Backfill: ensure every template/event grid module has all of its current
@@ -693,6 +697,38 @@ export const continueReceiptBackfill = internalMutation({
   args: { cursor: v.union(v.string(), v.null()) },
   handler: async (ctx, { cursor }) =>
     await backfillReceiptDocumentsPage(ctx, cursor),
+});
+
+/**
+ * Scheduler continuation for the person-emails backfill (`0039`). The
+ * registry entry (`runBackfillPersonEmails`) processes only the FIRST page of
+ * the FIRST stage (`people`) inside `runPending`'s transaction — Convex
+ * allows at most one `.paginate()` call per function execution, and this scan
+ * walks three source tables (`people` → `donors` → `rsvps`), each needing its
+ * own pagination. This continuation drains the rest: it runs one page of one
+ * stage, then reschedules itself with whatever `{ stage, cursor }` comes back
+ * until `runBackfillPersonEmailsPage` reports `isDone`. Idempotent (see
+ * `migrations/0039_backfill_person_emails.ts`'s module doc), so a redundant
+ * fire — or resuming after a prior deploy's chain was interrupted partway
+ * through — is safe.
+ */
+export const continuePersonEmailsBackfill = internalMutation({
+  args: {
+    stage: v.union(v.literal("people"), v.literal("donors"), v.literal("rsvps")),
+    cursor: v.union(v.string(), v.null()),
+  },
+  handler: async (ctx, { stage, cursor }) => {
+    const at = { stage: stage as PersonEmailsStage, cursor };
+    const result = await runBackfillPersonEmailsPage(ctx, at);
+    if (!result.isDone && result.next) {
+      await ctx.scheduler.runAfter(
+        0,
+        internal.migrations.continuePersonEmailsBackfill,
+        result.next,
+      );
+    }
+    return result;
+  },
 });
 
 /**
