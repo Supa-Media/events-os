@@ -385,6 +385,13 @@ const centralBudgetCard = v.object({
   spentCents: v.number(),
   pct: v.number(),
   status: okWarnValidator,
+  // Projects-category-breakdown: the same per-category mini-bar shape the
+  // chapter cards carry (`projectBudgetCard`/`recurringBudgetCard`), summed
+  // from the SAME matched-txn set as this card's own `spentCents` — so the
+  // org dashboard's expand-chevron can break a central budget down into
+  // categories (and from there into transactions, via the already-central-
+  // capable `dashboardCharts.budgetTransactions`).
+  categories: v.array(categoryBreakdown),
   ...budgetApprovalFields,
 });
 
@@ -3151,6 +3158,25 @@ export const dashboardCentral = query({
     // CARD visibility gate uses, without re-querying each ref/txn set again.
     const centralRefDateById = new Map<Id<"budgets">, number | null>();
     const centralModeMatchedById = new Map<Id<"budgets">, Doc<"transactions">[]>();
+    // Projects-category-breakdown: category-name resolution for the central
+    // cards' own category mini-bars. A central budget's linked txns can come
+    // from ANY chapter, so there's no single-chapter `budgetCategories` list
+    // to preload (`dashboardChapter`'s `catName` pattern) — instead resolve
+    // each distinct categoryId once, read-through, shared across the loop.
+    // A vanished category falls back to `spendBreakdownFor`'s own
+    // "Uncategorized" bucket (id absent from the map), same as everywhere else.
+    const centralCatName = new Map<Id<"budgetCategories">, string>();
+    async function resolveCentralCatNames(
+      txns: Doc<"transactions">[],
+    ): Promise<Map<Id<"budgetCategories">, string>> {
+      for (const tr of txns) {
+        if (tr.categoryId && !centralCatName.has(tr.categoryId)) {
+          const cat = await ctx.db.get(tr.categoryId);
+          if (cat) centralCatName.set(tr.categoryId, cat.name);
+        }
+      }
+      return centralCatName;
+    }
     const centralBudgets: (typeof centralBudgetCard.type)[] = [];
     for (const cb of centralBudgetDocs) {
       const linked = await ctx.db
@@ -3214,6 +3240,15 @@ export const dashboardCentral = query({
         // guard for the full reasoning.
         if (budgetCents === 0 && cardSpentCents === 0) continue;
         const pct = pctOf(cardSpentCents, budgetCents);
+        // Same LIFETIME narrowing as `cardSpentCents` right above (and as
+        // `oneTimeCardBreakdown`'s isSpend-only rule on the chapter side), so
+        // the mini-bars always sum to exactly this card's own figure.
+        const oneTimeMatching = modeMatched.filter(isSpend);
+        const { categories } = spendBreakdownFor(
+          cb,
+          oneTimeMatching,
+          await resolveCentralCatNames(oneTimeMatching),
+        );
         centralBudgets.push({
           id: cb._id,
           name: cbName,
@@ -3230,6 +3265,7 @@ export const dashboardCentral = query({
           spentCents: cardSpentCents,
           pct,
           status: statusFor(pct),
+          categories,
           ...budgetApprovalCardFields(cb),
         });
         continue;
@@ -3238,6 +3274,17 @@ export const dashboardCentral = query({
       // Allocation scales with the period in YTD so spent-vs-allocated stays comparable.
       const budgetCents = budgetAllocationForDash(cb, dp);
       const pct = pctOf(spentCents, budgetCents);
+      // Same CARD-shaped narrowing as `spentCents` above (`txnCountsTowardBudgetDash`
+      // — which includes the isSpend gate), so the mini-bars always sum to
+      // exactly this card's own figure.
+      const recurringMatching = modeMatched.filter((tr) =>
+        txnCountsTowardBudgetDash(tr, cb, dp),
+      );
+      const { categories } = spendBreakdownFor(
+        cb,
+        recurringMatching,
+        await resolveCentralCatNames(recurringMatching),
+      );
       centralBudgets.push({
         id: cb._id,
         name: cbName,
@@ -3251,6 +3298,7 @@ export const dashboardCentral = query({
         spentCents,
         pct,
         status: statusFor(pct),
+        categories,
         ...budgetApprovalCardFields(cb),
       });
     }
