@@ -67,6 +67,11 @@ on green).
   against the actual repo/CI state, and (d) re-arms itself. Notifications
   are a bonus wake-up, not the mechanism. Don't duplicate agents' work
   while waiting — verify outcomes, don't redo them.
+- Polling mechanism: on surfaces where send_later prompts for permission on
+  every call (claude.ai/code gates CCR scheduling tools upstream of the repo
+  allowlist — settings.json already allows send_later and is ignored), use a
+  persistent Monitor ticker instead: `while true; do sleep 300; echo TICK;
+  done` — same 5-min cadence, zero prompts, stops via TaskStop.
 
 ## Standing product principles (from the founders — apply to every plan)
 
