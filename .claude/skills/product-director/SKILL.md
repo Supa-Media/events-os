@@ -87,6 +87,19 @@ on green).
 6. **Prior approval is the money rule.** Budgets are planned before spend;
    increases are two-party approved; the product should make the approved
    plan visible at the moment of spend.
+7. **Consent is non-negotiable in comms.** Every bulk email carries a
+   working one-click unsubscribe from send #1; transactional email
+   (verification, receipts, approvals) is never gated by it. No BCC blasts,
+   ever — "people can't unsubscribe yet" is a compliance and deliverability
+   defect, not a convenience. Suppression (bounce/complaint/unsubscribe) is
+   shared org-wide; list membership is granular.
+8. **No SaaS silos for data the platform owns.** When Chapter OS already
+   holds the contacts (donors, RSVPs, roster) and is ≥80% of the way to a
+   capability, don't stand up a vendor tool (Mailchimp etc.) that forks the
+   contact list — chapters especially must not create their own accounts.
+   "Rhythm before metrics" is a fine cultural rule (founder-endorsed:
+   consistency for the first months beats dashboard-watching), but the
+   system records metrics from send #1 regardless — collecting ≠ watching.
 
 ## Repo-specific invariants (verify, they drift)
 
@@ -134,6 +147,76 @@ Before finishing a run of this skill, you MUST:
    run's PR.
 
 ## Learnings Log (newest first)
+
+### 2026-07-24 — Run 2 addendum 2 (dispatch → merged: #323 revival shipped)
+- Full arc in one run: recon → founder greenlight → revival agent (merge
+  main into 62-behind branch) → adversarial verify agent → 2 fix commits →
+  squash-merge #323 → all 5 post-merge deploy runs green. Reviving a
+  well-built stale branch beat rebuilding: ~2h wall-clock for a 12k-line
+  feature.
+- subscribe_pr_activity failed repeatedly ("Could not subscribe") on both
+  tool variants — fallback that worked: send_later check-ins (~6-8 min)
+  carrying explicit next-step instructions. The prior "user declined
+  send_later" learning is about unprompted babysitting; when the user says
+  "merge ASAP" and webhooks are broken, scheduled check-ins are the tool.
+- Merge-conflict failure class worth naming: git interleaves two
+  structurally-similar-but-distinct blocks (route pairs in http.ts, settings
+  fns, mobile cards) into one hunk. Instruction that worked: RECONSTRUCT
+  from verbatim parent-tip sources (`git show parent:file`), never trust the
+  raw diff; then have a separate verifier byte-compare each reconstructed
+  block against its originating parent.
+- Two defects escaped the (excellent) revival agent, caught by cheap layers:
+  (1) typecheck drift — main added a NEW call site (sendSignInPhoneCode) of
+  a function whose signature the branch widened; textually conflict-free,
+  CI caught it. Budget one CI round trip for exactly this class. (2) a
+  behavior bug (digest email subject ternary duplicated from the h1) found
+  only by the adversarial verifier's parent-diff spot-read — verify agents
+  earn their cost on merges; run them in parallel with CI, not after.
+- Orchestrator fixing 1-line CI/verifier findings directly beats
+  round-tripping to the author agent when the diagnosis is already in hand
+  — reserve SendMessage round trips for fixes needing the agent's context.
+- Retarget a stacked PR's base to main BEFORE the revival push (one
+  update_pull_request call), and close the superseded base PR with a
+  contained-in note.
+
+### 2026-07-24 — Run 2 addendum (team chat: Mailchimp vs BCC vs native)
+- Team exchange (Charisma/Carolyn/founder) surfaced principles now encoded
+  as 7 & 8 above: founder rejected BCC ("filters to spam", can't design),
+  leaned build-native over Mailchimp $20/mo ("pricing is brutal… build it
+  myself"); Carolyn's "consistency first 3 months, metrics later" endorsed
+  as culture but NOT as "skip unsubscribe" — the team briefly framed
+  no-unsubscribe as a feature of BCC; guidelines must preempt that framing
+  org-wide before chapters multiply.
+- Ops reality check for native sends: Resend free tier is 100 emails/day —
+  a 500-recipient newsletter needs a paid Resend plan (~$20/mo) or
+  multi-day batch pacing; cost-parity with Mailchimp, so the native
+  argument is data unity + control + chapter scale, not price.
+- Contact compilation ask ("Givebutter + any other emails") = the donors/
+  rsvps/people silos recon already mapped; a mailing-list import must
+  record provenance + set expectations in the first send.
+
+### 2026-07-24 — Run 2: email-list/newsletter readiness assessment
+- Run shape: founder asked "what's the state of X, how ready are we" — an
+  assessment run, no attachments. 4 recon lanes (branch archaeology, main
+  inventory, framework capabilities, PR history) in one parallel launch;
+  synthesis-only deliverable, no implementation dispatched unbidden.
+- "I think I had a branch for this" → check OPEN PRs first, not just
+  branches: the remembered work was two still-open stacked PRs (#322→#323,
+  a complete ~12k-line campaigns system), not a rotted branch. PR-history
+  lane found intent/state; git lane found mergeability.
+- Git archaeology mechanics: the cloud clone is SHALLOW — `git fetch
+  --unshallow` before any merge-base/ancestry work, else false "no merge
+  base". `git merge-tree --write-tree origin/main <branch>` gives a
+  conflict-file list without touching the working tree — cheap, decisive
+  staleness evidence (62 behind / 9 conflict files ≠ "rotted").
+- Recon lanes disagree usefully: framework lane said "no email infra
+  upstream", branch lane said "branch built lib/resend.ts app-local" —
+  that intersection IS the upstream-first decision to surface, not resolve
+  silently.
+- Product gap worth naming precisely: #323's unsubscribe = deployment-wide
+  suppression (transactional exempt — matches founder ask) but NOT
+  per-list; founder said "mailing lists" plural. Flag granularity deltas
+  between remembered work and current ask explicitly.
 
 ### 2026-07-23 — Run 1 addendum 3 (post-merge deploy break)
 - Green CI is NOT green deploys. 10 PRs merged green, but two of them
