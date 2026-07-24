@@ -3,7 +3,11 @@ import { ConvexError } from "convex/values";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
-import { createReceipt, linkReceiptToTransaction } from "../lib/receiptLinks";
+import {
+  createReceipt,
+  linkReceiptToTransaction,
+  findDuplicateReceiptBySha256,
+} from "../lib/receiptLinks";
 import { transactionMatchesSearch } from "../receipts";
 
 /**
@@ -401,6 +405,17 @@ describe("markAsDuplicate", () => {
 
     const dupFilter = await s.as.query(api.receipts.listReceipts, { filter: "duplicates" });
     expect(dupFilter.map((r) => r._id)).toContain(a);
+
+    // THE ACTUAL BUG (founder, 2026-07-24): before the fix, `b` (the PRIMARY)
+    // kept showing `softDuplicate: true` forever — `a` never stopped counting
+    // toward the {a, b} collision group just because it got marked/archived.
+    // Confirm the primary's flag actually clears, in both `listReceipts` and
+    // `getReceipt` — the exact gap the earlier assertions above never covered.
+    const byId = new Map(all.map((r) => [r._id, r]));
+    expect(byId.get(b)?.softDuplicate).toBe(false);
+
+    const primaryDetail = await s.as.query(api.receipts.getReceipt, { receiptId: b });
+    expect(primaryDetail?.softDuplicate).toBe(false);
   });
 
   test("getReceipt on the primary surfaces its confirmed duplicate", async () => {
@@ -493,12 +508,20 @@ describe("unmarkDuplicate", () => {
       primaryReceiptId: primary,
     });
 
+    // markAsDuplicate archived it too — confirm before undoing.
+    const archivedRow = await run(t, (ctx) => ctx.db.get(dupe));
+    expect(archivedRow?.archived).toBe(true);
+
     await s.as.mutation(api.receipts.unmarkDuplicate, { receiptId: dupe });
 
     const row = await run(t, (ctx) => ctx.db.get(dupe));
     expect(row?.duplicateOfReceiptId).toBeUndefined();
     expect(row?.duplicateConfirmedByPersonId).toBeUndefined();
     expect(row?.duplicateConfirmedAt).toBeUndefined();
+    // Same coherent undo clears the archive stamps it set alongside them.
+    expect(row?.archived).toBeUndefined();
+    expect(row?.archivedAt).toBeUndefined();
+    expect(row?.archivedByPersonId).toBeUndefined();
 
     // Back in the default "all" listing.
     const all = await s.as.query(api.receipts.listReceipts, { filter: "all" });
@@ -546,6 +569,255 @@ describe("unmarkDuplicate", () => {
     await expect(
       s.as.mutation(api.receipts.unmarkDuplicate, { receiptId }),
     ).resolves.toBeNull();
+  });
+});
+
+// ── archiveReceipt / unarchiveReceipt (founder ask, 2026-07-24) ──────────────
+// "when you have nonsense receipts and duplicates, I think we should just
+// have a concept of archiving receipt entries, and the ability to
+// unarchive." `markAsDuplicate`/`unmarkDuplicate` now drive the SAME fields
+// (see those suites above for the combined behavior); this suite covers the
+// standalone mutations and the reader exclusions they drive everywhere else
+// in the file.
+describe("archiveReceipt / unarchiveReceipt", () => {
+  test("requires bookkeeper+", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const person = await seedPerson(s);
+    await grantRole(s, person, "viewer");
+    const receiptId = await newUploadReceipt(s);
+
+    await expect(
+      s.as.mutation(api.receipts.archiveReceipt, { receiptId }),
+    ).rejects.toThrow(ConvexError);
+    await expect(
+      s.as.mutation(api.receipts.unarchiveReceipt, { receiptId }),
+    ).rejects.toThrow(ConvexError);
+  });
+
+  test("sets archived fields, hides from all/unlinked/linked, surfaces in 'archived' — links survive untouched", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const bookkeeper = await seedBookkeeper(s);
+    const receiptId = await newUploadReceipt(s, { amountCents: 500 });
+    const txn = await seedTxn(s, { amountCents: 500 });
+    await run(t, (ctx) =>
+      linkReceiptToTransaction(ctx, { receiptId, transactionId: txn, source: "manual" }),
+    );
+
+    await s.as.mutation(api.receipts.archiveReceipt, { receiptId });
+
+    const row = await run(t, (ctx) => ctx.db.get(receiptId));
+    expect(row?.archived).toBe(true);
+    expect(row?.archivedAt).toBeDefined();
+    expect(row?.archivedByPersonId).toBe(bookkeeper);
+    // Never deleted, never unlinked — archiving is a visibility decision only.
+    expect(row).not.toBeNull();
+    expect(row?.linkCount).toBe(1);
+
+    const all = await s.as.query(api.receipts.listReceipts, { filter: "all" });
+    expect(all.map((r) => r._id)).not.toContain(receiptId);
+    const linked = await s.as.query(api.receipts.listReceipts, { filter: "linked" });
+    expect(linked.map((r) => r._id)).not.toContain(receiptId);
+    const unlinked = await s.as.query(api.receipts.listReceipts, { filter: "unlinked" });
+    expect(unlinked.map((r) => r._id)).not.toContain(receiptId);
+
+    const archived = await s.as.query(api.receipts.listReceipts, { filter: "archived" });
+    expect(archived.map((r) => r._id)).toEqual([receiptId]);
+    expect(archived[0]?.archived).toBe(true);
+  });
+
+  test("unarchiveReceipt restores a hand-archived receipt to the default listing", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    const receiptId = await newUploadReceipt(s);
+    await s.as.mutation(api.receipts.archiveReceipt, { receiptId });
+
+    await s.as.mutation(api.receipts.unarchiveReceipt, { receiptId });
+
+    const row = await run(t, (ctx) => ctx.db.get(receiptId));
+    expect(row?.archived).toBeUndefined();
+    expect(row?.archivedAt).toBeUndefined();
+    expect(row?.archivedByPersonId).toBeUndefined();
+
+    const all = await s.as.query(api.receipts.listReceipts, { filter: "all" });
+    expect(all.map((r) => r._id)).toContain(receiptId);
+  });
+
+  test("unarchiving a HUMAN-confirmed duplicate also clears the duplicate fields — one coherent undo", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    const primary = await newUploadReceipt(s, { amountCents: 5000 });
+    const dupe = await newUploadReceipt(s, { amountCents: 6000 });
+    await s.as.mutation(api.receipts.markAsDuplicate, { receiptId: dupe, primaryReceiptId: primary });
+
+    await s.as.mutation(api.receipts.unarchiveReceipt, { receiptId: dupe });
+
+    const row = await run(t, (ctx) => ctx.db.get(dupe));
+    expect(row?.archived).toBeUndefined();
+    expect(row?.duplicateOfReceiptId).toBeUndefined();
+    expect(row?.duplicateConfirmedByPersonId).toBeUndefined();
+    expect(row?.duplicateConfirmedAt).toBeUndefined();
+  });
+
+  test("unarchiving a DERIVED (sha256) duplicate leaves that pointer alone — the bytes are still identical", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    const storageId = await storeBlobWithContent(s, "same-bytes-archived");
+    const original = await run(s.t, (ctx) =>
+      createReceipt(ctx, { chapterId: s.chapterId, storageId, source: "upload", fileSha256: "hash-y" }),
+    );
+    const exactDupe = await run(s.t, (ctx) =>
+      createReceipt(ctx, {
+        chapterId: s.chapterId,
+        storageId,
+        source: "upload",
+        fileSha256: "hash-y",
+        duplicateOfReceiptId: original,
+      }),
+    );
+    await s.as.mutation(api.receipts.archiveReceipt, { receiptId: exactDupe });
+
+    await s.as.mutation(api.receipts.unarchiveReceipt, { receiptId: exactDupe });
+
+    const row = await run(t, (ctx) => ctx.db.get(exactDupe));
+    expect(row?.archived).toBeUndefined();
+    expect(row?.duplicateOfReceiptId).toBe(original);
+  });
+
+  // THE FOUNDER'S CORE COMPLAINT: "when you mark something as duplicate the
+  // original still shows the duplicate warning." markAsDuplicate now archives
+  // the duplicate, and `computeSoftDuplicates` drops archived rows before
+  // grouping — so the primary stops colliding with it entirely.
+  test("markAsDuplicate archives the duplicate; the primary's softDuplicate flag clears", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    const day = Date.now();
+    const a = await newUploadReceipt(s, { amountCents: 4210, receiptDate: day });
+    const b = await newUploadReceipt(s, { amountCents: 4210, receiptDate: day });
+
+    // Before marking: both collide, both flagged.
+    const before = await s.as.query(api.receipts.listReceipts, { filter: "all" });
+    const beforeById = new Map(before.map((r) => [r._id, r]));
+    expect(beforeById.get(a)?.softDuplicate).toBe(true);
+    expect(beforeById.get(b)?.softDuplicate).toBe(true);
+
+    await s.as.mutation(api.receipts.markAsDuplicate, { receiptId: a, primaryReceiptId: b });
+
+    const row = await run(t, (ctx) => ctx.db.get(a));
+    expect(row?.archived).toBe(true);
+
+    const after = await s.as.query(api.receipts.listReceipts, { filter: "all" });
+    const afterById = new Map(after.map((r) => [r._id, r]));
+    expect(afterById.get(b)?.softDuplicate).toBe(false);
+
+    const primaryDetail = await s.as.query(api.receipts.getReceipt, { receiptId: b });
+    expect(primaryDetail?.softDuplicate).toBe(false);
+  });
+
+  test("a plain hand-archive (no duplicate confirmation) of one colliding receipt also clears the other's softDuplicate flag and duplicateMatches", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    const day = Date.now();
+    const a = await newUploadReceipt(s, { amountCents: 777, receiptDate: day });
+    const b = await newUploadReceipt(s, { amountCents: 777, receiptDate: day });
+
+    await s.as.mutation(api.receipts.archiveReceipt, { receiptId: a });
+
+    const detailB = await s.as.query(api.receipts.getReceipt, { receiptId: b });
+    expect(detailB?.softDuplicate).toBe(false);
+    expect(detailB?.duplicateMatches).toEqual([]);
+  });
+
+  test("excludes archived receipts from listInboundQueue's per-email receipts[] — drops the row when that was the only one", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    const inboundReceiptId = await run(t, (ctx) =>
+      ctx.db.insert("inboundReceipts", {
+        emailId: `e_${Math.random()}`,
+        status: "needs_review",
+        fromEmail: "sender@x.com",
+        chapterId: s.chapterId,
+        receivedAt: Date.now(),
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const storageId = await storeBlobWithContent(s, `email-${Math.random()}`);
+    const receiptId = await run(t, (ctx) =>
+      createReceipt(ctx, {
+        chapterId: s.chapterId,
+        storageId,
+        source: "email",
+        inboundReceiptId,
+        ocrAmountCents: 1200,
+      }),
+    );
+
+    await s.as.mutation(api.receipts.archiveReceipt, { receiptId });
+
+    const queue = await s.as.query(api.receipts.listInboundQueue, {});
+    expect(queue.map((r) => r._id)).not.toContain(inboundReceiptId);
+  });
+
+  test("excludes archived receipts from findNextFailedReceipt and failedExtractionStatus's count", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    const storageId = await storeBlobWithContent(s, "failed-and-archived");
+    const receiptId = await run(t, (ctx) =>
+      createReceipt(ctx, {
+        chapterId: s.chapterId,
+        storageId,
+        source: "upload",
+        ocrError: "no text found",
+      }),
+    );
+
+    const before = await t.query(internal.receipts.findNextFailedReceipt, {
+      chapterId: s.chapterId,
+    });
+    expect(before?._id).toBe(receiptId);
+    const statusBefore = await s.as.query(api.receipts.failedExtractionStatus, {});
+    expect(statusBefore.failedCount).toBe(1);
+
+    await s.as.mutation(api.receipts.archiveReceipt, { receiptId });
+
+    const after = await t.query(internal.receipts.findNextFailedReceipt, {
+      chapterId: s.chapterId,
+    });
+    expect(after).toBeNull();
+    const statusAfter = await s.as.query(api.receipts.failedExtractionStatus, {});
+    expect(statusAfter.failedCount).toBe(0);
+  });
+
+  // findDuplicateReceiptBySha256 must NOT exclude archived rows — a re-upload
+  // of an archived file's exact bytes is still a real duplicate submission.
+  test("sha256 re-upload of an archived file's bytes still gets caught as a duplicate", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    const storageId = await storeBlobWithContent(s, "archived-bytes");
+    const original = await run(s.t, (ctx) =>
+      createReceipt(ctx, {
+        chapterId: s.chapterId,
+        storageId,
+        source: "upload",
+        fileSha256: "hash-archived",
+      }),
+    );
+    await s.as.mutation(api.receipts.archiveReceipt, { receiptId: original });
+
+    const hit = await run(t, (ctx) =>
+      findDuplicateReceiptBySha256(ctx, s.chapterId, "hash-archived"),
+    );
+    expect(hit).toBe(original);
   });
 });
 
@@ -941,24 +1213,37 @@ describe("transactionMatchesSearch", () => {
   });
 });
 
+// FOUNDER FIX (2026-07-24): "it doesn't let me search transactions that
+// already have receipts, but some transactions may need multiple receipts
+// associated." Receipted transactions are now INCLUDED in every search here
+// (never excluded), tagged `hasReceipt` so the UI can badge them instead of
+// hiding them — a bookkeeper can knowingly attach a second receipt.
 describe("searchUnreceiptedTransactions", () => {
-  test("finds unreceipted spend by merchant or amount; excludes receipted/non-spend", async () => {
+  test("finds spend by merchant or amount, excludes non-spend, tags receipted results with hasReceipt", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await seedBookkeeper(s);
     const now = Date.now();
     const audible = await seedTxn(s, { merchantName: "Audible", amountCents: 1636, postedAt: now });
     await seedTxn(s, { merchantName: "Costco", amountCents: 4210, postedAt: now });
-    // Noise: same merchant but already receipted, and a non-spend inflow.
-    await seedTxn(s, { merchantName: "Audible", amountCents: 1636, postedAt: now, hasReceipt: true });
+    // A transaction may need a SECOND receipt — no longer excluded, just tagged.
+    const audibleReceipted = await seedTxn(s, {
+      merchantName: "Audible",
+      amountCents: 1636,
+      postedAt: now,
+      hasReceipt: true,
+    });
+    // Still excluded: a non-spend inflow, regardless of receipt state.
     await seedTxn(s, { merchantName: "Audible", amountCents: 1636, postedAt: now, flow: "inflow" });
 
     const byName = await s.as.query(api.receipts.searchUnreceiptedTransactions, { query: "audible" });
-    // Only the one unreceipted spend Audible charge — not the receipted or inflow ones.
-    expect(byName.map((r) => r.transactionId)).toEqual([audible]);
+    const byNameId = new Map(byName.map((r) => [r.transactionId, r]));
+    expect(byNameId.size).toBe(2);
+    expect(byNameId.get(audible)?.hasReceipt).toBe(false);
+    expect(byNameId.get(audibleReceipted)?.hasReceipt).toBe(true);
 
     const byAmount = await s.as.query(api.receipts.searchUnreceiptedTransactions, { query: "$16.36" });
-    expect(byAmount.map((r) => r.transactionId)).toEqual([audible]);
+    expect(byAmount.map((r) => r.transactionId).sort()).toEqual([audible, audibleReceipted].sort());
   });
 
   test("a viewer can't search (bookkeeper+ gate)", async () => {
@@ -971,15 +1256,17 @@ describe("searchUnreceiptedTransactions", () => {
     ).rejects.toThrow(ConvexError);
   });
 
-  test("empty query returns the chapter's unreceipted spend", async () => {
+  test("empty query returns the chapter's spend, receipted and unreceipted alike", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await seedBookkeeper(s);
     const a = await seedTxn(s, { merchantName: "A", amountCents: 100 });
     const b = await seedTxn(s, { merchantName: "B", amountCents: 200 });
-    await seedTxn(s, { merchantName: "C", amountCents: 300, hasReceipt: true }); // excluded
+    const c = await seedTxn(s, { merchantName: "C", amountCents: 300, hasReceipt: true }); // now included
     const all = await s.as.query(api.receipts.searchUnreceiptedTransactions, {});
-    expect(all.map((r) => r.transactionId).sort()).toEqual([a, b].sort());
+    expect(all.map((r) => r.transactionId).sort()).toEqual([a, b, c].sort());
+    expect(all.find((r) => r.transactionId === c)?.hasReceipt).toBe(true);
+    expect(all.find((r) => r.transactionId === a)?.hasReceipt).toBe(false);
   });
 });
 
