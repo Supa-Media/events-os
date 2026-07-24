@@ -16,6 +16,7 @@ import type { GivingScope } from "./givingAccess";
 import { territoryForChapter } from "../territories";
 import { chapterRoster } from "./org";
 import { syncDonorIdentity } from "./donorIdentity";
+import { recordPersonEmail } from "./personEmails";
 
 /** The 90-day lapse window (the AJ donor system's rule, PRD §1). */
 export const LAPSE_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
@@ -328,6 +329,15 @@ export async function linkDonorToPerson(
       notes: "Added from Giving",
       createdAt: Date.now(),
     });
+  }
+
+  // Person-centric audiences Phase 2 (specs/person-centric-audiences.md item
+  // 1) — write-through: the donor's own email joins the linked person's
+  // `personEmails` ledger on EVERY link (matched OR freshly created), trusted
+  // at write time (CRM data is staff-entered or import-matched, never an
+  // anonymous public-form capture).
+  if (donor.email) {
+    await recordPersonEmail(ctx, { personId, email: donor.email, source: "donor", verified: true });
   }
 
   await ctx.db.patch(donor._id, { personId });
