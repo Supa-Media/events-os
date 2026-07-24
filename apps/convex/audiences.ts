@@ -211,9 +211,19 @@ export const previewAudience = query({
     sample: v.array(v.object({ name: v.optional(v.string()), email: v.string() })),
     excludedSuppressed: v.number(),
     excludedUnverified: v.number(),
-    // Phase 3 (`person_filters` only — always 0 for legacy sources).
+    // `person_filters` AND `people` (data-trust fix — previously always 0 for
+    // `people`, a silent drop; see `lib/audienceResolve.ts#resolvePeople`'s
+    // doc). Always 0 for `guests`/`donors`.
     excludedOptOut: v.number(),
     unlinkedCentralDonors: v.number(),
+    // ── Additive data-trust counters (below) — every existing field above is
+    // unchanged; these are new optional-shaped signals so an older client
+    // that doesn't render them yet loses nothing. See
+    // `lib/audienceResolve.ts#AudienceResolution`'s doc for each field. ──
+    centralDonorsExcludedByChapterFilter: v.number(),
+    unlinkedGuests: v.number(),
+    unlinkedGuestsIsLowerBound: v.boolean(),
+    handPickedUnverified: v.number(),
     // The 5,000-recipient cap (`AUDIENCE_RESOLVE_LIMIT`), surfaced instead of
     // silently truncated — `truncatedCount` is exact here (a live query, not
     // a stored snapshot), unlike the campaign row's boolean-only
@@ -237,6 +247,10 @@ export const previewAudience = query({
       excludedUnverified: resolution.excludedUnverified,
       excludedOptOut: resolution.excludedOptOut,
       unlinkedCentralDonors: resolution.unlinkedCentralDonors,
+      centralDonorsExcludedByChapterFilter: resolution.centralDonorsExcludedByChapterFilter,
+      unlinkedGuests: resolution.unlinkedGuests,
+      unlinkedGuestsIsLowerBound: resolution.unlinkedGuestsIsLowerBound,
+      handPickedUnverified: resolution.handPickedUnverified,
       truncated: resolution.truncated,
       truncatedCount: resolution.truncatedCount,
     };
