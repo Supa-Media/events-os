@@ -35,11 +35,14 @@ import { confirmAction } from "../../event/ticketing/helpers";
 import { Calendar } from "../../ui/Calendar";
 import type { ActionRunner } from "../../../lib/useActionToast";
 import {
-  centsToDollarsInput,
   formatCents,
   parseDollarsToCents,
   senderClassLabel,
   senderClassTone,
+  shouldReseedReceiptForm,
+  snapshotReceiptForm,
+  type ReceiptFormFields,
+  type ReceiptFormSnapshot,
 } from "./helpers";
 
 export function ReceiptDetailModal({
@@ -72,7 +75,11 @@ export function ReceiptDetailModal({
   const [date, setDate] = useState<number | null>(null);
   const [merchant, setMerchant] = useState("");
   const [note, setNote] = useState("");
-  const [seededFor, setSeededFor] = useState<Id<"receipts"> | null>(null);
+  // The server snapshot the form was LAST seeded from — the dirty check
+  // `shouldReseedReceiptForm` compares the live form against (see Bug 1's
+  // fix, `helpers.ts`). Doubles as `seededFor`'s replacement: `null` until
+  // the first seed, `.receiptId` tags which receipt it came from.
+  const [lastSeeded, setLastSeeded] = useState<ReceiptFormSnapshot | null>(null);
   const [saving, setSaving] = useState(false);
   const [imgFailed, setImgFailed] = useState(false);
   const [showCalendar, setShowCalendar] = useState(false);
@@ -83,18 +90,32 @@ export function ReceiptDetailModal({
   const [markingDuplicateId, setMarkingDuplicateId] = useState<Id<"receipts"> | null>(null);
   const [unmarkingDuplicate, setUnmarkingDuplicate] = useState(false);
 
-  // Seed local edit state once per receipt (never stomps an in-progress edit
-  // on a background live-query refresh of the SAME receipt).
+  // Seed local edit state from the live query (BUG 1 fix): a freshly opened
+  // (or switched-to) receipt ALWAYS seeds; the SAME receipt only re-seeds
+  // while the form still matches what it was last seeded from — i.e. the
+  // human hasn't typed anything since (see `shouldReseedReceiptForm`'s doc).
+  // This is what makes a retry that fills in a blank field show up in an
+  // OPEN modal immediately, without a close/reopen, while never clobbering
+  // an in-progress edit. Deliberately depends on `receipt` alone (not the
+  // form fields) — re-checking on every keystroke would be pointless work;
+  // this only needs to run when the SERVER value changes.
   useEffect(() => {
-    if (receipt && seededFor !== receipt._id) {
-      setAmountText(centsToDollarsInput(receipt.amountCents));
-      setDate(receipt.receiptDate);
-      setMerchant(receipt.merchant ?? "");
-      setNote(receipt.note ?? "");
-      setImgFailed(false);
-      setSeededFor(receipt._id);
+    if (!receipt) return;
+    const server = snapshotReceiptForm(receipt);
+    const current: ReceiptFormFields = { amountText, date, merchant, note };
+    if (shouldReseedReceiptForm(current, lastSeeded, server)) {
+      setAmountText(server.amountText);
+      setDate(server.date);
+      setMerchant(server.merchant);
+      setNote(server.note);
+      // Only reset the broken-image flag on an actual receipt SWITCH — a
+      // same-receipt reseed (e.g. a retry landing) shouldn't re-show an
+      // image that already failed to load.
+      if (!lastSeeded || lastSeeded.receiptId !== server.receiptId) setImgFailed(false);
+      setLastSeeded(server);
     }
-  }, [receipt, seededFor]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [receipt]);
 
   const amountCents = amountText.trim() === "" ? null : parseDollarsToCents(amountText);
   const amountInvalid = amountText.trim() !== "" && amountCents == null;
@@ -169,8 +190,17 @@ export function ReceiptDetailModal({
       destructive: false,
       onConfirm: () => {
         setMarkingDuplicateId(primaryReceiptId);
+        // BUG 2 fix: the backend + reactive query wiring here were already
+        // correct (a live `getReceipt` picks up `duplicateOfReceiptId` and
+        // swaps in the "Duplicate of" banner, and the library grid's live
+        // `listReceipts` already drops the row) — but with the modal staying
+        // open on an unchanged scroll position, that reactive swap was easy
+        // to miss and read as a no-op. Close on success so it's unmistakable:
+        // this receipt is now hidden from the library, so there's nothing
+        // left to look at in this modal.
         void run(() => markAsDuplicate({ receiptId, primaryReceiptId }), {
           errorTitle: "Couldn't mark as duplicate",
+          onSuccess: () => onClose(),
         }).finally(() => setMarkingDuplicateId(null));
       },
     });

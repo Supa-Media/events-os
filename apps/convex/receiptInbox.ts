@@ -1141,19 +1141,35 @@ export async function ocrReceiptImage(
       {
         role: "system",
         content:
-          "You extract the payment TOTAL from a photo of a receipt. Reply " +
-          "with a SINGLE JSON object and nothing else: " +
+          "You extract the payment TOTAL and MERCHANT from a photo of a " +
+          "receipt. Reply with a SINGLE JSON object and nothing else: " +
           '{"amount": <number, the grand total actually charged, in ' +
           'dollars, e.g. 42.10>, "date": "<YYYY-MM-DD or null>", ' +
-          '"merchant": "<store name or null>", "confidence": <0-1>}. ' +
+          '"merchant": "<store/restaurant/business name or null>", ' +
+          '"confidence": <0-1>}. ' +
           "The amount is the FINAL total paid (after tax/tip), not a " +
           "subtotal or a single line item. If you cannot read a clear " +
-          "total, set amount to null and confidence to 0. Never guess.",
+          "total, set amount to null and confidence to 0. Never guess. " +
+          "For merchant, find the business name printed on the receipt — " +
+          "usually the largest text or a logo at the very top, sometimes " +
+          "repeated near the bottom or on the payment line. Make a BEST " +
+          "EFFORT: if a plausible name is visible anywhere, even partial " +
+          "or stylized, return it rather than null — do not require a " +
+          "perfectly clean read. A DELIVERY-APP receipt (DoorDash, Uber " +
+          "Eats, Grubhub, Instacart, etc.) usually names the restaurant " +
+          "or store the order came from; use THAT name if it's legible, " +
+          "and fall back to the delivery platform's own name only if no " +
+          "restaurant/store name appears anywhere on the receipt. Only " +
+          "return null for merchant if genuinely no business name is " +
+          "visible on the receipt at all.",
       },
       {
         role: "user",
         content: [
-          { type: "text", text: "Extract the total from this receipt." },
+          {
+            type: "text",
+            text: "Extract the total and merchant name from this receipt.",
+          },
           { type: "image_url", image_url: { url: dataUrl } },
         ],
       },
