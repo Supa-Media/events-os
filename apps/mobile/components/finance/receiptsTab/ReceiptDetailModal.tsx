@@ -28,7 +28,7 @@ import { Image, Linking, Modal, Platform, Pressable, ScrollView, Text, View } fr
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { Badge, Button, Field, Icon, TextField } from "../../ui";
+import { Badge, Button, Field, Icon, ImageLightbox, TextField } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { formatDate } from "../../../lib/format";
 import { confirmAction } from "../../event/ticketing/helpers";
@@ -82,6 +82,7 @@ export function ReceiptDetailModal({
   const [lastSeeded, setLastSeeded] = useState<ReceiptFormSnapshot | null>(null);
   const [saving, setSaving] = useState(false);
   const [imgFailed, setImgFailed] = useState(false);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
   const [showCalendar, setShowCalendar] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [showModelInput, setShowModelInput] = useState(false);
@@ -224,11 +225,17 @@ export function ReceiptDetailModal({
   const openCandidates = (candidates ?? []).filter((c) => !linkedIds.has(c.transactionId));
 
   return (
+    <>
     <Modal visible transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable onPress={onClose} className="flex-1 items-center justify-center bg-ink/30 p-6">
+      {/* Right-anchored full-height panel (item 1: "open in a sidebar and show
+          the full length of data") — the backdrop dims + closes on tap, the
+          panel fills the height so the record scrolls naturally instead of
+          being boxed into a short centered card. On a narrow screen the panel
+          goes full-width, so it reads as a full-screen sheet. */}
+      <Pressable onPress={onClose} className="flex-1 flex-row justify-end bg-ink/30">
         <Pressable
           onPress={() => {}}
-          className="w-full max-w-lg overflow-hidden rounded-xl border border-border bg-raised shadow-pop"
+          className="h-full w-full max-w-md border-l border-border bg-raised shadow-pop"
         >
           <View className="flex-row items-center justify-between border-b border-border px-5 py-4">
             <Text className="font-display text-lg text-ink">Receipt</Text>
@@ -237,7 +244,7 @@ export function ReceiptDetailModal({
             </Pressable>
           </View>
 
-          <ScrollView className="max-h-[600px] px-5 py-4">
+          <ScrollView className="flex-1 px-5 py-4">
             {receipt === undefined ? (
               <Text className="py-8 text-center text-sm text-muted">Loading…</Text>
             ) : receipt === null ? (
@@ -273,12 +280,23 @@ export function ReceiptDetailModal({
                       <Text className="text-sm font-semibold text-accent">Open PDF</Text>
                     </Pressable>
                   ) : receipt.url && !imgFailed ? (
-                    <Image
-                      source={{ uri: receipt.url }}
-                      style={{ width: "100%", height: "100%" }}
-                      resizeMode="contain"
-                      onError={() => setImgFailed(true)}
-                    />
+                    // Tap the thumbnail to open it in the fullscreen spotlight
+                    // (item 2: "clicking the image should open it larger").
+                    <Pressable
+                      onPress={() => setLightboxOpen(true)}
+                      accessibilityLabel="View receipt larger"
+                      className="h-full w-full active:opacity-90"
+                    >
+                      <Image
+                        source={{ uri: receipt.url }}
+                        style={{ width: "100%", height: "100%" }}
+                        resizeMode="contain"
+                        onError={() => setImgFailed(true)}
+                      />
+                      <View className="absolute bottom-1.5 right-1.5 rounded-md bg-ink/60 px-1.5 py-0.5">
+                        <Icon name="maximize-2" size={12} color={colors.raised} />
+                      </View>
+                    </Pressable>
                   ) : (
                     <Pressable
                       onPress={() => receipt.url && Linking.openURL(receipt.url)}
@@ -629,5 +647,14 @@ export function ReceiptDetailModal({
         </Pressable>
       </Pressable>
     </Modal>
+    {receipt?.url && !isPdfReceipt ? (
+      <ImageLightbox
+        uri={receipt.url}
+        visible={lightboxOpen}
+        onClose={() => setLightboxOpen(false)}
+        caption={receipt.filename ?? undefined}
+      />
+    ) : null}
+    </>
   );
 }
