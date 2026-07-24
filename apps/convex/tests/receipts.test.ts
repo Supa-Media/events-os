@@ -546,6 +546,54 @@ describe("unmarkDuplicate", () => {
   });
 });
 
+// ── getReceipt: duplicateStillLinked (BUG FIX) ────────────────────────────────
+// `markAsDuplicate` deliberately never touches existing `receiptLinks` — money
+// records don't change silently. That means a confirmed duplicate CAN end up
+// still attached to a transaction, with nothing surfacing that loose end. The
+// fix: `getReceipt` now flags it explicitly so the UI can warn + offer an
+// unlink affordance instead of the money-adjacent state staying invisible.
+describe("getReceipt — duplicateStillLinked", () => {
+  test("flags a confirmed duplicate that still carries a receiptLink", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    const primary = await newUploadReceipt(s, { amountCents: 5000 });
+    const dupe = await newUploadReceipt(s, { amountCents: 6000 });
+    const txn = await seedTxn(s, { amountCents: 6000 });
+    await run(t, (ctx) =>
+      linkReceiptToTransaction(ctx, { receiptId: dupe, transactionId: txn, source: "manual" }),
+    );
+
+    await s.as.mutation(api.receipts.markAsDuplicate, {
+      receiptId: dupe,
+      primaryReceiptId: primary,
+    });
+
+    const detail = await s.as.query(api.receipts.getReceipt, { receiptId: dupe });
+    expect(detail?.duplicateStillLinked).toBe(true);
+    expect(detail?.linkCount).toBe(1);
+  });
+
+  test("is false for a confirmed duplicate with no links, and for a non-duplicate receipt", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    const primary = await newUploadReceipt(s, { amountCents: 5000 });
+    const dupe = await newUploadReceipt(s, { amountCents: 6000 });
+
+    await s.as.mutation(api.receipts.markAsDuplicate, {
+      receiptId: dupe,
+      primaryReceiptId: primary,
+    });
+
+    const dupeDetail = await s.as.query(api.receipts.getReceipt, { receiptId: dupe });
+    expect(dupeDetail?.duplicateStillLinked).toBe(false);
+
+    const primaryDetail = await s.as.query(api.receipts.getReceipt, { receiptId: primary });
+    expect(primaryDetail?.duplicateStillLinked).toBe(false);
+  });
+});
+
 // ── updateReceiptFields ──────────────────────────────────────────────────────
 describe("updateReceiptFields", () => {
   test("edits canonical fields, leaves ocr* untouched, and stamps the corrector", async () => {
@@ -833,5 +881,108 @@ describe("applyUploadOcrAndAttach", () => {
     expect(row?.merchant).toBe("Costco");
     // The immutable OCR provenance still refreshed regardless.
     expect(row?.ocrMerchant).toBe("Some Other Store");
+  });
+});
+
+// ── listInboundQueue: hiding confirmed/exact duplicates (BUG FIX) ────────────
+// Confirming a receipt as a duplicate (`markAsDuplicate`) already hides it
+// from the library's default views, but the SAME resolved receipt used to
+// keep sitting in the inbox's per-email `receipts[]` list — badged
+// "Duplicate", but never actually going away — so a resolved email kept
+// demanding attention forever. The fix: `listInboundQueue` excludes any
+// receipt with `duplicateOfReceiptId` set from that list, and drops the whole
+// inbound row when EVERY extracted receipt turned out to be a duplicate.
+describe("listInboundQueue — duplicate hiding", () => {
+  async function seedInboundRow(
+    s: ChapterSetup,
+    opts: { status?: "needs_review" | "no_match" | "error" } = {},
+  ): Promise<Id<"inboundReceipts">> {
+    return await run(s.t, (ctx) =>
+      ctx.db.insert("inboundReceipts", {
+        emailId: `e_${Math.random()}`,
+        status: opts.status ?? "needs_review",
+        fromEmail: "sender@x.com",
+        chapterId: s.chapterId,
+        receivedAt: Date.now(),
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+  }
+
+  test("excludes a confirmed-duplicate receipt from its email's receipts[] list", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    const inboundReceiptId = await seedInboundRow(s);
+    const primary = await newUploadReceipt(s, { amountCents: 5000 });
+
+    const storageId = await storeBlobWithContent(s, `email-${Math.random()}`);
+    const dupe = await run(t, (ctx) =>
+      createReceipt(ctx, {
+        chapterId: s.chapterId,
+        storageId,
+        source: "email",
+        inboundReceiptId,
+        ocrAmountCents: 5000,
+      }),
+    );
+    const otherStorageId = await storeBlobWithContent(s, `other-${Math.random()}`);
+    const clean = await run(t, (ctx) =>
+      createReceipt(ctx, {
+        chapterId: s.chapterId,
+        storageId: otherStorageId,
+        source: "email",
+        inboundReceiptId,
+        ocrAmountCents: 1200,
+      }),
+    );
+    await s.as.mutation(api.receipts.markAsDuplicate, {
+      receiptId: dupe,
+      primaryReceiptId: primary,
+    });
+
+    const rows = await s.as.query(api.receipts.listInboundQueue, {});
+    const row = rows.find((r) => r._id === inboundReceiptId);
+    expect(row).toBeDefined();
+    const receiptIds = row!.receipts.map((r) => r._id);
+    expect(receiptIds).toContain(clean);
+    expect(receiptIds).not.toContain(dupe);
+  });
+
+  test("drops the whole inbound row once EVERY extracted receipt is a confirmed duplicate", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    const inboundReceiptId = await seedInboundRow(s);
+    const primary = await newUploadReceipt(s, { amountCents: 5000 });
+
+    const storageId = await storeBlobWithContent(s, `email-${Math.random()}`);
+    const onlyReceipt = await run(t, (ctx) =>
+      createReceipt(ctx, {
+        chapterId: s.chapterId,
+        storageId,
+        source: "email",
+        inboundReceiptId,
+        ocrAmountCents: 5000,
+      }),
+    );
+    await s.as.mutation(api.receipts.markAsDuplicate, {
+      receiptId: onlyReceipt,
+      primaryReceiptId: primary,
+    });
+
+    const rows = await s.as.query(api.receipts.listInboundQueue, {});
+    expect(rows.map((r) => r._id)).not.toContain(inboundReceiptId);
+  });
+
+  test("never drops a row that legitimately has no extracted receipts (e.g. an OCR failure)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    const inboundReceiptId = await seedInboundRow(s, { status: "error" });
+
+    const rows = await s.as.query(api.receipts.listInboundQueue, { status: "error" });
+    expect(rows.map((r) => r._id)).toContain(inboundReceiptId);
   });
 });

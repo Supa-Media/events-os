@@ -488,6 +488,112 @@ describe("retryExtraction", () => {
   });
 });
 
+// ── retry email merchant fallback (BUG FIX) ───────────────────────────────────
+// `deriveMerchantFromEmail` only ever ran during INITIAL email processing
+// (`receiptInbox.ts#runPipeline`) — a retry re-ran the SAME PDF-text/vision
+// routing with no email context at all, so an email-sourced receipt whose
+// fresh extraction still found no merchant stayed blank FOREVER, even after a
+// successful retry. `runRetryExtraction` now mirrors the same fallback: an
+// email-sourced receipt (has an `inboundReceiptId`) whose fresh read yields no
+// merchant loads its originating `inboundReceipts` row and derives one from
+// the envelope, exactly like the initial pipeline does.
+describe("retryExtraction — email merchant fallback", () => {
+  async function seedInboundRow(
+    s: ChapterSetup,
+    opts: { fromEmail: string; subject?: string },
+  ): Promise<Id<"inboundReceipts">> {
+    return await run(s.t, (ctx) =>
+      ctx.db.insert("inboundReceipts", {
+        emailId: `e_${Math.random()}`,
+        status: "needs_review",
+        fromEmail: opts.fromEmail,
+        subject: opts.subject,
+        chapterId: s.chapterId,
+        receivedAt: Date.now(),
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+  }
+
+  test("a blank-merchant email receipt gets the merchant filled from the subject fallback on retry", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    // `DIGITAL_RECEIPT_TEXT`'s PDF-text heuristic finds an amount but no
+    // merchant (no business-suffix line at all) — exactly the gap the email
+    // fallback needs to fill.
+    const storageId = await storePdf(s, buildDigitalPdf(DIGITAL_RECEIPT_TEXT));
+    const inboundReceiptId = await seedInboundRow(s, {
+      fromEmail: "someone@gmail.com",
+      subject: "Fwd: Your receipt from Givebutter, Inc. #2383-5178",
+    });
+    const receiptId = await run(t, (ctx) =>
+      createReceipt(ctx, {
+        chapterId: s.chapterId,
+        storageId,
+        source: "email",
+        inboundReceiptId,
+      }),
+    );
+
+    await t.action(internal.receipts.runRetryExtraction, { receiptId, model: undefined });
+
+    const row = await run(t, (ctx) => ctx.db.get(receiptId));
+    expect(row?.ocrAmountCents).toBe(3380);
+    // The fresh PDF-text read alone found no merchant...
+    // ...but the email fallback fills it in.
+    expect(row?.ocrMerchant).toBe("Givebutter, Inc.");
+    // Per-field rule: the canonical `merchant` (still blank) is also filled.
+    expect(row?.merchant).toBe("Givebutter, Inc.");
+  });
+
+  test("never overwrites a merchant the fresh extraction DID find", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    // A PDF whose text layer DOES carry a clean business-suffix name
+    // (single-line fixture — see the module doc on the hand-rolled single-`Tj`
+    // fixture's quirks with embedded line breaks).
+    const storageId = await storePdf(s, buildDigitalPdf("Acme Co. Total 33.80 paid"));
+    const inboundReceiptId = await seedInboundRow(s, {
+      fromEmail: "someone@gmail.com",
+      subject: "Fwd: Your receipt from Givebutter, Inc. #2383-5178",
+    });
+    const receiptId = await run(t, (ctx) =>
+      createReceipt(ctx, {
+        chapterId: s.chapterId,
+        storageId,
+        source: "email",
+        inboundReceiptId,
+      }),
+    );
+
+    await t.action(internal.receipts.runRetryExtraction, { receiptId, model: undefined });
+
+    const row = await run(t, (ctx) => ctx.db.get(receiptId));
+    // The real extracted merchant wins — the email fallback never runs when
+    // extraction already found one.
+    expect(row?.ocrMerchant).not.toBe("Givebutter, Inc.");
+  });
+
+  test("an upload-sourced receipt (no inboundReceiptId) never triggers the email fallback", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    const storageId = await storePdf(s, buildDigitalPdf(DIGITAL_RECEIPT_TEXT));
+    const receiptId = await run(t, (ctx) =>
+      createReceipt(ctx, { chapterId: s.chapterId, storageId, source: "upload" }),
+    );
+
+    await t.action(internal.receipts.runRetryExtraction, { receiptId, model: undefined });
+
+    const row = await run(t, (ctx) => ctx.db.get(receiptId));
+    expect(row?.ocrAmountCents).toBe(3380);
+    expect(row?.ocrMerchant).toBeUndefined();
+  });
+});
+
 // ── submitUploadedReceipts filenames ──────────────────────────────────────────
 describe("submitUploadedReceipts filenames", () => {
   test("the client-supplied filename is stamped onto the created receipt", async () => {

@@ -54,6 +54,7 @@ import {
   candidateValidator,
   extractReceiptFields,
   resolveOcrModel,
+  deriveMerchantFromEmail,
   type OcrRoutingResult,
 } from "./receiptInbox";
 
@@ -378,6 +379,14 @@ const receiptDetail = v.object({
   // duplicates (see `findDuplicatesOfReceipt`). Only ever populated when
   // this receipt isn't itself somebody else's duplicate.
   duplicates: v.array(duplicateOfSummary),
+  // True iff THIS receipt is itself a duplicate (`duplicateOfReceiptId` set —
+  // derived OR human-confirmed) AND still carries `receiptLinks` to a
+  // transaction (`linkCount > 0`). `markAsDuplicate` deliberately never
+  // touches existing links (money records don't change silently — see its
+  // doc), so a confirmed duplicate can end up still attached to a charge; the
+  // mobile UI uses this to surface an explicit "still attached — unlink it?"
+  // warning instead of leaving that money-adjacent loose end invisible.
+  duplicateStillLinked: v.boolean(),
 });
 
 /**
@@ -473,6 +482,7 @@ export const getReceipt = query({
       duplicateOf,
       duplicateMatches,
       duplicates,
+      duplicateStillLinked: r.duplicateOfReceiptId != null && r.linkCount > 0,
     };
   },
 });
@@ -742,8 +752,16 @@ export const listInboundQueue = query({
         .query("receipts")
         .withIndex("by_inbound", (q) => q.eq("inboundReceiptId", r._id))
         .take(20);
+      // BUG FIX: a receipt confirmed (or derived) a DUPLICATE — its
+      // `duplicateOfReceiptId` set, whether via a human's `markAsDuplicate` or
+      // an exact-file sha256 match — is RESOLVED: it already hides from the
+      // library's default views (`listReceipts`'s doc), and it must not keep
+      // demanding attention in the inbox either. Exclude it from the per-email
+      // `receipts[]` list here; it's still reachable via the library's
+      // "Duplicates" filter, never deleted.
       const receipts = [];
       for (const rd of receiptDocs) {
+        if (rd.duplicateOfReceiptId != null) continue;
         receipts.push({
           _id: rd._id,
           url: await ctx.storage.getUrl(rd.storageId),
@@ -754,6 +772,13 @@ export const listInboundQueue = query({
           duplicateOfReceiptId: rd.duplicateOfReceiptId ?? null,
         });
       }
+      // If EVERY receipt this email produced turned out to be a duplicate,
+      // the row itself is resolved — there's nothing left here for a human to
+      // act on, so drop the row entirely rather than leaving an empty-handed
+      // "needs a human" card in the queue. A row that never had any extracted
+      // receipts at all (an OCR/no-file failure) is unaffected — it still
+      // needs a human, so it's never dropped by this rule.
+      if (receiptDocs.length > 0 && receipts.length === 0) continue;
       out.push({
         _id: r._id,
         status: r.status,
@@ -1446,6 +1471,28 @@ async function runRetryPipeline(
     });
   } else {
     result = { ocrError: "Unsupported file type for extraction." };
+  }
+
+  // BUG FIX: the email pipeline's merchant FALLBACK (`deriveMerchantFromEmail`
+  // — display name > sending domain > "receipt from X" subject fragment) only
+  // ever ran once, during INITIAL processing (`receiptInbox.ts#runPipeline`).
+  // A retry re-runs the SAME `extractReceiptFields` routing with no email
+  // context at all, so an email-sourced receipt whose fresh OCR/PDF-text read
+  // still comes back with no merchant used to stay blank FOREVER, even after
+  // a successful retry — there was simply no path left to try. Mirror the
+  // same fallback here: an email-sourced receipt (has an `inboundReceiptId`)
+  // whose fresh extraction found no merchant loads its originating
+  // `inboundReceipts` row and derives one from the envelope, exactly like the
+  // initial pipeline does. Never overwrites a real extracted merchant — only
+  // fills a gap left by this retry's own read.
+  if (!result.ocrMerchant && receipt.source === "email" && receipt.inboundReceiptId) {
+    const inbound = (await ctx.runQuery(internal.receiptInbox.getInboundReceipt, {
+      receiptId: receipt.inboundReceiptId,
+    })) as Doc<"inboundReceipts"> | null;
+    if (inbound) {
+      const fallback = deriveMerchantFromEmail(inbound.fromEmail, inbound.subject);
+      if (fallback) result = { ...result, ocrMerchant: fallback };
+    }
   }
 
   let candidateTransactionIds: Id<"transactions">[] = [];

@@ -10,6 +10,7 @@ import {
   isReceiptInboxAddress,
   extractEmailAddress,
   deriveMerchantFromEmail,
+  extractMidLineMerchant,
   isLikelyInlineAsset,
   appendSkippedNote,
   isMeaningfulPdfText,
@@ -174,6 +175,35 @@ describe("parseReceiptFromText", () => {
     );
     expect(r.merchant).toBeNull();
   });
+
+  // ── BUG FIX: the mid-line business-suffix heuristic (unpdf glues a real
+  // merchant name to the boilerplate riding next to it on the page — an
+  // address, an invoice header) ─────────────────────────────────────────────
+  test("a merchant+suffix glued directly to the following address (no separator) still resolves", () => {
+    const r = parseReceiptFromText(
+      "Invoice\nInvoice number ZADI4N1R-0008\nDate of issue July 3, 2026\n" +
+        "Givebutter, Inc.2810 North Church Street\n#53748\n" +
+        "Wilmington, Delaware 19802\nUnited States\nsupport@givebutter.com\nTotal: $33.80\n",
+    );
+    expect(r.merchant).toBe("Givebutter, Inc.");
+  });
+
+  test("the whole invoice header + address block glued onto one line still resolves", () => {
+    const r = parseReceiptFromText(
+      "Invoice\nInvoice number ZADI4N1R-0008\n" +
+        "Date of issue July 3, 2026 Date due July 3, 2026 Givebutter, Inc. " +
+        "2810 North Church Street #53748 Wilmington, Delaware 19802 " +
+        "United States support@givebutter.com\nTotal: $33.80\n",
+    );
+    expect(r.merchant).toBe("Givebutter, Inc.");
+  });
+
+  test("a glued line naming a merchant with no suffix at all is NOT force-matched (conservative)", () => {
+    const r = parseReceiptFromText(
+      "Invoice\nSome Random Company Name And A Bunch Of Other Words Here Too\nTotal: $10.00\n",
+    );
+    expect(r.merchant).toBeNull();
+  });
 });
 
 // ── deriveMerchantFromEmail (the email merchant fallback) ────────────────────
@@ -200,6 +230,68 @@ describe("deriveMerchantFromEmail", () => {
 
   test("a display name that's itself just the address isn't useful — falls through", () => {
     expect(deriveMerchantFromEmail("<receipts@givebutter.com>")).toBe("Givebutter");
+  });
+
+  // ── BUG FIX: the forwarded-Givebutter-PDF case — a real person forwards the
+  // original receipt email in, so `fromEmail` carries no merchant identity of
+  // its own; only the SUBJECT line has it, prefixed with the forward marker
+  // and suffixed with an order number. ─────────────────────────────────────
+  test("a forwarded subject ('Fwd: ... #order-number') still yields the merchant", () => {
+    expect(
+      deriveMerchantFromEmail(
+        "someone@gmail.com",
+        "Fwd: Your receipt from Givebutter, Inc. #2383-5178",
+      ),
+    ).toBe("Givebutter, Inc.");
+  });
+
+  test("a doubly-prefixed subject ('Re: Fwd: ...') still yields the merchant", () => {
+    expect(
+      deriveMerchantFromEmail(
+        "someone@gmail.com",
+        "Re: Fwd: Your receipt from Givebutter, Inc. #2383-5178",
+      ),
+    ).toBe("Givebutter, Inc.");
+  });
+});
+
+// ── extractMidLineMerchant (bug fix: a merchant name glued to surrounding
+// PDF text — see `extractMerchantFromLines`'s doc) ───────────────────────────
+describe("extractMidLineMerchant", () => {
+  test("extracts just the name+suffix when glued directly to a following address", () => {
+    expect(extractMidLineMerchant("Givebutter, Inc.2810 North Church Street")).toBe(
+      "Givebutter, Inc.",
+    );
+  });
+
+  test("extracts the name+suffix out of a long glued invoice+address line", () => {
+    expect(
+      extractMidLineMerchant(
+        "Date of issue July 3, 2026 Date due July 3, 2026 Givebutter, Inc. " +
+          "2810 North Church Street #53748 Wilmington, Delaware 19802 " +
+          "United States support@givebutter.com",
+      ),
+    ).toBe("Givebutter, Inc.");
+  });
+
+  test("never matches starting mid-word (no capitalized word boundary to anchor on)", () => {
+    expect(extractMidLineMerchant("receiptGivebutter, Inc. today")).toBeNull();
+  });
+
+  test("a bare 'Company' suffix with no comma is too common in prose to trust", () => {
+    expect(
+      extractMidLineMerchant("Some Random Company Name And A Bunch Of Other Words"),
+    ).toBeNull();
+  });
+
+  test("a comma-preceded 'Company' suffix is trusted", () => {
+    expect(extractMidLineMerchant("Thanks for shopping at Acme, Company today")).toBe(
+      "Acme, Company",
+    );
+  });
+
+  test("a line with no business-entity suffix at all yields null", () => {
+    expect(extractMidLineMerchant("Thank you for your donation today")).toBeNull();
   });
 });
 

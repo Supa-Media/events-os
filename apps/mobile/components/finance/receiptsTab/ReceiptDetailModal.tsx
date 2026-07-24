@@ -345,6 +345,46 @@ export function ReceiptDetailModal({
                   </View>
                 ) : null}
 
+                {/* Still-linked-to-a-transaction warning: `markAsDuplicate`
+                    deliberately never touches existing `receiptLinks` (money
+                    records don't change silently), so a confirmed duplicate
+                    can end up still attached to a charge — that's a decision
+                    for a human to make explicitly, not a silent side effect.
+                    Only ever shown alongside the "Duplicate of" banner above. */}
+                {receipt.duplicateStillLinked ? (
+                  <View className="mb-4 gap-2 rounded-md border border-warn bg-warn-bg px-3 py-2.5">
+                    <View className="flex-row items-start gap-2">
+                      <Icon name="alert-triangle" size={16} color={colors.warn} />
+                      <Text className="flex-1 text-xs font-semibold text-warn">
+                        This duplicate is still attached to a transaction — unlink it?
+                      </Text>
+                    </View>
+                    <View className="gap-1.5">
+                      {receipt.linkedTransactions.map((t) => (
+                        <View
+                          key={t.id}
+                          className="flex-row items-center justify-between rounded-md border border-border bg-raised px-2.5 py-2"
+                        >
+                          <View className="flex-1">
+                            <Text className="text-xs font-semibold text-ink" numberOfLines={1}>
+                              {t.merchantName ?? t.description ?? "Transaction"}
+                            </Text>
+                            <Text className="text-2xs text-muted">
+                              {formatCents(t.amountCents)} · {formatDate(t.postedAt)}
+                            </Text>
+                          </View>
+                          <Pressable
+                            onPress={() => handleUnlink(t.id, t.merchantName ?? "this charge")}
+                            hitSlop={6}
+                          >
+                            <Text className="text-xs font-semibold text-danger">Unlink</Text>
+                          </Pressable>
+                        </View>
+                      ))}
+                    </View>
+                  </View>
+                ) : null}
+
                 {/* Possible-duplicate matches (soft signal — same amount+date,
                     a different file). Only shown when un-dismissed; an
                     exact-file dupe already has its own callout above and

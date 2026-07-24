@@ -196,6 +196,25 @@ const GENERIC_EMAIL_DOMAINS = new Set([
   "aol.com", "protonmail.com", "me.com", "live.com",
 ]);
 
+/** Strips repeated leading "Fwd:"/"Fw:"/"Re:" reply/forward prefixes off a
+ *  subject line ("Fwd: Your receipt from X" → "Your receipt from X",
+ *  "Re: Fwd: ..." → "..."). A FORWARDED receipt is the common shape for this
+ *  fallback's subject-fragment path — a human forwards the original
+ *  merchant email to the receipts inbox — so the prefix must never block the
+ *  "receipt from X" / "X receipt" match below. */
+function stripReplyForwardPrefixes(subject: string): string {
+  let s = subject;
+  // Bounded loop (subjects don't chain more than a couple of these) — avoids
+  // any risk of a pathological/backtracking replace on attacker-controlled
+  // input.
+  for (let i = 0; i < 5; i++) {
+    const next = s.replace(/^\s*(?:fwd?|re)\s*:\s*/i, "");
+    if (next === s) break;
+    s = next;
+  }
+  return s;
+}
+
 /**
  * Best-effort MERCHANT FALLBACK derived from the email envelope itself — used
  * only when extraction (body parse or vision OCR) found no merchant (see
@@ -206,7 +225,12 @@ const GENERIC_EMAIL_DOMAINS = new Set([
  *   2. The sending domain's second-level label, title-cased
  *      ("noreply@doordash.com" → "Doordash") — skipped for a generic mail
  *      host (`GENERIC_EMAIL_DOMAINS`), which carries no merchant identity.
- *   3. A "receipt from X" / "X receipt" fragment off the SUBJECT line.
+ *   3. A "receipt from X" / "X receipt" fragment off the SUBJECT line — a
+ *      leading "Fwd:"/"Re:" prefix (the common shape when a human forwards
+ *      the original receipt email in) is stripped first
+ *      (`stripReplyForwardPrefixes`), and a trailing "#..." order/invoice
+ *      number is trimmed off the captured fragment (e.g. "Your receipt from
+ *      Givebutter, Inc. #2383-5178" → "Givebutter, Inc.").
  * Returns `null` (never a guess) when none of these yield a confident
  * candidate. Exported for direct unit testing.
  */
@@ -234,10 +258,18 @@ export function deriveMerchantFromEmail(
   }
 
   if (subject) {
+    const cleanedSubject = stripReplyForwardPrefixes(subject);
     const m =
-      subject.match(/receipt from ([a-z0-9 .,'&-]{2,40})/i) ??
-      subject.match(/^([a-z0-9 .,'&-]{2,40})\s+receipt\b/i);
-    if (m) return m[1].trim().slice(0, 200);
+      cleanedSubject.match(/receipt from ([a-z0-9 .,'&-]{2,40})/i) ??
+      cleanedSubject.match(/^([a-z0-9 .,'&-]{2,40})\s+receipt\b/i);
+    if (m) {
+      // Trim a trailing "#..." order/invoice number the character class
+      // above didn't already stop at (belt-and-suspenders — it usually does,
+      // since '#' isn't in the allowed set, but a captured fragment could
+      // still end in one after the class stops at a different boundary).
+      const candidate = m[1].trim().replace(/\s*#\S*$/, "").trim();
+      if (candidate) return candidate.slice(0, 200);
+    }
   }
 
   return null;
@@ -781,16 +813,71 @@ function looksLikeMerchantLine(line: string): boolean {
   return letters >= 2 && letters / trimmed.length >= 0.5;
 }
 
+/** A merchant-with-entity-suffix fragment ANYWHERE within a line, not just a
+ *  clean whole line by itself — the fix for a PDF text layer where a text
+ *  extractor (e.g. `unpdf`) glues positioned text runs together, so a real
+ *  merchant name ("Givebutter, Inc.") ends up concatenated with the address
+ *  or boilerplate that sits next to it on the page ("Givebutter, Inc.1345
+ *  Some Ave Suite 200") — a line `looksLikeMerchantLine` would reject outright
+ *  on length/price/contact grounds alone. Deliberately narrower than the
+ *  whole-line suffix check: 1–4 Title-Case words immediately followed by a
+ *  strict business-ENTITY suffix (Inc/LLC/Co/Ltd/Corp — not the softer
+ *  Restaurant/Store/Market/Coffee/... words `MERCHANT_SUFFIX_RE` also allows,
+ *  which are far more likely to false-positive mid-sentence), and not
+ *  immediately preceded by another letter (so a concatenation with no word
+ *  boundary at all before the merchant's capitalized name, e.g.
+ *  "receiptGivebutter, Inc.", can never anchor mid-word and match). "Company"
+ *  is DELIBERATELY excluded unless comma-preceded ("Foo, Company") — as a
+ *  bare suffix it's an ordinary English word ("Some Random Company Name...")
+ *  far too common in prose to trust without the stronger comma signal, unlike
+ *  the abbreviations above which essentially never appear mid-sentence. */
+const MID_LINE_MERCHANT_RE =
+  /(?:^|[^A-Za-z])([A-Z][a-zA-Z'&-]{1,30}(?:\s[A-Z][a-zA-Z'&-]{1,30}){0,3}(?:,\s+Company\.?|,?\s+(?:Inc|LLC|L\.L\.C|Co|Ltd|Corp)\.?))(?=$|[^a-zA-Z])/;
+
+/** Extract just the "<Name>, Inc./LLC/Co." fragment out of a (possibly much
+ *  longer, glued-together) line via `MID_LINE_MERCHANT_RE`. Returns `null`
+ *  when no confident fragment is found, or when the matched fragment itself
+ *  still looks like a contact/URL line (belt-and-suspenders — the narrow
+ *  character class above makes this rare). Exported for direct unit testing. */
+export function extractMidLineMerchant(line: string): string | null {
+  const m = line.match(MID_LINE_MERCHANT_RE);
+  if (!m) return null;
+  const candidate = m[1].replace(/\s+/g, " ").trim();
+  if (candidate.length < 4 || candidate.length > 60) return null;
+  if (MERCHANT_CONTACT_RE.test(candidate)) return null;
+  return candidate;
+}
+
 /**
  * Best-effort merchant name off the first ~15 non-empty lines of a receipt
- * body: prefer a line carrying a business-entity suffix (`MERCHANT_SUFFIX_RE`
- * — highest confidence, e.g. "Givebutter, Inc."), else the first plausible
- * non-label line near the top (`looksLikeMerchantLine`). Returns `null` when
- * nothing confident is found — deliberately conservative (see module doc: a
- * wrong merchant is worse than none). Exported for direct unit testing.
+ * body, in priority order:
+ *   1. A STRICT business-entity suffix (Inc/LLC/Co/Ltd/Corp/Company) found
+ *      ANYWHERE in a line, extracted as just the "<Name>, Inc." fragment
+ *      (`extractMidLineMerchant`) — checked FIRST and independent of the
+ *      whole line's length/shape, because a PDF text layer routinely GLUES a
+ *      real merchant name to the boilerplate sitting next to it on the page
+ *      (an address, an invoice header) into one long line; anchoring on the
+ *      suffix itself is the only way to pull the name out clean rather than
+ *      grabbing the whole run (or missing it outright because the glued line
+ *      fails every whole-line shape check below). This also correctly
+ *      handles the simple case — a line that's ONLY "Givebutter, Inc." — so
+ *      it fully supersedes the old "whole-line suffix" pass.
+ *   2. A whole clean line carrying a SOFTER suffix (Restaurant/Store/Market/
+ *      Coffee/Cafe/Grill — too common mid-sentence to safely extract as a
+ *      fragment, so these only count on an otherwise-plausible whole line —
+ *      `MERCHANT_SUFFIX_RE` + `looksLikeMerchantLine`).
+ *   3. The first plausible non-label line near the top at all, no suffix
+ *      required (`looksLikeMerchantLine`).
+ * Returns `null` when nothing confident is found — deliberately conservative
+ * (see module doc: a wrong merchant is worse than none). Exported for direct
+ * unit testing.
  */
 export function extractMerchantFromLines(lines: string[]): string | null {
   const nonEmpty = lines.map((l) => l.trim()).filter(Boolean).slice(0, 15);
+  for (const line of nonEmpty) {
+    const mid = extractMidLineMerchant(line);
+    if (mid) return mid;
+  }
   for (const line of nonEmpty) {
     if (MERCHANT_SUFFIX_RE.test(line) && looksLikeMerchantLine(line)) {
       return line.replace(/\s+/g, " ").trim().slice(0, 200);
