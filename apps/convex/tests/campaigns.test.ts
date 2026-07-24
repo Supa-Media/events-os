@@ -566,6 +566,114 @@ describe("previewAudience — people", () => {
     expect(preview.count).toBe(1);
     expect(preview.sample.map((r) => r.email)).toEqual(["teammate@example.com"]);
   });
+
+  // Person-centric audiences Phase 2 (specs/person-centric-audiences.md Phase
+  // 2 items 2/3) — marketingOptOut, resolveSendAddress-via-personEmails, and
+  // the fallback to `pwEmail ?? email` for a person with no `personEmails`
+  // rows yet.
+  test("marketingOptOut excludes the person entirely, even with a reachable address", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await run(s.t, async (ctx) => {
+      await ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Opted Out",
+        email: "opted-out@example.com",
+        status: "active",
+        marketingOptOut: true,
+        createdAt: Date.now(),
+      });
+      await ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Reachable",
+        email: "reachable@example.com",
+        status: "active",
+        createdAt: Date.now(),
+      });
+    });
+
+    const preview = await s.as.query(api.audiences.previewAudience, {
+      scope: "central",
+      source: "people",
+      filters: { chapterId: s.chapterId },
+    });
+    expect(preview.count).toBe(1);
+    expect(preview.sample.map((r) => r.email)).toEqual(["reachable@example.com"]);
+  });
+
+  test("no personEmails rows yet — falls back to pwEmail ?? email (pre-Phase-2 behavior)", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "No Ledger Yet",
+        email: "fallback@example.com",
+        status: "active",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const preview = await s.as.query(api.audiences.previewAudience, {
+      scope: "central",
+      source: "people",
+      filters: { chapterId: s.chapterId },
+    });
+    expect(preview.count).toBe(1);
+    expect(preview.sample[0].email).toBe("fallback@example.com");
+  });
+
+  test("an explicit isPrimary personEmails row overrides pwEmail/email, and a suppressed PRIMARY address excludes the person", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const personId = await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Primary Override",
+        email: "roster@example.com",
+        pwEmail: "pw@publicworship.life",
+        status: "active",
+        createdAt: Date.now(),
+      }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("personEmails", {
+        personId,
+        email: "chosen-primary@example.com",
+        source: "manual",
+        verified: true,
+        isPrimary: true,
+        addedAt: Date.now(),
+      }),
+    );
+
+    let preview = await s.as.query(api.audiences.previewAudience, {
+      scope: "central",
+      source: "people",
+      filters: { chapterId: s.chapterId },
+    });
+    expect(preview.count).toBe(1);
+    expect(preview.sample[0].email).toBe("chosen-primary@example.com");
+
+    // Suppress the CHOSEN (primary) address — the address-level ledger stays
+    // authoritative even though `pwEmail`/`email` are still perfectly fine
+    // addresses; the person is excluded because their SPECIFIC chosen address
+    // is suppressed, not merely because SOME address of theirs is.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("emailSuppressions", {
+        email: "chosen-primary@example.com",
+        reason: "unsubscribe",
+        createdAt: Date.now(),
+      }),
+    );
+    preview = await s.as.query(api.audiences.previewAudience, {
+      scope: "central",
+      source: "people",
+      filters: { chapterId: s.chapterId },
+    });
+    expect(preview.count).toBe(0);
+    expect(preview.excludedSuppressed).toBe(1);
+  });
 });
 
 // ── Campaign CRUD ─────────────────────────────────────────────────────────
