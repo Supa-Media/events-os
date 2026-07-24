@@ -165,6 +165,29 @@ Before finishing a run of this skill, you MUST:
 
 ## Learnings Log (newest first)
 
+### 2026-07-24 — Run 2 addendum 7 (0037 guest backfill executed in prod)
+- Manual prod backfills via the run-convex-function workflow: dispatch →
+  ~90s one-shot background wait → parse result JSON from job logs → next
+  page with continueCursor. Works; drive pages yourself, verify failed==0
+  each page.
+- TWO more convex-runtime classes convex-test can't catch: (1) the
+  single-paginate rule struck AGAIN in 0037 (written pre-0039-incident;
+  manual-only so CI never ran it) — when a runtime-constraint class is
+  found, sweep ALL siblings immediately (the 0039 hotfix didn't; the #414
+  sweep found 0040's comment CLAIMED one paginate while the code looped);
+  (2) the 32k documents-read cap: helpers that self-load per call
+  (chapterRoster in linkRsvpToPerson) explode when batch-driven — thread a
+  cached roster into batch paths, and best-effort catches MUST have a
+  truthful `failed` counter or prod failures masquerade as skips (a
+  "successful" run linked 6/64).
+- Dry-run must exercise the SAME code path as execute or its counts lie
+  (dry-run 64 vs execute 6 exposed the asymmetry).
+- Backfill outcome: 250 guests linked to people, ~22 divergent-name
+  (shared-inbox) groups deliberately left for human review on the People
+  tab, ~2.3k name-only rows unlinkable by design. Legacy guests audiences
+  can now be migrated (0040 skipped them) — future run: migrate + retire
+  legacy resolvers.
+
 ### 2026-07-24 — Run 2 addendum 6 (Phase 3 #407 shipped — workstream complete)
 - Full email workstream shipped in one session-day: #323 revival → #399
   approval gate → #401 identity backbone → 0039 hotfix (#405) → #402
