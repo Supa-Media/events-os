@@ -2,7 +2,7 @@ import type { MutationCtx } from "../_generated/server";
 import type { Migration } from "./index";
 import type { Id } from "../_generated/dataModel";
 import { normalizeEmail } from "../lib/access";
-import { SOURCE_RANK, type PersonEmailSource } from "../lib/personEmails";
+import { pickMoreTrustworthy, type PersonEmailSource } from "../lib/personEmails";
 
 /**
  * Person Emails backfill (person-centric audiences Phase 2 item 1 —
@@ -25,13 +25,13 @@ import { SOURCE_RANK, type PersonEmailSource } from "../lib/personEmails";
  *
  * DEDUPE BEFORE INSERT: candidates are grouped by (personId, normalized
  * email) BEFORE any write, keeping the single highest-trust candidate per
- * group — `verified: true` beats `false` first, then the SAME source rank
- * `lib/personEmails.ts#SOURCE_RANK` uses (pw > roster > donor > rsvp),
- * ties broken by earliest `addedAt` (deterministic, mirrors `0037`'s
- * "earliest" tie-break). This mirrors `recordPersonEmail`'s own upgrade-only
- * rule so a person who's simultaneously a roster member, a linked donor, AND
- * a repeat rsvp guest ends up with ONE row per distinct address, not one per
- * source.
+ * group via `lib/personEmails.ts#pickMoreTrustworthy` (verified beats
+ * unverified first, then source rank pw > roster > donor > rsvp, ties broken
+ * by earliest `addedAt` — deterministic, mirrors `0037`'s "earliest"
+ * tie-break). This is the SAME comparator `repointPersonEmails` uses when two
+ * people merge, so a person who's simultaneously a roster member, a linked
+ * donor, AND a repeat rsvp guest ends up with ONE row per distinct address,
+ * not one per source.
  *
  * IDEMPOTENT: a (personId, email) pair that already has a `personEmails` row
  * — from a previous run of this migration OR a live write-through call that
@@ -51,23 +51,12 @@ type Candidate = {
   addedAt: number;
 };
 
-/** Pick the more-trustworthy candidate for a (personId, email) group: verified
- *  beats unverified, then higher source rank, then earliest `addedAt`. Pure —
- *  shared by every group resolution below. */
-function preferCandidate(a: Candidate, b: Candidate): Candidate {
-  if (a.verified !== b.verified) return a.verified ? a : b;
-  if (SOURCE_RANK[a.source] !== SOURCE_RANK[b.source]) {
-    return SOURCE_RANK[a.source] > SOURCE_RANK[b.source] ? a : b;
-  }
-  return a.addedAt <= b.addedAt ? a : b;
-}
-
 export async function runBackfillPersonEmails(ctx: MutationCtx) {
   const winners = new Map<string, Candidate>(); // key: `${personId}::${email}`
   const addCandidate = (c: Candidate) => {
     const key = `${c.personId}::${c.email}`;
     const existing = winners.get(key);
-    winners.set(key, existing ? preferCandidate(existing, c) : c);
+    winners.set(key, existing ? pickMoreTrustworthy(existing, c) : c);
   };
 
   // ── people: roster `email` + `pwEmail` ──────────────────────────────────

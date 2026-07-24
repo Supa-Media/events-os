@@ -165,28 +165,27 @@ export const personAudit = defineTable({
  * enough provenance to deterministically pick one "best" send address
  * (`lib/personEmails.ts#resolveSendAddress`) without ever collapsing a
  * person down to a single `people.email` field or overwriting a lower-trust
- * observation with a higher one's absence. A person accrues rows here from
- * FOUR places (write-through, never a background job):
- *  - `people.email`/`people.pwEmail` changing via `people.create`/`update`
- *    (source `"roster"`/`"pw"`),
- *  - `lib/givingDonors.ts#linkDonorToPerson` linking/creating a donor's
- *    person (source `"donor"`),
- *  - `lib/rsvpPeople.ts#linkRsvpToPerson` linking/creating a guest's person
- *    (source `"rsvp"`, `verified` mirroring `rsvps.emailVerified`),
- *  - `personEmails.ts#setPrimaryEmail`, which only ever flips `isPrimary` on
- *    an EXISTING row (never mints a `"manual"` row itself today — that source
- *    is reserved for a future manual-add UI).
- * All four are additive/upgrade-only (`lib/personEmails.ts#recordPersonEmail`)
- * — a later observation can raise `verified`/`source` but never silently
- * downgrades or deletes a row a human might be relying on.
+ * observation with a higher one's absence. Written ONLY via write-through
+ * (never a background job) — see `lib/personEmails.ts`'s header for the full,
+ * audited list of call sites (roster/pw edits, donor/rsvp linking, the AI
+ * assistant's add-person tool, and BOTH person-merge paths' blank-fill +
+ * repoint). That write-through is additive/upgrade-only
+ * (`lib/personEmails.ts#recordPersonEmail`) — a later observation can raise
+ * `verified`/`source` but never silently downgrades or deletes a row a human
+ * might be relying on. A person MERGE is the one path allowed to delete a row
+ * outright — `lib/personEmails.ts#repointPersonEmails`, when two rows collide
+ * on the same address, deletes the less-trustworthy one rather than carrying
+ * a duplicate.
  *
  * `isPrimary` is a soft "pick this one" override a human sets via
- * `setPrimaryEmail`; AT MOST ONE row per person may carry `true` (enforced by
- * that mutation, not the schema — Convex has no cross-row constraint).
+ * `personEmails.ts#setPrimaryEmail`; AT MOST ONE row per person may carry
+ * `true` (enforced by that mutation and by `repointPersonEmails` — which
+ * always clears it on a row landing on a survivor via merge — not by the
+ * schema; Convex has no cross-row constraint).
  * `verified`: `true` for every write-through source except `"rsvp"`, which
  * mirrors `rsvps.emailVerified` (`false` = a pending unconfirmed code; the
- * OTHER three sources are staff/CRM-entered or import-matched, not an
- * anonymous public-form capture, so they're trusted at write time).
+ * OTHER sources are staff/CRM-entered or import-matched, not an anonymous
+ * public-form capture, so they're trusted at write time).
  */
 export const personEmails = defineTable({
   personId: v.id("people"),

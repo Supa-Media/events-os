@@ -282,6 +282,109 @@ describe("mergePeople", () => {
       }),
     ).rejects.toThrow(/belong to this chapter/);
   });
+
+  // Person-centric audiences Phase 2 (specs/person-centric-audiences.md) —
+  // `personEmails` write-through gap fix: blank-filling email/pwEmail onto
+  // the survivor must record it, and the duplicate's OWN ledger rows must be
+  // re-pointed (deduped on collision, `isPrimary` cleared) rather than left
+  // dangling on the deleted duplicate.
+  test("blank-filling email/pwEmail onto the survivor records personEmails write-through", async () => {
+    const s = await setupChapter(newT());
+    const survivorId = await seedPerson(s, { name: "No Email Yet" }); // blank email + pwEmail
+    const duplicateId = await seedPerson(s, {
+      name: "Has Both",
+      email: "personal@example.com",
+      pwEmail: "team@publicworship.life",
+    });
+
+    await s.as.mutation(api.dataHygiene.mergePeople, {
+      chapterId: s.chapterId,
+      survivorId,
+      duplicateId,
+    });
+
+    const rows = await run(s.t, (ctx) =>
+      ctx.db.query("personEmails").withIndex("by_person", (q) => q.eq("personId", survivorId)).collect(),
+    );
+    const bySource = Object.fromEntries(rows.map((r) => [r.source, r]));
+    expect(bySource.roster).toMatchObject({ email: "personal@example.com", verified: true });
+    expect(bySource.pw).toMatchObject({ email: "team@publicworship.life", verified: true });
+  });
+
+  test("repoints the duplicate's personEmails rows onto the survivor: no orphaned personId, dedupe on collision, at most one isPrimary", async () => {
+    const s = await setupChapter(newT());
+    const survivorId = await seedPerson(s, { name: "Survivor" });
+    const duplicateId = await seedPerson(s, { name: "Duplicate" });
+
+    // Survivor already knows "shared@example.com" via a TRUSTED donor row,
+    // marked as its chosen primary.
+    const survivorSharedRowId = await run(s.t, (ctx) =>
+      ctx.db.insert("personEmails", {
+        personId: survivorId,
+        email: "shared@example.com",
+        source: "donor",
+        verified: true,
+        isPrimary: true,
+        addedAt: 1000,
+      }),
+    );
+    // The duplicate knows the SAME address, but via a weaker, unverified rsvp
+    // row — the survivor's row must win the collision; the duplicate's must
+    // be deleted (not left dangling on the now-gone duplicateId).
+    await run(s.t, (ctx) =>
+      ctx.db.insert("personEmails", {
+        personId: duplicateId,
+        email: "shared@example.com",
+        source: "rsvp",
+        verified: false,
+        addedAt: 2000,
+      }),
+    );
+    // The duplicate ALSO knows a UNIQUE address the survivor has never seen,
+    // marked primary on the duplicate's own (now-irrelevant) side — this must
+    // move onto the survivor with `isPrimary` cleared, never creating a
+    // second primary row.
+    const duplicateUniqueRowId = await run(s.t, (ctx) =>
+      ctx.db.insert("personEmails", {
+        personId: duplicateId,
+        email: "unique@example.com",
+        source: "roster",
+        verified: true,
+        isPrimary: true,
+        addedAt: 3000,
+      }),
+    );
+
+    await s.as.mutation(api.dataHygiene.mergePeople, {
+      chapterId: s.chapterId,
+      survivorId,
+      duplicateId,
+    });
+
+    const survivorRows = await run(s.t, (ctx) =>
+      ctx.db.query("personEmails").withIndex("by_person", (q) => q.eq("personId", survivorId)).collect(),
+    );
+    expect(survivorRows.map((r) => r.email).sort()).toEqual([
+      "shared@example.com",
+      "unique@example.com",
+    ]);
+    // The collision kept the survivor's ALREADY-TRUSTED row (donor, verified)
+    // — the duplicate's weaker rsvp row was deleted, not merely re-pointed.
+    const sharedRow = survivorRows.find((r) => r.email === "shared@example.com")!;
+    expect(sharedRow._id).toBe(survivorSharedRowId);
+    expect(sharedRow).toMatchObject({ source: "donor", verified: true, isPrimary: true });
+    // The unique row moved over, but its `isPrimary` was cleared on repoint.
+    const uniqueRow = survivorRows.find((r) => r.email === "unique@example.com")!;
+    expect(uniqueRow._id).toBe(duplicateUniqueRowId);
+    expect(uniqueRow.personId).toBe(survivorId);
+    expect(uniqueRow.isPrimary).toBeUndefined();
+
+    // No orphaned row still points at the deleted duplicate.
+    const allRows = await run(s.t, (ctx) => ctx.db.query("personEmails").collect());
+    expect(allRows.some((r) => r.personId === duplicateId)).toBe(false);
+    // At most one isPrimary row for the survivor.
+    expect(survivorRows.filter((r) => r.isPrimary === true)).toHaveLength(1);
+  });
 });
 
 // ═══════════════════════════════════════════════════════════════════════════

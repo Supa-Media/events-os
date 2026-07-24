@@ -60,6 +60,11 @@
  *   donors.personId / ownerPersonId ...... scan by_scope (chapter + central)
  *   sponsorships.ownerPersonId .. scan (global cap)
  *   seatStructureLog.editorPersonId ...... scan (global cap)
+ *   personEmails.personId ....... idx by_person, DEDUPE-AWARE (not a blind
+ *                                  repoint — collisions on the same address
+ *                                  are resolved by trust, `isPrimary` always
+ *                                  cleared on repoint; see
+ *                                  `lib/personEmails.ts#repointPersonEmails`)
  *
  * A "scan" is bounded to `SCAN_CAP` rows per table — the same guardrail the rest
  * of the codebase uses (see `lib/org.ts`'s `SEAT_ASSIGNMENT_SCAN_LIMIT`). In
@@ -80,6 +85,7 @@ import {
   deriveDonorStatus,
   linkDonorToPerson,
 } from "./lib/givingDonors";
+import { recordPersonEmail, repointPersonEmails } from "./lib/personEmails";
 
 // ── Bounds ───────────────────────────────────────────────────────────────────
 /** Rows read per indexed-drain page. Patched rows leave the person index, so
@@ -499,6 +505,17 @@ async function repointPersonRefs(
     bump(counts, "reattributionAudit", n);
   }
 
+  // Person-centric audiences Phase 2 (specs/person-centric-audiences.md) —
+  // this table's OWN `personId` reference needs the same merge attention as
+  // every other one above, but a blind overwrite (like `repointDrain`) would
+  // silently create two rows for one address when both people already know
+  // it; `repointPersonEmails` dedupes on collision and never leaves the
+  // survivor with two `isPrimary` rows. See its own doc for the full rule.
+  {
+    const { moved, merged } = await repointPersonEmails(ctx, { dup, surv });
+    bump(counts, "personEmails", moved + merged);
+  }
+
   return counts;
 }
 
@@ -630,6 +647,22 @@ export const mergePeople = mutation({
     }
 
     await ctx.db.patch(survivorId, patch);
+
+    // Person-centric audiences Phase 2 — write-through: a blank-filled
+    // email/pwEmail (the duplicate's value adopted onto the survivor's own
+    // scalar field, above) must join the survivor's `personEmails` ledger
+    // exactly like a direct `people.update` edit would. This is INDEPENDENT
+    // of `repointPersonEmails` (step 1, which moves the duplicate's OWN
+    // ledger rows) — the duplicate may predate write-through entirely (no
+    // ledger row ever existed for its `email`), so the ledger's only record
+    // of this address is the one recorded HERE, from the field that actually
+    // got copied.
+    if (fieldsFilled.includes("email") && typeof patch.email === "string") {
+      await recordPersonEmail(ctx, { personId: survivorId, email: patch.email, source: "roster", verified: true });
+    }
+    if (fieldsFilled.includes("pwEmail") && typeof patch.pwEmail === "string") {
+      await recordPersonEmail(ctx, { personId: survivorId, email: patch.pwEmail, source: "pw", verified: true });
+    }
 
     // 3) Delete the now-merged duplicate row.
     await ctx.db.delete(duplicateId);
