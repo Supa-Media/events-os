@@ -23,14 +23,20 @@ export type SuggestedCandidate = FunctionReturnType<typeof api.receipts.suggestM
 // ── Library filter (matches `receipts.listReceipts`'s `filter` arg) ──────────
 // "duplicates" is the ONLY filter that surfaces a receipt with
 // `duplicateOfReceiptId` set (derived exact-file OR human-confirmed via
-// `markAsDuplicate`) — the other three EXCLUDE them by default (hiding, never
-// deleting; see `receipts.ts#listReceipts`'s doc).
-export type LibraryFilterKey = "all" | "unlinked" | "linked" | "duplicates";
+// `markAsDuplicate`) — "all"/"unlinked"/"linked" EXCLUDE them by default
+// (hiding, never deleting; see `receipts.ts#listReceipts`'s doc). "archived"
+// is the same idea for `archived` (founder ask, 2026-07-24: "a concept of
+// archiving receipt entries, and the ability to unarchive") — a confirmed
+// duplicate is now archived too, but stays reachable from "duplicates" either
+// way; "archived" is where you go to browse (and unarchive) everything hidden
+// this way, duplicates and nonsense receipts alike.
+export type LibraryFilterKey = "all" | "unlinked" | "linked" | "duplicates" | "archived";
 export const LIBRARY_FILTERS: { key: LibraryFilterKey; label: string }[] = [
   { key: "all", label: "All" },
   { key: "unlinked", label: "Unmatched" },
   { key: "linked", label: "Matched" },
   { key: "duplicates", label: "Duplicates" },
+  { key: "archived", label: "Archived" },
 ];
 
 // ── Inbox status chips ─────────────────────────────────────────────────────

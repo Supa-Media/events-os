@@ -14,9 +14,10 @@
  *  - the CANONICAL amount/date/merchant, with an "OCR read" subtext line only
  *    when the immutable `ocr*` provenance actually disagrees with it (a human
  *    correction, or nothing to compare — never shown for agreement).
- *  - source/sender-class badges, a "possible duplicate" flag, and a
- *    "linked to N charges" note when the SAME receipt document backs more
- *    than one transaction.
+ *  - source/sender-class badges, a "Duplicate" flag (confirmed —
+ *    `duplicateOfReceiptId` set), an "Archived" flag, and a "linked to N
+ *    charges" note when the SAME receipt document backs more than one
+ *    transaction.
  *  - per-receipt Detach (confirm first, mirrors `CardholderRow`'s own
  *    destructive-confirm `Alert.alert` idiom) and Replace (upload a new file →
  *    `submitUploadedReceipts` → link the new one → detach the old one — a
@@ -369,8 +370,14 @@ function ReceiptDetail({
           <Badge label={SENDER_CLASS_LABEL[r.senderClass]} tone={SENDER_CLASS_TONE[r.senderClass]} />
         ) : null}
         {r.duplicateOfReceiptId ? (
-          <Badge label="Possible duplicate" tone="warn" icon="alert-triangle" />
+          // BUG FIX: `duplicateOfReceiptId` set means CONFIRMED (derived
+          // sha256 match OR a human's `markAsDuplicate`) — this used to read
+          // "Possible duplicate", the SOFT-signal label, which is wrong here;
+          // "possible" is `receipts.ts#computeSoftDuplicates`' output, a
+          // different, weaker signal this row doesn't even carry.
+          <Badge label="Duplicate" tone="danger" icon="copy" />
         ) : null}
+        {r.archived ? <Badge label="Archived" tone="neutral" icon="archive" /> : null}
         {r.linkCount > 1 ? <Badge label={`Linked to ${r.linkCount} charges`} tone="info" /> : null}
       </View>
 

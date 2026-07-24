@@ -20,8 +20,18 @@
  *    manual refetch needed after a save).
  *  - A `duplicateOf` callout when flagged, tapping through to the original
  *    (re-keys this same modal via the parent's `onOpenReceipt`).
- *  - Possible-duplicate MATCHES (the soft signal) as tappable rows + a "Not a
- *    duplicate" dismiss (`dismissDuplicateFlag`).
+ *  - Possible-duplicate MATCHES (the soft signal) as tappable rows, each with
+ *    a "Duplicate — archive this receipt" confirm (`markAsDuplicate`, which
+ *    now archives too) + a "Not a duplicate" dismiss (`dismissDuplicateFlag`).
+ *  - Archiving (founder ask, 2026-07-24): a general "Archive receipt" action
+ *    for nonsense receipts (`archiveReceipt`) alongside an "Unarchive" +
+ *    banner on already-archived ones (`unarchiveReceipt`) — the same soft-
+ *    hide philosophy `duplicateOfReceiptId` already used, now available
+ *    without needing a duplicate to point at.
+ *  - Transaction search includes ALREADY-RECEIPTED charges too (badged "Has
+ *    receipt"), so a bookkeeper can knowingly attach a second receipt to one
+ *    transaction — search used to hard-exclude them, which made that
+ *    impossible.
  */
 import { useEffect, useState } from "react";
 import { Image, Linking, Modal, Platform, Pressable, ScrollView, Text, View } from "react-native";
@@ -79,6 +89,8 @@ export function ReceiptDetailModal({
   const dismissDuplicateFlag = useMutation(api.receipts.dismissDuplicateFlag);
   const markAsDuplicate = useMutation(api.receipts.markAsDuplicate);
   const unmarkDuplicate = useMutation(api.receipts.unmarkDuplicate);
+  const archiveReceipt = useMutation(api.receipts.archiveReceipt);
+  const unarchiveReceipt = useMutation(api.receipts.unarchiveReceipt);
 
   const [amountText, setAmountText] = useState("");
   const [date, setDate] = useState<number | null>(null);
@@ -99,6 +111,8 @@ export function ReceiptDetailModal({
   const [dismissingDuplicate, setDismissingDuplicate] = useState(false);
   const [markingDuplicateId, setMarkingDuplicateId] = useState<Id<"receipts"> | null>(null);
   const [unmarkingDuplicate, setUnmarkingDuplicate] = useState(false);
+  const [archiving, setArchiving] = useState(false);
+  const [unarchiving, setUnarchiving] = useState(false);
 
   // Seed local edit state from the live query (BUG 1 fix): a freshly opened
   // (or switched-to) receipt ALWAYS seeds; the SAME receipt only re-seeds
@@ -193,10 +207,10 @@ export function ReceiptDetailModal({
 
   function handleMarkAsDuplicate(primaryReceiptId: Id<"receipts">) {
     confirmAction({
-      title: "Mark as duplicate?",
+      title: "Archive this receipt as a duplicate?",
       message:
-        "This receipt stays in the library — it just gets hidden from the default view and points at the other receipt as the original.",
-      confirmLabel: "Mark as duplicate",
+        "It stays in the library — hidden from the default view, and archived — pointing at the other receipt as the original. Nothing is deleted.",
+      confirmLabel: "Duplicate — archive",
       destructive: false,
       onConfirm: () => {
         setMarkingDuplicateId(primaryReceiptId);
@@ -218,14 +232,47 @@ export function ReceiptDetailModal({
 
   async function handleUnmarkDuplicate() {
     setUnmarkingDuplicate(true);
+    // Also unarchives (see `unmarkDuplicate`'s backend doc) — one coherent
+    // undo, no separate "Unarchive" tap needed here.
     await run(() => unmarkDuplicate({ receiptId }), {
       errorTitle: "Couldn't un-mark this duplicate",
     });
     setUnmarkingDuplicate(false);
   }
 
+  // Founder ask (2026-07-24): a general "archive the nonsense ones" action —
+  // for a blank photo, a stray screenshot, anything worth clearing out that
+  // ISN'T (necessarily) a duplicate. Same confirm-first idiom as
+  // `handleMarkAsDuplicate`.
+  function handleArchive() {
+    confirmAction({
+      title: "Archive this receipt?",
+      message:
+        "It stays in the library — hidden from the default view, but still reachable from the Archived filter. Nothing is deleted, and any existing links stay intact.",
+      confirmLabel: "Archive",
+      destructive: false,
+      onConfirm: () => {
+        setArchiving(true);
+        void run(() => archiveReceipt({ receiptId }), {
+          errorTitle: "Couldn't archive receipt",
+        }).finally(() => setArchiving(false));
+      },
+    });
+  }
+
+  async function handleUnarchive() {
+    setUnarchiving(true);
+    await run(() => unarchiveReceipt({ receiptId }), {
+      errorTitle: "Couldn't unarchive receipt",
+    });
+    setUnarchiving(false);
+  }
+
   const correctedByName = receipt?.correctedByPersonId
     ? (people?.find((p) => p._id === receipt.correctedByPersonId)?.name ?? "a bookkeeper")
+    : null;
+  const archivedByName = receipt?.archivedByPersonId
+    ? (people?.find((p) => p._id === receipt.archivedByPersonId)?.name ?? "a bookkeeper")
     : null;
 
   const linkedIds = new Set((receipt?.linkedTransactions ?? []).map((t) => t.id));
@@ -332,10 +379,53 @@ export function ReceiptDetailModal({
                   {receipt.softDuplicate && !receipt.duplicateOfReceiptId ? (
                     <Badge label="Possible duplicate" tone="warn" icon="alert-triangle" />
                   ) : null}
+                  {receipt.archived ? <Badge label="Archived" tone="neutral" icon="archive" /> : null}
                 </View>
                 <Text className="mb-3 text-2xs text-faint" numberOfLines={1}>
                   {receipt.filename ?? "Unknown source"}
                 </Text>
+
+                {/* Archived banner (founder ask, 2026-07-24) — a clear,
+                    always-visible state + the way back. A receipt can be
+                    archived WITHOUT being a duplicate (a hand-archived
+                    nonsense receipt, `archiveReceipt`) or archived BECAUSE
+                    it's a confirmed duplicate (`markAsDuplicate`), in which
+                    case this renders alongside the "Duplicate of" callout
+                    below rather than instead of it — two separate, both-true
+                    facts about this receipt. */}
+                {receipt.archived ? (
+                  <View className="mb-4 gap-2 rounded-md border border-border-strong bg-sunken px-3 py-2.5">
+                    <View className="flex-row items-start gap-2">
+                      <Icon name="archive" size={16} color={colors.muted} />
+                      <Text className="flex-1 text-xs font-semibold text-muted">
+                        Archived{archivedByName ? ` by ${archivedByName}` : ""}
+                        {receipt.archivedAt ? ` · ${formatDate(receipt.archivedAt)}` : ""} — hidden
+                        from the everyday library view, still reachable from the Archived filter.
+                      </Text>
+                    </View>
+                    <Button
+                      title="Unarchive"
+                      variant="secondary"
+                      size="sm"
+                      icon="archive"
+                      loading={unarchiving}
+                      onPress={() => void handleUnarchive()}
+                      className="self-start"
+                    />
+                  </View>
+                ) : (
+                  // General archive action (founder ask) — for a nonsense
+                  // receipt that isn't necessarily a duplicate of anything.
+                  <Button
+                    title="Archive receipt"
+                    variant="secondary"
+                    size="sm"
+                    icon="archive"
+                    loading={archiving}
+                    onPress={handleArchive}
+                    className="mb-4 self-start"
+                  />
+                )}
 
                 {/* Duplicate-of callout — shown for BOTH a derived exact-file
                     match and a human-confirmed one (`markAsDuplicate`); only
@@ -379,17 +469,24 @@ export function ReceiptDetailModal({
                 ) : null}
 
                 {/* Still-linked-to-a-transaction warning: `markAsDuplicate`
-                    deliberately never touches existing `receiptLinks` (money
-                    records don't change silently), so a confirmed duplicate
-                    can end up still attached to a charge — that's a decision
-                    for a human to make explicitly, not a silent side effect.
-                    Only ever shown alongside the "Duplicate of" banner above. */}
-                {receipt.duplicateStillLinked ? (
+                    and `archiveReceipt` both deliberately never touch
+                    existing `receiptLinks` (money records don't change
+                    silently), so a confirmed duplicate OR a hand-archived
+                    receipt can end up still attached to a charge — that's a
+                    decision for a human to make explicitly, not a silent
+                    side effect. Covers both cases: a confirmed duplicate
+                    (alongside the "Duplicate of" banner above) and any other
+                    archived-but-linked receipt (alongside the Archived
+                    banner). */}
+                {receipt.duplicateStillLinked ||
+                (receipt.archived && receipt.linkedTransactions.length > 0) ? (
                   <View className="mb-4 gap-2 rounded-md border border-warn bg-warn-bg px-3 py-2.5">
                     <View className="flex-row items-start gap-2">
                       <Icon name="alert-triangle" size={16} color={colors.warn} />
                       <Text className="flex-1 text-xs font-semibold text-warn">
-                        This duplicate is still attached to a transaction — unlink it?
+                        {receipt.duplicateOfReceiptId
+                          ? "This duplicate is still attached to a transaction — unlink it?"
+                          : "This archived receipt is still attached to a transaction — unlink it?"}
                       </Text>
                     </View>
                     <View className="gap-1.5">
@@ -456,10 +553,10 @@ export function ReceiptDetailModal({
                               <Icon name="chevron-right" size={14} color={colors.muted} />
                             </Pressable>
                             <Button
-                              title="This is a duplicate"
+                              title="Duplicate — archive this receipt"
                               variant="secondary"
                               size="sm"
-                              icon="copy"
+                              icon="archive"
                               loading={markingDuplicateId === m._id}
                               onPress={() => handleMarkAsDuplicate(m._id)}
                               className="self-start"
@@ -657,9 +754,16 @@ export function ReceiptDetailModal({
                   </View>
                 )}
 
-                {/* Search any unreceipted charge to match to (item 4) — for
-                    when the exact-amount suggestions above miss the right one
-                    (a mis-read total, or a receipt with no amount at all). */}
+                {/* Search any charge to match to (item 4) — for when the
+                    exact-amount suggestions above miss the right one (a
+                    mis-read total, or a receipt with no amount at all).
+                    FOUNDER FIX (2026-07-24): this used to only search
+                    unreceipted charges, which made it impossible to search up
+                    a transaction that legitimately needs a SECOND receipt (a
+                    split purchase, a re-sent copy) — results now include
+                    already-receipted transactions too, badged "Has receipt"
+                    so a bookkeeper knowingly attaches another one instead of
+                    assuming the search is broken. */}
                 <View className="mt-5">
                   <Text className="mb-2 text-2xs font-bold uppercase tracking-wider text-muted">
                     Search transactions
@@ -674,7 +778,7 @@ export function ReceiptDetailModal({
                     <Text className="text-sm text-faint">Searching…</Text>
                   ) : openSearchResults.length === 0 ? (
                     <Text className="text-sm text-faint">
-                      No unreceipted charge matches “{txnSearch.trim()}”.
+                      No charge matches “{txnSearch.trim()}”.
                     </Text>
                   ) : (
                     <View className="gap-2">
@@ -692,7 +796,10 @@ export function ReceiptDetailModal({
                               {formatCents(c.amountCents)} · {formatDate(c.postedAt)} · {c.status}
                             </Text>
                           </View>
-                          <Badge label="Link" tone="accent" icon="link" />
+                          <View className="flex-row items-center gap-1.5">
+                            {c.hasReceipt ? <Badge label="Has receipt" tone="info" /> : null}
+                            <Badge label="Link" tone="accent" icon="link" />
+                          </View>
                         </Pressable>
                       ))}
                     </View>

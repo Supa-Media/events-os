@@ -153,6 +153,11 @@ function ReceiptCard({
         ) : receipt.softDuplicate ? (
           <Badge label="Possible duplicate" tone="warn" icon="alert-triangle" />
         ) : null}
+        {/* Archived (founder ask) — a distinct, neutral badge from the
+            danger-toned "DUPLICATE" one above; a receipt can be both (a
+            confirmed duplicate archives itself), so this renders alongside it
+            rather than instead of it. */}
+        {receipt.archived ? <Badge label="Archived" tone="neutral" icon="archive" /> : null}
       </View>
     </Pressable>
   );
