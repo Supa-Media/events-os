@@ -148,6 +148,22 @@ Before finishing a run of this skill, you MUST:
 
 ## Learnings Log (newest first)
 
+### 2026-07-24 — Run 2 addendum 5 (Phase 2 personEmails #402 shipped)
+- pnpm vitest + tsc NOW WORK in the cloud sandbox (the 401-on-install
+  constraint lifted mid-session). Require implementation agents to run the
+  full suite + tsc locally BEFORE pushing — Phase 2 was this session's
+  first first-try-green CI, vs 4 fix rounds for the blind-push approval PR.
+  Verifiers should run empirical probes too (Phase 2's verifier proved
+  no-unsubscribe-bypass by executing the resolver, not reading it).
+- Write-through-ledger failure class: when adding a mirror table
+  (personEmails) maintained at mutation sites, the classic misses are
+  admin MERGE flows (blank-fill), LOGIN-time reconciliation, and AI/tool
+  insert paths — and BOTH repoint-references helpers must learn the new FK
+  table or merges orphan rows. Audit those four site classes explicitly.
+- Suppression invariant held as designed: resolve ONE send address per
+  person, check that one string against suppressions — never retry
+  per-address (that would route around an unsubscribe).
+
 ### 2026-07-24 — Run 2 addendum 4 (Phase 1 identity backbone #401 shipped)
 - Contact/roster boundary needed THREE audit layers to get airtight:
   implementer's own audit → adversarial verifier (found 3 leaks + the
