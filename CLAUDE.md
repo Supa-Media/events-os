@@ -22,14 +22,16 @@ skip CI. This is the standing expectation; don't wait to be asked to PR or
 merge.
 
 **Polling while work is in flight (subagents, CI, deploys): use a
-persistent background Monitor ticker, never `send_later`.** Arm one
-session-length Monitor (`while true; do sleep 300; echo "POLL TICK"; done`,
-persistent) and on each tick check in-flight branches, CI check runs, and
-deploy workflows — never passively wait for completion notifications and
-never take a subagent's self-report on faith. `send_later` triggers a
-permission prompt on every call on claude.ai/code (the repo allowlist is
-ignored for CCR scheduling tools), which interrupts the founder — avoid it.
-Stop the ticker when nothing is outstanding.
+persistent background Monitor ticker. NEVER use `send_later` — for
+anything.** It triggers a blocking permission prompt on every call on
+claude.ai/code (the repo allowlist is ignored for CCR scheduling tools),
+interrupting whoever is at the keyboard. Arm one session-length Monitor
+(`while true; do sleep 300; echo "POLL TICK"; done`, persistent) and on
+each tick check in-flight branches, CI check runs, and deploy workflows —
+never passively wait for completion notifications and never take a
+subagent's self-report on faith. For one-shot waits use Bash
+run_in_background with an `until` loop. Stop the ticker when nothing is
+outstanding.
 
 ## Supa Framework
 

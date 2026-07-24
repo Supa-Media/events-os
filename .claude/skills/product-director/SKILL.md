@@ -71,12 +71,12 @@ on green).
   directive 2026-07-24).** Arm ONE session-length ticker at the start of any
   run with in-flight work: Monitor with `while true; do sleep 300; echo
   "POLL TICK"; done`, persistent: true. Each tick = run the full poll cycle
-  above. Do NOT use send_later for polling: claude.ai/code gates CCR
-  scheduling tools upstream of the repo allowlist (settings.json already
-  allows send_later and is still prompted per-call), so every call
-  interrupts the founder with a permission dialog. send_later is
-  acceptable only where Monitor is unavailable AND the surface doesn't
-  prompt. Stop the ticker (TaskStop) when nothing is outstanding.
+  above. **NEVER use send_later — for polling or anything else (founder
+  directive 2026-07-24: "it blocks unnecessarily").** Every call throws a
+  blocking permission dialog on claude.ai/code (the repo allowlist is
+  ignored for CCR scheduling tools) and interrupts the founder. Monitor
+  covers timed wake-ups; Bash run_in_background with an `until` loop covers
+  one-shot waits. Stop the ticker (TaskStop) when nothing is outstanding.
 
 ## Standing product principles (from the founders — apply to every plan)
 
