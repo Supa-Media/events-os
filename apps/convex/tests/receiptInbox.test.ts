@@ -21,6 +21,7 @@ import {
 } from "../receiptInbox";
 import { verifyStandardWebhookSignature } from "../lib/standardWebhook";
 import type { AiEngineConfig } from "../lib/aiEngine";
+import { getFunctionName } from "convex/server";
 
 /**
  * Inbound-email → OCR → reconcile pipeline (`receiptInbox.ts`). The network
@@ -509,6 +510,221 @@ describe("extractReceiptFields — ocrError translation", () => {
     expect(result.ocrError).toBe(
       "The model read the receipt but couldn't find a clear total — try Retry with a different model.",
     );
+  });
+});
+
+// ── extractReceiptFields — scanned PDF renders to an image before OCR ───────
+// THE FIX for the `application/pdf` vision-OCR 400 (Ollama sniffs the actual
+// file bytes and rejects them: "invalid image: expected image mime type, got
+// application/pdf" — the owner's ~25-receipts-in-one-upload bug): a scanned/
+// image-only PDF (no usable text layer) must NEVER reach `ocrReceiptImage`
+// carrying the raw PDF bytes. `receiptPdf.ts#renderPdfFirstPagePng` can't
+// actually rasterize under this suite's `@edge-runtime/vm` sandbox (no native
+// canvas backend — proven end-to-end in `receiptPdf.test.ts`, which exercises
+// the real degrade-to-ocrError path), so these tests mock the `ctx.runAction`
+// boundary directly to exercise BOTH branches of the routing decision:
+//  - a successful render hands vision a real `image/png` data URL, and
+//  - a failed/unavailable render (or a render that reports success but whose
+//    stored PNG can't be read back) degrades to a clear, human-actionable
+//    `ocrError` — WITHOUT ever calling the vision model at all.
+// Either way, the content type handed to a vision call is asserted directly:
+// it is always an image, never `application/pdf`.
+describe("extractReceiptFields — scanned PDF renders to an image before OCR", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    vi.restoreAllMocks();
+  });
+
+  function config(over: Partial<AiEngineConfig> = {}): AiEngineConfig {
+    return {
+      provider: "openrouter",
+      baseUrl: "https://openrouter.ai/api",
+      apiKey: "test-key",
+      model: null,
+      ocrModel: null,
+      ...over,
+    };
+  }
+
+  // A structurally-real PDF signature — if this ever leaked into a vision
+  // call's payload, it'd prove the guard failed.
+  const pdfBlob = new Blob(["%PDF-1.4 (scanned, no text layer)"], {
+    type: "application/pdf",
+  });
+  const pngStorageId = "storage_png" as unknown as Id<"_storage">;
+
+  /** A fake `ActionCtx` whose `runAction` answers `extractPdfText` (always
+   *  "no text layer" — the scanned-PDF branch) and `renderPdfFirstPagePng`
+   *  with the given canned result, and whose `storage.get` serves the given
+   *  PNG blob only for `pngStorageId`. */
+  function fakeCtxWithRender(
+    renderResult: { ok: true; storageId: Id<"_storage"> } | { ok: false; reason: string },
+    pngBlob: Blob | null,
+  ): ActionCtx {
+    return {
+      // Function references are fresh Proxy objects on every property access
+      // (see `convex/server`'s `createApi`), so identify the call by its
+      // stable dotted name (`getFunctionName`) rather than object identity.
+      runAction: vi.fn(async (ref: unknown) => {
+        const name = getFunctionName(ref as Parameters<typeof getFunctionName>[0]);
+        if (name === getFunctionName(internal.receiptPdf.extractPdfText)) {
+          return { text: "", pageCount: 1 };
+        }
+        if (name === getFunctionName(internal.receiptPdf.renderPdfFirstPagePng)) {
+          return renderResult;
+        }
+        throw new Error(`unexpected runAction call: ${name}`);
+      }),
+      storage: {
+        get: vi.fn(async (id: unknown) => (id === pngStorageId ? pngBlob : null)),
+        delete: vi.fn(async () => undefined),
+      },
+    } as unknown as ActionCtx;
+  }
+
+  test("a successful render hands vision a real image/png data URL — never application/pdf", async () => {
+    let capturedImageUrl: string | undefined;
+    globalThis.fetch = (async (_url: unknown, init: any) => {
+      const body = JSON.parse(init.body);
+      const userMsg = body.messages.find((m: any) => m.role === "user");
+      const imagePart = userMsg.content.find((c: any) => c.type === "image_url");
+      capturedImageUrl = imagePart.image_url.url;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({ amount: 12.34, merchant: "Acme", confidence: 0.8 }),
+              },
+            },
+          ],
+        }),
+        text: async () => "",
+      };
+    }) as unknown as typeof fetch;
+
+    const fakeCtx = fakeCtxWithRender(
+      { ok: true, storageId: pngStorageId },
+      new Blob([new Uint8Array([1, 2, 3, 4])], { type: "image/png" }),
+    );
+
+    const result = await extractReceiptFields(fakeCtx, {
+      storageId: "storage_pdf" as unknown as Id<"_storage">,
+      config: config(),
+      blob: pdfBlob,
+      contentType: "application/pdf",
+      model: "m",
+    });
+
+    expect(capturedImageUrl).toBeDefined();
+    // The content type handed to the vision call is an image — never the raw
+    // PDF's `application/pdf`.
+    expect(capturedImageUrl).toMatch(/^data:image\/png;base64,/);
+    expect(capturedImageUrl).not.toContain("application/pdf");
+    expect(result.ocrAmountCents).toBe(1234);
+    expect(result.ocrError).toBeUndefined();
+  });
+
+  test("Ollama's native image path also carries real PNG bytes, never the PDF's own bytes", async () => {
+    // Ollama's native `/api/chat` strips the `data:<mime>;base64,` prefix
+    // entirely (see `lib/aiEngine.ts#toOllamaNativeMessages`) — Ollama learns
+    // the file type by sniffing the bytes themselves, which is exactly why
+    // the OLD code's raw-PDF base64 tripped its "invalid image: expected
+    // image mime type, got application/pdf" rejection. Asserting on the
+    // magic bytes actually sent is the closest a unit test gets to
+    // reproducing that failure mode directly.
+    let capturedImages: string[] | undefined;
+    globalThis.fetch = (async (_url: unknown, init: any) => {
+      const body = JSON.parse(init.body);
+      const userMsg = body.messages.find((m: any) => m.role === "user");
+      capturedImages = userMsg.images;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          message: { content: JSON.stringify({ amount: 5, confidence: 0.5 }) },
+        }),
+        text: async () => "",
+      };
+    }) as unknown as typeof fetch;
+
+    // Real PNG magic bytes (89 50 4E 47 ...) — what a genuine render
+    // produces, vs. the PDF signature (%PDF = 25 50 44 46) the old code sent.
+    const pngBytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const fakeCtx = fakeCtxWithRender(
+      { ok: true, storageId: pngStorageId },
+      new Blob([pngBytes], { type: "image/png" }),
+    );
+
+    await extractReceiptFields(fakeCtx, {
+      storageId: "storage_pdf" as unknown as Id<"_storage">,
+      config: config({ provider: "ollama", baseUrl: "http://localhost:11434" }),
+      blob: pdfBlob,
+      contentType: "application/pdf",
+      model: "m",
+    });
+
+    expect(capturedImages).toBeDefined();
+    expect(capturedImages).toHaveLength(1);
+    const decoded = atob(capturedImages![0]);
+    const firstBytes = Array.from(decoded.slice(0, 4)).map((c) => c.charCodeAt(0));
+    // PNG magic bytes, not "%PDF" (0x25 0x50 0x44 0x46).
+    expect(firstBytes).toEqual([0x89, 0x50, 0x4e, 0x47]);
+  });
+
+  test("a failed/unavailable render degrades to a clear ocrError — vision is NEVER called with the raw PDF", async () => {
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      throw new Error("vision must never be called on a raw PDF");
+    }) as unknown as typeof fetch;
+
+    const fakeCtx = fakeCtxWithRender(
+      { ok: false, reason: "native canvas backend unavailable" },
+      null,
+    );
+
+    const result = await extractReceiptFields(fakeCtx, {
+      storageId: "storage_pdf" as unknown as Id<"_storage">,
+      config: config(),
+      blob: pdfBlob,
+      contentType: "application/pdf",
+      model: "m",
+    });
+
+    expect(fetchCalled).toBe(false);
+    expect(result.ocrAmountCents).toBeUndefined();
+    expect(result.ocrModel).toBeUndefined();
+    expect(result.ocrError).toBe(
+      "Scanned PDF (no readable text layer) — couldn't OCR it as an image; " +
+        "re-upload as a photo/screenshot or enter the total manually.",
+    );
+  });
+
+  test("a render that reports success but whose PNG can't be read back still degrades cleanly (never a raw-PDF vision call)", async () => {
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      throw new Error("vision must never be called on a raw PDF");
+    }) as unknown as typeof fetch;
+
+    // `ok: true` but `storage.get` returns null for it (e.g. the file
+    // vanished between store and read) — the belt-and-suspenders branch.
+    const fakeCtx = fakeCtxWithRender({ ok: true, storageId: pngStorageId }, null);
+
+    const result = await extractReceiptFields(fakeCtx, {
+      storageId: "storage_pdf" as unknown as Id<"_storage">,
+      config: config(),
+      blob: pdfBlob,
+      contentType: "application/pdf",
+      model: "m",
+    });
+
+    expect(fetchCalled).toBe(false);
+    expect(result.ocrError).toContain("Scanned PDF");
   });
 });
 
