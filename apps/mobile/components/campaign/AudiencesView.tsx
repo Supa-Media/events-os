@@ -2,23 +2,24 @@
  * AUDIENCES — the audience-segment list + inline create/edit form.
  *
  * An audience is a saved recipe (`api.audiences.*`) that campaigns send to.
- * Person-centric audiences Phase 3 (specs/person-centric-audiences.md
- * "Phase 3") replaced the source dropdown for every NEW audience: the source
- * is always `"person_filters"` — a set of AND-combined criteria chips
- * (Giving / Backer / Attendance / Role / Type / Email) plus an optional
- * hand-picked include/exclude list (`searchPeopleForAudience`). The editor
- * shows a LIVE preview (`api.audiences.previewAudience`) as the criteria
- * change, so an author sees the recipient count — and every exclusion
- * reason, including the Phase 3 invariant that suppression/opt-out beat a
- * hand-pick — before saving.
+ * Targeting v2 (specs/audience-targeting-v2.md, founder-approved mockup
+ * 2026-07-24) made the editor a GROUP builder (`TargetingBuilder.tsx`):
+ * "Send to" groups of plain-sentence conditions (match ANY group; every line
+ * in a group must hold; negation is on the line), "Don't send to" skip
+ * lists, hand-picked include/exclude (`searchPeopleForAudience`), and a
+ * "Check a person" box (`api.audiences.explainAudiencePerson`) that explains
+ * any individual condition by condition. The editor shows a LIVE preview
+ * (`api.audiences.previewAudience`) as the definition changes — the overall
+ * count, per-group counts, and every exclusion reason, including the
+ * invariant that suppression/opt-out beat a hand-pick.
  *
- * Legacy `guests`/`donors`/`people`-sourced audiences (pre-Phase-3, `source`
- * is immutable after creation — see `audiences.ts#updateAudience`) render
- * READ-ONLY here: their badge + a plain-language filter summary, editable
- * name/archive only. The migration (`migrations/0040_migrate_legacy_audiences.ts`)
- * moves most of them onto `person_filters` automatically; any that remain
- * (deliberately, for `"guests"` — see that migration's doc) keep working
- * exactly as before through `lib/audienceResolve.ts`'s legacy resolvers.
+ * Every NEW audience gets `targeting`, and migration
+ * (`migrations/0042_wrap_targeting.ts`) wraps stored rows; the pre-v2 chip
+ * builder (`FilterChipsBuilder` below) stays mounted ONLY for a
+ * not-yet-wrapped `person_filters` row (e.g. one referenced by an in-flight
+ * approval at deploy time — see 0042's doc). A legacy
+ * `guests`/`donors`/`people`-sourced row without `targeting` renders
+ * READ-ONLY: badge + summary, editable name/archive only.
  *
  * UI-polish pass (founder feedback: the picker "looks and feels clunky"): a
  * slim recipients count (`LiveRecipientsSummary`) is pinned above the filter
@@ -63,6 +64,15 @@ import {
   splitExcludePatch,
   type PendingNumberField,
 } from "./audienceFilterFields";
+import {
+  PersonCheckSection,
+  TargetingBuilder,
+  summarizeTargeting,
+  targetingToUi,
+  toWireTargeting,
+  type Targeting,
+  type UiGroup,
+} from "./TargetingBuilder";
 
 /** Debounce for both the numeric filter TextFields and the hand-pick search
  *  box before they drive their query — matches the house pattern in
@@ -78,7 +88,8 @@ type SearchResult = FunctionReturnType<typeof api.audiences.searchPeopleForAudie
 /** Every audience/campaign this UI creates is org-wide — see the file doc. */
 const CENTRAL_SCOPE = "central" as const;
 
-function sourceLabel(source: string): string {
+function sourceLabel(source: string, hasTargeting: boolean): string {
+  if (hasTargeting) return "Groups";
   if (source === "person_filters") return "Filters + hand-picked";
   if (source === "guests") return "Guests";
   if (source === "donors") return "Donors";
@@ -130,27 +141,25 @@ export function AudiencesView() {
       ) : (
         <View style={styles.list}>
           {(audiences as Audience[]).map((a) => {
-            const summary = describeAudience(
-              a.source,
-              a.filters,
-              {
-                includeCount: a.includePersonIds?.length,
-                excludeCount: a.excludePersonIds?.length,
-              },
-              a.excludeFilters,
-            );
+            const handPickCounts = {
+              includeCount: a.includePersonIds?.length,
+              excludeCount: a.excludePersonIds?.length,
+            };
+            const summary = a.targeting
+              ? summarizeTargeting(a.targeting, handPickCounts)
+              : describeAudience(a.source, a.filters, handPickCounts, a.excludeFilters);
             return (
               <Card key={a._id} onPress={() => setEditingId(a._id)}>
                 <View style={styles.cardTop}>
                   <Text style={styles.name} numberOfLines={1}>
                     {a.name}
                   </Text>
-                  <Badge label={sourceLabel(a.source)} tone="accent" />
+                  <Badge label={sourceLabel(a.source, a.targeting != null)} tone="accent" />
                 </View>
                 <Text style={styles.meta} numberOfLines={1}>
                   {summary}
                 </Text>
-                {a.source !== "person_filters" ? (
+                {a.source !== "person_filters" && !a.targeting ? (
                   <Text style={styles.legacyNote}>
                     Previous-format audience — still works for sending, and will move to the new
                     filter picker automatically.
@@ -180,6 +189,28 @@ function AudienceForm({
 
   const [name, setName] = useState(initial?.name ?? "");
   const [filters, setFilters] = useState<PersonFilters>(initial?.filters ?? {});
+
+  // ── Targeting v2 (the group/skip-list builder) ────────────────────────────
+  // Every NEW audience is v2, and every stored row that carries `targeting`
+  // (migration 0042 wraps legacy rows) edits through the group builder; the
+  // legacy chip builder below stays mounted ONLY for a not-yet-wrapped row.
+  // Rows commit into UI state on every valid keystroke (WYSIWYG — see
+  // `TargetingBuilder.tsx`'s doc); the PREVIEW debounces here instead, so the
+  // live counts don't refetch per keystroke.
+  const isTargetingV2 = initial ? initial.targeting != null : true;
+  const initialUi = useMemo(
+    () => targetingToUi(initial?.targeting ?? { groups: [{ conditions: [] }] }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [],
+  );
+  const [uiGroups, setUiGroups] = useState<UiGroup[]>(initialUi.groups);
+  const [uiExcludeGroups, setUiExcludeGroups] = useState<UiGroup[]>(initialUi.excludeGroups);
+  const wire = useMemo(() => toWireTargeting(uiGroups, uiExcludeGroups), [uiGroups, uiExcludeGroups]);
+  const [debouncedTargeting, setDebouncedTargeting] = useState<Targeting>(wire.targeting);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedTargeting(wire.targeting), FILTER_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [wire.targeting]);
   // Property-level exclusions ("Exclude people who…") — same shape as
   // `filters`, AND-combined the same way; see `helpers.ts#describeFilterCriteria`'s
   // doc and `lib/audienceResolve.ts#personMatchesCriteria`'s doc for why the
@@ -233,8 +264,9 @@ function AudienceForm({
   const previewArgs: PreviewArgs = {
     scope,
     source,
-    filters,
-    excludeFilters,
+    filters: isTargetingV2 ? (initial?.filters ?? {}) : filters,
+    excludeFilters: isTargetingV2 ? undefined : excludeFilters,
+    targeting: isTargetingV2 ? debouncedTargeting : undefined,
     includePersonIds: includeIds.length ? includeIds : undefined,
     excludePersonIds: excludeIds.length ? excludeIds : undefined,
   };
@@ -247,6 +279,45 @@ function AudienceForm({
   async function handleSave() {
     const trimmed = name.trim();
     if (!trimmed) return;
+
+    if (isTargetingV2) {
+      // Incomplete rows (an id control not chosen yet) never reach the wire
+      // shape — blocking Save on them (with the hint below the buttons)
+      // beats silently saving a narrower audience than what's on screen.
+      if (wire.incompleteCount > 0) return;
+      setSaving(true);
+      try {
+        const result = initial
+          ? await run(
+              () =>
+                update({
+                  audienceId: initial._id,
+                  name: trimmed,
+                  targeting: wire.targeting,
+                  includePersonIds: includeIds,
+                  excludePersonIds: excludeIds,
+                }),
+              { errorTitle: "Couldn't save audience" },
+            )
+          : await run(
+              () =>
+                create({
+                  scope: CENTRAL_SCOPE,
+                  name: trimmed,
+                  source: "person_filters",
+                  filters: {},
+                  targeting: wire.targeting,
+                  includePersonIds: includeIds.length ? includeIds : undefined,
+                  excludePersonIds: excludeIds.length ? excludeIds : undefined,
+                }),
+              { errorTitle: "Couldn't create audience" },
+            );
+        if (result !== undefined) onDone();
+      } finally {
+        setSaving(false);
+      }
+      return;
+    }
 
     // Flush every mounted numeric field's RAW text synchronously — Save must
     // persist what's on screen, not the last value each field's own 400ms
@@ -328,22 +399,72 @@ function AudienceForm({
     <Card style={styles.form}>
       <TextField label="Name" placeholder="e.g. Active donors" value={name} onChangeText={setName} />
 
-      <Field label="Source">
-        <Badge label={sourceLabel(source)} tone="accent" />
-        {!isPersonFilters ? (
-          <Text className="mt-1 text-xs text-muted">
-            {describeAudience(source, filters)} — this is a previous-format audience. It still works
-            for sending, and will move to the new filter picker automatically; until then, only its
-            name can be changed here.
-          </Text>
-        ) : null}
-      </Field>
+      {!isTargetingV2 ? (
+        <Field label="Source">
+          <Badge label={sourceLabel(source, false)} tone="accent" />
+          {!isPersonFilters ? (
+            <Text className="mt-1 text-xs text-muted">
+              {describeAudience(source, filters)} — this is a previous-format audience. It still
+              works for sending, and will move to the new group builder automatically; until then,
+              only its name can be changed here.
+            </Text>
+          ) : null}
+        </Field>
+      ) : null}
 
       <ErrorBoundary inline>
-        <LiveRecipientsSummary args={previewArgs} pendingEdit={dirtyKeys.size > 0} />
+        <LiveRecipientsSummary
+          args={previewArgs}
+          pendingEdit={
+            dirtyKeys.size > 0 || (isTargetingV2 && wire.targeting !== debouncedTargeting)
+          }
+        />
       </ErrorBoundary>
 
-      {isPersonFilters ? (
+      {isTargetingV2 ? (
+        <>
+          <ErrorBoundary inline>
+            <TargetingBuilder
+              groups={uiGroups}
+              excludeGroups={uiExcludeGroups}
+              onGroupsChange={setUiGroups}
+              onExcludeGroupsChange={setUiExcludeGroups}
+              previewArgs={previewArgs}
+              onInvalid={(key, invalid) => setFieldStatus(key, false, invalid)}
+            />
+          </ErrorBoundary>
+          <ErrorBoundary inline>
+            <HandPickSection
+              includeIds={includeIds}
+              excludeIds={excludeIds}
+              includeNames={includeNames}
+              excludeNames={excludeNames}
+              onAddInclude={(p) => {
+                setIncludeIds((ids) => (ids.includes(p.personId) ? ids : [...ids, p.personId]));
+                setExcludeIds((ids) => ids.filter((id) => id !== p.personId));
+                rememberName("include", p.personId, p.name);
+              }}
+              onAddExclude={(p) => {
+                setExcludeIds((ids) => (ids.includes(p.personId) ? ids : [...ids, p.personId]));
+                setIncludeIds((ids) => ids.filter((id) => id !== p.personId));
+                rememberName("exclude", p.personId, p.name);
+              }}
+              onRemoveInclude={(id) => setIncludeIds((ids) => ids.filter((x) => x !== id))}
+              onRemoveExclude={(id) => setExcludeIds((ids) => ids.filter((x) => x !== id))}
+            />
+          </ErrorBoundary>
+          <ErrorBoundary inline>
+            <PersonCheckSection
+              scope={scope}
+              targeting={debouncedTargeting}
+              includePersonIds={includeIds.length ? includeIds : undefined}
+              excludePersonIds={excludeIds.length ? excludeIds : undefined}
+            />
+          </ErrorBoundary>
+        </>
+      ) : null}
+
+      {!isTargetingV2 && isPersonFilters ? (
         <>
           <ErrorBoundary inline>
             <FilterChipsBuilder filters={filters} onChange={setFilters} controller={numberFieldController} />
@@ -398,7 +519,11 @@ function AudienceForm({
             title={initial ? "Save" : "Create audience"}
             onPress={handleSave}
             loading={saving}
-            disabled={!name.trim() || invalidKeys.size > 0}
+            disabled={
+              !name.trim() ||
+              invalidKeys.size > 0 ||
+              (isTargetingV2 && wire.incompleteCount > 0)
+            }
           />
           <Button title="Cancel" variant="secondary" onPress={onDone} />
         </View>
@@ -409,6 +534,12 @@ function AudienceForm({
       {invalidKeys.size > 0 ? (
         <Text className="mt-2 text-xs text-danger">
           Fix the highlighted field{invalidKeys.size === 1 ? "" : "s"} above before saving.
+        </Text>
+      ) : null}
+      {isTargetingV2 && wire.incompleteCount > 0 ? (
+        <Text className="mt-2 text-xs text-danger">
+          {wire.incompleteCount === 1 ? "One line above still needs" : `${wire.incompleteCount} lines above still need`}{" "}
+          a choice (a role, chapter, or event) before saving.
         </Text>
       ) : null}
     </Card>
