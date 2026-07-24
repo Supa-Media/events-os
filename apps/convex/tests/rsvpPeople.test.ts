@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { api, internal } from "../_generated/api";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import type { Doc, Id } from "../_generated/dataModel";
-import { findPersonMatch, linkRsvpToPerson } from "../lib/rsvpPeople";
+import { findPersonMatch, linkRsvpToPerson, linkRsvpToPersonWithRoster } from "../lib/rsvpPeople";
 
 /**
  * Person-centric audiences Phase 1 item 2 — `lib/rsvpPeople.ts#linkRsvpToPerson`
@@ -255,6 +255,159 @@ describe("linkRsvpToPerson", () => {
     // onto the deleted rsvp, not the person creation) — what matters is that
     // the call resolved instead of throwing.
     expect(result === null || typeof result === "string").toBe(true);
+  });
+});
+
+/**
+ * hotfix 0037-roster-reads (prod incident, 2026-07-24) — the preloaded-roster
+ * variant a batch caller (`migrations/0037_link_rsvp_people.ts`) uses so a
+ * chapter's roster is read from storage at most once per invocation instead
+ * of once per row. See `lib/rsvpPeople.ts`'s "PRELOADED-ROSTER VARIANT" doc
+ * banner for the full incident writeup.
+ */
+describe("linkRsvpToPersonWithRoster", () => {
+  test("matches ONLY against the passed roster array — never falls back to a fresh DB load", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    // A real person exists in the DB for this email, but is DELIBERATELY left
+    // OUT of the array passed to the function — proving the function trusts
+    // its caller's cache instead of silently re-querying `chapterRoster`.
+    await seedPerson(s, { name: "DB-Only Person", email: "dbonly@example.com" });
+    const rsvpId = await run(s.t, (ctx) =>
+      ctx.db.insert("rsvps", {
+        eventId,
+        chapterId: s.chapterId,
+        name: "DB-Only Person",
+        email: "dbonly@example.com",
+        status: "going",
+        token: "tok-roster-1",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+
+    const staleRoster: Doc<"people">[] = []; // deliberately missing the DB row above
+    const result = await run(s.t, (ctx) =>
+      linkRsvpToPersonWithRoster(
+        ctx,
+        { rsvpId, chapterId: s.chapterId, name: "DB-Only Person", email: "dbonly@example.com" },
+        staleRoster,
+      ),
+    );
+    expect(result.status).toBe("linked");
+    // Since the passed-in roster didn't contain the existing person, this
+    // created a SECOND (duplicate) contact rather than matching it — proof
+    // the match was decided purely from `staleRoster`, not a fresh reload.
+    const everyone = await run(s.t, (ctx) => ctx.db.query("people").collect());
+    expect(everyone).toHaveLength(2);
+  });
+
+  test("a freshly created contact is appended to the passed roster in place, so a later call sees it without a reload", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const r1 = await run(s.t, (ctx) =>
+      ctx.db.insert("rsvps", {
+        eventId,
+        chapterId: s.chapterId,
+        name: "Shared Inbox",
+        email: "shared-page@example.com",
+        status: "going",
+        token: "tok-roster-2a",
+        createdAt: 1000,
+        updatedAt: 1000,
+      }),
+    );
+    const r2 = await run(s.t, (ctx) =>
+      ctx.db.insert("rsvps", {
+        eventId,
+        chapterId: s.chapterId,
+        name: "Shared Inbox",
+        email: "shared-page@example.com",
+        status: "going",
+        token: "tok-roster-2b",
+        createdAt: 2000,
+        updatedAt: 2000,
+      }),
+    );
+
+    const roster: Doc<"people">[] = []; // simulates a page-level cache, starts empty
+    const first = await run(s.t, (ctx) =>
+      linkRsvpToPersonWithRoster(
+        ctx,
+        { rsvpId: r1, chapterId: s.chapterId, name: "Shared Inbox", email: "shared-page@example.com" },
+        roster,
+      ),
+    );
+    expect(first.status).toBe("linked");
+    expect(roster).toHaveLength(1); // appended in place — no second DB read needed
+
+    // SAME roster array reference, no reload — a second row for the SAME
+    // email must MATCH the just-created person, not create a duplicate.
+    const second = await run(s.t, (ctx) =>
+      linkRsvpToPersonWithRoster(
+        ctx,
+        { rsvpId: r2, chapterId: s.chapterId, name: "Shared Inbox", email: "shared-page@example.com" },
+        roster,
+      ),
+    );
+    expect(second.status).toBe("linked");
+    if (first.status === "linked" && second.status === "linked") {
+      expect(second.personId).toBe(first.personId);
+    }
+    expect(roster).toHaveLength(1); // still one — the second call matched, didn't append
+    const everyone = await run(s.t, (ctx) => ctx.db.query("people").collect());
+    expect(everyone).toHaveLength(1); // no duplicate
+  });
+
+  test("discriminated result: 'skipped' (no identifier) is never confused with 'failed' (an actual exception)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const nameOnlyId = await run(s.t, (ctx) =>
+      ctx.db.insert("rsvps", {
+        eventId,
+        chapterId: s.chapterId,
+        name: "Name Only",
+        status: "going",
+        token: "tok-roster-3",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const skipped = await run(s.t, (ctx) =>
+      linkRsvpToPersonWithRoster(ctx, { rsvpId: nameOnlyId, chapterId: s.chapterId, name: "Name Only" }, []),
+    );
+    expect(skipped.status).toBe("skipped");
+
+    // Same ghost-rsvp-id pattern as `linkRsvpToPerson`'s "never throws" test —
+    // here it must come back `status: "failed"`, not `"skipped"`.
+    const ghostId = await run(s.t, async (ctx) => {
+      const id = await ctx.db.insert("rsvps", {
+        eventId,
+        chapterId: s.chapterId,
+        name: "Ghost",
+        email: "ghost-roster@example.com",
+        status: "going",
+        token: "tok-roster-4",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      await ctx.db.delete(id);
+      return id;
+    });
+    const failed = await run(s.t, (ctx) =>
+      linkRsvpToPersonWithRoster(
+        ctx,
+        { rsvpId: ghostId, chapterId: s.chapterId, name: "Ghost", email: "ghost-roster@example.com" },
+        [],
+      ),
+    );
+    expect(failed.status).toBe("failed");
+    if (failed.status === "failed") {
+      expect(failed.error).toBeTruthy();
+    }
   });
 });
 

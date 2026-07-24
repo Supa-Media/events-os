@@ -41,17 +41,86 @@
  * This was ALREADY the documented contract for a `SCAN_CAP`-truncated scan
  * (`truncated: true` + `continueCursor`, re-invoke until `isDone`) — that
  * contract is now simply the NORMAL path on every invocation instead of a
- * rare cap-hit fallback, so no caller-facing shape changed. `PAGE_SIZE` is
- * raised (500 → 1000) since a page is now the WHOLE unit of work per call
- * instead of one slice of a larger in-memory scan; `SCAN_CAP` is gone —
- * there's nothing left for it to bound.
+ * rare cap-hit fallback, so no caller-facing shape changed. `SCAN_CAP` is
+ * gone — there's nothing left for it to bound.
+ * ============================================================================
+ *
+ * ============================================================================
+ * ONE ROSTER LOAD PER CHAPTER PER INVOCATION — hotfix 0037-roster-reads (prod
+ * incident, 2026-07-24, the very next production attempt after the fix
+ * above): making pagination single-call didn't make execute SAFE — the first
+ * real production execute (`{execute: true}`, page 1) logged 256+ "linkRsvpToPerson
+ * failed" errors ("Too many documents read in a single function execution
+ * (limit: 32000)") and silently miscounted every one of them as
+ * `skippedNoIdentifier` (`lib/rsvpPeople.ts#linkRsvpToPerson` catches and logs
+ * every error — see that file's BEST-EFFORT BY DESIGN doc — so the failure
+ * never surfaced as a failure). Root cause: `linkRsvpToPerson` self-loads the
+ * chapter roster (`chapterRoster` — an unbounded `.collect()`) on EVERY call,
+ * but THIS file was already loading + caching its own roster per chapter for
+ * anchor lookups (`loadRoster` below) — so every linked/created row paid for
+ * the SAME roster collect TWICE: once for this file's own anchor check, once
+ * again inside `linkRsvpToPerson`. At `PAGE_SIZE` rows/page that blew past
+ * Convex's 32,000-documents-read-per-execution cap partway through the page.
+ * Dry-run never called `linkRsvpToPerson` at all (its preview path already
+ * matched against the cached roster directly), which is why dry-run and
+ * execute counts diverged for the identical page — not a preview-logic bug,
+ * purely the crash.
+ *
+ * Fixed by using `lib/rsvpPeople.ts#linkRsvpToPersonWithRoster` — the SAME
+ * cached `loadRoster(chapterId)` array this file already builds is now
+ * threaded into the link call too, so a chapter's roster is read from
+ * storage AT MOST ONCE per invocation, no matter how many of that chapter's
+ * rows this page links or creates. A newly created contact is appended to
+ * that cached array in place (see that function's doc), so a LATER row in
+ * the SAME page for the SAME chapter/email still converges onto it — this is
+ * what makes cross-row convergence WITHIN one page work at all now that the
+ * roster isn't reloaded (and re-observed via the database's own
+ * reads-your-writes) on every call.
+ *
+ * TRUTHFUL COUNTING: `linkRsvpToPersonWithRoster` returns a discriminated
+ * `{status: "linked" | "skipped" | "failed"}` instead of swallowing every
+ * non-link into a bare `null`, so a genuine "no email/phone to link or create
+ * from" (`skippedNoIdentifier`) is never confused with an actual FAILURE
+ * (`failed`, surfaced below AND logged loudly if non-zero) the way the prod
+ * incident's errors were. With the roster now loaded once, `failed` should
+ * be 0 in ordinary operation — it stays as a truthful safety net, not a
+ * silence.
+ *
+ * READ BUDGET (worst case, `PAGE_SIZE` = 500 — see below for why this was
+ * lowered back from 1000): reads(page) ≈
+ *   PAGE_SIZE                                    // the rsvps page itself
+ *   + Σ over each DISTINCT chapter in this page of |that chapter's people|
+ *                                                 // one roster collect per
+ *                                                 // chapter, cached — see above
+ *   + (rows actually linked or created) × ~2      // `ctx.db.get(rsvpId)` for
+ *                                                 // the emailVerified check +
+ *                                                 // `personEmails`'s own small
+ *                                                 // by-person collect
+ *   + (rows that CREATE a new contact) × 1        // the `ctx.db.get` needed to
+ *                                                 // append the fresh doc to
+ *                                                 // the cached roster array
+ * With every row in one chapter (the overwhelmingly common case — a page is
+ * usually one event's/chapter's guest history), worst case is
+ * `500 + |roster| + 500×2 + 500 ≈ 2000 + |roster|` — comfortably inside the
+ * 32,000 cap unless a single chapter's `people` table is itself in the tens
+ * of thousands, which this app's guest/contact volume is nowhere near today
+ * (same footing as `0032_link_donor_people`'s "small at this stage" note).
+ * Worst case across MANY distinct chapters in one page (a pathological
+ * chapter-shuffled page) sums each chapter's own roster size once — bounded
+ * by the number of chapters this app has (small) times a typical chapter's
+ * roster size, not by `PAGE_SIZE`. If either assumption stops holding
+ * (a single chapter's contact volume grows into the thousands, or a page
+ * routinely spans dozens of chapters), lower `PAGE_SIZE` again or add an
+ * explicit per-chapter roster cap here — do NOT touch `chapterRoster` itself,
+ * which many unrelated authorization call sites also depend on being a
+ * complete, uncapped roster.
  * ============================================================================
  *
  * ONE HUMAN, N EVENTS, ONE PERSON: unlike a single live insert (which only
  * ever sees ONE rsvp row and matches it into the roster/contacts on its own),
  * this backfill sees a PAGE of history at a time, so it groups that page's
  * un-linked rsvp rows by (chapterId, normalized email) BEFORE calling
- * `lib/rsvpPeople.ts#linkRsvpToPerson` — a repeat attendee whose rows land on
+ * `lib/rsvpPeople.ts#linkRsvpToPersonWithRoster` — a repeat attendee whose rows land on
  * the SAME page converges onto ONE person row instead of accidentally
  * matching a differently-created identity per event (email is already the
  * primary match key, so in practice this mostly matters for deciding what to
@@ -63,7 +132,7 @@
  * the same trimmed name, this picks the "winning" name (most rows IN THIS
  * PAGE, ties broken by earliest `createdAt`, UNLESS an anchor person already
  * exists for the email — see below) and links ONLY that subset via
- * `linkRsvpToPerson` (which will match-or-create ONE person for them); every
+ * `linkRsvpToPersonWithRoster` (which will match-or-create ONE person for them); every
  * row carrying a different name is left UNLINKED — never guessed at, never
  * merged into a mismatched person. A human resolves it from the People tab
  * like any other bad match. Rows with NO email (phone-only or name-only)
@@ -113,20 +182,23 @@
  * a single page). Whenever more rows remain, `isDone: false` comes back with
  * `continueCursor` set; a human (or the run-convex-function workflow)
  * re-invokes with `{ cursor: continueCursor }` (same `execute` value) until
- * `isDone: true`.
+ * `isDone: true`. Lowered back to 500 (from an intermediate 1000) by the
+ * "ONE ROSTER LOAD PER CHAPTER PER INVOCATION" hotfix above, for read-budget
+ * margin — see that section's math.
  */
 import { v } from "convex/values";
 import { internalMutation } from "../_generated/server";
 import type { MutationCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import { normalizeEmail } from "../lib/access";
-import { findPersonMatch, linkRsvpToPerson } from "../lib/rsvpPeople";
+import { findPersonMatch, linkRsvpToPersonWithRoster } from "../lib/rsvpPeople";
 import { hasPersonIdentifier } from "../lib/givingDonors";
 import { chapterRoster } from "../lib/org";
 
 /** Rows read per (single) `.paginate()` call — see the module doc's
- *  "ONE `.paginate()` PER INVOCATION" banner and "SCALE" note. */
-const PAGE_SIZE = 1000;
+ *  "ONE `.paginate()` PER INVOCATION" banner, "ONE ROSTER LOAD PER CHAPTER
+ *  PER INVOCATION" read-budget math, and "SCALE" note. */
+const PAGE_SIZE = 500;
 
 /** Pick the "winning" name within a (chapter, email) group: the name shared
  *  by the most rows, ties broken by the earliest `createdAt` among them. Pure
@@ -164,6 +236,12 @@ type Stats = {
   linked: number;
   skippedDivergentName: number;
   skippedNoIdentifier: number;
+  /** A genuine infrastructure FAILURE (an exception from `linkRsvpToPersonWithRoster`),
+   *  never a legitimate skip — see the module doc's "ONE ROSTER LOAD PER CHAPTER
+   *  PER INVOCATION" banner. Should be 0 in ordinary operation; non-zero is
+   *  logged loudly (see below) and the affected rows are safely retryable
+   *  (idempotent — a re-run only touches what's still unlinked). */
+  failed: number;
   truncated: boolean;
   isDone: boolean;
   continueCursor: string | null;
@@ -209,6 +287,7 @@ export async function linkRsvpPeoplePage(
   let linked = 0;
   let skippedDivergentName = 0;
   let skippedNoIdentifier = 0;
+  let failed = 0;
   let divergentGroups = 0;
 
   // Roster cache, one load per chapter — used to find an ALREADY-ESTABLISHED
@@ -242,38 +321,62 @@ export async function linkRsvpPeoplePage(
   };
 
   if (args.execute) {
+    // Tally one `linkRsvpToPersonWithRoster` outcome truthfully — a FAILURE
+    // (an infrastructure exception) is never folded into `skippedNoIdentifier`
+    // (see the module doc's "ONE ROSTER LOAD PER CHAPTER PER INVOCATION"
+    // banner — that miscount is exactly what hid the prod incident).
+    const tally = (result: Awaited<ReturnType<typeof linkRsvpToPersonWithRoster>>) => {
+      if (result.status === "linked") linked++;
+      else if (result.status === "skipped") skippedNoIdentifier++;
+      else failed++;
+    };
+
     for (const rows of groups.values()) {
+      const chapterId = rows[0].chapterId;
       const email = normalizeEmail(rows[0].email) as string; // group key guarantees this
-      const winner = await winningNameFor(rows[0].chapterId, email, rows);
+      const winner = await winningNameFor(chapterId, email, rows);
       const winning = rows.filter((r) => r.name.trim() === winner);
       const divergent = rows.filter((r) => r.name.trim() !== winner);
       if (divergent.length > 0) divergentGroups++;
       skippedDivergentName += divergent.length;
+      // The SAME cached array `winningNameFor` just read via `loadRoster` —
+      // a cache hit, not a second DB read (see the read-budget math above).
+      const roster = await loadRoster(chapterId);
       for (const r of winning) {
         // Sequential on purpose: the first call in a group may INSERT the
-        // contact person; every subsequent call for the SAME group then
-        // MATCHES it by email (reads-your-writes within this transaction) —
-        // one person for the whole group, never one per row.
-        const personId = await linkRsvpToPerson(ctx, {
-          rsvpId: r._id,
-          chapterId: r.chapterId,
-          name: r.name,
-          email: r.email,
-          phone: r.phone,
-        });
-        if (personId) linked++;
+        // contact person (appending it to `roster` in place); every
+        // subsequent call for the SAME group then MATCHES it off that same
+        // in-memory roster — one person for the whole group, never one per
+        // row, and never a second DB read for this chapter.
+        tally(
+          await linkRsvpToPersonWithRoster(
+            ctx,
+            { rsvpId: r._id, chapterId: r.chapterId, name: r.name, email: r.email, phone: r.phone },
+            roster,
+          ),
+        );
       }
     }
     for (const r of ungrouped) {
-      const personId = await linkRsvpToPerson(ctx, {
-        rsvpId: r._id,
-        chapterId: r.chapterId,
-        name: r.name,
-        email: r.email,
-        phone: r.phone,
-      });
-      if (personId) linked++;
-      else skippedNoIdentifier++;
+      const roster = await loadRoster(r.chapterId);
+      tally(
+        await linkRsvpToPersonWithRoster(
+          ctx,
+          { rsvpId: r._id, chapterId: r.chapterId, name: r.name, email: r.email, phone: r.phone },
+          roster,
+        ),
+      );
+    }
+
+    if (failed > 0) {
+      // Loud, distinct from the per-row `console.error` inside
+      // `linkRsvpToPersonWithRoster` — a page-level summary an operator
+      // scanning logs can't miss. Safe to re-run: idempotent, and a failed
+      // row's `personId` was never set, so it stays in the unlinked pool.
+      console.error(
+        `migrations/0037_link_rsvp_people: ${failed} row(s) FAILED to link on this page ` +
+          `(see individual errors above) — safe to re-run, this migration is idempotent`,
+      );
     }
   } else {
     // Dry run: preview counts WITHOUT writing. Mirrors the real matcher
@@ -324,6 +427,7 @@ export async function linkRsvpPeoplePage(
     linked,
     skippedDivergentName,
     skippedNoIdentifier,
+    failed,
     truncated: !isDone,
     isDone,
     continueCursor: isDone ? null : page.continueCursor,
