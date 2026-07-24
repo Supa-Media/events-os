@@ -58,6 +58,15 @@ export function ReceiptDetailModal({
 }) {
   const receipt = useQuery(api.receipts.getReceipt, { receiptId });
   const candidates = useQuery(api.receipts.suggestMatches, { receiptId });
+  // Free-text transaction search (item 4) — for when the exact-amount
+  // suggestions don't surface the right charge (a mis-read amount, or none).
+  // Skipped until the bookkeeper types, so opening the panel doesn't pull the
+  // whole unreceipted list.
+  const [txnSearch, setTxnSearch] = useState("");
+  const searchResults = useQuery(
+    api.receipts.searchUnreceiptedTransactions,
+    txnSearch.trim() ? { query: txnSearch } : "skip",
+  );
   // Resolves `correctedByPersonId` to a display name — the existing
   // chapter-roster read every mention/picker surface already uses, not a new
   // backend query.
@@ -223,6 +232,12 @@ export function ReceiptDetailModal({
   // Suggestions that aren't already linked — a linked txn belongs in the
   // "Linked" list above, not offered again as a candidate.
   const openCandidates = (candidates ?? []).filter((c) => !linkedIds.has(c.transactionId));
+  // Search hits minus anything already linked or already in the suggestions
+  // above (no point offering the same charge twice).
+  const suggestedIds = new Set(openCandidates.map((c) => c.transactionId));
+  const openSearchResults = (searchResults ?? []).filter(
+    (c) => !linkedIds.has(c.transactionId) && !suggestedIds.has(c.transactionId),
+  );
 
   return (
     <>
@@ -641,6 +656,48 @@ export function ReceiptDetailModal({
                     ))}
                   </View>
                 )}
+
+                {/* Search any unreceipted charge to match to (item 4) — for
+                    when the exact-amount suggestions above miss the right one
+                    (a mis-read total, or a receipt with no amount at all). */}
+                <View className="mt-5">
+                  <Text className="mb-2 text-2xs font-bold uppercase tracking-wider text-muted">
+                    Search transactions
+                  </Text>
+                  <TextField
+                    value={txnSearch}
+                    onChangeText={setTxnSearch}
+                    placeholder="Search by merchant or amount…"
+                    autoCapitalize="none"
+                  />
+                  {txnSearch.trim() === "" ? null : searchResults === undefined ? (
+                    <Text className="text-sm text-faint">Searching…</Text>
+                  ) : openSearchResults.length === 0 ? (
+                    <Text className="text-sm text-faint">
+                      No unreceipted charge matches “{txnSearch.trim()}”.
+                    </Text>
+                  ) : (
+                    <View className="gap-2">
+                      {openSearchResults.map((c) => (
+                        <Pressable
+                          key={c.transactionId}
+                          onPress={() => handleLink(c.transactionId)}
+                          className="flex-row items-center justify-between rounded-md border border-border bg-raised px-3 py-2 active:opacity-80"
+                        >
+                          <View className="flex-1">
+                            <Text className="text-sm font-semibold text-ink" numberOfLines={1}>
+                              {c.merchantName ?? c.description ?? "Transaction"}
+                            </Text>
+                            <Text className="text-2xs text-muted">
+                              {formatCents(c.amountCents)} · {formatDate(c.postedAt)} · {c.status}
+                            </Text>
+                          </View>
+                          <Badge label="Link" tone="accent" icon="link" />
+                        </Pressable>
+                      ))}
+                    </View>
+                  )}
+                </View>
               </>
             )}
           </ScrollView>
