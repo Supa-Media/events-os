@@ -112,11 +112,17 @@ export const createAudience = mutation({
     filters: audienceFiltersValidator,
     // Phase 3 (person_filters only — see schema doc; harmless-but-unused on
     // a legacy source, mirroring `filters`' own "fields the source ignores
-    // sit unused" shape).
+    // sit unused" shape). `excludeFilters` is the property-level exclusion
+    // block ("everyone matching filters, EXCEPT anyone matching
+    // excludeFilters") — see `schema/campaigns.ts#audiences`'s doc.
+    excludeFilters: v.optional(audienceFiltersValidator),
     includePersonIds: v.optional(v.array(v.id("people"))),
     excludePersonIds: v.optional(v.array(v.id("people"))),
   },
-  handler: async (ctx, { scope, name, source, filters, includePersonIds, excludePersonIds }) => {
+  handler: async (
+    ctx,
+    { scope, name, source, filters, excludeFilters, includePersonIds, excludePersonIds },
+  ) => {
     await requireCampaignsAccess(ctx);
     const userId = (await requireUserId(ctx)) as Id<"users">;
     const trimmed = name.trim();
@@ -130,6 +136,7 @@ export const createAudience = mutation({
       name: trimmed,
       source,
       filters,
+      excludeFilters,
       includePersonIds,
       excludePersonIds,
       createdBy: userId,
@@ -144,13 +151,20 @@ export const updateAudience = mutation({
     audienceId: v.id("audiences"),
     name: v.optional(v.string()),
     filters: v.optional(audienceFiltersValidator),
+    // `undefined` leaves the stored excludeFilters untouched; pass `{}`
+    // explicitly to clear every exclude criterion back to a no-op (same
+    // "full replace" convention `filters` itself uses).
+    excludeFilters: v.optional(audienceFiltersValidator),
     // Phase 3 — `undefined` leaves the stored list untouched; pass `[]`
     // explicitly to clear it (the same "must pass empty array, not omit"
     // convention `filters` doesn't need since it's always a full replace).
     includePersonIds: v.optional(v.array(v.id("people"))),
     excludePersonIds: v.optional(v.array(v.id("people"))),
   },
-  handler: async (ctx, { audienceId, name, filters, includePersonIds, excludePersonIds }) => {
+  handler: async (
+    ctx,
+    { audienceId, name, filters, excludeFilters, includePersonIds, excludePersonIds },
+  ) => {
     await requireCampaignsAccess(ctx);
     const existing = await ctx.db.get(audienceId);
     if (!existing) {
@@ -169,6 +183,7 @@ export const updateAudience = mutation({
       patch.name = trimmed;
     }
     if (filters !== undefined) patch.filters = filters;
+    if (excludeFilters !== undefined) patch.excludeFilters = excludeFilters;
     if (includePersonIds !== undefined) patch.includePersonIds = includePersonIds;
     if (excludePersonIds !== undefined) patch.excludePersonIds = excludePersonIds;
     await ctx.db.patch(audienceId, patch);
@@ -201,6 +216,11 @@ export const previewAudience = query({
     scope: scopeValidator,
     source: sourceValidator,
     filters: audienceFiltersValidator,
+    // Property-level exclusions ("everyone matching filters, EXCEPT anyone
+    // matching excludeFilters") — a live composer draft's exclude block, so
+    // the preview reflects it before the audience is even saved. Same shape
+    // as `filters`, `person_filters` only — see `schema/campaigns.ts#audiences`.
+    excludeFilters: v.optional(audienceFiltersValidator),
     // Phase 3 — a live composer draft's hand-picks, so the preview reflects
     // includes/excludes before the audience is even saved.
     includePersonIds: v.optional(v.array(v.id("people"))),
@@ -224,6 +244,12 @@ export const previewAudience = query({
     unlinkedGuests: v.number(),
     unlinkedGuestsIsLowerBound: v.boolean(),
     handPickedUnverified: v.number(),
+    // `person_filters` only — how many otherwise-matching people were
+    // removed by `excludeFilters` (primary count) and, of those, how many
+    // were ALSO a hand-picked include (diagnostic — an exclusion beating a
+    // hand-pick). See `lib/audienceResolve.ts#AudienceResolution`'s doc.
+    excludedByFilters: v.number(),
+    handPickedExcludedByFilters: v.number(),
     // The 5,000-recipient cap (`AUDIENCE_RESOLVE_LIMIT`), surfaced instead of
     // silently truncated — `truncatedCount` is exact here (a live query, not
     // a stored snapshot), unlike the campaign row's boolean-only
@@ -231,7 +257,10 @@ export const previewAudience = query({
     truncated: v.boolean(),
     truncatedCount: v.number(),
   }),
-  handler: async (ctx, { scope, source, filters, includePersonIds, excludePersonIds }) => {
+  handler: async (
+    ctx,
+    { scope, source, filters, excludeFilters, includePersonIds, excludePersonIds },
+  ) => {
     await requireCampaignsAccess(ctx);
     // `includeDiagnostics: true` — this is the ONLY caller that should pay
     // for the extra data-trust transparency scans (`unlinkedGuests`/
@@ -241,7 +270,7 @@ export const previewAudience = query({
     // `lib/audienceResolve.ts#resolveAudienceRecipients`'s doc.
     const resolution = await resolveAudienceRecipients(
       ctx,
-      { scope, source, filters, includePersonIds, excludePersonIds },
+      { scope, source, filters, excludeFilters, includePersonIds, excludePersonIds },
       AUDIENCE_RESOLVE_LIMIT,
       true,
     );
@@ -256,6 +285,8 @@ export const previewAudience = query({
       unlinkedGuests: resolution.unlinkedGuests,
       unlinkedGuestsIsLowerBound: resolution.unlinkedGuestsIsLowerBound,
       handPickedUnverified: resolution.handPickedUnverified,
+      excludedByFilters: resolution.excludedByFilters,
+      handPickedExcludedByFilters: resolution.handPickedExcludedByFilters,
       truncated: resolution.truncated,
       truncatedCount: resolution.truncatedCount,
     };
