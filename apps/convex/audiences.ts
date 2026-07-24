@@ -211,9 +211,19 @@ export const previewAudience = query({
     sample: v.array(v.object({ name: v.optional(v.string()), email: v.string() })),
     excludedSuppressed: v.number(),
     excludedUnverified: v.number(),
-    // Phase 3 (`person_filters` only — always 0 for legacy sources).
+    // `person_filters` AND `people` (data-trust fix — previously always 0 for
+    // `people`, a silent drop; see `lib/audienceResolve.ts#resolvePeople`'s
+    // doc). Always 0 for `guests`/`donors`.
     excludedOptOut: v.number(),
     unlinkedCentralDonors: v.number(),
+    // ── Additive data-trust counters (below) — every existing field above is
+    // unchanged; these are new optional-shaped signals so an older client
+    // that doesn't render them yet loses nothing. See
+    // `lib/audienceResolve.ts#AudienceResolution`'s doc for each field. ──
+    centralDonorsExcludedByChapterFilter: v.number(),
+    unlinkedGuests: v.number(),
+    unlinkedGuestsIsLowerBound: v.boolean(),
+    handPickedUnverified: v.number(),
     // The 5,000-recipient cap (`AUDIENCE_RESOLVE_LIMIT`), surfaced instead of
     // silently truncated — `truncatedCount` is exact here (a live query, not
     // a stored snapshot), unlike the campaign row's boolean-only
@@ -223,13 +233,18 @@ export const previewAudience = query({
   }),
   handler: async (ctx, { scope, source, filters, includePersonIds, excludePersonIds }) => {
     await requireCampaignsAccess(ctx);
-    const resolution = await resolveAudienceRecipients(ctx, {
-      scope,
-      source,
-      filters,
-      includePersonIds,
-      excludePersonIds,
-    });
+    // `includeDiagnostics: true` — this is the ONLY caller that should pay
+    // for the extra data-trust transparency scans (`unlinkedGuests`/
+    // `centralDonorsExcludedByChapterFilter`); the send path
+    // (`resolveAudienceForSend` below) and `campaigns.ts#liveAudienceCount`
+    // deliberately leave it at its `false` default — see
+    // `lib/audienceResolve.ts#resolveAudienceRecipients`'s doc.
+    const resolution = await resolveAudienceRecipients(
+      ctx,
+      { scope, source, filters, includePersonIds, excludePersonIds },
+      AUDIENCE_RESOLVE_LIMIT,
+      true,
+    );
     return {
       count: resolution.recipients.length,
       sample: resolution.recipients.slice(0, 10),
@@ -237,6 +252,10 @@ export const previewAudience = query({
       excludedUnverified: resolution.excludedUnverified,
       excludedOptOut: resolution.excludedOptOut,
       unlinkedCentralDonors: resolution.unlinkedCentralDonors,
+      centralDonorsExcludedByChapterFilter: resolution.centralDonorsExcludedByChapterFilter,
+      unlinkedGuests: resolution.unlinkedGuests,
+      unlinkedGuestsIsLowerBound: resolution.unlinkedGuestsIsLowerBound,
+      handPickedUnverified: resolution.handPickedUnverified,
       truncated: resolution.truncated,
       truncatedCount: resolution.truncatedCount,
     };
@@ -315,6 +334,14 @@ const SEARCH_RESULT_LIMIT = 20;
  * suppression-filtered recipient list to materialize into `campaignRecipients`
  * rows. NEVER exposed as a public function — a send always goes through the
  * `campaigns.send` mutation's access gate first.
+ *
+ * Deliberately leaves `resolveAudienceRecipients`'s `includeDiagnostics` at
+ * its `false` default — the data-trust transparency counters are a preview
+ * affordance, not a send-time one, and the extra bounded scans they cost
+ * have no business running against a real send's read budget (see that
+ * function's doc — the read-budget incident class hotfix #414 addressed).
+ * The returned shape only ever carries `recipients`/`truncated` anyway, so
+ * the diagnostic fields wouldn't even be surfaced if computed.
  */
 export const resolveAudienceForSend = internalQuery({
   args: { audienceId: v.id("audiences") },

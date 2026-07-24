@@ -485,7 +485,13 @@ async function computeCampaignSnapshotHash(
  *  `resolveAudienceRecipients` (the exact same primitive
  *  `audiences.ts#previewAudience` and `resolveAudienceForSend` already call)
  *  rather than duplicating audience resolution here. `undefined` when the
- *  audience no longer exists. */
+ *  audience no longer exists.
+ *
+ *  Deliberately leaves `includeDiagnostics` at its `false` default: this is
+ *  polled repeatedly (campaign detail views, approval cards), so the extra
+ *  data-trust transparency scans `previewAudience` opts into would be paid
+ *  on every poll for a value (`recipients.length`) that never surfaces
+ *  them — see `resolveAudienceRecipients`'s doc. */
 async function liveAudienceCount(
   ctx: QueryCtx | MutationCtx,
   audienceId: Id<"audiences">,
