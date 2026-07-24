@@ -505,6 +505,17 @@ async function computeCampaignSnapshotHash(
   if (audience?.excludeFilters && hasEffectiveExcludeCriteria(audience.excludeFilters)) {
     payload.audienceExcludeFilters = audience.excludeFilters;
   }
+  // Targeting v2 — same key-omission rule for the same reason: every
+  // campaign hashed before this field existed must keep hashing identically
+  // until its audience actually adopts `targeting` (at which point the edit
+  // IS drift a reviewer should re-approve — migration 0042 deliberately
+  // skips audiences referenced by in-flight approvals so a deploy alone
+  // never invalidates one; see that migration's doc). `audiences.ts`'s
+  // write-time normalization guarantees a stored `targeting` is never
+  // present-but-inert, mirroring `excludeFilters`.
+  if (audience?.targeting) {
+    payload.audienceTargeting = audience.targeting;
+  }
   return sha256Hex(JSON.stringify(payload));
 }
 

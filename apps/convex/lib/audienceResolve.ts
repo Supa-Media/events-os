@@ -51,6 +51,7 @@ import { suppressedEmailSet } from "../emailSuppressions";
 import { resolveSendAddress } from "./personEmails";
 import type { audienceFiltersValidator } from "../schema/campaigns";
 import { PLEDGE_STATUSES } from "../schema/givingPlatform";
+import { resolveTargetingAudience, type AudienceTargeting } from "./audienceTargeting";
 
 export type AudienceFilters = Infer<typeof audienceFiltersValidator>;
 export type AudienceScope = Id<"chapters"> | "central";
@@ -147,6 +148,23 @@ export interface AudienceResolution {
    *  unless the caller opted in, mirroring `unlinkedGuests`/
    *  `centralDonorsExcludedByChapterFilter`. */
   handPickedExcludedByFilters: number;
+  /** Targeting-v2 rows only (`audience.targeting` present), DIAGNOSTIC-ONLY
+   *  (empty arrays unless `includeDiagnostics`): per-include-group match
+   *  counts over the candidate pool. Groups overlap, so the sum can exceed
+   *  the deduped recipient count — the UI labels that rather than hiding it.
+   *  Always `[]` for legacy-shaped rows. */
+  perGroupCounts: number[];
+  /** Targeting-v2 rows only, DIAGNOSTIC-ONLY: how many union members each
+   *  exclude group removed (a member matching two exclude groups counts in
+   *  both). Always `[]` for legacy-shaped rows. */
+  perExcludeGroupCounts: number[];
+  /** Targeting-v2 rows only, DIAGNOSTIC-ONLY: recipient email → include-group
+   *  indexes that matched, for preview-sample tagging ("via Group 2"). An
+   *  IN-PROCESS map — never serialized across a function boundary
+   *  (`previewAudience` reads it to tag its sample; `resolveAudienceForSend`'s
+   *  return shape never includes it). Empty for legacy-shaped rows or when
+   *  diagnostics are off. */
+  matchedGroupsByEmail: Record<string, number[]>;
   /** True when the deduped, suppression-filtered match count exceeded
    *  `limit` and `recipients` was truncated to it — surfaced (not silent) so
    *  a send/preview against an audience bigger than the cap says so. */
@@ -1206,6 +1224,12 @@ export async function resolveAudienceRecipients(
     // Ignored (harmlessly) for every legacy source, mirroring `filters`'
     // own "fields the source ignores sit unused" shape.
     excludeFilters?: AudienceFilters;
+    // Targeting v2 (specs/audience-targeting-v2.md): when present it fully
+    // defines property-based membership and `source`/`filters`/
+    // `excludeFilters` are not consulted at all (hand-picks below still
+    // apply). Legacy rows simply don't have it and resolve exactly as
+    // before — the branch below is the ONLY fork point.
+    targeting?: AudienceTargeting;
     includePersonIds?: Id<"people">[];
     excludePersonIds?: Id<"people">[];
   },
@@ -1221,8 +1245,35 @@ export async function resolveAudienceRecipients(
   let handPickedUnverified = 0;
   let excludedByFilters = 0;
   let handPickedExcludedByFilters = 0;
+  let perGroupCounts: number[] = [];
+  let perExcludeGroupCounts: number[] = [];
+  let matchedGroupsByEmail: Record<string, number[]> = {};
 
-  if (audience.source === "guests") {
+  if (audience.targeting) {
+    const result = await resolveTargetingAudience(
+      ctx,
+      {
+        scope: audience.scope,
+        targeting: audience.targeting,
+        includePersonIds: audience.includePersonIds,
+        excludePersonIds: audience.excludePersonIds,
+      },
+      includeDiagnostics,
+    );
+    raw = result.raw;
+    excludedOptOut = result.excludedOptOut;
+    centralFallbackEmails = result.centralFallbackEmails;
+    unlinkedGuests = result.unlinkedGuests;
+    unlinkedGuestsIsLowerBound = result.unlinkedGuestsIsLowerBound;
+    handPickedUnverified = result.handPickedUnverified;
+    // One number, one UI slot: group-shaped exclusions surface through the
+    // same `excludedByFilters` fields the legacy `excludeFilters` uses.
+    excludedByFilters = result.excludedByGroups;
+    handPickedExcludedByFilters = result.handPickedExcludedByGroups;
+    perGroupCounts = result.perGroupCounts;
+    perExcludeGroupCounts = result.perExcludeGroupCounts;
+    matchedGroupsByEmail = result.matchedGroupsByEmail;
+  } else if (audience.source === "guests") {
     const result = await resolveGuests(ctx, audience.filters);
     raw = result.raw;
     excludedUnverified = result.excludedUnverified;
@@ -1249,8 +1300,14 @@ export async function resolveAudienceRecipients(
   // chapterId, and an active donor criterion all line up — see the
   // function's doc. DIAGNOSTIC-ONLY: gated by `includeDiagnostics` first —
   // never runs on the send path or `liveAudienceCount`.
+  // Never for a targeting-v2 row: v2 has no `filters.chapterId` scan
+  // narrowing at all (`chapter` is a per-person CONDITION, and the central
+  // donor pool is always scanned when donor conditions exist), so the
+  // silently-unscanned-pool class this counter exposes is structurally gone.
   const centralDonorsExcludedByChapterFilter =
-    includeDiagnostics && (audience.source === "donors" || audience.source === "person_filters")
+    includeDiagnostics &&
+    !audience.targeting &&
+    (audience.source === "donors" || audience.source === "person_filters")
       ? await countCentralDonorsExcludedByChapterFilter(ctx, audience)
       : 0;
 
@@ -1289,6 +1346,9 @@ export async function resolveAudienceRecipients(
     handPickedUnverified,
     excludedByFilters,
     handPickedExcludedByFilters,
+    perGroupCounts,
+    perExcludeGroupCounts,
+    matchedGroupsByEmail,
     truncated,
     truncatedCount,
   };

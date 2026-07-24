@@ -158,6 +158,126 @@ export const audienceFiltersValidator = v.object({
   verifiedEmailOnly: v.optional(v.boolean()),
 });
 
+/**
+ * ── Targeting v2 (specs/audience-targeting-v2.md) ───────────────────────────
+ * A `Condition` is one testable statement about a person, with NEGATION AS AN
+ * OPERATOR (`is_not`/`has_not`/`not_holds`/`not_within_days`) rather than a
+ * separate block. Conditions AND-combine inside a `Group`; a person matches
+ * the audience if they match ANY include group (OR comes from adding groups);
+ * `excludeGroups` then removes anyone matching ANY of those. Evaluated by
+ * `lib/audienceTargeting.ts` — see that module's doc for the exact semantics
+ * of every field/op pair (∃-donor-row rules, central-fallback behavior,
+ * unprovable-criterion rules).
+ *
+ * Shape notes (each is load-bearing, not style):
+ *  - Discriminated union on `field` — a condition can only carry the value
+ *    fields its own `field` defines, so a malformed condition (an eventId on
+ *    a giving condition) is unrepresentable rather than ignored.
+ *  - `attended_event`/`attended_any` carry their qualifiers (`rsvpStatus`/
+ *    `withinDays`/`chapterId`) ON the condition: a single rsvp row must
+ *    satisfy every qualifier together, preserving the legacy
+ *    `personAttendsMatch` "one row satisfies all attendance criteria jointly"
+ *    semantics losslessly under migration 0042's wrap (two separate
+ *    conditions would let two different rows satisfy them independently — a
+ *    different, wider audience).
+ *  - `donor_status` accepts the extra `"any"` literal — "is a donor at all"
+ *    (any donor row, any status) / "is not a donor" — the founder's own
+ *    phrasing ("all donors who…"), unrepresentable in the legacy model.
+ *  - `email_verified` is INCLUDE-side only (#424 finding C: negated/excluded
+ *    it reads backwards — "remove anyone whose address IS verified");
+ *    `lib/audienceTargeting.ts#validateTargeting` rejects it inside
+ *    `excludeGroups` at write time and the evaluator treats it as
+ *    never-matching there as a belt-and-suspenders.
+ */
+export const audienceConditionValidator = v.union(
+  v.object({
+    field: v.literal("donor_status"),
+    op: v.union(v.literal("is"), v.literal("is_not")),
+    status: v.union(v.literal("any"), ...DONOR_STATUSES.map((s) => v.literal(s))),
+  }),
+  v.object({
+    field: v.literal("giving_lifetime"),
+    op: v.union(v.literal("gte"), v.literal("lte")),
+    cents: v.number(),
+  }),
+  v.object({
+    field: v.literal("gift_count"),
+    op: v.union(v.literal("gte"), v.literal("lte")),
+    count: v.number(),
+  }),
+  v.object({
+    field: v.literal("last_gift"),
+    op: v.union(v.literal("within_days"), v.literal("not_within_days")),
+    days: v.number(),
+  }),
+  v.object({
+    field: v.literal("backer"),
+    op: v.union(v.literal("is"), v.literal("is_not")),
+    status: v.union(...AUDIENCE_BACKER_STATUSES.map((s) => v.literal(s))),
+  }),
+  v.object({
+    field: v.literal("attended_event"),
+    op: v.union(v.literal("has"), v.literal("has_not")),
+    eventId: v.id("events"),
+    rsvpStatus: v.optional(v.union(...RSVP_STATUSES.map((s) => v.literal(s)))),
+    withinDays: v.optional(v.number()),
+  }),
+  v.object({
+    field: v.literal("attended_any"),
+    op: v.union(v.literal("has"), v.literal("has_not")),
+    rsvpStatus: v.optional(v.union(...RSVP_STATUSES.map((s) => v.literal(s)))),
+    withinDays: v.optional(v.number()),
+    // Restrict to rsvps recorded under one chapter's events (`rsvps.chapterId`)
+    // — exists so migration 0042 can wrap a legacy chapter-filtered "guests"
+    // audience faithfully ("attended anything at THIS chapter, ever").
+    chapterId: v.optional(v.id("chapters")),
+  }),
+  v.object({
+    field: v.literal("chapter"),
+    op: v.union(v.literal("is"), v.literal("is_not")),
+    chapterId: v.id("chapters"),
+  }),
+  v.object({
+    field: v.literal("seat"),
+    op: v.union(v.literal("holds"), v.literal("not_holds")),
+    seatId: v.id("seatDefs"),
+  }),
+  v.object({
+    field: v.literal("kind"),
+    op: v.literal("is"),
+    kind: v.union(v.literal("team"), v.literal("contact")),
+  }),
+  v.object({
+    field: v.literal("email_verified"),
+    op: v.literal("is"),
+  }),
+);
+
+/** One AND-group of conditions — the unit a human reads as one sentence
+ *  ("people who are donors and have never attended an event"). An EMPTY
+ *  `conditions` array is a deliberate "everyone in scope" group on the
+ *  INCLUDE side (the vacuous-AND reading, mirroring the legacy empty-filters
+ *  "match everyone" behavior) — and is REJECTED inside `excludeGroups` at
+ *  write time (`lib/audienceTargeting.ts#validateTargeting`), where the same
+ *  vacuous reading would mean "exclude everyone," never what a human meant
+ *  (the `hasEffectiveExcludeCriteria` philosophy, group-shaped). */
+export const audienceGroupValidator = v.object({
+  conditions: v.array(audienceConditionValidator),
+});
+
+/** The v2 targeting model: match ANY include group, then drop anyone matching
+ *  ANY exclude group. OPTIONAL on the audiences table — a row without it
+ *  resolves through the legacy `source`/`filters` paths untouched (and hashes
+ *  identically to before this field existed — see
+ *  `campaigns.ts#computeCampaignSnapshotHash`'s key-omission rule); migration
+ *  0042 wraps legacy rows in losslessly. When PRESENT, it fully defines
+ *  property-based membership and `filters`/`excludeFilters` are ignored
+ *  (`includePersonIds`/`excludePersonIds` hand-picks still apply, unchanged). */
+export const audienceTargetingValidator = v.object({
+  groups: v.array(audienceGroupValidator),
+  excludeGroups: v.optional(v.array(audienceGroupValidator)),
+});
+
 /** A saved, reusable recipient definition a campaign targets. `includePersonIds`/
  *  `excludePersonIds` (Phase 3, `person_filters` only — always empty/unset for
  *  legacy sources) are the "hand-picked" half of the picker: a person in
@@ -188,6 +308,7 @@ export const audiences = defineTable({
   source: v.union(...AUDIENCE_SOURCES.map((s) => v.literal(s))),
   filters: audienceFiltersValidator,
   excludeFilters: v.optional(audienceFiltersValidator),
+  targeting: v.optional(audienceTargetingValidator),
   includePersonIds: v.optional(v.array(v.id("people"))),
   excludePersonIds: v.optional(v.array(v.id("people"))),
   createdBy: v.id("users"),
