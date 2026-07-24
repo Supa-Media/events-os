@@ -81,6 +81,7 @@ import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
 import { TransactionNoteModal } from "../modals/TransactionNoteModal";
 import { ReceiptViewerModal } from "../receipts/ReceiptViewerModal";
+import { ReceiptAttachPicker } from "../receipts/ReceiptAttachPicker";
 import {
   STATUS_OPTIONS,
   isSuggestible,
@@ -843,6 +844,7 @@ export function ReceiptCell({
 }) {
   const [busy, setBusy] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
+  const [attachOpen, setAttachOpen] = useState(false);
 
   async function uploadBlob(blob: Blob, contentType: string) {
     setBusy(true);
@@ -935,17 +937,40 @@ export function ReceiptCell({
         : "Upload";
 
   return (
-    <Pressable
-      onPress={pick}
-      disabled={busy}
-      className="flex-1 flex-row items-center gap-1 px-2 py-1.5 active:opacity-70 web:hover:opacity-90"
-    >
-      <Icon name={escalated ? "alert-triangle" : "upload"} size={14} color={tint} />
-      <Text
-        className={`text-sm ${escalated ? "text-danger" : flagged ? "text-warn" : "text-muted"}`}
-      >
-        {label}
-      </Text>
-    </Pressable>
+    <>
+      <View className="flex-1 flex-row items-center gap-1 px-2 py-1.5">
+        <Pressable
+          onPress={pick}
+          disabled={busy}
+          className="flex-row items-center gap-1 active:opacity-70 web:hover:opacity-90"
+        >
+          <Icon name={escalated ? "alert-triangle" : "upload"} size={14} color={tint} />
+          <Text
+            className={`text-sm ${escalated ? "text-danger" : flagged ? "text-warn" : "text-muted"}`}
+          >
+            {label}
+          </Text>
+        </Pressable>
+        {/* Attach an EXISTING receipt instead of uploading a new one — opens
+            the searchable library picker. Only when we know which transaction
+            (see the prop doc); hidden while an upload is in flight. */}
+        {transactionId && !busy ? (
+          <Pressable
+            onPress={() => setAttachOpen(true)}
+            hitSlop={6}
+            accessibilityLabel="Attach an existing receipt"
+            className="ml-1 active:opacity-70 web:hover:opacity-90"
+          >
+            <Icon name="search" size={13} color={colors.faint} />
+          </Pressable>
+        ) : null}
+      </View>
+      {attachOpen && transactionId ? (
+        <ReceiptAttachPicker
+          transactionId={transactionId}
+          onClose={() => setAttachOpen(false)}
+        />
+      ) : null}
+    </>
   );
 }
