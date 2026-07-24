@@ -332,6 +332,189 @@ describe("dismissDuplicateFlag", () => {
   });
 });
 
+// ── markAsDuplicate / unmarkDuplicate + hide-by-default ──────────────────────
+// Owner ask (2026-07-24): "when something is confirmed duplicate I cannot
+// merge it — we shouldn't delete the duplicate, just mark it as such, point
+// to the primary receipt, and hide it in the UI."
+describe("markAsDuplicate", () => {
+  test("sets the pointer + confirmation stamps, and hides the receipt from the default listReceipts filters", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const bookkeeper = await seedBookkeeper(s);
+    const primary = await newUploadReceipt(s, { amountCents: 5000 });
+    const dupe = await newUploadReceipt(s, { amountCents: 6000 }); // different amount — not a soft dupe
+
+    await s.as.mutation(api.receipts.markAsDuplicate, {
+      receiptId: dupe,
+      primaryReceiptId: primary,
+    });
+
+    const row = await run(t, (ctx) => ctx.db.get(dupe));
+    expect(row?.duplicateOfReceiptId).toBe(primary);
+    expect(row?.duplicateConfirmedByPersonId).toBe(bookkeeper);
+    expect(row?.duplicateConfirmedAt).toBeDefined();
+
+    // Nothing is DELETED — the row still exists and is readable directly.
+    expect(row).not.toBeNull();
+
+    // Hidden from "all"/"unlinked"/"linked" by default...
+    const all = await s.as.query(api.receipts.listReceipts, { filter: "all" });
+    expect(all.map((r) => r._id)).not.toContain(dupe);
+    expect(all.map((r) => r._id)).toContain(primary);
+    const unlinked = await s.as.query(api.receipts.listReceipts, { filter: "unlinked" });
+    expect(unlinked.map((r) => r._id)).not.toContain(dupe);
+
+    // ...but still reachable via the "duplicates" filter.
+    const dupFilter = await s.as.query(api.receipts.listReceipts, { filter: "duplicates" });
+    expect(dupFilter.map((r) => r._id)).toEqual([dupe]);
+  });
+
+  test("getReceipt on the primary surfaces its confirmed duplicate", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    const primary = await newUploadReceipt(s, { amountCents: 5000 });
+    const dupe = await newUploadReceipt(s, { amountCents: 6000 });
+
+    await s.as.mutation(api.receipts.markAsDuplicate, {
+      receiptId: dupe,
+      primaryReceiptId: primary,
+    });
+
+    const detail = await s.as.query(api.receipts.getReceipt, { receiptId: primary });
+    expect(detail?.duplicates.map((d) => d._id)).toEqual([dupe]);
+
+    const dupeDetail = await s.as.query(api.receipts.getReceipt, { receiptId: dupe });
+    expect(dupeDetail?.duplicateOf?._id).toBe(primary);
+    expect(dupeDetail?.duplicateConfirmedByPersonId).toBeDefined();
+  });
+
+  test("existing receiptLinks on the confirmed duplicate are left alone (never silently unlinked)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    const primary = await newUploadReceipt(s, { amountCents: 5000 });
+    const dupe = await newUploadReceipt(s, { amountCents: 6000 });
+    const txn = await seedTxn(s, { amountCents: 6000 });
+    await run(t, (ctx) =>
+      linkReceiptToTransaction(ctx, { receiptId: dupe, transactionId: txn, source: "manual" }),
+    );
+
+    await s.as.mutation(api.receipts.markAsDuplicate, {
+      receiptId: dupe,
+      primaryReceiptId: primary,
+    });
+
+    const links = await run(t, (ctx) =>
+      ctx.db.query("receiptLinks").withIndex("by_receipt", (q) => q.eq("receiptId", dupe)).collect(),
+    );
+    expect(links).toHaveLength(1);
+    const row = await run(t, (ctx) => ctx.db.get(dupe));
+    expect(row?.linkCount).toBe(1);
+  });
+
+  test("rejects marking a receipt a duplicate of itself", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    const receiptId = await newUploadReceipt(s);
+
+    await expect(
+      s.as.mutation(api.receipts.markAsDuplicate, {
+        receiptId,
+        primaryReceiptId: receiptId,
+      }),
+    ).rejects.toThrow(ConvexError);
+  });
+
+  test("gates below bookkeeper+ and rejects a receipt outside the caller's chapter", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "a@publicworship.life", chapterName: "NY" });
+    const other = await setupChapter(t, { email: "b@publicworship.life", chapterName: "LA" });
+    await seedBookkeeper(other);
+    const primary = await newUploadReceipt(s);
+    const dupe = await newUploadReceipt(s);
+
+    // No bookkeeper grant in `s` → role gate rejects.
+    await expect(
+      s.as.mutation(api.receipts.markAsDuplicate, { receiptId: dupe, primaryReceiptId: primary }),
+    ).rejects.toThrow(ConvexError);
+
+    // A bookkeeper in a DIFFERENT chapter can't touch either receipt.
+    await expect(
+      other.as.mutation(api.receipts.markAsDuplicate, { receiptId: dupe, primaryReceiptId: primary }),
+    ).rejects.toThrow(ConvexError);
+  });
+});
+
+describe("unmarkDuplicate", () => {
+  test("clears a HUMAN-confirmed duplicate pointer", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    const primary = await newUploadReceipt(s, { amountCents: 5000 });
+    const dupe = await newUploadReceipt(s, { amountCents: 6000 });
+    await s.as.mutation(api.receipts.markAsDuplicate, {
+      receiptId: dupe,
+      primaryReceiptId: primary,
+    });
+
+    await s.as.mutation(api.receipts.unmarkDuplicate, { receiptId: dupe });
+
+    const row = await run(t, (ctx) => ctx.db.get(dupe));
+    expect(row?.duplicateOfReceiptId).toBeUndefined();
+    expect(row?.duplicateConfirmedByPersonId).toBeUndefined();
+    expect(row?.duplicateConfirmedAt).toBeUndefined();
+
+    // Back in the default "all" listing.
+    const all = await s.as.query(api.receipts.listReceipts, { filter: "all" });
+    expect(all.map((r) => r._id)).toContain(dupe);
+  });
+
+  test("refuses to clear a DERIVED (sha256 exact-file) duplicate — that's not a human assertion to retract", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    const storageId = await storeBlobWithContent(s, "same-bytes-again");
+    const original = await run(s.t, (ctx) =>
+      createReceipt(ctx, {
+        chapterId: s.chapterId,
+        storageId,
+        source: "upload",
+        fileSha256: "hash-x",
+      }),
+    );
+    const exactDupe = await run(s.t, (ctx) =>
+      createReceipt(ctx, {
+        chapterId: s.chapterId,
+        storageId,
+        source: "upload",
+        fileSha256: "hash-x",
+        duplicateOfReceiptId: original,
+      }),
+    );
+
+    await expect(
+      s.as.mutation(api.receipts.unmarkDuplicate, { receiptId: exactDupe }),
+    ).rejects.toThrow(ConvexError);
+
+    // Still flagged — refused, not silently no-op'd.
+    const row = await run(t, (ctx) => ctx.db.get(exactDupe));
+    expect(row?.duplicateOfReceiptId).toBe(original);
+  });
+
+  test("is a no-op on a receipt that isn't flagged a duplicate at all", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    const receiptId = await newUploadReceipt(s);
+
+    await expect(
+      s.as.mutation(api.receipts.unmarkDuplicate, { receiptId }),
+    ).resolves.toBeNull();
+  });
+});
+
 // ── updateReceiptFields ──────────────────────────────────────────────────────
 describe("updateReceiptFields", () => {
   test("edits canonical fields, leaves ocr* untouched, and stamps the corrector", async () => {
@@ -578,5 +761,46 @@ describe("applyUploadOcrAndAttach", () => {
       ctx.db.query("receiptLinks").withIndex("by_receipt", (q) => q.eq("receiptId", receiptId)).collect(),
     );
     expect(links).toHaveLength(0);
+  });
+
+  // RECEIPT QUALITY PR (per-field retry fix): `applyUploadOcrAndAttach`
+  // shares the SAME per-field seeding rule as `applyRetryExtraction` — a
+  // still-blank canonical field fills in from the fresh OCR read regardless
+  // of `correctedAt`; a field that already holds a value is preserved.
+  test("fills only the BLANK canonical fields on a receipt that already has correctedAt set", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const bookkeeper = await seedBookkeeper(s);
+    const storageId = await storeBlobWithContent(s, "z");
+    const receiptId = await run(t, (ctx) =>
+      createReceipt(ctx, { chapterId: s.chapterId, storageId, source: "upload" }),
+    );
+    // A human corrected the MERCHANT only, stamping correctedAt — amount and
+    // date are still blank.
+    await run(t, (ctx) =>
+      ctx.db.patch(receiptId, {
+        merchant: "Costco",
+        correctedByPersonId: bookkeeper,
+        correctedAt: Date.now(),
+      }),
+    );
+
+    await t.mutation(internal.receipts.applyUploadOcrAndAttach, {
+      receiptId,
+      ocrAmountCents: 1234,
+      ocrDate: Date.now(),
+      ocrMerchant: "Some Other Store",
+      candidateTransactionIds: [],
+    });
+
+    const row = await run(t, (ctx) => ctx.db.get(receiptId));
+    // Blank fields filled from the fresh read...
+    expect(row?.amountCents).toBe(1234);
+    expect(row?.receiptDate).toBeDefined();
+    // ...but the human-corrected merchant is untouched, never overwritten by
+    // the fresh OCR merchant read.
+    expect(row?.merchant).toBe("Costco");
+    // The immutable OCR provenance still refreshed regardless.
+    expect(row?.ocrMerchant).toBe("Some Other Store");
   });
 });

@@ -221,8 +221,8 @@ describe("resolveOcrModel", () => {
     );
   });
 
-  test("with nothing stored, Ollama falls back to glm-ocr — NOT a global chat model", () => {
-    expect(resolveOcrModel({ provider: "ollama", ocrModel: null })).toBe("glm-ocr");
+  test("with nothing stored, Ollama falls back to gemma4 — cloud-hosted + vision-capable, confirmed working (glm-ocr 404s, local-only)", () => {
+    expect(resolveOcrModel({ provider: "ollama", ocrModel: null })).toBe("gemma4");
   });
 
   test("with nothing stored, OpenRouter falls back to its own OCR default (env or hardcoded)", () => {

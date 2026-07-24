@@ -65,6 +65,8 @@ export function ReceiptDetailModal({
   const unlinkReceipt = useMutation(api.receipts.unlinkReceipt);
   const retryExtraction = useMutation(api.receipts.retryExtraction);
   const dismissDuplicateFlag = useMutation(api.receipts.dismissDuplicateFlag);
+  const markAsDuplicate = useMutation(api.receipts.markAsDuplicate);
+  const unmarkDuplicate = useMutation(api.receipts.unmarkDuplicate);
 
   const [amountText, setAmountText] = useState("");
   const [date, setDate] = useState<number | null>(null);
@@ -78,6 +80,8 @@ export function ReceiptDetailModal({
   const [showModelInput, setShowModelInput] = useState(false);
   const [modelOverride, setModelOverride] = useState("");
   const [dismissingDuplicate, setDismissingDuplicate] = useState(false);
+  const [markingDuplicateId, setMarkingDuplicateId] = useState<Id<"receipts"> | null>(null);
+  const [unmarkingDuplicate, setUnmarkingDuplicate] = useState(false);
 
   // Seed local edit state once per receipt (never stomps an in-progress edit
   // on a background live-query refresh of the SAME receipt).
@@ -154,6 +158,30 @@ export function ReceiptDetailModal({
       errorTitle: "Couldn't dismiss the duplicate flag",
     });
     setDismissingDuplicate(false);
+  }
+
+  function handleMarkAsDuplicate(primaryReceiptId: Id<"receipts">) {
+    confirmAction({
+      title: "Mark as duplicate?",
+      message:
+        "This receipt stays in the library — it just gets hidden from the default view and points at the other receipt as the original.",
+      confirmLabel: "Mark as duplicate",
+      destructive: false,
+      onConfirm: () => {
+        setMarkingDuplicateId(primaryReceiptId);
+        void run(() => markAsDuplicate({ receiptId, primaryReceiptId }), {
+          errorTitle: "Couldn't mark as duplicate",
+        }).finally(() => setMarkingDuplicateId(null));
+      },
+    });
+  }
+
+  async function handleUnmarkDuplicate() {
+    setUnmarkingDuplicate(true);
+    await run(() => unmarkDuplicate({ receiptId }), {
+      errorTitle: "Couldn't un-mark this duplicate",
+    });
+    setUnmarkingDuplicate(false);
   }
 
   const correctedByName = receipt?.correctedByPersonId
@@ -246,27 +274,45 @@ export function ReceiptDetailModal({
                   {receipt.filename ?? "Unknown source"}
                 </Text>
 
-                {/* Duplicate-of callout */}
+                {/* Duplicate-of callout — shown for BOTH a derived exact-file
+                    match and a human-confirmed one (`markAsDuplicate`); only
+                    the latter (`duplicateConfirmedByPersonId` set) offers
+                    "Undo" — an exact-file match isn't a human call to walk
+                    back (see `unmarkDuplicate`'s doc). Hiding this receipt
+                    from the default library ≠ deleting it — it's still right
+                    here, one tap from the original. */}
                 {receipt.duplicateOf ? (
-                  <Pressable
-                    onPress={() => onOpenReceipt(receipt.duplicateOf!._id)}
-                    className="mb-4 flex-row items-center gap-3 rounded-md border border-danger bg-danger-bg px-3 py-2.5 active:opacity-80"
-                  >
-                    <Icon name="copy" size={16} color={colors.danger} />
-                    <View className="flex-1">
-                      <Text className="text-xs font-semibold text-danger">
-                        Duplicate of an earlier receipt
-                      </Text>
-                      <Text className="text-xs text-danger">
-                        {receipt.duplicateOf.merchant ?? "Unknown merchant"} ·{" "}
-                        {receipt.duplicateOf.amountCents != null
-                          ? formatCents(receipt.duplicateOf.amountCents)
-                          : "no amount"}{" "}
-                        · tap to view the original
-                      </Text>
-                    </View>
-                    <Icon name="chevron-right" size={16} color={colors.danger} />
-                  </Pressable>
+                  <View className="mb-4 gap-2 rounded-md border border-danger bg-danger-bg px-3 py-2.5">
+                    <Pressable
+                      onPress={() => onOpenReceipt(receipt.duplicateOf!._id)}
+                      className="flex-row items-center gap-3 active:opacity-80"
+                    >
+                      <Icon name="copy" size={16} color={colors.danger} />
+                      <View className="flex-1">
+                        <Text className="text-xs font-semibold text-danger">
+                          Duplicate of an earlier receipt →
+                        </Text>
+                        <Text className="text-xs text-danger">
+                          {receipt.duplicateOf.merchant ?? "Unknown merchant"} ·{" "}
+                          {receipt.duplicateOf.amountCents != null
+                            ? formatCents(receipt.duplicateOf.amountCents)
+                            : "no amount"}{" "}
+                          · tap to view the original
+                        </Text>
+                      </View>
+                      <Icon name="chevron-right" size={16} color={colors.danger} />
+                    </Pressable>
+                    {receipt.duplicateConfirmedByPersonId ? (
+                      <Button
+                        title="Undo — not a duplicate"
+                        variant="secondary"
+                        size="sm"
+                        loading={unmarkingDuplicate}
+                        onPress={() => void handleUnmarkDuplicate()}
+                        className="self-start"
+                      />
+                    ) : null}
+                  </View>
                 ) : null}
 
                 {/* Possible-duplicate matches (soft signal — same amount+date,
@@ -287,22 +333,35 @@ export function ReceiptDetailModal({
                     {receipt.duplicateMatches.length > 0 ? (
                       <View className="gap-1.5">
                         {receipt.duplicateMatches.map((m) => (
-                          <Pressable
+                          <View
                             key={m._id}
-                            onPress={() => onOpenReceipt(m._id)}
-                            className="flex-row items-center justify-between rounded-md border border-border bg-raised px-2.5 py-2 active:opacity-80"
+                            className="gap-1.5 rounded-md border border-border bg-raised px-2.5 py-2"
                           >
-                            <View className="flex-1">
-                              <Text className="text-xs font-semibold text-ink" numberOfLines={1}>
-                                {m.merchant ?? "Unknown merchant"}
-                              </Text>
-                              <Text className="text-2xs text-muted">
-                                {m.amountCents != null ? formatCents(m.amountCents) : "no amount"}{" "}
-                                · {m.receiptDate != null ? formatDate(m.receiptDate) : "no date"}
-                              </Text>
-                            </View>
-                            <Icon name="chevron-right" size={14} color={colors.muted} />
-                          </Pressable>
+                            <Pressable
+                              onPress={() => onOpenReceipt(m._id)}
+                              className="flex-row items-center justify-between active:opacity-80"
+                            >
+                              <View className="flex-1">
+                                <Text className="text-xs font-semibold text-ink" numberOfLines={1}>
+                                  {m.merchant ?? "Unknown merchant"}
+                                </Text>
+                                <Text className="text-2xs text-muted">
+                                  {m.amountCents != null ? formatCents(m.amountCents) : "no amount"}{" "}
+                                  · {m.receiptDate != null ? formatDate(m.receiptDate) : "no date"}
+                                </Text>
+                              </View>
+                              <Icon name="chevron-right" size={14} color={colors.muted} />
+                            </Pressable>
+                            <Button
+                              title="This is a duplicate"
+                              variant="secondary"
+                              size="sm"
+                              icon="copy"
+                              loading={markingDuplicateId === m._id}
+                              onPress={() => handleMarkAsDuplicate(m._id)}
+                              className="self-start"
+                            />
+                          </View>
                         ))}
                       </View>
                     ) : null}

@@ -54,6 +54,39 @@ trailer
 %%EOF`;
 }
 
+/** Same shape as `buildDigitalPdf`, but a much wider `MediaBox` — the
+ *  hand-rolled single-`Tj` fixture's known pdf.js quirk (see the module doc)
+ *  clips extracted text at roughly the visible page width; a 300pt-wide page
+ *  only reliably survives ~28 characters at this font size. Used only where a
+ *  test needs a LONGER string (e.g. a full "Mon D, YYYY" date) to survive
+ *  extraction intact. */
+function buildWideDigitalPdf(text: string): string {
+  const streamBody = `BT /F1 24 Tf 20 100 Td (${text}) Tj ET`;
+  const len = new TextEncoder().encode(streamBody).length;
+  return `%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /Resources << /Font << /F1 4 0 R >> >> /MediaBox [0 0 900 144] /Contents 5 0 R >>
+endobj
+4 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+5 0 obj
+<< /Length ${len} >>
+stream
+${streamBody}
+endstream
+endobj
+trailer
+<< /Size 6 /Root 1 0 R >>
+%%EOF`;
+}
+
 /** A structurally valid PDF with an EMPTY content stream — no text layer at
  *  all, the shape a scanned/faxed receipt (image-only page) produces. */
 const SCANNED_PDF = `%PDF-1.4
@@ -76,6 +109,13 @@ trailer
 %%EOF`;
 
 const DIGITAL_RECEIPT_TEXT = "Givebutter Total 33.80 paid Jul 3 filler filler filler";
+// Same shape, but with a full "Mon D, YYYY" date so `parseReceiptFromText`'s
+// date regex (which requires a 4-digit year) actually parses an `ocrDate` —
+// `DIGITAL_RECEIPT_TEXT` above deliberately omits the year and so never
+// yields one, which the per-field retry tests below need to exercise. Built
+// via `buildWideDigitalPdf` (below) so the trailing year survives extraction
+// intact.
+const DIGITAL_RECEIPT_TEXT_WITH_DATE = "Givebutter Total 33.80 paid Jul 3, 2026 filler filler";
 
 async function storePdf(s: ChapterSetup, content: string): Promise<Id<"_storage">> {
   return await run(s.t, (ctx) =>
@@ -287,6 +327,86 @@ describe("retryExtraction", () => {
       // ...but the human-corrected CANONICAL amount is untouched.
       expect(row?.amountCents).toBe(9999);
       expect(row?.correctedAt).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // RECEIPT QUALITY PR (per-field retry fix): the old rule gated ALL THREE
+  // canonical fields on the single `correctedAt` flag, so a receipt that had
+  // `correctedAt` set (from correcting one field, or ever having been
+  // "touched") could never fill in an EMPTY field on retry — even a
+  // successful fresh read never reached it. The fix is per-field: a still-
+  // blank canonical field fills in from the fresh read regardless of
+  // `correctedAt`; a field that already holds a value (human-set or not) is
+  // preserved.
+  test("a receipt with correctedAt set but a BLANK amount/date gets them filled on retry", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      const bookkeeper = await seedBookkeeper(s);
+      const storageId = await storePdf(s, buildWideDigitalPdf(DIGITAL_RECEIPT_TEXT_WITH_DATE));
+      const receiptId = await run(t, (ctx) =>
+        createReceipt(ctx, { chapterId: s.chapterId, storageId, source: "upload" }),
+      );
+      // Simulate the reported bug: `correctedAt` is set (e.g. the merchant
+      // was corrected, or a field was cleared after correction), but the
+      // canonical amount/date are BLANK — the fresh OCR read (gemma4 reading
+      // "$303.86 · Jul 2" off a photo) must still fill them in.
+      await run(t, (ctx) =>
+        ctx.db.patch(receiptId, {
+          amountCents: undefined,
+          receiptDate: undefined,
+          correctedByPersonId: bookkeeper,
+          correctedAt: Date.now(),
+        }),
+      );
+
+      await s.as.mutation(api.receipts.retryExtraction, { receiptId });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      const row = await run(t, (ctx) => ctx.db.get(receiptId));
+      expect(row?.ocrAmountCents).toBe(3380);
+      // The previously-blank canonical fields are now filled from the fresh
+      // read — the whole point of the fix.
+      expect(row?.amountCents).toBe(3380);
+      expect(row?.receiptDate).toBe(row?.ocrDate);
+      expect(row?.receiptDate).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a receipt with a human-set amount keeps it on retry, while a blank date still fills in", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      const bookkeeper = await seedBookkeeper(s);
+      const storageId = await storePdf(s, buildWideDigitalPdf(DIGITAL_RECEIPT_TEXT_WITH_DATE));
+      const receiptId = await run(t, (ctx) =>
+        createReceipt(ctx, { chapterId: s.chapterId, storageId, source: "upload" }),
+      );
+      // A human corrected the AMOUNT only — the date was never set.
+      await run(t, (ctx) =>
+        ctx.db.patch(receiptId, {
+          amountCents: 4444,
+          receiptDate: undefined,
+          correctedByPersonId: bookkeeper,
+          correctedAt: Date.now(),
+        }),
+      );
+
+      await s.as.mutation(api.receipts.retryExtraction, { receiptId });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      const row = await run(t, (ctx) => ctx.db.get(receiptId));
+      // The human-corrected amount survives untouched...
+      expect(row?.amountCents).toBe(4444);
+      // ...but the blank date fills in from the fresh read.
+      expect(row?.receiptDate).toBeDefined();
+      expect(row?.receiptDate).toBe(row?.ocrDate);
     } finally {
       vi.useRealTimers();
     }

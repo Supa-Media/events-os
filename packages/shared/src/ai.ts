@@ -132,14 +132,19 @@ export const OPENROUTER_BASE_URL = "https://openrouter.ai/api";
  * SOFT model defaults for Ollama when no global `aiModel` is configured yet —
  * clearly fallbacks, not a curated catalog (the live `/v1/models` list is
  * authoritative for the picker; these families postdate this code's training
- * data). `glm-ocr` is Ollama's dedicated multimodal document-OCR model (the
- * standout for receipt extraction); `gemma4` is a capable vision/tools/thinking
- * family for the coding + assistant call sites. Exact cloud model IDs (tag
- * suffixes etc.) vary — if one of these isn't in the account's live list the
- * chat call surfaces a typed error naming the model, never a silent failure, so
- * the owner picks the right id from the dropdown.
+ * data). `gemma4` is a capable vision/tools/thinking family, confirmed
+ * CLOUD-HOSTED and vision-capable on ollama.com (it correctly read a receipt
+ * photo end to end), used for both the OCR default and the coding + assistant
+ * call sites. `glm-ocr` — Ollama's dedicated multimodal document-OCR model —
+ * is LOCAL-only: it carries no "cloud" tag on ollama.com, so it 404s for any
+ * account running against Ollama's cloud service (the default base URL —
+ * see `DEFAULT_OLLAMA_BASE_URL`). Do not reinstate it as a default without
+ * confirming cloud availability first. Exact cloud model IDs (tag suffixes
+ * etc.) vary — if one of these isn't in the account's live list the chat call
+ * surfaces a typed error naming the model, never a silent failure, so the
+ * owner picks the right id from the dropdown.
  */
-export const OLLAMA_DEFAULT_OCR_MODEL = "glm-ocr";
+export const OLLAMA_DEFAULT_OCR_MODEL = "gemma4";
 export const OLLAMA_DEFAULT_CHAT_MODEL = "gemma4";
 
 /**

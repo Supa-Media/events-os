@@ -100,7 +100,10 @@ const OCR_TIMEOUT_MS = 60_000;
  *  Config, not code: overridable via `RECEIPT_OCR_MODEL` so the owner can point
  *  it at a FREE/cheap vision model (the preference) or upgrade if scan quality
  *  is weak. Defaults to a low-cost vision-capable model. (For Ollama, the soft
- *  default is `glm-ocr` — see `resolveOcrModel`.) */
+ *  default is `gemma4` — confirmed cloud-hosted + vision-capable; see
+ *  `resolveOcrModel` and `OLLAMA_DEFAULT_OCR_MODEL`'s doc for why `glm-ocr`,
+ *  Ollama's dedicated OCR model, is NOT the default — it's local-only and
+ *  404s on ollama.com's cloud service.) */
 export function ocrModel(): string {
   return process.env.RECEIPT_OCR_MODEL ?? "google/gemini-2.0-flash-001";
 }
@@ -108,13 +111,13 @@ export function ocrModel(): string {
 /**
  * Resolve the OCR model for one call: per-call override > stored DEDICATED
  * `aiOcrModel` (fix 4 — NEVER the global `aiModel`, which is a general chat/
- * coding model that can silently degrade a receipt read, e.g. `gemma4:31b`
- * choking on a busy photo where `glm-ocr` wouldn't) > per-provider OCR
- * default (OpenRouter's `ocrModel()` env/hardcoded, or Ollama's `glm-ocr`).
- * The `override` is the retry-UI hook (plumbed through
- * `receipts.processUploadedReceipt`). Deliberately does NOT call
- * `resolveEngineModel` (which reads the global `model`) — OCR resolution is
- * its own precedence chain, kept apart on purpose.
+ * coding model that could silently degrade a receipt read if pointed at
+ * something not vision-capable) > per-provider OCR default (OpenRouter's
+ * `ocrModel()` env/hardcoded, or Ollama's `gemma4` — see
+ * `OLLAMA_DEFAULT_OCR_MODEL`'s doc). The `override` is the retry-UI hook
+ * (plumbed through `receipts.processUploadedReceipt`). Deliberately does NOT
+ * call `resolveEngineModel` (which reads the global `model`) — OCR
+ * resolution is its own precedence chain, kept apart on purpose.
  */
 export function resolveOcrModel(
   config: Pick<AiEngineConfig, "provider" | "ocrModel">,
