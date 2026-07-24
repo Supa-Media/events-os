@@ -115,7 +115,7 @@ export async function sendSignInPhoneCode(
   const existing = await pendingPhoneCodeFor(ctx, rsvp._id);
   if (sentRecently(existing)) return;
   const code = await writeFreshCode(ctx, rsvp._id, existing);
-  await scheduleCodeSms(ctx, rsvp.phone, code);
+  await scheduleCodeSms(ctx, rsvp._id, rsvp.phone, code);
 }
 
 /** Explicit "Resend code" request — throws when rate-limited. */
