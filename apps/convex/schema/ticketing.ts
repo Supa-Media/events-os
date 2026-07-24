@@ -173,6 +173,14 @@ export const rsvps = defineTable({
   // are kept (recoverable) but excluded from every count, guest list, and feed.
   // Ticket-buyer rows (source === "ticket") are never archived.
   archivedAt: v.optional(v.number()),
+  // Person-centric audiences Phase 1 (specs/person-centric-audiences.md item
+  // 2) — this guest's linked `people` row, stamped best-effort by
+  // `lib/rsvpPeople.ts#linkRsvpToPerson` right after every insert site (see
+  // that file's doc comment for the six call sites + match order). Optional:
+  // a row with no email AND no phone can never be linked (nothing to match
+  // or safely create a contact from), and a divergent-name match found by the
+  // backfill migration is deliberately left unlinked rather than guessed at.
+  personId: v.optional(v.id("people")),
   createdAt: v.number(),
   updatedAt: v.number(),
 })

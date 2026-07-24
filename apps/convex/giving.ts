@@ -27,6 +27,7 @@ import { Id } from "./_generated/dataModel";
 import { normalizeEmail } from "./lib/access";
 import { requireEvent, requireOwned, requireUserId } from "./lib/context";
 import { clearEmailCode } from "./lib/emailCodes";
+import { linkRsvpToPerson } from "./lib/rsvpPeople";
 import {
   dualWriteGiftForDonation,
   removeGiftForDonation,
@@ -277,6 +278,14 @@ export const prepareDonation = internalMutation({
         updatedAt: now,
       });
       await bumpRsvpCounters(ctx, page, null, "maybe");
+      // Person-centric audiences Phase 1 item 2 — best-effort, never blocks
+      // the donation (see `lib/rsvpPeople.ts`'s doc comment).
+      await linkRsvpToPerson(ctx, {
+        rsvpId,
+        chapterId: page.chapterId,
+        name,
+        email,
+      });
     }
 
     const donationId = await ctx.db.insert("donations", {

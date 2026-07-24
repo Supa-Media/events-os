@@ -27,6 +27,20 @@ export const people = defineTable({
   // volunteer — the same person can be a vendor on one event and volunteer on
   // another, so these signals coexist rather than partition the roster.
   isTeamMember: v.optional(v.boolean()),
+  // Person-centric audiences Phase 1 (specs/person-centric-audiences.md item 1)
+  // — the contact/roster discriminator. `true` marks a row that exists ONLY
+  // for identity/contact purposes (auto-created from a donor gift, a CSV
+  // import, or a public RSVP — see `lib/givingDonors.ts#linkDonorToPerson`
+  // and `lib/rsvpPeople.ts#linkRsvpToPerson`), never a person who actually
+  // showed up to volunteer/lead/manage. Contact rows are EXCLUDED from
+  // roster-facing surfaces (the People tab's default listing, org-chart
+  // pickers, manager derivation, reminder/digest scans) but REMAIN visible to
+  // identity matching (`lib/org.ts#chapterRoster`'s callers that dedupe
+  // donors/guests must still see them, so a repeat giver/guest links to the
+  // SAME person instead of spawning a duplicate). Unset = a real roster row
+  // (the pre-existing default; nothing before this field ever meant "contact
+  // only", so `undefined`/`false` both read as "on the roster").
+  isContactOnly: v.optional(v.boolean()),
   vettingStatus: v.optional(
     v.union(
       v.literal("unvetted"),
