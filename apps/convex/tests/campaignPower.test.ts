@@ -122,12 +122,18 @@ describe("setSeatCampaignPower — gate", () => {
 // ── Transitions touch ONLY the campaign pair ────────────────────────────────
 
 describe("setSeatCampaignPower — capability transitions", () => {
+  // `financial_manager`'s template ALSO carries `giving.view`/`nav.giving`
+  // by default (F-6 P1, 2026-07-19) — `setSeatCampaignPower` only ever
+  // touches the campaign pair, so these two ride along untouched through
+  // every assertion below.
   const FINANCE_CAPS = [
     "finance.manager",
     "finance.central",
     "finance.accounts",
     "finance.record",
     "nav.finances",
+    "giving.view",
+    "nav.giving",
   ];
 
   test("approve → compose → none rewrites only campaign caps, never finance caps", async () => {
