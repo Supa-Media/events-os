@@ -24,14 +24,21 @@ import {
 } from "./lib/org";
 import { makeShareId } from "./lib/platformGuides";
 
+/** Bounded scan for the "oldest non-contact person" doc-author fallback below
+ *  — a rare edge case (the creating user has no roster row in this chapter),
+ *  so a small scan is plenty. */
+const HOW_TO_AUTHOR_FALLBACK_SCAN = 50;
+
 /**
  * Materialize plain how-to TEXT into a standalone `note` doc and return its id,
  * so a duty points at a doc via `howToDocId` (the legacy plain-text `howTo`
  * field is never written). Mirrors the `materializeHowToDocs` migration: a doc
  * is authored AS a roster person (`docs.createdBy` is an `Id<"people">`), so we
  * attribute it to the creating user's linked roster person, else the oldest
- * person in the chapter. Returns null when the text is empty or the chapter has
- * no roster person to own the doc (caller leaves `howToDocId` unset).
+ * NON-CONTACT person in the chapter (person-centric audiences Phase 1 — a
+ * guest/donor auto-created row must never become a doc's author). Returns
+ * null when the text is empty or the chapter has no eligible roster person to
+ * own the doc (caller leaves `howToDocId` unset).
  */
 async function materializeHowToDoc(
   ctx: MutationCtx,
@@ -49,11 +56,14 @@ async function materializeHowToDoc(
   let author: Id<"people"> | null =
     linked && linked.chapterId === chapterId ? linked._id : null;
   if (!author) {
-    const anyPerson = await ctx.db
+    // Fall back to the oldest roster person in the chapter — but NEVER a
+    // contact-only row (person-centric audiences Phase 1): a guest/donor
+    // auto-created from an RSVP or a gift must never become a doc's author.
+    const candidates = await ctx.db
       .query("people")
       .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-      .first();
-    author = anyPerson?._id ?? null;
+      .take(HOW_TO_AUTHOR_FALLBACK_SCAN);
+    author = candidates.find((p) => p.isContactOnly !== true)?._id ?? null;
   }
   if (!author) return null;
   const now = Date.now();

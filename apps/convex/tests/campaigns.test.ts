@@ -532,6 +532,40 @@ describe("previewAudience — people", () => {
     expect(preview.sample[0].email).toBe("team@publicworship.life");
     expect(preview.excludedSuppressed).toBe(1);
   });
+
+  test("excludes contact-only rows (person-centric audiences Phase 1) — the 'People' source is roster-only", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await run(s.t, async (ctx) => {
+      await ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Real Teammate",
+        email: "teammate@example.com",
+        status: "active",
+        createdAt: Date.now(),
+      });
+      // Auto-created from a donor gift / import / public RSVP — never a real
+      // roster member, so "People" (the legacy roster-shaped source) must not
+      // silently include them. Phase 3's filter model is the deliberate way
+      // to reach contacts later (specs/person-centric-audiences.md).
+      await ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Auto-created Contact",
+        email: "contact@example.com",
+        status: "active",
+        isContactOnly: true,
+        createdAt: Date.now(),
+      });
+    });
+
+    const preview = await s.as.query(api.audiences.previewAudience, {
+      scope: "central",
+      source: "people",
+      filters: { chapterId: s.chapterId },
+    });
+    expect(preview.count).toBe(1);
+    expect(preview.sample.map((r) => r.email)).toEqual(["teammate@example.com"]);
+  });
 });
 
 // ── Campaign CRUD ─────────────────────────────────────────────────────────

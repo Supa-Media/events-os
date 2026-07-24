@@ -103,7 +103,21 @@ export const eventContext = internalQuery({
         .query("people")
         .withIndex("by_chapter", (q: any) => q.eq("chapterId", event.chapterId))
         .collect()
-    ).map((p: any) => ({ id: p._id, name: p.name }));
+    )
+      // Assignment-shaped (this vocabulary feeds `assign_role`/
+      // `set_workstream_owner`): exclude event-scoped placeholder stand-ins,
+      // Academy sample people, and contact-only rows (person-centric
+      // audiences Phase 1 — auto-created from a donor gift, an import, or a
+      // public RSVP, never a real volunteer/team member) so the agent never
+      // offers one as an assignee. Pre-existing gap — this filtered nothing
+      // at all before; closing all three while here.
+      .filter(
+        (p: any) =>
+          p.isPlaceholder !== true &&
+          p.isSamplePerson !== true &&
+          p.isContactOnly !== true,
+      )
+      .map((p: any) => ({ id: p._id, name: p.name }));
     const personName = new Map(people.map((p) => [String(p.id), p.name]));
 
     // Roles come with the name of the person currently holding each (or null),

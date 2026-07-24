@@ -42,8 +42,10 @@ export interface SeedGuidesResult {
  * roster `people` id (see schema/docs.ts), so — mirroring how seed.ts falls
  * back to "the first user" for template authorship — we pick the most
  * system-owner-like person in the chapter: one linked to a login, else a team
- * member, else anyone. Returns null for a person-less chapter (the caller
- * skips seeding; re-run once the roster exists).
+ * member, else anyone NON-CONTACT (person-centric audiences Phase 1 — a
+ * guest/donor auto-created row is never eligible). Returns null for a
+ * person-less (or contacts-only) chapter (the caller skips seeding; re-run
+ * once a real roster person exists).
  */
 async function resolveAuthorPerson(
   ctx: MutationCtx,
@@ -54,11 +56,17 @@ async function resolveAuthorPerson(
     .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
     .collect();
   if (people.length === 0) return null;
+  // The first two tiers (login-linked, team member) already can never be a
+  // contact-only row (person-centric audiences Phase 1 — those never carry a
+  // `userId` or `isTeamMember: true`). The last-resort "anyone" tier must
+  // still exclude them explicitly — a guest/donor auto-created row must never
+  // become a doc's author.
   const person =
     people.find((p) => p.userId !== undefined) ??
     people.find((p) => p.isTeamMember) ??
-    people[0];
-  return person._id;
+    people.find((p) => p.isContactOnly !== true) ??
+    null;
+  return person?._id ?? null;
 }
 
 /**

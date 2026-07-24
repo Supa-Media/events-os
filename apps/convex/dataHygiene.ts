@@ -227,6 +227,11 @@ export const listPeopleDuplicates = query({
         message: "Only chapter admins can review duplicates.",
       });
     }
+    // Deliberately NOT filtered on `isContactOnly` (person-centric audiences
+    // Phase 1): this is an admin hygiene tool, not a picker — a contact-only
+    // row genuinely needs dedup review too (e.g. a donor AND a guest contact
+    // for the same person, created by two different auto-link paths), so it
+    // must stay visible here even though it's excluded from roster pickers.
     const roster = (
       await ctx.db
         .query("people")

@@ -470,6 +470,11 @@ async function matchPerson(
     .query("people")
     .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
     .take(2000);
+  // Deliberately identity-matching, NOT filtered on `isContactOnly` (person-
+  // centric audiences Phase 1): matching a contact-only claimant is SAFER
+  // than leaving them unmatched — separation-of-duties binds to a personId,
+  // so an unmatched claimant would escape that check entirely rather than
+  // being (correctly) treated as a distinct, unprivileged party.
   const found = people.find(
     (p) =>
       p.isPlaceholder !== true &&

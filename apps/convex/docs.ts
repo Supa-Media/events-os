@@ -104,7 +104,14 @@ async function requireWritableDoc(
   return doc;
 }
 
-/** The caller's linked roster person (for `createdBy`); falls back to any chapter person. */
+/** Bounded scan for the "any chapter person" doc-author fallback below — a
+ *  rare edge case (the caller has no roster row in this chapter). */
+const CALLER_PERSON_FALLBACK_SCAN = 50;
+
+/** The caller's linked roster person (for `createdBy`); falls back to any
+ *  chapter person — but NEVER a contact-only row (person-centric audiences
+ *  Phase 1): a guest/donor auto-created row must never become a doc's
+ *  author. */
 async function requireCallerPerson(
   ctx: any,
   chapterId: string,
@@ -115,10 +122,11 @@ async function requireCallerPerson(
     .withIndex("by_user", (q: any) => q.eq("userId", userId))
     .first();
   if (linked) return linked._id as Id<"people">;
-  const any = await ctx.db
+  const candidates = await ctx.db
     .query("people")
     .withIndex("by_chapter", (q: any) => q.eq("chapterId", chapterId))
-    .first();
+    .take(CALLER_PERSON_FALLBACK_SCAN);
+  const any = candidates.find((p: any) => p.isContactOnly !== true);
   if (any) return any._id as Id<"people">;
   throw new ConvexError({
     code: "NO_PERSON",

@@ -52,6 +52,7 @@ async function seedPerson(
     pwEmail?: string;
     linkUser?: boolean;
     isTeamMember?: boolean;
+    isContactOnly?: boolean;
   } = {},
 ): Promise<Id<"people">> {
   return await run(s.t, (ctx) =>
@@ -61,6 +62,7 @@ async function seedPerson(
       email: opts.email,
       pwEmail: opts.pwEmail,
       isTeamMember: opts.isTeamMember,
+      isContactOnly: opts.isContactOnly,
       userId: opts.linkUser ? s.userId : undefined,
       createdAt: Date.now(),
     }),
@@ -862,6 +864,19 @@ describe("classifySender", () => {
     const c = await t.query(internal.receiptInbox.classifySender, {
       email: "stranger@nowhere.com",
     });
+    expect(c.senderClass).toBe("external");
+    expect(c.personId).toBeNull();
+    expect(c.chapterId).toBeNull();
+  });
+
+  test("a contact-only match (guest/donor, never a cardholder) falls through to the domain check, not auto-attached", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, { email: "guest@example.com", isContactOnly: true });
+    const c = await t.query(internal.receiptInbox.classifySender, {
+      email: "guest@example.com",
+    });
+    // Falls through exactly like "no match" — an outside address → external.
     expect(c.senderClass).toBe("external");
     expect(c.personId).toBeNull();
     expect(c.chapterId).toBeNull();

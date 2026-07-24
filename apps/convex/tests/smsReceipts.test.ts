@@ -119,7 +119,7 @@ describe("resolveTwilioReceiptsWebhookUrl", () => {
 // ── Seed helpers ─────────────────────────────────────────────────────────────
 async function seedPerson(
   s: ChapterSetup,
-  opts: { phone?: string; isTeamMember?: boolean } = {},
+  opts: { phone?: string; isTeamMember?: boolean; isContactOnly?: boolean } = {},
 ): Promise<Id<"people">> {
   return await run(s.t, (ctx) =>
     ctx.db.insert("people", {
@@ -127,6 +127,7 @@ async function seedPerson(
       name: "Cardholder",
       phone: opts.phone,
       isTeamMember: opts.isTeamMember,
+      isContactOnly: opts.isContactOnly,
       createdAt: Date.now(),
     }),
   );
@@ -219,6 +220,16 @@ describe("classifySmsSender", () => {
     const t = newT();
     await setupChapter(t);
     const c = await t.query(internal.smsReceipts.classifySmsSender, { phone: "+19995551234" });
+    expect(c.senderClass).toBe("external");
+    expect(c.personId).toBeNull();
+    expect(c.chapterId).toBeNull();
+  });
+
+  test("a contact-only match (guest/donor, never a cardholder) → external, not auto-attached", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, { phone: "9175550003", isContactOnly: true });
+    const c = await t.query(internal.smsReceipts.classifySmsSender, { phone: "9175550003" });
     expect(c.senderClass).toBe("external");
     expect(c.personId).toBeNull();
     expect(c.chapterId).toBeNull();
