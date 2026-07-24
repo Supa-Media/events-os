@@ -109,6 +109,27 @@ const AUDIENCE_SOURCE_LABEL: Record<string, string> = {
   person_filters: "Filters",
 };
 
+/** Plain-language labels for the person_filters status fields — mirror the
+ *  option labels in `AudiencesView`'s filter chip pickers (`DONOR_STATUS_OPTIONS`
+ *  / `BACKER_STATUS_OPTIONS` / `RSVP_STATUS_OPTIONS`); keep both in sync if the
+ *  wording changes. */
+const DONOR_STATUS_TEXT: Record<string, string> = {
+  prospect: "Prospect donors",
+  active: "Active donors",
+  lapsed: "Lapsed donors",
+};
+
+const BACKER_STATUS_TEXT: Record<string, string> = {
+  active: "Active backer",
+  lapsed: "Lapsed backer",
+};
+
+const RSVP_STATUS_TEXT: Record<string, string> = {
+  going: "RSVP'd going",
+  maybe: "RSVP'd maybe",
+  not_going: "RSVP'd not going",
+};
+
 /** A short "who this targets" description for the approval review card —
  *  the audience's SOURCE + its own filters, plain-language. Deliberately
  *  doesn't resolve event/chapter/seat ids to names (no extra round-trip);
@@ -148,13 +169,14 @@ export function describeAudience(
     if (filters.givingLifetimeMinCents != null || filters.givingLifetimeMaxCents != null) {
       parts.push("giving amount");
     }
-    if (filters.giftCountMin != null) parts.push(`≥${filters.giftCountMin} gifts`);
-    if (filters.donorStatus) parts.push(`donor: ${filters.donorStatus}`);
-    if (filters.gaveWithinDays != null) parts.push(`gave within ${filters.gaveWithinDays}d`);
-    if (filters.backerStatus) parts.push(`backer: ${filters.backerStatus}`);
+    if (filters.giftCountMin != null) parts.push(`${filters.giftCountMin} or more gifts`);
+    if (filters.donorStatus) parts.push(DONOR_STATUS_TEXT[filters.donorStatus] ?? filters.donorStatus);
+    if (filters.gaveWithinDays != null) parts.push(`gave in the last ${filters.gaveWithinDays} days`);
+    if (filters.backerStatus) parts.push(BACKER_STATUS_TEXT[filters.backerStatus] ?? filters.backerStatus);
     if (filters.attendedEventId) parts.push("attended one event");
-    if (filters.attendedWithinDays != null) parts.push(`attended within ${filters.attendedWithinDays}d`);
-    if (filters.rsvpStatus) parts.push(`rsvp: ${filters.rsvpStatus}`);
+    if (filters.attendedWithinDays != null)
+      parts.push(`attended in the last ${filters.attendedWithinDays} days`);
+    if (filters.rsvpStatus) parts.push(RSVP_STATUS_TEXT[filters.rsvpStatus] ?? filters.rsvpStatus);
     if (filters.seatId) parts.push("holds a role");
     if (filters.verifiedEmailOnly) parts.push("verified email");
     if (handPicks?.includeCount) parts.push(`+${handPicks.includeCount} hand-picked`);
