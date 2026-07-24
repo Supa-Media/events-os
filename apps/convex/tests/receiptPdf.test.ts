@@ -1,6 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 import { ConvexError } from "convex/values";
-import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
+import { newT, run, setupChapter, storeBlob, type ChapterSetup } from "./setup.helpers";
 import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { createReceipt } from "../lib/receiptLinks";
@@ -235,36 +235,38 @@ describe("PDF routing via retryExtraction (no vision-model call for a digital PD
     expect(links).toHaveLength(0);
   });
 
-  test("a scanned PDF (no text layer) falls back to vision OCR, which sets ocrError when keyless", async () => {
-    const savedKey = process.env.OPENROUTER_API_KEY;
-    delete process.env.OPENROUTER_API_KEY;
-    try {
-      const t = newT();
-      const s = await setupChapter(t);
-      await seedBookkeeper(s);
-      const storageId = await storePdf(s, SCANNED_PDF);
-      const receiptId = await run(t, (ctx) =>
-        createReceipt(ctx, { chapterId: s.chapterId, storageId, source: "upload" }),
-      );
+  // PDF-VISION-400 FIX: a scanned PDF used to be base64'd straight into an
+  // `image_url` as `application/pdf` and handed to the vision model — Ollama
+  // rejects that with "HTTP 400: invalid image: expected image mime type,
+  // got application/pdf" (the owner's ~25-receipts-on-one-upload bug). The
+  // fix is by-construction: a PDF with no usable text layer NEVER reaches a
+  // vision call. Rendering the page to an image so vision COULD read it would
+  // need a native canvas backend that doesn't bundle into Convex (see git
+  // history / PR #406), so the routing degrades to a clear, human-actionable
+  // `ocrError` instead. This test proves the guarantee end to end: no vision
+  // call is ever attempted (proven by `ocrModel` staying unset).
+  test("a scanned PDF (no text layer) never reaches vision as a raw PDF — degrades to a clear ocrError", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+    const storageId = await storePdf(s, SCANNED_PDF);
+    const receiptId = await run(t, (ctx) =>
+      createReceipt(ctx, { chapterId: s.chapterId, storageId, source: "upload" }),
+    );
 
-      await t.action(internal.receipts.runRetryExtraction, { receiptId, model: undefined });
+    await t.action(internal.receipts.runRetryExtraction, { receiptId, model: undefined });
 
-      const row = await run(t, (ctx) => ctx.db.get(receiptId));
-      expect(row?.ocrAmountCents).toBeUndefined();
-      // RECEIPT QUALITY PR (fix 2): a keyless failure is a TRANSPORT problem,
-      // distinct from "scanned PDF, model found no total" — it gets its own
-      // specific, actionable message (never the generic scanned-PDF wording,
-      // which would wrongly imply the model tried and failed to read it).
-      expect(row?.ocrError).toBe(
-        "No AI engine key configured — set one in Settings → Integrations.",
-      );
-      // ocrModel is the VISION model this time (the fallback was attempted),
-      // never the text-layer sentinel.
-      expect(row?.ocrModel).not.toBe(PDF_TEXT_LAYER_PROVENANCE);
-      expect(row?.ocrModel).toBeDefined();
-    } finally {
-      if (savedKey !== undefined) process.env.OPENROUTER_API_KEY = savedKey;
-    }
+    const row = await run(t, (ctx) => ctx.db.get(receiptId));
+    expect(row?.ocrAmountCents).toBeUndefined();
+    expect(row?.ocrError).toBe(
+      "Scanned PDF (no readable text layer) — couldn't read it " +
+        "automatically; re-upload as a photo/screenshot or enter the total " +
+        "manually.",
+    );
+    // No vision call was ever attempted — `ocrModel` is neither the text-layer
+    // sentinel NOR a vision-model slug.
+    expect(row?.ocrModel).not.toBe(PDF_TEXT_LAYER_PROVENANCE);
+    expect(row?.ocrModel).toBeUndefined();
   });
 });
 
@@ -464,10 +466,13 @@ describe("retryExtraction", () => {
       const t = newT();
       const s = await setupChapter(t);
       await seedBookkeeper(s);
-      // A SCANNED pdf so the routing actually reaches the vision call (whose
-      // model argument we're asserting on) rather than short-circuiting via
-      // the text layer.
-      const storageId = await storePdf(s, SCANNED_PDF);
+      // A plain image so the routing actually reaches the vision call (whose
+      // model argument we're asserting on) directly — a SCANNED pdf would
+      // route through the render-then-OCR path instead (covered by its own
+      // tests above and in `receiptInbox.test.ts`), which the sandbox's
+      // `@edge-runtime/vm` can't actually render (no native canvas), so it'd
+      // never reach a vision call to assert the model argument on at all.
+      const storageId = await storeBlob(t);
       const receiptId = await run(t, (ctx) =>
         createReceipt(ctx, { chapterId: s.chapterId, storageId, source: "upload" }),
       );

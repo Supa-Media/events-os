@@ -13,20 +13,24 @@
  *
  * A SCANNED/faxed PDF has no text layer (or only OCR noise pdf.js can't
  * parse), so this returns `""`; the caller (`receiptInbox.ts`'s
- * `extractReceiptFields`) treats that as "no usable text" and falls back to
- * the existing vision-OCR path — unchanged, still the last resort for a
- * receipt with no text to read.
+ * `extractReceiptFields`) treats that as "no usable text" and degrades to a
+ * clear, human-actionable `ocrError` (re-upload as a photo) — it NEVER hands
+ * the raw PDF to a vision call, which is the whole point: Ollama 400s on
+ * `image_url` with `application/pdf`. Rendering a scanned PDF page to an image
+ * here would need a native canvas backend that doesn't bundle into Convex (see
+ * git history / PR #406), so we don't attempt it.
  *
  * NODE-ONLY: `unpdf`'s `getDocumentProxy`/`extractText` need pdf.js's Node
  * build (`DOMMatrix`/canvas-adjacent shims unavailable in the default V8
- * runtime) — hence `"use node"` and this file's total isolation from every
- * query/mutation in the app (the guideline: never mix a Node action with a
- * query/mutation in the same file). Kept to the smallest possible surface
- * (a storage id in, raw text out) so the default-runtime pipeline can stay
- * action→action across the runtime boundary without any parsing logic
- * living here — `receiptInbox.ts#parseReceiptFromText` (unit-testable, no
- * Node, no ctx) still owns turning that text into `{ amountCents, date,
- * merchant }`.
+ * runtime) — hence `"use node"` and this file's total
+ * isolation from every query/mutation in the app (the guideline: never mix a
+ * Node action with a query/mutation in the same file). Kept to the smallest
+ * possible surface (a storage id in, raw text/a rendered-image storage id
+ * out) so the default-runtime pipeline can stay action→action across the
+ * runtime boundary without any parsing/OCR logic living here —
+ * `receiptInbox.ts#parseReceiptFromText`/`extractReceiptFields` (unit-
+ * testable, no Node, no ctx for the former) still own turning that text/image
+ * into `{ amountCents, date, merchant }`.
  */
 import { v } from "convex/values";
 import { internalAction } from "./_generated/server";

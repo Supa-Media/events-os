@@ -21,6 +21,7 @@ import {
 } from "../receiptInbox";
 import { verifyStandardWebhookSignature } from "../lib/standardWebhook";
 import type { AiEngineConfig } from "../lib/aiEngine";
+import { getFunctionName } from "convex/server";
 
 /**
  * Inbound-email → OCR → reconcile pipeline (`receiptInbox.ts`). The network
@@ -509,6 +510,114 @@ describe("extractReceiptFields — ocrError translation", () => {
     expect(result.ocrError).toBe(
       "The model read the receipt but couldn't find a clear total — try Retry with a different model.",
     );
+  });
+});
+
+// ── extractReceiptFields — a scanned PDF never reaches a vision call ────────
+// THE FIX for the `application/pdf` vision-OCR 400 (Ollama sniffs the actual
+// file bytes and rejects them: "invalid image: expected image mime type, got
+// application/pdf" — the owner's ~25-receipts-in-one-upload bug): a scanned/
+// image-only PDF (no usable text layer) must NEVER reach `ocrReceiptImage`
+// carrying the raw PDF bytes. The guarantee is by construction — such a PDF
+// degrades to a clear, human-actionable `ocrError` and the vision model is
+// never called at all. (Rendering the page to an image so vision COULD read
+// it would need a native canvas backend that doesn't bundle into Convex — see
+// git history / PR #406 — so we don't attempt it.) These tests mock the
+// `ctx.runAction` boundary so `extractPdfText` always reports "no text layer"
+// (the scanned-PDF branch), then assert vision is never fetched.
+describe("extractReceiptFields — a scanned PDF never reaches a vision call", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    vi.restoreAllMocks();
+  });
+
+  function config(over: Partial<AiEngineConfig> = {}): AiEngineConfig {
+    return {
+      provider: "openrouter",
+      baseUrl: "https://openrouter.ai/api",
+      apiKey: "test-key",
+      model: null,
+      ocrModel: null,
+      ...over,
+    };
+  }
+
+  // A structurally-real PDF signature — if this ever leaked into a vision
+  // call's payload, it'd prove the guard failed.
+  const pdfBlob = new Blob(["%PDF-1.4 (scanned, no text layer)"], {
+    type: "application/pdf",
+  });
+
+  /** A fake `ActionCtx` whose `runAction` answers `extractPdfText` with "no
+   *  text layer" — the scanned-PDF branch. No other action should ever be
+   *  called. */
+  function fakeCtxNoTextLayer(): ActionCtx {
+    return {
+      // Function references are fresh Proxy objects on every property access
+      // (see `convex/server`'s `createApi`), so identify the call by its
+      // stable dotted name (`getFunctionName`) rather than object identity.
+      runAction: vi.fn(async (ref: unknown) => {
+        const name = getFunctionName(ref as Parameters<typeof getFunctionName>[0]);
+        if (name === getFunctionName(internal.receiptPdf.extractPdfText)) {
+          return { text: "", pageCount: 1 };
+        }
+        throw new Error(`unexpected runAction call: ${name}`);
+      }),
+      storage: {
+        get: vi.fn(async () => null),
+        delete: vi.fn(async () => undefined),
+      },
+    } as unknown as ActionCtx;
+  }
+
+  test("degrades to a clear ocrError — vision is NEVER called with the raw PDF", async () => {
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      throw new Error("vision must never be called on a raw PDF");
+    }) as unknown as typeof fetch;
+
+    const fakeCtx = fakeCtxNoTextLayer();
+
+    const result = await extractReceiptFields(fakeCtx, {
+      storageId: "storage_pdf" as unknown as Id<"_storage">,
+      config: config(),
+      blob: pdfBlob,
+      contentType: "application/pdf",
+      model: "m",
+    });
+
+    // No vision call was ever attempted — not even for a moment.
+    expect(fetchCalled).toBe(false);
+    expect(result.ocrAmountCents).toBeUndefined();
+    expect(result.ocrModel).toBeUndefined();
+    expect(result.ocrError).toBe(
+      "Scanned PDF (no readable text layer) — couldn't read it " +
+        "automatically; re-upload as a photo/screenshot or enter the total " +
+        "manually.",
+    );
+  });
+
+  test("the guarantee holds for Ollama too — no /api/chat call on a scanned PDF", async () => {
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      throw new Error("vision must never be called on a raw PDF");
+    }) as unknown as typeof fetch;
+
+    const fakeCtx = fakeCtxNoTextLayer();
+
+    const result = await extractReceiptFields(fakeCtx, {
+      storageId: "storage_pdf" as unknown as Id<"_storage">,
+      config: config({ provider: "ollama", baseUrl: "http://localhost:11434" }),
+      blob: pdfBlob,
+      contentType: "application/pdf",
+      model: "m",
+    });
+
+    expect(fetchCalled).toBe(false);
+    expect(result.ocrError).toContain("Scanned PDF");
   });
 });
 

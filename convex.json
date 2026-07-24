@@ -1,3 +1,6 @@
 {
-  "functions": "apps/convex"
+  "functions": "apps/convex",
+  "node": {
+    "externalPackages": ["@napi-rs/canvas"]
+  }
 }
