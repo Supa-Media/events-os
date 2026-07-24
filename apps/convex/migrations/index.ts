@@ -51,6 +51,7 @@ import { backfillReceiptDocuments } from "./0035_backfill_receipt_documents";
 import { addCampaignPowerDefaults } from "./0036_add_campaign_power_defaults";
 import { backfillContactOnlyPeople } from "./0038_backfill_contact_only_people";
 import { backfillPersonEmails } from "./0039_backfill_person_emails";
+import { migrateLegacyAudiences } from "./0040_migrate_legacy_audiences";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -170,4 +171,10 @@ export const MIGRATIONS: Migration[] = [
   // for what already exists. Idempotent (already-present pairs skipped). See
   // 0039.
   backfillPersonEmails,
+  // Person-centric audiences Phase 3 — repoint existing "people"/"donors"
+  // sourced audiences onto the new `person_filters` model (equivalent
+  // filters, same resolved recipients); "guests" rows are deliberately left
+  // on the legacy source (see 0040's own doc for why). Idempotent (rows
+  // already `person_filters`, and every "guests" row, are skipped). See 0040.
+  migrateLegacyAudiences,
 ];

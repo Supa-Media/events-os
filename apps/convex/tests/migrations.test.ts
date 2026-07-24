@@ -321,6 +321,7 @@ const REGISTRY_NAMES = [
   "0036_add_campaign_power_defaults",
   "0038_backfill_contact_only_people",
   "0039_backfill_person_emails",
+  "0040_migrate_legacy_audiences",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

@@ -449,19 +449,33 @@ function ReviewCard({
   const excludedBits: string[] = [];
   if (preview && preview.excludedSuppressed > 0) excludedBits.push(`${preview.excludedSuppressed} suppressed`);
   if (preview && preview.excludedUnverified > 0) excludedBits.push(`${preview.excludedUnverified} unverified`);
+  // Person-centric audiences Phase 3 — `excludedOptOut`/`unlinkedCentralDonors`
+  // are always 0 for legacy sources, so this is additive-only for existing
+  // campaigns' review cards.
+  if (preview && preview.excludedOptOut > 0) excludedBits.push(`${preview.excludedOptOut} opted out`);
 
   return (
     <View className="mt-2 gap-3">
       <View className="gap-1">
         <Text className="text-2xs font-bold uppercase tracking-wider text-faint">Audience</Text>
         <Text className="text-sm text-ink">
-          {audience ? describeAudience(audience.source, audience.filters) : "Audience deleted"}
+          {audience
+            ? describeAudience(audience.source, audience.filters, {
+                includeCount: audience.includePersonIds?.length,
+                excludeCount: audience.excludePersonIds?.length,
+              })
+            : "Audience deleted"}
         </Text>
         <Text className="text-sm text-muted">
           {preview === undefined
             ? "Resolving recipients…"
             : `${pluralCount(preview.count, "recipient")}${excludedBits.length > 0 ? ` (${excludedBits.join(", ")} excluded)` : ""}`}
         </Text>
+        {preview && preview.unlinkedCentralDonors > 0 ? (
+          <Text className="text-xs text-muted">
+            Includes {pluralCount(preview.unlinkedCentralDonors, "central donor")} (unlinked)
+          </Text>
+        ) : null}
       </View>
       <View className="gap-1">
         <Text className="text-2xs font-bold uppercase tracking-wider text-faint">Purpose</Text>

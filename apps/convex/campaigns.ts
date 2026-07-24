@@ -429,22 +429,38 @@ function assertCampaignTransition(
 /**
  * Deterministic hash over everything an approval decision BINDS: the
  * campaign's own content/sender fields, and its audience's TARGETING
- * DEFINITION (source/scope/filters) — deliberately NOT the audience's live
- * resolved MEMBERSHIP, which naturally drifts as people/donors/guests come
- * and go (a "matches everyone in Springfield" audience gaining a new match
- * overnight isn't content drift; someone silently changing WHAT it targets
- * is). Recomputed and compared at three points: stored at submit time
- * (`approvedSnapshotHash`), recomputed and checked at approve time
- * (`approveCampaign`), and recomputed and checked again at send time
+ * DEFINITION (source/scope/filters, AND — person-centric audiences Phase 3
+ * — its hand-picked includePersonIds/excludePersonIds) — deliberately NOT
+ * the audience's live resolved MEMBERSHIP, which naturally drifts as
+ * people/donors/guests come and go (a "matches everyone in Springfield"
+ * audience gaining a new match overnight isn't content drift; someone
+ * silently changing WHAT it targets is). A hand-pick list IS part of the
+ * targeting DEFINITION, not live membership — `audiences.updateAudience`
+ * can edit `includePersonIds`/`excludePersonIds` exactly like `filters`, so
+ * omitting them here would let a hand-pick edit slip past both the approve-
+ * time and send-time checks below (a reviewer approves audience X, the
+ * campaign sends to X′). Recomputed and compared at three points: stored at
+ * submit time (`approvedSnapshotHash`), recomputed and checked at approve
+ * time (`approveCampaign`), and recomputed and checked again at send time
  * (`send`) — the last check catches an audience-definition edit made AFTER
  * approval but before the send actually runs (`audiences.updateAudience`
  * isn't status-locked, so this is the only thing that catches that case).
+ *
+ * `normalizePersonIdList` SORTS its input and treats `undefined`/`[]`
+ * identically — array ORDER must never affect the hash (two saves of the
+ * same picks in a different order must match), and a legacy/no-hand-pick
+ * audience (`undefined`) must hash IDENTICALLY to an explicitly-cleared one
+ * (`[]`), or clearing a list would itself look like drift.
  *
  * Plain `JSON.stringify` over a freshly-built object literal is
  * deterministic here (not a general-purpose canonical serializer) because
  * every call builds the SAME object with the SAME key insertion order —
  * there's no need to sort keys for that to hash identically call to call.
  */
+function normalizePersonIdList(ids: Id<"people">[] | undefined): string[] {
+  return [...(ids ?? [])].map(String).sort();
+}
+
 async function computeCampaignSnapshotHash(
   ctx: QueryCtx | MutationCtx,
   campaign: Doc<"campaigns">,
@@ -459,6 +475,8 @@ async function computeCampaignSnapshotHash(
     audienceSource: audience?.source ?? null,
     audienceScope: audience?.scope ?? null,
     audienceFilters: audience?.filters ?? null,
+    audienceIncludePersonIds: normalizePersonIdList(audience?.includePersonIds),
+    audienceExcludePersonIds: normalizePersonIdList(audience?.excludePersonIds),
   };
   return sha256Hex(JSON.stringify(payload));
 }

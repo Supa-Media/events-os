@@ -134,6 +134,16 @@
  * question on when to use them instead of texting a cardholder off-app —
  * quiz length 3→4 (bumped below). Its title, minutes, and placement are
  * unchanged. No slugs, sections, or courses moved; total stays 98 sections.
+ *
+ * Person-centric audiences Phase 3 (specs/person-centric-audiences.md
+ * "Phase 3" — the founder-facing filters + hand-picked audience picker):
+ * `dev-relationship-workflow` gained a second rule ("An audience is filters,
+ * hand-picked people, or both — and it's always live") teaching the new
+ * criteria-chip builder, live re-resolution, and the non-negotiable
+ * suppression/opt-out-beats-hand-pick invariant, plus one quiz question on
+ * that invariant — quiz length 4→5 (bumped below). Its title, minutes, and
+ * placement are unchanged. No slugs, sections, or courses moved; total stays
+ * 98 sections.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -950,7 +960,7 @@ const EXPECTED_SECTIONS: {
     slug: "dev-relationship-workflow",
     title: "Owners, notes, and the top-donor list",
     minutes: 4,
-    quizLength: 4,
+    quizLength: 5,
     optional: false,
     capstoneKind: null,
   },

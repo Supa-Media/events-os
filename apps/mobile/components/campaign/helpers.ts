@@ -106,13 +106,19 @@ const AUDIENCE_SOURCE_LABEL: Record<string, string> = {
   guests: "Guests",
   donors: "Donors",
   people: "People (roster)",
+  person_filters: "Filters",
 };
 
 /** A short "who this targets" description for the approval review card —
  *  the audience's SOURCE + its own filters, plain-language. Deliberately
- *  doesn't resolve event/chapter ids to names (no extra round-trip); good
- *  enough for a reviewer to sanity-check the shape of the audience, with the
- *  live recipient count (from `previewAudience`) carrying the real number. */
+ *  doesn't resolve event/chapter/seat ids to names (no extra round-trip);
+ *  good enough for a reviewer to sanity-check the SHAPE of the audience, with
+ *  the live recipient count (from `previewAudience`) carrying the real
+ *  number. Person-centric audiences Phase 3 (specs/person-centric-audiences.md
+ *  "Phase 3" item 6) — `person_filters`'s richer criteria + hand-picks are
+ *  summarized here too, automatically, so the two-party approval review card
+ *  (PR #399) shows the new picker's shape without any changes on its own
+ *  side — see `CampaignStatusCard.tsx`'s call site. */
 export function describeAudience(
   source: string,
   filters: {
@@ -120,9 +126,42 @@ export function describeAudience(
     chapterId?: string | null;
     donorStatus?: string | null;
     gaveWithinDays?: number | null;
+    givingLifetimeMinCents?: number | null;
+    givingLifetimeMaxCents?: number | null;
+    giftCountMin?: number | null;
+    backerStatus?: string | null;
+    attendedEventId?: string | null;
+    attendedWithinDays?: number | null;
+    rsvpStatus?: string | null;
+    seatId?: string | null;
+    teamOnly?: boolean | null;
+    contactsOnly?: boolean | null;
+    verifiedEmailOnly?: boolean | null;
   },
+  handPicks?: { includeCount?: number; excludeCount?: number },
 ): string {
   const parts = [AUDIENCE_SOURCE_LABEL[source] ?? source];
+  if (source === "person_filters") {
+    if (filters.chapterId) parts.push("one chapter");
+    if (filters.teamOnly) parts.push("team only");
+    if (filters.contactsOnly) parts.push("contacts only");
+    if (filters.givingLifetimeMinCents != null || filters.givingLifetimeMaxCents != null) {
+      parts.push("giving amount");
+    }
+    if (filters.giftCountMin != null) parts.push(`≥${filters.giftCountMin} gifts`);
+    if (filters.donorStatus) parts.push(`donor: ${filters.donorStatus}`);
+    if (filters.gaveWithinDays != null) parts.push(`gave within ${filters.gaveWithinDays}d`);
+    if (filters.backerStatus) parts.push(`backer: ${filters.backerStatus}`);
+    if (filters.attendedEventId) parts.push("attended one event");
+    if (filters.attendedWithinDays != null) parts.push(`attended within ${filters.attendedWithinDays}d`);
+    if (filters.rsvpStatus) parts.push(`rsvp: ${filters.rsvpStatus}`);
+    if (filters.seatId) parts.push("holds a role");
+    if (filters.verifiedEmailOnly) parts.push("verified email");
+    if (handPicks?.includeCount) parts.push(`+${handPicks.includeCount} hand-picked`);
+    if (handPicks?.excludeCount) parts.push(`−${handPicks.excludeCount} excluded`);
+    if (parts.length === 1) parts.push("everyone");
+    return parts.join(" · ");
+  }
   if (filters.eventId) parts.push("one event");
   if (filters.chapterId) parts.push("one chapter");
   if (filters.donorStatus) parts.push(`status: ${filters.donorStatus}`);

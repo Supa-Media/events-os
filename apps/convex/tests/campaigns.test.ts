@@ -2046,6 +2046,172 @@ describe("two-party approval — content drift", () => {
   });
 });
 
+// Person-centric audiences Phase 3 — `computeCampaignSnapshotHash` must also
+// bind `includePersonIds`/`excludePersonIds` (a hand-pick list IS part of the
+// targeting definition, not live membership) — otherwise editing ONLY the
+// hand-picks after submission sails past both the approve-time and send-time
+// checks (`audiences.updateAudience` isn't status-locked, same gap the
+// filters-drift tests above cover).
+describe("two-party approval — content drift (hand-picked audiences)", () => {
+  async function seedPersonFiltersAudience(
+    s: ChapterSetup,
+    opts: { includePersonIds?: Id<"people">[]; excludePersonIds?: Id<"people">[] } = {},
+  ): Promise<Id<"audiences">> {
+    return run(s.t, (ctx) =>
+      ctx.db.insert("audiences", {
+        scope: "central",
+        name: "Hand-picked",
+        source: "person_filters",
+        filters: {},
+        includePersonIds: opts.includePersonIds,
+        excludePersonIds: opts.excludePersonIds,
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+  }
+
+  async function seedPerson(s: ChapterSetup, name: string): Promise<Id<"people">> {
+    return run(s.t, (ctx) =>
+      ctx.db.insert("people", { chapterId: s.chapterId, name, createdAt: Date.now() }),
+    );
+  }
+
+  test("editing includePersonIds while pending → approve throws CONTENT_DRIFT", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await configureResend(s);
+    const audienceId = await seedPersonFiltersAudience(s);
+    const campaignId = await s.as.mutation(api.campaigns.createCampaign, {
+      scope: "central",
+      name: "N",
+      subject: "Hi",
+      audienceId,
+      doc: heroDoc(),
+    });
+    await seedSelfPerson(s);
+    const reviewer = await seedReviewer(s);
+    await s.as.mutation(api.campaigns.submitForApproval, {
+      campaignId,
+      purpose: "P",
+      reviewerPersonId: reviewer.personId,
+    });
+
+    const pickedId = await seedPerson(s, "Hand Picked");
+    await s.as.mutation(api.audiences.updateAudience, {
+      audienceId,
+      includePersonIds: [pickedId],
+    });
+
+    expect(
+      await errorCode(reviewer.as.mutation(api.campaigns.approveCampaign, { campaignId })),
+    ).toBe("CONTENT_DRIFT");
+  });
+
+  test("approved, then excludePersonIds is edited afterward → send() RECORDS a changed-since-approval failure", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await configureResend(s);
+    const audienceId = await seedPersonFiltersAudience(s);
+    const campaignId = await s.as.mutation(api.campaigns.createCampaign, {
+      scope: "central",
+      name: "N",
+      subject: "Hi",
+      audienceId,
+      doc: heroDoc(),
+    });
+    await seedSelfPerson(s);
+    const reviewer = await seedReviewer(s);
+    await s.as.mutation(api.campaigns.submitForApproval, {
+      campaignId,
+      purpose: "P",
+      reviewerPersonId: reviewer.personId,
+    });
+    await reviewer.as.mutation(api.campaigns.approveCampaign, { campaignId });
+
+    const excludedId = await seedPerson(s, "Excluded After Approval");
+    await s.as.mutation(api.audiences.updateAudience, {
+      audienceId,
+      excludePersonIds: [excludedId],
+    });
+
+    await s.as.mutation(api.campaigns.send, { campaignId });
+    const campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
+    expect(campaign.status).toBe("failed");
+    expect(campaign.error).toMatch(/changed since it was approved/);
+  });
+
+  test("hash stability: reordering the SAME includePersonIds set is not drift", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await configureResend(s);
+    const personA = await seedPerson(s, "A");
+    const personB = await seedPerson(s, "B");
+    const audienceId = await seedPersonFiltersAudience(s, { includePersonIds: [personA, personB] });
+    const campaignId = await s.as.mutation(api.campaigns.createCampaign, {
+      scope: "central",
+      name: "N",
+      subject: "Hi",
+      audienceId,
+      doc: heroDoc(),
+    });
+    await seedSelfPerson(s);
+    const reviewer = await seedReviewer(s);
+    await s.as.mutation(api.campaigns.submitForApproval, {
+      campaignId,
+      purpose: "P",
+      reviewerPersonId: reviewer.personId,
+    });
+
+    // Same two people, opposite array order — array order must never affect
+    // the hash, or a harmless re-save would look like drift.
+    await s.as.mutation(api.audiences.updateAudience, {
+      audienceId,
+      includePersonIds: [personB, personA],
+    });
+
+    await reviewer.as.mutation(api.campaigns.approveCampaign, { campaignId });
+    const campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
+    expect(campaign.status).toBe("approved");
+  });
+
+  test("hash stability: an unset includePersonIds and an explicit empty array hash identically (no false drift on legacy/no-hand-pick audiences)", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await configureResend(s);
+    // A legacy "people"-sourced audience — never had includePersonIds/
+    // excludePersonIds at all (both `undefined`).
+    const audienceId = await seedAudience(s, "people");
+    const campaignId = await s.as.mutation(api.campaigns.createCampaign, {
+      scope: "central",
+      name: "N",
+      subject: "Hi",
+      audienceId,
+      doc: heroDoc(),
+    });
+    await seedSelfPerson(s);
+    const reviewer = await seedReviewer(s);
+    await s.as.mutation(api.campaigns.submitForApproval, {
+      campaignId,
+      purpose: "P",
+      reviewerPersonId: reviewer.personId,
+    });
+
+    // Explicitly clearing to an empty array must NOT read as drift against
+    // the submit-time `undefined` — both normalize to the same `[]`.
+    await s.as.mutation(api.audiences.updateAudience, {
+      audienceId,
+      includePersonIds: [],
+      excludePersonIds: [],
+    });
+
+    await reviewer.as.mutation(api.campaigns.approveCampaign, { campaignId });
+    const campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
+    expect(campaign.status).toBe("approved");
+  });
+});
+
 describe("two-party approval — changes requested & deny", () => {
   test("requestCampaignChanges requires a note, re-enables editing, and resubmitting (a different reviewer) works", async () => {
     const t = newT();
