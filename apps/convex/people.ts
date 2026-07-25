@@ -439,8 +439,16 @@ export const update = mutation({
           message: "Send either name or firstName/lastName, not both.",
         });
       }
-      const first = (fields.firstName as string | undefined)?.trim() || undefined;
-      const last = (fields.lastName as string | undefined)?.trim() || undefined;
+      // Only the half that was actually SENT changes — sending one never
+      // wipes the other (the People grid's cells commit one at a time).
+      const first =
+        patch.firstName !== undefined
+          ? (fields.firstName as string | undefined)?.trim() || undefined
+          : person.firstName;
+      const last =
+        patch.lastName !== undefined
+          ? (fields.lastName as string | undefined)?.trim() || undefined
+          : person.lastName;
       fields.firstName = first;
       fields.lastName = last;
       const composed = composeName(first, last);

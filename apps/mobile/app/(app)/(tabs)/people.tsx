@@ -105,7 +105,14 @@ const PERSONA_FILTERS: { key: PersonaFilter; label: string }[] = [
 // Fixed column widths (px) — mirrors EditableGrid's chrome so columns stay put
 // while the table scrolls horizontally on web.
 const COLS = {
-  name: 210,
+  // First/Last (founder ask, 2026-07-25): the roster shows the structured
+  // halves as two editable columns. `first` also carries the avatar and the
+  // identity badges, and — for a row whose name couldn't be auto-split —
+  // falls back to showing the full display name (editing it renames, which
+  // re-splits when the new name is unambiguous; a truly ambiguous name is
+  // hand-split in the detail sheet's Name section).
+  first: 170,
+  last: 130,
   status: 150,
   role: 150,
   email: 190,
@@ -401,7 +408,8 @@ export default function PeopleScreen() {
           <View style={{ width: Math.max(TABLE_WIDTH, 320) }}>
             {/* Column header */}
             <View className="flex-row items-center border-b border-border bg-sunken">
-              <GridHeaderCell label="Name" width={COLS.name} />
+              <GridHeaderCell label="First name" width={COLS.first} />
+              <GridHeaderCell label="Last name" width={COLS.last} />
               <GridHeaderCell label="Status" width={COLS.status} />
               <GridHeaderCell label="Title" width={COLS.role} />
               <GridHeaderCell label="Email" width={COLS.email} />
@@ -535,6 +543,10 @@ function PersonRow({
 
   const vetting = (person.vettingStatus ?? "unvetted") as VettingStatus;
   const status = (person.status ?? "active") as RosterStatus;
+  // Structured halves exist → the First/Last cells edit them directly; absent
+  // (the splitter refused this name) → the First cell shows/edits the full
+  // display name instead. See the two cells' own comments below.
+  const isSplit = person.firstName !== undefined || person.lastName !== undefined;
 
   // Avatar upload — web file input (mirrors SiteMapEditor). Native picker is
   // intentionally omitted; web is the test target.
@@ -568,9 +580,14 @@ function PersonRow({
         isLast ? "border-b-0" : ""
       }`}
     >
-      {/* Name: avatar (tap to upload photo) + inline text */}
+      {/* First name: avatar (tap to upload photo) + inline text. A row whose
+          name couldn't be auto-split (no halves) shows the FULL display name
+          here — editing it renames the person (which re-splits when the new
+          name is unambiguous); a split row edits just the first half, the
+          other half preserved server-side (`people.update`'s one-at-a-time
+          rule). */}
       <View
-        style={{ width: COLS.name }}
+        style={{ width: COLS.first }}
         className="flex-row items-center gap-2 border-r border-border/60 px-2 py-1.5"
       >
         <Pressable
@@ -582,10 +599,14 @@ function PersonRow({
           <Avatar name={person.name || "?"} size={26} uri={person.imageUrl} />
         </Pressable>
         <InlineText
-          value={person.name}
-          placeholder="Name"
+          value={isSplit ? (person.firstName ?? "") : person.name}
+          placeholder={isSplit ? "First" : "Name"}
           weight="medium"
-          onCommit={(t) => update({ personId: id, name: t })}
+          onCommit={(t) =>
+            isSplit
+              ? update({ personId: id, firstName: t.trim() || null })
+              : update({ personId: id, name: t })
+          }
         />
         {/* Linked to a user account — they can sign in. Distinguishes a real
             logged-in team member from a roster-only contact. */}
@@ -611,6 +632,22 @@ function PersonRow({
           </View>
         ) : null}
       </View>
+
+      {/* Last name — editable on a split row; an unsplit row shows a muted
+          em-dash (hand-split it in the detail sheet's Name section, one tap
+          away, where the composed result is previewed before saving). */}
+      <Cell width={COLS.last}>
+        {isSplit ? (
+          <InlineText
+            value={person.lastName ?? ""}
+            placeholder="Last"
+            weight="medium"
+            onCommit={(t) => update({ personId: id, lastName: t.trim() || null })}
+          />
+        ) : (
+          <Text className="px-1 text-sm text-faint">—</Text>
+        )}
+      </Cell>
 
       {/* Status (roster lifecycle select) */}
       <Cell width={COLS.status}>
