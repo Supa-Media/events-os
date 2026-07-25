@@ -168,6 +168,7 @@ import type * as moneyViews from "../moneyViews.js";
 import type * as oneoffDedupeRelay from "../oneoffDedupeRelay.js";
 import type * as org from "../org.js";
 import type * as people from "../people.js";
+import type * as peopleImport from "../peopleImport.js";
 import type * as personEmails from "../personEmails.js";
 import type * as places from "../places.js";
 import type * as profiles from "../profiles.js";
@@ -412,6 +413,7 @@ declare const fullApi: ApiFromModules<{
   oneoffDedupeRelay: typeof oneoffDedupeRelay;
   org: typeof org;
   people: typeof people;
+  peopleImport: typeof peopleImport;
   personEmails: typeof personEmails;
   places: typeof places;
   profiles: typeof profiles;

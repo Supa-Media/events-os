@@ -28,6 +28,7 @@ import {
   SelectCell,
   type SelectOption,
   PersonPicker,
+  Button,
 } from "../../../components/ui";
 import { colors, spacing } from "../../../lib/theme";
 import { formatDate, parseList } from "../../../lib/format";
@@ -204,6 +205,7 @@ export default function PeopleScreen() {
   // below and the modal never opens (quiet degrade).
   const openParam = useLocalSearchParams<{ openId?: string }>();
   const [openId, setOpenId] = useState<string | null>(openParam.openId ?? null);
+  const router = useRouter();
   // Admin-only duplicate review + merge (Attendance C).
   const [dupOpen, setDupOpen] = useState(false);
 
@@ -292,6 +294,18 @@ export default function PeopleScreen() {
       <View style={styles.titleRow}>
         <Text className="font-display text-2xl text-ink">People</Text>
         <View className="flex-row items-center gap-3">
+          {/* Bulk contact onboarding lives HERE, on the People tab (founder
+              call, 2026-07-25) — Giving → Import stays the home for
+              money-bearing files only. */}
+          <Pressable
+            onPress={() => router.push("/people/import" as never)}
+            hitSlop={6}
+            accessibilityLabel="Import contacts"
+            className="flex-row items-center gap-1 rounded-md border border-border px-2 py-1 active:bg-sunken web:hover:bg-sunken"
+          >
+            <Icon name="upload" size={13} color={colors.muted} />
+            <Text className="text-xs font-semibold text-muted">Import</Text>
+          </Pressable>
           {/* Duplicate review is chapter-admin only (merging re-points every
               reference across the app; enforced server-side too). */}
           {org?.isAdmin === true && chapterId ? (
@@ -1030,6 +1044,68 @@ function ListCell({
 }
 
 /** Centered modal detail: read-only contact + event history. */
+/** First/Last name editor inside the detail sheet. Local drafts + an explicit
+ *  Save (only shown when dirty) — the sheet's toggle-style fields commit
+ *  immediately, but text fields mid-typing shouldn't fire a mutation per
+ *  keystroke. Saving sends ONLY the halves; the backend recomposes the
+ *  display name and refuses a call that sends both (see `people.update`). */
+function NameFieldsSection({ person }: { person: Person }) {
+  const update = useMutation(api.people.update);
+  const [first, setFirst] = useState(person.firstName ?? "");
+  const [last, setLast] = useState(person.lastName ?? "");
+  const [saving, setSaving] = useState(false);
+  const dirty = first !== (person.firstName ?? "") || last !== (person.lastName ?? "");
+  const composed = [first.trim(), last.trim()].filter(Boolean).join(" ");
+
+  async function save() {
+    setSaving(true);
+    try {
+      await update({
+        personId: person._id,
+        firstName: first.trim() || null,
+        lastName: last.trim() || null,
+      });
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <View className="mb-4">
+      <Text className="mb-2 text-2xs font-bold uppercase tracking-wider text-muted">
+        Name
+      </Text>
+      <View className="flex-row gap-2">
+        <View className="flex-1">
+          <TextField label="First" value={first} onChangeText={setFirst} placeholder="First" />
+        </View>
+        <View className="flex-1">
+          <TextField label="Last" value={last} onChangeText={setLast} placeholder="Last" />
+        </View>
+      </View>
+      {!person.firstName && !person.lastName && !dirty ? (
+        <Text className="mt-1 text-xs text-faint">
+          This name couldn't be split automatically — set the halves here.
+        </Text>
+      ) : null}
+      {dirty ? (
+        <View className="mt-2 flex-row items-center gap-2">
+          <Button
+            title="Save name"
+            size="sm"
+            onPress={save}
+            loading={saving}
+            disabled={!composed}
+          />
+          <Text className="text-xs text-muted" numberOfLines={1}>
+            {composed ? `Will show as "${composed}"` : "Enter at least one name."}
+          </Text>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 function PersonDetail({
   person,
   giverMark,
@@ -1149,6 +1225,13 @@ function PersonDetailBody({
       </View>
 
       <ScrollView style={{ maxHeight: 460 }} contentContainerStyle={styles.detailBody}>
+        {/* Structured name (founder ask, 2026-07-25) — the split halves
+            migration 0043 backfilled, shown and EDITABLE here. Saving
+            recomposes the display name ("First Last"); this is also where an
+            ambiguous name the automatic splitter refused ("Mary Jo Van Der
+            Berg") gets hand-corrected into real halves. */}
+        <NameFieldsSection person={person} />
+
         {/* Contact */}
         {person.email || person.phone ? (
           <View style={styles.contactRows}>

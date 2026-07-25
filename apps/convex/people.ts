@@ -17,7 +17,7 @@ import { isChapterAdmin } from "./lib/org";
 import { isCardEligible } from "@events-os/shared";
 import { writePersonAudit, diffFields } from "./lib/givingAudit";
 import { recordPersonEmail } from "./lib/personEmails";
-import { nameHalvesPatch, splitPersonName } from "./lib/personName";
+import { composeName, nameHalvesPatch, splitPersonName } from "./lib/personName";
 
 const vettingStatus = v.union(
   v.literal("unvetted"),
@@ -365,6 +365,15 @@ export const update = mutation({
   args: {
     personId: v.id("people"),
     name: v.optional(v.string()),
+    // Structured name halves (founder ask, 2026-07-25). When EITHER is
+    // provided they are authoritative: both halves are stored as given
+    // (null/empty clears one) and the display `name` is RECOMPOSED from
+    // them ("First Last") whenever at least one is non-empty — this is how
+    // an ambiguous name ("Mary Jo Van Der Berg") gets hand-corrected into
+    // halves the automatic splitter refuses to guess. When only `name` is
+    // sent, the halves are re-derived/cleared from it instead (see below).
+    firstName: v.optional(v.union(v.string(), v.null())),
+    lastName: v.optional(v.union(v.string(), v.null())),
     email: v.optional(v.string()),
     phone: v.optional(v.string()),
     // Either arg accepted; the writer stores it in the new `services` field.
@@ -419,11 +428,28 @@ export const update = mutation({
     // Person lifecycle lives on `status` only now; the legacy `isActive` flag is
     // no longer written (accept the arg from OTA-lagged clients, then drop it).
     delete fields.isActive;
-    // A rename keeps the structured halves consistent: refreshed on a clean
-    // split, EXPLICITLY CLEARED (undefined) on an ambiguous one — stale
-    // halves from the previous name are wrong data, not missing data. See
-    // `lib/personName.ts#nameHalvesPatch`.
-    if (typeof fields.name === "string") {
+    if (patch.firstName !== undefined || patch.lastName !== undefined) {
+      // Halves are authoritative when sent (see the args doc): store them
+      // and recompose the display name — unless the caller ALSO sent a
+      // `name` in the same call, which would be two competing sources of
+      // truth for the same string; reject that instead of guessing.
+      if (patch.name !== undefined) {
+        throw new ConvexError({
+          code: "CONFLICTING_NAME",
+          message: "Send either name or firstName/lastName, not both.",
+        });
+      }
+      const first = (fields.firstName as string | undefined)?.trim() || undefined;
+      const last = (fields.lastName as string | undefined)?.trim() || undefined;
+      fields.firstName = first;
+      fields.lastName = last;
+      const composed = composeName(first, last);
+      if (composed) fields.name = composed;
+    } else if (typeof fields.name === "string") {
+      // A rename keeps the structured halves consistent: refreshed on a clean
+      // split, EXPLICITLY CLEARED (undefined) on an ambiguous one — stale
+      // halves from the previous name are wrong data, not missing data. See
+      // `lib/personName.ts#nameHalvesPatch`.
       const halves = nameHalvesPatch(fields.name);
       fields.firstName = halves.firstName;
       fields.lastName = halves.lastName;
