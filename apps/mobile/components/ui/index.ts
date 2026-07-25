@@ -39,6 +39,7 @@ export { statusTone } from "./status";
 export { ToastView } from "./Toast";
 export { useAnchor, type AnchorRect, type UseAnchor } from "./useAnchor";
 export { useResizableColumns } from "./useResizableColumns";
+export { useHoverImagePreview } from "./HoverImagePreview";
 export {
   InlineText,
   GridHeaderCell,
