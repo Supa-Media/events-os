@@ -324,6 +324,7 @@ const REGISTRY_NAMES = [
   "0040_migrate_legacy_audiences",
   "0041_migrate_guest_audiences",
   "0042_wrap_targeting",
+  "0043_split_person_names",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

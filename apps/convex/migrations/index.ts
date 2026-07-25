@@ -54,6 +54,7 @@ import { backfillPersonEmails } from "./0039_backfill_person_emails";
 import { migrateLegacyAudiences } from "./0040_migrate_legacy_audiences";
 import { migrateGuestAudiences } from "./0041_migrate_guest_audiences";
 import { wrapTargeting } from "./0042_wrap_targeting";
+import { splitPersonNames } from "./0043_split_person_names";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -195,4 +196,10 @@ export const MIGRATIONS: Migration[] = [
   // skipped (hash-drift protection) for a later manual re-run. Idempotent
   // (wrapped rows skipped). See 0042.
   wrapTargeting,
+  // Structured names — stamp firstName/lastName onto every people row whose
+  // display `name` splits unambiguously (exactly two tokens, the ONE rule in
+  // lib/personName.ts); ambiguous names stay unsplit and counted. `name`
+  // itself never changes. Idempotent (already-split rows skipped, so a
+  // hand-corrected split is never overwritten). See 0043.
+  splitPersonNames,
 ];

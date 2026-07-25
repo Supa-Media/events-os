@@ -17,6 +17,7 @@ import { isChapterAdmin } from "./lib/org";
 import { isCardEligible } from "@events-os/shared";
 import { writePersonAudit, diffFields } from "./lib/givingAudit";
 import { recordPersonEmail } from "./lib/personEmails";
+import { nameHalvesPatch, splitPersonName } from "./lib/personName";
 
 const vettingStatus = v.union(
   v.literal("unvetted"),
@@ -320,6 +321,10 @@ export const create = mutation({
     const personId = await ctx.db.insert("people", {
       chapterId: chapterId as Id<"chapters">,
       name: args.name,
+      // Structured halves when the split is unambiguous — see
+      // `lib/personName.ts` (the one splitting rule migration 0043 and every
+      // rename write-through share).
+      ...(splitPersonName(args.name) ?? {}),
       email: args.email,
       phone: args.phone,
       // Writer targets the new `services` field only; the legacy `skills` arg
@@ -414,6 +419,15 @@ export const update = mutation({
     // Person lifecycle lives on `status` only now; the legacy `isActive` flag is
     // no longer written (accept the arg from OTA-lagged clients, then drop it).
     delete fields.isActive;
+    // A rename keeps the structured halves consistent: refreshed on a clean
+    // split, EXPLICITLY CLEARED (undefined) on an ambiguous one — stale
+    // halves from the previous name are wrong data, not missing data. See
+    // `lib/personName.ts#nameHalvesPatch`.
+    if (typeof fields.name === "string") {
+      const halves = nameHalvesPatch(fields.name);
+      fields.firstName = halves.firstName;
+      fields.lastName = halves.lastName;
+    }
     await ctx.db.patch(personId, fields);
 
     // Person-centric audiences Phase 2 — write-through: a changed `email`/

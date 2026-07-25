@@ -27,6 +27,18 @@ export const PERSON_EMAIL_SOURCES = [
 export const people = defineTable({
   chapterId: v.id("chapters"),
   name: v.string(),
+  // Structured name halves (founder ask, 2026-07-25). `name` STAYS the
+  // canonical display string every surface renders — these exist for
+  // greeting personalization ("Hi Shante"), imports that arrive pre-split
+  // (Givebutter contact exports), and future sort-by-last-name. Optional:
+  // migration 0043 backfills them only where the split is unambiguous
+  // (`lib/personName.ts#splitPersonName` — exactly two tokens); an ambiguous
+  // `name` leaves them unset rather than guessing. Write paths that RENAME a
+  // person must keep them consistent via `splitPersonName` (refresh on a
+  // clean split, CLEAR on an ambiguous one — stale halves are worse than
+  // absent ones).
+  firstName: v.optional(v.string()),
+  lastName: v.optional(v.string()),
   email: v.optional(v.string()),
   phone: v.optional(v.string()),
   userId: v.optional(v.id("users")),

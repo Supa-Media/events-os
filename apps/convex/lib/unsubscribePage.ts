@@ -46,7 +46,7 @@ export function renderUnsubscribeConfirm(email: string, token: string): string {
     `<div class="card">
       <div class="emoji">✉️</div>
       <h1>Unsubscribe ${esc(email)}?</h1>
-      <p>You'll stop receiving email campaigns at this address. This won't affect event RSVP confirmations or ticket receipts.</p>
+      <p>You'll stop receiving all Public Worship newsletters and announcements at this address. This won't affect event RSVP confirmations or ticket receipts.</p>
       <form method="post" action="/unsubscribe/${esc(token)}">
         <button class="btn" type="submit">Unsubscribe me</button>
       </form>

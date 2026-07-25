@@ -297,7 +297,7 @@ ${preview}<div style="margin:0;padding:32px 12px;background:#ffffff;font-family:
     <div style="text-align:center;padding-top:16px;font-family:${SANS};font-size:11px;color:${MUTED}">
       ${addressLine}
       <div>Sent with love by Public Worship · Chapter OS</div>
-      <div style="padding-top:8px"><a href="${esc(opts.unsubscribeUrl)}" style="color:${MUTED};text-decoration:underline">Unsubscribe</a></div>
+      <div style="padding-top:8px"><a href="${esc(opts.unsubscribeUrl)}" style="color:${MUTED};text-decoration:underline">Unsubscribe from all Public Worship emails</a></div>
     </div>
   </div>
 </div>
@@ -357,6 +357,6 @@ export function renderCampaignText(doc: EmailDocument, opts: RenderEmailOptions)
   }
   if (opts.orgAddress) lines.push(opts.orgAddress);
   lines.push("Sent with love by Public Worship · Chapter OS");
-  lines.push(`Unsubscribe: ${opts.unsubscribeUrl}`);
+  lines.push(`Unsubscribe from all Public Worship emails: ${opts.unsubscribeUrl}`);
   return `${lines.join("\n").replace(/\n{3,}/g, "\n\n").trim()}\n`;
 }

@@ -48,6 +48,10 @@ import {
 } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
 import { useGivingScope } from "../../../lib/useGivingScope";
+import {
+  parseGivebutterContacts,
+  type GivebutterContactsParse,
+} from "../../../lib/givebutterContacts";
 
 type GivingScope = "central" | Id<"chapters">;
 
@@ -292,10 +296,20 @@ export default function ImportScreen() {
 function ImportBody({ scope }: { scope: GivingScope }) {
   const [text, setText] = useState("");
   const [parseSkipped, setParseSkipped] = useState(0);
+  // Givebutter CONTACTS preset (checked first — its headers are disjoint from
+  // the transactions export's): every row becomes one `contact` row, names
+  // kept pre-split, no money history ever. See `lib/givebutterContacts.ts`.
+  const gbContacts: GivebutterContactsParse | null = useMemo(
+    () => parseGivebutterContacts(text),
+    [text],
+  );
   // Givebutter transactions preset: detected from the pasted header. When
   // present, the per-campaign gift/ticket/skip mapping drives the canonical
   // rows instead of the plain `parseCanonicalRows` path.
-  const gbParse = useMemo(() => parseGivebutterTransactions(text), [text]);
+  const gbParse = useMemo(
+    () => (gbContacts ? null : parseGivebutterTransactions(text)),
+    [text, gbContacts],
+  );
   const [gbMapping, setGbMapping] = useState<Record<string, GbRowKind>>({});
   const [previewArgs, setPreviewArgs] = useState<
     { scope: GivingScope; rows: CanonicalRow[] } | "skip"
@@ -321,6 +335,25 @@ function ImportBody({ scope }: { scope: GivingScope }) {
   function runPreview() {
     setCommitResult(null);
     setCommitError(null);
+    if (gbContacts) {
+      // Contacts preset — every parsed contact is one canonical `contact`
+      // row; the server's preview then shows matched-vs-new (an existing
+      // person is matched by email → phone → exact name, never duplicated).
+      const rows: CanonicalRow[] = gbContacts.contacts.map(
+        (c) =>
+          ({
+            rowType: "contact",
+            name: c.name,
+            ...(c.firstName ? { firstName: c.firstName } : {}),
+            ...(c.lastName ? { lastName: c.lastName } : {}),
+            ...(c.email ? { email: c.email } : {}),
+            ...(c.phone ? { phone: c.phone } : {}),
+          }) as CanonicalRow,
+      );
+      setParseSkipped(gbContacts.dropped);
+      setPreviewArgs(rows.length === 0 ? "skip" : { scope, rows });
+      return;
+    }
     if (gbParse) {
       // Givebutter transactions preset — map each campaign, then classify.
       const rows = gbTransactionsToCanonical(gbParse, gbMapping);
@@ -384,6 +417,29 @@ function ImportBody({ scope }: { scope: GivingScope }) {
             numberOfLines={8}
             placeholder={"gift,Ada Lovelace,ada@example.com,,50,2026-01-05,givebutter,gb_txn_1,,"}
           />
+          {gbContacts ? (
+            <>
+              <Text className="mb-2 text-xs text-success">
+                Detected a Givebutter contacts export · {gbContacts.contacts.length} contact
+                {gbContacts.contacts.length === 1 ? "" : "s"}. Each becomes a contact (name,
+                email, phone) — existing people are matched by email, phone, or exact name,
+                never duplicated. No donors or giving history are created from this file.
+              </Text>
+              {scope === "central" ? (
+                <Text className="mb-2 text-xs text-warn">
+                  Contacts import into a chapter's people list — switch off the Central lens
+                  to your chapter first, or every row will preview as invalid.
+                </Text>
+              ) : null}
+              {gbContacts.noIdentifier > 0 ? (
+                <Text className="mb-2 text-xs text-warn">
+                  {gbContacts.noIdentifier} row{gbContacts.noIdentifier === 1 ? "" : "s"} have
+                  no email or phone — those are reported in the preview but never created
+                  (a name alone isn't a reachable contact).
+                </Text>
+              ) : null}
+            </>
+          ) : null}
           {gbParse ? (
             <Text className="mb-2 text-xs text-success">
               Detected a Givebutter transactions export · {gbParse.rows.length} row
