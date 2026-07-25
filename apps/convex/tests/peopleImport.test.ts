@@ -156,5 +156,14 @@ describe("people.update — structured halves", () => {
       firstName: "Mary",
       lastName: "Berg",
     });
+
+    // The grid's cells commit ONE half at a time — the unsent half must be
+    // preserved, never wiped (people.update's one-at-a-time rule).
+    await s.as.mutation(api.people.update, { personId, firstName: "Maria" });
+    expect(await run(s.t, (ctx) => ctx.db.get(personId))).toMatchObject({
+      firstName: "Maria",
+      lastName: "Berg",
+      name: "Maria Berg",
+    });
   });
 });
