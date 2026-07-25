@@ -820,13 +820,20 @@ export async function matchOrCreatePersonContact(
   ctx: MutationCtx,
   chapterId: Id<"chapters">,
   args: { name: string; email?: string; phone?: string; firstName?: string; lastName?: string },
+  // Optional prefetched roster (`chapterRoster`-shaped) — `peopleImport.ts`'s
+  // batch import passes one shared pool per batch so a 100-row commit costs
+  // ONE roster read instead of 100 (it also appends each new insert to the
+  // pool it owns, so same-paste duplicates match instead of double-creating).
+  // Omitted (the canonical giving import's per-row calls), the roster is
+  // fetched fresh per call — the original behavior, unchanged.
+  prefetchedRoster?: Doc<"people">[],
 ): Promise<
   | { personId: Id<"people">; isNew: boolean; skipped?: undefined }
   | { personId: null; isNew: false; skipped: "no-identifier" }
 > {
   // Identity matching, not roster UX — deliberately unfiltered. See
   // `lib/org.ts#excludeContacts`.
-  const roster = await chapterRoster(ctx, chapterId);
+  const roster = prefetchedRoster ?? (await chapterRoster(ctx, chapterId));
   const { match } = matchIdentity(roster, args);
   if (match) return { personId: match._id, isNew: false };
   // OWNER RULE (Attendance C): a name-only contact/ticket row (no email AND no
