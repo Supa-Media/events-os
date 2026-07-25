@@ -38,6 +38,7 @@ import {
 import { runMigrateLegacyAudiencesPage } from "./migrations/0040_migrate_legacy_audiences";
 import { runMigrateGuestAudiencesPage } from "./migrations/0041_migrate_guest_audiences";
 import { runWrapTargetingPage } from "./migrations/0042_wrap_targeting";
+import { runSplitPersonNamesPage } from "./migrations/0043_split_person_names";
 
 /**
  * Backfill: ensure every template/event grid module has all of its current
@@ -784,6 +785,17 @@ export const continueWrapTargeting = internalMutation({
 export const runWrapTargeting = internalMutation({
   args: {},
   handler: async (ctx) => await runWrapTargetingPage(ctx, null),
+});
+
+/**
+ * Scheduler continuation for the structured-name backfill (`0043`) — same
+ * shape as `continueWrapTargeting` above; idempotent (already-split rows are
+ * skipped — see `migrations/0043_split_person_names.ts`'s module doc), so a
+ * redundant fire is a no-op.
+ */
+export const continueSplitPersonNames = internalMutation({
+  args: { cursor: v.union(v.string(), v.null()) },
+  handler: async (ctx, { cursor }) => await runSplitPersonNamesPage(ctx, cursor),
 });
 
 /**

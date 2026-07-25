@@ -62,6 +62,8 @@ import { normalizeEmail } from "./lib/access";
 import { chapterRoster } from "./lib/org";
 import { requireGivingManage, type GivingScope } from "./lib/givingAccess";
 import { matchOrCreateDonor, recordGiftForDonor } from "./lib/givingDonors";
+import { recordPersonEmail } from "./lib/personEmails";
+import { splitPersonName } from "./lib/personName";
 import { findDonorInScope, hasPersonIdentifier } from "./lib/givingDonors";
 import {
   DONOR_KINDS,
@@ -113,6 +115,14 @@ const CANONICAL_ROW_TYPES = ["gift", "ticket", "contact", "recurring"] as const;
 export const canonicalImportRowValidator = v.object({
   rowType: v.union(...CANONICAL_ROW_TYPES.map((t) => v.literal(t))),
   name: v.string(),
+  // Structured name halves when the SOURCE already had them split (the
+  // Givebutter contacts export's First/Last columns) — stored verbatim on a
+  // newly-created contact instead of re-deriving them from the joined
+  // display string (which `lib/personName.ts#splitPersonName` would refuse
+  // for any multi-token half). Contact/ticket rows only; gift/recurring rows
+  // ignore them (donor rows have no structured-name model).
+  firstName: v.optional(v.string()),
+  lastName: v.optional(v.string()),
   email: v.optional(v.string()),
   phone: v.optional(v.string()),
   kind: v.optional(donorKindValidator), // gift/recurring donor kind, default individual
@@ -809,7 +819,7 @@ type CommitCounters = {
 export async function matchOrCreatePersonContact(
   ctx: MutationCtx,
   chapterId: Id<"chapters">,
-  args: { name: string; email?: string; phone?: string },
+  args: { name: string; email?: string; phone?: string; firstName?: string; lastName?: string },
 ): Promise<
   | { personId: Id<"people">; isNew: boolean; skipped?: undefined }
   | { personId: null; isNew: false; skipped: "no-identifier" }
@@ -826,9 +836,17 @@ export async function matchOrCreatePersonContact(
   if (!hasPersonIdentifier({ email: args.email, phone: args.phone })) {
     return { personId: null, isNew: false, skipped: "no-identifier" };
   }
+  // Structured name halves: the source's own split wins when it arrived
+  // pre-split (Givebutter contact exports); else derive via the shared
+  // unambiguous-split rule (`lib/personName.ts`).
+  const halves =
+    args.firstName || args.lastName
+      ? { firstName: args.firstName?.trim() || undefined, lastName: args.lastName?.trim() || undefined }
+      : (splitPersonName(args.name) ?? {});
   const personId = await ctx.db.insert("people", {
     chapterId,
     name: args.name.trim() || "Unknown",
+    ...halves,
     ...(args.email ? { email: args.email } : {}),
     ...(args.phone ? { phone: args.phone } : {}),
     isTeamMember: false,
@@ -841,6 +859,17 @@ export async function matchOrCreatePersonContact(
     notes: "Added from import",
     createdAt: Date.now(),
   });
+  // Person-centric audiences Phase 2 — write-through: an import-created
+  // contact's email seeds its `personEmails` ledger like every other
+  // automated person-creation path (`linkDonorToPerson`/`linkRsvpToPerson`).
+  // `verified: false` — an import proves the address was on file somewhere,
+  // not that WE ever delivered to it (the `verifiedEmailOnly`/
+  // `email_verified` audience criteria must not treat a pasted CSV as
+  // verification); `resolveSendAddress`'s `people.email` fallback still
+  // reaches it for sends either way.
+  if (args.email) {
+    await recordPersonEmail(ctx, { personId, email: args.email, source: "manual", verified: false });
+  }
   return { personId, isNew: true };
 }
 
@@ -998,6 +1027,8 @@ async function commitContactRow(
     name: row.name,
     email: row.email,
     phone: row.phone,
+    firstName: row.firstName,
+    lastName: row.lastName,
   });
   if (res.skipped) {
     counters.skippedNoIdentifier++; // owner rule — name-only, nothing created
@@ -1018,6 +1049,8 @@ async function commitTicketRow(
     name: row.name,
     email: row.email,
     phone: row.phone,
+    firstName: row.firstName,
+    lastName: row.lastName,
   });
   if (res.skipped) {
     counters.skippedNoIdentifier++; // owner rule — name-only, nothing created

@@ -332,6 +332,61 @@ describe("previewImport / importCanonical — ticket rows", () => {
 // ── contact row dispositions ───────────────────────────────────────────────────
 
 describe("previewImport / importCanonical — contact rows", () => {
+  test("pre-split first/last names are stored verbatim; email seeds personEmails (unverified)", async () => {
+    const s = await devDirectorSetup();
+
+    const result = await s.as.mutation(api.givingImport.importCanonical, {
+      scope: s.chapterId,
+      rows: [
+        {
+          rowType: "contact",
+          name: "Ama (Gina) Oppong Asante",
+          firstName: "Gina",
+          lastName: "Oppong Asante",
+          email: "gina@example.com",
+          phone: "13102903015",
+        },
+        // No pre-split halves → the shared unambiguous-split rule applies.
+        { rowType: "contact", name: "Shante Evans", email: "shante@example.com" },
+        // Ambiguous, no pre-split → halves stay unset.
+        { rowType: "contact", name: "Mary Jo Van Der Berg", email: "maryjo@example.com" },
+      ],
+    });
+    expect(result.imported.people).toBe(3);
+
+    const people = await run(s.t, (ctx) =>
+      ctx.db
+        .query("people")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    );
+    const byEmail = new Map(people.map((p) => [p.email, p]));
+    expect(byEmail.get("gina@example.com")).toMatchObject({
+      firstName: "Gina",
+      lastName: "Oppong Asante",
+      name: "Ama (Gina) Oppong Asante",
+      isContactOnly: true,
+    });
+    expect(byEmail.get("shante@example.com")).toMatchObject({
+      firstName: "Shante",
+      lastName: "Evans",
+    });
+    expect(byEmail.get("maryjo@example.com")!.firstName).toBeUndefined();
+    expect(byEmail.get("maryjo@example.com")!.lastName).toBeUndefined();
+
+    // personEmails write-through: recorded, but NEVER verified by a CSV
+    // paste — the email_verified/verifiedEmailOnly audience criteria must
+    // not treat an import as verification.
+    const emails = await run(s.t, (ctx) =>
+      ctx.db
+        .query("personEmails")
+        .withIndex("by_person", (q) => q.eq("personId", byEmail.get("gina@example.com")!._id))
+        .collect(),
+    );
+    expect(emails).toHaveLength(1);
+    expect(emails[0]).toMatchObject({ email: "gina@example.com", verified: false, source: "manual" });
+  });
+
   test("new + matched; central scope reports invalid and creates nothing", async () => {
     const s = await devDirectorSetup();
 
