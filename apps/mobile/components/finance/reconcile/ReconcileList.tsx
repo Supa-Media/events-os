@@ -505,7 +505,6 @@ function ReconcileRow({
           hasReceipt={row.hasReceipt}
           reminderStage={row.reminderStage}
           transactionId={id}
-          centralScope={centralScope}
           onUpload={async (storageId) => {
             await guard(attachReceipt({ transactionId: id, storageId }));
           }}
@@ -878,7 +877,6 @@ export function ReceiptCell({
   hasReceipt,
   reminderStage,
   transactionId,
-  centralScope = false,
   onUpload,
   generateUploadUrl,
 }: {
@@ -890,14 +888,6 @@ export function ReceiptCell({
    *  keeps compiling unchanged; omitting it just falls back to the old inert
    *  chip rather than opening a viewer. */
   transactionId?: Id<"transactions">;
-  /** Is this cell's transaction in the CENTRAL-owned bucket (the Reconcile
-   *  grid's Central toggle)? Widens the "attach existing" picker's search to
-   *  central receipts instead of the caller's own chapter — otherwise a
-   *  central transaction's receipt is invisible to the picker even though
-   *  it's sitting right there (the bug this prop fixes). Defaults `false` —
-   *  `TransactionDetailModal`'s call site doesn't track scope yet, so it
-   *  keeps today's chapter-only search unchanged. */
-  centralScope?: boolean;
   onUpload: (storageId: Id<"_storage">) => Promise<void>;
   generateUploadUrl: () => Promise<string>;
 }) {
@@ -1027,7 +1017,6 @@ export function ReceiptCell({
       {attachOpen && transactionId ? (
         <ReceiptAttachPicker
           transactionId={transactionId}
-          centralScope={centralScope}
           onClose={() => setAttachOpen(false)}
         />
       ) : null}

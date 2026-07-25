@@ -231,27 +231,29 @@ export async function unlinkReceiptFromTransaction(
 }
 
 /**
- * Find an EARLIER receipt in the same chapter whose stored file has the exact
- * same content hash (`by_sha256`, then chapter-filtered in memory — a real
- * hash collision among one chapter's receipts is rare, so this stays cheap).
- * Used by both ingest paths (`receipts.ts#submitUploadedReceipts`,
- * `receiptInbox.ts#commitInboundReceipts`) to catch the SAME bytes arriving
- * twice, whether by re-upload or by re-forwarding an email — deliberately
- * scoped to one chapter (a coincidental cross-chapter match is not a
- * duplicate submission, just two chapters photographing similar receipts).
- * A chapterless (unknown-sender) or central-owned receipt never dedupes
- * (`chapterId` must be a real chapter id) — returns `null` immediately.
+ * Find an EARLIER receipt ORG-WIDE whose stored file has the exact same
+ * content hash (`by_sha256`). Used by both ingest paths
+ * (`receipts.ts#submitUploadedReceipts`, `receiptInbox.ts#commitInboundReceipts`)
+ * to catch the SAME bytes arriving twice, whether by re-upload or by
+ * re-forwarding an email.
+ *
+ * DE-SCOPED (founder decision, 2026-07-24): this used to require a real
+ * chapter id AND an exact chapter match, so a chapterless (unknown-sender) or
+ * central-owned receipt never deduped at all, and the same file forwarded by
+ * two people in different chapters produced two rows. Since every receipt
+ * arrives through ONE shared inbox and receipts are no longer chapter
+ * property, identical BYTES are a duplicate submission wherever they came
+ * from — the previous "two chapters photographing similar receipts" worry
+ * doesn't apply to an exact sha256 match of the same file.
  */
 export async function findDuplicateReceiptBySha256(
   ctx: MutationCtx,
-  chapterId: ReceiptChapterId | undefined,
+  _chapterId: ReceiptChapterId | undefined,
   fileSha256: string,
 ): Promise<Id<"receipts"> | null> {
-  if (chapterId == null || chapterId === "central") return null;
   const matches = await ctx.db
     .query("receipts")
     .withIndex("by_sha256", (q) => q.eq("fileSha256", fileSha256))
     .take(50);
-  const hit = matches.find((r) => r.chapterId === chapterId);
-  return hit ? hit._id : null;
+  return matches.length > 0 ? matches[0]._id : null;
 }

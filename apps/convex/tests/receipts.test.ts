@@ -196,16 +196,21 @@ describe("listReceipts", () => {
     expect(linkedRows[0].linkCount).toBe(1);
   });
 
-  test("is chapter-scoped: another chapter's receipts never appear", async () => {
+  // REPLACES "is chapter-scoped: another chapter's receipts never appear"
+  // (founder decision, 2026-07-24 — receipts are org-wide provenance-tagged
+  // documents now; the old assertion pinned the behavior that made a
+  // shared-inbox receipt unmatchable).
+  test("is org-wide: another chapter's receipts DO appear, tagged with their origin", async () => {
     const t = newT();
     const s = await setupChapter(t, { email: "a@publicworship.life", chapterName: "NY" });
     const other = await setupChapter(t, { email: "b@publicworship.life", chapterName: "LA" });
     await seedBookkeeper(s);
     await seedBookkeeper(other);
-    await newUploadReceipt(other);
+    const theirs = await newUploadReceipt(other);
 
     const rows = await s.as.query(api.receipts.listReceipts, {});
-    expect(rows).toEqual([]);
+    expect(rows.map((r) => r._id)).toEqual([theirs]);
+    expect(rows[0].chapterName).toBe("LA");
   });
 });
 
@@ -321,22 +326,23 @@ describe("dismissDuplicateFlag", () => {
     expect(row?.duplicateDismissed).toBe(true);
   });
 
-  test("requires bookkeeper+ and chapter ownership", async () => {
+  test("requires bookkeeper+, but no longer chapter ownership", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const other = await setupChapter(t, { email: "other@publicworship.life", chapterName: "LA" });
     await seedBookkeeper(other);
     const receiptId = await newUploadReceipt(s, { amountCents: 4210, receiptDate: Date.now() });
 
-    // No bookkeeper grant in `s` at all → role gate rejects.
+    // No bookkeeper grant in `s` at all → role gate still rejects.
     await expect(
       s.as.mutation(api.receipts.dismissDuplicateFlag, { receiptId }),
     ).rejects.toThrow(ConvexError);
 
-    // A bookkeeper in a DIFFERENT chapter can't touch this receipt.
+    // A bookkeeper in a DIFFERENT chapter CAN act on it now: receipts are
+    // org-wide, and the finance ROLE is the only remaining gate.
     await expect(
       other.as.mutation(api.receipts.dismissDuplicateFlag, { receiptId }),
-    ).rejects.toThrow(ConvexError);
+    ).resolves.toBeNull();
   });
 });
 
@@ -477,7 +483,7 @@ describe("markAsDuplicate", () => {
     ).rejects.toThrow(ConvexError);
   });
 
-  test("gates below bookkeeper+ and rejects a receipt outside the caller's chapter", async () => {
+  test("gates below bookkeeper+, but a receipt's chapter no longer matters", async () => {
     const t = newT();
     const s = await setupChapter(t, { email: "a@publicworship.life", chapterName: "NY" });
     const other = await setupChapter(t, { email: "b@publicworship.life", chapterName: "LA" });
@@ -485,15 +491,18 @@ describe("markAsDuplicate", () => {
     const primary = await newUploadReceipt(s);
     const dupe = await newUploadReceipt(s);
 
-    // No bookkeeper grant in `s` → role gate rejects.
+    // No bookkeeper grant in `s` → role gate still rejects.
     await expect(
       s.as.mutation(api.receipts.markAsDuplicate, { receiptId: dupe, primaryReceiptId: primary }),
     ).rejects.toThrow(ConvexError);
 
-    // A bookkeeper in a DIFFERENT chapter can't touch either receipt.
+    // A bookkeeper in a DIFFERENT chapter CAN resolve them: two copies of the
+    // same document reaching the shared inbox from different chapters is
+    // precisely the duplicate this flow exists to merge (founder decision,
+    // 2026-07-24 — receipts are org-wide).
     await expect(
       other.as.mutation(api.receipts.markAsDuplicate, { receiptId: dupe, primaryReceiptId: primary }),
-    ).rejects.toThrow(ConvexError);
+    ).resolves.not.toThrow();
   });
 });
 
@@ -1040,38 +1049,113 @@ describe("linkReceipt / unlinkReceipt", () => {
   });
 });
 
-// ── listReceipts scope:"central" ──────────────────────────────────────────────
-describe("listReceipts scope: central", () => {
-  test("a central-reach caller sees CENTRAL-owned receipts, not the chapter's own", async () => {
-    const t = newT();
-    const s = await setupChapter(t);
-    const person = await seedPerson(s);
-    await run(s.t, (ctx) =>
-      ctx.db.insert("financeRoles", {
-        chapterId: s.chapterId,
-        personId: person,
-        role: "bookkeeper",
-        scope: "central",
-        createdAt: Date.now(),
-      }),
-    );
-    await newUploadReceipt(s); // chapter-scoped — must NOT show up under scope:"central"
-    const centralStorageId = await storeBlobWithContent(s, `central-${Math.random()}`);
-    const centralReceiptId = await run(s.t, (ctx) =>
-      createReceipt(ctx, { chapterId: CENTRAL, storageId: centralStorageId, source: "upload" }),
-    );
+// ── Receipts are ORG-WIDE (founder decision, 2026-07-24) ─────────────────────
+/** Seed a receipt with NO chapter at all — the unknown-sender email case that
+ *  used to be invisible to every chapter-scoped read in the system. */
+async function newChapterlessReceipt(s: ChapterSetup): Promise<Id<"receipts">> {
+  const storageId = await storeBlobWithContent(s, `chapterless-${Math.random()}`);
+  return await run(s.t, (ctx) => createReceipt(ctx, { storageId, source: "upload" }));
+}
 
-    const rows = await s.as.query(api.receipts.listReceipts, { scope: "central" });
-    expect(rows.map((r) => r._id)).toEqual([centralReceiptId]);
+describe("listReceipts is org-wide", () => {
+  test("a chapter bookkeeper sees other chapters' receipts AND chapterless ones", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "a@publicworship.life", chapterName: "NY" });
+    const other = await setupChapter(t, { email: "b@publicworship.life", chapterName: "Boston" });
+    await seedBookkeeper(s);
+
+    const mine = await newUploadReceipt(s);
+    const theirs = await newUploadReceipt(other);
+    const chapterless = await newChapterlessReceipt(s);
+
+    const rows = await s.as.query(api.receipts.listReceipts, {});
+    const ids = rows.map((r) => r._id);
+    // The whole point of de-scoping: nothing is hidden from anyone.
+    expect(ids).toContain(mine);
+    expect(ids).toContain(theirs);
+    expect(ids).toContain(chapterless);
   });
 
-  test("rejects scope:\"central\" for a caller without central reach", async () => {
+  test("provenance is returned so the UI can label where a receipt came from", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { chapterName: "NY" });
+    await seedBookkeeper(s);
+    const mine = await newUploadReceipt(s);
+    const chapterless = await newChapterlessReceipt(s);
+
+    const rows = await s.as.query(api.receipts.listReceipts, {});
+    const byId = new Map(rows.map((r) => [r._id, r]));
+    expect(byId.get(mine)?.chapterName).toBe("NY");
+    // A chapterless row reports null rather than vanishing — the UI shows
+    // "Unassigned" instead of the row being invisible everywhere.
+    expect(byId.get(chapterless)?.chapterId).toBeNull();
+    expect(byId.get(chapterless)?.chapterName).toBeNull();
+  });
+
+  test("rankForTransactionId floats same-chapter first, then chapterless — hiding nothing", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "a@publicworship.life", chapterName: "NY" });
+    const other = await setupChapter(t, { email: "b@publicworship.life", chapterName: "Boston" });
+    await seedBookkeeper(s);
+
+    // Created oldest → newest, so the UNRANKED (newest-first) order would be
+    // exactly the reverse of the ranking we expect — proving ranking ran.
+    const nyReceipt = await newUploadReceipt(s);
+    const chapterless = await newChapterlessReceipt(s);
+    const bostonReceipt = await newUploadReceipt(other);
+
+    const nyTxn = await seedTxn(s);
+    const unranked = await s.as.query(api.receipts.listReceipts, { filter: "unlinked" });
+    expect(unranked.map((r) => r._id)).toEqual([bostonReceipt, chapterless, nyReceipt]);
+
+    const ranked = await s.as.query(api.receipts.listReceipts, {
+      filter: "unlinked",
+      rankForTransactionId: nyTxn,
+    });
+    expect(ranked.map((r) => r._id)).toEqual([nyReceipt, chapterless, bostonReceipt]);
+  });
+});
+
+describe("linking is gated on the transaction, not the receipt's chapter", () => {
+  test("a chapterless (unknown-sender) receipt can be linked — the founder's stuck case", async () => {
     const t = newT();
     const s = await setupChapter(t);
-    await seedBookkeeper(s); // chapter-scoped only
+    await seedBookkeeper(s);
+    const txn = await seedTxn(s, { status: "categorized" });
+    const chapterless = await newChapterlessReceipt(s);
+
+    const res = await s.as.mutation(api.receipts.linkReceipt, {
+      receiptId: chapterless,
+      transactionId: txn,
+    });
+    expect(res).toEqual({ linked: true, reconciled: true });
+  });
+
+  test("a receipt whose provenance is ANOTHER chapter still links (provenance is a hint)", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "a@publicworship.life", chapterName: "NY" });
+    const other = await setupChapter(t, { email: "b@publicworship.life", chapterName: "Boston" });
+    await seedBookkeeper(s);
+    const txn = await seedTxn(s, { status: "categorized" });
+    const bostonReceipt = await newUploadReceipt(other);
+
+    const res = await s.as.mutation(api.receipts.linkReceipt, {
+      receiptId: bostonReceipt,
+      transactionId: txn,
+    });
+    expect(res).toEqual({ linked: true, reconciled: true });
+  });
+
+  test("but the TRANSACTION is still gated — no linking onto another chapter's charge", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "a@publicworship.life", chapterName: "NY" });
+    const other = await setupChapter(t, { email: "b@publicworship.life", chapterName: "Boston" });
+    await seedBookkeeper(s);
+    const otherTxn = await seedTxn(other);
+    const receiptId = await newUploadReceipt(s);
 
     await expect(
-      s.as.query(api.receipts.listReceipts, { scope: "central" }),
+      s.as.mutation(api.receipts.linkReceipt, { receiptId, transactionId: otherTxn }),
     ).rejects.toThrow(ConvexError);
   });
 });

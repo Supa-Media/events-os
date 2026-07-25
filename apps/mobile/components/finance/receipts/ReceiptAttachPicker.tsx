@@ -1,22 +1,25 @@
 /**
  * ATTACH AN EXISTING RECEIPT — the sub-picker `ReceiptViewerModal`'s "Attach
- * existing" button and the Reconcile grid's receipt cell both open. Lists the
- * chapter's UNLINKED receipts (`api.receipts.listReceipts({filter:"unlinked"})`
+ * existing" button and the Reconcile grid's receipt cell both open. Lists
+ * EVERY unlinked receipt org-wide (`api.receipts.listReceipts({filter:"unlinked"})`
  * — the bookkeeper's real worklist, per that query's own doc comment) as a
  * searchable tap-to-link list; tapping a row calls `api.receipts.linkReceipt`
  * and closes on success. Same hand-rolled modal shape as its parent (nested —
  * RN supports stacked `Modal`s).
  *
- * `centralScope` (the Reconcile grid's Central toggle) switches the search to
- * the CENTRAL-owned receipt library instead — previously this picker always
- * searched the caller's own chapter regardless of scope, so a central
- * transaction's receipt was invisible here even when it existed (the bug
- * this prop fixes; `linkReceipt` independently re-verifies scope server-side
- * from the transaction itself, never trusting this client flag).
+ * NO CHAPTER SCOPE (founder decision, 2026-07-24). This used to search only
+ * the caller's own chapter, so a receipt from the shared no-reply inbox that
+ * landed under a different chapter — or under NO chapter, the unknown-sender
+ * case — was unreachable here even though the charge was sitting right there.
+ * Instead of filtering, the server RANKS: passing `rankForTransactionId`
+ * floats receipts whose provenance matches this transaction's scope to the
+ * top, then chapterless ones, then the rest. Every receipt stays reachable —
+ * "a Boston member uploaded it" makes a Boston purchase likely, not certain.
+ * Each row shows its origin so the human can judge.
  *
- * The search box filters the worklist client-side by merchant name and amount
- * (the query itself has no text-search term); the list is read at the max page
- * size so a search reaches the whole unlinked backlog, not just the first page.
+ * The search box filters that ranked worklist client-side by merchant name and
+ * amount (the query itself has no text-search term); the list is read at the
+ * max page size so a search reaches the whole backlog, not just page one.
  */
 import { useMemo, useState } from "react";
 import { ActivityIndicator, Image, Modal, Pressable, ScrollView, Text, View } from "react-native";
@@ -32,22 +35,18 @@ import { receiptMatchesSearch } from "./receiptSearch";
 
 export function ReceiptAttachPicker({
   transactionId,
-  centralScope = false,
   onClose,
 }: {
   transactionId: Id<"transactions">;
-  /** Search the CENTRAL-owned receipt library instead of the caller's own
-   *  chapter — must match the scope of `transactionId`'s own transaction, or
-   *  `linkReceipt` rejects the pick server-side (see its own doc comment). */
-  centralScope?: boolean;
   onClose: () => void;
 }) {
   // Read at the max page size so the client-side search below can reach the
-  // whole unlinked backlog, not just the default first page.
+  // whole unlinked backlog, not just the default first page. `rankForTransactionId`
+  // orders (never filters) by provenance — see this file's module doc.
   const unlinked = useQuery(api.receipts.listReceipts, {
     filter: "unlinked",
     limit: 500,
-    ...(centralScope ? { scope: "central" as const } : {}),
+    rankForTransactionId: transactionId,
   });
   const linkReceipt = useMutation(api.receipts.linkReceipt);
   const { run, toast, dismiss } = useActionRunner();
@@ -101,9 +100,7 @@ export function ReceiptAttachPicker({
               <Text className="py-6 text-center text-sm text-muted">Loading…</Text>
             ) : unlinked.length === 0 ? (
               <Text className="py-6 text-center text-sm text-muted">
-                {centralScope
-                  ? "No unattached receipts in the central library."
-                  : "No unattached receipts in your library."}
+                No unattached receipts anywhere in the org.
               </Text>
             ) : filtered.length === 0 ? (
               <Text className="py-6 text-center text-sm text-muted">
@@ -128,6 +125,15 @@ export function ReceiptAttachPicker({
                           r.amountCents != null ? formatCents(r.amountCents) : "No amount read",
                           r.receiptDate != null ? shortDate(r.receiptDate) : null,
                         ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </Text>
+                      {/* PROVENANCE — where this came from and who put it
+                          there. The list spans the whole org now, so the
+                          origin is what lets a human tell "my chapter's
+                          receipt" from "someone else's, probably not mine". */}
+                      <Text className="text-2xs text-faint" numberOfLines={1}>
+                        {[r.chapterName ?? "Unassigned", r.uploadedByName]
                           .filter(Boolean)
                           .join(" · ")}
                       </Text>
