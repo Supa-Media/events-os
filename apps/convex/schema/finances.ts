@@ -1114,11 +1114,23 @@ export const inboundReceipts = defineTable({
  *  recoverable. `chapterId` mirrors `transactions.chapterId` (a real chapter or
  *  the `"central"` sentinel). */
 export const receipts = defineTable({
-  // A real chapter or the `"central"` sentinel. OPTIONAL because an email from
-  // an UNKNOWN sender (no roster match) is still processed and stored (owner
-  // decision, 2026-07-23) but has no chapter to infer — those rows surface only
-  // in the org-wide receipt view, never a chapter-scoped read. Upload/backfill
-  // and resolved-sender email receipts always carry a chapter.
+  // PROVENANCE, NOT TENANCY (founder decision, 2026-07-24). A real chapter or
+  // the `"central"` sentinel: where this document probably belongs, inferred
+  // from who uploaded it or whose email it arrived from. It is a HINT — it
+  // ranks the attach-a-receipt picker (a Boston member's upload is most likely
+  // a Boston purchase) and labels the row; it NEVER hides a receipt from
+  // anyone. Every receipt is visible to every finance-seat holder org-wide.
+  //
+  // This used to be a hard tenancy filter, which broke the actual workflow:
+  // every receipt lands in ONE shared no-reply inbox, people double-hat
+  // Central and New York, and an unknown-sender email carries no chapter at
+  // all — so a receipt and its transaction routinely sat in different buckets
+  // and could never be matched. `linkReceipt` gates on the TRANSACTION's scope
+  // (the real money boundary); the document itself is org-wide.
+  //
+  // Still OPTIONAL: an email from an UNKNOWN sender (no roster match) has no
+  // chapter to infer (owner decision, 2026-07-23). Such a row now simply
+  // shows as "Unassigned" rather than being invisible everywhere.
   chapterId: v.optional(v.union(v.id("chapters"), v.literal("central"))),
   // The stored receipt file (image/PDF, or a rendered email body).
   storageId: v.id("_storage"),
@@ -1245,9 +1257,14 @@ export const receipts = defineTable({
   createdAt: v.number(),
   updatedAt: v.number(),
 })
+  // Provenance lookups only (e.g. "which chapter did this come from") — NEVER
+  // a visibility filter for the library; see `chapterId`'s own doc above.
   .index("by_chapter", ["chapterId"])
-  // The "unmatched receipts" query: a chapter's receipts with linkCount 0.
   .index("by_chapter_and_linkCount", ["chapterId", "linkCount"])
+  // The real "unmatched receipts" worklist, ORG-WIDE: every receipt nobody has
+  // attached yet, regardless of which chapter it came from. Replaces
+  // `by_chapter_and_linkCount` for `listReceipts`' `unlinked` filter.
+  .index("by_linkCount", ["linkCount"])
   // Find the receipt(s) extracted from a given inbound email (manual-match).
   .index("by_inbound", ["inboundReceiptId"])
   // Exact-duplicate detection: find every receipt sharing a stored file's

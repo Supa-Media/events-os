@@ -43,9 +43,15 @@ import {
   RECEIPT_SENDER_CLASSES,
   INBOUND_RECEIPT_STATUSES,
   CENTRAL,
+  financeRoleAtLeast,
 } from "@events-os/shared";
 import { getChapterIdOrNull, requireChapterId } from "./lib/context";
-import { requireFinanceRole, requireCentralFinanceRole, type FinanceAccess } from "./lib/finance";
+import {
+  requireFinanceRole,
+  requireCentralFinanceRole,
+  getFinanceRole,
+  type FinanceAccess,
+} from "./lib/finance";
 import {
   createReceipt,
   linkReceiptToTransaction,
@@ -193,9 +199,88 @@ const receiptSummary = v.object({
   // receipt hidden by hand, OR a confirmed duplicate — see
   // `markAsDuplicate`'s doc). `false` for every pre-existing row.
   archived: v.boolean(),
+  // ── PROVENANCE (founder decision, 2026-07-24) ───────────────────────────────
+  // Where this receipt probably belongs and who put it there. Purely
+  // informational + ranking fuel — see `schema/finances.ts`'s `chapterId` doc.
+  // `chapterName` is null for a chapterless (unknown-sender) row, which the UI
+  // labels "Unassigned"; `uploadedByName` is null for an email-sourced row
+  // whose sender never resolved to a roster person.
+  chapterId: v.union(v.id("chapters"), v.literal(CENTRAL), v.null()),
+  chapterName: v.union(v.string(), v.null()),
+  uploadedByName: v.union(v.string(), v.null()),
   createdAt: v.number(),
 });
-async function toReceiptSummary(ctx: QueryCtx, r: Doc<"receipts">) {
+
+/**
+ * Every TRANSACTION scope this caller may match receipts against: their own
+ * chapter, plus CENTRAL when they hold central reach at bookkeeper rank.
+ *
+ * Receipts went org-wide (see `schema/finances.ts`'s `chapterId` doc) but
+ * TRANSACTIONS did not — a charge is real money owned by exactly one scope,
+ * and a Boston bookkeeper still has no business matching against New York's
+ * ledger. What was broken is narrower: every receipt→transaction search read
+ * the caller's home chapter ONLY, so a CENTRAL-owned charge was invisible to
+ * the matcher, the suggestion list, and the free-text search alike. A receipt
+ * for a central purchase therefore reported "No candidate transactions found"
+ * and could never be matched by hand either (founder bug, 2026-07-24).
+ */
+async function readableTxnScopes(
+  ctx: QueryCtx,
+  homeChapterId: Id<"chapters">,
+): Promise<(Id<"chapters"> | typeof CENTRAL)[]> {
+  const access = await getFinanceRole(ctx, homeChapterId);
+  const scopes: (Id<"chapters"> | typeof CENTRAL)[] = [homeChapterId];
+  if (access.isCentral && financeRoleAtLeast(access.role, "bookkeeper")) {
+    scopes.push(CENTRAL);
+  }
+  return scopes;
+}
+
+/** Read-through caches for a single query's provenance lookups — a library
+ *  page is mostly a handful of distinct chapters/uploaders, so this keeps the
+ *  per-row `db.get`s to one per DISTINCT id rather than one per row. */
+type ProvenanceCache = {
+  chapters: Map<string, string | null>;
+  people: Map<string, string | null>;
+};
+function newProvenanceCache(): ProvenanceCache {
+  return { chapters: new Map(), people: new Map() };
+}
+
+async function resolveProvenance(
+  ctx: QueryCtx,
+  r: Doc<"receipts">,
+  cache: ProvenanceCache,
+): Promise<{ chapterName: string | null; uploadedByName: string | null }> {
+  let chapterName: string | null = null;
+  if (r.chapterId === CENTRAL) {
+    chapterName = "Central";
+  } else if (r.chapterId) {
+    const key = r.chapterId as string;
+    if (!cache.chapters.has(key)) {
+      const doc = await ctx.db.get(r.chapterId as Id<"chapters">);
+      cache.chapters.set(key, doc?.name ?? null);
+    }
+    chapterName = cache.chapters.get(key) ?? null;
+  }
+  let uploadedByName: string | null = null;
+  if (r.uploadedByPersonId) {
+    const key = r.uploadedByPersonId as string;
+    if (!cache.people.has(key)) {
+      const doc = await ctx.db.get(r.uploadedByPersonId);
+      cache.people.set(key, doc?.name ?? null);
+    }
+    uploadedByName = cache.people.get(key) ?? null;
+  }
+  return { chapterName, uploadedByName };
+}
+
+async function toReceiptSummary(ctx: QueryCtx, r: Doc<"receipts">, cache?: ProvenanceCache) {
+  const { chapterName, uploadedByName } = await resolveProvenance(
+    ctx,
+    r,
+    cache ?? newProvenanceCache(),
+  );
   return {
     _id: r._id,
     url: await ctx.storage.getUrl(r.storageId),
@@ -214,12 +299,15 @@ async function toReceiptSummary(ctx: QueryCtx, r: Doc<"receipts">) {
     linkCount: r.linkCount,
     duplicateOfReceiptId: r.duplicateOfReceiptId ?? null,
     archived: r.archived === true,
+    chapterId: r.chapterId ?? null,
+    chapterName,
+    uploadedByName,
     createdAt: r.createdAt,
   };
 }
 
 /**
- * A bounded, newest-first scan of a chapter's receipts, keyed by
+ * A bounded, newest-first scan of ALL receipts org-wide, keyed by
  * `amountCents:receiptDate` — every receipt whose key collides with another
  * receipt's in the scanned window is a SOFT duplicate (same reported total on
  * the same day; unlike `fileSha256`'s EXACT-bytes match, this catches two
@@ -243,15 +331,12 @@ async function toReceiptSummary(ctx: QueryCtx, r: Doc<"receipts">) {
  * the duplicate warning." A resolved sibling shouldn't count toward anyone
  * else's collision group either.
  */
-async function computeSoftDuplicates(
-  ctx: QueryCtx,
-  chapterId: Id<"chapters"> | typeof CENTRAL,
-): Promise<Set<Id<"receipts">>> {
-  const scan = await ctx.db
-    .query("receipts")
-    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-    .order("desc")
-    .take(DUPLICATE_SCAN_LIMIT);
+async function computeSoftDuplicates(ctx: QueryCtx): Promise<Set<Id<"receipts">>> {
+  // ORG-WIDE (founder decision, 2026-07-24): receipts are no longer
+  // chapter-scoped, so neither is duplicate detection — the same photo
+  // emailed by two people who happen to sit in different chapters is exactly
+  // the collision this is for, and the old per-chapter scan couldn't see it.
+  const scan = await ctx.db.query("receipts").order("desc").take(DUPLICATE_SCAN_LIMIT);
   const byKey = new Map<string, Doc<"receipts">[]>();
   for (const r of scan) {
     if (r.amountCents == null || r.receiptDate == null) continue;
@@ -271,7 +356,7 @@ async function computeSoftDuplicates(
 }
 
 /**
- * The OTHER receipt(s) in this chapter that share `receipt`'s canonical
+ * The OTHER receipt(s) org-wide that share `receipt`'s canonical
  * amount+date — EXACTLY the `computeSoftDuplicates` collision criteria,
  * surfaced so a flagged receipt's "why" is answerable (and actionable — the
  * mobile detail view links straight to each one). Excludes itself and its
@@ -287,15 +372,11 @@ async function computeSoftDuplicates(
  */
 async function findSoftDuplicateMatches(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
   receipt: Doc<"receipts">,
 ): Promise<Doc<"receipts">[]> {
   if (receipt.amountCents == null || receipt.receiptDate == null) return [];
-  const scan = await ctx.db
-    .query("receipts")
-    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-    .order("desc")
-    .take(DUPLICATE_SCAN_LIMIT);
+  // Org-wide, matching `computeSoftDuplicates` — see its own doc.
+  const scan = await ctx.db.query("receipts").order("desc").take(DUPLICATE_SCAN_LIMIT);
   return scan
     .filter(
       (r) =>
@@ -310,7 +391,7 @@ async function findSoftDuplicateMatches(
 }
 
 /**
- * The OTHER receipt(s) in this chapter whose `duplicateOfReceiptId` points at
+ * The OTHER receipt(s) org-wide whose `duplicateOfReceiptId` points at
  * `receiptId` — i.e. `receiptId` is the kept PRIMARY of one or more hidden
  * duplicates (derived sha256 matches AND human-confirmed ones alike; see
  * `getReceipt`'s doc on `duplicates`). Bounded scan (same discipline as
@@ -318,14 +399,10 @@ async function findSoftDuplicateMatches(
  */
 async function findDuplicatesOfReceipt(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
   receiptId: Id<"receipts">,
 ): Promise<Doc<"receipts">[]> {
-  const scan = await ctx.db
-    .query("receipts")
-    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-    .order("desc")
-    .take(DUPLICATE_SCAN_LIMIT);
+  // Org-wide, matching `computeSoftDuplicates` — see its own doc.
+  const scan = await ctx.db.query("receipts").order("desc").take(DUPLICATE_SCAN_LIMIT);
   return scan.filter((r) => r.duplicateOfReceiptId === receiptId).slice(0, MAX_DUPLICATE_MATCHES);
 }
 
@@ -378,24 +455,25 @@ export const listReceipts = query({
   args: {
     filter: v.optional(listFilterValidator),
     limit: v.optional(v.number()),
-    // Central desk: browse CENTRAL-owned receipts (`chapterId:"central"`)
-    // instead of the caller's own chapter — mirrors `listReconcile`'s own
-    // `scope:"central"` (WP-2.1). Requires central reach; absent → the
-    // caller's own chapter, exactly as before.
-    scope: v.optional(v.literal("central")),
+    // PROVENANCE RANKING (founder ask, 2026-07-24): when the caller is picking
+    // a receipt to attach to a specific transaction, sort the page so the
+    // likeliest candidates lead — receipts whose provenance chapter matches
+    // that transaction's scope first, then chapterless/unknown-sender ones,
+    // then everything else. Purely an ORDERING hint: nothing is filtered out,
+    // because "a Boston member uploaded it" makes a Boston purchase LIKELY,
+    // not certain, and the whole point of de-scoping was to keep the odd case
+    // reachable. Absent → plain newest-first.
+    rankForTransactionId: v.optional(v.id("transactions")),
   },
   returns: v.array(listReceiptRow),
   handler: async (ctx, args) => {
+    // Receipts are ORG-WIDE (founder decision, 2026-07-24 — see
+    // `schema/finances.ts`'s `chapterId` doc): any finance-seat holder in any
+    // chapter sees every receipt. The caller's home chapter is still where we
+    // resolve their finance role from, but it no longer filters the results.
     const homeChapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
     if (!homeChapterId) return [];
-    let chapterId: Id<"chapters"> | typeof CENTRAL;
-    if (args.scope === "central") {
-      await requireCentralFinanceRole(ctx, homeChapterId, "bookkeeper");
-      chapterId = CENTRAL;
-    } else {
-      await requireFinanceRole(ctx, homeChapterId, "bookkeeper");
-      chapterId = homeChapterId;
-    }
+    await requireFinanceRole(ctx, homeChapterId, "bookkeeper");
 
     const filter = args.filter ?? "all";
     const limit = Math.min(Math.max(Math.trunc(args.limit ?? DEFAULT_LIST_LIMIT), 1), MAX_LIST_LIMIT);
@@ -404,43 +482,43 @@ export const listReceipts = query({
     if (filter === "unlinked") {
       const page = await ctx.db
         .query("receipts")
-        .withIndex("by_chapter_and_linkCount", (q) =>
-          q.eq("chapterId", chapterId).eq("linkCount", 0),
-        )
+        .withIndex("by_linkCount", (q) => q.eq("linkCount", 0))
         .order("desc")
         .take(limit);
       rows = page.filter((r) => r.duplicateOfReceiptId == null && r.archived !== true);
     } else if (filter === "duplicates") {
-      const page = await ctx.db
-        .query("receipts")
-        .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-        .order("desc")
-        .take(limit);
+      const page = await ctx.db.query("receipts").order("desc").take(limit);
       rows = page.filter((r) => r.duplicateOfReceiptId != null);
     } else if (filter === "archived") {
-      const page = await ctx.db
-        .query("receipts")
-        .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-        .order("desc")
-        .take(limit);
+      const page = await ctx.db.query("receipts").order("desc").take(limit);
       rows = page.filter((r) => r.archived === true);
     } else {
-      const page = await ctx.db
-        .query("receipts")
-        .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-        .order("desc")
-        .take(limit);
+      const page = await ctx.db.query("receipts").order("desc").take(limit);
       const undupedPage = page.filter(
         (r) => r.duplicateOfReceiptId == null && r.archived !== true,
       );
       rows = filter === "linked" ? undupedPage.filter((r) => r.linkCount > 0) : undupedPage;
     }
 
-    const dupSet = await computeSoftDuplicates(ctx, chapterId);
+    // Provenance ranking (stable — equal ranks keep the newest-first order the
+    // index already produced). The target txn is read only for its scope; the
+    // caller's right to SEE receipts was already settled above.
+    if (args.rankForTransactionId) {
+      const txn = await ctx.db.get(args.rankForTransactionId);
+      if (txn) {
+        const rank = (r: Doc<"receipts">) =>
+          r.chapterId === txn.chapterId ? 0 : r.chapterId == null ? 1 : 2;
+        rows = rows.map((r, i) => ({ r, i })).sort((a, b) => rank(a.r) - rank(b.r) || a.i - b.i)
+          .map(({ r }) => r);
+      }
+    }
+
+    const dupSet = await computeSoftDuplicates(ctx);
+    const cache = newProvenanceCache();
     const out = [];
     for (const r of rows) {
       out.push({
-        ...(await toReceiptSummary(ctx, r)),
+        ...(await toReceiptSummary(ctx, r, cache)),
         softDuplicate: dupSet.has(r._id),
       });
     }
@@ -521,7 +599,7 @@ export const getReceipt = query({
     await requireFinanceRole(ctx, chapterId, "bookkeeper");
 
     const r = await ctx.db.get(receiptId);
-    if (!r || r.chapterId !== chapterId) return null;
+    if (!r) return null;
 
     const links = await ctx.db
       .query("receiptLinks")
@@ -554,12 +632,12 @@ export const getReceipt = query({
       }
     }
 
-    const dupSet = await computeSoftDuplicates(ctx, chapterId);
+    const dupSet = await computeSoftDuplicates(ctx);
     const softDuplicate = dupSet.has(r._id);
 
     const duplicateMatches = [];
     if (softDuplicate) {
-      for (const d of await findSoftDuplicateMatches(ctx, chapterId, r)) {
+      for (const d of await findSoftDuplicateMatches(ctx, r)) {
         duplicateMatches.push({
           _id: d._id,
           url: await ctx.storage.getUrl(d.storageId),
@@ -575,7 +653,7 @@ export const getReceipt = query({
     // duplicate-of-a-duplicate chain isn't a case this surfaces.
     const duplicates = [];
     if (!r.duplicateOfReceiptId) {
-      for (const d of await findDuplicatesOfReceipt(ctx, chapterId, r._id)) {
+      for (const d of await findDuplicatesOfReceipt(ctx, r._id)) {
         duplicates.push({
           _id: d._id,
           url: await ctx.storage.getUrl(d.storageId),
@@ -625,10 +703,10 @@ export const dismissDuplicateFlag = mutation({
     await requireFinanceRole(ctx, chapterId, "bookkeeper");
 
     const receipt = await ctx.db.get(receiptId);
-    if (!receipt || receipt.chapterId !== chapterId) {
+    if (!receipt) {
       throw new ConvexError({
         code: "NOT_FOUND",
-        message: "Receipt not found in your chapter.",
+        message: "Receipt not found.",
       });
     }
 
@@ -684,14 +762,14 @@ export const markAsDuplicate = mutation({
     }
 
     const receipt = await ctx.db.get(args.receiptId);
-    if (!receipt || receipt.chapterId !== chapterId) {
+    if (!receipt) {
       throw new ConvexError({
         code: "NOT_FOUND",
-        message: "Receipt not found in your chapter.",
+        message: "Receipt not found.",
       });
     }
     const primary = await ctx.db.get(args.primaryReceiptId);
-    if (!primary || primary.chapterId !== chapterId) {
+    if (!primary) {
       throw new ConvexError({
         code: "NOT_FOUND",
         message: "Primary receipt not found in your chapter.",
@@ -733,10 +811,10 @@ export const unmarkDuplicate = mutation({
     await requireFinanceRole(ctx, chapterId, "bookkeeper");
 
     const receipt = await ctx.db.get(receiptId);
-    if (!receipt || receipt.chapterId !== chapterId) {
+    if (!receipt) {
       throw new ConvexError({
         code: "NOT_FOUND",
-        message: "Receipt not found in your chapter.",
+        message: "Receipt not found.",
       });
     }
     if (!receipt.duplicateOfReceiptId) return null;
@@ -781,10 +859,10 @@ export const archiveReceipt = mutation({
     const access = await requireFinanceRole(ctx, chapterId, "bookkeeper");
 
     const receipt = await ctx.db.get(receiptId);
-    if (!receipt || receipt.chapterId !== chapterId) {
+    if (!receipt) {
       throw new ConvexError({
         code: "NOT_FOUND",
-        message: "Receipt not found in your chapter.",
+        message: "Receipt not found.",
       });
     }
 
@@ -818,10 +896,10 @@ export const unarchiveReceipt = mutation({
     await requireFinanceRole(ctx, chapterId, "bookkeeper");
 
     const receipt = await ctx.db.get(receiptId);
-    if (!receipt || receipt.chapterId !== chapterId) {
+    if (!receipt) {
       throw new ConvexError({
         code: "NOT_FOUND",
-        message: "Receipt not found in your chapter.",
+        message: "Receipt not found.",
       });
     }
 
@@ -845,7 +923,9 @@ export const unarchiveReceipt = mutation({
 
 // ── listForTransaction ───────────────────────────────────────────────────────
 /** Every receipt linked to one transaction (a txn detail panel's receipt
- *  strip). Bookkeeper+, chapter-only. */
+ *  strip). Bookkeeper+ in any scope the caller can read — a CENTRAL-owned
+ *  transaction's receipts used to come back empty for everyone, since this
+ *  compared the txn against the caller's home chapter alone. */
 export const listForTransaction = query({
   args: { transactionId: v.id("transactions") },
   returns: v.array(receiptSummary),
@@ -855,7 +935,9 @@ export const listForTransaction = query({
     await requireFinanceRole(ctx, chapterId, "bookkeeper");
 
     const txn = await ctx.db.get(transactionId);
-    if (!txn || txn.chapterId !== chapterId) return [];
+    if (!txn) return [];
+    const scopes = await readableTxnScopes(ctx, chapterId);
+    if (!scopes.includes(txn.chapterId as Id<"chapters"> | typeof CENTRAL)) return [];
 
     const links = await ctx.db
       .query("receiptLinks")
@@ -1053,10 +1135,10 @@ export const updateReceiptFields = mutation({
     const access = await requireFinanceRole(ctx, chapterId, "bookkeeper");
 
     const receipt = await ctx.db.get(args.receiptId);
-    if (!receipt || receipt.chapterId !== chapterId) {
+    if (!receipt) {
       throw new ConvexError({
         code: "NOT_FOUND",
-        message: "Receipt not found in your chapter.",
+        message: "Receipt not found.",
       });
     }
 
@@ -1108,17 +1190,26 @@ export const suggestMatches = query({
     await requireFinanceRole(ctx, chapterId, "bookkeeper");
 
     const receipt = await ctx.db.get(receiptId);
-    if (!receipt || receipt.chapterId !== chapterId) return [];
+    if (!receipt) return [];
     if (receipt.amountCents == null) return [];
 
-    return await matchReceiptCandidates(ctx, {
-      chapterId,
-      amountCents: receipt.amountCents,
-      // No canonical date → match on amount alone (never `createdAt`, which
-      // would wrongly window out older same-amount charges — the auto-match bug).
-      receiptDate: receipt.receiptDate ?? undefined,
-      ocrMerchant: receipt.merchant ?? receipt.ocrMerchant,
-    });
+    // Every scope the caller can match against, not just their home chapter —
+    // see `readableTxnScopes`. Central candidates are appended after the
+    // chapter's own, preserving each scope's internal ranking.
+    const out = [];
+    for (const scope of await readableTxnScopes(ctx, chapterId)) {
+      out.push(
+        ...(await matchReceiptCandidates(ctx, {
+          chapterId: scope,
+          amountCents: receipt.amountCents,
+          // No canonical date → match on amount alone (never `createdAt`, which
+          // would wrongly window out older same-amount charges — the auto-match bug).
+          receiptDate: receipt.receiptDate ?? undefined,
+          ocrMerchant: receipt.merchant ?? receipt.ocrMerchant,
+        })),
+      );
+    }
+    return out;
   },
 });
 
@@ -1178,7 +1269,12 @@ export function transactionMatchesSearch(
  * renaming it would 404 on any mobile client still running an OTA-lagged
  * bundle that calls it by the old name — leave the name alone.
  *
- * Bookkeeper+, chapter-only, bounded.
+ * SECOND FOUNDER FIX (2026-07-24): this searched the caller's home chapter
+ * ONLY, so a CENTRAL-owned charge could never be found here no matter what
+ * was typed — the reported "there is a purchase here that I can't link to a
+ * receipt". It now spans every scope the caller may read (`readableTxnScopes`).
+ *
+ * Bookkeeper+, bounded.
  */
 export const searchUnreceiptedTransactions = query({
   args: { query: v.optional(v.string()), limit: v.optional(v.number()) },
@@ -1190,28 +1286,33 @@ export const searchUnreceiptedTransactions = query({
 
     const sandboxMode = await readSandbox(ctx);
     const cap = Math.min(Math.max(Math.trunc(limit ?? TXN_SEARCH_MAX_RESULTS), 1), 100);
-    const rows = await ctx.db
-      .query("transactions")
-      .withIndex("by_chapter_and_postedAt", (qb) => qb.eq("chapterId", chapterId))
-      .order("desc")
-      .take(TXN_SEARCH_SCAN_LIMIT);
+    const scopes = await readableTxnScopes(ctx, chapterId);
 
     const results = [];
-    for (const tr of rows) {
-      if (!isSpend(tr)) continue;
-      if (!txnMatchesMode(tr, sandboxMode)) continue;
-      if (!transactionMatchesSearch(tr, query ?? "")) continue;
-      results.push({
-        transactionId: tr._id,
-        amountCents: tr.amountCents,
-        postedAt: tr.postedAt,
-        merchantName: tr.merchantName,
-        description: tr.description,
-        status: tr.status,
-        merchantOverlap: false,
-        isOwnCharge: false,
-        hasReceipt: tr.receiptStorageId != null,
-      });
+    for (const scope of scopes) {
+      const rows = await ctx.db
+        .query("transactions")
+        .withIndex("by_chapter_and_postedAt", (qb) => qb.eq("chapterId", scope))
+        .order("desc")
+        .take(TXN_SEARCH_SCAN_LIMIT);
+
+      for (const tr of rows) {
+        if (!isSpend(tr)) continue;
+        if (!txnMatchesMode(tr, sandboxMode)) continue;
+        if (!transactionMatchesSearch(tr, query ?? "")) continue;
+        results.push({
+          transactionId: tr._id,
+          amountCents: tr.amountCents,
+          postedAt: tr.postedAt,
+          merchantName: tr.merchantName,
+          description: tr.description,
+          status: tr.status,
+          merchantOverlap: false,
+          isOwnCharge: false,
+          hasReceipt: tr.receiptStorageId != null,
+        });
+        if (results.length >= cap) break;
+      }
       if (results.length >= cap) break;
     }
     return results;
@@ -1255,12 +1356,14 @@ async function requireReceiptAndTxnInChapter(
       message: "Transaction not found in your chapter.",
     });
   }
+  // ANY receipt may attach to a transaction the caller can write to — receipts
+  // are org-wide provenance-tagged documents, not chapter property (founder
+  // decision, 2026-07-24; see `schema/finances.ts`'s `chapterId` doc). The
+  // transaction gate above is the real money boundary; requiring the receipt
+  // to match it too is what made a shared-inbox receipt unlinkable.
   const receipt = await ctx.db.get(receiptId);
-  if (!receipt || receipt.chapterId !== txn.chapterId) {
-    throw new ConvexError({
-      code: "NOT_FOUND",
-      message: "Receipt not found in this scope.",
-    });
+  if (!receipt) {
+    throw new ConvexError({ code: "NOT_FOUND", message: "Receipt not found." });
   }
   return { receipt, txn, access };
 }
@@ -1684,10 +1787,10 @@ export const retryExtraction = mutation({
     await requireFinanceRole(ctx, chapterId, "bookkeeper");
 
     const receipt = await ctx.db.get(args.receiptId);
-    if (!receipt || receipt.chapterId !== chapterId) {
+    if (!receipt) {
       throw new ConvexError({
         code: "NOT_FOUND",
-        message: "Receipt not found in your chapter.",
+        message: "Receipt not found.",
       });
     }
 

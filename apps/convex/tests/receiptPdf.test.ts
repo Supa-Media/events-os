@@ -573,7 +573,11 @@ describe("retryExtraction", () => {
     ).rejects.toThrow(ConvexError);
   });
 
-  test("rejects a receipt outside the caller's chapter", async () => {
+  // Receipts are ORG-WIDE (founder decision, 2026-07-24): a bookkeeper can
+  // re-run extraction on any receipt, whatever chapter it came from — a
+  // failed OCR on a shared-inbox document is everyone's problem, and the
+  // finance role is the only remaining gate.
+  test("accepts a receipt from another chapter — bookkeeper role is the only gate", async () => {
     const t = newT();
     const s = await setupChapter(t, { email: "a@publicworship.life", chapterName: "NY" });
     const other = await setupChapter(t, { email: "b@publicworship.life", chapterName: "LA" });
@@ -584,7 +588,7 @@ describe("retryExtraction", () => {
     );
     await expect(
       s.as.mutation(api.receipts.retryExtraction, { receiptId }),
-    ).rejects.toThrow(ConvexError);
+    ).resolves.not.toThrow();
   });
 
   test("schedules reprocessing; a fresh read never overwrites a HUMAN-corrected canonical field", async () => {

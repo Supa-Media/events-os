@@ -123,6 +123,14 @@ function ReceiptCard({
         <Text className="text-2xs text-faint" numberOfLines={1}>
           {receipt.receiptDate != null ? formatDate(receipt.receiptDate) : formatDate(receipt.createdAt)}
         </Text>
+        {/* PROVENANCE — the library spans the whole org now (founder decision,
+            2026-07-24), so every card says where it came from and who put it
+            there. Without this an out-of-chapter row reads as a mystery. */}
+        <Text className="text-2xs text-faint" numberOfLines={1}>
+          {[receipt.chapterName ?? "Unassigned", receipt.uploadedByName]
+            .filter(Boolean)
+            .join(" · ")}
+        </Text>
         {receipt.filename ? (
           <Text className="text-2xs text-faint" numberOfLines={1}>
             {receipt.filename}

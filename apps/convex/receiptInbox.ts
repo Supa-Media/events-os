@@ -462,7 +462,11 @@ function merchantTokens(...texts: (string | null | undefined)[]): Set<string> {
 export async function matchReceiptCandidates(
   ctx: QueryCtx,
   args: {
-    chapterId: Id<"chapters">;
+    // A real chapter, or the `"central"` sentinel for CENTRAL-owned charges.
+    // Central was unreachable here before (founder bug, 2026-07-24): a receipt
+    // for a central purchase could never surface its own transaction, so the
+    // panel just said "No candidate transactions found".
+    chapterId: Id<"chapters"> | "central";
     amountCents: number;
     receiptDate?: number;
     ocrMerchant?: string;
@@ -534,7 +538,7 @@ export async function matchReceiptCandidates(
 
 export const findReceiptMatches = internalQuery({
   args: {
-    chapterId: v.id("chapters"),
+    chapterId: v.union(v.id("chapters"), v.literal("central")),
     amountCents: v.number(),
     // Optional: absent → match on exact amount alone (no date window). See
     // `matchReceiptCandidates` for why a fabricated date was the auto-match bug.
