@@ -165,9 +165,23 @@ export const TRANSACTION_SOURCES = [
   "manual", // hand-entered
   "reimbursement", // the payout leg of an approved reimbursement (a transfer)
   "repayment", // an offsetting credit from a personal-charge repayment
-  "skim", // a leg of the monthly chapter→central City Launch Fund skim (WP-4.1)
-  "launch_grant", // a leg of a one-time central→chapter launch grant (WP-4.2)
-  "settlement", // a leg of a monthly central↔chapter inter-scope settlement (WP-4.5)
+  "skim", // HISTORICAL (WP-4.1, retired) — a leg of the automated monthly
+  // chapter→central City Launch Fund skim. No code writes this anymore
+  // (owner decision 2026-07-26: "just 1 chapter, not a lot of backers, it
+  // feels unnecessarily complex" — see `transfers.ts`'s header comment); kept
+  // ONLY so prod rows recorded before the collapse keep validating. Never
+  // migrated/rewritten — a read path that still cares can treat it as a
+  // `"transfer"` alias (both are `flow:"transfer"` legs).
+  "launch_grant", // HISTORICAL (WP-4.2, retired) — a leg of a one-time
+  // central→chapter launch grant, same retirement as `"skim"` above.
+  "settlement", // HISTORICAL (WP-4.5, retired) — a leg of a monthly
+  // central↔chapter inter-scope settlement, same retirement as `"skim"`
+  // above.
+  "transfer", // a leg of a generic manual central↔chapter transfer — the ONE
+  // kind every NEW transfer writes today (skim commitment, launch grant, or
+  // inter-scope settlement are now all just "a transfer" with a free-text
+  // `note` explaining why; see `transfers.ts#recordTransfer`). Direction
+  // lives in `transactions.transferDirection`, not a separate source value.
 ] as const;
 export type TransactionSource = (typeof TRANSACTION_SOURCES)[number];
 
@@ -971,64 +985,34 @@ export function chapterAffordability(
   };
 }
 
-// ── The City Launch Fund money flows (WP-4.1 skim · WP-4.2 launch grant) ──────
+// ── The City Launch Fund money flows ──────────────────────────────────────────
 // The playbook models money moving BOTH ways between a chapter and central (PRD
-// §0.1): UP is the monthly ~15% skim (chapter → central City Launch Fund); DOWN
-// is a one-time launch grant (central → a new chapter, equipment + training
-// trip). Both are recorded as a PAIR of `flow:"transfer"` transactions — an
-// outflow leg on the source scope + an inflow leg on the destination scope —
-// linked by a shared `transactions.transferGroupId`. Transfers never count as
-// spend (`countsAsSpend`), so they distort no budget/category rollup.
+// §0.1): UP is the ~15% skim commitment (chapter → central City Launch Fund);
+// DOWN is a one-time launch grant (central → a new chapter, equipment +
+// training trip). Both are recorded as a PAIR of `flow:"transfer"`
+// transactions — an outflow leg on the source scope + an inflow leg on the
+// destination scope — linked by a shared `transactions.transferGroupId`.
+// Transfers never count as spend (`countsAsSpend`), so they distort no
+// budget/category rollup.
+//
+// RETIRED (owner decision 2026-07-26): the WP-4.1/4.2/4.5 automation that used
+// to compute a skim amount from revenue, stamp a launch chapter's budget
+// automatically, and (optionally) fire a real Increase transfer is GONE — "we
+// just have 1 chapter and not a lot of backers, it feels unnecessarily
+// complex... it could be just a manual transfer." Every transfer, of every
+// kind, is now recorded by a human via ONE generic mutation
+// (`apps/convex/transfers.ts#recordTransfer`) with a free-text `note`
+// explaining what it was for. `skimAmountCents`/`skimTransferGroupId`/
+// `launchTransferGroupId`/`settlementTransferGroupId`/`TRANSFER_KINDS` are
+// deleted along with that automation; `CENTRAL_SKIM_PCT` stays (see the
+// Affordability section above) because the 15% commitment is still the real,
+// donor-promised number — it's just honored by hand now, not computed here.
 //
 // NOTE: `BACKER_UNIT_CENTS` and `CENTRAL_SKIM_PCT` are defined once, above, in
-// the Affordability (WP-4.3) section — both the affordability header and this
-// transfer automation read the same two constants.
+// the Affordability (WP-4.3) section.
 
-/**
- * The integer-cents skim owed on a month's backer revenue. `Math.round` gives
- * banker-free round-half-up on the exact `revenue × 0.15` product (e.g.
- * 250_000 → 37_500; 333_333 → 50_000 — 49_999.95 rounds up). Always returns a
- * whole number of cents so the ledger never carries a fractional amount.
- */
-export function skimAmountCents(monthlyBackerRevenueCents: number): number {
-  return Math.round(monthlyBackerRevenueCents * CENTRAL_SKIM_PCT);
-}
-
-/** The kinds of money movement between a chapter and central. Stored on the
- *  transfer legs as `transactions.source` (mirroring `reimbursement`), so a leg
- *  is self-describing and the City Launch Fund position is a simple sum by
- *  source over central-scope legs — no group-id prefix parsing. `settlement`
- *  (WP-4.5) is the third kind: it true-ups the net cash imbalance created by
- *  cross-scope attribution (a card on one scope's account paying for the
- *  other scope's budget) — see `settlementTransferGroupId` below. */
-export const TRANSFER_KINDS = ["skim", "launch_grant", "settlement"] as const;
-export type TransferKind = (typeof TRANSFER_KINDS)[number];
-
-/**
- * The deterministic id shared by both legs of a monthly skim pair — one per
- * (chapter, year, month). Doubles as the Increase account-transfer
- * `Idempotency-Key` and the re-record guard, so a given month's skim can be
- * recorded/initiated exactly once. Month is zero-padded for a stable key.
- */
-export function skimTransferGroupId(
-  chapterId: string,
-  year: number,
-  month: number,
-): string {
-  return `skim-${chapterId}-${year}-${String(month).padStart(2, "0")}`;
-}
-
-/**
- * The deterministic id shared by both legs of a launch grant — one per chapter,
- * FOR ALL TIME (a launch grant is a one-time event). Doubles as the Increase
- * `Idempotency-Key` and the re-record guard, so a chapter can be launch-granted
- * exactly once.
- */
-export function launchTransferGroupId(chapterId: string): string {
-  return `launch-${chapterId}`;
-}
-
-/** One planned line of the launch budget stamped on a newly-granted chapter. */
+/** One planned line of a new chapter's one-time launch budget (equipment +
+ *  training trip) — see `LAUNCH_BUDGET_TEMPLATE`. */
 export interface LaunchBudgetLine {
   label: string;
   amountCents: number;
@@ -1037,9 +1021,15 @@ export interface LaunchBudgetLine {
 /**
  * The City Launch Playbook's one-time launch budget (PRD §0.1: equipment
  * ~$4,300 + an NYC training trip ~$3,500–4,000, ~$7,800–8,300/city total).
- * Editable product constant — stamped as `one_time` chapter budgets on the
- * chapter a launch grant funds (WP-4.2). Only NONZERO lines become budgets
- * (owner rule), so a line can be zeroed here to skip it without code changes.
+ * Editable product constant — feeds `launchTemplateTotalCents()` below, which
+ * is the launch-fund TARGET amount shown on a territory's public pot
+ * (`territories.ts`, `lib/givePage.ts`) and recorded as a chapter's launch
+ * grant (`transfers.ts#recordTransfer`, a manual `central_to_chapter`
+ * transfer — see that file's header comment). Retired (2026-07-26): this used
+ * to also auto-stamp one `one_time` budget per nonzero line on the receiving
+ * chapter the moment a launch grant was recorded; that side effect went away
+ * with the launch-grant automation, so a chapter's launch budgets are now
+ * created the normal manual way, same as any other budget.
  */
 export const LAUNCH_BUDGET_TEMPLATE: readonly LaunchBudgetLine[] = [
   { label: "Launch equipment", amountCents: 430_000 },
@@ -1056,31 +1046,17 @@ export function launchTemplateTotalCents(): number {
   );
 }
 
-// ── Inter-scope settlement balances (WP-4.5) ──────────────────────────────────
+// ── Inter-scope settlement balances ───────────────────────────────────────────
 // Owner policy: "Your card determines whose account paid; reconcile determines
-// whose budget it was; Central settles the difference monthly alongside the
-// skim." Cards stay account-scoped (cash physics) but attribution (a txn's
-// `budgetId`) crosses scopes freely — a chapter's card can pay for a central
-// budget line. That creates a net CASH imbalance between the two accounts,
-// separate from the skim: a `settlement` transfer pair (like a skim/launch
-// grant) true-ups the difference. See `apps/convex/transfers.ts#interScopeBalances`
-// for the ledger-derived balance computation.
-
-/**
- * The deterministic id shared by both legs of ONE MONTH's settlement between
- * central and a chapter — one per (chapter, year, month), regardless of
- * direction (a settlement can run either way in a given month). Doubles as
- * the Increase `Idempotency-Key` and the re-record guard, so a given month's
- * settlement can be recorded/initiated exactly once, mirroring
- * `skimTransferGroupId`.
- */
-export function settlementTransferGroupId(
-  chapterId: string,
-  year: number,
-  month: number,
-): string {
-  return `settle-${chapterId}-${year}-${String(month).padStart(2, "0")}`;
-}
+// whose budget it was; Central settles the difference." Cards stay
+// account-scoped (cash physics) but attribution (a txn's `budgetId`) crosses
+// scopes freely — a chapter's card can pay for a central budget line. That
+// creates a net CASH imbalance between the two accounts, corrected by
+// recording a generic transfer in the direction that pays it down. See
+// `apps/convex/transfers.ts#interScopeBalances` for the ledger-derived balance
+// computation (RETIRED `settlementTransferGroupId`'s deterministic
+// one-per-month id is gone with the settlement-specific automation — a
+// generic transfer's id is `apps/convex/transfers.ts#genericTransferGroupId`).
 
 // ── Money-page unification (WP-money-unify PR1) ───────────────────────────────
 // A cost-bearing row (`eventItems`, `engagements`) now carries an OPTIONAL

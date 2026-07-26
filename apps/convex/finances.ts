@@ -2891,10 +2891,15 @@ export const dashboardCentral = query({
     // of the same name — central has no txns of its own yet, so this is purely
     // the cross-chapter sum).
     orgUnattributedCents: v.number(),
-    // The City Launch Fund position (WP-4.1/4.2), derived from the central legs
-    // of skim (inflow) + launch-grant (outflow) transfer pairs. `positionCents`
-    // = all-time skims received − launch grants made; the `period*` figures are
-    // the same, bounded to the dashboard period.
+    // The City Launch Fund position, derived from the central legs of every
+    // recorded transfer — chapter→central (inflow, "received") vs
+    // central→chapter (outflow, "made/granted"); see the handler below for how
+    // that's computed now that skim/launch-grant/settlement are one generic
+    // transfer. `positionCents` = all-time received − made; the `period*`
+    // figures are the same, bounded to the dashboard period. Field names are
+    // unchanged from the retired skim/launch-grant era (`skimsReceivedCents`,
+    // `launchGrantsMadeCents`) to avoid a churny rename across every consumer;
+    // they now mean "received from a chapter" / "made to a chapter" generically.
     cityLaunchFund: v.object({
       skimsReceivedCents: v.number(),
       launchGrantsMadeCents: v.number(),
@@ -3445,11 +3450,26 @@ export const dashboardCentral = query({
       meta: "transactions",
     });
 
-    // City Launch Fund position (WP-4.1/4.2): the CENTRAL legs of skim (money
-    // into the fund) + launch-grant (money out) transfer pairs. Read all central
-    // rows once (bounded) — transfer legs are low-volume (≤1 skim/chapter/month,
-    // ≤1 launch/chapter ever) — and sum by `source`. All-time drives the fund
-    // balance; the `period*` figures narrow the same legs to the dashboard period.
+    // City Launch Fund position: the CENTRAL legs of every transfer that moved
+    // money INTO the fund (received) vs OUT of it (made/granted). Read all
+    // central rows once (bounded) — transfer legs are low-volume — and sum by
+    // kind. All-time drives the fund balance; the `period*` figures narrow the
+    // same legs to the dashboard period.
+    //
+    // RETIRED (2026-07-26): the skim/launch-grant/settlement collapse to ONE
+    // generic `source:"transfer"` (see `transfers.ts`'s header comment) means
+    // this sum can no longer distinguish "the skim" from "a settlement" by
+    // `source` alone — that distinction doesn't exist anymore. So EVERY
+    // chapter→central transfer counts as "received" and every central→chapter
+    // transfer counts as "made/granted", via `transferDirection`, regardless
+    // of what the recording treasurer's `note` says it was for. The historical
+    // `"skim"`/`"launch_grant"` sources (rows written before the collapse)
+    // keep summing exactly as before; historical `"settlement"` rows are
+    // DELIBERATELY excluded here (as they always were — a settlement corrects
+    // a cash/budget-attribution mismatch, not fund money) but a NEW transfer
+    // recorded for that same reason is indistinguishable from any other and
+    // DOES count — an accepted consequence of the simplification, not an
+    // oversight.
     const allCentralTxns = await ctx.db
       .query("transactions")
       .withIndex("by_chapter", (q) => q.eq("chapterId", CENTRAL))
@@ -3469,15 +3489,22 @@ export const dashboardCentral = query({
       // sandbox-initiated transfer leg (externalId `sandbox_account_transfer_
       // …`) count toward the PRODUCTION fund position forever. A transfer leg
       // carries its own env in `externalId` when it's a real Increase
-      // movement, so check that directly; a manual leg (no externalId) has
+      // movement, so check that directly; a manual leg (no externalId — every
+      // NEW transfer, since there's no more Increase auto-initiate path) has
       // none and stays env-neutral (`matchesMode` returns `true` for a
       // falsy id either way).
       if (!matchesMode(tr.externalId ?? null, sandboxMode)) continue;
       const inPeriod = inDashRange(tr.postedAt, dp);
-      if (tr.source === "skim") {
+      const receivedFromChapter =
+        tr.source === "skim" ||
+        (tr.source === "transfer" && tr.transferDirection === "chapter_to_central");
+      const madeToChapter =
+        tr.source === "launch_grant" ||
+        (tr.source === "transfer" && tr.transferDirection === "central_to_chapter");
+      if (receivedFromChapter) {
         skimsReceivedCents += tr.amountCents;
         if (inPeriod) periodSkimsReceivedCents += tr.amountCents;
-      } else if (tr.source === "launch_grant") {
+      } else if (madeToChapter) {
         launchGrantsMadeCents += tr.amountCents;
         if (inPeriod) periodLaunchGrantsMadeCents += tr.amountCents;
       }

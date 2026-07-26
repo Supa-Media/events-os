@@ -79,8 +79,9 @@ budget envelope) but never manages donors. This separation is deliberate playboo
 1. Money is integer `amountCents`; direction is `flow` (`outflow`/`inflow`/`transfer`), never a sign.
 2. `transactions` is the ONLY table summed for Actuals. Estimated (budget lines, `events.budget`,
    `projects.budgetUsd`, item costs, engagements) is NEVER summed with Actuals.
-3. `flow:"transfer"` rows are excluded from category/budget spend (skim transfers, launch grants,
-   reimbursement payouts, repayments are all transfers).
+3. `flow:"transfer"` rows are excluded from category/budget spend (the generic central↔chapter
+   transfer — see Phase 4 below, retired 2026-07-26 into ONE manual kind — plus reimbursement
+   payouts and repayments, all transfers).
 4. Every finance table chapter-scoped; central is the string sentinel `"central"`, never null.
 5. Authz through `apps/convex/lib/finance.ts`; failures are `ConvexError`, never `Error`.
 6. SoD is identity-based (personId + auth email), never role-based; approver ≠ requester, payer ≠ payee.
@@ -271,11 +272,22 @@ message to Increase should mention digital wallet tokenization alongside card au
 
 ### Phase 4 — The model's money flows
 
-**WP-4.1 · The skim**: monthly chapter → central transfer (~15% of backer revenue). Modeled as
-`flow:"transfer"` pairs; automated via Increase account-to-account transfer once accounts are
-live. Central City Launch Fund = a central fund whose balance is visible.
-**WP-4.2 · Launch grants**: central → new-chapter one-time transfer with a stamped launch budget
-(equipment ~$4,300 + training trip lines). The launch grant and the launch budget are created together.
+**WP-4.1/4.2/4.5 · RETIRED, collapsed into ONE generic manual transfer (2026-07-26).** This
+Phase originally shipped THREE separate flows — WP-4.1 the skim (chapter → central, monthly,
+~15% of backer revenue), WP-4.2 launch grants (central → a new chapter, one-time, with a
+stamped launch budget), and WP-4.5 settlements (either direction, true-ing up a cross-scope cash
+imbalance) — each with its own mutation, deterministic `transferGroupId`, and an `initiate*`
+Increase-automation action. Founder decision: "we just have 1 chapter and not a lot of
+backers, it feels unnecessarily complex... it could be just a manual transfer." All three
+collapsed into `apps/convex/transfers.ts#recordTransfer({direction, chapterId, amountCents,
+postedAt, note})` — still `flow:"transfer"` pairs, still excluded from spend, but ONE mutation,
+no Increase automation, and a free-text `note` in place of a structural "kind." The 15% skim
+commitment is still the real, donor-promised number (`CENTRAL_SKIM_PCT`, unchanged; the give
+pages still say so) — it's honored by a human recording a transfer, not computed/automated by
+the app. See `transfers.ts`'s header comment for the full rationale, and
+`docs/plans/transfers-ops-notes.md` for how to operate it. Central City Launch Fund = a central
+fund whose balance is visible (`dashboardCentral.cityLaunchFund`), fed by chapter→central
+transfers and drawn down by central→chapter ones.
 **WP-4.3 · Affordability header** (chapter dashboard): backers → tier → monthly envelope → floor
 → surplus → skim → **discretionary**. Answers "can we afford this event?" in one line. Backer
 count is manual-entry until the Giving page exists (explicit stub, no donor management here).

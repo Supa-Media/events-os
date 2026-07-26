@@ -144,6 +144,19 @@
  * that invariant — quiz length 4→5 (bumped below). Its title, minutes, and
  * placement are unchanged. No slugs, sections, or courses moved; total stays
  * 98 sections.
+ *
+ * Skim-automation retirement (founder decision, 2026-07-26 — the skim/
+ * launch-grant/settlement mutations collapsed into one generic manual
+ * transfer, see `streams/finances.ts`'s header comment): `finance-tiers-and-
+ * skim` gained a tip explaining the 15% is honored as a deliberate manual
+ * transfer, not an automated mechanic, and swapped its "does a higher tier
+ * change the skim %" quiz question (redundant with an earlier one in the
+ * same quiz) for a question testing that same manual-transfer point — quiz
+ * length stays 5, minutes 4→5 (bumped below). `finance-launch-grants-and-
+ * transfers` was rewritten to stop promising an automated Increase pipe
+ * "coming with Phase 4" (that automation was built, then deleted) — same
+ * title, minutes, and quiz length (3/3), so nothing else moved. No slugs,
+ * sections, or courses moved; total stays 98 sections.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -767,7 +780,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-tiers-and-skim",
     title: "Tiers, the covenant, and the skim",
-    minutes: 4,
+    minutes: 5,
     quizLength: 5,
     optional: false,
     capstoneKind: null,

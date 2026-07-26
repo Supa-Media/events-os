@@ -98,7 +98,7 @@ export function CentralView({
   /** Clicking a spend-by-month bar sets the SAME period state the page's
    *  ‹ › picker uses — one state, no second control (mirrors `ChapterView`). */
   onChangePeriod: (next: { year: number; month: number; period: DashPeriodMode }) => void;
-  /** Open `TransferRecordModal` (record/initiate a skim in or a grant out). */
+  /** Open `TransferRecordModal` (record a manual chapter↔central transfer). */
   onRecordTransfer: () => void;
   /** Open `TransferRecordModal` PRESET to a settlement for this chapter. */
   onSettle: (chapterId: Id<"chapters">, chapterName: string, netCents: number) => void;
@@ -651,16 +651,16 @@ function CityLaunchFundTile({ fund }: { fund: CityLaunchFund }) {
   const neverActive =
     fund.positionCents === 0 && fund.skimsReceivedCents === 0 && fund.launchGrantsMadeCents === 0;
   const meta = neverActive
-    ? "15% skim · no activity yet"
+    ? "No activity yet"
     : fund.periodNetCents !== 0
       ? `${fund.periodNetCents > 0 ? "+" : ""}${formatCents(fund.periodNetCents)} this period`
-      : "15% skim of chapter revenue";
+      : "Chapter contributions fund the next city";
   return (
     <Tile
       label="City Launch Fund"
       value={formatCents(fund.positionCents)}
       meta={meta}
-      tooltip="15% of chapter backer revenue routed here each month to fund the next city's launch."
+      tooltip="Chapters commit to routing a share of backer revenue here to fund the next city's launch — recorded as a manual transfer today."
     />
   );
 }
@@ -881,10 +881,10 @@ const CONTRIBUTOR_DIRECTION_LABEL: Record<
 };
 
 /**
- * WP-4.5: "Your card determines whose account paid; reconcile determines
- * whose budget it was; Central settles the difference monthly alongside the
- * skim." Only chapters with a NONZERO net render a row. Each row expands
- * into the actual transactions/settlement legs behind the number, via
+ * "Your card determines whose account paid; reconcile determines whose
+ * budget it was; Central settles the difference." Only chapters with a
+ * NONZERO net render a row. Each row expands into the actual
+ * transactions/settling legs behind the number, via
  * `transfers.interScopeBalanceContributors`, and carries its own Settle
  * button (a sibling of the toggle, never nested — a Button nested inside a
  * Pressable double-fires on RN Web).
