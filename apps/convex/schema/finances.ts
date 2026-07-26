@@ -349,22 +349,25 @@ export const transactions = defineTable({
   engagementId: v.optional(v.id("engagements")),
   cardId: v.optional(v.id("cards")),
   reimbursementId: v.optional(v.id("reimbursementRequests")),
-  // WP-4.1/4.2/4.5: the shared reference linking the two legs of a
-  // central↔chapter transfer pair (a skim, launch grant, or settlement). Both
-  // legs carry the SAME deterministic id (see `skimTransferGroupId`/
-  // `launchTransferGroupId`/`settlementTransferGroupId`), which also serves as
-  // the Increase account-transfer Idempotency-Key + the re-record guard. The
-  // leg's `source` (`skim`/`launch_grant`/`settlement`) names the kind; its
-  // `chapterId` (a real chapter vs the `"central"` sentinel) names the side.
+  // The shared reference linking the two legs of a central↔chapter transfer
+  // pair. Both legs carry the SAME id (see `transfers.ts#genericTransferGroupId`
+  // — random-but-explicit, not deterministic; a generic transfer has no
+  // natural per-period key the way the retired skim/launch-grant/settlement
+  // kinds did). The leg's `source` (`"transfer"` for every new row; the
+  // historical `skim`/`launch_grant`/`settlement` literals only appear on
+  // rows written before the 2026-07-26 collapse to one generic transfer —
+  // see `transfers.ts`'s header comment) names the kind; its `chapterId` (a
+  // real chapter vs the `"central"` sentinel) names the side.
   transferGroupId: v.optional(v.string()),
-  // WP-4.5 ONLY: which way a `settlement` pair moved money — `skim`/
-  // `launch_grant` never need this (their direction is FIXED by kind: a skim
-  // is always chapter→central, a launch grant always central→chapter), but a
-  // settlement can true-up the imbalance either way, and both legs otherwise
-  // carry identical `flow:"transfer"` + `source:"settlement"` with no way to
-  // tell which side paid. Both legs of a pair carry the SAME value (it
-  // describes the pair, not the individual leg) — a reader resolves "did MY
-  // scope give or receive" by comparing its own `chapterId` against this.
+  // Which way a transfer pair moved money. Every NEW transfer sets this
+  // (there's no more "direction implied by kind" — a skim was always
+  // chapter→central, a launch grant always central→chapter; a generic
+  // transfer states it explicitly every time, same as the historical
+  // `settlement` kind always did). Both legs otherwise carry identical
+  // `flow:"transfer"` + `source:"transfer"` with no way to tell which side
+  // paid. Both legs of a pair carry the SAME value (it describes the pair,
+  // not the individual leg) — a reader resolves "did MY scope give or
+  // receive" by comparing its own `chapterId` against this.
   transferDirection: v.optional(
     v.union(v.literal("central_to_chapter"), v.literal("chapter_to_central")),
   ),

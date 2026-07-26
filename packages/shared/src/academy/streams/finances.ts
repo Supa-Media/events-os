@@ -58,6 +58,23 @@
  * No existing teaching changed truth value — nothing here ever claimed
  * reimbursements were budget-invisible. Title, minutes, and quiz length are
  * unchanged, so the snapshot test needed no updates.
+ *
+ * Skim-automation retirement (founder decision, 2026-07-26 — "we just have 1
+ * chapter and not a lot of backers, it feels unnecessarily complex... it
+ * could be just a manual transfer"; collapsed the skim/launch-grant/
+ * settlement mutations into one generic `transfers.ts#recordTransfer`):
+ * `finance-tiers-and-skim` gained a tip explaining the 15% is still real and
+ * owed, just recorded as a deliberate manual transfer (not automated), and
+ * swapped its "does a higher tier change the skim %" quiz question (already
+ * redundant with an earlier question in the same quiz) for one testing that
+ * same manual-transfer point — quiz length stays 5, minutes 4→5 (bumped in
+ * the snapshot test). `finance-launch-grants-and-transfers` was rewritten end
+ * to end: it used to frame automated Increase transfers as "coming with
+ * Phase 4" — since that automation was built and then DELETED per this
+ * decision, the lesson no longer promises a pipe that isn't coming; both
+ * flows are now taught as deliberate, by-design manual transfers. Its quiz
+ * answer about automation timing was corrected to match (still 3 questions —
+ * no snapshot change there). Title and slug are unchanged for both sections.
  */
 
 import type {
@@ -871,7 +888,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     slug: "finance-tiers-and-skim",
     title: "Tiers, the covenant, and the skim",
     subtitle: "What backer count buys you, and what goes back to central",
-    minutes: 4,
+    minutes: 5,
     blocks: [
       {
         kind: "p",
@@ -893,7 +910,11 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "The skim funds the next city",
-        text: "Every month, a flat **15%** of chapter revenue moves — as a real transfer, not a budget line — from the chapter's account to central's City Launch Fund. That fund is what pays a new city's ~$7,800–8,300 launch cost (equipment + the training trip) when it's ready to start.",
+        text: "Every month, a flat **15%** of chapter revenue is committed — as a real transfer, not a budget line — from the chapter's account to central's City Launch Fund. That fund is what pays a new city's ~$7,800–8,300 launch cost (equipment + the training trip) when it's ready to start.",
+      },
+      {
+        kind: "tip",
+        text: "**How the 15% actually moves today:** by hand, on purpose. With one chapter and a small backer base, automating the transfer would be complexity the network doesn't need yet — so central's bookkeeper records it as a manual transfer (same ledger shape either way: a real `flow:\"transfer\"` pair, excluded from spend), with a note saying which month's commitment it honors. The 15% itself isn't optional or improvised — it's the number this lesson teaches, and the number donors are told on the giving page — only the RECORDING is manual for now.",
       },
       {
         kind: "tip",
@@ -945,16 +966,16 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "The fund exists specifically to seed the NEXT city — every chapter's skim is an investment in the network growing.",
       },
       {
-        prompt: "Does reaching a higher backer tier change the skim percentage?",
+        prompt: "Is the monthly 15% skim transfer automated today?",
         options: [
-          "Yes, higher tiers pay a higher percentage",
-          "No — the skim stays a flat 15% regardless of tier; more backers just means more total revenue",
-          "Yes, it drops as chapters grow",
-          "The skim only starts after 50 backers",
+          "Yes, it moves automatically every month with no human involved",
+          "No — central's bookkeeper records it as a deliberate manual transfer; automating it would be complexity the network doesn't need with one chapter",
+          "It was automated, then removed after a bug",
+          "It's automated, but only above the 30-backer tier",
         ],
         answerIndex: 1,
         explanation:
-          "The percentage is constant; only the base it's applied to grows as a chapter adds backers.",
+          "The 15% is still real and still owed — recording it is just a deliberate manual step for now, not a gap waiting to be automated on any particular timeline.",
       },
       {
         prompt: "Where does a chapter's backer count actually come from today?",
@@ -1243,7 +1264,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         items: [
           "**New budget, central scope:** created the same way a chapter budget is, just scoped to central instead of a chapter.",
           "**Central's rollup row:** sits alongside every chapter in the by-chapter view, with the identical drill-down behavior.",
-          "**What lives here:** central operating costs, the City Launch Fund balance, and — as launch grants come online — the money that seeds new cities.",
+          "**What lives here:** central operating costs, the City Launch Fund balance, and the launch grants that seed new cities.",
         ],
       },
       {
@@ -1377,15 +1398,22 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
   },
 
   // ── 45 · Executive Director: launch grants + the skim transfer ─────────────
+  // Retitled framing, unchanged title/slug (2026-07-26): this used to describe
+  // automated Increase transfers as "coming with Phase 4" — that automation
+  // was built, then DELETED at the founder's request ("we just have 1 chapter
+  // and not a lot of backers, it feels unnecessarily complex... it could be
+  // just a manual transfer"). Rewritten so it no longer promises an automated
+  // pipe that isn't coming; both flows are honored as deliberate manual
+  // transfers today, recorded through one generic mutation.
   {
     slug: "finance-launch-grants-and-transfers",
     title: "Launch grants and the skim transfer",
-    subtitle: "What's live today, and what's coming with Phase 4",
+    subtitle: "Two money flows, both recorded by hand, by design",
     minutes: 3,
     blocks: [
       {
         kind: "p",
-        text: "Two money flows tie the whole network together: the 15% skim moving UP from every chapter into the City Launch Fund, and a one-time launch grant moving DOWN from central to seed a brand-new city. The fund itself is real today — it's central's own account. Moving money automatically along both directions is coming next.",
+        text: "Two money flows tie the whole network together: the 15% skim moving UP from every chapter into the City Launch Fund, and a one-time launch grant moving DOWN from central to seed a brand-new city. The fund itself is real today — it's central's own account. Both flows move as a deliberate, human-recorded transfer, not an automatic pipe — and that's a choice, not a gap.",
       },
       {
         kind: "table",
@@ -1397,19 +1425,19 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "rule",
-        title: "The fund exists; the pipe doesn't, yet",
-        text: "The City Launch Fund's balance is a real number in a real central account you can see today. What's still ahead: the skim transfer running itself every month, and a launch grant that stamps a new chapter's launch budget automatically the day it's approved.",
+        title: "The fund exists; a human moves the money into and out of it",
+        text: "The City Launch Fund's balance is a real number in a real central account you can see today. Central's bookkeeper records every skim contribution and every launch grant as a manual transfer — same real ledger entry either way, just typed in rather than run by a cron job.",
       },
       {
         kind: "tip",
-        text: "**Coming soon:** both flows will be modeled as `transfer` rows once built (Phase 4 of the finance roadmap) — excluded from category/budget spend like any transfer, so they never distort a chapter's or central's real operating numbers. Until then, treat the skim and launch grants as manual moves you track, not automated ones the app runs for you.",
+        text: "**Why manual, on purpose:** with one chapter and a small backer base, an automated monthly transfer (and the account wiring, approval flow, and failure handling it requires) is complexity the network doesn't need yet. Every transfer — a skim contribution, a launch grant, or anything else that moves money between a chapter and central — goes through ONE mutation today, with a note saying what it's for. If the network grows enough that this becomes a real burden, automating it is a well-understood, revisitable decision — not a broken promise.",
       },
       {
         kind: "reveal",
         prompt:
-          "A brand-new city is ready to launch. Where does its ~$7,800–8,300 in equipment and training-trip funding come from?",
+          "A brand-new city is ready to launch. Where does its ~$7,800–8,300 in equipment and training-trip funding come from, and who moves it?",
         answer:
-          "The City Launch Fund — the pool every existing chapter has been feeding with its monthly 15% skim. The fund's balance is real and visible today; the one-time transfer that hands it to the new chapter is the part still being built.",
+          "The City Launch Fund — the pool every existing chapter has been feeding with its monthly 15% skim. The fund's balance is real and visible today; central's bookkeeper records the one-time transfer to the new chapter by hand, the same way every skim contribution gets recorded.",
       },
     ],
     quiz: [
@@ -1429,16 +1457,16 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt: "Is the monthly skim transfer automated today?",
         options: [
           "Yes, fully automatic",
-          "The fund's balance is real today; automating the transfer itself is a coming addition",
-          "It was automated then removed",
+          "No — central's bookkeeper records it as a deliberate manual transfer; that's a choice for the network's current size, not an unfinished feature",
+          "It was automated then removed after a failure",
           "It only runs once a year",
         ],
         answerIndex: 1,
         explanation:
-          "Central's account and the fund balance are live now (WP-1.2); the automatic monthly transfer is Phase 4 work, still ahead.",
+          "The fund's balance is real and live, and every contribution to it is a real transfer — recording it by hand is a deliberate simplification, not a missing Phase 4 feature waiting to ship.",
       },
       {
-        prompt: "Why will skim and launch-grant transfers be modeled as `flow:\"transfer\"` rows once built?",
+        prompt: "Why are skim and launch-grant transfers modeled as `flow:\"transfer\"` rows?",
         options: [
           "So they count double toward budgets",
           "So they're excluded from category/budget spend, like any money movement that isn't a mission purchase",
