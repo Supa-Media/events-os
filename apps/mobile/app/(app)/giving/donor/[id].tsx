@@ -41,6 +41,7 @@ import {
   EmptyState,
   Icon,
   Narrow,
+  PersonPicker,
   Screen,
   SectionHeader,
   Select,
@@ -155,18 +156,18 @@ export default function DonorDetailScreen() {
             {donor.source ? ` · ${donor.source}` : ""}
           </Text>
           {/* Territories P5 — this donor's 1:1 linked roster person (chapter-
-              scope donors only; central donors never link, see schema doc). */}
-          {person ? (
-            <Pressable
-              onPress={() => router.navigate("/people" as never)}
-              className="mt-2 flex-row items-center gap-1.5 self-start active:opacity-70"
-            >
-              <Icon name="user" size={13} color={colors.muted} />
-              <Text className="text-xs font-medium text-accent">
-                Linked to {person.name} on the roster
-              </Text>
-            </Pressable>
-          ) : null}
+              scope donors only; central donors never link, see schema doc).
+              People-CRM UX: manual link/unlink wiring `setDonorPerson` — the
+              mutation built "for when a merge or bad auto-link left a donor
+              pointing at the wrong person," gated identically here
+              (`canManage`, the same `requireGivingManage` mirror the
+              record/edit-gift affordances above already use). */}
+          <DonorPersonLink
+            donorId={donorId}
+            person={person}
+            canManage={canManage}
+            donorScope={donor.scope}
+          />
         </View>
 
         <View className="mb-4 flex-row flex-wrap gap-3">
@@ -227,6 +228,124 @@ export default function DonorDetailScreen() {
         />
       ) : null}
     </Screen>
+  );
+}
+
+/**
+ * The donor's manual person link/unlink control (People-CRM UX) — wires
+ * `api.givingPlatform.setDonorPerson`, previously mutation-only with zero
+ * mobile callers. Linked: shows who + a "Change"/"Unlink" pair (manager
+ * only). Unlinked: a "Link to person" affordance (manager only, and only for
+ * a CHAPTER-scope donor — a central donor is CRM-only and the mutation
+ * refuses a person link for it, see its doc, so the control never renders
+ * for one). Uses `PersonPicker` (`source: "all"`, the caller's own chapter
+ * roster) — the same picker every other assignment surface in the app uses;
+ * `setDonorPerson` itself re-checks the picked person is on the donor's own
+ * chapter roster before writing.
+ */
+function DonorPersonLink({
+  donorId,
+  person,
+  canManage,
+  donorScope,
+}: {
+  donorId: Id<"donors">;
+  person: { _id: Id<"people">; name: string } | null;
+  canManage: boolean;
+  donorScope: string;
+}) {
+  const setDonorPerson = useMutation(api.givingPlatform.setDonorPerson);
+  const router = useRouter();
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const isCentral = donorScope === "central";
+
+  async function link(personId: Id<"people">) {
+    setBusy(true);
+    try {
+      await setDonorPerson({ donorId, personId });
+      setPickerOpen(false);
+    } catch (e) {
+      alertError(e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function unlink() {
+    setBusy(true);
+    try {
+      await setDonorPerson({ donorId, personId: null });
+      setPickerOpen(false);
+    } catch (e) {
+      alertError(e);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (person) {
+    return (
+      <>
+        <View className="mt-2 flex-row flex-wrap items-center gap-2">
+          <Pressable
+            onPress={() => router.navigate("/people" as never)}
+            className="flex-row items-center gap-1.5 active:opacity-70"
+          >
+            <Icon name="user" size={13} color={colors.muted} />
+            <Text className="text-xs font-medium text-accent">
+              Linked to {person.name} on the roster
+            </Text>
+          </Pressable>
+          {canManage ? (
+            <>
+              <Pressable
+                onPress={() => setPickerOpen(true)}
+                disabled={busy}
+                className="active:opacity-70"
+              >
+                <Text className="text-xs font-medium text-muted underline">Change</Text>
+              </Pressable>
+              <Pressable onPress={() => void unlink()} disabled={busy} className="active:opacity-70">
+                <Text className="text-xs font-medium text-danger underline">Unlink</Text>
+              </Pressable>
+            </>
+          ) : null}
+        </View>
+        {canManage ? (
+          <PersonPicker
+            visible={pickerOpen}
+            title="Change linked person"
+            selectedId={person._id}
+            onPick={(id) => void link(id as Id<"people">)}
+            onClear={() => void unlink()}
+            onClose={() => setPickerOpen(false)}
+            source="all"
+          />
+        ) : null}
+      </>
+    );
+  }
+
+  if (!canManage || isCentral) return null;
+
+  return (
+    <>
+      <Pressable
+        onPress={() => setPickerOpen(true)}
+        className="mt-2 flex-row items-center gap-1.5 self-start active:opacity-70"
+      >
+        <Icon name="user-plus" size={13} color={colors.muted} />
+        <Text className="text-xs font-medium text-accent">Link to person on the roster</Text>
+      </Pressable>
+      <PersonPicker
+        visible={pickerOpen}
+        title="Link to person"
+        onPick={(id) => void link(id as Id<"people">)}
+        onClose={() => setPickerOpen(false)}
+        source="all"
+      />
+    </>
   );
 }
 

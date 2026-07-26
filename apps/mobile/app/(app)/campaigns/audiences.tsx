@@ -1,14 +1,31 @@
+import { useMemo } from "react";
 import { useQuery } from "convex/react";
+import { useLocalSearchParams } from "expo-router";
 import { api } from "@events-os/convex/_generated/api";
+import type { Id } from "@events-os/convex/_generated/dataModel";
 import { Screen, Narrow, EmptyState } from "../../../components/ui";
 import { AudiencesView } from "../../../components/campaign/AudiencesView";
 
 /** AUDIENCES tab — segment list + inline create/edit with a live preview.
  *
  * Gated the same way `campaigns/index.tsx` (and `giving/donors.tsx` before
- * it) gates its own screen — see that file's doc. */
+ * it) gates its own screen — see that file's doc.
+ *
+ * `seedIncludeIds` (People-CRM UX, People grid's "Email selected" bridge):
+ * a comma-joined list of person ids, deep-linked from
+ * `router.push(\`/campaigns/audiences?seedIncludeIds=...\`)` — parsed here
+ * and handed to `AudiencesView`, which auto-opens a fresh draft with them
+ * pre-picked. Absent for every other entry into this screen. */
 export default function AudiencesScreen() {
   const access = useQuery(api.audiences.myCampaignsAccess, {});
+  const { seedIncludeIds: seedParam } = useLocalSearchParams<{ seedIncludeIds?: string }>();
+  const seedIncludeIds = useMemo(
+    () =>
+      seedParam
+        ? (seedParam.split(",").filter(Boolean) as Id<"people">[])
+        : undefined,
+    [seedParam],
+  );
   if (access === undefined) return <Screen loading />;
   if (!access.canView) {
     return (
@@ -25,7 +42,7 @@ export default function AudiencesScreen() {
   }
   return (
     <Screen>
-      <AudiencesView />
+      <AudiencesView seedIncludeIds={seedIncludeIds} />
     </Screen>
   );
 }

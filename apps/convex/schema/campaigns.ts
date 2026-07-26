@@ -251,6 +251,15 @@ export const audienceConditionValidator = v.union(
     field: v.literal("email_verified"),
     op: v.literal("is"),
   }),
+  v.object({
+    field: v.literal("has_service"),
+    op: v.union(v.literal("has"), v.literal("has_not")),
+    // Free text, matched case-insensitively (trim + lowercase both sides)
+    // against `people.services` — see `lib/audienceTargeting.ts`'s doc for
+    // the exact match rule and the central-donor-fallback/no-services-array
+    // behavior ("has" → false, "has_not" → true, same as `attended_event`).
+    service: v.string(),
+  }),
 );
 
 /** One AND-group of conditions — the unit a human reads as one sentence

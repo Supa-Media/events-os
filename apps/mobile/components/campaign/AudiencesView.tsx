@@ -97,10 +97,30 @@ function sourceLabel(source: string, hasTargeting: boolean): string {
   return source;
 }
 
-export function AudiencesView() {
+export function AudiencesView({
+  seedIncludeIds,
+}: {
+  /**
+   * People-CRM UX — the People grid's "Email selected" bridge: a set of
+   * hand-picked person ids to pre-seed into a brand-NEW audience's draft the
+   * moment this view mounts (never applied to an existing/editing audience —
+   * only meaningful for the "+ New audience" flow). Purely a client-side
+   * draft seed: nothing is written until the marketer reviews and hits Save,
+   * same as picking each person by hand in `HandPickSection` below.
+   */
+  seedIncludeIds?: Id<"people">[];
+} = {}) {
   const audiences = useQuery(api.audiences.listAudiences, {});
   const [editingId, setEditingId] = useState<Id<"audiences"> | "new" | null>(null);
   const { run, toast, dismiss } = useActionRunner();
+
+  // Auto-open a fresh draft when arriving with a seed — the marketer lands
+  // straight in the form with their picks already in the hand-pick list,
+  // rather than having to tap "+ New audience" themselves.
+  useEffect(() => {
+    if (seedIncludeIds && seedIncludeIds.length > 0) setEditingId("new");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (audiences === undefined) {
     return (
@@ -125,6 +145,7 @@ export function AudiencesView() {
           initial={editingAudience}
           run={run}
           onDone={() => setEditingId(null)}
+          seedIncludeIds={editingId === "new" ? seedIncludeIds : undefined}
         />
       ) : (
         <Button title="+ New audience" onPress={() => setEditingId("new")} className="self-start" />
@@ -178,10 +199,14 @@ function AudienceForm({
   initial,
   run,
   onDone,
+  seedIncludeIds,
 }: {
   initial: Audience | null;
   run: ReturnType<typeof useActionRunner>["run"];
   onDone: () => void;
+  /** People-CRM UX seed (see `AudiencesView`'s doc) — only ever passed for a
+   *  brand-new draft (`initial` is null whenever this is set). */
+  seedIncludeIds?: Id<"people">[];
 }) {
   const create = useMutation(api.audiences.createAudience);
   const update = useMutation(api.audiences.updateAudience);
@@ -217,11 +242,38 @@ function AudienceForm({
   // two blocks share every bit of logic except which side of the audience
   // they land on.
   const [excludeFilters, setExcludeFilters] = useState<PersonFilters>(initial?.excludeFilters ?? {});
-  const [includeIds, setIncludeIds] = useState<Id<"people">[]>(initial?.includePersonIds ?? []);
+  const [includeIds, setIncludeIds] = useState<Id<"people">[]>(
+    initial?.includePersonIds ?? seedIncludeIds ?? [],
+  );
   const [excludeIds, setExcludeIds] = useState<Id<"people">[]>(initial?.excludePersonIds ?? []);
   const [includeNames, setIncludeNames] = useState<Record<string, string>>({});
   const [excludeNames, setExcludeNames] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
+
+  // People-CRM UX: seeded ids arrive as bare ids (the People grid's own
+  // roster query, not `searchPeopleForAudience`) — resolve their display
+  // names from the caller's own roster (`api.people.list`, the same source
+  // the grid itself reads) so `HandPickSection`'s chips show a name instead
+  // of a raw id. Skipped entirely once there's nothing to seed.
+  const needsSeedNames = (seedIncludeIds?.length ?? 0) > 0;
+  const seedRoster = useQuery(api.people.list, needsSeedNames ? {} : "skip");
+  useEffect(() => {
+    if (!seedRoster || !seedIncludeIds?.length) return;
+    setIncludeNames((names) => {
+      let changed = false;
+      const next = { ...names };
+      for (const id of seedIncludeIds) {
+        if (next[id]) continue;
+        const p = seedRoster.find((r: { _id: string }) => r._id === id);
+        if (p) {
+          next[id] = (p as { name: string }).name;
+          changed = true;
+        }
+      }
+      return changed ? next : names;
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seedRoster]);
 
   // Every mounted numeric filter field mirrors its raw typed text in here so
   // `handleSave` can flush exactly what's on screen — see
