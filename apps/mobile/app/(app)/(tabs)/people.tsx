@@ -63,6 +63,19 @@ const STATUS_OPTIONS: SelectOption<RosterStatus>[] = [
   { value: "unavailable", label: "Unavailable", color: "amber" },
 ];
 
+// Guest history (People-CRM UX) status badge — mirrors `RSVP_STATUSES`
+// (`schema/ticketing.ts`).
+const RSVP_STATUS_LABEL: Record<string, string> = {
+  going: "Going",
+  maybe: "Maybe",
+  not_going: "Not going",
+};
+const RSVP_STATUS_TONE: Record<string, "success" | "warn" | "neutral"> = {
+  going: "success",
+  maybe: "warn",
+  not_going: "neutral",
+};
+
 // A roster row is the `people` document plus the `imageUrl` the list query
 // resolves from the stored storageId. Persona (`team` / `volunteer` / `vendor`)
 // is DERIVED from signals via the shared `personaOf`, not stored.
@@ -132,8 +145,35 @@ const COLS = {
   events: 56,
 } as const;
 const DELETE_W = 38;
+// People-CRM UX: the leftmost multi-select checkbox column.
+const SELECT_W = 36;
 const TABLE_WIDTH =
-  Object.values(COLS).reduce((sum, w) => sum + w, 0) + DELETE_W;
+  Object.values(COLS).reduce((sum, w) => sum + w, 0) + DELETE_W + SELECT_W;
+
+/** Cap on how many selected people the "Email selected" bridge will hand off
+ *  to a new audience draft — a human-curated hand-pick list (same rationale
+ *  as `audiences.ts#HAND_PICK_LOOKUP_LIMIT`, which allows far more; this is a
+ *  tighter, UX-sane bound for a single grid selection, not the ceiling the
+ *  backend enforces). */
+const EMAIL_SELECTED_CAP = 200;
+
+/** Digits only — for a loose, punctuation-insensitive phone match ("(212)
+ *  555-1234" matches a search of "2125551234" or vice versa). */
+function digitsOnly(s: string): string {
+  return s.replace(/\D/g, "");
+}
+
+/** People-CRM UX search upgrade: a case-insensitive substring match against
+ *  name, email, pwEmail, OR phone (phone compared digits-only so punctuation/
+ *  formatting never blocks a match). `query` is already trimmed+lowercased;
+ *  `queryDigits` is precomputed once per search string, not per row. */
+function personMatchesSearch(p: Person, query: string, queryDigits: string): boolean {
+  if (p.name.toLowerCase().includes(query)) return true;
+  if (p.email && p.email.toLowerCase().includes(query)) return true;
+  if (p.pwEmail && p.pwEmail.toLowerCase().includes(query)) return true;
+  if (queryDigits && p.phone && digitsOnly(p.phone).includes(queryDigits)) return true;
+  return false;
+}
 
 /** Parse a comma list into trimmed, lowercased, de-duped values (skills). */
 function parseSkills(raw: string): string[] {
@@ -216,6 +256,16 @@ export default function PeopleScreen() {
   // Admin-only duplicate review + merge (Attendance C).
   const [dupOpen, setDupOpen] = useState(false);
 
+  // People-CRM UX: multi-select + "Email selected" bridge to a new audience
+  // draft. Local state only — nothing persists server-side, mirrors every
+  // other grid's own local-only sort/filter state. `myCampaignsAccess` is
+  // the SAME soft visibility gate `campaigns/audiences.tsx` uses for the
+  // whole screen — the action is hidden entirely for anyone who couldn't
+  // actually open the destination screen.
+  const [selected, setSelected] = useState<Set<Id<"people">>>(new Set());
+  const campaignsAccess = useQuery(api.audiences.myCampaignsAccess, {});
+  const canEmailSelected = campaignsAccess?.canView === true;
+
   // Manager names by id — one map instead of a per-row roster scan. Sourced
   // from `roster` (not `people`): a contact-only row is never anyone's
   // manager, and this must stay resolvable while the Contacts tab is active.
@@ -266,16 +316,52 @@ export default function PeopleScreen() {
   // the contacts-only query result in that case, not a slice to filter again.
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
+    const queryDigits = digitsOnly(query);
     return (people ?? []).filter((p) => {
       if (persona !== "all" && persona !== "contacts" && personaOf(p) !== persona)
         return false;
       if (giversOnly && !giverMarksByPerson.has(p._id)) return false;
       if (skillFilter && !(p.services ?? []).includes(skillFilter))
         return false;
-      if (query && !p.name.toLowerCase().includes(query)) return false;
+      if (query && !personMatchesSearch(p, query, queryDigits)) return false;
       return true;
     });
   }, [people, persona, giversOnly, giverMarksByPerson, skillFilter, search]);
+
+  // People-CRM UX selection: "select all visible" respects whatever's
+  // currently filtered (persona/givers/skill/search), never the full roster.
+  const allVisibleSelected =
+    filtered.length > 0 && filtered.every((p) => selected.has(p._id));
+  const selectedCount = selected.size;
+  const overCap = selectedCount > EMAIL_SELECTED_CAP;
+
+  function toggleSelectAllVisible() {
+    setSelected((cur) => {
+      const next = new Set(cur);
+      if (allVisibleSelected) {
+        for (const p of filtered) next.delete(p._id);
+      } else {
+        for (const p of filtered) next.add(p._id);
+      }
+      return next;
+    });
+  }
+
+  function toggleSelectOne(id: Id<"people">) {
+    setSelected((cur) => {
+      const next = new Set(cur);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
+  function handleEmailSelected() {
+    if (selectedCount === 0 || overCap) return;
+    router.push(
+      `/campaigns/audiences?seedIncludeIds=${Array.from(selected).join(",")}` as never,
+    );
+  }
 
   if (people === undefined) return <Screen loading />;
 
@@ -360,6 +446,44 @@ export default function PeopleScreen() {
         })}
       </View>
 
+      {/* People-CRM UX: selection bar — appears only once at least one row is
+          checked. "Email selected" is hidden for a caller without campaigns
+          access (`myCampaignsAccess`, the same soft gate the Audiences
+          screen itself uses) rather than shown-then-denied. */}
+      {selectedCount > 0 ? (
+        <View style={styles.selectionBar}>
+          <Text className="text-sm font-semibold text-ink">
+            {selectedCount} selected
+          </Text>
+          <Pressable onPress={() => setSelected(new Set())} className="active:opacity-70">
+            <Text className="text-xs font-medium text-muted underline">Clear</Text>
+          </Pressable>
+          {canEmailSelected ? (
+            <>
+              <Pressable
+                onPress={handleEmailSelected}
+                disabled={overCap}
+                hitSlop={4}
+                accessibilityLabel="Email selected people"
+                className={`flex-row items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 ${
+                  overCap ? "opacity-50" : "active:bg-sunken web:hover:bg-sunken"
+                }`}
+              >
+                <Icon name="mail" size={13} color={colors.accent} />
+                <Text className="text-xs font-semibold text-accent">
+                  Email selected
+                </Text>
+              </Pressable>
+              {overCap ? (
+                <Text className="text-xs text-danger">
+                  Select {EMAIL_SELECTED_CAP} or fewer to email them at once.
+                </Text>
+              ) : null}
+            </>
+          ) : null}
+        </View>
+      ) : null}
+
       {/* Givers overlay chip (territories P5) — absent entirely when the
           caller has no giving access at this chapter (`giverMarks` returns
           `[]`), so the People tab renders exactly as before for everyone
@@ -408,6 +532,21 @@ export default function PeopleScreen() {
           <View style={{ width: Math.max(TABLE_WIDTH, 320) }}>
             {/* Column header */}
             <View className="flex-row items-center border-b border-border bg-sunken">
+              {/* People-CRM UX: select-all-visible checkbox. Cross-platform
+                  (Pressable/View/Icon), so it renders — and works — on both
+                  web and native, not just web. */}
+              <View
+                style={{ width: SELECT_W }}
+                className="items-center justify-center border-r border-border/60 py-1.5"
+              >
+                <RowCheckbox
+                  checked={allVisibleSelected}
+                  onPress={toggleSelectAllVisible}
+                  accessibilityLabel={
+                    allVisibleSelected ? "Deselect all visible people" : "Select all visible people"
+                  }
+                />
+              </View>
               <GridHeaderCell label="First name" width={COLS.first} />
               <GridHeaderCell label="Last name" width={COLS.last} />
               <GridHeaderCell label="Status" width={COLS.status} />
@@ -465,6 +604,8 @@ export default function PeopleScreen() {
                   seatTitles={seatTitlesByPerson.get(p._id) ?? []}
                   giverMark={giverMarksByPerson.get(p._id) ?? null}
                   isLast={i === filtered.length - 1}
+                  selected={selected.has(p._id)}
+                  onToggleSelected={() => toggleSelectOne(p._id)}
                   onOpen={() => setOpenId(p._id)}
                 />
               ))
@@ -518,6 +659,8 @@ function PersonRow({
   seatTitles,
   giverMark,
   isLast,
+  selected,
+  onToggleSelected,
   onOpen,
 }: {
   person: Person;
@@ -533,6 +676,9 @@ function PersonRow({
    *  in that case, upstream). */
   giverMark: GiverMark | null;
   isLast: boolean;
+  /** People-CRM UX multi-select — local grid state, not persisted. */
+  selected: boolean;
+  onToggleSelected: () => void;
   onOpen: () => void;
 }) {
   const update = useMutation(api.people.update);
@@ -580,6 +726,18 @@ function PersonRow({
         isLast ? "border-b-0" : ""
       }`}
     >
+      {/* People-CRM UX: per-row selection checkbox. */}
+      <View
+        style={{ width: SELECT_W }}
+        className="items-center justify-center border-r border-border/60"
+      >
+        <RowCheckbox
+          checked={selected}
+          onPress={onToggleSelected}
+          accessibilityLabel={`Select ${person.name || "this person"}`}
+        />
+      </View>
+
       {/* First name: avatar (tap to upload photo) + inline text. A row whose
           name couldn't be auto-split (no halves) shows the FULL display name
           here — editing it renames the person (which re-splits when the new
@@ -1192,6 +1350,20 @@ function PersonDetailBody({
   const history = useQuery(api.engagements.historyForPerson, {
     personId: person._id as any,
   });
+  // People-CRM UX: guest/RSVP attendance history — "attended/registered as a
+  // guest," distinct from `history` above ("Event history" — worked/
+  // volunteered a role). Same gate as `history` (`requireOwned`).
+  const guestHistory = useQuery(api.ticketing.guestHistoryForPerson, {
+    personId: person._id as Id<"people">,
+  });
+  // People-CRM UX: the `personEmails` ledger — every known address, with a
+  // "Make primary" affordance wired to `setPrimaryEmail`. Gated identically
+  // to that mutation (chapter membership via the linked person — no extra
+  // seat/power check, same as every other edit in this sheet).
+  const knownEmails = useQuery(api.personEmails.listForPerson, {
+    personId: person._id as Id<"people">,
+  });
+  const setPrimaryEmail = useMutation(api.personEmails.setPrimaryEmail);
   // Duties are shown only to callers who can act on them (managers/admins) —
   // for anyone else `responsibilities.list` returns just the CALLER's own
   // duties, which would render a misleadingly empty section for this person.
@@ -1446,6 +1618,87 @@ function PersonDetailBody({
           </>
         )}
 
+        {/* Guest history (People-CRM UX) — "attended/registered as a guest"
+            (every rsvp linked to this person), distinct from "Event history"
+            above (worked/volunteered a role). */}
+        <View className="mt-4">
+          <Text className="mb-2 text-2xs font-bold uppercase tracking-wider text-muted">
+            Guest history
+          </Text>
+          {guestHistory === undefined ? (
+            <Text style={styles.historyEmpty}>Loading guest history…</Text>
+          ) : guestHistory.count === 0 ? (
+            <Text style={styles.historyEmpty}>
+              No RSVPs on file — this person hasn't attended as a guest.
+            </Text>
+          ) : (
+            <View style={styles.historyList}>
+              {guestHistory.history.map((h) => (
+                <View key={h.rsvpId} style={styles.historyItem}>
+                  <View style={styles.historyItemTop}>
+                    <Text style={styles.historyEvent} numberOfLines={1}>
+                      {h.eventName}
+                    </Text>
+                    <Badge
+                      label={RSVP_STATUS_LABEL[h.status] ?? h.status}
+                      tone={RSVP_STATUS_TONE[h.status] ?? "neutral"}
+                    />
+                  </View>
+                  <Text style={styles.historyMeta}>{formatDate(h.eventDate)}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+        </View>
+
+        {/* Known emails (People-CRM UX, `personEmails` ledger) — every
+            address ever observed for this person, with a "Make primary"
+            affordance. Compact by design: this is a quick reference, not a
+            full preference center. */}
+        <View className="mt-4">
+          <Text className="mb-2 text-2xs font-bold uppercase tracking-wider text-muted">
+            Known emails
+          </Text>
+          {knownEmails === undefined ? (
+            <Text style={styles.historyEmpty}>Loading known emails…</Text>
+          ) : knownEmails.length === 0 ? (
+            <Text style={styles.historyEmpty}>No known email addresses yet.</Text>
+          ) : (
+            <View className="gap-1.5">
+              {knownEmails.map((e) => (
+                <View
+                  key={e._id}
+                  className="flex-row items-center justify-between rounded-md border border-border bg-raised px-2.5 py-1.5"
+                >
+                  <View className="min-w-0 flex-1 flex-row items-center gap-1.5">
+                    <Text className="flex-1 text-sm text-ink" numberOfLines={1}>
+                      {e.address}
+                    </Text>
+                    <Text className="text-2xs text-faint">{e.source}</Text>
+                    {e.verified ? (
+                      <Icon name="check-circle" size={12} color={colors.success} />
+                    ) : null}
+                  </View>
+                  {e.isPrimary ? (
+                    <Badge label="Primary" tone="accent" />
+                  ) : (
+                    <Pressable
+                      onPress={() => setPrimaryEmail({ personEmailId: e._id })}
+                      hitSlop={6}
+                      accessibilityLabel={`Make ${e.address} primary`}
+                      className="active:opacity-70"
+                    >
+                      <Text className="text-xs font-medium text-accent">
+                        Make primary
+                      </Text>
+                    </Pressable>
+                  )}
+                </View>
+              ))}
+            </View>
+          )}
+        </View>
+
         {/* Governance roles (super-admin only): a read-only mirror of this
             person's specialized leadership/finance roles. Assignment happens
             from the Org Chart (`/org-chart`) — this section only reflects
@@ -1520,6 +1773,40 @@ function ContactLink({
   );
 }
 
+/** People-CRM UX multi-select checkbox — mirrors the reconcile grid's own
+ *  `CheckBox` idiom (`components/finance/reconcile/ReconcileList.tsx`), the
+ *  house pattern for a grid-cell checkbox: plain cross-platform primitives
+ *  (`Pressable`/`View`/`Icon`), so it renders and works identically on web
+ *  and native — never a raw DOM input. */
+function RowCheckbox({
+  checked,
+  onPress,
+  accessibilityLabel,
+}: {
+  checked: boolean;
+  onPress: () => void;
+  accessibilityLabel: string;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      hitSlop={6}
+      accessibilityRole="checkbox"
+      accessibilityState={{ checked }}
+      accessibilityLabel={accessibilityLabel}
+      className="rounded p-1 active:opacity-70"
+    >
+      <View
+        className={`h-4 w-4 items-center justify-center rounded border ${
+          checked ? "border-accent bg-accent" : "border-border-strong bg-raised"
+        }`}
+      >
+        {checked ? <Icon name="check" size={12} color={colors.accentText} /> : null}
+      </View>
+    </Pressable>
+  );
+}
+
 const styles = StyleSheet.create({
   titleRow: {
     flexDirection: "row",
@@ -1542,6 +1829,13 @@ const styles = StyleSheet.create({
     gap: spacing.xs,
     marginTop: spacing.sm,
     marginBottom: spacing.md,
+  },
+  selectionBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    flexWrap: "wrap",
+    gap: spacing.sm,
+    marginBottom: spacing.sm,
   },
   rowIdentity: {
     flexDirection: "row",
