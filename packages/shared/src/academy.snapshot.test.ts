@@ -144,6 +144,14 @@
  * that invariant — quiz length 4→5 (bumped below). Its title, minutes, and
  * placement are unchanged. No slugs, sections, or courses moved; total stays
  * 98 sections.
+ *
+ * Finance audit trail (`financeAuditLog`, founder ask: more audit trails on
+ * reconcile edits): `finance-reconcile-grid`'s `try_status` caption now says
+ * excluding a charge requires a reason, and the section gained one quiz
+ * question on that same rule — quiz length 4→5 (bumped below). Its title,
+ * minutes, and placement are unchanged; `finance-monthly-close` teaches the
+ * closing CHECKLIST, not the exclude action itself, so it needed no change.
+ * No slugs, sections, or courses moved; total stays 98 sections.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -728,7 +736,7 @@ const EXPECTED_SECTIONS: {
     slug: "finance-reconcile-grid",
     title: "Running Reconcile",
     minutes: 4,
-    quizLength: 4,
+    quizLength: 5,
     optional: false,
     capstoneKind: null,
   },

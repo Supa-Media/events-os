@@ -71,6 +71,8 @@ import {
   REASSIGN_BATCH_CAP,
   chapterAffordability as chapterAffordabilityCalc,
   effectiveBudgetApprovalStatus,
+  TRANSACTION_STATUS_LABELS,
+  FINANCE_AUDIT_ACTIONS,
   type BudgetType,
   type BudgetRefKind,
   type BudgetApprovalStatus,
@@ -85,6 +87,7 @@ import {
 } from "./cards";
 import { queueSuggestionOnIngest } from "./aiCodingData";
 import { createReceipt, linkReceiptToTransaction } from "./lib/receiptLinks";
+import { logFinanceAudit } from "./lib/financeAuditLog";
 import {
   getChapterIdOrNull,
   requireChapterId,
@@ -668,6 +671,75 @@ function toBudgetSummary(
  *  resolved budget name. */
 function budgetDisplayName(b: Doc<"budgets">): string {
   return b.label?.trim() || BUDGET_TYPE_LABELS[effectiveType(b)];
+}
+
+// ── financeAuditLog: recode (category/budget attribution) helper ────────────
+/**
+ * Log a `recode` row per attribution field that was EXPLICITLY changed by the
+ * caller — never the silent fund-default fill-in (`defaultFundId`) that
+ * `categorizeTransaction`/`bulkCategorize` apply when a client omits `fundId`
+ * on a fund-less txn; that's not a human choice worth a trail entry. Shared by
+ * `categorizeTransaction`, `bulkCategorize`, and `setTransactionCategory` (the
+ * category-only editor) so all three attribution-change paths log identically.
+ * A no-op "change" (before === after, e.g. re-picking the same category) is
+ * skipped — nothing actually changed.
+ */
+async function logRecodeAudit(
+  ctx: MutationCtx,
+  params: {
+    txn: Doc<"transactions">;
+    scope: FinanceScope;
+    actorPersonId: Id<"people"> | null;
+    categoryChanged: boolean;
+    budgetChanged: boolean;
+    beforeCategoryId: Id<"budgetCategories"> | null;
+    afterCategoryId: Id<"budgetCategories"> | null;
+    beforeBudgetId: Id<"budgets"> | null;
+    afterBudgetId: Id<"budgets"> | null;
+  },
+): Promise<void> {
+  if (!params.categoryChanged && !params.budgetChanged) return;
+  const getCategory = nameCache(ctx, "budgetCategories");
+  const getBudget = nameCache(ctx, "budgets");
+  const categoryLabel = async (id: Id<"budgetCategories"> | null): Promise<string> => {
+    if (!id) return "None";
+    const c = await getCategory(id);
+    return c ? c.name : "Deleted category";
+  };
+  const budgetLabel = async (id: Id<"budgets"> | null): Promise<string> => {
+    if (!id) return "None";
+    const b = await getBudget(id);
+    return b ? budgetDisplayName(b) : "Deleted budget";
+  };
+  if (
+    params.categoryChanged &&
+    params.beforeCategoryId !== params.afterCategoryId
+  ) {
+    await logFinanceAudit(ctx, {
+      chapterId: params.scope,
+      subjectType: "transaction",
+      subjectId: params.txn._id,
+      action: "recode",
+      actorPersonId: params.actorPersonId,
+      field: "category",
+      before: await categoryLabel(params.beforeCategoryId),
+      after: await categoryLabel(params.afterCategoryId),
+      amountCents: params.txn.amountCents,
+    });
+  }
+  if (params.budgetChanged && params.beforeBudgetId !== params.afterBudgetId) {
+    await logFinanceAudit(ctx, {
+      chapterId: params.scope,
+      subjectType: "transaction",
+      subjectId: params.txn._id,
+      action: "recode",
+      actorPersonId: params.actorPersonId,
+      field: "budget",
+      before: await budgetLabel(params.beforeBudgetId),
+      after: await budgetLabel(params.afterBudgetId),
+      amountCents: params.txn.amountCents,
+    });
+  }
 }
 
 function toTxnSummary(tr: Doc<"transactions">) {
@@ -5014,11 +5086,10 @@ export const updateBudget = mutation({
       { allowCentral: true },
     );
     const level = budget.chapterId as BudgetLevel;
-    if (level === CENTRAL) {
-      await requireFinanceCentral(ctx, chapterId);
-    } else {
-      await requireFinanceManager(ctx, chapterId);
-    }
+    const access =
+      level === CENTRAL
+        ? await requireFinanceCentral(ctx, chapterId)
+        : await requireFinanceManager(ctx, chapterId);
     if (args.patch.amountCents != null) {
       assertIntegerCents(args.patch.amountCents, "Budget amount");
     }
@@ -5123,6 +5194,21 @@ export const updateBudget = mutation({
     await ctx.db.patch(args.budgetId, cleanPatch(restPatch));
     if (nextAmountCents != null) {
       await setBudgetAmount(ctx, args.budgetId, nextAmountCents);
+      // financeAuditLog (budget_amount_change) — only when the amount
+      // actually changed (skip a same-value resubmit).
+      if (nextAmountCents !== budget.amountCents) {
+        await logFinanceAudit(ctx, {
+          chapterId: level,
+          subjectType: "budget",
+          subjectId: args.budgetId,
+          action: "budget_amount_change",
+          actorPersonId: access.personId,
+          field: "amount",
+          before: formatCents(budget.amountCents),
+          after: formatCents(nextAmountCents),
+          amountCents: nextAmountCents,
+        });
+      }
     }
 
     // Replace the tag set when `tagIds` was provided (diff the link rows).
@@ -5643,11 +5729,24 @@ export const deleteBudget = mutation({
       "Budget",
       { allowCentral: true },
     );
-    if (budget.chapterId === CENTRAL) {
-      await requireFinanceCentral(ctx, chapterId);
-    } else {
-      await requireFinanceManager(ctx, chapterId);
-    }
+    const access =
+      budget.chapterId === CENTRAL
+        ? await requireFinanceCentral(ctx, chapterId)
+        : await requireFinanceManager(ctx, chapterId);
+    // financeAuditLog (budget_delete) — logged before the cascade below (the
+    // row still exists here to describe); subjectId is a plain string, so the
+    // log outlives the deleted budget doc it describes, same as
+    // `reattributionAudit`'s own priorStates.
+    await logFinanceAudit(ctx, {
+      chapterId: budget.chapterId,
+      subjectType: "budget",
+      subjectId: args.budgetId,
+      action: "budget_delete",
+      actorPersonId: access.personId,
+      field: "budget",
+      before: `${budgetDisplayName(budget)} (${formatCents(budget.amountCents)})`,
+      amountCents: budget.amountCents,
+    });
     // Clear the explicit link on every txn attributed to this budget FIRST —
     // otherwise a linked txn's `budgetId` points at a deleted doc: invisible
     // to every budget card (it's no one's budget anymore), to
@@ -7760,7 +7859,15 @@ async function requireReconcileTxn(
   ctx: MutationCtx,
   transactionId: Id<"transactions">,
   min: "viewer" | "bookkeeper" | "manager",
-): Promise<{ txn: Doc<"transactions">; homeChapterId: Id<"chapters">; scope: FinanceScope }> {
+): Promise<{
+  txn: Doc<"transactions">;
+  homeChapterId: Id<"chapters">;
+  scope: FinanceScope;
+  /** The caller's roster person id at this scope, for `financeAuditLog`'s
+   *  `actorPersonId` — `null` for a superuser with no roster row (a real,
+   *  supported path; see that table's doc comment). */
+  actorPersonId: Id<"people"> | null;
+} > {
   const homeChapterId = (await requireChapterId(ctx)) as Id<"chapters">;
   const txn = (await ctx.db.get(transactionId)) as Doc<"transactions"> | null;
   const notFound = () =>
@@ -7774,12 +7881,127 @@ async function requireReconcileTxn(
         message: `This action needs at least the ${FINANCE_ROLE_LABELS[min]} finance role.`,
       });
     }
-    return { txn, homeChapterId, scope: CENTRAL };
+    return { txn, homeChapterId, scope: CENTRAL, actorPersonId: access.personId };
+  }
+  const access = await requireFinanceRole(ctx, homeChapterId, min);
+  if (txn.chapterId !== homeChapterId) throw notFound();
+  return { txn, homeChapterId, scope: txn.chapterId, actorPersonId: access.personId };
+}
+
+/**
+ * Resolve + authorize a READ against a finance subject that already lives at
+ * `ownerChapterId` (a transaction's or a budget's own `chapterId`) — the
+ * EXACT scope rule `requireReconcileTxn` applies to transaction WRITES
+ * (central-owned needs central reach + the `min` rank; chapter-owned needs
+ * the caller's OWN chapter at that rank), reused here for
+ * `financeAuditTrail`'s read gate per the design's "match `requireReconcileTxn`
+ * / `listReconcile`, don't invent new scoping" instruction. Kept as a
+ * standalone QueryCtx-typed function (rather than refactoring the
+ * MutationCtx-typed `requireReconcileTxn` to share it) so an existing write
+ * gate is never put at risk for a new read path. Returns `null` — never
+ * throws NOT_FOUND — when the subject belongs to a chapter that isn't the
+ * caller's own and isn't central (mirrors `requireReconcileTxn`'s own
+ * chapter-mismatch branch, but a read path degrades to "nothing to show"
+ * rather than a hard error).
+ */
+async function requireFinanceSubjectRead(
+  ctx: QueryCtx,
+  ownerChapterId: FinanceScope,
+  min: "viewer" | "bookkeeper" | "manager",
+): Promise<FinanceScope | null> {
+  const homeChapterId = await readChapterId(ctx);
+  if (!homeChapterId) return null;
+  if (ownerChapterId === CENTRAL) {
+    const access = await requireFinanceCentral(ctx, homeChapterId);
+    if (!financeRoleAtLeast(access.role, min)) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message: `This action needs at least the ${FINANCE_ROLE_LABELS[min]} finance role.`,
+      });
+    }
+    return CENTRAL;
   }
   await requireFinanceRole(ctx, homeChapterId, min);
-  if (txn.chapterId !== homeChapterId) throw notFound();
-  return { txn, homeChapterId, scope: txn.chapterId };
+  if (ownerChapterId !== homeChapterId) return null;
+  return ownerChapterId;
 }
+
+// ── financeAuditLog read (History section, mobile) ───────────────────────────
+const financeAuditActionValidator = v.union(
+  ...FINANCE_AUDIT_ACTIONS.map((a) => v.literal(a)),
+);
+const AUDIT_TRAIL_LIMIT = 200;
+
+const financeAuditRow = v.object({
+  id: v.id("financeAuditLog"),
+  action: financeAuditActionValidator,
+  actorName: v.union(v.string(), v.null()),
+  field: v.union(v.string(), v.null()),
+  before: v.union(v.string(), v.null()),
+  after: v.union(v.string(), v.null()),
+  reason: v.union(v.string(), v.null()),
+  amountCents: v.union(v.number(), v.null()),
+  createdAt: v.number(),
+});
+
+/**
+ * The field-change trail for one transaction or budget — the mobile detail
+ * modal's compact, collapsed-by-default "History" section. Bookkeeper+
+ * gated, scope-aware the SAME way `requireReconcileTxn`/`listReconcile`
+ * already are (see `requireFinanceSubjectRead`'s own doc comment) — never a
+ * new scoping rule. Returns `[]` (never throws NOT_FOUND) for a missing or
+ * out-of-scope subject, exactly like `listReconcile`'s own empty-result
+ * shape for "nothing to show here."
+ */
+export const financeAuditTrail = query({
+  args: {
+    subjectType: v.union(v.literal("transaction"), v.literal("budget")),
+    subjectId: v.string(),
+  },
+  returns: v.array(financeAuditRow),
+  handler: async (ctx, args) => {
+    const rows = await ctx.db
+      .query("financeAuditLog")
+      .withIndex("by_subject", (q) =>
+        q.eq("subjectType", args.subjectType).eq("subjectId", args.subjectId),
+      )
+      .order("desc")
+      .take(AUDIT_TRAIL_LIMIT);
+    if (rows.length === 0) return [];
+    // Resolve scope from the LIVE subject when it still exists; `deleteBudget`
+    // logs its `budget_delete` row for a doc that's gone by the time anyone
+    // reads this trail, so fall back to the newest log row's own recorded
+    // `chapterId` (every row for one subject carries the same chapter — a
+    // subject's chapter only ever changes via bulk reattribution, which
+    // writes `reattributionAudit`, not this table) rather than 404ing a trail
+    // whose whole point is to outlive the row it describes.
+    const ownerChapterId: FinanceScope | null =
+      (args.subjectType === "transaction"
+        ? (await ctx.db.get(args.subjectId as Id<"transactions">))?.chapterId
+        : (await ctx.db.get(args.subjectId as Id<"budgets">))?.chapterId) ??
+      rows[0].chapterId;
+    if (ownerChapterId == null) return [];
+    const scope = await requireFinanceSubjectRead(ctx, ownerChapterId, "bookkeeper");
+    if (scope == null) return [];
+    const getPerson = nameCache(ctx, "people");
+    const out: (typeof financeAuditRow.type)[] = [];
+    for (const r of rows) {
+      const actor = r.actorPersonId ? await getPerson(r.actorPersonId) : null;
+      out.push({
+        id: r._id,
+        action: r.action,
+        actorName: actor?.name ?? null,
+        field: r.field ?? null,
+        before: r.before ?? null,
+        after: r.after ?? null,
+        reason: r.reason ?? null,
+        amountCents: r.amountCents ?? null,
+        createdAt: r.createdAt,
+      });
+    }
+    return out;
+  },
+});
 
 /**
  * The single EVENT a transaction's budget is scoped to, if any — `null` for
@@ -7832,10 +8054,15 @@ async function eventForTxn(
 async function requireTxnNoteReceiptCategoryAccess(
   ctx: MutationCtx,
   transactionId: Id<"transactions">,
-): Promise<{ txn: Doc<"transactions">; viaFinance: boolean }> {
+): Promise<{
+  txn: Doc<"transactions">;
+  viaFinance: boolean;
+  /** For `financeAuditLog` — see `requireReconcileTxn`'s own doc comment. */
+  actorPersonId: Id<"people"> | null;
+}> {
   try {
-    const { txn } = await requireReconcileTxn(ctx, transactionId, "bookkeeper");
-    return { txn, viaFinance: true };
+    const { txn, actorPersonId } = await requireReconcileTxn(ctx, transactionId, "bookkeeper");
+    return { txn, viaFinance: true, actorPersonId };
   } catch (err) {
     if (!(err instanceof ConvexError)) throw err;
     // Fall through — the caller isn't bookkeeper+ (or has no home chapter at
@@ -7847,7 +8074,12 @@ async function requireTxnNoteReceiptCategoryAccess(
   }
   const event = await eventForTxn(ctx, txn);
   if (event && (await callerHasEventEditRights(ctx, event))) {
-    return { txn, viaFinance: false };
+    // Resolve the caller's OWN roster person (their home chapter, not the
+    // txn's — mirrors `requireReconcileTxn`'s `actorPersonId` resolution) for
+    // the audit trail; `null` is a legitimate outcome here too.
+    const homeChapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const actor = await viewerPerson(ctx, homeChapterId);
+    return { txn, viaFinance: false, actorPersonId: actor?._id ?? null };
   }
   throw new ConvexError({
     code: "FORBIDDEN",
@@ -7883,11 +8115,29 @@ export const createManualTransaction = mutation({
     const homeChapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     assertIntegerCents(args.amountCents);
     const userId = (await requireUserId(ctx)) as Id<"users">;
+    // financeAuditLog (manual_create) — human summary of what was entered;
+    // logged for BOTH branches right before returning, once the txn id exists.
+    const logManualCreate = async (
+      chapterIdForLog: FinanceScope,
+      txnId: Id<"transactions">,
+      actorPersonId: Id<"people"> | null,
+    ) => {
+      const what = args.merchantName?.trim() || args.description?.trim() || "Manual entry";
+      await logFinanceAudit(ctx, {
+        chapterId: chapterIdForLog,
+        subjectType: "transaction",
+        subjectId: txnId,
+        action: "manual_create",
+        actorPersonId,
+        after: `${what} — ${formatCents(args.amountCents)} (${args.flow})`,
+        amountCents: args.amountCents,
+      });
+    };
     if (args.central) {
       // Central desk: org-wide reach, and NONE of the chapter-scoped links
       // apply (central has no funds/categories/teams; a person is a chapter
       // roster row). Reject them loudly rather than silently drop.
-      await requireFinanceCentral(ctx, homeChapterId);
+      const access = await requireFinanceCentral(ctx, homeChapterId);
       if (args.fundId || args.categoryId || args.teamId || args.personId) {
         throw new ConvexError({
           code: "UNSUPPORTED",
@@ -7901,7 +8151,7 @@ export const createManualTransaction = mutation({
         // WP-wave4 (item 5): only an APPROVED budget can take a charge.
         await assertBudgetApprovedForAttribution(ctx, args.budgetId);
       }
-      return await ctx.db.insert("transactions", {
+      const txnId = await ctx.db.insert("transactions", {
         chapterId: CENTRAL,
         source: args.source ?? "manual",
         flow: args.flow,
@@ -7917,9 +8167,11 @@ export const createManualTransaction = mutation({
         createdBy: userId,
         createdAt: Date.now(),
       });
+      await logManualCreate(CENTRAL, txnId, access.personId);
+      return txnId;
     }
     const chapterId = homeChapterId;
-    await requireFinanceRole(ctx, chapterId, "bookkeeper");
+    const access = await requireFinanceRole(ctx, chapterId, "bookkeeper");
     await verifyTxnRefs(ctx, chapterId, args);
     if (args.budgetId) {
       // A chapter txn may point at its OWN chapter budget or a central one.
@@ -7956,6 +8208,7 @@ export const createManualTransaction = mutation({
       createdBy: userId,
       createdAt: Date.now(),
     });
+    await logManualCreate(chapterId, txnId, access.personId);
     // ON-INGEST HOOK — fire-and-forget: ONLY schedules a separate transaction
     // that does the actual eligibility + debounce work (a manual entry
     // submitted already coded — `status` above is already `"categorized"` —
@@ -7984,7 +8237,11 @@ export const categorizeTransaction = mutation({
   handler: async (ctx, args) => {
     // Scope-aware (WP-2.1): a central-owned txn is authorized at central reach,
     // a chapter txn at the caller's bookkeeper role in its chapter.
-    const { txn, scope } = await requireReconcileTxn(ctx, args.transactionId, "bookkeeper");
+    const { txn, scope, actorPersonId } = await requireReconcileTxn(
+      ctx,
+      args.transactionId,
+      "bookkeeper",
+    );
     if (scope === CENTRAL) {
       // Central txns carry no chapter-scoped links — only a central budget.
       if (args.fundId || args.categoryId || args.teamId) {
@@ -8038,6 +8295,20 @@ export const categorizeTransaction = mutation({
     // so it can never later resurface via `acceptSuggestion` and clobber this.
     patch.aiSuggestion = undefined;
     await ctx.db.patch(args.transactionId, patch);
+    // financeAuditLog (recode) — see `logRecodeAudit`'s own doc comment; only
+    // logs the attribution fields the CALLER explicitly touched, never the
+    // silent fund auto-default above.
+    await logRecodeAudit(ctx, {
+      txn,
+      scope,
+      actorPersonId,
+      categoryChanged: args.categoryId !== undefined,
+      budgetChanged: args.budgetId !== undefined,
+      beforeCategoryId: txn.categoryId ?? null,
+      afterCategoryId: args.categoryId === undefined ? (txn.categoryId ?? null) : args.categoryId,
+      beforeBudgetId: txn.budgetId ?? null,
+      afterBudgetId: args.budgetId === undefined ? (txn.budgetId ?? null) : args.budgetId,
+    });
     return null;
   },
 });
@@ -8073,7 +8344,7 @@ export const bulkCategorize = mutation({
     };
     let updated = 0;
     for (const id of args.transactionIds) {
-      const { txn, scope } = await requireReconcileTxn(ctx, id, "bookkeeper");
+      const { txn, scope, actorPersonId } = await requireReconcileTxn(ctx, id, "bookkeeper");
       if (scope === CENTRAL && (args.fundId || args.categoryId)) {
         throw new ConvexError({
           code: "UNSUPPORTED",
@@ -8111,6 +8382,22 @@ export const bulkCategorize = mutation({
       // so it can never later resurface via `acceptSuggestion` and clobber this.
       patch.aiSuggestion = undefined;
       await ctx.db.patch(id, patch);
+      // financeAuditLog (recode) — same rule `categorizeTransaction` documents
+      // (one row per explicitly-touched attribution field, never the silent
+      // fund default), applied per row so a bulk action still leaves an
+      // individually-readable trail on every transaction it touched.
+      await logRecodeAudit(ctx, {
+        txn,
+        scope,
+        actorPersonId,
+        categoryChanged: args.categoryId !== undefined,
+        budgetChanged: args.budgetId !== undefined,
+        beforeCategoryId: txn.categoryId ?? null,
+        afterCategoryId:
+          args.categoryId === undefined ? (txn.categoryId ?? null) : args.categoryId,
+        beforeBudgetId: txn.budgetId ?? null,
+        afterBudgetId: args.budgetId === undefined ? (txn.budgetId ?? null) : args.budgetId,
+      });
       updated++;
     }
     return { updated };
@@ -8118,11 +8405,30 @@ export const bulkCategorize = mutation({
 });
 
 export const setTransactionStatus = mutation({
-  args: { transactionId: v.id("transactions"), status: statusValidator },
+  args: {
+    transactionId: v.id("transactions"),
+    status: statusValidator,
+    // REQUIRED (non-blank) when `status:"excluded"` — dropping a charge out of
+    // every budget/category/actuals total (`isSpend`) with no trace was the
+    // founder-flagged gap this whole audit trail exists to close. Optional
+    // (but still logged) for every other transition.
+    reason: v.optional(v.string()),
+  },
   returns: v.null(),
   handler: async (ctx, args) => {
     // Scope-aware (WP-2.1): central-owned txns are reconcilable at central reach.
-    await requireReconcileTxn(ctx, args.transactionId, "bookkeeper");
+    const { txn, scope, actorPersonId } = await requireReconcileTxn(
+      ctx,
+      args.transactionId,
+      "bookkeeper",
+    );
+    const reason = args.reason?.trim() || undefined;
+    if (args.status === "excluded" && !reason) {
+      throw new ConvexError({
+        code: "REASON_REQUIRED",
+        message: "Excluding a transaction requires a reason.",
+      });
+    }
     // A human just acted on this transaction's status manually — clear any
     // stored AI suggestion so it can never later resurface via
     // `acceptSuggestion` and clobber whatever state this call put it in.
@@ -8136,6 +8442,21 @@ export const setTransactionStatus = mutation({
       ...(args.status === "reconciled" || args.status === "excluded"
         ? { receiptReminderStage: undefined, lastReminderSentAt: undefined }
         : {}),
+    });
+    // financeAuditLog (status_change) — the headline instrumentation: every
+    // status set is logged, `reason` carried through only when the caller gave
+    // one (required above for `excluded`, optional otherwise).
+    await logFinanceAudit(ctx, {
+      chapterId: scope,
+      subjectType: "transaction",
+      subjectId: args.transactionId,
+      action: "status_change",
+      actorPersonId,
+      field: "status",
+      before: TRANSACTION_STATUS_LABELS[txn.status],
+      after: TRANSACTION_STATUS_LABELS[args.status],
+      reason,
+      amountCents: txn.amountCents,
     });
     return null;
   },
@@ -8213,6 +8534,7 @@ export const attachReceipt = mutation({
     // `categorized` charge to `reconciled` (reconcile is a deliberate later
     // step here), so we opt out via `reconcileIfCategorized: false`.
     const uploader = await viewerPerson(ctx, chapterId);
+    const hadReceipt = txn.receiptStorageId != null;
     const receiptId = await createReceipt(ctx, {
       chapterId: txn.chapterId,
       storageId: args.storageId,
@@ -8226,6 +8548,20 @@ export const attachReceipt = mutation({
       ...(uploader ? { linkedByPersonId: uploader._id } : {}),
       reconcileIfCategorized: false,
     });
+    // financeAuditLog (receipt_attach). `receipts.linkReceipt` (the bookkeeper
+    // "pick the right charge" path over an inbox receipt) logs the same
+    // action independently — see its own comment.
+    await logFinanceAudit(ctx, {
+      chapterId: txn.chapterId,
+      subjectType: "transaction",
+      subjectId: args.transactionId,
+      action: "receipt_attach",
+      actorPersonId: uploader?._id ?? null,
+      field: "receipt",
+      before: hadReceipt ? "Attached" : "None",
+      after: "Attached",
+      amountCents: txn.amountCents,
+    });
     return null;
   },
 });
@@ -8238,10 +8574,29 @@ export const flagPersonal = mutation({
     // rather than dead-ending; personal-charge flagging is really a chapter/
     // cardholder concern, but the scope gate must not leave central txns
     // untouchable by the central desk.
-    await requireReconcileTxn(ctx, args.transactionId, "bookkeeper");
+    const { txn, scope, actorPersonId } = await requireReconcileTxn(
+      ctx,
+      args.transactionId,
+      "bookkeeper",
+    );
     // A personal charge is excluded from spend until repaid (`isPersonal`
     // already drops it from SPEND totals; no status change needed).
     await ctx.db.patch(args.transactionId, { isPersonal: args.isPersonal });
+    // financeAuditLog (personal_flag) — removes money from spend just like an
+    // exclude, but flows through this dedicated boolean setter instead.
+    if ((txn.isPersonal === true) !== args.isPersonal) {
+      await logFinanceAudit(ctx, {
+        chapterId: scope,
+        subjectType: "transaction",
+        subjectId: args.transactionId,
+        action: "personal_flag",
+        actorPersonId,
+        field: "isPersonal",
+        before: txn.isPersonal === true ? "Personal" : "Not personal",
+        after: args.isPersonal ? "Personal" : "Not personal",
+        amountCents: txn.amountCents,
+      });
+    }
     return null;
   },
 });
@@ -8259,7 +8614,10 @@ export const setTransactionNote = mutation({
   args: { transactionId: v.id("transactions"), note: v.union(v.string(), v.null()) },
   returns: v.null(),
   handler: async (ctx, args) => {
-    await requireTxnNoteReceiptCategoryAccess(ctx, args.transactionId);
+    const { txn, actorPersonId } = await requireTxnNoteReceiptCategoryAccess(
+      ctx,
+      args.transactionId,
+    );
     const trimmed = args.note?.trim() || null;
     if (trimmed && trimmed.length > MAX_NOTE_LENGTH) {
       throw new ConvexError({
@@ -8268,6 +8626,21 @@ export const setTransactionNote = mutation({
       });
     }
     await ctx.db.patch(args.transactionId, { note: trimmed ?? undefined });
+    // financeAuditLog (note_edit) — skip a true no-op (unchanged note).
+    const beforeNote = txn.note ?? null;
+    if (beforeNote !== trimmed) {
+      await logFinanceAudit(ctx, {
+        chapterId: txn.chapterId,
+        subjectType: "transaction",
+        subjectId: args.transactionId,
+        action: "note_edit",
+        actorPersonId,
+        field: "note",
+        before: beforeNote,
+        after: trimmed,
+        amountCents: txn.amountCents,
+      });
+    }
     return null;
   },
 });
@@ -8298,7 +8671,7 @@ export const setTransactionCategory = mutation({
   },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const { txn, viaFinance } = await requireTxnNoteReceiptCategoryAccess(
+    const { txn, viaFinance, actorPersonId } = await requireTxnNoteReceiptCategoryAccess(
       ctx,
       args.transactionId,
     );
@@ -8334,6 +8707,20 @@ export const setTransactionCategory = mutation({
     // mirrors `categorizeTransaction`'s own rule.
     patch.aiSuggestion = undefined;
     await ctx.db.patch(args.transactionId, patch);
+    // financeAuditLog (recode) — shares `categorizeTransaction`'s helper so
+    // both attribution-change paths log identically; this mutation only ever
+    // touches `categoryId`, so `budgetChanged` is always false.
+    await logRecodeAudit(ctx, {
+      txn,
+      scope: txn.chapterId,
+      actorPersonId,
+      categoryChanged: true,
+      budgetChanged: false,
+      beforeCategoryId: txn.categoryId ?? null,
+      afterCategoryId: args.categoryId,
+      beforeBudgetId: null,
+      afterBudgetId: null,
+    });
     return null;
   },
 });

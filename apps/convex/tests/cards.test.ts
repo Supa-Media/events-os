@@ -1635,6 +1635,10 @@ describe("setTransactionStatus clearing the reminder timeline", () => {
       await s.as.mutation(api.finances.setTransactionStatus, {
         transactionId: txn,
         status,
+        // `setTransactionStatus` now requires a reason for `"excluded"` —
+        // harmless/ignored for the `"reconciled"` case this same table also
+        // exercises.
+        reason: status === "excluded" ? "test transition" : undefined,
       });
 
       const after = await run(s.t, (ctx) => ctx.db.get(txn));

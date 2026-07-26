@@ -306,6 +306,7 @@ describe("Part B — needsBudget + toBudgetCount", () => {
     await s.as.mutation(api.finances.setTransactionStatus, {
       transactionId: txnD,
       status: "excluded",
+      reason: "test fixture",
     });
     // E: inflow → not spend.
     await s.as.mutation(api.finances.createManualTransaction, {

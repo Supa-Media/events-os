@@ -32,6 +32,7 @@ import {
   FINANCE_ROLE_SCOPES,
   SPECIALIZED_ROLE_TITLES,
   SPECIALIZED_ROLE_KINDS,
+  FINANCE_AUDIT_ACTIONS,
 } from "@events-os/shared";
 
 /**
@@ -909,6 +910,73 @@ export const reattributionAudit = defineTable({
 })
   .index("by_created", ["createdAt"])
   .index("by_target", ["target"]);
+
+// ── Finance audit log (field-change trail) ───────────────────────────────────
+/** APPEND-ONLY trail of individual FIELD CHANGES on a transaction or budget —
+ *  founder ask: "let's get more audit trails when people update reconcile
+ *  rows... whatever you feel like would be most important for the financial
+ *  part of this app." Deliberately a NEW, separate table rather than an
+ *  extension of the three that already exist, each of which models something
+ *  else entirely:
+ *   - `approvals` — APPROVAL DECISIONS (who approved/rejected/paid a
+ *     reimbursement/payout/budget). Its unused `subjectType:"transaction"` /
+ *     `action:"edit"` literals were never wired to a writer — this table is
+ *     that missing piece, kept SEPARATE so "decided" and "changed a value"
+ *     never muddy one shape.
+ *   - `budgetApprovalLog` — one row per budget workflow decision
+ *     (sent/approved/changes_requested), written only by
+ *     `submitBudgetForApproval`/`approveBudget`/`requestBudgetChanges`. NOT
+ *     duplicated here — a budget's approval decisions stay that table's story.
+ *   - `reattributionAudit` — one row per BULK cross-scope reattribution
+ *     (`reassignTransactions`/`transferProjectScope`/`transferEventScope`).
+ *     NOT duplicated here — a bulk move stays that table's story (it already
+ *     captures a full pre-move snapshot for undo, which this table doesn't).
+ *
+ *  Written by (see each mutation's own comment): `setTransactionStatus`
+ *  (`status_change` — excluding a transaction REQUIRES a non-blank `reason`,
+ *  every other transition logs without one), `categorizeTransaction`/
+ *  `bulkCategorize`/`setTransactionCategory` (`recode`, one row per changed
+ *  attribution field), `flagPersonal` (`personal_flag`), `setTransactionNote`
+ *  (`note_edit`), `createManualTransaction` (`manual_create`), `attachReceipt`/
+ *  `receipts.linkReceipt` (`receipt_attach`), `receipts.unlinkReceipt`
+ *  (`receipt_detach`), `updateBudget` (`budget_amount_change`, only when
+ *  `amountCents` actually changes), and `deleteBudget` (`budget_delete`).
+ *  NEVER updated or deleted once written.
+ *
+ *  `before`/`after` are always human-readable (a category NAME, a formatted
+ *  dollar amount, a status label) — never a raw id — so the trail still reads
+ *  years later without joining back to a row that may no longer exist.
+ *  `actorPersonId` is optional (not every finance write comes from a caller
+ *  with a roster row — a superuser acting on a chapter's finances with no
+ *  `people` row is a real, supported path; mirrors `reattributionAudit`'s own
+ *  optional `actorPersonId`), but every writer supplies it whenever one is
+ *  resolvable. */
+export const financeAuditLog = defineTable({
+  chapterId: v.union(v.id("chapters"), v.literal("central")),
+  subjectType: v.union(v.literal("transaction"), v.literal("budget")),
+  // `Id<"transactions">` or `Id<"budgets">` stored as a plain string — a single
+  // `by_subject` index over both subject types needs one homogeneous field
+  // type (mirrors `approvals.subjectId`'s own string-not-id shape).
+  subjectId: v.string(),
+  action: v.union(...FINANCE_AUDIT_ACTIONS.map((a) => v.literal(a))),
+  actorPersonId: v.optional(v.id("people")),
+  // The changed field's name (e.g. "status", "category", "budget", "amount",
+  // "note", "receipt", "isPersonal") — omitted for an action with no single
+  // changed field (e.g. `manual_create`).
+  field: v.optional(v.string()),
+  before: v.optional(v.string()),
+  after: v.optional(v.string()),
+  // Required (non-blank, enforced by `setTransactionStatus`) for a
+  // `status_change` row whose `after` is "Excluded"; optional everywhere else.
+  reason: v.optional(v.string()),
+  // The transaction's amount (or, for a `budget_amount_change` row, the
+  // budget's NEW amount) — a quick-scan number alongside the formatted
+  // `before`/`after` strings, never the sole record of it.
+  amountCents: v.optional(v.number()),
+  createdAt: v.number(),
+})
+  .index("by_subject", ["subjectType", "subjectId"])
+  .index("by_chapter_and_createdAt", ["chapterId", "createdAt"]);
 
 // ── Finance roles (graded, per-person) ───────────────────────────────────────
 /** A caller's graded finance capability in a chapter (viewer < bookkeeper <

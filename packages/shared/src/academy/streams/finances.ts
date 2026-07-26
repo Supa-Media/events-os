@@ -499,7 +499,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         terminal: "reconciled",
         caption:
-          "Excluded is the fourth real status — for charges (like a transfer) that should never count as spend at all.",
+          "Excluded is the fourth real status — for charges (like a transfer) that should never count as spend at all. Marking one excluded now REQUIRES a reason: the app won't let the row go through blank.",
       },
     ],
     quiz: [
@@ -545,6 +545,18 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 1,
         explanation:
           "Multi-select drives a bulk bar for exactly the actions that make a real month's worth of charges manageable in minutes, not hours.",
+      },
+      {
+        prompt: "You mark a charge \"Excluded\" but leave the reason field blank. What happens?",
+        options: [
+          "It saves — the reason is just a nice-to-have",
+          "The app blocks the save until you type a reason",
+          "It saves, but flags the row for the Chapter Director to review",
+          "It silently defaults to \"Duplicate\"",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Excluding drops a charge out of every budget/category/actuals total — a blank reason is refused so the trail always explains why, not just that it happened.",
       },
     ],
   },
