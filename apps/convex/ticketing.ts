@@ -629,6 +629,48 @@ export const listRsvpsAdmin = query({
   },
 });
 
+/** How many guest/RSVP rows a person's detail sheet renders (newest-first). */
+const GUEST_HISTORY_READ_CAP = 50;
+
+/**
+ * A person's guest/RSVP attendance history (People-CRM UX) — every RSVP row
+ * linked to them via `rsvps.by_person`, newest-first, joined with the
+ * event's name/date. Distinct from `engagements.historyForPerson` ("Event
+ * history" — worked/volunteered a role): this is "attended/registered as a
+ * guest." Archived rows (a free-RSVP row archived when its event switched to
+ * ticketed mode — see `schema/ticketing.ts#rsvps`'s doc) are excluded, same
+ * as `listRsvpsAdmin`'s guest list. Scoped to the caller's chapter via
+ * `requireOwned`, mirroring `historyForPerson`'s gating; bounded `by_person`
+ * read (never a full-table scan).
+ */
+export const guestHistoryForPerson = query({
+  args: { personId: v.id("people") },
+  handler: async (ctx, { personId }) => {
+    await requireOwned(ctx, "people", personId, "Person");
+    const rows = await ctx.db
+      .query("rsvps")
+      .withIndex("by_person", (q) => q.eq("personId", personId))
+      .order("desc")
+      .take(GUEST_HISTORY_READ_CAP);
+    const visible = rows.filter((r) => r.archivedAt == null);
+    const history = await Promise.all(
+      visible.map(async (r) => {
+        const event = await ctx.db.get(r.eventId);
+        return {
+          rsvpId: r._id,
+          eventId: r.eventId,
+          eventName: event?.name ?? "Unknown event",
+          eventDate: event?.eventDate ?? 0,
+          status: r.status,
+          createdAt: r.createdAt,
+        };
+      }),
+    );
+    history.sort((a, b) => b.eventDate - a.eventDate);
+    return { count: history.length, history };
+  },
+});
+
 export const listOrdersAdmin = query({
   args: { eventId: v.id("events") },
   handler: async (ctx, { eventId }) => {
