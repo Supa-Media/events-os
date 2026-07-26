@@ -68,6 +68,7 @@ import {
 } from "./receiptInbox";
 import { isSpend, txnMatchesMode } from "./finances";
 import { readSandbox } from "./financeSettings";
+import { logFinanceAudit } from "./lib/financeAuditLog";
 
 // ── Validators ───────────────────────────────────────────────────────────────
 const receiptSourceValidator = v.union(
@@ -1376,20 +1377,37 @@ export const linkReceipt = mutation({
   returns: linkResult,
   handler: async (ctx, args) => {
     const homeChapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    const { access } = await requireReceiptAndTxnInChapter(
+    const { txn, access } = await requireReceiptAndTxnInChapter(
       ctx,
       homeChapterId,
       args.receiptId,
       args.transactionId,
     );
 
-    return await linkReceiptToTransaction(ctx, {
+    const hadReceipt = txn.receiptStorageId != null;
+    const result = await linkReceiptToTransaction(ctx, {
       receiptId: args.receiptId,
       transactionId: args.transactionId,
       source: "manual",
       linkedByPersonId: access.personId ?? undefined,
       reconcileIfCategorized: true,
     });
+    // financeAuditLog (receipt_attach) — `finances.attachReceipt` (the direct
+    // upload path) logs the same action independently for its own call site.
+    if (result.linked) {
+      await logFinanceAudit(ctx, {
+        chapterId: txn.chapterId,
+        subjectType: "transaction",
+        subjectId: args.transactionId,
+        action: "receipt_attach",
+        actorPersonId: access.personId,
+        field: "receipt",
+        before: hadReceipt ? "Attached" : "None",
+        after: "Attached",
+        amountCents: txn.amountCents,
+      });
+    }
+    return result;
   },
 });
 
@@ -1401,12 +1419,33 @@ export const unlinkReceipt = mutation({
   returns: unlinkResult,
   handler: async (ctx, args) => {
     const homeChapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    await requireReceiptAndTxnInChapter(ctx, homeChapterId, args.receiptId, args.transactionId);
+    const { txn, access } = await requireReceiptAndTxnInChapter(
+      ctx,
+      homeChapterId,
+      args.receiptId,
+      args.transactionId,
+    );
 
-    return await unlinkReceiptFromTransaction(ctx, {
+    const result = await unlinkReceiptFromTransaction(ctx, {
       receiptId: args.receiptId,
       transactionId: args.transactionId,
     });
+    // financeAuditLog (receipt_detach) — only when a link actually came off
+    // (skip a no-op unlink of a receipt that was never attached).
+    if (result.unlinked) {
+      await logFinanceAudit(ctx, {
+        chapterId: txn.chapterId,
+        subjectType: "transaction",
+        subjectId: args.transactionId,
+        action: "receipt_detach",
+        actorPersonId: access.personId,
+        field: "receipt",
+        before: "Attached",
+        after: "None",
+        amountCents: txn.amountCents,
+      });
+    }
+    return result;
   },
 });
 

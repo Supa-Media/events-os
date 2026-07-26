@@ -72,6 +72,7 @@ import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
   MAX_NOTE_LENGTH,
+  FINANCE_AUDIT_ACTION_LABELS,
   type BudgetRefKind,
   type TransactionFlow,
   type TransactionStatus,
@@ -84,6 +85,7 @@ import { SignedMoney, txnStatusTone } from "./parts";
 import { STATUS_OPTIONS, shortDate } from "../reconcile/helpers";
 import { ReceiptCell } from "../reconcile/ReconcileList";
 import { ReceiptViewerModal } from "../receipts/ReceiptViewerModal";
+import { ExcludeReasonModal } from "../modals/ExcludeReasonModal";
 import type { DrilldownTxn } from "./TransactionList";
 
 const TABULAR = { fontVariant: ["tabular-nums" as const] };
@@ -325,6 +327,10 @@ function TransactionDetailBody({
   // Read-only (peek / below-bookkeeper role) still allows VIEWING receipts —
   // only the mutating actions inside the viewer are hidden (`readOnly` below).
   const [readOnlyViewerOpen, setReadOnlyViewerOpen] = useState(false);
+  // Reason prompt (server-enforced, `finances.setTransactionStatus`) — see
+  // `ExcludeReasonModal`'s own doc comment; mirrors the Reconcile grid's own
+  // `excludePromptOpen` gate exactly.
+  const [excludePromptOpen, setExcludePromptOpen] = useState(false);
   useEffect(() => {
     setCategoryIdState(txn.categoryId);
     setCategoryNameState(txn.categoryName);
@@ -365,11 +371,11 @@ function TransactionDetailBody({
     }
   }
 
-  async function editStatus(next: TransactionStatus) {
+  async function editStatus(next: TransactionStatus, reason?: string) {
     const prev = status;
     setStatusState(next);
     try {
-      await setStatus({ transactionId: txn.id, status: next });
+      await setStatus({ transactionId: txn.id, status: next, reason });
     } catch (err) {
       setStatusState(prev);
       alertError(err);
@@ -467,7 +473,9 @@ function TransactionDetailBody({
         )}
       </View>
 
-      {/* Status */}
+      {/* Status. Picking "Excluded" opens the required reason prompt instead
+          of committing right away — see `ExcludeReasonModal`'s own doc
+          comment (mirrors the Reconcile grid's identical gate). */}
       <View>
         <FieldLabel label="Status" />
         {readOnly ? (
@@ -478,12 +486,25 @@ function TransactionDetailBody({
               value={status}
               options={STATUS_OPTIONS}
               onChange={(v) => {
+                if (v === "excluded") {
+                  setExcludePromptOpen(true);
+                  return;
+                }
                 void editStatus(v);
               }}
             />
           </View>
         )}
       </View>
+      {excludePromptOpen ? (
+        <ExcludeReasonModal
+          onCancel={() => setExcludePromptOpen(false)}
+          onConfirm={(reason) => {
+            setExcludePromptOpen(false);
+            void editStatus("excluded", reason);
+          }}
+        />
+      ) : null}
 
       {/* Receipt — read-only (peek / below-bookkeeper) still lets a caller
           VIEW the receipt(s); only the viewer's mutating actions are hidden
@@ -583,6 +604,75 @@ function TransactionDetailBody({
           </View>
         )}
       </View>
+
+      {/* History — the `financeAuditLog` trail (actor · when · what changed),
+          collapsed by default so it never competes with the fields above.
+          Read-only for everyone who can view this modal (peek included) —
+          the query itself is bookkeeper+ gated server-side, so a below-
+          bookkeeper viewer simply sees an empty/loading list rather than a
+          FORBIDDEN error surfacing here. */}
+      <TransactionHistorySection transactionId={txn.id} />
+    </View>
+  );
+}
+
+/**
+ * Compact, collapsed-by-default "History" section reading
+ * `finances.financeAuditTrail` for this one transaction — actor, when, and
+ * what changed (before → after, plus a reason when one was given). Query is
+ * `"skip"`ped until expanded so a caller who never opens it never pays for
+ * the read. Bookkeeper+ / scope gated server-side (see that query's own doc
+ * comment) — a caller below that bar just sees an empty list, never an error,
+ * matching this modal's existing "no dead disabled buttons" philosophy.
+ */
+function TransactionHistorySection({ transactionId }: { transactionId: Id<"transactions"> }) {
+  const [expanded, setExpanded] = useState(false);
+  const rows = useQuery(
+    api.finances.financeAuditTrail,
+    expanded ? { subjectType: "transaction", subjectId: transactionId } : "skip",
+  );
+
+  return (
+    <View className="border-t border-border pt-3">
+      <Pressable
+        onPress={() => setExpanded((e) => !e)}
+        accessibilityRole="button"
+        className="flex-row items-center gap-1 self-start active:opacity-70 web:hover:opacity-90"
+      >
+        <Icon name={expanded ? "chevron-up" : "chevron-down"} size={14} color={colors.muted} />
+        <Text className="text-2xs font-bold uppercase tracking-wider text-muted">History</Text>
+      </Pressable>
+      {expanded ? (
+        rows === undefined ? (
+          <Text className="mt-2 text-xs text-muted">Loading…</Text>
+        ) : rows.length === 0 ? (
+          <Text className="mt-2 text-xs text-muted">No changes recorded yet.</Text>
+        ) : (
+          <View className="mt-2 gap-2.5">
+            {rows.map((r) => (
+              <View key={r.id} className="border-l-2 border-border pl-2">
+                <Text className="text-xs font-medium text-ink">
+                  {FINANCE_AUDIT_ACTION_LABELS[r.action]}
+                  {r.field ? ` — ${r.field}` : ""}
+                </Text>
+                {r.before != null || r.after != null ? (
+                  <Text className="text-xs text-muted" numberOfLines={2}>
+                    {r.before ?? "—"} → {r.after ?? "—"}
+                  </Text>
+                ) : null}
+                {r.reason ? (
+                  <Text className="text-xs text-muted" numberOfLines={3}>
+                    Reason: {r.reason}
+                  </Text>
+                ) : null}
+                <Text className="text-2xs text-faint">
+                  {r.actorName ?? "Unknown"} · {shortDate(r.createdAt)}
+                </Text>
+              </View>
+            ))}
+          </View>
+        )
+      ) : null}
     </View>
   );
 }

@@ -82,6 +82,7 @@ import {
 import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
 import { TransactionNoteModal } from "../modals/TransactionNoteModal";
+import { ExcludeReasonModal } from "../modals/ExcludeReasonModal";
 import { ReceiptViewerModal } from "../receipts/ReceiptViewerModal";
 import { ReceiptAttachPicker } from "../receipts/ReceiptAttachPicker";
 import {
@@ -295,6 +296,10 @@ function ReconcileRow({
     viewerPersonId != null && row.cardholder?.personId === viewerPersonId;
 
   const [noteModalOpen, setNoteModalOpen] = useState(false);
+  // Reason prompt (server-enforced, `finances.setTransactionStatus`) — set
+  // ONLY while the picker is asking for a reason; `guard(setStatus(...))`
+  // never fires until the bookkeeper confirms one.
+  const [excludePromptOpen, setExcludePromptOpen] = useState(false);
   // Accept feels TERMINAL: the moment a suggestion is accepted we show a brief
   // "Accepted" state in the Suggested cell instead of letting an
   // still-`isSuggestible` row (accepted the category but still needs a budget)
@@ -512,14 +517,33 @@ function ReconcileRow({
         />
       </Cell>
 
-      {/* Status (inline dropdown) */}
+      {/* Status (inline dropdown). Picking "Excluded" opens the required
+          reason prompt instead of committing right away — the mutation
+          itself throws `REASON_REQUIRED` without one (see
+          `ExcludeReasonModal`'s own doc comment); every other transition
+          commits immediately, unchanged. */}
       <Cell width={widths.status}>
         <SelectCell
           value={row.status}
           options={STATUS_OPTIONS}
-          onChange={(v) => guard(setStatus({ transactionId: id, status: v }))}
+          onChange={(v) => {
+            if (v === "excluded") {
+              setExcludePromptOpen(true);
+              return;
+            }
+            guard(setStatus({ transactionId: id, status: v }));
+          }}
         />
       </Cell>
+      {excludePromptOpen ? (
+        <ExcludeReasonModal
+          onCancel={() => setExcludePromptOpen(false)}
+          onConfirm={(reason) => {
+            setExcludePromptOpen(false);
+            guard(setStatus({ transactionId: id, status: "excluded", reason }));
+          }}
+        />
+      ) : null}
 
       {/* Actions (R1): note (icon fills in when set) + "Mark personal" on a
           card charge that isn't already personal, shown for a MANAGER (any

@@ -198,6 +198,46 @@ export const TRANSACTION_STATUSES = [
 ] as const;
 export type TransactionStatus = (typeof TRANSACTION_STATUSES)[number];
 
+export const TRANSACTION_STATUS_LABELS: Record<TransactionStatus, string> = {
+  unreviewed: "Unreviewed",
+  categorized: "Categorized",
+  reconciled: "Reconciled",
+  excluded: "Excluded",
+};
+
+// ── Finance audit log (field-change trail) ───────────────────────────────────
+// One append-only row per meaningful FIELD CHANGE on a transaction or budget —
+// "who altered a value from X to Y." Distinct from `approvals` (APPROVAL
+// DECISIONS: who approved/rejected/paid a reimbursement/payout/budget) and from
+// `budgetApprovalLog`/`reattributionAudit` (their own narrower append-only
+// trails — a budget approval decision or a bulk cross-scope reattribution is
+// NEVER double-logged here; see each mutation's own comment). See
+// `schema/finances.ts`'s `financeAuditLog` table doc for the full shape.
+export const FINANCE_AUDIT_ACTIONS = [
+  "status_change", // setTransactionStatus (the headline: excluding requires a reason)
+  "recode", // categorizeTransaction / bulkCategorize / setTransactionCategory
+  "receipt_attach", // attachReceipt / receipts.linkReceipt
+  "receipt_detach", // receipts.unlinkReceipt
+  "personal_flag", // flagPersonal
+  "note_edit", // setTransactionNote
+  "manual_create", // createManualTransaction
+  "budget_amount_change", // updateBudget (amountCents only)
+  "budget_delete", // deleteBudget
+] as const;
+export type FinanceAuditAction = (typeof FINANCE_AUDIT_ACTIONS)[number];
+
+export const FINANCE_AUDIT_ACTION_LABELS: Record<FinanceAuditAction, string> = {
+  status_change: "Status changed",
+  recode: "Recoded",
+  receipt_attach: "Receipt attached",
+  receipt_detach: "Receipt detached",
+  personal_flag: "Personal flag changed",
+  note_edit: "Note edited",
+  manual_create: "Created manually",
+  budget_amount_change: "Budget amount changed",
+  budget_delete: "Budget deleted",
+};
+
 // ── Inbound email receipts (backfill pipeline) ───────────────────────────────
 // The lifecycle of ONE inbound email routed to the receipt-ingest webhook
 // (reply.publicworship.life via Resend). A row is created the moment a signed
