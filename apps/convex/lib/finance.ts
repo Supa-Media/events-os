@@ -550,12 +550,14 @@ export async function isCentralEdOrFm(ctx: QueryCtx): Promise<boolean> {
  *  Relay-cards section (the client-side `canViewAccounts` query is the same
  *  check; this is for functions that must ALSO refuse the write/read itself,
  *  not just hide the affordance). */
-export async function requireCentralEdOrFm(ctx: QueryCtx): Promise<void> {
+export async function requireCentralEdOrFm(
+  ctx: QueryCtx,
+  /** Override for callers that aren't the Accounts screen — the default text
+   *  names that surface, which would read as a non-sequitur on e.g. a transfer
+   *  write. Same gate either way; only the refusal wording changes. */
+  message = "Accounts is visible only to the Executive Director and Financial Manager.",
+): Promise<void> {
   if (!(await isCentralEdOrFm(ctx))) {
-    throw new ConvexError({
-      code: "FORBIDDEN",
-      message:
-        "Accounts is visible only to the Executive Director and Financial Manager.",
-    });
+    throw new ConvexError({ code: "FORBIDDEN", message });
   }
 }

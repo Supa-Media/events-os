@@ -70,15 +70,12 @@
  * explicitly-dated event, so recording two transfers for the same chapter on
  * the same day is normal, not a duplicate.
  *
- * GATING. Every direction of a generic transfer is a central MONEY WRITE →
- * central reach + bookkeeper+ (mirroring the skim's and settlement's gate).
- * The launch grant's stricter central-ED/FM-only gate (`requireCentralEdOrFm`,
- * #149) is DELETED along with the launch-grant kind itself — collapsing to
- * one generic mutation means one gate, and bookkeeper+ was already the gate
- * for 2 of the 3 retired variants (including the one that also moves central
- * → chapter, the settlement). A launch grant is still possible (it's just a
- * `central_to_chapter` transfer with a note saying so); it now needs
- * bookkeeper+, not specifically an ED/FM title.
+ * GATING IS DIRECTIONAL — see `recordTransfer`'s own doc comment. Collapsing
+ * three mutations into one must not quietly weaken the strongest control any
+ * of them had, so money ARRIVING at central (`chapter_to_central`) needs
+ * central bookkeeper+ as the skim/settlement always did, while money LEAVING
+ * central (`central_to_chapter`) still needs central ED/FM — preserving the
+ * launch grant's #149 gate even though the launch-grant KIND is gone.
  */
 import { mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
@@ -87,6 +84,7 @@ import { Doc, Id } from "./_generated/dataModel";
 import { CENTRAL, easternParts, matchesMode } from "@events-os/shared";
 import { requireChapterId, requireUserId } from "./lib/context";
 import {
+  requireCentralEdOrFm,
   requireCentralFinanceRole,
   getChapterAccountForMode,
   type FinanceScope,
@@ -261,19 +259,41 @@ function genericTransferGroupId(
 
 /**
  * Record a manual central↔chapter transfer for money that moved OUTSIDE the
- * app (central bookkeeper+) — the one entry point that replaces the retired
- * skim/launch-grant/settlement mutations. Books the ledger pair (an outflow
- * leg on whichever scope `direction` says paid, an inflow leg on the other)
- * exactly like those did; the `note` is where "what this was for" (the skim
- * commitment, a launch grant, a settlement, or anything else) lives now,
- * since the app itself no longer distinguishes those reasons structurally.
+ * app — the one entry point that replaces the retired skim/launch-grant/
+ * settlement mutations. Books the ledger pair (an outflow leg on whichever
+ * scope `direction` says paid, an inflow leg on the other) exactly like those
+ * did; the `note` is where "what this was for" (the skim commitment, a launch
+ * grant, a settlement, or anything else) lives now, since the app itself no
+ * longer distinguishes those reasons structurally.
+ *
+ * GATING IS DIRECTIONAL, and deliberately so. Collapsing three mutations into
+ * one must not quietly weaken the strongest control any of them had. The
+ * retired launch grant (central → chapter — the single largest movement in
+ * the system, a new city's ~$7,800–8,300 equipment + training cost) was
+ * gated on `requireCentralEdOrFm` (#149, PRD seat table §0.2); the skim and
+ * settlement were bookkeeper+. A flat bookkeeper+ gate here would have let a
+ * central bookkeeper move money OUT of central on their own, which no retired
+ * variant allowed. So:
+ *   - `chapter_to_central` (money arriving at central — the skim commitment,
+ *     a chapter-owes-central settlement): central bookkeeper+, as before.
+ *   - `central_to_chapter` (money LEAVING central — a launch grant, a
+ *     central-owes-chapter settlement): central ED/FM, preserving #149.
+ * One mutation, one form, one ledger shape — the seat requirement is the only
+ * thing that varies, and it varies with which way the money actually moves.
  */
 export const recordTransfer = mutation({
   args: transferArgs,
   returns: recordResult,
   handler: async (ctx, args) => {
     const home = (await requireChapterId(ctx)) as Id<"chapters">;
-    await requireCentralFinanceRole(ctx, home, "bookkeeper");
+    if (args.direction === "central_to_chapter") {
+      await requireCentralEdOrFm(
+        ctx,
+        "Moving money out of central requires the Executive Director or Financial Manager.",
+      );
+    } else {
+      await requireCentralFinanceRole(ctx, home, "bookkeeper");
+    }
     const userId = (await requireUserId(ctx)) as Id<"users">;
     assertPositiveCents(args.amountCents);
     assertValidPostedAt(args.postedAt);

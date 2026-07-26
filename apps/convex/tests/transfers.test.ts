@@ -58,6 +58,24 @@ async function asCentral(
   return personId;
 }
 
+/** A central ED/FM — the seat `recordTransfer` requires for the
+ *  `central_to_chapter` direction (money LEAVING central), preserving the
+ *  retired launch grant's #149 gate. Layered ON TOP of a central finance
+ *  grant, since the mutation also resolves a central finance role. */
+async function asCentralEdOrFm(s: ChapterSetup): Promise<Id<"people">> {
+  const personId = await asCentral(s, "bookkeeper");
+  await run(s.t, (ctx) =>
+    ctx.db.insert("specializedRoles", {
+      personId,
+      title: "executive_director",
+      roleKind: "leadership",
+      scope: "central",
+      createdAt: Date.now(),
+    }),
+  );
+  return personId;
+}
+
 /** A chapter-only manager (person + manager grant, chapter scope). */
 async function asChapterManager(s: ChapterSetup): Promise<Id<"people">> {
   const personId = await seedSelfPerson(s);
@@ -183,7 +201,7 @@ describe("recordTransfer — the ledger pair", () => {
   test("central_to_chapter: central outflow → chapter inflow (e.g. a launch grant)", async () => {
     const t = newT();
     const s = await setupChapter(t);
-    await asCentral(s, "bookkeeper");
+    await asCentralEdOrFm(s);
     const newChapter = await makeChapter(s, "Boston");
 
     const res = await s.as.mutation(api.transfers.recordTransfer, {
@@ -328,7 +346,7 @@ describe("recordTransfer — authz", () => {
         amountCents: 10_000,
         postedAt: MARCH_2026,
       }),
-    ).rejects.toThrow(/central/i);
+    ).rejects.toThrow(/FORBIDDEN/);
     await expect(
       s.as.mutation(api.transfers.recordTransfer, {
         direction: "central_to_chapter",
@@ -336,7 +354,7 @@ describe("recordTransfer — authz", () => {
         amountCents: 10_000,
         postedAt: MARCH_2026,
       }),
-    ).rejects.toThrow(/central/i);
+    ).rejects.toThrow(/FORBIDDEN/);
   });
 
   test("central VIEWER is FORBIDDEN on the write (needs bookkeeper+)", async () => {
@@ -353,10 +371,44 @@ describe("recordTransfer — authz", () => {
     ).rejects.toThrow(ConvexError);
   });
 
-  test("central bookkeeper can record either direction — no separate ED/FM gate for a grant-like transfer", async () => {
+  test("central bookkeeper CAN record chapter_to_central (money arriving)", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await asCentral(s, "bookkeeper");
+    await expect(
+      s.as.mutation(api.transfers.recordTransfer, {
+        direction: "chapter_to_central",
+        chapterId: s.chapterId,
+        amountCents: 37_500,
+        postedAt: MARCH_2026,
+        note: "The 15% commitment, moved by hand",
+      }),
+    ).resolves.toBeTruthy();
+  });
+
+  // The collapse to one mutation must NOT weaken the strongest gate any of the
+  // three retired variants had: the launch grant (central → chapter) required
+  // central ED/FM (#149). A bookkeeper could never move money OUT of central.
+  test("central bookkeeper is FORBIDDEN on central_to_chapter (money leaving central needs ED/FM)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentral(s, "bookkeeper");
+    const newChapter = await makeChapter(s, "Boston");
+    await expect(
+      s.as.mutation(api.transfers.recordTransfer, {
+        direction: "central_to_chapter",
+        chapterId: newChapter,
+        amountCents: 780_000,
+        postedAt: MARCH_2026,
+        note: "Launch grant",
+      }),
+    ).rejects.toThrow();
+  });
+
+  test("central ED/FM CAN record central_to_chapter (the retired launch grant's own gate)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEdOrFm(s);
     const newChapter = await makeChapter(s, "Boston");
     await expect(
       s.as.mutation(api.transfers.recordTransfer, {
@@ -376,7 +428,7 @@ describe("dashboardCentral.cityLaunchFund — generic transfer + historical sour
   test("chapter_to_central transfers count as received; central_to_chapter as made", async () => {
     const t = newT();
     const s = await setupChapter(t);
-    await asCentral(s, "bookkeeper");
+    await asCentralEdOrFm(s);
     const newChapter = await makeChapter(s, "Boston");
 
     await s.as.mutation(api.transfers.recordTransfer, {
@@ -619,7 +671,7 @@ describe("interScopeBalances — authz", () => {
     await asChapterManager(s);
     await expect(
       s.as.query(api.transfers.interScopeBalances, {}),
-    ).rejects.toThrow(/central/i);
+    ).rejects.toThrow(/FORBIDDEN/);
   });
 
   test("central VIEWER can read (query is viewer+, not a write)", async () => {
@@ -635,7 +687,7 @@ describe("recordTransfer — nets out interScopeBalances (the old settlement's j
   test("a central_to_chapter transfer books central outflow → chapter inflow and fully nets the balance", async () => {
     const t = newT();
     const s = await setupChapter(t);
-    await asCentral(s, "bookkeeper");
+    await asCentralEdOrFm(s);
     const centralBudgetId = await makeCentralBudget(s, 100_000);
     await chapterSpendLinkedTo(s, centralBudgetId, 20_000, MARCH_2026);
 
@@ -701,7 +753,7 @@ describe("recordTransfer — nets out interScopeBalances (the old settlement's j
   test("historical settlement rows still net alongside new generic transfers", async () => {
     const t = newT();
     const s = await setupChapter(t);
-    await asCentral(s, "bookkeeper");
+    await asCentralEdOrFm(s);
     const centralBudgetId = await makeCentralBudget(s, 100_000);
     await chapterSpendLinkedTo(s, centralBudgetId, 30_000, MARCH_2026);
 
@@ -755,7 +807,7 @@ describe("interScopeBalanceContributors", () => {
   test("contributor rows' signed sum reconciles exactly to interScopeBalances' netCents", async () => {
     const t = newT();
     const s = await setupChapter(t);
-    await asCentral(s, "bookkeeper");
+    await asCentralEdOrFm(s);
     const centralBudgetId = await makeCentralBudget(s, 100_000);
     await chapterSpendLinkedTo(s, centralBudgetId, 12_000, MARCH_2026);
     await chapterSpendLinkedTo(s, centralBudgetId, 8_000, MARCH_2026 + 86_400_000);
@@ -813,7 +865,7 @@ describe("interScopeBalanceContributors", () => {
       s.as.query(api.transfers.interScopeBalanceContributors, {
         chapterId: s.chapterId,
       }),
-    ).rejects.toThrow(/central/i);
+    ).rejects.toThrow(/FORBIDDEN/);
 
     const t2 = newT();
     const s2 = await setupChapter(t2);
