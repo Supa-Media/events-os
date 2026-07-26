@@ -143,7 +143,19 @@ on green).
 - Merge order matters with parallel agent PRs: land stacked PRs right after
   their base; expect PRs sharing hot files to go conflicted as siblings
   merge — route each conflict back to its author agent (merge main in,
-  resolve, re-green) and merge on the next green.
+  resolve, re-green) and merge on the next green. Stacked PRs report
+  mergeable_state "unstable" until their base merges — expected, not red.
+- Git archaeology mechanics: the cloud clone is SHALLOW — `git fetch
+  --unshallow` before merge-base/ancestry work. `git merge-tree
+  --write-tree origin/main <branch>` gives a conflict-file list without
+  touching the tree. Squash-merged source branches NEVER read as ancestors
+  of main (`merge-base --is-ancestor` says no forever) — before calling a
+  branch "in-flight", compare its tip date and commit subjects against
+  recently-merged PRs; recon lanes have twice mislabeled dead source
+  branches as collision risks.
+- `actions_list` on main can exceed the token cap — slice the saved
+  tool-result file with python and parse `name|conclusion|head_sha` instead
+  of reading raw.
 - Read `apps/convex/_generated/ai/guidelines.md` before writing Convex code.
 - Academy (packages/shared/src/academy/, streams/finances.ts) must track
   every user-facing change; run the academy integrity tests.
@@ -465,73 +477,12 @@ Before finishing a run of this skill, you MUST:
   update_pull_request call), and close the superseded base PR with a
   contained-in note.
 
-### 2026-07-24 — Run 2 addendum (team chat: Mailchimp vs BCC vs native)
-- Team exchange (Charisma/Carolyn/founder) surfaced principles now encoded
-  as 7 & 8 above: founder rejected BCC ("filters to spam", can't design),
-  leaned build-native over Mailchimp $20/mo ("pricing is brutal… build it
-  myself"); Carolyn's "consistency first 3 months, metrics later" endorsed
-  as culture but NOT as "skip unsubscribe" — the team briefly framed
-  no-unsubscribe as a feature of BCC; guidelines must preempt that framing
-  org-wide before chapters multiply.
-- Ops reality check for native sends: Resend free tier is 100 emails/day —
-  a 500-recipient newsletter needs a paid Resend plan (~$20/mo) or
-  multi-day batch pacing; cost-parity with Mailchimp, so the native
-  argument is data unity + control + chapter scale, not price.
-- Contact compilation ask ("Givebutter + any other emails") = the donors/
-  rsvps/people silos recon already mapped; a mailing-list import must
-  record provenance + set expectations in the first send.
-
-### 2026-07-24 — Run 2: email-list/newsletter readiness assessment
-- Run shape: founder asked "what's the state of X, how ready are we" — an
-  assessment run, no attachments. 4 recon lanes (branch archaeology, main
-  inventory, framework capabilities, PR history) in one parallel launch;
-  synthesis-only deliverable, no implementation dispatched unbidden.
-- "I think I had a branch for this" → check OPEN PRs first, not just
-  branches: the remembered work was two still-open stacked PRs (#322→#323,
-  a complete ~12k-line campaigns system), not a rotted branch. PR-history
-  lane found intent/state; git lane found mergeability.
-- Git archaeology mechanics: the cloud clone is SHALLOW — `git fetch
-  --unshallow` before any merge-base/ancestry work, else false "no merge
-  base". `git merge-tree --write-tree origin/main <branch>` gives a
-  conflict-file list without touching the working tree — cheap, decisive
-  staleness evidence (62 behind / 9 conflict files ≠ "rotted").
-- Recon lanes disagree usefully: framework lane said "no email infra
-  upstream", branch lane said "branch built lib/resend.ts app-local" —
-  that intersection IS the upstream-first decision to surface, not resolve
-  silently.
-- Product gap worth naming precisely: #323's unsubscribe = deployment-wide
-  suppression (transactional exempt — matches founder ask) but NOT
-  per-list; founder said "mailing lists" plural. Flag granularity deltas
-  between remembered work and current ask explicitly.
-
-### 2026-07-23 — Run 1 addendum 3 (post-merge deploy break)
-- Green CI is NOT green deploys. 10 PRs merged green, but two of them
-  (#381 tooltip import + #389 dashboard edit to the same file) combined into
-  a mis-depthed relative import (`../ui` should have been `../../ui`) that
-  only the Metro bundler catches — CI's unit/typecheck jobs don't bundle.
-  Result: `Deploy Web (production)` + `Deploy Mobile Update (OTA)` failed on
-  main while Convex deploy + CI stayed green. Hotfix #391 fixed it; verified
-  by checking the post-merge deploy workflow runs, not just CI.
-- Takeaways now encoded as invariants above: (1) always verify post-merge
-  Deploy Web/Mobile runs for UI changes; (2) when a merge reconciles two
-  PRs' imports, grep the file for import-depth mistakes before merging.
-- Mechanic: `actions_list` on main can exceed the token cap — slice the
-  saved tool-result file with python `read()[A:B]` and parse the JSON for
-  `name|conclusion|head_sha` instead of reading raw.
-
-### 2026-07-23 — Run 1 addendum 2 (drive-to-green phase)
-- CI status sweeps must use CHECK RUNS (pull_request_read method
-  get_check_runs), not get_status — the legacy commit-status API is empty on
-  Actions-based repos and reads as "pending, 0 checks" for fully green PRs.
-  When an agent's report contradicts known facts, spot-check one case
-  yourself before relaying, then send the agent back with the correction.
-- Route CI fixes back to the agent that authored the PR via SendMessage —
-  it retains full context and fixed a type-narrowing error in minutes.
-- Sandbox agents cannot pnpm install here (401 on @supa-media/* GitHub
-  Packages) — expect "manual review + CI is the real gate" in every agent
-  report; budget one CI-fix round trip per backend-touching PR.
-- Stacked PRs report mergeable_state "unstable" while their base PR is
-  unmerged — expected, not a failure; state the merge order in both bodies.
+[Folded 2026-07-26: Run 2 (email readiness), Run 2 team-chat addendum, and
+Run 1 addenda 2-3 — durable bits now live in the invariants (git
+archaeology/shallow-clone, actions_list token cap, check-runs-not-status,
+deploy-verification, stacked-PR "unstable") and principles 7/8. The
+2026-07-23 "sandbox can't pnpm install (401)" constraint is LIFTED — full
+local suites are the norm; the bundler still only runs in deploys.]
 
 [Runs 1 and its addenda (2026-07-23) folded into the instructions above:
 parallel recon with exact symptoms, schema-ready-but-UI-missing gaps,
