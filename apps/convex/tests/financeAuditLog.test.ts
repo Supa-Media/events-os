@@ -628,6 +628,43 @@ describe("financeAuditTrail — authz-gated (bookkeeper+) and scope-correct", ()
   });
 });
 
+describe("every row names an actor — the trail's integrity anchor", () => {
+  // `actorPersonId` is optional by design (a superuser with no roster row is a
+  // real path), so it CANNOT be what guarantees attributability. `actorUserId`
+  // is required and resolved inside `logFinanceAudit` itself rather than passed
+  // by each caller, so no writer can produce an anonymous row by omission.
+  test("actorUserId is populated on every row, across every instrumented action", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await grantRole(s, personId, "bookkeeper");
+    const fundId = await seedFund(s);
+    const missions = await seedCategory(s, fundId, "Missions");
+    const txnId = await seedTxn(s);
+
+    await s.as.mutation(api.finances.setTransactionNote, {
+      transactionId: txnId,
+      note: "Why we bought it",
+    });
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: txnId,
+      categoryId: missions,
+    });
+    await s.as.mutation(api.finances.flagPersonal, { transactionId: txnId, isPersonal: true });
+    await s.as.mutation(api.finances.setTransactionStatus, {
+      transactionId: txnId,
+      status: "excluded",
+      reason: "Duplicate of the card charge",
+    });
+
+    const rows = await run(s.t, (ctx) => ctx.db.query("financeAuditLog").collect());
+    expect(rows.length).toBeGreaterThanOrEqual(5); // manual_create + the four above
+    for (const row of rows) {
+      expect(row.actorUserId).toBeTruthy();
+    }
+  });
+});
+
 describe("append-only — nothing patches or deletes a financeAuditLog row once written", () => {
   test("a row logged by one action survives every subsequent action on the same transaction, byte for byte", async () => {
     const t = newT();

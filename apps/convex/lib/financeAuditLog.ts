@@ -10,11 +10,16 @@
  * This file adds no authorization of its own — every writer resolves its own
  * `actorPersonId` through whichever finance gate it already calls
  * (`requireReconcileTxn`, `requireFinanceRole`, etc.) and passes it straight
- * through. Kept out of `finances.ts` only so `receipts.ts` (which already
+ * through. It DOES resolve `actorUserId` itself, via `requireUserId`, rather
+ * than taking it from the caller: that field is the trail's integrity anchor
+ * (see the schema doc comment), and a required field a caller could simply
+ * forget to pass is not an anchor. Every writer is already authenticated, so
+ * this never adds a new failure mode. Kept out of `finances.ts` only so `receipts.ts` (which already
  * imports helpers FROM `finances.ts`, never the reverse) can log
  * receipt attach/detach without a circular import.
  */
 import type { MutationCtx } from "../_generated/server";
+import { requireUserId } from "./context";
 import type { Id } from "../_generated/dataModel";
 import type { FinanceAuditAction } from "@events-os/shared";
 import type { FinanceScope } from "./finance";
@@ -47,8 +52,10 @@ export async function logFinanceAudit(
   ctx: MutationCtx,
   entry: FinanceAuditEntry,
 ): Promise<void> {
+  const actorUserId = (await requireUserId(ctx)) as Id<"users">;
   await ctx.db.insert("financeAuditLog", {
     chapterId: entry.chapterId,
+    actorUserId,
     subjectType: entry.subjectType,
     subjectId: entry.subjectId,
     action: entry.action,

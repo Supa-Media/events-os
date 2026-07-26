@@ -959,6 +959,18 @@ export const financeAuditLog = defineTable({
   // type (mirrors `approvals.subjectId`'s own string-not-id shape).
   subjectId: v.string(),
   action: v.union(...FINANCE_AUDIT_ACTIONS.map((a) => v.literal(a))),
+  // WHO — two identities, both stored on purpose, mirroring
+  // `reattributionAudit` above (the existing house precedent for exactly this
+  // problem).
+  //
+  // `actorUserId` is REQUIRED and is this trail's integrity anchor: every
+  // mutation that logs here runs behind auth, so an authenticated user id
+  // always exists, and an audit row that can't name anyone is worthless
+  // precisely when it matters most ("$303.86 left the budget and nobody knows
+  // who"). `actorPersonId` is the friendly, DISPLAYABLE identity and stays
+  // optional — legitimately absent for a superuser with no roster row — which
+  // is exactly why it can't be the anchor on its own.
+  actorUserId: v.id("users"),
   actorPersonId: v.optional(v.id("people")),
   // The changed field's name (e.g. "status", "category", "budget", "amount",
   // "note", "receipt", "isPersonal") — omitted for an action with no single
