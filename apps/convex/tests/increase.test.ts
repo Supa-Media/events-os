@@ -12,7 +12,7 @@ import { verifyIncreaseSignature } from "../increase";
  *  - `payReimbursement` refuses a non-approved request, and is idempotent
  *    (twice → ONE payout, never double-pays),
  *  - `markPaidManually` sets the reimbursement `paid` + posts exactly one
- *    `flow:"transfer"` ledger row (excluded from spend), idempotently,
+ *    `flow:"outflow"` ledger row (the expense itself), idempotently,
  *  - `onIncreaseWebhookEvent` paid→paid + transfer, failed/returned→not paid,
  *    unknown transfer no-ops, and a `paid` payout ignores a later `failed`,
  *  - `provisionChapterAccount` degrades when a required env is unset, opens an
@@ -135,8 +135,8 @@ async function seedLine(
   );
 }
 
-/** Count the `transfer`-flow transactions linked to a reimbursement. */
-async function transferTxns(
+/** The ledger row(s) linked to a reimbursement — its payout `outflow`. */
+async function payoutTxns(
   s: ChapterSetup,
   reimbursementId: Id<"reimbursementRequests">,
 ) {
@@ -297,7 +297,7 @@ describe("payReimbursement (real ACH once a destination is linked)", () => {
     });
     const settled = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
     expect(settled?.status).toBe("paid");
-    const txns = await transferTxns(s, reimbursementId);
+    const txns = await payoutTxns(s, reimbursementId);
     expect(txns.length).toBe(1);
     expect(txns[0].amountCents).toBe(1800);
   });
@@ -586,9 +586,9 @@ describe("markPaidManually", () => {
     expect(req?.status).toBe("paid");
     expect(req?.paidAt).toBeTruthy();
 
-    const txns = await transferTxns(s, reimbursementId);
+    const txns = await payoutTxns(s, reimbursementId);
     expect(txns.length).toBe(1);
-    expect(txns[0].flow).toBe("transfer"); // excluded from category spend
+    expect(txns[0].flow).toBe("outflow"); // the expense — counts toward budget/category spend
     expect(txns[0].source).toBe("reimbursement");
     expect(txns[0].status).toBe("reconciled");
     expect(txns[0].amountCents).toBe(1800);
@@ -610,7 +610,7 @@ describe("markPaidManually", () => {
       reimbursementId,
     });
     expect(again.id).toBe(payout.id);
-    const txnsAfter = await transferTxns(s, reimbursementId);
+    const txnsAfter = await payoutTxns(s, reimbursementId);
     expect(txnsAfter.length).toBe(1);
   });
 
@@ -660,7 +660,7 @@ describe("disbursement guards", () => {
     ).rejects.toBeInstanceOf(ConvexError);
     // No payout + no transfer was minted.
     expect((await payoutsFor(s, reimbursementId)).length).toBe(0);
-    expect((await transferTxns(s, reimbursementId)).length).toBe(0);
+    expect((await payoutTxns(s, reimbursementId)).length).toBe(0);
   });
 
   test("the payee (as a manager) is blocked from releasing their own payout", async () => {
@@ -730,7 +730,7 @@ describe("disbursement guards", () => {
     const payouts = await payoutsFor(s, reimbursementId);
     expect(payouts.length).toBe(1);
     expect(payouts[0].status).toBe("processing");
-    expect((await transferTxns(s, reimbursementId)).length).toBe(0);
+    expect((await payoutTxns(s, reimbursementId)).length).toBe(0);
   });
 });
 
@@ -769,7 +769,7 @@ async function seedProcessingPayout(
 }
 
 describe("onIncreaseWebhookEvent", () => {
-  test("submitted (Increase's terminal success) → reimbursement paid + one transfer txn", async () => {
+  test("submitted (Increase's terminal success) → reimbursement paid + one outflow txn", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const { reimbursementId, payoutId } = await seedProcessingPayout(
@@ -789,9 +789,9 @@ describe("onIncreaseWebhookEvent", () => {
     expect(payout?.status).toBe("paid");
     const req = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
     expect(req?.status).toBe("paid");
-    const txns = await transferTxns(s, reimbursementId);
+    const txns = await payoutTxns(s, reimbursementId);
     expect(txns.length).toBe(1);
-    expect(txns[0].flow).toBe("transfer");
+    expect(txns[0].flow).toBe("outflow");
     expect(txns[0].amountCents).toBe(1800);
   });
 
@@ -814,7 +814,7 @@ describe("onIncreaseWebhookEvent", () => {
     const req = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
     expect(req?.status).toBe("approved");
     expect(req?.status).not.toBe("paid");
-    expect((await transferTxns(s, reimbursementId)).length).toBe(0);
+    expect((await payoutTxns(s, reimbursementId)).length).toBe(0);
   });
 
   test("returned → reimbursement NOT paid", async () => {
@@ -835,7 +835,7 @@ describe("onIncreaseWebhookEvent", () => {
     expect(payout?.status).toBe("returned");
     const req = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
     expect(req?.status).not.toBe("paid");
-    expect((await transferTxns(s, reimbursementId)).length).toBe(0);
+    expect((await payoutTxns(s, reimbursementId)).length).toBe(0);
   });
 
   test("unknown transfer id is a no-op (never throws)", async () => {
@@ -875,7 +875,7 @@ describe("onIncreaseWebhookEvent", () => {
     expect(payout?.status).toBe("paid");
     const req = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
     expect(req?.status).toBe("paid");
-    expect((await transferTxns(s, reimbursementId)).length).toBe(1);
+    expect((await payoutTxns(s, reimbursementId)).length).toBe(1);
   });
 
   test("a paid payout REVERSES on a late `returned` (re-opens the reimbursement, removes the transfer)", async () => {
@@ -891,7 +891,7 @@ describe("onIncreaseWebhookEvent", () => {
       transferId: "ach_bounce",
       status: "submitted",
     });
-    expect((await transferTxns(s, reimbursementId)).length).toBe(1);
+    expect((await payoutTxns(s, reimbursementId)).length).toBe(1);
     const paidReq = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
     expect(paidReq?.status).toBe("paid");
     expect(paidReq?.paidAt).toBeTruthy();
@@ -914,7 +914,7 @@ describe("onIncreaseWebhookEvent", () => {
     // The offsetting transfer was REMOVED (not merely re-flagged) — a future
     // successful payout must post a fresh one, not mistake this bounced row
     // for an already-posted transfer.
-    expect((await transferTxns(s, reimbursementId)).length).toBe(0);
+    expect((await payoutTxns(s, reimbursementId)).length).toBe(0);
   });
 
   test("a duplicate `returned` webhook after reversal is idempotent (no double re-open)", async () => {

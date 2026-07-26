@@ -325,6 +325,7 @@ const REGISTRY_NAMES = [
   "0041_migrate_guest_audiences",
   "0042_wrap_targeting",
   "0043_split_person_names",
+  "0044_reimbursement_payouts_outflow",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

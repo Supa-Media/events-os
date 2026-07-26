@@ -15,8 +15,12 @@ to the exact event/project/item it was spent on. **The prototype IS the spec** �
   actors are `people` (resolve caller via `people` `by_user`).
 - **Estimated ≠ Actual (anti-double-count).** Estimated = planned (`budgets`,
   `projects.budgetUsd`, `events.budget`, item `fields.cost`, `engagements.amountUsd`).
-  Actual = the `transactions` table ONLY. Never sum across them. Reimbursement
-  payouts post as `flow:"transfer"` → excluded from category/budget spend.
+  Actual = the `transactions` table ONLY. Never sum across them. Only
+  `flow:"transfer"` rows are excluded from category/budget spend — money MOVING
+  (chapter ↔ central skims/grants/settlements, a personal-charge repayment
+  credit), where both legs already exist in the ledger. A reimbursement payout
+  is NOT one of those: it's the expense itself (nothing else books an
+  out-of-pocket purchase), so it posts `flow:"outflow"` and counts.
 - Enum validators are built from the `packages/shared/src/finance.ts` tuples
   (the `EVENT_STATUSES` pattern). Money-format via `formatCents`; period
   bucketing (`easternParts`/`quarterOfMonth`) in America/New_York.

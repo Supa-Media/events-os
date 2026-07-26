@@ -2,8 +2,8 @@
 /**
  * Reimbursement payout rows should carry the reimbursement's own data.
  *
- * A paid reimbursement posts a single `flow:"transfer"` transaction (see
- * `increase.ts#postReimbursementTransfer`). Historically that row was written
+ * A paid reimbursement posts a single `flow:"outflow"` transaction (see
+ * `increase.ts#postReimbursementSpend`). Historically that row was written
  * BARE — no category, no "For", no purpose, no receipt, no merchant — so every
  * paid reimbursement showed up in Reconcile as an "Unlabeled charge /
  * Uncategorized / For: None / missing receipt", inflating the missing-receipt +
@@ -118,7 +118,7 @@ async function seedPaidReimbursement(
     const txnId = await ctx.db.insert("transactions", {
       chapterId: s.chapterId,
       source: "reimbursement",
-      flow: "transfer",
+      flow: "outflow",
       amountCents: total,
       postedAt: Date.now(),
       reimbursementId,

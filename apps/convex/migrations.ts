@@ -39,6 +39,7 @@ import { runMigrateLegacyAudiencesPage } from "./migrations/0040_migrate_legacy_
 import { runMigrateGuestAudiencesPage } from "./migrations/0041_migrate_guest_audiences";
 import { runWrapTargetingPage } from "./migrations/0042_wrap_targeting";
 import { runSplitPersonNamesPage } from "./migrations/0043_split_person_names";
+import { runReimbursementPayoutsOutflowPage } from "./migrations/0044_reimbursement_payouts_outflow";
 
 /**
  * Backfill: ensure every template/event grid module has all of its current
@@ -796,6 +797,12 @@ export const runWrapTargeting = internalMutation({
 export const continueSplitPersonNames = internalMutation({
   args: { cursor: v.union(v.string(), v.null()) },
   handler: async (ctx, { cursor }) => await runSplitPersonNamesPage(ctx, cursor),
+});
+
+export const continueReimbursementPayoutsOutflow = internalMutation({
+  args: { cursor: v.union(v.string(), v.null()) },
+  handler: async (ctx, { cursor }) =>
+    await runReimbursementPayoutsOutflowPage(ctx, cursor),
 });
 
 /**

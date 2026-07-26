@@ -1,7 +1,7 @@
 /**
  * One-shot backfill: port each ALREADY-PAID reimbursement's descriptive +
- * attribution data onto its payout transaction (the `flow:"transfer"` row
- * `postReimbursementTransfer` created). Before the fix in `increase.ts`, those
+ * attribution data onto its payout transaction (the row
+ * `postReimbursementSpend` created). Before the fix in `increase.ts`, those
  * rows were written bare, so historical reimbursements show up in Reconcile as
  * "Unlabeled charge / Uncategorized / For: None / missing receipt" even though
  * every field exists on the reimbursement.
@@ -70,7 +70,7 @@ export const backfillReimbursementTxnData = internalMutation({
     let patched = 0;
 
     for (const req of page.page) {
-      // The single transfer row this reimbursement's payout posted (if any).
+      // The single ledger row this reimbursement's payout posted (if any).
       const txn = await ctx.db
         .query("transactions")
         .withIndex("by_reimbursement", (q) => q.eq("reimbursementId", req._id))

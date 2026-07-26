@@ -259,10 +259,15 @@ export function receiptSenderCanAutoAttach(
   return senderClass === "team" || senderClass === "roster";
 }
 
-// Flows that DON'T count toward category / budget spend. A reimbursement payout
-// is money leaving the account but the underlying expense was already booked
-// against its category on the line item, so counting the transfer too would
-// double-count.
+// Flows that DON'T count toward category / budget spend. A `transfer` is money
+// MOVING (chapter ↔ central skims/grants/settlements, a personal-charge
+// repayment netting its own charge) — both legs exist in the ledger, so
+// counting either as spend would double-count real expenses that are already
+// booked elsewhere.
+//
+// NOT in here: a reimbursement payout. That money leaves the org for a
+// purchase someone made out of pocket, and no other row books it, so it posts
+// as a plain `outflow` (see `increase.ts#postReimbursementSpend`).
 export const NON_SPEND_FLOWS: readonly TransactionFlow[] = ["transfer"];
 
 /** True iff a transaction's flow counts toward category/budget spend. */

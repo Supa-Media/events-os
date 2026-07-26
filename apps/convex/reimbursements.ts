@@ -31,9 +31,13 @@
  *  - Status transitions are guarded against the current status via explicit
  *    allowed-from sets; reject/cancel are legal only before a payout is in
  *    motion, and approved/paying/terminal requests can't be walked back here.
- *  - ANTI-DOUBLE-COUNT: the reimbursement PAYOUT (a `transfer` transaction) is
- *    Phase 4 — this file NEVER creates transactions. A line's
- *    `matchedTransactionId` (set elsewhere) links it to an already-synced txn.
+ *  - The reimbursement PAYOUT (an `outflow` transaction — the expense itself,
+ *    see `increase.ts#postReimbursementSpend`) is Phase 4 — this file NEVER
+ *    creates transactions. A line's `matchedTransactionId` links it to an
+ *    already-synced txn; nothing writes that field today, so a payout is the
+ *    only ledger row a reimbursement ever produces. If a matcher is ever
+ *    built, the payout must stop counting as spend for a MATCHED line, or the
+ *    already-synced charge and the payout will both hit the budget.
  *  - `payeeName`/`payeeEmail` are editable display fields, NOT the SoD anchor
  *    (`personId` is). On the authenticated in-app path `identityVerified` is
  *    set, so `list`/`get` also surface the real roster name behind the

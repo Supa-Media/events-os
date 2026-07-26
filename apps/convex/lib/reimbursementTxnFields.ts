@@ -1,19 +1,20 @@
 /**
  * The descriptive + attribution fields a reimbursement PAYOUT transaction should
- * inherit from the reimbursement it settles. Without this, `postReimbursementTransfer`
- * (increase.ts) writes a bare `flow:"transfer"` row — no category, no "For", no
- * purpose, no receipt, no merchant — so every paid reimbursement lands in
- * Reconcile as an "Unlabeled charge / Uncategorized / For: None / missing
- * receipt", inflating the missing-receipt + uncategorized backlogs even though
- * all of it is already captured on the reimbursement.
+ * inherit from the reimbursement it settles. Without this, `postReimbursementSpend`
+ * (increase.ts) writes a bare row — no category, no "For", no purpose, no
+ * receipt, no merchant — so every paid reimbursement lands in Reconcile as an
+ * "Unlabeled charge / Uncategorized / For: None / missing receipt", inflating
+ * the missing-receipt + uncategorized backlogs even though all of it is
+ * already captured on the reimbursement.
  *
- * The payout row stays `flow:"transfer"` (anti-double-count: transfers are
- * excluded from every category/budget/actual SPEND total, see `countsAsSpend`),
- * so these fields are DISPLAY + attribution only and can NEVER double-count the
- * spend. They just make the already-reconciled row self-explanatory and drop it
- * out of the "needs a receipt / needs a category" filters.
+ * The payout row is `flow:"outflow"` — the reimbursed purchase IS the
+ * chapter's expense, and this row is the only place it enters the ledger — so
+ * these fields are the row's LIVE attribution: the category/fund/"For" ported
+ * here are what the budget and category rollups actually read. Anything left
+ * ambiguous (see `unanimous`) stays unset for a bookkeeper to code in
+ * Reconcile rather than being guessed into the wrong budget.
  *
- * Shared by the live insert path (`increase.ts#postReimbursementTransfer`) and
+ * Shared by the live insert path (`increase.ts#postReimbursementSpend`) and
  * the one-shot backfill (`reimbursementBackfill.ts`).
  */
 import type { QueryCtx } from "../_generated/server";
