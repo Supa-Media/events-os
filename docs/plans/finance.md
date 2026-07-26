@@ -17,7 +17,7 @@ to the exact event/project/item it was spent on. **The prototype IS the spec** �
   `projects.budgetUsd`, `events.budget`, item `fields.cost`, `engagements.amountUsd`).
   Actual = the `transactions` table ONLY. Never sum across them. Only
   `flow:"transfer"` rows are excluded from category/budget spend — money MOVING
-  (chapter ↔ central skims/grants/settlements, a personal-charge repayment
+  (a manual chapter ↔ central transfer, a personal-charge repayment
   credit), where both legs already exist in the ledger. A reimbursement payout
   is NOT one of those: it's the expense itself (nothing else books an
   out-of-pocket purchase), so it posts `flow:"outflow"` and counts.

@@ -145,6 +145,19 @@
  * placement are unchanged. No slugs, sections, or courses moved; total stays
  * 98 sections.
  *
+ * Skim-automation retirement (founder decision, 2026-07-26 — the skim/
+ * launch-grant/settlement mutations collapsed into one generic manual
+ * transfer, see `streams/finances.ts`'s header comment): `finance-tiers-and-
+ * skim` gained a tip explaining the 15% is honored as a deliberate manual
+ * transfer, not an automated mechanic, and swapped its "does a higher tier
+ * change the skim %" quiz question (redundant with an earlier one in the
+ * same quiz) for a question testing that same manual-transfer point — quiz
+ * length stays 5, minutes 4→5 (bumped below). `finance-launch-grants-and-
+ * transfers` was rewritten to stop promising an automated Increase pipe
+ * "coming with Phase 4" (that automation was built, then deleted) — same
+ * title, minutes, and quiz length (3/3), so nothing else moved. No slugs,
+ * sections, or courses moved; total stays 98 sections.
+ *
  * Finance audit trail (`financeAuditLog`, founder ask: more audit trails on
  * reconcile edits): `finance-reconcile-grid`'s `try_status` caption now says
  * excluding a charge requires a reason, and the section gained one quiz
@@ -775,7 +788,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-tiers-and-skim",
     title: "Tiers, the covenant, and the skim",
-    minutes: 4,
+    minutes: 5,
     quizLength: 5,
     optional: false,
     capstoneKind: null,

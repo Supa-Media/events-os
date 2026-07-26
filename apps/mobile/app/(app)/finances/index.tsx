@@ -177,18 +177,16 @@ function DashboardBody({ seats }: { seats: Seats }) {
   // Backer milestone ladder editor (giving-platform PRD §3), central desk only.
   const [milestoneModalOpen, setMilestoneModalOpen] = useState(false);
   // City Launch Fund transfer modal (central desk). Carries the real chapters
-  // money can move to/from (from the central dashboard's rollup). `preset`
-  // (WP-4.5) is set when opened from the "Inter-chapter balances" section's
-  // "Settle" affordance — presets the modal straight to that settlement.
+  // money can move to/from (from the central dashboard's rollup). `preset` is
+  // set when opened from the "Inter-chapter balances" section's "Settle"
+  // affordance — presets the modal straight to that direction/amount.
   const [transferModal, setTransferModal] = useState<{
     open: boolean;
     chapters: Array<{ chapterId: Id<"chapters">; chapterName: string }>;
     preset?: {
       chapterId: Id<"chapters">;
-      year: number;
-      month: number;
       amountCents: number;
-      settlementDirection: "central_to_chapter" | "chapter_to_central";
+      direction: "central_to_chapter" | "chapter_to_central";
     };
   }>({ open: false, chapters: [] });
 
@@ -306,10 +304,8 @@ function DashboardBody({ seats }: { seats: Seats }) {
                   chapters,
                   preset: {
                     chapterId,
-                    year: ym.year,
-                    month: ym.month,
                     amountCents: Math.abs(netCents),
-                    settlementDirection:
+                    direction:
                       netCents > 0 ? "central_to_chapter" : "chapter_to_central",
                   },
                 })

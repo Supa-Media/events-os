@@ -2941,10 +2941,12 @@ export const listAccountsStatus = query({
  * SANDBOX child records so the chapter is clean for a fresh production
  * provision — `sandbox_`-issued `cards` (+ their `cardAuthorizations`),
  * `sandbox_` `payouts`, any `increase_*` `transactions` with a `sandbox_`
- * external/source id, AND any `skim`/`launch_grant`/`settlement` TRANSFER leg
- * (WP-4.1/4.2/4.5) whose `externalId` is `sandbox_`-prefixed — otherwise a sandbox-initiated
- * transfer would keep counting toward the PRODUCTION City Launch Fund position
- * forever (`dashboardCentral`). Environment-NEUTRAL records (a null-id
+ * external/source id, AND any transfer leg (the current generic `"transfer"`
+ * source, or a historical `skim`/`launch_grant`/`settlement` row — see
+ * `transfers.ts`'s header comment) whose `externalId` is `sandbox_`-prefixed
+ * — otherwise a sandbox-initiated transfer would keep counting toward the
+ * PRODUCTION City Launch Fund position forever (`dashboardCentral`).
+ * Environment-NEUTRAL records (a null-id
  * degraded card, a manual null-transfer payout, a manually-recorded transfer
  * leg with no `externalId`) are left untouched. Best-effort Increase-side card
  * cancellation is OUT OF SCOPE — this only cleans our DB (a sandbox object is
@@ -3005,13 +3007,19 @@ export const removeChapterAccount = mutation({
 
     // 3. Sandbox increase_* transactions (none written today — defensive). A
     //    reimbursement/repayment/manual txn is env-neutral and left alone.
-    //    ALSO sandbox skim/launch_grant/settlement TRANSFER legs (WP-4.1/4.2/4.5)
-    //    — a sandbox-initiated `initiateSkimTransfer`/`initiateLaunchGrant`/
-    //    `initiateSettlementTransfer` stamps the leg's `externalId` with the
+    //    ALSO sandbox transfer legs — historical `skim`/`launch_grant`/
+    //    `settlement` rows AND the current generic `transfer` source. Before
+    //    the 2026-07-26 collapse to one generic transfer (see
+    //    `transfers.ts`'s header comment), a sandbox-initiated
+    //    `initiateSkimTransfer`/`initiateLaunchGrant`/`initiateSettlementTransfer`
+    //    (all deleted with that collapse — there's no more Increase
+    //    auto-initiate path for a transfer, so no NEW row will ever carry a
+    //    sandbox `externalId` here) stamped the leg's `externalId` with the
     //    real Increase account-transfer id (`sandbox_account_transfer_…` in
-    //    sandbox), so it's matched by prefix the same way a card/ACH row is;
-    //    otherwise it would count toward the PRODUCTION City Launch Fund
-    //    position forever (dashboardCentral).
+    //    sandbox), matched by prefix the same way a card/ACH row is; kept for
+    //    any such row still sitting in a sandbox env from before — otherwise
+    //    it would count toward the PRODUCTION City Launch Fund position
+    //    forever (dashboardCentral).
     const txns = await ctx.db
       .query("transactions")
       .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
@@ -3022,7 +3030,8 @@ export const removeChapterAccount = mutation({
       const isTransferTxn =
         t.source === "skim" ||
         t.source === "launch_grant" ||
-        t.source === "settlement";
+        t.source === "settlement" ||
+        t.source === "transfer";
       if (
         (isIncreaseTxn &&
           (isSandboxObjectId(t.externalId) ||
