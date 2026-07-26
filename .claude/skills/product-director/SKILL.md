@@ -177,6 +177,105 @@ Before finishing a run of this skill, you MUST:
 
 ## Learnings Log (newest first)
 
+### 2026-07-26 — Run 7b (audit → two shipped workstreams: skim retirement + finance audit trail)
+- Continuation of Run 7's assessment. Founder picked two items; both shipped
+  the same session (#435, #436), all deploys green. Shape that worked: two
+  sonnet implementation agents on DISJOINT-ish file sets, one in the main
+  checkout, one in a manually-created `git worktree` — the Agent tool's
+  `isolation: "worktree"` FAILED here ("not in a git repository and no
+  WorktreeCreate hooks configured"), so `git worktree add -b <branch> <path>
+  origin/main` by hand + a brief pinning the agent to that path is the working
+  substitute. Say "never touch <other path>" explicitly in the brief.
+- **Both agents produced good work AND each shipped one defect only
+  verification caught. Neither was the agent's fault; one was mine.**
+  (a) Collapsing 3 transfer mutations into 1 flattened authz to bookkeeper+ in
+  both directions, silently dropping the launch grant's `requireCentralEdOrFm`
+  (#149) — a bookkeeper could then move money OUT of central, which no retired
+  variant allowed. Caused by MY "one gate" instruction. Fix: gate on
+  DIRECTION, not on kind. (b) The audit log's only "who" field was optional
+  `actorPersonId`, so a superuser with no roster row would write an
+  unattributable row — fatal for an audit trail. **New rule: when collapsing N
+  code paths into 1, diff the AUTHZ of all N and keep the STRICTEST; and when
+  adding any audit/log table, assert every row can name an actor.**
+- The (b) fix came from re-reading the in-repo precedent: `reattributionAudit`
+  already stores required `actorUserId` + optional `actorPersonId`. The agent
+  cited that table to justify the optional half and copied only that half.
+  When an agent cites a precedent for a design choice, OPEN THE PRECEDENT —
+  it often contains the other half of the answer.
+- Belt-and-braces that paid: resolve a required audit field INSIDE the logging
+  helper (via `requireUserId(ctx)`) rather than as a parameter. "A required
+  field a caller can forget to pass is not an anchor." Zero call sites changed.
+- Founder product call worth keeping: retiring an internal mechanic does NOT
+  retire the promise it implemented. The skim lives on the PUBLIC GIVE PAGES
+  ("15% becomes the City Launch Fund"). Founder chose keep-the-promise /
+  drop-the-plumbing, so the Academy lesson was REWRITTEN not deleted (deleting
+  it would leave training silent on a split the give page still promises).
+  **Before deleting any concept, grep the PUBLIC surfaces (`lib/givePage*`,
+  landing, emails) — an internal mechanic may be a donor-facing commitment.**
+- Merge-order prediction half-held: both branches touched
+  `schema/finances.ts` + `packages/shared/src/finance.ts`, but git auto-merged
+  both (different regions). The ONE real conflict was
+  `academy.snapshot.test.ts`'s changelog header — two appended entries;
+  resolution is keep BOTH chronologically, not pick one. Cheap to resolve
+  inline; no need to round-trip the agent.
+- Sequencing gotcha to avoid repeating: after committing this SKILL file to a
+  run branch, `git checkout -B <same-branch> origin/main` DISCARDS that commit
+  locally (it survives on the remote). Recover with `git checkout <sha> --
+  .claude/skills/...` before appending the next entry, or write the log entry
+  last.
+- `actions_list` blew the token cap on EVERY call again (~423k chars each).
+  The saved-file + `json.load` + 3-field print recipe works every time; budget
+  for it. `curl` to api.github.com returns empty in this sandbox (proxy) — use
+  the MCP tools, not curl, for run status.
+
+### 2026-07-26 — Run 7 (reimbursement-as-spend fix, then a finance-weirdness audit)
+- Two-part run. Part 1: founder screenshot ("why doesn't this transaction
+  register?") → diagnosed from the IMAGE before reading much code — the
+  amount rendered with NO sign and in `text-muted`, and `SignedMoney`
+  (parts.tsx:72) only produces that combination for `flow:"transfer"`.
+  Confirmed by sampling the actual pixels (`#7A5A5A` == `colors.muted`,
+  vs `#210909` for `text-ink`). Reading the RENDERED PIXELS of a screenshot
+  against the component's own styling logic is a fast, cheap diagnosis
+  channel — it narrowed a 9,300-line file to one field before any grep.
+- Root-cause pattern worth naming, it recurs: **an invariant that rests on
+  unbuilt machinery.** `docs/plans/finance-v2-split-prd.md` §1 invariant #3
+  declared "reimbursement payouts are transfers" (excluded from spend) on
+  the premise the expense was booked from line items via
+  `matchedTransactionId` — a field NOTHING has ever written. The PRD also
+  says "No design decisions inside a WP," so every implementing agent
+  correctly obeyed a premise nobody re-checked. When auditing, grep the
+  PRD's invariants for the mechanism each one assumes, then grep for that
+  mechanism's WRITERS. Zero writers = the invariant is fiction.
+- Same pattern found FOUR more times in the audit: `approvalPolicy`
+  (`requireSecondApproverOverCents` + `requirePreApprovalOverCents` — schema
+  fields, zero readers, yet `reimbursements.ts:1771-1777` accepts a residual
+  insider risk explicitly BECAUSE that threshold "exists"),
+  `approvals.subjectType:"transaction"` + `action:"edit"` (enum literals,
+  zero writers, so excluding a txn has no audit trail),
+  `finance.record` (seat capability, zero functional readers),
+  `source:"increase_ach"` (defensively handled in 3 files, never written).
+  **The spec'd-but-unwired grep is now the single highest-yield audit move
+  in this repo** — run it first, every time.
+- Recon mislabeling of branches happened for the THIRD time (now: PRs too).
+  The meta lane reported "all 3 open PRs touch finance files" with an
+  IDENTICAL file list for three unrelated PRs — the signature of diffing a
+  stale branch against current main and attributing main's churn to the PR.
+  Only #368 genuinely touches finance. It also called two squash-merged
+  branches in-flight. New rule that actually works and is cheaper than
+  ancestry checks: **verify a branch is dead by testing whether its
+  CONTENT exists in main** (`git cat-file -e origin/main:<file>` on files
+  the branch adds), not by ancestry and not by subject matching.
+- Verification upgrade that paid: when a lane flags a schema-sentinel
+  inconsistency, check the BLAST RADIUS before ranking it. `financeTeams`
+  uses optional-chapterId-means-central while everything else uses the
+  `"central"` literal, and `requireInCallerChapter` papers over it with
+  `docChapter === undefined`. Sounded like an authz hole; I checked all
+  nine tables that function is generic over and `financeTeams` is the only
+  one with an optional `chapterId` — so it's display-only. Downgrading a
+  lane's finding is as valuable as confirming one.
+- Assessment-only discipline held (founder asked "what's weird," not "fix
+  it"): no implementation dispatched. Standing rule confirmed again.
+
 ### 2026-07-26 — Run 6 (People CRM UX: person record completeness + People→email bridge + has_service)
 - Founder ask was thematic, not a bug report ("improve linking people /
   maintaining the database for volunteers, guests, donors"). Run shape: 3
