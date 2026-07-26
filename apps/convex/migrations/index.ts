@@ -55,6 +55,7 @@ import { migrateLegacyAudiences } from "./0040_migrate_legacy_audiences";
 import { migrateGuestAudiences } from "./0041_migrate_guest_audiences";
 import { wrapTargeting } from "./0042_wrap_targeting";
 import { splitPersonNames } from "./0043_split_person_names";
+import { reimbursementPayoutsOutflow } from "./0044_reimbursement_payouts_outflow";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -202,4 +203,11 @@ export const MIGRATIONS: Migration[] = [
   // itself never changes. Idempotent (already-split rows skipped, so a
   // hand-corrected split is never overwritten). See 0043.
   splitPersonNames,
+  // Reimbursement payouts are spend — flip every historical payout txn from
+  // `flow:"transfer"` (excluded from every budget/category total) to
+  // `flow:"outflow"`, so reimbursed purchases finally count against the
+  // budget they're already coded to. Only `source:"reimbursement"` rows;
+  // skim/launch-grant/settlement legs and personal-charge repayment credits
+  // stay transfers. Idempotent (rows already `outflow` are skipped). See 0044.
+  reimbursementPayoutsOutflow,
 ];

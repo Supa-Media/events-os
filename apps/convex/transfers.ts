@@ -22,7 +22,9 @@
  * LEDGER MODEL. Every transfer is a PAIR of `flow:"transfer"` transactions — an
  * outflow leg on the source scope + an inflow leg on the destination scope —
  * linked by a shared `transactions.transferGroupId` (mirroring how a
- * reimbursement payout leg is a `flow:"transfer"` row keyed by `reimbursementId`).
+ * reimbursement payout is one row keyed by `reimbursementId`, though THAT row
+ * is a `flow:"outflow"` expense, not a transfer — money leaving the org, not
+ * moving within it).
  * The leg's `source` (`skim`/`launch_grant`) names the kind and its `chapterId`
  * (a real chapter vs the `"central"` sentinel) names the side. Transfers never
  * count as spend (`countsAsSpend`), so no budget/category rollup is distorted.

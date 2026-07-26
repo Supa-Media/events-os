@@ -20,9 +20,13 @@
  *    `transactions.flow`, never a sign.
  *  - Every table is chapter-scoped; every client id is verified in the caller's
  *    chapter before use.
- *  - Reimbursement payouts post as `flow:"transfer"` → EXCLUDED from category /
- *    budget spend (the underlying expense was already booked on the line item;
- *    counting the transfer too would double-count).
+ *  - Reimbursement payouts post as `flow:"outflow"` → they ARE the chapter's
+ *    expense (an out-of-pocket purchase the chapter is paying back), so they
+ *    count toward category / budget spend like any other charge. They used to
+ *    post as `flow:"transfer"` on an anti-double-count theory that assumed the
+ *    underlying expense was already booked from the line item — nothing ever
+ *    booked it, so reimbursed spend was invisible to every budget. See
+ *    `postReimbursementSpend`.
  *  - `payouts` is idempotency-keyed on `reimbursementId`: at most one LIVE payout
  *    per reimbursement, so an approved reimbursement can NEVER double-pay.
  *  - Degrade to a logged no-op (never throw) when `INCREASE_API_KEY` is unset.
@@ -801,11 +805,26 @@ export const createExternalAccount = internalAction({
 
 // ── Payout state-machine helpers (pure DB, the testable core) ────────────────
 
-/** The single `transfer`-flow transaction recording a reimbursement payout
- *  leaving the account. IDEMPOTENT: at most one per reimbursement (keyed via
- *  the `by_reimbursement` index). Positive integer cents; `flow:"transfer"` so
- *  it's excluded from category/budget spend. Links the payout to the txn. */
-async function postReimbursementTransfer(
+/**
+ * The single transaction recording a reimbursement payout leaving the account.
+ * IDEMPOTENT: at most one per reimbursement (keyed via the `by_reimbursement`
+ * index). Positive integer cents; direction lives in `flow`. Links the payout
+ * to the txn.
+ *
+ * `flow:"outflow"` — this row IS the expense. A reimbursement is money the
+ * chapter owes for a purchase someone made out of pocket; no card charge ever
+ * synced for it, so this is the only place that spend can enter the ledger.
+ *
+ * It used to post as `flow:"transfer"` (excluded from spend by
+ * `countsAsSpend`) on the theory that the expense was already booked against
+ * its category from the reimbursement's line items. Nothing ever booked it:
+ * `reimbursementLineItems` is read by no spend rollup, and its
+ * `matchedTransactionId` (the documented link to an already-synced txn) is
+ * never written. The result was reimbursed spend that appeared coded to a
+ * budget and category in the UI while contributing $0 to both. Migration
+ * `0044_reimbursement_payouts_outflow` flips the historical rows.
+ */
+async function postReimbursementSpend(
   ctx: MutationCtx,
   chapterId: Id<"chapters">,
   req: Doc<"reimbursementRequests">,
@@ -828,13 +847,14 @@ async function postReimbursementTransfer(
   // Inherit the reimbursement's own description / merchant / "For" / purpose /
   // category / receipt so the payout row is self-explanatory in Reconcile
   // instead of an "Unlabeled charge / Uncategorized / For: None / missing
-  // receipt". The row stays `flow:"transfer"` (excluded from spend), so these
-  // are display + attribution only and can never double-count.
+  // receipt". Now that the row is `flow:"outflow"`, these are the LIVE
+  // attribution the budget/category rollups read — the same fields a
+  // bookkeeper would otherwise have to re-key by hand.
   const ported = await deriveReimbursementTxnFields(ctx, req);
   const txnId = await ctx.db.insert("transactions", {
     chapterId,
     source: "reimbursement",
-    flow: "transfer", // EXCLUDED from category/budget spend (anti-double-count)
+    flow: "outflow", // the expense itself — counts toward category/budget spend
     amountCents: payout.amountCents,
     currency: "usd",
     postedAt: now,
@@ -848,8 +868,8 @@ async function postReimbursementTransfer(
   return txnId;
 }
 
-/** Settle a payout: mark the reimbursement `paid` + post the offsetting
- *  `transfer` ledger row. Idempotent via `postReimbursementTransfer`. */
+/** Settle a payout: mark the reimbursement `paid` + post the `outflow` ledger
+ *  row for the expense. Idempotent via `postReimbursementSpend`. */
 async function settleReimbursementPaid(
   ctx: MutationCtx,
   req: Doc<"reimbursementRequests">,
@@ -864,7 +884,7 @@ async function settleReimbursementPaid(
       updatedAt: now,
     });
   }
-  await postReimbursementTransfer(ctx, req.chapterId, req, payout);
+  await postReimbursementSpend(ctx, req.chapterId, req, payout);
 }
 
 /** The payout status an inbound Increase ACH-transfer maps to (or null = ignore).
@@ -930,16 +950,17 @@ function payoutTargetFor(
  * event for an ACH credit — `submitted` IS our terminal `paid`, so a return is
  * the only signal that can still arrive after the fact). Re-opens the
  * reimbursement to `approved` so a manager can retry or investigate, and
- * REMOVES the offsetting `transfer` ledger row this payout posted.
+ * REMOVES the ledger row this payout posted.
  *
- * Deleting (rather than merely re-flagging) the transaction is deliberate and
- * safe: `transfer`-flow rows are ALREADY excluded from category/budget spend
- * (anti-double-count), so removing it changes no totals. It also MUST be
- * removed — `postReimbursementTransfer` finds an existing transfer for this
+ * Deleting (rather than merely re-flagging) the transaction is deliberate:
+ * the money never left the account, so its spend must come back OUT of the
+ * budget/category totals it now (`flow:"outflow"`) contributes to — the
+ * chapter re-books it when the retried payout posts a fresh row. It also MUST
+ * be removed — `postReimbursementSpend` finds an existing row for this
  * reimbursement via `by_reimbursement` UNCONDITIONALLY (no status filter), so
  * leaving the bounced row in place would make a future successful re-payout
- * mistake it for "already posted" and silently skip crediting the real
- * transfer. The full bounce history survives on the `payouts` row itself
+ * mistake it for "already posted" and silently skip booking the real
+ * payout. The full bounce history survives on the `payouts` row itself
  * (`status:"returned"` + `failureReason`) — this repo has no existing
  * transaction-level void/reversal convention to mirror, so the payout doc is
  * the audit trail here, same as the pre-paid `failed`/`returned` branch below
@@ -2040,9 +2061,10 @@ export const payReimbursement = action({
  * Mark an approved reimbursement paid by hand (the working Phase-4 path while
  * ACH destination linking isn't built). Manager-only. Find-or-creates the
  * `manual` payout, marks it `paid`, sets the reimbursement `paid` + `paidAt`,
- * posts the offsetting `flow:"transfer"` ledger row (excluded from spend), and
- * appends a `"pay"` entry to the audit trail. IDEMPOTENT: a re-call after it's
- * paid returns the payout without a second transaction or audit row.
+ * posts the `flow:"outflow"` ledger row for the expense (which is what puts it
+ * into the budget/category totals), and appends a `"pay"` entry to the audit
+ * trail. IDEMPOTENT: a re-call after it's paid returns the payout without a
+ * second transaction or audit row.
  */
 export const markPaidManually = mutation({
   args: { reimbursementId: v.id("reimbursementRequests") },
@@ -2131,8 +2153,8 @@ export const markPaidManually = mutation({
       payoutId: payout._id,
       updatedAt: now,
     });
-    // Offsetting `transfer` ledger row (idempotent — one per reimbursement).
-    await postReimbursementTransfer(ctx, chapterId, reimbursement, payout);
+    // The expense's `outflow` ledger row (idempotent — one per reimbursement).
+    await postReimbursementSpend(ctx, chapterId, reimbursement, payout);
 
     // Append to the append-only approval/audit trail.
     await ctx.db.insert("approvals", {
