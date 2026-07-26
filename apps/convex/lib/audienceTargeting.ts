@@ -44,6 +44,13 @@
  * `resolvedAddressIsVerified` rule — include-side only, see
  * `validateTargeting`).
  *
+ * `has_service`/`has_not` compares `people.services` (free-text skills like
+ * "audio", "worship" — zero reads, already on the person row): a
+ * case-insensitive EXACT match (trim + lowercase both sides) against any
+ * entry in the array. A person with no `services` array: `has` → false,
+ * `has_not` → true — same "missing data reads as false"/negation-inverts
+ * rule `attended_event` uses for a person with no rsvp rows.
+ *
  * ── Central-donor fallback (spec §3.4, #424 finding A from day one) ────────
  * For a `scope: "central"` audience, unlinked `scope: "central"` donor rows
  * are candidates too — but ONLY via an include group carrying at least one
@@ -52,9 +59,11 @@
  * donor file into a people-shaped audience). Against a donor row:
  *  - donor-derived conditions evaluate on THAT row (row set = itself);
  *  - person-linked conditions (`attended_*`/`seat`/`chapter`/`kind`/
- *    `email_verified`) evaluate as their linked-person semantics would with
- *    no rows: positive ops false, negated ops true ("never attended" is TRUE
- *    of a row with no person and no rsvps). This applies to EXCLUDE groups
+ *    `email_verified`/`has_service`) evaluate as their linked-person
+ *    semantics would with no rows: positive ops false, negated ops true
+ *    ("never attended" is TRUE of a row with no person and no rsvps; a donor
+ *    row has no `services` either, so `has_service` reads the same way —
+ *    `has` false, `has_not` true). This applies to EXCLUDE groups
  *    identically — "remove anyone who never attended" really does remove
  *    fallback donors; uniform rule, no conservative-stay special case.
  *
@@ -428,6 +437,11 @@ async function evalConditionForPerson(
     }
     case "kind":
       return c.kind === "contact" ? person.isContactOnly === true : person.isContactOnly !== true;
+    case "has_service": {
+      const target = c.service.trim().toLowerCase();
+      const some = (person.services ?? []).some((s) => s.trim().toLowerCase() === target);
+      return c.op === "has" ? some : !some;
+    }
     case "donor_status":
     case "giving_lifetime":
     case "gift_count":
@@ -459,6 +473,7 @@ function conditionCost(c: AudienceCondition): number {
   switch (c.field) {
     case "chapter":
     case "kind":
+    case "has_service":
       return 0;
     case "donor_status":
     case "giving_lifetime":

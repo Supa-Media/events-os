@@ -389,6 +389,45 @@ describe("targeting — negation as an operator", () => {
     });
     expect(contacts.sample.map((r) => r.email)).toEqual(["contact@example.com"]);
   });
+
+  test("has_service: case-insensitive exact match, has_not, and no-services-array behavior", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await seedPerson(s, {
+      name: "Audio Volunteer",
+      email: "audio@example.com",
+      services: ["Audio", "Lighting"],
+    });
+    await seedPerson(s, {
+      name: "Worship Volunteer",
+      email: "worship@example.com",
+      services: ["worship"],
+    });
+    await seedPerson(s, { name: "No Services", email: "none@example.com" });
+
+    // Case-insensitive exact match: "  AUDIO  " (mixed case + whitespace)
+    // matches a stored "Audio" entry.
+    const has = await previewTargeting(s, {
+      groups: [{ conditions: [{ field: "has_service", op: "has", service: "  AUDIO  " }] }],
+    });
+    expect(has.sample.map((r) => r.email)).toEqual(["audio@example.com"]);
+
+    // Non-matching service: nobody has "video".
+    const nonMatching = await previewTargeting(s, {
+      groups: [{ conditions: [{ field: "has_service", op: "has", service: "video" }] }],
+    });
+    expect(nonMatching.count).toBe(0);
+
+    // has_not: everyone WITHOUT "audio" — including the person with no
+    // `services` array at all (missing data reads as "doesn't have it").
+    const hasNot = await previewTargeting(s, {
+      groups: [{ conditions: [{ field: "has_service", op: "has_not", service: "audio" }] }],
+    });
+    expect(hasNot.sample.map((r) => r.email).sort()).toEqual([
+      "none@example.com",
+      "worship@example.com",
+    ]);
+  });
 });
 
 // ── Exclude groups + hand-picks + consent ──────────────────────────────────
@@ -424,6 +463,26 @@ describe("targeting — exclude groups, hand-picks, consent", () => {
     expect(preview.excludedByFilters).toBe(2);
     expect(preview.handPickedExcludedByFilters).toBe(1);
     expect(preview.perExcludeGroupCounts).toEqual([2]);
+  });
+
+  test("has_service inside an exclude group removes matching skip-list members", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const auditor = await seedPerson(s, {
+      name: "Vetted Audio",
+      email: "vetted-audio@example.com",
+      services: ["audio"],
+    });
+    await seedDonorForPerson(s, auditor, { email: "vetted-audio@example.com", status: "active" });
+    const otherDonor = await seedPerson(s, { name: "Other Donor", email: "other@example.com" });
+    await seedDonorForPerson(s, otherDonor, { email: "other@example.com", status: "active" });
+
+    const preview = await previewTargeting(s, {
+      groups: [{ conditions: [{ field: "donor_status", op: "is", status: "any" }] }],
+      excludeGroups: [{ conditions: [{ field: "has_service", op: "has", service: "AUDIO" }] }],
+    });
+    expect(preview.sample.map((r) => r.email)).toEqual(["other@example.com"]);
+    expect(preview.excludedByFilters).toBe(1);
   });
 
   test("excludePersonIds still beats a group match; opt-out and suppression always win", async () => {
@@ -675,6 +734,76 @@ describe("targeting — central-donor fallback", () => {
       {
         groups: [{ conditions: [{ field: "donor_status", op: "is", status: "any" }] }],
         excludeGroups: [{ conditions: [{ field: "attended_any", op: "has_not" }] }],
+      },
+      { scope: "central" },
+    );
+    expect(excluded.count).toBe(0);
+    expect(excluded.excludedByFilters).toBe(1);
+  });
+
+  test("has_service against a central-donor fallback row: never admits (not donor-derived), 'has' always false, 'has_not' always true — same reading as attended_*", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await seedDonorForPerson(s, undefined, {
+      email: "central-service@example.com",
+      status: "active",
+      scope: "central",
+    });
+
+    // A group carrying ONLY has_service has no donor-derived condition, so it
+    // can never admit an unlinked donor row — even `has_not`, which reads
+    // TRUE for it (the "everyone"/negation-only-group gate, same rule as
+    // attended_any has_not above).
+    const serviceOnly = await previewTargeting(
+      s,
+      { groups: [{ conditions: [{ field: "has_service", op: "has_not", service: "audio" }] }] },
+      { scope: "central" },
+    );
+    expect(serviceOnly.count).toBe(0);
+
+    // Paired with a donor-derived condition in the SAME group, has_service
+    // "has" is false for the row (donor rows have no `services`) so it keeps
+    // the row out even though the donor condition alone would admit it.
+    const hasBlocksIt = await previewTargeting(
+      s,
+      {
+        groups: [
+          {
+            conditions: [
+              { field: "donor_status", op: "is", status: "any" },
+              { field: "has_service", op: "has", service: "audio" },
+            ],
+          },
+        ],
+      },
+      { scope: "central" },
+    );
+    expect(hasBlocksIt.count).toBe(0);
+
+    // ...while has_not is true for it, so the group still admits the row.
+    const hasNotAdmits = await previewTargeting(
+      s,
+      {
+        groups: [
+          {
+            conditions: [
+              { field: "donor_status", op: "is", status: "any" },
+              { field: "has_service", op: "has_not", service: "audio" },
+            ],
+          },
+        ],
+      },
+      { scope: "central" },
+    );
+    expect(hasNotAdmits.sample.map((r) => r.email)).toEqual(["central-service@example.com"]);
+
+    // An exclude group reaches the fallback row via the same has_not-is-true
+    // reading (uniform include/exclude rule, no conservative-stay case).
+    const excluded = await previewTargeting(
+      s,
+      {
+        groups: [{ conditions: [{ field: "donor_status", op: "is", status: "any" }] }],
+        excludeGroups: [{ conditions: [{ field: "has_service", op: "has_not", service: "audio" }] }],
       },
       { scope: "central" },
     );

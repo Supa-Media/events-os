@@ -2147,6 +2147,68 @@ describe("two-party approval — content drift (targeting v2)", () => {
       await errorCode(reviewer.as.mutation(api.campaigns.approveCampaign, { campaignId })),
     ).toBe("CONTENT_DRIFT");
   });
+
+  // `has_service` is a new condition variant on an ALREADY-targeting-v2
+  // audience — the "add a new targeting dimension after approval" hole class
+  // this whole hash exists to close (see `computeCampaignSnapshotHash`'s
+  // doc, apps/convex/campaigns.ts:508-518): the hash serializes the WHOLE
+  // `targeting` object with `JSON.stringify`, so a brand-new condition field
+  // is covered automatically, with no enumeration to keep in lockstep.
+  test("adding a has_service condition to an already-targeting audience while pending → approve throws CONTENT_DRIFT", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await configureResend(s);
+    const audienceId = await run(s.t, (ctx) =>
+      ctx.db.insert("audiences", {
+        scope: "central",
+        name: "Aud",
+        source: "person_filters",
+        filters: {},
+        targeting: {
+          groups: [{ conditions: [{ field: "donor_status", op: "is", status: "any" }] }],
+        },
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const campaignId = await s.as.mutation(api.campaigns.createCampaign, {
+      scope: "central",
+      name: "N",
+      subject: "Hi",
+      audienceId,
+      doc: heroDoc(),
+    });
+    await seedSelfPerson(s);
+    const reviewer = await seedReviewer(s);
+    await s.as.mutation(api.campaigns.submitForApproval, {
+      campaignId,
+      purpose: "P",
+      reviewerPersonId: reviewer.personId,
+    });
+    // Approve first, then edit — proves the hash catches a POST-approval
+    // edit too (the `send()`-time recheck), not just a pre-approval one.
+    await reviewer.as.mutation(api.campaigns.approveCampaign, { campaignId });
+
+    await s.as.mutation(api.audiences.updateAudience, {
+      audienceId,
+      targeting: {
+        groups: [
+          {
+            conditions: [
+              { field: "donor_status", op: "is", status: "any" },
+              { field: "has_service", op: "has", service: "audio" },
+            ],
+          },
+        ],
+      },
+    });
+
+    await s.as.mutation(api.campaigns.send, { campaignId });
+    const campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
+    expect(campaign.status).toBe("failed");
+    expect(campaign.error).toMatch(/changed since it was approved/);
+  });
 });
 
 // Person-centric audiences Phase 3 — `computeCampaignSnapshotHash` must also

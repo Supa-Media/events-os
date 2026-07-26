@@ -80,7 +80,8 @@ export type UiRow =
   | { key: string; kind: "chapter"; op: "is" | "is_not"; chapterId: Id<"chapters"> | null }
   | { key: string; kind: "seat"; op: "holds" | "not_holds"; seatId: Id<"seatDefs"> | null }
   | { key: string; kind: "kind"; personKind: "team" | "contact" }
-  | { key: string; kind: "email_verified" };
+  | { key: string; kind: "email_verified" }
+  | { key: string; kind: "service"; op: "has" | "has_not"; service: string };
 
 export type UiGroup = { key: string; rows: UiRow[] };
 
@@ -130,6 +131,8 @@ function conditionToRow(c: TargetingCondition): UiRow {
       return { key, kind: "kind", personKind: c.kind };
     case "email_verified":
       return { key, kind: "email_verified" };
+    case "has_service":
+      return { key, kind: "service", op: c.op, service: c.service };
   }
 }
 
@@ -172,6 +175,10 @@ function rowToCondition(r: UiRow): TargetingCondition | null {
       return { field: "kind", op: "is", kind: r.personKind };
     case "email_verified":
       return { field: "email_verified", op: "is" };
+    case "service": {
+      const trimmed = r.service.trim();
+      return trimmed ? { field: "has_service", op: r.op, service: trimmed } : null;
+    }
   }
 }
 
@@ -278,6 +285,8 @@ export function describeCondition(c: TargetingCondition, lookups: ConditionLooku
       return c.kind === "team" ? "is a team member" : "is a contact";
     case "email_verified":
       return "has a verified email";
+    case "has_service":
+      return `${c.op === "has_not" ? "does not have" : "has"} the "${c.service}" service/skill`;
   }
 }
 
@@ -353,6 +362,7 @@ const FIELD_OPTIONS = [
   { value: "seat", label: "Role" },
   { value: "kind", label: "Person type" },
   { value: "email_verified", label: "Email" },
+  { value: "service", label: "Has service/skill" },
 ];
 
 function defaultRow(kind: string): UiRow {
@@ -376,6 +386,8 @@ function defaultRow(kind: string): UiRow {
       return { key, kind: "kind", personKind: "team" };
     case "email_verified":
       return { key, kind: "email_verified" };
+    case "service":
+      return { key, kind: "service", op: "has", service: "" };
     default:
       return { key, kind: "donor", op: "is", status: "any" };
   }
@@ -704,6 +716,26 @@ function ConditionRow({
       ) : null}
 
       {row.kind === "email_verified" ? <Text style={rowStyles.unit}>is verified</Text> : null}
+
+      {row.kind === "service" ? (
+        <>
+          {opSelect(
+            [
+              { value: "has", label: "has" },
+              { value: "has_not", label: "does not have" },
+            ],
+            row.op,
+            (v) => onChange({ ...row, op: v as "has" | "has_not" }),
+          )}
+          <View style={rowStyles.valueBox}>
+            <TextField
+              placeholder="e.g. audio"
+              value={row.service}
+              onChangeText={(text) => onChange({ ...row, service: text })}
+            />
+          </View>
+        </>
+      ) : null}
 
       <Button
         title="✕"
