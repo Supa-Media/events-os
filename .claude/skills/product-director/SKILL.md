@@ -177,6 +177,43 @@ Before finishing a run of this skill, you MUST:
 
 ## Learnings Log (newest first)
 
+### 2026-07-26 — Run 6 (People CRM UX: person record completeness + People→email bridge + has_service)
+- Founder ask was thematic, not a bug report ("improve linking people /
+  maintaining the database for volunteers, guests, donors"). Run shape: 3
+  recon lanes → orchestrator spot-verified every load-bearing claim (grep
+  for callers, index names, condition unions) → TWO parallel sonnet
+  implementation agents on disjoint file sets — one in the main checkout on
+  the run branch, one in a WORKTREE on a temp branch (`isolation:
+  "worktree"`), merged cleanly after both landed. Both first-try-green on
+  the full local suite; adversarial verifier found zero confirmed issues.
+  Worktree isolation is the right tool for a second same-repo implementation
+  agent: no interleaved commits, no tree contention, one clean merge.
+- Recon mislabel to watch (now an invariant): the meta lane called five
+  squash-merged source branches "in-flight collision risks." Tip dates +
+  commit subjects vs the merged-PR list settled it in one git command.
+- The spec'd-but-unwired class keeps paying: `setDonorPerson` (built for a
+  founder complaint, zero callers), `personEmails` ledger (write-side only,
+  no read query), `rsvps.by_person` guest history (indexed, never displayed).
+  Grep "export const" against mobile callers early — recon found all three
+  in one pass.
+- Cross-feature hash check paid again (#399 class): approval snapshot
+  already hashed includePersonIds AND the whole `targeting` object, so both
+  new features were auto-covered — but only a code-read + a new
+  CONTENT_DRIFT test proved it; the verifier confirmed post-approval
+  `send()`-time recheck too.
+- Stop-hook noise profile this run: repeated "commit and push" while a
+  subagent had half-done edits (refused, per standing rule) and repeated
+  "unverified commit" warnings on unpushed branch commits whose emails were
+  already correct — that flag is the missing GPG signature, unfixable in
+  sandbox and moot under squash-merge; set `git config user.email
+  noreply@anthropic.com` once and move on, don't rebase mid-flight while
+  agents/tests hold the tree.
+- Roadmap intentionally left for future runs (say so in the PR): volunteer
+  aggregation from `engagements` (+ a `volunteered_event/any` condition),
+  unifying the two divergent person-merge repoint paths (dataHygiene vs
+  login-time lib/people — different coverage, correctness risk), dedup UI
+  consolidation, people export (no backend exists).
+
 ### 2026-07-24 — Run 5 (Reconcile: central receipt-link scope + resizable columns)
 - Founder UI feedback (screenshot + prose, no attachment beyond the image):
   "central/chapter divide is confusing... can't link a receipt to a
