@@ -34,7 +34,7 @@ import {
 import { colors, spacing } from "../../../lib/theme";
 import { formatDate, parseList } from "../../../lib/format";
 import { alertError } from "../../../lib/errors";
-import { buildServiceLabelMap } from "../../../lib/serviceCatalog";
+import { buildServiceLabelMap, buildServiceMatchSetMap } from "../../../lib/serviceCatalog";
 import type { Doc, Id } from "@events-os/convex/_generated/dataModel";
 import {
   type VettingStatus,
@@ -203,7 +203,7 @@ export default function PeopleScreen() {
   const seatHoldings = useQuery(api.responsibilities.chapterSeatHoldings);
 
   const [search, setSearch] = useState("");
-  const [skillFilter, setSkillFilter] = useState<string | null>(null);
+  const [skillFilter, setSkillFilter] = useState<Id<"serviceOptions"> | null>(null);
   // Default to the core Team — the common case (a lead manages their team, not
   // the full roster of volunteers/vendors). "All" is one tap away.
   const [persona, setPersona] = useState<PersonaFilter>("team");
@@ -291,15 +291,39 @@ export default function PeopleScreen() {
     return counts;
   }, [roster, contacts]);
 
-  // Distinct skills across the roster, for the filter bar. Roster-only —
-  // contact rows never carry `services`.
+  // Service Catalog, for the filter bar — chips must show the SAME
+  // "Parent:Child" label the picker uses (`ServiceOptionsPicker`/
+  // `SkillsCell`), so the two surfaces never disagree on what a service is
+  // called.
+  const serviceCatalog = useQuery(api.serviceOptions.list, { includeInactive: true });
+  const serviceLabelById = useMemo(
+    () =>
+      serviceCatalog ? buildServiceLabelMap(serviceCatalog) : new Map<Id<"serviceOptions">, string>(),
+    [serviceCatalog],
+  );
+  // A PARENT chip's match set is itself + every child — mirrors the
+  // backend's `has_service` subtree rollup (`lib/audienceTargeting.ts`) so
+  // this filter never disagrees with what targeting a service actually
+  // means.
+  const serviceMatchSetById = useMemo(
+    () =>
+      serviceCatalog
+        ? buildServiceMatchSetMap(serviceCatalog)
+        : new Map<Id<"serviceOptions">, Set<Id<"serviceOptions">>>(),
+    [serviceCatalog],
+  );
+
+  // Distinct services across the roster, for the filter bar. Roster-only —
+  // contact rows never carry `serviceIds`.
   const allSkills = useMemo(() => {
-    const set = new Set<string>();
+    const seen = new Set<Id<"serviceOptions">>();
     for (const p of roster ?? []) {
-      for (const s of p.services ?? []) set.add(s);
+      for (const sid of p.serviceIds ?? []) seen.add(sid);
     }
-    return Array.from(set).sort();
-  }, [roster]);
+    return Array.from(seen)
+      .map((id) => ({ id, label: serviceLabelById.get(id) ?? "…" }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [roster, serviceLabelById]);
 
   // Memoized so a re-render (e.g. typing in another field) doesn't re-scan the
   // whole roster — only persona / skill / search changes recompute the rows.
@@ -312,12 +336,14 @@ export default function PeopleScreen() {
       if (persona !== "all" && persona !== "contacts" && personaOf(p) !== persona)
         return false;
       if (giversOnly && !giverMarksByPerson.has(p._id)) return false;
-      if (skillFilter && !(p.services ?? []).includes(skillFilter))
-        return false;
+      if (skillFilter) {
+        const matchSet = serviceMatchSetById.get(skillFilter) ?? new Set([skillFilter]);
+        if (!(p.serviceIds ?? []).some((sid) => matchSet.has(sid))) return false;
+      }
       if (query && !personMatchesSearch(p, query, queryDigits)) return false;
       return true;
     });
-  }, [people, persona, giversOnly, giverMarksByPerson, skillFilter, search]);
+  }, [people, persona, giversOnly, giverMarksByPerson, skillFilter, serviceMatchSetById, search]);
 
   // People-CRM UX selection: "select all visible" respects whatever's
   // currently filtered (persona/givers/skill/search), never the full roster.
@@ -507,10 +533,10 @@ export default function PeopleScreen() {
           />
           {allSkills.map((s) => (
             <Pill
-              key={s}
-              label={s}
-              selected={skillFilter === s}
-              onPress={() => setSkillFilter((cur) => (cur === s ? null : s))}
+              key={s.id}
+              label={s.label}
+              selected={skillFilter === s.id}
+              onPress={() => setSkillFilter((cur) => (cur === s.id ? null : s.id))}
             />
           ))}
         </View>

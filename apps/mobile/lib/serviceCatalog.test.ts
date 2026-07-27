@@ -4,6 +4,7 @@ import { describe, expect, test } from "@jest/globals";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
   buildServiceLabelMap,
+  buildServiceMatchSetMap,
   flattenServiceCatalog,
   parentIdsWithChildren,
   topLevelServiceOptions,
@@ -120,5 +121,24 @@ describe("topLevelServiceOptions", () => {
       { _id: AUDIO, name: "Audio" },
       { _id: SONGWRITING, name: "Songwriting" },
     ]);
+  });
+});
+
+describe("buildServiceMatchSetMap", () => {
+  test("a PARENT's match set is itself plus every direct child — picking a group matches everyone under it, mirroring the backend's has_service subtree rollup", () => {
+    const map = buildServiceMatchSetMap(TREE);
+    expect(map.get(VOCALS)).toEqual(new Set([VOCALS, TENOR, ALTO]));
+  });
+
+  test("a CHILD's match set is only itself — one level of nesting, no grandchildren to roll up", () => {
+    const map = buildServiceMatchSetMap(TREE);
+    expect(map.get(TENOR)).toEqual(new Set([TENOR]));
+    expect(map.get(ALTO)).toEqual(new Set([ALTO]));
+  });
+
+  test("a childless top-level row's match set is just itself — same as a leaf", () => {
+    const map = buildServiceMatchSetMap(TREE);
+    expect(map.get(AUDIO)).toEqual(new Set([AUDIO]));
+    expect(map.get(SONGWRITING)).toEqual(new Set([SONGWRITING]));
   });
 });

@@ -95,3 +95,25 @@ export function topLevelServiceOptions(
 ): { _id: Id<"serviceOptions">; name: string }[] {
   return tree.map((p) => ({ _id: p._id, name: p.name }));
 }
+
+/** id -> "the match set for a `has_service` condition on this id" — itself
+ *  plus every DIRECT child (a child has no children of its own, one level of
+ *  nesting only, so its own match set is just itself). Mirrors
+ *  `apps/convex/lib/audienceTargeting.ts#buildServiceIndex`'s per-id match
+ *  set exactly (computed here from the already-fetched tree instead of a
+ *  `by_parent` query) — so a client-side "does this person have X" check
+ *  (a filter chip, a roster count) never disagrees with what `has_service`
+ *  actually matches server-side: picking a PARENT matches everyone tagged
+ *  with it OR any of its children. */
+export function buildServiceMatchSetMap(
+  tree: ServiceCatalogTree,
+): Map<Id<"serviceOptions">, Set<Id<"serviceOptions">>> {
+  const map = new Map<Id<"serviceOptions">, Set<Id<"serviceOptions">>>();
+  for (const parent of tree) {
+    map.set(parent._id, new Set([parent._id, ...parent.children.map((c) => c._id)]));
+    for (const child of parent.children) {
+      map.set(child._id, new Set([child._id]));
+    }
+  }
+  return map;
+}
