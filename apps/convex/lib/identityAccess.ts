@@ -1,6 +1,6 @@
 /**
  * Access gate for the Guest Identity review queue (Partiful name-only RSVP
- * resolution — see `migrations/0049_link_rsvp_identifiers.ts` for the
+ * resolution — see `migrations/0050_link_rsvp_identifiers.ts` for the
  * automated half and `identity.ts` for the human half). Named/seamed from day
  * one per CLAUDE.md's "Gate It Behind a Power, Even When It's Open Today":
  * the founder's EXPLICIT call is that ANYONE logged in on the team can review

@@ -488,7 +488,7 @@ const schema = defineSchema({
   // Guest Identity review (Partiful name-only RSVP resolution) — the
   // append-only decision ledger behind the human review queue's
   // suppression/resurfacing logic. See schema/identity.ts's module doc +
-  // identity.ts (queries/mutations) + migrations/0049_link_rsvp_identifiers.ts
+  // identity.ts (queries/mutations) + migrations/0050_link_rsvp_identifiers.ts
   // (the automated auto-link half).
   identityDecisions,
 });

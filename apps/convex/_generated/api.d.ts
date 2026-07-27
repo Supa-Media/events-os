@@ -170,7 +170,7 @@ import type * as migrations_0037_link_rsvp_people from "../migrations/0037_link_
 import type * as migrations_0038_backfill_contact_only_people from "../migrations/0038_backfill_contact_only_people.js";
 import type * as migrations_0039_backfill_person_emails from "../migrations/0039_backfill_person_emails.js";
 import type * as migrations_0048_import_form_submissions from "../migrations/0048_import_form_submissions.js";
-import type * as migrations_0049_link_rsvp_identifiers from "../migrations/0049_link_rsvp_identifiers.js";
+import type * as migrations_0050_link_rsvp_identifiers from "../migrations/0050_link_rsvp_identifiers.js";
 import type * as migrations_index from "../migrations/index.js";
 import type * as modules from "../modules.js";
 import type * as moneyViews from "../moneyViews.js";
@@ -427,7 +427,7 @@ declare const fullApi: ApiFromModules<{
   "migrations/0038_backfill_contact_only_people": typeof migrations_0038_backfill_contact_only_people;
   "migrations/0039_backfill_person_emails": typeof migrations_0039_backfill_person_emails;
   "migrations/0048_import_form_submissions": typeof migrations_0048_import_form_submissions;
-  "migrations/0049_link_rsvp_identifiers": typeof migrations_0049_link_rsvp_identifiers;
+  "migrations/0050_link_rsvp_identifiers": typeof migrations_0050_link_rsvp_identifiers;
   "migrations/index": typeof migrations_index;
   modules: typeof modules;
   moneyViews: typeof moneyViews;
