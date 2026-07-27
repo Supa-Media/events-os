@@ -20,9 +20,15 @@ describe("profiles.reconcileMyPerson", () => {
     // Two UNLINKED rows for the same human (both carry the login pwEmail), plus
     // a report and tasks attached to the NEWER duplicate — the survivor is the
     // older row, so everything here must move onto it.
-    const { dupOld, dupNew, projectId, dutyId, checkInId, reportId } = await run(
+    const { dupOld, dupNew, audioId, projectId, dutyId, checkInId, reportId } = await run(
       t,
       async (ctx) => {
+        const audioId = await ctx.db.insert("serviceOptions", {
+          chapterId,
+          name: "Audio",
+          isActive: true,
+          createdAt: 1,
+        });
         const dupOld = await ctx.db.insert("people", {
           chapterId,
           name: "Jamie",
@@ -34,7 +40,7 @@ describe("profiles.reconcileMyPerson", () => {
           name: "Jamie R.",
           pwEmail: email,
           phone: "+15555551234", // only the newer row has a phone
-          services: ["audio"],
+          serviceIds: [audioId],
           createdAt: 2,
         });
         const projectId = await ctx.db.insert("projects", {
@@ -71,7 +77,7 @@ describe("profiles.reconcileMyPerson", () => {
           createdBy: userId,
           createdAt: 1,
         });
-        return { dupOld, dupNew, projectId, dutyId, checkInId, reportId };
+        return { dupOld, dupNew, audioId, projectId, dutyId, checkInId, reportId };
       },
     );
 
@@ -104,7 +110,7 @@ describe("profiles.reconcileMyPerson", () => {
     expect(state.survivor!.isTeamMember).toBe(true);
     // Missing fields were carried over from the merged duplicate.
     expect(state.survivor!.phone).toBe("+15555551234");
-    expect(state.survivor!.services).toEqual(["audio"]);
+    expect(state.survivor!.serviceIds).toEqual([audioId]);
 
     // Every reference now points at the survivor — no orphaned tasks.
     expect(state.project!.ownerPersonId).toBe(dupOld);

@@ -616,8 +616,23 @@ export const mergePeople = mutation({
         fieldsFilled.push(field as string);
       }
     };
-    for (const f of ["services", "projects", "commsPreferences"] as (keyof Doc<"people">)[]) {
+    for (const f of ["projects", "commsPreferences"] as (keyof Doc<"people">)[]) {
       fillArray(f);
+    }
+    // Service Catalog ids (replaces the retired free-text `services` array —
+    // see `schema/people.ts`'s deprecation comment): UNION + dedupe rather
+    // than fill-only-if-empty. Unlike `projects`/`commsPreferences` (ordered
+    // lists a blind union would corrupt), `serviceIds` is an unordered id
+    // set, so combining both people's tags is strictly more correct than
+    // discarding the duplicate's.
+    const survivorServiceIds = survivor.serviceIds ?? [];
+    const duplicateServiceIds = duplicate.serviceIds ?? [];
+    if (duplicateServiceIds.length > 0) {
+      const merged = new Set([...survivorServiceIds, ...duplicateServiceIds]);
+      if (merged.size !== survivorServiceIds.length) {
+        patch.serviceIds = [...merged];
+        fieldsFilled.push("serviceIds");
+      }
     }
     // isTeamMember is a capability — OR the two (either being team keeps team).
     if (survivor.isTeamMember !== true && duplicate.isTeamMember === true) {

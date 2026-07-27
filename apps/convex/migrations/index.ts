@@ -56,6 +56,8 @@ import { migrateGuestAudiences } from "./0041_migrate_guest_audiences";
 import { wrapTargeting } from "./0042_wrap_targeting";
 import { splitPersonNames } from "./0043_split_person_names";
 import { reimbursementPayoutsOutflow } from "./0044_reimbursement_payouts_outflow";
+import { seedServiceCatalog } from "./0045_seed_service_catalog";
+import { serviceConditionsToIds } from "./0046_service_conditions_to_ids";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -210,4 +212,19 @@ export const MIGRATIONS: Migration[] = [
   // skim/launch-grant/settlement legs and personal-charge repayment credits
   // stay transfers. Idempotent (rows already `outflow` are skipped). See 0044.
   reimbursementPayoutsOutflow,
+  // Service Catalog: seed the canonical catalog for every chapter, then
+  // backfill `people.serviceIds` from each person's legacy free-text
+  // `services` strings via the audited 13-entry mapping. Unmapped strings are
+  // left out and reported, never guessed. Idempotent (already-seeded catalog
+  // rows and already-backfilled people are skipped). See 0045.
+  seedServiceCatalog,
+  // Convert saved `has_service` audience conditions from the pre-catalog
+  // `{ service: string }` shape to `{ serviceId }`, by case-insensitive name
+  // match against the now-seeded catalog (0045 must run first — filename
+  // order guarantees it). A condition that doesn't resolve to EXACTLY ONE
+  // catalog row (no match, ambiguous, or a central-scoped audience with no
+  // single chapter to anchor against) is left untouched and reported —
+  // never silently widened to "everyone" or dropped. Idempotent (conditions
+  // already carrying `serviceId` are skipped). See 0046.
+  serviceConditionsToIds,
 ];

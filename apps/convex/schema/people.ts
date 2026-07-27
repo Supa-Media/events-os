@@ -42,11 +42,24 @@ export const people = defineTable({
   email: v.optional(v.string()),
   phone: v.optional(v.string()),
   userId: v.optional(v.id("users")),
-  // Services this person can offer (worship, audio, videography…). The basis
-  // for "who can deliver X?" discovery. Chapter-OS successor to the retired
-  // `skills` field (dropped in Deploy C after `backfillPeopleServices` copied
-  // `skills` → `services` and `clearLegacyFields` drained the legacy column).
+  // DEPRECATED — free-text predecessor of `serviceIds` below (Service
+  // Catalog). Convex cannot drop a field while values exist, so this stays in
+  // the schema, but nothing reads or writes it anymore as of the Service
+  // Catalog PR: migration 0045 backfilled `serviceIds` from these strings for
+  // every mappable value, and every write path (`people.ts#create`/`update`,
+  // `dataHygiene.ts#mergePeople`, `lib/people.ts#mergePersonInto`) now targets
+  // `serviceIds` only. Follow-up cleanup PR: drop this field from the schema
+  // once prod shows zero reads of it outside this comment (mirrors the
+  // `skills` → `services` retirement this field itself once was the target
+  // of — see `migrations/0016_clear_legacy_fields.ts`).
   services: v.optional(v.array(v.string())),
+  // Service Catalog (replaces free-text `services` above): the person's
+  // managed service-catalog tags, each an id into `serviceOptions`. A bare
+  // parent id means "yes, unspecified" (e.g. tagged `Vocals` with no specific
+  // part); a child id means the specific one (`Vocals:Tenor`). Display labels
+  // are always resolved live from the referenced `serviceOptions` rows, never
+  // duplicated here, so renaming a catalog option propagates automatically.
+  serviceIds: v.optional(v.array(v.id("serviceOptions"))),
   // Typical fee when engaged as a PAID vendor (prefills a paid engagement).
   usualRateUsd: v.optional(v.number()),
   // Free-form notes about this person (preferences, availability, context).

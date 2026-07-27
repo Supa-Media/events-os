@@ -2158,6 +2158,14 @@ describe("two-party approval — content drift (targeting v2)", () => {
     const t = newT();
     const s = await asSuperuser(t);
     await configureResend(s);
+    const serviceId = await run(s.t, (ctx) =>
+      ctx.db.insert("serviceOptions", {
+        chapterId: s.chapterId,
+        name: "Audio",
+        isActive: true,
+        createdAt: Date.now(),
+      }),
+    );
     const audienceId = await run(s.t, (ctx) =>
       ctx.db.insert("audiences", {
         scope: "central",
@@ -2197,7 +2205,7 @@ describe("two-party approval — content drift (targeting v2)", () => {
           {
             conditions: [
               { field: "donor_status", op: "is", status: "any" },
-              { field: "has_service", op: "has", service: "audio" },
+              { field: "has_service", op: "has", serviceId },
             ],
           },
         ],

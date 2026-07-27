@@ -44,10 +44,15 @@
  * `resolvedAddressIsVerified` rule — include-side only, see
  * `validateTargeting`).
  *
- * `has_service`/`has_not` compares `people.services` (free-text skills like
- * "audio", "worship" — zero reads, already on the person row): a
- * case-insensitive EXACT match (trim + lowercase both sides) against any
- * entry in the array. A person with no `services` array: `has` → false,
+ * `has_service`/`has_not` compares `people.serviceIds` (Service Catalog ids,
+ * `schema/services.ts`) against the condition's `serviceId`: a person matches
+ * if `serviceIds` contains that id OR ANY CHILD of it — so targeting the
+ * parent `Vocals` also matches everyone tagged the child `Vocals:Tenor`. The
+ * child set is resolved ONCE per resolution (`buildServiceIndex`, a
+ * prebuilt in-memory index exactly like `DonorIndex` below — a single bounded
+ * `by_parent` read per DISTINCT `serviceId` referenced anywhere in the
+ * targeting, never per candidate), so evaluating the condition itself is a
+ * zero-read Set lookup. A person with no `serviceIds` array: `has` → false,
  * `has_not` → true — same "missing data reads as false"/negation-inverts
  * rule `attended_event` uses for a person with no rsvp rows.
  *
@@ -62,7 +67,7 @@
  *    `email_verified`/`has_service`) evaluate as their linked-person
  *    semantics would with no rows: positive ops false, negated ops true
  *    ("never attended" is TRUE of a row with no person and no rsvps; a donor
- *    row has no `services` either, so `has_service` reads the same way —
+ *    row has no `serviceIds` either, so `has_service` reads the same way —
  *    `has` false, `has_not` true). This applies to EXCLUDE groups
  *    identically — "remove anyone who never attended" really does remove
  *    fallback donors; uniform rule, no conservative-stay special case.
@@ -286,6 +291,48 @@ async function buildDonorIndex(
   return idx;
 }
 
+/** Bound on the `by_parent` scan `buildServiceIndex` runs per distinct
+ *  `serviceId` — far above the Service Catalog's own per-option child count
+ *  (a handful, e.g. `Vocals`'s 4 parts). */
+const SERVICE_CHILDREN_LIMIT = 500;
+
+interface ServiceIndex {
+  /** Target `serviceId` → the full match set (itself + every child,
+   *  regardless of the child's own `isActive` — deactivating an option never
+   *  retroactively untags anyone; see `schema/services.ts`'s doc). */
+  matchSetById: Map<Id<"serviceOptions">, Set<Id<"serviceOptions">>>;
+}
+
+function targetingServiceIds(targeting: AudienceTargeting): Set<Id<"serviceOptions">> {
+  const ids = new Set<Id<"serviceOptions">>();
+  for (const g of [...targeting.groups, ...(targeting.excludeGroups ?? [])]) {
+    for (const c of g.conditions) {
+      if (c.field === "has_service") ids.add(c.serviceId);
+    }
+  }
+  return ids;
+}
+
+/** ONE bounded `by_parent` scan per DISTINCT `serviceId` referenced anywhere
+ *  in `targeting` (include or exclude side) — built once per resolution,
+ *  exactly like `buildDonorIndex`, so evaluating `has_service` for each
+ *  candidate is a zero-read Set lookup regardless of how many people are
+ *  scanned. */
+async function buildServiceIndex(
+  ctx: QueryCtx,
+  targeting: AudienceTargeting,
+): Promise<ServiceIndex> {
+  const idx: ServiceIndex = { matchSetById: new Map() };
+  for (const serviceId of targetingServiceIds(targeting)) {
+    const children = await ctx.db
+      .query("serviceOptions")
+      .withIndex("by_parent", (q) => q.eq("parentId", serviceId))
+      .take(SERVICE_CHILDREN_LIMIT);
+    idx.matchSetById.set(serviceId, new Set([serviceId, ...children.map((c) => c._id)]));
+  }
+  return idx;
+}
+
 // ── Per-candidate lazy lookups (each paid at most once per candidate) ───────
 
 interface PersonCaches {
@@ -426,6 +473,7 @@ async function evalConditionForPerson(
   person: Doc<"people">,
   c: AudienceCondition,
   donorIdx: DonorIndex,
+  serviceIdx: ServiceIndex,
   caches: PersonCaches,
   now: number,
   excludeSide: boolean,
@@ -438,8 +486,8 @@ async function evalConditionForPerson(
     case "kind":
       return c.kind === "contact" ? person.isContactOnly === true : person.isContactOnly !== true;
     case "has_service": {
-      const target = c.service.trim().toLowerCase();
-      const some = (person.services ?? []).some((s) => s.trim().toLowerCase() === target);
+      const matchSet = serviceIdx.matchSetById.get(c.serviceId) ?? new Set([c.serviceId]);
+      const some = (person.serviceIds ?? []).some((id) => matchSet.has(id));
       return c.op === "has" ? some : !some;
     }
     case "donor_status":
@@ -473,13 +521,13 @@ function conditionCost(c: AudienceCondition): number {
   switch (c.field) {
     case "chapter":
     case "kind":
-    case "has_service":
       return 0;
     case "donor_status":
     case "giving_lifetime":
     case "gift_count":
     case "last_gift":
     case "backer":
+    case "has_service":
       return 1;
     default:
       return 2;
@@ -495,13 +543,14 @@ async function personMatchesGroup(
   person: Doc<"people">,
   group: AudienceGroup,
   donorIdx: DonorIndex,
+  serviceIdx: ServiceIndex,
   caches: PersonCaches,
   now: number,
   excludeSide: boolean,
 ): Promise<boolean> {
   const ordered = [...group.conditions].sort((a, b) => conditionCost(a) - conditionCost(b));
   for (const c of ordered) {
-    if (!(await evalConditionForPerson(ctx, person, c, donorIdx, caches, now, excludeSide))) {
+    if (!(await evalConditionForPerson(ctx, person, c, donorIdx, serviceIdx, caches, now, excludeSide))) {
       return false;
     }
   }
@@ -661,6 +710,7 @@ export async function explainTargetingForPerson(
   const { targeting } = audience;
   const now = Date.now();
   const donorIdx = await buildDonorIndex(ctx, audience.scope, targeting);
+  const serviceIdx = await buildServiceIndex(ctx, targeting);
   const caches: PersonCaches = {
     rsvpsById: new Map(),
     seatsById: new Map(),
@@ -674,7 +724,7 @@ export async function explainTargetingForPerson(
       for (const c of g.conditions) {
         conditions.push({
           condition: c,
-          pass: await evalConditionForPerson(ctx, person, c, donorIdx, caches, now, excludeSide),
+          pass: await evalConditionForPerson(ctx, person, c, donorIdx, serviceIdx, caches, now, excludeSide),
         });
       }
       out.push({ matched: conditions.every((v) => v.pass), conditions });
@@ -768,6 +818,7 @@ export async function resolveTargetingAudience(
   const excludeGroups = targeting.excludeGroups ?? [];
 
   const donorIdx = await buildDonorIndex(ctx, audience.scope, targeting);
+  const serviceIdx = await buildServiceIndex(ctx, targeting);
   const caches: PersonCaches = {
     rsvpsById: new Map(),
     seatsById: new Map(),
@@ -796,7 +847,7 @@ export async function resolveTargetingAudience(
       personById.set(p._id, p);
       const matched: number[] = [];
       for (let gi = 0; gi < targeting.groups.length; gi++) {
-        if (await personMatchesGroup(ctx, p, targeting.groups[gi], donorIdx, caches, now, false)) {
+        if (await personMatchesGroup(ctx, p, targeting.groups[gi], donorIdx, serviceIdx, caches, now, false)) {
           matched.push(gi);
           perGroupCounts[gi]++;
           if (!includeDiagnostics) break;
@@ -849,7 +900,7 @@ export async function resolveTargetingAudience(
     }
     let excluded = false;
     for (let gi = 0; gi < excludeGroups.length; gi++) {
-      if (await personMatchesGroup(ctx, person, excludeGroups[gi], donorIdx, caches, now, true)) {
+      if (await personMatchesGroup(ctx, person, excludeGroups[gi], donorIdx, serviceIdx, caches, now, true)) {
         if (!excluded) {
           excluded = true;
           excludedByGroups++;
