@@ -514,6 +514,10 @@ a { text-decoration:underline; }
 }
 
 @media (prefers-color-scheme: dark) {
+  /* The body element as well as the wrapper: the wrapper only covers as much
+     height as the content, so a short email would otherwise show a light
+     strip beneath the card. */
+  body { background:${d.canvas} !important; }
   .${CLS.wrap} { background:${d.canvas} !important; }
   .${CLS.card} { background:${d.surface} !important; border-color:${d.border} !important; }
   .${CLS.heading} { color:${d.ink} !important; }
@@ -531,6 +535,7 @@ a { text-decoration:underline; }
 
 /* Outlook.com / some Android clients key off [data-ogsc] instead of the media
    query — same overrides, applied through the attribute they rewrite to. */
+[data-ogsc] body, [data-ogsc] .${CLS.wrap} { background:${d.canvas} !important; }
 [data-ogsc] .${CLS.card} { background:${d.surface} !important; }
 [data-ogsc] .${CLS.heading} { color:${d.ink} !important; }
 [data-ogsc] .${CLS.text} { color:${d.muted} !important; }
