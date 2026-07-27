@@ -24,6 +24,7 @@ import {
   defaultStatusOptions,
   getAcademySection,
   previousModuleInCourse,
+  quizQuestionKey,
   type ModuleKey,
 } from "@events-os/shared";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
@@ -277,8 +278,8 @@ describe("quiz grading", () => {
     expect(res.passed).toBe(true);
     expect(res.results).toHaveLength(res.total);
     for (const r of res.results) {
-      expect(r.correct).toBe(true);
-      expect(r.explanation.length).toBeGreaterThan(0);
+      expect(r!.correct).toBe(true);
+      expect(r!.explanation.length).toBeGreaterThan(0);
     }
 
     const progress = await s.as.query(api.academy.myProgress, {});
@@ -300,8 +301,8 @@ describe("quiz grading", () => {
     });
     expect(res.score).toBe(res.total - 1);
     expect(res.passed).toBe(false);
-    expect(res.results[0].correct).toBe(false);
-    expect(res.results.slice(1).every((r) => r.correct)).toBe(true);
+    expect(res.results[0]!.correct).toBe(false);
+    expect(res.results.slice(1).every((r) => r!.correct)).toBe(true);
 
     const progress = await s.as.query(api.academy.myProgress, {});
     const row = progress.sections.find((x) => x.slug === SECTION_1.slug)!;
@@ -340,7 +341,7 @@ describe("quiz grading", () => {
     expect(row.passed).toBe(true);
   });
 
-  test("validation: unknown slug, wrong answer count, capstones have no quiz", async () => {
+  test("validation: unknown slug, empty answers, capstones have no quiz", async () => {
     const s = await setupLearner(newT());
     await expect(
       s.as.mutation(api.academy.submitQuiz, {
@@ -354,9 +355,9 @@ describe("quiz grading", () => {
     await expect(
       s.as.mutation(api.academy.submitQuiz, {
         sectionSlug: SECTION_1.slug,
-        answers: [0],
+        answers: [],
       }),
-    ).rejects.toThrow(/Expected \d+ answers/);
+    ).rejects.toThrow(/Expected \d+ answers, got 0/);
     await expect(
       s.as.mutation(api.academy.submitQuiz, {
         sectionSlug: CAPSTONE_JOIN.slug,
@@ -503,6 +504,103 @@ describe("quiz grading", () => {
     }));
     expect(people).toHaveLength(0);
     expect(progress).toHaveLength(0);
+  });
+});
+
+/**
+ * The curriculum ships in two independently-deployed places — this backend
+ * (live on merge) and the app bundle (live on an OTA) — so an app is routinely
+ * a question behind the grader. That skew used to be a hard wall: adding a
+ * fifth question to a four-question quiz answered every future attempt from
+ * every installed build with "Expected 5 answers, got 4", on the one screen
+ * that advances the course. These pin the tolerance that replaced it.
+ */
+describe("client/server curriculum skew", () => {
+  const SECTION_1_PROMPTS = SECTION_1.quiz.map((q) => q.prompt);
+
+  test("a bundle one question behind still grades — and can still pass", async () => {
+    const s = await setupLearner(newT());
+    const stalePrompts = SECTION_1_PROMPTS.slice(0, -1); // the added question is missing
+    const res = await s.as.mutation(api.academy.submitQuiz, {
+      sectionSlug: SECTION_1.slug,
+      answers: correctAnswers(SECTION_1.slug).slice(0, -1),
+      questionKeys: stalePrompts.map(quizQuestionKey),
+    });
+    expect(res.total).toBe(SECTION_1.quiz.length - 1);
+    expect(res.score).toBe(res.total);
+    expect(res.passed).toBe(true);
+
+    // And the pass is real: the next module in the course opens.
+    const progress = await s.as.query(api.academy.myProgress, {});
+    expect(
+      progress.sections.find((x) => x.slug === SECTION_1.slug)!.passed,
+    ).toBe(true);
+  });
+
+  test("keys grade each answer against its OWN question, not its position", async () => {
+    const s = await setupLearner(newT());
+    // A question was inserted at the top since this bundle shipped, so the
+    // learner's answers are all one position off. Positional grading would
+    // mark every one of them wrong; keyed grading gets them all right.
+    const shifted = SECTION_1_PROMPTS.slice(1);
+    const res = await s.as.mutation(api.academy.submitQuiz, {
+      sectionSlug: SECTION_1.slug,
+      answers: SECTION_1.quiz.slice(1).map((q) => q.answerIndex),
+      questionKeys: shifted.map(quizQuestionKey),
+    });
+    expect(res.total).toBe(SECTION_1.quiz.length - 1);
+    expect(res.passed).toBe(true);
+  });
+
+  test("a question this deploy no longer has grades as null, the rest still count", async () => {
+    const s = await setupLearner(newT());
+    const prompts = [...SECTION_1_PROMPTS, "A question that was since deleted"];
+    const res = await s.as.mutation(api.academy.submitQuiz, {
+      sectionSlug: SECTION_1.slug,
+      answers: [...correctAnswers(SECTION_1.slug), 0],
+      questionKeys: prompts.map(quizQuestionKey),
+    });
+    expect(res.results).toHaveLength(SECTION_1.quiz.length + 1);
+    expect(res.results.at(-1)).toBeNull(); // ungradeable, and not held against them
+    expect(res.total).toBe(SECTION_1.quiz.length);
+    expect(res.passed).toBe(true);
+  });
+
+  test("a keyless bundle falls back to positional grading over what it sent", async () => {
+    const s = await setupLearner(newT());
+    const res = await s.as.mutation(api.academy.submitQuiz, {
+      sectionSlug: SECTION_1.slug,
+      answers: correctAnswers(SECTION_1.slug).slice(0, -1),
+    });
+    expect(res.total).toBe(SECTION_1.quiz.length - 1);
+    expect(res.passed).toBe(true);
+  });
+
+  test("a wholly rewritten quiz says so instead of recording a meaningless 0/0", async () => {
+    const s = await setupLearner(newT());
+    await expect(
+      s.as.mutation(api.academy.submitQuiz, {
+        sectionSlug: SECTION_1.slug,
+        answers: [0, 0],
+        questionKeys: ["deadbeef", "cafebabe"],
+      }),
+    ).rejects.toThrow(/rewritten since you opened it/);
+    const progress = await s.as.query(api.academy.myProgress, {});
+    expect(
+      progress.sections.find((x) => x.slug === SECTION_1.slug)!.quizBestScore,
+    ).toBeNull();
+  });
+
+  test("quizQuestionKey is stable per prompt and unique within every section", () => {
+    expect(quizQuestionKey("What is Public Worship's mission?")).toBe(
+      quizQuestionKey("What is Public Worship's mission?"),
+    );
+    for (const section of ACADEMY_SECTIONS) {
+      const keys = section.quiz.map((q) => quizQuestionKey(q.prompt));
+      expect(new Set(keys).size, `duplicate quiz key in ${section.slug}`).toBe(
+        keys.length,
+      );
+    }
   });
 });
 

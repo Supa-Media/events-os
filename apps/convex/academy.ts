@@ -36,6 +36,7 @@ import {
   getAcademySection,
   isCompleteStatus,
   previousModuleInCourse,
+  quizQuestionKey,
   requiredModuleSlugsForCourse,
   type AcademySection,
   type AcademyTrainingKind,
@@ -698,10 +699,27 @@ export const markRead = mutation({
  * Returns per-question correctness + the teaching explanation (and the correct
  * index — the quizzes teach, they don't gatekeep). Quizzes unlock sequentially:
  * a section's quiz opens once the previous section's quiz is passed.
+ *
+ * Grades what the READER SAW, not what this deploy happens to hold. The
+ * curriculum ships in two independently-deployed places — this backend (live
+ * the instant a PR merges) and the app bundle (whatever build/OTA the learner
+ * is on) — so a quiz edit puts every installed app one question behind until
+ * an OTA lands. Demanding an exactly-length-matched answer vector turned that
+ * skew into a hard wall: an unfixable "Expected 5 answers, got 4" on the only
+ * screen that advances the course. See `quizQuestionKey`.
  */
 export const submitQuiz = mutation({
-  args: { sectionSlug: v.string(), answers: v.array(v.number()) },
-  handler: async (ctx, { sectionSlug, answers }) => {
+  args: {
+    sectionSlug: v.string(),
+    answers: v.array(v.number()),
+    /**
+     * One `quizQuestionKey` per entry in `answers`, identifying the question
+     * the learner actually answered. Optional because clients that predate it
+     * can't send it — those fall back to positional grading below.
+     */
+    questionKeys: v.optional(v.array(v.string())),
+  },
+  handler: async (ctx, { sectionSlug, answers, questionKeys }) => {
     const section = requireSection(sectionSlug);
     if (section.quiz.length === 0) {
       throw new ConvexError({
@@ -710,10 +728,10 @@ export const submitQuiz = mutation({
           "This section is completed through its training event, not a quiz.",
       });
     }
-    if (answers.length !== section.quiz.length) {
+    if (answers.length === 0) {
       throw new ConvexError({
         code: "BAD_ANSWERS",
-        message: `Expected ${section.quiz.length} answers, got ${answers.length}.`,
+        message: `Expected ${section.quiz.length} answers, got 0.`,
       });
     }
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
@@ -742,14 +760,54 @@ export const submitQuiz = mutation({
       });
     }
 
-    const results = section.quiz.map((q, i) => ({
-      correct: answers[i] === q.answerIndex,
-      correctIndex: q.answerIndex,
-      explanation: q.explanation,
-    }));
-    const score = results.filter((r) => r.correct).length;
-    const total = section.quiz.length;
-    const passed = score === total;
+    // Pair each submitted answer with the question it belongs to. By key when
+    // the client sent keys (exact, and survives an insert/remove/reorder mid-
+    // quiz); positionally otherwise, which is right for the append-a-question
+    // case and the best guess available for a client too old to say more.
+    const indexByKey = new Map<string, number>();
+    section.quiz.forEach((q, i) => {
+      const key = quizQuestionKey(q.prompt);
+      if (!indexByKey.has(key)) indexByKey.set(key, i);
+    });
+    const keyed =
+      questionKeys != null && questionKeys.length === answers.length;
+    const questionIndexes = answers.map((_a, i) =>
+      keyed ? (indexByKey.get(questionKeys![i]) ?? null) : i,
+    );
+
+    // One entry per SUBMITTED answer, in submission order, so the client can
+    // keep reading `results[i]` against its own question list. `null` marks an
+    // answer this deploy can't grade — a question that was reworded or removed
+    // out from under the learner. Questions the client never saw simply aren't
+    // in here; they're graded the next time that learner opens the section.
+    const results = questionIndexes.map((qi, i) => {
+      const q = qi != null ? section.quiz[qi] : undefined;
+      if (!q) return null;
+      return {
+        correct: answers[i] === q.answerIndex,
+        correctIndex: q.answerIndex,
+        explanation: q.explanation,
+      };
+    });
+    const graded = results.filter((r) => r !== null);
+    if (graded.length === 0) {
+      // Every submitted question is gone from this deploy — a whole-quiz
+      // rewrite, not a skew we can grade around. Say so instead of recording a
+      // meaningless 0/0.
+      throw new ConvexError({
+        code: "STALE_QUIZ",
+        message:
+          "This quiz was rewritten since you opened it. Reopen the section to load the current questions.",
+      });
+    }
+    const score = graded.filter((r) => r.correct).length;
+    const total = graded.length;
+    // Perfect on everything the learner was shown. A stale client is a
+    // deployment artifact, not a learner's mistake — holding their course
+    // hostage to a question their build can't render is the bug, not the fix.
+    // Mirrors the "never re-lock a passed module" rule above: curriculum
+    // changes move the content forward, never a learner's progress back.
+    const passed = total > 0 && score === total;
 
     const existing = bySlug.get(sectionSlug);
     const newlyPassed = passed && existing?.passedAt == null;
