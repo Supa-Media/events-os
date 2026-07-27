@@ -77,15 +77,25 @@ type Selection =
   | null;
 
 /**
- * Read a picker row as a complete `EmailTheme`.
+ * Read a picker row as a complete `EmailTheme` for editing.
  *
  * `normalizeEmailTheme` is the contract's permissive READ edge: it takes the
  * flat token fields off the row and ignores everything else on it (`themeId`,
  * `isPreset`, `contrastWarnings`), filling any gap from the default rather
  * than throwing. A row written before a token existed still opens.
+ *
+ * Its ONE behaviour that's wrong for an editor is `dark`: a MISSING `dark` is
+ * filled from `DEFAULT_EMAIL_THEME`, which is correct at render time (some
+ * dark rendering must exist) and a lie in a form — the toggle would read
+ * "dark overrides on" for a theme that has none, and saving would then stamp
+ * Public Worship's maroon dark mode onto, say, a Winter-derived theme nobody
+ * asked to have one. `emailThemes.createTheme` refuses to persist that same
+ * fill for the same reason. So the row's OWN `dark` is restored over the
+ * normalized one, present or absent.
  */
 function themeOf(row: ThemeView): EmailTheme {
-  return normalizeEmailTheme(row);
+  const { dark: _filledIn, ...tokens } = normalizeEmailTheme(row);
+  return row.dark ? { ...tokens, dark: row.dark } : tokens;
 }
 
 export function CampaignThemesView() {
@@ -144,7 +154,12 @@ export function CampaignThemesView() {
       return;
     }
     setSaveError(null);
-    const { name, dark, ...tokens } = validated.theme;
+    // Tokens from the VALIDATED theme (normalized, trimmed), but `dark` from
+    // the DRAFT — `validateEmailTheme` returns `normalizeEmailTheme`'s output,
+    // which back-fills a missing `dark` from the default theme (see
+    // `themeOf`). Reading it here would silently re-add dark overrides the
+    // designer just switched off.
+    const { name, dark: _normalizedDark, ...tokens } = validated.theme;
     setSaving(true);
     try {
       await run(
@@ -156,7 +171,7 @@ export function CampaignThemesView() {
             // `null` is the CLEAR sentinel — `undefined` would mean "leave the
             // stored overrides alone", which is the opposite of what turning
             // the dark section off means.
-            dark: dark ?? null,
+            dark: draft.dark ?? null,
           }),
         { errorTitle: "Couldn't save the theme" },
       );

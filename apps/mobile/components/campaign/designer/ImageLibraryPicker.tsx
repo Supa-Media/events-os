@@ -14,11 +14,11 @@
  * app has no reusable modal primitive to begin with (`Popover`/`ContextMenu`
  * are anchored menus, not content panels).
  *
- * Picking an image fills BOTH `imageUrl` and `imageAlt` — the library row
- * carries the label that was written when the image was first added, so
- * reuse means reusing the alt text too. That's the whole accessibility
- * argument for the feature: alt text gets written once, correctly, and then
- * travels with the asset.
+ * Picking an image fills BOTH `imageUrl` and `imageAlt` — the row carries the
+ * description written the first time the image was used, so reuse means
+ * reusing the alt text too. That's the whole accessibility argument for the
+ * feature: the description gets written once, properly, and then travels with
+ * the asset (see `useImageLibraryRegistration` for how it gets there).
  */
 import { useEffect, useRef, useState } from "react";
 import { Image, Pressable, ScrollView, Text, View } from "react-native";

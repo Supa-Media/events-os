@@ -517,8 +517,8 @@ function ImageBlockEditor({
             }}
           />
         ) : null}
-        {/* Picking from the library fills the alt text too — the label was
-            written once, when the image was first added, and travels with it. */}
+        {/* Picking from the library fills the alt text too — the description
+            was written once, the first time this image was used. */}
         <ImageLibraryPicker onPick={({ url, alt }) => onChange({ url, alt })} />
       </View>
       <TextField
