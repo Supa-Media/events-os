@@ -44,8 +44,24 @@ import {
   resolveResendSettings,
   sendResendEmail,
 } from "./lib/resend";
-import { renderCampaignEmail, renderCampaignText, validateEmailDocument } from "@events-os/shared";
+import {
+  DEFAULT_EMAIL_THEME,
+  normalizeEmailTheme,
+  renderCampaignEmail,
+  renderCampaignText,
+  validateEmailDocument,
+} from "@events-os/shared";
+import type { EmailTheme } from "@events-os/shared";
 import { sendEmail, emailShell } from "./ticketingEmails";
+import {
+  EMAIL_CLS,
+  emailButtonRow,
+  emailHeading,
+  emailPanel,
+  emailParagraph,
+  emailRule,
+  emailTextStyle,
+} from "./lib/emailShell";
 
 // ── submit-time test pair ────────────────────────────────────────────────────
 
@@ -99,10 +115,15 @@ function injectBeforeBodyClose(html: string, insert: string): string {
 
 /** A visible divider + a proof-of-read line + the review link, appended to
  *  the bottom of the REVIEWER's copy only (via `injectBeforeBodyClose`, so it
- *  lands INSIDE the document). Plain inline styles matching the rest of this
- *  codebase's hand-rolled transactional HTML (`ticketingEmails.ts` /
- *  `budgetDecisionEmails.ts`) — no shared component, this is the only place
- *  it's needed.
+ *  lands INSIDE the document).
+ *
+ *  Built from `lib/emailShell.ts`'s themed helpers and painted with the
+ *  CAMPAIGN'S OWN theme, not the default — this block lands inside a document
+ *  `renderCampaignEmail` already themed, so a campaign on the Winter preset
+ *  must not sprout a maroon button at the bottom. The helpers emit the same
+ *  `pw-*` class names `renderCampaignEmail`'s `<style>` block already targets,
+ *  so the appended block inherits that document's dark-mode and responsive
+ *  rules for free.
  *
  *  `reviewUrl` is `null` when `APP_URL` isn't configured (`lib/siteUrl.ts#appUrl`)
  *  — an unusual, misconfigured deployment state, but this must NEVER silently
@@ -110,17 +131,22 @@ function injectBeforeBodyClose(html: string, insert: string): string {
  *  way to actually review). Degrades to plain, non-linked instructional text
  *  instead — same visible label either way ("Review this campaign"), so a
  *  caller checking for the label doesn't need to know which branch rendered. */
-function reviewBlock(reviewUrl: string | null): { html: string; text: string } {
+function reviewBlock(
+  reviewUrl: string | null,
+  theme: EmailTheme,
+): { html: string; text: string } {
   const lead =
     "You've been asked to approve this campaign. Review the audience, purpose, and recipient count, then decide:";
   const ctaLabel = "Review this campaign →";
-  const ctaHtml = reviewUrl
-    ? `<a href="${reviewUrl}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">${ctaLabel}</a>`
-    : `${escapeHtml(ctaLabel)} Open the app and find it under Campaigns → Awaiting your approval.`;
   const html =
-    `<hr style="margin:24px 0;border:none;border-top:1px solid #E4CFCB" />` +
-    `<p style="margin:0 0 12px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:13px;line-height:1.6;color:#7A5A5A">${escapeHtml(lead)}</p>` +
-    `<p style="margin:0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600">${ctaHtml}</p>`;
+    emailRule({ theme }) +
+    emailParagraph(escapeHtml(lead), { size: 13, margin: "0 0 12px", theme }) +
+    (reviewUrl
+      ? emailButtonRow(reviewUrl, escapeHtml(ctaLabel), { theme })
+      : emailParagraph(
+          `${escapeHtml(ctaLabel)} Open the app and find it under Campaigns → Awaiting your approval.`,
+          { size: 12, margin: "0", theme },
+        ));
   const text = `\n\n---\n${lead}\n${reviewUrl ?? "(open the app to review — find it under Campaigns → Awaiting your approval)"}`;
   return { html, text };
 }
@@ -150,6 +176,10 @@ export const sendApprovalTestPair = internalAction({
       // `validated.ok` doesn't propagate into a function DECLARED after the
       // guard, only INTO code that reads `validated` directly at this level.
       const doc = validated.doc;
+      // The exact theme `renderCampaignEmail` will paint this document with,
+      // resolved once so the appended review block matches it rather than
+      // defaulting to Public Worship's maroon on a seasonally-themed campaign.
+      const docTheme = doc.theme ? normalizeEmailTheme(doc.theme) : DEFAULT_EMAIL_THEME;
 
       const settings = await resolveResendSettings(ctx);
       if (!settings) return null; // no RESEND_API_KEY configured — dev/CI degrade
@@ -177,7 +207,7 @@ export const sendApprovalTestPair = internalAction({
         let html = renderCampaignEmail(doc, renderOpts);
         let text = renderCampaignText(doc, renderOpts);
         if (appendReview) {
-          const block = reviewBlock(reviewUrl);
+          const block = reviewBlock(reviewUrl, docTheme);
           // INSIDE the document, right before `</body>` — never after
           // `</html>` (see `injectBeforeBodyClose`'s doc). The plain-text
           // variant has no markup to violate, so a plain append already
@@ -305,7 +335,10 @@ export const notifyCampaignDecision = internalAction({
     const lead = `Your campaign "${escapeHtml(decision.campaignName)}" was ${verb}${byBit}.`;
     const noteLabel = decision.decision === "approved" ? "Note" : "Why";
     const noteBlock = decision.reviewNote
-      ? `<div style="background:#fff;border:1px dashed #E4CFCB;border-radius:14px;padding:14px 18px;margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#210909"><b>${noteLabel}:</b> ${escapeHtml(decision.reviewNote)}</div>`
+      ? emailPanel(
+          `<div class="${EMAIL_CLS.text}" style="${emailTextStyle({ strong: true })}"><b>${noteLabel}:</b> ${escapeHtml(decision.reviewNote)}</div>`,
+          { dashed: true },
+        )
       : "";
     const link = appUrl(`/campaign/${campaignId}`);
 
@@ -313,14 +346,10 @@ export const notifyCampaignDecision = internalAction({
       to: decision.submitterEmail,
       subject,
       html: emailShell(`
-        <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">${heading}</h1>
-        <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(decision.submitterName)} — ${lead}</p>
+        ${emailHeading(heading)}
+        ${emailParagraph(`Hi ${escapeHtml(decision.submitterName)} — ${lead}`)}
         ${noteBlock}
-        ${
-          link
-            ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${link}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">Open the campaign →</a></div>`
-            : ""
-        }`),
+        ${link ? emailButtonRow(link, "Open the campaign →") : ""}`),
     });
     return null;
   },

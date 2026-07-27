@@ -5,21 +5,63 @@
  * mirroring `SiteMapEditor`'s "selection = contextual controls" idea, just
  * inline per-row instead of a floating bar (there's no canvas to float over
  * here — the stack IS the canvas).
+ *
+ * ── Editor idioms (kept identical across every kind) ───────────────────────
+ * `TextField` for free text, `Select` for a closed set of >2 choices, the
+ * `LevelToggle` segmented control for 2-3 choices, and — new with the
+ * composed blocks — `CardContentEditor` for anything shaped like a card.
+ * The shared controls live in `DesignerControls.tsx` so `CardContentEditor`
+ * can use them without importing this file back.
+ *
+ * ── Where the composed editors keep their invariants ───────────────────────
+ * `columns` and `poll` are the two kinds with COUNT bounds
+ * (`MIN_COLUMNS`/`MAX_COLUMNS`, `MIN_POLL_OPTIONS`/`MAX_POLL_OPTIONS`), and
+ * both enforce them by DISABLING the add/remove control at the bound rather
+ * than letting the tap fail — the count is visible in the control's own
+ * label, so the ceiling explains itself. Poll option ids come from
+ * `newBlockId()` and are never touched again: a vote is recorded against the
+ * id, so re-deriving one from a renamed label would silently re-bucket every
+ * vote already cast.
  */
-import { useState } from "react";
-import { ActivityIndicator, Platform, View, Text, Pressable } from "react-native";
+import { View, Text, Pressable } from "react-native";
 import { GestureDetector, type GestureType } from "react-native-gesture-handler";
-// expo-image-picker is Expo Go-safe (classified `core` in native-deps.json);
-// only used on native, mirroring `CoverPhotoPicker`'s upload flow.
-import * as ImagePicker from "expo-image-picker";
-import type { EmailBlock } from "@events-os/shared";
+import {
+  MAX_COLUMNS,
+  MAX_POLL_OPTIONS,
+  MIN_COLUMNS,
+  MIN_POLL_OPTIONS,
+  newBlockId,
+  type EmailBlock,
+  type EmailCardContent,
+  type EmailPollOption,
+} from "@events-os/shared";
 import { Icon, TextField, Select, Field } from "../../ui";
 import { MarkdownEditor } from "../../markdown";
 import { colors } from "../../../lib/theme";
 import { BLOCK_KIND_LABELS } from "../../../lib/emailDesigner";
 import type { ActionRunner } from "../../../lib/useActionToast";
+import {
+  EditorGroup,
+  ImageUploadButton,
+  LevelToggle,
+  type UploadImage,
+} from "./DesignerControls";
+import { CardContentEditor, InlineWarning } from "./CardContentEditor";
+import { ImageLibraryPicker, useAddToImageLibrary } from "./ImageLibraryPicker";
 
 const COMPACT_MARKDOWN_HEIGHT = 180;
+
+/**
+ * The glyphs offered as one-tap suggestions on an `eyebrow`.
+ *
+ * Literal characters, never icon-font names: email clients don't load icon
+ * fonts, so anything else renders as a tofu box (the contract says as much).
+ * The four typographic marks are what the Public Worship newsletter actually
+ * uses to open a section; the two emoji are there because the designer asked
+ * for "something seasonal" and emoji are the only glyphs with colour that
+ * survive every client.
+ */
+const EYEBROW_GLYPHS = ["◆", "★", "✦", "❯", "🎵", "✨"] as const;
 
 export function BlockCard({
   block,
@@ -39,8 +81,8 @@ export function BlockCard({
   onDuplicate: () => void;
   onDelete: () => void;
   drag?: GestureType;
-  /** Web-only image upload (see `ImageBlockEditor`); omitted → URL-only. */
-  uploadImage?: (file: Blob, contentType: string) => Promise<string>;
+  /** Image upload (see `ImageBlockEditor`); omitted → URL / library only. */
+  uploadImage?: UploadImage;
   /** Surfaces an `uploadImage` failure via the screen's toast/Alert —
    *  required whenever `uploadImage` is passed (both come from the design
    *  screen together). */
@@ -97,7 +139,7 @@ function BlockEditor({
 }: {
   block: EmailBlock;
   onChange: (patch: Record<string, unknown>) => void;
-  uploadImage?: (file: Blob, contentType: string) => Promise<string>;
+  uploadImage?: UploadImage;
   run?: ActionRunner["run"];
 }) {
   switch (block.kind) {
@@ -188,32 +230,256 @@ function BlockEditor({
         />
       );
 
+    case "eyebrow":
+      return <EyebrowEditor block={block} onChange={onChange} />;
+
+    case "card":
+      return (
+        <CardContentEditor
+          content={block}
+          onChange={onChange}
+          uploadImage={uploadImage}
+          run={run}
+        />
+      );
+
+    case "columns":
+      return (
+        <ColumnsEditor block={block} onChange={onChange} uploadImage={uploadImage} run={run} />
+      );
+
+    case "quote":
+      return (
+        <View>
+          <TextField
+            label="Quote"
+            value={block.text}
+            onChangeText={(text) => onChange({ text })}
+            placeholder="The line worth pulling out"
+            multiline
+            numberOfLines={3}
+            style={{ minHeight: 72, textAlignVertical: "top" }}
+          />
+          <TextField
+            label="Attribution"
+            value={block.attribution ?? ""}
+            onChangeText={(attribution) => onChange({ attribution })}
+            placeholder="Who said it (optional)"
+          />
+        </View>
+      );
+
+    case "poll":
+      return <PollEditor block={block} onChange={onChange} />;
+
     default:
       return null;
   }
 }
 
-/** A small two-state toggle button — reused for heading level, button align. */
-function LevelToggle({
-  label,
-  active,
-  onPress,
+/** The all-caps accent label that opens a section, plus its leading glyph. */
+function EyebrowEditor({
+  block,
+  onChange,
 }: {
-  label: string;
-  active: boolean;
-  onPress: () => void;
+  block: Extract<EmailBlock, { kind: "eyebrow" }>;
+  onChange: (patch: Record<string, unknown>) => void;
 }) {
+  const glyph = block.icon ?? "";
   return (
-    <Pressable
-      onPress={onPress}
-      className={`rounded-md border px-2.5 py-1 ${
-        active ? "border-accent bg-accent-soft" : "border-border bg-raised"
-      }`}
-    >
-      <Text className={`text-xs font-medium ${active ? "font-semibold text-accent" : "text-muted"}`}>
-        {label}
+    <View>
+      <TextField
+        label="Eyebrow text"
+        value={block.text}
+        onChangeText={(text) => onChange({ text })}
+        placeholder="THIS MONTH"
+        autoCapitalize="characters"
+        hint="Renders small, bold, and letter-spaced in the theme's accent colour."
+      />
+      <Field
+        label="Glyph"
+        hint="Any character works — these are just the ones the newsletter uses."
+      >
+        <View className="flex-row flex-wrap items-center gap-2">
+          {EYEBROW_GLYPHS.map((g) => (
+            <Pressable
+              key={g}
+              onPress={() => onChange({ icon: glyph === g ? undefined : g })}
+              accessibilityRole="button"
+              accessibilityLabel={`Use the ${g} glyph`}
+              accessibilityState={{ selected: glyph === g }}
+              className={`h-9 w-9 items-center justify-center rounded-md border ${
+                glyph === g ? "border-accent bg-accent-soft" : "border-border bg-raised"
+              }`}
+            >
+              <Text className="text-base text-ink">{g}</Text>
+            </Pressable>
+          ))}
+          <LevelToggle
+            label="None"
+            active={glyph === ""}
+            onPress={() => onChange({ icon: undefined })}
+          />
+        </View>
+        <View className="mt-2">
+          <TextField
+            value={glyph}
+            onChangeText={(icon) => onChange({ icon: icon || undefined })}
+            placeholder="…or paste your own"
+            maxLength={4}
+          />
+        </View>
+      </Field>
+    </View>
+  );
+}
+
+/**
+ * 2-3 cards side by side. Each column is a `CardContentEditor` in `compact`
+ * mode; the count controls sit in each column's header (remove) and below the
+ * stack (add), both bounded by the contract's MIN/MAX.
+ */
+function ColumnsEditor({
+  block,
+  onChange,
+  uploadImage,
+  run,
+}: {
+  block: Extract<EmailBlock, { kind: "columns" }>;
+  onChange: (patch: Record<string, unknown>) => void;
+  uploadImage?: UploadImage;
+  run?: ActionRunner["run"];
+}) {
+  const columns = block.columns;
+  const atMin = columns.length <= MIN_COLUMNS;
+  const atMax = columns.length >= MAX_COLUMNS;
+
+  function patchColumn(index: number, patch: Partial<EmailCardContent>) {
+    onChange({
+      columns: columns.map((c, i) => (i === index ? { ...c, ...patch } : c)),
+    });
+  }
+
+  return (
+    <View>
+      {columns.map((column, index) => (
+        <EditorGroup
+          // Columns have no ids of their own in the contract, so position is
+          // the only available key. Safe here because the list is only ever
+          // appended to or truncated from the end — there's no reorder, so a
+          // remounted subtree can't lose a half-typed field mid-edit.
+          key={index}
+          title={`Column ${index + 1}`}
+          right={
+            <Pressable
+              onPress={
+                atMin
+                  ? undefined
+                  : () => onChange({ columns: columns.filter((_, i) => i !== index) })
+              }
+              disabled={atMin}
+              hitSlop={6}
+              accessibilityRole="button"
+              accessibilityLabel={`Remove column ${index + 1}`}
+              className={`rounded p-1 ${atMin ? "opacity-30" : "active:bg-sunken web:hover:bg-sunken"}`}
+            >
+              <Icon name="x" size={13} color={colors.muted} />
+            </Pressable>
+          }
+        >
+          <CardContentEditor
+            content={column}
+            onChange={(patch) => patchColumn(index, patch)}
+            compact
+            uploadImage={uploadImage}
+            run={run}
+          />
+        </EditorGroup>
+      ))}
+      <LevelToggle
+        label={atMax ? `Maximum ${MAX_COLUMNS} columns` : "+ Add column"}
+        active={false}
+        disabled={atMax}
+        onPress={() => onChange({ columns: [...columns, { heading: "" }] })}
+      />
+      <Text className="mt-2 text-2xs text-faint">
+        Columns stack to full width on a phone.
       </Text>
-    </Pressable>
+    </View>
+  );
+}
+
+/** Question + 2-6 options. Option ids are generated once and never rewritten. */
+function PollEditor({
+  block,
+  onChange,
+}: {
+  block: Extract<EmailBlock, { kind: "poll" }>;
+  onChange: (patch: Record<string, unknown>) => void;
+}) {
+  const options = block.options;
+  const atMin = options.length <= MIN_POLL_OPTIONS;
+  const atMax = options.length >= MAX_POLL_OPTIONS;
+  const blankLabel = options.some((o) => o.label.trim() === "");
+
+  function setOptions(next: EmailPollOption[]) {
+    onChange({ options: next });
+  }
+
+  return (
+    <View>
+      <TextField
+        label="Question"
+        value={block.question}
+        onChangeText={(question) => onChange({ question })}
+        placeholder="What should we sing next month?"
+      />
+      <Field label="Options">
+        {options.map((option, index) => (
+          <View key={option.id} className="mb-2 flex-row items-center gap-2">
+            <View className="flex-1">
+              <TextField
+                value={option.label}
+                onChangeText={(label) =>
+                  // Patch the LABEL only — `option.id` is carried through
+                  // untouched. Votes are tallied by id, so regenerating one
+                  // on a rename would orphan every vote already cast for it.
+                  setOptions(
+                    options.map((o, i) => (i === index ? { ...o, label } : o)),
+                  )
+                }
+                placeholder={`Option ${index + 1}`}
+              />
+            </View>
+            <Pressable
+              onPress={
+                atMin ? undefined : () => setOptions(options.filter((_, i) => i !== index))
+              }
+              disabled={atMin}
+              hitSlop={6}
+              accessibilityRole="button"
+              accessibilityLabel={`Remove option ${index + 1}`}
+              className={`mb-3 rounded p-1 ${atMin ? "opacity-30" : "active:bg-sunken web:hover:bg-sunken"}`}
+            >
+              <Icon name="x" size={13} color={colors.muted} />
+            </Pressable>
+          </View>
+        ))}
+        <LevelToggle
+          label={atMax ? `Maximum ${MAX_POLL_OPTIONS} options` : "+ Add option"}
+          active={false}
+          disabled={atMax}
+          onPress={() => setOptions([...options, { id: newBlockId(), label: "" }])}
+        />
+      </Field>
+      {blankLabel ? (
+        <InlineWarning text="Every option needs a label before this campaign can be saved." />
+      ) : null}
+      <Text className="text-2xs text-faint">
+        Recipients vote by tapping an option; the tallies show on the campaign
+        once it has sent.
+      </Text>
+    </View>
   );
 }
 
@@ -225,9 +491,11 @@ function ImageBlockEditor({
 }: {
   block: Extract<EmailBlock, { kind: "image" }>;
   onChange: (patch: Record<string, unknown>) => void;
-  uploadImage?: (file: Blob, contentType: string) => Promise<string>;
+  uploadImage?: UploadImage;
   run?: ActionRunner["run"];
 }) {
+  const addToLibrary = useAddToImageLibrary();
+
   return (
     <View>
       <TextField
@@ -238,18 +506,38 @@ function ImageBlockEditor({
         autoCapitalize="none"
         keyboardType="url"
       />
-      {uploadImage && run ? (
-        <ImageUploadButton
-          onUploaded={(url) => onChange({ url })}
-          uploadImage={uploadImage}
-          run={run}
-        />
-      ) : null}
+      <View className="mb-1 flex-row flex-wrap items-start gap-2">
+        {uploadImage && run ? (
+          <ImageUploadButton
+            uploadImage={uploadImage}
+            run={run}
+            onUploaded={(url, suggestedLabel) => {
+              const label = suggestedLabel || "Campaign image";
+              onChange({ url, alt: block.alt || label });
+              addToLibrary(url, label);
+            }}
+          />
+        ) : null}
+        {/* Picking from the library fills the alt text too — the label was
+            written once, when the image was first added, and travels with it. */}
+        <ImageLibraryPicker onPick={({ url, label }) => onChange({ url, alt: label })} />
+      </View>
       <TextField
         label="Alt text"
         value={block.alt}
         onChangeText={(alt) => onChange({ alt })}
         placeholder="Describes the image for screen readers / blocked images"
+      />
+      {block.url.trim() !== "" && block.alt.trim() === "" ? (
+        <InlineWarning text="No alt text. Screen readers and image-blocking clients will show nothing here. Leave it empty only if the image is purely decorative." />
+      ) : null}
+      <TextField
+        label="Link (optional)"
+        value={block.href ?? ""}
+        onChangeText={(href) => onChange({ href: href.trim() ? href : undefined })}
+        placeholder="https://… — makes the image tappable"
+        autoCapitalize="none"
+        keyboardType="url"
       />
       <Field label="Width">
         <View className="flex-row gap-2">
@@ -266,74 +554,5 @@ function ImageBlockEditor({
         </View>
       </Field>
     </View>
-  );
-}
-
-/** Cross-platform "Upload image" affordance — web file input, native picker,
- *  mirroring `CoverPhotoPicker`'s upload flow (generate-URL, POST, resolve to
- *  a servable URL) which is the app's only prior image-upload precedent. */
-function ImageUploadButton({
-  uploadImage,
-  onUploaded,
-  run,
-}: {
-  uploadImage: (file: Blob, contentType: string) => Promise<string>;
-  onUploaded: (url: string) => void;
-  run: ActionRunner["run"];
-}) {
-  const [uploading, setUploading] = useState(false);
-
-  async function uploadBlob(blob: Blob, contentType: string) {
-    setUploading(true);
-    try {
-      // `run` surfaces a failure (a bad response, a network error) via the
-      // screen's toast/Alert instead of silently swallowing it — previously
-      // an upload failure here left the spinner stop with no explanation.
-      await run(
-        async () => {
-          const url = await uploadImage(blob, contentType);
-          onUploaded(url);
-        },
-        { errorTitle: "Couldn't upload image" },
-      );
-    } finally {
-      setUploading(false);
-    }
-  }
-
-  function pickWeb() {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "image/*";
-    input.onchange = () => {
-      const file = input.files?.[0];
-      if (file) void uploadBlob(file, file.type || "image/jpeg");
-    };
-    input.click();
-  }
-
-  async function pickNative() {
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 0.9,
-    });
-    if (result.canceled || !result.assets?.length) return;
-    const asset = result.assets[0];
-    const resp = await fetch(asset.uri);
-    const blob = await resp.blob();
-    await uploadBlob(blob, asset.mimeType || blob.type || "image/jpeg");
-  }
-
-  return (
-    <Pressable
-      onPress={() => (Platform.OS === "web" ? pickWeb() : void pickNative())}
-      disabled={uploading}
-      className="mb-3 flex-row items-center gap-2 self-start rounded-md border border-border-strong bg-raised px-3 py-1.5 active:bg-sunken web:hover:bg-sunken"
-    >
-      {uploading ? <ActivityIndicator size="small" color={colors.muted} /> : null}
-      <Text className="text-xs font-semibold text-ink">
-        {uploading ? "Uploading…" : "Upload image…"}
-      </Text>
-    </Pressable>
   );
 }

@@ -121,9 +121,13 @@ import {
   audiences,
   campaigns,
   campaignApprovalLog,
+  campaignPollVotes,
   campaignRecipients,
+  campaignTemplates,
+  emailImages,
   emailSuppressions,
   emailReplies,
+  emailThemes,
 } from "./schema/campaigns";
 
 /**
@@ -452,6 +456,17 @@ const schema = defineSchema({
   campaignRecipients,
   emailSuppressions,
   emailReplies,
+  // The composer's design surface: `emailThemes` are the org's saved, editable
+  // token sets (the built-in presets stay in code — see
+  // @events-os/shared's EMAIL_THEME_PRESETS); `campaignTemplates` are saved
+  // starting documents; `emailImages` is the reusable illustration library;
+  // `campaignPollVotes` is one row per (recipient, poll block), written by the
+  // public `/poll/` route. See schema/campaigns.ts's doc for each +
+  // emailThemes.ts / campaignTemplates.ts / emailImages.ts / campaignPolls.ts.
+  emailThemes,
+  campaignTemplates,
+  emailImages,
+  campaignPollVotes,
 });
 
 export default schema;

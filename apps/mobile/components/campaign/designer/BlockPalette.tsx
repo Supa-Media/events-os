@@ -15,6 +15,11 @@ const KIND_ICON: Record<EmailBlockKind, IconName> = {
   button: "mouse-pointer",
   divider: "minus",
   spacer: "move",
+  eyebrow: "tag",
+  card: "credit-card",
+  columns: "columns",
+  quote: "message-square",
+  poll: "bar-chart-2",
 };
 
 export function BlockPalette({ onAdd }: { onAdd: (kind: EmailBlockKind) => void }) {

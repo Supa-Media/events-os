@@ -132,6 +132,14 @@ import {
   assertAccountNumber,
 } from "./increase";
 import { sendEmail, sendEmailReporting, emailShell } from "./ticketingEmails";
+import {
+  emailButtonRow,
+  emailCode,
+  emailHeading,
+  emailList,
+  emailPanel,
+  emailParagraph,
+} from "./lib/emailShell";
 import { escapeHtml } from "./lib/html";
 import { appUrl } from "./lib/siteUrl";
 import { normalizePhone, resolveTwilioCredentials, sendSms } from "./lib/twilio";
@@ -2208,9 +2216,15 @@ export const handleIncreaseDigitalWalletAuthenticationRequested = internalAction
               to: auth.email,
               subject: "Your Public Worship wallet verification code",
               html: emailShell(`
-                <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">Your wallet verification code</h1>
-                <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Enter this code to finish adding your card to your digital wallet:</p>
-                <p style="margin:0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:32px;font-weight:700;letter-spacing:0.08em;color:#210909">${escapeHtml(auth.one_time_passcode)}</p>`),
+                ${emailHeading("Your wallet verification code")}
+                ${emailParagraph("Enter this code to finish adding your card to your digital wallet:")}
+                ${emailPanel(
+                  emailCode(escapeHtml(auth.one_time_passcode), {
+                    size: 32,
+                    letterSpacing: "0.08em",
+                  }),
+                  { dashed: true, center: true, margin: "0" },
+                )}`),
             });
             if (delivered) {
               actionBody = {
@@ -2827,14 +2841,17 @@ export const notifyPersonalChargeFlagged = internalAction({
         );
       }
       const ctaHtml = link
-        ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${link}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">Pay it back →</a></div>`
-        : `<p style="margin:0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;color:#7A5A5A">Open the app and go to Finances → Cards to pay it back.</p>`;
+        ? emailButtonRow(link, "Pay it back →")
+        : emailParagraph("Open the app and go to Finances → Cards to pay it back.", {
+            size: 12,
+            margin: "0",
+          });
       await sendEmail(ctx, {
         to: contact.email,
         subject,
         html: emailShell(`
-          <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">${escapeHtml(subject)}</h1>
-          <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(contact.cardholderName)} — ${reason} Pay it back from the Cards tab in the app.</p>
+          ${emailHeading(escapeHtml(subject))}
+          ${emailParagraph(`Hi ${escapeHtml(contact.cardholderName)} — ${reason} Pay it back from the Cards tab in the app.`)}
           ${ctaHtml}`),
       });
     } catch (err) {
@@ -3929,14 +3946,15 @@ async function notifyReceiptDigest(
   const list =
     count === 1
       ? ""
-      : `<ul style="margin:0 0 16px;padding-left:18px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.7;color:#7A5A5A">${digest.charges
-          .map(
-            (c) =>
-              `<li>${escapeHtml(fmt(c))}${c.escalated ? " — <b>locks soon</b>" : ""}</li>`,
-          )
-          .join("")}</ul>`;
+      : emailList(
+          digest.charges.map(
+            (c) => `${escapeHtml(fmt(c))}${c.escalated ? " — <b>locks soon</b>" : ""}`,
+          ),
+        );
   const lockNote = digest.anyEscalated
-    ? `<p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Add ${count === 1 ? "it" : "them"} soon — a charge still missing its receipt after ${RECEIPT_GRACE_DAYS} days locks your card (${daysLeft} more day${daysLeft === 1 ? "" : "s"} for the escalated one${count === 1 ? "" : "s"}).</p>`
+    ? emailParagraph(
+        `Add ${count === 1 ? "it" : "them"} soon — a charge still missing its receipt after ${RECEIPT_GRACE_DAYS} days locks your card (${daysLeft} more day${daysLeft === 1 ? "" : "s"} for the escalated one${count === 1 ? "" : "s"}).`,
+      )
     : "";
   // The bookkeeper's missing-receipt queue — same filter pill the Reconcile
   // grid's "Missing receipt" pill drives. Null (omitted) when APP_URL is unset.
@@ -3945,15 +3963,13 @@ async function notifyReceiptDigest(
     to: digest.email,
     subject,
     html: emailShell(`
-      <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">${escapeHtml(count === 1 ? subject : "Receipts still needed")}</h1>
-      <p style="margin:0 0 ${count === 1 ? 16 : 8}px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(digest.cardholderName)} — ${intro}</p>
+      ${emailHeading(escapeHtml(count === 1 ? subject : "Receipts still needed"))}
+      ${emailParagraph(`Hi ${escapeHtml(digest.cardholderName)} — ${intro}`, {
+        margin: `0 0 ${count === 1 ? 16 : 8}px`,
+      })}
       ${list}
       ${lockNote}
-      ${
-        link
-          ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${link}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">Add receipt${count === 1 ? "" : "s"} →</a></div>`
-          : ""
-      }`),
+      ${link ? emailButtonRow(link, `Add receipt${count === 1 ? "" : "s"} →`) : ""}`),
   });
 }
 

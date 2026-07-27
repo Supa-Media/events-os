@@ -14,9 +14,12 @@
  * `{past, present, future}` zipper. No free positioning, no per-field diffing.
  */
 import {
+  MIN_COLUMNS,
+  MIN_POLL_OPTIONS,
   newBlockId,
   type EmailBlock,
   type EmailBlockKind,
+  type EmailCardContent,
   type EmailDocument,
 } from "@events-os/shared";
 
@@ -24,7 +27,26 @@ import {
  *  `crypto.randomUUID()`. Production callers omit it and get `newBlockId`. */
 export type IdFactory = () => string;
 
-/** A block with sensible starting content for a freshly-added block of `kind`. */
+/** An empty column/card payload. Every field is optional in
+ *  `EmailCardContent`, and a freshly-added card should start BLANK rather
+ *  than with placeholder copy someone forgets to replace — except the
+ *  heading, which is the one part that's always filled in and gives the
+ *  block a visible shape in the preview straight away. */
+function emptyCardContent(heading: string): EmailCardContent {
+  return { heading };
+}
+
+/**
+ * A block with sensible starting content for a freshly-added block of `kind`.
+ *
+ * Every default here must PASS `validateEmailDocument` as-is: the composer
+ * autosaves 600ms after the block lands, and `updateCampaignDoc` rejects an
+ * invalid document outright (`INVALID_DOC`). So the fields the validator
+ * requires to be non-empty (`quote.text`, `poll.question`, every poll option
+ * label, `eyebrow.text`) get real placeholder copy rather than `""` — a
+ * placeholder the designer overwrites in the next keystroke is far better
+ * than a block that silently can't be saved until it's finished.
+ */
 export function defaultBlockFor(kind: EmailBlockKind, id: string): EmailBlock {
   switch (kind) {
     case "heading":
@@ -39,6 +61,38 @@ export function defaultBlockFor(kind: EmailBlockKind, id: string): EmailBlock {
       return { id, kind: "divider" };
     case "spacer":
       return { id, kind: "spacer", size: "md" };
+    case "eyebrow":
+      // The newsletter's own opener. `icon` defaults to the lozenge the real
+      // Public Worship newsletter uses, so the block looks right before the
+      // designer touches it.
+      return { id, kind: "eyebrow", text: "THIS MONTH", icon: "◆" };
+    case "card":
+      return { id, kind: "card", ...emptyCardContent("Card heading") };
+    case "columns":
+      // MIN_COLUMNS, not MAX — two is the newsletter's actual layout, and
+      // removing an unwanted third column is more work than adding one.
+      return {
+        id,
+        kind: "columns",
+        columns: Array.from({ length: MIN_COLUMNS }, (_, i) =>
+          emptyCardContent(`Column ${i + 1}`),
+        ),
+      };
+    case "quote":
+      return { id, kind: "quote", text: "Add the quote here." };
+    case "poll":
+      // Option ids come from `newBlockId` — NEVER from the label. A vote is
+      // recorded against the id, so deriving it from the label would
+      // re-bucket every existing vote the moment the designer fixes a typo.
+      return {
+        id,
+        kind: "poll",
+        question: "What should we do next?",
+        options: Array.from({ length: MIN_POLL_OPTIONS }, (_, i) => ({
+          id: newBlockId(),
+          label: `Option ${i + 1}`,
+        })),
+      };
     default: {
       // Exhaustiveness guard — a new EmailBlockKind added upstream without a
       // matching case here should fail loudly at compile time.
@@ -56,10 +110,27 @@ export const BLOCK_KIND_LABELS: Record<EmailBlockKind, string> = {
   button: "Button",
   divider: "Divider",
   spacer: "Spacer",
+  eyebrow: "Eyebrow",
+  card: "Card",
+  columns: "Columns",
+  quote: "Quote",
+  poll: "Poll",
 };
 
-/** All block kinds, in the order the "Add block" palette renders them. */
+/**
+ * All block kinds, in the order the "Add block" palette renders them.
+ *
+ * Ordered by how the newsletter is actually built, not alphabetically: the
+ * COMPOSED blocks (eyebrow → card → columns → quote → poll) come first
+ * because they're the shapes the designer reaches for, and the primitives
+ * (heading/text/image/button/divider/spacer) follow as the escape hatch.
+ */
 export const BLOCK_KINDS: EmailBlockKind[] = [
+  "eyebrow",
+  "card",
+  "columns",
+  "quote",
+  "poll",
   "heading",
   "text",
   "image",
@@ -69,6 +140,16 @@ export const BLOCK_KINDS: EmailBlockKind[] = [
 ];
 
 /**
+ * Every helper below rebuilds the document by SPREADING the original
+ * (`{ ...doc, blocks }`) rather than constructing a bare `{ blocks }`.
+ *
+ * That matters since `EmailDocument` grew an optional `theme`: a literal
+ * `{ blocks }` silently drops it, so adding a block to a themed campaign
+ * would strip the theme off the document and autosave the stripped version —
+ * an off-brand send caused by an unrelated edit. Spreading keeps every
+ * present and future document-level field intact by default.
+ *
+ * ── insertBlock ────────────────────────────────────────────────────────────
  * Insert a new block of `kind` right after `afterId` (or at the end when
  * `afterId` is null/not found — e.g. nothing selected). Returns the updated
  * doc and the new block's id (so the caller can select it).
@@ -88,12 +169,12 @@ export function insertBlock(
   } else {
     blocks.push(block);
   }
-  return { doc: { blocks }, id };
+  return { doc: { ...doc, blocks }, id };
 }
 
 /** Remove the block with `id`. A no-op (same array contents) if not found. */
 export function removeBlock(doc: EmailDocument, id: string): EmailDocument {
-  return { blocks: doc.blocks.filter((b) => b.id !== id) };
+  return { ...doc, blocks: doc.blocks.filter((b) => b.id !== id) };
 }
 
 /**
@@ -112,7 +193,7 @@ export function duplicateBlock(
   const copy = { ...doc.blocks[index], id: newId } as EmailBlock;
   const blocks = doc.blocks.slice();
   blocks.splice(index + 1, 0, copy);
-  return { doc: { blocks }, id: newId };
+  return { doc: { ...doc, blocks }, id: newId };
 }
 
 /** Shallow-patch the block with `id` (kind-narrowed patch is the caller's job —
@@ -123,6 +204,7 @@ export function updateBlock<B extends EmailBlock>(
   patch: Partial<Omit<B, "id" | "kind">>,
 ): EmailDocument {
   return {
+    ...doc,
     blocks: doc.blocks.map((b) =>
       b.id === id ? ({ ...b, ...patch } as EmailBlock) : b,
     ),
@@ -147,7 +229,7 @@ export function reorderBlocks(
   for (const b of doc.blocks) {
     if (!seen.has(b.id)) blocks.push(b);
   }
-  return { blocks };
+  return { ...doc, blocks };
 }
 
 // ── Undo / redo (linear document-snapshot history) ─────────────────────────

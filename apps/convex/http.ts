@@ -67,6 +67,11 @@ import {
   renderUnsubscribeDone,
   renderUnsubscribeNotFound,
 } from "./lib/unsubscribePage";
+import {
+  renderPollConfirm,
+  renderPollNotFound,
+  renderPollThanks,
+} from "./lib/pollPage";
 import { verifyStandardWebhookSignature } from "./lib/standardWebhook";
 import { isReceiptInboxAddress } from "./receiptInbox";
 import { resolveTwilioReceiptsWebhookUrl } from "./smsReceipts";
@@ -1001,6 +1006,106 @@ http.route({
     const result = await ctx.runMutation(internal.campaigns.unsubscribeByToken, { token });
     if (!result) return html(renderUnsubscribeNotFound(), 404);
     return html(renderUnsubscribeDone(result.email));
+  }),
+});
+
+// ── Email campaigns: /poll/<campaignId>/<token>/<blockId>/<optionId> ─────────
+// Where a `poll` block's option link lands. EXACTLY the same GET-reads /
+// POST-writes split as /unsubscribe/ above, and for a sharper version of the
+// same reason: Apple Mail Privacy Protection and corporate link scanners
+// prefetch EVERY href in a message, so recording a vote on GET would hand
+// every option in every poll a phantom vote at delivery time — the tally would
+// be wrong before the first human opened the email. GET renders a confirm page
+// and writes nothing; the vote is recorded only by that page's POST.
+//
+// The token is the recipient's own `unsubscribeToken` (reused rather than
+// minting a second per-recipient secret). `campaignPolls.ts` verifies all four
+// segments line up — including that `optionId` is really one of that block's
+// options — so a hand-edited URL 404s instead of inventing a tally row.
+
+/** Split a `/poll/` path into its four segments, or `null` if it isn't shaped
+ *  like one. Shared by both handlers so GET and POST can never disagree about
+ *  what a valid poll URL looks like. */
+function parsePollPath(
+  pathname: string,
+): { campaignId: string; token: string; blockId: string; optionId: string } | null {
+  const segments = pathname.split("/").filter(Boolean);
+  if (segments.length !== 5) return null;
+  try {
+    const [, campaignId, token, blockId, optionId] = segments.map(decodeURIComponent);
+    if (!campaignId || !token || !blockId || !optionId) return null;
+    return { campaignId, token, blockId, optionId };
+  } catch {
+    return null; // malformed percent-encoding
+  }
+}
+
+http.route({
+  pathPrefix: "/poll/",
+  method: "GET",
+  handler: httpAction(async (ctx, req) => {
+    const url = new URL(req.url);
+    const parsed = parsePollPath(url.pathname);
+    if (!parsed) return html(renderPollNotFound(), 404);
+    // `v.id("campaigns")` throws on a string that isn't a well-formed id for
+    // the table, so a guessed/garbage first segment is caught here and turned
+    // into the same 404 every other mismatch produces (the
+    // `findCampaignByPlusAddress` precedent).
+    let view;
+    try {
+      view = await ctx.runQuery(internal.campaignPolls.getPollContext, {
+        campaignId: parsed.campaignId as Id<"campaigns">,
+        token: parsed.token,
+        blockId: parsed.blockId,
+        optionId: parsed.optionId,
+      });
+    } catch {
+      return html(renderPollNotFound(), 404);
+    }
+    if (!view) return html(renderPollNotFound(), 404);
+    return html(
+      renderPollConfirm({
+        theme: view.theme,
+        question: view.question,
+        optionLabel: view.optionLabel,
+        // Post back to the very path this page was fetched at — already
+        // percent-encoded, since it came off the request URL.
+        actionPath: url.pathname,
+      }),
+    );
+  }),
+});
+
+http.route({
+  pathPrefix: "/poll/",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    const url = new URL(req.url);
+    const parsed = parsePollPath(url.pathname);
+    if (!parsed) return html(renderPollNotFound(), 404);
+    let result;
+    try {
+      result = await ctx.runMutation(internal.campaignPolls.recordPollVote, {
+        campaignId: parsed.campaignId as Id<"campaigns">,
+        token: parsed.token,
+        blockId: parsed.blockId,
+        optionId: parsed.optionId,
+      });
+    } catch {
+      return html(renderPollNotFound(), 404);
+    }
+    if (!result) return html(renderPollNotFound(), 404);
+    return html(
+      renderPollThanks({
+        theme: result.theme,
+        optionLabel: result.optionLabel,
+        tally: {
+          question: result.tally.question,
+          totalVotes: result.tally.totalVotes,
+          options: result.tally.options,
+        },
+      }),
+    );
   }),
 });
 

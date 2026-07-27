@@ -481,6 +481,156 @@ export const emailSuppressions = defineTable({
   createdAt: v.number(),
 }).index("by_email", ["email"]);
 
+// ── Theming, templates, the image library, and polls ─────────────────────────
+// The composer used to paint every send with a palette hardcoded in
+// `emailRender.ts` — a red/cream/Georgia look that was invented before anyone
+// had Public Worship's actual newsletter to compare against. These four tables
+// are what turn that into DATA the designer owns:
+//
+//  - `emailThemes`   — an org's saved, EDITABLE token sets. The built-in
+//                      presets (`@events-os/shared`'s `EMAIL_THEME_PRESETS`)
+//                      are NOT rows: they're code, always available, never
+//                      editable; `duplicateTheme` is how a designer starts
+//                      from "Summer" and makes it hers.
+//  - `campaignTemplates` — saved starting points (a whole `EmailDocument`), so
+//                      the monthly newsletter isn't rebuilt block-by-block
+//                      every month.
+//  - `emailImages`   — the reusable illustration library (a Convex-stored blob
+//                      + its public URL + REQUIRED alt text), modelled on
+//                      `schema/finances.ts#receipts`.
+//  - `campaignPollVotes` — one row per (recipient, poll block); see its own
+//                      doc for why re-voting UPDATES rather than inserts.
+
+/** One theme's stored token set. Every colour is a `#rgb`/`#rrggbb` string
+ *  validated at the WRITE gate by `@events-os/shared`'s `validateEmailTheme`
+ *  (`emailThemes.ts` runs it on the full token set before every insert/patch)
+ *  — Convex has no "hex colour" validator, so `v.string()` here is the shape
+ *  and the shared validator is the meaning, exactly like `campaigns.doc`'s
+ *  `v.any()` + `validateEmailDocument` split.
+ *
+ *  `dark` is a PARTIAL override, not a second theme: a missing key means
+ *  "don't move this token under `prefers-color-scheme: dark`", which is why
+ *  every field inside it is optional while the light side's are not. See
+ *  `emailTheme.ts`'s module doc for why that asymmetry is load-bearing.
+ *
+ *  `isDefault` is at most one row per `scope` — `emailThemes.setDefaultTheme`
+ *  clears it from every sibling in the same transaction, and `archiveTheme`
+ *  refuses to archive the row holding it, so a scope can never end up with a
+ *  default that's been soft-deleted. */
+export const emailThemes = defineTable({
+  scope: campaignsScope,
+  name: v.string(),
+  accent: v.string(),
+  accentInk: v.string(),
+  ink: v.string(),
+  muted: v.string(),
+  canvas: v.string(),
+  surface: v.string(),
+  border: v.string(),
+  link: v.string(),
+  headingFont: v.string(),
+  bodyFont: v.string(),
+  radius: v.number(),
+  /** The small all-caps strip above the card. Empty string = no wordmark. */
+  wordmark: v.string(),
+  dark: v.optional(
+    v.object({
+      accent: v.optional(v.string()),
+      accentInk: v.optional(v.string()),
+      ink: v.optional(v.string()),
+      muted: v.optional(v.string()),
+      canvas: v.optional(v.string()),
+      surface: v.optional(v.string()),
+      border: v.optional(v.string()),
+      link: v.optional(v.string()),
+      headingFont: v.optional(v.string()),
+      bodyFont: v.optional(v.string()),
+    }),
+  ),
+  isDefault: v.optional(v.boolean()),
+  createdBy: v.id("users"),
+  createdAt: v.number(),
+  updatedAt: v.number(),
+  archived: v.optional(v.boolean()),
+}).index("by_scope", ["scope"]);
+
+/** A saved starting point for a new campaign — a whole `EmailDocument` under
+ *  `doc` (same `v.any()` + `validateEmailDocument` split `campaigns.doc` uses,
+ *  for the same reason: Convex validators can't express the block union).
+ *
+ *  `isBuiltIn` marks a row seeded from code (`campaignTemplates.ts`'s
+ *  `ensureBuiltInTemplates`, which idempotently upserts
+ *  `PUBLIC_WORSHIP_NEWSLETTER_TEMPLATE` keyed by NAME per scope — the
+ *  `lib/seed/templates.ts#ensureTrainingTemplate` precedent). A built-in row
+ *  is still an ordinary editable row afterwards; the flag is provenance, not
+ *  a lock. */
+export const campaignTemplates = defineTable({
+  scope: campaignsScope,
+  name: v.string(),
+  description: v.optional(v.string()),
+  doc: v.any(),
+  isBuiltIn: v.optional(v.boolean()),
+  createdBy: v.id("users"),
+  createdAt: v.number(),
+  updatedAt: v.number(),
+  archived: v.optional(v.boolean()),
+}).index("by_scope", ["scope"]);
+
+/** The reusable illustration library the composer's image picker reads.
+ *  Modelled on `schema/finances.ts#receipts`: the blob lives in Convex file
+ *  storage (`storageId`) and the row caches the resolved public `url` so a
+ *  listing never has to `ctx.storage.getUrl` once per image.
+ *
+ *  `alt` is REQUIRED (empty string = "decorative") for the same reason
+ *  `EmailCardContent` requires it: Gmail and Outlook block remote images by
+ *  default, so alt text is what most recipients actually see first. `label` is
+ *  the librarian's own name for it ("Sanctuary at dusk"), shown in the picker. */
+export const emailImages = defineTable({
+  scope: campaignsScope,
+  storageId: v.id("_storage"),
+  url: v.string(),
+  alt: v.string(),
+  label: v.optional(v.string()),
+  createdBy: v.id("users"),
+  createdAt: v.number(),
+}).index("by_scope", ["scope"]);
+
+/**
+ * One vote: this recipient's answer to this poll block. ONE ROW PER
+ * (recipient, block) — `by_recipient_and_block` is what makes that true, and
+ * `campaignPolls.ts#recordPollVote` looks the row up on that index and PATCHES
+ * it when it already exists rather than inserting a second. Changing your mind
+ * must move your vote, never add one: a recipient who taps "Sunday" and then
+ * "Wednesday" is one person with one opinion, and an insert-only table would
+ * report them as two.
+ *
+ * `blockId`/`optionId` are the document's own stable block/option ids
+ * (`newBlockId`, `EmailPollOption.id`) — NOT indexes into the options array
+ * and NOT derived from the option's label, so renaming "Sunday" to "Sunday
+ * evening" later never re-buckets the votes already cast (see
+ * `emailBlocks.ts#EmailPollOption`).
+ *
+ * `by_campaign_and_block` backs the tally (`getPollResults`, and the "thanks,
+ * here's where it stands" page a voter lands on). Both are bounded reads: a
+ * campaign can't have more recipients than
+ * `lib/audienceResolve.ts#AUDIENCE_RESOLVE_LIMIT`, so one block's votes are
+ * hard-capped at that number — see `campaignPolls.ts#POLL_TALLY_CAP`.
+ *
+ * A vote is deliberately NOT anonymous at the row level (it carries
+ * `recipientId`) — that's what enforces one-vote-per-person and lets a
+ * re-vote find the earlier row. Nothing surfaces per-person answers today; the
+ * results query returns counts only.
+ */
+export const campaignPollVotes = defineTable({
+  campaignId: v.id("campaigns"),
+  recipientId: v.id("campaignRecipients"),
+  blockId: v.string(),
+  optionId: v.string(),
+  votedAt: v.number(),
+})
+  .index("by_campaign_and_block", ["campaignId", "blockId"])
+  .index("by_recipient_and_block", ["recipientId", "blockId"]);
+
 /** An inbound reply to a campaign send, captured via the Resend inbound
  *  webhook (matched to a campaign by the `campaign+<id>@<inboundDomain>`
  *  reply-to plus-address). `campaignId` is optional — an inbound message that
