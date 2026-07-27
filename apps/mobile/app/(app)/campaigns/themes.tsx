@@ -33,7 +33,7 @@
  * through `normalizeEmailTheme` (the contract's permissive READ edge), so it
  * copes whether the row nests its tokens under `theme` or stores them flat.
  */
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { Text, View } from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -55,6 +55,7 @@ import {
   SectionHeader,
   ToastView,
 } from "../../../components/ui";
+import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
 import { ThemeEditor } from "../../../components/campaign/theme/ThemeEditor";
 
@@ -115,6 +116,7 @@ function CampaignThemesBody() {
   const [selection, setSelection] = useState<Selection>(null);
   const [draft, setDraft] = useState<EmailTheme | null>(null);
   const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   function openSaved(row: SavedThemeRow) {
     setSelection({ kind: "saved", id: row._id });
@@ -129,6 +131,7 @@ function CampaignThemesBody() {
   function close() {
     setSelection(null);
     setDraft(null);
+    setSaveError(null);
   }
 
   /** Copy a built-in preset into an editable org theme, then open it. This is
@@ -150,11 +153,10 @@ function CampaignThemesBody() {
     // wordmark should be named in the form, not returned as a round trip.
     const validated = validateEmailTheme(draft);
     if (!validated.ok) {
-      await run(() => Promise.reject(new Error(validated.error)), {
-        errorTitle: "This theme can't be saved yet",
-      });
+      setSaveError(validated.error);
       return;
     }
+    setSaveError(null);
     setSaving(true);
     try {
       await run(() => updateTheme({ themeId: selection.id, theme: validated.theme }), {
@@ -193,6 +195,11 @@ function CampaignThemesBody() {
             )}
           </View>
         </View>
+        {saveError ? (
+          <View className="mb-3 rounded-md border border-danger bg-danger-bg px-3 py-2">
+            <Text className="text-xs text-ink">{saveError}</Text>
+          </View>
+        ) : null}
         {isPreset ? (
           <Text className="mb-3 text-xs text-muted">
             Built-in themes are the fallback every org renders on, so they
@@ -322,7 +329,7 @@ function ThemeRow({
   theme: EmailTheme;
   isDefault?: boolean;
   onOpen: () => void;
-  actions: React.ReactNode;
+  actions: ReactNode;
 }) {
   return (
     <Card onPress={onOpen}>
@@ -339,7 +346,7 @@ function ThemeRow({
                   marginLeft: i === 0 ? 0 : -6,
                   borderRadius: 11,
                   borderWidth: 1,
-                  borderColor: "#00000014",
+                  borderColor: colors.border,
                 }}
               />
             ))}
