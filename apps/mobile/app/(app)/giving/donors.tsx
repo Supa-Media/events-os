@@ -270,7 +270,11 @@ function DonorsBody({
   // A central holder browsing another chapter (or "All chapters") simply
   // won't find a name here — the Linked cell degrades to an icon-only state
   // rather than ever showing a wrong person's name (see `DonorGridRow`).
-  const people = useQuery(api.people.list, {});
+  // `persona: "all"` — this is identity matching, not roster UX: a donor's
+  // `personId` very often points at an auto-created CONTACT row (person.list's
+  // default excludes those; see that query's doc), and this column must
+  // still resolve a name for it rather than silently going blank.
+  const people = useQuery(api.people.list, { persona: "all" });
   const personNameById = useMemo(() => {
     const map = new Map<Id<"people">, string>();
     for (const p of people ?? []) map.set(p._id, p.name);

@@ -195,7 +195,11 @@ export const rsvps = defineTable({
   // person → their rsvps lookup (`lib/audienceResolve.ts#resolvePersonFilters`).
   // Absent before this: the only existing rsvp indexes are event-keyed. Bounded
   // per-candidate reads (`.take()`), never a full-table scan.
-  .index("by_person", ["personId"]);
+  .index("by_person", ["personId"])
+  // Person-centric audiences / full persona ladder (people.ts#resolvePersonaForRoster)
+  // — a non-archived RSVP/ticket is the "guest" participation signal, resolved
+  // for a WHOLE chapter roster in one bounded scan rather than a per-person query.
+  .index("by_chapter", ["chapterId"]);
 
 /**
  * Pending email-verification code for an RSVP (at most one per RSVP). Only a

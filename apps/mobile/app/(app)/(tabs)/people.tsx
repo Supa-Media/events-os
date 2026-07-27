@@ -39,7 +39,6 @@ import type { Doc, Id } from "@events-os/convex/_generated/dataModel";
 import {
   type VettingStatus,
   type RosterStatus,
-  personaOf,
   responsibilityAppliesTo,
   type Persona,
 } from "@events-os/shared";
@@ -79,9 +78,17 @@ const RSVP_STATUS_TONE: Record<string, "success" | "warn" | "neutral"> = {
 };
 
 // A roster row is the `people` document plus the `imageUrl` the list query
-// resolves from the stored storageId. Persona (`team` / `volunteer` / `vendor`)
-// is DERIVED from signals via the shared `personaOf`, not stored.
-type Person = Doc<"people"> & { imageUrl?: string | null };
+// resolves from the stored storageId, and the `persona` the backend derives
+// per-row (`@events-os/shared#Persona`: team > vendor > volunteer > guest >
+// contact — participation-aware, so it requires the DB reads `people.list`
+// batches via `resolvePersonaForRoster`). Never re-derive persona
+// client-side here: the client only has the row's own fields, not the
+// participation signals (engagements/roleAssignments/rsvps) that distinguish
+// a genuine volunteer/guest from a contact.
+type Person = Doc<"people"> & {
+  imageUrl?: string | null;
+  persona?: Persona | null;
+};
 
 // One "Givers" overlay mark (territories P5) — sourced from
 // `givingPlatform.giverMarks`, keyed by `personId`. "Giver" is an OVERLAY on
@@ -100,21 +107,20 @@ type GiverMark = {
 };
 
 // The segmented filter adds an "all" sentinel on top of the shared Persona
-// set, PLUS "contacts" (person-centric audiences Phase 1 item 1) — a
-// deliberate, explicit way to see contact-only rows (auto-created from a
-// donor gift, an import, or a public RSVP) that the default roster view
-// (`api.people.list` with `contactsOnly` unset) now excludes. "Contacts" is
-// NOT one of the shared `Persona` values: it's a UI-local view, not a
-// backend-derived persona (a contact never has a team/volunteer/vendor
-// signal — it's excluded from the roster entirely, not classified within it).
-type PersonaFilter = Persona | "all" | "contacts";
+// ladder (`@events-os/shared#Persona`: team > vendor > volunteer > guest >
+// contact). `people.list` now ALWAYS returns everyone — "Contacts" used to
+// be a separate UI-local view backed by a second `contactsOnly: true` query;
+// it's now just the "contact" persona, filtered from the SAME single list
+// everything else here reads from.
+type PersonaFilter = Persona | "all";
 
 const PERSONA_FILTERS: { key: PersonaFilter; label: string }[] = [
   { key: "all", label: "All" },
   { key: "team", label: "Team" },
   { key: "volunteer", label: "Volunteers" },
   { key: "vendor", label: "Vendors" },
-  { key: "contacts", label: "Contacts" },
+  { key: "guest", label: "Guests" },
+  { key: "contact", label: "Contacts" },
 ];
 
 // Fixed column widths (px) — mirrors EditableGrid's chrome so columns stay put
@@ -187,14 +193,17 @@ function confirmRemove(name: string): boolean {
 
 /** PEOPLE roster — a spreadsheet-style editable grid with per-person history. */
 export default function PeopleScreen() {
-  // Roster (default `api.people.list` — excludes `isContactOnly` rows now,
-  // person-centric audiences Phase 1) and contacts (the deliberate
-  // `contactsOnly: true` view) are TWO separate queries, both kept live so
-  // the segmented control's counts stay stable regardless of which tab is
-  // active — see the "contacts" persona filter note above `PersonaFilter`.
-  const roster = useQuery(api.people.list, {}) as Person[] | undefined;
-  const contacts = useQuery(api.people.list, {
-    contactsOnly: true,
+  // ONE query for everyone — the People tab is one of the few callers that
+  // explicitly opts INTO `persona: "all"`; `people.list`'s UNFILTERED
+  // default is deliberately the roster only (see that query's doc — most of
+  // its ~11 callers are pickers/mentions/duty-assignment that want exactly
+  // that conservative default). Every persona (including "contact") is then
+  // a client-side filter over this one list, using the `persona` field the
+  // backend already derived per row. This is also what fixes the header
+  // count (see below): there's only one list, so it can never disagree with
+  // itself.
+  const roster = useQuery(api.people.list, {
+    persona: "all",
   }) as Person[] | undefined;
   const org = useQuery(api.org.nav);
   const create = useMutation(api.people.create);
@@ -211,18 +220,16 @@ export default function PeopleScreen() {
   // can also be a giver), so it composes with whichever persona is selected.
   const [giversOnly, setGiversOnly] = useState(false);
 
-  // The grid's data source: the roster for every persona except the
-  // deliberate "Contacts" tab, which shows the separate contacts-only query.
-  const people = persona === "contacts" ? contacts : roster;
+  // The grid's data source is now just the one list — every persona
+  // (including "Contacts") is a filter over it, applied below in `filtered`.
+  const people = roster;
 
   // Givers overlay (territories P5). Every roster row shares one `chapterId`
   // (the roster query is already hard-scoped to the caller's own chapter), so
   // the first row's is the current chapter — skip the query until the roster
-  // has loaded at least one row. Sourced from `roster` (not `people`) so it
-  // stays available even while the Contacts tab is active. Returns `[]` for a
-  // caller with no giving access at this chapter (quiet degrade, never a
-  // throw — see `givingPlatform.giverMarks`), so the overlay simply doesn't
-  // render below.
+  // has loaded at least one row. Returns `[]` for a caller with no giving
+  // access at this chapter (quiet degrade, never a throw — see
+  // `givingPlatform.giverMarks`), so the overlay simply doesn't render below.
   const chapterId = roster && roster.length > 0 ? roster[0].chapterId : undefined;
   const giverMarks = useQuery(
     api.givingPlatform.giverMarks,
@@ -257,9 +264,7 @@ export default function PeopleScreen() {
   const campaignsAccess = useQuery(api.audiences.myCampaignsAccess, {});
   const canEmailSelected = campaignsAccess?.canView === true;
 
-  // Manager names by id — one map instead of a per-row roster scan. Sourced
-  // from `roster` (not `people`): a contact-only row is never anyone's
-  // manager, and this must stay resolvable while the Contacts tab is active.
+  // Manager names by id — one map instead of a per-row roster scan.
   const nameById = useMemo(
     () => new Map((roster ?? []).map((p) => [p._id, p.name])),
     [roster],
@@ -275,21 +280,27 @@ export default function PeopleScreen() {
   }, [seatHoldings]);
 
   // Per-persona counts for the segmented control, so the filtering model is
-  // legible at a glance (Team 12 · Volunteers 30 · Vendors 5 · Contacts 4)
-  // rather than a blind default. "all" is the full roster (still excluding
-  // contacts — see `PersonaFilter`'s doc). Sourced from `roster`/`contacts`
-  // directly (not `people`) so the counts never flicker between tabs.
+  // legible at a glance (Team 12 · Volunteers 30 · Vendors 5 · Guests 20 ·
+  // Contacts 111) rather than a blind default. "all" is EVERYONE — the fix
+  // for the bug where this header/count used to reflect whichever of two
+  // separate queries (roster vs. contactsOnly) happened to be active, which
+  // is exactly what showed 164 instead of ~275. One list, one set of counts,
+  // read straight off the backend-derived `persona` field — never
+  // re-derived client-side (see `Person`'s doc above).
   const personaCounts = useMemo(() => {
     const counts: Record<PersonaFilter, number> = {
       all: (roster ?? []).length,
       team: 0,
       volunteer: 0,
       vendor: 0,
-      contacts: (contacts ?? []).length,
+      guest: 0,
+      contact: 0,
     };
-    for (const p of roster ?? []) counts[personaOf(p)] += 1;
+    for (const p of roster ?? []) {
+      if (p.persona) counts[p.persona] += 1;
+    }
     return counts;
-  }, [roster, contacts]);
+  }, [roster]);
 
   // Service Catalog, for the filter bar — chips must show the SAME
   // "Parent:Child" label the picker uses (`ServiceOptionsPicker`/
@@ -327,14 +338,13 @@ export default function PeopleScreen() {
 
   // Memoized so a re-render (e.g. typing in another field) doesn't re-scan the
   // whole roster — only persona / skill / search changes recompute the rows.
-  // `persona === "contacts"` skips the `personaOf` check: `people` is already
-  // the contacts-only query result in that case, not a slice to filter again.
+  // Persona is filtered against the backend-derived `p.persona`, the same
+  // field `personaCounts` reads — one source of truth for both.
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
     const queryDigits = digitsOnly(query);
     return (people ?? []).filter((p) => {
-      if (persona !== "all" && persona !== "contacts" && personaOf(p) !== persona)
-        return false;
+      if (persona !== "all" && p.persona !== persona) return false;
       if (giversOnly && !giverMarksByPerson.has(p._id)) return false;
       if (skillFilter) {
         const matchSet = serviceMatchSetById.get(skillFilter) ?? new Set([skillFilter]);
@@ -384,13 +394,10 @@ export default function PeopleScreen() {
 
   // Cross-tab deep link (see `openParam` above) can point at a CONTACT — e.g.
   // the giving CRM's donor "Linked person" column, since a donor-linked row is
-  // now `isContactOnly` (person-centric audiences Phase 1). Search BOTH
-  // `roster` and `contacts`, never just the currently active `people` view, so
-  // the link still opens regardless of which persona tab happens to be active.
+  // still `isContactOnly` (provenance). `roster` is the one list everyone
+  // lives in now, so it opens regardless of which persona segment is active.
   const openPerson = openId
-    ? ((roster ?? []).find((p) => p._id === openId) ??
-        (contacts ?? []).find((p) => p._id === openId) ??
-        null)
+    ? (roster ?? []).find((p) => p._id === openId) ?? null
     : null;
 
   async function handleAddRow() {
@@ -429,13 +436,17 @@ export default function PeopleScreen() {
               <Text className="text-xs font-semibold text-muted">Duplicates</Text>
             </Pressable>
           ) : null}
+          {/* The FULL list's count, always — never whichever persona segment
+              happens to be selected. This is literally the header that used
+              to show 164 (a stale roster-only count) instead of ~275: with
+              one query for everyone, `people.length` IS the full count. */}
           <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-            {persona === "contacts" ? "Contacts" : "Roster"} ({people.length})
+            People ({people.length})
           </Text>
         </View>
       </View>
 
-      {/* Persona segmented control (All · Team · Volunteers · Vendors) */}
+      {/* Persona segmented control (All · Team · Volunteers · Vendors · Guests · Contacts) */}
       <View style={styles.segmented}>
         {PERSONA_FILTERS.map((f) => {
           const active = persona === f.key;

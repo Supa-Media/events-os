@@ -126,4 +126,8 @@ export const roleAssignments = defineTable({
 })
   .index("by_event", ["eventId"])
   .index("by_event_role", ["eventId", "roleId"])
-  .index("by_person", ["personId"]);
+  .index("by_person", ["personId"])
+  // Person-centric audiences / full persona ladder (people.ts#resolvePersonaForRoster)
+  // — "holds any event role" is a volunteer-participation signal, resolved for
+  // a WHOLE chapter roster in one bounded scan rather than a per-person query.
+  .index("by_chapter", ["chapterId"]);

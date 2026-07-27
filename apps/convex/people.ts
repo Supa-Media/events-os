@@ -14,11 +14,23 @@ import {
   getChapterIdOrNull,
 } from "./lib/context";
 import { isChapterAdmin } from "./lib/org";
-import { isCardEligible } from "@events-os/shared";
+import { isCardEligible, type Persona } from "@events-os/shared";
 import { writePersonAudit, diffFields } from "./lib/givingAudit";
 import { recordPersonEmail } from "./lib/personEmails";
 import { composeName, nameHalvesPatch, splitPersonName } from "./lib/personName";
 import { assertServiceIdsInChapter } from "./lib/serviceCatalog";
+import { resolvePersonaForRoster } from "./lib/people";
+
+const personaFilter = v.union(
+  v.literal("team"),
+  v.literal("vendor"),
+  v.literal("volunteer"),
+  v.literal("guest"),
+  v.literal("contact"),
+  // Not a real persona — an explicit opt-IN to seeing everyone, contacts
+  // included. See `list`'s doc for why the unfiltered default is NOT this.
+  v.literal("all"),
+);
 
 const vettingStatus = v.union(
   v.literal("unvetted"),
@@ -114,23 +126,44 @@ async function sandboxPeopleFilter(
     (p.isPlaceholder === true && engaged.has(String(p._id)));
 }
 
-/** List the chapter roster sorted by name. In a training sandbox (`eventId`
- *  of a training event), lists only the caller + placeholder people.
+/**
+ * List people in the chapter, sorted by name (excluding only
+ * `isPlaceholder`/`isSamplePerson` rows, which aren't real humans). In a
+ * training sandbox (`eventId` of a training event), lists only the caller +
+ * placeholder people instead — see `sandboxPeopleFilter`.
  *
- * `contactsOnly` (person-centric audiences Phase 1 item 1) flips the default
- * roster-facing view: unset/false returns the ROSTER only (excludes
- * `isContactOnly` rows — the fix for the People tab default list, every
- * person picker/mention/duty-assignment surface, and the org-chart consumers
- * that all call this same query with `{}`), `true` returns ONLY contacts —
- * the People tab's deliberate "Contacts" persona filter, so a contact-only
- * row (auto-created from a donor gift, an import, or a public RSVP) is still
- * findable/editable, just never mixed into the default roster. */
+ * Founder's model (the fix for the People *tab* showing 164 of ~275 real
+ * people): a person is never PERMANENTLY hidden by a stored flag; persona is
+ * a FILTER, never a partition. But this query has ~11 callers beyond the
+ * People tab — pickers, mention lists, duty/role assignment, receipt person
+ * lookup — and every one of those was built assuming "the roster" (a real,
+ * participating person), never a bare contact auto-created from a donor
+ * gift/import/RSVP. Flipping the UNFILTERED default to "everyone" would
+ * silently widen 8 of those callers to include contacts with no review.
+ *
+ * So the default stays CONSERVATIVE and unchanged from before this fix:
+ *   - `persona` UNSET (the default): the ROSTER — everyone except the
+ *     "contact" persona (no participation signal at all). This is
+ *     `contactsOnly: false`'s old behavior, preserved exactly.
+ *   - `persona: "all"`: literally everyone, contacts included — the explicit
+ *     opt-in a caller must ask for (the People tab, audience-seeding, and
+ *     donor↔person linking are the only three that do; see their own call
+ *     sites for why).
+ *   - `persona: "team" | "vendor" | "volunteer" | "guest" | "contact"`:
+ *     narrows to exactly that rung of the ladder
+ *     (`@events-os/shared#Persona`: team > vendor > volunteer > guest >
+ *     contact) — `contactsOnly: true` is now `persona: "contact"`.
+ * Every row carries the backend-derived `persona` field regardless of the
+ * filter applied, resolved by `resolvePersonaForRoster` (batched, bounded
+ * DB reads — never per-person), so callers that need the ladder (the People
+ * tab's segmented control + counts) never have to re-derive it client-side.
+ */
 export const list = query({
   args: {
     eventId: v.optional(v.id("events")),
-    contactsOnly: v.optional(v.boolean()),
+    persona: v.optional(personaFilter),
   },
-  handler: async (ctx, { eventId, contactsOnly }) => {
+  handler: async (ctx, { eventId, persona }) => {
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return [];
     const people = await ctx.db
@@ -146,23 +179,33 @@ export const list = query({
     // members, so keep them out of the People roster. Replacing one only
     // consumes that event's copy. Inside a training sandbox the rule flips:
     // placeholders (+ the caller) are the ONLY people offered — sandbox mode
-    // ignores `contactsOnly` (a training drill never shows contacts).
-    const sorted = people
-      .filter(
-        sandbox ??
-          ((p) =>
-            p.isPlaceholder !== true &&
-            p.isSamplePerson !== true &&
-            (contactsOnly === true
-              ? p.isContactOnly === true
-              : p.isContactOnly !== true)),
-      )
-      .sort((a, b) => a.name.localeCompare(b.name));
+    // ignores `persona` (a training drill never classifies its sample bench).
+    const everyone = people.filter(
+      sandbox ?? ((p) => p.isPlaceholder !== true && p.isSamplePerson !== true),
+    );
+    const personaByPerson = sandbox
+      ? null
+      : await resolvePersonaForRoster(ctx, chapterId as Id<"chapters">, everyone);
+    // Sandbox mode short-circuits to `everyone` (its own restricted set) —
+    // no persona filtering applies there, same as before. Outside sandbox:
+    // an explicit persona narrows to that rung, "all" means literally
+    // everyone, and the CONSERVATIVE DEFAULT (unset) is the roster — every
+    // rung except "contact". See this query's doc for why that default is
+    // deliberate.
+    const filtered = !personaByPerson
+      ? everyone
+      : persona === "all"
+        ? everyone
+        : persona
+          ? everyone.filter((p) => personaByPerson.get(p._id) === persona)
+          : everyone.filter((p) => personaByPerson.get(p._id) !== "contact");
+    const sorted = filtered.sort((a, b) => a.name.localeCompare(b.name));
     // Resolve each profile photo storageId to a servable URL for display.
     return await Promise.all(
       sorted.map(async (p) => ({
         ...p,
         imageUrl: p.image ? await ctx.storage.getUrl(p.image) : null,
+        persona: (personaByPerson?.get(p._id) ?? null) as Persona | null,
       })),
     );
   },

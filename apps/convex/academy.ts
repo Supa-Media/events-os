@@ -830,7 +830,9 @@ export const chapterProgress = query({
     // Roster UX ("who's trained" manager panel), not identity matching — a
     // contact-only row was never enrolled in Academy training. See
     // `lib/org.ts#excludeContacts`.
-    const roster = excludeContacts(
+    const roster = await excludeContacts(
+      ctx,
+      chapterId as Id<"chapters">,
       await chapterRoster(ctx, chapterId as Id<"chapters">),
     );
     const childrenOf = buildChildrenOf(roster);
