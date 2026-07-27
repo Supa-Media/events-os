@@ -46,6 +46,7 @@ import { Calendar } from "../../ui/Calendar";
 import type { ActionRunner } from "../../../lib/useActionToast";
 import {
   formatCents,
+  isPdfReceipt,
   parseDollarsToCents,
   senderClassLabel,
   senderClassTone,
@@ -144,8 +145,9 @@ export function ReceiptDetailModal({
   const amountCents = amountText.trim() === "" ? null : parseDollarsToCents(amountText);
   const amountInvalid = amountText.trim() !== "" && amountCents == null;
   // No content-type from the backend — infer PDF from the filename extension
-  // (fix 5: inline PDF preview).
-  const isPdfReceipt = /\.pdf$/i.test(receipt?.filename ?? "");
+  // (fix 5: inline PDF preview). Shared with `LibrarySection`/`ImageLightbox`
+  // via `helpers.ts#isPdfReceipt` — ONE definition, not re-inlined here.
+  const isPdf = isPdfReceipt(receipt?.filename);
 
   async function save() {
     if (amountInvalid) return;
@@ -322,10 +324,10 @@ export function ReceiptDetailModal({
                     back to "Open file" if it fails to decode. */}
                 <View
                   className={`mb-4 w-full items-center justify-center overflow-hidden rounded-lg border border-border bg-sunken ${
-                    isPdfReceipt && Platform.OS === "web" ? "h-96" : "h-48"
+                    isPdf && Platform.OS === "web" ? "h-96" : "h-48"
                   }`}
                 >
-                  {receipt.url && isPdfReceipt && Platform.OS === "web" ? (
+                  {receipt.url && isPdf && Platform.OS === "web" ? (
                     // RN-web renders this iframe directly in the DOM (same
                     // pattern as `crew/BriefingView.tsx`'s video embed).
                     <iframe
@@ -333,7 +335,7 @@ export function ReceiptDetailModal({
                       title={receipt.filename ?? "Receipt PDF"}
                       style={{ width: "100%", height: "100%", border: "0" }}
                     />
-                  ) : receipt.url && isPdfReceipt ? (
+                  ) : receipt.url && isPdf ? (
                     <Pressable
                       onPress={() => receipt.url && Linking.openURL(receipt.url)}
                       className="items-center gap-2 px-6 py-4"
@@ -811,7 +813,7 @@ export function ReceiptDetailModal({
         </Pressable>
       </Pressable>
     </Modal>
-    {receipt?.url && !isPdfReceipt ? (
+    {receipt?.url && !isPdf ? (
       <ImageLightbox
         uri={receipt.url}
         visible={lightboxOpen}

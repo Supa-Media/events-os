@@ -89,6 +89,19 @@ export function inboundStatusLabel(status: InboundReceiptStatus): string {
   }
 }
 
+// ── PDF detection (no content-type from the backend) ──────────────────────
+/**
+ * Infer whether a receipt is a PDF from its filename. The backend never
+ * surfaces a content-type (see `ReceiptDetailModal`'s file-preview doc), so
+ * the extension is the only signal any call site has. ONE definition, used by
+ * `ReceiptDetailModal` (inline preview), `LibrarySection` (thumbnail column +
+ * lightbox trigger), and — indirectly, via those callers — `ImageLightbox`'s
+ * `isPdf` prop. Don't re-inline this regex a fourth time.
+ */
+export function isPdfReceipt(filename: string | null | undefined): boolean {
+  return /\.pdf$/i.test(filename ?? "");
+}
+
 // ── Sender-class badge (team=success, roster=info, internal=accent, external=warn) ──
 export function senderClassTone(cls: ReceiptSenderClass | null): BadgeTone {
   switch (cls) {

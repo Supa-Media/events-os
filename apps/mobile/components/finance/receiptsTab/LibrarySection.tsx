@@ -50,6 +50,7 @@ import { colors } from "../../../lib/theme";
 import { formatDate } from "../../../lib/format";
 import {
   formatCents,
+  isPdfReceipt,
   senderClassLabel,
   senderClassTone,
   LIBRARY_FILTERS,
@@ -97,7 +98,9 @@ export function LibrarySection({
   );
   const { wrapperRef, onWrapperLayout, hoverProps, layer } = useHoverImagePreview();
   // The full-size viewer a thumbnail press opens (the native + click path).
-  const [lightbox, setLightbox] = useState<{ uri: string; caption?: string } | null>(null);
+  const [lightbox, setLightbox] = useState<{ uri: string; caption?: string; isPdf?: boolean } | null>(
+    null,
+  );
 
   const tableWidth = (Object.values(widths) as number[]).reduce((sum, w) => sum + w, 0);
 
@@ -170,6 +173,7 @@ export function LibrarySection({
         <ImageLightbox
           uri={lightbox.uri}
           caption={lightbox.caption}
+          isPdf={lightbox.isPdf}
           visible
           onClose={() => setLightbox(null)}
         />
@@ -192,11 +196,27 @@ function ReceiptGridRow({
   widths: Record<ColKey, number>;
   isLast: boolean;
   hoverProps: (uri: string | null | undefined) => object;
-  onOpenLightbox: (v: { uri: string; caption?: string }) => void;
+  onOpenLightbox: (v: { uri: string; caption?: string; isPdf?: boolean }) => void;
   onPress: () => void;
   onJumpToOriginal?: () => void;
   original?: ReceiptRow;
 }) {
+  // No content-type from the backend — infer PDF from the filename extension
+  // (see `helpers.ts#isPdfReceipt`'s doc; ONE definition shared with
+  // `ReceiptDetailModal`).
+  const isPdf = isPdfReceipt(receipt.filename);
+  // A genuinely broken image URL (bad file, expired signed URL, ...) used to
+  // just render nothing — now it degrades to the same icon treatment as "no
+  // file" rather than silently blanking (mirrors `ReceiptDetailModal`'s
+  // `imgFailed` state).
+  const [imgFailed, setImgFailed] = useState(false);
+  const showImage = !!receipt.url && !isPdf && !imgFailed;
+  // PDFs have no rendered preview to float (there's no persisted preview
+  // image — see the PR's doc) — `null` uri makes `hoverProps` return no
+  // handlers at all, so the hook's existing "nothing to show" path applies
+  // instead of floating a blank white card.
+  const hoverUri = isPdf ? null : receipt.url;
+
   return (
     <GridRow
       onPress={onPress}
@@ -212,12 +232,14 @@ function ReceiptGridRow({
             disabled and the press falls through to the row, which is the
             behavior you'd want anyway. */}
         <Pressable
-          {...hoverProps(receipt.url)}
+          {...hoverProps(hoverUri)}
           onPress={() => {
-            if (receipt.url) onOpenLightbox({ uri: receipt.url, caption: receipt.filename ?? undefined });
+            if (receipt.url) {
+              onOpenLightbox({ uri: receipt.url, caption: receipt.filename ?? undefined, isPdf });
+            }
           }}
           disabled={!receipt.url}
-          accessibilityLabel="View receipt image"
+          accessibilityLabel={isPdf ? "View receipt PDF" : "View receipt image"}
           className="p-1.5"
           style={{ height: ROW_HEIGHT }}
         >
@@ -225,12 +247,24 @@ function ReceiptGridRow({
             className="h-full overflow-hidden rounded border border-border bg-sunken"
             style={{ width: widths.preview - 12 }}
           >
-            {receipt.url ? (
+            {showImage ? (
               <Image
-                source={{ uri: receipt.url }}
+                // `showImage` already guarantees `receipt.url` is set — the
+                // `?? undefined` is only to satisfy `ImageSourcePropType`,
+                // which (unlike `ReceiptRow["url"]`) doesn't accept `null`.
+                source={{ uri: receipt.url ?? undefined }}
                 style={{ width: "100%", height: "100%" }}
                 resizeMode="cover"
+                onError={() => setImgFailed(true)}
               />
+            ) : receipt.url && isPdf ? (
+              // Legible "this is a PDF, not a missing file" affordance — a
+              // bare file-text icon reads identically to "no file at all",
+              // which these two states must not.
+              <View className="flex-1 items-center justify-center gap-0.5">
+                <Icon name="file-text" size={16} color={colors.faint} />
+                <Text className="text-2xs font-bold text-faint">PDF</Text>
+              </View>
             ) : (
               <View className="flex-1 items-center justify-center">
                 <Icon name="file-text" size={18} color={colors.faint} />

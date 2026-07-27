@@ -3,6 +3,7 @@
 import { describe, expect, test } from "@jest/globals";
 import {
   centsToDollarsInput,
+  isPdfReceipt,
   snapshotReceiptForm,
   shouldReseedReceiptForm,
   type ReceiptFormFields,
@@ -35,6 +36,35 @@ function receipt(overrides: {
     ...overrides,
   };
 }
+
+/**
+ * Founder report: PDF receipts render blank in the library thumbnail,
+ * hover-preview card, and lightbox — all three hand the raw file URL to a
+ * React Native `<Image>`, which can't decode `application/pdf`. The fix
+ * branches every one of those call sites on this single filename heuristic
+ * (the backend never surfaces a content-type), extracted here from what used
+ * to be `ReceiptDetailModal`'s own inline regex so `LibrarySection` and
+ * `ImageLightbox`'s caller share the exact same definition.
+ */
+describe("isPdfReceipt", () => {
+  test("matches a .pdf filename, case-insensitively", () => {
+    expect(isPdfReceipt("receipt.pdf")).toBe(true);
+    expect(isPdfReceipt("receipt.PDF")).toBe(true);
+    expect(isPdfReceipt("Scanned Receipt.Pdf")).toBe(true);
+  });
+
+  test("rejects image filenames and filenames that merely contain 'pdf'", () => {
+    expect(isPdfReceipt("receipt.jpg")).toBe(false);
+    expect(isPdfReceipt("receipt.png")).toBe(false);
+    expect(isPdfReceipt("pdf-scan-notes.txt")).toBe(false);
+  });
+
+  test("treats a missing filename as not-a-PDF rather than throwing", () => {
+    expect(isPdfReceipt(null)).toBe(false);
+    expect(isPdfReceipt(undefined)).toBe(false);
+    expect(isPdfReceipt("")).toBe(false);
+  });
+});
 
 describe("snapshotReceiptForm", () => {
   test("maps null canonical fields to the form's empty representations", () => {
