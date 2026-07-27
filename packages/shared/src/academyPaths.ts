@@ -202,6 +202,7 @@ export const ROLE_PATHS: RolePath[] = [
       "finances-for-everyone",
       "doxology-what-we-sing",
       "leading-worship",
+      "collaborating-on-a-release",
     ],
   },
   {
@@ -215,6 +216,7 @@ export const ROLE_PATHS: RolePath[] = [
       "finances-for-everyone",
       "doxology-what-we-sing",
       "leading-worship",
+      "collaborating-on-a-release",
     ],
   },
   {
@@ -228,6 +230,7 @@ export const ROLE_PATHS: RolePath[] = [
       "finances-for-everyone",
       "doxology-what-we-sing",
       "leading-worship",
+      "collaborating-on-a-release",
     ],
   },
   {
@@ -383,6 +386,7 @@ export const ROLE_PATHS: RolePath[] = [
       "doxology-what-we-sing",
       "leading-worship",
       "producing-and-artistry",
+      "collaborating-on-a-release",
       "the-one-on-one",
       "the-director-standard",
     ],
@@ -398,6 +402,7 @@ export const ROLE_PATHS: RolePath[] = [
       "finances-for-everyone",
       "doxology-what-we-sing",
       "producing-and-artistry",
+      "collaborating-on-a-release",
     ],
   },
   {
@@ -411,6 +416,7 @@ export const ROLE_PATHS: RolePath[] = [
       "finances-for-everyone",
       "doxology-what-we-sing",
       "producing-and-artistry",
+      "collaborating-on-a-release",
     ],
   },
   {
@@ -424,6 +430,7 @@ export const ROLE_PATHS: RolePath[] = [
       "finances-for-everyone",
       "doxology-what-we-sing",
       "producing-and-artistry",
+      "collaborating-on-a-release",
     ],
   },
   {
@@ -437,6 +444,7 @@ export const ROLE_PATHS: RolePath[] = [
       "finances-for-everyone",
       "doxology-what-we-sing",
       "producing-and-artistry",
+      "collaborating-on-a-release",
     ],
   },
   {

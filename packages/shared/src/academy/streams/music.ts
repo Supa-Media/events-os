@@ -1,7 +1,8 @@
 /**
  * The Music stream — the doxological-worship songwriting/song-selection
- * framework, the worship-leader submission checklist, and the producer/artist
- * roles. Also the Music theme + its three courses.
+ * framework, the worship-leader submission checklist, the producer/artist
+ * roles, and how a collaborator is compensated on a release. Also the Music
+ * theme + its four courses.
  *
  * Content is authored, with strict fidelity, FROM three archived Notion
  * sources (verbatim archives of `bedecked-mandrill-c8b.notion.site`, captured
@@ -20,6 +21,16 @@
  * the source's own, unchanged. Personal names in the source docs ("let me or
  * Ella know") are depersonalized to role references ("your Music Lead") —
  * the doctrine and checklists are unchanged, only the process anchor.
+ *
+ * Course 4 (Collaborating on a Release) and the `music-inviting-a-collaborator`
+ * lesson are authored FROM the two PUBLISHED pages the org already points
+ * collaborators at — `publicworship.life/collaborate` (the by-role/by-situation
+ * walkthrough, `apps/landing/src/pages/collaborate.astro`) and
+ * `publicworship.life/music-policy` (the canonical policy,
+ * `apps/landing/src/pages/music-policy.astro`). Those pages are CANONICAL: the
+ * rate-sheet numbers, the 15-point Primary Artist baseline, and the 50-point
+ * cap are mirrored here for teaching, never restated differently. When a rate
+ * or a rule changes on the landing pages, these lessons change in the same PR.
  *
  * Owned exclusively by this file for content authoring — do not add Music
  * sections or courses anywhere else. See `../index` for how this assembles
@@ -973,6 +984,635 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
       },
     ],
   },
+
+  // ── 10 · Producing & Artistry: inviting a collaborator ─────────────────
+  {
+    slug: "music-inviting-a-collaborator",
+    title: "Inviting a collaborator",
+    subtitle: "Publish the terms, then ask",
+    minutes: 3,
+    blocks: [
+      {
+        kind: "p",
+        text: "When we reach out to a vocalist, producer, engineer, or player, the terms are not invented in the conversation. They're already published: **publicworship.life/collaborate** walks anyone through their own situation and role, and **/music-policy** is the canonical document behind it. Your job on an invite is to point at what's published, not to negotiate a private version of it.",
+      },
+      { kind: "heading", text: "Running the invite" },
+      {
+        kind: "bullets",
+        items: [
+          "**Send the link first.** /collaborate lets someone — and their manager, or their lawyer — read the whole picture before they answer you.",
+          "**Name the ask precisely.** One song, which part (a lead, a verse, a bridge, a vocal moment), and the credit exactly as it would appear on the release.",
+          "**Say what cash is funded before they choose a path** — the release's cash budget for their role, and whether the rate sheet is fully, partly, or not funded. Before, never after.",
+          "**Say the master out loud, early.** Public Worship owns the official master. If that's a dealbreaker for them, it's a conversation before anything is recorded, not after.",
+          "**Approval rights are real.** Their performance, their credit, and how their name and likeness are used are theirs to sign off on.",
+          "**Non-exclusive, always.** Their catalog, their label, their deals, their career are untouched by this song.",
+          "**No path is holier.** Never hint — in words or in tone — that taking donation or equity earns someone the next invitation.",
+          "**Paper before recording.** A split sheet and the release agreement get signed before the song goes out; no release ships with unresolved splits.",
+        ],
+      },
+      {
+        kind: "rule",
+        title: "\"No\" has to cost nothing",
+        text: "Declining is one of the four honored paths, not a failed negotiation. Say so plainly when you invite someone: listening to the song and saying it isn't for them costs them nothing, and the door stays open for later. An invitation that carries a cost for saying no isn't an invitation.",
+      },
+      {
+        kind: "rule",
+        title: "Sponsors fund a release; they don't own a piece of it",
+        text: "An outside supporter or church can fund a release's production or promotion budget as a tax-deductible release-budget sponsorship, and gets recognition for it — credits, mentions, \"made possible by.\" They do not receive master points, master ownership, or any equity-like interest. Public Worship does not sell master participation for cash.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "An artist's manager replies to your DM with \"what's your standard deal?\" What do you send?",
+        answer:
+          "The /collaborate walkthrough and the rate sheet on it — that IS the standard deal, published so nobody gets a different one. Add the two specifics only you know: what part of the song you're asking for, and what cash is actually funded for that role on this release. Then let them read it before they answer.",
+      },
+      {
+        kind: "link",
+        label: "The walkthrough you send: publicworship.life/collaborate",
+        url: "https://publicworship.life/collaborate",
+      },
+      {
+        kind: "link",
+        label: "Further reading: Music Release & Royalty Policy",
+        url: "https://publicworship.life/music-policy",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "Where do the terms of a collaboration come from?",
+        options: [
+          "Whatever you and the collaborator agree to in the DM",
+          "The published pages — /collaborate and /music-policy — which you point at rather than negotiate around",
+          "The Music Director decides per person",
+          "Each artist's manager sets them",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Rates, paths, and ownership are published on purpose so nobody gets a private version of the deal. The invite adds only what's specific to this song: the ask, and what cash is funded for that role.",
+      },
+      {
+        prompt: "When does a contributor learn what cash is actually funded for their role?",
+        options: [
+          "After the session, once the budget is final",
+          "Before they choose a path — in writing, never after",
+          "Only if they ask",
+          "At the release date",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The whole point of the four paths is an informed choice. Someone choosing equity because they were never told cash was available — or expecting cash that was never funded — is the failure this rule exists to prevent.",
+      },
+      {
+        prompt: "A church wants to fund a release's production budget. What do they receive?",
+        options: [
+          "Master points proportional to their gift",
+          "Recognition — credits, mentions, \"made possible by\" — but never master points or ownership",
+          "A share of the writer split",
+          "Approval rights over the final mix",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Release-budget sponsorship is a tax-deductible gift to Global Echo Charitable Co., not an investment. Public Worship does not sell master participation for cash — the financial relationship ends at the gift.",
+      },
+      {
+        prompt: "Why say \"Public Worship owns the official master\" early in an invite?",
+        options: [
+          "To pressure the artist into deciding quickly",
+          "Because if it's a dealbreaker for them, that conversation belongs before anything is recorded — not after",
+          "It isn't said; it's in the paperwork",
+          "Because artists rarely care about masters",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Master ownership is the part of the policy that most resembles a label deal, so it gets surfaced early and honestly. Finding out after a session is how a good relationship turns into a bad one.",
+      },
+    ],
+  },
+
+  // ── 11 · Collaborating: greenlight, demos, reversion ───────────────────
+  {
+    slug: "music-greenlight-and-the-demo",
+    title: "Greenlight, demos, and getting a song back",
+    subtitle: "Nothing attaches until a song is greenlit — in writing",
+    minutes: 4,
+    blocks: [
+      {
+        kind: "p",
+        text: "Public Worship sessions, retreats, and writing camps generate far more songs than we will ever release. That's normal and healthy — not every idea is meant to leave the room. A song becomes an **Official Public Worship Release** only when Public Worship explicitly *greenlights* it for a specific project, cycle, or release plan.",
+      },
+      {
+        kind: "rule",
+        title: "Greenlight is a written designation",
+        text: "It is never implied by enthusiasm in the room, by a song landing well in a session, or by someone senior saying they love it. Until it's written down for a specific project, the song is still in development.",
+      },
+      {
+        kind: "p",
+        text: "**The compensation framework only starts at greenlight.** The cash fees, master income participation, and donation paths on the rate sheet apply to greenlit songs. Before greenlight: writers keep their writer share on whatever they wrote, Public Worship has no publishing claim, and none of the four paths are live yet.",
+      },
+      {
+        kind: "table",
+        headers: ["Status", "Demo recording", "Composition", "Compensation"],
+        rows: [
+          [
+            "Greenlit as Official Release",
+            "Owned by PW",
+            "PW Publishing structure applies",
+            "Yes",
+          ],
+          [
+            "Held for future consideration",
+            "Owned by PW",
+            "Writers retain writer share; no PW publishing claim until greenlit",
+            "No",
+          ],
+          [
+            "Released back to writers on request",
+            "Owned by PW; not commercially released without writer consent",
+            "100% to writers, free of PW involvement",
+            "No",
+          ],
+        ],
+      },
+      { kind: "heading", text: "Why the demo stays with us" },
+      {
+        kind: "p",
+        text: "Any recording made with Public Worship resources — studio time, equipment, engineering, session leadership — is owned by Public Worship as a *recording*, greenlit or not. The composition is a separate thing, and it can still go back to the writers.",
+      },
+      {
+        kind: "p",
+        text: "**Asking for a song back.** If a song was written in a Public Worship context and hasn't been greenlit, any writer on it may request a formal release of the *composition* back to them, free of any Public Worship publishing or administrative claim. In most cases that request is granted. Public Worship may decline if the song is actively being considered for a future project or cycle — and when we decline, we say what we're considering it for and when we'll revisit. If it's granted, the writer is free to re-record and release the song as their own work: no publishing share, no master claim, no encumbrance. The original demo stays owned by Public Worship, and we won't commercially release it without the writers' written agreement.",
+      },
+      {
+        kind: "rule",
+        title: "Selection is stewardship, not judgment",
+        text: "Releasing a song costs real money — studio, mixing, mastering, distribution, marketing, time. Each release is an investment of nonprofit resources in one particular song. A song not being chosen is a stewardship call about the project, the cycle, and the catalog. It is not a verdict on the people who made it.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "A song from your session got a standing ovation in the room and a director said \"we have to release this.\" Is it greenlit?",
+        answer:
+          "No. Greenlight is a written designation for a specific project, cycle, or release plan — enthusiasm in the room isn't it. Until it's written, none of the four paths or rate-sheet numbers apply to that song. Ask for the written designation before you plan around it.",
+      },
+      {
+        kind: "link",
+        label: "The walkthrough: publicworship.life/collaborate",
+        url: "https://publicworship.life/collaborate",
+      },
+      {
+        kind: "link",
+        label: "Further reading: policy §4 — demos, greenlit releases, unreleased songs",
+        url: "https://publicworship.life/music-policy#demos",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "What makes a song an Official Public Worship Release?",
+        options: [
+          "Being written in a Public Worship session",
+          "An explicit, written greenlight for a specific project, cycle, or release plan",
+          "The room loving it",
+          "Public Worship paying for the studio time",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Greenlight is a written designation. A song written in our space, recorded on our gear, and loved by everyone present is still not an official release until it's greenlit in writing.",
+      },
+      {
+        prompt: "When does the compensation framework — cash, participation, donation — attach to a song?",
+        options: [
+          "The moment it's written in a Public Worship session",
+          "At greenlight, and not before",
+          "When it's first performed live",
+          "When it hits a streaming threshold",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The four paths and the rate sheet apply to greenlit songs. Before greenlight, writers keep their writer share and Public Worship has no publishing claim — but no compensation framework is attached either.",
+      },
+      {
+        prompt: "You wrote a song in a PW session that hasn't been greenlit, and you want to release it yourself. What can you ask for?",
+        options: [
+          "Nothing — songs written in session belong to PW permanently",
+          "A formal release of the composition back to you — usually granted; PW may decline only if it's actively being considered, and will say what for and when it'll revisit",
+          "The demo recording, which becomes yours automatically",
+          "A refund of the studio costs",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The composition can come back to the writers on request, free of any PW publishing or admin claim. The demo recording — made with PW's studio, gear, and engineering — stays owned by PW, and PW won't release it commercially without the writers' written agreement.",
+      },
+      {
+        prompt: "A song of yours isn't greenlit this cycle. What does that mean?",
+        options: [
+          "The team judged your songwriting and found it lacking",
+          "It's a stewardship call about the project, the cycle, and the catalog — releasing costs real money, and not every song fits",
+          "The song can never be considered again",
+          "You should stop writing for Public Worship",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Selection is stewardship, not judgment. Each release spends real nonprofit money on one particular song, so not everything gets chosen — and that choice isn't a comment on the people involved.",
+      },
+    ],
+  },
+
+  // ── 12 · Collaborating: the three lanes ────────────────────────────────
+  {
+    slug: "music-three-lanes",
+    title: "Three lanes: song, publishing, master",
+    subtitle: "Writer share, publisher share, and who owns the recording",
+    minutes: 4,
+    blocks: [
+      {
+        kind: "p",
+        text: "Music rights get tangled fast, so we keep them in three clearly separate lanes. Almost every confusing conversation about \"what do I get?\" is really a question about which lane a contribution lands in.",
+      },
+      {
+        kind: "table",
+        headers: ["Lane", "What it covers", "Who holds it"],
+        rows: [
+          [
+            "**Composition** (writer share)",
+            "The song itself — lyrics, melody, chord structure, core composition",
+            "100% to the writers, per the agreed split sheet. **Public Worship takes 0%.**",
+          ],
+          [
+            "**Publishing** (publisher share)",
+            "The administrative and stewardship side — registering the song with CCLI and the PROs, administering it, stewarding it over time",
+            "50% Public Worship Publishing, 50% split among the writers according to their writer splits",
+          ],
+          [
+            "**Master recording**",
+            "The actual recording people stream (one song can have several masters — studio, live, acoustic)",
+            "Owned by Public Worship, held by Global Echo Charitable Co.",
+          ],
+        ],
+      },
+      {
+        kind: "rule",
+        title: "Producing, playing, and engineering are honored — they aren't writer share",
+        text: "You're on the writer split if you contributed lyrics, melody, or composition. Producing, mixing, engineering, and performing are real and honored contributions, compensated through the four paths at the published rate for that role — not by taking a piece of writer credit. Public Worship honors writing by leaving that lane whole.",
+      },
+      { kind: "heading", text: "Why Public Worship owns the master" },
+      {
+        kind: "bullets",
+        items: [
+          "**Catalog continuity.** Worship songs need to stay available for decades. Team members move, sign elsewhere, change paths. A catalog scattered across former volunteers' personal accounts is unworkable.",
+          "**Clean rights.** Distribution, sync, and licensing require unambiguous ownership; a master split across many parties makes those slow or impossible.",
+          "**Mission protection.** We can decline uses that contradict the ministry's purpose.",
+          "**Reinvestment.** Master income funds the next session — and the nonprofit form makes that enforceable, because there are no shareholders.",
+        ],
+      },
+      {
+        kind: "p",
+        text: "That ownership comes with published stewardship promises, not a blank check: if Global Echo dissolves, the catalog goes to an aligned 501(c)(3) or reverts pro-rata to participation holders; if a release is pulled from distribution and not restored within **18 months**, its master reverts to the named primary artist; and no master is sold or transferred to a for-profit entity without the written consent of the named primary artist (or, absent one, holders of a majority of that release's participation points). Nothing in the policy waives a writer's statutory right to terminate transfers of the *composition* under 17 U.S.C. §§ 203 and 304(c).",
+      },
+      {
+        kind: "rule",
+        title: "Owning the master isn't the same as keeping all the income",
+        text: "Master ownership = control of the recording (distribution, licensing, takedowns, sync approval). Master income participation = a contractual right to a percentage of net master income, without ownership. Participation is expressed in points, and one point equals 1% of net master income for that release — \"5 points\" and \"5%\" mean the same thing.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "You mixed the record and wrote none of it. A friend tells you that you should be on the split sheet. Are they right?",
+        answer:
+          "No. Mixing is honored and compensated — the mix-engineer rate through the four paths, plus your credit on the release — but the writer share covers lyrics, melody, and composition only. That lane is left whole for the writers (Public Worship takes 0% of it), and it doesn't widen to cover recording roles.",
+      },
+      {
+        kind: "link",
+        label: "The walkthrough: publicworship.life/collaborate",
+        url: "https://publicworship.life/collaborate",
+      },
+      {
+        kind: "link",
+        label: "Further reading: policy §§5–10 — rights, writer share, publishing, master",
+        url: "https://publicworship.life/music-policy#rights",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "How much of the writer share does Public Worship take on an official release?",
+        options: ["50%", "0%", "25%", "It depends on the song"],
+        answerIndex: 1,
+        explanation:
+          "Writers keep 100% of the writer share, per the split sheet. Public Worship's role as commissioner and steward shows up in the publisher share and in master ownership — not in a piece of writer credit.",
+      },
+      {
+        prompt: "How does the publisher share split on an Official Public Worship Release?",
+        options: [
+          "100% Public Worship Publishing",
+          "50% Public Worship Publishing, 50% split among the writers per their writer splits",
+          "100% to the writers",
+          "Evenly among everyone who was in the room",
+        ],
+        answerIndex: 1,
+        explanation:
+          "PW Publishing retains 50% of the publisher share for originating, funding, registering, and stewarding the release; the other 50% flows to the writers in the same proportions as their writer splits.",
+      },
+      {
+        prompt: "What's the difference between master ownership and master income participation?",
+        options: [
+          "Nothing — they're two names for the same thing",
+          "Ownership is control of the recording; participation is a contractual right to a percentage of net master income, without ownership",
+          "Participation includes the right to license the song",
+          "Ownership applies to the composition, participation to the recording",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Public Worship owns and controls the official master — distribution, licensing, takedowns, sync approval — and grants participation in the income from it. One point of participation equals 1% of net master income for that release.",
+      },
+      {
+        prompt: "What happens if Public Worship pulls a release from distribution and doesn't restore it within 18 months?",
+        options: [
+          "Nothing — ownership is permanent",
+          "Master ownership of that release reverts to the named primary artist (or pro-rata to participation holders)",
+          "The song enters the public domain",
+          "The writers lose their writer share",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The out-of-print reversion is one of the published stewardship promises attached to master ownership, alongside the dissolution reversion and the change-of-control consent requirement. Temporary pauses for remasters or distributor changes don't trigger it.",
+      },
+    ],
+  },
+
+  // ── 13 · Collaborating: the four paths ─────────────────────────────────
+  {
+    slug: "music-the-four-paths",
+    title: "The four paths",
+    subtitle: "Cash, participation, donation, decline — equally honored",
+    minutes: 4,
+    blocks: [
+      {
+        kind: "p",
+        text: "For every contributor role on a greenlit release, Public Worship publishes two numbers: the **cash fee** for that role at market rate, and the **master income participation** you may take instead of the cash. Both are predefined, not negotiated release by release. Before recording, every contributor picks one of four paths, recorded in writing as part of the release agreement.",
+      },
+      {
+        kind: "table",
+        headers: ["Path", "What it is", "Available"],
+        rows: [
+          [
+            "**Cash fee**",
+            "The published rate as a one-time payment",
+            "*When funded* — depends on this release's budget",
+          ],
+          [
+            "**Master income participation**",
+            "The published points instead of cash, paid from net master income over time",
+            "Always",
+          ],
+          [
+            "**Donation to mission**",
+            "Your work as an in-kind gift through Global Echo Charitable Co., with credit and gratitude. Under IRS rules the value of donated *services* isn't deductible — only out-of-pocket expenses and tangible property are",
+            "Always",
+          ],
+          [
+            "**Decline**",
+            "None of the above works for you on this release — a real answer",
+            "Always",
+          ],
+        ],
+      },
+      {
+        kind: "rule",
+        title: "All four paths are equally valued — and we say so out loud",
+        text: "Choosing cash doesn't make someone less invested in the mission. Choosing participation isn't greedy — it's accepting the risk that the song may not perform. Donation isn't \"the pure option,\" it's one of four honorable answers. We don't track who chose what as a measure of commitment, and we never imply that donating or taking equity makes someone more spiritual or more deserving of the next invitation.",
+      },
+      { kind: "heading", text: "Cash is the conditional one" },
+      {
+        kind: "p",
+        text: "Public Worship is a new initiative with no recurring music revenue. Participation and donation don't require cash on hand, so they're available on every release. A cash fee depends on that release's budget — some releases fund the rate sheet fully, some partly, some not at all. **Before** anyone signs onto a release, we put in writing the total cash budget, what's allocated to each role, and whether the going rate is fully, partly, or not funded. You choose knowing what's actually on offer.",
+      },
+      {
+        kind: "p",
+        text: "If cash matters to you and we can't fund it, there are three honored answers: take equity or donate instead; take a partial cash fee plus partial equity, if the budget allows a mixed path; or decline this release. If too many contributors need cash we can't fund, we reshape the team, postpone, or set the song aside — we'd rather pause a release than push someone toward a path that isn't right for them.",
+      },
+      { kind: "heading", text: "The rate sheet" },
+      {
+        kind: "table",
+        headers: ["Role", "Cash fee", "Master points"],
+        rows: [
+          ["Lead producer (full song)", "$500", "5%"],
+          ["Co-producer", "$250", "2%"],
+          ["Recording engineer (tracking)", "$200", "1.5%"],
+          ["Mix engineer", "$400", "3%"],
+          ["Mastering engineer", "$125", "0.75%"],
+          ["Vocal producer", "$250", "2%"],
+          ["Arranger", "$200", "1.5%"],
+          ["Featured vocalist", "$300", "3%"],
+          ["Background vocalist", "$125", "0.75%"],
+          ["Session instrumentalist", "$125", "0.75%"],
+          ["Marketing / rollout lead", "$500", "3%"],
+        ],
+      },
+      {
+        kind: "tip",
+        text: "Rates are **per song, not per session** — a producer who works on three songs is paid for three songs. These are anchored to independent-artist market rates, not major-label rates and not a \"ministry discount.\" Effective 2026, next scheduled review end of 2027 — the published sheet at publicworship.life/collaborate is canonical if this lesson ever lags behind it.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "A background vocalist tells you she needs the cash fee, and this release's budget can't fund her role. What's the honest move?",
+        answer:
+          "Tell her what IS funded, in writing, before she picks a path — then walk her through the other three: participation at 0.75%, a partial cash + partial equity mix if the budget allows any of it, or declining this one with no cost to her standing. If none of those work for enough of the team, the release gets reshaped, postponed, or set aside. What we never do is let her find out after she's sung.",
+      },
+      {
+        kind: "link",
+        label: "The rate sheet and walkthrough: publicworship.life/collaborate",
+        url: "https://publicworship.life/collaborate",
+      },
+      {
+        kind: "link",
+        label: "Further reading: policy §§11–13 — the four paths, rate sheet, cash availability",
+        url: "https://publicworship.life/music-policy#four-paths",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "Which of the four paths is conditional on a specific release's budget?",
+        options: [
+          "Master income participation",
+          "The cash fee",
+          "Donation",
+          "All four are conditional",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Participation, donation, and declining don't require cash on hand, so they're available on every release. Only the cash fee depends on what that release's budget actually funds.",
+      },
+      {
+        prompt: "When does a contributor find out whether their cash fee is funded?",
+        options: [
+          "After the recording session",
+          "Before they choose a path — in writing, including the release's cash budget and what's allocated to their role",
+          "When the release goes live",
+          "Only if the answer is yes",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Release-budget transparency is the point: total cash budget, the amount allocated to each role, and whether the going rate is fully, partly, or not funded — all shared before anyone signs on.",
+      },
+      {
+        prompt: "Is choosing the donation path more spiritual than taking the cash fee?",
+        options: [
+          "Yes — donating is the most committed option",
+          "No — all four paths are equally valued, and we never imply that donating or taking equity earns better standing or future invitations",
+          "Yes, but only for volunteers",
+          "It depends on the release",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The policy says this explicitly and so do we: we don't track who chose which path as a measure of commitment. Cash is what we offer when we have it; equity is what we can always offer; donation is a gift, never an expectation.",
+      },
+      {
+        prompt: "A lead producer takes participation instead of cash. What does the rate sheet give them?",
+        options: ["$500", "5 points — 5% of net master income", "15 points", "2%"],
+        answerIndex: 1,
+        explanation:
+          "Lead producer (full song) is $500 cash or 5% master income participation, per song. Each role on the sheet publishes both numbers so the choice is between two known quantities.",
+      },
+      {
+        prompt: "A producer works on three songs for one release cycle. How are they paid?",
+        options: [
+          "One fee for the session",
+          "Per song — three songs means three fees (or three point allocations)",
+          "A flat monthly rate",
+          "Only for the song that performs best",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Rates are per song, not per session. The rate sheet's numbers are all per-song unless noted otherwise.",
+      },
+    ],
+  },
+
+  // ── 14 · Collaborating: what your role receives ────────────────────────
+  {
+    slug: "music-what-your-role-receives",
+    title: "What your role receives",
+    subtitle: "Primary artist, featured artist, contributor — and the 50-point cap",
+    minutes: 4,
+    blocks: [
+      {
+        kind: "p",
+        text: "The /collaborate walkthrough sorts people by what they actually did on a release. Underneath it are three role families, each with its own published picture.",
+      },
+      {
+        kind: "table",
+        headers: ["Role", "What it means", "What it carries"],
+        rows: [
+          [
+            "**Primary Artist**",
+            "The named artist we're building with over time — sound, writing, worship identity, catalog",
+            "A **15-point baseline** (15% of net master income) per release, automatic under the Primary Artist Agreement; full writer share on anything written; the writer side of the publisher pool; cash or honorarium where the budget allows; ongoing collaboration",
+          ],
+          [
+            "**Featured Artist**",
+            "Prominently featured on one specific release — *Public Worship feat. [you]* — with no long-term commitment",
+            "Featured credit on the release and every DSP; writer share on anything written; one of the four paths for the feature itself ($300 or 3 points)",
+          ],
+          [
+            "**Contributor**",
+            "Producers, musicians, engineers, arrangers, vocalists, creative directors",
+            "Credit on the release; one of the four paths at the published rate for that role; writer share only if they also contributed lyrics, melody, or composition",
+          ],
+        ],
+      },
+      {
+        kind: "rule",
+        title: "Roles compound; credit isn't a path",
+        text: "A primary artist who also produces gets the 15-point baseline PLUS the producer's path for producing. Every role is compensated separately at its own published rate, so someone who wrote, produced, and played is paid three times over. Credit, though, is never one of the four paths — you're credited for what you did whichever path you take. Credit isn't traded; it's owed.",
+      },
+      { kind: "heading", text: "Why the baseline is 15 and not 50" },
+      {
+        kind: "p",
+        text: "The 15-point baseline is deliberate. We expect most Public Worship releases to carry **more than one** primary artist co-leading a song. A 50-point baseline for a single artist creates a zero-sum dynamic where artists hoard songs and treat them as solo property. We'd rather build a catalog where collaboration is the norm and several artists meaningfully share in a song's income. We are not artists trying to keep everything; we're artists who need other artists in order to grow.",
+      },
+      {
+        kind: "rule",
+        title: "Contributor points are capped at 50",
+        text: "Public Worship may allocate up to 50 points of net master income across all artists and contributors on a release, retaining at least 50 for mission reinvestment. If the proposed allocations would blow past the cap, it's resolved BEFORE the agreement is signed, never after: (1) surface the math in front of everyone at once — never in a private conversation with one person; (2) re-offer the four paths, since the same contribution can be taken as cash, a mix, donation, or declined; (3) reduce non-baseline points pro-rata, preserving the 15-point primary baseline; (4) if it still doesn't reconcile, reshape the team, postpone, or set the song aside.",
+      },
+      {
+        kind: "p",
+        text: "**If you leave later:** existing master income participation on existing releases continues — earned participation is earned. The catalog stays with Public Worship; future releases are negotiated fresh. And the relationship is non-exclusive the whole way through: your own music, your own deals, your own catalog, your own career stay yours.",
+      },
+      {
+        kind: "p",
+        text: "**Nothing releases without the paperwork.** Depending on the song that means a split sheet, a master release agreement, producer / featured / primary artist / contributor agreements, a publishing or admin agreement, a master participation agreement, and the per-release budget and recoupment list. No release goes out with unclear ownership, unclear credits, or unresolved expectations.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "You're the named primary artist on a release and you also produced it. Do you get the 15-point baseline, or the lead producer's 5 points?",
+        answer:
+          "Both. The 15-point baseline comes automatically with the Primary Artist Agreement, and producing is a separate role compensated under the four paths — $500 cash, 5 points, donation, or decline. Roles compound. All allocations across everyone still have to fit inside the 50-point contributor cap, which is reconciled before anything is signed.",
+      },
+      {
+        kind: "link",
+        label: "Find your own situation: publicworship.life/collaborate",
+        url: "https://publicworship.life/collaborate",
+      },
+      {
+        kind: "link",
+        label: "Further reading: policy §10 (participation), §16 (roles), §23 (agreements)",
+        url: "https://publicworship.life/music-policy#participation",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "What does a named Primary Artist receive automatically on a release?",
+        options: [
+          "50% of net master income",
+          "A 15-point baseline — 15% of net master income — under the Primary Artist Agreement",
+          "Ownership of the master",
+          "Nothing automatic; everything is negotiated per song",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The 15-point baseline is granted automatically for carrying the named-artist identity, performance, and ongoing relationship. Any other role on the same release is compensated separately on top of it.",
+      },
+      {
+        prompt: "Why is the Primary Artist baseline 15 points rather than 50?",
+        options: [
+          "Because the ministry can't afford more",
+          "Because most releases are expected to have more than one primary artist co-leading — a 50-point baseline would make artists treat songs as solo property",
+          "Because primary artists also get cash",
+          "It's an industry-standard number",
+        ],
+        answerIndex: 1,
+        explanation:
+          "It's a deliberate anti-hoarding choice: the catalog is meant to be collaborative, with several artists meaningfully sharing in a song's income rather than one artist holding a song alone.",
+      },
+      {
+        prompt: "Contributor allocations on a release would total 58 points. What happens?",
+        options: [
+          "The extra 8 points come out of the writers' share",
+          "It's reconciled before signing — surface the math to everyone, re-offer the four paths, then reduce non-baseline points pro-rata (the 15-point baseline is preserved), and reshape or pause if it still doesn't fit",
+          "Whoever signed first keeps their points",
+          "Public Worship absorbs the overage silently",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The 50-point cap is reconciled BEFORE the agreement is signed, never after, and never privately with one person. The order of operations is published so nobody gets quietly reduced.",
+      },
+      {
+        prompt: "A contributor chooses the donation path. Do they still get credited?",
+        options: [
+          "No — credit goes with the cash or equity paths",
+          "Yes — credit isn't one of the four paths; you're credited for what you did regardless of which path you take",
+          "Only if they ask for it in writing",
+          "Only on the streaming platforms, not the release",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Credit is owed, not traded. The four paths cover compensation for the role; being named for the work you did isn't part of that trade.",
+      },
+    ],
+  },
 ];
 
 /** The Music stream's theme entry. */
@@ -986,7 +1626,9 @@ export const MUSIC_THEME: Theme = {
  * The Music stream's courses, in catalog order: the doxological songwriting
  * and song-selection framework (everyone on a music team), the worship
  * leader's submission checklist (a role course, deliberately one lesson for
- * now), and the producer/artist roles.
+ * now), the producer/artist roles, and how a release is split and paid for
+ * (the published /collaborate walkthrough, taught to everyone who might end
+ * up on a release — writers, players, vocalists, engineers, artists).
  */
 export const MUSIC_COURSES: Course[] = [
   {
@@ -1033,13 +1675,36 @@ export const MUSIC_COURSES: Course[] = [
     description:
       "What producing actually means (it's broader than beat-making), what " +
       "it takes to build an artist brand — including the standard Public " +
-      "Worship-affiliated artists are held to — and the honest economics of " +
-      "releasing a song.",
+      "Worship-affiliated artists are held to — the honest economics of " +
+      "releasing a song, and how to run an invite so a collaborator sees the " +
+      "published terms before they answer.",
     icon: "headphones",
     moduleSlugs: [
       "music-what-a-producer-does",
       "music-artist-is-a-brand",
       "music-the-economics-of-a-song",
+      "music-inviting-a-collaborator",
+    ],
+  },
+  {
+    slug: "collaborating-on-a-release",
+    themeKey: "music",
+    title: "Collaborating on a Release",
+    level: "intermediate",
+    audience: "team",
+    description:
+      "What publicworship.life/collaborate tells the people we make music " +
+      "with, so the room knows it too: greenlight and the demo, the three " +
+      "rights lanes (writer share, publishing, master), the four " +
+      "equally-honored paths and the published rate sheet, and what each " +
+      "role receives — including the 15-point Primary Artist baseline and " +
+      "the 50-point cap.",
+    icon: "percent",
+    moduleSlugs: [
+      "music-greenlight-and-the-demo",
+      "music-three-lanes",
+      "music-the-four-paths",
+      "music-what-your-role-receives",
     ],
   },
 ];

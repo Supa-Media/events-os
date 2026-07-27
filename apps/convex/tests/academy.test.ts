@@ -175,7 +175,7 @@ async function platformTemplates(s: ChapterSetup) {
 }
 
 describe("curriculum content", () => {
-  test("ninety-eight ordered sections; six capstones; one optional bonus", () => {
+  test("one hundred three ordered sections; six capstones; one optional bonus", () => {
     // 79 + 5 (the "Leading a project" course: works-defining-a-project,
     // works-planning-the-work, works-the-project-budget,
     // works-tracking-and-escalating, works-finishing-well — all required,
@@ -185,13 +185,16 @@ describe("curriculum content", () => {
     // donor-stewardship course — required, not a capstone)
     // + 1 (the Supplies ⇄ Inventory unification: keeping-inventory, inserted
     // after tab-supplies in the logistics-lead course — required, not a
-    // capstone).
-    expect(ACADEMY_SECTION_COUNT).toBe(98);
+    // capstone) + 5 (the /collaborate fold-in:
+    // music-inviting-a-collaborator into producing-and-artistry, plus the
+    // four modules of the new collaborating-on-a-release course — all
+    // required, none capstones).
+    expect(ACADEMY_SECTION_COUNT).toBe(103);
     expect(ACADEMY_SECTIONS.map((s) => s.order)).toEqual(
-      Array.from({ length: 98 }, (_v, i) => i + 1),
+      Array.from({ length: 103 }, (_v, i) => i + 1),
     );
     // The optional bonus is excluded from the trained denominator.
-    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(97);
+    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(102);
     expect(ACADEMY_CAPSTONE_SECTIONS).toHaveLength(6);
     // The suite leans on this order — pin it.
     expect(CAPSTONE_JOIN.capstone!.kind).toBe("join_event");

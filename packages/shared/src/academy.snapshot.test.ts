@@ -165,6 +165,16 @@
  * minutes, and placement are unchanged; `finance-monthly-close` teaches the
  * closing CHECKLIST, not the exclude action itself, so it needed no change.
  * No slugs, sections, or courses moved; total stays 98 sections.
+ *
+ * The /collaborate fold-in (the published `publicworship.life/collaborate`
+ * walkthrough + `/music-policy`, taught to the people who actually make the
+ * records) APPENDED five Music sections after `music-the-economics-of-a-song`:
+ * `music-inviting-a-collaborator` (3 min, 4-quiz), which joins the existing
+ * `producing-and-artistry` course as its fourth module, plus
+ * `music-greenlight-and-the-demo` (4/4), `music-three-lanes` (4/4),
+ * `music-the-four-paths` (4/5), and `music-what-your-role-receives` (4/4) in a
+ * NEW `collaborating-on-a-release` course appended to the Music catalog. Total:
+ * 103 sections. Nothing else moved.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -252,6 +262,11 @@ const EXPECTED_SECTION_SLUGS: string[] = [
   "music-what-a-producer-does",
   "music-artist-is-a-brand",
   "music-the-economics-of-a-song",
+  "music-inviting-a-collaborator",
+  "music-greenlight-and-the-demo",
+  "music-three-lanes",
+  "music-the-four-paths",
+  "music-what-your-role-receives",
   "mktg-the-look",
   "mktg-hit-record",
   "mktg-shoot-to-timeline",
@@ -930,6 +945,46 @@ const EXPECTED_SECTIONS: {
     capstoneKind: null,
   },
   {
+    slug: "music-inviting-a-collaborator",
+    title: "Inviting a collaborator",
+    minutes: 3,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "music-greenlight-and-the-demo",
+    title: "Greenlight, demos, and getting a song back",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "music-three-lanes",
+    title: "Three lanes: song, publishing, master",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "music-the-four-paths",
+    title: "The four paths",
+    minutes: 4,
+    quizLength: 5,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "music-what-your-role-receives",
+    title: "What your role receives",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
     slug: "mktg-the-look",
     title: "The look",
     minutes: 3,
@@ -1212,7 +1267,22 @@ const EXPECTED_COURSES: {
   {
     slug: "producing-and-artistry",
     themeKey: "music",
-    moduleSlugs: ["music-what-a-producer-does", "music-artist-is-a-brand", "music-the-economics-of-a-song"],
+    moduleSlugs: [
+      "music-what-a-producer-does",
+      "music-artist-is-a-brand",
+      "music-the-economics-of-a-song",
+      "music-inviting-a-collaborator",
+    ],
+  },
+  {
+    slug: "collaborating-on-a-release",
+    themeKey: "music",
+    moduleSlugs: [
+      "music-greenlight-and-the-demo",
+      "music-three-lanes",
+      "music-the-four-paths",
+      "music-what-your-role-receives",
+    ],
   },
   {
     slug: "brand-and-voice",
