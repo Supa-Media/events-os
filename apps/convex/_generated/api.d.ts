@@ -43,6 +43,7 @@ import type * as financeGenesisBackfill from "../financeGenesisBackfill.js";
 import type * as financeRoles from "../financeRoles.js";
 import type * as financeSettings from "../financeSettings.js";
 import type * as finances from "../finances.js";
+import type * as formSubmissions from "../formSubmissions.js";
 import type * as givebutterSync from "../givebutterSync.js";
 import type * as giving from "../giving.js";
 import type * as givingActivity from "../givingActivity.js";
@@ -162,6 +163,7 @@ import type * as migrations_0036_add_campaign_power_defaults from "../migrations
 import type * as migrations_0037_link_rsvp_people from "../migrations/0037_link_rsvp_people.js";
 import type * as migrations_0038_backfill_contact_only_people from "../migrations/0038_backfill_contact_only_people.js";
 import type * as migrations_0039_backfill_person_emails from "../migrations/0039_backfill_person_emails.js";
+import type * as migrations_0048_import_form_submissions from "../migrations/0048_import_form_submissions.js";
 import type * as migrations_index from "../migrations/index.js";
 import type * as modules from "../modules.js";
 import type * as moneyViews from "../moneyViews.js";
@@ -290,6 +292,7 @@ declare const fullApi: ApiFromModules<{
   financeRoles: typeof financeRoles;
   financeSettings: typeof financeSettings;
   finances: typeof finances;
+  formSubmissions: typeof formSubmissions;
   givebutterSync: typeof givebutterSync;
   giving: typeof giving;
   givingActivity: typeof givingActivity;
@@ -409,6 +412,7 @@ declare const fullApi: ApiFromModules<{
   "migrations/0037_link_rsvp_people": typeof migrations_0037_link_rsvp_people;
   "migrations/0038_backfill_contact_only_people": typeof migrations_0038_backfill_contact_only_people;
   "migrations/0039_backfill_person_emails": typeof migrations_0039_backfill_person_emails;
+  "migrations/0048_import_form_submissions": typeof migrations_0048_import_form_submissions;
   "migrations/index": typeof migrations_index;
   modules: typeof modules;
   moneyViews: typeof moneyViews;
