@@ -33,6 +33,41 @@ subagent's self-report on faith. For one-shot waits use Bash
 run_in_background with an `until` loop. Stop the ticker when nothing is
 outstanding.
 
+## Gate It Behind a Power, Even When It's Open Today
+
+**Whenever a capability might one day need to be restricted, put it behind a
+named access function from the start — never inline the check, and never
+hard-code "anyone can do this" at the call site.** "We'll add permissions
+later" turns a one-file change into a fifty-call-site change, and the call
+sites are where the misses happen.
+
+The mechanism is the seat chart — seats are the single source of roles AND
+permissions:
+
+1. A power is a string in `SEAT_CAPABILITIES` (`packages/shared/src/seats.ts`).
+2. Seats grant it via `SEAT_DEFS[seatId].capabilities`; a holder's effective
+   set is the union of their assignments (`lib/seatStructure.ts#effectiveCapabilities`).
+3. Each domain owns a resolver in `apps/convex/lib/<domain>Access.ts` exposing
+   a `has<Thing>` / `require<Thing>` pair. Every call site uses the `require`
+   form — nothing checks seats inline.
+
+When the answer today is "anyone in the chapter," **still write the resolver**;
+its body is just the membership check, with a comment saying which capability
+name it will graduate to. Adding the real gate is then: add the string to
+`SEAT_CAPABILITIES`, list it on the seats that should carry it, and change the
+resolver's body. One file, no call-site churn, and the seat chart stays the
+honest answer to "who can do this?"
+
+Precedents to copy: `lib/campaignsAccess.ts` (`campaigns.compose` /
+`campaigns.approve` — deliberately seat-capability-only so it can be
+granted/revoked per seat at runtime), `lib/givingAccess.ts` (`giving.view` /
+`giving.manage` / `nav.giving`), and the finance ladder in `lib/finance.ts`.
+
+Two things this pulls in: a new capability is a **roles/seats change**, so the
+Academy rule below applies; and separation-of-duties matters — if a power
+approves something, the approver must not be the submitter (see
+`campaigns.ts`'s state-machine doc).
+
 ## Supa Framework
 
 This repo is the first consumer of **Supa-Media/supa-framework** (`@supa-media/*`

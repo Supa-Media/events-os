@@ -305,7 +305,6 @@ const CARRY_SCALAR: (keyof Doc<"people">)[] = [
   "vettingStatus",
 ];
 const CARRY_ARRAY: (keyof Doc<"people">)[] = [
-  "services",
   "projects",
   "commsPreferences",
 ];
@@ -334,6 +333,20 @@ export async function mergePersonInto(
     const current = (survivor[f] as unknown[] | undefined) ?? [];
     const dupValue = (dup[f] as unknown[] | undefined) ?? [];
     if (current.length === 0 && dupValue.length > 0) patch[f] = dupValue;
+  }
+  // Service Catalog ids (replaces the retired free-text `services` — see
+  // `schema/people.ts`'s deprecation comment): UNION + dedupe, not
+  // fill-only-if-empty — `serviceIds` is an unordered id set, so combining
+  // both rows' tags is strictly more correct than discarding the duplicate's
+  // (unlike CARRY_ARRAY's ordered lists, where a blind union would corrupt
+  // `commsPreferences`'s priority order).
+  {
+    const survivorServiceIds = survivor.serviceIds ?? [];
+    const dupServiceIds = dup.serviceIds ?? [];
+    if (dupServiceIds.length > 0) {
+      const merged = new Set([...survivorServiceIds, ...dupServiceIds]);
+      if (merged.size !== survivorServiceIds.length) patch.serviceIds = [...merged];
+    }
   }
   // Adopt the duplicate's real name when the survivor only has the placeholder
   // (e.g. a bare row auto-created on an earlier login), so a real name imported

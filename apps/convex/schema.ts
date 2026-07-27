@@ -125,6 +125,7 @@ import {
   emailSuppressions,
   emailReplies,
 } from "./schema/campaigns";
+import { serviceOptions } from "./schema/services";
 
 /**
  * Database schema for Chapter OS.
@@ -452,6 +453,11 @@ const schema = defineSchema({
   campaignRecipients,
   emailSuppressions,
   emailReplies,
+
+  // Service Catalog — the managed dropdown behind `people.serviceIds` (see
+  // schema/services.ts's module doc). One level of parent/child nesting,
+  // soft-delete only; `serviceOptions.ts` owns every write.
+  serviceOptions,
 });
 
 export default schema;

@@ -16,6 +16,7 @@ import {
   getChapterIdOrNull,
 } from "./lib/context";
 import { deleteEventPlacementsForRef } from "./lib/placements";
+import { resolveServiceLabels } from "./lib/serviceCatalog";
 
 /**
  * A `budgetCategoryId` override, if any, must belong to the CALLER's own
@@ -81,7 +82,11 @@ export const listForEvent = query({
                 name: person.name,
                 email: person.email ?? null,
                 phone: person.phone ?? null,
-                skills: person.services ?? [],
+                // Service Catalog labels (replaces the retired free-text
+                // `people.services` — see `schema/people.ts`'s deprecation
+                // comment), resolved live so a catalog rename is reflected
+                // here without a write-through.
+                skills: await resolveServiceLabels(ctx, person.serviceIds),
                 isPlaceholder: person.isPlaceholder === true,
               }
             : null,

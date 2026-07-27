@@ -40,11 +40,35 @@ describe("OTP login via accessAllowlist", () => {
 
 // ── readers use the new fields only ──────────────────────────────────────────
 describe("readers on new-field-only rows", () => {
-  test("engagements.listForEvent surfaces person.services (no legacy skills)", async () => {
+  test("engagements.listForEvent surfaces Service Catalog labels (no legacy services string)", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const now = Date.now();
-    const eventId = await run(t, async (ctx) => {
+    const { eventId } = await run(t, async (ctx) => {
+      // Service Catalog (replaces the retired free-text `people.services` —
+      // see `schema/people.ts`'s deprecation comment): a parent + a child, so
+      // the resolved label round-trips through the derived "Parent:Child"
+      // format, not just a bare name.
+      const vocalsId = await ctx.db.insert("serviceOptions", {
+        chapterId: s.chapterId,
+        name: "Vocals",
+        isActive: true,
+        createdAt: now,
+      });
+      const tenorId = await ctx.db.insert("serviceOptions", {
+        chapterId: s.chapterId,
+        parentId: vocalsId,
+        name: "Tenor",
+        isActive: true,
+        createdAt: now,
+      });
+      const worshipId = await ctx.db.insert("serviceOptions", {
+        chapterId: s.chapterId,
+        name: "Worship Leading",
+        isActive: true,
+        createdAt: now,
+      });
+
       const eventTypeId = await ctx.db.insert("eventTypes", {
         chapterId: s.chapterId,
         name: "T",
@@ -69,8 +93,8 @@ describe("readers on new-field-only rows", () => {
       const personId = await ctx.db.insert("people", {
         chapterId: s.chapterId,
         name: "Ada",
-        // NEW field only — the legacy `skills` field no longer exists.
-        services: ["worship", "vocals"],
+        // NEW field only — the legacy `services` string array is deprecated.
+        serviceIds: [worshipId, tenorId],
         status: "active",
         createdAt: now,
       });
@@ -82,13 +106,13 @@ describe("readers on new-field-only rows", () => {
         status: "confirmed",
         createdAt: now,
       });
-      return eventId;
+      return { eventId };
     });
 
     const rows = await s.as.query(api.engagements.listForEvent, { eventId });
     expect(rows).toHaveLength(1);
     // The return shape still exposes a `skills` alias (client back-compat),
-    // populated from the person's `services`.
-    expect(rows[0].person?.skills).toEqual(["worship", "vocals"]);
+    // now resolved live from the Service Catalog instead of a stored string.
+    expect(rows[0].person?.skills).toEqual(["Worship Leading", "Vocals:Tenor"]);
   });
 });

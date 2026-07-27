@@ -57,6 +57,8 @@ import { wrapTargeting } from "./0042_wrap_targeting";
 import { splitPersonNames } from "./0043_split_person_names";
 import { reimbursementPayoutsOutflow } from "./0044_reimbursement_payouts_outflow";
 import { backfillPersonalRepayments } from "./0045_backfill_personal_repayments";
+import { seedServiceCatalog } from "./0046_seed_service_catalog";
+import { serviceConditionsToIds } from "./0047_service_conditions_to_ids";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -218,4 +220,20 @@ export const MIGRATIONS: Migration[] = [
   // already carrying `repaymentId` is skipped); a row resolving no payee
   // (no personId, no card) is left for a human to resolve by hand. See 0045.
   backfillPersonalRepayments,
+  // Service Catalog: seed the canonical catalog ONCE, ORG-WIDE (shared by
+  // every chapter — a Tenor is a Tenor in any chapter), then backfill
+  // `people.serviceIds` for every chapter's roster from each person's legacy
+  // free-text `services` strings via the audited 13-entry mapping. Unmapped
+  // strings are left out and reported, never guessed. Idempotent
+  // (already-seeded org-wide rows and already-backfilled people are
+  // skipped). See 0047.
+  seedServiceCatalog,
+  // Convert saved `has_service` audience conditions from the pre-catalog
+  // `{ service: string }` shape to `{ serviceId }`, by case-insensitive name
+  // match against the now-seeded org-wide catalog (0046 must run first —
+  // filename order guarantees it). A condition that doesn't resolve to
+  // EXACTLY ONE catalog row (no match, or ambiguous) is left untouched and
+  // reported — never silently widened to "everyone" or dropped. Idempotent
+  // (conditions already carrying `serviceId` are skipped). See 0047.
+  serviceConditionsToIds,
 ];

@@ -18,6 +18,7 @@ import { isCardEligible } from "@events-os/shared";
 import { writePersonAudit, diffFields } from "./lib/givingAudit";
 import { recordPersonEmail } from "./lib/personEmails";
 import { composeName, nameHalvesPatch, splitPersonName } from "./lib/personName";
+import { assertServiceIdsInChapter } from "./lib/serviceCatalog";
 
 const vettingStatus = v.union(
   v.literal("unvetted"),
@@ -290,11 +291,10 @@ export const create = mutation({
     name: v.string(),
     email: v.optional(v.string()),
     phone: v.optional(v.string()),
-    // `skills` is the legacy arg name (OTA-lagged clients still send it);
-    // `services` is the Chapter-OS name. Either is accepted; the writer stores
-    // the value in the new `services` field.
-    skills: v.optional(v.array(v.string())),
-    services: v.optional(v.array(v.string())),
+    // Service Catalog ids (`serviceOptions`) — replaces the retired
+    // `skills`/`services` free-text args. See `schema/people.ts`'s
+    // deprecation comment on `services`.
+    serviceIds: v.optional(v.array(v.id("serviceOptions"))),
     vettingStatus: v.optional(vettingStatus),
     status: v.optional(rosterStatus),
     role: v.optional(v.string()),
@@ -317,6 +317,9 @@ export const create = mutation({
       await requireCanSetManager(ctx, chapterId as Id<"chapters">);
       await requireOwned(ctx, "people", args.managerId, "Manager");
     }
+    if (args.serviceIds && args.serviceIds.length > 0) {
+      await assertServiceIdsInChapter(ctx, chapterId as Id<"chapters">, args.serviceIds);
+    }
     const status = args.status ?? "active";
     const personId = await ctx.db.insert("people", {
       chapterId: chapterId as Id<"chapters">,
@@ -327,9 +330,7 @@ export const create = mutation({
       ...(splitPersonName(args.name) ?? {}),
       email: args.email,
       phone: args.phone,
-      // Writer targets the new `services` field only; the legacy `skills` arg
-      // (OTA-lagged clients) is accepted but its value is stored in `services`.
-      services: args.services ?? args.skills,
+      serviceIds: args.serviceIds,
       vettingStatus: args.vettingStatus ?? "unvetted",
       status,
       role: args.role,
@@ -376,9 +377,10 @@ export const update = mutation({
     lastName: v.optional(v.union(v.string(), v.null())),
     email: v.optional(v.string()),
     phone: v.optional(v.string()),
-    // Either arg accepted; the writer stores it in the new `services` field.
-    skills: v.optional(v.union(v.array(v.string()), v.null())),
-    services: v.optional(v.union(v.array(v.string()), v.null())),
+    // Service Catalog ids (`serviceOptions`) — replaces the retired
+    // `skills`/`services` free-text args. See `schema/people.ts`'s
+    // deprecation comment on `services`.
+    serviceIds: v.optional(v.union(v.array(v.id("serviceOptions")), v.null())),
     usualRateUsd: v.optional(v.union(v.number(), v.null())),
     notes: v.optional(v.union(v.string(), v.null())),
     isTeamMember: v.optional(v.boolean()),
@@ -413,17 +415,13 @@ export const update = mutation({
       await requireOwned(ctx, "people", patch.managerId, "Manager");
       await assertNoManagerCycle(ctx, personId, patch.managerId);
     }
+    if (patch.serviceIds != null && patch.serviceIds.length > 0) {
+      await assertServiceIdsInChapter(ctx, person.chapterId, patch.serviceIds);
+    }
     const fields: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(patch)) {
       // null = explicit clear (store undefined); undefined = leave unchanged.
       if (value !== undefined) fields[key] = value === null ? undefined : value;
-    }
-    // Services rename: the writer targets the new `services` field. Accept the
-    // legacy `skills` arg (OTA-lagged clients) but never write the legacy field.
-    if (patch.services !== undefined || patch.skills !== undefined) {
-      const val = patch.services !== undefined ? patch.services : patch.skills;
-      fields.services = val === null ? undefined : val;
-      delete fields.skills;
     }
     // Person lifecycle lives on `status` only now; the legacy `isActive` flag is
     // no longer written (accept the arg from OTA-lagged clients, then drop it).
