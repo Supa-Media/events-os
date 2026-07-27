@@ -38,6 +38,23 @@ on green).
    (tester didn't find it). Confirm root causes against the recon reports
    before asserting them. Distinguish "bug" from "intentional design that
    reads as a bug" — both need fixing but differently.
+   **Never assert a capability is ABSENT from a recon lane's silence.** A lane
+   that traced subsystem X answers only for X's path. "There is no card rail,
+   only Increase/ACH" was told to the founder AND baked into an agent brief on
+   the strength of a *reimbursement-payout* trace — the repo had Stripe
+   Checkout (`stripe.ts`, webhook in `http.ts`, `@stripe/stripe-js` in mobile)
+   the whole time, and the founder had to correct it. An absence claim needs
+   its own repo-wide grep for the whole category (every payment/auth/email
+   provider), not the absence of a mention in one subsystem trace.
+   **When the founder's ask is directionally ambiguous, ask BEFORE dispatching
+   implementation.** "mark as personal expense … put in their credit cards to
+   reimburse for it" had two opposite money-flow readings, each mapping to a
+   different already-built subsystem. One AskUserQuestion before dispatch is
+   far cheaper than a wrong build. Make each option's CONSEQUENCE concrete,
+   not just its mechanism ("status is mutually exclusive, so marking personal
+   would un-reconcile the row") — a founder who picks against your
+   recommendation on an abstract framing tends to reverse once the concrete
+   consequence surfaces, and the reversal costs a rebuild.
 4. **Roadmap as parallel workstreams.** Each workstream: one branch, one
    agent, sized ≤ a reviewable PR, with an explicit collision note against
    in-flight PRs (a refactor-in-flight on a file you must touch means land
@@ -77,6 +94,20 @@ on green).
   ignored for CCR scheduling tools) and interrupts the founder. Monitor
   covers timed wake-ups; Bash run_in_background with an `until` loop covers
   one-shot waits. Stop the ticker (TaskStop) when nothing is outstanding.
+  Monitor's `persistent: true` still times out (~30 min) in this harness —
+  expect to re-arm on the timeout notification, every run.
+- **Redirecting an in-flight agent: SendMessage is NOT reliable — verify,
+  then kill (2026-07-27).** A deep-in-an-autonomous-run subagent may never
+  surface queued messages. Two redirects went unread while the agent kept
+  building a design the founder had rejected, right down to writing tests
+  for it. Protocol: send ONE redirect, then on the very next poll tick
+  inspect the worktree for evidence it landed (grep the tree for the
+  rejected construct — not the agent's word). If the rejected design is
+  still there after one cycle, `TaskStop` and relaunch with a corrected
+  brief. A restart costs one build; undetected drift costs the build AND
+  the review that has to catch it. Before discarding, diff the dead tree
+  for incidental fixes worth salvaging as their own commit (this run
+  rescued a real duplicated-`isSpend` cleanup that way).
 
 ## Standing product principles (from the founders — apply to every plan)
 
@@ -157,6 +188,22 @@ on green).
   tool-result file with python and parse `name|conclusion|head_sha` instead
   of reading raw.
 - Read `apps/convex/_generated/ai/guidelines.md` before writing Convex code.
+- Pinned-spec sweep: growing an enum or capability breaks tests that pin
+  shared constants — `EXPECTED_CAPABILITIES_BY_SEAT` (packages/shared/src/
+  seats.test.ts) on seat changes, `REGISTRY_NAMES` (apps/convex/tests/
+  migrations.test.ts) on any new migration. Grep `toEqual` on shared
+  constants when touching either.
+- Budget ~3-4 CI/verify fix rounds for a large (multi-thousand-line) feature
+  PR; a focused client-only fix should be first-try-green off the local gate.
+- Prompt adversarial verifiers with the SPECIFIC bypass classes the domain
+  allows (e.g. one userId owning two `people` rows self-approving) — generic
+  "check this is correct" misses what a domain-aware probe finds.
+- Transactional email: assert the real `<a href>` with `process.env.APP_URL`
+  set in the test, and make a missing APP_URL degrade LOUDLY — the house
+  `link ? <a> : ""` pattern otherwise ships a CTA-less email silently.
+- Money state settled by a payment webhook: flip on webhook confirmation
+  only (never the browser success-redirect), and route through the existing
+  idempotent settle core so retries/out-of-order delivery are one guarantee.
 - Academy (packages/shared/src/academy/, streams/finances.ts) must track
   every user-facing change; run the academy integrity tests.
 - Upstream-first: framework-generic changes go to Supa-Media/supa-framework,
@@ -176,6 +223,60 @@ Before finishing a run of this skill, you MUST:
    run's PR.
 
 ## Learnings Log (newest first)
+
+### 2026-07-27 — Run 7 (PDF receipt preview bug + personal-expense flag/Stripe repayment)
+- Two founder items from screenshots. Shape: 4 parallel recon lanes → PDF
+  bug dispatched IMMEDIATELY once its lane returned (didn't wait for the
+  other three — that lane was self-contained and collision-free, and #440
+  was merged+deployed before the feature was even scoped). Ship the small
+  confirmed fix while the big one is still being designed.
+- **Both founder decisions from my AskUserQuestion were later REVERSED by
+  the founder** (status→flag, ACH→Stripe). See the new §3 guidance: my
+  options stated mechanism, not consequence. The reversal landed mid-build
+  and cost a full agent run. Corollary: when the founder picks against your
+  recommendation, that's a signal to make the consequence vivid, not to
+  argue — and to expect a possible reversal, so prefer the design whose
+  reversal is cheapest to absorb.
+- **My factual error, founder-corrected**: told them "no card rail exists"
+  from a reimbursement-payout trace. `stripe.ts` had `createCheckout` all
+  along. Now encoded as a §3 rule. Note the two Stripe modules are easy to
+  confuse and briefs must disambiguate: `stripe.ts` = Checkout (card
+  payments); `stripeFinance.ts` = Financial Connections (bank sync).
+- **SendMessage redirect failed twice** → new Agent-economics rule (verify
+  the redirect landed by grepping the worktree, then TaskStop+relaunch).
+  Salvaged a real fix out of the discarded tree before deleting it.
+- **Best design call of the run came from the implementation agent, not the
+  brief**: I specified "new field, subsume `isPersonal` via migration"; it
+  instead DERIVED the 3-state lifecycle from `isPersonal` + the linked
+  `personalRepayments.status`, both written by one code path — no new
+  persisted field, no second writer, drift structurally impossible rather
+  than merely tested. Generalize: when adding a lifecycle on top of a
+  boolean a money predicate already keys on, try deriving before persisting.
+  Brief the CONSTRAINT (one source of truth) and let the agent pick the
+  mechanism.
+- **New dead-end-control class**: two near-identically-named mutations where
+  one is a stub — `finances.flagPersonal` (boolean, no record, no email)
+  vs `cards.flagPersonalCharge` (real workflow). The founder had been
+  clicking the stub for months. Sibling of the spec'd-but-unwired class:
+  when feedback says "X doesn't do anything", grep for near-duplicate
+  mutation names before assuming the feature is missing.
+- Webhook-settled money: flip state ONLY on webhook confirmation, never on
+  the browser success-redirect, and settle through the EXISTING idempotent
+  core (here `settleRepayment`, guarded on `creditTransactionId`) so
+  at-least-once/out-of-order delivery is one guarantee, not a new one.
+- `actions_list` token-cap parse (the invariant says "slice with python" but
+  not the shape): the saved payload is a DICT — `json.loads(f)['workflow_runs']`,
+  then `r['name'] | r['status'] | r.get('conclusion') | r['head_sha'][:8]`.
+  `conclusion` is ABSENT (not null) on in-progress runs, so `.get` it.
+- Stop-hook "commit and push" fired twice while the only dirty tree was a
+  subagent's worktree holding the REJECTED design — declined both times and
+  said why. Refusing that hook is correct when committing would preserve
+  work already decided against; check `git status` in BOTH the main checkout
+  and every worktree before answering it.
+- Designated-branch mechanic worked cleanly for a second PR after the first
+  merged: `git checkout -B <designated> origin/main` → cherry-pick the
+  worktree branch's commits → `push --force-with-lease` (the branch held
+  only already-merged history, so the force was safe).
 
 ### 2026-07-26 — Run 6 (People CRM UX: person record completeness + People→email bridge + has_service)
 - Founder ask was thematic, not a bug report ("improve linking people /
@@ -436,83 +537,20 @@ Before finishing a run of this skill, you MUST:
   person, check that one string against suppressions — never retry
   per-address (that would route around an unsubscribe).
 
-### 2026-07-24 — Run 2 addendum 4 (Phase 1 identity backbone #401 shipped)
-- Contact/roster boundary needed THREE audit layers to get airtight:
-  implementer's own audit → adversarial verifier (found 3 leaks + the
-  docs-vs-code stamping gap) → systematic grep sweep (found 1 more leak +
-  4 judgment calls). For boundary-type changes (a flag every consumer must
-  respect), budget all three layers; none alone sufficed.
-- Verifier ran tests EMPIRICALLY this round, including a throwaway
-  origin/main git-worktree comparison — far higher signal than static
-  reading (it proved a "regression" reproduced only on-branch). Encourage
-  verifiers to attempt running the real suite; the pnpm/401 constraint may
-  not bind in all sandboxes — but require they leave the tree clean.
-- Grandchild-sweep pattern: implementation agent spawned its own sweep
-  whose report bubbled to the orchestrator; ruling on its judgment calls
-  centrally (fix vs deliberately-inclusive-with-comment) and sending
-  rulings back worked well — boundaries get ONE consistent policy.
-- New failure class: side-effectful helpers at insert sites flip pinned
-  import-preview expectations (canonicalImport donorMatch "new"→"email").
-  When adding insert-time side effects, grep tests for pinned preview/
-  disposition expectations on flows that traverse those inserts.
-- "Leave inclusive" sites must carry a comment stating the decision, or a
-  future sweep will "fix" them backwards (matchPerson SOD binding,
-  dataHygiene dedup).
 
-### 2026-07-24 — Run 2 addendum 3 (approval gate #399 shipped; audience recon)
-- Approval-gate PR took FOUR CI/verify fix rounds (typecheck narrowing →
-  pinned seat spec → pinned migration registry + email-block placement →
-  missing link anchor + zero-recipient test). Rounds shrink but budget ~3-4
-  for a 3.5k-line feature PR, not 1.
-- Adversarial verifier with recon-informed prompts caught a REAL SOD bypass
-  (one userId owning two people rows self-approving via its second row) that
-  the implementation agent's own tests missed — always prompt verifiers with
-  the specific bypass classes the domain allows (multi-row identity here).
-- Pinned-spec test class: adding seat capabilities breaks
-  packages/shared/src/seats.test.ts EXPECTED_CAPABILITIES_BY_SEAT; adding a
-  migration breaks apps/convex/tests/migrations.test.ts REGISTRY_NAMES. Sweep
-  ALL pinned specs (grep toEqual on shared constants) when touching seat defs
-  or migrations.
-- Email-link assertions need process.env.APP_URL set in the test (no repo
-  precedent existed — house pattern was asserting context data, not HTML).
-  Conditional-link house pattern (`link ? <a> : ""`) silently ships CTA-less
-  email when env is missing — degrade loudly instead.
-- Founder direction captured: person-centric audiences (source is ALWAYS
-  people; donor/guest→person linkage; personEmails + prefs; filters incl.
-  giving amount/backer/attended-event; hand-picked include/exclude lists;
-  suppression overrides hand-picks). Full design: specs/person-centric-audiences.md
-  — phases there are the roadmap of record.
-
-### 2026-07-24 — Run 2 addendum 2 (dispatch → merged: #323 revival shipped)
-- Full arc in one run: recon → founder greenlight → revival agent (merge
-  main into 62-behind branch) → adversarial verify agent → 2 fix commits →
-  squash-merge #323 → all 5 post-merge deploy runs green. Reviving a
-  well-built stale branch beat rebuilding: ~2h wall-clock for a 12k-line
-  feature.
-- subscribe_pr_activity failed repeatedly ("Could not subscribe") on both
-  tool variants — fallback that worked: send_later check-ins (~6-8 min)
-  carrying explicit next-step instructions. The prior "user declined
-  send_later" learning is about unprompted babysitting; when the user says
-  "merge ASAP" and webhooks are broken, scheduled check-ins are the tool.
-- Merge-conflict failure class worth naming: git interleaves two
-  structurally-similar-but-distinct blocks (route pairs in http.ts, settings
-  fns, mobile cards) into one hunk. Instruction that worked: RECONSTRUCT
-  from verbatim parent-tip sources (`git show parent:file`), never trust the
-  raw diff; then have a separate verifier byte-compare each reconstructed
-  block against its originating parent.
-- Two defects escaped the (excellent) revival agent, caught by cheap layers:
-  (1) typecheck drift — main added a NEW call site (sendSignInPhoneCode) of
-  a function whose signature the branch widened; textually conflict-free,
-  CI caught it. Budget one CI round trip for exactly this class. (2) a
-  behavior bug (digest email subject ternary duplicated from the h1) found
-  only by the adversarial verifier's parent-diff spot-read — verify agents
-  earn their cost on merges; run them in parallel with CI, not after.
-- Orchestrator fixing 1-line CI/verifier findings directly beats
-  round-tripping to the author agent when the diagnosis is already in hand
-  — reserve SendMessage round trips for fixes needing the agent's context.
-- Retarget a stacked PR's base to main BEFORE the revival push (one
-  update_pull_request call), and close the superseded base PR with a
-  contained-in note.
+[Folded 2026-07-27: Run 2 addenda 2-4 (#323 revival, #399 approval gate,
+#401 identity backbone). Durable bits promoted to the invariants above
+(pinned-spec sweep; budget 3-4 CI rounds on a large feature PR; prompt
+adversarial verifiers with the domain's specific bypass classes; APP_URL
+email-link assertion + loud degrade). Also still true, in brief: for a
+BOUNDARY change (a flag every consumer must respect) budget three audit
+layers — implementer self-audit, adversarial verifier, systematic grep
+sweep; none alone sufficed. Sites deliberately left inclusive need a
+comment saying so or a later sweep "fixes" them backwards. Resolve merge
+conflicts by RECONSTRUCTING from verbatim parent-tip sources (`git show
+parent:file`), never from the raw diff. The orchestrator should fix
+one-line CI/verifier findings directly rather than round-tripping to the
+author agent.]
 
 [Folded 2026-07-26: Run 2 (email readiness), Run 2 team-chat addendum, and
 Run 1 addenda 2-3 — durable bits now live in the invariants (git
