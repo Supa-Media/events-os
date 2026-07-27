@@ -16,6 +16,15 @@
  */
 import { mutation, internalMutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
+// Triggers-wrapped builders for the handful of exports below that write
+// `people`/`engagements`/`roleAssignments` (seeding a person, seeding role
+// assignments, or `instantiateEvent`'s owner/placeholder-crew inserts) — see
+// `lib/peopleAggregate.ts`'s module doc. Every other mutation in this file
+// (chapter/template/module seeding) stays on the raw builders above.
+import {
+  mutation as triggerMutation,
+  internalMutation as triggerInternalMutation,
+} from "./lib/peopleAggregate";
 import { Id, TableNames } from "./_generated/dataModel";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
@@ -488,7 +497,7 @@ export const health = query({
  * SECURITY: converted from a public `mutation` to `internalMutation` — it mass-
  * patches roster rows and is not called from the UI. Dashboard/CLI only.
  */
-export const backfillTeamMembers = internalMutation({
+export const backfillTeamMembers = triggerInternalMutation({
   args: {},
   handler: async (ctx: MutationCtx) => {
     const ids = new Set<string>();
@@ -508,7 +517,7 @@ export const backfillTeamMembers = internalMutation({
   },
 });
 
-export const seedDemoData = mutation({
+export const seedDemoData = triggerMutation({
   args: {},
   handler: async (ctx: MutationCtx) => {
     const userId = await requireUserId(ctx);
@@ -841,7 +850,7 @@ export const ensureChapters = internalMutation({
  * auth and is hugely destructive (cascade-deletes a chapter's events, templates,
  * docs, and site-map). Not called from the UI. Dashboard/CLI only.
  */
-export const reseedNyDemo = internalMutation({
+export const reseedNyDemo = triggerInternalMutation({
   args: {},
   handler: async (ctx: MutationCtx) => {
     const now = Date.now();
@@ -1079,7 +1088,7 @@ export const reseedNyDemo = internalMutation({
  * auth and destructively merges/deletes engagement rows. Not called from the UI.
  * Dashboard/CLI only.
  */
-export const mergeEngagementTeams = internalMutation({
+export const mergeEngagementTeams = triggerInternalMutation({
   args: {},
   handler: async (ctx: MutationCtx) => {
     const all = await ctx.db.query("engagements").collect();
@@ -1142,7 +1151,7 @@ export const mergeEngagementTeams = internalMutation({
 // roster, so it must not be reachable from the public API. Dashboard/CLI only.
 // ---------------------------------------------------------------------------
 
-export const importRoster = internalMutation({
+export const importRoster = triggerInternalMutation({
   args: {},
   handler: async (ctx: MutationCtx) => {
     let chapter = await ctx.db
@@ -1255,7 +1264,7 @@ export const importRoster = internalMutation({
  * auth and creates events + assignments. Not called from the UI. Dashboard/CLI
  * only.
  */
-export const seedOverseeingDemo = internalMutation({
+export const seedOverseeingDemo = triggerInternalMutation({
   args: {},
   handler: async (ctx: MutationCtx) => {
     const now = Date.now();

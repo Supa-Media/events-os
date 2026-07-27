@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 import { describe, expect, test } from "vitest";
-import { api } from "../_generated/api";
+import { api, internal } from "../_generated/api";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
 import type { Doc, Id } from "../_generated/dataModel";
@@ -375,6 +375,14 @@ describe("people.counts", () => {
     await seedPerson(s, { name: "Contact B" });
     // Excluded from every count, same as `listPaginated`.
     await seedPerson(s, { name: "Placeholder", isPlaceholder: true });
+
+    // `seedPerson` raw-inserts (bypasses the trigger-wrapped `people.create`
+    // mutation), so the `peopleByPersona` Aggregate never learns about these
+    // rows on its own — exactly the "direct DB write" drift scenario
+    // `repairPersonaAggregate` (Guard 1, `people.ts`) exists to fix. Calling
+    // it here is the realistic way to sync fixtures seeded like this, not a
+    // workaround.
+    await t.mutation(internal.people.repairPersonaAggregate, {});
 
     const counts = await s.as.query(api.people.counts, {});
     expect(counts).toEqual({

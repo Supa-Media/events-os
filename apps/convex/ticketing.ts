@@ -22,6 +22,15 @@ import {
   query,
 } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
+// Triggers-wrapped builder for `submitRsvp`/`updatePage`/`prepareOrder`
+// below (write `rsvps.personId`/`archivedAt` — a public RSVP, un-archiving
+// on ticketing switch-on, and `linkRsvpToPerson`) — see
+// `lib/peopleAggregate.ts`'s module doc. Every other mutation in this file
+// stays on the raw builders above.
+import {
+  mutation as triggerMutation,
+  internalMutation as triggerInternalMutation,
+} from "./lib/peopleAggregate";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
@@ -231,7 +240,7 @@ export const createPage = mutation({
   },
 });
 
-export const updatePage = mutation({
+export const updatePage = triggerMutation({
   args: {
     pageId: v.id("eventPages"),
     patch: v.object({
@@ -1183,7 +1192,7 @@ async function buildActivity(
  *   3. Fresh row.
  * Returns the guest token the browser should store.
  */
-export const submitRsvp = mutation({
+export const submitRsvp = triggerMutation({
   args: {
     slug: v.string(),
     // Optional when a valid token already identifies the guest.
@@ -1460,7 +1469,7 @@ export const getPublicTicket = query({
  * Validate a cart and create a pending order (+ ensure an RSVP identity for
  * the buyer). Called by the checkout action right before Stripe.
  */
-export const prepareOrder = internalMutation({
+export const prepareOrder = triggerInternalMutation({
   args: {
     slug: v.string(),
     name: v.string(),

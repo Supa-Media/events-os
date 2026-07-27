@@ -10,7 +10,11 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   test: {
     environment: "edge-runtime",
-    server: { deps: { inline: ["convex-test"] } },
+    // `@convex-dev/aggregate` is inlined too — its `/test` entry point
+    // (`lib/peopleAggregate.ts`'s consistency test) uses `import.meta.glob`
+    // to register the aggregate component with convex-test, which only
+    // works if Vite processes it as source rather than a pre-bundled dep.
+    server: { deps: { inline: ["convex-test", "@convex-dev/aggregate"] } },
     include: ["**/*.test.ts"],
   },
 });

@@ -34,7 +34,11 @@
  * `matchOrCreatePersonContact`'s doc) — a re-import of an existing contact
  * can add newly-learned facts but never overwrite a value already on file.
  */
-import { mutation, query } from "./_generated/server";
+import { query } from "./_generated/server";
+// `mutation` is the triggers-wrapped builder, not `./_generated/server`'s —
+// `importContacts` inserts `people` rows via `matchOrCreatePersonContact`.
+// See `lib/peopleAggregate.ts`'s module doc.
+import { mutation } from "./lib/peopleAggregate";
 import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireChapterId, requireUserId } from "./lib/context";

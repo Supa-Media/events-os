@@ -4,7 +4,7 @@
  * Chapter-scoped roster CRUD. Every function resolves the caller's chapter via
  * `requireChapterId` and scopes reads/writes to it.
  */
-import { query, mutation, QueryCtx } from "./_generated/server";
+import { query, QueryCtx } from "./_generated/server";
 import { Doc, Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
@@ -22,6 +22,10 @@ import { composeName, nameHalvesPatch, splitPersonName } from "./lib/personName"
 import { assertServiceIdsInChapter, expandServiceIdsWithChildren } from "./lib/serviceCatalog";
 import { resolvePersonaForRoster, resolvePersonaForPage } from "./lib/people";
 import { requireGivingView, type GivingScope } from "./lib/givingAccess";
+// `mutation`/`internalMutation` come from the triggers-wrapped builders, NOT
+// `./_generated/server`, because this file writes `people` directly
+// (create/update/remove) — see `lib/peopleAggregate.ts`'s module doc.
+import { mutation, internalMutation, peopleByPersona, isCountedInAggregate } from "./lib/peopleAggregate";
 
 const personaFilter = v.union(
   v.literal("team"),
@@ -401,7 +405,14 @@ export const listPaginated = query({
 
     let cursor: string | null = args.paginationOpts.cursor;
     let isDone = false;
-    const page: Array<Doc<"people"> & { imageUrl: string | null; persona: Persona | null }> = [];
+    // `Omit<..., "persona">` — `Doc<"people">` now carries its OWN cached
+    // `persona` field (`schema/people.ts`'s new Aggregate-backed cache), but
+    // this result's `persona` is the freshly-computed, page-scoped value
+    // from `resolvePersonaForPage` below, not that cache; omitting avoids
+    // the two conflicting `persona` types colliding in the intersection.
+    const page: Array<
+      Omit<Doc<"people">, "persona"> & { imageUrl: string | null; persona: Persona | null }
+    > = [];
     for (
       let loop = 0;
       loop < PEOPLE_PAGE_BATCH_LOOPS && page.length < args.paginationOpts.numItems && !isDone;
@@ -430,32 +441,20 @@ export const listPaginated = query({
   },
 });
 
-/** Bound on `counts`' roster scan — generous relative to a real chapter
- *  (heading into the thousands per the People-CRM overhaul brief), and a
- *  DELIBERATE exception to "bound reads, don't read everyone": an accurate
- *  persona-ladder count fundamentally requires visiting every roster row's
- *  derived persona at least once — there's no index that can pre-aggregate
- *  a value computed from three OTHER tables' participation history. This
- *  query is the cheap alternative the People-CRM overhaul brief asked for:
- *  ONE dedicated query, decoupled from the (now paginated) `listPaginated`,
- *  that ships only 6 integers to the client — never a full roster. If the
- *  roster outgrows this bound, the real fix is denormalizing a cached
- *  `persona` field onto `people` (write-through from every mutation that
- *  can change it — `people.update`, `engagements`/`roleAssignments`/`rsvps`
- *  writes) so counts become a true O(1) incremental counter; that's a much
- *  larger, cross-cutting change flagged here rather than done as part of
- *  this PR. */
+/** Bound on `repairPersonaAggregate`'s per-chapter roster scan — generous
+ *  relative to a real chapter (heading into the thousands per the
+ *  People-CRM overhaul brief). `counts` itself no longer scans anything (see
+ *  below) — this bound only matters for the repair tool's from-scratch
+ *  rebuild. */
 const PEOPLE_COUNTS_SCAN_LIMIT = 20000;
 
 /**
  * Persona-ladder counts (All / Team / Volunteers / Vendors / Guests /
- * Contacts) for the People grid's header — computed WITHOUT the client ever
- * holding the roster (see the bound's doc above for the "why a scan, not a
- * counter" tradeoff). Reuses `resolvePersonaForRoster`'s existing
- * whole-chapter batching (three bounded, chapter-scoped scans), so this is
- * exactly as expensive as the old `people.list({persona:"all"})` load USED
- * to be to COMPUTE — the difference is it never ships the 473+ person docs
- * to the client, just 6 numbers.
+ * Contacts) for the People grid's header. Previously a whole-chapter scan +
+ * `resolvePersonaForRoster` on every call; now reads `peopleByPersona` (a
+ * `TableAggregate` over `people.persona` — see `lib/peopleAggregate.ts`),
+ * giving O(log n) counts instead of visiting every roster row. Same return
+ * shape as before — the client is unaffected.
  */
 export const counts = query({
   args: {},
@@ -472,18 +471,56 @@ export const counts = query({
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return empty;
     const cId = chapterId as Id<"chapters">;
-    const people = await ctx.db
-      .query("people")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", cId))
-      .take(PEOPLE_COUNTS_SCAN_LIMIT);
-    const everyone = people.filter((p) => p.isPlaceholder !== true && p.isSamplePerson !== true);
-    const personaByPerson = await resolvePersonaForRoster(ctx, cId, everyone);
-    const counts = { ...empty, all: everyone.length };
-    for (const p of everyone) {
-      const persona = personaByPerson.get(p._id);
-      if (persona) counts[persona] += 1;
+    const [all, team, vendor, volunteer, guest, contact] = await peopleByPersona.countBatch(ctx, [
+      { namespace: cId },
+      { namespace: cId, bounds: { prefix: ["team"] } },
+      { namespace: cId, bounds: { prefix: ["vendor"] } },
+      { namespace: cId, bounds: { prefix: ["volunteer"] } },
+      { namespace: cId, bounds: { prefix: ["guest"] } },
+      { namespace: cId, bounds: { prefix: ["contact"] } },
+    ]);
+    return { all, team, vendor, volunteer, guest, contact };
+  },
+});
+
+/**
+ * Guard 1 — repair tool. Clears `peopleByPersona` and rebuilds it from
+ * scratch, per chapter, by recomputing every eligible person's REAL persona
+ * from source-of-truth signals (`resolvePersonaForRoster` — the same
+ * whole-chapter batching `counts` used before this PR) and unconditionally
+ * re-patching `persona`, even when the computed value matches what's already
+ * stored. That "patch anyway" is deliberate: the cache field can be correct
+ * while the AGGREGATE is still missing the row entirely (e.g. a write that
+ * slipped through an un-wrapped mutation — see `lib/peopleAggregate.ts`'s
+ * module doc), and only an actual patch fires the write-through trigger that
+ * repopulates the aggregate. Safe to run any time drift is suspected; not on
+ * a cron — this is a manually-invoked, superuser-triggered repair, not a
+ * live code path.
+ *
+ * Run locally:   npx convex run people:repairPersonaAggregate
+ * Run on prod:   npx convex run --prod people:repairPersonaAggregate
+ */
+export const repairPersonaAggregate = internalMutation({
+  args: {},
+  returns: v.object({ chaptersRepaired: v.number(), peopleRepaired: v.number() }),
+  handler: async (ctx) => {
+    await peopleByPersona.clearAll(ctx);
+    const chapters = await ctx.db.query("chapters").take(1000);
+    let peopleRepaired = 0;
+    for (const chapter of chapters) {
+      const roster = await ctx.db
+        .query("people")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", chapter._id))
+        .take(PEOPLE_COUNTS_SCAN_LIMIT);
+      const eligible = roster.filter(isCountedInAggregate);
+      const personaByPerson = await resolvePersonaForRoster(ctx, chapter._id, eligible);
+      for (const p of eligible) {
+        const persona = personaByPerson.get(p._id) ?? "contact";
+        await ctx.db.patch(p._id, { persona });
+        peopleRepaired++;
+      }
     }
-    return counts;
+    return { chaptersRepaired: chapters.length, peopleRepaired };
   },
 });
 

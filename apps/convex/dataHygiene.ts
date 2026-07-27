@@ -74,8 +74,13 @@
  * transaction's read budget. Indexed drains are complete (patched rows leave the
  * person-column index, so the next page returns only still-unmerged rows).
  */
-import { query, mutation } from "./_generated/server";
+import { query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
+// `mutation` is the triggers-wrapped builder, not `./_generated/server`'s —
+// `mergePeople` patches/deletes `people` rows (via `mergePeopleCore`) and
+// `mergeDonors` can insert one (`linkDonorToPerson`'s belt-and-suspenders
+// re-link). See `lib/peopleAggregate.ts`'s module doc.
+import { mutation } from "./lib/peopleAggregate";
 import { ConvexError, v } from "convex/values";
 import { Doc, Id } from "./_generated/dataModel";
 import { normalizeEmail } from "./lib/access";

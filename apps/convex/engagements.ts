@@ -7,7 +7,7 @@
  * splits engagements into two lists (Volunteers / Vendors); paid engagements
  * carry an amount + payment status and roll into the event budget.
  */
-import { query, mutation, QueryCtx } from "./_generated/server";
+import { query, QueryCtx } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
 import {
@@ -17,6 +17,10 @@ import {
 } from "./lib/context";
 import { deleteEventPlacementsForRef } from "./lib/placements";
 import { resolveServiceLabels } from "./lib/serviceCatalog";
+// `mutation` is the triggers-wrapped builder, not `./_generated/server`'s —
+// every mutation here writes `engagements`, whose `personId`/`type` feed the
+// persona ladder. See `lib/peopleAggregate.ts`'s module doc.
+import { mutation } from "./lib/peopleAggregate";
 
 /**
  * A `budgetCategoryId` override, if any, must belong to the CALLER's own

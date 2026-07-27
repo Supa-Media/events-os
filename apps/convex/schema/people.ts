@@ -201,6 +201,30 @@ export const people = defineTable({
   // reports roll up to their manager, transitively, so a director can see the
   // whole structure under them. Kept acyclic by `people.update`.
   managerId: v.optional(v.id("people")),
+  // ── Persona cache (People-counts Aggregate, `lib/peopleAggregate.ts`) ──────
+  // A DERIVED CACHE of the `team > vendor > volunteer > guest > contact`
+  // ladder (`@events-os/shared#personaFromSignals`) — NEVER a source of
+  // truth, and NEVER hand-edited (there is no UI or mutation field for it).
+  // It exists ONLY because `TableAggregate` can only key on a value stored ON
+  // the document, and the real ladder also depends on `engagements` /
+  // `roleAssignments` / `rsvps` rows that live in OTHER tables. Maintained
+  // write-through by `lib/peopleAggregate.ts`'s triggers on every write to
+  // this table and those three, so it should always agree with a fresh
+  // `resolvePersonaForRoster`/`resolvePersonaForPage` computation; if it ever
+  // doesn't, the live computation is correct and this field is stale — run
+  // `people.ts#repairPersonaAggregate`. This keeps the codebase's stated
+  // philosophy intact: persona is still derived from coexisting signals
+  // (`isTeamMember`'s own comment above), not a stored `kind` — a maintained
+  // cache is compatible with that; a hand-editable field would not be.
+  persona: v.optional(
+    v.union(
+      v.literal("team"),
+      v.literal("vendor"),
+      v.literal("volunteer"),
+      v.literal("guest"),
+      v.literal("contact"),
+    ),
+  ),
   createdAt: v.number(),
 })
   .index("by_chapter", ["chapterId"])
