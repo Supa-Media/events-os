@@ -7,6 +7,7 @@
 import { query, mutation, QueryCtx } from "./_generated/server";
 import { Doc, Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
+import { paginationOptsValidator } from "convex/server";
 import {
   requireUserId,
   requireChapterId,
@@ -18,8 +19,9 @@ import { isCardEligible, type Persona } from "@events-os/shared";
 import { writePersonAudit, diffFields } from "./lib/givingAudit";
 import { recordPersonEmail } from "./lib/personEmails";
 import { composeName, nameHalvesPatch, splitPersonName } from "./lib/personName";
-import { assertServiceIdsInChapter } from "./lib/serviceCatalog";
-import { resolvePersonaForRoster } from "./lib/people";
+import { assertServiceIdsInChapter, expandServiceIdsWithChildren } from "./lib/serviceCatalog";
+import { resolvePersonaForRoster, resolvePersonaForPage } from "./lib/people";
+import { requireGivingView, type GivingScope } from "./lib/givingAccess";
 
 const personaFilter = v.union(
   v.literal("team"),
@@ -208,6 +210,310 @@ export const list = query({
         persona: (personaByPerson?.get(p._id) ?? null) as Persona | null,
       })),
     );
+  },
+});
+
+// ── People-CRM overhaul (2026-07-27) ────────────────────────────────────────
+//
+// `list` above stays exactly as it was: ~11 callers (pickers, mentions,
+// duty/role assignment, receipt person lookup, …) depend on its conservative
+// unfiltered default and its plain-array shape, and a regression test guards
+// that default — see `list`'s own doc. The People TAB, though, needs a
+// fundamentally different shape: server-side search/filter/sort over a
+// roster heading into the thousands, paginated, with counts that don't
+// require holding everyone in memory. Rather than reshape `list` (which
+// would ripple through every one of those callers), this is a dedicated
+// query for the grid.
+
+/** A grid row's persona narrows to exactly one rung — no "all" sentinel here
+ *  (unlike `list`'s `persona` arg): this query's own unfiltered default
+ *  already means "everyone, contacts included" (the CRM grid's whole point),
+ *  so there's no separate opt-in needed. */
+const gridPersonaFilter = v.union(
+  v.literal("team"),
+  v.literal("vendor"),
+  v.literal("volunteer"),
+  v.literal("guest"),
+  v.literal("contact"),
+);
+
+const gridSortBy = v.union(v.literal("name"), v.literal("lastName"), v.literal("status"));
+const gridSortDir = v.union(v.literal("asc"), v.literal("desc"));
+
+/** Bound on `getGiverPersonIds`'s donor scan — mirrors
+ *  `givingPlatform.ts#DONOR_LIST_LIMIT` (same table, same chapter-scale
+ *  reasoning; the People grid only needs the id set, not the richer
+ *  per-donor shape `givingPlatform.ts#giverMarks` returns). */
+const GIVER_PERSON_IDS_SCAN_LIMIT = 500;
+
+/**
+ * The chapter's "givers" as a person-id set, for the grid's Givers filter —
+ * same predicate as `givingPlatform.ts#giverMarks` (a linked donor with at
+ * least one recorded gift). Quietly degrades to an empty set for a caller
+ * with no giving access at this chapter (mirrors `giverMarks`'s no-throw
+ * pattern), so the People grid doesn't blow up for a viewer who simply can't
+ * see the giving desk.
+ */
+async function getGiverPersonIds(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<Set<Id<"people">>> {
+  try {
+    await requireGivingView(ctx, chapterId as GivingScope);
+  } catch {
+    return new Set();
+  }
+  const donors = await ctx.db
+    .query("donors")
+    .withIndex("by_scope_and_lifetime", (q) => q.eq("scope", chapterId))
+    .take(GIVER_PERSON_IDS_SCAN_LIMIT);
+  const ids = new Set<Id<"people">>();
+  for (const d of donors) {
+    if (d.personId !== undefined && d.giftCount > 0) ids.add(d.personId);
+  }
+  return ids;
+}
+
+/** One indexed, sorted `.paginate()` call per `sortBy` column — a compound
+ *  index per column (`schema/people.ts`) so the DB itself returns rows
+ *  already in the requested order across the whole walk, cursor included.
+ *  Written as an if/else over three concrete index names rather than one
+ *  dynamic `withIndex(name, …)` call so each branch keeps full type
+ *  inference on its own `q.eq`. */
+async function paginateSortedPeople(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  sortBy: "name" | "lastName" | "status",
+  order: "asc" | "desc",
+  opts: { numItems: number; cursor: string | null },
+) {
+  if (sortBy === "lastName") {
+    return await ctx.db
+      .query("people")
+      .withIndex("by_chapter_and_lastName", (q) => q.eq("chapterId", chapterId))
+      .order(order)
+      .paginate(opts);
+  }
+  if (sortBy === "status") {
+    return await ctx.db
+      .query("people")
+      .withIndex("by_chapter_and_status", (q) => q.eq("chapterId", chapterId))
+      .order(order)
+      .paginate(opts);
+  }
+  return await ctx.db
+    .query("people")
+    .withIndex("by_chapter_and_name", (q) => q.eq("chapterId", chapterId))
+    .order(order)
+    .paginate(opts);
+}
+
+/** Safety bound on how many raw index batches `listPaginated` will re-walk
+ *  in a SINGLE call to backfill a page that search/filter/persona shrank
+ *  below `numItems` — never unbounded. Filtering after `.paginate()` is the
+ *  standard Convex pattern for a query no built-in index can fully express
+ *  (free-text substring search across name/email/phone); looping a bounded
+ *  number of times inside the one call means a rare search still returns a
+ *  full page in one round trip instead of forcing the client through a
+ *  string of near-empty "load more" taps. */
+const PEOPLE_PAGE_BATCH_LOOPS = 10;
+
+/**
+ * The People tab's grid data source: server-side search + filter + sort,
+ * paginated. Replaces the old `people.list({persona:"all"})` +
+ * client-side-filter-everything approach, which shipped every person to the
+ * client on every load and re-derived persona for the WHOLE roster
+ * (`resolvePersonaForRoster`) regardless of what was actually on screen.
+ *
+ * - `search`: case-insensitive substring match against name, email, pwEmail,
+ *   OR phone (phone compared digits-only, mirrors the old client-side
+ *   `personMatchesSearch`).
+ * - `persona`: narrows to exactly that rung (no "all" — see
+ *   `gridPersonaFilter`'s doc; omit the arg for everyone).
+ * - `serviceIds`: multi-select, OR semantics — a person matches if their
+ *   `serviceIds` intersects ANY selected id's expanded match set (itself +
+ *   children), so picking a parent (e.g. "Vocals") also matches everyone
+ *   tagged with a child (e.g. "Vocals:Tenor") — mirrors
+ *   `lib/audienceTargeting.ts#buildServiceIndex`'s `has_service` rollup
+ *   exactly (see `expandServiceIdsWithChildren`), so the grid and audience
+ *   targeting never disagree about what selecting a service means.
+ * - `status` / `giversOnly`: single-value / boolean overlays, same as
+ *   before, just server-side now.
+ *
+ * Persona is derived PER PAGE (`resolvePersonaForPage`), never for the whole
+ * roster — see that function's doc for why `resolvePersonaForRoster` would
+ * be the wrong tool here. Placeholders/sample people are excluded, same as
+ * `list`.
+ */
+export const listPaginated = query({
+  args: {
+    paginationOpts: paginationOptsValidator,
+    search: v.optional(v.string()),
+    persona: v.optional(gridPersonaFilter),
+    serviceIds: v.optional(v.array(v.id("serviceOptions"))),
+    status: v.optional(rosterStatus),
+    giversOnly: v.optional(v.boolean()),
+    sortBy: v.optional(gridSortBy),
+    sortDir: v.optional(gridSortDir),
+  },
+  handler: async (ctx, args) => {
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) {
+      return { page: [], isDone: true, continueCursor: "" };
+    }
+    const cId = chapterId as Id<"chapters">;
+
+    const serviceMatchSet =
+      args.serviceIds && args.serviceIds.length > 0
+        ? await expandServiceIdsWithChildren(ctx, args.serviceIds)
+        : null;
+    const giverIds = args.giversOnly ? await getGiverPersonIds(ctx, cId) : null;
+
+    const search = (args.search ?? "").trim().toLowerCase();
+    const searchDigits = search.replace(/\D/g, "");
+
+    // Every filter EXCEPT persona (which needs a derived value resolved
+    // per-candidate below) — cheap field compares over an already-indexed,
+    // already-sorted raw batch.
+    function passesFieldFilters(p: Doc<"people">): boolean {
+      if (p.isPlaceholder === true || p.isSamplePerson === true) return false;
+      if (args.status && p.status !== args.status) return false;
+      if (serviceMatchSet && !(p.serviceIds ?? []).some((id) => serviceMatchSet.has(id))) {
+        return false;
+      }
+      if (giverIds && !giverIds.has(p._id)) return false;
+      if (search) {
+        const nameHit = p.name.toLowerCase().includes(search);
+        const emailHit =
+          (p.email?.toLowerCase().includes(search) ?? false) ||
+          (p.pwEmail?.toLowerCase().includes(search) ?? false);
+        const phoneHit =
+          searchDigits.length > 0 &&
+          !!p.phone &&
+          p.phone.replace(/\D/g, "").includes(searchDigits);
+        if (!nameHit && !emailHit && !phoneHit) return false;
+      }
+      return true;
+    }
+
+    const sortBy = args.sortBy ?? "name";
+    const order = args.sortDir ?? "asc";
+
+    let cursor: string | null = args.paginationOpts.cursor;
+    let isDone = false;
+    const page: Array<Doc<"people"> & { imageUrl: string | null; persona: Persona | null }> = [];
+    for (
+      let loop = 0;
+      loop < PEOPLE_PAGE_BATCH_LOOPS && page.length < args.paginationOpts.numItems && !isDone;
+      loop++
+    ) {
+      const batch = await paginateSortedPeople(ctx, cId, sortBy, order, {
+        numItems: args.paginationOpts.numItems,
+        cursor,
+      });
+      isDone = batch.isDone;
+      cursor = batch.continueCursor;
+      const candidates = batch.page.filter(passesFieldFilters);
+      if (candidates.length === 0) continue;
+      const personaByPerson = await resolvePersonaForPage(ctx, candidates);
+      for (const p of candidates) {
+        const persona = personaByPerson.get(p._id) ?? null;
+        if (args.persona && persona !== args.persona) continue;
+        page.push({
+          ...p,
+          imageUrl: p.image ? await ctx.storage.getUrl(p.image) : null,
+          persona,
+        });
+      }
+    }
+    return { page, isDone, continueCursor: cursor ?? "" };
+  },
+});
+
+/** Bound on `counts`' roster scan — generous relative to a real chapter
+ *  (heading into the thousands per the People-CRM overhaul brief), and a
+ *  DELIBERATE exception to "bound reads, don't read everyone": an accurate
+ *  persona-ladder count fundamentally requires visiting every roster row's
+ *  derived persona at least once — there's no index that can pre-aggregate
+ *  a value computed from three OTHER tables' participation history. This
+ *  query is the cheap alternative the People-CRM overhaul brief asked for:
+ *  ONE dedicated query, decoupled from the (now paginated) `listPaginated`,
+ *  that ships only 6 integers to the client — never a full roster. If the
+ *  roster outgrows this bound, the real fix is denormalizing a cached
+ *  `persona` field onto `people` (write-through from every mutation that
+ *  can change it — `people.update`, `engagements`/`roleAssignments`/`rsvps`
+ *  writes) so counts become a true O(1) incremental counter; that's a much
+ *  larger, cross-cutting change flagged here rather than done as part of
+ *  this PR. */
+const PEOPLE_COUNTS_SCAN_LIMIT = 20000;
+
+/**
+ * Persona-ladder counts (All / Team / Volunteers / Vendors / Guests /
+ * Contacts) for the People grid's header — computed WITHOUT the client ever
+ * holding the roster (see the bound's doc above for the "why a scan, not a
+ * counter" tradeoff). Reuses `resolvePersonaForRoster`'s existing
+ * whole-chapter batching (three bounded, chapter-scoped scans), so this is
+ * exactly as expensive as the old `people.list({persona:"all"})` load USED
+ * to be to COMPUTE — the difference is it never ships the 473+ person docs
+ * to the client, just 6 numbers.
+ */
+export const counts = query({
+  args: {},
+  returns: v.object({
+    all: v.number(),
+    team: v.number(),
+    vendor: v.number(),
+    volunteer: v.number(),
+    guest: v.number(),
+    contact: v.number(),
+  }),
+  handler: async (ctx) => {
+    const empty = { all: 0, team: 0, vendor: 0, volunteer: 0, guest: 0, contact: 0 };
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) return empty;
+    const cId = chapterId as Id<"chapters">;
+    const people = await ctx.db
+      .query("people")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", cId))
+      .take(PEOPLE_COUNTS_SCAN_LIMIT);
+    const everyone = people.filter((p) => p.isPlaceholder !== true && p.isSamplePerson !== true);
+    const personaByPerson = await resolvePersonaForRoster(ctx, cId, everyone);
+    const counts = { ...empty, all: everyone.length };
+    for (const p of everyone) {
+      const persona = personaByPerson.get(p._id);
+      if (persona) counts[persona] += 1;
+    }
+    return counts;
+  },
+});
+
+/** Bound generous relative to a real chapter's roster (heading into the
+ *  thousands) — a lightweight `{_id, name}` PROJECTION, not full person
+ *  docs, so this stays cheap even at that scale regardless of how many
+ *  people exist. */
+const PEOPLE_NAMES_SCAN_LIMIT = 20000;
+
+/**
+ * `{_id, name}` for every real person in the chapter — powers the People
+ * grid's Manager-name column, which must resolve a name for ANY person in
+ * the chapter regardless of which page of the (now paginated) grid happens
+ * to be loaded. Never used to derive persona/filters/counts — just a name
+ * lookup, which is why this stays cheap at roster scale where
+ * `listPaginated`'s per-row cost would not.
+ */
+export const namesByChapter = query({
+  args: {},
+  returns: v.array(v.object({ _id: v.id("people"), name: v.string() })),
+  handler: async (ctx) => {
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) return [];
+    const people = await ctx.db
+      .query("people")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId as Id<"chapters">))
+      .take(PEOPLE_NAMES_SCAN_LIMIT);
+    return people
+      .filter((p) => p.isPlaceholder !== true && p.isSamplePerson !== true)
+      .map((p) => ({ _id: p._id, name: p.name }));
   },
 });
 
