@@ -57,7 +57,7 @@ import {
   BUDGET_REF_KINDS,
   BUDGET_APPROVAL_STATUSES,
   CENTRAL,
-  countsAsSpend,
+  TRANSACTION_STATUSES,
   effectiveBudgetApprovalStatus,
   financeRoleAtLeast,
   MODULE_DEFAULT_CATEGORY_NAMES,
@@ -68,7 +68,7 @@ import {
 } from "@events-os/shared";
 import { getChapterIdOrNull } from "./lib/context";
 import { requireFinanceRole, getFinanceRole, type FinanceAccess } from "./lib/finance";
-import { effectiveCapCents } from "./finances";
+import { effectiveCapCents, isSpend } from "./finances";
 import { callerHasEventEditRights } from "./lib/org";
 
 // A generous bound on budgets-per-ref / lines-per-budget / txns-per-budget —
@@ -190,29 +190,27 @@ function canEditBudgetPlan(
   return budgetChapterId === authz.ownChapterId && bookkeeperPlus;
 }
 
-/** True iff a transaction contributes to category/budget SPEND — mirrors
- *  `finances.ts#isSpend` exactly (kept local since that one isn't exported):
- *  outflow, non-transfer (`countsAsSpend`), not excluded, not a personal charge. */
-function isSpend(tr: Doc<"transactions">): boolean {
-  return (
-    tr.flow === "outflow" &&
-    countsAsSpend(tr.flow) &&
-    tr.status !== "excluded" &&
-    tr.isPersonal !== true
-  );
-}
+// `isSpend` is now imported from `./finances` (it's exported there for
+// exactly this reason — see `transfers.ts#interScopeBalances`'s own reuse).
+// A hand-copied local definition previously lived here and drifted out of
+// sync with the real predicate's doc comment (it claimed "kept local since
+// that one isn't exported", which was already stale); importing the single
+// canonical implementation means the Money tab and Reconcile/dashboard totals
+// can never again disagree on what counts as spend.
 
 const moneyTxnSummary = v.object({
   id: v.id("transactions"),
   postedAt: v.number(),
   amountCents: v.number(),
   flow: v.union(v.literal("outflow"), v.literal("inflow"), v.literal("transfer")),
-  status: v.union(
-    v.literal("unreviewed"),
-    v.literal("categorized"),
-    v.literal("reconciled"),
-    v.literal("excluded"),
-  ),
+  // Derived from the canonical `TRANSACTION_STATUSES` tuple (NOT hand-written)
+  // — a hand-written 4-literal union previously lived here and didn't derive
+  // from the tuple, so ANY future addition/removal from that tuple would
+  // silently drift out of sync here (worst case: a Convex output-validator
+  // error the moment this query returned a status this union didn't know
+  // about). Grepped the rest of the codebase for any other hand-written
+  // `v.literal("excluded")`-style union and found none.
+  status: v.union(...TRANSACTION_STATUSES.map((s) => v.literal(s))),
   merchantName: v.union(v.string(), v.null()),
   description: v.union(v.string(), v.null()),
   categoryId: v.union(v.id("budgetCategories"), v.null()),

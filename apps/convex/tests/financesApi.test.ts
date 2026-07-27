@@ -10,7 +10,7 @@ import type { Id } from "../_generated/dataModel";
  *
  * Covers: budget scope/cadence create + budgetVsActual spent-vs-allocated math,
  * Estimated ≠ Actual (a budget + a matching txn don't double count, transfers
- * excluded from spend), categorize + flagPersonal, integer-cents enforcement,
+ * excluded from spend), categorize + flagPersonalCharge, integer-cents enforcement,
  * bounded pagination, viewer-rejected-from-manager-write, and cross-chapter id
  * rejection.
  */
@@ -179,7 +179,7 @@ describe("budgets + budgetVsActual (Estimated ≠ Actual)", () => {
   test("actual sums matching transactions; transfers + personal are excluded", async () => {
     const t = newT();
     const s = await setupChapter(t);
-    await asManager(s);
+    const manager = await asManager(s);
     const year = 2026;
     const month = 3;
 
@@ -208,12 +208,15 @@ describe("budgets + budgetVsActual (Estimated ≠ Actual)", () => {
 
     // A real $120.00 outflow coded to Food in March, EXPLICITLY linked to the
     // budget → counts as actual (fund/category alone is no longer enough).
+    // `personId` set to the manager so it later resolves as a payee for
+    // `cards.flagPersonalCharge` (personId, else a card's cardholder).
     const outflowTxnId = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 12000,
       postedAt: tsInMonth(year, month),
       fundId,
       categoryId,
+      personId: manager,
     });
     await s.as.mutation(api.finances.categorizeTransaction, {
       transactionId: outflowTxnId,
@@ -248,9 +251,8 @@ describe("budgets + budgetVsActual (Estimated ≠ Actual)", () => {
     });
     const outflow = txns.page.find((x) => x.flow === "outflow");
     expect(outflow).toBeDefined();
-    await s.as.mutation(api.finances.flagPersonal, {
+    await s.as.mutation(api.cards.flagPersonalCharge, {
       transactionId: outflow!.id,
-      isPersonal: true,
     });
     const rows2 = await s.as.query(api.finances.budgetVsActual, { year, month });
     expect(rows2.find((r) => r.budgetId === budgetId)?.actualCents).toBe(0);
@@ -539,6 +541,7 @@ describe("listReconcile (server-side filters + counts + projections)", () => {
       missing_receipt: 1, // t1
       uncategorized: 2, // t1, t4
       ready: 1, // t2
+      personal_unpaid: 0, // none flagged personal in this fixture
     });
     const allIds = all.rows.map((r) => r.id);
     expect(allIds).toEqual(expect.arrayContaining([t1, t2, t4]));

@@ -33,15 +33,18 @@
  *  - Status → `finances.setTransactionStatus`.
  *  - Receipt → `finances.attachReceipt` via the SAME `ReceiptCell` affordance
  *    `ReconcileList` uses (re-exported from there, unmodified).
- *  - Personal flag → `finances.flagPersonal` — the plain bookkeeper-gated
- *    boolean setter `dashboardCharts.ts`'s own module doc lists as one of
- *    this drill-down's reuse targets, DELIBERATELY not `cards.
- *    flagPersonalCharge` (the Reconcile grid's manager-only affordance,
- *    which creates a repayment record and is gated to cardholder-or-manager
- *    — a bigger workflow this compact modal has no room to represent
- *    faithfully). `flagPersonal` matches the SAME bookkeeper gate as every
- *    other field this modal edits.
+ *  - Personal flag → READ-ONLY here (was `finances.flagPersonal`, a plain
+ *    boolean setter that created no repayment record and emailed nobody —
+ *    DELETED; see `finances.ts`'s removal note). Marking/un-marking personal
+ *    now always goes through `cards.flagPersonalCharge`/`unflagPersonalCharge`
+ *    (creates the repayment, resolves a real payee, schedules the email,
+ *    confirms first) — a workflow this compact modal has no room to
+ *    represent faithfully (no confirm step, no payee resolution UI). Rather
+ *    than half-implement that here, this modal just SHOWS the live state
+ *    and points the caller at the Reconcile grid — the founder's own chosen
+ *    home for this action — to change it.
  *
+
  * PEEK (owner rule, 2026-07-17): a central caller PEEKING a chapter that
  * isn't their own home desk has reconcile writes that would fail
  * server-side (every mutation above scopes to the caller's OWN chapter via
@@ -306,7 +309,6 @@ function TransactionDetailBody({
   const setStatus = useMutation(api.finances.setTransactionStatus);
   const attachReceipt = useMutation(api.finances.attachReceipt);
   const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
-  const flagPersonal = useMutation(api.finances.flagPersonal);
 
   // LOCAL OPTIMISTIC OVERRIDES: `txn` (the "detail" path) is a plain snapshot
   // passed in once when the modal opened, NOT a live query result — a
@@ -389,17 +391,6 @@ function TransactionDetailBody({
       await attachReceipt({ transactionId: txn.id, storageId });
     } catch (err) {
       setHasReceiptState(prev);
-      alertError(err);
-    }
-  }
-
-  async function editPersonal(next: boolean) {
-    const prev = isPersonal;
-    setIsPersonalState(next);
-    try {
-      await flagPersonal({ transactionId: txn.id, isPersonal: next });
-    } catch (err) {
-      setIsPersonalState(prev);
       alertError(err);
     }
   }
@@ -546,32 +537,20 @@ function TransactionDetailBody({
         )}
       </View>
 
-      {/* Personal charge — only when the source query actually carries the
-          real value (see `Normalized.isPersonal`'s own doc comment); omitted
-          rather than shown in a possibly-wrong default state. */}
+      {/* Personal charge — READ-ONLY (see the module doc comment for why
+          editing it doesn't live here): only shown when the source query
+          actually carries the real value, omitted rather than shown in a
+          possibly-wrong default state. Mark/un-mark from the Reconcile
+          grid. */}
       {isPersonal != null ? (
         <View>
           <FieldLabel label="Personal charge" />
-          {readOnly ? (
-            <Text className="text-sm text-ink">{isPersonal ? "Yes" : "No"}</Text>
-          ) : (
-            <Pressable
-              onPress={() => {
-                void editPersonal(!isPersonal);
-              }}
-              accessibilityRole="button"
-              className="flex-row items-center gap-2 self-start rounded-md border border-border-strong px-2.5 py-1.5 active:opacity-70 web:hover:bg-sunken"
-            >
-              <View
-                className={`h-4 w-4 items-center justify-center rounded border ${
-                  isPersonal ? "border-accent bg-accent" : "border-border-strong bg-raised"
-                }`}
-              >
-                {isPersonal ? <Icon name="check" size={12} color={colors.accentText} /> : null}
-              </View>
-              <Text className="text-sm text-ink">Personal charge</Text>
-            </Pressable>
-          )}
+          <Text className="text-sm text-ink">{isPersonal ? "Yes" : "No"}</Text>
+          {!readOnly && isPersonal != null ? (
+            <Text className="mt-1 text-xs text-muted">
+              Mark or un-mark from the Reconcile grid.
+            </Text>
+          ) : null}
         </View>
       ) : null}
 

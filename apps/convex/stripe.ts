@@ -13,7 +13,7 @@
 import { action } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
-import { rsvpPageUrl } from "./lib/siteUrl";
+import { rsvpPageUrl, appUrl } from "./lib/siteUrl";
 
 const STRIPE_API = "https://api.stripe.com/v1";
 
@@ -219,6 +219,94 @@ export const createDonationCheckout = action({
       sessionId: session.id,
     });
     return { kind: "stripe", url: session.url, token: prepared.guestToken };
+  },
+});
+
+/** Result of createRepaymentCheckout: always a Stripe redirect (amount > 0). */
+type RepaymentCheckoutResult = { kind: "stripe"; url: string };
+
+/**
+ * The Stripe rail for a personal-charge repayment's "card" method
+ * (`cards.ts`'s "Stripe repayment" section) — the CALLER'S own outstanding
+ * repayments (or a manager paying back on the payer's behalf, mirroring
+ * `beginRepayment`'s OR-gate), bundled into ONE Checkout session (one line
+ * item per charge), same multi-line-item shape `createCheckout` uses for a
+ * ticket cart. Authorization + amount are resolved SERVER-SIDE in
+ * `cards.prepareRepaymentCheckout` — the client only ever supplies which
+ * repayments it wants to pay, never an amount.
+ */
+export const createRepaymentCheckout = action({
+  args: { repaymentIds: v.array(v.id("personalRepayments")) },
+  handler: async (ctx, { repaymentIds }): Promise<RepaymentCheckoutResult> => {
+    const prepared = await ctx.runMutation(
+      internal.cards.prepareRepaymentCheckout,
+      { repaymentIds },
+    );
+
+    const secretKey = process.env.STRIPE_SECRET_KEY;
+    if (!secretKey) {
+      throw new ConvexError({
+        code: "PAYMENTS_NOT_CONFIGURED",
+        message: "Card repayment isn't available yet — payments are still being set up.",
+      });
+    }
+
+    const returnUrl = appUrl("/finances/cards");
+    if (!returnUrl) {
+      // Degrade LOUDLY rather than start a Checkout with no return URL — the
+      // same "conditional link ships silently broken" trap this feature was
+      // explicitly warned to avoid (see `cards.ts#notifyPersonalChargeFlagged`).
+      console.error(
+        "[stripe] createRepaymentCheckout: APP_URL is unset — refusing to start a checkout with no return URL",
+      );
+      throw new ConvexError({
+        code: "PAYMENTS_NOT_CONFIGURED",
+        message: "Card repayment isn't available yet — payments are still being set up.",
+      });
+    }
+
+    const body = new URLSearchParams();
+    body.set("mode", "payment");
+    if (prepared.payerEmail) body.set("customer_email", prepared.payerEmail);
+    body.set("success_url", `${returnUrl}?repay=success`);
+    body.set("cancel_url", returnUrl);
+    // Bundled into ONE session — the webhook reads this back to know which
+    // repayments to settle (`http.ts`'s `checkout.session.completed` branch).
+    body.set("metadata[repaymentIds]", repaymentIds.join(","));
+    prepared.lines.forEach((line, i) => {
+      body.set(`line_items[${i}][quantity]`, "1");
+      body.set(`line_items[${i}][price_data][currency]`, "usd");
+      body.set(
+        `line_items[${i}][price_data][unit_amount]`,
+        String(line.amountCents),
+      );
+      body.set(
+        `line_items[${i}][price_data][product_data][name]`,
+        `Repayment — ${line.merchantName ?? "personal charge"}`,
+      );
+    });
+
+    const response = await fetch(`${STRIPE_API}/checkout/sessions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secretKey}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: body.toString(),
+    });
+    if (!response.ok) {
+      console.error("[stripe] repayment checkout session failed:", await response.text());
+      throw new ConvexError({
+        code: "STRIPE_ERROR",
+        message: "Couldn't start checkout. Please try again.",
+      });
+    }
+    const session = (await response.json()) as { id: string; url: string };
+    await ctx.runMutation(internal.cards.attachRepaymentStripeSession, {
+      repaymentIds,
+      sessionId: session.id,
+    });
+    return { kind: "stripe", url: session.url };
   },
 });
 

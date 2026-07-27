@@ -19,15 +19,22 @@
  * owe Public Worship" section) can hide/collapse in lockstep instead of
  * showing a stale count over a banner that just went blank.
  *
- * Pay by card / Pay by bank (ACH) pay ALL outstanding repayments at once via
+ * Pay by bank (ACH) pays ALL outstanding repayments at once via
  * `initiateRepayment`. The real ACH debit is feature-gated OFF
  * (`REPAYMENT_DEBIT_ENABLED` in cards.ts) — every call degrades to a `pending`
  * repayment, so a manager confirms receipt manually (`markRepaymentPaid`).
- * That gate is untouched here; this component only ever calls the existing
- * degrade-safe actions.
+ * That gate is untouched here; the ACH button only ever calls the existing
+ * degrade-safe action.
+ *
+ * Pay by card is a REAL rail (`stripe.ts#createRepaymentCheckout` +
+ * `cards.ts`'s "Stripe repayment" section): bundles every outstanding
+ * repayment into ONE Stripe Checkout session and redirects there
+ * (`Linking.openURL`). The flag only actually clears once Stripe's webhook
+ * confirms payment — never on this redirect alone (a closed tab / abandoned
+ * checkout leaves the repayment exactly as outstanding as it was).
  */
 import { useEffect, useState } from "react";
-import { Text, View } from "react-native";
+import { Linking, Text, View } from "react-native";
 import { useAction, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import { formatCents } from "@events-os/shared";
@@ -44,9 +51,16 @@ export function OwedBanner({
 } = {}) {
   const repayments = useQuery(api.cards.myPersonalRepayments, {});
   // A member may only INITIATE a repayment (choose a method + kick it off) —
-  // the offsetting credit is posted by a manager confirming receipt, never here.
+  // the offsetting credit is posted by a manager confirming receipt (ACH), or
+  // the Stripe webhook (card), never directly by this component.
   const initiateRepayment = useAction(api.cards.initiateRepayment);
   const linkRepaymentBankAccount = useAction(api.cards.linkRepaymentBankAccount);
+  // "Pay by card" — a REAL rail now (Stripe Checkout, `cards.ts`'s "Stripe
+  // repayment" section): bundles every outstanding repayment into ONE
+  // checkout session and hands back a redirect URL. The flag only actually
+  // flips to "reimbursed" once Stripe's webhook confirms payment
+  // (`cards.applyRepaymentPaidFromStripe`) — never on this redirect alone.
+  const createRepaymentCheckout = useAction(api.stripe.createRepaymentCheckout);
   const { run, toast, dismiss } = useActionRunner();
 
   const [achFormOpen, setAchFormOpen] = useState(false);
@@ -54,6 +68,7 @@ export function OwedBanner({
   const [achAccount, setAchAccount] = useState("");
   const [achFunding, setAchFunding] = useState<"checking" | "savings">("checking");
   const [achBusy, setAchBusy] = useState(false);
+  const [cardBusy, setCardBusy] = useState(false);
   // Repayments this session already kicked off — the real debit is gated off
   // (see file header), so `status` alone never flips away from "pending" here;
   // this is purely so the button doesn't invite a repeat click.
@@ -74,7 +89,7 @@ export function OwedBanner({
     onEmptyChange?.(toRepay.length === 0);
   }, [repayments, toRepay.length, onEmptyChange]);
 
-  async function payAll(method: "card" | "ach") {
+  async function payAll(method: "ach") {
     for (const r of toRepay) {
       const res = await run(
         () => initiateRepayment({ repaymentId: r.id, method }),
@@ -82,6 +97,27 @@ export function OwedBanner({
       );
       if (res) setInitiated((m) => ({ ...m, [r.id]: true }));
     }
+  }
+
+  /** "Pay by card" — ONE Stripe Checkout for everything currently owed. Opens
+   *  the Stripe-hosted page. Deliberately does NOT set the local `initiated`
+   *  optimistic flag ACH uses: this rail is REAL money, and the flag only
+   *  actually flips once Stripe's webhook confirms payment
+   *  (`applyRepaymentPaidFromStripe`) — a closed tab / abandoned checkout
+   *  must keep the "You owe" banner showing the true outstanding amount, not
+   *  hide it behind a click that didn't actually pay anything. `cardBusy`
+   *  alone prevents a double-click from opening two sessions back to back;
+   *  a second real click after that is harmless (Stripe just issues another
+   *  session; settlement stays idempotent either way). */
+  async function handlePayByCard() {
+    setCardBusy(true);
+    const result = await run(
+      () => createRepaymentCheckout({ repaymentIds: toRepay.map((r) => r.id) }),
+      { errorTitle: "Couldn't start checkout" },
+    );
+    setCardBusy(false);
+    if (!result) return;
+    void Linking.openURL(result.url);
   }
 
   /** "Pay by bank (ACH)" — link a bank account first if any charge still
@@ -150,7 +186,8 @@ export function OwedBanner({
               variant="secondary"
               size="sm"
               icon="credit-card"
-              onPress={() => payAll("card")}
+              loading={cardBusy}
+              onPress={() => void handlePayByCard()}
             />
             <Button
               title="Pay by bank (ACH)"

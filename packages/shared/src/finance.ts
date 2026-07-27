@@ -218,7 +218,7 @@ export const FINANCE_AUDIT_ACTIONS = [
   "recode", // categorizeTransaction / bulkCategorize / setTransactionCategory
   "receipt_attach", // attachReceipt / receipts.linkReceipt
   "receipt_detach", // receipts.unlinkReceipt
-  "personal_flag", // flagPersonal
+  "personal_flag", // cards.flagPersonalCharge / cards.unflagPersonalCharge
   "note_edit", // setTransactionNote
   "manual_create", // createManualTransaction
   "budget_amount_change", // updateBudget (amountCents only)
@@ -469,6 +469,48 @@ export type RepaymentMethod = (typeof REPAYMENT_METHODS)[number];
 
 export const REPAYMENT_STATUSES = ["pending", "paid", "failed"] as const;
 export type RepaymentStatus = (typeof REPAYMENT_STATUSES)[number];
+
+// ── Personal expense state (derived — deliberately NOT a persisted field) ───
+// Founder ask: mark a charge as a personal expense / needing repayment,
+// separate from `status` — a discarded earlier attempt added a 5th
+// TRANSACTION_STATUS for this and was rejected, because a transaction must be
+// able to be BOTH `"reconciled"` AND an unpaid personal expense at the same
+// time, which one status column can't represent.
+//
+// DESIGN CALL: no new persisted field either. `transactions.isPersonal`
+// (boolean) already existed as the ONE thing `finances.ts#isSpend` excludes
+// on. Adding a second "is this personal" field next to it would recreate the
+// exact two-representations-that-can-drift trap this design had to avoid —
+// imagine a write that sets one but not the other, or a migration that misses
+// a legacy row. Instead the full 3-state lifecycle (not-personal → personal &
+// unpaid → reimbursed) is DERIVED from two fields that are already written
+// together, atomically, by the ONE code path that ever changes either
+// (`cards.ts#convertChargeToPersonalRepayment`): `transactions.isPersonal`
+// and the linked `personalRepayments` row's `status`
+// (`transactions.repaymentId` → `personalRepayments.status`). Because there is
+// no second writer, this derived state can never disagree with `isPersonal` —
+// see the invariant test in `finances.personalExpenseState.test.ts`.
+export const PERSONAL_EXPENSE_STATES = [
+  "not_personal",
+  "personal_unpaid",
+  "personal_reimbursed",
+] as const;
+export type PersonalExpenseState = (typeof PERSONAL_EXPENSE_STATES)[number];
+
+/**
+ * Derive a transaction's personal-expense lifecycle state from its
+ * `isPersonal` flag and its linked repayment's status (`null`/`undefined`
+ * when unflagged, or a flagged row whose repayment can't be resolved). A
+ * `"failed"` repayment attempt still reads as `"personal_unpaid"` — the debt
+ * stays outstanding either way; only `"paid"` clears it.
+ */
+export function personalExpenseState(
+  isPersonal: boolean | null | undefined,
+  repaymentStatus: RepaymentStatus | null | undefined,
+): PersonalExpenseState {
+  if (isPersonal !== true) return "not_personal";
+  return repaymentStatus === "paid" ? "personal_reimbursed" : "personal_unpaid";
+}
 
 // ── ACH destination capture (Increase External Accounts) ─────────────────────
 // The funding-type Increase records on an External Account (`POST
