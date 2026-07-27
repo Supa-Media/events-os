@@ -120,6 +120,7 @@ describe("academy course completions", () => {
       "chapter-director",
       "chapter-money-model",
       "chapter-os-fundamentals",
+      "collaborating-on-a-release",
       "directing",
       "donor-stewardship",
       "doxology-what-we-sing",
