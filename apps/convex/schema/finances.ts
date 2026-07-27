@@ -657,6 +657,19 @@ export const personalRepayments = defineTable({
   // `cards.beginRepayment` from a degraded/manual repayment to a real charge.
   payerExternalAccountId: v.optional(v.string()),
   payerAccountLast4: v.optional(v.string()),
+  // The Stripe Checkout Session id for the "card" repayment method (a
+  // distinct rail from the ACH fields above — see `cards.ts`'s "Stripe
+  // repayment" section). May be shared across several repayments settled by
+  // ONE bundled checkout (`stripe.ts#createRepaymentCheckout`), so it's not a
+  // unique key. Set when a checkout is created; NOT cleared on expiry (a new
+  // checkout simply overwrites it) — settlement only ever happens through the
+  // webhook, which is idempotent regardless of this field's history.
+  stripeCheckoutSessionId: v.optional(v.string()),
+  // The Stripe PaymentIntent id, stamped once the checkout actually pays
+  // (mirrors `increaseRef` for the ACH rail, kept as a separate field rather
+  // than overloading `increaseRef` so a reader never has to guess which
+  // provider a ref belongs to).
+  stripePaymentIntentId: v.optional(v.string()),
   // The offsetting credit transaction posted once the repayment settles.
   creditTransactionId: v.optional(v.id("transactions")),
   createdAt: v.number(),

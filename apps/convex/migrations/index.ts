@@ -56,6 +56,7 @@ import { migrateGuestAudiences } from "./0041_migrate_guest_audiences";
 import { wrapTargeting } from "./0042_wrap_targeting";
 import { splitPersonNames } from "./0043_split_person_names";
 import { reimbursementPayoutsOutflow } from "./0044_reimbursement_payouts_outflow";
+import { backfillPersonalRepayments } from "./0045_backfill_personal_repayments";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -210,4 +211,11 @@ export const MIGRATIONS: Migration[] = [
   // skim/launch-grant/settlement legs and personal-charge repayment credits
   // stay transfers. Idempotent (rows already `outflow` are skipped). See 0044.
   reimbursementPayoutsOutflow,
+  // Personal-expense flag/repayment (founder ask, reconcile flow) — backfill
+  // `personalRepayments` rows for legacy `isPersonal:true` transactions that
+  // the now-deleted `finances.ts#flagPersonal` boolean setter left with no
+  // repayment (no payee to bill, no email ever sent). Idempotent (a row
+  // already carrying `repaymentId` is skipped); a row resolving no payee
+  // (no personId, no card) is left for a human to resolve by hand. See 0045.
+  backfillPersonalRepayments,
 ];

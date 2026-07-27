@@ -175,6 +175,17 @@
  * `music-the-four-paths` (4/5), and `music-what-your-role-receives` (4/4) in a
  * NEW `collaborating-on-a-release` course appended to the Music catalog. Total:
  * 103 sections. Nothing else moved.
+ *
+ * The personal-expense flag/repayment feature (reconcile-flow marking,
+ * un-marking, and the new Stripe-card repayment rail) touched
+ * `finance-reimbursements-and-flags` (content-only: bullets + an existing
+ * quiz explanation reworked to teach that the personal flag is orthogonal to
+ * `status`, not a status itself — quiz length UNCHANGED, still 5, to stay
+ * under the 5-question-per-section cap `apps/convex/tests/academy.test.ts`
+ * enforces) plus content-only edits to `finance-reconcile-grid` (a "Personal
+ * (unpaid)" filter row + a rule block — quiz length unchanged) and
+ * `finance-monthly-close` (a bullet + a `try_ready` criterion — no quiz
+ * change). No section added/moved/removed. Total: still 103 sections.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";

@@ -39,26 +39,35 @@
  * pick" flow is retired.
  *
  * Actions (R1): a note icon (filled when set, tap → `TransactionNoteModal`)
- * and, for a finance MANAGER on a card charge that isn't already personal, a
- * "Mark personal" flag — the manager path of `cards.flagPersonalCharge` (#147)
- * had no Reconcile entry point before this; the member's own "My transactions"
- * flag flow is untouched. The flag's state is REAL now (R1b follow-up):
+ * and, for a finance MANAGER or the charge's own PAYER, a "Mark personal"
+ * flag — `cards.flagPersonalCharge` (#147), confirmed first
+ * (`MarkPersonalModal`, mirrors `ExcludeReasonModal`'s confirm-before-commit
+ * pattern) since marking schedules a real repayment email. A flagged-but-
+ * unpaid charge also offers "Un-mark" (`cards.unflagPersonalCharge`, same
+ * confirm step) for a mis-flag — gone once the repayment settles (the server
+ * refuses to un-flag a paid one). The flag's state is REAL (R1b follow-up):
  * `listReconcile` rows carry `isPersonal` + the linked repayment's live
  * `repaymentStatus`, so the badge reads "Personal" (awaiting repayment) or
- * "Repaid" from the payload — the old session-local "what did I just flag"
- * state (which forgot on reload and never showed a member/manager flag made
- * elsewhere) is gone.
+ * "Repaid" straight from the payload — no session-local "what did I just
+ * flag" state, so a reload or a flag made elsewhere always shows correctly.
+ *
+ * PAYEE (generalized past card-only): the flag button shows whenever
+ * `row.cardholder` resolves — a card's cardholder OR a transaction with its
+ * own `personId` directly attributed — mirroring `flagPersonalCharge`'s own
+ * server-side payee resolution (`personId`, else the card's cardholder)
+ * exactly, so this button's visibility never promises an action the backend
+ * would then reject with `PAYEE_REQUIRED`.
  *
  * OWN-CHARGE FLAG (founder feedback review): `cards.flagPersonalCharge`
- * already allows the CARDHOLDER, not just a manager, to flag their own charge
- * server-side — but this grid only ever offered the button to `isManager`,
- * so a bookkeeper-only cardholder (full Reconcile access, no manager rank)
- * reconciling their OWN charge had no way to flag it here (their only path
- * was the separate "My transactions" screen). The button now also shows when
- * `row.cardholder?.personId === viewerPersonId` — the caller's OWN roster
- * person, resolved once by `listReconcile` — so "manager flags anyone" and
- * "cardholder flags themselves" are both covered, exactly mirroring the
- * server's own OR-gate. Server authz stays the source of truth either way.
+ * already allows the PAYER, not just a manager, to flag their own charge
+ * server-side — but this grid used to only ever offer the button to
+ * `isManager`, so a bookkeeper-only payer (full Reconcile access, no manager
+ * rank) reconciling their OWN charge had no way to flag it here (their only
+ * path was the separate "My transactions" screen). The button also shows
+ * when `row.cardholder?.personId === viewerPersonId` — the caller's OWN
+ * roster person, resolved once by `listReconcile` — so "manager flags
+ * anyone" and "payer flags themselves" are both covered, exactly mirroring
+ * the server's own OR-gate. Server authz stays the source of truth either way.
  */
 import { useEffect, useRef, useState } from "react";
 import { View, Text, Pressable, Platform, ScrollView, TextInput } from "react-native";
@@ -83,6 +92,7 @@ import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
 import { TransactionNoteModal } from "../modals/TransactionNoteModal";
 import { ExcludeReasonModal } from "../modals/ExcludeReasonModal";
+import { MarkPersonalModal } from "../modals/MarkPersonalModal";
 import { ReceiptViewerModal } from "../receipts/ReceiptViewerModal";
 import { ReceiptAttachPicker } from "../receipts/ReceiptAttachPicker";
 import {
@@ -283,6 +293,7 @@ function ReconcileRow({
   const acceptSuggestion = useMutation(api.aiCodingData.acceptSuggestion);
   const recordCodingOverride = useMutation(api.aiCodingData.recordCodingOverride);
   const flagPersonalCharge = useMutation(api.cards.flagPersonalCharge);
+  const unflagPersonalCharge = useMutation(api.cards.unflagPersonalCharge);
   const id = row.id as Id<"transactions">;
 
   // Fire-and-surface: run a cell mutation, alerting the server's reason on error.
@@ -300,6 +311,13 @@ function ReconcileRow({
   // ONLY while the picker is asking for a reason; `guard(setStatus(...))`
   // never fires until the bookkeeper confirms one.
   const [excludePromptOpen, setExcludePromptOpen] = useState(false);
+  // "Mark personal" / "Un-mark" prompt — marking schedules a real email to
+  // the payer, so it never fires straight off a tap (mirrors
+  // `excludePromptOpen` above / `ExcludeReasonModal`'s own doc comment).
+  const [personalPromptMode, setPersonalPromptMode] = useState<
+    "mark" | "unmark" | null
+  >(null);
+  const [personalPromptBusy, setPersonalPromptBusy] = useState(false);
   // Accept feels TERMINAL: the moment a suggestion is accepted we show a brief
   // "Accepted" state in the Suggested cell instead of letting an
   // still-`isSuggestible` row (accepted the category but still needs a budget)
@@ -343,13 +361,22 @@ function ReconcileRow({
     }
   }
 
-  async function handleMarkPersonal() {
+  async function confirmPersonalPrompt() {
+    setPersonalPromptBusy(true);
     try {
       // No local flagged state needed: `listReconcile`'s live subscription
-      // re-renders this row with `isPersonal` set the moment the flag commits.
-      await flagPersonalCharge({ transactionId: id });
+      // re-renders this row with `isPersonal`/`repaymentStatus` set the
+      // moment either mutation commits.
+      if (personalPromptMode === "mark") {
+        await flagPersonalCharge({ transactionId: id });
+      } else if (personalPromptMode === "unmark") {
+        await unflagPersonalCharge({ transactionId: id });
+      }
+      setPersonalPromptMode(null);
     } catch (err) {
       alertError(err);
+    } finally {
+      setPersonalPromptBusy(false);
     }
   }
 
@@ -546,12 +573,19 @@ function ReconcileRow({
       ) : null}
 
       {/* Actions (R1): note (icon fills in when set) + "Mark personal" on a
-          card charge that isn't already personal, shown for a MANAGER (any
-          charge) OR the CARDHOLDER on their OWN charge (`isOwnCharge` —
-          founder feedback review, mirrors `cards.flagPersonalCharge`'s
-          server-side cardholder-or-manager gate). A flagged charge shows its
-          REAL repayment state ("Personal" until the cardholder pays it
-          back, then "Repaid") from the row payload. */}
+          charge with a resolvable payee (`row.cardholder` — a card's
+          cardholder OR a directly-attributed person, mirrors
+          `cards.flagPersonalCharge`'s own payee resolution) that isn't
+          already personal, shown for a MANAGER (any charge) OR the PAYER on
+          their OWN charge (`isOwnCharge` — founder feedback review, mirrors
+          `cards.flagPersonalCharge`'s server-side payer-or-manager gate). A
+          flagged charge shows its REAL repayment state ("Personal" until
+          repaid, then "Repaid") from the row payload, plus an "Un-mark"
+          affordance while it's still unpaid (mis-flag correction —
+          `cards.unflagPersonalCharge` refuses once it's settled). Both
+          transitions confirm first (`MarkPersonalModal`, mirrors
+          `ExcludeReasonModal`) — marking schedules a real email, so neither
+          fires off a stray tap. */}
       <Cell width={widths.actions}>
         <View className="flex-1 flex-row items-center justify-center gap-2 px-1">
           <Pressable
@@ -568,14 +602,29 @@ function ReconcileRow({
             />
           </Pressable>
           {row.isPersonal ? (
-            row.repaymentStatus === "paid" ? (
-              <Badge label="Repaid" tone="success" />
-            ) : (
-              <Badge label="Personal" tone="accent" />
-            )
-          ) : (isManager || isOwnCharge) && row.cardLast4 != null ? (
+            <View className="flex-row items-center gap-1.5">
+              {row.repaymentStatus === "paid" ? (
+                <Badge label="Repaid" tone="success" />
+              ) : (
+                <>
+                  <Badge label="Personal" tone="accent" />
+                  {isManager || isOwnCharge ? (
+                    <Pressable
+                      onPress={() => setPersonalPromptMode("unmark")}
+                      hitSlop={6}
+                      accessibilityRole="button"
+                      accessibilityLabel="Un-mark personal"
+                      className="rounded p-1 active:opacity-70 web:hover:opacity-90"
+                    >
+                      <Icon name="x-circle" size={14} color={colors.muted} />
+                    </Pressable>
+                  ) : null}
+                </>
+              )}
+            </View>
+          ) : (isManager || isOwnCharge) && row.cardholder != null ? (
             <Pressable
-              onPress={handleMarkPersonal}
+              onPress={() => setPersonalPromptMode("mark")}
               hitSlop={6}
               accessibilityRole="button"
               accessibilityLabel="Mark personal"
@@ -586,6 +635,15 @@ function ReconcileRow({
           ) : null}
         </View>
       </Cell>
+
+      {personalPromptMode ? (
+        <MarkPersonalModal
+          mode={personalPromptMode}
+          submitting={personalPromptBusy}
+          onCancel={() => setPersonalPromptMode(null)}
+          onConfirm={() => void confirmPersonalPrompt()}
+        />
+      ) : null}
 
       {noteModalOpen ? (
         <TransactionNoteModal

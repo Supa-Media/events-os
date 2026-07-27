@@ -32,7 +32,8 @@ export type FilterKey =
   | "needs_budget"
   | "missing_receipt"
   | "uncategorized"
-  | "ready";
+  | "ready"
+  | "personal_unpaid";
 
 /** Per-filter counts returned by `listReconcile` (drives each pill's badge). */
 export type FilterCounts = FunctionReturnType<
@@ -50,6 +51,9 @@ export const FILTERS: { key: FilterKey; label: string }[] = [
   { key: "missing_receipt", label: "Missing receipt" },
   { key: "uncategorized", label: "Uncategorized" },
   { key: "ready", label: "Ready" },
+  // Founder ask: an unpaid personal expense is exactly the worklist a
+  // treasurer needs — surfaced as its own pill rather than buried in "All".
+  { key: "personal_unpaid", label: "Personal (unpaid)" },
 ];
 
 // ── Status select options (the inline Status▾ cell + bulk "mark reconciled") ──

@@ -135,6 +135,7 @@ import { sendEmail, sendEmailReporting, emailShell } from "./ticketingEmails";
 import { escapeHtml } from "./lib/html";
 import { appUrl } from "./lib/siteUrl";
 import { normalizePhone, resolveTwilioCredentials, sendSms } from "./lib/twilio";
+import { logFinanceAudit } from "./lib/financeAuditLog";
 
 const externalAccountFundingValidator = v.union(
   ...EXTERNAL_ACCOUNT_FUNDINGS.map((f) => v.literal(f)),
@@ -2561,19 +2562,28 @@ export async function convertChargeToPersonalRepayment(
   return { repayment: (await ctx.db.get(repaymentId))!, created: true };
 }
 
-// ── flagPersonalCharge (cardholder or manager) ───────────────────────────────
+// ── flagPersonalCharge (payer or manager) ────────────────────────────────────
 
 /**
- * Flag a card charge as an accidental personal charge. The cardholder OR a
- * finance manager may flag it. Marks the transaction `isPersonal` (removing it
- * from category spend) and creates a `pending` `personalRepayments` row owned by
- * the card's cardholder. IDEMPOTENT: one repayment per transaction.
+ * Flag a transaction as an accidental personal charge — the ONE marking entry
+ * point (Reconcile grid, Cards tab, "My transactions") funnels through this,
+ * per the founder's explicit direction not to leave a second divergent path
+ * (see the now-deleted `finances.ts#flagPersonal` boolean setter this
+ * replaced). The payer OR a finance manager may flag it. Marks the
+ * transaction `isPersonal` (removing it from category spend — see
+ * `finances.ts#isSpend`) and creates a `pending` `personalRepayments` row.
+ * IDEMPOTENT: one repayment per transaction.
+ *
+ * PAYEE RESOLUTION: the transaction's own `personId` if set, else the
+ * cardholder of its `cardId`. Never creates a repayment nobody can be
+ * billed for — a transaction with neither throws `PAYEE_REQUIRED` (mirrors
+ * `finances.ts`'s `REASON_REQUIRED` shape for excluding a transaction).
  *
  * MANAGER-INITIATED (D4): when a MANAGER flags someone ELSE's charge, the
- * cardholder is notified by best-effort email (`notifyPersonalChargeFlagged`,
+ * payer is notified by best-effort email (`notifyPersonalChargeFlagged`,
  * scheduled so the mutation never blocks on Resend) — they otherwise have no
- * way to learn a charge on THEIR card was just marked personal. A cardholder
- * flagging their own charge needs no such email (they already know).
+ * way to learn a charge was just marked personal. A payer flagging their own
+ * charge needs no such email (they already know).
  */
 export const flagPersonalCharge = mutation({
   args: { transactionId: v.id("transactions") },
@@ -2586,23 +2596,30 @@ export const flagPersonalCharge = mutation({
     await requireInChapter(ctx, chapterId, txn, "Transaction");
     const transaction = txn!;
 
-    if (!transaction.cardId) {
+    // Resolve who owes: the txn's own `personId` if set, else the cardholder
+    // of its `cardId` (mirrors `finances.ts#makeCardholderResolver`, kept as a
+    // one-off resolve here rather than importing the per-query cached version
+    // built to amortize across a whole grid of rows).
+    let payerPersonId: Id<"people"> | null = transaction.personId ?? null;
+    if (!payerPersonId && transaction.cardId) {
+      const card = await ctx.db.get(transaction.cardId);
+      await requireInChapter(ctx, chapterId, card, "Card");
+      payerPersonId = card!.cardholderPersonId;
+    }
+    if (!payerPersonId) {
       throw new ConvexError({
-        code: "NOT_A_CARD_CHARGE",
-        message: "Only a card charge can be flagged as personal.",
+        code: "PAYEE_REQUIRED",
+        message:
+          "Can't mark this as personal — there's no cardholder or assigned person to bill.",
       });
     }
-    const card = await ctx.db.get(transaction.cardId);
-    await requireInChapter(ctx, chapterId, card, "Card");
-    const cardholderPersonId = card!.cardholderPersonId;
 
-    // Authorization: the cardholder themselves, or a finance manager.
-    const isCardholder =
-      access.personId != null && access.personId === cardholderPersonId;
-    if (!isCardholder && !access.isManager) {
+    // Authorization: the identified payer themselves, or a finance manager.
+    const isPayer = access.personId != null && access.personId === payerPersonId;
+    if (!isPayer && !access.isManager) {
       throw new ConvexError({
         code: "FORBIDDEN",
-        message: "Only the cardholder or a finance manager can flag this charge.",
+        message: "Only the payer or a finance manager can flag this charge.",
       });
     }
 
@@ -2611,21 +2628,121 @@ export const flagPersonalCharge = mutation({
     const { repayment, created } = await convertChargeToPersonalRepayment(
       ctx,
       transaction,
-      cardholderPersonId,
+      payerPersonId,
     );
 
-    // Manager flagging SOMEONE ELSE's charge → notify the cardholder, but ONLY
+    // financeAuditLog (personal_flag) — only on the FIRST conversion; a
+    // repeat flag of an already-personal charge is a true no-op and shouldn't
+    // add a redundant trail entry.
+    if (created) {
+      await logFinanceAudit(ctx, {
+        chapterId: transaction.chapterId,
+        subjectType: "transaction",
+        subjectId: transactionId,
+        action: "personal_flag",
+        actorPersonId: access.personId ?? null,
+        field: "isPersonal",
+        before: "Not personal",
+        after: "Personal",
+        amountCents: transaction.amountCents,
+      });
+    }
+
+    // Manager flagging SOMEONE ELSE's charge → notify the payer, but ONLY
     // on the FIRST conversion (`created`) — a repeat flag of an already-personal
     // charge is a no-op and must not re-email. Scheduled (not awaited) so a
     // slow/failing Resend call never blocks the flag itself; the action is
     // best-effort and degrades silently without a key.
-    if (created && !isCardholder) {
+    if (created && !isPayer) {
       await ctx.scheduler.runAfter(0, internal.cards.notifyPersonalChargeFlagged, {
         repaymentId: repayment._id,
       });
     }
 
     return toRepaymentSummary(repayment);
+  },
+});
+
+// ── unflagPersonalCharge (payer or manager) ──────────────────────────────────
+
+/**
+ * Un-flag a transaction someone mis-marked as personal. Same payer-or-manager
+ * OR-gate as `flagPersonalCharge`. BLOCKED once the repayment has SETTLED
+ * (`status === "paid"`) — real money already moved, so undoing the flag at
+ * that point would hide a debt that was actually collected; that needs a
+ * manual accounting correction, not a toggle.
+ *
+ * DELETES the (never-settled) `personalRepayments` row rather than leaving it
+ * in some "canceled" state — nothing was added to `REPAYMENT_STATUSES` for
+ * this, so there's no state for an orphaned row to sit in. A later re-flag
+ * creates a FRESH repayment (and, correctly, a fresh email — it's a new
+ * flagging event, so re-notifying is not a duplicate).
+ *
+ * OUTSTANDING STRIPE SESSION: if a Stripe Checkout session was already
+ * created for this repayment (`stripe.ts#createRepaymentCheckout`) and the
+ * payer completes it anyway AFTER this unflag, the webhook
+ * (`applyRepaymentPaidFromStripe`) finds no matching repayment row for that
+ * id and no-ops with a loud `console.error` — real money would have moved
+ * with no debt left to apply it to. That's a rare edge (the payer would have
+ * to complete an abandoned checkout after being un-flagged) and is
+ * DELIBERATELY surfaced for manual reconciliation rather than silently
+ * swallowed or, worse, guessed at by resurrecting a deleted row.
+ */
+export const unflagPersonalCharge = mutation({
+  args: { transactionId: v.id("transactions") },
+  returns: v.null(),
+  handler: async (ctx, { transactionId }) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const access = await getFinanceRole(ctx, chapterId);
+
+    const txn = await ctx.db.get(transactionId);
+    await requireInChapter(ctx, chapterId, txn, "Transaction");
+    const transaction = txn!;
+
+    if (transaction.isPersonal !== true) return null; // already not personal
+
+    let payerPersonId: Id<"people"> | null = transaction.personId ?? null;
+    if (!payerPersonId && transaction.cardId) {
+      const card = await ctx.db.get(transaction.cardId);
+      payerPersonId = card?.cardholderPersonId ?? null;
+    }
+    const isPayer = access.personId != null && access.personId === payerPersonId;
+    if (!isPayer && !access.isManager) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message: "Only the payer or a finance manager can un-flag this charge.",
+      });
+    }
+
+    const repayment = transaction.repaymentId
+      ? await ctx.db.get(transaction.repaymentId)
+      : null;
+    if (repayment && (repayment.status === "paid" || repayment.creditTransactionId)) {
+      throw new ConvexError({
+        code: "ILLEGAL_TRANSITION",
+        message:
+          "This charge has already been repaid — un-flagging it now would hide a settled debt. Correct it by hand instead.",
+      });
+    }
+
+    if (repayment) await ctx.db.delete(repayment._id);
+    await ctx.db.patch(transactionId, {
+      isPersonal: false,
+      repaymentId: undefined,
+    });
+
+    await logFinanceAudit(ctx, {
+      chapterId: transaction.chapterId,
+      subjectType: "transaction",
+      subjectId: transactionId,
+      action: "personal_flag",
+      actorPersonId: access.personId ?? null,
+      field: "isPersonal",
+      before: "Personal",
+      after: "Not personal",
+      amountCents: transaction.amountCents,
+    });
+    return null;
   },
 });
 
@@ -2640,6 +2757,7 @@ export const getPersonalChargeFlagContact = internalQuery({
       cardholderName: v.string(),
       merchantName: v.union(v.string(), v.null()),
       amountCents: v.number(),
+      postedAt: v.union(v.number(), v.null()),
     }),
     v.null(),
   ),
@@ -2655,6 +2773,7 @@ export const getPersonalChargeFlagContact = internalQuery({
       cardholderName: person.name,
       merchantName: txn?.merchantName ?? null,
       amountCents: rep.amountCents,
+      postedAt: txn?.postedAt ?? null,
     };
   },
 });
@@ -2677,27 +2796,46 @@ export const notifyPersonalChargeFlagged = internalAction({
       if (!contact) return null;
       const dollars = `$${(contact.amountCents / 100).toFixed(2)}`;
       const merchant = contact.merchantName ?? "a charge on your card";
+      const when = contact.postedAt
+        ? new Date(contact.postedAt).toLocaleDateString("en-US", {
+            month: "long",
+            day: "numeric",
+            year: "numeric",
+            timeZone: "America/New_York",
+          })
+        : null;
       const subject = auto
         ? `A charge with no receipt became a personal charge — you owe ${dollars}`
         : `A charge on your card was marked personal — you owe ${dollars}`;
       const reason = auto
-        ? `${escapeHtml(merchant)} (${escapeHtml(dollars)}) passed the receipt deadline with no receipt attached, so it was automatically converted to a personal charge.`
-        : `a finance manager marked ${escapeHtml(merchant)} (${escapeHtml(dollars)}) as a personal charge.`;
+        ? `${escapeHtml(merchant)} (${escapeHtml(dollars)}${when ? `, ${escapeHtml(when)}` : ""}) passed the receipt deadline with no receipt attached, so it was automatically converted to a personal charge.`
+        : `a finance manager marked ${escapeHtml(merchant)} (${escapeHtml(dollars)}${when ? `, ${escapeHtml(when)}` : ""}) as a personal charge.`;
       // The Cards tab's member view (`MemberCardsView`) owns the per-charge
       // flag/pay-back list this charge lives in — not Reimbursements (which
-      // only shows the aggregate "you owe" total). Null when APP_URL is unset.
+      // only shows the aggregate "you owe" total).
       const link = appUrl("/finances/cards");
+      // KNOWN REPO TRAP: a `link ? <a> : ""` pattern here would silently ship
+      // a CTA-less transactional email whenever APP_URL is unset — the
+      // recipient would read "you owe $X" with no way to act on it and no
+      // signal anything was wrong. Degrade LOUDLY instead: log so the gap is
+      // visible in production logs/alerts, and always render SOME actionable
+      // text (a plain path when there's no absolute URL to link).
+      if (!link) {
+        console.error(
+          "[cards] notifyPersonalChargeFlagged: APP_URL is unset — sending WITHOUT a clickable pay-back link",
+          repaymentId,
+        );
+      }
+      const ctaHtml = link
+        ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${link}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">Pay it back →</a></div>`
+        : `<p style="margin:0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;color:#7A5A5A">Open the app and go to Finances → Cards to pay it back.</p>`;
       await sendEmail(ctx, {
         to: contact.email,
         subject,
         html: emailShell(`
           <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">${escapeHtml(subject)}</h1>
           <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(contact.cardholderName)} — ${reason} Pay it back from the Cards tab in the app.</p>
-          ${
-            link
-              ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${link}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">Pay it back →</a></div>`
-              : ""
-          }`),
+          ${ctaHtml}`),
       });
     } catch (err) {
       console.error(
@@ -2810,12 +2948,16 @@ export const personalRepaymentsOutstanding = query({
  * Settle a repayment: mark it `paid` and post the single OFFSETTING credit — a
  * positive `flow:"transfer"` transaction (EXCLUDED from category spend, so it
  * nets the personal charge without counting as income) owned by the payer and
- * linked back to the repayment. IDEMPOTENT via `creditTransactionId`.
+ * linked back to the repayment. IDEMPOTENT via `creditTransactionId` — this is
+ * the ONE settlement core every repayment rail (manager manual confirm,
+ * Increase ACH, Stripe Checkout) goes through, so "at most one credit per
+ * repayment" is a single, already-tested guarantee instead of being
+ * re-implemented per rail.
  */
 async function settleRepayment(
   ctx: MutationCtx,
   repayment: Doc<"personalRepayments">,
-  increaseRef?: string,
+  ref?: { increaseRef?: string; stripePaymentIntentId?: string },
 ): Promise<Doc<"personalRepayments">> {
   // Already settled → return as-is (no second credit).
   if (repayment.creditTransactionId) {
@@ -2844,7 +2986,8 @@ async function settleRepayment(
   await ctx.db.patch(repayment._id, {
     status: "paid",
     creditTransactionId,
-    increaseRef: increaseRef ?? repayment.increaseRef,
+    increaseRef: ref?.increaseRef ?? repayment.increaseRef,
+    stripePaymentIntentId: ref?.stripePaymentIntentId ?? repayment.stripePaymentIntentId,
     updatedAt: now,
   });
   return (await ctx.db.get(repayment._id))!;
@@ -3144,8 +3287,170 @@ export const applyRepaymentPaid = internalMutation({
       return toRepaymentSummary(repayment);
     }
     return toRepaymentSummary(
-      await settleRepayment(ctx, repayment, args.increaseRef),
+      await settleRepayment(ctx, repayment, { increaseRef: args.increaseRef }),
     );
+  },
+});
+
+// ── Stripe repayment (the "card" method — Stripe Checkout) ───────────────────
+// `initiateRepayment`'s `method:"card"` used to be indistinguishable from
+// `"ach"` at the backend (both funneled through the Increase-only
+// `beginRepayment`, which is entirely gated off by `REPAYMENT_DEBIT_ENABLED`)
+// — a payer's "Pay by card" tap silently did nothing but record the chosen
+// method. This section gives "card" a REAL rail: Stripe Checkout, mirroring
+// `stripe.ts#createCheckout` / `createDonationCheckout` exactly — an action
+// does the Stripe `fetch`, an internal mutation validates + applies. The
+// webhook settles through the SAME `settleRepayment` core every other
+// repayment rail uses, so idempotency is one guarantee, not one per rail.
+
+/** One line a bundled Checkout will bill — a single outstanding repayment. */
+interface RepaymentCheckoutLine {
+  repaymentId: Id<"personalRepayments">;
+  amountCents: number;
+  merchantName: string | null;
+}
+
+/**
+ * Validate + prepare a Stripe Checkout for one or more repayments. Same
+ * payer-or-manager OR-gate as `beginRepayment`. An id that's already SETTLED
+ * is silently skipped (not an error) — a stale button click that raced a
+ * manager's `markRepaymentPaid` degrades to "bill whatever's still owed"
+ * instead of failing outright; this throws only when NOTHING is left to bill.
+ */
+export const prepareRepaymentCheckout = internalMutation({
+  args: { repaymentIds: v.array(v.id("personalRepayments")) },
+  returns: v.object({
+    lines: v.array(
+      v.object({
+        repaymentId: v.id("personalRepayments"),
+        amountCents: v.number(),
+        merchantName: v.union(v.string(), v.null()),
+      }),
+    ),
+    totalCents: v.number(),
+    payerEmail: v.union(v.string(), v.null()),
+    payerName: v.string(),
+  }),
+  handler: async (ctx, { repaymentIds }) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const access = await getFinanceRole(ctx, chapterId);
+
+    const lines: RepaymentCheckoutLine[] = [];
+    let payerPersonId: Id<"people"> | null = null;
+    for (const id of repaymentIds) {
+      const repayment = await ctx.db.get(id);
+      if (!repayment || repayment.chapterId !== chapterId) continue;
+      const isPayer =
+        access.personId != null && access.personId === repayment.payerPersonId;
+      if (!isPayer && !access.isManager) {
+        throw new ConvexError({
+          code: "FORBIDDEN",
+          message: "Only the payer or a finance manager can pay back this charge.",
+        });
+      }
+      payerPersonId = repayment.payerPersonId;
+      if (repayment.status === "paid" || repayment.creditTransactionId) continue;
+      const txn = await ctx.db.get(repayment.transactionId);
+      lines.push({
+        repaymentId: repayment._id,
+        amountCents: repayment.amountCents,
+        merchantName: txn?.merchantName ?? null,
+      });
+    }
+    if (lines.length === 0) {
+      throw new ConvexError({
+        code: "NOTHING_OWED",
+        message: "Nothing outstanding to pay back.",
+      });
+    }
+    const payer = payerPersonId ? await ctx.db.get(payerPersonId) : null;
+    return {
+      lines,
+      totalCents: lines.reduce((sum, l) => sum + l.amountCents, 0),
+      payerEmail: payer?.pwEmail ?? payer?.email ?? null,
+      payerName: payer?.name ?? "Repayment",
+    };
+  },
+});
+
+/** Stamp the Checkout Session id onto every repayment it bundled — best
+ *  effort per row (a repayment settled in the TOCTOU gap between
+ *  `prepareRepaymentCheckout` and the Stripe round-trip is simply skipped). */
+export const attachRepaymentStripeSession = internalMutation({
+  args: {
+    repaymentIds: v.array(v.id("personalRepayments")),
+    sessionId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, { repaymentIds, sessionId }) => {
+    for (const id of repaymentIds) {
+      const repayment = await ctx.db.get(id);
+      if (!repayment || repayment.status === "paid") continue;
+      await ctx.db.patch(id, {
+        stripeCheckoutSessionId: sessionId,
+        updatedAt: Date.now(),
+      });
+    }
+    return null;
+  },
+});
+
+/**
+ * Settle every listed repayment from a PAID Stripe Checkout session
+ * (`checkout.session.completed`, called from `http.ts`'s webhook). IDEMPOTENT
+ * via `settleRepayment`'s own `creditTransactionId` guard — safe under
+ * Stripe's at-least-once, possibly OUT-OF-ORDER redelivery (a duplicate or
+ * late-arriving event just re-finds every repayment already settled and
+ * no-ops on each).
+ *
+ * AMOUNT RECONCILIATION: sums the repayments that are STILL outstanding at
+ * webhook time (one settled by another rail — e.g. a manager's
+ * `markRepaymentPaid` — in the gap between checkout creation and this webhook
+ * is simply skipped, never double-settled) and compares against the session's
+ * own `amountTotalCents`. A mismatch is NOT silently accepted: Stripe already
+ * captured the money, so refusing to credit the payer would leave the org
+ * holding funds against no debt — worse than a logged discrepancy. Every
+ * still-outstanding repayment is settled anyway, each at ITS OWN stored
+ * `amountCents` (never at a share of Stripe's total), and the mismatch is
+ * logged loudly for manual review — mirroring `applyRepaymentPaid`'s own
+ * double-collection guard.
+ */
+export const applyRepaymentPaidFromStripe = internalMutation({
+  args: {
+    repaymentIds: v.array(v.id("personalRepayments")),
+    sessionId: v.string(),
+    paymentIntentId: v.optional(v.string()),
+    amountTotalCents: v.number(),
+  },
+  returns: v.null(),
+  handler: async (ctx, { repaymentIds, sessionId, paymentIntentId, amountTotalCents }) => {
+    const outstanding: Doc<"personalRepayments">[] = [];
+    for (const id of repaymentIds) {
+      const repayment = await ctx.db.get(id);
+      if (!repayment) {
+        console.error(
+          `[cards] applyRepaymentPaidFromStripe: repayment ${id} not found ` +
+            `(session ${sessionId}) — possibly un-flagged after the checkout was ` +
+            `created; the Stripe payment needs MANUAL REVIEW.`,
+        );
+        continue;
+      }
+      if (repayment.status !== "paid" && !repayment.creditTransactionId) {
+        outstanding.push(repayment);
+      }
+    }
+    const expectedCents = outstanding.reduce((sum, r) => sum + r.amountCents, 0);
+    if (outstanding.length > 0 && expectedCents !== amountTotalCents) {
+      console.error(
+        `[cards] applyRepaymentPaidFromStripe: amount mismatch for session ${sessionId} — ` +
+          `Stripe reports ${amountTotalCents}c paid, still-outstanding repayments sum to ` +
+          `${expectedCents}c. Settling each at its OWN stored amount anyway; flag for manual review.`,
+      );
+    }
+    for (const repayment of outstanding) {
+      await settleRepayment(ctx, repayment, { stripePaymentIntentId: paymentIntentId });
+    }
+    return null;
   },
 });
 

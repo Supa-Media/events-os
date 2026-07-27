@@ -331,7 +331,9 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         items: [
           "**Reimbursement — Public Worship owes you:** submit the request in-app with a short note on WHY it was needed, a transaction date on every line, and a receipt for every line — none of that is optional, the app blocks submission until all three are there. Your full bank details (routing + account, not just a last-4) are captured up front too, so the moment someone approves it, the ACH payout fires automatically from the chapter's Increase account — no one has to separately go send it (unless that account isn't set up yet for the chapter, in which case the Treasurer pays it manually instead). It then moves through submitted → approved → paying → paid. Someone else — never you — has to approve it.",
           "**A reimbursed purchase spends the budget, same as a card swipe:** once it's paid, it counts against whatever budget and category it's coded to — a $300 team meal you fronted eats $300 of Food & Meals either way. So code it as carefully as you'd code a card charge: the \"what's this for?\" and the per-line category are what decide which bucket it lands in, not paperwork.",
-          "**Personal-charge flag — you owe Public Worship:** flag your own charge as personal on My Transactions, or a manager flags it for you. It opens an owed balance, tracked the same way, just pointed the other direction.",
+          "**Personal-charge flag — you owe Public Worship:** flag your own charge as personal on My Transactions, or a manager flags it for you from the Reconcile grid (its \"Personal (unpaid)\" filter is the Treasurer's worklist for exactly this). It opens an owed balance, tracked the same way, just pointed the other direction — and it's a FLAG, not a status: the same charge can be Reconciled AND an unpaid personal expense at the same time.",
+          "**Pay it back by card or by bank:** once flagged, pay it back instantly by card (real-time, via Stripe Checkout) or by linking your bank account (ACH). Either way the flag only actually clears to \"repaid\" once the payment is CONFIRMED — closing the tab on a card payment without finishing it leaves the charge exactly as owed as before.",
+          "**Flagged something by mistake?** Un-flag it — but only before it's been repaid. Once it's marked repaid, that's a settled transaction; fixing an error at that point is a manual correction, not a toggle.",
           "**Both directions live in one place:** the Reimbursements tab shows \"Public Worship owes you\" and \"you owe Public Worship\" side by side, so nothing nets out silently.",
           "**Don't recognize a charge at all?** That's different from a personal charge you remember making — flagging it \"personal\" says YOU made it. If a charge on the Public Worship card is a genuine mystery, freeze the card yourself right away (instant, self-serve, reversible), then tell your Treasurer or the Financial Manager immediately so they can look into it. Don't guess by flagging an unrecognized charge as personal.",
         ],
@@ -437,7 +439,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 3,
         explanation:
-          "Flagging is available on your OWN transactions, not just to managers — catching your own mistake early is the fastest way to clear it.",
+          "Flagging is available on your OWN transactions, not just to managers — catching your own mistake early is the fastest way to clear it. The flag is separate from the charge's status too: it can be fully Reconciled AND an unpaid personal expense at the same time — flagging doesn't touch its category, budget, or receipt.",
       },
       {
         prompt: "Your chapter's Treasurer submits a reimbursement request for their own out-of-pocket purchase. Who can approve it?",
@@ -499,7 +501,13 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           ["Missing receipt", "No receipt uploaded"],
           ["Uncategorized", "No category assigned at all"],
           ["Ready", "Receipt + category + budget all present"],
+          ["Personal (unpaid)", "Flagged personal, not yet repaid — the worklist for chasing down what people owe back"],
         ],
+      },
+      {
+        kind: "rule",
+        title: "Personal is a flag, not a status",
+        text: "Marking a charge personal doesn't change its Category/Budget/Receipt coding at all — a fully Reconciled charge can also be an unpaid personal expense at the same time. Mark or un-mark it right from a row's actions (confirm first — marking emails the person who owes it); un-marking only works before it's been repaid.",
       },
       {
         kind: "rule",
@@ -688,6 +696,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         items: [
           "**Reconcile at Ready:** every charge has a receipt, a category, and a budget link — the Ready filter's count climbs toward all of them.",
           "**Reimbursement queue triaged:** nothing sitting unreviewed that's actually yours to act on — the submission email is a nudge, not a substitute for actually clearing the queue.",
+          "**Personal (unpaid) filter checked:** a personal flag doesn't block Ready (it's a separate flag, not a status), so it's easy to close a month while real debts sit uncollected — check the Personal (unpaid) pill directly and nudge anyone who still owes.",
           "**Report up:** the central Financial Manager should be able to open your chapter's numbers and trust them without a conversation — that trust IS the north-star metric this whole system is built around.",
         ],
       },
@@ -698,6 +707,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "Every charge is categorized and linked to a budget",
           "The reimbursement queue has nothing waiting on you",
           "Unattributed spend is at zero or explained",
+          "The Personal (unpaid) filter is empty, or every row on it is being actively chased",
         ],
       },
     ],

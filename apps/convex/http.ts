@@ -454,6 +454,24 @@ http.route({
           refKey: `give:${obj.id}`,
           amountCents: obj.amount_total ?? 0,
         });
+      } else if (obj.metadata?.repaymentIds) {
+        // A personal-charge repayment Checkout (`stripe.ts#createRepaymentCheckout`,
+        // `cards.ts`'s "Stripe repayment" section) — bundled, so metadata
+        // carries a comma-joined list. Settled through the SAME idempotent
+        // core every other repayment rail uses (`cards.ts#settleRepayment`,
+        // guarded on `creditTransactionId`), so Stripe's at-least-once /
+        // possibly out-of-order redelivery can never post a second
+        // offsetting credit. Handled BEFORE the ticket/donation fan-out: a
+        // repayment session carries no pledgeId and is neither an order nor
+        // an event donation.
+        await ctx.runMutation(internal.cards.applyRepaymentPaidFromStripe, {
+          repaymentIds: obj.metadata.repaymentIds.split(",") as Id<
+            "personalRepayments"
+          >[],
+          sessionId: obj.id,
+          paymentIntentId: obj.payment_intent ?? undefined,
+          amountTotalCents: obj.amount_total ?? 0,
+        });
       } else if (obj.metadata?.pledgeId) {
         const pledgeId = obj.metadata.pledgeId;
         // A BACKER (subscription) checkout — identified by our pledge id in the
