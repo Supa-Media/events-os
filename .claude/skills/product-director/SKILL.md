@@ -63,7 +63,36 @@ on green).
 5. **Delegate implementation** to the cheapest capable agents (policy below),
    each on its own branch, per the repo delivery workflow. Every user-facing
    change must answer "does the Academy need updating?" in its PR.
-6. **Self-improve this skill** (mandatory, see below).
+6. **Adversarially self-review BEFORE opening the PR — mandatory for every
+   feature workstream, not just ones that feel risky.** Fan out review agents
+   in ONE message, each with a distinct lens, each told to *find real bugs*
+   and to prove every finding by running code rather than by reading. Lenses
+   that have each earned their place by finding something a green test suite
+   did not:
+   - **Correctness/security of the shared layer** — injection into every sink
+     (attributes AND `<style>`/CSS, where HTML entities are NOT decoded so
+     escaping is the wrong tool), escaping order, arithmetic verified against
+     an independent implementation, total functions fed hostile input.
+   - **Backend** — auth gate on EVERY new function, guideline violations
+     (`.filter()`, unbounded `.collect()`, `.collect().length`), transaction
+     read/write limits, OCC contention (a read set that overlaps the write
+     set on a hot path), and idempotency/retry paths.
+   - **UI** — parity between inline validation and the server validator in
+     BOTH directions; a UI that permits what the server rejects silently
+     breaks autosave for the whole document, not just that field.
+   - **"Does it actually do what it claims?"** — for EVERY new backend
+     function, find its production caller; anything reachable only from tests
+     is a finding. Check each claim in the PR body against the code. A false
+     claim in a PR body is a real defect.
+   Then FIX what they find and re-verify. Treat a subagent's "all green" as a
+   hypothesis: re-run the suites yourself.
+   **Reviews are not a substitute for CI.** Four review passes missed a
+   registered Convex route that the edge router never proxied — every link in
+   every sent email would have 404'd in production. No unit test on either
+   side could see it; only the repo's cross-package drift assert knew. When a
+   change adds a public route, a queue, a cron, or anything else with a
+   counterpart in another package, grep for the counterpart explicitly.
+7. **Self-improve this skill** (mandatory, see below).
 
 ## Agent economics
 
@@ -223,6 +252,56 @@ Before finishing a run of this skill, you MUST:
    run's PR.
 
 ## Learnings Log (newest first)
+
+### 2026-07-27 — Run 8 (designer feedback on campaign email → themes/templates/polls)
+- Shape: 3 recon lanes → I wrote the shared contract MYSELF → 4 implementation
+  agents on disjoint file sets → 4 adversarial review agents → fix → PR. The
+  disjoint-file-set split worked (zero write collisions across 4 concurrent
+  agents); the cost was that EVERY API signature I handed the UI agent was
+  wrong, and it rewrote once the backend landed. **If two lanes share a
+  contract, write the contract first and hand out the real file, not a
+  described shape.** I did this for the block model and not for the Convex
+  function signatures, and only the second one hurt.
+- **The adversarial review was the highest-value step of the run and it is now
+  §6.** Four passes over code with 3,300 passing tests found: one person able
+  to vote twice after a re-send (recipient rows are wiped and re-tokenised;
+  the uniqueness index keys on the dead id), a font stack able to escape the
+  `style` attribute (and the far likelier mundane version — pasting the
+  CONVENTIONAL `Inter,"Segoe UI",sans-serif` silently unstyles every element),
+  a dark-mode fallback block that had drifted to a subset leaving poll options
+  at 1.06:1, a query that could exceed Convex's transaction read limit, and a
+  tally computed inside its own write transaction. None was visible to tests.
+- **The "does it actually do what it claims?" lens is the one to keep.** It
+  found `ensureBuiltInTemplates` shipped with NO production caller — 12 tests
+  green while a real deployment's template picker would have been empty, i.e.
+  exactly the feature we were asked for, absent. Then it found my *fix* for
+  that had the same shape one level up: the migration's own comment claimed a
+  no-op "re-runs next deploy", but `runPending` ledgers unconditionally, so on
+  any freshly scaffolded deployment it would never run again. **A seeder is
+  not done when its test passes; it is done when you have traced the call from
+  a real production entry point.**
+- **CI caught what four reviewers missed.** `/poll/` was registered in
+  `apps/convex/http.ts` but absent from `infra/router`'s `CONVEX_PREFIXES`, so
+  the apex domain would have served the static site — every poll link dead in
+  production. The reviewer that traced the URL end-to-end confirmed builder
+  and parser agreed; they did, and both were irrelevant. Encoded in §6.
+- **Check `mergeable_state` early.** CI produced zero check runs for ~30
+  minutes and no webhook said why: the PR was `dirty`, and GitHub does not
+  schedule checks on a conflicted PR. Poll `pull_request_read`'s
+  `mergeable_state` as the FIRST diagnostic when checks don't appear, not the
+  last.
+- **Founder steer, quoted**: "Just choose whatever color is best, we'll
+  probably edit it later." Applies generally — when a decision is cheap to
+  reverse and the product surface is already editable, pick and move rather
+  than escalating. I'd surfaced three conflicting brand reds (`#891d1a` in her
+  real newsletter, `#D23B3A` in code, `#c93431` in the Academy brand kit) as a
+  decision; the right call was to unify on the one demonstrably in use and say
+  so. Corollary: an inconsistency worth REPORTING is not automatically a
+  decision worth BLOCKING on.
+- **Don't hoard a checkpoint.** I initially refused to commit in-flight agent
+  work to avoid a broken intermediate commit; the repo squash-merges, so
+  intermediate state never reaches `main` and the only real risk was losing
+  the work with the container. Checkpoint freely on a feature branch.
 
 ### 2026-07-27 — Run 7 (PDF receipt preview bug + personal-expense flag/Stripe repayment)
 - Two founder items from screenshots. Shape: 4 parallel recon lanes → PDF
