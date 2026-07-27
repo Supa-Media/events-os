@@ -455,6 +455,7 @@ declare const fullApi: ApiFromModules<{
   "schema/seatProposals": typeof schema_seatProposals;
   "schema/seatStructureLog": typeof schema_seatStructureLog;
   "schema/seats": typeof schema_seats;
+  "schema/services": typeof schema_services;
   "schema/shared": typeof schema_shared;
   "schema/siteMap": typeof schema_siteMap;
   "schema/smsOptOuts": typeof schema_smsOptOuts;
