@@ -195,6 +195,23 @@ describe("listUnidentifiedGuests — bucket 4 ordering", () => {
     ]);
     expect(result.page[0].eventCount).toBe(3);
     expect(result.isDone).toBe(true);
+    expect(result.totalCount).toBe(3);
+  });
+
+  test("totalCount reflects the full distinct-name-group count, not just this page's length", async () => {
+    const s = await setupChapter(newT());
+    const eventId = await seedEvent(s, "Big Event");
+    for (const name of ["Guest A", "Guest B", "Guest C"]) {
+      await seedRsvp(s, eventId, { name });
+    }
+
+    const firstPage = await s.as.query(api.identity.listUnidentifiedGuests, {
+      chapterId: s.chapterId,
+      paginationOpts: { numItems: 1, cursor: null },
+    });
+    expect(firstPage.page).toHaveLength(1);
+    expect(firstPage.isDone).toBe(false);
+    expect(firstPage.totalCount).toBe(3);
   });
 });
 
