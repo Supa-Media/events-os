@@ -20,7 +20,7 @@
  * argument for the feature: alt text gets written once, correctly, and then
  * travels with the asset.
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Image, Pressable, ScrollView, Text, View } from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -110,31 +110,76 @@ export function ImageLibraryPicker({
 }
 
 /**
- * File a freshly-uploaded image into the library.
+ * Registering a freshly-uploaded image into the library, and backfilling its
+ * description once the designer writes one.
  *
- * A hook rather than something `ImageUploadButton` does itself, because that
- * button lives in `DesignerControls.tsx`, which is deliberately convex-free
- * (it's a presentational control).
+ * ── Why not just register with the file name as alt ────────────────────────
+ * A file name is not alt text. "hero photo final 2" read aloud is worse than
+ * silence, and worse still it LOOKS written, so nobody ever fixes it. The
+ * row is therefore created with an empty `alt` (the contract's legitimate
+ * "decorative" value) and updated the moment the block's own alt field —
+ * which nags visibly until it's filled — has something real in it. That's
+ * what makes reuse worth anything: the description is written once,
+ * properly, and travels with the asset to every future campaign.
  *
- * Deliberately NOT routed through `useActionRunner`: this is a side effect
- * the designer never asked for. Her upload has already succeeded and is
- * already in the block — failing to ALSO index it for reuse is a lost
- * nicety, not a failed edit, and raising a modal Alert for it would train
- * her to ignore upload errors that do matter. It's logged instead.
+ * ── Why a hook, and why it swallows failures ───────────────────────────────
+ * A hook because `ImageUploadButton` lives in `DesignerControls.tsx`, which
+ * is deliberately convex-free (it's a presentational control). Failures are
+ * logged rather than surfaced through `useActionRunner` because this is a
+ * side effect the designer never asked for: her upload has already succeeded
+ * and is already in the block, so failing to ALSO index it for reuse is a
+ * lost nicety, not a failed edit — and raising an Alert for it would train
+ * her to dismiss the upload errors that do matter.
  */
-export function useAddToImageLibrary() {
+const ALT_BACKFILL_DEBOUNCE_MS = 800;
+
+export function useImageLibraryRegistration() {
   const addImage = useMutation(api.emailImages.addImage);
-  return (storageId: Id<"_storage">, label: string) => {
-    // `alt` is stored EMPTY, not filled from the file name. A file name is
-    // not alt text — "hero photo final 2" read aloud is worse than silence,
-    // and worse still it looks written, so nobody fixes it. The block's own
-    // alt field nags visibly until a real description is typed; whatever the
-    // designer writes there is what a future picker reuse should carry, and
-    // `emailImages.updateImage` is how it gets there.
-    void addImage({ scope: SCOPE, storageId, alt: "", label }).catch(
-      (err: unknown) => {
-        console.warn("Couldn't add image to the campaign image library", err);
-      },
-    );
-  };
+  const updateImage = useMutation(api.emailImages.updateImage);
+  /** The row created by the most recent upload from THIS editor, or null when
+   *  there's nothing of ours to backfill (a library pick, a pasted URL). */
+  const imageIdRef = useRef<Id<"emailImages"> | null>(null);
+  const pendingAltRef = useRef<string>("");
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    },
+    [],
+  );
+
+  function warn(err: unknown) {
+    console.warn("Couldn't file the image into the campaign image library", err);
+  }
+
+  function register(storageId: Id<"_storage">, label: string) {
+    imageIdRef.current = null;
+    pendingAltRef.current = "";
+    void addImage({ scope: SCOPE, storageId, alt: "", label })
+      .then((imageId) => {
+        imageIdRef.current = imageId;
+        // The designer can easily out-type the round trip; if she already
+        // wrote a description while this was in flight, apply it now rather
+        // than waiting for another keystroke that may never come.
+        const alt = pendingAltRef.current.trim();
+        if (alt) void updateImage({ imageId, alt }).catch(warn);
+      })
+      .catch(warn);
+  }
+
+  /** Called on every alt-text keystroke. Debounced, and a no-op unless this
+   *  editor actually created a library row. */
+  function noteAlt(alt: string) {
+    pendingAltRef.current = alt;
+    if (timerRef.current) clearTimeout(timerRef.current);
+    timerRef.current = setTimeout(() => {
+      const imageId = imageIdRef.current;
+      const next = pendingAltRef.current.trim();
+      if (!imageId || !next) return;
+      void updateImage({ imageId, alt: next }).catch(warn);
+    }, ALT_BACKFILL_DEBOUNCE_MS);
+  }
+
+  return { register, noteAlt };
 }

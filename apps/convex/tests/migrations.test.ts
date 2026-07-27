@@ -327,6 +327,7 @@ const REGISTRY_NAMES = [
   "0043_split_person_names",
   "0044_reimbursement_payouts_outflow",
   "0045_backfill_personal_repayments",
+  "0046_seed_builtin_campaign_templates",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

@@ -237,10 +237,19 @@ export const archiveTemplate = mutation({
  * Returns the ids of every built-in row for this scope, for tests and callers
  * that want to point a picker straight at one.
  */
-export const ensureBuiltInTemplates = internalMutation({
-  args: { scope: scopeValidator, createdBy: v.id("users") },
-  returns: v.array(v.id("campaignTemplates")),
-  handler: async (ctx, { scope, createdBy }) => {
+/**
+ * The seeding logic as a PLAIN helper, so both the `internalMutation` wrapper
+ * below and `migrations/0046_seed_builtin_campaign_templates.ts` can run it.
+ * A migration executes inside a `MutationCtx` and cannot `runMutation` another
+ * mutation, so the shared body has to live outside the wrapper — the same
+ * `runX` + registered-wrapper split every migration in `migrations/` uses.
+ */
+export async function seedBuiltInTemplates(
+  ctx: MutationCtx,
+  scope: Id<"chapters"> | "central",
+  createdBy: Id<"users">,
+): Promise<Id<"campaignTemplates">[]> {
+  {
     const existing = await ctx.db
       .query("campaignTemplates")
       .withIndex("by_scope", (q) => q.eq("scope", scope))
@@ -279,5 +288,12 @@ export const ensureBuiltInTemplates = internalMutation({
       );
     }
     return ids;
-  },
+  }
+}
+
+export const ensureBuiltInTemplates = internalMutation({
+  args: { scope: scopeValidator, createdBy: v.id("users") },
+  returns: v.array(v.id("campaignTemplates")),
+  handler: async (ctx, { scope, createdBy }) =>
+    seedBuiltInTemplates(ctx, scope, createdBy),
 });

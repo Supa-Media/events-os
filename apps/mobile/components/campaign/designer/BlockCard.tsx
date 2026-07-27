@@ -47,7 +47,7 @@ import {
   type UploadImage,
 } from "./DesignerControls";
 import { CardContentEditor, InlineWarning } from "./CardContentEditor";
-import { ImageLibraryPicker, useAddToImageLibrary } from "./ImageLibraryPicker";
+import { ImageLibraryPicker, useImageLibraryRegistration } from "./ImageLibraryPicker";
 
 const COMPACT_MARKDOWN_HEIGHT = 180;
 
@@ -494,7 +494,7 @@ function ImageBlockEditor({
   uploadImage?: UploadImage;
   run?: ActionRunner["run"];
 }) {
-  const addToLibrary = useAddToImageLibrary();
+  const library = useImageLibraryRegistration();
 
   return (
     <View>
@@ -511,21 +511,23 @@ function ImageBlockEditor({
           <ImageUploadButton
             uploadImage={uploadImage}
             run={run}
-            onUploaded={(url, suggestedLabel) => {
-              const label = suggestedLabel || "Campaign image";
-              onChange({ url, alt: block.alt || label });
-              addToLibrary(url, label);
+            onUploaded={(uploaded, suggestedLabel) => {
+              onChange({ url: uploaded.url });
+              library.register(uploaded.storageId, suggestedLabel || "Campaign image");
             }}
           />
         ) : null}
         {/* Picking from the library fills the alt text too — the label was
             written once, when the image was first added, and travels with it. */}
-        <ImageLibraryPicker onPick={({ url, label }) => onChange({ url, alt: label })} />
+        <ImageLibraryPicker onPick={({ url, alt }) => onChange({ url, alt })} />
       </View>
       <TextField
         label="Alt text"
         value={block.alt}
-        onChangeText={(alt) => onChange({ alt })}
+        onChangeText={(alt) => {
+          onChange({ alt });
+          library.noteAlt(alt);
+        }}
         placeholder="Describes the image for screen readers / blocked images"
       />
       {block.url.trim() !== "" && block.alt.trim() === "" ? (

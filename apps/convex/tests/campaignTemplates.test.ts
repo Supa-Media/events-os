@@ -7,7 +7,10 @@ import {
   BUILT_IN_CAMPAIGN_TEMPLATES,
   DEFAULT_EMAIL_THEME,
   PUBLIC_WORSHIP_NEWSLETTER_TEMPLATE,
+  PUBLIC_WORSHIP_THEME,
+  validateEmailDocument,
 } from "@events-os/shared";
+import { runSeedBuiltInCampaignTemplates } from "../migrations/0046_seed_builtin_campaign_templates";
 
 /**
  * Campaign templates (`campaignTemplates.ts`):
@@ -324,5 +327,72 @@ describe("ensureBuiltInTemplates", () => {
     expect(
       await s.as.query(api.campaignTemplates.listTemplates, { scope: s.chapterId }),
     ).toHaveLength(BUILT_IN_CAMPAIGN_TEMPLATES.length);
+  });
+});
+
+/**
+ * The migration is what makes the seeded newsletter exist in PRODUCTION.
+ * `ensureBuiltInTemplates` shipped as an internalMutation with no caller, so
+ * every test above passed while a real deployment's template library stayed
+ * empty — these cover the wiring, not just the helper.
+ */
+describe("0046_seed_builtin_campaign_templates", () => {
+  test("seeds the monthly newsletter into the central scope", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+
+    const result = await run(s.t, (ctx) => runSeedBuiltInCampaignTemplates(ctx));
+    expect(result.seeded).toBe(BUILT_IN_CAMPAIGN_TEMPLATES.length);
+
+    const templates = await s.as.query(api.campaignTemplates.listTemplates, {
+      scope: "central",
+    });
+    const newsletter = templates.find(
+      (row) => row.name === PUBLIC_WORSHIP_NEWSLETTER_TEMPLATE.name,
+    );
+    expect(newsletter).toBeDefined();
+    expect(newsletter?.isBuiltIn).toBe(true);
+    // The seeded document is the real newsletter, not an empty shell.
+    const validated = validateEmailDocument(newsletter?.doc);
+    expect(validated.ok).toBe(true);
+    if (validated.ok) {
+      const kinds = new Set(validated.doc.blocks.map((b) => b.kind));
+      expect(kinds.has("eyebrow")).toBe(true);
+      expect(kinds.has("columns")).toBe(true);
+      expect(kinds.has("quote")).toBe(true);
+      expect(validated.doc.theme?.accent).toBe(PUBLIC_WORSHIP_THEME.accent);
+    }
+  });
+
+  test("re-running does not duplicate (idempotent on every deploy)", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await run(s.t, (ctx) => runSeedBuiltInCampaignTemplates(ctx));
+    await run(s.t, (ctx) => runSeedBuiltInCampaignTemplates(ctx));
+    expect(
+      await s.as.query(api.campaignTemplates.listTemplates, { scope: "central" }),
+    ).toHaveLength(BUILT_IN_CAMPAIGN_TEMPLATES.length);
+  });
+
+  test("an archived built-in stays archived rather than resurrecting on deploy", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await run(s.t, (ctx) => runSeedBuiltInCampaignTemplates(ctx));
+    const [row] = await s.as.query(api.campaignTemplates.listTemplates, {
+      scope: "central",
+    });
+    await s.as.mutation(api.campaignTemplates.archiveTemplate, { templateId: row._id });
+
+    await run(s.t, (ctx) => runSeedBuiltInCampaignTemplates(ctx));
+    expect(
+      await s.as.query(api.campaignTemplates.listTemplates, { scope: "central" }),
+    ).toHaveLength(0);
+  });
+
+  test("a deployment with no users is a safe no-op (re-runs next deploy)", async () => {
+    const t = newT();
+    const result = await run(t, (ctx) => runSeedBuiltInCampaignTemplates(ctx));
+    expect(result.seeded).toBe(0);
+    expect(result.skipped).toBe("no users");
   });
 });

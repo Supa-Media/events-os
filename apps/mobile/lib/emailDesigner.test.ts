@@ -1,7 +1,13 @@
 // No @types/jest / ambient globals configured for this package — import test
 // globals explicitly from @jest/globals (mirrors `lib/financeSeats.test.ts`).
 import { describe, expect, test } from "@jest/globals";
-import type { EmailDocument } from "@events-os/shared";
+import {
+  DEFAULT_EMAIL_THEME,
+  MIN_COLUMNS,
+  validateEmailDocument,
+  type EmailBlockKind,
+  type EmailDocument,
+} from "@events-os/shared";
 import {
   BLOCK_KINDS,
   canRedo,
@@ -186,5 +192,77 @@ describe("history (undo/redo)", () => {
     expect(redoHistory(h)).toBe(h);
     expect(canUndo(h)).toBe(false);
     expect(canRedo(h)).toBe(false);
+  });
+});
+
+// ── Regression suites added with the composed blocks (eyebrow/card/columns/
+//    quote/poll) and the document-level `theme` field ─────────────────────────
+
+describe("defaultBlockFor — every new block must be SAVEABLE", () => {
+  // `image` is the ONE kind whose default can't validate, and deliberately so:
+  // its `url` must be a non-empty http(s) string, and the only way to satisfy
+  // that up front is a fabricated URL that would render as a broken image and
+  // could be sent for real if nobody noticed. An unsaveable block that says
+  // "image url must be a non-empty string" is the better failure — the
+  // composer's save indicator surfaces it, and filling the field fixes it.
+  const NEEDS_INPUT_BEFORE_SAVING: EmailBlockKind[] = ["image"];
+
+  test("every other kind's default passes the write gate on its own", () => {
+    // The composer autosaves 600ms after a block is added, and
+    // `campaigns.updateCampaignDoc` rejects an invalid document outright, so a
+    // default that doesn't validate means the designer's very next edit
+    // silently fails to save. This is the guard for that.
+    for (const kind of BLOCK_KINDS) {
+      if (NEEDS_INPUT_BEFORE_SAVING.includes(kind)) continue;
+      const doc: EmailDocument = { blocks: [defaultBlockFor(kind, "blk1")] };
+      const result = validateEmailDocument(doc);
+      expect([kind, result.ok ? null : result.error]).toEqual([kind, null]);
+    }
+  });
+
+  test("poll options get unique ids that are not derived from their labels", () => {
+    const poll = defaultBlockFor("poll", "p1");
+    if (poll.kind !== "poll") throw new Error("expected a poll block");
+    const ids = poll.options.map((o) => o.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    for (const option of poll.options) {
+      expect(option.id).not.toContain(option.label);
+    }
+  });
+
+  test("columns start at the minimum, not the maximum", () => {
+    const columns = defaultBlockFor("columns", "c1");
+    if (columns.kind !== "columns") throw new Error("expected a columns block");
+    expect(columns.columns).toHaveLength(MIN_COLUMNS);
+  });
+});
+
+describe("document-level fields survive every block operation", () => {
+  // `EmailDocument` grew an optional `theme`; a helper that rebuilt the doc as
+  // a bare `{ blocks }` would strip it and autosave the stripped version — an
+  // off-brand send caused by an unrelated edit.
+  const themed: EmailDocument = {
+    theme: { ...DEFAULT_EMAIL_THEME, name: "Advent" },
+    blocks: [defaultBlockFor("heading", "h1"), defaultBlockFor("text", "t1")],
+  };
+
+  test("insertBlock keeps the theme", () => {
+    expect(insertBlock(themed, "quote", null, seededIds()).doc.theme).toEqual(themed.theme);
+  });
+
+  test("removeBlock keeps the theme", () => {
+    expect(removeBlock(themed, "h1").theme).toEqual(themed.theme);
+  });
+
+  test("duplicateBlock keeps the theme", () => {
+    expect(duplicateBlock(themed, "h1", seededIds()).doc.theme).toEqual(themed.theme);
+  });
+
+  test("updateBlock keeps the theme", () => {
+    expect(updateBlock(themed, "h1", { text: "Hi" }).theme).toEqual(themed.theme);
+  });
+
+  test("reorderBlocks keeps the theme", () => {
+    expect(reorderBlocks(themed, ["t1", "h1"]).theme).toEqual(themed.theme);
   });
 });

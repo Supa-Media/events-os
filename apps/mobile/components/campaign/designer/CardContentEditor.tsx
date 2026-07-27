@@ -26,7 +26,7 @@
 import { Text, View } from "react-native";
 import type { EmailCardContent } from "@events-os/shared";
 import { TextField } from "../../ui";
-import { ImageLibraryPicker, useAddToImageLibrary } from "./ImageLibraryPicker";
+import { ImageLibraryPicker, useImageLibraryRegistration } from "./ImageLibraryPicker";
 import { ImageUploadButton, type UploadImage } from "./DesignerControls";
 import type { ActionRunner } from "../../../lib/useActionToast";
 
@@ -47,7 +47,7 @@ export function CardContentEditor({
   uploadImage?: UploadImage;
   run?: ActionRunner["run"];
 }) {
-  const addToLibrary = useAddToImageLibrary();
+  const library = useImageLibraryRegistration();
 
   const hasImage = typeof content.imageUrl === "string" && content.imageUrl.length > 0;
   const altMissing = hasImage && !content.imageAlt;
@@ -80,15 +80,20 @@ export function CardContentEditor({
           <ImageUploadButton
             uploadImage={uploadImage}
             run={run}
-            onUploaded={(url, suggestedLabel) => {
-              const label = suggestedLabel || "Campaign image";
-              onChange({ imageUrl: url, imageAlt: content.imageAlt ?? label });
-              addToLibrary(url, label);
+            onUploaded={(uploaded, suggestedLabel) => {
+              onChange({
+                imageUrl: uploaded.url,
+                // Always write an alt alongside the URL: `undefined` is the
+                // one value that makes the document unsaveable, "" is the
+                // contract's "decorative" and merely earns the warning below.
+                imageAlt: content.imageAlt ?? "",
+              });
+              library.register(uploaded.storageId, suggestedLabel || "Campaign image");
             }}
           />
         ) : null}
         <ImageLibraryPicker
-          onPick={({ url, label }) => onChange({ imageUrl: url, imageAlt: label })}
+          onPick={({ url, alt }) => onChange({ imageUrl: url, imageAlt: alt })}
         />
       </View>
 
@@ -96,7 +101,12 @@ export function CardContentEditor({
         <TextField
           label="Alt text"
           value={content.imageAlt ?? ""}
-          onChangeText={(imageAlt) => onChange({ imageAlt })}
+          onChangeText={(imageAlt) => {
+            onChange({ imageAlt });
+            // Backfills the library row this editor just created, so the
+            // description is written once and reused forever after.
+            library.noteAlt(imageAlt);
+          }}
           placeholder="What the image shows"
           hint={
             altMissing

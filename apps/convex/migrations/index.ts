@@ -57,6 +57,7 @@ import { wrapTargeting } from "./0042_wrap_targeting";
 import { splitPersonNames } from "./0043_split_person_names";
 import { reimbursementPayoutsOutflow } from "./0044_reimbursement_payouts_outflow";
 import { backfillPersonalRepayments } from "./0045_backfill_personal_repayments";
+import { seedBuiltInCampaignTemplates } from "./0046_seed_builtin_campaign_templates";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -218,4 +219,12 @@ export const MIGRATIONS: Migration[] = [
   // already carrying `repaymentId` is skipped); a row resolving no payee
   // (no personId, no card) is left for a human to resolve by hand. See 0045.
   backfillPersonalRepayments,
+  // Built-in campaign templates — seed the Public Worship monthly newsletter
+  // into the central scope so "start from a template" isn't empty in prod.
+  // `ensureBuiltInTemplates` shipped with no production caller, so the
+  // template existed only in tests. Central-only (campaigns is a central-only
+  // surface). Idempotent: keyed on isBuiltIn+name, refreshes in place only
+  // when the shipped content changed, and never resurrects an archived row.
+  // See 0046.
+  seedBuiltInCampaignTemplates,
 ];

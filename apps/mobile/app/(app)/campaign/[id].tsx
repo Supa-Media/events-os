@@ -8,6 +8,7 @@ import { useActionRunner } from "../../../lib/useActionToast";
 import { CampaignMetaCard } from "../../../components/campaign/CampaignMetaCard";
 import { CampaignStatusCard } from "../../../components/campaign/CampaignStatusCard";
 import { CampaignRepliesSection } from "../../../components/campaign/CampaignRepliesSection";
+import { CampaignPollResults } from "../../../components/campaign/CampaignPollResults";
 
 /**
  * CAMPAIGN DETAIL — metadata (eager-autosave), the send workflow (status
@@ -118,6 +119,12 @@ function CampaignDetailBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
           audience={selectedAudience}
           preview={preview}
           run={run}
+        />
+
+        <CampaignPollResults
+          campaignId={campaignId}
+          status={campaign.status}
+          doc={campaign.doc}
         />
 
         <CampaignRepliesSection campaignId={campaignId} />

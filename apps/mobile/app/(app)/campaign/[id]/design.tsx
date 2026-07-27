@@ -59,6 +59,11 @@ import { BlockCard } from "../../../../components/campaign/designer/BlockCard";
 import { BlockPalette } from "../../../../components/campaign/designer/BlockPalette";
 import { MergeTagRow } from "../../../../components/campaign/designer/MergeTagRow";
 import EmailHtmlPreview from "../../../../components/email/EmailHtmlPreview";
+import { SaveAsTemplateAction } from "../../../../components/campaign/SaveAsTemplateAction";
+import type {
+  UploadImage,
+  UploadedImage,
+} from "../../../../components/campaign/designer/DesignerControls";
 
 /** Below this width the preview stacks under the editor instead of beside it. */
 const SPLIT_BREAKPOINT = 960;
@@ -247,9 +252,9 @@ function CampaignDesignBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
   // Image upload: generate-URL → POST → resolve a servable URL, the
   // `CoverPhotoPicker` / `doc/[id].tsx` precedent (the app's only prior
   // image-upload flows).
-  const uploadImage = useMemo(() => {
+  const uploadImage = useMemo<UploadImage | undefined>(() => {
     if (!editable) return undefined;
-    return async (file: Blob, contentType: string): Promise<string> => {
+    return async (file: Blob, contentType: string): Promise<UploadedImage> => {
       const uploadUrl = await generateUploadUrl();
       const res = await fetch(uploadUrl, {
         method: "POST",
@@ -263,10 +268,13 @@ function CampaignDesignBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
       if (!res.ok) {
         throw new Error(`Image upload failed (HTTP ${res.status})`);
       }
-      const { storageId } = await res.json();
+      const { storageId } = (await res.json()) as { storageId: Id<"_storage"> };
       const url = await convex.query(api.storage.getUrl, { storageId });
       if (!url) throw new Error("Could not resolve uploaded image URL");
-      return url;
+      // The `storageId` rides along because `emailImages.addImage` takes the
+      // storage handle, not a client-supplied URL — it resolves the public
+      // URL itself rather than trusting one it was handed.
+      return { url, storageId };
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editable]);
@@ -384,11 +392,18 @@ function CampaignDesignBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
   return (
     <Screen maxWidth={FULL_WIDTH}>
       <ToastView toast={toast} onDismiss={dismiss} />
-      <View className="mb-3 flex-row items-center justify-between gap-3">
+      <View className="mb-3 flex-row flex-wrap items-start justify-between gap-3">
         <Text className="font-display text-lg text-ink" numberOfLines={1}>
           {campaign.name}
         </Text>
-        <Button title="Done" variant="secondary" onPress={() => router.push(`/campaign/${campaignId}` as never)} />
+        <View className="flex-row items-start gap-2">
+          <SaveAsTemplateAction
+            campaignId={campaignId}
+            campaignName={campaign.name}
+            run={run}
+          />
+          <Button title="Done" variant="secondary" onPress={() => router.push(`/campaign/${campaignId}` as never)} />
+        </View>
       </View>
       {split ? (
         <View className="flex-row">
