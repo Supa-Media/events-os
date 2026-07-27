@@ -1,6 +1,6 @@
 /**
  * Guest Identity review — the human half of Partiful name-only RSVP
- * resolution. `migrations/0049_link_rsvp_identifiers.ts` auto-links the small
+ * resolution. `migrations/0050_link_rsvp_identifiers.ts` auto-links the small
  * slice of rsvps that already carry an email/phone; everything else (a bare
  * first name, appearing at N events, that could be one of several existing
  * people or nobody the app has ever seen) needs a human. See
@@ -49,7 +49,7 @@ import { requireUserId } from "./lib/context";
 import { chapterRoster } from "./lib/org";
 import { normName, groupDuplicates, mergePeopleCore } from "./dataHygiene";
 import { normalizeEmail } from "./lib/access";
-import { isAutoLinkEligible } from "./migrations/0049_link_rsvp_identifiers";
+import { isAutoLinkEligible } from "./migrations/0050_link_rsvp_identifiers";
 
 // ── Bounds ───────────────────────────────────────────────────────────────────
 /** Bounded scan of a chapter's rsvps for the name-based buckets (2 & 4) and
@@ -139,7 +139,7 @@ async function shouldIncludeIdentityPair(
 
 /** A name-only, not-yet-linked rsvp — the shared source population for
  *  buckets 2 and 4 (never bucket 1's auto-link scope — see
- *  `migrations/0049_link_rsvp_identifiers.ts#isAutoLinkEligible`, whose
+ *  `migrations/0050_link_rsvp_identifiers.ts#isAutoLinkEligible`, whose
  *  complement this is, by construction, so the automated and human scopes
  *  never silently overlap or drift apart). */
 async function nameOnlyRsvps(ctx: QueryCtx, chapterId: Id<"chapters">): Promise<Doc<"rsvps">[]> {

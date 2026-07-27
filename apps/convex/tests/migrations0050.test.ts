@@ -5,7 +5,7 @@ import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import {
   linkRsvpIdentifiersPage,
   isAutoLinkEligible,
-} from "../migrations/0049_link_rsvp_identifiers";
+} from "../migrations/0050_link_rsvp_identifiers";
 import type { Doc, Id } from "../_generated/dataModel";
 
 /**
@@ -181,7 +181,7 @@ describe("migration 0049 — link rsvp identifiers backfill", () => {
         );
       }
 
-      await s.t.mutation(internal.migrations["0049_link_rsvp_identifiers"].backfillLinkRsvpIdentifiers, {
+      await s.t.mutation(internal.migrations["0050_link_rsvp_identifiers"].backfillLinkRsvpIdentifiers, {
         execute: true,
       });
       await t.finishAllScheduledFunctions(vi.runAllTimers);

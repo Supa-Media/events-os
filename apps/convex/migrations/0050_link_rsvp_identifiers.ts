@@ -59,9 +59,9 @@
  * processing order — there's no "pick a winner" decision to get wrong.
  *
  * Run locally (dry run, no writes):
- *   npx convex run migrations/0049_link_rsvp_identifiers:backfillLinkRsvpIdentifiers
+ *   npx convex run migrations/0050_link_rsvp_identifiers:backfillLinkRsvpIdentifiers
  * Run locally (execute — runs to completion via self-scheduling):
- *   npx convex run migrations/0049_link_rsvp_identifiers:backfillLinkRsvpIdentifiers '{"execute":true}'
+ *   npx convex run migrations/0050_link_rsvp_identifiers:backfillLinkRsvpIdentifiers '{"execute":true}'
  * Add `--prod` for production (do NOT run against prod without a founder
  * go-ahead — see the task doc this migration shipped with).
  */
@@ -151,7 +151,7 @@ export async function linkRsvpIdentifiersPage(
     }
     if (failed > 0) {
       console.error(
-        `migrations/0049_link_rsvp_identifiers: ${failed} row(s) FAILED to link on this page ` +
+        `migrations/0050_link_rsvp_identifiers: ${failed} row(s) FAILED to link on this page ` +
           `(see individual errors above) — safe to re-run, this migration is idempotent`,
       );
     }
@@ -180,7 +180,7 @@ export async function linkRsvpIdentifiersPage(
   if (args.execute && !isDone) {
     await ctx.scheduler.runAfter(
       0,
-      internal.migrations["0049_link_rsvp_identifiers"].continueLinkRsvpIdentifiers,
+      internal.migrations["0050_link_rsvp_identifiers"].continueLinkRsvpIdentifiers,
       { cursor: page.continueCursor },
     );
   }

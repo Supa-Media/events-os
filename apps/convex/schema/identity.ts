@@ -3,7 +3,7 @@ import { v } from "convex/values";
 
 /**
  * Guest Identity review — the human half of Partiful name-only RSVP
- * resolution (the automated half is `migrations/0049_link_rsvp_identifiers.ts`,
+ * resolution (the automated half is `migrations/0050_link_rsvp_identifiers.ts`,
  * which auto-links the small slice of rsvps that already carry an email or
  * phone; everything else needs a human to look at it — see `identity.ts`).
  *
