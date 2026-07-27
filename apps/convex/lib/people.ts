@@ -19,9 +19,10 @@
  * extras into a single survivor (re-pointing every reference first so nothing
  * is orphaned), and claims that survivor.
  */
-import type { MutationCtx } from "../_generated/server";
+import type { MutationCtx, QueryCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import { recordPersonEmail, repointPersonEmails } from "./personEmails";
+import { personaFromSignals, type Persona } from "@events-os/shared";
 
 /**
  * Find a roster person in `chapterId` not yet linked to a user account whose
@@ -470,4 +471,90 @@ export async function reconcilePersonForUser(
   }
 
   return survivor._id;
+}
+
+// ── Full persona resolution (participation-aware) ───────────────────────────
+//
+// Bounded scan caps for the three participation tables below, each read via
+// a chapter-scoped index. Generous relative to a real chapter's history —
+// same rationale as `lib/org.ts`'s SEAT_DEF_SCAN_LIMIT/
+// SEAT_ASSIGNMENT_SCAN_LIMIT: not a real limit in practice, but a `.take()`
+// bound instead of an unbounded `.collect()`.
+const PERSONA_ENGAGEMENTS_SCAN_LIMIT = 5000;
+const PERSONA_ROLE_ASSIGNMENTS_SCAN_LIMIT = 5000;
+const PERSONA_RSVPS_SCAN_LIMIT = 5000;
+
+/**
+ * Batch-resolve the FULL persona ladder (team > vendor > volunteer > guest >
+ * contact — see `@events-os/shared#Persona`) for a WHOLE roster in three
+ * bounded, chapter-scoped queries — never a per-person query in a loop, so
+ * this stays cheap regardless of roster size.
+ *
+ * `personaOf` (`@events-os/shared`) stays the pure, DB-free team/vendor-only
+ * classifier for callers that don't need the full ladder; this is its
+ * companion for callers that do — `people.list`, and the former
+ * `isContactOnly`-based `lib/org.ts#excludeContacts` call sites (the org
+ * chart / management-reach primitives, the 1:1 check-in roster, the Team
+ * tab's org-chart + workload views, the subtree check-in history list, and
+ * the Academy "who's trained" manager panel).
+ *
+ * Participation signals, unioned per person:
+ *  - volunteer: an explicit `people.isVolunteer === true` flag (read
+ *    defensively via a cast — that field ships on the sibling
+ *    `feat/person-form-fields` branch, not this one, so both merge cleanly
+ *    regardless of merge order), OR an `engagements` row of type
+ *    "volunteer", OR any `roleAssignments` row (holding an event role).
+ *  - guest: a non-archived `rsvps` row linked via `personId` (an RSVP or a
+ *    ticket purchase) — only reached when there's no volunteer signal,
+ *    per the ladder.
+ */
+export async function resolvePersonaForRoster(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  roster: Doc<"people">[],
+): Promise<Map<Id<"people">, Persona>> {
+  const [engagements, roleAssignments, rsvps] = await Promise.all([
+    ctx.db
+      .query("engagements")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .take(PERSONA_ENGAGEMENTS_SCAN_LIMIT),
+    ctx.db
+      .query("roleAssignments")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .take(PERSONA_ROLE_ASSIGNMENTS_SCAN_LIMIT),
+    ctx.db
+      .query("rsvps")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .take(PERSONA_RSVPS_SCAN_LIMIT),
+  ]);
+
+  const volunteerIds = new Set<Id<"people">>();
+  for (const e of engagements) {
+    if (e.type === "volunteer") volunteerIds.add(e.personId);
+  }
+  for (const a of roleAssignments) volunteerIds.add(a.personId);
+
+  const guestIds = new Set<Id<"people">>();
+  for (const r of rsvps) {
+    if (r.archivedAt == null && r.personId != null) guestIds.add(r.personId);
+  }
+
+  const personas = new Map<Id<"people">, Persona>();
+  for (const p of roster) {
+    personas.set(
+      p._id,
+      personaFromSignals({
+        isTeamMember: p.isTeamMember,
+        usualRateUsd: p.usualRateUsd,
+        hasVolunteerSignal:
+          // NOTE: `isVolunteer` is not yet a schema field on this branch — it
+          // ships on the sibling `feat/person-form-fields` branch. Read
+          // defensively so this resolver works whichever branch merges first.
+          (p as unknown as { isVolunteer?: boolean }).isVolunteer === true ||
+          volunteerIds.has(p._id),
+        hasAttendanceSignal: guestIds.has(p._id),
+      }),
+    );
+  }
+  return personas;
 }

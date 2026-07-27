@@ -14,11 +14,20 @@ import {
   getChapterIdOrNull,
 } from "./lib/context";
 import { isChapterAdmin } from "./lib/org";
-import { isCardEligible } from "@events-os/shared";
+import { isCardEligible, type Persona } from "@events-os/shared";
 import { writePersonAudit, diffFields } from "./lib/givingAudit";
 import { recordPersonEmail } from "./lib/personEmails";
 import { composeName, nameHalvesPatch, splitPersonName } from "./lib/personName";
 import { assertServiceIdsInChapter } from "./lib/serviceCatalog";
+import { resolvePersonaForRoster } from "./lib/people";
+
+const personaFilter = v.union(
+  v.literal("team"),
+  v.literal("vendor"),
+  v.literal("volunteer"),
+  v.literal("guest"),
+  v.literal("contact"),
+);
 
 const vettingStatus = v.union(
   v.literal("unvetted"),
@@ -114,23 +123,30 @@ async function sandboxPeopleFilter(
     (p.isPlaceholder === true && engaged.has(String(p._id)));
 }
 
-/** List the chapter roster sorted by name. In a training sandbox (`eventId`
- *  of a training event), lists only the caller + placeholder people.
+/**
+ * List EVERY person in the chapter, sorted by name — team, vendors,
+ * volunteers, guests, and contacts alike (excluding only `isPlaceholder`/
+ * `isSamplePerson` rows, which aren't real humans). In a training sandbox
+ * (`eventId` of a training event), lists only the caller + placeholder
+ * people instead — see `sandboxPeopleFilter`.
  *
- * `contactsOnly` (person-centric audiences Phase 1 item 1) flips the default
- * roster-facing view: unset/false returns the ROSTER only (excludes
- * `isContactOnly` rows — the fix for the People tab default list, every
- * person picker/mention/duty-assignment surface, and the org-chart consumers
- * that all call this same query with `{}`), `true` returns ONLY contacts —
- * the People tab's deliberate "Contacts" persona filter, so a contact-only
- * row (auto-created from a donor gift, an import, or a public RSVP) is still
- * findable/editable, just never mixed into the default roster. */
+ * Founder's model (the fix for the People tab showing 164 of ~275 real
+ * people): a person is ALWAYS in the list; persona is a FILTER over that one
+ * list, never a partition of it. `persona` (optional) narrows the result to
+ * one rung of the ladder (`@events-os/shared#Persona`:
+ * team > vendor > volunteer > guest > contact), resolved per-row by
+ * `resolvePersonaForRoster` and returned on every row as `persona` so
+ * callers (the People tab's segmented control + counts) never have to
+ * re-derive it client-side without the participation data that requires.
+ * This REPLACES the old `contactsOnly` boolean partition (`contactsOnly:
+ * true` is now `persona: "contact"`).
+ */
 export const list = query({
   args: {
     eventId: v.optional(v.id("events")),
-    contactsOnly: v.optional(v.boolean()),
+    persona: v.optional(personaFilter),
   },
-  handler: async (ctx, { eventId, contactsOnly }) => {
+  handler: async (ctx, { eventId, persona }) => {
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return [];
     const people = await ctx.db
@@ -146,23 +162,24 @@ export const list = query({
     // members, so keep them out of the People roster. Replacing one only
     // consumes that event's copy. Inside a training sandbox the rule flips:
     // placeholders (+ the caller) are the ONLY people offered — sandbox mode
-    // ignores `contactsOnly` (a training drill never shows contacts).
-    const sorted = people
-      .filter(
-        sandbox ??
-          ((p) =>
-            p.isPlaceholder !== true &&
-            p.isSamplePerson !== true &&
-            (contactsOnly === true
-              ? p.isContactOnly === true
-              : p.isContactOnly !== true)),
-      )
-      .sort((a, b) => a.name.localeCompare(b.name));
+    // ignores `persona` (a training drill never classifies its sample bench).
+    const everyone = people.filter(
+      sandbox ?? ((p) => p.isPlaceholder !== true && p.isSamplePerson !== true),
+    );
+    const personaByPerson = sandbox
+      ? null
+      : await resolvePersonaForRoster(ctx, chapterId as Id<"chapters">, everyone);
+    const filtered =
+      persona && personaByPerson
+        ? everyone.filter((p) => personaByPerson.get(p._id) === persona)
+        : everyone;
+    const sorted = filtered.sort((a, b) => a.name.localeCompare(b.name));
     // Resolve each profile photo storageId to a servable URL for display.
     return await Promise.all(
       sorted.map(async (p) => ({
         ...p,
         imageUrl: p.image ? await ctx.storage.getUrl(p.image) : null,
+        persona: (personaByPerson?.get(p._id) ?? null) as Persona | null,
       })),
     );
   },

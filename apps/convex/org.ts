@@ -322,7 +322,11 @@ export const overview = query({
     // Roster UX (the Team tab's org-chart view), not identity matching — drop
     // contact-only rows (person-centric audiences Phase 1) before they can
     // show up as a phantom teammate. See `lib/org.ts#excludeContacts`.
-    const roster = excludeContacts(rosterWithContacts);
+    const roster = await excludeContacts(
+      ctx,
+      chapterId as Id<"chapters">,
+      rosterWithContacts,
+    );
     // Seat truth first, `managerId` fallback per-person — see `lib/org.ts`'s
     // "Seat-derived managers" section. `people[].managerId` in the response
     // below stays the raw STORED value; `hasReports`/`canManage` AND the new
@@ -386,7 +390,11 @@ export const workload = query({
     ]);
     // Roster UX (the Team tab's workload view), not identity matching — see
     // `lib/org.ts#excludeContacts`.
-    const roster = excludeContacts(rosterWithContacts);
+    const roster = await excludeContacts(
+      ctx,
+      chapterId as Id<"chapters">,
+      rosterWithContacts,
+    );
     // Seat truth first, `managerId` fallback per-person — see `lib/org.ts`'s
     // "Seat-derived managers" section. This can fan a person's reports out
     // under MULTIPLE managers (a multi-holder parent seat) — `subtreeNodes`/
