@@ -1329,6 +1329,50 @@ function NameFieldsSection({ person }: { person: Person }) {
   );
 }
 
+/** A single free-text field with a "Save" affordance that only appears once
+ *  dirty — the same local-state-then-commit shape `NameFieldsSection` above
+ *  uses, generalized to one field so `location`/`referralSource` don't each
+ *  need their own bespoke component. `onSave` receives the trimmed value
+ *  (empty string means "clear it" — the caller maps that to `null`). */
+function PersonTextFieldRow({
+  label,
+  placeholder,
+  value,
+  onSave,
+}: {
+  label: string;
+  placeholder: string;
+  value: string;
+  onSave: (next: string) => Promise<unknown>;
+}) {
+  const [text, setText] = useState(value);
+  const [saving, setSaving] = useState(false);
+  const dirty = text.trim() !== value.trim();
+
+  return (
+    <View className="mb-2">
+      <TextField label={label} value={text} onChangeText={setText} placeholder={placeholder} />
+      {dirty ? (
+        <View className="mt-1 flex-row items-center gap-2">
+          <Button
+            title="Save"
+            size="sm"
+            loading={saving}
+            onPress={async () => {
+              setSaving(true);
+              try {
+                await onSave(text.trim());
+              } finally {
+                setSaving(false);
+              }
+            }}
+          />
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 function PersonDetail({
   person,
   giverMark,
@@ -1443,9 +1487,12 @@ function PersonDetailBody({
   // membership check; this app doesn't gate ordinary roster contact edits
   // beyond that — see `people.ts`'s module doc). The full preference center
   // (known addresses, per-list subscriptions) is a later phase; this is
-  // deliberately just the one toggle.
-  const updateMarketingPref = useMutation(api.people.update);
+  // deliberately just the one toggle. Shared below by every contact/identity
+  // field this panel edits (marketing opt-out, location, referral source,
+  // volunteer signal) — one mutation instance, several call sites.
+  const updatePerson = useMutation(api.people.update);
   const marketingOptOut = person.marketingOptOut === true;
+  const isVolunteer = person.isVolunteer === true;
 
   return (
     <>
@@ -1489,6 +1536,59 @@ function PersonDetailBody({
           </View>
         ) : null}
 
+        {/* Details (person-form-fields widening, founder ask 2026-07-27) —
+            the facts the 6 Google Form imports capture beyond bare identity.
+            Location + referral source are hand-correctable here;
+            `isVolunteer` is the explicit signal, toggleable like
+            `isTeamMember` elsewhere in this app. Consent is DISPLAY-ONLY: it
+            records an affirmative "yes" with a timestamp, so it's set by the
+            import path only, never casually flipped by a staffer — see
+            `schema/people.ts#consentedAt`'s doc for why it can never be used
+            to make a suppressed address sendable. */}
+        <View className="mb-4">
+          <Text className="mb-2 text-2xs font-bold uppercase tracking-wider text-muted">
+            Details
+          </Text>
+          <PersonTextFieldRow
+            label="Location"
+            placeholder="City, State"
+            value={person.location ?? ""}
+            onSave={(next) =>
+              updatePerson({ personId: person._id, location: next || null })
+            }
+          />
+          <PersonTextFieldRow
+            label="How they heard about us"
+            placeholder="Instagram, a friend, …"
+            value={person.referralSource ?? ""}
+            onSave={(next) =>
+              updatePerson({ personId: person._id, referralSource: next || null })
+            }
+          />
+          <Pressable
+            onPress={() =>
+              updatePerson({ personId: person._id, isVolunteer: !isVolunteer })
+            }
+            accessibilityRole="switch"
+            accessibilityState={{ checked: isVolunteer }}
+            accessibilityLabel="Marked as volunteer"
+            className="mt-2 flex-row items-center justify-between rounded-lg border border-border bg-raised p-3 active:opacity-70"
+          >
+            <View className="flex-row items-center gap-2">
+              <Icon name="check-circle" size={14} color={colors.muted} />
+              <Text className="text-sm text-ink">Marked as volunteer</Text>
+            </View>
+            <Badge label={isVolunteer ? "Yes" : "No"} tone={isVolunteer ? "accent" : "neutral"} />
+          </Pressable>
+          <Text className="mt-2 text-xs text-muted">
+            {person.consentedAt
+              ? `Consented ${formatDate(person.consentedAt)}${
+                  person.consentSource ? ` · ${person.consentSource}` : ""
+                }`
+              : "No affirmative consent on file"}
+          </Text>
+        </View>
+
         {/* Marketing preference (person-centric audiences Phase 2) — layered
             OVER the address-level unsubscribe/bounce ledger, which stays
             authoritative and untouched; this only ever excludes THIS person
@@ -1499,7 +1599,7 @@ function PersonDetailBody({
           </Text>
           <Pressable
             onPress={() =>
-              updateMarketingPref({ personId: person._id, marketingOptOut: !marketingOptOut })
+              updatePerson({ personId: person._id, marketingOptOut: !marketingOptOut })
             }
             accessibilityRole="switch"
             accessibilityState={{ checked: !marketingOptOut }}

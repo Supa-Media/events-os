@@ -25,6 +25,14 @@
  * one `personEmails` upsert per new row. New inserts are appended to the
  * in-call pool so duplicate rows WITHIN one paste match instead of
  * double-creating; across calls, match-or-create makes re-runs idempotent.
+ *
+ * Row shape (person-form-fields widening, founder ask 2026-07-27): beyond
+ * bare identity, a row may also carry `serviceIds`/`location`/
+ * `referralSource`/`consentedAt`+`consentSource`/`isVolunteer` —
+ * `givingImport.ts#PersonContactFacts`. On CREATE these are written
+ * straight through; on a MATCH they fill blanks ONLY (see
+ * `matchOrCreatePersonContact`'s doc) — a re-import of an existing contact
+ * can add newly-learned facts but never overwrite a value already on file.
  */
 import { mutation, query } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
@@ -47,6 +55,20 @@ const contactRowValidator = v.object({
   lastName: v.optional(v.string()),
   email: v.optional(v.string()),
   phone: v.optional(v.string()),
+  // Service Catalog ids — same fields the roster's own `people.create`/
+  // `update` accept (`schema/people.ts#serviceIds`).
+  serviceIds: v.optional(v.array(v.id("serviceOptions"))),
+  // Person-form-fields widening (founder ask, 2026-07-27): the 6 Google Form
+  // exports carry these answers, and until this widening every one of them
+  // was silently dropped on import — only name/email/phone survived. See
+  // `schema/people.ts`'s doc on each field for what writes/reads it and,
+  // for `consentedAt`/`consentSource`, the loud compliance warning about
+  // suppression always winning.
+  location: v.optional(v.string()),
+  referralSource: v.optional(v.string()),
+  consentedAt: v.optional(v.number()),
+  consentSource: v.optional(v.string()),
+  isVolunteer: v.optional(v.boolean()),
 });
 
 function assertBatchSize(rows: unknown[]): void {
