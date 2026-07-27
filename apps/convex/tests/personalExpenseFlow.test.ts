@@ -487,8 +487,12 @@ describe("notifyPersonalChargeFlagged — the pay-back link", () => {
 
       expect(sent).toHaveLength(1);
       expect(sent[0].to).toBe("payer@publicworship.life");
+      // `[^>]*` before `href` too: the themed button helper
+      // (`lib/emailShell.ts#emailButtonRow`) emits `class="pw-btn"` first, so
+      // the anchor's attribute ORDER is not part of the contract — the link
+      // target and its visible label are.
       expect(sent[0].html).toMatch(
-        /<a href="https:\/\/app\.publicworship\.life\/finances\/cards"[^>]*>Pay it back/,
+        /<a[^>]*href="https:\/\/app\.publicworship\.life\/finances\/cards"[^>]*>Pay it back/,
       );
     } finally {
       globalThis.fetch = realFetch;
@@ -525,7 +529,7 @@ describe("notifyPersonalChargeFlagged — the pay-back link", () => {
       });
 
       expect(sent).toHaveLength(1); // transactional — still sends
-      expect(sent[0].html).not.toContain("<a href=");
+      expect(sent[0].html).not.toMatch(/<a[^>]*href=/); // no anchor at all, in any attribute order
       expect(sent[0].html).toContain("Finances");
       expect(
         errorSpy.mock.calls.some((c) => String(c[0]).includes("APP_URL is unset")),

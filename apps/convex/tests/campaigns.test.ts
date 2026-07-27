@@ -2956,7 +2956,9 @@ describe("two-party approval — notification emails", () => {
       expect(reviewHtml).toContain("Review this campaign");
       // A real, clickable link — not just the label text — since APP_URL is
       // configured in this test.
-      expect(reviewHtml).toMatch(/<a href="https:\/\/app\.publicworship\.life\/campaign\/[^"]+"[^>]*>Review this campaign/);
+      // Attribute order is not the contract — the themed button helper puts
+      // `class="pw-btn"` ahead of `href`. The target and label are.
+      expect(reviewHtml).toMatch(/<a[^>]*href="https:\/\/app\.publicworship\.life\/campaign\/[^"]+"[^>]*>Review this campaign/);
       // The document's root tag is still the very last thing in the string —
       // nothing was appended past it.
       expect(reviewHtml.trimEnd().endsWith("</html>")).toBe(true);
