@@ -807,6 +807,12 @@ export const submitQuiz = mutation({
     // hostage to a question their build can't render is the bug, not the fix.
     // Mirrors the "never re-lock a passed module" rule above: curriculum
     // changes move the content forward, never a learner's progress back.
+    //
+    // Yes, this means a hand-crafted one-answer submission can pass a module.
+    // That's an accepted cost, not an oversight: grading already hands back
+    // every `correctIndex` and retakes are unlimited, so anyone willing to
+    // submit twice could always pass. The quizzes teach; they were never the
+    // gate, and pretending otherwise here would only re-brick honest clients.
     const passed = total > 0 && score === total;
 
     const existing = bySlug.get(sectionSlug);
