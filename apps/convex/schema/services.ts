@@ -2,13 +2,23 @@ import { defineTable } from "convex/server";
 import { v } from "convex/values";
 
 /**
- * Service Catalog — the managed, per-chapter dropdown of "what can this
- * person do?" tags (worship leading, vocals, videography, …), replacing the
- * free-text `people.services` array (13 inconsistent lowercase strings across
- * 21 of 305 prod people at the time of writing). A person now references
- * catalog rows by id (`people.serviceIds`) instead of typing a string, so a
- * rename here propagates to everyone automatically and a value can only ever
- * be one of the catalog's own options.
+ * Service Catalog — the managed dropdown of "what can this person do?" tags
+ * (worship leading, vocals, videography, …), replacing the free-text
+ * `people.services` array (13 inconsistent lowercase strings across 21 of 305
+ * prod people at the time of writing). A person now references catalog rows
+ * by id (`people.serviceIds`) instead of typing a string, so a rename here
+ * propagates to everyone automatically and a value can only ever be one of
+ * the catalog's own options.
+ *
+ * ORG-WIDE BY DEFAULT, WITH OPTIONAL CHAPTER-LOCAL ADDITIONS — mirrors
+ * `schema/finances.ts#financeTeams`'s central/chapter split verbatim: absent
+ * `chapterId` = an org-wide option shared by every chapter (the founder's
+ * curated canonical catalog — a Tenor is a Tenor in any chapter); present =
+ * a LOCAL addition visible only to that one chapter. `serviceOptions.ts#list`
+ * returns the union (every org-wide option, plus the caller's own chapter's
+ * local ones) — see that file's doc. A parent/child pair must share the same
+ * scope (both org-wide, or both the same chapter) — `serviceOptions.ts#create`
+ * enforces this.
  *
  * ONE LEVEL OF NESTING ONLY, mirroring `schema/finances.ts#budgetCategories`'s
  * parent/child + `isActive` shape: a row may optionally point at a `parentId`,
@@ -34,12 +44,16 @@ import { v } from "convex/values";
  * already there.
  */
 export const serviceOptions = defineTable({
-  chapterId: v.id("chapters"),
+  // Optional: absent = an ORG-WIDE option shared by every chapter. Present =
+  // a chapter-LOCAL addition visible only to that chapter.
+  chapterId: v.optional(v.id("chapters")),
   // Absent = a top-level option (itself a parent, or a standalone leaf with no
   // children, e.g. "Songwriting"). Present = a child under that parent. A row
   // with `parentId` set may never itself be pointed at as a parent — enforced
   // in `serviceOptions.ts#create`/`rename`, not here (Convex has no
-  // cross-row schema constraint).
+  // cross-row schema constraint). A child's `chapterId` must match its
+  // parent's (both org-wide, or both the same chapter) — also enforced in
+  // `serviceOptions.ts#create`.
   parentId: v.optional(v.id("serviceOptions")),
   // The bare name at this level: "Tenor" for a child, "Vocals" for its parent.
   // Never contains ":" or "," — both are reserved (":" is the derived-label

@@ -212,19 +212,20 @@ export const MIGRATIONS: Migration[] = [
   // skim/launch-grant/settlement legs and personal-charge repayment credits
   // stay transfers. Idempotent (rows already `outflow` are skipped). See 0044.
   reimbursementPayoutsOutflow,
-  // Service Catalog: seed the canonical catalog for every chapter, then
-  // backfill `people.serviceIds` from each person's legacy free-text
-  // `services` strings via the audited 13-entry mapping. Unmapped strings are
-  // left out and reported, never guessed. Idempotent (already-seeded catalog
-  // rows and already-backfilled people are skipped). See 0045.
+  // Service Catalog: seed the canonical catalog ONCE, ORG-WIDE (shared by
+  // every chapter — a Tenor is a Tenor in any chapter), then backfill
+  // `people.serviceIds` for every chapter's roster from each person's legacy
+  // free-text `services` strings via the audited 13-entry mapping. Unmapped
+  // strings are left out and reported, never guessed. Idempotent
+  // (already-seeded org-wide rows and already-backfilled people are
+  // skipped). See 0045.
   seedServiceCatalog,
   // Convert saved `has_service` audience conditions from the pre-catalog
   // `{ service: string }` shape to `{ serviceId }`, by case-insensitive name
-  // match against the now-seeded catalog (0045 must run first — filename
-  // order guarantees it). A condition that doesn't resolve to EXACTLY ONE
-  // catalog row (no match, ambiguous, or a central-scoped audience with no
-  // single chapter to anchor against) is left untouched and reported —
-  // never silently widened to "everyone" or dropped. Idempotent (conditions
-  // already carrying `serviceId` are skipped). See 0046.
+  // match against the now-seeded org-wide catalog (0045 must run first —
+  // filename order guarantees it). A condition that doesn't resolve to
+  // EXACTLY ONE catalog row (no match, or ambiguous) is left untouched and
+  // reported — never silently widened to "everyone" or dropped. Idempotent
+  // (conditions already carrying `serviceId` are skipped). See 0046.
   serviceConditionsToIds,
 ];

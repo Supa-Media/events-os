@@ -33,7 +33,7 @@ import {
 import { requireUserId } from "./lib/context";
 import { isSuperuser } from "./lib/superuser";
 import { instantiateEvent, toSlug, seedTemplateRoles } from "./lib/templates";
-import { ensureServiceCatalogForChapter, resolveServiceStringsBestEffort } from "./lib/serviceCatalog";
+import { ensureOrgWideServiceCatalog, resolveServiceStringsBestEffort } from "./lib/serviceCatalog";
 import { seedPlatformGuidesForChapter } from "./lib/platformGuides";
 import { seedChapterFinance } from "./lib/seed/finance";
 import {
@@ -570,10 +570,11 @@ export const seedDemoData = mutation({
 
     // ── People ───────────────────────────────────────────────────────────────
     // Service Catalog (replaces free-text `people.services` — see
-    // `schema/people.ts`'s deprecation comment): seed this chapter's catalog
-    // first, then tag each demo person by canonical catalog NAME (case-
-    // insensitive lookup against `labelToId`) instead of writing raw strings.
-    const { labelToId } = await ensureServiceCatalogForChapter(ctx, chapterId);
+    // `schema/people.ts`'s deprecation comment): ensure the ORG-WIDE catalog
+    // exists (shared by every chapter, not seeded per-chapter), then tag each
+    // demo person by canonical catalog NAME (case-insensitive lookup against
+    // `labelToId`) instead of writing raw strings.
+    const { labelToId } = await ensureOrgWideServiceCatalog(ctx);
     type SeedPerson = {
       name: string;
       email?: string;
@@ -1158,10 +1159,10 @@ export const importRoster = internalMutation({
     const now = Date.now();
 
     // Service Catalog (replaces free-text `people.services` — see
-    // `schema/people.ts`'s deprecation comment): ensure this chapter's
-    // catalog exists, then best-effort-resolve each roster entry's `skills`
-    // strings against it below.
-    const { labelToId } = await ensureServiceCatalogForChapter(ctx, chapterId);
+    // `schema/people.ts`'s deprecation comment): ensure the ORG-WIDE catalog
+    // exists, then best-effort-resolve each roster entry's `skills` strings
+    // against it below.
+    const { labelToId } = await ensureOrgWideServiceCatalog(ctx);
     const unmappedSkills: { name: string; skill: string }[] = [];
 
     const existing = await ctx.db

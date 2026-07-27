@@ -276,18 +276,156 @@ describe("serviceOptions.merge", () => {
     expect((targeting.excludeGroups![0].conditions[0] as any).serviceId).toBe(toId);
   });
 
-  test("rejects merging an option into itself, and options from another chapter", async () => {
+  test("rejects merging an option into itself, and options from different scopes", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const other = await setupChapter(t, { email: "other@publicworship.life", chapterName: "Other" });
-    const mine = await s.as.mutation(api.serviceOptions.create, { name: "Audio" });
-    const theirs = await other.as.mutation(api.serviceOptions.create, { name: "Audio" });
+    const mineLocal = await s.as.mutation(api.serviceOptions.create, {
+      name: "Audio",
+      scope: s.chapterId,
+    });
+    const theirsLocal = await other.as.mutation(api.serviceOptions.create, {
+      name: "Audio",
+      scope: other.chapterId,
+    });
+    const central = await s.as.mutation(api.serviceOptions.create, { name: "Video" });
 
-    expect(await errorCode(s.as.mutation(api.serviceOptions.merge, { fromId: mine, toId: mine }))).toBe(
-      "INVALID_INPUT",
-    );
     expect(
-      await errorCode(s.as.mutation(api.serviceOptions.merge, { fromId: mine, toId: theirs })),
+      await errorCode(s.as.mutation(api.serviceOptions.merge, { fromId: mineLocal, toId: mineLocal })),
+    ).toBe("INVALID_INPUT");
+    // Two different chapters' LOCAL options are two different scopes — never
+    // mergeable into each other even though they happen to share a name.
+    expect(
+      await errorCode(s.as.mutation(api.serviceOptions.merge, { fromId: mineLocal, toId: theirsLocal })),
+    ).toBe("SCOPE_MISMATCH");
+    // A chapter-local option and an org-wide one are also different scopes.
+    expect(
+      await errorCode(s.as.mutation(api.serviceOptions.merge, { fromId: mineLocal, toId: central })),
+    ).toBe("SCOPE_MISMATCH");
+  });
+
+  test("a CENTRAL merge repoints people across EVERY chapter, not just the caller's", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const other = await setupChapter(t, { email: "other@publicworship.life", chapterName: "Other" });
+    const fromId = await s.as.mutation(api.serviceOptions.create, { name: "Audio" });
+    const toId = await s.as.mutation(api.serviceOptions.create, { name: "Audio Engineering" });
+
+    const mine = await seedPerson(s, { name: "A", serviceIds: [fromId] });
+    const theirs = await run(other.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: other.chapterId,
+        name: "B",
+        serviceIds: [fromId],
+        status: "active",
+        createdAt: Date.now(),
+      }),
+    );
+
+    // A member of the OTHER chapter can run the merge too — org-wide is
+    // "anyone can edit" today, per `lib/servicesAccess.ts`'s doc.
+    const result = await other.as.mutation(api.serviceOptions.merge, { fromId, toId });
+    expect(result.peopleRepointed).toBe(2);
+
+    expect((await run(s.t, (ctx) => ctx.db.get(mine)))?.serviceIds).toEqual([toId]);
+    expect((await run(s.t, (ctx) => ctx.db.get(theirs)))?.serviceIds).toEqual([toId]);
+  });
+});
+
+// ── scope: org-wide default, local additions, and per-scope access ───────
+
+describe("serviceOptions scope: org-wide default, local additions, access", () => {
+  test("create defaults to central (org-wide) when scope is omitted", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const id = await s.as.mutation(api.serviceOptions.create, { name: "Falsetto" });
+    const row = await run(s.t, (ctx) => ctx.db.get(id));
+    expect(row?.chapterId).toBeUndefined();
+  });
+
+  test("list returns org-wide options UNION the caller's own chapter's local additions — not another chapter's", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const other = await setupChapter(t, { email: "other@publicworship.life", chapterName: "Other" });
+    await s.as.mutation(api.serviceOptions.create, { name: "Global Option" }); // central
+    await s.as.mutation(api.serviceOptions.create, { name: "Mine Only", scope: s.chapterId });
+    await other.as.mutation(api.serviceOptions.create, { name: "Theirs Only", scope: other.chapterId });
+
+    const mine = await s.as.query(api.serviceOptions.list, {});
+    const names = mine.map((o) => o.name);
+    expect(names).toContain("Global Option");
+    expect(names).toContain("Mine Only");
+    expect(names).not.toContain("Theirs Only");
+
+    const global = mine.find((o) => o.name === "Global Option")!;
+    const local = mine.find((o) => o.name === "Mine Only")!;
+    expect(global.isCentral).toBe(true);
+    expect(local.isCentral).toBe(false);
+  });
+
+  test("a chapter cannot create, rename, or deactivate ANOTHER chapter's local option", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const other = await setupChapter(t, { email: "other@publicworship.life", chapterName: "Other" });
+
+    expect(
+      await errorCode(
+        s.as.mutation(api.serviceOptions.create, { name: "Sneaky", scope: other.chapterId }),
+      ),
+    ).toBe("FORBIDDEN");
+
+    const theirsId = await other.as.mutation(api.serviceOptions.create, {
+      name: "Theirs",
+      scope: other.chapterId,
+    });
+    expect(
+      await errorCode(
+        s.as.mutation(api.serviceOptions.rename, { serviceOptionId: theirsId, name: "Renamed" }),
+      ),
+    ).toBe("FORBIDDEN");
+    expect(
+      await errorCode(
+        s.as.mutation(api.serviceOptions.setActive, { serviceOptionId: theirsId, isActive: false }),
+      ),
+    ).toBe("FORBIDDEN");
+
+    // But ANY chapter member can manage an org-wide option today (the
+    // founder's "anyone can edit" call applies to central too — see
+    // `lib/servicesAccess.ts`'s doc).
+    const centralId = await other.as.mutation(api.serviceOptions.create, { name: "Shared" });
+    await expect(
+      s.as.mutation(api.serviceOptions.rename, { serviceOptionId: centralId, name: "Shared Renamed" }),
+    ).resolves.toBeNull();
+  });
+
+  test("a local child must share its parent's scope", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const other = await setupChapter(t, { email: "other@publicworship.life", chapterName: "Other" });
+    const localParent = await s.as.mutation(api.serviceOptions.create, {
+      name: "Local Parent",
+      scope: s.chapterId,
+    });
+    // Another chapter can't attach a child to a parent outside its own scope.
+    expect(
+      await errorCode(
+        other.as.mutation(api.serviceOptions.create, {
+          name: "Child",
+          parentId: localParent,
+          scope: other.chapterId,
+        }),
+      ),
+    ).toBe("NOT_FOUND");
+    // The SAME chapter can't attach a central-scoped child under its own
+    // local parent either — scopes must match exactly.
+    expect(
+      await errorCode(
+        s.as.mutation(api.serviceOptions.create, {
+          name: "Child",
+          parentId: localParent,
+          scope: "central",
+        }),
+      ),
     ).toBe("NOT_FOUND");
   });
 });
@@ -452,10 +590,11 @@ describe("migration 0046: convert has_service string conditions to serviceId", (
     ]);
   });
 
-  test("a central-scoped audience's condition has no single-chapter anchor — left untouched, reported", async () => {
+  test("a central-scoped audience's condition resolves against the org-wide catalog (the org-wide fix)", async () => {
     const t = newLooseT();
     const s = await setupChapter(t);
-    await run(s.t, (ctx) => runSeedServiceCatalog(ctx));
+    const seeded = await run(s.t, (ctx) => runSeedServiceCatalog(ctx));
+    expect(seeded.catalogRowsCreated).toBe(47);
 
     const centralId = await run(s.t, (ctx) =>
       ctx.db.insert("audiences", {
@@ -473,10 +612,12 @@ describe("migration 0046: convert has_service string conditions to serviceId", (
     );
 
     const result = await run(s.t, (ctx) => runServiceConditionsToIds(ctx));
-    expect(result.unresolved).toEqual([
-      { audienceId: centralId, audienceName: "Central", value: "Audio Engineering", reason: "no_chapter_anchor" },
-    ]);
+    expect(result.unresolved).toEqual([]);
+    expect(result.conditionsConverted).toBe(1);
+
+    const catalog = await s.as.query(api.serviceOptions.list, {});
+    const audioEngineering = catalog.find((o) => o.name === "Audio Engineering")!;
     const central = await run(s.t, (ctx) => ctx.db.get(centralId));
-    expect((central?.targeting as any).groups[0].conditions[0].service).toBe("Audio Engineering");
+    expect((central?.targeting as any).groups[0].conditions[0].serviceId).toBe(audioEngineering._id);
   });
 });

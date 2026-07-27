@@ -16,24 +16,27 @@ import { buildServiceNameIndex } from "../lib/serviceCatalog";
  * The legacy string was NEVER structured as "Parent:Child" (it was matched
  * as a flat case-insensitive string against `people.services`), so this
  * matches it against catalog rows' bare `name` ONLY (parent or child, either
- * can win) — `lib/serviceCatalog.ts#buildServiceNameIndex`. A string that
- * resolves to EXACTLY ONE row converts; anything else is left UNTOUCHED and
- * reported in `unresolved`, never guessed or dropped:
- *  - "no_match" — no catalog row shares that name.
+ * can win) — `lib/serviceCatalog.ts#buildServiceNameIndex`, which now indexes
+ * the ORG-WIDE catalog UNION a chapter's own local additions (the catalog
+ * moved from per-chapter to org-wide — see 0045's doc). A `scope: "central"`
+ * audience matches against the org-wide catalog alone (there's no single
+ * chapter's local rows to union in); a chapter-scoped audience matches
+ * org-wide UNION that chapter's locals. This is what makes central-scoped
+ * conditions resolvable at all now — an EARLIER version of this migration had
+ * a `"no_chapter_anchor"` failure class for exactly the case a per-chapter
+ * catalog couldn't resolve; with an org-wide catalog that class no longer
+ * exists (removed, not just unreachable — see CLAUDE.md's "Remove, Don't
+ * Deprecate").
+ *
+ * A string that resolves to EXACTLY ONE row converts; anything else is left
+ * UNTOUCHED and reported in `unresolved`, never guessed or dropped:
+ *  - "no_match" — no catalog row visible to this condition's scope shares
+ *    that name.
  *  - "ambiguous" — MORE than one row shares that name (the canonical catalog
  *    itself has this: `Vocals:Bass` and `Instruments:Bass` both end in
- *    "Bass") — picking one would silently narrow or widen the audience in a
+ *    "Bass"; a chapter-local addition can also collide with an org-wide
+ *    name) — picking one would silently narrow or widen the audience in a
  *    way nobody asked for, so this is treated exactly like no match.
- *  - "no_chapter_anchor" — the condition belongs to a `scope: "central"`
- *    audience. `serviceOptions` is chapter-scoped (`schema/services.ts`), so
- *    there is no single chapter whose catalog is "the" catalog to resolve a
- *    central audience's condition against — converting it would mean
- *    arbitrarily picking one chapter's row id, which would only ever match
- *    THAT chapter's people even though the audience spans every chapter.
- *    Left untouched deliberately (this is a real gap inherited from the
- *    contract's single-`serviceId`-per-condition shape, not something this
- *    migration can resolve on its own) rather than silently narrowing a
- *    central audience to one chapter's roster.
  *
  * A condition left unconverted keeps evaluating under the OLD shape, which no
  * longer type-checks against `AudienceCondition` but still round-trips
@@ -52,7 +55,7 @@ import { buildServiceNameIndex } from "../lib/serviceCatalog";
 
 const AUDIENCE_SCAN_LIMIT = 2000;
 
-type UnresolvedReason = "no_match" | "ambiguous" | "no_chapter_anchor";
+type UnresolvedReason = "no_match" | "ambiguous";
 
 export type ServiceConditionsToIdsResult = {
   scanned: number;
@@ -68,13 +71,15 @@ export type ServiceConditionsToIdsResult = {
 };
 
 /** Convert one condition (raw/untyped) in place if it's a legacy
- *  `has_service` string condition resolvable to exactly one row. Returns the
- *  (possibly unchanged) condition plus whether it changed. */
+ *  `has_service` string condition resolvable to exactly one row visible at
+ *  `scope`. Returns the (possibly unchanged) condition plus whether it
+ *  changed. `nameIndexByScopeKey` caches one name index per distinct scope
+ *  (`"central"`, or a chapter id) across the whole migration run. */
 async function convertCondition(
   ctx: MutationCtx,
   c: any,
-  scope: unknown,
-  nameIndexByChapter: Map<Id<"chapters">, Map<string, Id<"serviceOptions">[]>>,
+  scope: "central" | Id<"chapters">,
+  nameIndexByScopeKey: Map<string, Map<string, Id<"serviceOptions">[]>>,
   onUnresolved: (value: string, reason: UnresolvedReason) => void,
 ): Promise<{ condition: any; changed: boolean }> {
   if (!c || c.field !== "has_service" || c.serviceId !== undefined) {
@@ -83,16 +88,11 @@ async function convertCondition(
   const raw = typeof c.service === "string" ? c.service : "";
   const key = raw.trim().toLowerCase();
 
-  if (scope === "central") {
-    onUnresolved(raw, "no_chapter_anchor");
-    return { condition: c, changed: false };
-  }
-
-  const chapterId = scope as Id<"chapters">;
-  let nameIndex = nameIndexByChapter.get(chapterId);
+  const scopeKey = String(scope);
+  let nameIndex = nameIndexByScopeKey.get(scopeKey);
   if (!nameIndex) {
-    nameIndex = await buildServiceNameIndex(ctx, chapterId);
-    nameIndexByChapter.set(chapterId, nameIndex);
+    nameIndex = await buildServiceNameIndex(ctx, scope === "central" ? undefined : scope);
+    nameIndexByScopeKey.set(scopeKey, nameIndex);
   }
   const matches = nameIndex.get(key) ?? [];
   if (matches.length !== 1) {
@@ -115,7 +115,7 @@ export async function runServiceConditionsToIds(
     skippedAlreadyIds: 0,
     unresolved: [],
   };
-  const nameIndexByChapter = new Map<Id<"chapters">, Map<string, Id<"serviceOptions">[]>>();
+  const nameIndexByScopeKey = new Map<string, Map<string, Id<"serviceOptions">[]>>();
 
   const audiences = await ctx.db.query("audiences").take(AUDIENCE_SCAN_LIMIT);
   for (const audience of audiences) {
@@ -136,7 +136,7 @@ export async function runServiceConditionsToIds(
             ctx,
             c,
             audience.scope,
-            nameIndexByChapter,
+            nameIndexByScopeKey,
             (value, reason) => {
               result.unresolved.push({
                 audienceId: audience._id,

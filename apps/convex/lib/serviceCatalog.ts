@@ -109,20 +109,21 @@ function labelKey(name: string, parentName?: string): string {
 }
 
 /**
- * Ensure `chapterId` has every canonical catalog row, inserting only what's
+ * Ensure the ORG-WIDE catalog (every `serviceOptions` row with NO `chapterId`
+ * — shared by every chapter) has every canonical row, inserting only what's
  * missing (matched by name, case-insensitive, at the correct nesting level)
- * — idempotent, safe to call on every migration/seed run. Returns a
- * label→id lookup (`"name"` for a top-level option, `"parent:child"` for a
- * child, both lowercased) covering every row now present, so callers can
- * resolve a canonical label to an id without a second read.
+ * — idempotent, safe to call on every migration/seed run, from ANY chapter's
+ * context (there's exactly one org-wide catalog, not one per chapter).
+ * Returns a label→id lookup (`"name"` for a top-level option, `"parent:child"`
+ * for a child, both lowercased) covering every org-wide row now present, so
+ * callers can resolve a canonical label to an id without a second read.
  */
-export async function ensureServiceCatalogForChapter(
+export async function ensureOrgWideServiceCatalog(
   ctx: MutationCtx,
-  chapterId: Id<"chapters">,
 ): Promise<{ labelToId: Map<string, Id<"serviceOptions">>; created: number }> {
   const rows: Doc<"serviceOptions">[] = await ctx.db
     .query("serviceOptions")
-    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .withIndex("by_chapter", (q) => q.eq("chapterId", undefined))
     .take(CATALOG_SCAN_LIMIT);
 
   const findExisting = (name: string, parentId?: Id<"serviceOptions">) =>
@@ -144,14 +145,13 @@ export async function ensureServiceCatalogForChapter(
       parentId = parentRow._id;
     } else {
       parentId = await ctx.db.insert("serviceOptions", {
-        chapterId,
         name: entry.name,
         sortOrder: sortOrder++,
         isActive: true,
         createdAt: now,
       });
       created++;
-      const inserted = { _id: parentId, chapterId, name: entry.name, isActive: true, createdAt: now } as Doc<"serviceOptions">;
+      const inserted = { _id: parentId, name: entry.name, isActive: true, createdAt: now } as Doc<"serviceOptions">;
       rows.push(inserted);
       parentRow = inserted;
     }
@@ -164,7 +164,6 @@ export async function ensureServiceCatalogForChapter(
         childId = existingChild._id;
       } else {
         childId = await ctx.db.insert("serviceOptions", {
-          chapterId,
           parentId,
           name: childName,
           sortOrder: sortOrder++,
@@ -172,7 +171,7 @@ export async function ensureServiceCatalogForChapter(
           createdAt: now,
         });
         created++;
-        rows.push({ _id: childId, chapterId, parentId, name: childName, isActive: true, createdAt: now } as Doc<"serviceOptions">);
+        rows.push({ _id: childId, parentId, name: childName, isActive: true, createdAt: now } as Doc<"serviceOptions">);
       }
       labelToId.set(labelKey(childName, entry.name), childId);
     }
@@ -184,7 +183,7 @@ export async function ensureServiceCatalogForChapter(
 /**
  * Map a person's legacy `services` free-text strings onto catalog ids via
  * `LEGACY_SERVICE_STRING_MAP`, against an already-resolved `labelToId` (from
- * `ensureServiceCatalogForChapter`). Deduped. Any string with no map entry
+ * `ensureOrgWideServiceCatalog`). Deduped. Any string with no map entry
  * (or whose mapped label isn't in `labelToId` — shouldn't happen once the
  * catalog is seeded, but defensive) is reported in `unmapped` rather than
  * silently dropped from the count — `migrations/0045_seed_service_catalog.ts`
@@ -240,24 +239,33 @@ export function resolveServiceStringsBestEffort(
 }
 
 /**
- * Every `serviceOptions` row in `chapterId`, indexed by lowercased bare
- * `name` → every row id sharing that name (a parent and a child can share a
- * name — e.g. `Vocals:Bass`/`Instruments:Bass` — so callers must treat more
- * than one hit as AMBIGUOUS, never guess). Used by
+ * Every `serviceOptions` row VISIBLE to `chapterId` — every org-wide row
+ * (`chapterId` absent) UNION that chapter's own local rows — indexed by
+ * lowercased bare `name` → every row id sharing that name (a parent and a
+ * child can share a name — e.g. `Vocals:Bass`/`Instruments:Bass` — so
+ * callers must treat more than one hit as AMBIGUOUS, never guess). Omit
+ * `chapterId` for a CENTRAL-scoped lookup (org-wide rows only — there's no
+ * single chapter's local rows to union in). Used by
  * `migrations/0046_service_conditions_to_ids.ts` to convert a legacy free-text
  * `has_service` condition string, which was never structured as
  * "Parent:Child", into an id by plain-name match.
  */
 export async function buildServiceNameIndex(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
+  chapterId?: Id<"chapters">,
 ): Promise<Map<string, Id<"serviceOptions">[]>> {
-  const rows = await ctx.db
+  const orgWide = await ctx.db
     .query("serviceOptions")
-    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .withIndex("by_chapter", (q) => q.eq("chapterId", undefined))
     .take(CATALOG_SCAN_LIMIT);
+  const local = chapterId
+    ? await ctx.db
+        .query("serviceOptions")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+        .take(CATALOG_SCAN_LIMIT)
+    : [];
   const index = new Map<string, Id<"serviceOptions">[]>();
-  for (const row of rows) {
+  for (const row of [...orgWide, ...local]) {
     const key = row.name.trim().toLowerCase();
     const list = index.get(key);
     if (list) list.push(row._id);
@@ -266,10 +274,12 @@ export async function buildServiceNameIndex(
   return index;
 }
 
-/** Assert every id in `serviceIds` is a real `serviceOptions` row in
- *  `chapterId` — the write-side guard `people.ts#create`/`update` run before
+/** Assert every id in `serviceIds` is a real `serviceOptions` row USABLE by
+ *  `chapterId` — either org-wide (`chapterId` absent on the row) or local to
+ *  THIS chapter — the write-side guard `people.ts#create`/`update` run before
  *  trusting a client-supplied `serviceIds` array (a person's services must
- *  come from THEIR chapter's catalog, never a stray/cross-chapter id). */
+ *  come from a catalog their chapter can actually see, never a stray/
+ *  another-chapter's-local id). */
 export async function assertServiceIdsInChapter(
   ctx: QueryCtx,
   chapterId: Id<"chapters">,
@@ -277,10 +287,10 @@ export async function assertServiceIdsInChapter(
 ): Promise<void> {
   for (const id of serviceIds) {
     const row = await ctx.db.get(id);
-    if (!row || row.chapterId !== chapterId) {
+    if (!row || (row.chapterId !== undefined && row.chapterId !== chapterId)) {
       throw new ConvexError({
         code: "NOT_FOUND",
-        message: "One of the selected services isn't in your chapter's catalog.",
+        message: "One of the selected services isn't available in your chapter's catalog.",
       });
     }
   }
