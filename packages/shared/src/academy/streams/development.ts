@@ -303,6 +303,27 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         text: "A campaign's audience is built from GROUPS of plain-sentence conditions. Someone gets the email if they match ANY one group; inside a group, every line must be true (\"Donor · is · a donor\" and also \"Events · has never been to · any event\"). Saying who's OUT is just as easy as who's in — every line can flip to its negative (\"is not\", \"has never been to\"), so \"all donors who have never been to an event\" is one group, exactly as you'd say it out loud. Want to widen the audience instead? Add another group — \"or anyone who gave $100+\" is a second group, not a rewrite of the first. SKIP LISTS sit below the groups: anyone matching one is removed no matter what, even someone you hand-picked into the include list (an explicit skip always beats a manual include). Hand-picks still work both ways — search a person to always include or always exclude them. Audiences are LIVE — someone who starts matching a group tomorrow (a new donor crosses a giving threshold, a guest RSVPs) is included automatically the next time the audience is used, and someone who starts matching a skip list is dropped automatically too. Each group card shows its own live count, and the \"Check a person\" box explains any individual line by line — every condition gets a ✓ or ✗, then the final answer. One thing hand-picking can NEVER do, on either side: override consent. If a person has unsubscribed (their address is suppressed) or opted out of marketing, they're excluded even if you explicitly added them to the include list — the preview always shows exactly who was dropped and why.",
       },
       {
+        kind: "rule",
+        title: "The THEME carries the brand — you never colour a block",
+        text: "A campaign's look isn't decided block by block. It comes from a THEME — the org's brand colours, fonts, corner radius, and wordmark — edited in one place, **Campaigns → Themes**. Every block in the email INHERITS it: headings, body copy, buttons, dividers, quotes, poll options. There is deliberately no \"make this heading maroon\" control, and that's the point — when the brand moves, you edit the theme once and every future send follows, instead of hunting fifty campaigns for the old red. Themes ship with presets (Public Worship's own brand plus seasonal Summer, Fall, and Winter variations), and you can save your own. Pick a theme per campaign: the newsletter can wear Advent in December without anyone touching a single block.",
+      },
+      {
+        kind: "rule",
+        title: "It has to be readable on a phone, at night",
+        text: "Campaign emails are DARK-MODE AWARE and RESPONSIVE. Every theme carries a dark set alongside its light one, so a recipient whose phone is in dark mode gets a deliberately designed dark version — not the muddy auto-inversion a mail client would invent for a cream card. Columns stack and buttons go full-width on a narrow screen. And when you edit a theme, the composer CHECKS CONTRAST in **both** schemes and warns you when text would be hard to read (body copy on the card, a button label on the button, links). The warning is advice, not a lock — it's your brand, and you can ship past it — but it's the difference between \"it looked fine on my monitor\" and knowing someone reading on a phone in sunlight can actually read it.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "The person who designs the monthly newsletter is away, and this month's issue has to go out Friday. Nobody left is a designer. What now?",
+        answer:
+          "Start from the TEMPLATE. Any campaign can be saved as a reusable starting point, and Public Worship's monthly newsletter ships as a built-in one — layout, theme, and structure already right. You open it, replace the copy, and submit it for approval like any other campaign. Templates exist exactly so a send isn't hostage to one person's calendar: the design decisions were made once, by the designer, and everyone else fills in the words. (Two-party approval still applies — a template is a head start, not a shortcut past the reviewer.)",
+      },
+      {
+        kind: "tip",
+        text: "**Two more things that save real time.** A campaign can ask a QUESTION inline — add a poll block, and the recipient taps an option right in the email and lands on a short confirm page (tapping is not voting; the confirm page is what records it, so a mail scanner prefetching links can't stuff the ballot). It's one vote per recipient, and re-voting CHANGES their answer rather than adding a second one — so the totals are people, not taps. And the IMAGE LIBRARY holds your reusable illustrations and logos: pick one instead of re-uploading the same graphic into every campaign.",
+      },
+      {
         kind: "tip",
         text: "**You can start an audience straight from the People tab.** Check off a handful of people in the roster grid, then \"Email selected\" (visible only to a Compose/Approve holder) drops you into a brand-new audience draft with exactly those people already hand-picked. Nothing sends yet — it's a shortcut past the search-and-add step, not a bypass of the review-and-approve flow above, and every suppression/opt-out rule still applies to a hand-pick that arrives this way, same as one you picked by hand.",
       },
@@ -333,16 +354,17 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
           "The \"top donors\" ordering exists specifically for the relationship workflow — who matters most over time, not who gave most recently.",
       },
       {
-        prompt: "Where do a donor's notes and gift history live?",
+        prompt:
+          "The org rebrands: the accent colour changes. How do you get every future campaign onto the new colour?",
         options: [
-          "In a separate spreadsheet the owner keeps privately",
-          "On the same donor detail screen as identity, owner, and any active pledge",
-          "Notes aren't supported yet",
-          "Only central can see notes, never a chapter",
+          "Edit each block's colour in every campaign that might be reused",
+          "Edit the THEME once in Campaigns → Themes — every block inherits it",
+          "Ask a developer to change it in the code",
+          "You can't — the colours are fixed",
         ],
         answerIndex: 1,
         explanation:
-          "Everything about one donor — who they are, who owns the relationship, what they've given, what they're backing, and the story behind it — sits on one screen.",
+          "Colour lives on the theme, never on a block. That's why there's no per-block colour control: a rebrand is one edit, and no single campaign can quietly drift off-brand.",
       },
       {
         prompt: "The Executive Director writes a mass email campaign. Who can approve it before it sends?",
