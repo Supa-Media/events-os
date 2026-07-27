@@ -252,10 +252,14 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
  * `safeEmailHref`/`safeImageSrc` provide for URLs: `validateEmailTheme` already
  * rejects these characters at the WRITE gate, but a theme written before that
  * gate existed — or via a direct DB write / import script — must still not be
- * able to inject a `}` and escape into arbitrary CSS. Font stacks are
- * interpolated into BOTH a `style=` attribute and a `<style>` block, and HTML
- * entities are not decoded inside `<style>`, so escaping is not an option here
- * — stripping is.
+ * able to break out of the declaration it lands in.
+ *
+ * A font stack is interpolated raw into a double-quoted `style="…"` attribute
+ * (the `<style>` block interpolates only hex tokens and the radius, never a
+ * font). Stripping rather than escaping, for two reasons: entities are not
+ * decoded inside a `<style>` block, so escaping would be the wrong tool if a
+ * font ever does land there; and no legitimate font stack contains any of
+ * these characters, so there is nothing to preserve.
  *
  * Returns `null` when nothing usable survives, so the caller falls back to a
  * known-good stack rather than emitting an empty `font-family:`.
@@ -267,7 +271,7 @@ export function safeFontStack(stack: string): string | null {
 
 /** Global twin of `FONT_STACK_FORBIDDEN` — the validator only needs to know
  *  IF a bad character is present; the sanitizer needs to remove them all. */
-const FONT_STACK_FORBIDDEN_G = /[;{}<>()\\]/g;
+const FONT_STACK_FORBIDDEN_G = /[;{}<>()\\"/*]/g;
 
 /** Read a hex token off an unknown object, falling back to the default theme's
  *  value when absent/malformed. The renderer must never emit `undefined` into
@@ -447,11 +451,27 @@ const CONTRAST_PAIRS: readonly {
   required: number;
 }[] = [
   {
+    // Judged at the BODY bar, not the large-text one. `ink` was originally
+    // held to 3:1 on the reasoning that "headings in every preset are ≥20px"
+    // — true when written, false now: poll option labels render `ink` at
+    // 14px/600, which is not WCAG large text (that needs ≥18.66px bold). A
+    // theme with `ink` near 3:1 would have passed every warning while
+    // shipping sub-AA poll options.
     id: "ink-on-surface",
-    label: "Headings on the card",
+    label: "Headings and poll options on the card",
     fg: "ink",
     bg: "surface",
-    required: AA_CONTRAST_LARGE,
+    required: AA_CONTRAST_BODY,
+  },
+  {
+    // The footer and the unsubscribe link sit on `canvas`, not `surface`, and
+    // had no pair at all — the one piece of text every send is legally
+    // required to carry was the one nothing checked.
+    id: "muted-on-canvas",
+    label: "Footer and unsubscribe link",
+    fg: "muted",
+    bg: "canvas",
+    required: AA_CONTRAST_BODY,
   },
   {
     id: "muted-on-surface",
@@ -528,12 +548,32 @@ const MAX_FONT_STACK = 240;
 const MAX_WORDMARK = 48;
 const MAX_THEME_NAME = 60;
 
-/** A font stack may not contain the characters that would let it break out of
- *  the `font-family:` declaration it's interpolated into (`emailRender.ts`
- *  writes it straight into a `style=` attribute and a `<style>` block).
- *  Quotes are escaped at render time, but `;`/`{`/`}`/`<` have no business in
- *  a font stack at all and are rejected outright rather than escaped. */
-const FONT_STACK_FORBIDDEN = /[;{}<>()\\]/;
+/**
+ * Characters a font stack may not contain, because `emailRender.ts`
+ * interpolates it RAW into a double-quoted `style="…"` attribute.
+ *
+ * `"` is the load-bearing one and was originally missed. Two distinct
+ * failures came from that, and the boring one is the more likely:
+ *  - A designer pasting the CONVENTIONAL form of a stack,
+ *    `Inter,"Segoe UI",sans-serif`, terminates the style attribute at its
+ *    own second quote — every element silently loses every declaration
+ *    after `font-family`, and the email renders unstyled with no warning.
+ *  - The same gap lets an author inject arbitrary HTML attributes
+ *    (`Inter" onmouseover="…`) into essentially every element of a real
+ *    send. Assignment syntax needs none of the other forbidden characters.
+ * A single quote is NOT forbidden — it is the safe way to quote a family
+ * inside a double-quoted attribute, and every preset relies on it
+ * (`'Segoe UI'`).
+ *
+ * `/` and `*` are forbidden because `Inter/*` opens a CSS comment that eats
+ * the rest of the declaration list — the same silent-unstyling failure by
+ * another route. No real font family contains either.
+ *
+ * These are REJECTED rather than escaped: entities are not decoded inside a
+ * `<style>` block, so escaping would be wrong in the one context where this
+ * value may also land, and no legitimate font stack needs them anywhere.
+ */
+const FONT_STACK_FORBIDDEN = /[;{}<>()\\"/*]/;
 
 /**
  * Strict validation for the write path — an org's stored theme and a doc's

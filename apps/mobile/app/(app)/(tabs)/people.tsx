@@ -29,15 +29,16 @@ import {
   type SelectOption,
   PersonPicker,
   Button,
+  ServiceOptionsPicker,
 } from "../../../components/ui";
 import { colors, spacing } from "../../../lib/theme";
 import { formatDate, parseList } from "../../../lib/format";
 import { alertError } from "../../../lib/errors";
+import { buildServiceLabelMap, buildServiceMatchSetMap } from "../../../lib/serviceCatalog";
 import type { Doc, Id } from "@events-os/convex/_generated/dataModel";
 import {
   type VettingStatus,
   type RosterStatus,
-  personaOf,
   responsibilityAppliesTo,
   type Persona,
 } from "@events-os/shared";
@@ -77,9 +78,17 @@ const RSVP_STATUS_TONE: Record<string, "success" | "warn" | "neutral"> = {
 };
 
 // A roster row is the `people` document plus the `imageUrl` the list query
-// resolves from the stored storageId. Persona (`team` / `volunteer` / `vendor`)
-// is DERIVED from signals via the shared `personaOf`, not stored.
-type Person = Doc<"people"> & { imageUrl?: string | null };
+// resolves from the stored storageId, and the `persona` the backend derives
+// per-row (`@events-os/shared#Persona`: team > vendor > volunteer > guest >
+// contact — participation-aware, so it requires the DB reads `people.list`
+// batches via `resolvePersonaForRoster`). Never re-derive persona
+// client-side here: the client only has the row's own fields, not the
+// participation signals (engagements/roleAssignments/rsvps) that distinguish
+// a genuine volunteer/guest from a contact.
+type Person = Doc<"people"> & {
+  imageUrl?: string | null;
+  persona?: Persona | null;
+};
 
 // One "Givers" overlay mark (territories P5) — sourced from
 // `givingPlatform.giverMarks`, keyed by `personId`. "Giver" is an OVERLAY on
@@ -98,21 +107,20 @@ type GiverMark = {
 };
 
 // The segmented filter adds an "all" sentinel on top of the shared Persona
-// set, PLUS "contacts" (person-centric audiences Phase 1 item 1) — a
-// deliberate, explicit way to see contact-only rows (auto-created from a
-// donor gift, an import, or a public RSVP) that the default roster view
-// (`api.people.list` with `contactsOnly` unset) now excludes. "Contacts" is
-// NOT one of the shared `Persona` values: it's a UI-local view, not a
-// backend-derived persona (a contact never has a team/volunteer/vendor
-// signal — it's excluded from the roster entirely, not classified within it).
-type PersonaFilter = Persona | "all" | "contacts";
+// ladder (`@events-os/shared#Persona`: team > vendor > volunteer > guest >
+// contact). `people.list` now ALWAYS returns everyone — "Contacts" used to
+// be a separate UI-local view backed by a second `contactsOnly: true` query;
+// it's now just the "contact" persona, filtered from the SAME single list
+// everything else here reads from.
+type PersonaFilter = Persona | "all";
 
 const PERSONA_FILTERS: { key: PersonaFilter; label: string }[] = [
   { key: "all", label: "All" },
   { key: "team", label: "Team" },
   { key: "volunteer", label: "Volunteers" },
   { key: "vendor", label: "Vendors" },
-  { key: "contacts", label: "Contacts" },
+  { key: "guest", label: "Guests" },
+  { key: "contact", label: "Contacts" },
 ];
 
 // Fixed column widths (px) — mirrors EditableGrid's chrome so columns stay put
@@ -175,17 +183,6 @@ function personMatchesSearch(p: Person, query: string, queryDigits: string): boo
   return false;
 }
 
-/** Parse a comma list into trimmed, lowercased, de-duped values (skills). */
-function parseSkills(raw: string): string[] {
-  const seen = new Set<string>();
-  for (const part of raw.split(",")) {
-    const s = part.trim().toLowerCase();
-    if (s) seen.add(s);
-  }
-  return Array.from(seen);
-}
-
-
 /** Confirm a destructive action — window.confirm on web, no prompt on native. */
 function confirmRemove(name: string): boolean {
   if (Platform.OS === "web" && typeof window !== "undefined") {
@@ -196,14 +193,17 @@ function confirmRemove(name: string): boolean {
 
 /** PEOPLE roster — a spreadsheet-style editable grid with per-person history. */
 export default function PeopleScreen() {
-  // Roster (default `api.people.list` — excludes `isContactOnly` rows now,
-  // person-centric audiences Phase 1) and contacts (the deliberate
-  // `contactsOnly: true` view) are TWO separate queries, both kept live so
-  // the segmented control's counts stay stable regardless of which tab is
-  // active — see the "contacts" persona filter note above `PersonaFilter`.
-  const roster = useQuery(api.people.list, {}) as Person[] | undefined;
-  const contacts = useQuery(api.people.list, {
-    contactsOnly: true,
+  // ONE query for everyone — the People tab is one of the few callers that
+  // explicitly opts INTO `persona: "all"`; `people.list`'s UNFILTERED
+  // default is deliberately the roster only (see that query's doc — most of
+  // its ~11 callers are pickers/mentions/duty-assignment that want exactly
+  // that conservative default). Every persona (including "contact") is then
+  // a client-side filter over this one list, using the `persona` field the
+  // backend already derived per row. This is also what fixes the header
+  // count (see below): there's only one list, so it can never disagree with
+  // itself.
+  const roster = useQuery(api.people.list, {
+    persona: "all",
   }) as Person[] | undefined;
   const org = useQuery(api.org.nav);
   const create = useMutation(api.people.create);
@@ -212,7 +212,7 @@ export default function PeopleScreen() {
   const seatHoldings = useQuery(api.responsibilities.chapterSeatHoldings);
 
   const [search, setSearch] = useState("");
-  const [skillFilter, setSkillFilter] = useState<string | null>(null);
+  const [skillFilter, setSkillFilter] = useState<Id<"serviceOptions"> | null>(null);
   // Default to the core Team — the common case (a lead manages their team, not
   // the full roster of volunteers/vendors). "All" is one tap away.
   const [persona, setPersona] = useState<PersonaFilter>("team");
@@ -220,18 +220,16 @@ export default function PeopleScreen() {
   // can also be a giver), so it composes with whichever persona is selected.
   const [giversOnly, setGiversOnly] = useState(false);
 
-  // The grid's data source: the roster for every persona except the
-  // deliberate "Contacts" tab, which shows the separate contacts-only query.
-  const people = persona === "contacts" ? contacts : roster;
+  // The grid's data source is now just the one list — every persona
+  // (including "Contacts") is a filter over it, applied below in `filtered`.
+  const people = roster;
 
   // Givers overlay (territories P5). Every roster row shares one `chapterId`
   // (the roster query is already hard-scoped to the caller's own chapter), so
   // the first row's is the current chapter — skip the query until the roster
-  // has loaded at least one row. Sourced from `roster` (not `people`) so it
-  // stays available even while the Contacts tab is active. Returns `[]` for a
-  // caller with no giving access at this chapter (quiet degrade, never a
-  // throw — see `givingPlatform.giverMarks`), so the overlay simply doesn't
-  // render below.
+  // has loaded at least one row. Returns `[]` for a caller with no giving
+  // access at this chapter (quiet degrade, never a throw — see
+  // `givingPlatform.giverMarks`), so the overlay simply doesn't render below.
   const chapterId = roster && roster.length > 0 ? roster[0].chapterId : undefined;
   const giverMarks = useQuery(
     api.givingPlatform.giverMarks,
@@ -266,9 +264,7 @@ export default function PeopleScreen() {
   const campaignsAccess = useQuery(api.audiences.myCampaignsAccess, {});
   const canEmailSelected = campaignsAccess?.canView === true;
 
-  // Manager names by id — one map instead of a per-row roster scan. Sourced
-  // from `roster` (not `people`): a contact-only row is never anyone's
-  // manager, and this must stay resolvable while the Contacts tab is active.
+  // Manager names by id — one map instead of a per-row roster scan.
   const nameById = useMemo(
     () => new Map((roster ?? []).map((p) => [p._id, p.name])),
     [roster],
@@ -284,49 +280,80 @@ export default function PeopleScreen() {
   }, [seatHoldings]);
 
   // Per-persona counts for the segmented control, so the filtering model is
-  // legible at a glance (Team 12 · Volunteers 30 · Vendors 5 · Contacts 4)
-  // rather than a blind default. "all" is the full roster (still excluding
-  // contacts — see `PersonaFilter`'s doc). Sourced from `roster`/`contacts`
-  // directly (not `people`) so the counts never flicker between tabs.
+  // legible at a glance (Team 12 · Volunteers 30 · Vendors 5 · Guests 20 ·
+  // Contacts 111) rather than a blind default. "all" is EVERYONE — the fix
+  // for the bug where this header/count used to reflect whichever of two
+  // separate queries (roster vs. contactsOnly) happened to be active, which
+  // is exactly what showed 164 instead of ~275. One list, one set of counts,
+  // read straight off the backend-derived `persona` field — never
+  // re-derived client-side (see `Person`'s doc above).
   const personaCounts = useMemo(() => {
     const counts: Record<PersonaFilter, number> = {
       all: (roster ?? []).length,
       team: 0,
       volunteer: 0,
       vendor: 0,
-      contacts: (contacts ?? []).length,
+      guest: 0,
+      contact: 0,
     };
-    for (const p of roster ?? []) counts[personaOf(p)] += 1;
-    return counts;
-  }, [roster, contacts]);
-
-  // Distinct skills across the roster, for the filter bar. Roster-only —
-  // contact rows never carry `services`.
-  const allSkills = useMemo(() => {
-    const set = new Set<string>();
     for (const p of roster ?? []) {
-      for (const s of p.services ?? []) set.add(s);
+      if (p.persona) counts[p.persona] += 1;
     }
-    return Array.from(set).sort();
+    return counts;
   }, [roster]);
+
+  // Service Catalog, for the filter bar — chips must show the SAME
+  // "Parent:Child" label the picker uses (`ServiceOptionsPicker`/
+  // `SkillsCell`), so the two surfaces never disagree on what a service is
+  // called.
+  const serviceCatalog = useQuery(api.serviceOptions.list, { includeInactive: true });
+  const serviceLabelById = useMemo(
+    () =>
+      serviceCatalog ? buildServiceLabelMap(serviceCatalog) : new Map<Id<"serviceOptions">, string>(),
+    [serviceCatalog],
+  );
+  // A PARENT chip's match set is itself + every child — mirrors the
+  // backend's `has_service` subtree rollup (`lib/audienceTargeting.ts`) so
+  // this filter never disagrees with what targeting a service actually
+  // means.
+  const serviceMatchSetById = useMemo(
+    () =>
+      serviceCatalog
+        ? buildServiceMatchSetMap(serviceCatalog)
+        : new Map<Id<"serviceOptions">, Set<Id<"serviceOptions">>>(),
+    [serviceCatalog],
+  );
+
+  // Distinct services across the roster, for the filter bar. Roster-only —
+  // contact rows never carry `serviceIds`.
+  const allSkills = useMemo(() => {
+    const seen = new Set<Id<"serviceOptions">>();
+    for (const p of roster ?? []) {
+      for (const sid of p.serviceIds ?? []) seen.add(sid);
+    }
+    return Array.from(seen)
+      .map((id) => ({ id, label: serviceLabelById.get(id) ?? "…" }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [roster, serviceLabelById]);
 
   // Memoized so a re-render (e.g. typing in another field) doesn't re-scan the
   // whole roster — only persona / skill / search changes recompute the rows.
-  // `persona === "contacts"` skips the `personaOf` check: `people` is already
-  // the contacts-only query result in that case, not a slice to filter again.
+  // Persona is filtered against the backend-derived `p.persona`, the same
+  // field `personaCounts` reads — one source of truth for both.
   const filtered = useMemo(() => {
     const query = search.trim().toLowerCase();
     const queryDigits = digitsOnly(query);
     return (people ?? []).filter((p) => {
-      if (persona !== "all" && persona !== "contacts" && personaOf(p) !== persona)
-        return false;
+      if (persona !== "all" && p.persona !== persona) return false;
       if (giversOnly && !giverMarksByPerson.has(p._id)) return false;
-      if (skillFilter && !(p.services ?? []).includes(skillFilter))
-        return false;
+      if (skillFilter) {
+        const matchSet = serviceMatchSetById.get(skillFilter) ?? new Set([skillFilter]);
+        if (!(p.serviceIds ?? []).some((sid) => matchSet.has(sid))) return false;
+      }
       if (query && !personMatchesSearch(p, query, queryDigits)) return false;
       return true;
     });
-  }, [people, persona, giversOnly, giverMarksByPerson, skillFilter, search]);
+  }, [people, persona, giversOnly, giverMarksByPerson, skillFilter, serviceMatchSetById, search]);
 
   // People-CRM UX selection: "select all visible" respects whatever's
   // currently filtered (persona/givers/skill/search), never the full roster.
@@ -367,13 +394,10 @@ export default function PeopleScreen() {
 
   // Cross-tab deep link (see `openParam` above) can point at a CONTACT — e.g.
   // the giving CRM's donor "Linked person" column, since a donor-linked row is
-  // now `isContactOnly` (person-centric audiences Phase 1). Search BOTH
-  // `roster` and `contacts`, never just the currently active `people` view, so
-  // the link still opens regardless of which persona tab happens to be active.
+  // still `isContactOnly` (provenance). `roster` is the one list everyone
+  // lives in now, so it opens regardless of which persona segment is active.
   const openPerson = openId
-    ? ((roster ?? []).find((p) => p._id === openId) ??
-        (contacts ?? []).find((p) => p._id === openId) ??
-        null)
+    ? (roster ?? []).find((p) => p._id === openId) ?? null
     : null;
 
   async function handleAddRow() {
@@ -412,13 +436,17 @@ export default function PeopleScreen() {
               <Text className="text-xs font-semibold text-muted">Duplicates</Text>
             </Pressable>
           ) : null}
+          {/* The FULL list's count, always — never whichever persona segment
+              happens to be selected. This is literally the header that used
+              to show 164 (a stale roster-only count) instead of ~275: with
+              one query for everyone, `people.length` IS the full count. */}
           <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-            {persona === "contacts" ? "Contacts" : "Roster"} ({people.length})
+            People ({people.length})
           </Text>
         </View>
       </View>
 
-      {/* Persona segmented control (All · Team · Volunteers · Vendors) */}
+      {/* Persona segmented control (All · Team · Volunteers · Vendors · Guests · Contacts) */}
       <View style={styles.segmented}>
         {PERSONA_FILTERS.map((f) => {
           const active = persona === f.key;
@@ -516,10 +544,10 @@ export default function PeopleScreen() {
           />
           {allSkills.map((s) => (
             <Pill
-              key={s}
-              label={s}
-              selected={skillFilter === s}
-              onPress={() => setSkillFilter((cur) => (cur === s ? null : s))}
+              key={s.id}
+              label={s.label}
+              selected={skillFilter === s.id}
+              onPress={() => setSkillFilter((cur) => (cur === s.id ? null : s.id))}
             />
           ))}
         </View>
@@ -864,11 +892,12 @@ function PersonRow({
         />
       </Cell>
 
-      {/* Skills: chips + comma-separated inline editor */}
+      {/* Skills: Service Catalog multi-select (replaces the old free-text
+          comma editor — see `SkillsCell`'s doc). */}
       <Cell width={COLS.skills}>
         <SkillsCell
-          skills={person.services ?? []}
-          onCommit={(next) => update({ personId: id, services: next })}
+          serviceIds={person.serviceIds ?? []}
+          onCommit={(next) => update({ personId: id, serviceIds: next })}
         />
       </Cell>
 
@@ -1128,41 +1157,51 @@ function RateCell({
   );
 }
 
-// ── Skills cell: chips + an inline comma-separated editor ─────────────────────
-// Tapping the chips area swaps to a text input; on blur it splits/normalizes.
+// ── Skills cell: Service Catalog multi-select ──────────────────────────────
+// Tapping the chips area opens `ServiceOptionsPicker` (browse the managed
+// catalog, add a new option inline, or jump to "Manage services…" to rename/
+// deactivate/merge) — replaces the old free-text comma editor now that
+// `people.update` takes `serviceIds` (catalog ids), not `services` (strings).
+// Queries its own catalog copy for label resolution (Convex dedupes this
+// against every other row's identical subscription; kept local rather than
+// lifted to `PeopleScreen` state to keep this change scoped to the cell).
 function SkillsCell({
-  skills,
+  serviceIds,
   onCommit,
 }: {
-  skills: string[];
-  onCommit: (next: string[]) => void;
+  serviceIds: Id<"serviceOptions">[];
+  onCommit: (next: Id<"serviceOptions">[]) => void;
 }) {
-  const [editing, setEditing] = useState(false);
-
-  if (editing) {
-    return (
-      <InlineText
-        value={skills.join(", ")}
-        placeholder="sound, lighting…"
-        onCommit={(t) => {
-          onCommit(parseSkills(t));
-          setEditing(false);
-        }}
-      />
-    );
-  }
+  const tree = useQuery(api.serviceOptions.list, { includeInactive: true });
+  const labelById = useMemo(
+    () => (tree ? buildServiceLabelMap(tree) : new Map<Id<"serviceOptions">, string>()),
+    [tree],
+  );
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   return (
-    <Pressable
-      onPress={() => setEditing(true)}
-      className="flex-1 flex-row flex-wrap items-center gap-1 px-2 py-1.5 active:opacity-70 web:hover:opacity-90"
-    >
-      {skills.length === 0 ? (
-        <Text className="text-sm text-faint">—</Text>
-      ) : (
-        skills.map((s) => <OptionTag key={s} label={s} />)
-      )}
-    </Pressable>
+    <>
+      <Pressable
+        onPress={() => setPickerOpen(true)}
+        className="flex-1 flex-row flex-wrap items-center gap-1 px-2 py-1.5 active:opacity-70 web:hover:opacity-90"
+      >
+        {serviceIds.length === 0 ? (
+          <Text className="text-sm text-faint">—</Text>
+        ) : (
+          serviceIds.map((sid) => (
+            <OptionTag key={sid} label={labelById.get(sid) ?? "…"} />
+          ))
+        )}
+      </Pressable>
+      <ServiceOptionsPicker
+        visible={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        mode="multi"
+        selectedIds={serviceIds}
+        onChange={onCommit}
+        title="Services"
+      />
+    </>
   );
 }
 
@@ -1301,6 +1340,50 @@ function NameFieldsSection({ person }: { person: Person }) {
   );
 }
 
+/** A single free-text field with a "Save" affordance that only appears once
+ *  dirty — the same local-state-then-commit shape `NameFieldsSection` above
+ *  uses, generalized to one field so `location`/`referralSource` don't each
+ *  need their own bespoke component. `onSave` receives the trimmed value
+ *  (empty string means "clear it" — the caller maps that to `null`). */
+function PersonTextFieldRow({
+  label,
+  placeholder,
+  value,
+  onSave,
+}: {
+  label: string;
+  placeholder: string;
+  value: string;
+  onSave: (next: string) => Promise<unknown>;
+}) {
+  const [text, setText] = useState(value);
+  const [saving, setSaving] = useState(false);
+  const dirty = text.trim() !== value.trim();
+
+  return (
+    <View className="mb-2">
+      <TextField label={label} value={text} onChangeText={setText} placeholder={placeholder} />
+      {dirty ? (
+        <View className="mt-1 flex-row items-center gap-2">
+          <Button
+            title="Save"
+            size="sm"
+            loading={saving}
+            onPress={async () => {
+              setSaving(true);
+              try {
+                await onSave(text.trim());
+              } finally {
+                setSaving(false);
+              }
+            }}
+          />
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
 function PersonDetail({
   person,
   giverMark,
@@ -1364,6 +1447,14 @@ function PersonDetailBody({
     personId: person._id as Id<"people">,
   });
   const setPrimaryEmail = useMutation(api.personEmails.setPrimaryEmail);
+  // PW Forms consolidation — every Google Form response resolved to this
+  // person (intake/interest forms; event-scoped anonymous surveys never
+  // carry a personId, so they never appear here — see `formSubmissions.ts`).
+  // Gated identically to everything else in this sheet (chapter membership
+  // via the linked person — `lib/formsAccess.ts`).
+  const formSubmissions = useQuery(api.formSubmissions.listForPerson, {
+    personId: person._id as Id<"people">,
+  });
   // Duties are shown only to callers who can act on them (managers/admins) —
   // for anyone else `responsibilities.list` returns just the CALLER's own
   // duties, which would render a misleadingly empty section for this person.
@@ -1415,9 +1506,12 @@ function PersonDetailBody({
   // membership check; this app doesn't gate ordinary roster contact edits
   // beyond that — see `people.ts`'s module doc). The full preference center
   // (known addresses, per-list subscriptions) is a later phase; this is
-  // deliberately just the one toggle.
-  const updateMarketingPref = useMutation(api.people.update);
+  // deliberately just the one toggle. Shared below by every contact/identity
+  // field this panel edits (marketing opt-out, location, referral source,
+  // volunteer signal) — one mutation instance, several call sites.
+  const updatePerson = useMutation(api.people.update);
   const marketingOptOut = person.marketingOptOut === true;
+  const isVolunteer = person.isVolunteer === true;
 
   return (
     <>
@@ -1461,6 +1555,59 @@ function PersonDetailBody({
           </View>
         ) : null}
 
+        {/* Details (person-form-fields widening, founder ask 2026-07-27) —
+            the facts the 6 Google Form imports capture beyond bare identity.
+            Location + referral source are hand-correctable here;
+            `isVolunteer` is the explicit signal, toggleable like
+            `isTeamMember` elsewhere in this app. Consent is DISPLAY-ONLY: it
+            records an affirmative "yes" with a timestamp, so it's set by the
+            import path only, never casually flipped by a staffer — see
+            `schema/people.ts#consentedAt`'s doc for why it can never be used
+            to make a suppressed address sendable. */}
+        <View className="mb-4">
+          <Text className="mb-2 text-2xs font-bold uppercase tracking-wider text-muted">
+            Details
+          </Text>
+          <PersonTextFieldRow
+            label="Location"
+            placeholder="City, State"
+            value={person.location ?? ""}
+            onSave={(next) =>
+              updatePerson({ personId: person._id, location: next || null })
+            }
+          />
+          <PersonTextFieldRow
+            label="How they heard about us"
+            placeholder="Instagram, a friend, …"
+            value={person.referralSource ?? ""}
+            onSave={(next) =>
+              updatePerson({ personId: person._id, referralSource: next || null })
+            }
+          />
+          <Pressable
+            onPress={() =>
+              updatePerson({ personId: person._id, isVolunteer: !isVolunteer })
+            }
+            accessibilityRole="switch"
+            accessibilityState={{ checked: isVolunteer }}
+            accessibilityLabel="Marked as volunteer"
+            className="mt-2 flex-row items-center justify-between rounded-lg border border-border bg-raised p-3 active:opacity-70"
+          >
+            <View className="flex-row items-center gap-2">
+              <Icon name="check-circle" size={14} color={colors.muted} />
+              <Text className="text-sm text-ink">Marked as volunteer</Text>
+            </View>
+            <Badge label={isVolunteer ? "Yes" : "No"} tone={isVolunteer ? "accent" : "neutral"} />
+          </Pressable>
+          <Text className="mt-2 text-xs text-muted">
+            {person.consentedAt
+              ? `Consented ${formatDate(person.consentedAt)}${
+                  person.consentSource ? ` · ${person.consentSource}` : ""
+                }`
+              : "No affirmative consent on file"}
+          </Text>
+        </View>
+
         {/* Marketing preference (person-centric audiences Phase 2) — layered
             OVER the address-level unsubscribe/bounce ledger, which stays
             authoritative and untouched; this only ever excludes THIS person
@@ -1471,7 +1618,7 @@ function PersonDetailBody({
           </Text>
           <Pressable
             onPress={() =>
-              updateMarketingPref({ personId: person._id, marketingOptOut: !marketingOptOut })
+              updatePerson({ personId: person._id, marketingOptOut: !marketingOptOut })
             }
             accessibilityRole="switch"
             accessibilityState={{ checked: !marketingOptOut }}
@@ -1699,6 +1846,43 @@ function PersonDetailBody({
           )}
         </View>
 
+        {/* Form submissions (PW Forms consolidation) — every Google Form
+            response resolved to this person (Contact Information, Team
+            Interest, …). Event-scoped anonymous surveys (Eden's attendee
+            survey) never carry a personId, so they surface on the EVENT's
+            Feedback card instead — see
+            `components/event/ticketing/FeedbackCard.tsx`. */}
+        <View className="mt-4">
+          <Text className="mb-2 text-2xs font-bold uppercase tracking-wider text-muted">
+            Form submissions
+          </Text>
+          {formSubmissions === undefined ? (
+            <Text style={styles.historyEmpty}>Loading form submissions…</Text>
+          ) : formSubmissions.length === 0 ? (
+            <Text style={styles.historyEmpty}>No form submissions on file.</Text>
+          ) : (
+            <View style={styles.historyList}>
+              {formSubmissions.map((sub) => (
+                <View key={sub._id} style={styles.historyItem}>
+                  <View style={styles.historyItemTop}>
+                    <Text style={styles.historyEvent} numberOfLines={1}>
+                      {sub.title}
+                    </Text>
+                    <Badge
+                      label={sub.source === "in_app" ? "In-app" : "Import"}
+                      tone="neutral"
+                    />
+                  </View>
+                  <Text style={styles.historyMeta}>
+                    {formatDate(sub.submittedAt)}
+                    {submissionPreview(sub.answers) ? ` · ${submissionPreview(sub.answers)}` : ""}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          )}
+        </View>
+
         {/* Governance roles (super-admin only): a read-only mirror of this
             person's specialized leadership/finance roles. Assignment happens
             from the Org Chart (`/org-chart`) — this section only reflects
@@ -1751,6 +1935,21 @@ function PersonDetailBody({
       ) : null}
     </>
   );
+}
+
+/** A short, single-line preview for a form submission's answers — the first
+ *  1-2 non-empty short string answers, joined. Deliberately generic (no
+ *  per-form logic): the full answer set is verbatim data meant for a future
+ *  detail view, not this compact list row. */
+function submissionPreview(answers: Record<string, unknown>): string {
+  const parts: string[] = [];
+  for (const value of Object.values(answers)) {
+    if (parts.length >= 2) break;
+    if (typeof value === "string" && value.trim().length > 0 && value.length <= 60) {
+      parts.push(value.trim());
+    }
+  }
+  return parts.join(" · ");
 }
 
 function ContactLink({

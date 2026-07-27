@@ -84,18 +84,19 @@ type Selection =
  * `isPreset`, `contrastWarnings`), filling any gap from the default rather
  * than throwing. A row written before a token existed still opens.
  *
- * Its ONE behaviour that's wrong for an editor is `dark`: a MISSING `dark` is
- * filled from `DEFAULT_EMAIL_THEME`, which is correct at render time (some
- * dark rendering must exist) and a lie in a form — the toggle would read
- * "dark overrides on" for a theme that has none, and saving would then stamp
- * Public Worship's maroon dark mode onto, say, a Winter-derived theme nobody
- * asked to have one. `emailThemes.createTheme` refuses to persist that same
- * fill for the same reason. So the row's OWN `dark` is restored over the
- * normalized one, present or absent.
+ * `dark` is the one field it does NOT fill from the default — absence there is
+ * meaningful ("this theme declares no dark intent") and is preserved as
+ * absence, which is exactly what a form needs: the dark toggle reads off the
+ * theme's own state instead of showing "overrides on" for a theme that has
+ * none. This function used to restore the row's RAW `dark` over a
+ * back-filled one to work around that fill; the fill is gone (see
+ * `emailTheme.ts`'s "ABSENCE IS MEANINGFUL" note), and restoring the raw
+ * value was itself a small hazard — an unnormalized override would be handed
+ * straight back to `validateEmailTheme` on save and rejected as the
+ * designer's typo.
  */
 function themeOf(row: ThemeView): EmailTheme {
-  const { dark: _filledIn, ...tokens } = normalizeEmailTheme(row);
-  return row.dark ? { ...tokens, dark: row.dark } : tokens;
+  return normalizeEmailTheme(row);
 }
 
 export function CampaignThemesView() {
@@ -154,12 +155,13 @@ export function CampaignThemesView() {
       return;
     }
     setSaveError(null);
-    // Tokens from the VALIDATED theme (normalized, trimmed), but `dark` from
-    // the DRAFT — `validateEmailTheme` returns `normalizeEmailTheme`'s output,
-    // which back-fills a missing `dark` from the default theme (see
-    // `themeOf`). Reading it here would silently re-add dark overrides the
-    // designer just switched off.
-    const { name, dark: _normalizedDark, ...tokens } = validated.theme;
+    // Everything from the VALIDATED theme (normalized, trimmed).
+    // `validateEmailTheme` returns `normalizeEmailTheme`'s output, which
+    // preserves an ABSENT `dark` as absent (it no longer back-fills one from
+    // the default theme), so turning the dark section off survives the round
+    // trip — `dark` is pulled out of the spread only because it has to be
+    // sent as an explicit `null`, below, rather than omitted.
+    const { name, dark, ...tokens } = validated.theme;
     setSaving(true);
     try {
       await run(
@@ -171,7 +173,7 @@ export function CampaignThemesView() {
             // `null` is the CLEAR sentinel — `undefined` would mean "leave the
             // stored overrides alone", which is the opposite of what turning
             // the dark section off means.
-            dark: draft.dark ?? null,
+            dark: dark ?? null,
           }),
         { errorTitle: "Couldn't save the theme" },
       );

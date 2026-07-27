@@ -23,6 +23,7 @@
  * id, so re-deriving one from a renamed label would silently re-bucket every
  * vote already cast.
  */
+import { useRef } from "react";
 import { View, Text, Pressable } from "react-native";
 import { GestureDetector, type GestureType } from "react-native-gesture-handler";
 import {
@@ -38,7 +39,12 @@ import {
 import { Icon, TextField, Select, Field } from "../../ui";
 import { MarkdownEditor } from "../../markdown";
 import { colors } from "../../../lib/theme";
-import { BLOCK_KIND_LABELS } from "../../../lib/emailDesigner";
+import {
+  BLOCK_KIND_LABELS,
+  imageUrlProblem,
+  pollHasBlankLabel,
+  syncListKeys,
+} from "../../../lib/emailDesigner";
 import type { ActionRunner } from "../../../lib/useActionToast";
 import {
   EditorGroup,
@@ -354,29 +360,51 @@ function ColumnsEditor({
   const atMin = columns.length <= MIN_COLUMNS;
   const atMax = columns.length >= MAX_COLUMNS;
 
+  /**
+   * A stable React key PER POSITION, spliced in step with the edits below.
+   *
+   * Columns have no ids of their own in the contract, so the tempting key is
+   * the index — and the index is wrong, because every column's remove button
+   * is live once there are three of them and removal is a `filter`, i.e. from
+   * the MIDDLE. Removing column 1 of 3 re-keys column 3's data onto the
+   * subtree that was rendering column 2, which carries that subtree's
+   * `useImageLibraryRegistration` ref (still pointing at column 2's uploaded
+   * image) and its half-typed TextInput caret with it. Keys that travel with
+   * the data make the removal a genuine unmount instead.
+   *
+   * A ref rather than state: this is derived bookkeeping, never rendered as
+   * data, and it must be correct WITHIN the render that reads it. Lengths
+   * that changed from outside this component (an undo, a reloaded document)
+   * fall back to `syncListKeys`, where a remount is the worst case.
+   */
+  const keysRef = useRef<string[]>([]);
+  if (keysRef.current.length !== columns.length) {
+    keysRef.current = syncListKeys(keysRef.current, columns.length);
+  }
+
   function patchColumn(index: number, patch: Partial<EmailCardContent>) {
     onChange({
       columns: columns.map((c, i) => (i === index ? { ...c, ...patch } : c)),
     });
   }
 
+  function removeColumn(index: number) {
+    // Drop the key with the column it belongs to, so the re-render's
+    // length check is already satisfied and every SURVIVING column keeps the
+    // key (and therefore the subtree) it had.
+    keysRef.current = keysRef.current.filter((_, i) => i !== index);
+    onChange({ columns: columns.filter((_, i) => i !== index) });
+  }
+
   return (
     <View>
       {columns.map((column, index) => (
         <EditorGroup
-          // Columns have no ids of their own in the contract, so position is
-          // the only available key. Safe here because the list is only ever
-          // appended to or truncated from the end — there's no reorder, so a
-          // remounted subtree can't lose a half-typed field mid-edit.
-          key={index}
+          key={keysRef.current[index]}
           title={`Column ${index + 1}`}
           right={
             <Pressable
-              onPress={
-                atMin
-                  ? undefined
-                  : () => onChange({ columns: columns.filter((_, i) => i !== index) })
-              }
+              onPress={atMin ? undefined : () => removeColumn(index)}
               disabled={atMin}
               hitSlop={6}
               accessibilityRole="button"
@@ -420,7 +448,10 @@ function PollEditor({
   const options = block.options;
   const atMin = options.length <= MIN_POLL_OPTIONS;
   const atMax = options.length >= MAX_POLL_OPTIONS;
-  const blankLabel = options.some((o) => o.label.trim() === "");
+  // The write gate's own test (`length === 0`, untrimmed) — see
+  // `pollHasBlankLabel`. Warning on a whitespace-only label would flag a poll
+  // that saves perfectly well.
+  const blankLabel = pollHasBlankLabel(options);
 
   function setOptions(next: EmailPollOption[]) {
     onChange({ options: next });
@@ -495,17 +526,32 @@ function ImageBlockEditor({
   run?: ActionRunner["run"];
 }) {
   const library = useImageLibraryRegistration();
+  // The URL is the field that decides whether this document can be SAVED at
+  // all: `defaultBlockFor("image")` starts it empty, and the write gate
+  // rejects the whole document over it — so an unfilled image block silently
+  // takes every other block's edits down with it until it's dealt with.
+  const urlProblem = imageUrlProblem(block.url);
 
   return (
     <View>
       <TextField
         label="Image URL"
         value={block.url}
-        onChangeText={(url) => onChange({ url })}
+        onChangeText={(url) => {
+          onChange({ url });
+          // A typed/pasted URL is not the image this editor uploaded, so any
+          // alt text written next must not be backfilled onto that row.
+          library.forget();
+        }}
         placeholder="https://…"
         autoCapitalize="none"
         keyboardType="url"
       />
+      {urlProblem === "missing" ? (
+        <InlineWarning text="This image has no URL yet. Upload a picture or choose one from the library — the campaign can't be saved (including edits to every other block) until this is filled in." />
+      ) : urlProblem === "scheme" ? (
+        <InlineWarning text="An image URL has to start with http:// or https://. The campaign can't be saved until this one does." />
+      ) : null}
       <View className="mb-1 flex-row flex-wrap items-start gap-2">
         {uploadImage && run ? (
           <ImageUploadButton
@@ -518,8 +564,16 @@ function ImageBlockEditor({
           />
         ) : null}
         {/* Picking from the library fills the alt text too — the description
-            was written once, the first time this image was used. */}
-        <ImageLibraryPicker onPick={({ url, alt }) => onChange({ url, alt })} />
+            was written once, the first time this image was used. `forget()`
+            because the picked row already HAS its description; editing the
+            alt field from here must not overwrite the row this editor's own
+            upload created (a different image entirely). */}
+        <ImageLibraryPicker
+          onPick={({ url, alt }) => {
+            onChange({ url, alt });
+            library.forget();
+          }}
+        />
       </View>
       <TextField
         label="Alt text"
@@ -530,7 +584,12 @@ function ImageBlockEditor({
         }}
         placeholder="Describes the image for screen readers / blocked images"
       />
-      {block.url.trim() !== "" && block.alt.trim() === "" ? (
+      {/* Advisory only, and deliberately SECOND: the write gate accepts an
+          empty alt ("" is the contract's "decorative"), so this must never be
+          the loudest thing on the card while the url — which the gate does
+          reject — is still unfilled. With no url there's no image to describe
+          yet, so it stays quiet. */}
+      {urlProblem === null && block.alt.trim() === "" ? (
         <InlineWarning text="No alt text. Screen readers and image-blocking clients will show nothing here. Leave it empty only if the image is purely decorative." />
       ) : null}
       <TextField

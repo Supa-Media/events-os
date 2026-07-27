@@ -64,6 +64,22 @@ const POLL_TALLY_CAP = AUDIENCE_RESOLVE_LIMIT + 1;
  *  email with more than this many polls is not a real document. */
 const POLL_BLOCKS_PER_CAMPAIGN = 25;
 
+/**
+ * Total vote rows `getPollResults` may read across ALL of a campaign's poll
+ * blocks in one query.
+ *
+ * The per-block cap alone was not enough: `POLL_BLOCKS_PER_CAMPAIGN` (25) x
+ * `POLL_TALLY_CAP` (5001) is ~125,000 documents, far past Convex's
+ * per-transaction read limit, and `validateEmailDocument` caps neither the
+ * block count nor the number of poll blocks — so four polls on a large
+ * campaign already reach it. The failure mode was a hard-throwing campaign
+ * detail screen, which is worse than an approximate tally.
+ *
+ * The budget is spent block-by-block, in document order, and any block that
+ * hits it reports `truncated: true` rather than silently under-reporting.
+ */
+const POLL_RESULTS_READ_BUDGET = 8000;
+
 type PollOption = { id: string; label: string };
 type PollBlock = { id: string; kind: "poll"; question: string; options: PollOption[] };
 
@@ -140,6 +156,10 @@ async function tallyBlock(
   ctx: QueryCtx,
   campaignId: Id<"campaigns">,
   block: PollBlock,
+  /** Max rows this call may read. The caller decrements a shared budget so a
+   *  many-poll campaign can't blow the transaction read limit — see
+   *  `POLL_RESULTS_READ_BUDGET`. */
+  readBudget: number = POLL_TALLY_CAP,
 ): Promise<{
   blockId: string;
   question: string;
@@ -152,7 +172,7 @@ async function tallyBlock(
     .withIndex("by_campaign_and_block", (q) =>
       q.eq("campaignId", campaignId).eq("blockId", block.id),
     )
-    .take(POLL_TALLY_CAP);
+    .take(Math.max(1, Math.min(POLL_TALLY_CAP, readBudget)));
 
   const counts = new Map<string, number>();
   for (const vote of votes) {
@@ -162,7 +182,7 @@ async function tallyBlock(
     blockId: block.id,
     question: block.question,
     totalVotes: votes.length,
-    truncated: votes.length >= POLL_TALLY_CAP,
+    truncated: votes.length >= Math.min(POLL_TALLY_CAP, readBudget),
     options: block.options.map((o) => ({
       optionId: o.id,
       label: o.label,
@@ -186,7 +206,6 @@ const tallyValidator = v.object({
  *  stored document — `lib/pollPage.ts` runs it through `normalizeEmailTheme`,
  *  the permissive read edge, exactly like the renderer does). */
 const pollViewValidator = v.object({
-  campaignName: v.string(),
   question: v.string(),
   optionLabel: v.string(),
   /** The document's inline `EmailTheme`, or null when it has none. */
@@ -210,9 +229,10 @@ export const getPollContext = internalQuery({
     const context = await resolvePollContext(ctx, args);
     if (!context) return null;
     return {
-      campaignName: context.campaign.name,
       question: context.block.question,
       optionLabel: context.option.label,
+      // `doc` is v.any(); guard rather than optional-chaining so a non-object
+      // stored doc can't surface a garbage theme. Matches recordPollVote.
       theme: isPlainObject(context.campaign.doc)
         ? (context.campaign.doc.theme ?? null)
         : null,
@@ -234,6 +254,30 @@ export const getPollContext = internalQuery({
  * Re-resolves the whole context itself rather than trusting anything the GET
  * page computed — the POST is a separate, independently forgeable request.
  */
+/**
+ * The tally for one block, read OUTSIDE the vote transaction.
+ *
+ * `recordPollVote` used to compute this itself, which meant every POST both
+ * READ the entire `by_campaign_and_block` range and WROTE into it. Under a
+ * real blast that makes each voter's read set overlap every other voter's
+ * write — guaranteed OCC contention on the hottest path in the feature,
+ * retried until Convex gives up. Splitting the read into its own transaction
+ * removes the overlap entirely; the thanks page just fetches it after the
+ * vote lands. A slightly stale count on a confirmation page is worth far more
+ * than a contended write.
+ */
+export const getPollTally = internalQuery({
+  args: { campaignId: v.id("campaigns"), blockId: v.string() },
+  returns: v.union(tallyValidator, v.null()),
+  handler: async (ctx, { campaignId, blockId }) => {
+    const campaign = await ctx.db.get(campaignId);
+    if (!campaign) return null;
+    const block = pollBlocksOf(campaign.doc).find((b) => b.id === blockId);
+    if (!block) return null;
+    return await tallyBlock(ctx, campaignId, block);
+  },
+});
+
 export const recordPollVote = internalMutation({
   args: {
     campaignId: v.id("campaigns"),
@@ -243,11 +287,9 @@ export const recordPollVote = internalMutation({
   },
   returns: v.union(
     v.object({
-      campaignName: v.string(),
       question: v.string(),
       optionLabel: v.string(),
       theme: v.any(),
-      tally: tallyValidator,
     }),
     v.null(),
   ),
@@ -276,13 +318,11 @@ export const recordPollVote = internalMutation({
     }
 
     return {
-      campaignName: context.campaign.name,
       question: context.block.question,
       optionLabel: context.option.label,
       theme: isPlainObject(context.campaign.doc)
         ? (context.campaign.doc.theme ?? null)
         : null,
-      tally: await tallyBlock(ctx, args.campaignId, context.block),
     };
   },
 });
@@ -302,8 +342,14 @@ export const getPollResults = query({
     }
     const blocks = pollBlocksOf(campaign.doc).slice(0, POLL_BLOCKS_PER_CAMPAIGN);
     const results = [];
+    let budget = POLL_RESULTS_READ_BUDGET;
     for (const block of blocks) {
-      results.push(await tallyBlock(ctx, campaignId, block));
+      const tally = await tallyBlock(ctx, campaignId, block, budget);
+      budget -= tally.totalVotes;
+      results.push(tally);
+      // Every remaining block would read zero rows and report a false 0 —
+      // stop instead, so the surface shows fewer blocks rather than wrong ones.
+      if (budget <= 0) break;
     }
     return results;
   },

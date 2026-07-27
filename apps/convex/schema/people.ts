@@ -42,11 +42,24 @@ export const people = defineTable({
   email: v.optional(v.string()),
   phone: v.optional(v.string()),
   userId: v.optional(v.id("users")),
-  // Services this person can offer (worship, audio, videography…). The basis
-  // for "who can deliver X?" discovery. Chapter-OS successor to the retired
-  // `skills` field (dropped in Deploy C after `backfillPeopleServices` copied
-  // `skills` → `services` and `clearLegacyFields` drained the legacy column).
+  // DEPRECATED — free-text predecessor of `serviceIds` below (Service
+  // Catalog). Convex cannot drop a field while values exist, so this stays in
+  // the schema, but nothing reads or writes it anymore as of the Service
+  // Catalog PR: migration 0045 backfilled `serviceIds` from these strings for
+  // every mappable value, and every write path (`people.ts#create`/`update`,
+  // `dataHygiene.ts#mergePeople`, `lib/people.ts#mergePersonInto`) now targets
+  // `serviceIds` only. Follow-up cleanup PR: drop this field from the schema
+  // once prod shows zero reads of it outside this comment (mirrors the
+  // `skills` → `services` retirement this field itself once was the target
+  // of — see `migrations/0016_clear_legacy_fields.ts`).
   services: v.optional(v.array(v.string())),
+  // Service Catalog (replaces free-text `services` above): the person's
+  // managed service-catalog tags, each an id into `serviceOptions`. A bare
+  // parent id means "yes, unspecified" (e.g. tagged `Vocals` with no specific
+  // part); a child id means the specific one (`Vocals:Tenor`). Display labels
+  // are always resolved live from the referenced `serviceOptions` rows, never
+  // duplicated here, so renaming a catalog option propagates automatically.
+  serviceIds: v.optional(v.array(v.id("serviceOptions"))),
   // Typical fee when engaged as a PAID vendor (prefills a paid engagement).
   usualRateUsd: v.optional(v.number()),
   // Free-form notes about this person (preferences, availability, context).
@@ -82,6 +95,29 @@ export const people = defineTable({
   // transactional email (RSVP confirmations, receipts, etc. — those aren't
   // campaign sends). Unset/false = the pre-existing default (reachable).
   marketingOptOut: v.optional(v.boolean()),
+  // Affirmative marketing consent — the "yes" a person explicitly gave (with
+  // a timestamp), as distinct from `marketingOptOut` above and the address-
+  // level `emailSuppressions`/`smsOptOuts` ledgers: all three of those are
+  // OPT-OUT records (silence = reachable). Before this field, an explicit
+  // "yes" had nowhere to be recorded at all (the Contact Information Google
+  // Form alone has 44 explicit Yes answers, each with its own timestamp,
+  // that were previously unrecordable). `consentSource` names where the
+  // "yes" was captured (e.g. "Contact Information form import, 2026-07").
+  // Written by `peopleImport.ts`'s contacts import — on CREATE always, on a
+  // MATCH only if the person doesn't already have a value (see
+  // `matchOrCreatePersonContact`'s blank-fill doc; a later, weaker "yes"
+  // never overwrites an earlier recorded one).
+  //
+  // *** NEVER WIRE THIS INTO SEND ELIGIBILITY. *** `consentedAt` being set
+  // is not consulted anywhere sends are gated (`lib/audienceResolve.ts`,
+  // `lib/personEmails.ts#resolveSendAddress`) and must never be — recording
+  // consent must NEVER make a suppressed address sendable again.
+  // `emailSuppressions` / `smsOptOuts` / `marketingOptOut` always win,
+  // regardless of what `consentedAt` says. A person who consented and later
+  // unsubscribed or bounced stays suppressed. See
+  // `tests/personConsent.test.ts` for the enforcement test.
+  consentedAt: v.optional(v.number()),
+  consentSource: v.optional(v.string()),
   vettingStatus: v.optional(
     v.union(
       v.literal("unvetted"),
@@ -123,6 +159,35 @@ export const people = defineTable({
   image: v.optional(v.id("_storage")),
   // A single social / web link for this person (Instagram, LinkedIn, site, …).
   socialLink: v.optional(v.string()),
+  // Free-text "City & State" exactly as the source form captured it (the
+  // founder's 6 Google Form exports — "Nyack NY", "NYC", "jersey", all
+  // structurally different). Deliberately NOT split into city/state columns:
+  // the source data is too inconsistent to parse reliably, and splitting it
+  // would either throw data away or fabricate structure that was never
+  // there. Written by `peopleImport.ts`'s contacts import (create + match-
+  // fill — see `matchOrCreatePersonContact`'s blank-fill doc) and editable
+  // by hand on the person detail panel (`people.ts#update`).
+  location: v.optional(v.string()),
+  // How this person first heard of the org ("Instagram", "Family or
+  // friend", "TikTok", …) — free text mirroring whatever the source form's
+  // answer was. Purely INFORMATIONAL marketing-attribution color for a human
+  // reading the profile; nothing in the product filters, segments, or
+  // gates on this field. Written by `peopleImport.ts`'s contacts import
+  // (create + match-fill) and editable by hand on the person detail panel
+  // (`people.ts#update`).
+  referralSource: v.optional(v.string()),
+  // The EXPLICIT volunteer signal (founder rule, 2026-07-27) — mirrors
+  // `isTeamMember`'s shape, but is only ONE of three ways a person becomes a
+  // volunteer: (1) explicitly marked here, (2) volunteered at a past event
+  // (derivable from `engagements` rows with `type: "volunteer"`), or (3)
+  // signed up via a volunteer sign-up form (a `feat/form-submissions`
+  // concept, not this field). This field alone is NOT the final "is this
+  // person a volunteer" answer — `feat/people-read-model`'s persona
+  // derivation is expected to read it defensively alongside the other two
+  // signals; do NOT fold this into `personaOf` here. Written by
+  // `peopleImport.ts`'s contacts import (create + match-fill) and editable
+  // by hand on the person detail panel (`people.ts#update`).
+  isVolunteer: v.optional(v.boolean()),
   // True when this row was materialized from a template's placeholder crew at
   // event creation — a stand-in the team swaps for a real person later.
   isPlaceholder: v.optional(v.boolean()),

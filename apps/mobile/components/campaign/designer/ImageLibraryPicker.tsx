@@ -122,6 +122,18 @@ export function ImageLibraryPicker({
  * what makes reuse worth anything: the description is written once,
  * properly, and travels with the asset to every future campaign.
  *
+ * ── Why the row has to be FORGOTTEN, not just remembered ───────────────────
+ * The backfill target is "the row THIS editor's CURRENT image created". The
+ * moment the block stops showing that image — the designer picks a different
+ * one from the library, or types over the URL — the alt text she writes next
+ * describes a different picture, and writing it onto the remembered row
+ * silently relabels an asset that other campaigns reuse. That's invisible
+ * (nothing in this editor renders the library row) and it ships: the wrong
+ * description is read aloud to a screen-reader user in a real send. So every
+ * caller that replaces the image calls `forget()`, and `register()` fences
+ * its own in-flight `addImage` behind a generation counter so a slow round
+ * trip can't re-arm a target that's already been abandoned.
+ *
  * ── Why a hook, and why it swallows failures ───────────────────────────────
  * A hook because `ImageUploadButton` lives in `DesignerControls.tsx`, which
  * is deliberately convex-free (it's a presentational control). Failures are
@@ -141,6 +153,10 @@ export function useImageLibraryRegistration() {
   const imageIdRef = useRef<Id<"emailImages"> | null>(null);
   const pendingAltRef = useRef<string>("");
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Bumped by every `register`/`forget`. An `addImage` round trip only gets
+   *  to install its row as the backfill target if the generation it started
+   *  in is still the current one. */
+  const generationRef = useRef(0);
 
   useEffect(
     () => () => {
@@ -154,10 +170,15 @@ export function useImageLibraryRegistration() {
   }
 
   function register(storageId: Id<"_storage">, label: string) {
+    const generation = ++generationRef.current;
     imageIdRef.current = null;
     pendingAltRef.current = "";
     void addImage({ scope: SCOPE, storageId, alt: "", label })
       .then((imageId) => {
+        // The designer moved on (another upload, a library pick, a typed URL)
+        // while this was in flight — this row is no longer what her alt text
+        // describes, so it must not become the backfill target.
+        if (generationRef.current !== generation) return;
         imageIdRef.current = imageId;
         // The designer can easily out-type the round trip; if she already
         // wrote a description while this was in flight, apply it now rather
@@ -166,6 +187,20 @@ export function useImageLibraryRegistration() {
         if (alt) void updateImage({ imageId, alt }).catch(warn);
       })
       .catch(warn);
+  }
+
+  /** Called whenever this editor's image is REPLACED by one we didn't create
+   *  (a library pick, a typed/pasted URL). Drops the backfill target so the
+   *  next alt-text keystroke can't relabel the previous image's library row —
+   *  and cancels any debounced write that was already queued for it. */
+  function forget() {
+    generationRef.current += 1;
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    imageIdRef.current = null;
+    pendingAltRef.current = "";
   }
 
   /** Called on every alt-text keystroke. Debounced, and a no-op unless this
@@ -181,5 +216,5 @@ export function useImageLibraryRegistration() {
     }, ALT_BACKFILL_DEBOUNCE_MS);
   }
 
-  return { register, noteAlt };
+  return { register, forget, noteAlt };
 }

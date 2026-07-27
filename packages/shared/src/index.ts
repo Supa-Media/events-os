@@ -1670,13 +1670,32 @@ export type VettingStatus = (typeof VETTING_STATUSES)[number];
 
 // ── Persona ──────────────────────────────────────────────────────────────────
 // Persona is DERIVED from signals, not stored as a rigid `kind` field, so the
-// same person can be a vendor on one event and a volunteer on another. The rule
-// previously lived only in the People screen and in seed prose; this is the one
-// canonical encoding both backend and frontend call.
-export type Persona = "team" | "volunteer" | "vendor";
+// same person can be a vendor on one event and a volunteer on another. The
+// full ladder — highest participation wins — is:
+//
+//     team > vendor > volunteer > guest > contact
+//
+// `team`/`vendor` read straight off the `people` row (no DB reads needed).
+// `volunteer`/`guest`/`contact` require PARTICIPATION signals that live in
+// OTHER tables (engagements, roleAssignments, rsvps) — a DB read this pure,
+// dependency-free module can never do. Hence the split:
+//   - `personaOf` stays a pure, sync, DB-free function for callers that only
+//     need the team/vendor distinction (its original, narrower contract) —
+//     it can never return "guest"/"contact" for lack of participation data.
+//   - `personaFromSignals` is the full-ladder pure function, given the
+//     participation booleans already resolved by the caller. The actual DB
+//     reads are batched for a WHOLE roster in bounded, chapter-scoped
+//     queries — never a per-person query in a loop — by
+//     `apps/convex/lib/people.ts#resolvePersonaForRoster`, which calls this.
+export type Persona = "team" | "vendor" | "volunteer" | "guest" | "contact";
 
 /**
- * Derive a person's persona from their signals:
+ * Pure, DB-free classification using only the two signals stored directly on
+ * a `people` row. Returns only "team" | "vendor" | "volunteer" — everyone not
+ * explicitly team/vendor reads as "volunteer" here, because this function has
+ * no way to check real participation (that lives in other tables). Callers
+ * that need the true volunteer/guest/contact distinction must use
+ * `personaFromSignals` with resolved participation signals instead.
  *   isTeamMember === true  → "team"    (core team is explicitly flagged)
  *   usualRateUsd != null   → "vendor"  (a usual rate marks vendor capability)
  *   else                   → "volunteer"
@@ -1685,10 +1704,34 @@ export type Persona = "team" | "volunteer" | "vendor";
 export function personaOf(person: {
   isTeamMember?: boolean | null;
   usualRateUsd?: number | null;
-}): Persona {
+}): "team" | "vendor" | "volunteer" {
   if (person.isTeamMember === true) return "team";
   if (person.usualRateUsd != null) return "vendor";
   return "volunteer";
+}
+
+/**
+ * The full persona ladder, given a person's own row signals PLUS its
+ * participation signals already resolved elsewhere (batched DB reads — see
+ * `resolvePersonaForRoster`). Highest participation wins:
+ *   - "team":      isTeamMember === true
+ *   - "vendor":    usualRateUsd != null
+ *   - "volunteer": hasVolunteerSignal (an explicit `isVolunteer` flag, a
+ *                  volunteer engagement, or a role assignment)
+ *   - "guest":     hasAttendanceSignal (an RSVP/ticket), with no volunteering
+ *   - "contact":   no participation signal at all
+ */
+export function personaFromSignals(person: {
+  isTeamMember?: boolean | null;
+  usualRateUsd?: number | null;
+  hasVolunteerSignal: boolean;
+  hasAttendanceSignal: boolean;
+}): Persona {
+  if (person.isTeamMember === true) return "team";
+  if (person.usualRateUsd != null) return "vendor";
+  if (person.hasVolunteerSignal) return "volunteer";
+  if (person.hasAttendanceSignal) return "guest";
+  return "contact";
 }
 
 // ── Roster lifecycle status ──────────────────────────────────────────────────

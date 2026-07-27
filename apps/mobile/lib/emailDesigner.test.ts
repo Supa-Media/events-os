@@ -5,21 +5,27 @@ import {
   DEFAULT_EMAIL_THEME,
   MIN_COLUMNS,
   validateEmailDocument,
+  type EmailBlock,
   type EmailBlockKind,
   type EmailDocument,
+  type EmailPollOption,
 } from "@events-os/shared";
 import {
   BLOCK_KINDS,
   canRedo,
   canUndo,
+  ctaPairProblem,
   defaultBlockFor,
   duplicateBlock,
+  imageUrlProblem,
   initHistory,
   insertBlock,
+  pollHasBlankLabel,
   pushHistory,
   redoHistory,
   removeBlock,
   reorderBlocks,
+  syncListKeys,
   undoHistory,
   updateBlock,
   type History,
@@ -264,5 +270,191 @@ describe("document-level fields survive every block operation", () => {
 
   test("reorderBlocks keeps the theme", () => {
     expect(reorderBlocks(themed, ["t1", "h1"]).theme).toEqual(themed.theme);
+  });
+});
+
+// ── The inline warnings must agree with the write gate ─────────────────────
+//
+// `updateCampaignDoc` rejects an invalid document WHOLE — every block's edits
+// go down with the one bad field — so the designer's inline warnings are only
+// useful if they fire on exactly the states the server refuses. Each suite
+// below pins one predicate against `validateEmailDocument` itself rather than
+// against a restatement of its rules.
+
+/** Does the real write gate accept a document containing just this block? */
+function gateAccepts(block: EmailBlock): boolean {
+  return validateEmailDocument({ blocks: [block] }).ok;
+}
+
+describe("imageUrlProblem", () => {
+  const CASES = [
+    "",
+    "   ",
+    "example.com",
+    "/local/photo.png",
+    "ftp://example.com/photo.png",
+    "javascript:alert(1)",
+    "https://example.com/photo.png",
+    "http://example.com/photo.png",
+    "  https://example.com/photo.png  ",
+  ];
+
+  test("flags exactly the urls the write gate rejects", () => {
+    for (const url of CASES) {
+      const block: EmailBlock = { id: "i1", kind: "image", url, alt: "" };
+      expect([url, imageUrlProblem(url) === null]).toEqual([url, gateAccepts(block)]);
+    }
+  });
+
+  test("distinguishes an unfilled url from a scheme-less one", () => {
+    expect(imageUrlProblem("")).toBe("missing");
+    expect(imageUrlProblem("   ")).toBe("missing");
+    expect(imageUrlProblem("example.com/photo.png")).toBe("scheme");
+  });
+
+  test("the freshly-added image block warns — it is what blocks the save", () => {
+    // The regression: `defaultBlockFor("image")` starts with an empty url, the
+    // gate rejects it, and the card used to say nothing about the url at all
+    // (it warned about the ALT, which the gate explicitly accepts as "").
+    const image = defaultBlockFor("image", "i1");
+    if (image.kind !== "image") throw new Error("expected an image block");
+    expect(imageUrlProblem(image.url)).toBe("missing");
+    expect(image.alt).toBe("");
+  });
+
+  test("an empty image block takes the WHOLE document down with it", () => {
+    // Why the warning has to name the blast radius: every other block edited
+    // while this one sits unfilled also fails to save.
+    const doc: EmailDocument = {
+      blocks: [defaultBlockFor("heading", "h1"), defaultBlockFor("image", "i1")],
+    };
+    expect(validateEmailDocument(doc).ok).toBe(false);
+  });
+
+  test("an image with a url and no alt is ACCEPTED — '' means decorative", () => {
+    expect(gateAccepts({ id: "i1", kind: "image", url: "https://x/p.png", alt: "" })).toBe(
+      true,
+    );
+    expect(imageUrlProblem("https://x/p.png")).toBeNull();
+  });
+});
+
+describe("ctaPairProblem", () => {
+  function card(content: { ctaLabel?: string; ctaUrl?: string }): EmailBlock {
+    return { id: "c1", kind: "card", heading: "Hi", ...content };
+  }
+
+  const CASES: { ctaLabel?: string; ctaUrl?: string }[] = [
+    {},
+    { ctaLabel: "Read more" },
+    { ctaUrl: "https://example.com" },
+    { ctaLabel: "Read more", ctaUrl: "https://example.com" },
+    { ctaLabel: "" },
+    { ctaLabel: "", ctaUrl: "" },
+    { ctaLabel: " " },
+    { ctaUrl: " " },
+    { ctaLabel: " ", ctaUrl: "https://example.com" },
+  ];
+
+  test("warns on exactly the pairs the write gate rejects", () => {
+    for (const content of CASES) {
+      const label = JSON.stringify(content);
+      expect([label, ctaPairProblem(content) === null]).toEqual([
+        label,
+        gateAccepts(card(content)),
+      ]);
+    }
+  });
+
+  test("a label backspaced down to a stray space still warns", () => {
+    // The regression: the form tested `!!ctaLabel?.trim()` while the gate
+    // tests `.length > 0` on the RAW string, so " " with no url was silent in
+    // the UI and fatal on save.
+    expect(ctaPairProblem({ ctaLabel: " " })).toBe("label-without-url");
+    expect(gateAccepts(card({ ctaLabel: " " }))).toBe(false);
+  });
+
+  test("names which half is missing", () => {
+    expect(ctaPairProblem({ ctaLabel: "Read more" })).toBe("label-without-url");
+    expect(ctaPairProblem({ ctaUrl: "https://example.com" })).toBe("url-without-label");
+  });
+});
+
+describe("pollHasBlankLabel", () => {
+  function poll(labels: string[]): EmailBlock {
+    return {
+      id: "p1",
+      kind: "poll",
+      question: "What next?",
+      options: labels.map((label, i) => ({ id: `o${i}`, label })),
+    };
+  }
+
+  test("warns on exactly the option lists the write gate rejects", () => {
+    const CASES = [
+      ["Yes", "No"],
+      ["", "No"],
+      ["Yes", ""],
+      [" ", "No"],
+      ["  ", "   "],
+    ];
+    for (const labels of CASES) {
+      const key = JSON.stringify(labels);
+      expect([key, !pollHasBlankLabel(poll(labels).kind === "poll" ? labels.map((label, i) => ({ id: `o${i}`, label })) : [])]).toEqual([
+        key,
+        gateAccepts(poll(labels)),
+      ]);
+    }
+  });
+
+  test("a whitespace-only label does NOT warn — the gate saves it", () => {
+    // The regression: the form trimmed, the gate doesn't. Warning here told
+    // the designer her campaign couldn't be saved when it saved fine.
+    expect(pollHasBlankLabel([{ id: "o1", label: " " }])).toBe(false);
+    expect(gateAccepts(poll([" ", "No"]))).toBe(true);
+  });
+
+  test("a genuinely empty label warns", () => {
+    expect(pollHasBlankLabel([{ id: "o1", label: "" }])).toBe(true);
+  });
+});
+
+describe("syncListKeys", () => {
+  test("is a no-op (same reference) when the length already matches", () => {
+    const keys = ["a", "b"];
+    expect(syncListKeys(keys, 2, seededIds())).toBe(keys);
+  });
+
+  test("appends fresh keys for a grown list, keeping the existing ones", () => {
+    expect(syncListKeys(["a", "b"], 4, seededIds("k"))).toEqual(["a", "b", "k1", "k2"]);
+  });
+
+  test("truncates from the end for a shrunken list", () => {
+    expect(syncListKeys(["a", "b", "c"], 1)).toEqual(["a"]);
+  });
+
+  test("seeds a whole list from empty with unique keys", () => {
+    const keys = syncListKeys([], 3);
+    expect(new Set(keys).size).toBe(3);
+  });
+
+  test("a column removed from the MIDDLE leaves the survivors' keys intact", () => {
+    // The regression this exists for: `key={index}` re-keyed column 3's data
+    // onto the subtree rendering column 2, carrying that subtree's image-
+    // library ref and half-typed caret across to a different column's data.
+    // `ColumnsEditor` splices the key out with the column, so the surviving
+    // columns keep the keys — and therefore the subtrees — they had.
+    const keys = syncListKeys([], 3, seededIds("col"));
+    const columns = ["one", "two", "three"];
+    const removed = 1;
+    const nextKeys = keys.filter((_, i) => i !== removed);
+    const nextColumns = columns.filter((_, i) => i !== removed);
+    expect(nextKeys).toEqual(["col1", "col3"]);
+    // Every surviving column is still paired with the key it started with.
+    for (const [i, column] of nextColumns.entries()) {
+      expect(nextKeys[i]).toBe(keys[columns.indexOf(column)]);
+    }
+    // And the reconcile agrees, so the render that follows doesn't re-key.
+    expect(syncListKeys(nextKeys, nextColumns.length)).toBe(nextKeys);
   });
 });

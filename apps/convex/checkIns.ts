@@ -251,7 +251,11 @@ export const listForSubtree = query({
 
     // Roster UX (subtree check-in history), not identity matching — see
     // `lib/org.ts#excludeContacts`.
-    const roster = excludeContacts(await chapterRoster(ctx, person.chapterId));
+    const roster = await excludeContacts(
+      ctx,
+      person.chapterId,
+      await chapterRoster(ctx, person.chapterId),
+    );
     const childrenOf = buildChildrenOf(roster);
     const viewer = await viewerFromRoster(ctx, roster);
     const manageable = await manageablePersonIds(

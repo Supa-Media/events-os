@@ -27,13 +27,14 @@
  * up in `AudiencesView.tsx`.
  */
 import { useEffect, useMemo, useState } from "react";
-import { View, Text, StyleSheet } from "react-native";
+import { View, Text, Pressable, StyleSheet } from "react-native";
 import { useQuery } from "convex/react";
 import type { FunctionArgs, FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { Button, Field, Select, TextField } from "../ui";
+import { Button, Field, Icon, Select, ServiceOptionsPicker, TextField } from "../ui";
 import { colors, spacing } from "../../lib/theme";
+import { buildServiceLabelMap, parentIdsWithChildren } from "../../lib/serviceCatalog";
 import {
   centsToDollarsStr,
   dollarsStrToCents,
@@ -81,7 +82,15 @@ export type UiRow =
   | { key: string; kind: "seat"; op: "holds" | "not_holds"; seatId: Id<"seatDefs"> | null }
   | { key: string; kind: "kind"; personKind: "team" | "contact" }
   | { key: string; kind: "email_verified" }
-  | { key: string; kind: "service"; op: "has" | "has_not"; service: string };
+  | {
+      key: string;
+      kind: "service";
+      op: "has" | "has_not";
+      // Service Catalog id (`serviceOptions`), not free text — see
+      // `schema/campaigns.ts`'s `has_service` doc. `null` = not yet chosen
+      // (mirrors "chapter"/"seat"'s own not-yet-chosen-id shape).
+      serviceId: Id<"serviceOptions"> | null;
+    };
 
 export type UiGroup = { key: string; rows: UiRow[] };
 
@@ -132,7 +141,7 @@ function conditionToRow(c: TargetingCondition): UiRow {
     case "email_verified":
       return { key, kind: "email_verified" };
     case "has_service":
-      return { key, kind: "service", op: c.op, service: c.service };
+      return { key, kind: "service", op: c.op, serviceId: c.serviceId };
   }
 }
 
@@ -175,10 +184,8 @@ function rowToCondition(r: UiRow): TargetingCondition | null {
       return { field: "kind", op: "is", kind: r.personKind };
     case "email_verified":
       return { field: "email_verified", op: "is" };
-    case "service": {
-      const trimmed = r.service.trim();
-      return trimmed ? { field: "has_service", op: r.op, service: trimmed } : null;
-    }
+    case "service":
+      return r.serviceId ? { field: "has_service", op: r.op, serviceId: r.serviceId } : null;
   }
 }
 
@@ -240,6 +247,7 @@ export type ConditionLookups = {
   eventName?: (id: string) => string | undefined;
   seatTitle?: (id: string) => string | undefined;
   chapterName?: (id: string) => string | undefined;
+  serviceLabel?: (id: string) => string | undefined;
 };
 
 /** One condition as the sentence the row's controls spell — used verbatim by
@@ -285,8 +293,10 @@ export function describeCondition(c: TargetingCondition, lookups: ConditionLooku
       return c.kind === "team" ? "is a team member" : "is a contact";
     case "email_verified":
       return "has a verified email";
-    case "has_service":
-      return `${c.op === "has_not" ? "does not have" : "has"} the "${c.service}" service/skill`;
+    case "has_service": {
+      const label = lookups.serviceLabel?.(c.serviceId) ?? "the chosen service";
+      return `${c.op === "has_not" ? "does not have" : "has"} "${label}"`;
+    }
   }
 }
 
@@ -320,6 +330,18 @@ export function summarizeTargeting(
 function useTargetingOptions() {
   const events = useQuery(api.events.list, { scope: "all" }) ?? [];
   const chart = useQuery(api.seats.chart, {});
+  const serviceTree = useQuery(api.serviceOptions.list, { includeInactive: true });
+  const serviceLabelById = useMemo(
+    () => (serviceTree ? buildServiceLabelMap(serviceTree) : new Map<string, string>()),
+    [serviceTree],
+  );
+  // Which top-level ids actually have children — only those get the "matches
+  // everyone under it too" note (a childless top-level row IS the whole
+  // match set, same as any leaf).
+  const serviceParentIdsWithChildren = useMemo(
+    () => (serviceTree ? parentIdsWithChildren(serviceTree) : new Set<Id<"serviceOptions">>()),
+    [serviceTree],
+  );
   const seatOptions = useMemo(() => {
     if (chart === undefined) return [];
     const seats =
@@ -343,8 +365,16 @@ function useTargetingOptions() {
     eventName: (id) => eventOptions.find((o) => o.value === id)?.label,
     seatTitle: (id) => seatOptions.find((o) => o.value === id)?.label,
     chapterName: (id) => chapterOptions.find((o) => o.value === id)?.label,
+    serviceLabel: (id) => serviceLabelById.get(id as Id<"serviceOptions">),
   };
-  return { eventOptions, seatOptions, chapterOptions, lookups };
+  return {
+    eventOptions,
+    seatOptions,
+    chapterOptions,
+    lookups,
+    serviceLabelById,
+    serviceParentIdsWithChildren,
+  };
 }
 
 type TargetingOptions = ReturnType<typeof useTargetingOptions>;
@@ -362,7 +392,7 @@ const FIELD_OPTIONS = [
   { value: "seat", label: "Role" },
   { value: "kind", label: "Person type" },
   { value: "email_verified", label: "Email" },
-  { value: "service", label: "Has service/skill" },
+  { value: "service", label: "Has service" },
 ];
 
 function defaultRow(kind: string): UiRow {
@@ -387,7 +417,7 @@ function defaultRow(kind: string): UiRow {
     case "email_verified":
       return { key, kind: "email_verified" };
     case "service":
-      return { key, kind: "service", op: "has", service: "" };
+      return { key, kind: "service", op: "has", serviceId: null };
     default:
       return { key, kind: "donor", op: "is", status: "any" };
   }
@@ -473,6 +503,7 @@ function ConditionRow({
   onRemove: () => void;
   onInvalid: (key: string, invalid: boolean) => void;
 }) {
+  const [servicePickerOpen, setServicePickerOpen] = useState(false);
   // Swapping the field keeps the row identity (its `key`) so list order and
   // focus don't jump; everything else resets to that field's default shape.
   const fieldOptions = excludeSide
@@ -728,10 +759,34 @@ function ConditionRow({
             (v) => onChange({ ...row, op: v as "has" | "has_not" }),
           )}
           <View style={rowStyles.valueBox}>
-            <TextField
-              placeholder="e.g. audio"
-              value={row.service}
-              onChangeText={(text) => onChange({ ...row, service: text })}
+            <Pressable
+              onPress={() => setServicePickerOpen(true)}
+              className="flex-row items-center justify-between rounded-md border border-border-strong bg-raised px-3 py-2.5"
+            >
+              <Text
+                className={row.serviceId ? "text-base text-ink" : "text-base text-faint"}
+                numberOfLines={1}
+              >
+                {row.serviceId
+                  ? (options.serviceLabelById.get(row.serviceId) ?? "…")
+                  : "Pick a service…"}
+              </Text>
+              <Icon name="chevron-down" size={16} color={colors.muted} />
+            </Pressable>
+            {/* Choosing a group (e.g. "Vocals") is presented — both in the
+                picker's own header and here — as matching everyone under it
+                too, since that's the whole point of the hierarchy (backend
+                subtree rollup, `lib/audienceTargeting.ts`). */}
+            {row.serviceId && options.serviceParentIdsWithChildren.has(row.serviceId) ? (
+              <Text style={rowStyles.serviceHint}>Matches everyone under this too.</Text>
+            ) : null}
+            <ServiceOptionsPicker
+              visible={servicePickerOpen}
+              onClose={() => setServicePickerOpen(false)}
+              mode="single"
+              selectedIds={row.serviceId ? [row.serviceId] : []}
+              onChange={(ids) => onChange({ ...row, serviceId: ids[0] ?? null })}
+              title="Pick a service"
             />
           </View>
         </>
@@ -1091,6 +1146,7 @@ const rowStyles = StyleSheet.create({
   valueBox: { minWidth: 160, flexShrink: 1 },
   qualBox: { minWidth: 120 },
   numBox: { width: 90 },
+  serviceHint: { marginTop: 4, fontSize: 11, color: colors.muted },
   unit: { fontSize: 13, color: colors.muted },
 });
 

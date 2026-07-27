@@ -254,11 +254,15 @@ export const audienceConditionValidator = v.union(
   v.object({
     field: v.literal("has_service"),
     op: v.union(v.literal("has"), v.literal("has_not")),
-    // Free text, matched case-insensitively (trim + lowercase both sides)
-    // against `people.services` — see `lib/audienceTargeting.ts`'s doc for
-    // the exact match rule and the central-donor-fallback/no-services-array
-    // behavior ("has" → false, "has_not" → true, same as `attended_event`).
-    service: v.string(),
+    // Service Catalog id (`serviceOptions`), not free text — replaces the
+    // pre-catalog `service: string` shape (migration 0046 converts saved
+    // conditions by case-insensitive name match). Matches a person carrying
+    // THIS id or any of its CHILDREN in `people.serviceIds` (picking a parent
+    // like "Vocals" matches everyone tagged "Vocals:Tenor" too) — see
+    // `lib/audienceTargeting.ts`'s doc for the exact subtree-match rule and
+    // the central-donor-fallback/no-serviceIds-array behavior ("has" →
+    // false, "has_not" → true, same as `attended_event`).
+    serviceId: v.id("serviceOptions"),
   }),
 );
 

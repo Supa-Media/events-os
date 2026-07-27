@@ -10,7 +10,7 @@ import {
   PUBLIC_WORSHIP_THEME,
   validateEmailDocument,
 } from "@events-os/shared";
-import { runSeedBuiltInCampaignTemplates } from "../migrations/0046_seed_builtin_campaign_templates";
+import { runSeedBuiltInCampaignTemplates } from "../migrations/0049_seed_builtin_campaign_templates";
 
 /**
  * Campaign templates (`campaignTemplates.ts`):
@@ -102,9 +102,11 @@ describe("template round-trip", () => {
       api.campaignTemplates.createTemplateFromCampaign,
       { campaignId, name: "Monthly newsletter shell", description: "  Start here.  " },
     );
-    const listed = await s.as.query(api.campaignTemplates.listTemplates, {
-      scope: "central",
-    });
+    // Built-ins are seeded opportunistically by `createCampaign`, so filter to
+    // author-created rows rather than asserting a bare total.
+    const listed = (
+      await s.as.query(api.campaignTemplates.listTemplates, { scope: "central" })
+    ).filter((row) => row.isBuiltIn !== true);
     expect(listed).toHaveLength(1);
     expect(listed[0]._id).toBe(templateId);
     expect(listed[0].description).toBe("Start here."); // trimmed
@@ -186,7 +188,9 @@ describe("template round-trip", () => {
     );
     await s.as.mutation(api.campaignTemplates.archiveTemplate, { templateId });
     expect(
-      await s.as.query(api.campaignTemplates.listTemplates, { scope: "central" }),
+      (
+        await s.as.query(api.campaignTemplates.listTemplates, { scope: "central" })
+      ).filter((row) => row.isBuiltIn !== true),
     ).toHaveLength(0);
   });
 });
@@ -336,7 +340,7 @@ describe("ensureBuiltInTemplates", () => {
  * every test above passed while a real deployment's template library stayed
  * empty — these cover the wiring, not just the helper.
  */
-describe("0046_seed_builtin_campaign_templates", () => {
+describe("0049_seed_builtin_campaign_templates", () => {
   test("seeds the monthly newsletter into the central scope", async () => {
     const t = newT();
     const s = await asSuperuser(t);

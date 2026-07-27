@@ -33,6 +33,7 @@ import {
 import { requireUserId } from "./lib/context";
 import { isSuperuser } from "./lib/superuser";
 import { instantiateEvent, toSlug, seedTemplateRoles } from "./lib/templates";
+import { ensureOrgWideServiceCatalog, resolveServiceStringsBestEffort } from "./lib/serviceCatalog";
 import { seedPlatformGuidesForChapter } from "./lib/platformGuides";
 import { seedChapterFinance } from "./lib/seed/finance";
 import {
@@ -568,6 +569,12 @@ export const seedDemoData = mutation({
     );
 
     // ── People ───────────────────────────────────────────────────────────────
+    // Service Catalog (replaces free-text `people.services` — see
+    // `schema/people.ts`'s deprecation comment): ensure the ORG-WIDE catalog
+    // exists (shared by every chapter, not seeded per-chapter), then tag each
+    // demo person by canonical catalog NAME (case-insensitive lookup against
+    // `labelToId`) instead of writing raw strings.
+    const { labelToId } = await ensureOrgWideServiceCatalog(ctx);
     type SeedPerson = {
       name: string;
       email?: string;
@@ -576,20 +583,23 @@ export const seedDemoData = mutation({
       vettingStatus: "vetted" | "pending" | "unvetted";
     };
     const people: SeedPerson[] = [
-      { name: "Ada Okafor", email: "ada@example.com", skills: ["worship", "vocals"], vettingStatus: "vetted" },
-      { name: "Ben Carter", email: "ben@example.com", phone: "+15555550101", skills: ["audio", "logistics"], vettingStatus: "vetted" },
-      { name: "Chloe Martins", email: "chloe@example.com", skills: ["marketing"], vettingStatus: "pending" },
-      { name: "Diego Ramos", phone: "+15555550102", skills: ["logistics"], vettingStatus: "unvetted" },
-      { name: "Esi Mensah", email: "esi@example.com", skills: ["worship", "audio"], vettingStatus: "vetted" },
+      { name: "Ada Okafor", email: "ada@example.com", skills: ["Worship Leading", "Vocals"], vettingStatus: "vetted" },
+      { name: "Ben Carter", email: "ben@example.com", phone: "+15555550101", skills: ["Audio Engineering", "Logistics & Venue"], vettingStatus: "vetted" },
+      { name: "Chloe Martins", email: "chloe@example.com", skills: ["Brand & PR"], vettingStatus: "pending" },
+      { name: "Diego Ramos", phone: "+15555550102", skills: ["Logistics & Venue"], vettingStatus: "unvetted" },
+      { name: "Esi Mensah", email: "esi@example.com", skills: ["Worship Leading", "Audio Engineering"], vettingStatus: "vetted" },
     ];
     const peopleIds: Id<"people">[] = [];
     for (const p of people) {
+      const serviceIds = p.skills
+        .map((name) => labelToId.get(name.toLowerCase()))
+        .filter((id): id is Id<"serviceOptions"> => id !== undefined);
       const id = await ctx.db.insert("people", {
         chapterId,
         name: p.name,
         email: p.email,
         phone: p.phone,
-        services: p.skills,
+        serviceIds,
         vettingStatus: p.vettingStatus,
         status: "active",
         createdAt: now,
@@ -1148,6 +1158,13 @@ export const importRoster = internalMutation({
     const chapterId = chapter._id;
     const now = Date.now();
 
+    // Service Catalog (replaces free-text `people.services` — see
+    // `schema/people.ts`'s deprecation comment): ensure the ORG-WIDE catalog
+    // exists, then best-effort-resolve each roster entry's `skills` strings
+    // against it below.
+    const { labelToId } = await ensureOrgWideServiceCatalog(ctx);
+    const unmappedSkills: { name: string; skill: string }[] = [];
+
     const existing = await ctx.db
       .query("people")
       .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
@@ -1192,7 +1209,11 @@ export const importRoster = internalMutation({
       if (r.pwEmail !== undefined) doc.pwEmail = r.pwEmail;
       if (r.role !== undefined) doc.role = r.role;
       if (r.gender !== undefined) doc.gender = r.gender;
-      if (r.skills !== undefined) doc.services = r.skills;
+      if (r.skills !== undefined) {
+        const { serviceIds, unmapped } = resolveServiceStringsBestEffort(labelToId, r.skills);
+        if (serviceIds.length > 0) doc.serviceIds = serviceIds;
+        for (const skill of unmapped) unmappedSkills.push({ name: r.name, skill });
+      }
       if (r.projects !== undefined) doc.projects = r.projects;
       if (r.commsPreferences !== undefined)
         doc.commsPreferences = r.commsPreferences;
@@ -1217,6 +1238,7 @@ export const importRoster = internalMutation({
       inserted,
       updated,
       total: roster.length,
+      unmappedSkills,
     };
   },
 });

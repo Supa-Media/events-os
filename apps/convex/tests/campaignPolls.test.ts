@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { ConvexError } from "convex/values";
-import { api } from "../_generated/api";
+import { api, internal } from "../_generated/api";
 import { newT, run, setupChapter, type ChapterSetup, type TestConvex } from "./setup.helpers";
 import type { Id } from "../_generated/dataModel";
 import { WINTER_THEME } from "@events-os/shared";
@@ -328,5 +328,65 @@ describe("getPollResults", () => {
     await expect(
       outsider.as.query(api.campaignPolls.getPollResults, { campaignId }),
     ).rejects.toBeInstanceOf(ConvexError);
+  });
+});
+
+/**
+ * A re-sent campaign must not let one person vote twice.
+ *
+ * `send` is legally re-runnable from `"failed"` (transport failure, or
+ * `sweepStuckSends`), and `materializeRecipients` then DELETES every
+ * `campaignRecipients` row and re-inserts with fresh `unsubscribeToken`s.
+ * One-vote-per-person is enforced by `by_recipient_and_block` — keyed on a
+ * `recipientId` that no longer exists after that wipe — so without cleanup
+ * the same human votes again on the second copy of the email and BOTH count.
+ */
+describe("re-send does not enable ballot stuffing", () => {
+  test("clearing recipients also clears their poll votes", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const { campaignId, tokens } = await seedPollCampaign(s);
+
+    await t.fetch(pollPath(campaignId, tokens[0]), { method: "POST" });
+    expect(await allVotes(t)).toHaveLength(1);
+
+    // Simulate the re-send wipe exactly as materializeRecipients does it.
+    for (;;) {
+      const dropped = await t.mutation(internal.campaigns.clearRecipientsBatch, {
+        campaignId,
+      });
+      if (dropped === 0) break;
+    }
+    for (;;) {
+      const dropped = await t.mutation(internal.campaigns.clearPollVotesBatch, {
+        campaignId,
+      });
+      if (dropped === 0) break;
+    }
+
+    // No orphans left pointing at deleted recipient rows.
+    expect(await allVotes(t)).toHaveLength(0);
+
+    // Same human, new token from the re-send, votes again: still ONE row.
+    const newToken = "poll-token-resend-1";
+    await run(s.t, (ctx) =>
+      ctx.db.insert("campaignRecipients", {
+        campaignId,
+        email: "reader0@example.com",
+        name: "Reader 0",
+        status: "sent",
+        unsubscribeToken: newToken,
+      }),
+    );
+    await t.fetch(pollPath(campaignId, newToken, BLOCK_ID, "opt_wed"), {
+      method: "POST",
+    });
+
+    const votes = await allVotes(t);
+    expect(votes).toHaveLength(1);
+    expect(votes[0].optionId).toBe("opt_wed");
+
+    const results = await s.as.query(api.campaignPolls.getPollResults, { campaignId });
+    expect(results[0].totalVotes).toBe(1);
   });
 });

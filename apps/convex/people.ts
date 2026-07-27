@@ -14,10 +14,23 @@ import {
   getChapterIdOrNull,
 } from "./lib/context";
 import { isChapterAdmin } from "./lib/org";
-import { isCardEligible } from "@events-os/shared";
+import { isCardEligible, type Persona } from "@events-os/shared";
 import { writePersonAudit, diffFields } from "./lib/givingAudit";
 import { recordPersonEmail } from "./lib/personEmails";
 import { composeName, nameHalvesPatch, splitPersonName } from "./lib/personName";
+import { assertServiceIdsInChapter } from "./lib/serviceCatalog";
+import { resolvePersonaForRoster } from "./lib/people";
+
+const personaFilter = v.union(
+  v.literal("team"),
+  v.literal("vendor"),
+  v.literal("volunteer"),
+  v.literal("guest"),
+  v.literal("contact"),
+  // Not a real persona — an explicit opt-IN to seeing everyone, contacts
+  // included. See `list`'s doc for why the unfiltered default is NOT this.
+  v.literal("all"),
+);
 
 const vettingStatus = v.union(
   v.literal("unvetted"),
@@ -113,23 +126,44 @@ async function sandboxPeopleFilter(
     (p.isPlaceholder === true && engaged.has(String(p._id)));
 }
 
-/** List the chapter roster sorted by name. In a training sandbox (`eventId`
- *  of a training event), lists only the caller + placeholder people.
+/**
+ * List people in the chapter, sorted by name (excluding only
+ * `isPlaceholder`/`isSamplePerson` rows, which aren't real humans). In a
+ * training sandbox (`eventId` of a training event), lists only the caller +
+ * placeholder people instead — see `sandboxPeopleFilter`.
  *
- * `contactsOnly` (person-centric audiences Phase 1 item 1) flips the default
- * roster-facing view: unset/false returns the ROSTER only (excludes
- * `isContactOnly` rows — the fix for the People tab default list, every
- * person picker/mention/duty-assignment surface, and the org-chart consumers
- * that all call this same query with `{}`), `true` returns ONLY contacts —
- * the People tab's deliberate "Contacts" persona filter, so a contact-only
- * row (auto-created from a donor gift, an import, or a public RSVP) is still
- * findable/editable, just never mixed into the default roster. */
+ * Founder's model (the fix for the People *tab* showing 164 of ~275 real
+ * people): a person is never PERMANENTLY hidden by a stored flag; persona is
+ * a FILTER, never a partition. But this query has ~11 callers beyond the
+ * People tab — pickers, mention lists, duty/role assignment, receipt person
+ * lookup — and every one of those was built assuming "the roster" (a real,
+ * participating person), never a bare contact auto-created from a donor
+ * gift/import/RSVP. Flipping the UNFILTERED default to "everyone" would
+ * silently widen 8 of those callers to include contacts with no review.
+ *
+ * So the default stays CONSERVATIVE and unchanged from before this fix:
+ *   - `persona` UNSET (the default): the ROSTER — everyone except the
+ *     "contact" persona (no participation signal at all). This is
+ *     `contactsOnly: false`'s old behavior, preserved exactly.
+ *   - `persona: "all"`: literally everyone, contacts included — the explicit
+ *     opt-in a caller must ask for (the People tab, audience-seeding, and
+ *     donor↔person linking are the only three that do; see their own call
+ *     sites for why).
+ *   - `persona: "team" | "vendor" | "volunteer" | "guest" | "contact"`:
+ *     narrows to exactly that rung of the ladder
+ *     (`@events-os/shared#Persona`: team > vendor > volunteer > guest >
+ *     contact) — `contactsOnly: true` is now `persona: "contact"`.
+ * Every row carries the backend-derived `persona` field regardless of the
+ * filter applied, resolved by `resolvePersonaForRoster` (batched, bounded
+ * DB reads — never per-person), so callers that need the ladder (the People
+ * tab's segmented control + counts) never have to re-derive it client-side.
+ */
 export const list = query({
   args: {
     eventId: v.optional(v.id("events")),
-    contactsOnly: v.optional(v.boolean()),
+    persona: v.optional(personaFilter),
   },
-  handler: async (ctx, { eventId, contactsOnly }) => {
+  handler: async (ctx, { eventId, persona }) => {
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return [];
     const people = await ctx.db
@@ -145,23 +179,33 @@ export const list = query({
     // members, so keep them out of the People roster. Replacing one only
     // consumes that event's copy. Inside a training sandbox the rule flips:
     // placeholders (+ the caller) are the ONLY people offered — sandbox mode
-    // ignores `contactsOnly` (a training drill never shows contacts).
-    const sorted = people
-      .filter(
-        sandbox ??
-          ((p) =>
-            p.isPlaceholder !== true &&
-            p.isSamplePerson !== true &&
-            (contactsOnly === true
-              ? p.isContactOnly === true
-              : p.isContactOnly !== true)),
-      )
-      .sort((a, b) => a.name.localeCompare(b.name));
+    // ignores `persona` (a training drill never classifies its sample bench).
+    const everyone = people.filter(
+      sandbox ?? ((p) => p.isPlaceholder !== true && p.isSamplePerson !== true),
+    );
+    const personaByPerson = sandbox
+      ? null
+      : await resolvePersonaForRoster(ctx, chapterId as Id<"chapters">, everyone);
+    // Sandbox mode short-circuits to `everyone` (its own restricted set) —
+    // no persona filtering applies there, same as before. Outside sandbox:
+    // an explicit persona narrows to that rung, "all" means literally
+    // everyone, and the CONSERVATIVE DEFAULT (unset) is the roster — every
+    // rung except "contact". See this query's doc for why that default is
+    // deliberate.
+    const filtered = !personaByPerson
+      ? everyone
+      : persona === "all"
+        ? everyone
+        : persona
+          ? everyone.filter((p) => personaByPerson.get(p._id) === persona)
+          : everyone.filter((p) => personaByPerson.get(p._id) !== "contact");
+    const sorted = filtered.sort((a, b) => a.name.localeCompare(b.name));
     // Resolve each profile photo storageId to a servable URL for display.
     return await Promise.all(
       sorted.map(async (p) => ({
         ...p,
         imageUrl: p.image ? await ctx.storage.getUrl(p.image) : null,
+        persona: (personaByPerson?.get(p._id) ?? null) as Persona | null,
       })),
     );
   },
@@ -290,11 +334,10 @@ export const create = mutation({
     name: v.string(),
     email: v.optional(v.string()),
     phone: v.optional(v.string()),
-    // `skills` is the legacy arg name (OTA-lagged clients still send it);
-    // `services` is the Chapter-OS name. Either is accepted; the writer stores
-    // the value in the new `services` field.
-    skills: v.optional(v.array(v.string())),
-    services: v.optional(v.array(v.string())),
+    // Service Catalog ids (`serviceOptions`) — replaces the retired
+    // `skills`/`services` free-text args. See `schema/people.ts`'s
+    // deprecation comment on `services`.
+    serviceIds: v.optional(v.array(v.id("serviceOptions"))),
     vettingStatus: v.optional(vettingStatus),
     status: v.optional(rosterStatus),
     role: v.optional(v.string()),
@@ -317,6 +360,9 @@ export const create = mutation({
       await requireCanSetManager(ctx, chapterId as Id<"chapters">);
       await requireOwned(ctx, "people", args.managerId, "Manager");
     }
+    if (args.serviceIds && args.serviceIds.length > 0) {
+      await assertServiceIdsInChapter(ctx, chapterId as Id<"chapters">, args.serviceIds);
+    }
     const status = args.status ?? "active";
     const personId = await ctx.db.insert("people", {
       chapterId: chapterId as Id<"chapters">,
@@ -327,9 +373,7 @@ export const create = mutation({
       ...(splitPersonName(args.name) ?? {}),
       email: args.email,
       phone: args.phone,
-      // Writer targets the new `services` field only; the legacy `skills` arg
-      // (OTA-lagged clients) is accepted but its value is stored in `services`.
-      services: args.services ?? args.skills,
+      serviceIds: args.serviceIds,
       vettingStatus: args.vettingStatus ?? "unvetted",
       status,
       role: args.role,
@@ -376,9 +420,10 @@ export const update = mutation({
     lastName: v.optional(v.union(v.string(), v.null())),
     email: v.optional(v.string()),
     phone: v.optional(v.string()),
-    // Either arg accepted; the writer stores it in the new `services` field.
-    skills: v.optional(v.union(v.array(v.string()), v.null())),
-    services: v.optional(v.union(v.array(v.string()), v.null())),
+    // Service Catalog ids (`serviceOptions`) — replaces the retired
+    // `skills`/`services` free-text args. See `schema/people.ts`'s
+    // deprecation comment on `services`.
+    serviceIds: v.optional(v.union(v.array(v.id("serviceOptions")), v.null())),
     usualRateUsd: v.optional(v.union(v.number(), v.null())),
     notes: v.optional(v.union(v.string(), v.null())),
     isTeamMember: v.optional(v.boolean()),
@@ -398,6 +443,14 @@ export const update = mutation({
     // Person-centric audiences Phase 2 (specs/person-centric-audiences.md) —
     // the person-level marketing opt-out, layered over `emailSuppressions`.
     marketingOptOut: v.optional(v.boolean()),
+    // Person-form-fields widening (`schema/people.ts`'s doc on each field) —
+    // hand corrections to what the Google Form imports captured.
+    // `consentedAt`/`consentSource` are deliberately NOT editable here: they
+    // record an affirmative-consent EVENT with a timestamp, not a toggle a
+    // staffer should casually flip; only the import write path sets them.
+    location: v.optional(v.union(v.string(), v.null())),
+    referralSource: v.optional(v.union(v.string(), v.null())),
+    isVolunteer: v.optional(v.boolean()),
     // Owner feedback #4: optional "why", recorded on the person-audit breadcrumb
     // when a contact field (name/email/phone) changes.
     why: v.optional(v.string()),
@@ -413,17 +466,13 @@ export const update = mutation({
       await requireOwned(ctx, "people", patch.managerId, "Manager");
       await assertNoManagerCycle(ctx, personId, patch.managerId);
     }
+    if (patch.serviceIds != null && patch.serviceIds.length > 0) {
+      await assertServiceIdsInChapter(ctx, person.chapterId, patch.serviceIds);
+    }
     const fields: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(patch)) {
       // null = explicit clear (store undefined); undefined = leave unchanged.
       if (value !== undefined) fields[key] = value === null ? undefined : value;
-    }
-    // Services rename: the writer targets the new `services` field. Accept the
-    // legacy `skills` arg (OTA-lagged clients) but never write the legacy field.
-    if (patch.services !== undefined || patch.skills !== undefined) {
-      const val = patch.services !== undefined ? patch.services : patch.skills;
-      fields.services = val === null ? undefined : val;
-      delete fields.skills;
     }
     // Person lifecycle lives on `status` only now; the legacy `isActive` flag is
     // no longer written (accept the arg from OTA-lagged clients, then drop it).

@@ -15,6 +15,7 @@
 import {
   DEFAULT_EMAIL_THEME,
   EMAIL_THEME_PRESETS,
+  isHexColor,
   newBlockId,
   resolveDarkTheme,
   type EmailDocument,
@@ -131,6 +132,38 @@ export function suggestedSwatches(key: ColorTokenKey): string[] {
     }
   }
   return out;
+}
+
+/**
+ * The colour a half-typed hex field should COMMIT to, or null while it isn't
+ * one yet. `ColorField`'s only rule about when to push a value upstream.
+ *
+ * The subtlety this exists for: `isHexColor` alone is not a "finished typing"
+ * test. Typing `891d1a` (no leading `#`, the way it's written on a brand
+ * sheet) passes through the intermediate `891` — and `#891` is a perfectly
+ * valid 3-digit hex, a DIFFERENT colour. Committing it means the live preview
+ * jumps to the wrong colour, the field rewrites itself to `#891` under the
+ * caret, and if the designer looks away at that moment `#891` is what the
+ * theme saves. So:
+ *
+ *  - With an explicit `#`, `isHexColor`'s own rule stands (4 or 7 characters,
+ *    3- or 6-digit): someone who typed `#891` typed a complete colour, and
+ *    honouring it is the whole reason shorthand hex exists.
+ *  - WITHOUT the `#`, only the full 6-digit form commits. A bare 3-character
+ *    run is indistinguishable from the first half of a 6-character one, and
+ *    guessing wrong silently ships the wrong brand colour. (`ColorField`
+ *    already renders a hash-less draft as not-a-colour-yet, so this only
+ *    makes the field's two halves agree.)
+ *
+ * Paste is unaffected in every form that carries its `#`, and hash-less
+ * `891d1a` — the case the leading-`#`-optional affordance was written for —
+ * still commits on the last character.
+ */
+export function hexFromDraft(draft: string): string | null {
+  const candidate = draft.trim();
+  if (candidate.startsWith("#")) return isHexColor(candidate) ? candidate : null;
+  const hashed = `#${candidate}`;
+  return candidate.length === 6 && isHexColor(hashed) ? hashed : null;
 }
 
 // ── Dark-mode overrides ────────────────────────────────────────────────────

@@ -65,6 +65,7 @@ import { matchOrCreateDonor, recordGiftForDonor } from "./lib/givingDonors";
 import { recordPersonEmail } from "./lib/personEmails";
 import { splitPersonName } from "./lib/personName";
 import { findDonorInScope, hasPersonIdentifier } from "./lib/givingDonors";
+import { assertServiceIdsInChapter } from "./lib/serviceCatalog";
 import {
   DONOR_KINDS,
   GIFT_METHODS,
@@ -810,16 +811,108 @@ type CommitCounters = {
 };
 
 /**
+ * Extra facts a `contact`/`ticket` row may carry beyond bare identity — the
+ * person-form-fields widening (founder ask, 2026-07-27: the 6 Google Form
+ * exports were losing everything but identity on import, because
+ * `peopleImport.ts`'s row shape only ever had name/email/phone). All
+ * optional; the canonical giving import's `contact`/`ticket` commit sites
+ * simply omit them and behave exactly as before.
+ */
+export type PersonContactFacts = {
+  serviceIds?: Id<"serviceOptions">[];
+  location?: string;
+  referralSource?: string;
+  consentedAt?: number;
+  consentSource?: string;
+  isVolunteer?: boolean;
+};
+
+/**
+ * MATCH-ONLY blank-fill (person-form-fields widening): before this helper, a
+ * matched row's newly-learned facts were discarded entirely —
+ * `matchOrCreatePersonContact` returned the existing person's id and never
+ * looked at the rest of the row. That silently dropped real data on every
+ * re-import of an existing contact (e.g. a later form submission naming a
+ * location/referral source/consent the FIRST import never captured).
+ *
+ * The rule is deliberately simple and applied UNIFORMLY across every field:
+ * fill it in ONLY if the roster row doesn't already have a value — a
+ * human-set (or earlier-import-set) value is NEVER overwritten by a later
+ * row. This is blank-fill, not union-merge — contrast
+ * `dataHygiene.ts#mergePeople`'s `serviceIds` handling, which unions two
+ * PEOPLE being merged into one; here we're reconciling one incoming row
+ * against an already-real roster person, so "the roster already knows this"
+ * always wins.
+ */
+async function fillMatchedContactFacts(
+  ctx: MutationCtx,
+  chapterId: Id<"chapters">,
+  match: Doc<"people">,
+  row: PersonContactFacts & {
+    firstName?: string;
+    lastName?: string;
+    phone?: string;
+    email?: string;
+  },
+): Promise<void> {
+  const patch: Partial<Doc<"people">> = {};
+  if (!match.firstName && row.firstName?.trim()) patch.firstName = row.firstName.trim();
+  if (!match.lastName && row.lastName?.trim()) patch.lastName = row.lastName.trim();
+  if (!match.phone && row.phone) patch.phone = row.phone;
+  if (!match.email && row.email) patch.email = row.email;
+  if ((match.serviceIds?.length ?? 0) === 0 && row.serviceIds && row.serviceIds.length > 0) {
+    await assertServiceIdsInChapter(ctx, chapterId, row.serviceIds);
+    patch.serviceIds = row.serviceIds;
+  }
+  if (!match.location && row.location) patch.location = row.location;
+  if (!match.referralSource && row.referralSource) patch.referralSource = row.referralSource;
+  // consentedAt/consentSource are a PAIR, filled together, and only when the
+  // person has NO recorded consent yet — never used to update/replace an
+  // already-recorded "yes" (see `schema/people.ts#consentedAt`'s doc: this
+  // is a compliance signal, not a value we want a later, possibly-stale row
+  // silently rewriting).
+  if (match.consentedAt === undefined && row.consentedAt !== undefined) {
+    patch.consentedAt = row.consentedAt;
+    if (row.consentSource) patch.consentSource = row.consentSource;
+  }
+  if (match.isVolunteer === undefined && row.isVolunteer !== undefined) {
+    patch.isVolunteer = row.isVolunteer;
+  }
+  if (Object.keys(patch).length === 0) return;
+  await ctx.db.patch(match._id, patch);
+  // A filled email must join the ledger exactly like a direct edit would —
+  // the same write-through rule every call site in `lib/personEmails.ts`'s
+  // header list follows.
+  if (typeof patch.email === "string") {
+    await recordPersonEmail(ctx, {
+      personId: match._id,
+      email: patch.email,
+      source: "manual",
+      verified: false,
+    });
+  }
+}
+
+/**
  * Match-or-create a chapter roster contact for a `contact`/`ticket` row —
  * reuses P5's `linkDonorToPerson` match order (email → phone → exact name)
  * directly against the roster, but writes "Added from import" (not "Added
  * from Giving") so the row reads as import-originated. Never touches
  * `donors` — a contact/ticket row creates no donor, ever.
+ *
+ * On a MATCH, see `fillMatchedContactFacts` above — blank fields only, never
+ * an overwrite.
  */
 export async function matchOrCreatePersonContact(
   ctx: MutationCtx,
   chapterId: Id<"chapters">,
-  args: { name: string; email?: string; phone?: string; firstName?: string; lastName?: string },
+  args: {
+    name: string;
+    email?: string;
+    phone?: string;
+    firstName?: string;
+    lastName?: string;
+  } & PersonContactFacts,
   // Optional prefetched roster (`chapterRoster`-shaped) — `peopleImport.ts`'s
   // batch import passes one shared pool per batch so a 100-row commit costs
   // ONE roster read instead of 100 (it also appends each new insert to the
@@ -835,7 +928,10 @@ export async function matchOrCreatePersonContact(
   // `lib/org.ts#excludeContacts`.
   const roster = prefetchedRoster ?? (await chapterRoster(ctx, chapterId));
   const { match } = matchIdentity(roster, args);
-  if (match) return { personId: match._id, isNew: false };
+  if (match) {
+    await fillMatchedContactFacts(ctx, chapterId, match, args);
+    return { personId: match._id, isNew: false };
+  }
   // OWNER RULE (Attendance C): a name-only contact/ticket row (no email AND no
   // phone) that matches no existing roster row creates NOTHING — a name-only
   // record is a guest, not a roster person. Matching above is still allowed;
@@ -850,12 +946,22 @@ export async function matchOrCreatePersonContact(
     args.firstName || args.lastName
       ? { firstName: args.firstName?.trim() || undefined, lastName: args.lastName?.trim() || undefined }
       : (splitPersonName(args.name) ?? {});
+  if (args.serviceIds && args.serviceIds.length > 0) {
+    await assertServiceIdsInChapter(ctx, chapterId, args.serviceIds);
+  }
   const personId = await ctx.db.insert("people", {
     chapterId,
     name: args.name.trim() || "Unknown",
     ...halves,
     ...(args.email ? { email: args.email } : {}),
     ...(args.phone ? { phone: args.phone } : {}),
+    ...(args.serviceIds && args.serviceIds.length > 0 ? { serviceIds: args.serviceIds } : {}),
+    ...(args.location ? { location: args.location } : {}),
+    ...(args.referralSource ? { referralSource: args.referralSource } : {}),
+    ...(args.consentedAt !== undefined
+      ? { consentedAt: args.consentedAt, consentSource: args.consentSource }
+      : {}),
+    ...(args.isVolunteer !== undefined ? { isVolunteer: args.isVolunteer } : {}),
     isTeamMember: false,
     // Person-centric audiences Phase 1 — stamped a contact-only row at INSERT
     // time (mirrors `lib/givingDonors.ts#linkDonorToPerson` and

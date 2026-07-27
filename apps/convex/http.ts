@@ -1095,15 +1095,26 @@ http.route({
       return html(renderPollNotFound(), 404);
     }
     if (!result) return html(renderPollNotFound(), 404);
+    // Tally is read in a SEPARATE transaction from the vote write. Computing
+    // it inside `recordPollVote` made every voter's read set overlap every
+    // other voter's write on the same index range — guaranteed OCC contention
+    // under a real blast. A count that is a moment stale on a confirmation
+    // page is a much better trade than a contended write path.
+    const tally = await ctx.runQuery(internal.campaignPolls.getPollTally, {
+      campaignId: parsed.campaignId as Id<"campaigns">,
+      blockId: parsed.blockId,
+    });
     return html(
       renderPollThanks({
         theme: result.theme,
         optionLabel: result.optionLabel,
-        tally: {
-          question: result.tally.question,
-          totalVotes: result.tally.totalVotes,
-          options: result.tally.options,
-        },
+        tally: tally
+          ? {
+              question: tally.question,
+              totalVotes: tally.totalVotes,
+              options: tally.options,
+            }
+          : { question: result.question, totalVotes: 0, options: [] },
       }),
     );
   }),

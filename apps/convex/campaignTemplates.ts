@@ -32,16 +32,17 @@ import { requireUserId } from "./lib/context";
 import { requireCampaignsAccess } from "./lib/campaignsAccess";
 import { applyThemeToDoc, docHasTheme } from "./campaigns";
 import { resolveScopeTheme } from "./emailThemes";
+import { validateEmailDocument } from "@events-os/shared";
 import {
-  BUILT_IN_CAMPAIGN_TEMPLATES,
-  validateEmailDocument,
-} from "@events-os/shared";
+  assertValidTemplateDoc,
+  seedBuiltInTemplates,
+  TEMPLATE_SCAN_LIMIT,
+} from "./lib/builtInTemplates";
+
+// Re-exported so the migration and existing tests keep one import path.
+export { seedBuiltInTemplates };
 
 const scopeValidator = v.union(v.id("chapters"), v.literal("central"));
-
-/** Bound on a single scope's templates — the same never-scan-unbounded
- *  discipline `listAudiences` uses, sized far above any plausible library. */
-const TEMPLATE_SCAN_LIMIT = 200;
 
 /** Load a template row or throw `NOT_FOUND` — shared so every mutation gates
  *  identically. */
@@ -237,60 +238,6 @@ export const archiveTemplate = mutation({
  * Returns the ids of every built-in row for this scope, for tests and callers
  * that want to point a picker straight at one.
  */
-/**
- * The seeding logic as a PLAIN helper, so both the `internalMutation` wrapper
- * below and `migrations/0046_seed_builtin_campaign_templates.ts` can run it.
- * A migration executes inside a `MutationCtx` and cannot `runMutation` another
- * mutation, so the shared body has to live outside the wrapper — the same
- * `runX` + registered-wrapper split every migration in `migrations/` uses.
- */
-export async function seedBuiltInTemplates(
-  ctx: MutationCtx,
-  scope: Id<"chapters"> | "central",
-  createdBy: Id<"users">,
-): Promise<Id<"campaignTemplates">[]> {
-  {
-    const existing = await ctx.db
-      .query("campaignTemplates")
-      .withIndex("by_scope", (q) => q.eq("scope", scope))
-      .take(TEMPLATE_SCAN_LIMIT);
-
-    const now = Date.now();
-    const ids: Id<"campaignTemplates">[] = [];
-    for (const template of BUILT_IN_CAMPAIGN_TEMPLATES) {
-      const doc = assertValidDoc(template.doc);
-      const match = existing.find((t) => t.isBuiltIn === true && t.name === template.name);
-      if (match) {
-        ids.push(match._id);
-        if (match.archived === true) continue; // deliberately deleted — stay deleted
-        // Refresh only when the shipped content actually changed, so an
-        // unchanged deploy doesn't churn `updatedAt` on every scope.
-        const sameDoc = JSON.stringify(match.doc) === JSON.stringify(doc);
-        if (sameDoc && match.description === template.description) continue;
-        await ctx.db.patch(match._id, {
-          doc,
-          description: template.description,
-          updatedAt: now,
-        });
-        continue;
-      }
-      ids.push(
-        await ctx.db.insert("campaignTemplates", {
-          scope,
-          name: template.name,
-          description: template.description,
-          doc,
-          isBuiltIn: true,
-          createdBy,
-          createdAt: now,
-          updatedAt: now,
-        }),
-      );
-    }
-    return ids;
-  }
-}
-
 export const ensureBuiltInTemplates = internalMutation({
   args: { scope: scopeValidator, createdBy: v.id("users") },
   returns: v.array(v.id("campaignTemplates")),

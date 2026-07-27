@@ -13,6 +13,7 @@ import { Doc, Id } from "../_generated/dataModel";
 import { QueryCtx } from "../_generated/server";
 import { requireUserId, getChapterIdOrNull } from "./context";
 import { isSuperuser } from "./superuser";
+import { resolvePersonaForRoster } from "./people";
 import {
   CHAPTER_ROLLUP_PARENT,
   buildSeatManagerIndex,
@@ -115,12 +116,19 @@ export async function chapterRoster(
 }
 
 /**
- * Drop contact-only rows (`people.isContactOnly`) from an already-loaded
- * roster — the ROSTER-UX view of `chapterRoster`'s output. Person-centric
- * audiences Phase 1 item 1: a row auto-created from a donor gift, an import,
- * or a public RSVP is a real contact for MATCHING purposes but was never a
- * team member/volunteer/vendor, so it must not appear in the org chart, the
- * manager tree, or anyone's "who can I manage" reach.
+ * Drop rows with NO participation signal (the "contact" persona — see
+ * `@events-os/shared#Persona`) from an already-loaded roster — the
+ * ROSTER-UX view of `chapterRoster`'s output. Person-centric audiences: a
+ * row auto-created from a donor gift, an import, or a public RSVP is a real
+ * contact for MATCHING purposes, but as long as it's never otherwise
+ * engaged (never a team member/vendor/volunteer/guest) it must not appear
+ * in the org chart, the manager tree, or anyone's "who can I manage" reach.
+ *
+ * Was a synchronous check on the stored `people.isContactOnly` flag; now
+ * requires DB reads (participation lives in other tables — see
+ * `lib/people.ts#resolvePersonaForRoster`), so every call site awaits it.
+ * `isContactOnly` itself is untouched by this change — it still exists on
+ * the row, just isn't what decides roster-UX visibility anymore.
  *
  * Applied at (audited call-by-call, 2026-07):
  *  - `hasEffectiveReports` / `manageablePersonIds` (below, this file) — the
@@ -137,8 +145,13 @@ export async function chapterRoster(
  *  - `givingImport.ts` (`ensureRosterPool` / `matchOrCreatePersonContact`) and
  *    `historicalBackfill.ts` — CSV/historical import matching, same reason.
  */
-export function excludeContacts(roster: Doc<"people">[]): Doc<"people">[] {
-  return roster.filter((p) => p.isContactOnly !== true);
+export async function excludeContacts(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  roster: Doc<"people">[],
+): Promise<Doc<"people">[]> {
+  const personas = await resolvePersonaForRoster(ctx, chapterId, roster);
+  return roster.filter((p) => personas.get(p._id) !== "contact");
 }
 
 /** Group a roster into a manager → direct-reports map. */
@@ -372,8 +385,9 @@ export async function hasEffectiveReports(
   // Roster UX (management structure), not identity matching — see
   // `excludeContacts`'s doc. A contact-only row never legitimately holds a
   // seat or a direct report, but keep the tree itself clean of them.
+  const filteredRoster = await excludeContacts(ctx, chapterId, roster);
   return (
-    (buildEffectiveChildrenOf(index, excludeContacts(roster)).get(personId) ?? [])
+    (buildEffectiveChildrenOf(index, filteredRoster).get(personId) ?? [])
       .length > 0
   );
 }
@@ -418,7 +432,11 @@ export async function readableCheckInSubject(
   if (!person || person.chapterId !== chapterId) return null;
   // Roster UX (1:1 check-in surfaces), not identity matching — see
   // `excludeContacts`'s doc.
-  const roster = excludeContacts(await chapterRoster(ctx, person.chapterId));
+  const roster = await excludeContacts(
+    ctx,
+    person.chapterId,
+    await chapterRoster(ctx, person.chapterId),
+  );
   const viewer = await viewerFromRoster(ctx, roster);
   const manageable = await manageablePersonIds(ctx, person.chapterId, roster);
   if (manageable !== null) {
@@ -451,7 +469,11 @@ export async function manageablePersonIds(
   roster?: Doc<"people">[],
 ): Promise<Set<Id<"people">> | null> {
   if (await isChapterAdmin(ctx, chapterId)) return null;
-  const people = excludeContacts(roster ?? (await chapterRoster(ctx, chapterId)));
+  const people = await excludeContacts(
+    ctx,
+    chapterId,
+    roster ?? (await chapterRoster(ctx, chapterId)),
+  );
   const viewer = await viewerFromRoster(ctx, people);
   if (!viewer) return new Set();
   const index = await loadSeatManagerIndex(ctx, chapterId);

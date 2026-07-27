@@ -23,6 +23,8 @@ export { SectionHeader } from "./SectionHeader";
 export { Table, TableHeader, HeaderCell, Row, Cell } from "./Table";
 export { PersonPicker } from "./PersonPicker";
 export { RolePicker } from "./RolePicker";
+export { ServiceOptionsPicker } from "./ServiceOptionsPicker";
+export { ServiceCatalogManageModal } from "./ServiceCatalogManageModal";
 export { Popover } from "./Popover";
 export { InfoTooltip } from "./InfoTooltip";
 export { Calendar } from "./Calendar";

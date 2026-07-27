@@ -125,6 +125,118 @@ describe("importContacts", () => {
   });
 });
 
+describe("importContacts — person-form-fields widening", () => {
+  test("a CREATE row writes location/referralSource/consent/isVolunteer/serviceIds through", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const serviceId = await run(s.t, (ctx) =>
+      ctx.db.insert("serviceOptions", {
+        chapterId: s.chapterId,
+        name: "Greeter",
+        isActive: true,
+        createdAt: Date.now(),
+      }),
+    );
+
+    const consentedAt = Date.now();
+    await s.as.mutation(api.peopleImport.importContacts, {
+      rows: [
+        {
+          name: "New Signup",
+          email: "new-signup@example.com",
+          location: "Nyack NY",
+          referralSource: "Instagram",
+          consentedAt,
+          consentSource: "Contact Information form import, 2026-07",
+          isVolunteer: true,
+          serviceIds: [serviceId],
+        },
+      ],
+    });
+
+    const people = await run(s.t, (ctx) =>
+      ctx.db
+        .query("people")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    );
+    const created = people.find((p) => p.email === "new-signup@example.com")!;
+    expect(created).toMatchObject({
+      location: "Nyack NY",
+      referralSource: "Instagram",
+      consentedAt,
+      consentSource: "Contact Information form import, 2026-07",
+      isVolunteer: true,
+      serviceIds: [serviceId],
+    });
+  });
+
+  test("a MATCHED row fills BLANK fields only — never overwrites a value already on file", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const oldServiceId = await run(s.t, (ctx) =>
+      ctx.db.insert("serviceOptions", {
+        chapterId: s.chapterId,
+        name: "Audio",
+        isActive: true,
+        createdAt: Date.now(),
+      }),
+    );
+    const newServiceId = await run(s.t, (ctx) =>
+      ctx.db.insert("serviceOptions", {
+        chapterId: s.chapterId,
+        name: "Video",
+        isActive: true,
+        createdAt: Date.now(),
+      }),
+    );
+    const existingConsentedAt = Date.now() - 1000;
+    const personId = await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Existing Member",
+        email: "existing@example.com",
+        // Already has a value — the import row below must NOT touch this.
+        location: "Existing City NY",
+        consentedAt: existingConsentedAt,
+        consentSource: "Prior consent capture",
+        serviceIds: [oldServiceId],
+        status: "active",
+        createdAt: Date.now(),
+      }),
+    );
+
+    // Matches by email; carries a DIFFERENT location + consent + serviceIds,
+    // plus referralSource/isVolunteer the roster row has never had.
+    await s.as.mutation(api.peopleImport.importContacts, {
+      rows: [
+        {
+          name: "Existing Member",
+          email: "existing@example.com",
+          location: "Somewhere Else NJ",
+          referralSource: "Family or friend",
+          consentedAt: Date.now(),
+          consentSource: "Should never be written",
+          isVolunteer: true,
+          serviceIds: [newServiceId],
+        },
+      ],
+    });
+
+    const after = await run(s.t, (ctx) => ctx.db.get(personId));
+    expect(after).toMatchObject({
+      // Untouched — already had a value.
+      location: "Existing City NY",
+      consentedAt: existingConsentedAt,
+      consentSource: "Prior consent capture",
+      serviceIds: [oldServiceId],
+      // Filled — was blank before.
+      referralSource: "Family or friend",
+      isVolunteer: true,
+    });
+  });
+});
+
 describe("people.update — structured halves", () => {
   test("halves are authoritative and recompose the display name; name+halves together is rejected", async () => {
     const t = newT();

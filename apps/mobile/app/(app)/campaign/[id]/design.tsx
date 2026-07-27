@@ -192,7 +192,19 @@ function CampaignDesignBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
   // state correctly skips a redundant save).
   useEffect(() => {
     if (!editable || history === null) return;
-    if (history.present === lastSavedRef.current) return;
+    if (history.present === lastSavedRef.current) {
+      // Nothing to save — but landing back HERE is exactly how a failed save
+      // gets undone: half a button typed, "Not saved — ctaLabel and ctaUrl
+      // must be set together", Cmd+Z. The editor and the server now agree,
+      // so leaving the error up accuses the designer of an unsaved change
+      // she has already backed out, with no edit left that would clear it.
+      // Only `error` is rewritten: `idle` (freshly loaded, never saved) and
+      // `saving` (a save still in flight for a doc this one supersedes) are
+      // both still true.
+      setSaveState((s) => (s === "error" ? "saved" : s));
+      setSaveError(null);
+      return;
+    }
     const timer = setTimeout(() => saveDoc(history.present), AUTOSAVE_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [history, editable, saveDoc]);

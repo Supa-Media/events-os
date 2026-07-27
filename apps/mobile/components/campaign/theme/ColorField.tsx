@@ -29,15 +29,18 @@
  *     uses".
  *
  * ── Why a local draft ──────────────────────────────────────────────────────
- * `onChange` only fires for a VALID hex. Half-typed input (`#8`, `#89`) is
- * held in local state instead of being pushed upstream, so a live preview
- * driven off this value doesn't strobe through nonsense colours on every
- * keystroke — and an invalid draft says so inline rather than silently
- * reverting.
+ * `onChange` only fires for a COMPLETE colour. Half-typed input (`#8`, `#89`,
+ * and — the case that used to slip through — the `891` on the way to
+ * `891d1a`) is held in local state instead of being pushed upstream, so a
+ * live preview driven off this value doesn't strobe through nonsense colours
+ * on every keystroke, and no half-typed prefix can end up being what saves.
+ * `hexFromDraft` owns that rule and is unit-tested; this file just asks it.
+ * An incomplete draft says so inline rather than silently reverting.
  */
 import { createElement, useEffect, useState } from "react";
 import { Platform, Pressable, Text, TextInput, View } from "react-native";
 import { isHexColor } from "@events-os/shared";
+import { hexFromDraft } from "../../../lib/emailThemeEditor";
 import { Icon } from "../../ui";
 import { colors, radius } from "../../../lib/theme";
 
@@ -67,17 +70,19 @@ export function ColorField({
   // keep showing whatever was last typed into it.
   useEffect(() => setDraft(value), [value]);
 
-  const valid = isHexColor(draft);
+  // The colour this draft resolves to, or null while it's still half-typed.
+  // ONE source of truth for both halves of the field's behaviour: what gets
+  // committed, and what the field reports as valid. They used to disagree —
+  // a hash-less `891d1a` was pushed upstream while the border stayed red.
+  const committed = hexFromDraft(draft);
+  const valid = committed !== null;
 
   function handleText(next: string) {
     setDraft(next);
-    const candidate = next.trim();
-    if (isHexColor(candidate)) {
-      onChange(candidate);
-    } else if (isHexColor(`#${candidate}`)) {
-      // Pasting from a brand sheet usually loses the leading #.
-      onChange(`#${candidate}`);
-    }
+    const hex = hexFromDraft(next);
+    // Pasting from a brand sheet usually loses the leading `#`; `hexFromDraft`
+    // puts it back, but only once the value is unambiguously complete.
+    if (hex !== null) onChange(hex);
   }
 
   function commit(hex: string) {
@@ -94,7 +99,9 @@ export function ColorField({
 
       <View className="flex-row items-center gap-2">
         <Swatch
-          value={valid ? draft : value}
+          // The RESOLVED draft, not the raw one: a hash-less `891d1a` is a
+          // real colour but `<input type="color">` can't read it.
+          value={committed ?? value}
           onPickWeb={commit}
           onPressNative={() => setExpanded((e) => !e)}
           label={label}

@@ -201,6 +201,12 @@ const CLS = {
   eyebrow: "pw-eyebrow",
   rule: "pw-hr",
   quote: "pw-quote",
+  // The quote's text carries its OWN class rather than being targeted as
+  // `.pw-quote div`: that descendant selector (specificity 0,1,1) also matched
+  // the attribution div and outranked `.pw-quote-attr` (0,1,0), so the
+  // attribution silently rendered at full `ink` in dark mode instead of
+  // `muted`, losing its de-emphasis.
+  quoteText: "pw-quote-text",
   quoteAttr: "pw-quote-attr",
   foot: "pw-foot",
   col: "pw-col",
@@ -408,7 +414,7 @@ function renderQuoteBlock(
   const attribution = block.attribution
     ? `<div class="${CLS.quoteAttr}" style="margin:10px 0 0;font-family:${t.bodyFont};font-size:13px;font-weight:600;letter-spacing:0.04em;color:${t.muted}">— ${substituteMergeTagsHtml(esc(block.attribution), recipient)}</div>`
     : "";
-  return `<blockquote class="${CLS.quote}" style="margin:0 0 20px;padding:4px 0 4px 18px;border-left:3px solid ${t.accent}"><div style="margin:0;font-family:${t.headingFont};font-size:19px;line-height:1.5;font-style:italic;color:${t.ink}">${text}</div>${attribution}</blockquote>`;
+  return `<blockquote class="${CLS.quote}" style="margin:0 0 20px;padding:4px 0 4px 18px;border-left:3px solid ${t.accent}"><div class="${CLS.quoteText}" style="margin:0;font-family:${t.headingFont};font-size:19px;line-height:1.5;font-style:italic;color:${t.ink}">${text}</div>${attribution}</blockquote>`;
 }
 
 /**
@@ -431,7 +437,12 @@ function renderPollBlock(
   const question = substituteMergeTagsHtml(esc(block.question), recipient);
   const optionHtml = block.options
     .map((opt: EmailPollOption) => {
-      const label = esc(opt.label);
+      // Merge tags substitute here too. Every other authored string in the
+      // renderer supports them, and the composer offers the tag chips at
+      // SCREEN level with nothing marking the poll-option field as the one
+      // input where they silently wouldn't work — so a raw `{{firstName}}`
+      // would have shipped to real inboxes.
+      const label = substituteMergeTagsHtml(esc(opt.label), recipient);
       const style = `display:block;margin:0 0 8px;padding:11px 16px;border:1px solid ${t.border};border-radius:999px;font-family:${t.bodyFont};font-size:14px;font-weight:600;color:${t.ink};text-decoration:none;text-align:center`;
       if (!opts.pollVoteUrl) {
         return `<span class="${CLS.pollOpt}" style="${style}">${label}</span>`;
@@ -487,6 +498,50 @@ function renderBlockHtml(
  * everything here is an OVERRIDE of something already rendered inline, never
  * the only source of a style.
  */
+/**
+ * The dark-mode overrides, as (selector, declarations) pairs.
+ *
+ * ONE list, emitted twice — once inside `@media (prefers-color-scheme: dark)`
+ * and once prefixed with `[data-ogsc]` for the clients that rewrite the
+ * document instead of honouring the media query. Written out separately they
+ * drifted, and the drift was invisible in every client that DOES honour the
+ * media query, so nothing caught it.
+ *
+ * Every selector here is a single class, which is what makes the naive
+ * `[data-ogsc] <sel>` prefix correct for all of them.
+ */
+function darkRules(d: EmailThemeTokens): [string, string][] {
+  return [
+    // `body` as well as the wrapper: the wrapper is only as tall as its
+    // content, so a short email would show a light strip beneath the card.
+    ["body", `background:${d.canvas} !important;`],
+    [`.${CLS.wrap}`, `background:${d.canvas} !important;`],
+    [
+      `.${CLS.card}`,
+      `background:${d.surface} !important; border-color:${d.border} !important;`,
+    ],
+    [`.${CLS.heading}`, `color:${d.ink} !important;`],
+    [`.${CLS.text}`, `color:${d.muted} !important;`],
+    [`.${CLS.link}`, `color:${d.link} !important;`],
+    [
+      `.${CLS.button}`,
+      `background:${d.accent} !important; color:${d.accentInk} !important;`,
+    ],
+    [`.${CLS.mark}`, `color:${d.accent} !important;`],
+    [`.${CLS.eyebrow}`, `color:${d.accent} !important;`],
+    [`.${CLS.rule}`, `border-top-color:${d.border} !important;`],
+    [`.${CLS.quote}`, `border-left-color:${d.accent} !important;`],
+    [`.${CLS.quoteText}`, `color:${d.ink} !important;`],
+    [`.${CLS.quoteAttr}`, `color:${d.muted} !important;`],
+    [
+      `.${CLS.pollOpt}`,
+      `border-color:${d.border} !important; color:${d.ink} !important;`,
+    ],
+    [`.${CLS.foot}`, `color:${d.muted} !important;`],
+    [`.${CLS.foot} a`, `color:${d.muted} !important;`],
+  ];
+}
+
 function styleBlock(t: EmailTheme): string {
   const d: EmailThemeTokens = resolveDarkTheme(t);
   return `
@@ -514,32 +569,17 @@ a { text-decoration:underline; }
 }
 
 @media (prefers-color-scheme: dark) {
-  /* The body element as well as the wrapper: the wrapper only covers as much
-     height as the content, so a short email would otherwise show a light
-     strip beneath the card. */
-  body { background:${d.canvas} !important; }
-  .${CLS.wrap} { background:${d.canvas} !important; }
-  .${CLS.card} { background:${d.surface} !important; border-color:${d.border} !important; }
-  .${CLS.heading} { color:${d.ink} !important; }
-  .${CLS.text} { color:${d.muted} !important; }
-  .${CLS.link} { color:${d.link} !important; }
-  .${CLS.button} { background:${d.accent} !important; color:${d.accentInk} !important; }
-  .${CLS.mark}, .${CLS.eyebrow} { color:${d.accent} !important; }
-  .${CLS.rule} { border-top-color:${d.border} !important; }
-  .${CLS.quote} { border-left-color:${d.accent} !important; }
-  .${CLS.quote} div { color:${d.ink} !important; }
-  .${CLS.quoteAttr} { color:${d.muted} !important; }
-  .${CLS.pollOpt} { border-color:${d.border} !important; color:${d.ink} !important; }
-  .${CLS.foot}, .${CLS.foot} a { color:${d.muted} !important; }
+${darkRules(d).map(([sel, decls]) => `  ${sel} { ${decls} }`).join("\n")}
 }
 
-/* Outlook.com / some Android clients key off [data-ogsc] instead of the media
-   query — same overrides, applied through the attribute they rewrite to. */
-[data-ogsc] body, [data-ogsc] .${CLS.wrap} { background:${d.canvas} !important; }
-[data-ogsc] .${CLS.card} { background:${d.surface} !important; }
-[data-ogsc] .${CLS.heading} { color:${d.ink} !important; }
-[data-ogsc] .${CLS.text} { color:${d.muted} !important; }
-[data-ogsc] .${CLS.button} { background:${d.accent} !important; color:${d.accentInk} !important; }
+/* Outlook.com and some Android clients never evaluate prefers-color-scheme —
+   they rewrite the document and key off [data-ogsc] instead. Generated from
+   the SAME rule list rather than hand-maintained: these were originally
+   written out twice and the attribute copy drifted into a strict subset,
+   leaving the quote text and every poll option at full-strength ink on a
+   forced-dark card (1.06:1 — invisible) in exactly the clients that need the
+   fallback most. */
+${darkRules(d).map(([sel, decls]) => `[data-ogsc] ${sel} { ${decls} }`).join("\n")}
 `.trim();
 }
 
@@ -624,6 +664,12 @@ function cardContentText(
   recipient: CampaignRecipient,
 ): string | null {
   const parts: string[] = [];
+  // The image's alt text carries real content in this design — the seeded
+  // newsletter tells the author to make these cards image-led — so omitting
+  // it left an image-only card contributing NOTHING to the plaintext part. A
+  // near-empty text/plain alternative is both a spam-filter signal and a dead
+  // end for anyone reading in plaintext.
+  if (content.imageUrl && content.imageAlt) parts.push(`[${content.imageAlt}]`);
   if (content.heading) parts.push(substituteMergeTagsPlain(content.heading, recipient));
   if (content.body) {
     parts.push(stripMarkdownSubset(substituteMergeTagsPlain(content.body, recipient)));

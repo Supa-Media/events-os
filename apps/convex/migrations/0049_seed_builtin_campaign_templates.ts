@@ -22,9 +22,23 @@
  *
  * `createdBy` is a real `users` row because the column requires one: the
  * earliest superuser if the deployment has one, otherwise the earliest user.
- * On a deployment with NO users at all the seed is a no-op and re-runs on the
- * next deploy (the ledger only records a completed run), so an empty
- * deployment doesn't permanently lose its templates.
+ *
+ * ── On a deployment with NO users ──────────────────────────────────────────
+ * This returns a no-op, and `runPending` LEDGERS IT ANYWAY — it records the
+ * row unconditionally once `run` returns, so a "completed" no-op is
+ * indistinguishable from real work and the migration never runs again. An
+ * earlier version of this comment claimed the opposite ("re-runs on the next
+ * deploy"); that was simply wrong, and it mattered: on any deployment whose
+ * first `runPending` precedes its first user — i.e. every freshly scaffolded
+ * app — the built-in newsletter would have been permanently absent, which is
+ * the exact "empty template picker in prod" failure this migration exists to
+ * prevent.
+ *
+ * The no-op is therefore NOT the safety net. `campaigns.createCampaign` calls
+ * `seedBuiltInTemplates` opportunistically (it always has a real user), so the
+ * built-ins appear the first time anyone actually touches the campaigns desk,
+ * on any deployment, whether or not this migration did anything. This
+ * migration remains the fast path for deployments that already have users.
  */
 
 import type { MutationCtx } from "../_generated/server";
@@ -50,6 +64,6 @@ export async function runSeedBuiltInCampaignTemplates(ctx: MutationCtx) {
 }
 
 export const seedBuiltInCampaignTemplates: Migration = {
-  name: "0046_seed_builtin_campaign_templates",
+  name: "0049_seed_builtin_campaign_templates",
   run: runSeedBuiltInCampaignTemplates,
 };

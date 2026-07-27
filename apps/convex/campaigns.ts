@@ -131,6 +131,9 @@ import {
   type EmailTheme,
 } from "@events-os/shared";
 import { resolveScopeTheme } from "./emailThemes";
+// From lib/, not campaignTemplates.ts — that module imports applyThemeToDoc
+// from here, so importing the seeder back from it would close a cycle.
+import { seedBuiltInTemplates } from "./lib/builtInTemplates";
 import { CAMPAIGN_STATUSES } from "./schema/campaigns";
 // Reused rather than re-implemented — same SOD_VIOLATION error code, pure
 // (no ctx) so it's trivially testable either way. See its own doc in
@@ -338,6 +341,16 @@ export const createCampaign = mutation({
       throw new ConvexError({ code: "INVALID_DOC", message: validated.error });
     }
     const sender = await validateSenderFields(ctx, fromName, fromEmail);
+
+    // Make sure the built-in templates exist. Migration 0049 is the fast path
+    // for deployments that already had users when it ran, but `runPending`
+    // ledgers a no-op as a completed run — so on a freshly scaffolded
+    // deployment (no users at the first deploy) the migration would never fire
+    // again and the template picker would be permanently empty. Here we always
+    // have a real user, so this is the guarantee; it's idempotent and bounded,
+    // and campaigns are created rarely enough that the extra indexed read
+    // doesn't matter.
+    await seedBuiltInTemplates(ctx, scope, userId);
 
     const now = Date.now();
     return await ctx.db.insert("campaigns", {
@@ -1405,6 +1418,40 @@ export const clearRecipientsBatch = internalMutation({
 });
 
 /**
+ * Drop this campaign's poll votes. Paired with `clearRecipientsBatch` and
+ * drained the same way (one bounded batch per call, caller loops to zero).
+ *
+ * Load-bearing, not tidiness. `send` is legally re-runnable from `"failed"`
+ * (a transport failure, or `sweepStuckSends`), and `materializeRecipients`
+ * then DELETES every `campaignRecipients` row and re-inserts with fresh
+ * `unsubscribeToken`s. One-vote-per-person is enforced by
+ * `campaignPollVotes.by_recipient_and_block` — keyed on a `recipientId` that
+ * no longer exists after that wipe. Leaving the votes behind means the same
+ * human, on the second copy of the email, inserts a SECOND row: both counted,
+ * tally wrong, and the orphaned rows accumulate against `POLL_TALLY_CAP`
+ * (whose safety argument is precisely that votes can't exceed the recipient
+ * cap).
+ *
+ * Deleting rather than re-pointing is deliberate: a re-send re-delivers to
+ * everyone, so the honest reading is that the poll re-opens with the new
+ * send. Re-pointing would need a stable person identity that recipient rows
+ * don't carry.
+ */
+export const clearPollVotesBatch = internalMutation({
+  args: { campaignId: v.id("campaigns") },
+  returns: v.number(),
+  handler: async (ctx, { campaignId }) => {
+    const rows = await ctx.db
+      .query("campaignPollVotes")
+      // Prefix query on the compound index — every block for this campaign.
+      .withIndex("by_campaign_and_block", (q) => q.eq("campaignId", campaignId))
+      .take(200);
+    for (const row of rows) await ctx.db.delete(row._id);
+    return rows.length;
+  },
+});
+
+/**
  * Resolve the campaign's audience and materialize it into `campaignRecipients`
  * rows, batching inserts at `MATERIALIZE_BATCH_SIZE`. Zero matching
  * recipients is a RECORDED failure (not an error) — the campaign never
@@ -1429,6 +1476,15 @@ export const materializeRecipients = internalAction({
         campaignId,
       });
       if (deleted === 0) break;
+    }
+    // Poll votes are keyed to the recipient rows just deleted — see
+    // `clearPollVotesBatch`'s doc for why leaving them lets one person vote
+    // twice on a re-sent campaign.
+    for (;;) {
+      const dropped = await ctx.runMutation(internal.campaigns.clearPollVotesBatch, {
+        campaignId,
+      });
+      if (dropped === 0) break;
     }
 
     const resolution = await ctx.runQuery(internal.audiences.resolveAudienceForSend, {

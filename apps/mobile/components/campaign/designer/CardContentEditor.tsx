@@ -17,6 +17,13 @@
  * hint the moment it's true. The hints are advisory-looking (they don't
  * block typing) but they name the exact fix.
  *
+ * They mirror the validator EXACTLY, raw-string semantics and all — the
+ * predicates live in `lib/emailDesigner.ts` so they can be pinned against
+ * `validateEmailDocument` itself in a unit test. A hint that's merely
+ * approximately right is worse than none: the document is rejected WHOLE, so
+ * a state the server refuses but the form calls fine reads as "the editor
+ * stopped saving" across every other block on the page.
+ *
  * Choosing an image ALWAYS writes `imageAlt` alongside `imageUrl` (as `""`
  * when there's nothing better), because "" is the contract's legitimate
  * "decorative" value and `undefined` is the one that makes the document
@@ -26,6 +33,7 @@
 import { Text, View } from "react-native";
 import type { EmailCardContent } from "@events-os/shared";
 import { TextField } from "../../ui";
+import { ctaPairProblem } from "../../../lib/emailDesigner";
 import { ImageLibraryPicker, useImageLibraryRegistration } from "./ImageLibraryPicker";
 import { ImageUploadButton, type UploadImage } from "./DesignerControls";
 import type { ActionRunner } from "../../../lib/useActionToast";
@@ -51,16 +59,20 @@ export function CardContentEditor({
 
   const hasImage = typeof content.imageUrl === "string" && content.imageUrl.length > 0;
   const altMissing = hasImage && !content.imageAlt;
-  const hasLabel = !!content.ctaLabel?.trim();
-  const hasUrl = !!content.ctaUrl?.trim();
-  const ctaHalfFilled = hasLabel !== hasUrl;
+  // NOT `?.trim()`: the validator counts a field as filled on the RAW string
+  // (`.length > 0`), so a label backspaced down to one stray space still
+  // rejects the document when there's no url beside it. Trimming here left
+  // that state warning-free in the form and fatal on save. See
+  // `ctaPairProblem`, which is pinned against the real validator in
+  // `lib/emailDesigner.test.ts`.
+  const ctaProblem = ctaPairProblem(content);
 
   return (
     <View>
       <TextField
         label={compact ? "Image URL" : "Image"}
         value={content.imageUrl ?? ""}
-        onChangeText={(imageUrl) =>
+        onChangeText={(imageUrl) => {
           onChange(
             imageUrl.trim()
               ? { imageUrl, imageAlt: content.imageAlt ?? "" }
@@ -68,8 +80,12 @@ export function CardContentEditor({
                 // hanging off an imageless card is dead data that reappears
                 // confusingly the next time an image is chosen.
                 { imageUrl: undefined, imageAlt: undefined },
-          )
-        }
+          );
+          // A typed/pasted URL is a DIFFERENT image from the one this editor
+          // uploaded, so the alt text written next must not be backfilled
+          // onto that upload's library row.
+          library.forget();
+        }}
         placeholder="https://…"
         autoCapitalize="none"
         keyboardType="url"
@@ -93,7 +109,13 @@ export function CardContentEditor({
           />
         ) : null}
         <ImageLibraryPicker
-          onPick={({ url, alt }) => onChange({ imageUrl: url, imageAlt: alt })}
+          onPick={({ url, alt }) => {
+            onChange({ imageUrl: url, imageAlt: alt });
+            // The picked row carries its own description already; editing the
+            // alt field from here must not rewrite the row this editor's
+            // upload created, which is now a different image entirely.
+            library.forget();
+          }}
         />
       </View>
 
@@ -148,11 +170,11 @@ export function CardContentEditor({
         autoCapitalize="none"
         keyboardType="url"
       />
-      {ctaHalfFilled ? (
+      {ctaProblem ? (
         <InlineWarning
           text={
-            hasLabel
-              ? "This button has a label but no link — add one, or clear the label. A card can't save with only half a button."
+            ctaProblem === "label-without-url"
+              ? "This button has a label but no link — add one, or clear the label (a label of just a space still counts as one). A card can't save with only half a button."
               : "This button has a link but no label — nothing will be visible to click. Add a label, or clear the link."
           }
         />
