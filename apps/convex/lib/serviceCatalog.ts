@@ -1,7 +1,7 @@
 /**
  * Service Catalog shared data: the canonical seed catalog + the legacy
  * free-text → catalog mapping, plus the small read/write helpers built on
- * top of them. Shared by `migrations/0045_seed_service_catalog.ts` (the
+ * top of them. Shared by `migrations/0046_seed_service_catalog.ts` (the
  * one-time backfill) and `seed.ts` (so newly-seeded demo/import data targets
  * `serviceIds` the same way prod data gets backfilled, never the deprecated
  * `people.services` string array — see `schema/people.ts`'s deprecation
@@ -186,7 +186,7 @@ export async function ensureOrgWideServiceCatalog(
  * `ensureOrgWideServiceCatalog`). Deduped. Any string with no map entry
  * (or whose mapped label isn't in `labelToId` — shouldn't happen once the
  * catalog is seeded, but defensive) is reported in `unmapped` rather than
- * silently dropped from the count — `migrations/0045_seed_service_catalog.ts`
+ * silently dropped from the count — `migrations/0046_seed_service_catalog.ts`
  * surfaces these for human triage.
  */
 export function resolveLegacyServiceStrings(
@@ -246,7 +246,7 @@ export function resolveServiceStringsBestEffort(
  * callers must treat more than one hit as AMBIGUOUS, never guess). Omit
  * `chapterId` for a CENTRAL-scoped lookup (org-wide rows only — there's no
  * single chapter's local rows to union in). Used by
- * `migrations/0046_service_conditions_to_ids.ts` to convert a legacy free-text
+ * `migrations/0047_service_conditions_to_ids.ts` to convert a legacy free-text
  * `has_service` condition string, which was never structured as
  * "Parent:Child", into an id by plain-name match.
  */

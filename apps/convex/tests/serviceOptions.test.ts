@@ -8,8 +8,8 @@ import { newT, run, setupChapter, modules, type ChapterSetup, type TestConvex } 
 import type { Doc, Id } from "../_generated/dataModel";
 import type { AudienceTargeting } from "../lib/audienceTargeting";
 import { resolveServiceLabels } from "../lib/serviceCatalog";
-import { runSeedServiceCatalog } from "../migrations/0045_seed_service_catalog";
-import { runServiceConditionsToIds } from "../migrations/0046_service_conditions_to_ids";
+import { runSeedServiceCatalog } from "../migrations/0046_seed_service_catalog";
+import { runServiceConditionsToIds } from "../migrations/0047_service_conditions_to_ids";
 
 /**
  * Service Catalog — `serviceOptions.ts` CRUD/merge, the `has_service`

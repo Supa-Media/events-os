@@ -56,8 +56,8 @@ import { migrateGuestAudiences } from "./0041_migrate_guest_audiences";
 import { wrapTargeting } from "./0042_wrap_targeting";
 import { splitPersonNames } from "./0043_split_person_names";
 import { reimbursementPayoutsOutflow } from "./0044_reimbursement_payouts_outflow";
-import { seedServiceCatalog } from "./0045_seed_service_catalog";
-import { serviceConditionsToIds } from "./0046_service_conditions_to_ids";
+import { seedServiceCatalog } from "./0046_seed_service_catalog";
+import { serviceConditionsToIds } from "./0047_service_conditions_to_ids";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {

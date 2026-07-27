@@ -122,6 +122,6 @@ export async function runSeedServiceCatalog(
 }
 
 export const seedServiceCatalog: Migration = {
-  name: "0045_seed_service_catalog",
+  name: "0046_seed_service_catalog",
   run: runSeedServiceCatalog,
 };

@@ -178,6 +178,6 @@ export async function runServiceConditionsToIds(
 }
 
 export const serviceConditionsToIds: Migration = {
-  name: "0046_service_conditions_to_ids",
+  name: "0047_service_conditions_to_ids",
   run: runServiceConditionsToIds,
 };
