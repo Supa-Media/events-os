@@ -56,6 +56,7 @@ import type * as givingPledges from "../givingPledges.js";
 import type * as guests from "../guests.js";
 import type * as historicalBackfill from "../historicalBackfill.js";
 import type * as http from "../http.js";
+import type * as identity from "../identity.js";
 import type * as increase from "../increase.js";
 import type * as integrationSettings from "../integrationSettings.js";
 import type * as inventory from "../inventory.js";
@@ -164,6 +165,7 @@ import type * as migrations_0037_link_rsvp_people from "../migrations/0037_link_
 import type * as migrations_0038_backfill_contact_only_people from "../migrations/0038_backfill_contact_only_people.js";
 import type * as migrations_0039_backfill_person_emails from "../migrations/0039_backfill_person_emails.js";
 import type * as migrations_0048_import_form_submissions from "../migrations/0048_import_form_submissions.js";
+import type * as migrations_0049_link_rsvp_identifiers from "../migrations/0049_link_rsvp_identifiers.js";
 import type * as migrations_index from "../migrations/index.js";
 import type * as modules from "../modules.js";
 import type * as moneyViews from "../moneyViews.js";
@@ -199,6 +201,7 @@ import type * as schema_finances from "../schema/finances.js";
 import type * as schema_givingActivity from "../schema/givingActivity.js";
 import type * as schema_givingInterest from "../schema/givingInterest.js";
 import type * as schema_givingPlatform from "../schema/givingPlatform.js";
+import type * as schema_identity from "../schema/identity.js";
 import type * as schema_integrationSettings from "../schema/integrationSettings.js";
 import type * as schema_inventory from "../schema/inventory.js";
 import type * as schema_migrations from "../schema/migrations.js";
@@ -305,6 +308,7 @@ declare const fullApi: ApiFromModules<{
   guests: typeof guests;
   historicalBackfill: typeof historicalBackfill;
   http: typeof http;
+  identity: typeof identity;
   increase: typeof increase;
   integrationSettings: typeof integrationSettings;
   inventory: typeof inventory;
@@ -413,6 +417,7 @@ declare const fullApi: ApiFromModules<{
   "migrations/0038_backfill_contact_only_people": typeof migrations_0038_backfill_contact_only_people;
   "migrations/0039_backfill_person_emails": typeof migrations_0039_backfill_person_emails;
   "migrations/0048_import_form_submissions": typeof migrations_0048_import_form_submissions;
+  "migrations/0049_link_rsvp_identifiers": typeof migrations_0049_link_rsvp_identifiers;
   "migrations/index": typeof migrations_index;
   modules: typeof modules;
   moneyViews: typeof moneyViews;
@@ -448,6 +453,7 @@ declare const fullApi: ApiFromModules<{
   "schema/givingActivity": typeof schema_givingActivity;
   "schema/givingInterest": typeof schema_givingInterest;
   "schema/givingPlatform": typeof schema_givingPlatform;
+  "schema/identity": typeof schema_identity;
   "schema/integrationSettings": typeof schema_integrationSettings;
   "schema/inventory": typeof schema_inventory;
   "schema/migrations": typeof schema_migrations;
