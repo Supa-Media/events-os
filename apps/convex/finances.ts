@@ -76,6 +76,7 @@ import {
   type BudgetType,
   type BudgetRefKind,
   type BudgetApprovalStatus,
+  type RepaymentStatus,
 } from "@events-os/shared";
 import { readSandbox } from "./financeSettings";
 import { MAX_MILESTONES } from "./backerMilestones";
@@ -315,6 +316,13 @@ const reconcileRow = v.object({
 // (`isSpend` — outflow, not excluded, not personal) — the drill-down target
 // for that tile, distinct from `all` (which keeps inflow/transfer/personal
 // rows too, so it would NOT sum to the same figure).
+// `personal_unpaid`: an unpaid personal expense — exactly the worklist a
+// treasurer needs (founder ask: surface it "in the reconcile flow"). Reuses
+// the SAME `isPersonal` + linked-repayment-status pair `repaymentStatus`
+// already resolves per row (see `personalExpenseState` in
+// `@events-os/shared`) — a row qualifies iff `isPersonal === true` AND its
+// repayment isn't `"paid"` (a `"failed"` attempt still counts — the debt is
+// still outstanding).
 const reconcileFilterValidator = v.union(
   v.literal("all"),
   v.literal("spend"),
@@ -322,6 +330,7 @@ const reconcileFilterValidator = v.union(
   v.literal("missing_receipt"),
   v.literal("uncategorized"),
   v.literal("ready"),
+  v.literal("personal_unpaid"),
 );
 
 // Per-filter counts returned alongside the rows so each pill shows its number.
@@ -332,6 +341,7 @@ const reconcileCounts = v.object({
   missing_receipt: v.number(),
   uncategorized: v.number(),
   ready: v.number(),
+  personal_unpaid: v.number(),
 });
 
 // Per-fund SPEND for the dashboard period (period reads are naturally bounded;
@@ -7549,6 +7559,7 @@ export const listReconcile = query({
       missing_receipt: 0,
       uncategorized: 0,
       ready: 0,
+      personal_unpaid: 0,
     };
     const homeChapterId = await readChapterId(ctx);
     if (!homeChapterId) return { rows: [], counts: zero, viewerPersonId: null };
@@ -7605,6 +7616,29 @@ export const listReconcile = query({
         .filter((tr) => tr.status !== "excluded");
     }
 
+    // The linked personal repayment's live status, resolved EAGERLY (before
+    // the counts loop) for just the `isPersonal` subset of `all` — bounded by
+    // how many rows are flagged personal (small in practice), not `all.length`.
+    // Needed both for the `personal_unpaid` pill's count AND its predicate,
+    // since "unpaid" (as opposed to "flagged at all") depends on the linked
+    // `personalRepayments` row's `status`, not just `isPersonal`.
+    const getRepaymentForCount = nameCache(ctx, "personalRepayments");
+    const repaymentStatusByTxnId = new Map<
+      Id<"transactions">,
+      RepaymentStatus | null
+    >();
+    for (const tr of all) {
+      if (tr.isPersonal === true) {
+        const rep = tr.repaymentId ? await getRepaymentForCount(tr.repaymentId) : null;
+        repaymentStatusByTxnId.set(tr._id, rep?.status ?? null);
+      }
+    }
+    // Mirrors `personalExpenseState` (`@events-os/shared`) collapsed to the
+    // one boolean this pill needs: unpaid iff personal AND not yet "paid" (a
+    // "failed" repayment attempt still counts — the debt is outstanding).
+    const isPersonalUnpaid = (tr: Doc<"transactions">) =>
+      tr.isPersonal === true && repaymentStatusByTxnId.get(tr._id) !== "paid";
+
     // Per-filter counts in the same pass (spend/receipt/status predicates).
     const counts = { ...zero, all: all.length };
     for (const tr of all) {
@@ -7614,6 +7648,7 @@ export const listReconcile = query({
         counts.missing_receipt += 1;
       if (tr.status === "unreviewed") counts.uncategorized += 1;
       if (tr.status === "reconciled") counts.ready += 1;
+      if (isPersonalUnpaid(tr)) counts.personal_unpaid += 1;
     }
 
     const predicates: Record<string, (tr: Doc<"transactions">) => boolean> = {
@@ -7624,6 +7659,7 @@ export const listReconcile = query({
         isSpend(tr) && tr.receiptStorageId == null && tr.status !== "reconciled",
       uncategorized: (tr) => tr.status === "unreviewed",
       ready: (tr) => tr.status === "reconciled",
+      personal_unpaid: (tr) => isPersonalUnpaid(tr),
     };
     const selected = all.filter(predicates[filter]);
 
@@ -7635,14 +7671,13 @@ export const listReconcile = query({
     const getFund = nameCache(ctx, "funds");
     const getCategory = nameCache(ctx, "budgetCategories");
     // The linked personal repayment's live status (`repaymentId` →
-    // `personalRepayments.status`) — resolved per returned row so the grid's
-    // Personal badge can read "Repaid" once the repayment settles.
-    const getRepayment = nameCache(ctx, "personalRepayments");
-    const resolveRepaymentStatus = async (tr: Doc<"transactions">) => {
-      if (!tr.repaymentId) return null;
-      const rep = await getRepayment(tr.repaymentId);
-      return rep?.status ?? null;
-    };
+    // `personalRepayments.status`) — the grid's Personal badge reads "Repaid"
+    // once it settles. Every returned row is a member of `all`
+    // (`selected = all.filter(...)`), and `repaymentStatusByTxnId` above
+    // already resolved this for every `isPersonal` row in `all` — reuse it
+    // rather than re-querying `personalRepayments` a second time per row.
+    const resolveRepaymentStatus = async (tr: Doc<"transactions">) =>
+      tr.isPersonal === true ? (repaymentStatusByTxnId.get(tr._id) ?? null) : null;
 
     // The AI suggestion, resolved to display names — only for a still-
     // `isSuggestible` row (unreviewed, OR categorized but still needsBudget —
@@ -8593,40 +8628,15 @@ export const attachReceipt = mutation({
   },
 });
 
-export const flagPersonal = mutation({
-  args: { transactionId: v.id("transactions"), isPersonal: v.boolean() },
-  returns: v.null(),
-  handler: async (ctx, args) => {
-    // Scope-aware (WP-2.1): keeps central-owned txns writable at central reach
-    // rather than dead-ending; personal-charge flagging is really a chapter/
-    // cardholder concern, but the scope gate must not leave central txns
-    // untouchable by the central desk.
-    const { txn, scope, actorPersonId } = await requireReconcileTxn(
-      ctx,
-      args.transactionId,
-      "bookkeeper",
-    );
-    // A personal charge is excluded from spend until repaid (`isPersonal`
-    // already drops it from SPEND totals; no status change needed).
-    await ctx.db.patch(args.transactionId, { isPersonal: args.isPersonal });
-    // financeAuditLog (personal_flag) — removes money from spend just like an
-    // exclude, but flows through this dedicated boolean setter instead.
-    if ((txn.isPersonal === true) !== args.isPersonal) {
-      await logFinanceAudit(ctx, {
-        chapterId: scope,
-        subjectType: "transaction",
-        subjectId: args.transactionId,
-        action: "personal_flag",
-        actorPersonId,
-        field: "isPersonal",
-        before: txn.isPersonal === true ? "Personal" : "Not personal",
-        after: args.isPersonal ? "Personal" : "Not personal",
-        amountCents: txn.amountCents,
-      });
-    }
-    return null;
-  },
-});
+// NOTE: `flagPersonal` (a plain `isPersonal` boolean setter) used to live
+// here. It created no `personalRepayments` row and sent no email — a dead
+// end nobody could ever actually get billed or paid back through. DELETED:
+// every marking/unmarking path (Reconcile grid, Cards tab, "My transactions",
+// the dashboard drill-down modal) now routes through `cards.ts#flagPersonalCharge`
+// / `cards.ts#unflagPersonalCharge` — the ONE workflow that resolves a real
+// payee, creates the repayment record, and emails them. Any `isPersonal:true`
+// row this old setter left behind with no `repaymentId` is backfilled by
+// migration `0045_backfill_personal_repayments`.
 
 /**
  * R1a — set (or clear) a transaction's freeform note: "who was this for and

@@ -40,6 +40,7 @@ import { runMigrateGuestAudiencesPage } from "./migrations/0041_migrate_guest_au
 import { runWrapTargetingPage } from "./migrations/0042_wrap_targeting";
 import { runSplitPersonNamesPage } from "./migrations/0043_split_person_names";
 import { runReimbursementPayoutsOutflowPage } from "./migrations/0044_reimbursement_payouts_outflow";
+import { runBackfillPersonalRepaymentsPage } from "./migrations/0045_backfill_personal_repayments";
 
 /**
  * Backfill: ensure every template/event grid module has all of its current
@@ -803,6 +804,18 @@ export const continueReimbursementPayoutsOutflow = internalMutation({
   args: { cursor: v.union(v.string(), v.null()) },
   handler: async (ctx, { cursor }) =>
     await runReimbursementPayoutsOutflowPage(ctx, cursor),
+});
+
+/**
+ * Scheduler continuation for the `personalRepayments` backfill (`0045`) —
+ * same shape as the continuations above; idempotent (already-backfilled rows
+ * are skipped — see `migrations/0045_backfill_personal_repayments.ts`'s
+ * module doc), so a redundant fire is a no-op.
+ */
+export const continueBackfillPersonalRepayments = internalMutation({
+  args: { cursor: v.union(v.string(), v.null()) },
+  handler: async (ctx, { cursor }) =>
+    await runBackfillPersonalRepaymentsPage(ctx, cursor),
 });
 
 /**

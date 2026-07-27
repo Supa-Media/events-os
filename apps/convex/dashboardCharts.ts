@@ -688,8 +688,12 @@ const BUDGET_TXN_DRILLDOWN_CAP = 200;
  * for a given year (+ optional month) — powers a category→transactions
  * drill-down and a click-to-view/edit detail modal. Editing reuses the
  * EXISTING reconcile mutations (`finances.categorizeTransaction`,
- * `finances.setTransactionNote`, `finances.flagPersonal`, `finances.excludeTransaction`,
- * `finances.attachReceipt`, …) — this query adds no new write path.
+ * `finances.setTransactionNote`, `finances.excludeTransaction`,
+ * `finances.attachReceipt`, …) — this query adds no new write path. The
+ * personal-charge flag is a READ-ONLY display here (via
+ * `cards.flagPersonalCharge`/`unflagPersonalCharge` instead — see
+ * `TransactionDetailModal`'s own doc comment for why editing it doesn't
+ * belong in this compact modal).
  *
  * "Spend" is the SAME `isSpend` gate every budget/category total on this
  * dashboard already sums with (outflow, non-transfer, non-excluded,

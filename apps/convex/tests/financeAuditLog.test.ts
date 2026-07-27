@@ -51,12 +51,20 @@ async function grantRole(
   );
 }
 
-async function seedTxn(s: ChapterSetup, amountCents = 4200): Promise<Id<"transactions">> {
+async function seedTxn(
+  s: ChapterSetup,
+  amountCents = 4200,
+  personId?: Id<"people">,
+): Promise<Id<"transactions">> {
   return await s.as.mutation(api.finances.createManualTransaction, {
     flow: "outflow",
     amountCents,
     postedAt: Date.now(),
     merchantName: "Coffee Shop",
+    // Optional: `cards.flagPersonalCharge` needs a resolvable payee
+    // (`personId`, else a card's cardholder) — pass the caller's own
+    // `personId` in tests that flag this transaction personal.
+    personId,
   });
 }
 
@@ -344,22 +352,26 @@ describe("categorizeTransaction / setTransactionCategory — recode logs before 
   });
 });
 
-describe("flagPersonal / setTransactionNote / receipts — the rest of the reconcile trail", () => {
-  test("flagPersonal logs personal_flag only on a real change", async () => {
+describe("flagPersonalCharge / setTransactionNote / receipts — the rest of the reconcile trail", () => {
+  test("flagPersonalCharge / unflagPersonalCharge log personal_flag only on a real change", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const personId = await seedSelfPerson(s);
     await grantRole(s, personId, "bookkeeper");
-    const txnId = await seedTxn(s);
+    // `personId` set to the caller's own roster row so they're the resolved
+    // PAYEE — `flagPersonalCharge`'s OR-gate (payer or manager) is satisfied
+    // without needing a manager grant.
+    const txnId = await seedTxn(s, 4200, personId);
 
-    await s.as.mutation(api.finances.flagPersonal, { transactionId: txnId, isPersonal: true });
-    // Re-asserting the SAME value is a no-op — no second row.
-    await s.as.mutation(api.finances.flagPersonal, { transactionId: txnId, isPersonal: true });
-    await s.as.mutation(api.finances.flagPersonal, { transactionId: txnId, isPersonal: false });
+    await s.as.mutation(api.cards.flagPersonalCharge, { transactionId: txnId });
+    // Idempotent re-flag (already personal) — no second row.
+    await s.as.mutation(api.cards.flagPersonalCharge, { transactionId: txnId });
+    await s.as.mutation(api.cards.unflagPersonalCharge, { transactionId: txnId });
 
     const trail = await trailFor(s, "transaction", txnId);
     const flags = trail.filter((r) => r.action === "personal_flag");
     expect(flags).toHaveLength(2);
+    // `financeAuditTrail` reads newest-first — the LATER unflag is index 0.
     expect(flags[0].before).toBe("Personal");
     expect(flags[0].after).toBe("Not personal");
     expect(flags[1].before).toBe("Not personal");
@@ -640,7 +652,7 @@ describe("every row names an actor — the trail's integrity anchor", () => {
     await grantRole(s, personId, "bookkeeper");
     const fundId = await seedFund(s);
     const missions = await seedCategory(s, fundId, "Missions");
-    const txnId = await seedTxn(s);
+    const txnId = await seedTxn(s, 4200, personId);
 
     await s.as.mutation(api.finances.setTransactionNote, {
       transactionId: txnId,
@@ -650,7 +662,7 @@ describe("every row names an actor — the trail's integrity anchor", () => {
       transactionId: txnId,
       categoryId: missions,
     });
-    await s.as.mutation(api.finances.flagPersonal, { transactionId: txnId, isPersonal: true });
+    await s.as.mutation(api.cards.flagPersonalCharge, { transactionId: txnId });
     await s.as.mutation(api.finances.setTransactionStatus, {
       transactionId: txnId,
       status: "excluded",
@@ -673,7 +685,7 @@ describe("append-only — nothing patches or deletes a financeAuditLog row once 
     await grantRole(s, personId, "bookkeeper");
     const fundId = await seedFund(s);
     const missions = await seedCategory(s, fundId, "Missions");
-    const txnId = await seedTxn(s);
+    const txnId = await seedTxn(s, 4200, personId);
 
     await s.as.mutation(api.finances.setTransactionNote, {
       transactionId: txnId,
@@ -691,7 +703,7 @@ describe("append-only — nothing patches or deletes a financeAuditLog row once 
       transactionId: txnId,
       categoryId: missions,
     });
-    await s.as.mutation(api.finances.flagPersonal, { transactionId: txnId, isPersonal: true });
+    await s.as.mutation(api.cards.flagPersonalCharge, { transactionId: txnId });
     await s.as.mutation(api.finances.setTransactionStatus, {
       transactionId: txnId,
       status: "excluded",

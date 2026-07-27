@@ -474,7 +474,7 @@ function ReconcileGrid() {
               />
             ))}
             <InfoTooltip
-              text="Needs budget: categorized but no budget linked. Missing receipt: no receipt uploaded. Uncategorized: no category assigned. Ready: receipt + category + budget all present."
+              text="Needs budget: categorized but no budget linked. Missing receipt: no receipt uploaded. Uncategorized: no category assigned. Ready: receipt + category + budget all present. Personal (unpaid): flagged personal, not yet repaid."
               size={14}
             />
             {counts && counts.missing_receipt > 0 ? (
