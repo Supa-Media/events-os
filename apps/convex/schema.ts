@@ -131,6 +131,7 @@ import {
 } from "./schema/campaigns";
 import { serviceOptions } from "./schema/services";
 import { formSubmissions, formDefinitions } from "./schema/forms";
+import { identityDecisions } from "./schema/identity";
 
 /**
  * Database schema for Chapter OS.
@@ -483,6 +484,13 @@ const schema = defineSchema({
   // the internal import write path).
   formSubmissions,
   formDefinitions,
+
+  // Guest Identity review (Partiful name-only RSVP resolution) — the
+  // append-only decision ledger behind the human review queue's
+  // suppression/resurfacing logic. See schema/identity.ts's module doc +
+  // identity.ts (queries/mutations) + migrations/0049_link_rsvp_identifiers.ts
+  // (the automated auto-link half).
+  identityDecisions,
 });
 
 export default schema;
