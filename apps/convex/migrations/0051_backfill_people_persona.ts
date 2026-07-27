@@ -33,22 +33,44 @@ import { peopleByPersona, isCountedInAggregate } from "../lib/peopleAggregate";
  *
  * Idempotent: a row that already carries `persona` skips the recompute (the
  * cache-stamp half), and `insertIfDoesNotExist` makes the aggregate half safe
- * to repeat unconditionally. Batched via `.paginate()`, mirroring
- * `0038_backfill_contact_only_people`'s shape.
+ * to repeat unconditionally. Walks per chapter with indexed `.take()` — NOT
+ * a looped `.paginate()`; see the note on the function below.
  *
  * Run locally:   npx convex run migrations:runPending
  * Run on prod:   npx convex run --prod migrations:runPending
  */
-const PAGE_SIZE = 500;
+/** Bound generous relative to a real chapter's roster. Matches
+ *  `people.ts#repairPersonaAggregate`'s own scan bound — the same walk, proven
+ *  against production. */
+const ROSTER_SCAN_LIMIT = 20000;
+const CHAPTER_SCAN_LIMIT = 1000;
 
+/**
+ * WALKS BY CHAPTER WITH `.take()`, NOT `.paginate()` IN A LOOP.
+ *
+ * The first version of this migration looped `ctx.db.query("people")
+ * .paginate(...)` (copying `0038_backfill_contact_only_people`'s shape) and
+ * CRASHED the production deploy: "This query or mutation function ran multiple
+ * paginated queries. Convex only supports a single paginated query in each
+ * function." 0038 gets away with the same shape only because its dataset fits
+ * in one page, so its loop never makes a second `paginate` call — that is
+ * luck, not a pattern to copy.
+ *
+ * Indexed `.take()` per chapter has no such limit and is the same walk
+ * `people.ts#repairPersonaAggregate` uses, which ran cleanly against
+ * production (4 chapters / 473 people) while this was being fixed.
+ */
 export async function runBackfillPeoplePersona(ctx: MutationCtx) {
   const result = { personaStamped: 0, aggregateInserted: 0 };
-  let cursor: string | null = null;
+  const chapters = await ctx.db.query("chapters").take(CHAPTER_SCAN_LIMIT);
 
-  for (;;) {
-    const page = await ctx.db.query("people").paginate({ numItems: PAGE_SIZE, cursor });
+  for (const chapter of chapters) {
+    const roster = await ctx.db
+      .query("people")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapter._id))
+      .take(ROSTER_SCAN_LIMIT);
 
-    for (const person of page.page) {
+    for (const person of roster) {
       let current = person;
       if (current.persona == null) {
         const resolved = await resolvePersonaForPage(ctx, [current]);
@@ -62,9 +84,6 @@ export async function runBackfillPeoplePersona(ctx: MutationCtx) {
         result.aggregateInserted++;
       }
     }
-
-    if (page.isDone) break;
-    cursor = page.continueCursor;
   }
 
   return result;
