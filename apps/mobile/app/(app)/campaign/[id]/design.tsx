@@ -39,6 +39,7 @@ import {
   ToastView,
 } from "../../../../components/ui";
 import { colors } from "../../../../lib/theme";
+import { errorMessage } from "../../../../lib/errors";
 import { useActionRunner } from "../../../../lib/useActionToast";
 import {
   canRedo,
@@ -118,7 +119,8 @@ function CampaignDesignBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
 
   const [history, setHistory] = useState<History<EmailDocument> | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
+  const [saveState, setSaveState] = useState<SaveState>("idle");
+  const [saveError, setSaveError] = useState<string | null>(null);
   const lastSavedRef = useRef<EmailDocument | null>(null);
   // A "latest" ref for `history` — the debounce timer's closure (and the
   // save-completion callback below) is captured at EFFECT-SETUP time, so
@@ -157,15 +159,29 @@ function CampaignDesignBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
   const saveDoc = useCallback(
     (toSave: EmailDocument) => {
       setSaveState("saving");
-      void updateDoc({ campaignId, doc: toSave }).then(() => {
-        lastSavedRef.current = toSave;
-        const latest = historyRef.current?.present;
-        if (latest !== undefined && latest !== toSave) {
-          saveDoc(latest);
-          return;
-        }
-        setSaveState("saved");
-      });
+      void updateDoc({ campaignId, doc: toSave })
+        .then(() => {
+          lastSavedRef.current = toSave;
+          setSaveError(null);
+          const latest = historyRef.current?.present;
+          if (latest !== undefined && latest !== toSave) {
+            saveDoc(latest);
+            return;
+          }
+          setSaveState("saved");
+        })
+        // A REJECTION here used to be swallowed by a bare `void …then(…)`,
+        // leaving the indicator stuck on "Saving…" forever with no clue why.
+        // That mattered little when every block was valid the moment it was
+        // added; with the composed blocks it's routinely reachable — a card
+        // with a button label and not yet a link is `INVALID_DOC` until the
+        // pair completes — so the reason is now shown, in the validator's own
+        // words. `lastSavedRef` is deliberately NOT advanced, so the next
+        // edit retries and a transient invalid state heals itself.
+        .catch((err: unknown) => {
+          setSaveError(errorMessage(err));
+          setSaveState("error");
+        });
     },
     [updateDoc, campaignId],
   );
@@ -317,7 +333,7 @@ function CampaignDesignBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
             disabled={!editable || !canRedo(history)}
           />
         </View>
-        <SaveIndicator editable={editable} saveState={saveState} />
+        <SaveIndicator editable={editable} saveState={saveState} error={saveError} />
       </View>
 
       {!editable ? (
@@ -420,12 +436,19 @@ function CampaignDesignBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
   );
 }
 
+/** Autosave states. `error` exists so a rejected save is VISIBLE — see
+ *  `saveDoc`'s catch for why that's now a routine state rather than a
+ *  never-happens one. */
+type SaveState = "idle" | "saving" | "saved" | "error";
+
 function SaveIndicator({
   editable,
   saveState,
+  error,
 }: {
   editable: boolean;
-  saveState: "idle" | "saving" | "saved";
+  saveState: SaveState;
+  error: string | null;
 }) {
   if (!editable) return null;
   if (saveState === "saving") {
@@ -433,6 +456,13 @@ function SaveIndicator({
   }
   if (saveState === "saved") {
     return <Text className="text-xs text-success">Saved</Text>;
+  }
+  if (saveState === "error") {
+    return (
+      <Text className="max-w-[320px] text-right text-xs text-danger" numberOfLines={3}>
+        Not saved — {error ?? "something went wrong."}
+      </Text>
+    );
   }
   return null;
 }
