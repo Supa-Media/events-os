@@ -1,12 +1,16 @@
 /**
  * Stable per-question keys — how a quiz submission survives a content change.
  *
- * The Academy curriculum ships in TWO independently-deployed places: the
- * Convex backend (deployed the moment a PR merges) and the mobile app bundle
- * (whatever build/OTA the learner happens to be running). So the reader's quiz
- * and the grader's quiz are the same source file but not always the same
- * VERSION — add a question and every already-installed app is one question
- * behind until an OTA lands.
+ * The Academy curriculum ships in TWO places that go live independently: the
+ * Convex backend (deployed the moment a PR merges) and the JS bundle actually
+ * EXECUTING on the learner's device. Those are not the same thing as the two
+ * deploy workflows, which run within minutes of each other — publishing an OTA
+ * is not the same as running one. expo-updates downloads in the background and
+ * applies on a later launch, so a device keeps executing the bundle it already
+ * had until it cold-starts again; a phone that just sits in someone's pocket,
+ * or a web tab left open, can be days behind a green deploy. So the reader's
+ * quiz and the grader's quiz are the same source file but routinely not the
+ * same VERSION.
  *
  * A submission that identifies its questions only by position can't survive
  * that: the grader has no way to tell "answer #3 of the old five" from

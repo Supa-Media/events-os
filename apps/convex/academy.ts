@@ -700,13 +700,12 @@ export const markRead = mutation({
  * index — the quizzes teach, they don't gatekeep). Quizzes unlock sequentially:
  * a section's quiz opens once the previous section's quiz is passed.
  *
- * Grades what the READER SAW, not what this deploy happens to hold. The
- * curriculum ships in two independently-deployed places — this backend (live
- * the instant a PR merges) and the app bundle (whatever build/OTA the learner
- * is on) — so a quiz edit puts every installed app one question behind until
- * an OTA lands. Demanding an exactly-length-matched answer vector turned that
- * skew into a hard wall: an unfixable "Expected 5 answers, got 4" on the only
- * screen that advances the course. See `quizQuestionKey`.
+ * Grades what the READER SAW, not what this deploy happens to hold. This
+ * backend goes live the instant a PR merges; the learner's device keeps
+ * running whatever JS bundle it last APPLIED, which can trail the published
+ * one indefinitely (see `quizQuestionKey`). Demanding an exactly-length-
+ * matched answer vector turned that skew into a hard wall: an unfixable
+ * "Expected 5 answers, got 4" on the only screen that advances the course.
  */
 export const submitQuiz = mutation({
   args: {
