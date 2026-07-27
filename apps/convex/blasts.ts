@@ -14,6 +14,7 @@
  * verification gate), de-duped by normalized phone. Email-less phone-only
  * imported guests — unreachable by email — ARE reached by SMS.
  */
+import { escapeHtml } from "./lib/html";
 import {
   internalAction,
   internalMutation,
@@ -326,10 +327,17 @@ async function deliverEmailBlast(
 ): Promise<{ recipientCount: number; sentCount: number; error?: string }> {
   const { blast, emails, eventName, slug, hostName } = payload;
   const subject = blast.subject || `An update on ${eventName}`;
+  // ESCAPE FIRST, then substitute <br/>. `lib/emailShell.ts`'s helpers all
+  // take already-escaped HTML (they interpolate raw), and every one of these
+  // four values is author- or organiser-supplied: `blast.body` and
+  // `blast.subject` are typed into the composer, `hostName`/`eventName` come
+  // from records anyone with event access can edit. The line-break markup is
+  // deliberate, so it has to be added AFTER escaping or it would be escaped
+  // too.
   const paragraphs = blast.body
     .split(/\n{2,}/)
     .map((p) =>
-      emailParagraph(p.replace(/\n/g, "<br/>"), {
+      emailParagraph(escapeHtml(p).replace(/\n/g, "<br/>"), {
         size: 15,
         margin: "0 0 14px",
         strong: true,
@@ -337,8 +345,8 @@ async function deliverEmailBlast(
     )
     .join("");
   const html = emailShell(`
-      ${emailEyebrow(`${hostName} · ${eventName}`, { margin: "0 0 8px" })}
-      ${emailHeading(subject, { margin: "0 0 16px" })}
+      ${emailEyebrow(`${escapeHtml(hostName)} · ${escapeHtml(eventName)}`, { margin: "0 0 8px" })}
+      ${emailHeading(escapeHtml(subject), { margin: "0 0 16px" })}
       ${paragraphs}
       ${slug ? `<div style="margin-top:6px">${emailButton(rsvpPageUrl(slug), "View event")}</div>` : ""}`);
 
