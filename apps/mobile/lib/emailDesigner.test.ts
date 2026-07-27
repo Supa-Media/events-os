@@ -381,13 +381,12 @@ describe("ctaPairProblem", () => {
 });
 
 describe("pollHasBlankLabel", () => {
+  function optionsFor(labels: string[]): EmailPollOption[] {
+    return labels.map((label, i) => ({ id: `o${i}`, label }));
+  }
+
   function poll(labels: string[]): EmailBlock {
-    return {
-      id: "p1",
-      kind: "poll",
-      question: "What next?",
-      options: labels.map((label, i) => ({ id: `o${i}`, label })),
-    };
+    return { id: "p1", kind: "poll", question: "What next?", options: optionsFor(labels) };
   }
 
   test("warns on exactly the option lists the write gate rejects", () => {
@@ -400,7 +399,7 @@ describe("pollHasBlankLabel", () => {
     ];
     for (const labels of CASES) {
       const key = JSON.stringify(labels);
-      expect([key, !pollHasBlankLabel(poll(labels).kind === "poll" ? labels.map((label, i) => ({ id: `o${i}`, label })) : [])]).toEqual([
+      expect([key, !pollHasBlankLabel(optionsFor(labels))]).toEqual([
         key,
         gateAccepts(poll(labels)),
       ]);
@@ -410,12 +409,12 @@ describe("pollHasBlankLabel", () => {
   test("a whitespace-only label does NOT warn — the gate saves it", () => {
     // The regression: the form trimmed, the gate doesn't. Warning here told
     // the designer her campaign couldn't be saved when it saved fine.
-    expect(pollHasBlankLabel([{ id: "o1", label: " " }])).toBe(false);
+    expect(pollHasBlankLabel(optionsFor([" "]))).toBe(false);
     expect(gateAccepts(poll([" ", "No"]))).toBe(true);
   });
 
   test("a genuinely empty label warns", () => {
-    expect(pollHasBlankLabel([{ id: "o1", label: "" }])).toBe(true);
+    expect(pollHasBlankLabel(optionsFor([""]))).toBe(true);
   });
 });
 

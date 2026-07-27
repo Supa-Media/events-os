@@ -17,6 +17,7 @@ import {
   darkFromLight,
   fontOptionsFor,
   forceDarkEmailPreview,
+  hexFromDraft,
   suggestedSwatches,
   themeSampleDocument,
 } from "./emailThemeEditor";
@@ -176,6 +177,57 @@ describe("forceDarkEmailPreview", () => {
       const light = render(preset);
       const forcedDark = forceDarkEmailPreview(light, resolveDarkTheme(preset).canvas);
       expect([preset.name, forcedDark === light]).toEqual([preset.name, false]);
+    }
+  });
+});
+
+describe("hexFromDraft", () => {
+  test("commits a complete colour, with or without the leading #", () => {
+    expect(hexFromDraft("#891d1a")).toBe("#891d1a");
+    expect(hexFromDraft("891d1a")).toBe("#891d1a");
+    expect(hexFromDraft("  #891D1A  ")).toBe("#891D1A");
+    expect(hexFromDraft("#fff")).toBe("#fff");
+  });
+
+  test("holds a half-typed draft back", () => {
+    for (const draft of ["", "#", "#8", "#89", "#891d", "#891d1", "8", "89"]) {
+      expect([draft, hexFromDraft(draft)]).toEqual([draft, null]);
+    }
+  });
+
+  test("never commits a PREFIX of the colour being typed", () => {
+    // The regression: `891d1a` typed one character at a time passed through
+    // `891`, and `isHexColor("#891")` is true — so the field committed #891,
+    // a different colour, and rewrote itself to it under the caret. If the
+    // designer looked away there, #891 is what the theme saved.
+    const target = "891d1a";
+    const committed: string[] = [];
+    for (let i = 1; i <= target.length; i++) {
+      const hex = hexFromDraft(target.slice(0, i));
+      if (hex !== null) committed.push(hex);
+    }
+    expect(committed).toEqual(["#891d1a"]);
+  });
+
+  test("an explicitly typed 3-digit hex is still a complete colour", () => {
+    // Shorthand exists to be used; only the hash-LESS 3-character form is
+    // ambiguous with a half-typed 6.
+    expect(hexFromDraft("#abc")).toBe("#abc");
+    expect(hexFromDraft("abc")).toBeNull();
+  });
+
+  test("rejects anything that isn't hex at all", () => {
+    for (const draft of ["rgb(1,2,3)", "#89 1d1a", "#891d1a1", "zzzzzz", "#gggggg"]) {
+      expect([draft, hexFromDraft(draft)]).toEqual([draft, null]);
+    }
+  });
+
+  test("every value the swatch rows offer round-trips unchanged", () => {
+    // A suggestion the field would then call incomplete would be absurd.
+    for (const token of COLOR_TOKENS) {
+      for (const hex of suggestedSwatches(token.key)) {
+        expect([hex, hexFromDraft(hex)]).toEqual([hex, hex]);
+      }
     }
   });
 });

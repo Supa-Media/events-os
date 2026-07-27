@@ -65,6 +65,10 @@ export const CONVEX_PREFIXES = [
   "/resend/",
   "/twilio/",
   "/unsubscribe/",
+  // Inline campaign polls (`apps/convex/http.ts`'s `/poll/` GET + POST). Same
+  // shape as `/unsubscribe/`: a link inside a sent email, resolved per
+  // recipient, so it must reach Convex rather than the static site.
+  "/poll/",
 ] as const;
 
 function isConvexPath(pathname: string): boolean {
