@@ -209,7 +209,15 @@ export const people = defineTable({
   // Resolve an inbound email's sender address to a roster person (the receipt-
   // ingest pipeline's auth gate — see `receiptInbox.resolvePersonByEmail`).
   // Normalized (lowercased/trimmed) addresses are written by `people.update`.
-  .index("by_email", ["email"]);
+  .index("by_email", ["email"])
+  // People-CRM overhaul (2026-07-27) — server-side sort for `people.ts#listPaginated`.
+  // One compound index per sortable column so `.paginate()` walks rows
+  // already in the requested order (never a client/JS sort over a full
+  // roster read). `name`/`lastName`/`status` are all optional fields;
+  // Convex orders a missing value before any defined one in ascending scans.
+  .index("by_chapter_and_name", ["chapterId", "name"])
+  .index("by_chapter_and_lastName", ["chapterId", "lastName"])
+  .index("by_chapter_and_status", ["chapterId", "status"]);
 
 /**
  * Person field AUDIT (owner feedback #4) — a lightweight, additive breadcrumb

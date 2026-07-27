@@ -558,3 +558,70 @@ export async function resolvePersonaForRoster(
   }
   return personas;
 }
+
+// ── Persona resolution for ONE PAGE (People-CRM overhaul, 2026-07-27) ──────
+//
+// `resolvePersonaForRoster` above is deliberately whole-chapter: three
+// bounded scans ONCE, then an in-memory loop — the right shape for a caller
+// that already has (or needs) the full roster in hand (`lib/org.ts`'s
+// management-reach primitives, `people.counts` below). It is the WRONG shape
+// for `people.ts#listPaginated`'s grid page: calling it per page would still
+// pay for those three chapter-wide scans on every single page fetch,
+// regardless of how few rows are actually on the page — exactly the "reads
+// across engagements/roleAssignments/rsvps for the WHOLE roster" cost the
+// People tab overhaul set out to remove.
+//
+// This is the per-page-scoped alternative: for each person ON THE PAGE, do a
+// small, INDEXED, bounded `by_person` read against each participation table —
+// cost scales with the page size (typically a few dozen rows), never with the
+// chapter's total participation history.
+const PERSONA_PAGE_ENGAGEMENTS_LIMIT = 200;
+const PERSONA_PAGE_ROLE_ASSIGNMENTS_LIMIT = 1; // existence only — any row counts
+const PERSONA_PAGE_RSVPS_LIMIT = 50;
+
+/**
+ * Batch-resolve the full persona ladder for ONE PAGE of people (never the
+ * whole roster — see the doc above). Same classifier
+ * (`personaFromSignals`/`@events-os/shared#Persona`) and the same signals as
+ * `resolvePersonaForRoster`, just read per-person via each table's `by_person`
+ * index instead of three chapter-wide scans.
+ */
+export async function resolvePersonaForPage(
+  ctx: QueryCtx,
+  page: Doc<"people">[],
+): Promise<Map<Id<"people">, Persona>> {
+  const personas = new Map<Id<"people">, Persona>();
+  await Promise.all(
+    page.map(async (p) => {
+      const [engagements, roleAssignments, rsvps] = await Promise.all([
+        p.isVolunteer === true
+          ? Promise.resolve([]) // already have the signal — skip the read
+          : ctx.db
+              .query("engagements")
+              .withIndex("by_person", (q) => q.eq("personId", p._id))
+              .take(PERSONA_PAGE_ENGAGEMENTS_LIMIT),
+        ctx.db
+          .query("roleAssignments")
+          .withIndex("by_person", (q) => q.eq("personId", p._id))
+          .take(PERSONA_PAGE_ROLE_ASSIGNMENTS_LIMIT),
+        ctx.db
+          .query("rsvps")
+          .withIndex("by_person", (q) => q.eq("personId", p._id))
+          .take(PERSONA_PAGE_RSVPS_LIMIT),
+      ]);
+      personas.set(
+        p._id,
+        personaFromSignals({
+          isTeamMember: p.isTeamMember,
+          usualRateUsd: p.usualRateUsd,
+          hasVolunteerSignal:
+            p.isVolunteer === true ||
+            engagements.some((e) => e.type === "volunteer") ||
+            roleAssignments.length > 0,
+          hasAttendanceSignal: rsvps.some((r) => r.archivedAt == null),
+        }),
+      );
+    }),
+  );
+  return personas;
+}

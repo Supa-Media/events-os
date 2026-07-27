@@ -322,3 +322,35 @@ export async function resolveServiceLabels(
   }
   return labels;
 }
+
+/** Bound on the `by_parent` scan `expandServiceIdsWithChildren` runs per
+ *  selected id — mirrors `lib/audienceTargeting.ts#SERVICE_CHILDREN_LIMIT`
+ *  (same table, same one-level-of-nesting reasoning). */
+const SERVICE_FILTER_CHILDREN_LIMIT = 500;
+
+/**
+ * People-CRM overhaul (2026-07-27) — the People grid's "Services" filter is
+ * multi-select with OR semantics: picking a PARENT must match everyone
+ * tagged with it OR any of its children, exactly like a `has_service`
+ * audience condition (`lib/audienceTargeting.ts#buildServiceIndex`) — the
+ * grid and targeting must never disagree about what selecting a service
+ * means. Expands the caller's selected ids into the UNION of every id that
+ * should count as a match (each id, plus its direct children, if any — one
+ * level of nesting only, mirrors `schema/services.ts`), so a person matches
+ * the filter iff `person.serviceIds` intersects this set.
+ */
+export async function expandServiceIdsWithChildren(
+  ctx: QueryCtx,
+  serviceIds: Id<"serviceOptions">[],
+): Promise<Set<Id<"serviceOptions">>> {
+  const out = new Set<Id<"serviceOptions">>();
+  for (const id of serviceIds) {
+    out.add(id);
+    const children = await ctx.db
+      .query("serviceOptions")
+      .withIndex("by_parent", (q) => q.eq("parentId", id))
+      .take(SERVICE_FILTER_CHILDREN_LIMIT);
+    for (const c of children) out.add(c._id);
+  }
+  return out;
+}

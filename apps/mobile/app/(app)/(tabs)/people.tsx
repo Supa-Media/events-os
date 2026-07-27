@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   View,
   Text,
@@ -8,16 +8,16 @@ import {
   ScrollView,
   Linking,
   Platform,
+  TextInput,
 } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useQuery, useMutation } from "convex/react";
+import { useQuery, useMutation, usePaginatedQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import {
   Screen,
   Narrow,
   FULL_WIDTH,
   Badge,
-  Pill,
   TextField,
   EmptyState,
   Avatar,
@@ -25,6 +25,7 @@ import {
   OptionTag,
   InlineText,
   GridHeaderCell,
+  SortableHeaderCell,
   SelectCell,
   type SelectOption,
   PersonPicker,
@@ -34,7 +35,7 @@ import {
 import { colors, spacing } from "../../../lib/theme";
 import { formatDate, parseList } from "../../../lib/format";
 import { alertError } from "../../../lib/errors";
-import { buildServiceLabelMap, buildServiceMatchSetMap } from "../../../lib/serviceCatalog";
+import { buildServiceLabelMap } from "../../../lib/serviceCatalog";
 import type { Doc, Id } from "@events-os/convex/_generated/dataModel";
 import {
   type VettingStatus,
@@ -46,6 +47,15 @@ import { DutyRows } from "../../../components/work/DutyRows";
 import { AddResponsibilityModal } from "../../../components/team/AddResponsibilityModal";
 import { CourseBadgeChips } from "../../../components/academy/CourseBadgeChips";
 import { DuplicatesSheet } from "../../../components/people/DuplicatesSheet";
+import {
+  PersonaDropdown,
+  PersonaCountsRow,
+  ServicesDropdown,
+  MoreFiltersDropdown,
+  ActiveFilterPills,
+  type PersonaFilter,
+  type ActiveFilterChip,
+} from "../../../components/people/PeopleFilters";
 
 // Vetting select options (gray / amber / green) — fed to the shared SelectCell.
 const VETTING_OPTIONS: SelectOption<VettingStatus>[] = [
@@ -63,6 +73,12 @@ const STATUS_OPTIONS: SelectOption<RosterStatus>[] = [
   { value: "transitioning_out", label: "Transitioning out", color: "gray" },
   { value: "unavailable", label: "Unavailable", color: "amber" },
 ];
+/** Plain label lookup for `STATUS_OPTIONS` — the "More" filter dropdown and
+ *  its active-filter pill need just the string, not the full select-option
+ *  shape (color/value) the row editor cell uses. */
+const STATUS_LABEL: Record<RosterStatus, string> = Object.fromEntries(
+  STATUS_OPTIONS.map((o) => [o.value, o.label]),
+) as Record<RosterStatus, string>;
 
 // Guest history (People-CRM UX) status badge — mirrors `RSVP_STATUSES`
 // (`schema/ticketing.ts`).
@@ -106,23 +122,6 @@ type GiverMark = {
   isBacker: boolean;
 };
 
-// The segmented filter adds an "all" sentinel on top of the shared Persona
-// ladder (`@events-os/shared#Persona`: team > vendor > volunteer > guest >
-// contact). `people.list` now ALWAYS returns everyone — "Contacts" used to
-// be a separate UI-local view backed by a second `contactsOnly: true` query;
-// it's now just the "contact" persona, filtered from the SAME single list
-// everything else here reads from.
-type PersonaFilter = Persona | "all";
-
-const PERSONA_FILTERS: { key: PersonaFilter; label: string }[] = [
-  { key: "all", label: "All" },
-  { key: "team", label: "Team" },
-  { key: "volunteer", label: "Volunteers" },
-  { key: "vendor", label: "Vendors" },
-  { key: "guest", label: "Guests" },
-  { key: "contact", label: "Contacts" },
-];
-
 // Fixed column widths (px) — mirrors EditableGrid's chrome so columns stay put
 // while the table scrolls horizontally on web.
 const COLS = {
@@ -165,23 +164,15 @@ const TABLE_WIDTH =
  *  backend enforces). */
 const EMAIL_SELECTED_CAP = 200;
 
-/** Digits only — for a loose, punctuation-insensitive phone match ("(212)
- *  555-1234" matches a search of "2125551234" or vice versa). */
-function digitsOnly(s: string): string {
-  return s.replace(/\D/g, "");
-}
+/** Search debounce (owner addendum precedent —
+ *  `components/finance/reconcile/ReconcileList.tsx#SEARCH_DEBOUNCE_MS`): a
+ *  round trip per keystroke is wasteful now that search is server-side. */
+const SEARCH_DEBOUNCE_MS = 200;
 
-/** People-CRM UX search upgrade: a case-insensitive substring match against
- *  name, email, pwEmail, OR phone (phone compared digits-only so punctuation/
- *  formatting never blocks a match). `query` is already trimmed+lowercased;
- *  `queryDigits` is precomputed once per search string, not per row. */
-function personMatchesSearch(p: Person, query: string, queryDigits: string): boolean {
-  if (p.name.toLowerCase().includes(query)) return true;
-  if (p.email && p.email.toLowerCase().includes(query)) return true;
-  if (p.pwEmail && p.pwEmail.toLowerCase().includes(query)) return true;
-  if (queryDigits && p.phone && digitsOnly(p.phone).includes(queryDigits)) return true;
-  return false;
-}
+/** How many rows `usePaginatedQuery` loads per page — big enough that most
+ *  chapters never see a "Load more" tap, small enough that a heavily
+ *  filtered/searched page still resolves in one indexed round trip. */
+const PAGE_SIZE = 50;
 
 /** Confirm a destructive action — window.confirm on web, no prompt on native. */
 function confirmRemove(name: string): boolean {
@@ -193,44 +184,76 @@ function confirmRemove(name: string): boolean {
 
 /** PEOPLE roster — a spreadsheet-style editable grid with per-person history. */
 export default function PeopleScreen() {
-  // ONE query for everyone — the People tab is one of the few callers that
-  // explicitly opts INTO `persona: "all"`; `people.list`'s UNFILTERED
-  // default is deliberately the roster only (see that query's doc — most of
-  // its ~11 callers are pickers/mentions/duty-assignment that want exactly
-  // that conservative default). Every persona (including "contact") is then
-  // a client-side filter over this one list, using the `persona` field the
-  // backend already derived per row. This is also what fixes the header
-  // count (see below): there's only one list, so it can never disagree with
-  // itself.
-  const roster = useQuery(api.people.list, {
-    persona: "all",
-  }) as Person[] | undefined;
   const org = useQuery(api.org.nav);
   const create = useMutation(api.people.create);
   // The Title column mirrors org-chart seat titles (the current model) —
   // `people.role` is only the fallback shown when someone holds no seat.
   const seatHoldings = useQuery(api.responsibilities.chapterSeatHoldings);
 
+  // ── Filter/sort state — every one of these is now a `listPaginated` ARG,
+  // not a client-side filter. Search is debounced (below) so a keystroke
+  // doesn't fire a fresh server round trip. ─────────────────────────────────
   const [search, setSearch] = useState("");
-  const [skillFilter, setSkillFilter] = useState<Id<"serviceOptions"> | null>(null);
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedSearch(search), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [search]);
+  const [serviceIds, setServiceIds] = useState<Id<"serviceOptions">[]>([]);
   // Default to the core Team — the common case (a lead manages their team, not
   // the full roster of volunteers/vendors). "All" is one tap away.
   const [persona, setPersona] = useState<PersonaFilter>("team");
-  // Givers overlay toggle — independent of the persona segments (a Team member
-  // can also be a giver), so it composes with whichever persona is selected.
+  const [status, setStatus] = useState<RosterStatus | null>(null);
+  // Givers overlay toggle — independent of persona (a Team member can also be
+  // a giver), so it composes with whichever persona is selected.
   const [giversOnly, setGiversOnly] = useState(false);
+  const [sortBy, setSortBy] = useState<"name" | "lastName" | "status">("name");
+  const [sortDir, setSortDir] = useState<"asc" | "desc">("asc");
 
-  // The grid's data source is now just the one list — every persona
-  // (including "Contacts") is a filter over it, applied below in `filtered`.
-  const people = roster;
+  function toggleSort(column: "name" | "lastName" | "status") {
+    if (sortBy === column) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortBy(column);
+      setSortDir("asc");
+    }
+  }
+
+  // The People tab's grid data — server-side search/filter/sort, paginated
+  // (People-CRM overhaul, 2026-07-27). Replaces the old
+  // `people.list({persona:"all"})` full-roster load.
+  const {
+    results,
+    status: pageStatus,
+    isLoading: pageLoading,
+    loadMore,
+  } = usePaginatedQuery(
+    api.people.listPaginated,
+    {
+      search: debouncedSearch.trim() || undefined,
+      persona: persona === "all" ? undefined : persona,
+      serviceIds: serviceIds.length > 0 ? serviceIds : undefined,
+      status: status ?? undefined,
+      giversOnly: giversOnly || undefined,
+      sortBy,
+      sortDir,
+    },
+    { initialNumItems: PAGE_SIZE },
+  );
+  const people = results as Person[];
+
+  // Persona-ladder counts (All / Team / Volunteers / Vendors / Guests /
+  // Contacts) — a dedicated cheap query (`people.counts`), never derived from
+  // `people` above (which is only ever ONE PAGE now).
+  const personaCounts = useQuery(api.people.counts, {});
 
   // Givers overlay (territories P5). Every roster row shares one `chapterId`
-  // (the roster query is already hard-scoped to the caller's own chapter), so
-  // the first row's is the current chapter — skip the query until the roster
-  // has loaded at least one row. Returns `[]` for a caller with no giving
-  // access at this chapter (quiet degrade, never a throw — see
-  // `givingPlatform.giverMarks`), so the overlay simply doesn't render below.
-  const chapterId = roster && roster.length > 0 ? roster[0].chapterId : undefined;
+  // (the query is already hard-scoped to the caller's own chapter), so the
+  // first loaded row's is the current chapter — skip until at least one row
+  // has loaded. Returns `[]` for a caller with no giving access at this
+  // chapter (quiet degrade, never a throw — see `givingPlatform.giverMarks`),
+  // so the overlay simply doesn't render below.
+  const chapterId = people.length > 0 ? people[0].chapterId : undefined;
   const giverMarks = useQuery(
     api.givingPlatform.giverMarks,
     chapterId ? { chapterId } : "skip",
@@ -254,6 +277,17 @@ export default function PeopleScreen() {
   // Admin-only duplicate review + merge (Attendance C).
   const [dupOpen, setDupOpen] = useState(false);
 
+  // The deep-linked person may not be on the currently loaded page (or on
+  // ANY loaded page — pagination no longer holds the whole roster). Falls
+  // back to a direct, bounded single-person lookup (`people.get`, "skip"ped
+  // once the id is already found on the page) rather than growing the page
+  // size to guarantee it's present.
+  const openPersonOnPage = openId ? people.find((p) => p._id === openId) ?? null : null;
+  const openPersonFallback = useQuery(
+    api.people.get,
+    openId && !openPersonOnPage ? { personId: openId as Id<"people"> } : "skip",
+  );
+
   // People-CRM UX: multi-select + "Email selected" bridge to a new audience
   // draft. Local state only — nothing persists server-side, mirrors every
   // other grid's own local-only sort/filter state. `myCampaignsAccess` is
@@ -264,10 +298,14 @@ export default function PeopleScreen() {
   const campaignsAccess = useQuery(api.audiences.myCampaignsAccess, {});
   const canEmailSelected = campaignsAccess?.canView === true;
 
-  // Manager names by id — one map instead of a per-row roster scan.
+  // Manager names by id — a lightweight `{_id, name}` PROJECTION over the
+  // whole chapter (`people.namesByChapter`), not the paginated `people`
+  // array: a person's manager may live on a page that isn't currently
+  // loaded, so resolving their name can't depend on what's on screen.
+  const allNames = useQuery(api.people.namesByChapter, {});
   const nameById = useMemo(
-    () => new Map((roster ?? []).map((p) => [p._id, p.name])),
-    [roster],
+    () => new Map((allNames ?? []).map((p) => [p._id, p.name])),
+    [allNames],
   );
 
   // Seat titles held, by person — the Title column's read-only mirror.
@@ -279,86 +317,22 @@ export default function PeopleScreen() {
     return map;
   }, [seatHoldings]);
 
-  // Per-persona counts for the segmented control, so the filtering model is
-  // legible at a glance (Team 12 · Volunteers 30 · Vendors 5 · Guests 20 ·
-  // Contacts 111) rather than a blind default. "all" is EVERYONE — the fix
-  // for the bug where this header/count used to reflect whichever of two
-  // separate queries (roster vs. contactsOnly) happened to be active, which
-  // is exactly what showed 164 instead of ~275. One list, one set of counts,
-  // read straight off the backend-derived `persona` field — never
-  // re-derived client-side (see `Person`'s doc above).
-  const personaCounts = useMemo(() => {
-    const counts: Record<PersonaFilter, number> = {
-      all: (roster ?? []).length,
-      team: 0,
-      volunteer: 0,
-      vendor: 0,
-      guest: 0,
-      contact: 0,
-    };
-    for (const p of roster ?? []) {
-      if (p.persona) counts[p.persona] += 1;
-    }
-    return counts;
-  }, [roster]);
-
-  // Service Catalog, for the filter bar — chips must show the SAME
-  // "Parent:Child" label the picker uses (`ServiceOptionsPicker`/
-  // `SkillsCell`), so the two surfaces never disagree on what a service is
-  // called.
+  // Service Catalog labels, for the active-filter pills — the SAME
+  // "Parent:Child" label `ServicesDropdown`/`SkillsCell` show, so every
+  // surface agrees on what a service is called.
   const serviceCatalog = useQuery(api.serviceOptions.list, { includeInactive: true });
   const serviceLabelById = useMemo(
     () =>
       serviceCatalog ? buildServiceLabelMap(serviceCatalog) : new Map<Id<"serviceOptions">, string>(),
     [serviceCatalog],
   );
-  // A PARENT chip's match set is itself + every child — mirrors the
-  // backend's `has_service` subtree rollup (`lib/audienceTargeting.ts`) so
-  // this filter never disagrees with what targeting a service actually
-  // means.
-  const serviceMatchSetById = useMemo(
-    () =>
-      serviceCatalog
-        ? buildServiceMatchSetMap(serviceCatalog)
-        : new Map<Id<"serviceOptions">, Set<Id<"serviceOptions">>>(),
-    [serviceCatalog],
-  );
 
-  // Distinct services across the roster, for the filter bar. Roster-only —
-  // contact rows never carry `serviceIds`.
-  const allSkills = useMemo(() => {
-    const seen = new Set<Id<"serviceOptions">>();
-    for (const p of roster ?? []) {
-      for (const sid of p.serviceIds ?? []) seen.add(sid);
-    }
-    return Array.from(seen)
-      .map((id) => ({ id, label: serviceLabelById.get(id) ?? "…" }))
-      .sort((a, b) => a.label.localeCompare(b.label));
-  }, [roster, serviceLabelById]);
-
-  // Memoized so a re-render (e.g. typing in another field) doesn't re-scan the
-  // whole roster — only persona / skill / search changes recompute the rows.
-  // Persona is filtered against the backend-derived `p.persona`, the same
-  // field `personaCounts` reads — one source of truth for both.
-  const filtered = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    const queryDigits = digitsOnly(query);
-    return (people ?? []).filter((p) => {
-      if (persona !== "all" && p.persona !== persona) return false;
-      if (giversOnly && !giverMarksByPerson.has(p._id)) return false;
-      if (skillFilter) {
-        const matchSet = serviceMatchSetById.get(skillFilter) ?? new Set([skillFilter]);
-        if (!(p.serviceIds ?? []).some((sid) => matchSet.has(sid))) return false;
-      }
-      if (query && !personMatchesSearch(p, query, queryDigits)) return false;
-      return true;
-    });
-  }, [people, persona, giversOnly, giverMarksByPerson, skillFilter, serviceMatchSetById, search]);
-
-  // People-CRM UX selection: "select all visible" respects whatever's
-  // currently filtered (persona/givers/skill/search), never the full roster.
+  // People-CRM UX selection: "select all visible" respects the currently
+  // LOADED page(s) — selecting across a filter/search a user hasn't scrolled
+  // to yet was never supported even before pagination (it acted on
+  // `filtered`, the client-side-filtered view of the full roster).
   const allVisibleSelected =
-    filtered.length > 0 && filtered.every((p) => selected.has(p._id));
+    people.length > 0 && people.every((p) => selected.has(p._id));
   const selectedCount = selected.size;
   const overCap = selectedCount > EMAIL_SELECTED_CAP;
 
@@ -366,9 +340,9 @@ export default function PeopleScreen() {
     setSelected((cur) => {
       const next = new Set(cur);
       if (allVisibleSelected) {
-        for (const p of filtered) next.delete(p._id);
+        for (const p of people) next.delete(p._id);
       } else {
-        for (const p of filtered) next.add(p._id);
+        for (const p of people) next.add(p._id);
       }
       return next;
     });
@@ -390,15 +364,48 @@ export default function PeopleScreen() {
     );
   }
 
-  if (people === undefined) return <Screen loading />;
+  // Active-filter pills (standard CRM pattern): one removable chip per
+  // non-default filter, so "what's currently narrowing this list" is legible
+  // at a glance instead of scattered across four controls.
+  const filterChips: ActiveFilterChip[] = [];
+  if (persona !== "all") {
+    filterChips.push({
+      key: "persona",
+      label: persona.charAt(0).toUpperCase() + persona.slice(1),
+      onRemove: () => setPersona("all"),
+    });
+  }
+  for (const sid of serviceIds) {
+    filterChips.push({
+      key: `service:${sid}`,
+      label: serviceLabelById.get(sid) ?? "…",
+      onRemove: () => setServiceIds((cur) => cur.filter((id) => id !== sid)),
+    });
+  }
+  if (status) {
+    filterChips.push({
+      key: "status",
+      label: STATUS_LABEL[status],
+      onRemove: () => setStatus(null),
+    });
+  }
+  if (giversOnly) {
+    filterChips.push({ key: "givers", label: "Givers only", onRemove: () => setGiversOnly(false) });
+  }
+  function clearAllFilters() {
+    setPersona("all");
+    setServiceIds([]);
+    setStatus(null);
+    setGiversOnly(false);
+  }
 
-  // Cross-tab deep link (see `openParam` above) can point at a CONTACT — e.g.
-  // the giving CRM's donor "Linked person" column, since a donor-linked row is
-  // still `isContactOnly` (provenance). `roster` is the one list everyone
-  // lives in now, so it opens regardless of which persona segment is active.
-  const openPerson = openId
-    ? (roster ?? []).find((p) => p._id === openId) ?? null
-    : null;
+  if (pageStatus === "LoadingFirstPage" && people.length === 0) return <Screen loading />;
+
+  // Cross-tab deep link (see `openParam`/`openPersonOnPage` above) can point
+  // at a CONTACT — e.g. the giving CRM's donor "Linked person" column, since
+  // a donor-linked row is still `isContactOnly` (provenance).
+  const openPerson: Person | null =
+    openPersonOnPage ?? (openPersonFallback ? { ...openPersonFallback, imageUrl: null, persona: null } : null);
 
   async function handleAddRow() {
     await create({ name: "New person" });
@@ -436,43 +443,71 @@ export default function PeopleScreen() {
               <Text className="text-xs font-semibold text-muted">Duplicates</Text>
             </Pressable>
           ) : null}
-          {/* The FULL list's count, always — never whichever persona segment
-              happens to be selected. This is literally the header that used
-              to show 164 (a stale roster-only count) instead of ~275: with
-              one query for everyone, `people.length` IS the full count. */}
-          <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-            People ({people.length})
-          </Text>
+          {/* Reserved for the sibling `feat/guest-identify` branch's
+              triage surface (`/people/identify`) — that branch owns the
+              screen AND the "N to identify" count; this is just the entry
+              point so the two branches merge cleanly, per that PR's own
+              coordination note. No count query exists on THIS branch yet. */}
+          <Pressable
+            onPress={() => router.push("/people/identify" as never)}
+            hitSlop={6}
+            accessibilityLabel="Identify guests"
+            className="flex-row items-center gap-1 rounded-md border border-border px-2 py-1 active:bg-sunken web:hover:bg-sunken"
+          >
+            <Icon name="user-check" size={13} color={colors.muted} />
+            <Text className="text-xs font-semibold text-muted">Identify</Text>
+          </Pressable>
         </View>
       </View>
 
-      {/* Persona segmented control (All · Team · Volunteers · Vendors · Guests · Contacts) */}
-      <View style={styles.segmented}>
-        {PERSONA_FILTERS.map((f) => {
-          const active = persona === f.key;
-          return (
-            <Pressable
-              key={f.key}
-              onPress={() => setPersona(f.key)}
-              className={`rounded-md px-3 py-1.5 active:opacity-80 ${
-                active ? "bg-raised shadow-sm" : ""
-              }`}
-            >
-              <Text
-                className={`text-sm font-semibold ${
-                  active ? "text-ink" : "text-muted"
-                }`}
-              >
-                {f.label}
-                <Text className={active ? "text-muted" : "text-faint"}>
-                  {"  "}
-                  {personaCounts[f.key]}
-                </Text>
-              </Text>
+      {/* Search + filter dropdowns — ONE row (People-CRM overhaul, 2026-07-27):
+          replaces the old title-row count pill, full persona segment row,
+          stray Givers pill, full-width search box, and 30-chip service bar
+          with search + three anchored dropdowns (Persona / Services / More).
+          Selections land as removable pills below, never as more rows here. */}
+      <View className="mt-3 flex-row flex-wrap items-center gap-2">
+        <View className="min-w-[220px] flex-1 flex-row items-center gap-2 rounded-md border border-border-strong bg-raised px-3 py-2">
+          <Icon name="search" size={14} color={colors.faint} />
+          <TextInput
+            value={search}
+            onChangeText={setSearch}
+            placeholder="Search name, email, phone…"
+            placeholderTextColor={colors.faint}
+            autoCapitalize="none"
+            className="flex-1 text-sm text-ink"
+          />
+          {search.length > 0 ? (
+            <Pressable onPress={() => setSearch("")} hitSlop={6} accessibilityLabel="Clear search">
+              <Icon name="x" size={14} color={colors.faint} />
             </Pressable>
-          );
-        })}
+          ) : null}
+        </View>
+        <PersonaDropdown value={persona} counts={personaCounts} onChange={setPersona} />
+        <ServicesDropdown selectedIds={serviceIds} onChange={setServiceIds} />
+        <MoreFiltersDropdown
+          status={status}
+          onChangeStatus={setStatus}
+          giversOnly={giversOnly}
+          onChangeGiversOnly={setGiversOnly}
+          showGivers={hasGiverOverlay}
+        />
       </View>
+
+      {/* Persona counts — compact, both a filter and a summary (founder
+          spec): clicking a count sets `persona`, same state the dropdown
+          above drives. */}
+      <View className="mt-2">
+        <PersonaCountsRow value={persona} counts={personaCounts} onChange={setPersona} />
+      </View>
+
+      {/* Active-filter pills — one removable chip per non-default filter,
+          "Clear all" to reset every one at once. Absent entirely when
+          nothing is narrowing the list. */}
+      {filterChips.length > 0 ? (
+        <View className="mt-2">
+          <ActiveFilterPills chips={filterChips} onClearAll={clearAllFilters} />
+        </View>
+      ) : null}
 
       {/* People-CRM UX: selection bar — appears only once at least one row is
           checked. "Email selected" is hidden for a caller without campaigns
@@ -511,47 +546,6 @@ export default function PeopleScreen() {
           ) : null}
         </View>
       ) : null}
-
-      {/* Givers overlay chip (territories P5) — absent entirely when the
-          caller has no giving access at this chapter (`giverMarks` returns
-          `[]`), so the People tab renders exactly as before for everyone
-          else. An OVERLAY, not a persona: composes with whichever segment is
-          selected above. */}
-      {hasGiverOverlay ? (
-        <View style={styles.filterBar}>
-          <Pill
-            label={`Givers  ${giverMarksByPerson.size}`}
-            selected={giversOnly}
-            onPress={() => setGiversOnly((v) => !v)}
-          />
-        </View>
-      ) : null}
-
-      {/* Search + skill filter chips */}
-      <TextField
-        placeholder="Search by name…"
-        value={search}
-        onChangeText={setSearch}
-        autoCapitalize="none"
-      />
-
-      {allSkills.length > 0 ? (
-        <View style={styles.filterBar}>
-          <Pill
-            label="All"
-            selected={skillFilter === null}
-            onPress={() => setSkillFilter(null)}
-          />
-          {allSkills.map((s) => (
-            <Pill
-              key={s.id}
-              label={s.label}
-              selected={skillFilter === s.id}
-              onPress={() => setSkillFilter((cur) => (cur === s.id ? null : s.id))}
-            />
-          ))}
-        </View>
-      ) : null}
       </Narrow>
 
       {/* The grid */}
@@ -575,9 +569,30 @@ export default function PeopleScreen() {
                   }
                 />
               </View>
-              <GridHeaderCell label="First name" width={COLS.first} />
-              <GridHeaderCell label="Last name" width={COLS.last} />
-              <GridHeaderCell label="Status" width={COLS.status} />
+              {/* First/Last/Status sort server-side now (People-CRM overhaul)
+                  — click to sort, click again to reverse, mirrors the Giving
+                  desk's `SortableHeaderCell` exactly. */}
+              <SortableHeaderCell
+                label="First name"
+                width={COLS.first}
+                active={sortBy === "name"}
+                direction={sortDir}
+                onSort={() => toggleSort("name")}
+              />
+              <SortableHeaderCell
+                label="Last name"
+                width={COLS.last}
+                active={sortBy === "lastName"}
+                direction={sortDir}
+                onSort={() => toggleSort("lastName")}
+              />
+              <SortableHeaderCell
+                label="Status"
+                width={COLS.status}
+                active={sortBy === "status"}
+                direction={sortDir}
+                onSort={() => toggleSort("status")}
+              />
               <GridHeaderCell label="Title" width={COLS.role} />
               <GridHeaderCell label="Email" width={COLS.email} />
               <GridHeaderCell label="PW Email" width={COLS.pwEmail} />
@@ -598,30 +613,31 @@ export default function PeopleScreen() {
             </View>
 
             {/* Body */}
-            {people.length === 0 ? (
+            {people.length === 0 && personaCounts?.all === 0 ? (
               <View className="px-3 py-6">
                 <Text className="text-sm text-faint">
                   No people yet — add your first below.
                 </Text>
               </View>
-            ) : filtered.length === 0 ? (
+            ) : people.length === 0 ? (
               <View className="px-3 py-6">
                 <Text className="text-sm text-faint">
                   No one matches your filters.
                 </Text>
-                {persona !== "all" && personaCounts.all > 0 ? (
-                  <Pressable
-                    onPress={() => setPersona("all")}
-                    className="mt-2 self-start active:opacity-70"
-                  >
-                    <Text className="text-sm font-semibold text-accent">
-                      View all {personaCounts.all} people
-                    </Text>
-                  </Pressable>
-                ) : null}
+                <Pressable
+                  onPress={() => {
+                    clearAllFilters();
+                    setSearch("");
+                  }}
+                  className="mt-2 self-start active:opacity-70"
+                >
+                  <Text className="text-sm font-semibold text-accent">
+                    Clear filters{personaCounts ? ` — view all ${personaCounts.all}` : ""}
+                  </Text>
+                </Pressable>
               </View>
             ) : (
-              filtered.map((p, i) => (
+              people.map((p, i) => (
                 <PersonRow
                   key={p._id}
                   person={p}
@@ -631,7 +647,7 @@ export default function PeopleScreen() {
                   canEditManager={org?.isAdmin === true}
                   seatTitles={seatTitlesByPerson.get(p._id) ?? []}
                   giverMark={giverMarksByPerson.get(p._id) ?? null}
-                  isLast={i === filtered.length - 1}
+                  isLast={i === people.length - 1}
                   selected={selected.has(p._id)}
                   onToggleSelected={() => toggleSelectOne(p._id)}
                   onOpen={() => setOpenId(p._id)}
@@ -640,6 +656,22 @@ export default function PeopleScreen() {
             )}
           </View>
         </ScrollView>
+
+        {/* Load more — server-side pagination (People-CRM overhaul); a plain
+            "tap to load the next page" affordance rather than an
+            auto-triggering scroll listener, simplest to get right inside a
+            grid that already scrolls both directions. */}
+        {pageStatus === "CanLoadMore" || pageStatus === "LoadingMore" ? (
+          <Pressable
+            onPress={() => loadMore(PAGE_SIZE)}
+            disabled={pageLoading}
+            className="flex-row items-center justify-center gap-1.5 border-t border-border px-3 py-2.5 active:bg-sunken web:hover:bg-sunken"
+          >
+            <Text className="text-sm font-medium text-muted">
+              {pageStatus === "LoadingMore" ? "Loading…" : `Load ${PAGE_SIZE} more`}
+            </Text>
+          </Pressable>
+        ) : null}
 
         {/* Add row */}
         <Pressable
@@ -651,7 +683,7 @@ export default function PeopleScreen() {
         </Pressable>
       </View>
 
-      {people.length === 0 ? (
+      {people.length === 0 && personaCounts?.all === 0 ? (
         <Narrow>
           <View style={{ marginTop: spacing.md }}>
             <EmptyState
@@ -2011,22 +2043,6 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "baseline",
     justifyContent: "space-between",
-    marginBottom: spacing.md,
-  },
-  segmented: {
-    flexDirection: "row",
-    alignSelf: "flex-start",
-    gap: spacing.xs,
-    padding: 3,
-    marginBottom: spacing.sm,
-    borderRadius: 10,
-    backgroundColor: colors.sunken,
-  },
-  filterBar: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: spacing.xs,
-    marginTop: spacing.sm,
     marginBottom: spacing.md,
   },
   selectionBar: {
