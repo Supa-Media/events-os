@@ -400,6 +400,14 @@ export const update = mutation({
     // Person-centric audiences Phase 2 (specs/person-centric-audiences.md) —
     // the person-level marketing opt-out, layered over `emailSuppressions`.
     marketingOptOut: v.optional(v.boolean()),
+    // Person-form-fields widening (`schema/people.ts`'s doc on each field) —
+    // hand corrections to what the Google Form imports captured.
+    // `consentedAt`/`consentSource` are deliberately NOT editable here: they
+    // record an affirmative-consent EVENT with a timestamp, not a toggle a
+    // staffer should casually flip; only the import write path sets them.
+    location: v.optional(v.union(v.string(), v.null())),
+    referralSource: v.optional(v.union(v.string(), v.null())),
+    isVolunteer: v.optional(v.boolean()),
     // Owner feedback #4: optional "why", recorded on the person-audit breadcrumb
     // when a contact field (name/email/phone) changes.
     why: v.optional(v.string()),
