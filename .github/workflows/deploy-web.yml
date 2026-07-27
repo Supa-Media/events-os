@@ -65,9 +65,13 @@ jobs:
         working-directory: apps/mobile
         run: npx expo export --platform web
 
+      # Use the `eas` binary the Setup EAS step already installed. `npx eas-cli`
+      # would re-resolve `latest` from npm here instead, which fails outright
+      # when a release's dist-tag has propagated but its manifest hasn't yet
+      # (ETARGET) — that raced a real deploy 43s after eas-cli@21.3.0 published.
       - name: Deploy to EAS Hosting (production)
         working-directory: apps/mobile
-        run: npx eas-cli deploy --prod --environment=production --non-interactive
+        run: eas deploy --prod --environment=production --non-interactive
 
       - name: Summary
         if: always()
