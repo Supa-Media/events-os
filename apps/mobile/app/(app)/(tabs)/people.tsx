@@ -1447,6 +1447,14 @@ function PersonDetailBody({
     personId: person._id as Id<"people">,
   });
   const setPrimaryEmail = useMutation(api.personEmails.setPrimaryEmail);
+  // PW Forms consolidation — every Google Form response resolved to this
+  // person (intake/interest forms; event-scoped anonymous surveys never
+  // carry a personId, so they never appear here — see `formSubmissions.ts`).
+  // Gated identically to everything else in this sheet (chapter membership
+  // via the linked person — `lib/formsAccess.ts`).
+  const formSubmissions = useQuery(api.formSubmissions.listForPerson, {
+    personId: person._id as Id<"people">,
+  });
   // Duties are shown only to callers who can act on them (managers/admins) —
   // for anyone else `responsibilities.list` returns just the CALLER's own
   // duties, which would render a misleadingly empty section for this person.
@@ -1838,6 +1846,43 @@ function PersonDetailBody({
           )}
         </View>
 
+        {/* Form submissions (PW Forms consolidation) — every Google Form
+            response resolved to this person (Contact Information, Team
+            Interest, …). Event-scoped anonymous surveys (Eden's attendee
+            survey) never carry a personId, so they surface on the EVENT's
+            Feedback card instead — see
+            `components/event/ticketing/FeedbackCard.tsx`. */}
+        <View className="mt-4">
+          <Text className="mb-2 text-2xs font-bold uppercase tracking-wider text-muted">
+            Form submissions
+          </Text>
+          {formSubmissions === undefined ? (
+            <Text style={styles.historyEmpty}>Loading form submissions…</Text>
+          ) : formSubmissions.length === 0 ? (
+            <Text style={styles.historyEmpty}>No form submissions on file.</Text>
+          ) : (
+            <View style={styles.historyList}>
+              {formSubmissions.map((sub) => (
+                <View key={sub._id} style={styles.historyItem}>
+                  <View style={styles.historyItemTop}>
+                    <Text style={styles.historyEvent} numberOfLines={1}>
+                      {sub.title}
+                    </Text>
+                    <Badge
+                      label={sub.source === "in_app" ? "In-app" : "Import"}
+                      tone="neutral"
+                    />
+                  </View>
+                  <Text style={styles.historyMeta}>
+                    {formatDate(sub.submittedAt)}
+                    {submissionPreview(sub.answers) ? ` · ${submissionPreview(sub.answers)}` : ""}
+                  </Text>
+                </View>
+              ))}
+            </View>
+          )}
+        </View>
+
         {/* Governance roles (super-admin only): a read-only mirror of this
             person's specialized leadership/finance roles. Assignment happens
             from the Org Chart (`/org-chart`) — this section only reflects
@@ -1890,6 +1935,21 @@ function PersonDetailBody({
       ) : null}
     </>
   );
+}
+
+/** A short, single-line preview for a form submission's answers — the first
+ *  1-2 non-empty short string answers, joined. Deliberately generic (no
+ *  per-form logic): the full answer set is verbatim data meant for a future
+ *  detail view, not this compact list row. */
+function submissionPreview(answers: Record<string, unknown>): string {
+  const parts: string[] = [];
+  for (const value of Object.values(answers)) {
+    if (parts.length >= 2) break;
+    if (typeof value === "string" && value.trim().length > 0 && value.length <= 60) {
+      parts.push(value.trim());
+    }
+  }
+  return parts.join(" · ");
 }
 
 function ContactLink({

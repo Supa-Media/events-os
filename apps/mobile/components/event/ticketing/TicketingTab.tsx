@@ -28,6 +28,7 @@ import { ToastView } from "../../ui/Toast";
 import { useActionRunner, type ActionRunner } from "../../../lib/useActionToast";
 import { formatDateTime } from "../../../lib/format";
 import { DesignPhase } from "./DesignPhase";
+import { FeedbackCard } from "./FeedbackCard";
 import { GivingCard } from "./GivingCard";
 import { GuestListCard, type GuestFilter } from "./GuestListCard";
 import { ImportAttendanceCard } from "./ImportAttendanceCard";
@@ -159,6 +160,9 @@ export default function TicketingTab({ eventId }: { eventId: Id<"events"> }) {
             </PhaseBlock>
             <PhaseBlock label="Giving">
               <GivingCard eventId={eventId} page={pageRow} run={run} />
+            </PhaseBlock>
+            <PhaseBlock label="Feedback">
+              <FeedbackCard eventId={eventId} />
             </PhaseBlock>
           </View>
         );

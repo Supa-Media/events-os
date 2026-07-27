@@ -126,6 +126,7 @@ import {
   emailReplies,
 } from "./schema/campaigns";
 import { serviceOptions } from "./schema/services";
+import { formSubmissions, formDefinitions } from "./schema/forms";
 
 /**
  * Database schema for Chapter OS.
@@ -458,6 +459,15 @@ const schema = defineSchema({
   // schema/services.ts's module doc). One level of parent/child nesting,
   // soft-delete only; `serviceOptions.ts` owns every write.
   serviceOptions,
+
+  // Form Submissions (PW Forms consolidation) — one table for every Google
+  // Form response, person-scoped (`personId` set) or event-scoped
+  // (`eventId` set, anonymous surveys). `formDefinitions` holds each form's
+  // ordered question list. See schema/forms.ts's module doc +
+  // lib/formCatalog.ts (the 6-form catalog) + formSubmissions.ts (reads +
+  // the internal import write path).
+  formSubmissions,
+  formDefinitions,
 });
 
 export default schema;
