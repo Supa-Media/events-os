@@ -24,24 +24,15 @@ import { useState } from "react";
 import { Image, Pressable, ScrollView, Text, View } from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
+import type { Id } from "@events-os/convex/_generated/dataModel";
 import { Icon } from "../../ui";
 import { colors } from "../../../lib/theme";
 
 /**
- * One row of `api.emailImages.listImages`.
- *
- * ⚠ The backend module (`apps/convex/emailImages.ts`) is being written
- * concurrently with this screen; this is the shape it is coded against —
- * `label` doubles as the image's alt text. Declared as a local type rather
- * than derived via `FunctionReturnType` so that, the moment the real module
- * lands, TypeScript checks the real row against it here instead of silently
- * flowing `any` through the component.
+ * The library is CENTRAL-scoped, matching every other campaigns surface
+ * (`CampaignsListView`) — there's no chapter picker on this desk to feed one.
  */
-export type EmailImageRow = {
-  _id: string;
-  url: string;
-  label: string;
-};
+const SCOPE = "central" as const;
 
 const THUMB_WIDTH = 96;
 const THUMB_HEIGHT = 68;
@@ -51,15 +42,16 @@ export function ImageLibraryPicker({
   onPick,
 }: {
   /** Called with the chosen image — the caller writes BOTH url and alt. */
-  onPick: (image: { url: string; label: string }) => void;
+  onPick: (image: { url: string; alt: string }) => void;
 }) {
   const [open, setOpen] = useState(false);
   // "skip" until the panel is actually opened: a long newsletter has a
   // dozen card/column/image editors mounted at once, and none of them needs
   // a live subscription to the whole library just to render a button.
-  const images = useQuery(api.emailImages.listImages, open ? {} : "skip") as
-    | EmailImageRow[]
-    | undefined;
+  const images = useQuery(
+    api.emailImages.listImages,
+    open ? { scope: SCOPE } : "skip",
+  );
 
   return (
     <View className="mb-3">
@@ -89,11 +81,11 @@ export function ImageLibraryPicker({
                   <Pressable
                     key={img._id}
                     onPress={() => {
-                      onPick({ url: img.url, label: img.label });
+                      onPick({ url: img.url, alt: img.alt });
                       setOpen(false);
                     }}
                     accessibilityRole="button"
-                    accessibilityLabel={`Use image ${img.label}`}
+                    accessibilityLabel={`Use image ${img.label ?? img.alt}`}
                     className="rounded-md border border-border p-1 active:bg-sunken web:hover:bg-sunken"
                     style={{ width: THUMB_WIDTH + 8 }}
                   >
@@ -101,10 +93,10 @@ export function ImageLibraryPicker({
                       source={{ uri: img.url }}
                       style={{ width: THUMB_WIDTH, height: THUMB_HEIGHT, borderRadius: 4 }}
                       resizeMode="cover"
-                      accessibilityLabel={img.label}
+                      accessibilityLabel={img.alt}
                     />
                     <Text className="mt-1 text-2xs text-muted" numberOfLines={2}>
-                      {img.label || "Untitled"}
+                      {img.label || img.alt || "Untitled"}
                     </Text>
                   </Pressable>
                 ))}
@@ -132,9 +124,17 @@ export function ImageLibraryPicker({
  */
 export function useAddToImageLibrary() {
   const addImage = useMutation(api.emailImages.addImage);
-  return (url: string, label: string) => {
-    void addImage({ url, label }).catch((err: unknown) => {
-      console.warn("Couldn't add image to the campaign image library", err);
-    });
+  return (storageId: Id<"_storage">, label: string) => {
+    // `alt` is stored EMPTY, not filled from the file name. A file name is
+    // not alt text — "hero photo final 2" read aloud is worse than silence,
+    // and worse still it looks written, so nobody fixes it. The block's own
+    // alt field nags visibly until a real description is typed; whatever the
+    // designer writes there is what a future picker reuse should carry, and
+    // `emailImages.updateImage` is how it gets there.
+    void addImage({ scope: SCOPE, storageId, alt: "", label }).catch(
+      (err: unknown) => {
+        console.warn("Couldn't add image to the campaign image library", err);
+      },
+    );
   };
 }

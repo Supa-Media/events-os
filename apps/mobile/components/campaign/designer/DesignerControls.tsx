@@ -14,6 +14,7 @@ import { ActivityIndicator, Platform, Pressable, Text, View } from "react-native
 // expo-image-picker is Expo Go-safe (classified `core` in native-deps.json);
 // only used on native, mirroring `CoverPhotoPicker`'s upload flow.
 import * as ImagePicker from "expo-image-picker";
+import type { Id } from "@events-os/convex/_generated/dataModel";
 import { colors } from "../../../lib/theme";
 import type { ActionRunner } from "../../../lib/useActionToast";
 
@@ -49,8 +50,22 @@ export function LevelToggle({
   );
 }
 
-/** Uploader for a picked file. Returns a servable URL. */
-export type UploadImage = (file: Blob, contentType: string) => Promise<string>;
+/**
+ * The result of one upload.
+ *
+ * BOTH halves are needed downstream and neither can be derived from the
+ * other: the block stores the public `url` (a mail client fetches it days
+ * later, from a machine that never talked to this backend), while
+ * `emailImages.addImage` takes the `storageId` and resolves the URL itself
+ * rather than trusting a client-supplied one.
+ */
+export type UploadedImage = { url: string; storageId: Id<"_storage"> };
+
+/** Uploader for a picked file. */
+export type UploadImage = (
+  file: Blob,
+  contentType: string,
+) => Promise<UploadedImage>;
 
 /**
  * Cross-platform "Upload image" affordance — web file input, native picker,
@@ -68,7 +83,7 @@ export function ImageUploadButton({
   label = "Upload image…",
 }: {
   uploadImage: UploadImage;
-  onUploaded: (url: string, suggestedLabel: string) => void;
+  onUploaded: (uploaded: UploadedImage, suggestedLabel: string) => void;
   run: ActionRunner["run"];
   label?: string;
 }) {
@@ -82,8 +97,8 @@ export function ImageUploadButton({
       // an upload failure here left the spinner stop with no explanation.
       await run(
         async () => {
-          const url = await uploadImage(blob, contentType);
-          onUploaded(url, labelFromFileName(fileName));
+          const uploaded = await uploadImage(blob, contentType);
+          onUploaded(uploaded, labelFromFileName(fileName));
         },
         { errorTitle: "Couldn't upload image" },
       );
