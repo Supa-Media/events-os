@@ -7,9 +7,13 @@ import { resolvePersonaForRoster } from "../lib/people";
 /**
  * The full persona ladder (`@events-os/shared#Persona`:
  * team > vendor > volunteer > guest > contact) and `people.list`'s `persona`
- * filter — the founder-model fix for `people.list` hiding ~111 real people
+ * filter — the founder-model fix for the People tab hiding ~111 real people
  * behind the old `isContactOnly` read-time partition (see
- * `peopleContacts.test.ts`'s doc for the root cause).
+ * `peopleContacts.test.ts`'s doc for the root cause and for why
+ * `people.list`'s own UNFILTERED default stays the conservative roster, not
+ * "everyone" — most of these tests pass `persona: "all"` explicitly for
+ * exactly that reason whenever they need to see a "contact"-persona row
+ * through `people.list` itself).
  *
  * `personaOf` (packages/shared) stays the pure, DB-free team/vendor-only
  * classifier. `resolvePersonaForRoster` (`lib/people.ts`) is its full-ladder
@@ -163,7 +167,9 @@ describe("persona ladder — people.list", () => {
       }),
     );
 
-    const rows = await s.as.query(api.people.list, {});
+    // `persona: "all"` — a "contact"-persona row isn't in the default
+    // (roster) result, so inspecting its persona needs the explicit opt-in.
+    const rows = await s.as.query(api.people.list, { persona: "all" });
     // No usualRateUsd on the person row itself, and a one-off paid
     // engagement isn't a volunteer signal — this falls through to "contact".
     expect(rows.find((p) => p._id === personId)?.persona).toBe("contact");
@@ -255,7 +261,8 @@ describe("persona ladder — people.list", () => {
       archivedAt: Date.now(),
     });
 
-    const rows = await s.as.query(api.people.list, {});
+    // `persona: "all"` — same reason as the PAID-engagement test above.
+    const rows = await s.as.query(api.people.list, { persona: "all" });
     expect(rows.find((p) => p._id === personId)?.persona).toBe("contact");
   });
 
@@ -282,12 +289,15 @@ describe("persona ladder — people.list", () => {
     expect(rows.find((p) => p._id === personId)?.persona).toBe("volunteer");
   });
 
-  test("no participation signal at all reads as 'contact', and still appears in the DEFAULT (everyone) list", async () => {
+  test("no participation signal at all reads as 'contact' — excluded from the DEFAULT (roster) list, present under 'all'/'contact'", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await seedPerson(s, { name: "Nobody Signal" });
 
-    const everyone = await s.as.query(api.people.list, {});
+    const roster = await s.as.query(api.people.list, {});
+    expect(roster.map((p) => p.name)).not.toContain("Nobody Signal");
+
+    const everyone = await s.as.query(api.people.list, { persona: "all" });
     const row = everyone.find((p) => p.name === "Nobody Signal");
     expect(row).toBeDefined();
     expect(row?.persona).toBe("contact");
@@ -296,14 +306,17 @@ describe("persona ladder — people.list", () => {
     expect(contacts.map((p) => p.name)).toEqual(["Nobody Signal"]);
   });
 
-  test("the full list still excludes placeholders and Academy sample people", async () => {
+  test("persona: 'all' still excludes placeholders and Academy sample people (never real humans, regardless of persona filter)", async () => {
     const t = newT();
     const s = await setupChapter(t);
+    // "Real Person" deliberately carries no participation signal (so it
+    // reads as "contact") — persona: "all" is what makes this test about
+    // placeholder/sample exclusion, not about the roster-vs-everyone split.
     await seedPerson(s, { name: "Real Person" });
     await seedPerson(s, { name: "Placeholder Crew", isPlaceholder: true });
     await seedPerson(s, { name: "Academy Sample", isSamplePerson: true });
 
-    const everyone = await s.as.query(api.people.list, {});
+    const everyone = await s.as.query(api.people.list, { persona: "all" });
     expect(everyone.map((p) => p.name)).toEqual(["Real Person"]);
   });
 });

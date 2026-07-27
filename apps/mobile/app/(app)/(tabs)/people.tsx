@@ -193,12 +193,18 @@ function confirmRemove(name: string): boolean {
 
 /** PEOPLE roster — a spreadsheet-style editable grid with per-person history. */
 export default function PeopleScreen() {
-  // ONE query for everyone — `people.list` no longer partitions on
-  // `contactsOnly`; every persona (including "contact") is a client-side
-  // filter over this same list, using the `persona` field the backend
-  // already derived per row. This is also what fixes the header count (see
-  // below): there's only one list, so it can never disagree with itself.
-  const roster = useQuery(api.people.list, {}) as Person[] | undefined;
+  // ONE query for everyone — the People tab is one of the few callers that
+  // explicitly opts INTO `persona: "all"`; `people.list`'s UNFILTERED
+  // default is deliberately the roster only (see that query's doc — most of
+  // its ~11 callers are pickers/mentions/duty-assignment that want exactly
+  // that conservative default). Every persona (including "contact") is then
+  // a client-side filter over this one list, using the `persona` field the
+  // backend already derived per row. This is also what fixes the header
+  // count (see below): there's only one list, so it can never disagree with
+  // itself.
+  const roster = useQuery(api.people.list, {
+    persona: "all",
+  }) as Person[] | undefined;
   const org = useQuery(api.org.nav);
   const create = useMutation(api.people.create);
   // The Title column mirrors org-chart seat titles (the current model) —

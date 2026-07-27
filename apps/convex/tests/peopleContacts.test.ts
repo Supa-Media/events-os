@@ -8,21 +8,30 @@ import type { Id } from "../_generated/dataModel";
  * Person-centric audiences Phase 1 item 1 — the contact/roster discriminator
  * (`people.isContactOnly`).
  *
- * `isContactOnly` used to be a read-time PARTITION on `people.list`
+ * `isContactOnly` used to be a read-time PARTITION baked into `people.list`
  * (unset/false = the roster, `contactsOnly: true` = only the contact rows) —
  * that partition is exactly what hid ~111 real people from the founder's
- * People tab (auto-created contacts stayed permanently roster-side once
- * `notes` drifted off the migration's exact-match strings). `people.list`
- * now ALWAYS returns everyone; the "contact" persona
- * (`@events-os/shared#Persona`) is derived from having no participation
- * signal at all (see `peoplePersona.test.ts` for the full ladder), never
- * from this stored flag. `isContactOnly` itself is UNCHANGED here — it's
- * still stamped at insert by the two auto-creation paths below, purely as
- * provenance; identity matching (`lib/org.ts#chapterRoster`, the primitive
- * `linkDonorToPerson`/`linkRsvpToPerson` build on) keeps seeing these rows so
- * a repeat giver/guest never spawns a duplicate — that part is untouched.
- * See `lib/org.ts#excludeContacts`'s doc for the roster-UX call-site audit;
- * `rsvpPeople.test.ts` covers the matching side directly.
+ * People *tab* (auto-created contacts stayed permanently roster-side once
+ * `notes` drifted off the migration's exact-match strings).
+ *
+ * `people.list` no longer partitions on the stored `isContactOnly` flag, but
+ * its UNFILTERED default is still deliberately the ROSTER (everyone except
+ * the "contact" persona — no participation signal at all): `people.list`
+ * has ~11 callers across the app, and 8 of them are pickers/mention lists/
+ * duty-assignment surfaces that were always built assuming "a real,
+ * participating person." Only three callers explicitly opt in to
+ * `persona: "all"` (the People tab, audience hand-pick seeding, and donor↔
+ * person linking) — see `people.ts#list`'s doc for the full rationale.
+ * `persona: "contact"` replaces the old `contactsOnly: true`.
+ *
+ * `isContactOnly` itself is UNCHANGED here — it's still stamped at insert by
+ * the two auto-creation paths below, purely as provenance; identity matching
+ * (`lib/org.ts#chapterRoster`, the primitive `linkDonorToPerson`/
+ * `linkRsvpToPerson` build on) keeps seeing these rows so a repeat giver/
+ * guest never spawns a duplicate — that part is untouched. See
+ * `lib/org.ts#excludeContacts`'s doc for the roster-UX call-site audit;
+ * `peoplePersona.test.ts` for the full ladder; `rsvpPeople.test.ts` for the
+ * matching side directly.
  */
 
 async function seedPerson(
@@ -68,14 +77,17 @@ async function devDirectorSetup(): Promise<ChapterSetup> {
   return s;
 }
 
-describe("people.list — everyone, with an optional persona filter", () => {
-  test("the default list includes contact-only rows (no more read-time partition)", async () => {
+describe("people.list — the default is the ROSTER; 'all' is the explicit opt-in", () => {
+  test("REGRESSION GUARD: the default (no persona arg) excludes contacts; persona: 'all' includes them", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await seedPerson(s, { name: "Real Teammate", isTeamMember: true });
     await seedPerson(s, { name: "A Contact", isContactOnly: true });
 
-    const everyone = await s.as.query(api.people.list, {});
+    const roster = await s.as.query(api.people.list, {});
+    expect(roster.map((p) => p.name)).toEqual(["Real Teammate"]);
+
+    const everyone = await s.as.query(api.people.list, { persona: "all" });
     expect(everyone.map((p) => p.name).sort()).toEqual([
       "A Contact",
       "Real Teammate",
@@ -97,7 +109,7 @@ describe("people.list — everyone, with an optional persona filter", () => {
     expect(contacts.map((p) => p.name)).toEqual(["A Contact"]);
   });
 
-  test("a REAL donor-created contact (linkDonorToPerson, no pre-existing match) appears in the default list, classifies as 'contact', and is still identity-matchable", async () => {
+  test("a REAL donor-created contact (linkDonorToPerson, no pre-existing match) is excluded from the default (roster) list but findable via persona: 'all'/'contact', and stays identity-matchable", async () => {
     const s = await devDirectorSetup();
 
     const donorId = (await s.as.mutation(api.givingPlatform.upsertDonor, {
@@ -114,14 +126,19 @@ describe("people.list — everyone, with an optional persona filter", () => {
     const created = await run(s.t, (ctx) => ctx.db.get(donor!.personId!));
     expect(created?.isContactOnly).toBe(true);
 
-    // Appears in the default (everyone) list, classified by persona.
-    const everyone = await s.as.query(api.people.list, {});
+    // Excluded from the default (roster) list — this is the conservative
+    // default every picker/mention/duty-assignment caller relies on.
+    const roster = await s.as.query(api.people.list, {});
+    expect(roster.map((p) => p.name)).not.toContain("New Giver");
+
+    // Findable under the explicit "everyone" opt-in, classified by persona.
+    const everyone = await s.as.query(api.people.list, { persona: "all" });
     expect(everyone.map((p) => p.name)).toContain("New Giver");
     expect(everyone.find((p) => p.name === "New Giver")?.persona).toBe(
       "contact",
     );
 
-    // And still findable under the deliberate Contacts persona filter.
+    // And under the deliberate Contacts persona filter.
     const contacts = await s.as.query(api.people.list, { persona: "contact" });
     expect(contacts.map((p) => p.name)).toContain("New Giver");
 

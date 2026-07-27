@@ -250,13 +250,19 @@ function AudienceForm({
   const [excludeNames, setExcludeNames] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState(false);
 
-  // People-CRM UX: seeded ids arrive as bare ids (the People grid's own
-  // roster query, not `searchPeopleForAudience`) — resolve their display
-  // names from the caller's own roster (`api.people.list`, the same source
-  // the grid itself reads) so `HandPickSection`'s chips show a name instead
-  // of a raw id. Skipped entirely once there's nothing to seed.
+  // People-CRM UX: seeded ids arrive as bare ids (the People tab's OWN list,
+  // not `searchPeopleForAudience`) — resolve their display names from
+  // `api.people.list` so `HandPickSection`'s chips show a name instead of a
+  // raw id. Skipped entirely once there's nothing to seed. `persona: "all"`:
+  // the People tab's "Email selected" can hand-pick ANY persona, contacts
+  // included (audiences deliberately target contacts — that's the whole
+  // point of a contact row), so this lookup must see everyone too, not just
+  // `people.list`'s conservative roster-only default.
   const needsSeedNames = (seedIncludeIds?.length ?? 0) > 0;
-  const seedRoster = useQuery(api.people.list, needsSeedNames ? {} : "skip");
+  const seedRoster = useQuery(
+    api.people.list,
+    needsSeedNames ? { persona: "all" } : "skip",
+  );
   useEffect(() => {
     if (!seedRoster || !seedIncludeIds?.length) return;
     setIncludeNames((names) => {
