@@ -55,6 +55,14 @@ import {
   query,
 } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
+// Triggers-wrapped builders (not the raw ones above) for the two exports
+// below that write `people` (`matchOrCreatePersonContact`) — see
+// `lib/peopleAggregate.ts`'s module doc. Every OTHER mutation in this file
+// stays on the raw builders imported above.
+import {
+  mutation as triggerMutation,
+  internalMutation as triggerInternalMutation,
+} from "./lib/peopleAggregate";
 import { ConvexError, v, type Infer } from "convex/values";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
@@ -1255,7 +1263,7 @@ async function importCanonicalBatch(
  * batch's counts (mirrors the legacy importer's own return shape) — the
  * remainder, if any, continues via `importCanonicalRest`.
  */
-export const importCanonical = mutation({
+export const importCanonical = triggerMutation({
   args: {
     scope: scopeValidator,
     rows: v.array(canonicalImportRowValidator),
@@ -1276,7 +1284,7 @@ export const importCanonical = mutation({
 });
 
 /** Internal continuation of `importCanonical` (already gated when scheduled). */
-export const importCanonicalRest = internalMutation({
+export const importCanonicalRest = triggerInternalMutation({
   args: {
     scope: scopeValidator,
     rows: v.array(canonicalImportRowValidator),

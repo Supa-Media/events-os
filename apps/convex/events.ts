@@ -8,6 +8,10 @@
  */
 import { query, mutation, QueryCtx } from "./_generated/server";
 import { api } from "./_generated/api";
+// Triggers-wrapped builder for `createFromTemplate` below (`instantiateEvent`
+// can insert a real owner person and materialize placeholder crew into
+// `people`) — see `lib/peopleAggregate.ts`'s module doc.
+import { mutation as triggerMutation } from "./lib/peopleAggregate";
 import { Doc, Id } from "./_generated/dataModel";
 import { ConvexError, v, type Infer } from "convex/values";
 import {
@@ -160,7 +164,7 @@ export const scopeOptions = query({
  * which IS the "what do we still need" reset; tasks/comms start at their status
  * column's first option.
  */
-export const createFromTemplate = mutation({
+export const createFromTemplate = triggerMutation({
   args: {
     // Omitted for the ad-hoc "Blank event" path — the New Event screen's
     // synthetic Blank card doesn't pick a real template id. Resolved below to

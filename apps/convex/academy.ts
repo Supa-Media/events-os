@@ -20,6 +20,11 @@
  * section but is excluded from completed/total ("fully trained") counts.
  */
 import { query, mutation, MutationCtx, QueryCtx } from "./_generated/server";
+// Triggers-wrapped builder for `startTraining` below (inserts a real,
+// `isTeamMember:true` owner person via `getOrCreateOwnerPerson`) — see
+// `lib/peopleAggregate.ts`'s module doc. Every other mutation in this file
+// stays on the raw `mutation` above.
+import { mutation as triggerMutation } from "./lib/peopleAggregate";
 import { Doc, Id } from "./_generated/dataModel";
 import { ConvexError, v } from "convex/values";
 import {
@@ -1219,7 +1224,7 @@ async function ensureSampleTeammates(
  *    re-seeded.
  *  - TRAINING_LIMIT — at most 5 training events ever per person per capstone.
  */
-export const startTraining = mutation({
+export const startTraining = triggerMutation({
   args: { capstoneSlug: v.string() },
   handler: async (
     ctx,

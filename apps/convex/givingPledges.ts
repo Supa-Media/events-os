@@ -34,6 +34,10 @@ import {
   query,
 } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
+// Triggers-wrapped builder for `preparePledge` below (writes `people` via
+// `matchOrCreateDonor`/`linkDonorToPerson`) — see
+// `lib/peopleAggregate.ts`'s module doc.
+import { internalMutation as triggerInternalMutation } from "./lib/peopleAggregate";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
@@ -229,7 +233,7 @@ function mapStripeSubStatus(
  * `prospect`/`raising` (its shadow-chapter phase) — otherwise it's NOT_FOUND,
  * so a random inactive/demo chapter can't be pledged to.
  */
-export const preparePledge = internalMutation({
+export const preparePledge = triggerInternalMutation({
   args: {
     chapterId: v.id("chapters"),
     amountCents: v.number(),

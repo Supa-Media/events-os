@@ -10,13 +10,17 @@
  * legacy /e/<slug> aliases still resolve). Idempotent by slug.
  */
 import { internalAction, internalMutation } from "./_generated/server";
+// Triggers-wrapped builder for `seedTicketingDemo` below (inserts `rsvps`)
+// — see `lib/peopleAggregate.ts`'s module doc. Every other mutation in this
+// file stays on the raw `internalMutation` above.
+import { internalMutation as triggerInternalMutation } from "./lib/peopleAggregate";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
 
 const SLUG = "worship-on-the-water";
 
-export const seedTicketingDemo = internalMutation({
+export const seedTicketingDemo = triggerInternalMutation({
   args: {},
   handler: async (ctx) => {
     const existing = await ctx.db

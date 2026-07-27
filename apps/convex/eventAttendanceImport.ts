@@ -35,6 +35,14 @@ import {
   query,
 } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
+// Triggers-wrapped builder for `commitAttendanceImport`/
+// `commitAttendanceImportRest` below (write `rsvps`/`people` via
+// `applyAttendanceRows`→`linkRsvpToPerson`) — see
+// `lib/peopleAggregate.ts`'s module doc.
+import {
+  mutation as triggerMutation,
+  internalMutation as triggerInternalMutation,
+} from "./lib/peopleAggregate";
 import { ConvexError, v, type Infer } from "convex/values";
 import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -563,7 +571,7 @@ async function commitBatch(
  * on re-run. Returns only THIS batch's counts; the remainder continues via
  * `commitAttendanceImportRest`.
  */
-export const commitAttendanceImport = mutation({
+export const commitAttendanceImport = triggerMutation({
   args: { eventId: v.id("events"), rows: v.array(attendanceRowValidator) },
   returns: commitResultValidator,
   handler: async (ctx, { eventId, rows }) => {
@@ -580,7 +588,7 @@ export const commitAttendanceImport = mutation({
 });
 
 /** Internal continuation of `commitAttendanceImport` (gated when scheduled). */
-export const commitAttendanceImportRest = internalMutation({
+export const commitAttendanceImportRest = triggerInternalMutation({
   args: { eventId: v.id("events"), rows: v.array(attendanceRowValidator) },
   handler: async (ctx, { eventId, rows }) => {
     const page = await requireEventPage(ctx, eventId);

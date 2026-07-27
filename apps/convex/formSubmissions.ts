@@ -14,6 +14,10 @@ import { v, ConvexError } from "convex/values";
 import { internalMutation, query } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
+// Triggers-wrapped builder for `importSubmissionsBatch` below (writes
+// `people` via `matchOrCreatePersonContact`) — see
+// `lib/peopleAggregate.ts`'s module doc.
+import { internalMutation as triggerInternalMutation } from "./lib/peopleAggregate";
 import { requireViewFormSubmissions } from "./lib/formsAccess";
 import { matchIdentity, matchOrCreatePersonContact } from "./givingImport";
 import { hasPersonIdentifier } from "./lib/givingDonors";
@@ -287,7 +291,7 @@ const importRowValidator = v.object({
  *   - Team Interest's matched service checkboxes → `people.serviceIds`
  *     (additive union with whatever the person already has).
  */
-export const importSubmissionsBatch = internalMutation({
+export const importSubmissionsBatch = triggerInternalMutation({
   args: {
     chapterId: v.id("chapters"),
     formKey: v.string(),

@@ -21,6 +21,14 @@ import {
   query,
 } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
+// Triggers-wrapped builder for `recordDonation`/`prepareDonation` below
+// (write `people` via `matchOrCreateDonor`/`linkDonorToPerson`, and
+// `rsvps` via `linkRsvpToPerson`) — see `lib/peopleAggregate.ts`'s module
+// doc. Every other mutation in this file stays on the raw builders above.
+import {
+  mutation as triggerMutation,
+  internalMutation as triggerInternalMutation,
+} from "./lib/peopleAggregate";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
@@ -76,7 +84,7 @@ async function bumpGivingRollup(
  * donations never come through here — they go via Stripe. Inserted `paid`
  * immediately and bumps the rollup.
  */
-export const recordDonation = mutation({
+export const recordDonation = triggerMutation({
   args: {
     eventId: v.id("events"),
     amountCents: v.number(),
@@ -218,7 +226,7 @@ export async function createPaidDonationForOrder(
  * for the donor). Called by `stripe.createDonationCheckout` right before Stripe.
  * Mirrors `ticketing.prepareOrder`.
  */
-export const prepareDonation = internalMutation({
+export const prepareDonation = triggerInternalMutation({
   args: {
     slug: v.string(),
     name: v.string(),

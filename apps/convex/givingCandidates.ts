@@ -54,6 +54,10 @@
 import { ConvexError, v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
+// Triggers-wrapped builder for `confirmExternalGift` below (writes `people`
+// via `matchOrCreateDonor`/`linkDonorToPerson`) — see
+// `lib/peopleAggregate.ts`'s module doc.
+import { mutation as triggerMutation } from "./lib/peopleAggregate";
 import { Doc, Id } from "./_generated/dataModel";
 import { financeRoleAtLeast } from "@events-os/shared";
 import {
@@ -268,7 +272,7 @@ const DEFAULT_EXTERNAL_GIFT_METHOD = "zelle" as const;
  * dollar — a retry/double-tap is a safe no-op-with-explanation, not a
  * double-count).
  */
-export const confirmExternalGift = mutation({
+export const confirmExternalGift = triggerMutation({
   args: {
     transactionId: v.id("transactions"),
     donorId: v.optional(v.id("donors")),

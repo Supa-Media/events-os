@@ -39,8 +39,13 @@
  */
 import { ConvexError, v } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
-import { query, mutation } from "./_generated/server";
+import { query } from "./_generated/server";
 import type { QueryCtx, MutationCtx } from "./_generated/server";
+// `mutation` is the triggers-wrapped builder, not `./_generated/server`'s —
+// `linkGuestToPerson`/`createPersonFromGuest` patch `rsvps.personId` and
+// `mergeDuplicatePeople` merges `people` rows (via `dataHygiene.ts#mergePeopleCore`),
+// all persona-relevant — see `lib/peopleAggregate.ts`'s module doc.
+import { mutation } from "./lib/peopleAggregate";
 import { api } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireReviewGuestIdentity, canReviewGuestIdentity } from "./lib/identityAccess";

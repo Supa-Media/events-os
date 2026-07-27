@@ -60,6 +60,7 @@ import { backfillPersonalRepayments } from "./0045_backfill_personal_repayments"
 import { seedServiceCatalog } from "./0046_seed_service_catalog";
 import { serviceConditionsToIds } from "./0047_service_conditions_to_ids";
 import { seedBuiltInCampaignTemplates } from "./0049_seed_builtin_campaign_templates";
+import { backfillPeoplePersona } from "./0051_backfill_people_persona";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -245,4 +246,12 @@ export const MIGRATIONS: Migration[] = [
   // when the shipped content changed, and never resurrects an archived row.
   // See 0049.
   seedBuiltInCampaignTemplates,
+  // People-counts Aggregate (`lib/peopleAggregate.ts`) — backfill
+  // `people.persona` for every existing roster row AND populate the new
+  // `peopleByPersona` TableAggregate from scratch, so `people.ts#counts`
+  // starts returning correct numbers the moment this deploys instead of
+  // reading an empty aggregate. Idempotent (already-stamped rows skip the
+  // recompute; aggregate inserts are `insertIfDoesNotExist`, safe to
+  // repeat). See 0051.
+  backfillPeoplePersona,
 ];

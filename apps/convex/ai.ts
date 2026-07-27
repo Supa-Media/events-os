@@ -21,6 +21,12 @@ import {
   type QueryCtx,
   type MutationCtx,
 } from "./_generated/server";
+// Triggers-wrapped builder for the handful of AI-assistant tool mutations
+// below that write `people`/`engagements`/`roleAssignments`
+// (`assignRole`/`unassignRole`/`addEngagement`/`updateEngagement`/`addPerson`)
+// — see `lib/peopleAggregate.ts`'s module doc. Every other mutation in this
+// (large) file stays on the raw `internalMutation`/`mutation` above.
+import { internalMutation as triggerInternalMutation } from "./lib/peopleAggregate";
 import { Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
 import {
@@ -989,7 +995,7 @@ export const removeItem = internalMutation({
  * roleAssignments.assign's upsert semantics: one person per role — any
  * existing assignment rows for the role are replaced.
  */
-export const assignRole = internalMutation({
+export const assignRole = triggerInternalMutation({
   args: {
     eventId: v.id("events"),
     chapterId: v.id("chapters"),
@@ -1023,7 +1029,7 @@ export const assignRole = internalMutation({
 });
 
 /** Clear a role's assignment (the `unassign_role` tool). Mirrors roleAssignments.unassign. */
-export const unassignRole = internalMutation({
+export const unassignRole = triggerInternalMutation({
   args: {
     eventId: v.id("events"),
     chapterId: v.id("chapters"),
@@ -1057,7 +1063,7 @@ const engagementStatusV = v.union(
  * Refuses a duplicate engagement for the same person so the agent is steered
  * to update_engagement instead.
  */
-export const addEngagement = internalMutation({
+export const addEngagement = triggerInternalMutation({
   args: {
     eventId: v.id("events"),
     chapterId: v.id("chapters"),
@@ -1105,7 +1111,7 @@ export const addEngagement = internalMutation({
  * located by person. Mirrors engagements.update's semantics — including the
  * volunteer↔paid flip clearing/seeding payment fields.
  */
-export const updateEngagement = internalMutation({
+export const updateEngagement = triggerInternalMutation({
   args: {
     eventId: v.id("events"),
     chapterId: v.id("chapters"),
@@ -1156,7 +1162,7 @@ export const updateEngagement = internalMutation({
  * Add a person to the chapter roster (the `add_person` tool), with the same
  * defaults people.create applies: unvetted, active.
  */
-export const addPerson = internalMutation({
+export const addPerson = triggerInternalMutation({
   args: {
     chapterId: v.id("chapters"),
     name: v.string(),

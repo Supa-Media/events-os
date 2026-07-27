@@ -66,12 +66,16 @@
  * go-ahead — see the task doc this migration shipped with).
  */
 import { v } from "convex/values";
-import { internalMutation } from "../_generated/server";
 import type { MutationCtx } from "../_generated/server";
 import { internal } from "../_generated/api";
 import type { Doc } from "../_generated/dataModel";
 import { linkRsvpToPersonWithRoster } from "../lib/rsvpPeople";
 import { chapterRoster } from "../lib/org";
+// `internalMutation` is the triggers-wrapped builder, not
+// `../_generated/server`'s — `linkRsvpToPersonWithRoster` writes
+// `rsvps.personId` and can insert a contact-only `people` row, both
+// persona-relevant. See `../lib/peopleAggregate.ts`'s module doc.
+import { internalMutation } from "../lib/peopleAggregate";
 
 /** Rows read per (single) `.paginate()` call — see the module doc's "ONE
  *  `.paginate()` PER INVOCATION" note. Mirrors 0037's `PAGE_SIZE`. */

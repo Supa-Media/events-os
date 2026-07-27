@@ -8,6 +8,14 @@
  * @module
  */
 
+// HAND-PATCHED (not from codegen): `npx convex codegen` can't run in this
+// worktree (no deployment configured — see `convex.config.ts`'s doc), so the
+// `peopleByPersona` component wiring below was added by hand to match what
+// codegen would emit for the app's first component. Regenerate for real via
+// `npx convex dev` as soon as a deployment is available; this hand patch is a
+// stopgap, not a replacement.
+import type { ComponentApi } from "@convex-dev/aggregate/_generated/component.js";
+
 import type * as academy from "../academy.js";
 import type * as accessAllowlist from "../accessAllowlist.js";
 import type * as ai from "../ai.js";
@@ -542,4 +550,6 @@ export declare const internal: FilterApi<
   FunctionReference<any, "internal">
 >;
 
-export declare const components: {};
+export declare const components: {
+  peopleByPersona: ComponentApi;
+};

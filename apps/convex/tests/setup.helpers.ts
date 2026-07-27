@@ -13,6 +13,7 @@
  */
 /// <reference types="vite/client" />
 import { convexTest } from "convex-test";
+import { register as registerAggregate } from "@convex-dev/aggregate/test";
 import schema from "../schema";
 import type { Id } from "../_generated/dataModel";
 import type { MutationCtx } from "../_generated/server";
@@ -23,7 +24,16 @@ export const modules = import.meta.glob("../**/*.*s");
 export type TestConvex = ReturnType<typeof convexTest>;
 
 export function newT(): TestConvex {
-  return convexTest(schema, modules);
+  const t = convexTest(schema, modules);
+  // `lib/peopleAggregate.ts`'s `peopleByPersona` — registered globally here
+  // (not per-test) because `people.ts#create`/`update`/`remove` and every
+  // other trigger-wrapped mutation across the app (engagements, role
+  // assignments, rsvps, merges, imports, …) calls into this component the
+  // moment ANY test exercises one of those mutations, not just the aggregate
+  // feature's own tests. The name MUST match `convex.config.ts`'s
+  // `app.use(aggregate, { name: "peopleByPersona" })`.
+  registerAggregate(t, "peopleByPersona");
+  return t;
 }
 
 /**

@@ -10,6 +10,9 @@
  * events.reschedule).
  */
 import { query, mutation, QueryCtx, MutationCtx } from "./_generated/server";
+// Triggers-wrapped builder for `convertItemToVendor` below (inserts an
+// `engagements` row) — see `lib/peopleAggregate.ts`'s module doc.
+import { mutation as triggerMutation } from "./lib/peopleAggregate";
 import { Doc, Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
 import {
@@ -1041,7 +1044,7 @@ export const convertEventItemModule = mutation({
  * engagement insert — so a thrown refusal leaves the item untouched and
  * creates no engagement.
  */
-export const convertItemToVendor = mutation({
+export const convertItemToVendor = triggerMutation({
   args: { itemId: v.id("eventItems"), personId: v.id("people") },
   returns: v.object({ engagementId: v.union(v.id("engagements"), v.null()) }),
   handler: async (ctx, { itemId, personId }) => {
