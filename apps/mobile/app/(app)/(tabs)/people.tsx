@@ -29,10 +29,12 @@ import {
   type SelectOption,
   PersonPicker,
   Button,
+  ServiceOptionsPicker,
 } from "../../../components/ui";
 import { colors, spacing } from "../../../lib/theme";
 import { formatDate, parseList } from "../../../lib/format";
 import { alertError } from "../../../lib/errors";
+import { buildServiceLabelMap, buildServiceMatchSetMap } from "../../../lib/serviceCatalog";
 import type { Doc, Id } from "@events-os/convex/_generated/dataModel";
 import {
   type VettingStatus,
@@ -175,17 +177,6 @@ function personMatchesSearch(p: Person, query: string, queryDigits: string): boo
   return false;
 }
 
-/** Parse a comma list into trimmed, lowercased, de-duped values (skills). */
-function parseSkills(raw: string): string[] {
-  const seen = new Set<string>();
-  for (const part of raw.split(",")) {
-    const s = part.trim().toLowerCase();
-    if (s) seen.add(s);
-  }
-  return Array.from(seen);
-}
-
-
 /** Confirm a destructive action — window.confirm on web, no prompt on native. */
 function confirmRemove(name: string): boolean {
   if (Platform.OS === "web" && typeof window !== "undefined") {
@@ -212,7 +203,7 @@ export default function PeopleScreen() {
   const seatHoldings = useQuery(api.responsibilities.chapterSeatHoldings);
 
   const [search, setSearch] = useState("");
-  const [skillFilter, setSkillFilter] = useState<string | null>(null);
+  const [skillFilter, setSkillFilter] = useState<Id<"serviceOptions"> | null>(null);
   // Default to the core Team — the common case (a lead manages their team, not
   // the full roster of volunteers/vendors). "All" is one tap away.
   const [persona, setPersona] = useState<PersonaFilter>("team");
@@ -300,15 +291,39 @@ export default function PeopleScreen() {
     return counts;
   }, [roster, contacts]);
 
-  // Distinct skills across the roster, for the filter bar. Roster-only —
-  // contact rows never carry `services`.
+  // Service Catalog, for the filter bar — chips must show the SAME
+  // "Parent:Child" label the picker uses (`ServiceOptionsPicker`/
+  // `SkillsCell`), so the two surfaces never disagree on what a service is
+  // called.
+  const serviceCatalog = useQuery(api.serviceOptions.list, { includeInactive: true });
+  const serviceLabelById = useMemo(
+    () =>
+      serviceCatalog ? buildServiceLabelMap(serviceCatalog) : new Map<Id<"serviceOptions">, string>(),
+    [serviceCatalog],
+  );
+  // A PARENT chip's match set is itself + every child — mirrors the
+  // backend's `has_service` subtree rollup (`lib/audienceTargeting.ts`) so
+  // this filter never disagrees with what targeting a service actually
+  // means.
+  const serviceMatchSetById = useMemo(
+    () =>
+      serviceCatalog
+        ? buildServiceMatchSetMap(serviceCatalog)
+        : new Map<Id<"serviceOptions">, Set<Id<"serviceOptions">>>(),
+    [serviceCatalog],
+  );
+
+  // Distinct services across the roster, for the filter bar. Roster-only —
+  // contact rows never carry `serviceIds`.
   const allSkills = useMemo(() => {
-    const set = new Set<string>();
+    const seen = new Set<Id<"serviceOptions">>();
     for (const p of roster ?? []) {
-      for (const s of p.services ?? []) set.add(s);
+      for (const sid of p.serviceIds ?? []) seen.add(sid);
     }
-    return Array.from(set).sort();
-  }, [roster]);
+    return Array.from(seen)
+      .map((id) => ({ id, label: serviceLabelById.get(id) ?? "…" }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+  }, [roster, serviceLabelById]);
 
   // Memoized so a re-render (e.g. typing in another field) doesn't re-scan the
   // whole roster — only persona / skill / search changes recompute the rows.
@@ -321,12 +336,14 @@ export default function PeopleScreen() {
       if (persona !== "all" && persona !== "contacts" && personaOf(p) !== persona)
         return false;
       if (giversOnly && !giverMarksByPerson.has(p._id)) return false;
-      if (skillFilter && !(p.services ?? []).includes(skillFilter))
-        return false;
+      if (skillFilter) {
+        const matchSet = serviceMatchSetById.get(skillFilter) ?? new Set([skillFilter]);
+        if (!(p.serviceIds ?? []).some((sid) => matchSet.has(sid))) return false;
+      }
       if (query && !personMatchesSearch(p, query, queryDigits)) return false;
       return true;
     });
-  }, [people, persona, giversOnly, giverMarksByPerson, skillFilter, search]);
+  }, [people, persona, giversOnly, giverMarksByPerson, skillFilter, serviceMatchSetById, search]);
 
   // People-CRM UX selection: "select all visible" respects whatever's
   // currently filtered (persona/givers/skill/search), never the full roster.
@@ -516,10 +533,10 @@ export default function PeopleScreen() {
           />
           {allSkills.map((s) => (
             <Pill
-              key={s}
-              label={s}
-              selected={skillFilter === s}
-              onPress={() => setSkillFilter((cur) => (cur === s ? null : s))}
+              key={s.id}
+              label={s.label}
+              selected={skillFilter === s.id}
+              onPress={() => setSkillFilter((cur) => (cur === s.id ? null : s.id))}
             />
           ))}
         </View>
@@ -864,11 +881,12 @@ function PersonRow({
         />
       </Cell>
 
-      {/* Skills: chips + comma-separated inline editor */}
+      {/* Skills: Service Catalog multi-select (replaces the old free-text
+          comma editor — see `SkillsCell`'s doc). */}
       <Cell width={COLS.skills}>
         <SkillsCell
-          skills={person.services ?? []}
-          onCommit={(next) => update({ personId: id, services: next })}
+          serviceIds={person.serviceIds ?? []}
+          onCommit={(next) => update({ personId: id, serviceIds: next })}
         />
       </Cell>
 
@@ -1128,41 +1146,51 @@ function RateCell({
   );
 }
 
-// ── Skills cell: chips + an inline comma-separated editor ─────────────────────
-// Tapping the chips area swaps to a text input; on blur it splits/normalizes.
+// ── Skills cell: Service Catalog multi-select ──────────────────────────────
+// Tapping the chips area opens `ServiceOptionsPicker` (browse the managed
+// catalog, add a new option inline, or jump to "Manage services…" to rename/
+// deactivate/merge) — replaces the old free-text comma editor now that
+// `people.update` takes `serviceIds` (catalog ids), not `services` (strings).
+// Queries its own catalog copy for label resolution (Convex dedupes this
+// against every other row's identical subscription; kept local rather than
+// lifted to `PeopleScreen` state to keep this change scoped to the cell).
 function SkillsCell({
-  skills,
+  serviceIds,
   onCommit,
 }: {
-  skills: string[];
-  onCommit: (next: string[]) => void;
+  serviceIds: Id<"serviceOptions">[];
+  onCommit: (next: Id<"serviceOptions">[]) => void;
 }) {
-  const [editing, setEditing] = useState(false);
-
-  if (editing) {
-    return (
-      <InlineText
-        value={skills.join(", ")}
-        placeholder="sound, lighting…"
-        onCommit={(t) => {
-          onCommit(parseSkills(t));
-          setEditing(false);
-        }}
-      />
-    );
-  }
+  const tree = useQuery(api.serviceOptions.list, { includeInactive: true });
+  const labelById = useMemo(
+    () => (tree ? buildServiceLabelMap(tree) : new Map<Id<"serviceOptions">, string>()),
+    [tree],
+  );
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   return (
-    <Pressable
-      onPress={() => setEditing(true)}
-      className="flex-1 flex-row flex-wrap items-center gap-1 px-2 py-1.5 active:opacity-70 web:hover:opacity-90"
-    >
-      {skills.length === 0 ? (
-        <Text className="text-sm text-faint">—</Text>
-      ) : (
-        skills.map((s) => <OptionTag key={s} label={s} />)
-      )}
-    </Pressable>
+    <>
+      <Pressable
+        onPress={() => setPickerOpen(true)}
+        className="flex-1 flex-row flex-wrap items-center gap-1 px-2 py-1.5 active:opacity-70 web:hover:opacity-90"
+      >
+        {serviceIds.length === 0 ? (
+          <Text className="text-sm text-faint">—</Text>
+        ) : (
+          serviceIds.map((sid) => (
+            <OptionTag key={sid} label={labelById.get(sid) ?? "…"} />
+          ))
+        )}
+      </Pressable>
+      <ServiceOptionsPicker
+        visible={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        mode="multi"
+        selectedIds={serviceIds}
+        onChange={onCommit}
+        title="Services"
+      />
+    </>
   );
 }
 
