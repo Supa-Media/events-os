@@ -19,6 +19,8 @@ email → receipts@reply.publicworship.life
       → processInboundReceipt (action)  (receiptInbox.ts)
            1. resolve sender → people row (auth gate; unknown → ignored)
            2. get content: image/PDF attachment (Resend Attachments API)
+              — a forwarded-as-attachment .eml is OPENED first and replaced
+                by the receipt(s) inside it (lib/emlMessage.ts)
               else the email body text
            3. read the total:
                 • body  → parseReceiptFromText   (regex, ZERO LLM)
@@ -33,6 +35,27 @@ email → receipts@reply.publicworship.life
 total off a receipt. The single money-adjacent write (`applyReceiptAttachment`)
 only attaches a receipt and, at most, flips an *already-categorized* charge to
 `reconciled`. Ambiguity always defers to a human. Mirrors the AI-coding rule.
+
+## Forwarding a receipt email
+
+Two shapes both work:
+
+- **Forward inline** (the ordinary "Forward") — the merchant's text comes
+  through in the body, and any receipt image/PDF rides along as an attachment.
+- **Forward as attachment** (Gmail/Apple Mail/Outlook) — the original message
+  arrives wrapped as a `message/rfc822` (`.eml`) attachment, with an empty
+  outer body. `lib/emlMessage.ts` (a small, dependency-free MIME parser) opens
+  it and hands the pipeline what's inside: the original's own image/PDF
+  attachments if it has any, otherwise its body text. A forward chain (a
+  forward of a forward) is unwrapped up to `MAX_EML_NESTING_DEPTH`, and several
+  messages forwarded in one email each become their own receipt (bounded by
+  `MAX_RECEIPT_SOURCES`).
+
+  The merchant fallback (`deriveMerchantFromEmail`) uses the **forwarded
+  message's** envelope, not the forwarder's — a receipt forwarded by a team
+  member reads as "Google Payments", never as their own mail host. An `.eml`
+  nothing could be read out of is still stored as a document for the review
+  queue rather than silently ignored.
 
 ## Matching defaults (tunable in `receiptInbox.ts`)
 

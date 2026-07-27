@@ -80,6 +80,11 @@ import {
   findDuplicateReceiptBySha256,
 } from "./lib/receiptLinks";
 import { sendEmail } from "./ticketingEmails";
+import {
+  isEmailMessageAttachment,
+  parseEmlMessage,
+  type ParsedEmlMessage,
+} from "./lib/emlMessage";
 
 // ── Tuning constants ─────────────────────────────────────────────────────────
 /** How far apart the receipt DATE and a card charge's `postedAt` may be and
@@ -94,6 +99,13 @@ const MAX_CANDIDATES_SURFACED = 8;
 /** How many attachments we ever process off one email (bounded — a receipt
  *  email carries a handful of photos, not hundreds). */
 const MAX_ATTACHMENTS = 10;
+/** How many receipt sources one email may yield AFTER forwarded-message
+ *  expansion. A single `.eml` attachment can itself carry several receipts,
+ *  and a "forward as attachment" batch can carry several `.eml`s (the shape
+ *  that motivated this — a whole month of invoices forwarded at once), so the
+ *  post-expansion ceiling is deliberately higher than `MAX_ATTACHMENTS`.
+ *  Anything past it is reported in the row's detail, never silently dropped. */
+const MAX_RECEIPT_SOURCES = 25;
 /** Abort a single OCR completion if it hangs longer than this. */
 const OCR_TIMEOUT_MS = 60_000;
 /** How many pages of a SCANNED pdf `extractReceiptFields` will render and
@@ -1100,29 +1112,55 @@ export function isLikelyInlineAsset(a: {
   size?: number;
 }): boolean {
   if (isPdfContentType(a.contentType, a.filename)) return false;
+  // A forwarded message is never an inline asset either — it's the envelope
+  // around the real receipt (see `isEmailMessageAttachment`).
+  if (isEmailMessageAttachment(a.contentType, a.filename)) return false;
   if (a.size == null || a.size >= INLINE_ASSET_SIZE_FLOOR_BYTES) return false;
   return INLINE_ASSET_NAME_RE.test(a.filename.toLowerCase());
 }
 
-/** Append a note about attachments the inline-asset filter skipped — so a
- *  filtered-out logo/signature never just silently disappears (a bookkeeper
- *  can see it was seen and why it wasn't treated as a receipt). No-op when
- *  nothing was skipped. Bounded to the first 5 names inline, with a `+N more`
- *  tail for a noisier email. */
+/** Append a note about attachments the pipeline did NOT turn into receipts —
+ *  one the inline-asset filter dropped (a logo, a signature) or one past a
+ *  per-email cap — so it never just silently disappears (a bookkeeper can see
+ *  it was seen). No-op when nothing was skipped. Bounded to the first 5 names
+ *  inline, with a `+N more` tail for a noisier email. */
 export function appendSkippedNote(detail: string, skippedNames: string[]): string {
   if (skippedNames.length === 0) return detail;
   const shown = skippedNames.slice(0, 5).join(", ");
   const rest = skippedNames.length > 5 ? `, +${skippedNames.length - 5} more` : "";
-  return `${detail} (Skipped ${skippedNames.length} likely non-receipt attachment${
+  return `${detail} (Skipped ${skippedNames.length} attachment${
     skippedNames.length === 1 ? "" : "s"
-  }: ${shown}${rest}.)`;
+  } not processed as receipts: ${shown}${rest}.)`;
+}
+
+/**
+ * True iff an attachment looks like something the pipeline can read a receipt
+ * out of: a receipt IMAGE or PDF, or a FORWARDED MESSAGE (`message/rfc822` /
+ * `.eml`) that may carry one inside (see `expandReceiptSources`). Checked by
+ * content type AND by filename extension — a mail client that mislabels a
+ * `.pdf`/`.eml` as `application/octet-stream` is common enough that the
+ * extension is a necessary second signal.
+ */
+export function isReceiptFileAttachment(
+  contentType: string | null | undefined,
+  filename: string | null | undefined,
+): boolean {
+  const ct = (contentType ?? "").toLowerCase();
+  const name = (filename ?? "").toLowerCase();
+  return (
+    ct.startsWith("image/") ||
+    ct === "application/pdf" ||
+    /\.(jpe?g|png|webp|heic|gif|pdf)$/.test(name) ||
+    isEmailMessageAttachment(ct, name)
+  );
 }
 
 /**
  * List a received email's attachments via the Resend API
  * (`GET /emails/receiving/{emailId}/attachments`) and return EVERY one that
- * looks like a receipt image or PDF AND isn't almost-certainly an inline
- * email asset (`isLikelyInlineAsset`), downloaded as a Blob (bounded by
+ * looks like a receipt image or PDF (or a forwarded `.eml` carrying one) AND
+ * isn't almost-certainly an inline email asset (`isLikelyInlineAsset`),
+ * downloaded as a Blob (bounded by
  * `MAX_ATTACHMENTS`). Each usable one is extracted + matched independently.
  * The `download_url` is a short-lived signed CloudFront URL (no auth header
  * needed for the download itself; the LIST call needs the API key). Returns
@@ -1155,20 +1193,11 @@ async function fetchAllReceiptAttachments(emailId: string): Promise<{
     return { attachments: [], skippedNames: [] };
   }
 
-  const isReceiptFile = (a: ResendAttachment) => {
-    const ct = (a.content_type ?? "").toLowerCase();
-    const name = (a.filename ?? "").toLowerCase();
-    return (
-      ct.startsWith("image/") ||
-      ct === "application/pdf" ||
-      /\.(jpe?g|png|webp|heic|gif|pdf)$/.test(name)
-    );
-  };
-
   const skippedNames: string[] = [];
   const targets: ResendAttachment[] = [];
   for (const a of list) {
-    if (!a.download_url || !isReceiptFile(a)) continue;
+    if (!a.download_url || !isReceiptFileAttachment(a.content_type, a.filename))
+      continue;
     if (isLikelyInlineAsset({ contentType: a.content_type ?? "", filename: a.filename ?? "", size: a.size })) {
       skippedNames.push(a.filename ?? a.id);
       continue;
@@ -1176,6 +1205,11 @@ async function fetchAllReceiptAttachments(emailId: string): Promise<{
     targets.push(a);
   }
   const bounded = targets.slice(0, MAX_ATTACHMENTS);
+  // Over the per-email cap — named in the row's detail rather than dropped
+  // without a trace (a batch forward can legitimately run long).
+  for (const over of targets.slice(MAX_ATTACHMENTS)) {
+    skippedNames.push(over.filename ?? over.id);
+  }
 
   const out: { blob: Blob; contentType: string; filename: string }[] = [];
   for (const target of bounded) {
@@ -1196,6 +1230,166 @@ async function fetchAllReceiptAttachments(emailId: string): Promise<{
     }
   }
   return { attachments: out, skippedNames };
+}
+
+// ── Forwarded-as-attachment expansion (the `.eml` fix) ───────────────────────
+/**
+ * The FORWARDED message's own envelope, when a receipt came out of a `.eml`
+ * attachment rather than straight off the email that was sent to us. It's the
+ * merchant's envelope (`Google Payments <payments-noreply@google.com>`), not
+ * the forwarder's — so the merchant fallback must prefer it (see
+ * `runPipeline` step 3b): deriving "Gmail"/the team member's own domain off
+ * the outer envelope would be flatly wrong for a forwarded receipt.
+ */
+export interface ForwardedEnvelope {
+  fromEmail?: string;
+  subject?: string;
+}
+
+/** One thing the pipeline will turn into a `receipts` row: a FILE to extract
+ *  (image/PDF) or BODY text to parse (zero LLM). A forwarded message expands
+ *  into one or more of these; a directly-attached image/PDF is just one
+ *  `file`. */
+export type ReceiptSource =
+  | {
+      kind: "file";
+      blob: Blob;
+      contentType: string;
+      filename: string;
+      envelope?: ForwardedEnvelope;
+    }
+  | {
+      kind: "body";
+      text: string;
+      isHtml: boolean;
+      filename: string;
+      envelope?: ForwardedEnvelope;
+    };
+
+/** Trim a forwarded message's subject into the `filename` a bookkeeper sees on
+ *  the stored body document. */
+function forwardedBodyLabel(subject: string | null): string {
+  const cleaned = (subject ?? "").replace(/\s+/g, " ").trim();
+  return cleaned ? `${cleaned.slice(0, 120)} (forwarded email)` : "forwarded email";
+}
+
+/**
+ * Turn ONE parsed forwarded message into the receipt sources it carries.
+ *
+ * Per message, the SAME precedence the top-level pipeline uses: its usable
+ * image/PDF attachments (a Google Workspace invoice PDF, a photo) win; only
+ * when a message and everything it forwards yield NO file at all does its own
+ * BODY text become the receipt. Recurses through a forward chain (bounded by
+ * the parser's `MAX_EML_NESTING_DEPTH`), so "Alice forwards Bob's forward of
+ * the merchant's receipt" still reaches the receipt.
+ *
+ * Inline assets (a signature graphic, a logo) are filtered with the exact same
+ * `isLikelyInlineAsset` rule directly-attached files get, and their names are
+ * pushed onto `skippedNames` so they surface in the row's detail instead of
+ * vanishing. Exported for direct unit testing.
+ */
+export function collectForwardedReceiptSources(
+  message: ParsedEmlMessage,
+  skippedNames: string[] = [],
+): ReceiptSource[] {
+  const envelope: ForwardedEnvelope = {
+    fromEmail: message.from ?? undefined,
+    subject: message.subject ?? undefined,
+  };
+  const sources: ReceiptSource[] = [];
+  for (const att of message.attachments) {
+    if (!isReceiptFileAttachment(att.contentType, att.filename)) continue;
+    if (
+      isLikelyInlineAsset({
+        contentType: att.contentType,
+        filename: att.filename,
+        size: att.bytes.length,
+      })
+    ) {
+      skippedNames.push(att.filename);
+      continue;
+    }
+    sources.push({
+      kind: "file",
+      blob: new Blob([att.bytes as BlobPart], { type: att.contentType }),
+      contentType: att.contentType,
+      filename: att.filename,
+      envelope,
+    });
+  }
+  for (const nested of message.forwarded) {
+    sources.push(...collectForwardedReceiptSources(nested, skippedNames));
+  }
+  if (sources.length > 0) return sources;
+
+  // No file anywhere in this branch — the forwarded message's own body IS the
+  // receipt (a plain-text/HTML merchant confirmation), stored as a document
+  // exactly like the top-level body path does.
+  const plain = (message.text ?? "").trim();
+  const html = (message.html ?? "").trim();
+  const body = plain || html;
+  if (!body) return [];
+  return [
+    {
+      kind: "body",
+      text: body,
+      isHtml: plain === "" && html !== "",
+      filename: forwardedBodyLabel(message.subject),
+      envelope,
+    },
+  ];
+}
+
+/**
+ * Expand the raw attachments off one inbound email into the receipt sources
+ * the pipeline actually processes: a `message/rfc822` / `.eml` attachment (the
+ * "Forward as attachment" shape — Gmail's, Apple Mail's, Outlook's) is OPENED
+ * and replaced by what it carries; everything else passes through as the file
+ * it already is.
+ *
+ * This is the fix for forwarded receipts arriving as opaque `.eml`s: before
+ * it, such an email had no image/PDF attachment and an empty outer body, so
+ * the whole message landed as `ignored` with the real receipt PDF one MIME
+ * layer down, unread.
+ *
+ * Bounded by `MAX_RECEIPT_SOURCES`; anything past the cap is reported through
+ * `skippedNames` (which the row's `detail` surfaces) rather than dropped
+ * silently. An unparseable `.eml` degrades to the file itself, so a bookkeeper
+ * still gets a document to look at.
+ */
+async function expandReceiptSources(
+  attachments: { blob: Blob; contentType: string; filename: string }[],
+  skippedNames: string[],
+): Promise<ReceiptSource[]> {
+  const sources: ReceiptSource[] = [];
+  for (const att of attachments) {
+    const asFile: ReceiptSource = { kind: "file", ...att };
+    if (!isEmailMessageAttachment(att.contentType, att.filename)) {
+      sources.push(asFile);
+      continue;
+    }
+    const inner = collectForwardedReceiptSources(
+      parseEmlMessage(await att.blob.arrayBuffer()),
+      skippedNames,
+    );
+    if (inner.length === 0) {
+      // Nothing readable inside — keep the `.eml` itself so the email doesn't
+      // silently become a no-op; a human can still open it from the queue.
+      console.log(
+        `[receiptInbox] forwarded message "${att.filename}" carried no readable receipt.`,
+      );
+      sources.push(asFile);
+      continue;
+    }
+    sources.push(...inner);
+  }
+  if (sources.length > MAX_RECEIPT_SOURCES) {
+    for (const extra of sources.slice(MAX_RECEIPT_SOURCES)) {
+      skippedNames.push(extra.filename);
+    }
+    return sources.slice(0, MAX_RECEIPT_SOURCES);
+  }
+  return sources;
 }
 
 /** Base64-encode an ArrayBuffer for a data: URL (chunked to avoid arg limits).
@@ -1635,6 +1829,48 @@ interface ExtractedReceipt {
   ocrModel?: string;
   ocrError?: string;
   candidateTransactionIds: Id<"transactions">[];
+  /** Set only when this receipt came out of a FORWARDED message — the inner
+   *  merchant envelope the merchant fallback must prefer over the forwarder's
+   *  (see `ForwardedEnvelope`). */
+  envelope?: ForwardedEnvelope;
+}
+
+/**
+ * Store one BODY receipt — an email whose text IS the receipt — as a document
+ * and parse its total with the zero-LLM heuristic. Stored as a file because an
+ * email receipt saved as a document IS the receipt, so a unique match can
+ * auto-attach it exactly like a photo; HTML keeps its `text/html` type so the
+ * review UI renders it. Shared by the top-level body path and the
+ * forwarded-message body path so the two can't drift apart.
+ */
+async function storeBodyReceipt(
+  ctx: ActionCtx,
+  args: {
+    text: string;
+    isHtml: boolean;
+    filename: string;
+    envelope?: ForwardedEnvelope;
+  },
+): Promise<ExtractedReceipt> {
+  const storageId = await ctx.storage.store(
+    new Blob([args.text], { type: args.isHtml ? "text/html" : "text/plain" }),
+  );
+  const parsed = parseReceiptFromText(args.text);
+  return {
+    storageId,
+    sourceKind: "body",
+    filename: args.filename,
+    ocrAmountCents: parsed.amountCents ?? undefined,
+    ocrDate: parsed.date ?? undefined,
+    ocrMerchant: parsed.merchant ?? undefined,
+    ocrConfidence: parsed.amountCents != null ? 0.5 : 0,
+    ocrError:
+      parsed.amountCents == null
+        ? "Couldn't find a total in the email body text."
+        : undefined,
+    candidateTransactionIds: [],
+    envelope: args.envelope,
+  };
 }
 
 /**
@@ -1694,13 +1930,16 @@ async function runPipeline(
 
   // 2. Get receipt content: EVERY usable image/PDF attachment (skipping
   //    almost-certainly-inline assets — logos, signatures, tracking pixels;
-  //    see `isLikelyInlineAsset`), else the body. A PDF attachment tries its
-  //    own text layer first (zero LLM) before ever reaching the vision model
-  //    — see `extractReceiptFields`.
+  //    see `isLikelyInlineAsset`), else the body. A `.eml` attachment — the
+  //    "Forward as attachment" shape — is OPENED first and replaced by the
+  //    receipt(s) inside it (`expandReceiptSources`). A PDF tries its own text
+  //    layer first (zero LLM) before ever reaching the vision model — see
+  //    `extractReceiptFields`.
   const { attachments, skippedNames } = await fetchAllReceiptAttachments(row.emailId);
+  const sources = await expandReceiptSources(attachments, skippedNames);
   const extracted: ExtractedReceipt[] = [];
 
-  if (attachments.length > 0) {
+  if (sources.length > 0) {
     // Resolve the active AI engine (provider + key + global model) ONCE for the
     // whole email, then the OCR model for this provider.
     const config = await ctx.runQuery(
@@ -1708,20 +1947,34 @@ async function runPipeline(
       {},
     );
     const model = resolveOcrModel(config);
-    for (const att of attachments) {
-      const storageId = await ctx.storage.store(att.blob);
+    for (const source of sources) {
+      if (source.kind === "body") {
+        // A forwarded message with no file inside — its body text IS the
+        // receipt (ZERO LLM), stored as a document like the top-level body
+        // path below.
+        extracted.push(
+          await storeBodyReceipt(ctx, {
+            text: source.text,
+            isHtml: source.isHtml,
+            filename: source.filename,
+            envelope: source.envelope,
+          }),
+        );
+        continue;
+      }
+      const storageId = await ctx.storage.store(source.blob);
       const result = await extractReceiptFields(ctx, {
         storageId,
         config,
-        blob: att.blob,
-        contentType: att.contentType,
-        filename: att.filename,
+        blob: source.blob,
+        contentType: source.contentType,
+        filename: source.filename,
         model,
       });
       extracted.push({
         storageId,
         sourceKind: "attachment",
-        filename: att.filename,
+        filename: source.filename,
         ocrAmountCents: result.ocrAmountCents,
         ocrDate: result.ocrDate,
         ocrMerchant: result.ocrMerchant,
@@ -1729,6 +1982,7 @@ async function runPipeline(
         ocrModel: result.ocrModel,
         ocrError: result.ocrError,
         candidateTransactionIds: [],
+        envelope: source.envelope,
       });
     }
   } else {
@@ -1739,25 +1993,13 @@ async function runPipeline(
     const full = await fetchReceivedEmailBody(row.emailId);
     const text = full ?? row.subject ?? "";
     if (text.trim()) {
-      const isHtml = /<[a-z][\s\S]*>/i.test(text);
-      const storageId = await ctx.storage.store(
-        new Blob([text], { type: isHtml ? "text/html" : "text/plain" }),
+      extracted.push(
+        await storeBodyReceipt(ctx, {
+          text,
+          isHtml: /<[a-z][\s\S]*>/i.test(text),
+          filename: "email body",
+        }),
       );
-      const parsed = parseReceiptFromText(text);
-      extracted.push({
-        storageId,
-        sourceKind: "body",
-        filename: "email body",
-        ocrAmountCents: parsed.amountCents ?? undefined,
-        ocrDate: parsed.date ?? undefined,
-        ocrMerchant: parsed.merchant ?? undefined,
-        ocrConfidence: parsed.amountCents != null ? 0.5 : 0,
-        ocrError:
-          parsed.amountCents == null
-            ? "Couldn't find a total in the email body text."
-            : undefined,
-        candidateTransactionIds: [],
-      });
     }
   }
 
@@ -1784,11 +2026,17 @@ async function runPipeline(
   //     merchant, derive one from the email envelope (`deriveMerchantFromEmail`
   //     — display name > sending domain > subject fragment) so `ocrMerchant`
   //     isn't left blank when the receipt itself carried no readable business
-  //     name (e.g. a bare Givebutter donation confirmation). NEVER overwrites a
-  //     real extracted merchant — only fills a gap.
+  //     name (e.g. a bare Givebutter donation confirmation). A receipt that
+  //     came out of a FORWARDED message uses THAT message's envelope first —
+  //     the merchant's own ("Google Payments"), not the forwarder's (which
+  //     would derive the team member's mail host, a flatly wrong merchant).
+  //     NEVER overwrites a real extracted merchant — only fills a gap.
   for (const ex of extracted) {
     if (!ex.ocrMerchant) {
-      const fallback = deriveMerchantFromEmail(row.fromEmail, row.subject);
+      const fallback =
+        (ex.envelope?.fromEmail
+          ? deriveMerchantFromEmail(ex.envelope.fromEmail, ex.envelope.subject)
+          : null) ?? deriveMerchantFromEmail(row.fromEmail, row.subject);
       if (fallback) ex.ocrMerchant = fallback;
     }
   }
