@@ -9,8 +9,14 @@
  * `false`, never throws), but a genuine transport failure (Resend fully down)
  * PROPAGATES out of both — that distinction matters to `blasts.ts`'s
  * per-recipient delivery loop, which needs a real throw to count a failure
- * instead of quietly marking a blast "sent" during an outage. All emails
- * carry the Public Worship look: cream card, deep-red accents.
+ * instead of quietly marking a blast "sent" during an outage.
+ *
+ * Every email here is painted by `lib/emailShell.ts`, which reads its tokens
+ * off `DEFAULT_EMAIL_THEME` — the SAME theme campaign email renders on. There
+ * is exactly one brand palette in this codebase (`emailTheme.ts` in
+ * `@events-os/shared`); nothing in this file may hardcode a colour.
+ * `emailShell` is re-exported below purely so the ~20 existing
+ * `from "./ticketingEmails"` imports keep working.
  *
  * The Resend key/from-address come from `lib/resend.ts`'s
  * `resolveResendSettings` — the in-app superuser setting
@@ -26,11 +32,25 @@ import { internal } from "./_generated/api";
 import { rsvpPageUrl, siteUrl } from "./lib/siteUrl";
 import { resolveResendSettings, sendResendEmail } from "./lib/resend";
 import { escapeHtml } from "./lib/html";
+import {
+  EMAIL_CLS,
+  EMAIL_THEME,
+  emailButton,
+  emailCode,
+  emailEyebrow,
+  emailHeading,
+  emailLink,
+  emailPanel,
+  emailParagraph,
+  emailShell,
+  emailTextStyle,
+} from "./lib/emailShell";
 
-const ACCENT = "#D23B3A";
-const INK = "#210909";
-const CREAM = "#FDF6F6";
-const MUTED = "#7A5A5A";
+/** Re-export so the existing `import { emailShell } from "./ticketingEmails"`
+ *  call sites (reminders, cards, reimbursements, blasts, budget/campaign
+ *  approvals, finances) keep working. The implementation — and the theme it
+ *  reads — lives in `lib/emailShell.ts`. */
+export { emailShell };
 
 function formatWhen(ts: number | null): string {
   if (!ts) return "";
@@ -42,19 +62,6 @@ function formatWhen(ts: number | null): string {
     minute: "2-digit",
     timeZone: "America/New_York",
   });
-}
-
-/** Shared shell: centered cream card on white with a red wordmark strip. */
-export function emailShell(inner: string): string {
-  return `<div style="margin:0;padding:32px 12px;background:#ffffff;font-family:Georgia,'Times New Roman',serif;color:${INK}">
-  <div style="max-width:520px;margin:0 auto">
-    <div style="text-align:center;padding-bottom:16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-weight:700;letter-spacing:0.12em;font-size:12px;color:${ACCENT}">PUBLIC WORSHIP</div>
-    <div style="background:${CREAM};border:1px solid #EFE0DC;border-radius:20px;padding:32px 28px">
-      ${inner}
-    </div>
-    <div style="text-align:center;padding-top:16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:11px;color:${MUTED}">Sent with love by Public Worship · Chapter OS</div>
-  </div>
-</div>`;
 }
 
 /**
@@ -110,10 +117,20 @@ export const sendVerificationEmail = internalAction({
       to: email,
       subject: `${code} is your verification code`,
       html: emailShell(`
-      <h1 style="margin:0 0 12px;font-size:26px;line-height:1.2">Confirm your email</h1>
-      <p style="margin:0 0 20px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:${MUTED}">Enter this code on the RSVP page so the host knows this address is really yours. It expires in 15 minutes.</p>
-      <div style="background:#fff;border:1px dashed #E4CFCB;border-radius:14px;padding:18px;text-align:center;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:32px;font-weight:700;letter-spacing:0.28em;color:${ACCENT}">${code}</div>
-      <p style="margin:16px 0 0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;line-height:1.6;color:${MUTED}">Didn't RSVP to a Public Worship event? You can safely ignore this email.</p>`),
+      ${emailHeading("Confirm your email", { size: 26 })}
+      ${emailParagraph(
+        "Enter this code on the RSVP page so the host knows this address is really yours. It expires in 15 minutes.",
+        { margin: "0 0 20px" },
+      )}
+      ${emailPanel(emailCode(escapeHtml(code), { size: 32, letterSpacing: "0.28em" }), {
+        dashed: true,
+        center: true,
+        margin: "0",
+      })}
+      ${emailParagraph(
+        "Didn't RSVP to a Public Worship event? You can safely ignore this email.",
+        { size: 12, margin: "16px 0 0" },
+      )}`),
     });
     return null;
   },
@@ -140,9 +157,9 @@ export const sendRsvpEmail = internalAction({
       to: email,
       subject: status === "going" ? "You're on the list 🎉" : "Got your RSVP",
       html: emailShell(`
-      <h1 style="margin:0 0 12px;font-size:26px;line-height:1.2">${heading}</h1>
-      <p style="margin:0 0 20px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:${MUTED}">${line}</p>
-      <a href="${url}" style="display:inline-block;background:${ACCENT};color:#fff;text-decoration:none;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-weight:600;font-size:14px;padding:12px 24px;border-radius:999px">Open the RSVP page</a>`),
+      ${emailHeading(escapeHtml(heading), { size: 26 })}
+      ${emailParagraph(line, { margin: "0 0 20px" })}
+      ${emailButton(url, "Open the RSVP page")}`),
     });
     return null;
   },
@@ -166,13 +183,13 @@ export const sendTicketsEmail = internalAction({
         : `$${(order.totalCents / 100).toFixed(2)}`;
 
     const ticketRows = tickets
-      .map(
-        (t) => `
-      <a href="${base}/t/${t.code}" style="display:block;text-decoration:none;color:${INK};background:#fff;border:1px dashed #E4CFCB;border-radius:14px;padding:14px 18px;margin:0 0 10px">
-        <div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:11px;letter-spacing:0.08em;color:${MUTED};text-transform:uppercase">${t.ticketTypeName}</div>
-        ${t.attendeeName ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;font-weight:600;color:${INK};padding-top:2px">${escapeHtml(t.attendeeName)}</div>` : ""}
-        <div style="font-family:'SF Mono',Menlo,Consolas,monospace;font-size:20px;font-weight:700;letter-spacing:0.06em;color:${ACCENT};padding-top:2px">${t.code}</div>
-      </a>`,
+      .map((t) =>
+        emailPanel(
+          `${emailEyebrow(escapeHtml(t.ticketTypeName), { margin: "0" })}
+        ${t.attendeeName ? `<div class="${EMAIL_CLS.text}" style="${emailTextStyle({ margin: "2px 0 0", strong: true })};font-weight:600">${escapeHtml(t.attendeeName)}</div>` : ""}
+        <div style="padding-top:2px">${emailCode(escapeHtml(t.code), { size: 20, letterSpacing: "0.06em" })}</div>`,
+          { dashed: true, margin: "0 0 10px", href: `${base}/t/${t.code}` },
+        ),
       )
       .join("");
 
@@ -180,13 +197,16 @@ export const sendTicketsEmail = internalAction({
       to: order.email,
       subject: `Your ticket${tickets.length === 1 ? "" : "s"} to ${eventName}`,
       html: emailShell(`
-      <h1 style="margin:0 0 6px;font-size:26px;line-height:1.2">${eventName}</h1>
-      <p style="margin:0 0 20px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:${MUTED}">
-        ${when}${venueName ? ` · ${venueName}` : ""}<br/>
-        ${tickets.length} ticket${tickets.length === 1 ? "" : "s"} · ${total}
-      </p>
+      ${emailHeading(escapeHtml(eventName), { size: 26, margin: "0 0 6px" })}
+      ${emailParagraph(
+        `${escapeHtml(when)}${venueName ? ` · ${escapeHtml(venueName)}` : ""}<br/>${tickets.length} ticket${tickets.length === 1 ? "" : "s"} · ${total}`,
+        { margin: "0 0 20px" },
+      )}
       ${ticketRows}
-      <p style="margin:16px 0 0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;line-height:1.6;color:${MUTED}">Tap a ticket to open it — each has a QR code for the door. ${slug ? `Event details: <a href="${rsvpPageUrl(slug)}" style="color:${ACCENT}">${rsvpPageUrl(slug)}</a>` : ""}</p>`),
+      ${emailParagraph(
+        `Tap a ticket to open it — each has a QR code for the door. ${slug ? `Event details: ${emailLink(rsvpPageUrl(slug), escapeHtml(rsvpPageUrl(slug)))}` : ""}`,
+        { size: 12, margin: "16px 0 0" },
+      )}`),
     });
     return null;
   },
@@ -208,10 +228,13 @@ export const sendDonationReceiptEmail = internalAction({
       to: email,
       subject: `Thank you for your gift to ${eventName}`,
       html: emailShell(`
-      <h1 style="margin:0 0 12px;font-size:26px;line-height:1.2">Thank you, ${firstName} 🙏</h1>
-      <p style="margin:0 0 20px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:${MUTED}">Your gift of <b>${amount}</b> to <b>${eventName}</b> came through. It means the world — thank you for supporting the work.</p>
-      <div style="background:#fff;border:1px dashed #E4CFCB;border-radius:14px;padding:18px;text-align:center;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:28px;font-weight:700;color:${ACCENT}">${amount}</div>
-      ${slug ? `<p style="margin:16px 0 0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;line-height:1.6;color:${MUTED}">Event details: <a href="${rsvpPageUrl(slug)}" style="color:${ACCENT}">${rsvpPageUrl(slug)}</a></p>` : ""}`),
+      ${emailHeading(`Thank you, ${escapeHtml(firstName)} 🙏`, { size: 26 })}
+      ${emailParagraph(
+        `Your gift of <b>${amount}</b> to <b>${escapeHtml(eventName)}</b> came through. It means the world — thank you for supporting the work.`,
+        { margin: "0 0 20px" },
+      )}
+      ${emailPanel(emailCode(amount), { dashed: true, center: true, margin: "0" })}
+      ${slug ? emailParagraph(`Event details: ${emailLink(rsvpPageUrl(slug), escapeHtml(rsvpPageUrl(slug)))}`, { size: 12, margin: "16px 0 0" }) : ""}`),
     });
     return null;
   },
@@ -239,10 +262,19 @@ export const sendPledgeReceiptEmail = internalAction({
       to: email,
       subject: `Your monthly gift to ${city}`,
       html: emailShell(`
-      <h1 style="margin:0 0 12px;font-size:26px;line-height:1.2">Thank you, ${firstName} 🙏</h1>
-      <p style="margin:0 0 20px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:${MUTED}">Your monthly gift of <b>${amount}</b> to <b>${city}</b> came through. Backers like you are what make the work possible, month after month — thank you for standing with us.</p>
-      <div style="background:#fff;border:1px dashed #E4CFCB;border-radius:14px;padding:18px;text-align:center;font-family:'SF Mono',Menlo,Consolas,monospace;font-size:28px;font-weight:700;color:${ACCENT}">${amount}<span style="font-size:14px;font-weight:400;color:${MUTED}"> / month</span></div>
-      <p style="margin:16px 0 0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;line-height:1.6;color:${MUTED}">Need to update your card or change your amount? Just reply to this email and we'll send you a secure link.</p>`),
+      ${emailHeading(`Thank you, ${escapeHtml(firstName)} 🙏`, { size: 26 })}
+      ${emailParagraph(
+        `Your monthly gift of <b>${amount}</b> to <b>${escapeHtml(city)}</b> came through. Backers like you are what make the work possible, month after month — thank you for standing with us.`,
+        { margin: "0 0 20px" },
+      )}
+      ${emailPanel(
+        `${emailCode(amount)}<span class="${EMAIL_CLS.text}" style="font-family:${EMAIL_THEME.bodyFont};font-size:14px;color:${EMAIL_THEME.muted}"> / month</span>`,
+        { dashed: true, center: true, margin: "0" },
+      )}
+      ${emailParagraph(
+        "Need to update your card or change your amount? Just reply to this email and we'll send you a secure link.",
+        { size: 12, margin: "16px 0 0" },
+      )}`),
     });
     return null;
   },

@@ -49,7 +49,7 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "bullets",
         items: [
-          "**Color:** PW Red — **#c93431**. It's the one color that has to show up somewhere on anything public-facing.",
+          "**Color:** PW Red — **#891d1a**. It's the one color that has to show up somewhere on anything public-facing. It's also the default accent of the campaign email theme (Campaigns → Themes), so an email and a flyer carry the same red.",
           "**Fonts:** Times New Roman Condensed for headlines, **SF Pro Display** for captions specifically, and Barbra Condensed as the third supporting face.",
           "**Logos:** live in the shared Logos folder in Dropbox — pull from there, don't recreate one from a screenshot.",
           "**Templates:** Canva templates cover the recurring shapes — flyers for distribution, banners, social media overlays, and signage. Duplicate a template, don't build from a blank canvas.",
@@ -91,10 +91,10 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
     quiz: [
       {
         prompt: "What is the PW brand red's hex code?",
-        options: ["#c93431", "#eaca6d", "#ff0000", "#3431c9"],
+        options: ["#891d1a", "#eaca6d", "#ff0000", "#1a1d89"],
         answerIndex: 0,
         explanation:
-          "#c93431 — PW Red — is the one color that should show up somewhere on anything public-facing, regardless of who made it.",
+          "#891d1a — PW Red — is the one color that should show up somewhere on anything public-facing, regardless of who made it. It's the same red the campaign email theme uses by default, so print and email don't drift apart.",
       },
       {
         prompt: "Which font is specifically used for captions?",

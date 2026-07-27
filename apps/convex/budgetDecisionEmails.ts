@@ -26,6 +26,14 @@ import { internal } from "./_generated/api";
 import { escapeHtml } from "./lib/html";
 import { appUrl } from "./lib/siteUrl";
 import { sendEmail, emailShell } from "./ticketingEmails";
+import {
+  EMAIL_CLS,
+  emailButtonRow,
+  emailHeading,
+  emailPanel,
+  emailParagraph,
+  emailTextStyle,
+} from "./lib/emailShell";
 import { nameCache, resolveBudgetRef } from "./finances";
 
 /**
@@ -116,7 +124,10 @@ export const notifyBudgetSubmitter = internalAction({
       ? `Your budget "${escapeHtml(decision.budgetName)}" was approved${deciderBit}.`
       : `Your budget "${escapeHtml(decision.budgetName)}" was sent back for changes${deciderBit}.`;
     const noteBlock = decision.reviewNote
-      ? `<div style="background:#fff;border:1px dashed #E4CFCB;border-radius:14px;padding:14px 18px;margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#210909"><b>${approved ? "Note" : "What to change"}:</b> ${escapeHtml(decision.reviewNote)}</div>`
+      ? emailPanel(
+          `<div class="${EMAIL_CLS.text}" style="${emailTextStyle({ strong: true })}"><b>${approved ? "Note" : "What to change"}:</b> ${escapeHtml(decision.reviewNote)}</div>`,
+          { dashed: true },
+        )
       : "";
     // The finance dashboard — same link `notifyBudgetApprovers` uses (`null`
     // when APP_URL is unset).
@@ -126,14 +137,10 @@ export const notifyBudgetSubmitter = internalAction({
       to: decision.submitterEmail,
       subject,
       html: emailShell(`
-        <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">${heading}</h1>
-        <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(decision.submitterName)} — ${lead}</p>
+        ${emailHeading(heading)}
+        ${emailParagraph(`Hi ${escapeHtml(decision.submitterName)} — ${lead}`)}
         ${noteBlock}
-        ${
-          link
-            ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${link}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">Open the finance dashboard →</a></div>`
-            : ""
-        }`),
+        ${link ? emailButtonRow(link, "Open the finance dashboard →") : ""}`),
     });
     return null;
   },

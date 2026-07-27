@@ -122,10 +122,18 @@ import {
 import { escapeHtml } from "./lib/html";
 import { newGuestToken } from "./ticketing";
 import {
+  emailThemePreset,
+  normalizeEmailTheme,
   renderCampaignEmail,
   renderCampaignText,
   validateEmailDocument,
+  type EmailDocument,
+  type EmailTheme,
 } from "@events-os/shared";
+import { resolveScopeTheme } from "./emailThemes";
+// From lib/, not campaignTemplates.ts — that module imports applyThemeToDoc
+// from here, so importing the seeder back from it would close a cycle.
+import { seedBuiltInTemplates } from "./lib/builtInTemplates";
 import { CAMPAIGN_STATUSES } from "./schema/campaigns";
 // Reused rather than re-implemented — same SOD_VIOLATION error code, pure
 // (no ctx) so it's trivially testable either way. See its own doc in
@@ -254,6 +262,43 @@ export const getSenderDefaults = query({
   },
 });
 
+// ── Theming ───────────────────────────────────────────────────────────────
+// A campaign's theme is stored INLINE on its document (`EmailDocument.theme`),
+// as a RESOLVED SNAPSHOT rather than a pointer to an `emailThemes` row. Two
+// reasons, both load-bearing:
+//
+//  1. What a reviewer approved is what sends. The approval snapshot hash
+//     (`computeCampaignSnapshotHash`) already hashes `campaign.doc` WHOLESALE,
+//     so an inline theme rides along for free — restyling a pending campaign
+//     changes its hash and correctly invalidates the approval, with no new key
+//     in that payload (adding one would have re-hashed every existing campaign
+//     on deploy; see that function's doc for why the payload shape is frozen).
+//  2. A campaign already sent must never restyle. If the doc pointed at a row,
+//     editing the org theme in November would silently rewrite what October's
+//     archived send appears to have looked like.
+//
+// Existing campaigns are never rewritten by any of this — their stored docs
+// keep no `theme` key and keep hashing byte-identically, and the renderer
+// falls back to `DEFAULT_EMAIL_THEME` for them.
+
+/** True iff `doc` already carries its own theme — the "don't overwrite what
+ *  the author chose" check for every seeding path. Written defensively because
+ *  `doc` is `v.any()` at the boundary. */
+export function docHasTheme(doc: unknown): boolean {
+  return (
+    typeof doc === "object" &&
+    doc !== null &&
+    !Array.isArray(doc) &&
+    (doc as Record<string, unknown>).theme !== undefined
+  );
+}
+
+/** Stamp `theme` onto `doc`. Pure and non-mutating — the caller decides
+ *  WHETHER to stamp (`docHasTheme`); this only decides HOW. */
+export function applyThemeToDoc(doc: unknown, theme: EmailTheme): EmailDocument {
+  return { ...(doc as EmailDocument), theme };
+}
+
 export const createCampaign = mutation({
   args: {
     scope: scopeValidator,
@@ -284,11 +329,28 @@ export const createCampaign = mutation({
     if (!audience) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Audience not found." });
     }
-    const validated = validateEmailDocument(doc);
+    // Stamp the scope's current default theme BEFORE validating, so the theme
+    // the document actually stores is the one the validator saw. Only when the
+    // incoming document brought none — a composer that already picked a theme
+    // (or a template that carries one) is never overridden.
+    const themed = docHasTheme(doc)
+      ? doc
+      : applyThemeToDoc(doc, await resolveScopeTheme(ctx, scope));
+    const validated = validateEmailDocument(themed);
     if (!validated.ok) {
       throw new ConvexError({ code: "INVALID_DOC", message: validated.error });
     }
     const sender = await validateSenderFields(ctx, fromName, fromEmail);
+
+    // Make sure the built-in templates exist. Migration 0049 is the fast path
+    // for deployments that already had users when it ran, but `runPending`
+    // ledgers a no-op as a completed run — so on a freshly scaffolded
+    // deployment (no users at the first deploy) the migration would never fire
+    // again and the template picker would be permanently empty. Here we always
+    // have a real user, so this is the guarantee; it's idempotent and bounded,
+    // and campaigns are created rarely enough that the extra indexed read
+    // doesn't matter.
+    await seedBuiltInTemplates(ctx, scope, userId);
 
     const now = Date.now();
     return await ctx.db.insert("campaigns", {
@@ -397,6 +459,73 @@ export const updateCampaignDoc = mutation({
     }
     assertEditable(existing);
     const validated = validateEmailDocument(doc);
+    if (!validated.ok) {
+      throw new ConvexError({ code: "INVALID_DOC", message: validated.error });
+    }
+    await ctx.db.patch(campaignId, { doc: validated.doc, updatedAt: Date.now() });
+    return null;
+  },
+});
+
+/**
+ * Restyle a campaign: resolve a saved theme (`themeId`) or a built-in preset
+ * (`presetName`), write it into `doc.theme`, revalidate, patch. Exactly one of
+ * the two must be given.
+ *
+ * `assertEditable` applies — this is a CONTENT edit like any other. Letting a
+ * pending or approved campaign be restyled would mean a reviewer signed off on
+ * one email and a different-looking one went out; letting a SENT one be
+ * restyled would rewrite history. (The snapshot hash would catch the first
+ * case at send time anyway, since it hashes the whole doc — but failing loudly
+ * at the edit is better than failing confusingly at the send.)
+ *
+ * A saved theme must belong to the campaign's own scope. Presets are global
+ * and carry no scope, so they're always available.
+ */
+export const setCampaignTheme = mutation({
+  args: {
+    campaignId: v.id("campaigns"),
+    themeId: v.optional(v.id("emailThemes")),
+    presetName: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, { campaignId, themeId, presetName }) => {
+    await requireCampaignsAccess(ctx);
+    const campaign = await ctx.db.get(campaignId);
+    if (!campaign) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
+    }
+    assertEditable(campaign);
+
+    if ((themeId === undefined) === (presetName === undefined)) {
+      throw new ConvexError({
+        code: "INVALID_ARGUMENT",
+        message: "Pick exactly one of a saved theme or a built-in preset.",
+      });
+    }
+
+    let theme: EmailTheme;
+    if (themeId !== undefined) {
+      const row = await ctx.db.get(themeId);
+      if (!row || row.archived === true) {
+        throw new ConvexError({ code: "NOT_FOUND", message: "Theme not found." });
+      }
+      if (row.scope !== campaign.scope) {
+        throw new ConvexError({
+          code: "SCOPE_MISMATCH",
+          message: "That theme belongs to a different scope.",
+        });
+      }
+      theme = normalizeEmailTheme(row);
+    } else {
+      const preset = emailThemePreset(presetName as string);
+      if (!preset) {
+        throw new ConvexError({ code: "NOT_FOUND", message: "No such preset theme." });
+      }
+      theme = preset;
+    }
+
+    const validated = validateEmailDocument(applyThemeToDoc(campaign.doc, theme));
     if (!validated.ok) {
       throw new ConvexError({ code: "INVALID_DOC", message: validated.error });
     }
@@ -1289,6 +1418,40 @@ export const clearRecipientsBatch = internalMutation({
 });
 
 /**
+ * Drop this campaign's poll votes. Paired with `clearRecipientsBatch` and
+ * drained the same way (one bounded batch per call, caller loops to zero).
+ *
+ * Load-bearing, not tidiness. `send` is legally re-runnable from `"failed"`
+ * (a transport failure, or `sweepStuckSends`), and `materializeRecipients`
+ * then DELETES every `campaignRecipients` row and re-inserts with fresh
+ * `unsubscribeToken`s. One-vote-per-person is enforced by
+ * `campaignPollVotes.by_recipient_and_block` — keyed on a `recipientId` that
+ * no longer exists after that wipe. Leaving the votes behind means the same
+ * human, on the second copy of the email, inserts a SECOND row: both counted,
+ * tally wrong, and the orphaned rows accumulate against `POLL_TALLY_CAP`
+ * (whose safety argument is precisely that votes can't exceed the recipient
+ * cap).
+ *
+ * Deleting rather than re-pointing is deliberate: a re-send re-delivers to
+ * everyone, so the honest reading is that the poll re-opens with the new
+ * send. Re-pointing would need a stable person identity that recipient rows
+ * don't carry.
+ */
+export const clearPollVotesBatch = internalMutation({
+  args: { campaignId: v.id("campaigns") },
+  returns: v.number(),
+  handler: async (ctx, { campaignId }) => {
+    const rows = await ctx.db
+      .query("campaignPollVotes")
+      // Prefix query on the compound index — every block for this campaign.
+      .withIndex("by_campaign_and_block", (q) => q.eq("campaignId", campaignId))
+      .take(200);
+    for (const row of rows) await ctx.db.delete(row._id);
+    return rows.length;
+  },
+});
+
+/**
  * Resolve the campaign's audience and materialize it into `campaignRecipients`
  * rows, batching inserts at `MATERIALIZE_BATCH_SIZE`. Zero matching
  * recipients is a RECORDED failure (not an error) — the campaign never
@@ -1313,6 +1476,15 @@ export const materializeRecipients = internalAction({
         campaignId,
       });
       if (deleted === 0) break;
+    }
+    // Poll votes are keyed to the recipient rows just deleted — see
+    // `clearPollVotesBatch`'s doc for why leaving them lets one person vote
+    // twice on a re-sent campaign.
+    for (;;) {
+      const dropped = await ctx.runMutation(internal.campaigns.clearPollVotesBatch, {
+        campaignId,
+      });
+      if (dropped === 0) break;
     }
 
     const resolution = await ctx.runQuery(internal.audiences.resolveAudienceForSend, {
@@ -1653,6 +1825,16 @@ export const deliverCampaignBatch = internalAction({
         recipient,
         unsubscribeUrl,
         orgAddress: mailSettings.orgMailingAddress,
+        // Poll option links are PER-RECIPIENT: the same random token that
+        // backs this row's unsubscribe link identifies the voter, so one
+        // person's vote can be found and MOVED when they change their mind
+        // (`campaignPolls.ts#recordPollVote`). Only the real send builds
+        // these — `sendTest` and the approval preview have no
+        // `campaignRecipients` row and therefore no token, so they leave
+        // `pollVoteUrl` unset and the renderer draws inert pills instead of
+        // links to a URL that would 404.
+        pollVoteUrl: (blockId: string, optionId: string) =>
+          `${siteUrl()}/poll/${campaign._id}/${row.unsubscribeToken}/${encodeURIComponent(blockId)}/${encodeURIComponent(optionId)}`,
       };
 
       toSend.push({

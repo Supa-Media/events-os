@@ -2010,11 +2010,17 @@ export * from "./sms";
 // ── Name-formatting helpers (firstName salutations, display-name fallback) ───
 export * from "./names";
 
+// ── Email-campaign theme tokens, presets, and contrast checking ──────────────
+export * from "./emailTheme";
+
 // ── Email-campaign block document model (designer contract) ──────────────────
 export * from "./emailBlocks";
 
 // ── Email-campaign block renderer (HTML + plaintext) ──────────────────────────
 export * from "./emailRender";
+
+// ── Built-in campaign templates (the seeded monthly newsletter) ──────────────
+export * from "./emailTemplates";
 
 // ── @mention markup for plain-text notes fields ───────────────────────────────
 export * from "./mentions";

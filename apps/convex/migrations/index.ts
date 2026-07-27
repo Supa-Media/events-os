@@ -59,6 +59,7 @@ import { reimbursementPayoutsOutflow } from "./0044_reimbursement_payouts_outflo
 import { backfillPersonalRepayments } from "./0045_backfill_personal_repayments";
 import { seedServiceCatalog } from "./0046_seed_service_catalog";
 import { serviceConditionsToIds } from "./0047_service_conditions_to_ids";
+import { seedBuiltInCampaignTemplates } from "./0049_seed_builtin_campaign_templates";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -226,7 +227,7 @@ export const MIGRATIONS: Migration[] = [
   // free-text `services` strings via the audited 13-entry mapping. Unmapped
   // strings are left out and reported, never guessed. Idempotent
   // (already-seeded org-wide rows and already-backfilled people are
-  // skipped). See 0047.
+  // skipped). See 0046.
   seedServiceCatalog,
   // Convert saved `has_service` audience conditions from the pre-catalog
   // `{ service: string }` shape to `{ serviceId }`, by case-insensitive name
@@ -236,4 +237,12 @@ export const MIGRATIONS: Migration[] = [
   // reported — never silently widened to "everyone" or dropped. Idempotent
   // (conditions already carrying `serviceId` are skipped). See 0047.
   serviceConditionsToIds,
+  // Built-in campaign templates — seed the Public Worship monthly newsletter
+  // into the central scope so "start from a template" isn't empty in prod.
+  // `ensureBuiltInTemplates` shipped with no production caller, so the
+  // template existed only in tests. Central-only (campaigns is a central-only
+  // surface). Idempotent: keyed on isBuiltIn+name, refreshes in place only
+  // when the shipped content changed, and never resurrects an archived row.
+  // See 0049.
+  seedBuiltInCampaignTemplates,
 ];

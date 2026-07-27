@@ -10,13 +10,18 @@ import { Pill } from "../../../components/ui";
  * provides the app chrome; this layout adds the in-app campaigns tabs above
  * the active screen, cloning the `giving/_layout` pill-nav pattern exactly.
  *
- * Campaigns · Audiences · Replies. The tabs render only for a caller who can
- * see the desk (`audiences.myCampaignsAccess.canView`) — each screen keeps
- * its own backend gate too, same as Giving.
+ * Campaigns · Audiences · Themes · Replies. The tabs render only for a caller
+ * who can see the desk (`audiences.myCampaignsAccess.canView`) — each screen
+ * keeps its own backend gate too, same as Giving.
+ *
+ * Themes sits between the two AUTHORING tabs and the inbox: it's where the
+ * email's branding is edited (`themes.tsx`), so it belongs beside the things
+ * you make, not beside the replies you read.
  */
 const TABS: { label: string; path: string }[] = [
   { label: "Campaigns", path: "/campaigns" },
   { label: "Audiences", path: "/campaigns/audiences" },
+  { label: "Themes", path: "/campaigns/themes" },
   { label: "Replies", path: "/campaigns/replies" },
 ];
 

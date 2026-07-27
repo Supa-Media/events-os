@@ -34,6 +34,8 @@ import { Doc, Id } from "./_generated/dataModel";
 import { hasAccess, isAllowedEmail, normalizeEmail } from "./lib/access";
 import { requireSuperuser } from "./lib/superuser";
 import { sendEmail } from "./ticketingEmails";
+import { emailHeading, emailParagraph, emailShell } from "./lib/emailShell";
+import { escapeHtml } from "./lib/html";
 
 /**
  * Pre-flight access check for the login screen. Public + unauthenticated so the
@@ -192,19 +194,25 @@ export const listGuests = query({
  * `ticketingEmails.sendEmail` chokepoint (Resend, own-key-or-env resolved via
  * `lib/resend.ts`) — best effort, never throws, so it can't fail the grant;
  * a no-op (just logs) when no Resend key resolves (dev).
+ *
+ * Uses `emailShell` like every other transactional message. It used to
+ * hand-roll its own unbranded `<div>` (system font, `#111` on white, no
+ * wordmark, no footer) — which meant the FIRST email a new guest ever
+ * received was the one that looked least like Public Worship. The recipient's
+ * address is escaped: it's arbitrary text a superuser typed into a grant form,
+ * and it now lands inside markup.
  */
 export const sendAccessGrantedEmail = internalAction({
   args: { email: v.string() },
   handler: async (ctx, { email }) => {
     const subject = "You've been given access to Chapter OS";
-    const html = `<div style="font-family:-apple-system,Segoe UI,Roboto,sans-serif;line-height:1.5;color:#111">
-  <h2 style="margin:0 0 12px">You're in 🎉</h2>
-  <p>You've been granted guest access to <strong>Chapter OS</strong>.</p>
-  <p>Open the app, choose <strong>Sign in as a guest</strong>, and enter this email
-  address (<strong>${email}</strong>). We'll email you a one-time code each time
-  you sign in.</p>
-  <p style="color:#666">See you inside.</p>
-</div>`;
+    const html = emailShell(`
+      ${emailHeading("You're in 🎉")}
+      ${emailParagraph("You've been granted guest access to <b>Chapter OS</b>.")}
+      ${emailParagraph(
+        `Open the app, choose <b>Sign in as a guest</b>, and enter this email address (<b>${escapeHtml(email)}</b>). We'll email you a one-time code each time you sign in.`,
+      )}
+      ${emailParagraph("See you inside.", { size: 12, margin: "0" })}`);
 
     await sendEmail(ctx, { to: email, subject, html });
     return null;
