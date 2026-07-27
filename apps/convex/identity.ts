@@ -323,10 +323,18 @@ export const listUnidentifiedGuests = query({
     ),
     isDone: v.boolean(),
     continueCursor: v.string(),
+    // Total distinct-name-group count (after the SCAN_CAP-bounded read,
+    // before pagination slicing) — a static "N unidentified" header total for
+    // the client, since `page.length` alone can't convey that. Recomputed
+    // (not cached) on every page call, so it always reflects the FULL
+    // in-memory `groups` array this handler builds anyway — see the module
+    // doc's SCAN_CAP tradeoff for why this isn't a truly global count past
+    // the cap.
+    totalCount: v.number(),
   }),
   handler: async (ctx, { chapterId, paginationOpts }) => {
     if (!(await canReviewGuestIdentity(ctx, chapterId))) {
-      return { page: [], isDone: true, continueCursor: "" };
+      return { page: [], isDone: true, continueCursor: "", totalCount: 0 };
     }
 
     const rows = await nameOnlyRsvps(ctx, chapterId);
@@ -380,7 +388,7 @@ export const listUnidentifiedGuests = query({
       });
     }
 
-    return { page, isDone, continueCursor: String(offset + numItems) };
+    return { page, isDone, continueCursor: String(offset + numItems), totalCount: groups.length };
   },
 });
 
