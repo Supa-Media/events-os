@@ -252,7 +252,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "tip",
-        text: "**Don't have the app handy?** Forward or take a photo and email the receipt to **receipts@reply.publicworship.life** — it lands in the same place as an in-app upload. Every receipt, emailed or uploaded, lands in ONE shared library at Finances → Receipts that all bookkeepers can see — it isn't walled off per chapter, because that address is shared and a receipt often arrives before anyone knows which budget it belongs to. Each one is tagged with who sent it and which chapter they're in, so the right charge is easy to find without anything ever being hidden from you.",
+        text: "**Don't have the app handy?** Forward or take a photo and email the receipt to **receipts@reply.publicworship.life** — it lands in the same place as an in-app upload. Forwarding *as an attachment* works too (handy when you're sending several at once): we open each attached message and read the receipt inside it. Every receipt, emailed or uploaded, lands in ONE shared library at Finances → Receipts that all bookkeepers can see — it isn't walled off per chapter, because that address is shared and a receipt often arrives before anyone knows which budget it belongs to. Each one is tagged with who sent it and which chapter they're in, so the right charge is easy to find without anything ever being hidden from you.",
       },
     ],
     quiz: [

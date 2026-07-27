@@ -12,6 +12,8 @@ import {
   deriveMerchantFromEmail,
   extractMidLineMerchant,
   isLikelyInlineAsset,
+  isReceiptFileAttachment,
+  collectForwardedReceiptSources,
   appendSkippedNote,
   isMeaningfulPdfText,
   isPdfContentType,
@@ -19,6 +21,7 @@ import {
   extractReceiptFields,
   resolveOcrModel,
 } from "../receiptInbox";
+import { parseEmlMessage } from "../lib/emlMessage";
 import { verifyStandardWebhookSignature } from "../lib/standardWebhook";
 import type { AiEngineConfig } from "../lib/aiEngine";
 import { getFunctionName } from "convex/server";
@@ -785,13 +788,15 @@ describe("appendSkippedNote", () => {
 
   test("appends a count + names, capped with a '+N more' tail", () => {
     const note = appendSkippedNote("Matched.", ["logo.png"]);
-    expect(note).toBe("Matched. (Skipped 1 likely non-receipt attachment: logo.png.)");
+    expect(note).toBe(
+      "Matched. (Skipped 1 attachment not processed as receipts: logo.png.)",
+    );
 
     const many = appendSkippedNote(
       "No match.",
       ["a.png", "b.png", "c.png", "d.png", "e.png", "f.png", "g.png"],
     );
-    expect(many).toContain("Skipped 7 likely non-receipt attachments:");
+    expect(many).toContain("Skipped 7 attachments not processed as receipts:");
     expect(many).toContain("+2 more");
   });
 });
@@ -816,6 +821,168 @@ describe("isPdfContentType", () => {
     expect(isPdfContentType("APPLICATION/PDF")).toBe(true);
     expect(isPdfContentType("application/octet-stream", "receipt.PDF")).toBe(true);
     expect(isPdfContentType("image/png", "photo.png")).toBe(false);
+  });
+});
+
+// ── Forwarded-as-attachment (.eml) expansion ─────────────────────────────────
+// "Forward as attachment" (Gmail/Apple Mail/Outlook) wraps the original
+// receipt email as a `message/rfc822` attachment, so the message that reaches
+// the webhook has an EMPTY body and one opaque `.eml` — which the image/PDF
+// filter used to drop, landing the whole email as `ignored` with the real
+// receipt one MIME layer down, unread. These pin the two halves of the fix:
+// the `.eml` gets PAST the attachment filter, and it gets OPENED into the
+// receipt(s) inside it.
+describe("isReceiptFileAttachment", () => {
+  test("accepts images, PDFs, and forwarded messages — by type or extension", () => {
+    expect(isReceiptFileAttachment("image/jpeg", "photo.jpg")).toBe(true);
+    expect(isReceiptFileAttachment("application/pdf", "invoice.pdf")).toBe(true);
+    // The bug: a forwarded message was rejected here and never opened.
+    expect(isReceiptFileAttachment("message/rfc822", "Fwd invoice.eml")).toBe(true);
+    expect(isReceiptFileAttachment("application/octet-stream", "Fwd invoice.eml")).toBe(true);
+    // Genuinely unusable attachments are still rejected.
+    expect(isReceiptFileAttachment("application/zip", "receipts.zip")).toBe(false);
+    expect(isReceiptFileAttachment("text/calendar", "invite.ics")).toBe(false);
+  });
+});
+
+describe("collectForwardedReceiptSources", () => {
+  const CRLF = "\r\n";
+  function buildEml(opts: {
+    from: string;
+    subject: string;
+    text?: string;
+    parts?: { contentType: string; filename: string; body: string }[];
+  }): string {
+    const lines = [
+      `Subject: ${opts.subject}`,
+      `From: ${opts.from}`,
+      'Content-Type: multipart/mixed; boundary="B"',
+      "",
+      "--B",
+      'Content-Type: text/plain; charset="UTF-8"',
+      "",
+      opts.text ?? "",
+    ];
+    for (const part of opts.parts ?? []) {
+      lines.push(
+        "--B",
+        `Content-Type: ${part.contentType}; name="${part.filename}"`,
+        `Content-Disposition: attachment; filename="${part.filename}"`,
+        "Content-Transfer-Encoding: base64",
+        "",
+        btoa(part.body),
+      );
+    }
+    lines.push("--B--", "");
+    return lines.join(CRLF);
+  }
+
+  test("a forwarded invoice yields its PDF, stamped with the MERCHANT's envelope", () => {
+    const parsed = parseEmlMessage(
+      buildEml({
+        from: "Google Payments <payments-noreply@google.com>",
+        subject: "Google Workspace: Your invoice is available",
+        text: "Your invoice is attached.",
+        parts: [
+          { contentType: "application/pdf", filename: "5628803684.pdf", body: "%PDF-1.4 x" },
+        ],
+      }),
+    );
+    const sources = collectForwardedReceiptSources(parsed);
+    expect(sources).toHaveLength(1);
+    const [source] = sources;
+    expect(source.kind).toBe("file");
+    expect(source.filename).toBe("5628803684.pdf");
+    // The envelope carried forward is the MERCHANT's, not the forwarder's —
+    // this is what keeps the merchant fallback from deriving the team
+    // member's own mail host as the "merchant".
+    expect(deriveMerchantFromEmail(source.envelope!.fromEmail!, source.envelope!.subject))
+      .toBe("Google Payments");
+  });
+
+  test("a forwarded email with NO file falls back to its own body text", () => {
+    const parsed = parseEmlMessage(
+      buildEml({
+        from: "Blue Bottle Coffee <receipts@bluebottle.example>",
+        subject: "Your receipt",
+        text: "Thanks for your order.\r\nTotal: $42.10\r\n",
+      }),
+    );
+    const sources = collectForwardedReceiptSources(parsed);
+    expect(sources).toHaveLength(1);
+    expect(sources[0].kind).toBe("body");
+    expect(sources[0].filename).toBe("Your receipt (forwarded email)");
+    if (sources[0].kind === "body") {
+      expect(parseReceiptFromText(sources[0].text).amountCents).toBe(4210);
+    }
+  });
+
+  test("a file inside wins over the body — the body is only a fallback", () => {
+    const parsed = parseEmlMessage(
+      buildEml({
+        from: "shop@example.com",
+        subject: "Receipt",
+        text: "Total: $42.10",
+        parts: [{ contentType: "image/jpeg", filename: "receipt.jpg", body: "jpegbytes" }],
+      }),
+    );
+    const sources = collectForwardedReceiptSources(parsed);
+    expect(sources.map((s) => s.kind)).toEqual(["file"]);
+  });
+
+  test("an inline signature/logo inside the forward is skipped, not turned into a receipt", () => {
+    const parsed = parseEmlMessage(
+      buildEml({
+        from: "shop@example.com",
+        subject: "Receipt",
+        text: "Total: $42.10",
+        parts: [
+          { contentType: "image/png", filename: "logo.png", body: "tiny" },
+          { contentType: "application/pdf", filename: "receipt.pdf", body: "%PDF-1.4 x" },
+        ],
+      }),
+    );
+    const skipped: string[] = [];
+    const sources = collectForwardedReceiptSources(parsed, skipped);
+    expect(sources.map((s) => s.filename)).toEqual(["receipt.pdf"]);
+    expect(skipped).toEqual(["logo.png"]);
+  });
+
+  test("a forward chain reaches the innermost receipt", () => {
+    const inner = buildEml({
+      from: "Google Payments <payments-noreply@google.com>",
+      subject: "Invoice",
+      parts: [{ contentType: "application/pdf", filename: "invoice.pdf", body: "%PDF-1.4 x" }],
+    });
+    const outer = [
+      "Subject: Fwd: Invoice",
+      "From: Alice <alice@publicworship.life>",
+      'Content-Type: multipart/mixed; boundary="W"',
+      "",
+      "--W",
+      "Content-Type: text/plain",
+      "",
+      "fyi",
+      "--W",
+      'Content-Type: message/rfc822; name="fwd.eml"',
+      'Content-Disposition: attachment; filename="fwd.eml"',
+      "",
+      inner,
+      "--W--",
+      "",
+    ].join(CRLF);
+
+    const sources = collectForwardedReceiptSources(parseEmlMessage(outer));
+    expect(sources).toHaveLength(1);
+    expect(sources[0].filename).toBe("invoice.pdf");
+    expect(sources[0].envelope?.fromEmail).toContain("payments-noreply@google.com");
+  });
+
+  test("a forward with nothing readable at all yields nothing", () => {
+    const sources = collectForwardedReceiptSources(
+      parseEmlMessage(["Subject: Empty", "From: a@b.com", "", ""].join(CRLF)),
+    );
+    expect(sources).toHaveLength(0);
   });
 });
 
@@ -1269,6 +1436,123 @@ describe("processInboundReceipt", () => {
     const receipts = await run(t, (ctx) => ctx.db.query("receipts").take(5));
     expect(receipts).toHaveLength(1);
     expect(receipts[0].ocrMerchant).toBe("Givebutter, Inc.");
+  });
+
+  // ── Forward as attachment, end to end ──────────────────────────────────────
+  // The reported bug: forwarding a receipt with Gmail's "Forward as
+  // attachment" delivered a `message/rfc822` (.eml) the pipeline dropped, so
+  // the email was `ignored` and the receipt never existed. Now the `.eml` is
+  // opened and the message inside becomes the receipt — including its
+  // merchant envelope, which is the MERCHANT's, not the forwarder's.
+  describe("a forwarded-as-attachment email", () => {
+    const realFetch = globalThis.fetch;
+    const realKey = process.env.RESEND_API_KEY;
+    afterEach(() => {
+      globalThis.fetch = realFetch;
+      if (realKey === undefined) delete process.env.RESEND_API_KEY;
+      else process.env.RESEND_API_KEY = realKey;
+    });
+
+    /** Serve Resend's attachment LIST + the signed download of one `.eml`.
+     *  Any other call (the courtesy reply) is answered with a bare failure —
+     *  `replyToSender` is best-effort by contract. */
+    function mockResend(eml: string): void {
+      process.env.RESEND_API_KEY = "test-key";
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/attachments")) {
+          return {
+            ok: true,
+            json: async () => ({
+              data: [
+                {
+                  id: "att_1",
+                  filename: "Google Workspace invoice.eml",
+                  content_type: "message/rfc822",
+                  size: eml.length,
+                  download_url: "https://files.example/att_1",
+                },
+              ],
+            }),
+          };
+        }
+        if (url.startsWith("https://files.example/")) {
+          return {
+            ok: true,
+            blob: async () => new Blob([eml], { type: "message/rfc822" }),
+          };
+        }
+        return { ok: false, status: 500, text: async () => "no" };
+      }) as unknown as typeof fetch;
+    }
+
+    test("is opened, and the message inside becomes the receipt (merchant from ITS envelope)", async () => {
+      const t = newT();
+      const s = await setupChapter(t);
+      // The FORWARDER is a roster member — that's what permits an auto-attach.
+      await seedPerson(s, { email: "jane@example.com" });
+      const txn = await seedTxn(s, { amountCents: 4210, status: "categorized" });
+
+      mockResend(
+        [
+          "Subject: Your receipt",
+          "From: Blue Bottle Coffee <receipts@bluebottle.example>",
+          'Content-Type: text/plain; charset="UTF-8"',
+          "",
+          "Thanks for your order.",
+          "Total: $42.10",
+          "",
+        ].join("\r\n"),
+      );
+
+      const { receiptId } = await t.mutation(internal.receiptInbox.recordInboundReceipt, {
+        envelope: {
+          emailId: "email_fwd_1",
+          fromEmail: "Jane Doe <jane@example.com>",
+          // Gmail sends the forward with an empty body — before the fix there
+          // was nothing here to read at all.
+          subject: "Fwd: Your receipt",
+        },
+      });
+      await t.action(internal.receiptInbox.processInboundReceipt, { receiptId });
+
+      const row = await run(t, (ctx) => ctx.db.get(receiptId));
+      expect(row?.status).toBe("matched");
+      expect(row?.matchedTransactionId).toBe(txn);
+
+      const receipts = await run(t, (ctx) => ctx.db.query("receipts").take(5));
+      expect(receipts).toHaveLength(1);
+      expect(receipts[0].ocrAmountCents).toBe(4210);
+      expect(receipts[0].filename).toBe("Your receipt (forwarded email)");
+      // The forwarded message's own sender — NOT "Example" off the
+      // forwarder's `jane@example.com`.
+      expect(receipts[0].ocrMerchant).toBe("Blue Bottle Coffee");
+
+      const txnRow = await run(t, (ctx) => ctx.db.get(txn));
+      expect(txnRow?.status).toBe("reconciled");
+    });
+
+    test("an unreadable .eml is still stored as a document rather than silently ignored", async () => {
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedPerson(s, { email: "jane@example.com" });
+      mockResend("this is not a parseable message at all");
+
+      const { receiptId } = await t.mutation(internal.receiptInbox.recordInboundReceipt, {
+        envelope: {
+          emailId: "email_fwd_2",
+          fromEmail: "jane@example.com",
+          subject: "Fwd: receipt",
+        },
+      });
+      await t.action(internal.receiptInbox.processInboundReceipt, { receiptId });
+
+      const row = await run(t, (ctx) => ctx.db.get(receiptId));
+      expect(row?.status).toBe("needs_review");
+      const receipts = await run(t, (ctx) => ctx.db.query("receipts").take(5));
+      expect(receipts).toHaveLength(1);
+      expect(receipts[0].filename).toBe("Google Workspace invoice.eml");
+    });
   });
 });
 
