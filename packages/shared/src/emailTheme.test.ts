@@ -493,3 +493,43 @@ describe("validateEmailTheme — the strict WRITE gate", () => {
     }
   });
 });
+
+describe("normalizeEmailTheme — dark absence is meaningful (regression)", () => {
+  test("a theme with no dark overrides does NOT inherit the default theme's dark mode", () => {
+    // Regression: normalization used to fill a missing `dark` from the base
+    // theme, so a Winter copy with no dark intent rendered Public Worship's
+    // MAROON at night — a blue brand turning maroon, visible only to the
+    // recipient. It also silently broke `resolveDarkTheme`'s documented
+    // promise that a theme with no `dark` renders the same in both schemes.
+    const noDark = { ...WINTER_THEME, name: "Winter (no dark)" };
+    delete (noDark as { dark?: unknown }).dark;
+
+    const normalized = normalizeEmailTheme(noDark);
+    expect(normalized.dark).toBeUndefined();
+    expect(resolveDarkTheme(normalized).accent).toBe(WINTER_THEME.accent);
+    expect(resolveDarkTheme(normalized).accent).not.toBe(PUBLIC_WORSHIP_THEME.dark?.accent);
+  });
+
+  test("a dark object with nothing usable in it normalizes to no dark intent", () => {
+    const theme = normalizeEmailTheme({
+      ...WINTER_THEME,
+      dark: { accent: "not-a-hex", ink: 42 },
+    });
+    expect(theme.dark).toBeUndefined();
+    expect(resolveDarkTheme(theme).accent).toBe(WINTER_THEME.accent);
+  });
+
+  test("a real dark override is still preserved", () => {
+    const theme = normalizeEmailTheme(WINTER_THEME);
+    expect(theme.dark?.accent).toBe(WINTER_THEME.dark?.accent);
+    expect(resolveDarkTheme(theme).accent).toBe(WINTER_THEME.dark?.accent);
+  });
+
+  test("rendering a themeless document still gets the default's dark mode", () => {
+    // The fix must NOT cost the default path its dark rendering — a campaign
+    // with no theme at all still renders Public Worship's, which HAS one.
+    expect(resolveDarkTheme(DEFAULT_EMAIL_THEME).accent).toBe(
+      PUBLIC_WORSHIP_THEME.dark?.accent,
+    );
+  });
+});

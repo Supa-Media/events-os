@@ -317,9 +317,21 @@ export function normalizeEmailTheme(
       ? input.name.trim()
       : base.name;
 
-  const dark = isPlainObject(input.dark)
-    ? normalizeDarkOverride(input.dark, base)
-    : base.dark;
+  // ABSENCE IS MEANINGFUL — never inherit `dark` from `base`.
+  //
+  // Filling a missing `dark` from the base theme means a Winter theme that
+  // declares no dark intent renders Public Worship's MAROON dark mode: a blue
+  // brand turning maroon at night, which is the exact off-brand failure this
+  // module exists to prevent. It also silently contradicts `resolveDarkTheme`,
+  // which documents that a theme with no `dark` renders identically in both
+  // schemes — that promise is unkeepable if normalization invents one first.
+  //
+  // The cost is that a genuinely PARTIAL input (a few tokens meant to merge
+  // onto `base`) no longer inherits the base's dark overrides. That's the
+  // right trade: the worst case here is a theme that doesn't darken, which a
+  // designer can see and fix, versus one that darkens to another brand's
+  // colours, which only a recipient sees.
+  const dark = isPlainObject(input.dark) ? normalizeDarkOverride(input.dark) : undefined;
 
   return {
     name,
@@ -334,10 +346,11 @@ export function normalizeEmailTheme(
 
 /** Normalize a `dark` partial — unlike the light side, a missing token stays
  *  MISSING (it means "don't override"), so this can't reuse `hexToken`'s
- *  fill-from-base behavior. */
+ *  fill-from-base behavior. An override object with nothing usable in it
+ *  returns `undefined` (i.e. "no dark intent"), never the base's overrides —
+ *  see the note at the call site. */
 function normalizeDarkOverride(
   input: Record<string, unknown>,
-  base: EmailTheme,
 ): Partial<EmailThemeTokens> | undefined {
   const out: Partial<EmailThemeTokens> = {};
   for (const key of TOKEN_KEYS) {
@@ -350,8 +363,7 @@ function normalizeDarkOverride(
     const cleaned = safeFontStack(raw);
     if (cleaned) out[key] = cleaned;
   }
-  if (Object.keys(out).length > 0) return out;
-  return base.dark;
+  return Object.keys(out).length > 0 ? out : undefined;
 }
 
 /**
