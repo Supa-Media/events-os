@@ -1,7 +1,12 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { api, internal } from "../_generated/api";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
-import { NEWSLETTER_ASSETS } from "@events-os/shared";
+import {
+  BUILT_IN_CAMPAIGN_TEMPLATES,
+  NEWSLETTER_ASSETS,
+  NEWSLETTER_TEMPLATE_SLOTS,
+  validateEmailDocument,
+} from "@events-os/shared";
 
 /**
  * `migrations/0052_import_newsletter_images.ts` — the one-time import of the
@@ -188,6 +193,123 @@ describe("importNewsletterImages — a rotting CDN", () => {
     });
     expect(result.failed).toBe(NEWSLETTER_ASSETS.length);
     expect(result.results[0].error).toMatch(/ENOTFOUND/);
+  });
+});
+
+/**
+ * Importing the images is only half the job. The built-in newsletter template
+ * ships with every artwork slot EMPTY and only picks the images up when it is
+ * next seeded — and nothing re-seeds it on a schedule (0049 is ledgered and
+ * never fires twice; `ensureBuiltInTemplates` had no production caller). So a
+ * "successful" import used to leave the template exactly as blank as before,
+ * until somebody happened to create a campaign. The action closes that loop
+ * itself now.
+ */
+describe("importNewsletterImages — it fills the built-in template", () => {
+  async function builtInTemplate(t: ReturnType<typeof newT>) {
+    const rows = await run(t, (ctx) => ctx.db.query("campaignTemplates").collect());
+    return rows.find((r) => r.isBuiltIn === true);
+  }
+
+  /** Every mapped slot's current URL, keyed by the asset it expects. */
+  function slotUrls(doc: { blocks: Record<string, unknown>[] }) {
+    return new Map(
+      NEWSLETTER_TEMPLATE_SLOTS.map((slot) => {
+        const block = doc.blocks.find((b) => b.id === slot.blockId);
+        return [
+          slot.sourceKey,
+          block?.kind === "bleed_image"
+            ? block.url
+            : block?.kind === "card"
+              ? block.imageUrl
+              : block?.kind === "footer"
+                ? block.logoUrl
+                : undefined,
+        ] as const;
+      }),
+    );
+  }
+
+  test("a committing run re-seeds the template and every slot ends up filled", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    stubAllOk();
+
+    // The real sequence: the template is already seeded (and empty) when the
+    // artwork arrives. This ordering is what the wiring has to survive.
+    await t.mutation(internal.campaignTemplates.ensureBuiltInTemplates, {
+      scope: "central",
+      createdBy: s.userId,
+    });
+    const before = await builtInTemplate(t);
+    expect([...slotUrls(before!.doc).values()].every((u) => u === undefined)).toBe(true);
+
+    const result = await t.action(IMPORT.importNewsletterImages, {
+      scope: "central",
+      dryRun: false,
+    });
+
+    expect(result.reseededTemplates).toHaveLength(BUILT_IN_CAMPAIGN_TEMPLATES.length);
+    expect(result.reseededTemplates[0]).toBe(before!._id);
+
+    const after = await run(t, (ctx) => ctx.db.get(before!._id));
+    for (const [sourceKey, url] of slotUrls(after!.doc)) {
+      expect(url, sourceKey).toBeTypeOf("string");
+      expect(String(url).length, sourceKey).toBeGreaterThan(0);
+    }
+    expect(validateEmailDocument(after!.doc).ok).toBe(true);
+  });
+
+  test("it seeds the template even when one never existed", async () => {
+    const t = newT();
+    await asSuperuser(t);
+    stubAllOk();
+
+    expect(await builtInTemplate(t)).toBeUndefined();
+    const result = await t.action(IMPORT.importNewsletterImages, {
+      scope: "central",
+      dryRun: false,
+    });
+
+    expect(result.reseededTemplates).toHaveLength(BUILT_IN_CAMPAIGN_TEMPLATES.length);
+    const template = await builtInTemplate(t);
+    expect([...slotUrls(template!.doc).values()].every((u) => typeof u === "string")).toBe(
+      true,
+    );
+  });
+
+  test("a DRY RUN re-seeds nothing — it writes nothing at all", async () => {
+    const t = newT();
+    await asSuperuser(t);
+    stubAllOk();
+
+    const result = await t.action(IMPORT.importNewsletterImages, { scope: "central" });
+
+    expect(result.dryRun).toBe(true);
+    expect(result.reseededTemplates).toEqual([]);
+    expect(await builtInTemplate(t)).toBeUndefined();
+  });
+
+  test("a run where every download failed still leaves the template unbroken", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    globalThis.fetch = (async () =>
+      new Response("gone", { status: 410, statusText: "Gone" })) as typeof fetch;
+
+    await t.mutation(internal.campaignTemplates.ensureBuiltInTemplates, {
+      scope: "central",
+      createdBy: s.userId,
+    });
+    const result = await t.action(IMPORT.importNewsletterImages, {
+      scope: "central",
+      dryRun: false,
+    });
+    expect(result.failed).toBe(NEWSLETTER_ASSETS.length);
+
+    const template = await builtInTemplate(t);
+    // Empty, not blanked-with-empty-strings, and still a valid document.
+    expect([...slotUrls(template!.doc).values()].every((u) => u === undefined)).toBe(true);
+    expect(validateEmailDocument(template!.doc).ok).toBe(true);
   });
 });
 

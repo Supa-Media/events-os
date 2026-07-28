@@ -49,6 +49,15 @@
  * make the library look finished while describing images I have not seen. The
  * result reports every row that still needs alt, and the composer already
  * warns on an image block without it.
+ *
+ * ── IT ALSO RE-SEEDS THE BUILT-IN TEMPLATE ─────────────────────────────────
+ * A committing run finishes by calling `ensureBuiltInTemplates`, which is what
+ * actually places the imported artwork into the newsletter template's empty
+ * slots (`lib/builtInTemplates.ts` → `fillTemplateArtwork`). Without it the
+ * import would "succeed" and the template would still render blank: the seed
+ * that fills it is ledgered (0049 never fires twice) and otherwise only runs
+ * opportunistically from `createCampaign`. A dry run skips this, like every
+ * other write here.
  */
 
 import { v } from "convex/values";
@@ -97,6 +106,10 @@ export const importNewsletterImages = internalAction({
      *  explicitly because "it worked" and "it is finished" are different
      *  things, and alt text is the difference. */
     needsAltText: v.array(v.string()),
+    /** Built-in template rows re-seeded after a committing run, so the caller
+     *  can see that the artwork actually reached the template rather than
+     *  taking it on faith. Always empty on a dry run. */
+    reseededTemplates: v.array(v.id("campaignTemplates")),
     results: v.array(assetResultValidator),
   }),
   handler: async (ctx, { scope, dryRun }) => {
@@ -235,8 +248,27 @@ export const importNewsletterImages = internalAction({
       });
     }
 
+    // ── Push the artwork into the built-in template ───────────────────────
+    // Importing the images is only half the job: the built-in newsletter
+    // template ships with every slot empty and only picks the artwork up when
+    // it is next seeded. Nothing re-seeds it on a schedule — migration 0049 is
+    // ledgered and never fires again, and `ensureBuiltInTemplates` had no
+    // production caller at all — so without this the images would sit in the
+    // library until someone happened to create a campaign. Re-seeding here
+    // closes that ordering hazard deterministically.
+    //
+    // Idempotent and cheap (it patches only if the document actually changed),
+    // and skipped entirely on a dry run because it WRITES.
+    const reseededTemplates: Id<"campaignTemplates">[] = isDryRun
+      ? []
+      : await ctx.runMutation(internal.campaignTemplates.ensureBuiltInTemplates, {
+          scope,
+          createdBy: owner,
+        });
+
     return {
       dryRun: isDryRun,
+      reseededTemplates,
       imported: results.filter((r) => r.outcome === "imported").length,
       alreadyOnFile: results.filter((r) => r.outcome === "already_on_file").length,
       failed: results.filter((r) => r.outcome === "failed").length,
