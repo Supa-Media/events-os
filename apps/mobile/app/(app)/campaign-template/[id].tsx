@@ -142,13 +142,13 @@ function TemplateDesignBody({
         />
       </View>
       <Text className="mb-3 text-xs text-muted">
-        Edits save as you type and change this template only — a campaign copies
+        Edits save as you type and change this template only — an email copies
         a template when it&apos;s created, so nothing already in flight moves.
       </Text>
       <DocumentComposer
         doc={template.doc as EmailDocument}
         editable={canDesign}
-        lockedNotice="Read-only — editing templates takes campaign design power."
+        lockedNotice="Read-only — editing templates takes design power on the Emails desk."
         onSave={saveDoc}
         onApplyTheme={applyTheme}
         run={run}

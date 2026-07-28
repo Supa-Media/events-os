@@ -174,7 +174,7 @@ export async function requireCampaignsAccess(ctx: QueryCtx): Promise<void> {
     throw new ConvexError({
       code: "FORBIDDEN",
       message:
-        "Email campaigns are available to the Executive Director / Financial Manager, or a seat granted campaign design, compose, or approve power.",
+        "The Emails desk is available to the Executive Director / Financial Manager, or a seat granted email design, compose, or approve power.",
     });
   }
 }
@@ -202,7 +202,7 @@ export async function requireCampaignDesign(ctx: QueryCtx): Promise<void> {
     throw new ConvexError({
       code: "FORBIDDEN",
       message:
-        "Editing campaign templates, themes, and the image library requires campaign design power.",
+        "Editing email templates, themes, and the image library requires email design power.",
     });
   }
 }
@@ -225,7 +225,7 @@ export async function requireCampaignCompose(ctx: QueryCtx): Promise<void> {
   if (!(await hasCampaignCompose(ctx))) {
     throw new ConvexError({
       code: "FORBIDDEN",
-      message: "Creating or editing a campaign requires campaign compose power.",
+      message: "Creating or editing an email requires email compose power.",
     });
   }
 }
@@ -253,7 +253,7 @@ export async function requireCampaignApprovalPower(ctx: QueryCtx): Promise<void>
   if (!(await hasCampaignApprovalPower(ctx))) {
     throw new ConvexError({
       code: "FORBIDDEN",
-      message: "Approving campaigns requires campaign-approval power.",
+      message: "Approving emails requires email-approval power.",
     });
   }
 }

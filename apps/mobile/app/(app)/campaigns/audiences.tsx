@@ -14,7 +14,11 @@ import { AudiencesView } from "../../../components/campaign/AudiencesView";
  * only — no API, table, or path was renamed.
  *
  * Gated the same way `campaigns/index.tsx` (and `giving/donors.tsx` before
- * it) gates its own screen — see that file's doc.
+ * it) gates its own screen — see that file's doc. `canView` opens the
+ * screen; `canCompose` is passed down separately because the three segment
+ * WRITES (create/update/archive) sit behind `requireCampaignCompose`, so a
+ * design-only holder must get the list without the editor rather than a form
+ * whose Save throws `FORBIDDEN` — the same split `campaigns/index.tsx` makes.
  *
  * `seedIncludeIds` (People-CRM UX, People grid's "Email selected" bridge):
  * a comma-joined list of person ids, deep-linked from
@@ -47,7 +51,7 @@ export default function AudiencesScreen() {
   }
   return (
     <Screen>
-      <AudiencesView seedIncludeIds={seedIncludeIds} />
+      <AudiencesView seedIncludeIds={seedIncludeIds} canCompose={access.canCompose} />
     </Screen>
   );
 }

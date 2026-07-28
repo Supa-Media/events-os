@@ -171,7 +171,7 @@ export const getCampaign = query({
     await requireCampaignsAccess(ctx);
     const campaign = await ctx.db.get(campaignId);
     if (!campaign) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
+      throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
     return campaign;
   },
@@ -324,7 +324,7 @@ export const createCampaign = mutation({
 
     const trimmedName = name.trim();
     if (!trimmedName) {
-      throw new ConvexError({ code: "EMPTY", message: "Name the campaign first." });
+      throw new ConvexError({ code: "EMPTY", message: "Name the email first." });
     }
     const trimmedSubject = subject.trim();
     if (!trimmedSubject) {
@@ -385,7 +385,7 @@ function assertEditable(campaign: Doc<"campaigns">): void {
   if (campaign.status !== "draft" && campaign.status !== "changes_requested") {
     throw new ConvexError({
       code: "NOT_EDITABLE",
-      message: "Only a draft (or changes-requested) campaign can be edited.",
+      message: "Only a draft (or changes-requested) email can be edited.",
     });
   }
 }
@@ -410,7 +410,7 @@ export const updateCampaignMeta = mutation({
     await requireCampaignCompose(ctx);
     const existing = await ctx.db.get(campaignId);
     if (!existing) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
+      throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
     assertEditable(existing);
 
@@ -418,7 +418,7 @@ export const updateCampaignMeta = mutation({
     if (name !== undefined) {
       const trimmed = name.trim();
       if (!trimmed) {
-        throw new ConvexError({ code: "EMPTY", message: "Name the campaign first." });
+        throw new ConvexError({ code: "EMPTY", message: "Name the email first." });
       }
       patch.name = trimmed;
     }
@@ -460,7 +460,7 @@ export const updateCampaignDoc = mutation({
     await requireCampaignCompose(ctx);
     const existing = await ctx.db.get(campaignId);
     if (!existing) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
+      throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
     assertEditable(existing);
     const validated = validateEmailDocument(doc);
@@ -546,7 +546,7 @@ export const setCampaignTheme = mutation({
     await requireCampaignCompose(ctx);
     const campaign = await ctx.db.get(campaignId);
     if (!campaign) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
+      throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
     assertEditable(campaign);
 
@@ -577,7 +577,7 @@ function assertCampaignTransition(
   if (!allowedFrom.includes(current)) {
     throw new ConvexError({
       code: "ILLEGAL_TRANSITION",
-      message: `Can't ${action} a campaign that's "${current}".`,
+      message: `Can't ${action} an email that's "${current}".`,
     });
   }
 }
@@ -774,20 +774,20 @@ async function assertCallerIsChosenReviewer(
   if (!campaign.reviewerPersonId) {
     throw new ConvexError({
       code: "NO_REVIEWER",
-      message: "This campaign has no reviewer on file.",
+      message: "This email has no reviewer on file.",
     });
   }
   const ownPersonIds = await resolveCampaignCallerPersonIds(ctx);
   if (!ownPersonIds.has(campaign.reviewerPersonId)) {
     throw new ConvexError({
       code: "NOT_CHOSEN_REVIEWER",
-      message: "Only the reviewer picked when this campaign was submitted can decide on it.",
+      message: "Only the reviewer picked when this email was submitted can decide on it.",
     });
   }
   if (campaign.submittedByPersonId && ownPersonIds.has(campaign.submittedByPersonId)) {
     throw new ConvexError({
       code: "SOD_VIOLATION",
-      message: "You can't decide on a campaign you submitted.",
+      message: "You can't decide on an email you submitted.",
     });
   }
   return campaign.reviewerPersonId;
@@ -802,7 +802,7 @@ async function loadCampaignForReviewerDecision(
 ): Promise<Doc<"campaigns">> {
   const campaign = await ctx.db.get(campaignId);
   if (!campaign) {
-    throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
+    throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
   }
   await assertCallerIsChosenReviewer(ctx, campaign);
   return campaign;
@@ -819,7 +819,7 @@ export const submitForApproval = mutation({
     await requireCampaignCompose(ctx);
     const campaign = await ctx.db.get(campaignId);
     if (!campaign) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
+      throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
     // `"failed"` is included so a hash mismatch caught at send-time (an
     // audience edit made after approval) has a way back INTO review without
@@ -836,7 +836,7 @@ export const submitForApproval = mutation({
     if (!trimmedPurpose) {
       throw new ConvexError({
         code: "EMPTY",
-        message: "Say why this campaign is being sent before submitting it.",
+        message: "Say why this email is being sent before submitting it.",
       });
     }
 
@@ -882,7 +882,7 @@ export const submitForApproval = mutation({
     if (!reviewerEligible) {
       throw new ConvexError({
         code: "INVALID_REVIEWER",
-        message: "Pick a reviewer who holds campaign-approval power.",
+        message: "Pick a reviewer who holds email-approval power.",
       });
     }
 
@@ -953,7 +953,7 @@ export const cancelApprovalRequest = mutation({
     await requireCampaignCompose(ctx);
     const campaign = await ctx.db.get(campaignId);
     if (!campaign) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
+      throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
     assertCampaignTransition(campaign.status, ["pending_approval"], "cancel the approval request on");
     await ctx.db.patch(campaignId, {
@@ -1050,7 +1050,7 @@ export const denyCampaign = mutation({
     if (!trimmedNote) {
       throw new ConvexError({
         code: "EMPTY",
-        message: "Say why this campaign is being denied.",
+        message: "Say why this email is being rejected.",
       });
     }
     const reviewerPersonId = campaign.reviewerPersonId as Id<"people">;
@@ -1081,7 +1081,7 @@ export const revertToDraft = mutation({
     await requireCampaignCompose(ctx);
     const campaign = await ctx.db.get(campaignId);
     if (!campaign) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
+      throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
     assertCampaignTransition(campaign.status, ["denied"], "move back to draft");
     await ctx.db.patch(campaignId, {
@@ -1142,7 +1142,7 @@ export const getCampaignApproval = query({
     await requireCampaignsAccess(ctx);
     const campaign = await ctx.db.get(campaignId);
     if (!campaign) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
+      throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
     const ownIds = await resolveCampaignCallerPersonIds(ctx);
     const canDecide =
@@ -1239,7 +1239,7 @@ export const sendTest = action({
       campaignId,
     });
     if (!campaign) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
+      throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
     const validated = validateEmailDocument(campaign.doc);
     if (!validated.ok) {
@@ -1313,7 +1313,7 @@ export const send = mutation({
     await requireCampaignCompose(ctx);
     const campaign = await ctx.db.get(campaignId);
     if (!campaign) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
+      throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
     // Two-party approval gate: `draft → sending` is no longer possible — a
     // campaign must clear `submitForApproval` → `approveCampaign` first. A

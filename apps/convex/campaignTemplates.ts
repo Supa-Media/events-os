@@ -193,7 +193,7 @@ export const createTemplateFromCampaign = mutation({
     const userId = (await requireUserId(ctx)) as Id<"users">;
     const campaign = await ctx.db.get(campaignId);
     if (!campaign) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
+      throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
     const trimmedName = name.trim();
     if (!trimmedName) {
@@ -241,7 +241,7 @@ export const createCampaignFromTemplate = mutation({
 
     const trimmedName = name.trim();
     if (!trimmedName) {
-      throw new ConvexError({ code: "EMPTY", message: "Name the campaign first." });
+      throw new ConvexError({ code: "EMPTY", message: "Name the email first." });
     }
     const trimmedSubject = subject.trim();
     if (!trimmedSubject) {

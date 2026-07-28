@@ -31,6 +31,16 @@
  * `guests`/`donors`/`people`-sourced row without `targeting` renders
  * READ-ONLY: badge + summary, editable name/archive only.
  *
+ * ── Who gets the editor ────────────────────────────────────────────────────
+ * `createAudience`/`updateAudience`/`archiveAudience` all sit behind
+ * `requireCampaignCompose` (see `audiences.ts`'s doc), so every write
+ * affordance — the "+ New segment" button, the tap-to-edit on each row, and
+ * the seed auto-open from People's "Email selected" — is HIDDEN unless
+ * `myCampaignsAccess.canCompose`. A design-only holder (the Graphic
+ * Designer) still reads the list and the summaries; she just gets a line
+ * saying where her own tools are instead of a form whose Save throws
+ * `FORBIDDEN`. Same shape as `CampaignsListView`'s designer card.
+ *
  * UI-polish pass (founder feedback: the picker "looks and feels clunky"): a
  * slim people count (`LivePeopleSummary`) is pinned above the filter
  * + hand-pick stack and never blanks back to "Calculating…" once it's loaded
@@ -43,6 +53,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, StyleSheet, Pressable } from "react-native";
+import { useRouter } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import type { FunctionArgs, FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
@@ -108,6 +119,7 @@ function sourceLabel(source: string, hasTargeting: boolean): string {
 
 export function AudiencesView({
   seedIncludeIds,
+  canCompose,
 }: {
   /**
    * People-CRM UX — the People grid's "Email selected" bridge: a set of
@@ -118,16 +130,20 @@ export function AudiencesView({
    * same as picking each person by hand in `HandPickSection` below.
    */
   seedIncludeIds?: Id<"people">[];
-} = {}) {
+  /** `myCampaignsAccess.canCompose`, resolved by the route before this
+   *  mounts. False hides every write affordance — see the file doc. */
+  canCompose: boolean;
+}) {
   const audiences = useQuery(api.audiences.listAudiences, {});
   const [editingId, setEditingId] = useState<Id<"audiences"> | "new" | null>(null);
   const { run, toast, dismiss } = useActionRunner();
 
   // Auto-open a fresh draft when arriving with a seed — the marketer lands
   // straight in the form with their picks already in the hand-pick list,
-  // rather than having to tap "+ New segment" themselves.
+  // rather than having to tap "+ New segment" themselves. Never for a
+  // reader who can't compose: the form's Save would throw `FORBIDDEN`.
   useEffect(() => {
-    if (seedIncludeIds && seedIncludeIds.length > 0) setEditingId("new");
+    if (canCompose && seedIncludeIds && seedIncludeIds.length > 0) setEditingId("new");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -148,7 +164,9 @@ export function AudiencesView({
     <>
       <ToastView toast={toast} onDismiss={dismiss} />
 
-      {editingId === "new" || editingAudience ? (
+      {!canCompose ? (
+        <ReadOnlyNote />
+      ) : editingId === "new" || editingAudience ? (
         <AudienceForm
           key={editingId === "new" ? "new" : editingAudience!._id}
           initial={editingAudience}
@@ -165,7 +183,11 @@ export function AudiencesView({
           <EmptyState
             icon="users"
             title="No segments yet"
-            message="Create a segment above — rules, hand-picked people, or both — to send an email to."
+            message={
+              canCompose
+                ? "Create a segment above — rules, hand-picked people, or both — to send an email to."
+                : "Nobody has saved a segment yet. When someone does, it shows up here with the rules it matches on."
+            }
           />
         </View>
       ) : (
@@ -179,7 +201,7 @@ export function AudiencesView({
               ? summarizeTargeting(a.targeting, handPickCounts)
               : describeAudience(a.source, a.filters, handPickCounts, a.excludeFilters);
             return (
-              <Card key={a._id} onPress={() => setEditingId(a._id)}>
+              <Card key={a._id} onPress={canCompose ? () => setEditingId(a._id) : undefined}>
                 <View style={styles.cardTop}>
                   <Text style={styles.name} numberOfLines={1}>
                     {a.name}
@@ -201,6 +223,40 @@ export function AudiencesView({
         </View>
       )}
     </>
+  );
+}
+
+/**
+ * What stands in for the "+ New segment" button when the caller holds
+ * `campaigns.design` but not `campaigns.compose` (the Graphic Designer /
+ * Social Media Manager). Mirrors `CampaignsListView#DesignerDeskCard`: a
+ * hidden button with nothing in its place reads as a broken screen, so this
+ * says in one line which half of the desk is theirs and walks them there.
+ */
+function ReadOnlyNote() {
+  const router = useRouter();
+  return (
+    <Card style={styles.readOnlyNote}>
+      <Text className="text-sm text-muted">
+        Segments are set up by whoever holds compose power — you can read who
+        each one reaches. Yours is what the emails are built from: the themes,
+        the saved templates and the image library.
+      </Text>
+      <View style={styles.readOnlyActions}>
+        <Button
+          title="Templates"
+          icon="bookmark"
+          variant="secondary"
+          onPress={() => router.push("/campaigns/templates" as never)}
+        />
+        <Button
+          title="Themes"
+          icon="droplet"
+          variant="secondary"
+          onPress={() => router.push("/campaigns/themes" as never)}
+        />
+      </View>
+    </Card>
   );
 }
 
@@ -1426,6 +1482,8 @@ function AudiencePreviewCard({
 
 const styles = StyleSheet.create({
   list: { marginTop: spacing.md, gap: spacing.md },
+  readOnlyNote: { gap: spacing.sm },
+  readOnlyActions: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
   form: { gap: spacing.xs, marginBottom: spacing.md },
   cardTop: {
     flexDirection: "row",
