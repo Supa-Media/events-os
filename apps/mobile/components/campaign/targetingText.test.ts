@@ -4,8 +4,10 @@ import {
   describeGroupSentence,
   summarizeTargeting,
   targetingSentences,
+  toWireTargeting,
   type Targeting,
   type TargetingCondition,
+  type UiGroup,
 } from "./targetingText";
 
 /** The founder's benchmark segment: "came to an event in the last 90 days,
@@ -23,6 +25,36 @@ describe("describeCondition", () => {
     expect(describeCondition({ field: "kind", op: "is", kind: "team" })).toBe("is a team member");
     expect(describeCondition({ field: "last_gift", op: "not_within_days", days: 365 })).toBe(
       "hasn't given in the last 365 days",
+    );
+  });
+
+  // REGRESSION — `attended_any` was the only condition whose unresolved-id
+  // fallback ERASED its qualifier instead of naming it: a chapter-scoped
+  // "been to an event" read as "an event", one article away from the
+  // unscoped "any event". `summarizeTargeting` passes no lookups AT ALL by
+  // design, so every row of the segments list hit this fallback permanently,
+  // and migration 0042 emits exactly this shape for wrapped legacy guests
+  // audiences that carried a chapter filter.
+  test("a chapter-scoped 'been to an event' still says so with no lookups", () => {
+    const scoped: TargetingCondition = {
+      field: "attended_any",
+      op: "has",
+      chapterId: "ch_1" as never,
+      withinDays: 90,
+    };
+    const unscoped: TargetingCondition = { field: "attended_any", op: "has", withinDays: 90 };
+
+    expect(describeCondition(scoped)).toBe(
+      "has been to an event in the chosen chapter in the last 90 days",
+    );
+    expect(describeCondition(scoped, { chapterName: () => "Nairobi" })).toBe(
+      "has been to an event in Nairobi in the last 90 days",
+    );
+    // The whole point: one chapter's attendees must never read like everyone
+    // who ever attended anything.
+    expect(describeCondition(scoped)).not.toBe(describeCondition(unscoped));
+    expect(summarizeTargeting({ groups: [{ conditions: [scoped] }] })).not.toBe(
+      summarizeTargeting({ groups: [{ conditions: [unscoped] }] }),
     );
   });
 
@@ -52,6 +84,18 @@ describe("describeGroupSentence", () => {
 
   test("an empty rule group says 'everyone' rather than a dangling 'anyone who'", () => {
     expect(describeGroupSentence([])).toBe("everyone");
+  });
+
+  // REGRESSION — a group that is empty ONLY because its rows are unfinished is
+  // not "everyone", and a group with one finished row plus one unfinished one
+  // is narrower than that finished row alone.
+  test("an unfinished row reads as unfinished, never as no restriction", () => {
+    expect(describeGroupSentence([], {}, 1)).toBe("anyone who matches a line you haven't finished yet");
+    expect(describeGroupSentence([], {}, 2)).toBe("anyone who matches 2 lines you haven't finished yet");
+    expect(describeGroupSentence([], {}, 1)).not.toBe("everyone");
+    expect(
+      describeGroupSentence([{ field: "donor_status", op: "is", status: "active" }], {}, 1),
+    ).toBe("anyone who is an active donor and matches a line you haven't finished yet");
   });
 });
 

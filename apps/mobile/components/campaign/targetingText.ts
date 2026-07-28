@@ -216,3 +216,221 @@ export function summarizeTargeting(
   if (handPicks?.excludeCount) parts.push(`−${handPicks.excludeCount} excluded`);
   return parts.join(" · ");
 }
+
+// ── UI row model ────────────────────────────────────────────────────────────
+//
+// One UI row per condition. `attended_event`/`attended_any` collapse into a
+// single "Events" row whose value select offers "any event" plus every real
+// event — the wire field is derived from the selection. Rows whose id-valued
+// control hasn't been chosen yet hold `null` and are dropped from the wire
+// shape (counted, never silently).
+
+export type UiRow =
+  | { key: string; kind: "donor"; op: "is" | "is_not"; status: "any" | "prospect" | "active" | "lapsed" }
+  | { key: string; kind: "giving"; op: "gte" | "lte"; cents: number }
+  | { key: string; kind: "gifts"; op: "gte" | "lte"; count: number }
+  | { key: string; kind: "last_gift"; op: "within_days" | "not_within_days"; days: number }
+  | { key: string; kind: "backer"; op: "is" | "is_not"; status: "active" | "lapsed" }
+  | {
+      key: string;
+      kind: "attended";
+      op: "has" | "has_not";
+      eventId: Id<"events"> | "any";
+      rsvpStatus?: "going" | "maybe" | "not_going";
+      withinDays?: number;
+      /** Carried through for wrapped legacy guests audiences (no UI control
+       *  — see `schema/campaigns.ts`'s `attended_any.chapterId` doc). */
+      chapterId?: Id<"chapters">;
+    }
+  | { key: string; kind: "chapter"; op: "is" | "is_not"; chapterId: Id<"chapters"> | null }
+  | { key: string; kind: "seat"; op: "holds" | "not_holds"; seatId: Id<"seatDefs"> | null }
+  | { key: string; kind: "kind"; personKind: "team" | "contact" }
+  | { key: string; kind: "email_verified" }
+  | {
+      key: string;
+      kind: "service";
+      op: "has" | "has_not";
+      // Service Catalog id (`serviceOptions`), not free text — see
+      // `schema/campaigns.ts`'s `has_service` doc. `null` = not yet chosen
+      // (mirrors "chapter"/"seat"'s own not-yet-chosen-id shape).
+      serviceId: Id<"serviceOptions"> | null;
+    };
+
+export type UiGroup = { key: string; rows: UiRow[] };
+
+let keyCounter = 0;
+export function nextKey(): string {
+  keyCounter += 1;
+  return `row-${keyCounter}`;
+}
+
+export function conditionToRow(c: TargetingCondition): UiRow {
+  const key = nextKey();
+  switch (c.field) {
+    case "donor_status":
+      return { key, kind: "donor", op: c.op, status: c.status };
+    case "giving_lifetime":
+      return { key, kind: "giving", op: c.op, cents: c.cents };
+    case "gift_count":
+      return { key, kind: "gifts", op: c.op, count: c.count };
+    case "last_gift":
+      return { key, kind: "last_gift", op: c.op, days: c.days };
+    case "backer":
+      return { key, kind: "backer", op: c.op, status: c.status };
+    case "attended_event":
+      return {
+        key,
+        kind: "attended",
+        op: c.op,
+        eventId: c.eventId,
+        rsvpStatus: c.rsvpStatus,
+        withinDays: c.withinDays,
+      };
+    case "attended_any":
+      return {
+        key,
+        kind: "attended",
+        op: c.op,
+        eventId: "any",
+        rsvpStatus: c.rsvpStatus,
+        withinDays: c.withinDays,
+        chapterId: c.chapterId,
+      };
+    case "chapter":
+      return { key, kind: "chapter", op: c.op, chapterId: c.chapterId };
+    case "seat":
+      return { key, kind: "seat", op: c.op, seatId: c.seatId };
+    case "kind":
+      return { key, kind: "kind", personKind: c.kind };
+    case "email_verified":
+      return { key, kind: "email_verified" };
+    case "has_service":
+      return { key, kind: "service", op: c.op, serviceId: c.serviceId };
+  }
+}
+
+/** null = the row is incomplete (an id control not chosen yet) — dropped from
+ *  the wire shape and counted by `toWireTargeting`. */
+export function rowToCondition(r: UiRow): TargetingCondition | null {
+  switch (r.kind) {
+    case "donor":
+      return { field: "donor_status", op: r.op, status: r.status };
+    case "giving":
+      return { field: "giving_lifetime", op: r.op, cents: r.cents };
+    case "gifts":
+      return { field: "gift_count", op: r.op, count: r.count };
+    case "last_gift":
+      return { field: "last_gift", op: r.op, days: r.days };
+    case "backer":
+      return { field: "backer", op: r.op, status: r.status };
+    case "attended":
+      if (r.eventId === "any") {
+        return {
+          field: "attended_any",
+          op: r.op,
+          ...(r.rsvpStatus ? { rsvpStatus: r.rsvpStatus } : {}),
+          ...(r.withinDays != null ? { withinDays: r.withinDays } : {}),
+          ...(r.chapterId ? { chapterId: r.chapterId } : {}),
+        };
+      }
+      return {
+        field: "attended_event",
+        op: r.op,
+        eventId: r.eventId,
+        ...(r.rsvpStatus ? { rsvpStatus: r.rsvpStatus } : {}),
+        ...(r.withinDays != null ? { withinDays: r.withinDays } : {}),
+      };
+    case "chapter":
+      return r.chapterId ? { field: "chapter", op: r.op, chapterId: r.chapterId } : null;
+    case "seat":
+      return r.seatId ? { field: "seat", op: r.op, seatId: r.seatId } : null;
+    case "kind":
+      return { field: "kind", op: "is", kind: r.personKind };
+    case "email_verified":
+      return { field: "email_verified", op: "is" };
+    case "service":
+      return r.serviceId ? { field: "has_service", op: r.op, serviceId: r.serviceId } : null;
+  }
+}
+
+export function targetingToUi(targeting: Targeting): { groups: UiGroup[]; excludeGroups: UiGroup[] } {
+  return {
+    groups: targeting.groups.map((g) => ({
+      key: nextKey(),
+      rows: g.conditions.map(conditionToRow),
+    })),
+    excludeGroups: (targeting.excludeGroups ?? []).map((g) => ({
+      key: nextKey(),
+      rows: g.conditions.map(conditionToRow),
+    })),
+  };
+}
+
+export type WireTargeting = {
+  /** What the preview asks for and Save stores. */
+  targeting: Targeting;
+  /** Rows on screen with an unchosen value control, across both sides. Save
+   *  blocks on this, and every count on screen has to hold while it's > 0. */
+  incompleteCount: number;
+  /**
+   * For each exclusion CARD (UI order), its index in
+   * `targeting.excludeGroups` — or `null` when the card was held back from
+   * the wire and therefore produced no count at all.
+   *
+   * Held-back cards RENUMBER every exclusion after them, so
+   * `perExcludeGroupCounts[cardIndex]` is simply the wrong figure once any
+   * exclusion is unfinished: the count computed for exclusion 2 lands on the
+   * card labelled "Exclusion 1", which excludes nobody. Every count lookup
+   * goes through this map instead of the card's own position.
+   */
+  excludeWireIndexes: (number | null)[];
+  /** Every card exactly as it sits on screen — unfinished rows counted, and
+   *  held-back exclusions still present in their own position — for the
+   *  sentences that read the builder back to its author. */
+  reading: { groups: ReadingGroup[]; excludeGroups: ReadingGroup[] };
+};
+
+export function toWireTargeting(groups: UiGroup[], excludeGroups: UiGroup[]): WireTargeting {
+  let incompleteCount = 0;
+  const read = (gs: UiGroup[]): ReadingGroup[] =>
+    gs.map((g) => {
+      let unfinishedCount = 0;
+      const conditions = g.rows.flatMap((r) => {
+        const c = rowToCondition(r);
+        if (c === null) {
+          unfinishedCount += 1;
+          return [];
+        }
+        return [c];
+      });
+      incompleteCount += unfinishedCount;
+      return { conditions, unfinishedCount };
+    });
+  const readGroups = read(groups);
+  const readExclude = read(excludeGroups);
+
+  const wireGroups = readGroups.map((g) => ({ conditions: [...g.conditions] }));
+  // An exclusion whose only rows are incomplete would become an EMPTY exclude
+  // group — which the backend rejects outright ("an empty one would skip
+  // everyone"). Hold those back from the wire shape; the incomplete-row count
+  // already blocks Save and the preview simply doesn't apply the
+  // still-unfinished exclusion yet. Record where each surviving card landed
+  // so its count can never be read off the wrong index (see
+  // `excludeWireIndexes`).
+  const wireExclude: { conditions: TargetingCondition[] }[] = [];
+  const excludeWireIndexes = readExclude.map((g) => {
+    if (g.conditions.length === 0) return null;
+    wireExclude.push({ conditions: [...g.conditions] });
+    return wireExclude.length - 1;
+  });
+
+  return {
+    targeting: {
+      groups: wireGroups.length > 0 ? wireGroups : [{ conditions: [] }],
+      ...(wireExclude.length > 0 ? { excludeGroups: wireExclude } : {}),
+    },
+    incompleteCount,
+    excludeWireIndexes,
+    reading: { groups: readGroups, excludeGroups: readExclude },
+  };
+}

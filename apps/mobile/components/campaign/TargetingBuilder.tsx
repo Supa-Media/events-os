@@ -40,9 +40,21 @@
  *
  * State model: the UI edits `UiGroup[]` rows that mirror the wire conditions
  * but allow a not-yet-chosen id (`eventId`/`seatId`/`chapterId` = null) while
- * the author is mid-edit — `toWireTargeting` drops incomplete rows for the
- * live preview and reports their count so Save can block on them instead of
- * silently sending a narrower segment than what's on screen. Numeric inputs
+ * the author is mid-edit — `toWireTargeting` (in `targetingText.ts`, so it's
+ * unit-testable) drops incomplete rows for the live preview and reports their
+ * count so Save can block on them instead of silently sending a narrower
+ * segment than what's on screen.
+ *
+ * ── Nothing on this screen may overstate the reach ─────────────────────────
+ * Dropping a row for the wire makes the wire shape a DIFFERENT, wider
+ * definition than the one on screen, so no sentence and no number may be
+ * rendered straight off it while a row is unfinished: the recap reads the
+ * on-screen shape (`toWireTargeting(...).reading`, unfinished rows included),
+ * a card whose rows aren't finished holds its count instead of printing one,
+ * and `AudiencesView.tsx` holds the segment's total the same way. Dropping an
+ * exclusion ENTIRELY (all its rows unfinished) additionally renumbers the
+ * backend's per-exclusion counts, so those are keyed through
+ * `excludeWireIndexes`, never by the card's own position. Numeric inputs
  * commit on every valid keystroke (no field-level debounce to flush at save
  * time — WYSIWYG by construction); the PREVIEW is what debounces, one level
  * up in `AudiencesView.tsx`.
@@ -66,212 +78,44 @@ import {
 import { pluralPeople } from "./helpers";
 import {
   describeCondition,
+  nextKey,
   targetingSentences,
+  toWireTargeting,
   type ConditionLookups,
   type Targeting,
   type TargetingCondition,
+  type TargetingReading,
+  type UiGroup,
+  type UiRow,
 } from "./targetingText";
 
 type PreviewArgs = FunctionArgs<typeof api.audiences.previewAudience>;
 type PreviewResult = FunctionReturnType<typeof api.audiences.previewAudience>;
-// The sentence layer lives in `targetingText.ts` (dependency-free, so it's
-// unit-testable); re-exported here because this module is the import path
-// every consumer already uses.
+// The sentence layer AND the UI-row ⇄ wire-condition model both live in
+// `targetingText.ts` (dependency-free, so both are unit-testable — the count
+// keying below is arithmetic that has to be pinned by tests); re-exported
+// here because this module is the import path every consumer already uses.
 export {
+  conditionToRow,
   describeCondition,
   describeGroupSentence,
+  rowToCondition,
   summarizeTargeting,
   targetingSentences,
+  targetingToUi,
+  toWireTargeting,
   type ConditionLookups,
   type Targeting,
   type TargetingCondition,
   type TargetingGroup,
+  type TargetingReading,
+  type UiGroup,
+  type UiRow,
 } from "./targetingText";
 type ExplainResult = FunctionReturnType<typeof api.audiences.explainAudiencePerson>;
 type SearchResult = FunctionReturnType<typeof api.audiences.searchPeopleForAudience>[number];
 
 const SEARCH_DEBOUNCE_MS = 400;
-
-// ── UI row model ────────────────────────────────────────────────────────────
-//
-// One UI row per condition. `attended_event`/`attended_any` collapse into a
-// single "Events" row whose value select offers "any event" plus every real
-// event — the wire field is derived from the selection. Rows whose id-valued
-// control hasn't been chosen yet hold `null` and are dropped from the wire
-// shape (counted, never silently).
-
-export type UiRow =
-  | { key: string; kind: "donor"; op: "is" | "is_not"; status: "any" | "prospect" | "active" | "lapsed" }
-  | { key: string; kind: "giving"; op: "gte" | "lte"; cents: number }
-  | { key: string; kind: "gifts"; op: "gte" | "lte"; count: number }
-  | { key: string; kind: "last_gift"; op: "within_days" | "not_within_days"; days: number }
-  | { key: string; kind: "backer"; op: "is" | "is_not"; status: "active" | "lapsed" }
-  | {
-      key: string;
-      kind: "attended";
-      op: "has" | "has_not";
-      eventId: Id<"events"> | "any";
-      rsvpStatus?: "going" | "maybe" | "not_going";
-      withinDays?: number;
-      /** Carried through for wrapped legacy guests audiences (no UI control
-       *  — see `schema/campaigns.ts`'s `attended_any.chapterId` doc). */
-      chapterId?: Id<"chapters">;
-    }
-  | { key: string; kind: "chapter"; op: "is" | "is_not"; chapterId: Id<"chapters"> | null }
-  | { key: string; kind: "seat"; op: "holds" | "not_holds"; seatId: Id<"seatDefs"> | null }
-  | { key: string; kind: "kind"; personKind: "team" | "contact" }
-  | { key: string; kind: "email_verified" }
-  | {
-      key: string;
-      kind: "service";
-      op: "has" | "has_not";
-      // Service Catalog id (`serviceOptions`), not free text — see
-      // `schema/campaigns.ts`'s `has_service` doc. `null` = not yet chosen
-      // (mirrors "chapter"/"seat"'s own not-yet-chosen-id shape).
-      serviceId: Id<"serviceOptions"> | null;
-    };
-
-export type UiGroup = { key: string; rows: UiRow[] };
-
-let keyCounter = 0;
-function nextKey(): string {
-  keyCounter += 1;
-  return `row-${keyCounter}`;
-}
-
-function conditionToRow(c: TargetingCondition): UiRow {
-  const key = nextKey();
-  switch (c.field) {
-    case "donor_status":
-      return { key, kind: "donor", op: c.op, status: c.status };
-    case "giving_lifetime":
-      return { key, kind: "giving", op: c.op, cents: c.cents };
-    case "gift_count":
-      return { key, kind: "gifts", op: c.op, count: c.count };
-    case "last_gift":
-      return { key, kind: "last_gift", op: c.op, days: c.days };
-    case "backer":
-      return { key, kind: "backer", op: c.op, status: c.status };
-    case "attended_event":
-      return {
-        key,
-        kind: "attended",
-        op: c.op,
-        eventId: c.eventId,
-        rsvpStatus: c.rsvpStatus,
-        withinDays: c.withinDays,
-      };
-    case "attended_any":
-      return {
-        key,
-        kind: "attended",
-        op: c.op,
-        eventId: "any",
-        rsvpStatus: c.rsvpStatus,
-        withinDays: c.withinDays,
-        chapterId: c.chapterId,
-      };
-    case "chapter":
-      return { key, kind: "chapter", op: c.op, chapterId: c.chapterId };
-    case "seat":
-      return { key, kind: "seat", op: c.op, seatId: c.seatId };
-    case "kind":
-      return { key, kind: "kind", personKind: c.kind };
-    case "email_verified":
-      return { key, kind: "email_verified" };
-    case "has_service":
-      return { key, kind: "service", op: c.op, serviceId: c.serviceId };
-  }
-}
-
-/** null = the row is incomplete (an id control not chosen yet) — dropped from
- *  the wire shape and counted by `toWireTargeting`. */
-function rowToCondition(r: UiRow): TargetingCondition | null {
-  switch (r.kind) {
-    case "donor":
-      return { field: "donor_status", op: r.op, status: r.status };
-    case "giving":
-      return { field: "giving_lifetime", op: r.op, cents: r.cents };
-    case "gifts":
-      return { field: "gift_count", op: r.op, count: r.count };
-    case "last_gift":
-      return { field: "last_gift", op: r.op, days: r.days };
-    case "backer":
-      return { field: "backer", op: r.op, status: r.status };
-    case "attended":
-      if (r.eventId === "any") {
-        return {
-          field: "attended_any",
-          op: r.op,
-          ...(r.rsvpStatus ? { rsvpStatus: r.rsvpStatus } : {}),
-          ...(r.withinDays != null ? { withinDays: r.withinDays } : {}),
-          ...(r.chapterId ? { chapterId: r.chapterId } : {}),
-        };
-      }
-      return {
-        field: "attended_event",
-        op: r.op,
-        eventId: r.eventId,
-        ...(r.rsvpStatus ? { rsvpStatus: r.rsvpStatus } : {}),
-        ...(r.withinDays != null ? { withinDays: r.withinDays } : {}),
-      };
-    case "chapter":
-      return r.chapterId ? { field: "chapter", op: r.op, chapterId: r.chapterId } : null;
-    case "seat":
-      return r.seatId ? { field: "seat", op: r.op, seatId: r.seatId } : null;
-    case "kind":
-      return { field: "kind", op: "is", kind: r.personKind };
-    case "email_verified":
-      return { field: "email_verified", op: "is" };
-    case "service":
-      return r.serviceId ? { field: "has_service", op: r.op, serviceId: r.serviceId } : null;
-  }
-}
-
-export function targetingToUi(targeting: Targeting): { groups: UiGroup[]; excludeGroups: UiGroup[] } {
-  return {
-    groups: targeting.groups.map((g) => ({
-      key: nextKey(),
-      rows: g.conditions.map(conditionToRow),
-    })),
-    excludeGroups: (targeting.excludeGroups ?? []).map((g) => ({
-      key: nextKey(),
-      rows: g.conditions.map(conditionToRow),
-    })),
-  };
-}
-
-export function toWireTargeting(
-  groups: UiGroup[],
-  excludeGroups: UiGroup[],
-): { targeting: Targeting; incompleteCount: number } {
-  let incompleteCount = 0;
-  const convert = (gs: UiGroup[]) =>
-    gs.map((g) => ({
-      conditions: g.rows.flatMap((r) => {
-        const c = rowToCondition(r);
-        if (c === null) {
-          incompleteCount += 1;
-          return [];
-        }
-        return [c];
-      }),
-    }));
-  const wireGroups = convert(groups);
-  // A skip list whose only rows are incomplete would become an EMPTY exclude
-  // group — which the backend rejects outright ("an empty one would skip
-  // everyone"). Hold those back from the wire shape; the incomplete-row
-  // count already blocks Save and the preview simply doesn't apply the
-  // still-unfinished skip list yet.
-  const wireExclude = convert(excludeGroups).filter((g) => g.conditions.length > 0);
-  return {
-    targeting: {
-      groups: wireGroups.length > 0 ? wireGroups : [{ conditions: [] }],
-      ...(wireExclude.length > 0 ? { excludeGroups: wireExclude } : {}),
-    },
-    incompleteCount,
-  };
-}
 
 // ── Option data (events / seats / chapters), shared across rows ────────────
 
@@ -833,11 +677,36 @@ function combineNote(excludeSide: boolean, rowCount: number): string | null {
     : `In only when ALL ${rowCount} lines are true of the same person.`;
 }
 
+/**
+ * What a card's own count line says.
+ *
+ * `unfinishedRows > 0` beats any number: the figure the backend computed for
+ * this card is the count of the rows that ARE finished, i.e. of a definition
+ * strictly wider than the one on screen (for a card whose ONLY row is
+ * unfinished, that's the whole org). Printing it would state a wrong fact
+ * about who this card reaches, which is the one thing a count on this screen
+ * must never do. `undefined` stays the honest "still calculating".
+ */
+function countLine(
+  excludeSide: boolean,
+  count: number | undefined,
+  unfinishedRows: number,
+): string {
+  if (unfinishedRows > 0) {
+    return unfinishedRows === 1 ? "finish the line to count" : "finish the lines to count";
+  }
+  if (count === undefined) return "…";
+  return excludeSide
+    ? `${pluralPeople(count)} left out`
+    : `${pluralPeople(count)} ${count === 1 ? "matches" : "match"}`;
+}
+
 function GroupCard({
   group,
   index,
   excludeSide,
   count,
+  unfinishedRows,
   options,
   onChange,
   onDelete,
@@ -848,6 +717,8 @@ function GroupCard({
   index: number;
   excludeSide: boolean;
   count: number | undefined;
+  /** Rows in THIS card with an unchosen value control. */
+  unfinishedRows: number;
   options: TargetingOptions;
   onChange: (next: UiGroup) => void;
   onDelete: () => void;
@@ -863,13 +734,7 @@ function GroupCard({
             {excludeSide ? `Exclusion ${index + 1}` : `Rule group ${index + 1}`}
           </Text>
         </View>
-        <Text style={groupStyles.count}>
-          {count === undefined
-            ? "…"
-            : excludeSide
-              ? `${pluralPeople(count)} left out`
-              : `${pluralPeople(count)} ${count === 1 ? "matches" : "match"}`}
-        </Text>
+        <Text style={groupStyles.count}>{countLine(excludeSide, count, unfinishedRows)}</Text>
         {canDelete ? (
           <Button
             title="✕"
@@ -943,19 +808,26 @@ function OrDivider({ caption }: { caption: string }) {
  *
  * This is the piece that makes the AND/OR model legible rather than merely
  * documented: whatever the author just did to the controls, this line says
- * who that reaches. It reads off the SAME `UiGroup[]` the cards render (via
- * the wire conversion, so incomplete rows are dropped exactly as the preview
- * drops them) — never off the debounced preview args, so it never lags a
- * beat behind the thing it's describing.
+ * who that reaches. It reads off the SAME `UiGroup[]` the cards render —
+ * never off the debounced preview args, so it never lags a beat behind the
+ * thing it's describing.
+ *
+ * It reads the ON-SCREEN shape (`toWireTargeting(...).reading`), NOT the wire
+ * shape. Reading the wire made this panel — which exists specifically to be
+ * believed — say "Send to everyone." while the control directly beneath it
+ * read `is [Pick a role…]`, because an unfinished row leaves an empty group
+ * behind and an empty group means everyone. It also silently dropped the
+ * phrase for any exclusion held back from the wire, so the remaining phrases
+ * no longer lined up with the cards they describe.
  */
 function PlainEnglishRecap({
-  targeting,
+  reading,
   lookups,
 }: {
-  targeting: Targeting;
+  reading: TargetingReading;
   lookups: ConditionLookups;
 }) {
-  const { send, skip } = targetingSentences(targeting, lookups);
+  const { send, skip } = targetingSentences(reading, lookups);
   return (
     <View style={recapStyles.box}>
       <Text style={recapStyles.head}>In plain English</Text>
@@ -1012,14 +884,38 @@ export function TargetingBuilder({
   const preview = useQuery(api.audiences.previewAudience, previewArgs) as PreviewResult | undefined;
   // Read straight off the LIVE ui state (not the form's debounced preview
   // args) so the recap never trails the controls it's describing.
-  const liveTargeting = useMemo(
-    () => toWireTargeting(groups, excludeGroups).targeting,
-    [groups, excludeGroups],
-  );
+  const wire = useMemo(() => toWireTargeting(groups, excludeGroups), [groups, excludeGroups]);
+
+  // `perGroupCounts` / `perExcludeGroupCounts` are indexed by WIRE position,
+  // which is not the card's position: an exclusion whose rows are all
+  // unfinished never reaches the wire and renumbers every exclusion after it,
+  // so `perExcludeGroupCounts[cardIndex]` printed the figure computed for one
+  // exclusion on a different exclusion's card. Counts are keyed through
+  // `excludeWireIndexes` instead, and a card that produced no wire group gets
+  // no count at all.
+  //
+  // The preview is ALSO debounced one level up, so between a structural edit
+  // and the refetch its arrays still describe the previous shape — positional
+  // lookups would land on the wrong card again (deleting rule group 1 would
+  // show its count on rule group 2). When the lengths don't line up, nothing
+  // is keyed and the cards read "…" until the preview catches up.
+  const wireExcludeLength = wire.targeting.excludeGroups?.length ?? 0;
+  const groupCounts =
+    preview && preview.perGroupCounts.length === wire.targeting.groups.length
+      ? preview.perGroupCounts
+      : undefined;
+  const excludeCounts =
+    preview && preview.perExcludeGroupCounts.length === wireExcludeLength
+      ? preview.perExcludeGroupCounts
+      : undefined;
+  const excludeCountFor = (cardIndex: number): number | undefined => {
+    const wireIndex = wire.excludeWireIndexes[cardIndex];
+    return wireIndex == null ? undefined : excludeCounts?.[wireIndex];
+  };
 
   return (
     <View>
-      <PlainEnglishRecap targeting={liveTargeting} lookups={options.lookups} />
+      <PlainEnglishRecap reading={wire.reading} lookups={options.lookups} />
 
       <Field
         label="Send to"
@@ -1032,7 +928,8 @@ export function TargetingBuilder({
               group={g}
               index={gi}
               excludeSide={false}
-              count={preview?.perGroupCounts[gi]}
+              count={groupCounts?.[gi]}
+              unfinishedRows={wire.reading.groups[gi]?.unfinishedCount ?? 0}
               options={options}
               onChange={(next) => onGroupsChange(groups.map((x, i) => (i === gi ? next : x)))}
               onDelete={() => onGroupsChange(groups.filter((_, i) => i !== gi))}
@@ -1061,7 +958,8 @@ export function TargetingBuilder({
               group={g}
               index={gi}
               excludeSide
-              count={preview?.perExcludeGroupCounts[gi]}
+              count={excludeCountFor(gi)}
+              unfinishedRows={wire.reading.excludeGroups[gi]?.unfinishedCount ?? 0}
               options={options}
               onChange={(next) =>
                 onExcludeGroupsChange(excludeGroups.map((x, i) => (i === gi ? next : x)))

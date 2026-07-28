@@ -646,7 +646,7 @@ describe("fillTemplateArtwork — an implausible url is skipped, never written",
   }
 
   for (const bad of [null, undefined, 42]) {
-    test(`a ${bad === null ? "null" : typeof bad} url does not throw`, () => {
+    test(`a url of ${JSON.stringify(bad) ?? "undefined"} does not throw`, () => {
       const filled = fillTemplateArtwork(template.doc, libraryWith(bad));
       const masthead = blockById(filled, "blk_nl-masthead");
       if (masthead?.kind !== "bleed_image") return expect.unreachable("bleed_image");

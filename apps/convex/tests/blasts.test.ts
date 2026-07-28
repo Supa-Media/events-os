@@ -404,7 +404,10 @@ type CapturedSend = {
 };
 
 /** Fire an email blast with `fetch` stubbed, returning every message Resend
- *  would have been asked to send. */
+ *  would have been asked to send. `deliverEmailBlast` posts the whole slice as
+ *  ONE `/emails/batch` request (`lib/resend.ts#sendResendEmailBatch`), so the
+ *  captured body is an ARRAY of per-recipient items — the same shape
+ *  `campaigns.test.ts` reads. */
 async function sendEmailBlastCapturing(
   s: ChapterSetup,
   eventId: Id<"events">,
@@ -412,13 +415,15 @@ async function sendEmailBlastCapturing(
 ): Promise<CapturedSend[]> {
   const sends: CapturedSend[] = [];
   globalThis.fetch = (async (_url: string, init?: { body?: string }) => {
-    const body = init?.body ? JSON.parse(init.body) : {};
-    sends.push({
-      to: body.to,
-      subject: body.subject,
-      html: body.html,
-      headers: body.headers,
-    });
+    const items: CapturedSend[] = init?.body ? JSON.parse(init.body) : [];
+    for (const item of items) {
+      sends.push({
+        to: item.to,
+        subject: item.subject,
+        html: item.html,
+        headers: item.headers,
+      });
+    }
     return { ok: true, status: 200, text: async () => "{}" };
   }) as unknown as typeof fetch;
 

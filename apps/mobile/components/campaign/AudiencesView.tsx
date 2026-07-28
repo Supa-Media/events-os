@@ -485,6 +485,7 @@ function AudienceForm({
           pendingEdit={
             dirtyKeys.size > 0 || (isTargetingV2 && wire.targeting !== debouncedTargeting)
           }
+          unfinishedRows={isTargetingV2 ? wire.incompleteCount : 0}
         />
       </ErrorBoundary>
 
@@ -577,7 +578,10 @@ function AudienceForm({
       ) : null}
 
       <ErrorBoundary inline>
-        <AudiencePreviewCard args={previewArgs} />
+        <AudiencePreviewCard
+          args={previewArgs}
+          unfinishedRows={isTargetingV2 ? wire.incompleteCount : 0}
+        />
       </ErrorBoundary>
 
       <View className="mt-3 flex-row items-center justify-between gap-2">
@@ -1262,9 +1266,12 @@ function HandPickSection({
 function LivePeopleSummary({
   args,
   pendingEdit,
+  unfinishedRows,
 }: {
   args: PreviewArgs;
   pendingEdit: boolean;
+  /** See `unfinishedCountHold` — while > 0 the number is withheld, not shown. */
+  unfinishedRows: number;
 }) {
   const preview = useQuery(api.audiences.previewAudience, args) as PreviewResult | undefined;
   const [lastKnown, setLastKnown] = useState<PreviewResult | null>(null);
@@ -1274,24 +1281,62 @@ function LivePeopleSummary({
 
   const shown = preview ?? lastKnown;
   const isUpdating = pendingEdit || (preview === undefined && lastKnown !== null);
+  const hold = unfinishedCountHold(unfinishedRows);
 
   return (
     <View className="mb-3 flex-row items-center gap-2 rounded-md border border-border bg-sunken px-3 py-2">
       <Icon name="users" size={15} color={colors.muted} />
-      {shown ? (
+      {hold ? (
+        <Text className="text-sm text-warn">{hold}</Text>
+      ) : shown ? (
         <Text className="text-sm font-semibold text-ink">{pluralPeople(shown.count)}</Text>
       ) : (
         <Text className="text-sm text-faint">Calculating…</Text>
       )}
-      {isUpdating ? <Text className="text-xs text-muted">Updating…</Text> : null}
+      {isUpdating && !hold ? <Text className="text-xs text-muted">Updating…</Text> : null}
     </View>
   );
 }
 
+/**
+ * What the segment's total says while a rule row is half-written, or null when
+ * there's a real number to show.
+ *
+ * An unfinished row (`Role is [Pick a role…]`) is dropped from the wire shape
+ * — see `TargetingBuilder.tsx`'s doc — so the preview answers for a WIDER
+ * definition than the one on screen, and for a brand-new segment whose only
+ * row is unfinished that's "the whole org". A number that big, sitting under
+ * the word "people", is read as a promise about who is about to be emailed;
+ * it has to be withheld rather than qualified.
+ */
+function unfinishedCountHold(unfinishedRows: number): string | null {
+  if (unfinishedRows <= 0) return null;
+  return unfinishedRows === 1
+    ? "Not counted yet — one line still needs a choice"
+    : `Not counted yet — ${unfinishedRows} lines still need a choice`;
+}
+
 // ── Preview card ──────────────────────────────────────────────────────────
 
-function AudiencePreviewCard({ args }: { args: PreviewArgs }) {
+function AudiencePreviewCard({
+  args,
+  unfinishedRows,
+}: {
+  args: PreviewArgs;
+  unfinishedRows: number;
+}) {
   const preview = useQuery(api.audiences.previewAudience, args) as PreviewResult | undefined;
+  // Same rule as the pinned total above: while a row is unfinished the preview
+  // describes a wider definition than the screen does, so the count (and the
+  // sample addresses that make it concrete) are withheld, not qualified.
+  const hold = unfinishedCountHold(unfinishedRows);
+  if (hold) {
+    return (
+      <Field label="People in this segment">
+        <Text className="text-sm text-warn">{hold} (a role, chapter, or event).</Text>
+      </Field>
+    );
+  }
   if (preview === undefined) {
     return (
       <Field label="People in this segment">
