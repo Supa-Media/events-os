@@ -1818,6 +1818,126 @@ describe("two-party approval — happy path", () => {
   });
 });
 
+// ── CAN-SPAM: the postal address is required, loudly ─────────────────────────
+
+describe("the org postal mailing address gates every bulk send", () => {
+  /** A draft campaign with Resend configured but NO mailing address — the
+   *  production state before this fix (nothing in the app could set the
+   *  field, so every campaign shipped a footer missing its legally required
+   *  line and nobody was told). */
+  async function seedDraftWithoutAddress(s: ChapterSetup): Promise<Id<"campaigns">> {
+    await s.as.mutation(api.integrationSettings.setResendSettings, {
+      apiKey: "re_test_key",
+      fromAddress: "Chapter OS <os@publicworship.life>",
+    });
+    const audienceId = await seedAudience(s, "people");
+    return s.as.mutation(api.campaigns.createCampaign, {
+      scope: "central",
+      name: "N",
+      subject: "Hi",
+      audienceId,
+      doc: heroDoc(),
+    });
+  }
+
+  test("submitForApproval refuses — a reviewer is never asked to sign off on a send that can't legally go out", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const campaignId = await seedDraftWithoutAddress(s);
+    await seedSelfPerson(s);
+    const reviewer = await seedReviewer(s);
+    expect(
+      await errorCode(
+        s.as.mutation(api.campaigns.submitForApproval, {
+          campaignId,
+          purpose: "Announce the retreat",
+          reviewerPersonId: reviewer.personId,
+        }),
+      ),
+    ).toBe("NO_MAILING_ADDRESS");
+    const campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
+    expect(campaign.status).toBe("draft");
+  });
+
+  test("send refuses when the address is cleared after approval — and does NOT burn the approval", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const campaignId = await seedDraftCampaign(s); // configures the address
+    await approveCampaignViaFlow(s, campaignId);
+    // A superuser clears it between approval and send.
+    await s.as.mutation(api.integrationSettings.setEmailCampaignSettings, {
+      orgMailingAddress: null,
+    });
+
+    expect(await errorCode(s.as.mutation(api.campaigns.send, { campaignId }))).toBe(
+      "NO_MAILING_ADDRESS",
+    );
+    // A missing ORG-WIDE setting isn't this campaign's fault: it stays
+    // `approved` (not `failed`), so filling the field in is the whole fix —
+    // no re-submission, no second reviewer.
+    const campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
+    expect(campaign.status).toBe("approved");
+  });
+
+  test("a whitespace-only address counts as blank", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const campaignId = await seedDraftWithoutAddress(s);
+    // `setEmailCampaignSettings` rejects a blank string outright, so write the
+    // singleton directly — the shape a hand-edited/imported row could take.
+    await run(s.t, async (ctx) => {
+      const row = await ctx.db.query("integrationSettings").first();
+      if (row) await ctx.db.patch(row._id, { orgMailingAddress: "   " });
+    });
+    await seedSelfPerson(s);
+    const reviewer = await seedReviewer(s);
+    expect(
+      await errorCode(
+        s.as.mutation(api.campaigns.submitForApproval, {
+          campaignId,
+          purpose: "Announce the retreat",
+          reviewerPersonId: reviewer.personId,
+        }),
+      ),
+    ).toBe("NO_MAILING_ADDRESS");
+  });
+
+  test("with an address on file, the rendered campaign email actually carries it", async () => {
+    vi.useFakeTimers();
+    const realFetch = globalThis.fetch;
+    try {
+      const t = newT();
+      const s = await asSuperuser(t);
+      const campaignId = await seedDraftCampaign(s);
+      await run(s.t, (ctx) =>
+        ctx.db.insert("people", {
+          chapterId: s.chapterId,
+          name: "Riley Reader",
+          email: "riley@example.com",
+          status: "active",
+          createdAt: Date.now(),
+        }),
+      );
+      const sends: string[] = [];
+      globalThis.fetch = (async (_url: string, init?: { body?: string }) => {
+        const items = init?.body ? JSON.parse(init.body) : [];
+        for (const item of items) sends.push(item.html as string);
+        return { ok: true, status: 200, text: async () => "{}" };
+      }) as unknown as typeof fetch;
+
+      await approveCampaignViaFlow(s, campaignId);
+      await s.as.mutation(api.campaigns.send, { campaignId });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      expect(sends).toHaveLength(1);
+      expect(sends[0]).toContain("Public Worship, 123 Main St, Brooklyn, NY 11201");
+    } finally {
+      globalThis.fetch = realFetch;
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe("two-party approval — reviewer eligibility & separation of duties", () => {
   test("SOD_VIOLATION when the submitter picks THEMSELVES as reviewer — even the ED", async () => {
     const t = newT();

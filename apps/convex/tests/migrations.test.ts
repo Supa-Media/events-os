@@ -331,6 +331,7 @@ const REGISTRY_NAMES = [
   "0047_service_conditions_to_ids",
   "0049_seed_builtin_campaign_templates",
   "0051_backfill_people_persona",
+  "0053_add_campaign_design_defaults",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

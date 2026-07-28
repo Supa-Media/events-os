@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { createHmac } from "node:crypto";
 import { ConvexError } from "convex/values";
-import { api } from "../_generated/api";
+import { api, internal } from "../_generated/api";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { verifyResendWebhookSignature } from "../lib/resend";
 import type { Id } from "../_generated/dataModel";
@@ -298,6 +298,106 @@ describe("/resend/webhook", () => {
     );
     expect(rows).toHaveLength(1);
     expect(rows[0].reason).toBe("bounce");
+  });
+
+  test("a PERMANENT bounce suppresses, and records the subType on the row", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await configureWebhookSecret(s);
+    await postResendWebhook(t, {
+      type: "email.bounced",
+      data: {
+        to: ["dead@example.com"],
+        bounce: { type: "Permanent", subType: "General", message: "550 no such user" },
+      },
+    });
+    const rows = await run(s.t, (ctx) =>
+      ctx.db.query("emailSuppressions").withIndex("by_email", (q) => q.eq("email", "dead@example.com")).collect(),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].reason).toBe("bounce");
+    expect(rows[0].note).toBe("Hard bounce: General");
+  });
+
+  test("a TRANSIENT (soft) bounce does NOT suppress — a full mailbox isn't a dead address", async () => {
+    // The gap the audit found: every `email.bounced` was treated as permanent,
+    // so one temporary 4xx killed a good address forever — with no
+    // un-suppress mutation and no screen that would have shown it happened.
+    const t = newT();
+    const s = await asSuperuser(t);
+    await configureWebhookSecret(s);
+    const res = await postResendWebhook(t, {
+      type: "email.bounced",
+      data: {
+        to: ["busy@example.com"],
+        bounce: { type: "Transient", subType: "MailboxFull", message: "452 over quota" },
+      },
+    });
+    // Still a 200 — the event was handled, it just isn't a suppression.
+    expect(res.status).toBe(200);
+    expect(
+      await run(s.t, (ctx) =>
+        ctx.db.query("emailSuppressions").withIndex("by_email", (q) => q.eq("email", "busy@example.com")).collect(),
+      ),
+    ).toEqual([]);
+    // And the address is still deliverable.
+    expect(
+      await t.query(internal.emailSuppressions.isEmailSuppressed, {
+        email: "busy@example.com",
+      }),
+    ).toBe(false);
+  });
+
+  test("the lowercase 'soft'/'hard' payload shape is understood too", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await configureWebhookSecret(s);
+    await postResendWebhook(t, {
+      type: "email.bounced",
+      data: { to: ["soft@example.com"], bounce: { type: "soft" } },
+    });
+    await postResendWebhook(t, {
+      type: "email.bounced",
+      data: { to: ["hard@example.com"], bounce: { type: "hard" } },
+    });
+    const emails = await run(s.t, async (ctx) =>
+      (await ctx.db.query("emailSuppressions").collect()).map((r) => r.email),
+    );
+    expect(emails).toEqual(["hard@example.com"]);
+  });
+
+  test("an UNDETERMINED bounce still suppresses — an unclassifiable bounce is treated as real", async () => {
+    // Deliberate: continuing to mail an address that genuinely hard-bounces
+    // is what burns the sending domain. `unsuppressEmail` is the recovery
+    // path for the rare wrong call — which is why it had to exist first.
+    const t = newT();
+    const s = await asSuperuser(t);
+    await configureWebhookSecret(s);
+    await postResendWebhook(t, {
+      type: "email.bounced",
+      data: { to: ["unknown@example.com"], bounce: { type: "Undetermined" } },
+    });
+    expect(
+      await run(s.t, (ctx) =>
+        ctx.db.query("emailSuppressions").withIndex("by_email", (q) => q.eq("email", "unknown@example.com")).collect(),
+      ),
+    ).toHaveLength(1);
+  });
+
+  test("a COMPLAINT is never classified — it's always the recipient's own deliberate stop", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await configureWebhookSecret(s);
+    await postResendWebhook(t, {
+      type: "email.complained",
+      // A `bounce` block here would be nonsense; it must not change anything.
+      data: { to: ["angry2@example.com"], bounce: { type: "Transient" } },
+    });
+    const rows = await run(s.t, (ctx) =>
+      ctx.db.query("emailSuppressions").withIndex("by_email", (q) => q.eq("email", "angry2@example.com")).collect(),
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].reason).toBe("complaint");
   });
 
   test("email.complained suppresses the address (reason: complaint)", async () => {

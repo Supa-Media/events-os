@@ -655,26 +655,30 @@ function PollEditor({
                 placeholder={`Option ${index + 1}`}
               />
             </View>
-            <Pressable
-              onPress={
-                atMin ? undefined : () => setOptions(options.filter((_, i) => i !== index))
-              }
-              disabled={atMin}
-              hitSlop={6}
-              accessibilityRole="button"
-              accessibilityLabel={`Remove option ${index + 1}`}
-              className={`mb-3 rounded p-1 ${atMin ? "opacity-30" : "active:bg-sunken web:hover:bg-sunken"}`}
-            >
-              <Icon name="x" size={13} color={colors.muted} />
-            </Pressable>
+            {readOnly ? null : (
+              <Pressable
+                onPress={
+                  atMin ? undefined : () => setOptions(options.filter((_, i) => i !== index))
+                }
+                disabled={atMin}
+                hitSlop={6}
+                accessibilityRole="button"
+                accessibilityLabel={`Remove option ${index + 1}`}
+                className={`mb-3 rounded p-1 ${atMin ? "opacity-30" : "active:bg-sunken web:hover:bg-sunken"}`}
+              >
+                <Icon name="x" size={13} color={colors.muted} />
+              </Pressable>
+            )}
           </View>
         ))}
-        <LevelToggle
-          label={atMax ? `Maximum ${MAX_POLL_OPTIONS} options` : "+ Add option"}
-          active={false}
-          disabled={atMax}
-          onPress={() => setOptions([...options, { id: newBlockId(), label: "" }])}
-        />
+        {readOnly ? null : (
+          <LevelToggle
+            label={atMax ? `Maximum ${MAX_POLL_OPTIONS} options` : "+ Add option"}
+            active={false}
+            disabled={atMax}
+            onPress={() => setOptions([...options, { id: newBlockId(), label: "" }])}
+          />
+        )}
       </Field>
       {blankLabel ? (
         <InlineWarning text="Every option needs a label before this campaign can be saved." />
@@ -992,6 +996,7 @@ function FooterEditor({
   uploadImage?: UploadImage;
   run?: ActionRunner["run"];
 }) {
+  const readOnly = useDesignerReadOnly();
   const links = block.links ?? [];
   const atMax = links.length >= MAX_FOOTER_LINKS;
 
@@ -1055,15 +1060,17 @@ function FooterEditor({
                     keyboardType="url"
                   />
                 </View>
-                <Pressable
-                  onPress={() => setLinks(links.filter((_, i) => i !== index))}
-                  hitSlop={6}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Remove link ${index + 1}`}
-                  className="mb-3 rounded p-1 active:bg-sunken web:hover:bg-sunken"
-                >
-                  <Icon name="x" size={13} color={colors.muted} />
-                </Pressable>
+                {readOnly ? null : (
+                  <Pressable
+                    onPress={() => setLinks(links.filter((_, i) => i !== index))}
+                    hitSlop={6}
+                    accessibilityRole="button"
+                    accessibilityLabel={`Remove link ${index + 1}`}
+                    className="mb-3 rounded p-1 active:bg-sunken web:hover:bg-sunken"
+                  >
+                    <Icon name="x" size={13} color={colors.muted} />
+                  </Pressable>
+                )}
               </View>
               {/* Unlike a card's call to action — both halves or neither — a
                   footer link that EXISTS must have both, so a half-filled row
@@ -1078,15 +1085,17 @@ function FooterEditor({
             </View>
           );
         })}
-        <LevelToggle
-          label={atMax ? `Maximum ${MAX_FOOTER_LINKS} links` : "+ Add link"}
-          active={false}
-          disabled={atMax}
-          // A fresh row starts with a real label and the https:// stub, so
-          // adding one doesn't itself make the document unsaveable — the same
-          // choice `defaultBlockFor("button")` makes.
-          onPress={() => setLinks([...links, { label: "Instagram", url: "https://" }])}
-        />
+        {readOnly ? null : (
+          <LevelToggle
+            label={atMax ? `Maximum ${MAX_FOOTER_LINKS} links` : "+ Add link"}
+            active={false}
+            disabled={atMax}
+            // A fresh row starts with a real label and the https:// stub, so
+            // adding one doesn't itself make the document unsaveable — the same
+            // choice `defaultBlockFor("button")` makes.
+            onPress={() => setLinks([...links, { label: "Instagram", url: "https://" }])}
+          />
+        )}
       </Field>
       <Text className="text-2xs text-faint">
         The unsubscribe line is added automatically to every send — it

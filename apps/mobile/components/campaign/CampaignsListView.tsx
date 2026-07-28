@@ -1,11 +1,18 @@
 /**
  * CAMPAIGNS — the campaign list + inline "new campaign" creator.
  *
- * Unlike `TemplatesView`'s "create with just a name" flow, `createCampaign`
- * requires a subject line and an audience up front (`campaigns.ts` validates
- * both before a draft can even be saved), so the creator collects all three
- * before pushing into the detail screen (`/campaign/[id]`) — previewText and
- * the actual design are filled in there via eager autosave.
+ * ── What the creator asks for, and what it doesn't ─────────────────────────
+ * TWO answers: the subject line and the segment. `campaigns.ts` refuses a
+ * draft without either, so both are genuinely required up front.
+ *
+ * It does NOT ask for a campaign name. It used to, and then the record screen
+ * immediately re-presented name AND subject as editable fields with different
+ * save semantics (a Create button here, save-on-blur there) — the same two
+ * questions asked twice, thirty seconds apart, the second time in a different
+ * idiom. The internal name is the one of the two nobody outside the org ever
+ * sees, so it starts as a copy of the subject and is renamed on the record if
+ * it's ever worth renaming. Preview text, sender and the design itself are
+ * likewise filled in there, via eager autosave.
  *
  * ── Starting from a template ───────────────────────────────────────────────
  * The creator offers "Start from" as its FIRST field, because it decides
@@ -40,9 +47,10 @@ const BLANK_TEMPLATE = "blank" as const;
 
 /** A single campaign row from `api.campaigns.listCampaigns`. */
 type Campaign = FunctionReturnType<typeof api.campaigns.listCampaigns>[number];
-/** A single audience row from `api.audiences.listAudiences` — used both to
- *  resolve a campaign's audience name for display and to populate the
- *  creator's audience picker. */
+/** A single SEGMENT row from `api.audiences.listAudiences` — used both to
+ *  resolve a campaign's segment name for display and to populate the
+ *  creator's segment picker. (The table and its API keep the older
+ *  "audience" name; the label on screen is "Segment".) */
 type Audience = FunctionReturnType<typeof api.audiences.listAudiences>[number];
 
 export function CampaignsListView() {
@@ -54,7 +62,6 @@ export function CampaignsListView() {
   const createFromTemplate = useMutation(api.campaignTemplates.createCampaignFromTemplate);
   const { run, toast, dismiss } = useActionRunner();
 
-  const [name, setName] = useState("");
   const [subject, setSubject] = useState("");
   const [audienceId, setAudienceId] = useState<string | null>(null);
   const [templateId, setTemplateId] = useState<string>(BLANK_TEMPLATE);
@@ -71,32 +78,36 @@ export function CampaignsListView() {
   const audienceName = (id: string | null | undefined): string | null =>
     (id && audiences.find((a) => a._id === id)?.name) || null;
 
-  const canCreate = name.trim() !== "" && subject.trim() !== "" && audienceId !== null;
+  const canCreate = subject.trim() !== "" && audienceId !== null;
 
   async function handleCreate() {
     if (!canCreate || !audienceId) return;
     setCreating(true);
     try {
+      // The internal name starts as the subject — `createCampaign` requires a
+      // non-empty one, and asking for a second string that only the org ever
+      // sees is a question better answered later (or never). It's editable on
+      // the record, which is also the only place it's ever shown.
+      const trimmedSubject = subject.trim();
       const id = await run(
         () =>
           templateId === BLANK_TEMPLATE
             ? create({
                 scope: "central",
-                name: name.trim(),
-                subject: subject.trim(),
+                name: trimmedSubject,
+                subject: trimmedSubject,
                 audienceId: audienceId as Id<"audiences">,
                 doc: { blocks: [] },
               })
             : createFromTemplate({
                 templateId: templateId as Id<"campaignTemplates">,
-                name: name.trim(),
-                subject: subject.trim(),
+                name: trimmedSubject,
+                subject: trimmedSubject,
                 audienceId: audienceId as Id<"audiences">,
               }),
         { errorTitle: "Couldn't create campaign" },
       );
       if (id) {
-        setName("");
         setSubject("");
         setAudienceId(null);
         setTemplateId(BLANK_TEMPLATE);
@@ -116,8 +127,16 @@ export function CampaignsListView() {
       {audiences.length === 0 ? (
         <Card style={styles.creator}>
           <Text className="text-sm text-muted">
-            Create an audience first (Audiences tab above) — every campaign needs one to send to.
+            Every campaign needs a segment to send to, and there aren&apos;t any yet.
           </Text>
+          {/* A link, not an instruction. "Create one first (Segments tab
+              above)" leaves the reader to find the tab and come back; the
+              button is the same sentence with the walk done for her. */}
+          <Button
+            title="Create a segment"
+            icon="users"
+            onPress={() => router.push("/campaigns/audiences" as never)}
+          />
         </Card>
       ) : (
         <Card style={styles.creator}>
@@ -129,21 +148,16 @@ export function CampaignsListView() {
             hint="A template copies its blocks and theme into the new draft. Editing the template later never touches a campaign already made from it."
           />
           <TextField
-            label="New campaign"
-            placeholder="e.g. Fall Fundraiser Kickoff"
-            value={name}
-            onChangeText={setName}
-          />
-          <TextField
             label="Subject line"
             placeholder="What shows in the inbox"
             value={subject}
             onChangeText={setSubject}
+            hint="Names the campaign too — rename it on the campaign itself if the internal name should differ."
           />
           <Select
-            label="Audience"
+            label="Segment"
             value={audienceId}
-            placeholder="Pick an audience…"
+            placeholder="Pick a segment…"
             options={audiences.map((a) => ({ value: a._id, label: a.name }))}
             onChange={setAudienceId}
           />
@@ -182,7 +196,7 @@ export function CampaignsListView() {
                   </Text>
                 ) : null}
                 <Text style={styles.meta}>
-                  {audienceName(c.audienceId) ?? "Audience deleted"}
+                  {audienceName(c.audienceId) ?? "Segment deleted"}
                   {c.status === "sending" || c.status === "sent" || c.status === "failed"
                     ? ` · ${pluralCount(sentCount, "sent")} / ${pluralCount(recipientCount, "recipient")}`
                     : ""}

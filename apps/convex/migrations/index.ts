@@ -61,6 +61,7 @@ import { seedServiceCatalog } from "./0046_seed_service_catalog";
 import { serviceConditionsToIds } from "./0047_service_conditions_to_ids";
 import { seedBuiltInCampaignTemplates } from "./0049_seed_builtin_campaign_templates";
 import { backfillPeoplePersona } from "./0051_backfill_people_persona";
+import { addCampaignDesignDefaults } from "./0053_add_campaign_design_defaults";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -254,4 +255,11 @@ export const MIGRATIONS: Migration[] = [
   // recompute; aggregate inserts are `insertIfDoesNotExist`, safe to
   // repeat). See 0051.
   backfillPeoplePersona,
+  // The `campaigns.design` rung — grant it to `graphic_designer` /
+  // `social_media_manager` (the seats that actually build the newsletter and
+  // held NO campaign capability, so couldn't open the desk at all), and top
+  // it up on any row already carrying compose/approve, where it's implied and
+  // therefore changes no access. Never grants it to a seat an ED deliberately
+  // set to "none". Idempotent. See 0053.
+  addCampaignDesignDefaults,
 ];

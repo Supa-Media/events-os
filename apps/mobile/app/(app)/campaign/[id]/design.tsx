@@ -14,12 +14,20 @@
  * `renderCampaignEmail` against a sample recipient) and a tap-to-copy
  * merge-tag row on the right — stacked below on narrow/native screens.
  *
+ * The theme picker (`CampaignThemePicker`) sits above the preview: it's the
+ * only caller of `campaigns.setCampaignTheme`, and the only way a campaign's
+ * look can be changed after creation. See `applyTheme` for why the result has
+ * to be folded back into the local history rather than left to the server.
+ *
  * Read-only once the campaign leaves `draft`/`changes_requested`
  * (`updateCampaignDoc` throws `NOT_EDITABLE` server-side past that point —
- * see `campaigns.ts#assertEditable`).
+ * see `campaigns.ts#assertEditable`). "Read-only" means it: the block cards
+ * render with `readOnly`, which makes every field static and removes every
+ * add/remove/upload control, instead of the no-op handlers that used to let
+ * a reviewer type into a locked campaign and lose the words on reload.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Platform, Text, View, useWindowDimensions } from "react-native";
+import { Platform, Pressable, Text, View, useWindowDimensions } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useConvex, useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -45,8 +53,10 @@ import {
   canRedo,
   canUndo,
   duplicateBlock,
+  explainDocError,
   initHistory,
   insertBlock,
+  moveBlock,
   pushHistory,
   redoHistory,
   removeBlock,
@@ -59,6 +69,10 @@ import { SortableRows } from "../../../../components/grid/SortableRows";
 import { BlockCard } from "../../../../components/campaign/designer/BlockCard";
 import { BlockPalette } from "../../../../components/campaign/designer/BlockPalette";
 import { MergeTagRow } from "../../../../components/campaign/designer/MergeTagRow";
+import {
+  CampaignThemePicker,
+  type ThemeChoice,
+} from "../../../../components/campaign/designer/CampaignThemePicker";
 import EmailHtmlPreview from "../../../../components/email/EmailHtmlPreview";
 import { SaveAsTemplateAction } from "../../../../components/campaign/SaveAsTemplateAction";
 import type {
@@ -109,6 +123,7 @@ function CampaignDesignBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
 
   const campaign = useQuery(api.campaigns.getCampaign, { campaignId });
   const updateDoc = useMutation(api.campaigns.updateCampaignDoc);
+  const setTheme = useMutation(api.campaigns.setCampaignTheme);
   const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
   // `storage.getUrl` is a query, not a mutation — resolved on demand via the
   // imperative Convex client (`app/(app)/doc/[id].tsx`'s upload-flow precedent),
@@ -258,6 +273,54 @@ function CampaignDesignBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
     [history, applyDoc],
   );
 
+  /**
+   * Move a block one place up or down.
+   *
+   * The drag handle was the ONLY way to reorder, which needs a pointer and a
+   * 15px grip; on a phone, reordering a fifteen-block newsletter was a
+   * long-press-and-scroll fight. `moveBlock` returns the same doc reference at
+   * either end of the stack, and `pushHistory` is skipped on a no-op, so a
+   * bumped-into-the-ceiling tap costs neither a history step nor a save.
+   */
+  const handleMove = useCallback(
+    (blockId: string, delta: -1 | 1) => {
+      if (!history) return;
+      const next = moveBlock(history.present, blockId, delta);
+      if (next === history.present) return;
+      applyDoc(next);
+      setSelectedId(blockId);
+    },
+    [history, applyDoc],
+  );
+
+  /**
+   * Restyle the campaign (`campaigns.setCampaignTheme`, which had no client
+   * caller at all until now — see `CampaignThemePicker`'s doc).
+   *
+   * The mutation applies the theme SERVER-side to the document as stored, so
+   * the new theme has to be folded back into the composer's local history
+   * immediately: this screen autosaves `history.present` wholesale, and that
+   * snapshot still carries the OLD theme — the very next keystroke would push
+   * it straight back over the restyle and silently undo it. Reading the doc
+   * back (rather than trusting a locally-guessed theme) also keeps the
+   * normalisation the server applied.
+   */
+  const applyTheme = useCallback(
+    async (choice: ThemeChoice): Promise<boolean> => {
+      const result = await run(() => setTheme({ campaignId, ...choice }), {
+        errorTitle: "Couldn't apply that theme",
+      });
+      if (result === undefined) return false;
+      const fresh = await convex.query(api.campaigns.getCampaign, { campaignId });
+      const theme = (fresh?.doc as EmailDocument | undefined)?.theme;
+      if (theme) {
+        setHistory((h) => (h ? pushHistory(h, { ...h.present, theme }) : h));
+      }
+      return true;
+    },
+    [run, setTheme, campaignId, convex],
+  );
+
   const handleUndo = useCallback(() => setHistory((h) => (h ? undoHistory(h) : h)), []);
   const handleRedo = useCallback(() => setHistory((h) => (h ? redoHistory(h) : h)), []);
 
@@ -372,7 +435,8 @@ function CampaignDesignBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
           ids={blockIds}
           onReorder={handleReorder}
           renderRow={({ id: blockId, drag }) => {
-            const block = doc.blocks.find((b) => b.id === blockId);
+            const index = doc.blocks.findIndex((b) => b.id === blockId);
+            const block = index < 0 ? undefined : doc.blocks[index];
             if (!block) return null;
             return (
               <BlockCard
@@ -382,6 +446,10 @@ function CampaignDesignBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
                 onChange={(patch) => handleUpdate(blockId, patch)}
                 onDuplicate={() => handleDuplicate(blockId)}
                 onDelete={() => handleDelete(blockId)}
+                onMoveUp={() => handleMove(blockId, -1)}
+                onMoveDown={() => handleMove(blockId, 1)}
+                canMoveUp={index > 0}
+                canMoveDown={index < doc.blocks.length - 1}
                 drag={drag}
                 uploadImage={uploadImage}
                 run={run}
@@ -390,11 +458,17 @@ function CampaignDesignBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
           }}
         />
       ) : (
+        // Past draft/changes_requested every write is refused server-side
+        // (`assertEditable`), so the cards render LOCKED — visibly static
+        // fields rather than live-looking ones wired to no-op handlers, which
+        // is what used to let a reviewer type into a submitted campaign and
+        // watch the words vanish on reload.
         doc.blocks.map((block) => (
           <BlockCard
             key={block.id}
             block={block}
             selected={false}
+            readOnly
             onSelect={() => {}}
             onChange={() => {}}
             onDuplicate={() => {}}
@@ -407,6 +481,16 @@ function CampaignDesignBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
 
   const previewColumn = (
     <View className={split ? "ml-4 w-[380px]" : "mt-6"}>
+      {/* Above the preview, not below it: the theme is the thing the preview
+          is FOR, and a picker under a 620px pane is a picker nobody finds. */}
+      {editable ? (
+        <View className="mb-3">
+          <CampaignThemePicker
+            currentThemeName={doc.theme?.name}
+            onApply={applyTheme}
+          />
+        </View>
+      ) : null}
       <Text className="mb-2 text-xs font-bold uppercase tracking-wider text-faint">
         Live preview
       </Text>
@@ -430,7 +514,19 @@ function CampaignDesignBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
             campaignName={campaign.name}
             run={run}
           />
-          <Button title="Done" variant="secondary" onPress={() => router.push(`/campaign/${campaignId}` as never)} />
+          {/* `back()`, not `push()`: the composer is always opened FROM the
+              record, so pushing a second copy of it grew the stack by one
+              screen every round trip (design → record → design → record …)
+              and left "back" walking through a corridor of duplicates.
+              `replace` is the deep-link fallback, matching `ui/BackLink`. */}
+          <Button
+            title="Done"
+            variant="secondary"
+            onPress={() => {
+              if (router.canGoBack()) router.back();
+              else router.replace(`/campaign/${campaignId}` as never);
+            }}
+          />
         </View>
       </View>
       {split ? (
@@ -453,6 +549,18 @@ function CampaignDesignBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
  *  never-happens one. */
 type SaveState = "idle" | "saving" | "saved" | "error";
 
+/**
+ * The autosave state, and — when a save is refused — WHY, in the labels this
+ * screen actually shows.
+ *
+ * The reason used to be the validator's own words (`blocks[3]: card:
+ * "ctaLabel" and "ctaUrl" must be set together`), which names fields from the
+ * document contract rather than anything on screen: there is no "ctaLabel"
+ * here, there's a "Button label". `explainDocError` maps the gate's messages
+ * onto the composer's vocabulary and keeps the raw string behind "Details",
+ * so the original is still one tap away when someone needs to grep the
+ * validator for it.
+ */
 function SaveIndicator({
   editable,
   saveState,
@@ -462,6 +570,8 @@ function SaveIndicator({
   saveState: SaveState;
   error: string | null;
 }) {
+  const [showRaw, setShowRaw] = useState(false);
+
   if (!editable) return null;
   if (saveState === "saving") {
     return <Text className="text-xs text-muted">Saving…</Text>;
@@ -470,10 +580,30 @@ function SaveIndicator({
     return <Text className="text-xs text-success">Saved</Text>;
   }
   if (saveState === "error") {
+    const explained = error === null ? null : explainDocError(error);
     return (
-      <Text className="max-w-[320px] text-right text-xs text-danger" numberOfLines={3}>
-        Not saved — {error ?? "something went wrong."}
-      </Text>
+      <View className="max-w-[340px] items-end">
+        <Text className="text-right text-xs text-danger">
+          Not saved — {explained?.message ?? "something went wrong."}
+        </Text>
+        {explained && explained.recognized ? (
+          <>
+            <Pressable
+              onPress={() => setShowRaw((s) => !s)}
+              hitSlop={6}
+              accessibilityRole="button"
+              accessibilityLabel={showRaw ? "Hide the technical reason" : "Show the technical reason"}
+            >
+              <Text className="mt-0.5 text-2xs text-muted underline">
+                {showRaw ? "Hide details" : "Details"}
+              </Text>
+            </Pressable>
+            {showRaw ? (
+              <Text className="mt-0.5 text-right text-2xs text-faint">{explained.raw}</Text>
+            ) : null}
+          </>
+        ) : null}
+      </View>
     );
   }
   return null;

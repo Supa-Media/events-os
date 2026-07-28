@@ -1,15 +1,21 @@
 /**
- * Campaign metadata — name / subject / preview text / audience / sender.
+ * Campaign metadata — name / subject / preview text / segment / sender.
  * Eager autosave: text fields save on blur (mirrors `template/NameEditor` +
- * `DescriptionEditor`), the audience Select saves immediately on change. The
- * audience picker shows a live recipient count next to it, so switching
- * audiences shows its impact before the caller ever hits Send.
+ * `DescriptionEditor`), the segment Select saves immediately on change. The
+ * segment picker shows a live count of the people it reaches next to it, so
+ * switching segments shows its impact before the caller ever hits Send.
  *
- * `preview` (the current audience's live `previewAudience` result) is lifted
+ * The creator (`CampaignsListView`) asks only for the subject and the
+ * segment; the campaign NAME starts as a copy of the subject and is renamed
+ * here, which is the only place it's ever shown. It used to be asked for
+ * twice — once there behind a Create button, once here on blur — for a string
+ * no recipient ever sees.
+ *
+ * `preview` (the current segment's live `previewAudience` result) is lifted
  * to the parent screen and passed in — `CampaignStatusCard`'s send-confirm
  * summary needs the exact same numbers, so there's one query, not two.
  *
- * "Send as" (`fromName`/`fromEmail`) is the per-campaign sender override —
+ * "From" (`fromName`/`fromEmail`) is the per-campaign sender override —
  * blank means "use the org's default Resend sender". `getSenderDefaults`
  * supplies the org domain (for the hint text) and default address (for the
  * "leave blank to send as…" copy); the domain match itself is enforced
@@ -29,7 +35,7 @@ import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { Card, TextField, Select, Field } from "../ui";
-import { pluralCount } from "./helpers";
+import { pluralCount, pluralPeople } from "./helpers";
 
 type Campaign = NonNullable<FunctionReturnType<typeof api.campaigns.getCampaign>>;
 type Audience = FunctionReturnType<typeof api.audiences.listAudiences>[number];
@@ -113,19 +119,19 @@ export function CampaignMetaCard({
         </Text>
       ) : null}
       <TextField
-        label="Campaign name"
-        placeholder="Internal name — recipients never see this"
-        value={name}
-        onChangeText={setName}
-        onBlur={saveName}
-        editable={editable}
-      />
-      <TextField
         label="Subject line"
         placeholder="What shows in the inbox"
         value={subject}
         onChangeText={setSubject}
         onBlur={saveSubject}
+        editable={editable}
+      />
+      <TextField
+        label="Campaign name"
+        hint="Internal only — nobody outside the org sees it. Starts as a copy of the subject line."
+        value={name}
+        onChangeText={setName}
+        onBlur={saveName}
         editable={editable}
       />
       <TextField
@@ -138,26 +144,29 @@ export function CampaignMetaCard({
       />
       {editable ? (
         <Select
-          label="Audience"
+          label="Segment"
           value={campaign.audienceId ?? null}
-          placeholder="Pick an audience…"
+          placeholder="Pick a segment…"
           options={audiences.map((a) => ({ value: a._id, label: a.name }))}
           onChange={(v) => void onSave({ audienceId: v as Id<"audiences"> })}
         />
       ) : (
-        <Field label="Audience">
-          <Text className="text-base text-ink">{selectedAudience?.name ?? "Audience deleted"}</Text>
+        <Field label="Segment">
+          <Text className="text-base text-ink">{selectedAudience?.name ?? "Segment deleted"}</Text>
         </Field>
       )}
-      <Field label="Recipients">
+      {/* PEOPLE, not recipients: this is a live estimate that re-resolves at
+          send time. "Recipients" is reserved for a send's actual delivery
+          rows (see `helpers.ts#pluralPeople`). */}
+      <Field label="Reaches">
         {!selectedAudience ? (
-          <Text className="text-sm text-faint">Pick an audience to see who this reaches.</Text>
+          <Text className="text-sm text-faint">Pick a segment to see who this reaches.</Text>
         ) : preview === undefined ? (
           <Text className="text-sm text-faint">Calculating…</Text>
         ) : (
           <View>
             <Text className="text-sm font-semibold text-ink">
-              {pluralCount(preview.count, "recipient")}
+              {pluralPeople(preview.count)}
             </Text>
             {preview.excludedSuppressed > 0 ||
             preview.excludedUnverified > 0 ||
@@ -174,11 +183,11 @@ export function CampaignMetaCard({
                   // Person-centric audiences Phase 3 — always 0 for legacy
                   // sources (guests/donors/people), so this is additive-only.
                   preview.excludedOptOut > 0
-                    ? `${pluralCount(preview.excludedOptOut, "person")} opted out`
+                    ? `${pluralPeople(preview.excludedOptOut)} opted out`
                     : null,
                   // Property-level exclusions (excludeFilters) — same shape.
                   preview.excludedByFilters > 0
-                    ? `${pluralCount(preview.excludedByFilters, "person")} matched an exclude filter`
+                    ? `${pluralPeople(preview.excludedByFilters)} matched an exclude filter`
                     : null,
                 ]
                   .filter(Boolean)
@@ -192,14 +201,14 @@ export function CampaignMetaCard({
             ) : null}
             {preview.truncated ? (
               <Text className="mt-0.5 text-xs text-warn">
-                Showing the first 5,000 — this audience matches more than the cap.
+                Showing the first 5,000 — this segment matches more than the cap.
               </Text>
             ) : null}
           </View>
         )}
       </Field>
       <Field
-        label="Send as"
+        label="From"
         hint={
           senderDefaults
             ? `Must be @${senderDefaults.orgDomain ?? "your organization's domain"}. Leave blank to send as ${senderDefaults.orgFromAddress ?? "the org default"}.`

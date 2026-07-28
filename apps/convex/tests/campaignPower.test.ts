@@ -5,6 +5,7 @@ import type { Doc, Id } from "../_generated/dataModel";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
 import { runAddCampaignPowerDefaults } from "../migrations/0036_add_campaign_power_defaults";
+import { runAddCampaignDesignDefaults } from "../migrations/0053_add_campaign_design_defaults";
 
 /**
  * `seats.setSeatCampaignPower` — the assignable per-role CAMPAIGN power
@@ -355,9 +356,14 @@ describe("campaigns.design — the desk's bottom rung", () => {
     await s.as.mutation(api.campaignTemplates.archiveTemplate, { templateId });
 
     // Image library — the write path a designer lives in.
-    const storageId = await run(s.t, (ctx) =>
-      ctx.storage.store(new Blob(["png"], { type: "image/png" })),
-    );
+    // `ctx.storage.store` exists on convex-test's writer but not on the
+    // generated `StorageWriter` type — the cast `campaignTemplates.test.ts`
+    // and `aiCoding.test.ts` already use.
+    const storageId = (await run(s.t, (ctx) =>
+      (ctx.storage as unknown as { store: (b: Blob) => Promise<Id<"_storage">> }).store(
+        new Blob(["png"], { type: "image/png" }),
+      ),
+    )) as Id<"_storage">;
     const imageId = await s.as.mutation(api.emailImages.addImage, {
       scope: "central",
       storageId,
@@ -574,5 +580,68 @@ describe("0036_add_campaign_power_defaults", () => {
       ctx.db.query("seatDefs").withIndex("by_slug", (q) => q.eq("slug", "marketing_director")).unique(),
     );
     expect(def!.capabilities).toContain("campaigns.approve");
+  });
+});
+
+// ── Migration 0053 — the campaigns.design backfill ──────────────────────────
+
+describe("0053_add_campaign_design_defaults", () => {
+  /** Strip the rung back off every seed row, simulating a deployment seeded
+   *  BEFORE the design rung shipped. */
+  async function stripDesign(t: ReturnType<typeof newT>): Promise<void> {
+    await run(t, async (ctx) => {
+      const rows = await ctx.db.query("seatDefs").take(300);
+      for (const row of rows) {
+        if (!row.capabilities.includes("campaigns.design")) continue;
+        await ctx.db.patch(row._id, {
+          capabilities: row.capabilities.filter((c) => c !== "campaigns.design"),
+        });
+      }
+    });
+  }
+
+  async function capsFor(t: ReturnType<typeof newT>, slug: string): Promise<string[]> {
+    const def = await run(t, (ctx) =>
+      ctx.db.query("seatDefs").withIndex("by_slug", (q) => q.eq("slug", slug)).unique(),
+    );
+    if (!def) throw new Error(`${slug} not seeded`);
+    return def.capabilities;
+  }
+
+  test("grants the rung to the two marketing seats, tops it up where implied, and re-runs clean", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    await stripDesign(t);
+
+    const result = await run(t, (ctx) => runAddCampaignDesignDefaults(ctx));
+    // 5 rows: graphic_designer + social_media_manager (case 1), and
+    // executive_director + financial_manager + marketing_director (case 2).
+    expect(result.patched).toBe(5);
+
+    expect(await capsFor(t, "graphic_designer")).toEqual(["campaigns.design"]);
+    expect(await capsFor(t, "social_media_manager")).toEqual(["campaigns.design"]);
+    for (const slug of ["executive_director", "financial_manager", "marketing_director"]) {
+      expect(await capsFor(t, slug)).toContain("campaigns.design");
+    }
+
+    // Idempotent — a second run touches nothing.
+    const second = await run(t, (ctx) => runAddCampaignDesignDefaults(ctx));
+    expect(second.patched).toBe(0);
+  });
+
+  test("never re-opens the desk for a seat an ED deliberately set to 'none'", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    // The ED strips marketing_director's campaign power entirely.
+    await run(t, async (ctx) => {
+      const def = await ctx.db
+        .query("seatDefs")
+        .withIndex("by_slug", (q) => q.eq("slug", "marketing_director"))
+        .unique();
+      await ctx.db.patch(def!._id, { capabilities: [] });
+    });
+
+    await run(t, (ctx) => runAddCampaignDesignDefaults(ctx));
+    expect(await capsFor(t, "marketing_director")).toEqual([]);
   });
 });

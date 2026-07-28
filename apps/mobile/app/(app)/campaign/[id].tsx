@@ -1,14 +1,23 @@
-import { View } from "react-native";
+import { Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { Screen, Narrow, Button, ToastView, EmptyState } from "../../../components/ui";
+import {
+  Screen,
+  Narrow,
+  BackLink,
+  Badge,
+  Button,
+  ToastView,
+  EmptyState,
+} from "../../../components/ui";
 import { useActionRunner } from "../../../lib/useActionToast";
 import { CampaignMetaCard } from "../../../components/campaign/CampaignMetaCard";
 import { CampaignStatusCard } from "../../../components/campaign/CampaignStatusCard";
 import { CampaignRepliesSection } from "../../../components/campaign/CampaignRepliesSection";
 import { CampaignPollResults } from "../../../components/campaign/CampaignPollResults";
+import { campaignStatusLabel, campaignStatusTone } from "../../../components/campaign/helpers";
 
 /**
  * CAMPAIGN DETAIL — metadata (eager-autosave), the send workflow (status
@@ -97,8 +106,28 @@ function CampaignDetailBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
       <Narrow>
         <ToastView toast={toast} onDismiss={dismiss} />
 
-        <View className="mb-4 flex-row items-center justify-between gap-3">
-          <View className="flex-1" />
+        {/* This screen used to open with an empty flex spacer and a single
+            button: no title, no status, and no way back to the desk — the
+            campaigns tabs belong to `campaigns/_layout` and disappear the
+            moment you open one campaign, so a reader could not tell WHICH
+            campaign this was or how to leave it except with the browser's
+            own back button. */}
+        <BackLink fallback="/campaigns" label="Campaigns" />
+        <View className="mb-4 flex-row flex-wrap items-start justify-between gap-3">
+          <View className="flex-1">
+            <Text className="font-display text-2xl text-ink">{campaign.name}</Text>
+            <View className="mt-1.5 flex-row flex-wrap items-center gap-2">
+              <Badge
+                label={campaignStatusLabel(campaign.status)}
+                tone={campaignStatusTone(campaign.status)}
+              />
+              {campaign.subject ? (
+                <Text className="text-sm text-muted" numberOfLines={1}>
+                  {campaign.subject}
+                </Text>
+              ) : null}
+            </View>
+          </View>
           <Button
             title="Edit design"
             icon="edit-3"
