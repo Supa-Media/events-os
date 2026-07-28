@@ -78,7 +78,7 @@ export function ImageLibraryPicker({
           ) : images.length === 0 ? (
             <Text className="px-1 py-2 text-xs text-muted">
               Nothing here yet — images you upload are added to the library
-              automatically, and can be reused in any campaign.
+              automatically, and can be reused in any email.
             </Text>
           ) : (
             <ScrollView className="max-h-64">

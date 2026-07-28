@@ -170,7 +170,7 @@ export function templateArchiveCopy(
   isBuiltIn: boolean,
 ): { title: string; message: string; confirmLabel: string } {
   const shared =
-    "Campaigns already created from it are unaffected — a campaign copies the template, it never links back to it.";
+    "Emails already created from it are unaffected — an email copies the template, it never links back to it.";
   if (isBuiltIn) {
     return {
       title: "Remove this built-in template?",

@@ -24,8 +24,8 @@ export default function CampaignTemplatesScreen() {
         <Narrow>
           <EmptyState
             icon="lock"
-            title="Campaigns is available to org leadership"
-            message="Ask a central Executive Director, Financial Manager, or Marketing Director to grant you campaign design, compose, or approve power."
+            title="The Emails desk is available to org leadership"
+            message="Ask a central Executive Director, Financial Manager, or Marketing Director to grant you email design, compose, or approve power."
           />
         </Narrow>
       </Screen>

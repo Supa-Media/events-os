@@ -323,9 +323,12 @@ export const CAPABILITY_LABELS: Record<string, string> = {
   "nav.giving": "Giving desk tab",
   // Campaigns desk (two-party approval, 2026-07-24; design rung 2026-07-28)
   // — the assignable campaign power's three capabilities.
-  "campaigns.design": "Edit campaign themes, templates & images",
-  "campaigns.compose": "Compose email campaigns",
-  "campaigns.approve": "Approve email campaigns",
+  // The capability STRINGS keep the older "campaigns." prefix (they are
+  // persisted on seat rows — see `docs/guides/email-terminology.md`); the
+  // descriptions beside them are what a reader actually sees.
+  "campaigns.design": "Edit email themes, templates & images",
+  "campaigns.compose": "Write and send emails",
+  "campaigns.approve": "Approve emails before they send",
 };
 
 export function capabilityLabel(id: string): string {

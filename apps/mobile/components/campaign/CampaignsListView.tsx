@@ -1,5 +1,10 @@
 /**
- * CAMPAIGNS — the campaign list + inline "new campaign" creator.
+ * EMAILS — the email list + inline "new email" creator.
+ *
+ * On screen this desk says EMAIL: one email, written once, sent once. The
+ * table, the API (`api.campaigns.*`) and the `/campaign/[id]` route keep the
+ * older "campaign" name, which is reserved for a future series container —
+ * see `docs/guides/email-terminology.md`.
  *
  * ── What the creator asks for, and what it doesn't ─────────────────────────
  * TWO answers: the subject line and the segment. `campaigns.ts` refuses a
@@ -80,7 +85,7 @@ export function CampaignsListView() {
   if (campaigns === undefined || audiences === undefined || access === undefined) {
     return (
       <View style={{ paddingVertical: spacing.lg }}>
-        <Text className="text-sm text-faint">Loading campaigns…</Text>
+        <Text className="text-sm text-faint">Loading emails…</Text>
       </View>
     );
   }
@@ -117,7 +122,7 @@ export function CampaignsListView() {
                 subject: trimmedSubject,
                 audienceId: audienceId as Id<"audiences">,
               }),
-        { errorTitle: "Couldn't create campaign" },
+        { errorTitle: "Couldn't create email" },
       );
       if (id) {
         setSubject("");
@@ -141,7 +146,7 @@ export function CampaignsListView() {
       ) : audiences.length === 0 ? (
         <Card style={styles.creator}>
           <Text className="text-sm text-muted">
-            Every campaign needs a segment to send to, and there aren&apos;t any yet.
+            Every email needs a segment to send to, and there aren&apos;t any yet.
           </Text>
           {/* A link, not an instruction. "Create one first (Segments tab
               above)" leaves the reader to find the tab and come back; the
@@ -159,14 +164,14 @@ export function CampaignsListView() {
             value={templateId}
             options={templateOptions(templates)}
             onChange={setTemplateId}
-            hint="A template copies its blocks and theme into the new draft. Editing the template later never touches a campaign already made from it."
+            hint="A template copies its blocks and theme into the new draft. Editing the template later never touches an email already made from it."
           />
           <TextField
             label="Subject line"
             placeholder="What shows in the inbox"
             value={subject}
             onChangeText={setSubject}
-            hint="Names the campaign too — rename it on the campaign itself if the internal name should differ."
+            hint="Names the email too — rename it on the email itself if the internal name should differ."
           />
           <Select
             label="Segment"
@@ -176,7 +181,7 @@ export function CampaignsListView() {
             onChange={setAudienceId}
           />
           <Button
-            title="+ Create campaign"
+            title="+ Create email"
             onPress={handleCreate}
             loading={creating}
             disabled={!canCreate}
@@ -187,11 +192,11 @@ export function CampaignsListView() {
       {campaigns.length === 0 ? (
         <EmptyState
           icon="mail"
-          title="No campaigns yet"
+          title="No emails yet"
           message={
             canCompose
-              ? "Create your first email campaign above — you'll design the email next."
-              : "Nobody has started a campaign yet. When someone does, it shows up here and uses the themes and templates you keep."
+              ? "Write your first one above — you'll design it next."
+              : "Nobody has written an email yet. When someone does, it shows up here and uses the themes and templates you keep."
           }
         />
       ) : (
@@ -243,7 +248,7 @@ function DesignerDeskCard() {
   return (
     <Card style={styles.creator}>
       <Text className="text-sm text-muted">
-        Campaigns themselves are written by whoever holds compose power. Yours
+        The emails themselves are written by whoever holds compose power. Yours
         is what they&apos;re built from — the themes, the saved templates and
         the image library.
       </Text>

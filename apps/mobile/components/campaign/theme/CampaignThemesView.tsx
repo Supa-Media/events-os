@@ -242,9 +242,9 @@ export function CampaignThemesView() {
       <Narrow>
         <Text className="mb-1 font-display text-lg text-ink">Email themes</Text>
         <Text className="mb-4 text-sm text-muted">
-          Every campaign email is painted from a theme — colours, fonts, corner
+          Every email is painted from a theme — colours, fonts, corner
           radius, and the wordmark above the card. Edit one here and every
-          campaign written afterwards follows.
+          email written afterwards follows.
         </Text>
 
         <SectionHeader

@@ -684,7 +684,7 @@ const DOC_ERROR_RULES: readonly { pattern: RegExp; message: string }[] = [
   {
     pattern: /^theme:/,
     message:
-      "This campaign's theme carries a value the email renderer won't accept. Pick a theme again, or fix it on the Themes tab.",
+      "This email's theme carries a value the renderer won't accept. Pick a theme again, or fix it on the Themes tab.",
   },
 ];
 

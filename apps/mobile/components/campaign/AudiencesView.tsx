@@ -165,7 +165,7 @@ export function AudiencesView({
           <EmptyState
             icon="users"
             title="No segments yet"
-            message="Create a segment above — rules, hand-picked people, or both — to send a campaign to."
+            message="Create a segment above — rules, hand-picked people, or both — to send an email to."
           />
         </View>
       ) : (
@@ -449,7 +449,7 @@ function AudienceForm({
     if (!initial) return;
     confirmAction({
       title: "Archive segment?",
-      message: `"${initial.name}" will be hidden from campaigns. Campaigns already using it are unaffected.`,
+      message: `"${initial.name}" will be hidden when picking who an email goes to. Emails already using it are unaffected.`,
       confirmLabel: "Archive",
       destructive: true,
       onConfirm: () => {

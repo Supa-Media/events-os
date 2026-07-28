@@ -116,10 +116,10 @@ export function CampaignTemplatesView() {
         <Text className="mb-1 font-display text-lg text-ink">Templates</Text>
         <Text className="mb-4 text-sm text-muted">
           A template is a saved starting point — the blocks and the theme of an
-          email you liked, ready to copy into a new campaign. Creating a campaign
-          from one copies it, so editing a template here never touches a campaign
-          already in flight. Start one from scratch below, or save one from any
-          campaign&apos;s designer with &ldquo;Save as template&rdquo;.
+          email you liked, ready to copy into a new one. Creating an email from
+          a template copies it, so editing a template here never touches an
+          email already in flight. Start one from scratch below, or save one
+          from any email&apos;s designer with &ldquo;Save as template&rdquo;.
         </Text>
 
         {canDesign ? <NewTemplateAction existing={rows} run={run} /> : null}
@@ -132,8 +132,8 @@ export function CampaignTemplatesView() {
             title="No templates yet"
             message={
               canDesign
-                ? "Choose “New template” above to build one block by block — or open a campaign you're happy with, go to Design, and choose “Save as template”."
-                : "Open a campaign you're happy with, go to Design, and choose “Save as template” — it'll show up here, preview and all."
+                ? "Choose “New template” above to build one block by block — or open an email you're happy with, go to Design, and choose “Save as template”."
+                : "Open an email you're happy with, go to Design, and choose “Save as template” — it'll show up here, preview and all."
             }
           />
         ) : (

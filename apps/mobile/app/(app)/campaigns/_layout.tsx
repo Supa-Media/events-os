@@ -5,12 +5,12 @@ import { api } from "@events-os/convex/_generated/api";
 import { Pill } from "../../../components/ui";
 
 /**
- * Campaigns (email-blast desk) sub-navigation — its own desk beside `giving/`
+ * Emails desk sub-navigation — its own desk beside `giving/`
  * (an ongoing-responsibility function, same PARA group). The outer AppShell
- * provides the app chrome; this layout adds the in-app campaigns tabs above
+ * provides the app chrome; this layout adds the in-app desk tabs above
  * the active screen, cloning the `giving/_layout` pill-nav pattern exactly.
  *
- * Campaigns · Segments · Templates · Themes · Replies. The tabs render only
+ * Emails · Segments · Templates · Themes · Replies. The tabs render only
  * for a caller who can see the desk (`audiences.myCampaignsAccess.canView`) —
  * each screen keeps its own backend gate too, same as Giving.
  *
@@ -23,8 +23,11 @@ import { Pill } from "../../../components/ui";
  * branding), so they belong beside the things you make, not beside the
  * replies you read.
  */
+// The first tab's route stays `/campaigns` — the paths and the API keep the
+// older name; only the words on screen changed. See
+// `docs/guides/email-terminology.md`.
 const TABS: { label: string; path: string }[] = [
-  { label: "Campaigns", path: "/campaigns" },
+  { label: "Emails", path: "/campaigns" },
   { label: "Segments", path: "/campaigns/audiences" },
   { label: "Templates", path: "/campaigns/templates" },
   { label: "Themes", path: "/campaigns/themes" },
@@ -32,8 +35,8 @@ const TABS: { label: string; path: string }[] = [
 ];
 
 /** Active when the pathname is the tab's route (exact for the index, prefix for
- *  the rest) — so /campaigns/audiences lights Audiences, /campaigns lights
- *  Campaigns. */
+ *  the rest) — so /campaigns/audiences lights Segments, /campaigns lights
+ *  Emails. */
 function isActive(pathname: string, path: string): boolean {
   if (path === "/campaigns") {
     return pathname === "/campaigns" || pathname === "/campaigns/index";

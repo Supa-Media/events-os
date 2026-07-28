@@ -117,7 +117,7 @@ export function CampaignMetaCard({
         <Text className="mb-3 text-xs text-muted">
           {campaign.status === "pending_approval"
             ? "Awaiting approval — the details are locked until a reviewer decides."
-            : "This campaign has left the draft stage — its details are locked."}
+            : "This email has left the draft stage — its details are locked."}
         </Text>
       ) : null}
       <TextField
@@ -129,7 +129,7 @@ export function CampaignMetaCard({
         editable={editable}
       />
       <TextField
-        label="Campaign name"
+        label="Email name"
         hint="Internal only — nobody outside the org sees it. Starts as a copy of the subject line."
         value={name}
         onChangeText={setName}

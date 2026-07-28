@@ -65,7 +65,7 @@ export function CampaignPowerControl({
   return (
     <View className="mt-3 gap-2">
       <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-        Campaigns desk access
+        Emails desk access
       </Text>
       <View className="flex-row gap-2">
         {OPTIONS.map((opt) => {
@@ -97,7 +97,7 @@ export function CampaignPowerControl({
       <Text className="text-xs text-muted">
         Design: open the desk and own themes, templates, and the image library
         — but never send. Compose: also draft and send once approved.
-        Approve: also review and decide on others' campaigns (never their own
+        Approve: also review and decide on others&apos; emails (never their own
         — a different approver is always required).
       </Text>
     </View>

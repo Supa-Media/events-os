@@ -58,8 +58,8 @@ export default function CampaignDesignScreen() {
         <Narrow>
           <EmptyState
             icon="lock"
-            title="Campaigns is available to org leadership"
-            message="Ask a central Executive Director, Financial Manager, or Marketing Director to grant you campaign design, compose, or approve power."
+            title="The Emails desk is available to org leadership"
+            message="Ask a central Executive Director, Financial Manager, or Marketing Director to grant you email design, compose, or approve power."
           />
         </Narrow>
       </Screen>
@@ -182,7 +182,7 @@ function lockNote(status: string | undefined, canCompose: boolean): string {
   if (status === "draft" || status === "changes_requested") {
     return canCompose
       ? "The design is locked."
-      : "Read-only — editing a campaign takes compose power. Themes, templates and the image library are yours to change.";
+      : "Read-only — editing an email takes compose power. Themes, templates and the image library are yours to change.";
   }
-  return "This campaign has been sent (or is on its way) — the design is locked.";
+  return "This email has been sent (or is on its way) — the design is locked.";
 }

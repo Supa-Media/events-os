@@ -51,8 +51,8 @@ export default function CampaignDetailScreen() {
         <Narrow>
           <EmptyState
             icon="lock"
-            title="Campaigns is available to org leadership"
-            message="Ask a central Executive Director, Financial Manager, or Marketing Director to grant you campaign design, compose, or approve power."
+            title="The Emails desk is available to org leadership"
+            message="Ask a central Executive Director, Financial Manager, or Marketing Director to grant you email design, compose, or approve power."
           />
         </Narrow>
       </Screen>
@@ -97,7 +97,7 @@ function CampaignDetailBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
     fromEmail?: string | null;
   }) {
     return run(() => updateMeta({ campaignId, ...patch }), {
-      errorTitle: "Couldn't save campaign",
+      errorTitle: "Couldn't save this email",
     });
   }
 
@@ -112,7 +112,7 @@ function CampaignDetailBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
             moment you open one campaign, so a reader could not tell WHICH
             campaign this was or how to leave it except with the browser's
             own back button. */}
-        <BackLink fallback="/campaigns" label="Campaigns" />
+        <BackLink fallback="/campaigns" label="Emails" />
         <View className="mb-4 flex-row flex-wrap items-start justify-between gap-3">
           <View className="flex-1">
             <Text className="font-display text-2xl text-ink">{campaign.name}</Text>

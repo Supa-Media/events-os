@@ -157,9 +157,9 @@ export function CardContentEditor({
           before, so pasting a bare `example.com` stopped the save with no
           explanation anywhere on the page. */}
       {imageUrlIssue === "missing" ? (
-        <InlineWarning text="This card's image URL is empty. Clear the field, upload a picture, or choose one from the library — the campaign can't be saved until then." />
+        <InlineWarning text="This card's image URL is empty. Clear the field, upload a picture, or choose one from the library — the email can't be saved until then." />
       ) : imageUrlIssue === "scheme" ? (
-        <InlineWarning text="An image URL has to start with http:// or https://. The campaign can't be saved until this one does." />
+        <InlineWarning text="An image URL has to start with http:// or https://. The email can't be saved until this one does." />
       ) : null}
 
       <View className="mb-1 flex-row flex-wrap items-start gap-2">
@@ -175,7 +175,7 @@ export function CardContentEditor({
                 // contract's "decorative" and merely earns the warning below.
                 imageAlt: content.imageAlt ?? "",
               });
-              library.register(uploaded.storageId, suggestedLabel || "Campaign image");
+              library.register(uploaded.storageId, suggestedLabel || "Email image");
             }}
           />
         ) : null}
@@ -344,7 +344,7 @@ export function CardContentEditor({
         />
       ) : null}
       {ctaUrlProblem ? (
-        <InlineWarning text="A button link has to start with http://, https:// or mailto:. The campaign can't be saved until this one does." />
+        <InlineWarning text="A button link has to start with http://, https:// or mailto:. The email can't be saved until this one does." />
       ) : null}
     </View>
   );
@@ -418,7 +418,7 @@ const ALT_EMPTY_WARNING =
   "No alt text. Screen readers and image-blocking clients (Gmail and Outlook block images by default) will show nothing here. Leave it empty only if the image is purely decorative.";
 
 const ALT_MISSING_WARNING =
-  "This image has a URL but no alt text at all, and the campaign can't be saved (including edits to every other block) until it has some. Type a description — or, if the image really is decorative, type a character and delete it to leave the field deliberately empty.";
+  "This image has a URL but no alt text at all, and the email can't be saved (including edits to every other block) until it has some. Type a description — or, if the image really is decorative, type a character and delete it to leave the field deliberately empty.";
 
 /**
  * A field-level advisory. Warn-toned rather than danger-toned on purpose:

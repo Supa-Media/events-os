@@ -367,12 +367,12 @@ function BlockEditor({
               isn't http/https/mailto. Neither said anything before — the save
               simply stopped working, taking every other block with it. */}
           {block.label.length === 0 ? (
-            <InlineWarning text="This button has no label, so there'd be nothing to click. The campaign can't be saved until it has one." />
+            <InlineWarning text="This button has no label, so there'd be nothing to click. The email can't be saved until it has one." />
           ) : null}
           {linkUrlProblem(block.url) === "missing" ? (
-            <InlineWarning text="This button has no link yet. The campaign can't be saved (including edits to every other block) until it does." />
+            <InlineWarning text="This button has no link yet. The email can't be saved (including edits to every other block) until it does." />
           ) : linkUrlProblem(block.url) === "scheme" ? (
-            <InlineWarning text="A button link has to start with http://, https:// or mailto:. The campaign can't be saved until this one does." />
+            <InlineWarning text="A button link has to start with http://, https:// or mailto:. The email can't be saved until this one does." />
           ) : null}
         </View>
       );
@@ -681,10 +681,10 @@ function PollEditor({
         )}
       </Field>
       {blankLabel ? (
-        <InlineWarning text="Every option needs a label before this campaign can be saved." />
+        <InlineWarning text="Every option needs a label before this email can be saved." />
       ) : null}
       <Text className="text-2xs text-faint">
-        Recipients vote by tapping an option; the tallies show on the campaign
+        Recipients vote by tapping an option; the tallies show on the email
         once it has sent.
       </Text>
     </View>
@@ -722,7 +722,7 @@ function ImageSourceFields({
   onChange,
   uploadImage,
   run,
-  libraryLabel = "Campaign image",
+  libraryLabel = "Email image",
 }: {
   urlLabel: string;
   urlPlaceholder?: string;
@@ -784,9 +784,9 @@ function ImageSourceFields({
         keyboardType="url"
       />
       {urlProblem === "missing" ? (
-        <InlineWarning text="This image has no URL yet. Upload a picture or choose one from the library — the campaign can't be saved (including edits to every other block) until this is filled in." />
+        <InlineWarning text="This image has no URL yet. Upload a picture or choose one from the library — the email can't be saved (including edits to every other block) until this is filled in." />
       ) : urlProblem === "scheme" ? (
-        <InlineWarning text="An image URL has to start with http:// or https://. The campaign can't be saved until this one does." />
+        <InlineWarning text="An image URL has to start with http:// or https://. The email can't be saved until this one does." />
       ) : null}
       <View className="mb-1 flex-row flex-wrap items-start gap-2">
         {uploadImage && run ? (
@@ -835,7 +835,7 @@ function ImageSourceFields({
           which the gate does reject — is unfilled. A MISSING alt is a
           different matter: that one does block the save. */}
       {urlProblem !== null ? null : altProblem === "unsaveable" ? (
-        <InlineWarning text="This image has a URL but no alt text at all, and the campaign can't be saved until it has some. Type a description — or, if the image really is decorative, type a character and delete it to leave the field deliberately empty." />
+        <InlineWarning text="This image has a URL but no alt text at all, and the email can't be saved until it has some. Type a description — or, if the image really is decorative, type a character and delete it to leave the field deliberately empty." />
       ) : altProblem === "empty" ? (
         <InlineWarning text="No alt text. Screen readers and image-blocking clients will show nothing here. Leave it empty only if the image is purely decorative." />
       ) : null}
@@ -975,7 +975,7 @@ function BleedImageEditor({
 }
 
 const IMAGE_HREF_WARNING =
-  "A link has to start with http://, https:// or mailto:. Clear the field or fix the address — the campaign can't be saved until then.";
+  "A link has to start with http://, https:// or mailto:. Clear the field or fix the address — the email can't be saved until then.";
 
 /**
  * The sign-off block: logo, nav line, and the social/link row.
@@ -1076,11 +1076,11 @@ function FooterEditor({
                   footer link that EXISTS must have both, so a half-filled row
                   rejects the whole document. */}
               {problem === "label-missing" ? (
-                <InlineWarning text="This link has no label, so nothing would show. Give it one, or remove the row — the campaign can't be saved until then." />
+                <InlineWarning text="This link has no label, so nothing would show. Give it one, or remove the row — the email can't be saved until then." />
               ) : problem === "url-missing" ? (
-                <InlineWarning text="This link has no address. Add one, or remove the row — the campaign can't be saved until then." />
+                <InlineWarning text="This link has no address. Add one, or remove the row — the email can't be saved until then." />
               ) : problem === "url-scheme" ? (
-                <InlineWarning text="A link has to start with http://, https:// or mailto:. The campaign can't be saved until this one does." />
+                <InlineWarning text="A link has to start with http://, https:// or mailto:. The email can't be saved until this one does." />
               ) : null}
             </View>
           );

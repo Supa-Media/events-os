@@ -130,7 +130,7 @@ export function CampaignStatusCard({
           <AudienceCapWarning truncated={campaign.audienceTruncated} />
           {campaign.status === "failed" ? (
             <Text className="mt-1 text-sm text-danger">
-              {campaign.error ?? "The send didn't complete. Check the campaign's segment and design, then try again."}
+              {campaign.error ?? "The send didn't complete. Check the email's segment and design, then try again."}
             </Text>
           ) : null}
         </View>
@@ -332,7 +332,7 @@ function RequestApprovalModal({
               label="Purpose"
               value={purpose}
               onChangeText={setPurpose}
-              placeholder="Why is this campaign going out?"
+              placeholder="Why is this email going out?"
               multiline
               numberOfLines={3}
               autoFocus
@@ -403,7 +403,7 @@ function PendingSubmitterView({
           onPress={() =>
             confirmAction({
               title: "Cancel this approval request?",
-              message: "The campaign goes back to draft — you can resubmit later.",
+              message: "The email goes back to draft — you can resubmit later.",
               confirmLabel: "Cancel request",
               destructive: true,
               onConfirm: () => {
@@ -481,7 +481,7 @@ function ReviewEmailPreview({ campaign }: { campaign: Campaign }) {
       </Text>
       {campaign.doc.blocks.length === 0 ? (
         <Text className="text-sm text-warn">
-          This campaign has no design yet — there is nothing to approve.
+          This email has no design yet — there is nothing to approve.
         </Text>
       ) : (
         <EmailHtmlPreview html={html} height={420} />
@@ -613,8 +613,8 @@ function ReviewCard({
       ) : null}
       {modal === "deny" ? (
         <NoteModal
-          title="Reject this campaign"
-          prompt="Why is this campaign being rejected? The submitter will see this note."
+          title="Reject this email"
+          prompt="Why is this email being rejected? The submitter will see this note."
           submitLabel="Reject"
           destructive
           onCancel={() => setModal(null)}
@@ -716,7 +716,7 @@ function DeniedActions({ campaign, run }: { campaign: Campaign; run: ActionRunne
         onPress={() => {
           setBusy(true);
           void run(() => revert({ campaignId: campaign._id }), {
-            errorTitle: "Couldn't move this campaign back to draft",
+            errorTitle: "Couldn't move this email back to draft",
           }).finally(() => setBusy(false));
         }}
       />
@@ -766,14 +766,16 @@ function DraftSendRow({
     const capNote = preview.truncated
       ? ` The segment hit the 5,000 cap — ${pluralPeople(preview.truncatedCount)} left out; raise the cap deliberately.`
       : "";
+    // The record is a `campaigns` row and the mutation is `campaigns.send`;
+    // every word on screen says "email" — see docs/guides/email-terminology.md.
     confirmAction({
-      title: retry ? "Retry sending this campaign?" : "Send campaign?",
+      title: retry ? "Retry sending this email?" : "Send this email?",
       message: `Sends to ${pluralPeople(preview.count)}${excludedNote} from ${senderDisplay}.${capNote} This can't be undone.`,
       confirmLabel: retry ? "Retry send" : "Send",
       onConfirm: () => {
         setSending(true);
         void run(() => send({ campaignId: campaign._id }), {
-          errorTitle: retry ? "Couldn't retry the send" : "Couldn't send campaign",
+          errorTitle: retry ? "Couldn't retry the send" : "Couldn't send this email",
         }).finally(() => setSending(false));
       },
     });
@@ -792,7 +794,7 @@ function DraftSendRow({
       ) : null}
       <View className="flex-row justify-end">
         <Button
-          title={retry ? "Retry send" : "Send campaign"}
+          title={retry ? "Retry send" : "Send email"}
           icon="send"
           onPress={handleSend}
           loading={sending}

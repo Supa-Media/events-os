@@ -69,7 +69,7 @@ export function CampaignPollResults({
               <Text className="text-base font-semibold text-ink">{tally.question}</Text>
               <Text className="mb-3 text-xs text-muted">
                 {tally.totalVotes === 1 ? "1 vote" : `${tally.totalVotes} votes`}
-                {tally.truncated ? " · counted up to this campaign's cap" : ""}
+                {tally.truncated ? " · counted up to this email's cap" : ""}
               </Text>
               {tally.options.map((option) => {
                 const share =
