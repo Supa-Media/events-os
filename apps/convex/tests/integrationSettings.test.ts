@@ -3,6 +3,7 @@ import { ConvexError } from "convex/values";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
+import { runSeedOrgMailingAddress } from "../migrations/0054_seed_org_mailing_address";
 
 /**
  * Integration settings (Attendance E) tests — the deployment-wide
@@ -609,5 +610,94 @@ describe("givebutterSync key resolution (PR E)", () => {
         .unique(),
     );
     expect(page?.givebutterLastSyncedAt).toBeUndefined();
+  });
+});
+
+/**
+ * `0054_seed_org_mailing_address` — the migration that keeps the release from
+ * taking sending down.
+ *
+ * The same release made `orgMailingAddress` a hard requirement for every bulk
+ * send, and the field had never been set in production. These pin the two
+ * promises the migration makes: it puts the address in place unattended, and
+ * it never touches one a human already entered.
+ */
+describe("0054_seed_org_mailing_address", () => {
+  /** A minimal `users` row — `integrationSettings.updatedBy` requires one. */
+  async function seedUser(t: ReturnType<typeof newT>) {
+    return run(t, (ctx) => ctx.db.insert("users", { email: "dev@supa.media" }));
+  }
+
+  test("skips a deployment with no users rather than failing the deploy", async () => {
+    const t = newT();
+    expect(await run(t, (ctx) => runSeedOrgMailingAddress(ctx))).toEqual({
+      action: "no users",
+    });
+  });
+
+  test("inserts the settings singleton when a deployment has none", async () => {
+    const t = newT();
+    await seedUser(t);
+    expect(await run(t, (ctx) => runSeedOrgMailingAddress(ctx))).toEqual({
+      action: "inserted",
+    });
+    const row = await run(t, (ctx) => ctx.db.query("integrationSettings").first());
+    expect(row?.orgMailingAddress).toBe("9355 Alloway Drive, Hagerstown, MD");
+  });
+
+  test("seeds an existing row whose address is unset", async () => {
+    const t = newT();
+    const userId = await seedUser(t);
+    await run(t, (ctx) =>
+      ctx.db.insert("integrationSettings", {
+        resendInboundDomain: "mail.example",
+        updatedAt: 1,
+        updatedBy: userId,
+      }),
+    );
+    expect(await run(t, (ctx) => runSeedOrgMailingAddress(ctx))).toEqual({ action: "seeded" });
+    const row = await run(t, (ctx) => ctx.db.query("integrationSettings").first());
+    expect(row?.orgMailingAddress).toBe("9355 Alloway Drive, Hagerstown, MD");
+    // The patch must not disturb the rest of the singleton.
+    expect(row?.resendInboundDomain).toBe("mail.example");
+  });
+
+  test("a whitespace-only address counts as unset, matching readOrgMailingAddress", async () => {
+    const t = newT();
+    const userId = await seedUser(t);
+    await run(t, (ctx) =>
+      ctx.db.insert("integrationSettings", {
+        orgMailingAddress: "   ",
+        updatedAt: 1,
+        updatedBy: userId,
+      }),
+    );
+    expect(await run(t, (ctx) => runSeedOrgMailingAddress(ctx))).toEqual({ action: "seeded" });
+  });
+
+  test("NEVER overwrites an address a human already entered", async () => {
+    const t = newT();
+    const userId = await seedUser(t);
+    await run(t, (ctx) =>
+      ctx.db.insert("integrationSettings", {
+        orgMailingAddress: "Somewhere else entirely, PO Box 1",
+        updatedAt: 1,
+        updatedBy: userId,
+      }),
+    );
+    expect(await run(t, (ctx) => runSeedOrgMailingAddress(ctx))).toEqual({
+      action: "already set",
+    });
+    const row = await run(t, (ctx) => ctx.db.query("integrationSettings").first());
+    expect(row?.orgMailingAddress).toBe("Somewhere else entirely, PO Box 1");
+  });
+
+  test("re-running is a no-op (the runner ledgers it, but idempotence is the contract)", async () => {
+    const t = newT();
+    await seedUser(t);
+    await run(t, (ctx) => runSeedOrgMailingAddress(ctx));
+    expect(await run(t, (ctx) => runSeedOrgMailingAddress(ctx))).toEqual({
+      action: "already set",
+    });
   });
 });
