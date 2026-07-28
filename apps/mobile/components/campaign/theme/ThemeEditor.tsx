@@ -33,13 +33,13 @@ import EmailHtmlPreview from "../../email/EmailHtmlPreview";
 import { ColorField } from "./ColorField";
 import { LevelToggle } from "../designer/DesignerControls";
 import {
-  COLOR_TOKENS,
-  DARK_TOKEN_KEYS,
+  COLOR_TOKEN_GROUPS,
   darkFromLight,
   fontOptionsFor,
   forceDarkEmailPreview,
   suggestedSwatches,
   themeSampleDocument,
+  trackingOptionsFor,
   type ColorTokenKey,
 } from "../../../lib/emailThemeEditor";
 
@@ -112,18 +112,26 @@ export function ThemeEditor({
       </Card>
 
       <SectionLabel>Colours</SectionLabel>
-      <Card>
-        {COLOR_TOKENS.map((token) => (
-          <ColorField
-            key={token.key}
-            label={token.label}
-            help={token.help}
-            value={theme[token.key]}
-            onChange={(hex) => set(token.key, hex)}
-            suggestions={suggestedSwatches(token.key)}
-          />
-        ))}
-      </Card>
+      {/* One card per group, not one card with four headings inside it: the
+          groups are the model (four fills, two weights of rule), and a card
+          boundary says that louder than a bold line does. `mb-3` because
+          `Card` carries no margin of its own and these are the only place
+          two of them ever stack. */}
+      {COLOR_TOKEN_GROUPS.map((group) => (
+        <Card key={group.title} className="mb-3">
+          <GroupHeading title={group.title} help={group.help} />
+          {group.tokens.map((token) => (
+            <ColorField
+              key={token.key}
+              label={token.label}
+              help={token.help}
+              value={theme[token.key]}
+              onChange={(hex) => set(token.key, hex)}
+              suggestions={suggestedSwatches(token.key)}
+            />
+          ))}
+        </Card>
+      ))}
 
       <SectionLabel>Type &amp; shape</SectionLabel>
       <Card>
@@ -139,6 +147,23 @@ export function ThemeEditor({
           value={theme.bodyFont}
           options={fontOptionsFor(theme.bodyFont)}
           onChange={(bodyFont) => set("bodyFont", bodyFont)}
+        />
+        {/* Letter-spacing is a closed list, not a text field: the value is
+            interpolated straight into a style attribute, the write gate
+            rejects anything that isn't a bare number-plus-unit, and what's
+            being chosen is a look rather than a CSS value. */}
+        <Select
+          label="Heading letter-spacing"
+          value={theme.headingTracking}
+          options={trackingOptionsFor(theme.headingTracking)}
+          onChange={(headingTracking) => set("headingTracking", headingTracking)}
+          hint="The newsletter sets its headings TIGHT — a copy of the palette at default spacing still doesn't look like the brand."
+        />
+        <Select
+          label="Body letter-spacing"
+          value={theme.bodyTracking}
+          options={trackingOptionsFor(theme.bodyTracking)}
+          onChange={(bodyTracking) => set("bodyTracking", bodyTracking)}
         />
         <Field label="Corner radius" hint={`${theme.radius}px`}>
           <View className="flex-row flex-wrap items-center gap-2">
@@ -233,6 +258,19 @@ function SectionLabel({ children }: { children: React.ReactNode }) {
   );
 }
 
+/** The header on one group of colour fields — what part of the email the
+ *  swatches below it paint. */
+function GroupHeading({ title, help }: { title: string; help?: string }) {
+  return (
+    <View className="mb-2.5">
+      <Text className="text-2xs font-bold uppercase tracking-wider text-faint">
+        {title}
+      </Text>
+      {help ? <Text className="mt-0.5 text-2xs text-faint">{help}</Text> : null}
+    </View>
+  );
+}
+
 /**
  * The `dark` sub-editor.
  *
@@ -297,27 +335,42 @@ function DarkModeSection({
               onPress={onEnable}
             />
           </View>
-          {DARK_TOKEN_KEYS.map((key) => {
-            const token = COLOR_TOKENS.find((t) => t.key === key);
-            return (
-              <ColorField
-                key={key}
-                label={token?.label ?? key}
-                help={token?.help}
-                value={resolved[key]}
-                onChange={(hex) => onSetDark(key, hex)}
-                suggestions={suggestedSwatches(key)}
-              />
-            );
-          })}
+          {/* Grouped exactly like the light side, and covering exactly the
+              same tokens — a dark editor missing a token is how a theme ends
+              up with a cream card that stays cream on a black screen. */}
+          {COLOR_TOKEN_GROUPS.map((group) => (
+            <View key={group.title}>
+              <GroupHeading title={group.title} />
+              {group.tokens.map((token) => (
+                <ColorField
+                  key={token.key}
+                  label={token.label}
+                  help={token.help}
+                  value={resolved[token.key]}
+                  onChange={(hex) => onSetDark(token.key, hex)}
+                  suggestions={suggestedSwatches(token.key)}
+                />
+              ))}
+            </View>
+          ))}
         </View>
       )}
     </Card>
   );
 }
 
-/** The contrast report. An explicit all-clear when there's nothing to say —
- *  silence would be indistinguishable from "the check didn't run". */
+/**
+ * The contrast report. An explicit all-clear when there's nothing to say —
+ * silence would be indistinguishable from "the check didn't run".
+ *
+ * Split by SCHEME rather than listed flat. The token set grew to twelve and
+ * the checked pairs with it, so a theme mid-edit can easily show eight or ten
+ * of these; as one flat list every row repeated "· light mode"/"· dark mode"
+ * and the shape of the problem ("it's fine in light, it's the dark overrides
+ * that are wrong" — the exact failure the dark editor exists for) was
+ * something the designer had to reconstruct by reading every line. A count
+ * per scheme says it at a glance.
+ */
 function ContrastWarnings({
   warnings,
 }: {
@@ -332,26 +385,49 @@ function ContrastWarnings({
       </Card>
     );
   }
+  const light = warnings.filter((w) => w.scheme === "light");
+  const dark = warnings.filter((w) => w.scheme === "dark");
+
   return (
     <Card>
-      <Text className="mb-2 text-xs text-muted">
-        These pairs fall below WCAG AA. You can still save and send — this is a
-        judgement call, not a gate — but each one is text somebody will
-        struggle to read.
+      <Text className="mb-3 text-xs text-muted">
+        {warnings.length === 1 ? "One pair falls" : `${warnings.length} pairs fall`} below
+        WCAG AA. You can still save and send — this is a judgement call, not a
+        gate — but each one is text somebody will struggle to read.
+      </Text>
+      <ContrastScheme title="Light mode" warnings={light} />
+      <ContrastScheme title="Dark mode" warnings={dark} />
+    </Card>
+  );
+}
+
+/** One scheme's failures. Renders nothing at all when that scheme is clean —
+ *  an empty "Dark mode" heading would read as a section that failed to load,
+ *  and the clean half is exactly the half that needs no attention. */
+function ContrastScheme({
+  title,
+  warnings,
+}: {
+  title: string;
+  warnings: ReturnType<typeof emailThemeContrastWarnings>;
+}) {
+  if (warnings.length === 0) return null;
+  return (
+    <View className="mb-1">
+      <Text className="mb-1.5 text-2xs font-bold uppercase tracking-wider text-faint">
+        {title} · {warnings.length}
       </Text>
       {warnings.map((w) => (
         <View
           key={w.id}
           className="mb-2 rounded-md border border-warn-soft bg-warn-bg px-2.5 py-2"
         >
-          <Text className="text-xs font-semibold text-ink">
-            {w.label} · {w.scheme === "dark" ? "dark mode" : "light mode"}
-          </Text>
+          <Text className="text-xs font-semibold text-ink">{w.label}</Text>
           <Text className="text-2xs text-muted">
             {w.ratio.toFixed(2)}:1 — needs at least {w.required}:1
           </Text>
         </View>
       ))}
-    </Card>
+    </View>
   );
 }

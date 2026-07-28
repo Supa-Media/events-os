@@ -1,6 +1,6 @@
 /**
- * The editor for ONE `EmailCardContent` — image, heading, body, call to
- * action.
+ * The editor for ONE `EmailCardContent` — how the card is painted, its image,
+ * its copy, and its call to action.
  *
  * Written once and used twice, exactly as the shared shape intends: the
  * full-width `card` block edits a single one of these, and the `columns`
@@ -9,13 +9,29 @@
  * and the composer editor are each written once"), so duplicating this per
  * block kind would defeat the contract's whole point.
  *
- * ── The two validation rules live HERE, inline ─────────────────────────────
+ * ── The fields follow the variant ──────────────────────────────────────────
+ * A card carries eleven fields now, and showing all eleven at once turns the
+ * one control that matters (the variant — it decides the fill, the alignment,
+ * the heading size and the button style in one tap) into the twelfth thing on
+ * a scroll. So the layout-dependent fields appear only where they DO
+ * something: the image side and its column width need an image, the width
+ * needs the image to be beside the text rather than above it, and the
+ * attribution line is the testimonial's own field.
+ *
+ * The one rule that overrides that: a field is never hidden while it still
+ * holds content. The renderer paints `attribution` on every variant, so
+ * hiding a filled one behind a variant switch would leave a line in the email
+ * with nothing in the editor to explain it — a field that's set stays visible
+ * whatever the variant says.
+ *
+ * ── The validation rules live HERE, inline ─────────────────────────────────
  * `validateEmailDocument` rejects a card whose `imageAlt` is missing while
- * `imageUrl` is set, and one where exactly one of `ctaLabel`/`ctaUrl` is
- * filled. Both are easy to hit by accident and both fail at SAVE time,
- * server-side, long after the mistake — so each is mirrored as a field-level
- * hint the moment it's true. The hints are advisory-looking (they don't
- * block typing) but they name the exact fix.
+ * `imageUrl` is set, one where exactly one of `ctaLabel`/`ctaUrl` is filled,
+ * and one whose `ctaUrl` carries a scheme outside http/https/mailto. All
+ * three are easy to hit by accident and all fail at SAVE time, server-side,
+ * long after the mistake — so each is mirrored as a field-level hint the
+ * moment it's true. The hints are advisory-looking (they don't block typing)
+ * but they name the exact fix.
  *
  * They mirror the validator EXACTLY, raw-string semantics and all — the
  * predicates live in `lib/emailDesigner.ts` so they can be pinned against
@@ -32,10 +48,21 @@
  */
 import { Text, View } from "react-native";
 import type { EmailCardContent } from "@events-os/shared";
-import { TextField } from "../../ui";
-import { ctaPairProblem } from "../../../lib/emailDesigner";
+import { Field, Select, TextField } from "../../ui";
+import {
+  CARD_VARIANT_OPTIONS,
+  DEFAULT_IMAGE_WIDTH_PCT,
+  IMAGE_WIDTH_PCT_STEP,
+  MAX_IMAGE_WIDTH_PCT,
+  MIN_IMAGE_WIDTH_PCT,
+  cardCtaUrlProblem,
+  ctaPairProblem,
+  imageAltProblem,
+  optionalImageUrlProblem,
+  stepImageWidthPct,
+} from "../../../lib/emailDesigner";
 import { ImageLibraryPicker, useImageLibraryRegistration } from "./ImageLibraryPicker";
-import { ImageUploadButton, type UploadImage } from "./DesignerControls";
+import { ImageUploadButton, LevelToggle, type UploadImage } from "./DesignerControls";
 import type { ActionRunner } from "../../../lib/useActionToast";
 
 export function CardContentEditor({
@@ -58,7 +85,10 @@ export function CardContentEditor({
   const library = useImageLibraryRegistration();
 
   const hasImage = typeof content.imageUrl === "string" && content.imageUrl.length > 0;
-  const altMissing = hasImage && !content.imageAlt;
+  // Two different failures, deliberately distinguished: a MISSING alt rejects
+  // the document, an empty one is the contract's "decorative" and merely
+  // earns an advisory. See `imageAltProblem`.
+  const altProblem = imageAltProblem({ url: content.imageUrl, alt: content.imageAlt });
   // NOT `?.trim()`: the validator counts a field as filled on the RAW string
   // (`.length > 0`), so a label backspaced down to one stray space still
   // rejects the document when there's no url beside it. Trimming here left
@@ -66,9 +96,31 @@ export function CardContentEditor({
   // `ctaPairProblem`, which is pinned against the real validator in
   // `lib/emailDesigner.test.ts`.
   const ctaProblem = ctaPairProblem(content);
+  const ctaUrlProblem = cardCtaUrlProblem(content);
+  const imageUrlIssue = optionalImageUrlProblem(content.imageUrl);
+
+  const variant = content.variant ?? "plain";
+  const imageSide = content.imageSide ?? "top";
+  const beside = hasImage && (imageSide === "left" || imageSide === "right");
+  // Shown for the testimonial, and for any card that already has one — see
+  // the note at the top about never hiding a field that holds content.
+  const showAttribution =
+    variant === "testimonial" || (content.attribution ?? "").length > 0;
 
   return (
     <View>
+      <Select
+        label="Style"
+        value={variant}
+        options={CARD_VARIANT_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+        onChange={(next) => onChange({ variant: next as EmailCardContent["variant"] })}
+        hint={
+          compact
+            ? undefined
+            : "The style sets the fill, the alignment, the headline size and the button — the theme still supplies every colour."
+        }
+      />
+
       <TextField
         label={compact ? "Image URL" : "Image"}
         value={content.imageUrl ?? ""}
@@ -90,6 +142,15 @@ export function CardContentEditor({
         autoCapitalize="none"
         keyboardType="url"
       />
+      {/* The card's own arm of the gate: absent is fine, but a url that IS
+          set must be non-empty and http(s). Nothing warned about the scheme
+          before, so pasting a bare `example.com` stopped the save with no
+          explanation anywhere on the page. */}
+      {imageUrlIssue === "missing" ? (
+        <InlineWarning text="This card's image URL is empty. Clear the field, upload a picture, or choose one from the library — the campaign can't be saved until then." />
+      ) : imageUrlIssue === "scheme" ? (
+        <InlineWarning text="An image URL has to start with http:// or https://. The campaign can't be saved until this one does." />
+      ) : null}
 
       <View className="mb-1 flex-row flex-wrap items-start gap-2">
         {uploadImage && run ? (
@@ -131,13 +192,57 @@ export function CardContentEditor({
           }}
           placeholder="What the image shows"
           hint={
-            altMissing
+            altProblem
               ? undefined
               : "Read aloud by screen readers, and shown in place of the image when a client blocks it."
           }
         />
       ) : null}
-      {altMissing ? <InlineWarning text={ALT_WARNING} /> : null}
+      {altProblem === "unsaveable" ? (
+        <InlineWarning text={ALT_MISSING_WARNING} />
+      ) : altProblem === "empty" ? (
+        <InlineWarning text={ALT_EMPTY_WARNING} />
+      ) : null}
+
+      {/* Placement only exists once there IS an image — `imageSide` and
+          `imageWidthPct` are both ignored by the renderer without one. */}
+      {hasImage ? (
+        <Field
+          label={compact ? "Image" : "Image placement"}
+          hint={
+            beside
+              ? undefined
+              : "Above the text, full width of the card."
+          }
+        >
+          <View className="flex-row flex-wrap gap-2">
+            <LevelToggle
+              label="Above"
+              active={imageSide === "top"}
+              onPress={() => onChange({ imageSide: "top" })}
+            />
+            <LevelToggle
+              label="Left of text"
+              active={imageSide === "left"}
+              onPress={() => onChange({ imageSide: "left" })}
+            />
+            <LevelToggle
+              label="Right of text"
+              active={imageSide === "right"}
+              onPress={() => onChange({ imageSide: "right" })}
+            />
+          </View>
+        </Field>
+      ) : null}
+
+      {beside ? <ImageWidthControl content={content} onChange={onChange} /> : null}
+
+      <TextField
+        label="Eyebrow"
+        value={content.eyebrow ?? ""}
+        onChangeText={(eyebrow) => onChange({ eyebrow })}
+        placeholder="Small line above the heading"
+      />
 
       <TextField
         label="Heading"
@@ -147,7 +252,7 @@ export function CardContentEditor({
       />
 
       <TextField
-        label="Body"
+        label={variant === "testimonial" ? "Quote" : "Body"}
         value={content.body ?? ""}
         onChangeText={(body) => onChange({ body })}
         placeholder="Supports **bold**, *italic*, [links](https://…) and - lists"
@@ -155,6 +260,36 @@ export function CardContentEditor({
         numberOfLines={compact ? 3 : 4}
         style={{ minHeight: compact ? 64 : 88, textAlignVertical: "top" }}
       />
+
+      {showAttribution ? (
+        <TextField
+          label="Attribution"
+          value={content.attribution ?? ""}
+          onChangeText={(attribution) => onChange({ attribution })}
+          placeholder="Who said it"
+          hint={compact ? undefined : "Renders under the quote, in bold."}
+        />
+      ) : null}
+
+      <Field label="Text alignment">
+        <View className="flex-row gap-2">
+          <LevelToggle
+            label="Left"
+            active={content.align === "left"}
+            onPress={() => onChange({ align: "left" })}
+          />
+          <LevelToggle
+            label="Centre"
+            active={content.align === "center"}
+            onPress={() => onChange({ align: "center" })}
+          />
+          <LevelToggle
+            label="Follow the style"
+            active={content.align === undefined}
+            onPress={() => onChange({ align: undefined })}
+          />
+        </View>
+      </Field>
 
       <TextField
         label="Button label"
@@ -170,6 +305,25 @@ export function CardContentEditor({
         autoCapitalize="none"
         keyboardType="url"
       />
+      <Field label="Button style">
+        <View className="flex-row flex-wrap gap-2">
+          <LevelToggle
+            label="Filled"
+            active={content.ctaStyle === "filled"}
+            onPress={() => onChange({ ctaStyle: "filled" })}
+          />
+          <LevelToggle
+            label="Outline"
+            active={content.ctaStyle === "outline"}
+            onPress={() => onChange({ ctaStyle: "outline" })}
+          />
+          <LevelToggle
+            label="Follow the style"
+            active={content.ctaStyle === undefined}
+            onPress={() => onChange({ ctaStyle: undefined })}
+          />
+        </View>
+      </Field>
       {ctaProblem ? (
         <InlineWarning
           text={
@@ -179,12 +333,82 @@ export function CardContentEditor({
           }
         />
       ) : null}
+      {ctaUrlProblem ? (
+        <InlineWarning text="A button link has to start with http://, https:// or mailto:. The campaign can't be saved until this one does." />
+      ) : null}
     </View>
   );
 }
 
-const ALT_WARNING =
+/**
+ * The image column's width, as a percentage of the card.
+ *
+ * A stepper rather than a slider: the app ships no slider primitive, a slider
+ * on a phone can't reliably hit a specific number anyway, and the numbers
+ * that matter here are specific — the newsletter's own rows are 44/56 and
+ * 52/48, and it was forcing 50/50 that made the first rebuild read as
+ * generic. So the presets are the real ones, and ± walks between them.
+ *
+ * Every path writes through `stepImageWidthPct`/the preset list, both of
+ * which are inside the gate's 20-80 range, so this control cannot produce a
+ * value that rejects the document.
+ */
+function ImageWidthControl({
+  content,
+  onChange,
+}: {
+  content: EmailCardContent;
+  onChange: (patch: Partial<EmailCardContent>) => void;
+}) {
+  const pct = content.imageWidthPct ?? DEFAULT_IMAGE_WIDTH_PCT;
+  const set = (next: number) => onChange({ imageWidthPct: next });
+
+  return (
+    <Field
+      label="Image width"
+      hint={`${pct}% image · ${100 - pct}% text`}
+    >
+      <View className="flex-row flex-wrap items-center gap-2">
+        <LevelToggle
+          label="−"
+          active={false}
+          disabled={pct <= MIN_IMAGE_WIDTH_PCT}
+          onPress={() => set(stepImageWidthPct(content.imageWidthPct, -IMAGE_WIDTH_PCT_STEP))}
+        />
+        <Text className="w-12 text-center text-base text-ink">{pct}%</Text>
+        <LevelToggle
+          label="+"
+          active={false}
+          disabled={pct >= MAX_IMAGE_WIDTH_PCT}
+          onPress={() => set(stepImageWidthPct(content.imageWidthPct, IMAGE_WIDTH_PCT_STEP))}
+        />
+        <View className="w-2" />
+        {IMAGE_WIDTH_PRESETS.map((preset) => (
+          <LevelToggle
+            key={preset.value}
+            label={preset.label}
+            active={pct === preset.value}
+            onPress={() => set(preset.value)}
+          />
+        ))}
+      </View>
+    </Field>
+  );
+}
+
+/** The three splits the newsletter actually uses, plus even. */
+const IMAGE_WIDTH_PRESETS: readonly { value: number; label: string }[] = [
+  { value: 33, label: "A third" },
+  { value: 44, label: "44" },
+  { value: 50, label: "Even" },
+  { value: 52, label: "52" },
+];
+
+const ALT_EMPTY_WARNING =
   "No alt text. Screen readers and image-blocking clients (Gmail and Outlook block images by default) will show nothing here. Leave it empty only if the image is purely decorative.";
+
+const ALT_MISSING_WARNING =
+  "This image has a URL but no alt text at all, and the campaign can't be saved (including edits to every other block) until it has some. Type a description — or, if the image really is decorative, type a character and delete it to leave the field deliberately empty.";
 
 /**
  * A field-level advisory. Warn-toned rather than danger-toned on purpose:

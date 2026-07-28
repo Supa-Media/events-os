@@ -520,7 +520,19 @@ export const emailSuppressions = defineTable({
  *  `isDefault` is at most one row per `scope` — `emailThemes.setDefaultTheme`
  *  clears it from every sibling in the same transaction, and `archiveTheme`
  *  refuses to archive the row holding it, so a scope can never end up with a
- *  default that's been soft-deleted. */
+ *  default that's been soft-deleted.
+ *
+ *  ── Why the newer tokens are `v.optional` and the original ones are not ────
+ *  `cream`/`contrast`/`contrastInk`/`hairline` and the two tracking values
+ *  were added once the REAL newsletter was in hand, after rows already
+ *  existed. Convex requires a field be optional or present on every row, and
+ *  the honest reading is that these columns genuinely ARE absent on the older
+ *  rows — so they're optional here and `normalizeEmailTheme` fills them from
+ *  `DEFAULT_EMAIL_THEME` at the read edge (`emailThemes.ts#resolveScopeTheme`,
+ *  `listThemes`, and `updateTheme`'s merge base all go through it). A
+ *  backfill migration would make the column shape prettier while adding a
+ *  second place the default lives; every write since this change stamps all
+ *  of them, so the optionality is a statement about history, not the API. */
 export const emailThemes = defineTable({
   scope: campaignsScope,
   name: v.string(),
@@ -530,11 +542,25 @@ export const emailThemes = defineTable({
   muted: v.string(),
   canvas: v.string(),
   surface: v.string(),
+  /** The warm card fill (`#fff9ee`) — a THIRD surface, not a variant of
+   *  `surface`; the design uses white, cream and near-black as distinct fills. */
+  cream: v.optional(v.string()),
+  /** Near-black, for filled buttons and the testimonial card (`#210706`). */
+  contrast: v.optional(v.string()),
+  /** Text drawn on `contrast`. */
+  contrastInk: v.optional(v.string()),
+  /** The thin rule between sections — lighter than `border`. */
+  hairline: v.optional(v.string()),
   border: v.string(),
   link: v.string(),
   headingFont: v.string(),
   bodyFont: v.string(),
   radius: v.number(),
+  /** Heading letter-spacing, e.g. `-0.04em` — validated by shape
+   *  (`@events-os/shared`'s `safeTracking`), not by this `v.string()`. */
+  headingTracking: v.optional(v.string()),
+  /** Body letter-spacing, e.g. `-0.01em`. */
+  bodyTracking: v.optional(v.string()),
   /** The small all-caps strip above the card. Empty string = no wordmark. */
   wordmark: v.string(),
   dark: v.optional(
@@ -545,6 +571,10 @@ export const emailThemes = defineTable({
       muted: v.optional(v.string()),
       canvas: v.optional(v.string()),
       surface: v.optional(v.string()),
+      cream: v.optional(v.string()),
+      contrast: v.optional(v.string()),
+      contrastInk: v.optional(v.string()),
+      hairline: v.optional(v.string()),
       border: v.optional(v.string()),
       link: v.optional(v.string()),
       headingFont: v.optional(v.string()),

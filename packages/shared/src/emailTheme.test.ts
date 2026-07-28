@@ -20,7 +20,10 @@ import {
 } from "./emailTheme";
 
 /** Every colour token, in the order `validateEmailTheme` checks them — the
- *  test-side twin of the module's private `TOKEN_KEYS`. */
+ *  test-side twin of the module's private `TOKEN_KEYS`. `cream`, `contrast`,
+ *  `contrastInk` and `hairline` arrived with the card variants: the design
+ *  uses white, cream and near-black as three distinct fills, so they are
+ *  first-class tokens rather than shades derived from `surface`. */
 const COLOR_TOKENS = [
   "accent",
   "accentInk",
@@ -28,6 +31,10 @@ const COLOR_TOKENS = [
   "muted",
   "canvas",
   "surface",
+  "cream",
+  "contrast",
+  "contrastInk",
+  "hairline",
   "border",
   "link",
 ] as const;
@@ -39,6 +46,8 @@ const ALL_TOKEN_KEYS = [
   ...COLOR_TOKENS,
   "headingFont",
   "bodyFont",
+  "headingTracking",
+  "bodyTracking",
   "radius",
   "wordmark",
 ] as const;
@@ -61,10 +70,53 @@ describe("presets", () => {
   test("DEFAULT_EMAIL_THEME is Public Worship's real brand, not the old invented palette", () => {
     expect(DEFAULT_EMAIL_THEME).toBe(PUBLIC_WORSHIP_THEME);
     expect(DEFAULT_EMAIL_THEME.accent).toBe("#891d1a");
-    expect(DEFAULT_EMAIL_THEME.canvas).toBe("#fff9ee");
+    // The PAGE is a cool grey and the CONTAINER is white; the cream is a card
+    // fill that sits on top of them. An earlier build had this inverted — a
+    // cream page behind a white card — which is why the right hex values
+    // still didn't look like the newsletter.
+    expect(DEFAULT_EMAIL_THEME.canvas).toBe("#f0f1f5");
+    expect(DEFAULT_EMAIL_THEME.surface).toBe("#ffffff");
+    expect(DEFAULT_EMAIL_THEME.cream).toBe("#fff9ee");
+    expect(DEFAULT_EMAIL_THEME.contrast).toBe("#210706");
     // The palette this feature replaced. If it ever comes back, it comes back
     // as a deliberate edit that has to delete this assertion.
     expect(DEFAULT_EMAIL_THEME.accent.toLowerCase()).not.toBe("#d23b3a");
+  });
+
+  test("the page and the container are different surfaces on every preset", () => {
+    // The whole point of the grey-page/white-container structure is that the
+    // 600px column reads as a card ON something. Collapsing `canvas` into
+    // `surface` renders a flat white slab and nobody notices until it sends.
+    for (const preset of EMAIL_THEME_PRESETS) {
+      expect(preset.canvas, preset.name).not.toBe(preset.surface);
+      expect(preset.dark?.canvas, `${preset.name} (dark)`).not.toBe(preset.dark?.surface);
+    }
+  });
+
+  test("every preset carries the three distinct card fills", () => {
+    // white (`surface`), cream (`cream`) and near-black (`contrast`) are the
+    // three fills the card variants paint with — they must be three colours,
+    // not one colour written three times.
+    for (const preset of EMAIL_THEME_PRESETS) {
+      const fills = new Set([preset.surface, preset.cream, preset.contrast]);
+      expect(fills.size, preset.name).toBe(3);
+    }
+  });
+
+  test("no preset ships a text wordmark — the masthead is artwork", () => {
+    // The real newsletter opens with a full-bleed masthead image, so the
+    // renderer's all-caps wordmark strip has nothing to say. It stays in the
+    // theme for a deployment that wants one; the presets deliberately don't.
+    for (const preset of EMAIL_THEME_PRESETS) {
+      expect(preset.wordmark, preset.name).toBe("");
+    }
+  });
+
+  test("every preset carries tight tracking on both headings and body", () => {
+    for (const preset of EMAIL_THEME_PRESETS) {
+      expect(preset.headingTracking, preset.name).toMatch(/^-\d*\.?\d+em$/);
+      expect(preset.bodyTracking, preset.name).toMatch(/^-\d*\.?\d+em$/);
+    }
   });
 
   test("emailThemePreset looks a preset up by exact name", () => {
@@ -215,11 +267,17 @@ describe("normalizeEmailTheme — preserving custom values", () => {
     muted: "#445566",
     canvas: "#f0f1f2",
     surface: "#fdfdfd",
+    cream: "#fbf4e9",
+    contrast: "#120a04",
+    contrastInk: "#fdfdfd",
+    hairline: "#cccccc",
     border: "#dddddd",
     link: "#0055aa",
     headingFont: "Fraunces,Georgia,serif",
     bodyFont: "Inter,Arial,sans-serif",
     radius: 4,
+    headingTracking: "-0.02em",
+    bodyTracking: "0",
     wordmark: "ADVENT",
   };
 

@@ -67,10 +67,19 @@ const darkOverrideValidator = v.object({
   muted: v.optional(v.string()),
   canvas: v.optional(v.string()),
   surface: v.optional(v.string()),
+  cream: v.optional(v.string()),
+  contrast: v.optional(v.string()),
+  contrastInk: v.optional(v.string()),
+  hairline: v.optional(v.string()),
   border: v.optional(v.string()),
   link: v.optional(v.string()),
   headingFont: v.optional(v.string()),
   bodyFont: v.optional(v.string()),
+  // NOTE: no `headingTracking`/`bodyTracking` here, on purpose. The shared
+  // `normalizeDarkOverride` carries only colour and font keys across, so a
+  // dark tracking value would be accepted, stored, and then silently dropped
+  // on every read — a field that looks like it works and doesn't. If dark
+  // mode ever needs its own tracking, it goes into `emailTheme.ts` first.
 });
 
 const contrastWarningValidator = v.object({
@@ -95,11 +104,17 @@ const themeViewValidator = v.object({
   muted: v.string(),
   canvas: v.string(),
   surface: v.string(),
+  cream: v.string(),
+  contrast: v.string(),
+  contrastInk: v.string(),
+  hairline: v.string(),
   border: v.string(),
   link: v.string(),
   headingFont: v.string(),
   bodyFont: v.string(),
   radius: v.number(),
+  headingTracking: v.string(),
+  bodyTracking: v.string(),
   wordmark: v.string(),
   dark: v.optional(darkOverrideValidator),
   /** Advisory WCAG AA failures, measured in BOTH schemes. Never blocks a save. */
@@ -113,13 +128,17 @@ type DarkOverride = {
   muted?: string;
   canvas?: string;
   surface?: string;
+  cream?: string;
+  contrast?: string;
+  contrastInk?: string;
+  hairline?: string;
   border?: string;
   link?: string;
   headingFont?: string;
   bodyFont?: string;
 };
 
-/** The eight colour tokens, in the order `emailTheme.ts` documents them. */
+/** The twelve colour tokens, in the order `emailTheme.ts` documents them. */
 const COLOR_KEYS = [
   "accent",
   "accentInk",
@@ -127,9 +146,45 @@ const COLOR_KEYS = [
   "muted",
   "canvas",
   "surface",
+  "cream",
+  "contrast",
+  "contrastInk",
+  "hairline",
   "border",
   "link",
 ] as const;
+
+/** The non-colour string tokens `updateTheme` merges the same way — letter
+ *  spacing, validated by SHAPE (`safeTracking`) rather than as a hex. */
+const TRACKING_KEYS = ["headingTracking", "bodyTracking"] as const;
+
+/** The full stored token set, projected off a validated `EmailTheme`. Shared
+ *  by `createTheme`'s insert, `updateTheme`'s patch and `duplicateTheme`'s
+ *  copy so a token added to `emailTheme.ts` can never reach two of the three
+ *  and be quietly dropped by the fourth. */
+function themeColumns(theme: EmailTheme) {
+  return {
+    name: theme.name,
+    accent: theme.accent,
+    accentInk: theme.accentInk,
+    ink: theme.ink,
+    muted: theme.muted,
+    canvas: theme.canvas,
+    surface: theme.surface,
+    cream: theme.cream,
+    contrast: theme.contrast,
+    contrastInk: theme.contrastInk,
+    hairline: theme.hairline,
+    border: theme.border,
+    link: theme.link,
+    headingFont: theme.headingFont,
+    bodyFont: theme.bodyFont,
+    radius: theme.radius,
+    headingTracking: theme.headingTracking,
+    bodyTracking: theme.bodyTracking,
+    wordmark: theme.wordmark,
+  };
+}
 
 // ── Read helpers ────────────────────────────────────────────────────────────
 
@@ -176,19 +231,7 @@ function toThemeView(
     themeId: opts.themeId,
     isPreset: opts.isPreset,
     isDefault: opts.isDefault,
-    name: theme.name,
-    accent: theme.accent,
-    accentInk: theme.accentInk,
-    ink: theme.ink,
-    muted: theme.muted,
-    canvas: theme.canvas,
-    surface: theme.surface,
-    border: theme.border,
-    link: theme.link,
-    headingFont: theme.headingFont,
-    bodyFont: theme.bodyFont,
-    radius: theme.radius,
-    wordmark: theme.wordmark,
+    ...themeColumns(theme),
     // Spread rather than `dark: theme.dark` — `undefined` is not a Convex
     // value, so an absent override must be an ABSENT KEY, not a present one
     // holding undefined.
@@ -262,11 +305,17 @@ export const createTheme = mutation({
     muted: v.string(),
     canvas: v.string(),
     surface: v.string(),
+    cream: v.string(),
+    contrast: v.string(),
+    contrastInk: v.string(),
+    hairline: v.string(),
     border: v.string(),
     link: v.string(),
     headingFont: v.string(),
     bodyFont: v.string(),
     radius: v.number(),
+    headingTracking: v.string(),
+    bodyTracking: v.string(),
     wordmark: v.string(),
     dark: v.optional(darkOverrideValidator),
   },
@@ -280,19 +329,7 @@ export const createTheme = mutation({
     const now = Date.now();
     return await ctx.db.insert("emailThemes", {
       scope,
-      name: theme.name,
-      accent: theme.accent,
-      accentInk: theme.accentInk,
-      ink: theme.ink,
-      muted: theme.muted,
-      canvas: theme.canvas,
-      surface: theme.surface,
-      border: theme.border,
-      link: theme.link,
-      headingFont: theme.headingFont,
-      bodyFont: theme.bodyFont,
-      radius: theme.radius,
-      wordmark: theme.wordmark,
+      ...themeColumns(theme),
       // The caller's OWN override, not the normalized one: `normalizeEmailTheme`
       // fills a missing `dark` from `DEFAULT_EMAIL_THEME`, which is right at
       // READ time (something must render) but would be a lie in the table —
@@ -327,11 +364,17 @@ export const updateTheme = mutation({
     muted: v.optional(v.string()),
     canvas: v.optional(v.string()),
     surface: v.optional(v.string()),
+    cream: v.optional(v.string()),
+    contrast: v.optional(v.string()),
+    contrastInk: v.optional(v.string()),
+    hairline: v.optional(v.string()),
     border: v.optional(v.string()),
     link: v.optional(v.string()),
     headingFont: v.optional(v.string()),
     bodyFont: v.optional(v.string()),
     radius: v.optional(v.number()),
+    headingTracking: v.optional(v.string()),
+    bodyTracking: v.optional(v.string()),
     wordmark: v.optional(v.string()),
     dark: v.optional(v.union(darkOverrideValidator, v.null())),
   },
@@ -340,32 +383,30 @@ export const updateTheme = mutation({
     await requireCampaignsAccess(ctx);
     const existing = await loadTheme(ctx, themeId);
 
+    // The merge BASE is the normalized row, not the raw one. A row written
+    // before `cream`/`contrast`/`hairline`/the tracking values existed has
+    // those columns absent (see `schema/campaigns.ts`), and merging a raw
+    // `undefined` under the strict validator would fail the designer's edit
+    // with an error about a token she never saw a field for. Normalizing
+    // first fills exactly those gaps from `DEFAULT_EMAIL_THEME`, so her one
+    // colour change saves and the row comes out complete.
+    const base = normalizeEmailTheme(existing);
+
     const merged: Record<string, unknown> = {
-      name: fields.name ?? existing.name,
-      radius: fields.radius ?? existing.radius,
-      wordmark: fields.wordmark ?? existing.wordmark,
-      headingFont: fields.headingFont ?? existing.headingFont,
-      bodyFont: fields.bodyFont ?? existing.bodyFont,
+      name: fields.name ?? base.name,
+      radius: fields.radius ?? base.radius,
+      wordmark: fields.wordmark ?? base.wordmark,
+      headingFont: fields.headingFont ?? base.headingFont,
+      bodyFont: fields.bodyFont ?? base.bodyFont,
     };
-    for (const key of COLOR_KEYS) merged[key] = fields[key] ?? existing[key];
+    for (const key of COLOR_KEYS) merged[key] = fields[key] ?? base[key];
+    for (const key of TRACKING_KEYS) merged[key] = fields[key] ?? base[key];
     const nextDark = dark === undefined ? existing.dark : (dark ?? undefined);
     if (nextDark) merged.dark = nextDark;
     const theme = assertValidTheme(merged);
 
     await ctx.db.patch(themeId, {
-      name: theme.name,
-      accent: theme.accent,
-      accentInk: theme.accentInk,
-      ink: theme.ink,
-      muted: theme.muted,
-      canvas: theme.canvas,
-      surface: theme.surface,
-      border: theme.border,
-      link: theme.link,
-      headingFont: theme.headingFont,
-      bodyFont: theme.bodyFont,
-      radius: theme.radius,
-      wordmark: theme.wordmark,
+      ...themeColumns(theme),
       // Explicit `undefined` CLEARS an optional field via `ctx.db.patch` —
       // the `dark: null` sentinel's actual effect.
       dark: nextDark,
@@ -474,19 +515,7 @@ export const duplicateTheme = mutation({
     const now = Date.now();
     return await ctx.db.insert("emailThemes", {
       scope,
-      name: theme.name,
-      accent: theme.accent,
-      accentInk: theme.accentInk,
-      ink: theme.ink,
-      muted: theme.muted,
-      canvas: theme.canvas,
-      surface: theme.surface,
-      border: theme.border,
-      link: theme.link,
-      headingFont: theme.headingFont,
-      bodyFont: theme.bodyFont,
-      radius: theme.radius,
-      wordmark: theme.wordmark,
+      ...themeColumns(theme),
       dark: theme.dark as DarkOverride | undefined,
       createdBy: userId,
       createdAt: now,

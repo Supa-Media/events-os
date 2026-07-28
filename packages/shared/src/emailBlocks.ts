@@ -23,6 +23,34 @@ import { validateEmailTheme } from "./emailTheme";
  * identical parts. One shape means the renderer, the validator, and the
  * composer editor are each written once.
  */
+/**
+ * How a card is painted. The real newsletter uses FOUR structurally distinct
+ * card treatments, not one card with different colours — which is why a
+ * `variant` exists at all despite the theme-level-only rule. The variant
+ * selects a ROLE; the theme still supplies every colour.
+ *
+ *  - `hero`      — accent-filled, centred, image above, filled CTA.
+ *  - `feature`   — cream, text beside an image, filled CTA.
+ *  - `outlined`  — surface with a 1px border, image beside text, outline CTA.
+ *  - `testimonial` — contrast-filled, centred, italic quote + attribution.
+ *  - `plain`     — no fill, no border (the pre-existing behaviour, kept so
+ *                  documents written before variants render unchanged).
+ */
+export type EmailCardVariant =
+  | "plain"
+  | "hero"
+  | "feature"
+  | "outlined"
+  | "testimonial";
+
+/** Where the card's image sits relative to its text. `left`/`right` produce
+ *  the asymmetric two-column rows the newsletter uses; `top` stacks. */
+export type EmailCardImageSide = "top" | "left" | "right";
+
+/** Filled (accent or contrast) versus outline (transparent, 1px border). The
+ *  newsletter uses both, and using only one is a visible mismatch. */
+export type EmailButtonVariant = "filled" | "outline";
+
 export type EmailCardContent = {
   imageUrl?: string;
   /** Required whenever `imageUrl` is set — enforced by `validateBlock`. */
@@ -32,6 +60,18 @@ export type EmailCardContent = {
   body?: string;
   ctaLabel?: string;
   ctaUrl?: string;
+  /** Small all-caps line above the heading, inside the card. */
+  eyebrow?: string;
+  /** Attribution line — `testimonial` only, rendered under the quote. */
+  attribution?: string;
+  variant?: EmailCardVariant;
+  imageSide?: EmailCardImageSide;
+  /** Percent width of the IMAGE column when `imageSide` is left/right. The
+   *  newsletter's rows are deliberately asymmetric (44/56, 52/48); forcing 50
+   *  is one of the things that made the rebuild look generic. 20-80. */
+  imageWidthPct?: number;
+  align?: "left" | "center";
+  ctaStyle?: EmailButtonVariant;
 };
 
 /** One option in a `poll` block. `id` is stable and is what a vote is
@@ -59,7 +99,46 @@ export type EmailBlock =
        *  expressible as an image block followed by a redundant button. */
       href?: string;
     }
-  | { id: string; kind: "button"; label: string; url: string; align?: "left" | "center" }
+  | {
+      id: string;
+      kind: "button";
+      label: string;
+      url: string;
+      align?: "left" | "center";
+      variant?: EmailButtonVariant;
+    }
+  /** Edge-to-edge image with NO container padding — the masthead and the
+   *  section banners, which in this design carry the section headings as
+   *  artwork rather than sitting above a text title. */
+  | {
+      id: string;
+      kind: "bleed_image";
+      /** OPTIONAL. An unfilled slot renders as a neutral placeholder band from
+       *  theme tokens — never an external request. A built-in template has to
+       *  express "the masthead goes here" WITHOUT pointing at a URL this
+       *  deployment doesn't own, or every new campaign opens with broken
+       *  images. */
+      url?: string;
+      alt: string;
+      href?: string;
+      /** Sit inside the container padding instead of bleeding edge to edge —
+       *  used for the song artwork, which is inset in the source. */
+      inset?: boolean;
+    }
+  /** Thin full-width rule (`hairline` token), distinct from `divider`'s
+   *  in-card border. */
+  | { id: string; kind: "hairline" }
+  /** The sign-off block: logo, a nav line, social links, and the legal row.
+   *  A real block rather than renderer furniture, because the newsletter's
+   *  footer is a cream card with its own layout. */
+  | {
+      id: string;
+      kind: "footer";
+      logoUrl?: string;
+      logoAlt?: string;
+      navLine?: string;
+      links?: { label: string; url: string }[];
+    }
   | { id: string; kind: "divider" }
   | { id: string; kind: "spacer"; size: "sm" | "md" | "lg" }
   // ── Composed blocks (the shapes the newsletter is actually built from) ────
@@ -189,6 +268,50 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+// ── Bounds and literal sets used by the validators below ────────────────────
+// Kept next to the code that enforces them (rather than beside the block
+// union) so the accepted values and the error strings that name them can
+// never drift apart.
+
+/** Cap on a `footer` block's link row. The real newsletter carries five (four
+ *  socials plus "view in browser"); eight is headroom, not a target — past
+ *  that the row wraps into an unreadable block on a phone. */
+const MAX_FOOTER_LINKS = 8;
+
+/** Bounds on a card's IMAGE column when `imageSide` is left/right. Below ~20%
+ *  the image is a thumbnail; above ~80% the text column can't hold a line of
+ *  copy. The newsletter's own rows sit at 44 and 52. */
+const MIN_IMAGE_WIDTH_PCT = 20;
+const MAX_IMAGE_WIDTH_PCT = 80;
+
+const CARD_VARIANTS: readonly EmailCardVariant[] = [
+  "plain",
+  "hero",
+  "feature",
+  "outlined",
+  "testimonial",
+];
+const CARD_IMAGE_SIDES: readonly EmailCardImageSide[] = ["top", "left", "right"];
+const BUTTON_VARIANTS: readonly EmailButtonVariant[] = ["filled", "outline"];
+const ALIGNMENTS: readonly ("left" | "center")[] = ["left", "center"];
+
+/** `"a" or "b"` / `"a", "b", or "c"` — so a rejection names every accepted
+ *  value instead of making the author guess which literal was wanted. The
+ *  two-value form drops the comma so the pre-existing messages (`button
+ *  "align" must be "left" or "center"`) read exactly as they always have. */
+function oneOfList(values: readonly string[]): string {
+  const quoted = values.map((v) => `"${v}"`);
+  if (quoted.length <= 1) return quoted[0] ?? "";
+  if (quoted.length === 2) return `${quoted[0]} or ${quoted[1]}`;
+  return `${quoted.slice(0, -1).join(", ")}, or ${quoted[quoted.length - 1]}`;
+}
+
+/** True iff `value` is one of `values` — narrow enough that the callers below
+ *  read as one line each rather than a chain of `!==` comparisons. */
+function isOneOf(value: unknown, values: readonly string[]): boolean {
+  return typeof value === "string" && values.includes(value);
+}
+
 /** Validate a single block, returning an error string (or null when valid).
  *  `path` is a human-readable locator prefixed onto any error message. */
 function validateBlock(block: unknown, path: string): string | null {
@@ -251,12 +374,90 @@ function validateBlock(block: unknown, path: string): string | null {
       if (!isAllowedLinkUrl(block.url)) {
         return `${path}: button "url" must start with http:, https:, or mailto:`;
       }
-      if (
-        block.align !== undefined &&
-        block.align !== "left" &&
-        block.align !== "center"
-      ) {
-        return `${path}: button "align" must be "left" or "center"`;
+      if (block.align !== undefined && !isOneOf(block.align, ALIGNMENTS)) {
+        return `${path}: button "align" must be ${oneOfList(ALIGNMENTS)}`;
+      }
+      if (block.variant !== undefined && !isOneOf(block.variant, BUTTON_VARIANTS)) {
+        return `${path}: button "variant" must be ${oneOfList(BUTTON_VARIANTS)}`;
+      }
+      return null;
+    }
+    case "bleed_image": {
+      // `url` is OPTIONAL — an unfilled slot is a legitimate, saveable state.
+      // The built-in template ships its masthead and section banners empty so
+      // the LAYOUT is right from the first open without naming a URL this
+      // deployment may not own; `emailRender.ts` draws a neutral placeholder
+      // band and makes no external request. When a url IS set it must be a
+      // real image URL.
+      if (block.url !== undefined) {
+        if (typeof block.url !== "string") {
+          return `${path}: bleed_image "url" must be a string`;
+        }
+        if (block.url.length > 0 && !isAllowedImageUrl(block.url)) {
+          return `${path}: bleed_image "url" must start with http: or https:`;
+        }
+      }
+      if (block.inset !== undefined && typeof block.inset !== "boolean") {
+        return `${path}: bleed_image "inset" must be a boolean`;
+      }
+      // Required, exactly like `image` and a card's `imageAlt` — a masthead is
+      // the FIRST thing a recipient meets, and Gmail/Outlook block remote
+      // images by default. `""` is the legitimate "decorative" value; only
+      // `undefined` is rejected.
+      if (typeof block.alt !== "string") {
+        return `${path}: bleed_image "alt" must be a string (use "" for a decorative image)`;
+      }
+      if (block.href !== undefined) {
+        if (typeof block.href !== "string" || block.href.length === 0) {
+          return `${path}: bleed_image "href" must be a non-empty string`;
+        }
+        if (!isAllowedLinkUrl(block.href)) {
+          return `${path}: bleed_image "href" must start with http:, https:, or mailto:`;
+        }
+      }
+      return null;
+    }
+    case "hairline": {
+      return null;
+    }
+    case "footer": {
+      if (block.logoUrl !== undefined) {
+        if (typeof block.logoUrl !== "string" || block.logoUrl.length === 0) {
+          return `${path}: footer "logoUrl" must be a non-empty string`;
+        }
+        if (!isAllowedImageUrl(block.logoUrl)) {
+          return `${path}: footer "logoUrl" must start with http: or https:`;
+        }
+        // Same required-alt rule the card images carry, for the same reason.
+        if (typeof block.logoAlt !== "string") {
+          return `${path}: footer "logoAlt" is required when "logoUrl" is set (use "" for a decorative logo)`;
+        }
+      }
+      if (block.navLine !== undefined && typeof block.navLine !== "string") {
+        return `${path}: footer "navLine" must be a string`;
+      }
+      if (block.links !== undefined) {
+        if (!Array.isArray(block.links)) {
+          return `${path}: footer "links" must be an array`;
+        }
+        if (block.links.length > MAX_FOOTER_LINKS) {
+          return `${path}: footer must have ${MAX_FOOTER_LINKS} links or fewer`;
+        }
+        for (let i = 0; i < block.links.length; i++) {
+          const link = block.links[i];
+          if (!isPlainObject(link)) {
+            return `${path}: footer links[${i}] must be an object`;
+          }
+          if (typeof link.label !== "string" || link.label.length === 0) {
+            return `${path}: footer links[${i}] "label" must be a non-empty string`;
+          }
+          if (typeof link.url !== "string" || link.url.length === 0) {
+            return `${path}: footer links[${i}] "url" must be a non-empty string`;
+          }
+          if (!isAllowedLinkUrl(link.url)) {
+            return `${path}: footer links[${i}] "url" must start with http:, https:, or mailto:`;
+          }
+        }
       }
       return null;
     }
@@ -363,9 +564,37 @@ function validateCardContent(content: unknown, path: string): string | null {
     }
   }
 
-  for (const key of ["heading", "body", "ctaLabel"] as const) {
+  for (const key of ["heading", "body", "ctaLabel", "eyebrow", "attribution"] as const) {
     if (content[key] !== undefined && typeof content[key] !== "string") {
       return `${path}: "${key}" must be a string`;
+    }
+  }
+
+  // Presentation fields. Each selects a ROLE the renderer knows how to paint
+  // (see `EmailCardVariant`'s doc) — an unknown value would silently fall
+  // through to the plain treatment, so it's rejected here rather than
+  // coerced, in keeping with this being the write gate.
+  if (content.variant !== undefined && !isOneOf(content.variant, CARD_VARIANTS)) {
+    return `${path}: "variant" must be ${oneOfList(CARD_VARIANTS)}`;
+  }
+  if (content.imageSide !== undefined && !isOneOf(content.imageSide, CARD_IMAGE_SIDES)) {
+    return `${path}: "imageSide" must be ${oneOfList(CARD_IMAGE_SIDES)}`;
+  }
+  if (content.align !== undefined && !isOneOf(content.align, ALIGNMENTS)) {
+    return `${path}: "align" must be ${oneOfList(ALIGNMENTS)}`;
+  }
+  if (content.ctaStyle !== undefined && !isOneOf(content.ctaStyle, BUTTON_VARIANTS)) {
+    return `${path}: "ctaStyle" must be ${oneOfList(BUTTON_VARIANTS)}`;
+  }
+  if (content.imageWidthPct !== undefined) {
+    const pct = content.imageWidthPct;
+    if (
+      typeof pct !== "number" ||
+      !Number.isFinite(pct) ||
+      pct < MIN_IMAGE_WIDTH_PCT ||
+      pct > MAX_IMAGE_WIDTH_PCT
+    ) {
+      return `${path}: "imageWidthPct" must be a number between ${MIN_IMAGE_WIDTH_PCT} and ${MAX_IMAGE_WIDTH_PCT}`;
     }
   }
 

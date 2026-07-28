@@ -12,14 +12,17 @@ import {
 } from "@events-os/shared";
 import {
   COLOR_TOKENS,
+  COLOR_TOKEN_GROUPS,
   DARK_TOKEN_KEYS,
   FONT_STACKS,
+  TRACKING_PRESETS,
   darkFromLight,
   fontOptionsFor,
   forceDarkEmailPreview,
   hexFromDraft,
   suggestedSwatches,
   themeSampleDocument,
+  trackingOptionsFor,
 } from "./emailThemeEditor";
 
 const RECIPIENT = { name: "Ada Lovelace", email: "ada@example.com" };
@@ -44,6 +47,101 @@ describe("FONT_STACKS", () => {
       });
       expect([stack.label, result.ok]).toEqual([stack.label, true]);
     }
+  });
+});
+
+describe("COLOR_TOKEN_GROUPS", () => {
+  test("covers every hex token in the theme, exactly once", () => {
+    // The form is the only way to edit these, so a token missing from the
+    // groups is a token nobody can change — and one listed twice is two
+    // fields fighting over the same value. `EmailThemeTokens` minus the two
+    // font stacks, the two letter-spacings, the radius and the wordmark.
+    const themeKeys = Object.keys(DEFAULT_EMAIL_THEME).filter(
+      (k) =>
+        !["name", "dark", "headingFont", "bodyFont", "radius", "wordmark",
+          "headingTracking", "bodyTracking"].includes(k),
+    );
+    const grouped = COLOR_TOKENS.map((t) => t.key);
+    expect(grouped.length).toBe(new Set(grouped).size);
+    expect([...grouped].sort()).toEqual([...themeKeys].sort());
+  });
+
+  test("every grouped token is a real hex value on every preset", () => {
+    for (const preset of EMAIL_THEME_PRESETS) {
+      for (const token of COLOR_TOKENS) {
+        expect([preset.name, token.key, preset[token.key]]).toEqual([
+          preset.name,
+          token.key,
+          expect.stringMatching(/^#[0-9a-fA-F]{3,6}$/),
+        ]);
+      }
+    }
+  });
+
+  test("the dark sub-editor covers the same tokens as the light form", () => {
+    // A dark editor missing a token is how a theme ends up with a cream card
+    // that stays cream on a black screen.
+    expect([...DARK_TOKEN_KEYS].sort()).toEqual([...COLOR_TOKENS.map((t) => t.key)].sort());
+  });
+
+  test("every group is labelled and non-empty", () => {
+    for (const group of COLOR_TOKEN_GROUPS) {
+      expect(group.title.length).toBeGreaterThan(0);
+      expect(group.tokens.length).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("TRACKING_PRESETS", () => {
+  test("every preset survives the theme write gate", () => {
+    // These are interpolated into a style attribute, and `validateEmailTheme`
+    // holds them to `safeTracking`'s shape. A value the picker offers must
+    // never be one the save then refuses.
+    for (const option of TRACKING_PRESETS) {
+      const result = validateEmailTheme({
+        ...DEFAULT_EMAIL_THEME,
+        headingTracking: option.value,
+        bodyTracking: option.value,
+      });
+      expect([option.value, result.ok]).toEqual([option.value, true]);
+    }
+  });
+
+  test("covers the values the built-in themes actually use", () => {
+    // Otherwise opening a preset would show it as "Custom — …", which reads
+    // as the theme having drifted off the supported set when it hasn't.
+    const offered = TRACKING_PRESETS.map((t) => t.value);
+    for (const preset of EMAIL_THEME_PRESETS) {
+      expect([preset.name, offered.includes(preset.headingTracking)]).toEqual([
+        preset.name,
+        true,
+      ]);
+      expect([preset.name, offered.includes(preset.bodyTracking)]).toEqual([
+        preset.name,
+        true,
+      ]);
+    }
+  });
+});
+
+describe("trackingOptionsFor", () => {
+  test("returns the curated list unchanged for a known value", () => {
+    expect(trackingOptionsFor(TRACKING_PRESETS[0].value)).toHaveLength(
+      TRACKING_PRESETS.length,
+    );
+  });
+
+  test("appends the theme's own value when it isn't one of ours", () => {
+    // Non-destructive, exactly like `fontOptionsFor`: a theme stored with
+    // `0.05em` must not open on an empty picker that blanks its tracking the
+    // next time any unrelated control is touched.
+    const options = trackingOptionsFor("0.05em");
+    expect(options).toHaveLength(TRACKING_PRESETS.length + 1);
+    expect(options[options.length - 1].value).toBe("0.05em");
+  });
+
+  test("ignores an empty value rather than adding a blank option", () => {
+    expect(trackingOptionsFor("")).toHaveLength(TRACKING_PRESETS.length);
   });
 });
 
@@ -119,8 +217,31 @@ describe("themeSampleDocument", () => {
 
   test("exercises every block kind the theme visibly changes", () => {
     const kinds = themeSampleDocument(DEFAULT_EMAIL_THEME).blocks.map((b) => b.kind);
-    for (const kind of ["eyebrow", "heading", "text", "button", "card", "quote"]) {
+    for (const kind of [
+      "eyebrow",
+      "heading",
+      "text",
+      "button",
+      "card",
+      "quote",
+      // The blocks that carry `cream`, `contrast`/`contrastInk` and
+      // `hairline`. Without them a third of the colour form drives nothing
+      // the designer can see, which reads as broken controls.
+      "hairline",
+      "footer",
+    ]) {
       expect(kinds).toContain(kind);
+    }
+  });
+
+  test("paints every colour token somewhere in the preview", () => {
+    // The point of the sample: each swatch in the form has to change
+    // something visible. A token that appears nowhere in the rendered HTML is
+    // a control with no effect.
+    const html = render(DEFAULT_EMAIL_THEME);
+    for (const token of COLOR_TOKENS) {
+      const value = DEFAULT_EMAIL_THEME[token.key];
+      expect([token.key, html.includes(value)]).toEqual([token.key, true]);
     }
   });
 
@@ -159,7 +280,12 @@ describe("forceDarkEmailPreview", () => {
     // Defense in depth: the caller passes a validated token, but this string
     // lands in CSS and a sink must not trust its input.
     const forced = forceDarkEmailPreview(render(theme), "red; } body { display:none");
-    expect(forced).not.toContain("display:none");
+    // Asserted against the PAYLOAD and against the pin's own signature, not
+    // against `display:none` on its own — the renderer emits that legitimately
+    // in its stacked-column rules, so the old proxy assertion started failing
+    // for a reason that had nothing to do with this function.
+    expect(forced).not.toContain("red; }");
+    expect(forced).not.toContain("html,body{background:");
     // The media-query rewrite still happened — only the background pin is
     // dropped.
     expect(forced).toContain("@media all {");

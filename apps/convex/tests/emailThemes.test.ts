@@ -35,14 +35,48 @@ function themeArgs(overrides: Record<string, unknown> = {}) {
     muted: "#4e6672",
     canvas: "#f4f9fc",
     surface: "#ffffff",
+    cream: "#f4f9fc",
+    contrast: "#0e1c24",
+    contrastInk: "#ffffff",
+    hairline: "#c2ccd2",
     border: "#d3e2ea",
     link: "#1f4a63",
     headingFont: "Georgia,serif",
     bodyFont: "Inter,Arial,sans-serif",
     radius: 12,
+    headingTracking: "-0.03em",
+    bodyTracking: "-0.01em",
     wordmark: "PUBLIC WORSHIP",
     ...overrides,
   };
+}
+
+/** A row inserted STRAIGHT into the table with only the columns that existed
+ *  before the newsletter rebuild — i.e. what production actually holds. Used
+ *  to prove the read edge fills the rest instead of throwing. */
+async function seedLegacyThemeRow(s: ChapterSetup) {
+  const now = Date.now();
+  return run(s.t, (ctx) =>
+    ctx.db.insert("emailThemes", {
+      scope: "central",
+      name: "Legacy",
+      accent: "#1f4a63",
+      accentInk: "#ffffff",
+      ink: "#0e1c24",
+      muted: "#4e6672",
+      canvas: "#f4f9fc",
+      surface: "#ffffff",
+      border: "#d3e2ea",
+      link: "#1f4a63",
+      headingFont: "Georgia,serif",
+      bodyFont: "Inter,Arial,sans-serif",
+      radius: 12,
+      wordmark: "",
+      createdBy: s.userId,
+      createdAt: now,
+      updatedAt: now,
+    }),
+  );
 }
 
 async function seedAudience(s: ChapterSetup) {
@@ -196,6 +230,174 @@ describe("theme CRUD", () => {
 
     await s.as.mutation(api.emailThemes.updateTheme, { themeId, dark: null });
     expect((await run(s.t, (ctx) => ctx.db.get(themeId)))?.dark).toBeUndefined();
+  });
+});
+
+// ── The newsletter-rebuild tokens ─────────────────────────────────────────
+// `cream`/`contrast`/`contrastInk`/`hairline` and the two tracking values
+// arrived with the real-newsletter template. They travel the same path as the
+// original tokens — args → `validateEmailTheme` → row → `listThemes` view —
+// and these tests pin each hop, because a token that stops at any one of them
+// renders as the DEFAULT theme's value with no error anywhere.
+
+describe("cream/contrast/hairline + tracking tokens", () => {
+  test("create round-trips every new token to the row and the view", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const themeId = await s.as.mutation(
+      api.emailThemes.createTheme,
+      themeArgs({
+        cream: "#fff9ee",
+        contrast: "#210706",
+        contrastInk: "#ffffff",
+        hairline: "#bfc3c8",
+        headingTracking: "-0.04em",
+        bodyTracking: "-0.01em",
+      }),
+    );
+
+    const row = await run(s.t, (ctx) => ctx.db.get(themeId));
+    expect(row?.cream).toBe("#fff9ee");
+    expect(row?.contrast).toBe("#210706");
+    expect(row?.contrastInk).toBe("#ffffff");
+    expect(row?.hairline).toBe("#bfc3c8");
+    expect(row?.headingTracking).toBe("-0.04em");
+    expect(row?.bodyTracking).toBe("-0.01em");
+
+    const view = (await s.as.query(api.emailThemes.listThemes, { scope: "central" })).find(
+      (x) => x.themeId === themeId,
+    );
+    expect(view?.cream).toBe("#fff9ee");
+    expect(view?.contrast).toBe("#210706");
+    expect(view?.contrastInk).toBe("#ffffff");
+    expect(view?.hairline).toBe("#bfc3c8");
+    expect(view?.headingTracking).toBe("-0.04em");
+    expect(view?.bodyTracking).toBe("-0.01em");
+  });
+
+  test("update moves them, leaving the untouched ones alone", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const themeId = await s.as.mutation(api.emailThemes.createTheme, themeArgs());
+
+    await s.as.mutation(api.emailThemes.updateTheme, {
+      themeId,
+      cream: "#fdf3e7",
+      headingTracking: "-0.05em",
+    });
+    const row = await run(s.t, (ctx) => ctx.db.get(themeId));
+    expect(row?.cream).toBe("#fdf3e7");
+    expect(row?.headingTracking).toBe("-0.05em");
+    expect(row?.contrast).toBe("#0e1c24"); // untouched
+    expect(row?.bodyTracking).toBe("-0.01em"); // untouched
+  });
+
+  test("dark overrides carry the new colours too", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const themeId = await s.as.mutation(
+      api.emailThemes.createTheme,
+      themeArgs({ dark: { cream: "#241d16", contrast: "#efe6dd", hairline: "#3d3733" } }),
+    );
+    const view = (await s.as.query(api.emailThemes.listThemes, { scope: "central" })).find(
+      (x) => x.themeId === themeId,
+    );
+    expect(view?.dark).toEqual({
+      cream: "#241d16",
+      contrast: "#efe6dd",
+      hairline: "#3d3733",
+    });
+  });
+
+  test("a tracking value that isn't a letter-spacing is rejected", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    // Not a length: `safeTracking` accepts em/rem/px, `normal`, or `0`.
+    await expect(
+      s.as.mutation(
+        api.emailThemes.createTheme,
+        themeArgs({ headingTracking: "tight" }),
+      ),
+    ).rejects.toMatchObject({ data: { code: "INVALID_THEME" } });
+    // …and one that could break out of the style attribute it lands in.
+    await expect(
+      s.as.mutation(
+        api.emailThemes.createTheme,
+        themeArgs({ headingTracking: "0;color:red" }),
+      ),
+    ).rejects.toMatchObject({ data: { code: "INVALID_THEME" } });
+    expect(
+      (await s.as.query(api.emailThemes.listThemes, { scope: "central" })).every(
+        (x) => x.isPreset,
+      ),
+    ).toBe(true); // nothing was written
+
+    const themeId = await s.as.mutation(api.emailThemes.createTheme, themeArgs());
+    await expect(
+      s.as.mutation(api.emailThemes.updateTheme, { themeId, bodyTracking: "3" }),
+    ).rejects.toMatchObject({ data: { code: "INVALID_THEME" } });
+    expect((await run(s.t, (ctx) => ctx.db.get(themeId)))?.bodyTracking).toBe("-0.01em");
+  });
+});
+
+// ── Back-compat with rows written before these columns existed ────────────
+
+describe("a row stored without the newer columns", () => {
+  test("reads back as a COMPLETE theme, filled from the default", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const themeId = await seedLegacyThemeRow(s);
+    // The row itself really is missing them — otherwise this proves nothing.
+    const row = await run(s.t, (ctx) => ctx.db.get(themeId));
+    expect(row?.cream).toBeUndefined();
+    expect(row?.headingTracking).toBeUndefined();
+
+    const view = (await s.as.query(api.emailThemes.listThemes, { scope: "central" })).find(
+      (x) => x.themeId === themeId,
+    );
+    expect(view?.name).toBe("Legacy");
+    expect(view?.accent).toBe("#1f4a63"); // its OWN tokens survive
+    expect(view?.cream).toBe(DEFAULT_EMAIL_THEME.cream);
+    expect(view?.contrast).toBe(DEFAULT_EMAIL_THEME.contrast);
+    expect(view?.contrastInk).toBe(DEFAULT_EMAIL_THEME.contrastInk);
+    expect(view?.hairline).toBe(DEFAULT_EMAIL_THEME.hairline);
+    expect(view?.headingTracking).toBe(DEFAULT_EMAIL_THEME.headingTracking);
+    expect(view?.bodyTracking).toBe(DEFAULT_EMAIL_THEME.bodyTracking);
+  });
+
+  test("is still editable — the merge base is the NORMALIZED row", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const themeId = await seedLegacyThemeRow(s);
+    // A designer nudging one colour must not be told her theme is invalid
+    // because of a token her editor never showed her.
+    await s.as.mutation(api.emailThemes.updateTheme, { themeId, accent: "#891d1a" });
+    const row = await run(s.t, (ctx) => ctx.db.get(themeId));
+    expect(row?.accent).toBe("#891d1a");
+    // …and the write completes the row, so the gap closes on first edit.
+    expect(row?.cream).toBe(DEFAULT_EMAIL_THEME.cream);
+    expect(row?.headingTracking).toBe(DEFAULT_EMAIL_THEME.headingTracking);
+  });
+
+  test("stamps a complete theme onto a campaign via resolveScopeTheme", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const audienceId = await seedAudience(s);
+    const themeId = await seedLegacyThemeRow(s);
+    await s.as.mutation(api.emailThemes.setDefaultTheme, { themeId });
+
+    const campaignId = await s.as.mutation(api.campaigns.createCampaign, {
+      scope: "central",
+      name: "Newsletter",
+      subject: "Hi",
+      audienceId,
+      doc: { blocks: [] },
+    });
+    const theme = (await run(s.t, (ctx) => ctx.db.get(campaignId)))?.doc.theme;
+    expect(theme?.name).toBe("Legacy");
+    expect(theme?.cream).toBe(DEFAULT_EMAIL_THEME.cream);
+    expect(theme?.hairline).toBe(DEFAULT_EMAIL_THEME.hairline);
+    expect(theme?.headingTracking).toBe(DEFAULT_EMAIL_THEME.headingTracking);
   });
 });
 

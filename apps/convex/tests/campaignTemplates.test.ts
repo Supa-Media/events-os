@@ -360,11 +360,31 @@ describe("0049_seed_builtin_campaign_templates", () => {
     const validated = validateEmailDocument(newsletter?.doc);
     expect(validated.ok).toBe(true);
     if (validated.ok) {
+      // The vocabulary the newsletter is ACTUALLY built from. It used to be
+      // asserted as eyebrow/columns/quote — the generic stand-ins from before
+      // the layout was rebuilt against the real design. The banners now carry
+      // the section headings as artwork, and the sections are card variants.
       const kinds = new Set(validated.doc.blocks.map((b) => b.kind));
-      expect(kinds.has("eyebrow")).toBe(true);
-      expect(kinds.has("columns")).toBe(true);
-      expect(kinds.has("quote")).toBe(true);
+      expect(kinds.has("bleed_image")).toBe(true);
+      expect(kinds.has("card")).toBe(true);
+      expect(kinds.has("footer")).toBe(true);
+
+      const variants = new Set(
+        validated.doc.blocks
+          .filter((b): b is Extract<typeof b, { kind: "card" }> => b.kind === "card")
+          .map((b) => b.variant),
+      );
+      for (const v of ["hero", "feature", "outlined", "testimonial"] as const) {
+        expect(variants.has(v)).toBe(true);
+      }
       expect(validated.doc.theme?.accent).toBe(PUBLIC_WORSHIP_THEME.accent);
+
+      // No block may name an image URL this deployment doesn't own — the
+      // template ships EMPTY slots the image library fills.
+      const urls = validated.doc.blocks.flatMap((b) =>
+        b.kind === "bleed_image" ? [b.url] : b.kind === "card" ? [b.imageUrl] : [],
+      );
+      expect(urls.every((u) => !u)).toBe(true);
     }
   });
 
