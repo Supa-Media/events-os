@@ -152,8 +152,20 @@ export const EMAIL_GEOMETRY = {
   body: { size: 16, line: 1.35, marginBottom: 12, listIndent: 20 },
   /** The `image` block. `half` is 50% of the container's content width. */
   image: { marginBottom: 16, halfPct: 50 },
-  /** Every button, standalone or a card's CTA. */
-  button: { size: 15, padY: 11, padX: 22, radius: 999, borderWidth: 1, marginBottom: 16 },
+  /** Every button, standalone or a card's CTA.
+   *
+   *  `defaultAlign` is what a standalone `button` block with no `align` of its
+   *  own actually SENDS (`emailRender.ts#renderButtonBlock`'s
+   *  `safeAlign(block.align, …)`), and `defaultBlockFor("button")` sets no
+   *  align — so it is the alignment of every freshly added button. It lives
+   *  here because the canvas and the inspector each have to answer the same
+   *  question, and a third and fourth hardcoded copy is exactly how the canvas
+   *  came to draw a new button left while the inbox centred it. A card's CTA
+   *  is NOT this: it takes its variant's `ctaAlign` from `EMAIL_CARD_SPECS`. */
+  button: {
+    size: 15, padY: 11, padX: 22, radius: 999, borderWidth: 1, marginBottom: 16,
+    defaultAlign: "center",
+  },
   /** The `eyebrow` block (the card's own eyebrow line is `card.eyebrow`). */
   eyebrow: { size: 12, marginBottom: 10 },
   /** `divider` — an in-flow rule with generous air either side. */

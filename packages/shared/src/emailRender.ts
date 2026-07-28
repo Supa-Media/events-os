@@ -915,25 +915,59 @@ function inlineMarkdownText(nodes: MarkdownInlineNode[]): string {
 }
 
 /**
- * Strip the markdown subset for the plaintext part, LINE BY LINE.
+ * Strip the markdown subset for the plaintext part.
  *
  * Line structure is preserved (a `- ` line becomes a bullet) rather than
  * reflowed into paragraphs the way `parseMarkdownSubset` does for the visual
- * renderers — a plaintext email has no other way to show shape. The INLINE
- * parse is the shared one, so plaintext strips exactly the markdown the HTML
- * render understands: a Wikipedia-style URL with brackets, or a
- * `**bold *italic* text**` run, come out of both the same way.
+ * renderers — a plaintext email has no other way to show shape.
+ *
+ * What is NOT preserved is line-by-line parsing. The two alternatives of one
+ * email have to agree about what is markup, so the unit of parsing here is
+ * the same BLOCK `parseMarkdownSubset` gives the HTML side — one paragraph,
+ * or one run of `- ` lines — with its lines still separated by newlines
+ * instead of joined by spaces.
+ *
+ * Both halves of that matter. Parsing one line at a time left the raw
+ * `[the full\nstory](https://…)` sitting in the text/plain part of an email
+ * whose text/html rendered it as a link. Parsing the whole body at once
+ * instead makes the opposite mistake: a stray `**` would reach across the
+ * blank line between two paragraphs, which the HTML side would never do.
  */
 function stripMarkdownSubset(markdown: string): string {
-  return markdown
-    .split(/\r?\n/)
-    .map((line) => {
-      const trimmed = line.trim();
-      const bullet = trimmed.startsWith("- ");
-      const body = inlineMarkdownText(parseInlineMarkdown(bullet ? trimmed.slice(2) : trimmed));
-      return bullet ? `• ${body}` : body;
-    })
-    .join("\n");
+  const out: string[] = [];
+  let block: string[] = [];
+  let blockIsList = false;
+
+  const flush = () => {
+    if (block.length === 0) return;
+    // A list's ITEMS are parsed one at a time and a paragraph's lines all
+    // together — mirroring `parseMarkdownSubset` exactly, so markup can reach
+    // across a soft wrap in both parts of the email and across a list-item
+    // boundary in neither.
+    out.push(
+      blockIsList
+        ? block.map((item) => inlineMarkdownText(parseInlineMarkdown(item))).join("\n")
+        : inlineMarkdownText(parseInlineMarkdown(block.join("\n"))),
+    );
+    block = [];
+  };
+
+  for (const rawLine of markdown.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line === "") {
+      flush();
+      out.push("");
+      continue;
+    }
+    const isList = line.startsWith("- ");
+    // A list starting or ending closes the block before it, exactly as it
+    // does for the visual renderers.
+    if (isList !== blockIsList) flush();
+    blockIsList = isList;
+    block.push(isList ? `• ${line.slice(2)}` : line);
+  }
+  flush();
+  return out.join("\n");
 }
 
 /** Plaintext for one card's parts — shared by `card` and `columns` for the

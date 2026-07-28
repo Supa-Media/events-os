@@ -46,72 +46,175 @@ const LINK_RE = /\[([^\]]+)\]\(((?:[^()\s]|\([^()]*\))+)\)/g;
  * single-`*` italic run (`**bold *italic* text**`: the content between the
  * outer `**` pair contains `*` characters a `[^*]+` class excludes), so it
  * simply fails to match and the whole thing falls through unrendered.
+ *
+ * `[\s\S]` rather than `.` so a pair can close on a LATER LINE. The visual
+ * renderers never see a newline (paragraph lines are joined with a space
+ * before they get here), but the plaintext part parses a whole block at once,
+ * and a `.`-based pattern made it disagree with the HTML part about
+ * `**bold` / `still bold**` — one email, two different answers.
  */
-const BOLD_RE = /\*\*(.+?)\*\*/g;
+const BOLD_RE = /\*\*([\s\S]+?)\*\*/g;
 const ITALIC_RE = /\*([^*]+)\*/g;
 
-/** Split `text` on `re`, mapping each match through `onMatch` and every gap
- *  through `onText`. Shared by all three inline passes, which differ only in
- *  what they build. */
-function splitOn(
-  text: string,
-  re: RegExp,
-  onMatch: (match: RegExpExecArray) => MarkdownInlineNode,
-  onText: (chunk: string) => MarkdownInlineNode[],
-): MarkdownInlineNode[] {
-  // A fresh RegExp per call: the module-level literals carry the `g` flag and
-  // therefore `lastIndex` state, which a nested/recursive parse would corrupt.
+/**
+ * The stand-in character for "text that is spoken for" while scanning.
+ *
+ * Masking preserves LENGTH, so every index found in a masked string is an
+ * index into the original — that positional identity is the whole trick (see
+ * `parseInlineMarkdown`). It only ever needs to be a character that is not
+ * `*`, so it cannot create or complete an emphasis pair; a space that was
+ * already in the author's text is therefore harmless, because the mask is
+ * used to LOCATE delimiters and never to produce output.
+ */
+const MASK = " ";
+
+/** One matched construct, as a range over the ORIGINAL text. */
+type MarkdownSpan = {
+  start: number;
+  end: number;
+  /** The sub-range that becomes this node's children, or `null` for a node
+   *  that parses its own (a link's label). */
+  inner: readonly [number, number] | null;
+  wrap: (children: MarkdownInlineNode[]) => MarkdownInlineNode;
+};
+
+/** Every match of `re` in `text`. A fresh RegExp per call: the module-level
+ *  literals carry the `g` flag and therefore `lastIndex` state, which a
+ *  nested/recursive parse would corrupt. */
+function matchAll(text: string, re: RegExp): RegExpExecArray[] {
   const scanner = new RegExp(re.source, re.flags);
-  const out: MarkdownInlineNode[] = [];
-  let cursor = 0;
+  const out: RegExpExecArray[] = [];
   let match: RegExpExecArray | null;
   while ((match = scanner.exec(text)) !== null) {
-    if (match.index > cursor) out.push(...onText(text.slice(cursor, match.index)));
-    out.push(onMatch(match));
-    cursor = match.index + match[0].length;
+    out.push(match);
     // Zero-length matches can't happen with these patterns, but a guard here
     // is what stops a future pattern change from spinning forever.
     if (match[0].length === 0) scanner.lastIndex += 1;
   }
-  if (cursor < text.length) out.push(...onText(text.slice(cursor)));
   return out;
 }
 
-function parseItalic(text: string): MarkdownInlineNode[] {
-  if (text === "") return [];
-  return splitOn(
-    text,
-    ITALIC_RE,
-    (m) => ({ kind: "em", children: [{ kind: "text", text: m[1] }] }),
-    (chunk) => (chunk === "" ? [] : [{ kind: "text", text: chunk }]),
-  );
+/** `text` with `[from, to)` replaced by the same number of `MASK` characters. */
+function maskRange(text: string, from: number, to: number): string {
+  return text.slice(0, from) + MASK.repeat(to - from) + text.slice(to);
 }
 
-function parseEmphasis(text: string): MarkdownInlineNode[] {
-  if (text === "") return [];
-  return splitOn(
-    text,
-    BOLD_RE,
-    (m) => ({ kind: "strong", children: parseItalic(m[1]) }),
-    parseItalic,
-  );
+/** Do `a` and `b` overlap without either containing the other? Two such
+ *  ranges cannot both become elements — one of them has to lose. */
+function crosses(a: MarkdownSpan, b: readonly [number, number]): boolean {
+  return (a.start < b[0] && a.end > b[0] && a.end < b[1]) ||
+    (a.start > b[0] && a.start < b[1] && a.end > b[1]);
 }
 
 /**
- * Parse one line of inline markdown.
+ * Turn a set of properly-nested spans into the tree, left to right.
  *
- * Links are matched FIRST, on the whole line, so a URL's own punctuation can
- * never be mistaken for emphasis; the link's LABEL is then parsed for
- * emphasis, which is what makes `[**Give**](https://…)` bold.
+ * `spans` is sorted outermost-first, so a span nested inside one already
+ * emitted starts before the cursor and is skipped here — the recursive call
+ * for that parent's `inner` range is what picks it up.
+ */
+function buildNodes(
+  text: string,
+  lo: number,
+  hi: number,
+  spans: readonly MarkdownSpan[],
+): MarkdownInlineNode[] {
+  const out: MarkdownInlineNode[] = [];
+  let cursor = lo;
+  for (const span of spans) {
+    if (span.start < cursor || span.start < lo || span.end > hi) continue;
+    if (span.start > cursor) out.push({ kind: "text", text: text.slice(cursor, span.start) });
+    out.push(span.wrap(span.inner ? buildNodes(text, span.inner[0], span.inner[1], spans) : []));
+    cursor = span.end;
+  }
+  if (cursor < hi) out.push({ kind: "text", text: text.slice(cursor, hi) });
+  return out;
+}
+
+/**
+ * Parse inline markdown: links, then bold, then italic.
+ *
+ * ── Why positions, and not a chain of string splits ────────────────────────
+ * The obvious shape — split on links, parse emphasis in each gap — cannot
+ * render `**[Give now](https://…)**`, because the two halves of that `**`
+ * pair land in DIFFERENT gaps and never meet. Real copy is written that way
+ * ("Read **[the full story](…)** before Sunday"), and the failure is silent:
+ * literal asterisks ship to the inbox. Splitting the other way round is worse
+ * — emphasis first would consume the `**` inside `[**Give**](…)` before the
+ * link is even recognised.
+ *
+ * So nothing is split. Each pass scans a MASKED COPY of the text — same
+ * length, with everything already claimed replaced by `MASK` — and records
+ * the ranges it matched. Because masking preserves length, those ranges are
+ * ranges of the original text, and the passes compose:
+ *
+ *  1. Links are matched first and masked whole, so a `*` inside a URL cannot
+ *     become emphasis (it used to inject `<em>` into the `href`) and a `**`
+ *     inside a label cannot pair with one outside it (which used to emit
+ *     overlapping, malformed tags). A link is ATOMIC to the passes below it,
+ *     but its label is re-parsed on its own — that is what keeps
+ *     `[**Give**](…)` bold.
+ *  2. Bold is matched over that, so a `**` pair spans a link node freely.
+ *  3. Italic is matched over the text with bold's DELIMITERS masked too —
+ *     which is how the outer pair of `*a **b** c*` still finds itself.
+ *
+ * Ranges from steps 2 and 3 nest properly, since an italic delimiter can
+ * never sit on a masked (link or bold-delimiter) character. The pathological
+ * exception is a genuinely crossing pair like `*a **b* c**`, where the older
+ * renderer emitted interleaved `<em>`/`<strong>` tags that no mail client
+ * agrees on; the italic loses, and its asterisks stay literal.
  */
 export function parseInlineMarkdown(text: string): MarkdownInlineNode[] {
   if (text === "") return [];
-  return splitOn(
-    text,
-    LINK_RE,
-    (m) => ({ kind: "link", href: m[2], children: parseEmphasis(m[1]) }),
-    parseEmphasis,
-  );
+  const spans: MarkdownSpan[] = [];
+
+  let masked = text;
+  for (const m of matchAll(text, LINK_RE)) {
+    const [label, href] = [m[1], m[2]];
+    const start = m.index;
+    const end = start + m[0].length;
+    // A label is `[^\]]+`, so it cannot itself contain a complete link — the
+    // recursion is bounded and always on a strictly shorter string.
+    spans.push({
+      start,
+      end,
+      inner: null,
+      wrap: () => ({ kind: "link", href, children: parseInlineMarkdown(label) }),
+    });
+    masked = maskRange(masked, start, end);
+  }
+
+  let postBold = masked;
+  const boldRanges: (readonly [number, number])[] = [];
+  for (const m of matchAll(masked, BOLD_RE)) {
+    const start = m.index;
+    const end = start + m[0].length;
+    boldRanges.push([start, end]);
+    spans.push({
+      start,
+      end,
+      inner: [start + 2, end - 2],
+      wrap: (children) => ({ kind: "strong", children }),
+    });
+    postBold = maskRange(maskRange(postBold, start, start + 2), end - 2, end);
+  }
+
+  for (const m of matchAll(postBold, ITALIC_RE)) {
+    const start = m.index;
+    const end = start + m[0].length;
+    const span: MarkdownSpan = {
+      start,
+      end,
+      inner: [start + 1, end - 1],
+      wrap: (children) => ({ kind: "em", children }),
+    };
+    if (boldRanges.some((b) => crosses(span, b))) continue;
+    spans.push(span);
+  }
+
+  // Outermost first, so `buildNodes` meets a parent before its children.
+  spans.sort((a, b) => a.start - b.start || b.end - a.end);
+  return buildNodes(text, 0, text.length, spans);
 }
 
 /**

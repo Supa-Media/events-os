@@ -193,6 +193,102 @@ describe("renderCampaignEmail — markdown subset", () => {
     expect(secondIdx).toBeGreaterThan(firstIdx);
     expect(html.match(/<p /g)?.length).toBe(2);
   });
+
+  /**
+   * A bold call to action is written `**[Give now](…)**` at least as often as
+   * `[**Give now**](…)`, and a parser that resolves links before pairing
+   * emphasis renders the first one as two literal asterisks in the inbox.
+   * `emailMarkdown.test.ts` specifies the parse; this asserts it survives the
+   * whole send path. See also the italic-wrapping-bold case, which the same
+   * defect broke.
+   */
+  test("emphasis wrapping a link survives to the inbox — no raw asterisks", () => {
+    const html = renderCampaignEmail(
+      doc([
+        {
+          id: "1",
+          kind: "text",
+          markdown: "Read **[the full story](https://x.test/story)** before Sunday.",
+        },
+      ]),
+      baseOpts,
+    );
+    expect(html).toContain("<strong>");
+    expect(html).toContain('href="https://x.test/story"');
+    expect(html).not.toContain("**");
+  });
+
+  test("italic wrapping bold renders both, not one", () => {
+    const html = renderCampaignEmail(
+      doc([{ id: "1", kind: "text", markdown: "*a **b** c*" }]),
+      baseOpts,
+    );
+    expect(html).toContain("<em>a <strong>b</strong> c</em>");
+  });
+});
+
+/**
+ * The text/plain and text/html alternatives of one email must agree about
+ * what is markup. They parse differently by design — HTML reflows a
+ * paragraph's soft wraps into spaces, plaintext keeps the line breaks — so a
+ * construct that straddles a wrap is exactly where they drift apart, and a
+ * plaintext reader gets served the raw `[…](…)` the HTML reader never sees.
+ */
+describe("renderCampaignText — markdown agrees with the HTML part", () => {
+  const wrapped = "Read [the full\nstory](https://x.test/story) before **Sunday,\nat ten**.";
+
+  test("a link whose label wraps is stripped, not left raw", () => {
+    const text = renderCampaignText(
+      doc([{ id: "1", kind: "text", markdown: wrapped }]),
+      baseOpts,
+    );
+    expect(text).toContain("(https://x.test/story)");
+    expect(text).not.toContain("[the full");
+    expect(text).not.toContain("](");
+  });
+
+  test("a bold pair that closes on the next line is stripped too", () => {
+    const text = renderCampaignText(
+      doc([{ id: "1", kind: "text", markdown: wrapped }]),
+      baseOpts,
+    );
+    expect(text).not.toContain("**");
+  });
+
+  test("the HTML part renders the same constructs it strips from plaintext", () => {
+    const html = renderCampaignEmail(
+      doc([{ id: "1", kind: "text", markdown: wrapped }]),
+      baseOpts,
+    );
+    expect(html).toContain('href="https://x.test/story"');
+    expect(html).toContain("<strong>");
+    expect(html).not.toContain("**");
+    expect(html).not.toContain("](");
+  });
+
+  /**
+   * The flip side: reaching ACROSS a block boundary is something neither part
+   * may do. Parsing the whole body in one go would strip markers here that
+   * the HTML part — which parses one paragraph, and one list item, at a
+   * time — leaves standing.
+   */
+  test("emphasis does not reach across a blank line in either part", () => {
+    const markdown = "**one\n\ntwo**";
+    const text = renderCampaignText(doc([{ id: "1", kind: "text", markdown }]), baseOpts);
+    const html = renderCampaignEmail(doc([{ id: "1", kind: "text", markdown }]), baseOpts);
+    expect(html).not.toContain("<strong>");
+    expect(text).toContain("**one");
+    expect(text).toContain("two**");
+  });
+
+  test("a link does not reach across a list-item boundary in either part", () => {
+    const markdown = "- [start\n- end](https://x.test/no)";
+    const text = renderCampaignText(doc([{ id: "1", kind: "text", markdown }]), baseOpts);
+    const html = renderCampaignEmail(doc([{ id: "1", kind: "text", markdown }]), baseOpts);
+    expect(html).not.toContain('href="https://x.test/no"');
+    expect(text).not.toContain("start end (https://x.test/no)");
+    expect(text).toContain("• [start");
+  });
 });
 
 describe("renderCampaignEmail — every block kind", () => {
