@@ -219,6 +219,8 @@ export const FINANCE_AUDIT_ACTIONS = [
   "receipt_attach", // attachReceipt / receipts.linkReceipt
   "receipt_detach", // receipts.unlinkReceipt
   "personal_flag", // cards.flagPersonalCharge / cards.unflagPersonalCharge
+  "transfer_mark", // finances.markAsTransfer / unmarkTransfer (BOTH legs logged)
+  "payout_mark", // finances.markAsPayout / unmarkPayout
   "note_edit", // setTransactionNote
   "manual_create", // createManualTransaction
   "budget_amount_change", // updateBudget (amountCents only)
@@ -232,6 +234,8 @@ export const FINANCE_AUDIT_ACTION_LABELS: Record<FinanceAuditAction, string> = {
   receipt_attach: "Receipt attached",
   receipt_detach: "Receipt detached",
   personal_flag: "Personal flag changed",
+  transfer_mark: "Internal transfer marking changed",
+  payout_mark: "Processor payout marking changed",
   note_edit: "Note edited",
   manual_create: "Created manually",
   budget_amount_change: "Budget amount changed",
@@ -315,9 +319,10 @@ export function receiptSenderCanAutoAttach(
 
 // Flows that DON'T count toward category / budget spend. A `transfer` is money
 // MOVING (chapter ↔ central skims/grants/settlements, a personal-charge
-// repayment netting its own charge) — both legs exist in the ledger, so
-// counting either as spend would double-count real expenses that are already
-// booked elsewhere.
+// repayment netting its own charge, or an INTERNAL BANK TRANSFER a bookkeeper
+// marked in Reconcile — see `PAYOUT_PROCESSORS` below for the case that is
+// deliberately NOT this) — both legs exist in the ledger, so counting either as
+// spend would double-count real expenses that are already booked elsewhere.
 //
 // NOT in here: a reimbursement payout. That money leaves the org for a
 // purchase someone made out of pocket, and no other row books it, so it posts
@@ -328,6 +333,30 @@ export const NON_SPEND_FLOWS: readonly TransactionFlow[] = ["transfer"];
 export function countsAsSpend(flow: TransactionFlow): boolean {
   return !NON_SPEND_FLOWS.includes(flow);
 }
+
+// ── Processor payouts ────────────────────────────────────────────────────────
+// A settlement deposit from a donation processor: Givebutter/Stripe batch the
+// donations they collected and wire the net to the bank, so ONE inflow lands
+// covering many gifts.
+//
+// A payout is NOT an internal transfer, and marking one must never set
+// `flow:"transfer"`. Donations live in `gifts` (donor CRM) and are NEVER
+// written to `transactions`, so this deposit is the ledger's ONLY record of
+// that income — excluding it from inflow the way a transfer is excluded would
+// erase the org's revenue outright. This is the same trap the reimbursement
+// payout fell into and was reversed out of (`increase.ts`'s header comment:
+// posting as `flow:"transfer"` on "an anti-double-count theory" that assumed a
+// second row booked the money; none did). A marked payout therefore stays a
+// plain `inflow` and only gains a `payoutProcessor` LABEL saying where it came
+// from.
+export const PAYOUT_PROCESSORS = ["givebutter", "stripe", "other"] as const;
+export type PayoutProcessor = (typeof PAYOUT_PROCESSORS)[number];
+
+export const PAYOUT_PROCESSOR_LABELS: Record<PayoutProcessor, string> = {
+  givebutter: "Givebutter",
+  stripe: "Stripe",
+  other: "Other processor",
+};
 
 // ── Reimbursements ───────────────────────────────────────────────────────────
 // Public-form submissions (accountless, secret token). Optional pre-approval

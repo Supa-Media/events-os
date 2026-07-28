@@ -542,6 +542,8 @@ describe("listReconcile (server-side filters + counts + projections)", () => {
       uncategorized: 2, // t1, t4
       ready: 1, // t2
       personal_unpaid: 0, // none flagged personal in this fixture
+      transfers: 0, // nothing marked as an internal transfer here
+      payouts: 0, // nothing marked as a processor payout here
     });
     const allIds = all.rows.map((r) => r.id);
     expect(allIds).toEqual(expect.arrayContaining([t1, t2, t4]));

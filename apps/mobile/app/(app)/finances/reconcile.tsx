@@ -64,6 +64,12 @@ import {
 } from "../../../components/finance/reconcile/helpers";
 import { BulkBar } from "../../../components/finance/reconcile/BulkBar";
 import { buildForPickerItems } from "../../../components/finance/reconcile/forPicker";
+import {
+  MarkTransferModal,
+  type TransferLegPreview,
+} from "../../../components/finance/modals/MarkTransferModal";
+import { MarkPayoutModal } from "../../../components/finance/modals/MarkPayoutModal";
+import type { PayoutProcessor } from "@events-os/shared";
 
 function NoFinanceAccess() {
   return (
@@ -106,6 +112,8 @@ const FILTER_KEYS = new Set<FilterKey>([
   "missing_receipt",
   "uncategorized",
   "ready",
+  "transfers",
+  "payouts",
 ]);
 
 /** `Jul 2026` / `YTD through Jul 2026` — the period-scope pill's label. */
@@ -225,6 +233,8 @@ function ReconcileGrid() {
   const bulkCategorize = useMutation(api.finances.bulkCategorize);
   const setStatus = useMutation(api.finances.setTransactionStatus);
   const reassignTransactions = useMutation(api.finances.reassignTransactions);
+  const markAsTransfer = useMutation(api.finances.markAsTransfer);
+  const markAsPayout = useMutation(api.finances.markAsPayout);
   const { run, toast, dismiss } = useActionRunner();
 
   // WP-2.2: the chapters a central caller may reassign money to/from. Only
@@ -352,6 +362,92 @@ function ReconcileGrid() {
     );
     clearSelection();
   }
+  // ── Marking (founder ask) ──────────────────────────────────────────────────
+  // Both open a confirm modal rather than committing on the tap: marking moves
+  // a row in or out of spend totals, the same weight class as Exclude. The
+  // server re-validates everything (pairing, amounts, scope, flow) — these
+  // previews only help a bookkeeper catch a mis-pick first.
+  const [transferPromptOpen, setTransferPromptOpen] = useState(false);
+  const [payoutPromptOpen, setPayoutPromptOpen] = useState(false);
+  const [markBusy, setMarkBusy] = useState(false);
+
+  // The two selected rows, resolved back to their display data for the confirm
+  // modal. `null` unless exactly two are selected — which is also the only
+  // state the bulk bar enables the button in.
+  const transferLegs = useMemo<[TransferLegPreview, TransferLegPreview] | null>(
+    () => {
+      if (selectedInView.length !== 2) return null;
+      const picked = selectedInView
+        .map((id) => displayed.find((r) => r.id === id))
+        .filter((r): r is NonNullable<typeof r> => r != null);
+      if (picked.length !== 2) return null;
+      const [a, b] = picked.map((r) => ({
+        id: r.id,
+        postedAt: r.postedAt,
+        amountCents: r.amountCents,
+        flow: r.flow,
+        label: r.merchantName ?? r.description ?? "Transaction",
+      }));
+      return [a, b];
+    },
+    [selectedInView, displayed],
+  );
+
+  async function confirmMarkTransfer(note: string | null) {
+    if (!transferLegs) return;
+    setMarkBusy(true);
+    try {
+      // Close + clear ONLY on success (`run` swallows the rejection and would
+      // otherwise close the modal on a server refusal). The refusals here are
+      // all "you picked the wrong counterpart" — mismatched amounts, two rows
+      // moving the same way, different books — so the selection has to survive
+      // for the bookkeeper to correct it.
+      await run(
+        () =>
+          markAsTransfer({
+            transactionId: transferLegs[0].id as Id<"transactions">,
+            counterpartTransactionId: transferLegs[1].id as Id<"transactions">,
+            ...(note ? { note } : {}),
+          }),
+        {
+          errorTitle: "Couldn't mark as transfer",
+          onSuccess: () => {
+            setTransferPromptOpen(false);
+            clearSelection();
+          },
+        },
+      );
+    } finally {
+      setMarkBusy(false);
+    }
+  }
+
+  async function confirmMarkPayout(processor: PayoutProcessor) {
+    setMarkBusy(true);
+    try {
+      // A loop over the per-row mutation, same shape as `bulkMarkReconciled`
+      // — a month of payouts from one processor is a single action.
+      await run(
+        () =>
+          Promise.all(
+            bulkIds.map((id) => markAsPayout({ transactionId: id, processor })),
+          ),
+        {
+          errorTitle: "Couldn't mark as payout",
+          // Success-only, same reasoning as the transfer path above — a
+          // selection containing an outflow is refused, and the bookkeeper
+          // needs it intact to drop that row.
+          onSuccess: () => {
+            setPayoutPromptOpen(false);
+            clearSelection();
+          },
+        },
+      );
+    } finally {
+      setMarkBusy(false);
+    }
+  }
+
   async function bulkMarkReconciled() {
     await run(
       // No bulk-status mutation: a loop over the idempotent per-row setter is fine.
@@ -505,6 +601,25 @@ function ReconcileGrid() {
             hideCategory={centralScope}
             reassignItems={reassignItems}
             onReassign={hasCentralSeat ? bulkReassign : undefined}
+            onMarkTransfer={() => setTransferPromptOpen(true)}
+            onMarkPayout={() => setPayoutPromptOpen(true)}
+          />
+        ) : null}
+
+        {transferPromptOpen && transferLegs ? (
+          <MarkTransferModal
+            legs={transferLegs}
+            submitting={markBusy}
+            onCancel={() => setTransferPromptOpen(false)}
+            onConfirm={(note) => void confirmMarkTransfer(note)}
+          />
+        ) : null}
+        {payoutPromptOpen ? (
+          <MarkPayoutModal
+            count={selectedInView.length}
+            submitting={markBusy}
+            onCancel={() => setPayoutPromptOpen(false)}
+            onConfirm={(processor) => void confirmMarkPayout(processor)}
           />
         ) : null}
 

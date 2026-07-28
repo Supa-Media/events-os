@@ -21,6 +21,8 @@ export function BulkBar({
   hideCategory = false,
   reassignItems,
   onReassign,
+  onMarkTransfer,
+  onMarkPayout,
 }: {
   count: number;
   categoryItems: PickerItem[];
@@ -36,7 +38,15 @@ export function BulkBar({
   // boundary (→ Central or a chapter). Absent for chapter-only reconcilers.
   reassignItems?: PickerItem[];
   onReassign?: (target: string | null) => void;
+  // Marking (founder ask): reclassify already-ingested bank rows. "Mark as
+  // transfer" lives HERE rather than on a row because a transfer is a PAIR —
+  // it needs two rows selected, which is exactly what this bar has and a row
+  // action doesn't. It's shown at any selection size but only enabled at two,
+  // so the requirement is discoverable instead of the button being missing.
+  onMarkTransfer?: () => void;
+  onMarkPayout?: () => void;
 }) {
+  const canMarkTransfer = count === 2;
   return (
     <View className="mb-3 flex-row flex-wrap items-center gap-3 rounded-lg border border-accent bg-accent-soft px-4 py-2.5">
       <Text className="text-sm font-semibold text-ink">
@@ -69,7 +79,32 @@ export function BulkBar({
             onPick={onReassign}
           />
         ) : null}
+        {onMarkTransfer ? (
+          <Button
+            title="Mark as transfer"
+            variant="secondary"
+            size="sm"
+            icon="repeat"
+            disabled={!canMarkTransfer}
+            onPress={onMarkTransfer}
+          />
+        ) : null}
+        {onMarkPayout ? (
+          <Button
+            title="Mark as payout"
+            variant="secondary"
+            size="sm"
+            icon="download"
+            onPress={onMarkPayout}
+          />
+        ) : null}
       </View>
+      {onMarkTransfer && !canMarkTransfer ? (
+        <Text className="w-full text-[11px] text-faint">
+          A transfer needs both legs — select the two rows that move the same
+          amount out of one account and into the other.
+        </Text>
+      ) : null}
       <Pressable
         onPress={onClear}
         hitSlop={8}

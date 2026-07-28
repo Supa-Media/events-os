@@ -33,7 +33,9 @@ export type FilterKey =
   | "missing_receipt"
   | "uncategorized"
   | "ready"
-  | "personal_unpaid";
+  | "personal_unpaid"
+  | "transfers"
+  | "payouts";
 
 /** Per-filter counts returned by `listReconcile` (drives each pill's badge). */
 export type FilterCounts = FunctionReturnType<
@@ -54,6 +56,12 @@ export const FILTERS: { key: FilterKey; label: string }[] = [
   // Founder ask: an unpaid personal expense is exactly the worklist a
   // treasurer needs — surfaced as its own pill rather than buried in "All".
   { key: "personal_unpaid", label: "Personal (unpaid)" },
+  // The worklists for the two marking flows. Without these there's no way to
+  // review what's been marked — a marked transfer leaves "Needs budget" and a
+  // marked payout was never in any pill, so both would otherwise be visible
+  // only by scrolling "All".
+  { key: "transfers", label: "Transfers" },
+  { key: "payouts", label: "Payouts" },
 ];
 
 // ── Status select options (the inline Status▾ cell + bulk "mark reconciled") ──

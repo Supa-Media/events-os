@@ -186,6 +186,18 @@
  * (unpaid)" filter row + a rule block — quiz length unchanged) and
  * `finance-monthly-close` (a bullet + a `try_ready` criterion — no quiz
  * change). No section added/moved/removed. Total: still 103 sections.
+ *
+ * Marking internal transfers + processor payouts in Reconcile (founder ask,
+ * after a "PUBLIC WORSHIP | Transfer" row landed in Needs budget as spend)
+ * ADDS one section: `finance-transfers-and-payouts`, slotted into the
+ * `treasurer` course between `finance-reconcile-grid` and
+ * `finance-chasing-receipts`. It earns its own section rather than more blocks
+ * on the Reconcile one because the rule carries a trap — a processor payout is
+ * real income and must NOT be marked as a transfer — and Reconcile's quiz was
+ * already at the 5-question cap `apps/convex/tests/academy.test.ts` enforces.
+ * `finance-reconcile-grid` itself is content-only (two filter-table rows for
+ * the new pills, and its `try_status` caption no longer teaches "Excluded" as
+ * the answer for a transfer — quiz length UNCHANGED at 5). Total: 104 sections.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -251,6 +263,7 @@ const EXPECTED_SECTION_SLUGS: string[] = [
   "finance-card-and-receipts",
   "finance-reimbursements-and-flags",
   "finance-reconcile-grid",
+  "finance-transfers-and-payouts",
   "finance-chasing-receipts",
   "finance-monthly-close",
   "finance-raise-vs-manage",
@@ -780,6 +793,14 @@ const EXPECTED_SECTIONS: {
     capstoneKind: null,
   },
   {
+    slug: "finance-transfers-and-payouts",
+    title: "Transfers and payouts",
+    minutes: 3,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
     slug: "finance-chasing-receipts",
     title: "Chasing receipts",
     minutes: 3,
@@ -1248,7 +1269,12 @@ const EXPECTED_COURSES: {
   {
     slug: "treasurer",
     themeKey: "finances",
-    moduleSlugs: ["finance-reconcile-grid", "finance-chasing-receipts", "finance-monthly-close"],
+    moduleSlugs: [
+      "finance-reconcile-grid",
+      "finance-transfers-and-payouts",
+      "finance-chasing-receipts",
+      "finance-monthly-close",
+    ],
   },
   {
     slug: "chapter-director",

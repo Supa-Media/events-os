@@ -12,6 +12,7 @@ import {
   BUDGET_APPROVAL_STATUSES,
   TRANSACTION_SOURCES,
   TRANSACTION_FLOWS,
+  PAYOUT_PROCESSORS,
   TRANSACTION_STATUSES,
   REIMBURSEMENT_STATUSES,
   CARD_TYPES,
@@ -369,9 +370,36 @@ export const transactions = defineTable({
   // paid. Both legs of a pair carry the SAME value (it describes the pair,
   // not the individual leg) — a reader resolves "did MY scope give or
   // receive" by comparing its own `chapterId` against this.
+  //
+  // UNSET for a MARKED internal transfer (`finances.markAsTransfer`): both
+  // literals describe a central<->chapter crossing, and a bookkeeper marking
+  // two already-ingested bank rows is usually moving money between two of the
+  // org's OWN accounts inside ONE scope, where neither is true. Direction is
+  // already unambiguous there without it — a marked pair is required to be one
+  // `outflow` leg and one `inflow` leg, so the sign names the side. A marked
+  // leg also KEEPS its ingest `source` (`stripe_fc`, `relay_csv`, ...) rather
+  // than being rewritten to `"transfer"`: the row really did come from the
+  // bank feed and provenance is not ours to overwrite. (`source` is NOT how a
+  // marked leg is identified though — `preMarkFlow` below is; see
+  // `finances.ts#isMarkedTransfer`.)
   transferDirection: v.optional(
     v.union(v.literal("central_to_chapter"), v.literal("chapter_to_central")),
   ),
+  // The leg's ingest-time `flow`, captured when `finances.markAsTransfer`
+  // overwrote it with `"transfer"`. Marking is REVERSIBLE and `flow` is the
+  // bank's own statement of direction, so it has to survive the round trip:
+  // once both legs read `flow:"transfer"` there is otherwise nothing left
+  // anywhere to say which side paid — `amountCents` is always non-negative,
+  // and `transferDirection` is unset on a marked (same-scope) pair. Set ONLY
+  // on a marked leg; `unmarkTransfer` restores it and clears this.
+  //
+  // Doubles as THE marker for "this transfer was marked, not created" —
+  // `finances.ts#isMarkedTransfer` keys off its presence. That matters because
+  // the app writes `flow:"transfer"` legs under several sources
+  // (`reimbursement`, `repayment`, the retired `skim`/`launch_grant`/
+  // `settlement` kinds on historical rows), and none of those are markable or
+  // un-markable; only a row this feature touched carries this field.
+  preMarkFlow: v.optional(v.union(v.literal("outflow"), v.literal("inflow"))),
 
   status: v.union(...TRANSACTION_STATUSES.map((s) => v.literal(s))),
 
@@ -425,6 +453,20 @@ export const transactions = defineTable({
   // (`isPersonal`) and repays it; `repaymentId` links to the repayment record.
   isPersonal: v.optional(v.boolean()),
   repaymentId: v.optional(v.id("personalRepayments")),
+
+  // Processor payout marking (`finances.markAsPayout`): a settlement deposit
+  // from Givebutter/Stripe, batching many donations into one bank inflow.
+  //
+  // This is a LABEL ONLY — a marked payout keeps `flow:"inflow"` and is never
+  // rewritten to `flow:"transfer"`. Donations live in `gifts` and never reach
+  // this table, so the deposit is the ledger's only record of that income;
+  // excluding it would erase real revenue. See `PAYOUT_PROCESSORS`
+  // (`@events-os/shared`) for the full reasoning and the prior incident it
+  // mirrors. Unlike a transfer this has NO counterpart leg to pair with —
+  // nothing else in the ledger books the same dollars.
+  payoutProcessor: v.optional(
+    v.union(...PAYOUT_PROCESSORS.map((p) => v.literal(p))),
+  ),
 
   // Provenance / dedup. `externalId` is the provider's unique id for the row
   // (Increase transaction id, Stripe FC transaction id) — the idempotent sync

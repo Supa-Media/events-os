@@ -502,6 +502,8 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           ["Uncategorized", "No category assigned at all"],
           ["Ready", "Receipt + category + budget all present"],
           ["Personal (unpaid)", "Flagged personal, not yet repaid — the worklist for chasing down what people owe back"],
+          ["Transfers", "Money you marked as moving between your own accounts"],
+          ["Payouts", "Deposits you marked as a processor settling donations to you"],
         ],
       },
       {
@@ -524,7 +526,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         terminal: "reconciled",
         caption:
-          "Excluded is the fourth real status — for charges (like a transfer) that should never count as spend at all. Marking one excluded now REQUIRES a reason: the app won't let the row go through blank.",
+          "Excluded is the fourth real status — for a row that should never count at all (a duplicate, a bank error). Marking one excluded REQUIRES a reason: the app won't let the row go through blank. Don't reach for it on a transfer or a payout — those have their own markings now, which keep the row honest instead of hiding it.",
       },
     ],
     quiz: [
@@ -563,13 +565,13 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt: "You select 20 charges at once in Reconcile. What can you do?",
         options: [
           "Nothing — only one row at a time can change",
-          "Bulk-set their Category, Budget, or mark them Reconciled",
+          "Bulk-set their Category, Budget, mark them Reconciled, or mark them as transfers/payouts",
           "Only delete them",
           "Export them to email",
         ],
         answerIndex: 1,
         explanation:
-          "Multi-select drives a bulk bar for exactly the actions that make a real month's worth of charges manageable in minutes, not hours.",
+          "Multi-select drives a bulk bar for exactly the actions that make a real month's worth of charges manageable in minutes, not hours. It's also where \"Mark as transfer\" lives, since that one needs two rows selected — both legs of the movement.",
       },
       {
         prompt: "You mark a charge \"Excluded\" but leave the reason field blank. What happens?",
@@ -586,7 +588,123 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 35 · Treasurer: chasing receipts ───────────────────────────────────────
+  // ── 35 · Treasurer: transfers & payouts ────────────────────────────────────
+  // Its own section rather than more blocks on `finance-reconcile-grid`: this
+  // is a money RULE with a trap in it (a payout is not a transfer), and the
+  // founder hit the underlying bug in real bookkeeping. Reconcile's own
+  // section keeps the how-to surface (the two new filter rows); this one
+  // teaches why the two markings are different and must stay different.
+  {
+    slug: "finance-transfers-and-payouts",
+    title: "Transfers and payouts",
+    subtitle: "Money moving vs. money arriving — and why they're not the same",
+    minutes: 3,
+    blocks: [
+      {
+        kind: "p",
+        text: "Not every row in Reconcile is a purchase. Two kinds routinely aren't, and both used to quietly distort the books: money you moved between your own accounts, and money a donation processor paid out to you. Your bank reports both as ordinary transactions, and nothing can tell them apart from the amount alone — so you mark them, by hand, one at a time.",
+      },
+      {
+        kind: "rule",
+        title: "A transfer isn't spend — mark BOTH legs",
+        text: "When you move money between your own accounts, the bank reports it twice: once leaving, once arriving. Left alone, the leaving side looks exactly like a purchase and sits in Needs budget forever. Select BOTH rows in Reconcile and \"Mark as transfer\" — the app REQUIRES the pair, because marking one side alone strands the other as income nobody can explain. Both then drop out of spend, so the same dollars are never counted twice.",
+      },
+      {
+        kind: "rule",
+        title: "A payout is NOT a transfer — it's your income",
+        text: "When Givebutter or Stripe pays out, that deposit is the ONLY record of those donations in your books: individual gifts live in the donor CRM, not the ledger. So \"Mark as payout\" just LABELS where the money came from and leaves it counted as income. Never mark a payout as a transfer — that would take real revenue out of your totals and quietly shrink the year.",
+      },
+      {
+        kind: "rule",
+        title: "Marked still means documented",
+        text: "Marking a row is not a way to make it go away. A marked transfer and a marked payout both still appear under Missing receipt until you attach something — a bank statement for the transfer, a settlement report for the payout. Every marking is logged with who did it and what changed, so a reclassification is always traceable, and any marking can be undone.",
+      },
+      {
+        kind: "rule",
+        title: "Don't reach for Excluded",
+        text: "Excluded is for a row that should never count at all — a duplicate, a bank error. Using it on a transfer hides the row instead of explaining it, only ever fixes one of the two legs, and drops it out of the receipt chase. Using it on a payout deletes real income. Both now have a marking that keeps the row honest and visible.",
+      },
+      {
+        kind: "scenario",
+        prompt: "Two rows land the same week: a $2,400 deposit described \"GIVEBUTTER PAYOUT\", and a $5,000 withdrawal described \"PUBLIC WORSHIP | Transfer\" with a matching $5,000 deposit into your savings account. How do you code them?",
+        options: [
+          {
+            text: "Mark all three as transfers — none of them are purchases",
+            feedback:
+              "The $5,000 pair, yes. But the Givebutter deposit is real income: those donations aren't recorded anywhere else in your ledger. Marking it a transfer would take $2,400 straight out of your revenue.",
+          },
+          {
+            text: "Mark the $5,000 pair as a transfer; mark the $2,400 deposit as a payout",
+            correct: true,
+            feedback:
+              "Right. The pair is money moving — both legs leave spend so the same dollars aren't counted twice. The payout is money arriving — labelled, but still counted as income.",
+          },
+          {
+            text: "Exclude all three so nothing double-counts",
+            feedback:
+              "Excluding hides rather than explains, and it drops all three out of the receipt chase. It would also erase the $2,400 of real donation income from your totals.",
+          },
+          {
+            text: "Mark only the $5,000 withdrawal — the deposit side is obvious",
+            feedback:
+              "The app won't let you: a transfer needs both legs. Marking only the withdrawal would strand the $5,000 deposit as income with no source.",
+          },
+        ],
+      },
+    ],
+    quiz: [
+      {
+        prompt: "A $1,000 row reading \"PUBLIC WORSHIP | Transfer\" is sitting in Needs budget. What do you do?",
+        options: [
+          "Mark it Excluded with a reason",
+          "Link it to whichever budget is closest",
+          "Select it AND the matching $1,000 deposit, then Mark as transfer",
+          "Leave it — transfers sort themselves out at year end",
+        ],
+        answerIndex: 2,
+        explanation:
+          "The bank reports a transfer twice, and nothing can tell a transfer from a purchase by the amount alone. Marking the PAIR takes both legs out of spend so the same dollars aren't counted twice. Excluding it would hide the row instead of explaining it — and would only ever fix one of the two sides.",
+      },
+      {
+        prompt: "A Givebutter payout lands in your bank account. How should it be marked?",
+        options: [
+          "As a transfer — the donations were already recorded elsewhere",
+          "As a payout, which labels it but keeps it counted as income",
+          "As Excluded, to avoid double-counting the gifts",
+          "It doesn't need marking at all",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Individual gifts live in the donor CRM, not the ledger — so the payout deposit is the only record of that revenue in your books. Marking it a transfer or excluding it would erase real income from your totals. \"Payout\" says where it came from and leaves it counted.",
+      },
+      {
+        prompt: "Why does the app refuse to mark a transfer from just one row?",
+        options: [
+          "To slow you down so you double-check the amount",
+          "Because the other leg would be left as unexplained money in your books",
+          "It's a technical limitation of the bank feed",
+          "It doesn't — one row is enough",
+        ],
+        answerIndex: 1,
+        explanation:
+          "A transfer is a pair by definition. Marking only the side that left would leave the arriving side sitting there as income with no source — swapping one wrong number for another.",
+      },
+      {
+        prompt: "You mark a transfer. What happens to its receipt obligation?",
+        options: [
+          "It disappears — marked rows aren't chased",
+          "It stays: both legs still show under Missing receipt until you attach a statement",
+          "Only the outgoing leg still needs one",
+          "It becomes optional after 30 days",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Marking changes how a row COUNTS, never whether it must be explained. Both legs keep owing documentation until something is attached — that's the difference between marking and hiding.",
+      },
+    ],
+  },
+
+  // ── 36 · Treasurer: chasing receipts ───────────────────────────────────────
   {
     slug: "finance-chasing-receipts",
     title: "Chasing receipts",
@@ -1766,6 +1884,7 @@ export const FINANCES_COURSES: Course[] = [
     icon: "check-square",
     moduleSlugs: [
       "finance-reconcile-grid",
+      "finance-transfers-and-payouts",
       "finance-chasing-receipts",
       "finance-monthly-close",
     ],

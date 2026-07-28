@@ -88,6 +88,7 @@ import {
   useAnchor,
   useResizableColumns,
 } from "../../ui";
+import { PAYOUT_PROCESSOR_LABELS } from "@events-os/shared";
 import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
 import { TransactionNoteModal } from "../modals/TransactionNoteModal";
@@ -294,6 +295,13 @@ function ReconcileRow({
   const recordCodingOverride = useMutation(api.aiCodingData.recordCodingOverride);
   const flagPersonalCharge = useMutation(api.cards.flagPersonalCharge);
   const unflagPersonalCharge = useMutation(api.cards.unflagPersonalCharge);
+  // Un-marking only. MARKING a transfer needs two rows, so it lives in the
+  // bulk bar (`BulkBar`) where a two-row selection exists; a row action there
+  // would have no way to name the other leg. Un-marking is per-row because a
+  // bookkeeper undoes it from whichever leg they're looking at — the mutation
+  // finds the pair through `transferGroupId` and restores both.
+  const unmarkTransfer = useMutation(api.finances.unmarkTransfer);
+  const unmarkPayout = useMutation(api.finances.unmarkPayout);
   const id = row.id as Id<"transactions">;
 
   // Fire-and-surface: run a cell mutation, alerting the server's reason on error.
@@ -601,6 +609,44 @@ function ReconcileRow({
               color={row.note ? colors.accent : colors.faint}
             />
           </Pressable>
+          {/* Marking badges. Both carry an un-mark affordance for a mis-pick,
+              bookkeeper+ only (`isManager` here is the grid's existing
+              write-rank flag) — the server gates it again regardless. A
+              transfer un-marks BOTH legs; a payout has none to pair with. */}
+          {row.isMarkedTransfer ? (
+            <View className="flex-row items-center gap-1.5">
+              <Badge label="Transfer" tone="neutral" />
+              {isManager ? (
+                <Pressable
+                  onPress={() => guard(unmarkTransfer({ transactionId: id }))}
+                  hitSlop={6}
+                  accessibilityRole="button"
+                  accessibilityLabel="Un-mark internal transfer (both legs)"
+                  className="rounded p-1 active:opacity-70 web:hover:opacity-90"
+                >
+                  <Icon name="x-circle" size={14} color={colors.muted} />
+                </Pressable>
+              ) : null}
+            </View>
+          ) : row.payoutProcessor ? (
+            <View className="flex-row items-center gap-1.5">
+              <Badge
+                label={PAYOUT_PROCESSOR_LABELS[row.payoutProcessor]}
+                tone="success"
+              />
+              {isManager ? (
+                <Pressable
+                  onPress={() => guard(unmarkPayout({ transactionId: id }))}
+                  hitSlop={6}
+                  accessibilityRole="button"
+                  accessibilityLabel="Un-mark processor payout"
+                  className="rounded p-1 active:opacity-70 web:hover:opacity-90"
+                >
+                  <Icon name="x-circle" size={14} color={colors.muted} />
+                </Pressable>
+              ) : null}
+            </View>
+          ) : null}
           {row.isPersonal ? (
             <View className="flex-row items-center gap-1.5">
               {row.repaymentStatus === "paid" ? (
