@@ -28,6 +28,15 @@
  * chapter) — this surface is CENTRAL-only to begin with, and per-chapter
  * scoping isn't part of this build's design brief, so there's no scope
  * picker yet; every campaign/audience this UI creates is org-wide.
+ *
+ * ── Who gets the creator ───────────────────────────────────────────────────
+ * Both of its buttons are COMPOSE actions (`campaigns.createCampaign` /
+ * `campaignTemplates.createCampaignFromTemplate`, each behind
+ * `requireCampaignCompose`), so the whole card is hidden unless
+ * `myCampaignsAccess.canCompose`. A design-only holder — the Graphic
+ * Designer, who opens this desk for the themes/templates/image library, not
+ * for the send — gets the campaign LIST plus a line saying where her own
+ * tools are, rather than a form whose Create button throws `FORBIDDEN`.
  */
 import { useState } from "react";
 import { View, Text, StyleSheet } from "react-native";
@@ -58,6 +67,7 @@ export function CampaignsListView() {
   const campaigns = useQuery(api.campaigns.listCampaigns, {});
   const audiences = useQuery(api.audiences.listAudiences, {});
   const templates = useQuery(api.campaignTemplates.listTemplates, { scope: "central" });
+  const access = useQuery(api.audiences.myCampaignsAccess, {});
   const create = useMutation(api.campaigns.createCampaign);
   const createFromTemplate = useMutation(api.campaignTemplates.createCampaignFromTemplate);
   const { run, toast, dismiss } = useActionRunner();
@@ -67,13 +77,15 @@ export function CampaignsListView() {
   const [templateId, setTemplateId] = useState<string>(BLANK_TEMPLATE);
   const [creating, setCreating] = useState(false);
 
-  if (campaigns === undefined || audiences === undefined) {
+  if (campaigns === undefined || audiences === undefined || access === undefined) {
     return (
       <View style={{ paddingVertical: spacing.lg }}>
         <Text className="text-sm text-faint">Loading campaigns…</Text>
       </View>
     );
   }
+
+  const canCompose = access.canCompose;
 
   const audienceName = (id: string | null | undefined): string | null =>
     (id && audiences.find((a) => a._id === id)?.name) || null;
@@ -124,7 +136,9 @@ export function CampaignsListView() {
 
       <PendingApprovalsStrip />
 
-      {audiences.length === 0 ? (
+      {!canCompose ? (
+        <DesignerDeskCard />
+      ) : audiences.length === 0 ? (
         <Card style={styles.creator}>
           <Text className="text-sm text-muted">
             Every campaign needs a segment to send to, and there aren&apos;t any yet.
@@ -174,7 +188,11 @@ export function CampaignsListView() {
         <EmptyState
           icon="mail"
           title="No campaigns yet"
-          message="Create your first email campaign above — you'll design the email next."
+          message={
+            canCompose
+              ? "Create your first email campaign above — you'll design the email next."
+              : "Nobody has started a campaign yet. When someone does, it shows up here and uses the themes and templates you keep."
+          }
         />
       ) : (
         <View style={styles.list}>
@@ -209,6 +227,41 @@ export function CampaignsListView() {
         </View>
       )}
     </>
+  );
+}
+
+/**
+ * What stands in for the creator when the caller holds `campaigns.design` but
+ * not `campaigns.compose` (the Graphic Designer / Social Media Manager).
+ *
+ * A hidden button with nothing in its place reads as a broken screen. This
+ * says, in one line, which half of the desk is theirs — and walks them there,
+ * the same "a link, not an instruction" move the no-segments card makes.
+ */
+function DesignerDeskCard() {
+  const router = useRouter();
+  return (
+    <Card style={styles.creator}>
+      <Text className="text-sm text-muted">
+        Campaigns themselves are written by whoever holds compose power. Yours
+        is what they&apos;re built from — the themes, the saved templates and
+        the image library.
+      </Text>
+      <View style={styles.designerActions}>
+        <Button
+          title="Templates"
+          icon="bookmark"
+          variant="secondary"
+          onPress={() => router.push("/campaigns/templates" as never)}
+        />
+        <Button
+          title="Themes"
+          icon="droplet"
+          variant="secondary"
+          onPress={() => router.push("/campaigns/themes" as never)}
+        />
+      </View>
+    </Card>
   );
 }
 
@@ -289,6 +342,7 @@ function PendingApprovalsStrip() {
 
 const styles = StyleSheet.create({
   creator: { gap: spacing.sm },
+  designerActions: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
   list: { marginTop: spacing.md, gap: spacing.md },
   cardTop: {
     flexDirection: "row",

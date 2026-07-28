@@ -1,5 +1,7 @@
 /**
- * Access gate for the email-campaigns surface (`audiences.ts`, `campaigns.ts`).
+ * Access gate for the email-campaigns surface (`audiences.ts`, `campaigns.ts`)
+ * — and, at the bottom of this file, for the one other BULK-MAIL send in the
+ * app, the event blast (`blasts.ts#sendBlast`).
  *
  * ── The ladder ─────────────────────────────────────────────────────────────
  * Three NESTED capabilities, weakest first (see `SEAT_CAPABILITIES`'s doc in
@@ -41,11 +43,21 @@
  *      the shared built-in newsletter template or hard-delete an image
  *      library blob. Those writes now sit behind `requireCampaignDesign`.
  *
- * Consequence worth stating plainly: a central ED/FM identified ONLY by a
- * legacy `specializedRoles` title, with no seat assignment, can still open
- * and READ the desk but can no longer edit templates/themes/images or start
- * a campaign from a template. The fix is to take the ED/FM seat — whose
- * template carries all three rungs — not to widen the power.
+ * Consequence worth stating plainly, because it is BROAD: a central ED/FM
+ * identified ONLY by a legacy `specializedRoles` title, with no seat
+ * assignment, can still open and READ the desk — and can do NOTHING ELSE
+ * there. Every write on the surface now sits behind one of the three powers,
+ * none of which the title satisfies. That is not just the design system:
+ * `createCampaign`, `updateCampaignMeta`, `updateCampaignDoc`,
+ * `setCampaignTheme`, `submitForApproval`, `cancelApprovalRequest`,
+ * `revertToDraft`, `send`, `sendTest` (via `assertAccessForAction`) and
+ * `markReplyRead` in `campaigns.ts`, plus
+ * `campaignTemplates.createCampaignFromTemplate` and
+ * `emailSuppressions.suppressEmail`/`unsuppressEmail`, all require
+ * `campaigns.compose`; themes, saved templates and the image library require
+ * `campaigns.design`; approving requires `campaigns.approve`. A title-only
+ * ED/FM is therefore a READ-ONLY desk visitor. The fix is to take the ED/FM
+ * seat — whose template carries all three rungs — not to widen the power.
  *
  * The caller's people rows are resolved the SAME union-across-every-
  * non-placeholder-`people`-row-for-the-userId way `lib/givingAccess.ts`
@@ -58,7 +70,7 @@ import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 import { isCentralEdOrFm } from "./finance";
 import { isSuperuser } from "./superuser";
-import { requireUserId } from "./context";
+import { requireEvent, requireUserId } from "./context";
 
 /** Bound on how many seat assignments a single person can hold — mirrors
  *  `lib/seats.ts#PERSON_SEAT_ASSIGNMENT_LIMIT` / `holdsApprovalSeatAt`. */
@@ -243,6 +255,62 @@ export async function requireCampaignApprovalPower(ctx: QueryCtx): Promise<void>
       code: "FORBIDDEN",
       message: "Approving campaigns requires campaign-approval power.",
     });
+  }
+}
+
+// ── Event blasts (`blasts.ts`) ──────────────────────────────────────────────
+//
+// An EMAIL BLAST is bulk mail by every test that matters — organiser-composed
+// promotional copy to a whole event audience — and `blasts.ts`'s module doc
+// says so itself, which is why a blast carries the same unsubscribe tokens,
+// RFC 8058 headers and postal address a campaign does. Its authorization,
+// though, was an INLINE `requireEvent` at the mutation: "any admin of this
+// event's chapter", written nowhere and named nothing. That is exactly the
+// shape CLAUDE.md's "gate it behind a power, even when it's open today"
+// section exists to prevent — when the day comes that a blast needs compose
+// power, or its own two-party sign-off, the change should be this file's body,
+// not a hunt through call sites.
+//
+// TODAY'S ANSWER IS DELIBERATELY UNCHANGED: event admins keep the power. This
+// is a seam, not a restriction — organisers are not being locked out of their
+// own announcements.
+//
+// GRADUATING THIS (the `lib/formsAccess.ts` three-step, no call-site churn):
+//   1. Add `"campaigns.blast"` to `SEAT_CAPABILITIES` (`packages/shared/src/seats.ts`).
+//   2. List it on whichever `SEAT_DEFS` entries should carry it.
+//   3. Change ONLY the body below. Do NOT add the capability string until that
+//      decision is actually made.
+
+/**
+ * The gate on FIRING a blast at an event's audience (`blasts.ts#sendBlast`).
+ * Returns the event, so the call site needs no second lookup.
+ *
+ * TODAY: bare event access — any admin of the event's own chapter
+ * (`lib/context.ts#requireEvent`'s membership check), which is precisely what
+ * `sendBlast` asserted inline before. `requireEvent`'s own errors pass through
+ * unchanged (a `NOT_FOUND` for an event outside the caller's chapter stays a
+ * `NOT_FOUND`). Graduates to `"campaigns.blast"` — see the section note above.
+ */
+export async function requireBlastSend(
+  ctx: QueryCtx,
+  eventId: Id<"events">,
+): Promise<Doc<"events">> {
+  return await requireEvent(ctx, eventId);
+}
+
+/** Soft, non-throwing form of `requireBlastSend` — for a passively-rendered
+ *  composer affordance, the way `hasCampaignsAccess` backs `myCampaignsAccess`.
+ *  DERIVED from the throwing form on purpose: there is exactly one body to
+ *  change when this graduates. */
+export async function hasBlastSend(
+  ctx: QueryCtx,
+  eventId: Id<"events">,
+): Promise<boolean> {
+  try {
+    await requireBlastSend(ctx, eventId);
+    return true;
+  } catch {
+    return false;
   }
 }
 

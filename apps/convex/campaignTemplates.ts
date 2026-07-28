@@ -13,10 +13,16 @@
  * A CAMPAIGN, so it requires `campaigns.compose` (`requireCampaignCompose`),
  * which a design-only Graphic Designer deliberately does NOT hold.
  *
- * A template is just an `EmailDocument` with a name: `createCampaignFromTemplate`
- * copies it into a fresh draft campaign, and `createTemplateFromCampaign`
- * snapshots a campaign back the other way ("this month's came out well — make
- * it the starting point for next month"). Both directions COPY; a campaign
+ * A template is just an `EmailDocument` with a name. THREE doors make one:
+ * `createTemplate` builds one from scratch (the design-only door — see its
+ * doc), `createTemplateFromCampaign` snapshots a campaign back the other way
+ * ("this month's came out well — make it the starting point for next month"),
+ * and `updateTemplate`/`setTemplateTheme` edit one in place from the template
+ * composer (`app/(app)/campaign-template/[id].tsx`), which autosaves through
+ * `updateTemplate({ templateId, doc })` exactly as the campaign composer
+ * autosaves through `campaigns.updateCampaignDoc`.
+ * `createCampaignFromTemplate` goes the other way, copying a template into a
+ * fresh draft campaign. Both directions COPY; a campaign
  * created from a template has no live link back to it, so editing the template
  * afterwards can never alter a draft someone is mid-way through, let alone
  * something already approved or sent.
@@ -44,7 +50,7 @@ import {
   requireCampaignDesign,
   requireCampaignsAccess,
 } from "./lib/campaignsAccess";
-import { applyThemeToDoc, docHasTheme } from "./campaigns";
+import { applyThemeToDoc, docHasTheme, resolveThemeChoice } from "./campaigns";
 import { resolveScopeTheme } from "./emailThemes";
 import { validateEmailDocument } from "@events-os/shared";
 import {
@@ -93,6 +99,82 @@ export const listTemplates = query({
           .take(TEMPLATE_SCAN_LIMIT)
       : await ctx.db.query("campaignTemplates").take(TEMPLATE_SCAN_LIMIT);
     return rows.filter((t) => t.archived !== true);
+  },
+});
+
+/**
+ * One template, for the editor (`app/(app)/campaign-template/[id].tsx`).
+ *
+ * `requireCampaignsAccess`, not `requireCampaignDesign`, for the same reason
+ * `listTemplates` is: READING a template is what a composer does before
+ * starting a campaign from it. The editor screen is what checks `canDesign`
+ * before offering to write, and every WRITE below re-checks it server-side.
+ * Throws `NOT_FOUND` rather than returning null, mirroring
+ * `campaigns.getCampaign`.
+ */
+export const getTemplate = query({
+  args: { templateId: v.id("campaignTemplates") },
+  handler: async (ctx, { templateId }) => {
+    await requireCampaignsAccess(ctx);
+    const row = await ctx.db.get(templateId);
+    if (!row) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Template not found." });
+    }
+    return row;
+  },
+});
+
+/**
+ * Create a template FROM SCRATCH — the designer's own door in.
+ *
+ * `createTemplateFromCampaign` (below) needs a campaign to snapshot, and
+ * minting a campaign requires `campaigns.compose`, which a design-only
+ * Graphic Designer deliberately does NOT hold. So without this, the person
+ * whose whole job is the design system could only ever rename and archive
+ * templates other people had made. This is `campaigns.design` like every other
+ * write to the shared design system.
+ *
+ * `doc` is optional: omitted, the template starts EMPTY (`{ blocks: [] }`) and
+ * is opened straight in the composer. Either way it goes through the same
+ * write gate a campaign's document does (`assertValidTemplateDoc`) — a
+ * template that saves but can never be sent is a trap — and picks up the
+ * scope's default theme when it brought none, exactly like
+ * `campaigns.createCampaign`, so a template's look never depends on which door
+ * it came in through.
+ */
+export const createTemplate = mutation({
+  args: {
+    scope: scopeValidator,
+    name: v.string(),
+    description: v.optional(v.string()),
+    doc: v.optional(v.any()),
+  },
+  returns: v.id("campaignTemplates"),
+  handler: async (ctx, { scope, name, description, doc }) => {
+    await requireCampaignDesign(ctx);
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+
+    const trimmedName = name.trim();
+    if (!trimmedName) {
+      throw new ConvexError({ code: "EMPTY", message: "Name the template first." });
+    }
+
+    const starting = doc ?? { blocks: [] };
+    const themed = docHasTheme(starting)
+      ? starting
+      : applyThemeToDoc(starting, await resolveScopeTheme(ctx, scope));
+    const validated = assertValidDoc(themed);
+
+    const now = Date.now();
+    return await ctx.db.insert("campaignTemplates", {
+      scope,
+      name: trimmedName,
+      description: description?.trim() || undefined,
+      doc: validated,
+      createdBy: userId,
+      createdAt: now,
+      updatedAt: now,
+    });
   },
 });
 
@@ -215,6 +297,34 @@ export const updateTemplate = mutation({
     if (description !== undefined) patch.description = description?.trim() || undefined;
     if (doc !== undefined) patch.doc = assertValidDoc(doc);
     await ctx.db.patch(templateId, patch);
+    return null;
+  },
+});
+
+/**
+ * Restyle a template — the template twin of `campaigns.setCampaignTheme`, and
+ * the reason a template's theme ROUND-TRIPS instead of quietly reverting.
+ *
+ * A template has no theme of its own beyond what's in `doc.theme`, so
+ * restyling one is a document edit: resolve the choice (`resolveThemeChoice`,
+ * shared with the campaign side so the two can never accept different things),
+ * stamp it, revalidate, patch. There's no `assertEditable` twin here — a
+ * template is never "in flight"; that guard exists on the campaign side
+ * because a reviewer approved a particular-looking email.
+ */
+export const setTemplateTheme = mutation({
+  args: {
+    templateId: v.id("campaignTemplates"),
+    themeId: v.optional(v.id("emailThemes")),
+    presetName: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, { templateId, themeId, presetName }) => {
+    await requireCampaignDesign(ctx);
+    const template = await loadTemplate(ctx, templateId);
+    const theme = await resolveThemeChoice(ctx, template.scope, { themeId, presetName });
+    const doc = assertValidDoc(applyThemeToDoc(template.doc, theme));
+    await ctx.db.patch(templateId, { doc, updatedAt: Date.now() });
     return null;
   },
 });

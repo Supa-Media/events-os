@@ -57,8 +57,9 @@ export type NewsletterAsset = {
   height: number;
   /**
    * The original CDN URL, kept ONLY for the one-time import. Expect this to
-   * rot — `0050`'s whole purpose is to stop depending on it. A failure to
-   * fetch here is expected eventually and is reported, never swallowed.
+   * rot — `migrations/0052`'s whole purpose is to stop depending on it. A
+   * failure to fetch here is expected eventually and is reported, never
+   * swallowed.
    */
   sourceUrl: string;
 };

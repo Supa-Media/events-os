@@ -113,7 +113,10 @@ import {
   resolveCampaignCallerPersonIds,
 } from "./lib/campaignsAccess";
 import { siteUrl } from "./lib/siteUrl";
-import { requireOrgMailingAddress } from "./integrationSettings";
+import {
+  MAILING_ADDRESS_LOCATION,
+  requireOrgMailingAddress,
+} from "./integrationSettings";
 import {
   emailDomain,
   formatFromAddress,
@@ -470,6 +473,54 @@ export const updateCampaignDoc = mutation({
 });
 
 /**
+ * Resolve a theme CHOICE — exactly one of a saved `themeId` or a built-in
+ * `presetName` — into the `EmailTheme` to stamp onto a document.
+ *
+ * Exported (a plain helper, not a Convex function) because `setCampaignTheme`
+ * and `campaignTemplates.ts#setTemplateTheme` restyle the two kinds of
+ * document a designer owns, and a second copy of "exactly one of the two, a
+ * saved row must match the scope, presets are global" is exactly how the two
+ * surfaces would drift into accepting different things. Import direction is
+ * the established one: `campaignTemplates.ts` already reads
+ * `applyThemeToDoc`/`docHasTheme` from here.
+ *
+ * `scope` is the OWNING row's scope (the campaign's, the template's) — a
+ * saved theme belongs to one scope and may not be borrowed across; presets
+ * carry no scope and are always available.
+ */
+export async function resolveThemeChoice(
+  ctx: QueryCtx,
+  scope: Id<"chapters"> | "central",
+  choice: { themeId?: Id<"emailThemes">; presetName?: string },
+): Promise<EmailTheme> {
+  const { themeId, presetName } = choice;
+  if ((themeId === undefined) === (presetName === undefined)) {
+    throw new ConvexError({
+      code: "INVALID_ARGUMENT",
+      message: "Pick exactly one of a saved theme or a built-in preset.",
+    });
+  }
+  if (themeId !== undefined) {
+    const row = await ctx.db.get(themeId);
+    if (!row || row.archived === true) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Theme not found." });
+    }
+    if (row.scope !== scope) {
+      throw new ConvexError({
+        code: "SCOPE_MISMATCH",
+        message: "That theme belongs to a different scope.",
+      });
+    }
+    return normalizeEmailTheme(row);
+  }
+  const preset = emailThemePreset(presetName as string);
+  if (!preset) {
+    throw new ConvexError({ code: "NOT_FOUND", message: "No such preset theme." });
+  }
+  return preset;
+}
+
+/**
  * Restyle a campaign: resolve a saved theme (`themeId`) or a built-in preset
  * (`presetName`), write it into `doc.theme`, revalidate, patch. Exactly one of
  * the two must be given.
@@ -499,33 +550,7 @@ export const setCampaignTheme = mutation({
     }
     assertEditable(campaign);
 
-    if ((themeId === undefined) === (presetName === undefined)) {
-      throw new ConvexError({
-        code: "INVALID_ARGUMENT",
-        message: "Pick exactly one of a saved theme or a built-in preset.",
-      });
-    }
-
-    let theme: EmailTheme;
-    if (themeId !== undefined) {
-      const row = await ctx.db.get(themeId);
-      if (!row || row.archived === true) {
-        throw new ConvexError({ code: "NOT_FOUND", message: "Theme not found." });
-      }
-      if (row.scope !== campaign.scope) {
-        throw new ConvexError({
-          code: "SCOPE_MISMATCH",
-          message: "That theme belongs to a different scope.",
-        });
-      }
-      theme = normalizeEmailTheme(row);
-    } else {
-      const preset = emailThemePreset(presetName as string);
-      if (!preset) {
-        throw new ConvexError({ code: "NOT_FOUND", message: "No such preset theme." });
-      }
-      theme = preset;
-    }
+    const theme = await resolveThemeChoice(ctx, campaign.scope, { themeId, presetName });
 
     const validated = validateEmailDocument(applyThemeToDoc(campaign.doc, theme));
     if (!validated.ok) {
@@ -1342,8 +1367,11 @@ export const send = mutation({
       );
       return null;
     }
-    // CAN-SPAM, re-checked at the last possible moment (the address can be
-    // cleared between approval and send). Deliberately a THROW rather than
+    // CAN-SPAM, re-checked here at the point of send (the address can be
+    // cleared between approval and send). This is a PRE-FLIGHT, not the last
+    // word: the real last-moment check is in `deliverCampaignBatch`, which is
+    // what actually renders the footer and is also reachable WITHOUT passing
+    // through here (`sweepStuckSends` reschedules it directly). Deliberately a THROW rather than
     // `recordSendFailure`: a missing org-wide setting is not a fault of THIS
     // campaign, so it must not burn the campaign's approval by flipping it to
     // "failed" — the composer sees the error, a superuser fills the field in,
@@ -1704,6 +1732,31 @@ export const finishCampaignSend = internalMutation({
   },
 });
 
+/**
+ * Halt an IN-FLIGHT send with a recorded failure, without sending anything
+ * (`blasts.ts#finishBlast`'s philosophy — an action can't throw usefully at
+ * anyone). Only ever acts on a campaign still in "sending", so a late/duplicate
+ * call can't reopen one that already finalized.
+ *
+ * The approval survives: `send` accepts a retry from "failed" and re-verifies
+ * the snapshot hash, so once the blocking condition is fixed (today: a
+ * superuser filling in the org's postal address) the SAME approved campaign
+ * sends again — no re-submission, no second reviewer. Any still-"queued"
+ * recipient rows are left where they are; `materializeRecipients` clears them
+ * on the retry.
+ */
+export const haltSendWithFailure = internalMutation({
+  args: { campaignId: v.id("campaigns"), error: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { campaignId, error }) => {
+    const campaign = await ctx.db.get(campaignId);
+    if (!campaign) return null;
+    if (campaign.status !== "sending") return null;
+    await recordSendFailure(ctx, campaignId, error);
+    return null;
+  },
+});
+
 // ── stuck-send sweep (crons.ts safety net) ──────────────────────────────────
 
 const STUCK_SEND_STALE_MS = 10 * 60 * 1000; // 10 minutes
@@ -1763,7 +1816,9 @@ export const sweepStuckSends = internalMutation({
  * older shape, both land here safely (idempotent either way). Every
  * per-recipient failure — suppressed, Resend unreachable, an invalid document
  * — is RECORDED on that row, never thrown; one bad address never stalls the
- * rest of the send.
+ * rest of the send. ORG-WIDE blockers are different: a missing CAN-SPAM postal
+ * address stops the WHOLE send here (`haltSendWithFailure`) rather than
+ * shipping a footer without it.
  */
 export const deliverCampaignBatch = internalAction({
   args: { campaignId: v.id("campaigns") },
@@ -1785,6 +1840,27 @@ export const deliverCampaignBatch = internalAction({
       internal.integrationSettings.readCampaignsMailSettings,
       {},
     );
+
+    // CAN-SPAM, at the LAST possible moment — the only check that actually
+    // guards the footer this action is about to render. `send` refuses without
+    // an address, but (a) the setting is org-wide and can be cleared in the gap
+    // between `send` and any batch of a long, paced delivery, and (b) this
+    // action is reachable WITHOUT `send` at all: `sweepStuckSends` reschedules
+    // it directly, and `applyDeliveryBatch` re-schedules it per batch. Without
+    // this the renderer's `opts.orgAddress ? … : ""` (`emailRender.ts`) would
+    // quietly drop the legally required line and the campaign would land
+    // "sent" — the exact silent degrade `requireOrgMailingAddress` exists to
+    // prevent. Recorded, never thrown (`blasts.ts#deliverEmailBlast` does the
+    // same at the same point), and the approval survives — see
+    // `haltSendWithFailure`.
+    const orgAddress = mailSettings.orgMailingAddress?.trim();
+    if (!orgAddress) {
+      await ctx.runMutation(internal.campaigns.haltSendWithFailure, {
+        campaignId,
+        error: `No postal mailing address on file — US CAN-SPAM requires it in every message. A superuser can set it at ${MAILING_ADDRESS_LOCATION}, then send this campaign again.`,
+      });
+      return null;
+    }
 
     const results: {
       recipientId: Id<"campaignRecipients">;
@@ -1847,7 +1923,8 @@ export const deliverCampaignBatch = internalAction({
       const renderOpts = {
         recipient,
         unsubscribeUrl,
-        orgAddress: mailSettings.orgMailingAddress,
+        // Non-empty by construction — the refusal above already returned.
+        orgAddress,
         // Poll option links are PER-RECIPIENT: the same random token that
         // backs this row's unsubscribe link identifies the voter, so one
         // person's vote can be found and MOVED when they change their mind

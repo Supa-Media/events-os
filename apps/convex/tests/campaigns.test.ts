@@ -135,6 +135,8 @@ describe("myCampaignsAccess", () => {
     const s = await asSuperuser(t);
     expect(await s.as.query(api.audiences.myCampaignsAccess, {})).toEqual({
       canView: true,
+      canDesign: true,
+      canCompose: true,
       canApprove: true,
     });
   });
@@ -144,6 +146,8 @@ describe("myCampaignsAccess", () => {
     const s = await setupChapter(t);
     expect(await s.as.query(api.audiences.myCampaignsAccess, {})).toEqual({
       canView: false,
+      canDesign: false,
+      canCompose: false,
       canApprove: false,
     });
   });

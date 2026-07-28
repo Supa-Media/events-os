@@ -322,3 +322,170 @@ describe("importNewsletterImages — attribution", () => {
     ).rejects.toThrow(/No users exist/);
   });
 });
+
+/**
+ * `ensureNewsletterImagesImported` — the CRON entry point, and the only thing
+ * that gets this artwork into production.
+ *
+ * The action above defaults to a dry run and was invoked by nobody but a human
+ * typing `npx convex run --prod`, so on merge the newsletter shipped with
+ * eleven blank slots and the eleven library rows never existed. These tests
+ * pin the four properties that replacement has to have: it commits, it retries
+ * a dying CDN, it stops doing work once finished, and it is never silent.
+ */
+describe("ensureNewsletterImagesImported — the cron", () => {
+  /** Count every outbound request, so "did this run touch the CDN at all?"
+   *  is an assertion rather than an inference. */
+  function countingFetch(inner: typeof globalThis.fetch) {
+    const calls: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push(typeof input === "string" ? input : String(input));
+      return inner(input, init);
+    }) as typeof fetch;
+    return calls;
+  }
+
+  async function builtInTemplate(t: ReturnType<typeof newT>) {
+    const rows = await run(t, (ctx) => ctx.db.query("campaignTemplates").collect());
+    return rows.find((r) => r.isBuiltIn === true);
+  }
+
+  test("commits without being asked — no dry run, no human", async () => {
+    const t = newT();
+    await asSuperuser(t);
+    stubAllOk();
+
+    const res = await t.action(IMPORT.ensureNewsletterImagesImported, {});
+
+    expect(res.status).toBe("completed");
+    expect(res.imported).toBe(NEWSLETTER_ASSETS.length);
+    expect(res.missing).toEqual([]);
+    expect(await libraryRows(t)).toHaveLength(NEWSLETTER_ASSETS.length);
+  });
+
+  test("the built-in template ends up carrying the artwork", async () => {
+    const t = newT();
+    await asSuperuser(t);
+    stubAllOk();
+
+    await t.action(IMPORT.ensureNewsletterImagesImported, {});
+
+    const template = await builtInTemplate(t);
+    expect(template).toBeDefined();
+    for (const slot of NEWSLETTER_TEMPLATE_SLOTS) {
+      const block = (template!.doc as { blocks: Record<string, unknown>[] }).blocks.find(
+        (b) => b.id === slot.blockId,
+      );
+      const url =
+        block?.kind === "bleed_image"
+          ? block.url
+          : block?.kind === "card"
+            ? block.imageUrl
+            : block?.kind === "footer"
+              ? block.logoUrl
+              : undefined;
+      expect(url, slot.blockId).toBeTypeOf("string");
+    }
+    expect(validateEmailDocument(template!.doc).ok).toBe(true);
+  });
+
+  test("self-disables once complete: a second run fetches NOTHING and writes nothing", async () => {
+    const t = newT();
+    await asSuperuser(t);
+    stubAllOk();
+    await t.action(IMPORT.ensureNewsletterImagesImported, {});
+
+    const calls = countingFetch(async () => fakeImage());
+    const second = await t.action(IMPORT.ensureNewsletterImagesImported, {});
+
+    expect(second.status).toBe("already_complete");
+    expect(second.imported).toBe(0);
+    expect(calls).toEqual([]);
+    expect(await libraryRows(t)).toHaveLength(NEWSLETTER_ASSETS.length);
+  });
+
+  test("a dead CDN reports 'incomplete' — it does not throw, and it does not go quiet", async () => {
+    const t = newT();
+    await asSuperuser(t);
+    globalThis.fetch = (async () =>
+      new Response("gone", { status: 410, statusText: "Gone" })) as typeof fetch;
+    const logged: unknown[] = [];
+    const realError = console.error;
+    console.error = (...args: unknown[]) => void logged.push(args);
+
+    try {
+      const res = await t.action(IMPORT.ensureNewsletterImagesImported, {});
+      expect(res.status).toBe("incomplete");
+      expect(res.imported).toBe(0);
+      expect(new Set(res.missing)).toEqual(
+        new Set(NEWSLETTER_ASSETS.map((a) => a.sourceKey)),
+      );
+    } finally {
+      console.error = realError;
+    }
+
+    // Loud, and specific enough to act on — the whole point of not being a
+    // silent no-op.
+    expect(logged).toHaveLength(1);
+    expect(String(logged[0])).toMatch(/newsletter-artwork/);
+    expect(String(logged[0])).toMatch(/410/);
+    expect(await libraryRows(t)).toHaveLength(0);
+  });
+
+  test("resumable: a partial failure retries ONLY the stragglers on the next run", async () => {
+    const t = newT();
+    await asSuperuser(t);
+
+    const failingUrl = NEWSLETTER_ASSETS[3].sourceUrl;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : String(input);
+      return url === failingUrl
+        ? new Response("gone", { status: 410, statusText: "Gone" })
+        : fakeImage();
+    }) as typeof fetch;
+
+    const realError = console.error;
+    console.error = () => {};
+    let first;
+    try {
+      first = await t.action(IMPORT.ensureNewsletterImagesImported, {});
+    } finally {
+      console.error = realError;
+    }
+    expect(first.status).toBe("incomplete");
+    expect(first.imported).toBe(NEWSLETTER_ASSETS.length - 1);
+    expect(first.missing).toEqual([NEWSLETTER_ASSETS[3].sourceKey]);
+
+    // The CDN recovers. Only the one missing asset is re-fetched — nothing
+    // already on file is downloaded or duplicated.
+    const calls = countingFetch(async () => fakeImage());
+    const second = await t.action(IMPORT.ensureNewsletterImagesImported, {});
+
+    expect(second.status).toBe("completed");
+    expect(second.imported).toBe(1);
+    expect(calls).toEqual([failingUrl]);
+    expect(await libraryRows(t)).toHaveLength(NEWSLETTER_ASSETS.length);
+  });
+
+  test("a deployment with no users defers instead of crashing the cron", async () => {
+    const t = newT();
+    const calls = countingFetch(async () => fakeImage());
+    const realWarn = console.warn;
+    const warned: unknown[] = [];
+    console.warn = (...args: unknown[]) => void warned.push(args);
+
+    try {
+      const res = await t.action(IMPORT.ensureNewsletterImagesImported, {});
+      expect(res.status).toBe("no_users");
+      expect(res.missing).toHaveLength(NEWSLETTER_ASSETS.length);
+    } finally {
+      console.warn = realWarn;
+    }
+
+    expect(warned).toHaveLength(1);
+    // The owner lookup happens before any download, so a userless deployment
+    // never hammers the CDN.
+    expect(calls).toEqual([]);
+    expect(await libraryRows(t)).toHaveLength(0);
+  });
+});

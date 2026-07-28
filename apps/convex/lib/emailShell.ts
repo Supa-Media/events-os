@@ -49,7 +49,12 @@
  * is exactly how the second palette got here in the first place.
  */
 import type { EmailTheme, EmailThemeTokens } from "@events-os/shared";
-import { DEFAULT_EMAIL_THEME, resolveDarkTheme } from "@events-os/shared";
+import {
+  DEFAULT_EMAIL_THEME,
+  normalizeEmailTheme,
+  resolveDarkTheme,
+  safeEmailHref,
+} from "@events-os/shared";
 import { escapeHtml } from "./html";
 
 /** The theme every transactional email renders on — Public Worship's real
@@ -339,7 +344,9 @@ img { -ms-interpolation-mode:bicubic; }
  * send outright rather than rendering a footer without one.
  */
 export type BulkMailFooter = {
-  /** Absolute `/unsubscribe/<token>` URL — PER RECIPIENT, never shared. */
+  /** Absolute `/unsubscribe/<token>` URL — PER RECIPIENT, never shared.
+   *  Escaped AND scheme-checked at render (`escapeHtml(safeEmailHref(...))`),
+   *  the same treatment `emailRender.ts` gives every href it emits. */
   unsubscribeUrl: string;
   /** The org's physical mailing address (`integrationSettings.orgMailingAddress`). */
   orgAddress: string;
@@ -363,15 +370,33 @@ export function emailShell(
   theme: EmailTheme = EMAIL_THEME,
   bulk?: BulkMailFooter,
 ): string {
-  const t = theme;
+  // NORMALIZE AT THE EDGE, once — the same thing `renderCampaignEmail` does
+  // with `doc.theme`, and for the same reason. The `theme` parameter exists so
+  // a per-org `emailThemes` ROW can be threaded through (see the doc above),
+  // and a row is a DB document: `EmailTheme` describes its shape, it does not
+  // enforce it. Every token below lands in either a `style="…"` attribute or
+  // the `<style>` block, where HTML entities are not decoded and escaping is
+  // no defense — an unnormalized `canvas` of `#fff" onload="alert(1)` reaches
+  // `<body>`, and one of `#000 !important} body{display:none` opens a second
+  // CSS rule. `normalizeEmailTheme` is total: hex tokens must be hex, fonts go
+  // through `safeFontStack`, tracking through `safeTracking`, radius is
+  // clamped, and anything unusable falls back on brand.
+  const t = normalizeEmailTheme(theme);
   const wordmark = t.wordmark
     ? `<div class="${EMAIL_CLS.mark}" style="text-align:center;padding-bottom:16px;font-family:${t.bodyFont};font-weight:700;letter-spacing:0.12em;font-size:12px;color:${t.accent}">${escapeHtml(t.wordmark)}</div>`
     : "";
-  // `href` is interpolated raw for the same reason `emailButton`'s is: every
-  // call site builds it from `siteUrl()` + a minted token, never user input.
+  // ESCAPED AND SCHEME-CHECKED, unlike `emailButton`'s href. This one is not
+  // a constant a developer wrote three lines above the call — it carries a
+  // minted token and travels through `blasts.ts`, and it sat next to a
+  // correctly-escaped `orgAddress` while being interpolated raw: a url of
+  // `…u"><script>…</script><a href="` closed the attribute and put a real
+  // `<script>` ELEMENT in the document, and `javascript:` survived into the
+  // href. `escapeHtml` alone would fix the first and not the second, so it
+  // gets the same `esc(safeEmailHref(...))` pairing every href in
+  // `emailRender.ts` has.
   const bulkFooter = bulk
     ? `<div style="margin-top:6px">${escapeHtml(bulk.orgAddress)}</div>` +
-      `<div style="margin-top:4px"><a href="${bulk.unsubscribeUrl}" style="color:${t.muted};text-decoration:underline">Unsubscribe</a> from Public Worship announcements.</div>`
+      `<div style="margin-top:4px"><a href="${escapeHtml(safeEmailHref(bulk.unsubscribeUrl))}" style="color:${t.muted};text-decoration:underline">Unsubscribe</a> from Public Worship announcements.</div>`
     : "";
   return `<!doctype html>
 <html lang="en">

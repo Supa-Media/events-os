@@ -29,6 +29,13 @@
  * the server enforces the same window via `assertEditable`, since restyling a
  * campaign under review would mean a reviewer approved one email and a
  * different-looking one went out.
+ *
+ * ── Also the TEMPLATE picker ───────────────────────────────────────────────
+ * `DocumentComposer` renders this for whatever document it's editing, so the
+ * same control restyles a saved template through
+ * `campaignTemplates.setTemplateTheme`. The name stays `CampaignThemePicker`
+ * because the thing it picks is a campaign THEME (`emailThemes`), and a
+ * template's theme is the same value in the same place — `doc.theme`.
  */
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
@@ -61,7 +68,9 @@ export function CampaignThemePicker({
   currentThemeName: string | undefined;
   /** Applies the choice (the caller owns the mutation, because it also has to
    *  fold the result back into the composer's local undo history — see
-   *  `design.tsx#applyTheme`). Resolves true when the theme actually landed. */
+   *  `DocumentComposer#applyTheme`, and the screen-level `applyTheme` in
+   *  `campaign/[id]/design.tsx` / `campaign-template/[id].tsx` that resolves
+   *  the theme the server actually wrote). Resolves true when it landed. */
   onApply: (choice: ThemeChoice) => Promise<boolean>;
 }) {
   const themes = useQuery(api.emailThemes.listThemes, { scope: SCOPE });

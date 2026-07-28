@@ -317,7 +317,7 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt:
           "The person who designs the monthly newsletter is away, and this month's issue has to go out Friday. Nobody left is a designer. What now?",
         answer:
-          "Start from the TEMPLATE. Any campaign can be saved as a reusable starting point, and Public Worship's monthly newsletter ships as a built-in one — layout, theme, and structure already right. You open it, replace the copy, and submit it for approval like any other campaign. Templates exist exactly so a send isn't hostage to one person's calendar: the design decisions were made once, by the designer, and everyone else fills in the words. (Two-party approval still applies — a template is a head start, not a shortcut past the reviewer.)",
+          "Start from the TEMPLATE. Any campaign can be saved as a reusable starting point, and Public Worship's monthly newsletter ships as a built-in one — layout, theme, and structure already right. You open it, replace the copy, and submit it for approval like any other campaign. Templates exist exactly so a send isn't hostage to one person's calendar: the design decisions were made once, by the designer, and everyone else fills in the words. (Two-party approval still applies — a template is a head start, not a shortcut past the reviewer.) The templates themselves live on **Campaigns → Templates**, and they're the DESIGNER's to keep sharp: \"New template\" starts a fresh one from a blank page, \"Edit design\" opens any of them in the same block composer a campaign uses — blocks, theme and all. That work needs design power, not compose: the person who owns the look never has to be the person who owns a send.",
       },
       {
         kind: "tip",

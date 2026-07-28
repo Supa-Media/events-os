@@ -16,6 +16,16 @@
  * `SaveAsTemplateAction` even told the author "it's in the template list
  * now." This is that list.
  *
+ * ── The two doors that make it a designer's library ────────────────────────
+ * Renaming and archiving is not owning. "New template" (`NewTemplateAction` →
+ * `campaignTemplates.createTemplate`) authors one from scratch without needing
+ * a campaign to snapshot — the design-only door, since
+ * `createTemplateFromCampaign` requires compose power a Graphic Designer
+ * doesn't hold — and "Edit design" opens the row in the block composer
+ * (`app/(app)/campaign-template/[id].tsx`), which is where a template's
+ * CONTENT is actually changed. Both are `canDesign`-only, matching the
+ * server's `requireCampaignDesign` on every write here.
+ *
  * ── Why every row renders the real email ───────────────────────────────────
  * A template IS its layout — "Monthly newsletter" tells you nothing next to
  * seeing the actual thing, exactly as `CampaignThemesView` leads with a
@@ -42,6 +52,7 @@
  */
 import { useMemo, useState } from "react";
 import { Text, View, useWindowDimensions } from "react-native";
+import { useRouter } from "expo-router";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { FunctionReturnType } from "convex/server";
@@ -61,9 +72,10 @@ import {
 import { ErrorBoundary } from "../ErrorBoundary";
 import EmailHtmlPreview from "../email/EmailHtmlPreview";
 import { formatDate } from "../../lib/format";
-import { useActionRunner } from "../../lib/useActionToast";
+import { useActionRunner, type ActionRunner } from "../../lib/useActionToast";
 import { confirmAction } from "./helpers";
 import {
+  newTemplateArgs,
   templateArchiveCopy,
   templateBlockSummary,
   templateDetailsPatch,
@@ -84,6 +96,9 @@ const PREVIEW_RECIPIENT = { name: "Ada Lovelace", email: "ada@example.com" };
 
 export function CampaignTemplatesView() {
   const templates = useQuery(api.campaignTemplates.listTemplates, { scope: SCOPE });
+  // Already resolved (and cached) by the route's own gate — `canDesign` is what
+  // separates "owns this library" from "reads it before starting a campaign".
+  const access = useQuery(api.audiences.myCampaignsAccess, {});
   const { run, toast, dismiss } = useActionRunner();
   const { width } = useWindowDimensions();
   const split = width >= SPLIT_BREAKPOINT;
@@ -92,6 +107,7 @@ export function CampaignTemplatesView() {
   if (templates === undefined) return <Screen loading />;
 
   const rows = templates as TemplateRow[];
+  const canDesign = access?.canDesign === true;
 
   return (
     <Screen>
@@ -102,9 +118,11 @@ export function CampaignTemplatesView() {
           A template is a saved starting point — the blocks and the theme of an
           email you liked, ready to copy into a new campaign. Creating a campaign
           from one copies it, so editing a template here never touches a campaign
-          already in flight. Save a new one from any campaign&apos;s designer with
-          &ldquo;Save as template&rdquo;.
+          already in flight. Start one from scratch below, or save one from any
+          campaign&apos;s designer with &ldquo;Save as template&rdquo;.
         </Text>
+
+        {canDesign ? <NewTemplateAction existing={rows} run={run} /> : null}
 
         <SectionHeader title="Templates" count={rows.length} />
 
@@ -112,7 +130,11 @@ export function CampaignTemplatesView() {
           <EmptyState
             icon="bookmark"
             title="No templates yet"
-            message="Open a campaign you're happy with, go to Design, and choose “Save as template” — it'll show up here, preview and all."
+            message={
+              canDesign
+                ? "Choose “New template” above to build one block by block — or open a campaign you're happy with, go to Design, and choose “Save as template”."
+                : "Open a campaign you're happy with, go to Design, and choose “Save as template” — it'll show up here, preview and all."
+            }
           />
         ) : (
           <View className="gap-4">
@@ -121,6 +143,7 @@ export function CampaignTemplatesView() {
                 key={row._id}
                 row={row}
                 split={split}
+                canDesign={canDesign}
                 editing={editingId === row._id}
                 onEdit={() => setEditingId(row._id)}
                 onCloseEdit={() => setEditingId(null)}
@@ -134,10 +157,113 @@ export function CampaignTemplatesView() {
   );
 }
 
+/**
+ * "New template" — a template built from scratch, which until now was
+ * impossible for the person whose job it is.
+ *
+ * The only way to author a template was `createTemplateFromCampaign` ("Save as
+ * template", in a campaign's designer), and that starts from a CAMPAIGN — so
+ * it needs `campaigns.compose` power, which a design-only Graphic Designer
+ * deliberately does not hold. `campaignTemplates.createTemplate` is the design
+ * door: name it, and it opens EMPTY in the composer
+ * (`app/(app)/campaign-template/[id].tsx`), themed with the scope default.
+ *
+ * Expand-in-place rather than a dialog, the `SaveAsTemplateAction` /
+ * `CampaignsListView` inline-creator idiom — the app has no modal primitive
+ * and `Alert.prompt` is iOS-only.
+ */
+function NewTemplateAction({
+  existing,
+  run,
+}: {
+  existing: readonly TemplateRow[];
+  run: ActionRunner["run"];
+}) {
+  const router = useRouter();
+  const createTemplate = useMutation(api.campaignTemplates.createTemplate);
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const args = newTemplateArgs({ name, description }, existing);
+
+  async function create() {
+    if (!args.ok) return;
+    const { ok: _ok, ...rest } = args;
+    setSaving(true);
+    try {
+      const templateId = await run(() => createTemplate({ scope: SCOPE, ...rest }), {
+        errorTitle: "Couldn't create the template",
+      });
+      // `run` resolves undefined when it swallowed a failure — only navigate
+      // when a real id came back.
+      if (templateId === undefined) return;
+      setOpen(false);
+      setName("");
+      setDescription("");
+      // Straight into the composer: a template with no blocks is not a
+      // deliverable, and making the designer find the row she just made before
+      // she can fill it in is the kind of step that turns "simple" into "fine,
+      // I'll do it in Canva".
+      router.push(`/campaign-template/${templateId}` as never);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!open) {
+    return (
+      <View className="mb-4 flex-row">
+        <Button
+          title="New template"
+          size="sm"
+          icon="plus"
+          onPress={() => setOpen(true)}
+        />
+      </View>
+    );
+  }
+
+  return (
+    <Card padding="sm" className="mb-4">
+      <TextField
+        label="Name"
+        value={name}
+        onChangeText={setName}
+        placeholder="e.g. Monthly newsletter"
+        autoFocus
+      />
+      <TextField
+        label="Description"
+        value={description}
+        onChangeText={setDescription}
+        placeholder="e.g. The monthly newsletter — send on the first Tuesday."
+        hint="Optional. Say when to reach for this one."
+        multiline
+      />
+      {!args.ok && name.trim() !== "" ? (
+        <Text className="text-xs text-danger">{args.error}</Text>
+      ) : null}
+      <View className="mt-1 flex-row justify-end gap-2">
+        <Button title="Cancel" size="sm" variant="ghost" onPress={() => setOpen(false)} />
+        <Button
+          title="Create and design"
+          size="sm"
+          loading={saving}
+          disabled={!args.ok}
+          onPress={() => void create()}
+        />
+      </View>
+    </Card>
+  );
+}
+
 /** One template: its rendered preview, what it is, and what you can do to it. */
 function TemplateCard({
   row,
   split,
+  canDesign,
   editing,
   onEdit,
   onCloseEdit,
@@ -145,11 +271,13 @@ function TemplateCard({
 }: {
   row: TemplateRow;
   split: boolean;
+  canDesign: boolean;
   editing: boolean;
   onEdit: () => void;
   onCloseEdit: () => void;
   run: ReturnType<typeof useActionRunner>["run"];
 }) {
+  const router = useRouter();
   const archiveTemplate = useMutation(api.campaignTemplates.archiveTemplate);
 
   function handleRemove() {
@@ -195,10 +323,25 @@ function TemplateCard({
             {templateBlockSummary(row.doc)} · Updated {formatDate(row.updatedAt)}
           </Text>
 
-          {editing ? (
+          {/* Every action here — rename, describe, restyle, remove — is a
+              write to the SHARED design system and needs `campaigns.design`
+              server-side. A caller without it gets the preview and the
+              details, which is the whole story they're entitled to, rather
+              than three buttons that would each come back FORBIDDEN. */}
+          {!canDesign ? null : editing ? (
             <TemplateDetailsForm row={row} onDone={onCloseEdit} run={run} />
           ) : (
             <View className="mt-2 flex-row flex-wrap items-center gap-2">
+              {/* First, and the only PRIMARY button on the card: what a
+                  template mostly needs is its CONTENT changed, and until this
+                  existed the answer to "how do I fix the newsletter template?"
+                  was "you can't — rename it or delete it". */}
+              <Button
+                title="Edit design"
+                size="sm"
+                icon="edit-3"
+                onPress={() => router.push(`/campaign-template/${row._id}` as never)}
+              />
               <Button
                 title="Rename or describe"
                 size="sm"

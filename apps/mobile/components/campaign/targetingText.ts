@@ -1,12 +1,19 @@
 /**
- * TARGETING COPY — the plain-language sentences the segment builder, the
- * "Check a person" readout, and the segment-list summary all speak.
+ * TARGETING COPY AND ROW MODEL — the plain-language sentences the segment
+ * builder, the "Check a person" readout, and the segment-list summary all
+ * speak, plus the UI-row ⇄ wire-condition conversion those sentences and the
+ * live preview are both computed from.
  *
  * Split out of `TargetingBuilder.tsx` so the wording is (a) impossible to
  * fork between those three surfaces and (b) unit-testable: this module is
  * dependency-free at runtime (types only from the Convex API), so it runs
  * under the repo's node-environment Jest config the same way
- * `audienceFilterFields.ts` does.
+ * `audienceFilterFields.ts` does. `toWireTargeting` moved here for exactly
+ * that second reason — it decides which cards reach the wire and therefore
+ * which live count belongs to which card, which is precisely the kind of
+ * arithmetic that has to be pinned by tests rather than by reading; it can't
+ * be reached from a test while it lives in a module that imports
+ * `react-native`.
  *
  * ── Vocabulary ─────────────────────────────────────────────────────────────
  * A saved recipe is a SEGMENT (the Convex table is still `audiences` — this
@@ -28,6 +35,7 @@ import type { FunctionArgs } from "convex/server";
 // Type-only: `typeof api` is a type position, so this import is fully erased
 // and this module stays runtime-dependency-free (see the file doc).
 import type { api } from "@events-os/convex/_generated/api";
+import type { Id } from "@events-os/convex/_generated/dataModel";
 import { centsToDollarsStr } from "./audienceFilterFields";
 
 type PreviewArgs = FunctionArgs<typeof api.audiences.previewAudience>;
@@ -74,8 +82,17 @@ export function describeCondition(c: TargetingCondition, lookups: ConditionLooku
       }${c.withinDays != null ? ` in the last ${c.withinDays} days` : ""}`;
     }
     case "attended_any": {
+      // The unresolved-id fallback NAMES the qualifier ("the chosen chapter")
+      // exactly as `attended_event`/`chapter`/`seat` do below. It used to drop
+      // the chapter clause entirely when no lookup resolved it, so a
+      // chapter-scoped condition read as "an event" — one article away from
+      // the unscoped "any event", and the segments list passes no lookups AT
+      // ALL by design (`summarizeTargeting`), so every list row silently lost
+      // its chapter restriction. Reachable, not hypothetical: migration
+      // 0042 emits `attended_any` + `chapterId` for wrapped legacy guests
+      // audiences and no UI control exposes the field.
       const where = c.chapterId
-        ? `an event${lookups.chapterName?.(c.chapterId) ? ` in ${lookups.chapterName(c.chapterId)}` : ""}`
+        ? `an event in ${lookups.chapterName?.(c.chapterId) ?? "the chosen chapter"}`
         : "any event";
       return `${c.op === "has_not" ? "has never been to" : "has been to"} ${where}${
         c.rsvpStatus ? ` (RSVP: ${c.rsvpStatus.replace("_", " ")})` : ""
@@ -100,15 +117,50 @@ export function describeCondition(c: TargetingCondition, lookups: ConditionLooku
   }
 }
 
+/**
+ * A card as it sits ON SCREEN: the conditions that are finished plus how many
+ * of its rows still have an unchosen value control ("Role is [Pick a role…]").
+ *
+ * The wire shape can't express a half-written row — `toWireTargeting` drops
+ * those — so anything reading the builder back to its author has to be handed
+ * the count separately, or it describes a definition narrower (or, for an
+ * empty group, infinitely wider) than the one on screen. `Targeting` itself
+ * satisfies this type, which is how the saved-segment surfaces keep passing
+ * stored rows straight in.
+ */
+export type ReadingGroup = {
+  conditions: readonly TargetingCondition[];
+  /** Rows whose id-valued control hasn't been chosen yet. Defaults to 0. */
+  unfinishedCount?: number;
+};
+
+export type TargetingReading = {
+  groups: readonly ReadingGroup[];
+  excludeGroups?: readonly ReadingGroup[];
+};
+
+/** How an unfinished row reads. It is never simply omitted: a row with no
+ *  value chosen yet is a restriction the author is halfway through writing,
+ *  and saying nothing about it makes the sentence claim a WIDER reach than
+ *  the screen shows — at the extreme, "everyone". */
+function unfinishedPhrase(n: number): string {
+  return `matches ${n === 1 ? "a line" : `${n} lines`} you haven't finished yet`;
+}
+
 /** One rule group (or one exclusion) as a noun phrase — "anyone who has been
  *  to any event in the last 90 days". An empty group matches everyone, which
- *  is worth saying out loud rather than rendering as "anyone who ". */
+ *  is worth saying out loud rather than rendering as "anyone who " — but a
+ *  group that is empty only because its rows are unfinished is NOT everyone,
+ *  and says so. */
 export function describeGroupSentence(
   conditions: readonly TargetingCondition[],
   lookups: ConditionLookups = {},
+  unfinishedCount = 0,
 ): string {
-  if (conditions.length === 0) return "everyone";
-  return `anyone who ${conditions.map((c) => describeCondition(c, lookups)).join(" and ")}`;
+  const parts = conditions.map((c) => describeCondition(c, lookups));
+  if (unfinishedCount > 0) parts.push(unfinishedPhrase(unfinishedCount));
+  if (parts.length === 0) return "everyone";
+  return `anyone who ${parts.join(" and ")}`;
 }
 
 /**
@@ -120,15 +172,23 @@ export function describeGroupSentence(
  * exclusion, joined the same way. Rendering them as a list rather than one
  * pre-joined string keeps the OR visible as a separate, styled word instead
  * of burying it mid-sentence.
+ *
+ * Takes a `TargetingReading` — one entry per CARD ON SCREEN, unfinished rows
+ * included — so the phrases stay positionally aligned with the cards (an
+ * exclusion held back from the wire still gets its phrase, in its place) and
+ * a half-written row can never read as "no restriction".
  */
 export function targetingSentences(
-  targeting: Targeting,
+  targeting: TargetingReading,
   lookups: ConditionLookups = {},
 ): { send: string[]; skip: string[] } {
-  const groups = targeting.groups.length > 0 ? targeting.groups : [{ conditions: [] }];
+  const groups: readonly ReadingGroup[] =
+    targeting.groups.length > 0 ? targeting.groups : [{ conditions: [] }];
+  const phrase = (g: ReadingGroup) =>
+    describeGroupSentence(g.conditions, lookups, g.unfinishedCount ?? 0);
   return {
-    send: groups.map((g) => describeGroupSentence(g.conditions, lookups)),
-    skip: (targeting.excludeGroups ?? []).map((g) => describeGroupSentence(g.conditions, lookups)),
+    send: groups.map(phrase),
+    skip: (targeting.excludeGroups ?? []).map(phrase),
   };
 }
 

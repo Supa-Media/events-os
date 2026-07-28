@@ -1,8 +1,9 @@
 /**
  * TEMPLATE FIELDS — the pure logic behind the Templates home
  * (`CampaignTemplatesView.tsx`): how a stored row's document is summarised,
- * what an edit actually sends to `campaignTemplates.updateTemplate`, and the
- * exact words the archive confirmation uses.
+ * what an edit actually sends to `campaignTemplates.updateTemplate`, what a
+ * NEW one sends to `campaignTemplates.createTemplate`, and the exact words the
+ * archive confirmation uses.
  *
  * Split out for the same two reasons `audienceFilterFields.ts` is: the view
  * stays about layout, and this half is unit-testable under the repo's
@@ -55,6 +56,47 @@ export function templateDetailsPatch(
     return { ok: true, changed: false };
   }
   return { ok: true, changed: true, ...patch };
+}
+
+// ── Creating one from scratch ───────────────────────────────────────────────
+
+export type NewTemplateArgs =
+  | { ok: false; error: string }
+  | { ok: true; name: string; description?: string };
+
+/**
+ * Build the `campaignTemplates.createTemplate` args for the "New template"
+ * form, or the reason it can't be created yet.
+ *
+ * Two rules, both checked HERE rather than round-tripping the server:
+ *  - a whitespace-only name is the server's `EMPTY`, refused up front the same
+ *    way `templateDetailsPatch` refuses it on a rename;
+ *  - a name that's already in the library is refused as a KINDNESS, not a
+ *    constraint — nothing in the schema enforces uniqueness, but two rows
+ *    called "Monthly newsletter" in a list whose whole job is "pick the one
+ *    you want" is a library nobody can use. Case- and whitespace-insensitive,
+ *    since "monthly newsletter " is the same answer to a human.
+ *
+ * `description` is omitted entirely when blank — `createTemplate` treats an
+ * empty string as "no description", and sending `""` would only make the row
+ * carry a field it doesn't mean.
+ */
+export function newTemplateArgs(
+  draft: { name: string; description: string },
+  existing: readonly TemplateDetails[],
+): NewTemplateArgs {
+  const name = draft.name.trim();
+  if (!name) return { ok: false, error: "Name the template first." };
+
+  const taken = existing.some(
+    (t) => t.name.trim().toLowerCase() === name.toLowerCase(),
+  );
+  if (taken) {
+    return { ok: false, error: `There's already a template called “${name}”.` };
+  }
+
+  const description = draft.description.trim();
+  return description ? { ok: true, name, description } : { ok: true, name };
 }
 
 // ── Document summary ────────────────────────────────────────────────────────

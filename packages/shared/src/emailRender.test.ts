@@ -317,6 +317,90 @@ describe("renderCampaignEmail — URL scheme allowlist (SECURITY)", () => {
     );
     expect(html).toContain('href="mailto:hello@example.com"');
   });
+
+  // The unsubscribe href was the ONE href in this file that was escaped but
+  // never scheme-checked, on both of its two paths (the `footer` block's own
+  // legal row, and the fallback footer a document without a footer block
+  // gets). Escaping stops the attribute break-out; it does nothing about
+  // `javascript:`, which survived intact into the href.
+  const unsubBlocks: Array<[string, EmailBlock[]]> = [
+    ["the fallback footer", []],
+    ["a footer block", [{ id: "f", kind: "footer", navLine: "Events" }]],
+  ];
+  for (const [label, blocks] of unsubBlocks) {
+    test(`a javascript: unsubscribeUrl renders as an inert '#' in ${label}`, () => {
+      const html = renderCampaignEmail(doc(blocks), {
+        ...baseOpts,
+        unsubscribeUrl: "javascript:alert(1)",
+      });
+      expect(html).not.toContain("javascript:");
+      expect(html).toContain('href="#"');
+    });
+
+    test(`a normal unsubscribeUrl is untouched in ${label}`, () => {
+      const html = renderCampaignEmail(doc(blocks), baseOpts);
+      expect(html).toContain(`href="${baseOpts.unsubscribeUrl}"`);
+    });
+  }
+});
+
+describe("renderCampaignEmail — card align injection (SECURITY)", () => {
+  // `content.align` was the one authored string interpolated into a `style="…"`
+  // attribute raw — every sibling is escaped, clamped, or a lookup key. It
+  // reaches the eyebrow, heading, body and attribution rows, and `columns[]`
+  // through the same function. `validateCardContent` restricts it at every
+  // write today, so this covers a document written before that gate or by a
+  // path that bypassed it — which is precisely what this render layer is for.
+  const attackAlign = 'https://ok.test/a" onmouseover="alert(1)' as unknown as "left";
+
+  const evilCard = {
+    id: "1",
+    kind: "card",
+    heading: "h",
+    eyebrow: "e",
+    body: "b",
+    attribution: "a",
+    align: attackAlign,
+  } as unknown as EmailBlock;
+
+  const evilColumns = {
+    id: "2",
+    kind: "columns",
+    columns: [{ heading: "h", align: attackAlign }],
+  } as unknown as EmailBlock;
+
+  for (const [label, block] of [
+    ["a card", evilCard],
+    ["a column", evilColumns],
+  ] as const) {
+    test(`${label}'s align cannot add an event handler`, () => {
+      const html = renderCampaignEmail(doc([block]), baseOpts);
+      expect(html).not.toContain("onmouseover");
+      expect(html).not.toContain("alert(1)");
+    });
+
+    test(`${label}'s align falls back to the variant default, not a quoted value`, () => {
+      const html = renderCampaignEmail(doc([block]), baseOpts);
+      // Nothing anywhere in the document may reach `text-align:` but the two
+      // legal keywords — and no style attribute may grow a quote or a `<`.
+      for (const value of html.match(/text-align:[^;"]*/g) ?? []) {
+        expect(["text-align:left", "text-align:center"]).toContain(value);
+      }
+      for (const styleAttr of html.match(/style="[^"]*"/g) ?? []) {
+        expect(styleAttr).not.toContain("<");
+      }
+      // The `plain` variant aligns left; the injected string must not survive.
+      expect(styleOfClass(html, "pw-h")).toContain("text-align:left");
+    });
+  }
+
+  test("a legitimate align still wins over the variant default", () => {
+    const html = renderCampaignEmail(
+      doc([{ id: "1", kind: "card", heading: "h", align: "center" }]),
+      baseOpts,
+    );
+    expect(styleOfClass(html, "pw-h")).toContain("text-align:center");
+  });
 });
 
 describe("safeEmailHref / safeImageSrc (unit)", () => {

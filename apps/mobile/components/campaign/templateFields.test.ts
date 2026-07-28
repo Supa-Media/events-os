@@ -1,5 +1,6 @@
 import { describe, expect, test } from "@jest/globals";
 import {
+  newTemplateArgs,
   templateArchiveCopy,
   templateBlockCount,
   templateBlockSummary,
@@ -48,6 +49,47 @@ describe("templateDetailsPatch — the null-sentinel contract", () => {
     const patch = templateDetailsPatch({ name: "   ", description: "" }, current);
     expect(patch.ok).toBe(false);
     if (!patch.ok) expect(patch.error).toMatch(/name/i);
+  });
+});
+
+describe("newTemplateArgs — the design-only door in", () => {
+  const existing = [
+    { name: "Monthly newsletter", description: "First Tuesday." },
+    { name: "Advent appeal" },
+  ];
+
+  test("a named template sends a trimmed name and no description", () => {
+    expect(newTemplateArgs({ name: "  Welcome  ", description: "  " }, existing)).toEqual({
+      ok: true,
+      name: "Welcome",
+    });
+  });
+
+  test("a description rides along, trimmed", () => {
+    expect(
+      newTemplateArgs({ name: "Welcome", description: "  For first-timers. " }, existing),
+    ).toEqual({ ok: true, name: "Welcome", description: "For first-timers." });
+  });
+
+  test("a whitespace-only name is refused here, not round-tripped to the server", () => {
+    const args = newTemplateArgs({ name: "  ", description: "" }, existing);
+    expect(args.ok).toBe(false);
+    if (!args.ok) expect(args.error).toMatch(/name/i);
+  });
+
+  test("a name already in the library is refused, however it's cased or spaced", () => {
+    for (const name of ["Monthly newsletter", "  monthly NEWSLETTER "]) {
+      const args = newTemplateArgs({ name, description: "" }, existing);
+      expect(args.ok).toBe(false);
+      if (!args.ok) expect(args.error).toMatch(/already/i);
+    }
+  });
+
+  test("an empty library takes any name", () => {
+    expect(newTemplateArgs({ name: "First one", description: "" }, [])).toEqual({
+      ok: true,
+      name: "First one",
+    });
   });
 });
 

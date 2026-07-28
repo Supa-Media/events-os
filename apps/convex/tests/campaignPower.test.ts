@@ -198,6 +198,8 @@ describe("setSeatCampaignPower — campaigns access enforcement effect", () => {
     // Post-seed template default already carries campaigns.approve.
     expect(await viewer.as.query(api.audiences.myCampaignsAccess, {})).toEqual({
       canView: true,
+      canDesign: true,
+      canCompose: true,
       canApprove: true,
     });
 
@@ -223,6 +225,8 @@ describe("setSeatCampaignPower — campaigns access enforcement effect", () => {
 
     expect(await viewer.as.query(api.audiences.myCampaignsAccess, {})).toEqual({
       canView: false,
+      canDesign: false,
+      canCompose: false,
       canApprove: false,
     });
   });
@@ -262,6 +266,8 @@ describe("setSeatCampaignPower — campaigns access enforcement effect", () => {
     // The composer can open the desk, but never gets approval power.
     expect(await composer.as.query(api.audiences.myCampaignsAccess, {})).toEqual({
       canView: true,
+      canDesign: true,
+      canCompose: true,
       canApprove: false,
     });
   });
@@ -315,6 +321,8 @@ describe("campaigns.design — the desk's bottom rung", () => {
     expect(await capsOf(s, "graphic_designer")).toEqual(["campaigns.design"]);
     expect(await s.as.query(api.audiences.myCampaignsAccess, {})).toEqual({
       canView: true,
+      canDesign: true,
+      canCompose: false,
       canApprove: false,
     });
   });
@@ -327,6 +335,58 @@ describe("campaigns.design — the desk's bottom rung", () => {
     await directlyAssign(s, "social_media_manager", "central", personId);
     expect(await s.as.query(api.audiences.myCampaignsAccess, {})).toEqual({
       canView: true,
+      canDesign: true,
+      canCompose: false,
+      canApprove: false,
+    });
+  });
+
+  /**
+   * The contract the CLIENT reads. `canView` alone can't tell a design-only
+   * holder apart from a composer, and every campaign WRITE is gated on
+   * compose — so before `canDesign`/`canCompose` existed, the desk rendered a
+   * create form and a live composer for someone whose every save threw
+   * `FORBIDDEN` (adversarial review, 2026-07-28). The mobile app hides those
+   * affordances on `canCompose`; this is the query behind that.
+   */
+  test("myCampaignsAccess separates design from compose", async () => {
+    const designOnly = await designerSetup();
+    expect(await designOnly.as.query(api.audiences.myCampaignsAccess, {})).toEqual({
+      canView: true,
+      canDesign: true,
+      canCompose: false,
+      canApprove: false,
+    });
+
+    // The SAME seat, promoted to compose by a separate ED identity (no
+    // self-lockout question) — design comes along for the ride, and the
+    // client's create form / composer come back with it.
+    const designerDef = await defBySlug(designOnly, "graphic_designer");
+    const edUserId = await run(designOnly.t, (ctx) =>
+      ctx.db.insert("users", { email: "ed-promoter@publicworship.life" }),
+    );
+    const edPersonId = await run(designOnly.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: designOnly.chapterId,
+        name: "ED",
+        userId: edUserId,
+        createdAt: Date.now(),
+      }),
+    );
+    await directlyAssign(designOnly, "executive_director", "central", edPersonId);
+    const edAs = designOnly.t.withIdentity({
+      subject: `${edUserId}|session`,
+      issuer: "test",
+    });
+    await edAs.mutation(api.seats.setSeatCampaignPower, {
+      seatDefId: designerDef._id,
+      power: "compose",
+    });
+
+    expect(await designOnly.as.query(api.audiences.myCampaignsAccess, {})).toEqual({
+      canView: true,
+      canDesign: true,
+      canCompose: true,
       canApprove: false,
     });
   });
@@ -371,6 +431,56 @@ describe("campaigns.design — the desk's bottom rung", () => {
     });
     await s.as.mutation(api.emailImages.updateImage, { imageId, alt: "Choir, July" });
     await s.as.mutation(api.emailImages.deleteImage, { imageId });
+  });
+
+  /**
+   * The product ask was "it should be simple for designers to create and
+   * update templates," and for a long time a design-only holder could do
+   * neither: `createTemplateFromCampaign` starts from a CAMPAIGN (compose
+   * power), and no client ever sent `updateTemplate` a `doc`, so "ownership of
+   * templates" amounted to rename, re-describe, archive. This is the whole
+   * loop she now owns — author, fill in, restyle — with no compose power
+   * anywhere in it.
+   */
+  test("a design-only holder can create a template from scratch and edit its document", async () => {
+    const s = await designerSetup();
+
+    const templateId = await s.as.mutation(api.campaignTemplates.createTemplate, {
+      scope: "central",
+      name: "Designer's shell",
+      description: "Built without ever touching a campaign.",
+    });
+
+    // It starts empty and already themed, and she can read it back.
+    const fresh = await s.as.query(api.campaignTemplates.getTemplate, { templateId });
+    expect(fresh.doc.blocks).toEqual([]);
+    expect(fresh.doc.theme).toBeDefined();
+
+    // The composer's autosave: the whole document, validated like a campaign's.
+    await s.as.mutation(api.campaignTemplates.updateTemplate, {
+      templateId,
+      doc: {
+        ...fresh.doc,
+        blocks: [{ id: "b1", kind: "heading", text: "This month", level: 1 }],
+      },
+    });
+    await s.as.mutation(api.campaignTemplates.setTemplateTheme, {
+      templateId,
+      presetName: "Public Worship",
+    });
+
+    const saved = await s.as.query(api.campaignTemplates.getTemplate, { templateId });
+    expect(saved.doc.blocks).toHaveLength(1);
+    expect(saved.doc.theme?.name).toBe("Public Worship");
+
+    // And the write gate is the campaign's own — a template that saves but
+    // could never be sent is a trap.
+    await expect(
+      s.as.mutation(api.campaignTemplates.updateTemplate, {
+        templateId,
+        doc: { blocks: [{ id: "b", kind: "button", label: "Go", url: "javascript:alert(1)" }] },
+      }),
+    ).rejects.toMatchObject({ data: { code: "INVALID_DOC" } });
   });
 
   test("a design-only holder can NEVER start a campaign from a template (that's compose)", async () => {
@@ -522,6 +632,8 @@ describe("campaigns.design — the desk's bottom rung", () => {
 
     expect(await s.as.query(api.audiences.myCampaignsAccess, {})).toEqual({
       canView: true,
+      canDesign: false,
+      canCompose: false,
       canApprove: false,
     });
     await expect(
@@ -591,6 +703,8 @@ describe("campaigns.design — the desk's bottom rung", () => {
 
     expect(await s.as.query(api.audiences.myCampaignsAccess, {})).toEqual({
       canView: false,
+      canDesign: false,
+      canCompose: false,
       canApprove: false,
     });
   });

@@ -1,92 +1,42 @@
 /**
- * CAMPAIGN DESIGNER — the block-based email editor.
+ * CAMPAIGN DESIGNER — the block-based email editor for a CAMPAIGN.
  *
- * Editing model: local `EmailDocument` state wrapped in a linear undo/redo
- * history (`lib/emailDesigner.ts`'s `History<EmailDocument>` — a snapshot
- * zipper, deliberately simpler than `SiteMapEditor`'s op-stack: there's no
- * free positioning here, just an ordered block stack), debounce-autosaved to
- * `campaigns.updateCampaignDoc` 600ms after the last edit. Cmd/Ctrl+Z / +Shift+Z
- * undo/redo on web, mirroring `SiteMapEditor`'s keyboard-shortcut precedent.
- *
- * Layout: a block stack (drag-reorder via `SortableRows`, the same grip-handle
- * idiom as `EditableGrid`) plus an "Add block" palette on the left/main
- * column; a live HTML preview (`EmailHtmlPreview`, rendering
- * `renderCampaignEmail` against a sample recipient) and a tap-to-copy
- * merge-tag row on the right — stacked below on narrow/native screens.
- *
- * The theme picker (`CampaignThemePicker`) sits above the preview: it's the
- * only caller of `campaigns.setCampaignTheme`, and the only way a campaign's
- * look can be changed after creation. See `applyTheme` for why the result has
- * to be folded back into the local history rather than left to the server.
+ * The editing surface itself is
+ * `components/campaign/designer/DocumentComposer.tsx` (history, autosave,
+ * palette, block stack, live preview, merge tags, theme picker) — shared with
+ * the template editor (`app/(app)/campaign-template/[id].tsx`) so a designer
+ * meets exactly one composer wherever she is. What stays HERE is what is
+ * genuinely the campaign's: the access gate, the record header with "Save as
+ * template", and what saving/restyling MEAN
+ * (`campaigns.updateCampaignDoc` / `campaigns.setCampaignTheme`).
  *
  * Read-only once the campaign leaves `draft`/`changes_requested`
  * (`updateCampaignDoc` throws `NOT_EDITABLE` server-side past that point —
- * see `campaigns.ts#assertEditable`). "Read-only" means it: the block cards
- * render with `readOnly`, which makes every field static and removes every
- * add/remove/upload control, instead of the no-op handlers that used to let
- * a reviewer type into a locked campaign and lose the words on reload.
+ * see `campaigns.ts#assertEditable`), or for a caller without compose power
+ * (see `editable` below). "Read-only" means it: the block cards render with
+ * `readOnly`, which makes every field static and removes every add/remove/
+ * upload control, instead of the no-op handlers that used to let a reviewer
+ * type into a locked campaign and lose the words on reload.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Platform, Pressable, Text, View, useWindowDimensions } from "react-native";
+import { useCallback } from "react";
+import { Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useConvex, useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import {
-  renderCampaignEmail,
-  type EmailBlockKind,
-  type EmailDocument,
-} from "@events-os/shared";
+import type { EmailDocument, EmailTheme } from "@events-os/shared";
 import {
   Screen,
   FULL_WIDTH,
   Narrow,
   Button,
-  Icon,
   EmptyState,
   ToastView,
 } from "../../../../components/ui";
-import { colors } from "../../../../lib/theme";
-import { errorMessage } from "../../../../lib/errors";
 import { useActionRunner } from "../../../../lib/useActionToast";
-import {
-  canRedo,
-  canUndo,
-  duplicateBlock,
-  explainDocError,
-  initHistory,
-  insertBlock,
-  moveBlock,
-  pushHistory,
-  redoHistory,
-  removeBlock,
-  reorderBlocks,
-  undoHistory,
-  updateBlock,
-  type History,
-} from "../../../../lib/emailDesigner";
-import { SortableRows } from "../../../../components/grid/SortableRows";
-import { BlockCard } from "../../../../components/campaign/designer/BlockCard";
-import { BlockPalette } from "../../../../components/campaign/designer/BlockPalette";
-import { MergeTagRow } from "../../../../components/campaign/designer/MergeTagRow";
-import {
-  CampaignThemePicker,
-  type ThemeChoice,
-} from "../../../../components/campaign/designer/CampaignThemePicker";
-import EmailHtmlPreview from "../../../../components/email/EmailHtmlPreview";
+import { DocumentComposer } from "../../../../components/campaign/designer/DocumentComposer";
+import type { ThemeChoice } from "../../../../components/campaign/designer/CampaignThemePicker";
 import { SaveAsTemplateAction } from "../../../../components/campaign/SaveAsTemplateAction";
-import type {
-  UploadImage,
-  UploadedImage,
-} from "../../../../components/campaign/designer/DesignerControls";
-
-/** Below this width the preview stacks under the editor instead of beside it. */
-const SPLIT_BREAKPOINT = 960;
-/** Debounce between the last edit and the autosave call. */
-const AUTOSAVE_DEBOUNCE_MS = 600;
-
-/** Sample recipient the live preview renders against — never sent anywhere. */
-const PREVIEW_RECIPIENT = { name: "Ada Lovelace", email: "ada@example.com" };
 
 /**
  * Gated the same way `campaigns/index.tsx` (and `giving/donors.tsx` before
@@ -109,397 +59,71 @@ export default function CampaignDesignScreen() {
           <EmptyState
             icon="lock"
             title="Campaigns is available to org leadership"
-            message="Ask a central Executive Director, Financial Manager, or Marketing Director to grant you campaign compose or approve power."
+            message="Ask a central Executive Director, Financial Manager, or Marketing Director to grant you campaign design, compose, or approve power."
           />
         </Narrow>
       </Screen>
     );
   }
-  return <CampaignDesignBody campaignId={campaignId} />;
+  return <CampaignDesignBody campaignId={campaignId} canCompose={access.canCompose} />;
 }
 
-function CampaignDesignBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
+function CampaignDesignBody({
+  campaignId,
+  canCompose,
+}: {
+  campaignId: Id<"campaigns">;
+  canCompose: boolean;
+}) {
   const router = useRouter();
 
   const campaign = useQuery(api.campaigns.getCampaign, { campaignId });
   const updateDoc = useMutation(api.campaigns.updateCampaignDoc);
   const setTheme = useMutation(api.campaigns.setCampaignTheme);
-  const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
-  // `storage.getUrl` is a query, not a mutation — resolved on demand via the
-  // imperative Convex client (`app/(app)/doc/[id].tsx`'s upload-flow precedent),
-  // not `useQuery` (which subscribes reactively, not what a one-off resolve
-  // after an upload needs).
+  // `storage.getUrl` / `getCampaign` are queries, not mutations — resolved on
+  // demand via the imperative Convex client (`app/(app)/doc/[id].tsx`'s
+  // precedent), not `useQuery` (which subscribes reactively, not what a
+  // one-off read after a write needs).
   const convex = useConvex();
   const { run, toast, dismiss } = useActionRunner();
 
-  const [history, setHistory] = useState<History<EmailDocument> | null>(null);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [saveState, setSaveState] = useState<SaveState>("idle");
-  const [saveError, setSaveError] = useState<string | null>(null);
-  const lastSavedRef = useRef<EmailDocument | null>(null);
-  // A "latest" ref for `history` — the debounce timer's closure (and the
-  // save-completion callback below) is captured at EFFECT-SETUP time, so
-  // without this it can only ever see the `history` that was current when
-  // ITS OWN save kicked off, not whatever the user has since undone/redone
-  // to while that save was still in flight.
-  const historyRef = useRef<History<EmailDocument> | null>(null);
-  historyRef.current = history;
-
   // Editable in `draft` OR `changes_requested` (a reviewer sent it back —
-  // `campaigns.ts#assertEditable` enforces the same pair server-side).
-  const editable = campaign?.status === "draft" || campaign?.status === "changes_requested";
-  const { width } = useWindowDimensions();
-  const split = width >= SPLIT_BREAKPOINT;
+  // `campaigns.ts#assertEditable` enforces the same pair server-side) AND
+  // only for a caller who can compose: `updateCampaignDoc` /
+  // `setCampaignTheme` both require `campaigns.compose`, so without this a
+  // design-only holder typed into a live-looking composer whose every
+  // autosave came back "Not saved — … requires campaign compose power."
+  const editable =
+    canCompose && (campaign?.status === "draft" || campaign?.status === "changes_requested");
 
-  // Seed history exactly once, when the campaign first loads.
-  useEffect(() => {
-    if (campaign && history === null) {
-      setHistory(initHistory(campaign.doc as EmailDocument));
-      lastSavedRef.current = campaign.doc as EmailDocument;
-    }
-  }, [campaign, history]);
-
-  const emptyDoc = useMemo<EmailDocument>(() => ({ blocks: [] }), []);
-  const doc = history?.present ?? emptyDoc;
-
-  /**
-   * Persist `toSave`, then check whether `history.present` has moved on (an
-   * undo/redo — or any edit — landing while THIS save was still in flight).
-   * If it has, immediately re-save the CURRENT present instead of waiting
-   * out another debounce cycle: without this, a save already in flight when
-   * an undo lands can resolve AFTER that undo's own (independently
-   * scheduled) save and clobber it on the server with the stale, pre-undo
-   * document — the undo would silently fail to persist.
-   */
   const saveDoc = useCallback(
-    (toSave: EmailDocument) => {
-      setSaveState("saving");
-      void updateDoc({ campaignId, doc: toSave })
-        .then(() => {
-          lastSavedRef.current = toSave;
-          setSaveError(null);
-          const latest = historyRef.current?.present;
-          if (latest !== undefined && latest !== toSave) {
-            saveDoc(latest);
-            return;
-          }
-          setSaveState("saved");
-        })
-        // A REJECTION here used to be swallowed by a bare `void …then(…)`,
-        // leaving the indicator stuck on "Saving…" forever with no clue why.
-        // That mattered little when every block was valid the moment it was
-        // added; with the composed blocks it's routinely reachable — a card
-        // with a button label and not yet a link is `INVALID_DOC` until the
-        // pair completes — so the reason is now shown, in the validator's own
-        // words. `lastSavedRef` is deliberately NOT advanced, so the next
-        // edit retries and a transient invalid state heals itself.
-        .catch((err: unknown) => {
-          setSaveError(errorMessage(err));
-          setSaveState("error");
-        });
-    },
+    (doc: EmailDocument) => updateDoc({ campaignId, doc }),
     [updateDoc, campaignId],
   );
 
-  // Debounced autosave: fires whenever `history.present` changes to a
-  // reference that isn't the last-saved one (undo/redo land back on an
-  // earlier snapshot's exact reference, so returning to an already-saved
-  // state correctly skips a redundant save).
-  useEffect(() => {
-    if (!editable || history === null) return;
-    if (history.present === lastSavedRef.current) {
-      // Nothing to save — but landing back HERE is exactly how a failed save
-      // gets undone: half a button typed, "Not saved — ctaLabel and ctaUrl
-      // must be set together", Cmd+Z. The editor and the server now agree,
-      // so leaving the error up accuses the designer of an unsaved change
-      // she has already backed out, with no edit left that would clear it.
-      // Only `error` is rewritten: `idle` (freshly loaded, never saved) and
-      // `saving` (a save still in flight for a doc this one supersedes) are
-      // both still true.
-      setSaveState((s) => (s === "error" ? "saved" : s));
-      setSaveError(null);
-      return;
-    }
-    const timer = setTimeout(() => saveDoc(history.present), AUTOSAVE_DEBOUNCE_MS);
-    return () => clearTimeout(timer);
-  }, [history, editable, saveDoc]);
-
-  const applyDoc = useCallback((next: EmailDocument) => {
-    setHistory((h) => (h ? pushHistory(h, next) : h));
-  }, []);
-
-  const handleAdd = useCallback(
-    (kind: EmailBlockKind) => {
-      if (!history) return;
-      const { doc: next, id: newId } = insertBlock(history.present, kind, selectedId);
-      applyDoc(next);
-      setSelectedId(newId);
-    },
-    [history, selectedId, applyDoc],
-  );
-
-  const handleUpdate = useCallback(
-    (blockId: string, patch: Record<string, unknown>) => {
-      if (!history) return;
-      applyDoc(updateBlock(history.present, blockId, patch));
-    },
-    [history, applyDoc],
-  );
-
-  const handleDuplicate = useCallback(
-    (blockId: string) => {
-      if (!history) return;
-      const { doc: next, id: newId } = duplicateBlock(history.present, blockId);
-      applyDoc(next);
-      if (newId) setSelectedId(newId);
-    },
-    [history, applyDoc],
-  );
-
-  const handleDelete = useCallback(
-    (blockId: string) => {
-      if (!history) return;
-      applyDoc(removeBlock(history.present, blockId));
-      setSelectedId((cur) => (cur === blockId ? null : cur));
-    },
-    [history, applyDoc],
-  );
-
-  const handleReorder = useCallback(
-    (orderedIds: string[]) => {
-      if (!history) return;
-      applyDoc(reorderBlocks(history.present, orderedIds));
-    },
-    [history, applyDoc],
-  );
-
   /**
-   * Move a block one place up or down.
-   *
-   * The drag handle was the ONLY way to reorder, which needs a pointer and a
-   * 15px grip; on a phone, reordering a fifteen-block newsletter was a
-   * long-press-and-scroll fight. `moveBlock` returns the same doc reference at
-   * either end of the stack, and `pushHistory` is skipped on a no-op, so a
-   * bumped-into-the-ceiling tap costs neither a history step nor a save.
-   */
-  const handleMove = useCallback(
-    (blockId: string, delta: -1 | 1) => {
-      if (!history) return;
-      const next = moveBlock(history.present, blockId, delta);
-      if (next === history.present) return;
-      applyDoc(next);
-      setSelectedId(blockId);
-    },
-    [history, applyDoc],
-  );
-
-  /**
-   * Restyle the campaign (`campaigns.setCampaignTheme`, which had no client
-   * caller at all until now — see `CampaignThemePicker`'s doc).
+   * Restyle the campaign (`campaigns.setCampaignTheme`).
    *
    * The mutation applies the theme SERVER-side to the document as stored, so
-   * the new theme has to be folded back into the composer's local history
-   * immediately: this screen autosaves `history.present` wholesale, and that
-   * snapshot still carries the OLD theme — the very next keystroke would push
-   * it straight back over the restyle and silently undo it. Reading the doc
-   * back (rather than trusting a locally-guessed theme) also keeps the
-   * normalisation the server applied.
+   * the theme that actually landed is read back (rather than trusting a
+   * locally-guessed one, which would drop the normalisation the server
+   * applied) and handed to the composer, which folds it into its local
+   * history — see `DocumentComposer`'s `onApplyTheme` for why that fold is
+   * required.
    */
   const applyTheme = useCallback(
-    async (choice: ThemeChoice): Promise<boolean> => {
+    async (choice: ThemeChoice): Promise<EmailTheme | null> => {
       const result = await run(() => setTheme({ campaignId, ...choice }), {
         errorTitle: "Couldn't apply that theme",
       });
-      if (result === undefined) return false;
+      if (result === undefined) return null;
       const fresh = await convex.query(api.campaigns.getCampaign, { campaignId });
-      const theme = (fresh?.doc as EmailDocument | undefined)?.theme;
-      if (theme) {
-        setHistory((h) => (h ? pushHistory(h, { ...h.present, theme }) : h));
-      }
-      return true;
+      return (fresh?.doc as EmailDocument | undefined)?.theme ?? null;
     },
     [run, setTheme, campaignId, convex],
   );
 
-  const handleUndo = useCallback(() => setHistory((h) => (h ? undoHistory(h) : h)), []);
-  const handleRedo = useCallback(() => setHistory((h) => (h ? redoHistory(h) : h)), []);
-
-  // Cmd/Ctrl+Z undo, Cmd/Ctrl+Shift+Z redo — web only (mirrors SiteMapEditor).
-  useEffect(() => {
-    if (Platform.OS !== "web" || typeof document === "undefined") return;
-    function onKeyDown(e: KeyboardEvent) {
-      const tag = (e.target as HTMLElement | null)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA") return;
-      const mod = e.metaKey || e.ctrlKey;
-      if (!mod || e.key.toLowerCase() !== "z") return;
-      e.preventDefault();
-      if (e.shiftKey) handleRedo();
-      else handleUndo();
-    }
-    document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
-  }, [handleUndo, handleRedo]);
-
-  // Image upload: generate-URL → POST → resolve a servable URL, the
-  // `CoverPhotoPicker` / `doc/[id].tsx` precedent (the app's only prior
-  // image-upload flows).
-  const uploadImage = useMemo<UploadImage | undefined>(() => {
-    if (!editable) return undefined;
-    return async (file: Blob, contentType: string): Promise<UploadedImage> => {
-      const uploadUrl = await generateUploadUrl();
-      const res = await fetch(uploadUrl, {
-        method: "POST",
-        headers: { "Content-Type": contentType },
-        body: file,
-      });
-      // A non-2xx response's body usually isn't JSON at all (a proxy error
-      // page, an empty body) — check `res.ok` BEFORE parsing it, or the
-      // real failure (upload rejected) gets masked by a confusing JSON
-      // parse error instead.
-      if (!res.ok) {
-        throw new Error(`Image upload failed (HTTP ${res.status})`);
-      }
-      const { storageId } = (await res.json()) as { storageId: Id<"_storage"> };
-      const url = await convex.query(api.storage.getUrl, { storageId });
-      if (!url) throw new Error("Could not resolve uploaded image URL");
-      // The `storageId` rides along because `emailImages.addImage` takes the
-      // storage handle, not a client-supplied URL — it resolves the public
-      // URL itself rather than trusting one it was handed.
-      return { url, storageId };
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [editable]);
-
-  const previewHtml = useMemo(
-    () =>
-      renderCampaignEmail(doc, {
-        recipient: PREVIEW_RECIPIENT,
-        unsubscribeUrl: "#",
-        // orgAddress isn't exposed to the client yet (only
-        // `integrationSettings.readCampaignsMailSettings`, an internalQuery) —
-        // the live preview omits the footer address line until a public
-        // reader lands; the real send still includes it.
-      }),
-    [doc],
-  );
-
-  if (campaign === undefined || history === null) return <Screen loading />;
-
-  const blockIds = doc.blocks.map((b) => b.id);
-
-  const editorColumn = (
-    <View className={split ? "flex-1" : undefined}>
-      <View className="mb-3 flex-row items-center justify-between gap-2">
-        <View className="flex-row items-center gap-2">
-          <Button
-            title="Undo"
-            variant="secondary"
-            size="sm"
-            icon="corner-up-left"
-            onPress={handleUndo}
-            disabled={!editable || !canUndo(history)}
-          />
-          <Button
-            title="Redo"
-            variant="secondary"
-            size="sm"
-            icon="corner-up-right"
-            onPress={handleRedo}
-            disabled={!editable || !canRedo(history)}
-          />
-        </View>
-        <SaveIndicator editable={editable} saveState={saveState} error={saveError} />
-      </View>
-
-      {!editable ? (
-        <Text className="mb-3 text-xs text-muted">
-          {campaign?.status === "pending_approval"
-            ? "Awaiting approval — the design is locked until a reviewer decides."
-            : "This campaign has been sent (or is on its way) — the design is locked."}
-        </Text>
-      ) : (
-        <View className="mb-4">
-          <BlockPalette onAdd={handleAdd} />
-        </View>
-      )}
-
-      {doc.blocks.length === 0 ? (
-        <View className="items-center rounded-lg border border-dashed border-border bg-raised px-6 py-14">
-          <Icon name="mail" size={22} color={colors.faint} />
-          <Text className="mt-2 text-sm text-muted">
-            Add a block above to start writing this email.
-          </Text>
-        </View>
-      ) : editable ? (
-        <SortableRows
-          ids={blockIds}
-          onReorder={handleReorder}
-          renderRow={({ id: blockId, drag }) => {
-            const index = doc.blocks.findIndex((b) => b.id === blockId);
-            const block = index < 0 ? undefined : doc.blocks[index];
-            if (!block) return null;
-            return (
-              <BlockCard
-                block={block}
-                selected={selectedId === blockId}
-                onSelect={() => setSelectedId(blockId)}
-                onChange={(patch) => handleUpdate(blockId, patch)}
-                onDuplicate={() => handleDuplicate(blockId)}
-                onDelete={() => handleDelete(blockId)}
-                onMoveUp={() => handleMove(blockId, -1)}
-                onMoveDown={() => handleMove(blockId, 1)}
-                canMoveUp={index > 0}
-                canMoveDown={index < doc.blocks.length - 1}
-                drag={drag}
-                uploadImage={uploadImage}
-                run={run}
-              />
-            );
-          }}
-        />
-      ) : (
-        // Past draft/changes_requested every write is refused server-side
-        // (`assertEditable`), so the cards render LOCKED — visibly static
-        // fields rather than live-looking ones wired to no-op handlers, which
-        // is what used to let a reviewer type into a submitted campaign and
-        // watch the words vanish on reload.
-        doc.blocks.map((block) => (
-          <BlockCard
-            key={block.id}
-            block={block}
-            selected={false}
-            readOnly
-            onSelect={() => {}}
-            onChange={() => {}}
-            onDuplicate={() => {}}
-            onDelete={() => {}}
-          />
-        ))
-      )}
-    </View>
-  );
-
-  const previewColumn = (
-    <View className={split ? "ml-4 w-[380px]" : "mt-6"}>
-      {/* Above the preview, not below it: the theme is the thing the preview
-          is FOR, and a picker under a 620px pane is a picker nobody finds. */}
-      {editable ? (
-        <View className="mb-3">
-          <CampaignThemePicker
-            currentThemeName={doc.theme?.name}
-            onApply={applyTheme}
-          />
-        </View>
-      ) : null}
-      <Text className="mb-2 text-xs font-bold uppercase tracking-wider text-faint">
-        Live preview
-      </Text>
-      <EmailHtmlPreview html={previewHtml} height={split ? 620 : 420} />
-      <View className="mt-4">
-        <MergeTagRow />
-      </View>
-    </View>
-  );
+  if (campaign === undefined) return <Screen loading />;
 
   return (
     <Screen maxWidth={FULL_WIDTH}>
@@ -529,82 +153,36 @@ function CampaignDesignBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
           />
         </View>
       </View>
-      {split ? (
-        <View className="flex-row">
-          {editorColumn}
-          {previewColumn}
-        </View>
-      ) : (
-        <View>
-          {editorColumn}
-          {previewColumn}
-        </View>
-      )}
+      <DocumentComposer
+        doc={campaign.doc as EmailDocument}
+        editable={editable}
+        lockedNotice={lockNote(campaign.status, canCompose)}
+        onSave={saveDoc}
+        onApplyTheme={applyTheme}
+        run={run}
+      />
     </Screen>
   );
 }
 
-/** Autosave states. `error` exists so a rejected save is VISIBLE — see
- *  `saveDoc`'s catch for why that's now a routine state rather than a
- *  never-happens one. */
-type SaveState = "idle" | "saving" | "saved" | "error";
-
 /**
- * The autosave state, and — when a save is refused — WHY, in the labels this
- * screen actually shows.
+ * Why the composer is locked, in one line above the block stack.
  *
- * The reason used to be the validator's own words (`blocks[3]: card:
- * "ctaLabel" and "ctaUrl" must be set together`), which names fields from the
- * document contract rather than anything on screen: there is no "ctaLabel"
- * here, there's a "Button label". `explainDocError` maps the gate's messages
- * onto the composer's vocabulary and keeps the raw string behind "Details",
- * so the original is still one tap away when someone needs to grep the
- * validator for it.
+ * The STATUS reasons come first because they're the ones that change: a
+ * campaign someone else already submitted is locked for everybody, and
+ * saying "you'd need compose power" about it would be answering a question
+ * nobody asked. The missing-power line is only reachable on a campaign that
+ * would otherwise be editable — a design-only holder reading a draft — and it
+ * points at what she DOES own rather than only at what she doesn't.
  */
-function SaveIndicator({
-  editable,
-  saveState,
-  error,
-}: {
-  editable: boolean;
-  saveState: SaveState;
-  error: string | null;
-}) {
-  const [showRaw, setShowRaw] = useState(false);
-
-  if (!editable) return null;
-  if (saveState === "saving") {
-    return <Text className="text-xs text-muted">Saving…</Text>;
+function lockNote(status: string | undefined, canCompose: boolean): string {
+  if (status === "pending_approval") {
+    return "Awaiting approval — the design is locked until a reviewer decides.";
   }
-  if (saveState === "saved") {
-    return <Text className="text-xs text-success">Saved</Text>;
+  if (status === "draft" || status === "changes_requested") {
+    return canCompose
+      ? "The design is locked."
+      : "Read-only — editing a campaign takes compose power. Themes, templates and the image library are yours to change.";
   }
-  if (saveState === "error") {
-    const explained = error === null ? null : explainDocError(error);
-    return (
-      <View className="max-w-[340px] items-end">
-        <Text className="text-right text-xs text-danger">
-          Not saved — {explained?.message ?? "something went wrong."}
-        </Text>
-        {explained && explained.recognized ? (
-          <>
-            <Pressable
-              onPress={() => setShowRaw((s) => !s)}
-              hitSlop={6}
-              accessibilityRole="button"
-              accessibilityLabel={showRaw ? "Hide the technical reason" : "Show the technical reason"}
-            >
-              <Text className="mt-0.5 text-2xs text-muted underline">
-                {showRaw ? "Hide details" : "Details"}
-              </Text>
-            </Pressable>
-            {showRaw ? (
-              <Text className="mt-0.5 text-right text-2xs text-faint">{explained.raw}</Text>
-            ) : null}
-          </>
-        ) : null}
-      </View>
-    );
-  }
-  return null;
+  return "This campaign has been sent (or is on its way) — the design is locked.";
 }

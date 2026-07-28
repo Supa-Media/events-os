@@ -421,3 +421,253 @@ describe("fillTemplateArtwork", () => {
     expect(html).not.toContain("Add artwork from the image library");
   });
 });
+
+/**
+ * The alt-text trap.
+ *
+ * Every row the newsletter import writes carries `alt: ""` on purpose, and the
+ * seeder re-runs `fillTemplateArtwork` on every import. So an unconditional
+ * `imageAlt: art.alt` doesn't just fail to add alt text — it DELETES any the
+ * shipped template authors. That is harmless only for exactly as long as the
+ * shipped newsletter happens to author none on its card/footer slots, which is
+ * an accident of today's copy, not a property of the function. These tests
+ * pin the rule so writing alt text into the template can never silently
+ * regress accessibility on the next seed.
+ */
+describe("fillTemplateArtwork — an empty library alt never erases authored alt", () => {
+  /** The shipped newsletter with alt text authored onto its artwork slots —
+   *  the state this guard exists to protect. */
+  function docWithAuthoredAlt() {
+    return {
+      ...template.doc,
+      blocks: template.doc.blocks.map((block) => {
+        if (block.id === "blk_nl-hero" && block.kind === "card") {
+          return { ...block, imageAlt: "Volunteers setting up in the park" };
+        }
+        if (block.id === "blk_nl-footer" && block.kind === "footer") {
+          return { ...block, logoAlt: "Public Worship" };
+        }
+        return block;
+      }),
+    };
+  }
+
+  /** The library exactly as an import leaves it: real URLs, empty alt. */
+  function libraryWithNoAlt(): Map<string, ResolvedArtwork> {
+    return new Map(
+      NEWSLETTER_ASSETS.map((a) => [
+        a.sourceKey,
+        { url: `https://files.example.com/${a.sourceKey}.png`, alt: "" },
+      ]),
+    );
+  }
+
+  test("a card's authored imageAlt survives an import's empty alt", () => {
+    const filled = fillTemplateArtwork(docWithAuthoredAlt(), libraryWithNoAlt());
+    const hero = blockById(filled, "blk_nl-hero");
+    if (hero?.kind !== "card") return expect.unreachable("card");
+    expect(hero.imageUrl).toBe("https://files.example.com/hero-photo.png");
+    expect(hero.imageAlt).toBe("Volunteers setting up in the park");
+  });
+
+  test("a footer's authored logoAlt survives an import's empty alt", () => {
+    const filled = fillTemplateArtwork(docWithAuthoredAlt(), libraryWithNoAlt());
+    const footer = blockById(filled, "blk_nl-footer");
+    if (footer?.kind !== "footer") return expect.unreachable("footer");
+    expect(footer.logoUrl).toBe("https://files.example.com/footer-logo.png");
+    expect(footer.logoAlt).toBe("Public Worship");
+  });
+
+  test("a NON-empty library alt still wins — a human writing alt in the library reaches the template", () => {
+    const library = libraryWithNoAlt();
+    library.set("hero-photo", {
+      url: "https://files.example.com/hero-photo.png",
+      alt: "Transcribed from the library",
+    });
+    library.set("footer-logo", {
+      url: "https://files.example.com/footer-logo.png",
+      alt: "Public Worship wordmark",
+    });
+    const filled = fillTemplateArtwork(docWithAuthoredAlt(), library);
+
+    const hero = blockById(filled, "blk_nl-hero");
+    if (hero?.kind !== "card") return expect.unreachable("card");
+    expect(hero.imageAlt).toBe("Transcribed from the library");
+
+    const footer = blockById(filled, "blk_nl-footer");
+    if (footer?.kind !== "footer") return expect.unreachable("footer");
+    expect(footer.logoAlt).toBe("Public Worship wordmark");
+  });
+
+  test("a slot with no alt on EITHER side still gets \"\" — the validator requires the field", () => {
+    // `imageAlt`/`logoAlt` are mandatory once a url is set ("" is the legal
+    // decorative value), so the guard must not leave them undefined.
+    const filled = fillTemplateArtwork(template.doc, libraryWithNoAlt());
+    const supply = blockById(filled, "blk_nl-supply");
+    if (supply?.kind !== "card") return expect.unreachable("card");
+    expect(supply.imageAlt).toBe("");
+
+    const footer = blockById(filled, "blk_nl-footer");
+    if (footer?.kind !== "footer") return expect.unreachable("footer");
+    expect(footer.logoAlt).toBe("");
+
+    expect(validateEmailDocument(filled).ok).toBe(true);
+  });
+
+  test("a bleed_image's authored alt survives an import's empty alt", () => {
+    // The song artwork is the one bleed block that authors copy. An empty
+    // library alt must not touch it.
+    const song = blockById(template.doc, "blk_nl-song");
+    if (song?.kind !== "bleed_image") return expect.unreachable("bleed_image");
+    expect(song.alt).toBe("Song of the month");
+
+    const filled = fillTemplateArtwork(template.doc, libraryWithNoAlt());
+    const after = blockById(filled, "blk_nl-song");
+    if (after?.kind !== "bleed_image") return expect.unreachable("bleed_image");
+    expect(after.alt).toBe("Song of the month");
+    expect(after.url).toBe("https://files.example.com/song-artwork.png");
+  });
+});
+
+/**
+ * The BANNERS are the regression this whole guard exists for.
+ *
+ * `bleed_image` used to be filled with `url` alone — no alt at all. Four of
+ * the newsletter's five bleed blocks ship `alt: ""`, and in this design the
+ * banner IS the section heading, so a SUCCESSFUL import produced a newsletter
+ * whose masthead and every section banner rendered `alt=""`. Gmail and Outlook
+ * block remote images by default: the recipient saw four blank bands where the
+ * headings should be, and the plaintext part lost its section structure
+ * entirely. It also meant alt typed into `emailImages.updateImage` — the one
+ * escape hatch — reached cards and the footer but never a banner.
+ */
+describe("fillTemplateArtwork — a library alt reaches the BLEED banners", () => {
+  /** The library once a human has transcribed the words in the artwork. */
+  function libraryWithBannerAlt(): Map<string, ResolvedArtwork> {
+    const library = new Map<string, ResolvedArtwork>(
+      NEWSLETTER_ASSETS.map((a) => [
+        a.sourceKey,
+        { url: `https://files.example.com/${a.sourceKey}.png`, alt: "" },
+      ]),
+    );
+    library.set("masthead", {
+      url: "https://files.example.com/masthead.png",
+      alt: "Public Worship",
+    });
+    library.set("banner-whats-on", {
+      url: "https://files.example.com/banner-whats-on.png",
+      alt: "What's on",
+    });
+    return library;
+  }
+
+  test("a non-empty library alt lands on the masthead and the banners", () => {
+    const filled = fillTemplateArtwork(template.doc, libraryWithBannerAlt());
+
+    const masthead = blockById(filled, "blk_nl-masthead");
+    if (masthead?.kind !== "bleed_image") return expect.unreachable("bleed_image");
+    expect(masthead.alt).toBe("Public Worship");
+
+    const whatsOn = blockById(filled, "blk_nl-banner-whats-on");
+    if (whatsOn?.kind !== "bleed_image") return expect.unreachable("bleed_image");
+    expect(whatsOn.alt).toBe("What's on");
+  });
+
+  test("the transcribed heading reaches the rendered <img alt>", () => {
+    const html = renderCampaignEmail(
+      fillTemplateArtwork(template.doc, libraryWithBannerAlt()),
+      baseOpts,
+    );
+    expect(html).toContain('alt="Public Worship"');
+    expect(html).toContain("alt=\"What&#39;s on\"");
+  });
+
+  test("the transcribed heading reaches the PLAINTEXT part", () => {
+    // `renderCampaignText`'s bleed case falls back to null on an empty alt, so
+    // a url-only fill left the text/plain alternative with no section
+    // structure at all — a spam signal and a dead end for a plaintext reader.
+    const text = renderCampaignText(
+      fillTemplateArtwork(template.doc, libraryWithBannerAlt()),
+      baseOpts,
+    );
+    expect(text).toContain("What's on");
+  });
+
+  test("an empty library alt still leaves every authored bleed alt intact", () => {
+    const library = libraryWithBannerAlt();
+    const filled = fillTemplateArtwork(template.doc, library);
+    // The song's alt is authored in the template and empty in the library.
+    const song = blockById(filled, "blk_nl-song");
+    if (song?.kind !== "bleed_image") return expect.unreachable("bleed_image");
+    expect(song.alt).toBe("Song of the month");
+    // A banner nobody transcribed keeps the shipped "" — legal "decorative".
+    const support = blockById(filled, "blk_nl-banner-support");
+    if (support?.kind !== "bleed_image") return expect.unreachable("bleed_image");
+    expect(support.alt).toBe("");
+    expect(validateEmailDocument(filled).ok).toBe(true);
+  });
+});
+
+/**
+ * A poisoned library row costs its own slot and nothing else.
+ *
+ * `fillTemplateArtwork` writes straight into a document that
+ * `assertValidTemplateDoc` then validates, so a url the write gate rejects
+ * doesn't break one image — it throws out of `seedBuiltInTemplates` on EVERY
+ * deploy and out of every `createCampaign`. Urls come from
+ * `ctx.storage.getUrl()` today, which is why this is defensive rather than
+ * reachable.
+ */
+describe("fillTemplateArtwork — an implausible url is skipped, never written", () => {
+  function libraryWith(url: unknown): Map<string, ResolvedArtwork> {
+    return new Map([
+      ["masthead", { url, alt: "" } as unknown as ResolvedArtwork],
+      [
+        "hero-photo",
+        { url: "https://files.example.com/hero-photo.png", alt: "" } as ResolvedArtwork,
+      ],
+    ]);
+  }
+
+  for (const bad of ["javascript:alert(1)", "data:text/html,<script>", "  ", "not-a-url"]) {
+    test(`"${bad}" leaves the slot empty and the document valid`, () => {
+      const filled = fillTemplateArtwork(template.doc, libraryWith(bad));
+      const masthead = blockById(filled, "blk_nl-masthead");
+      if (masthead?.kind !== "bleed_image") return expect.unreachable("bleed_image");
+      expect(masthead.url).toBeUndefined();
+      // The good row in the same library still lands.
+      const hero = blockById(filled, "blk_nl-hero");
+      if (hero?.kind !== "card") return expect.unreachable("card");
+      expect(hero.imageUrl).toBe("https://files.example.com/hero-photo.png");
+      // And the seed's own gate still passes.
+      const result = validateEmailDocument(filled);
+      expect(result.ok, result.ok ? "" : result.error).toBe(true);
+    });
+  }
+
+  for (const bad of [null, undefined, 42]) {
+    test(`a ${bad === null ? "null" : typeof bad} url does not throw`, () => {
+      const filled = fillTemplateArtwork(template.doc, libraryWith(bad));
+      const masthead = blockById(filled, "blk_nl-masthead");
+      if (masthead?.kind !== "bleed_image") return expect.unreachable("bleed_image");
+      expect(masthead.url).toBeUndefined();
+      expect(validateEmailDocument(filled).ok).toBe(true);
+    });
+  }
+
+  test("a non-string alt does not throw either", () => {
+    const filled = fillTemplateArtwork(
+      template.doc,
+      new Map([
+        [
+          "masthead",
+          { url: "https://files.example.com/masthead.png", alt: null } as unknown as ResolvedArtwork,
+        ],
+      ]),
+    );
+    const masthead = blockById(filled, "blk_nl-masthead");
+    if (masthead?.kind !== "bleed_image") return expect.unreachable("bleed_image");
+    expect(masthead.alt).toBe("");
+    expect(validateEmailDocument(filled).ok).toBe(true);
+  });
+});

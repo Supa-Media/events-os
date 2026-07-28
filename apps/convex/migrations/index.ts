@@ -15,6 +15,16 @@
  * NB: `apps/convex/migrations.ts` (the sibling file) holds the historical
  * hand-run migration bodies + the `runPending` runner; this folder is the
  * registry. Both coexist exactly like `schema.ts` + `schema/` in this project.
+ *
+ * NOT EVERY NUMBERED FILE IS IN THE REGISTRY. Some are numbered purely for
+ * discoverability and run by other means — a `MutationCtx` can't `fetch` or
+ * touch the filesystem, so anything that needs to must be an action:
+ *  - `0037` / `0048` are human-run (`npx convex run`), by design.
+ *  - `0050` is human-run and self-reschedules in batches.
+ *  - `0052` is driven by an HOURLY CRON (`crons.ts` → "newsletter artwork
+ *    import"), because its source is a dying CDN and the run therefore has to
+ *    be retryable — which is the one thing the ledger guarantees it isn't.
+ *    Its own header spells the reasoning out.
  */
 import type { MutationCtx } from "../_generated/server";
 

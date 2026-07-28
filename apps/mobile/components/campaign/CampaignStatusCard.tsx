@@ -424,7 +424,8 @@ function PendingSubmitterView({
 
 /** The sample recipient the review render is addressed to — never sent
  *  anywhere, and the same one the composer previews against
- *  (`design.tsx#PREVIEW_RECIPIENT`) so the two screens show one email. */
+ *  (`designer/DocumentComposer.tsx#PREVIEW_RECIPIENT`) so the two screens show
+ *  one email. */
 const REVIEW_RECIPIENT = { name: "Ada Lovelace", email: "ada@example.com" };
 
 /**
