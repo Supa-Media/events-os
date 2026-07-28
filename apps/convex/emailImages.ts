@@ -17,10 +17,11 @@
  * `emailBlocks.ts#validateCardContent` refuses an `imageUrl` without one.
  */
 import { ConvexError, v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { requireUserId } from "./lib/context";
 import { requireCampaignsAccess } from "./lib/campaignsAccess";
+import { SUPERUSER_EMAILS } from "./lib/superuser";
 
 const scopeValidator = v.union(v.id("chapters"), v.literal("central"));
 
@@ -135,5 +136,85 @@ export const deleteImage = mutation({
     await ctx.storage.delete(existing.storageId);
     await ctx.db.delete(imageId);
     return null;
+  },
+});
+
+// ── One-time newsletter artwork import (migrations/0052) ────────────────────
+// These back `0052_import_newsletter_images.ts`. They live here rather than in
+// the migration file so the table's write rules stay in one module, and they
+// are `internal*` because the import is a human-run operation, not something
+// a client may trigger.
+
+/** Which `sourceKey`s are already on file for a scope — the idempotency read
+ *  for the import. Bounded by the same limit `listImages` uses. */
+export const listImportedSourceKeys = internalQuery({
+  args: { scope: scopeValidator },
+  returns: v.array(v.string()),
+  handler: async (ctx, { scope }) => {
+    const rows = await ctx.db
+      .query("emailImages")
+      .withIndex("by_scope", (q) => q.eq("scope", scope))
+      .take(IMAGE_SCAN_LIMIT);
+    return rows
+      .map((r) => r.sourceKey)
+      .filter((k): k is string => typeof k === "string" && k.length > 0);
+  },
+});
+
+/**
+ * Insert one imported asset. Re-checks the `sourceKey` inside the mutation
+ * rather than trusting the action's earlier read: the action fetches over the
+ * network between the two, which is ample time for a concurrent run (or a
+ * human re-running the import) to have written the same key.
+ *
+ * `alt` is deliberately NOT taken from the caller — every imported asset
+ * starts with empty alt because the artwork carries text nobody has
+ * transcribed. See `NEWSLETTER_ASSETS`'s doc.
+ */
+export const insertImportedImage = internalMutation({
+  args: {
+    scope: scopeValidator,
+    sourceKey: v.string(),
+    storageId: v.id("_storage"),
+    url: v.string(),
+    label: v.string(),
+    createdBy: v.id("users"),
+  },
+  returns: v.union(v.id("emailImages"), v.null()),
+  handler: async (ctx, { scope, sourceKey, storageId, url, label, createdBy }) => {
+    const existing = await ctx.db
+      .query("emailImages")
+      .withIndex("by_scope", (q) => q.eq("scope", scope))
+      .take(IMAGE_SCAN_LIMIT);
+    if (existing.some((r) => r.sourceKey === sourceKey)) {
+      // Lost the race — drop the blob we just stored so it doesn't leak.
+      await ctx.storage.delete(storageId);
+      return null;
+    }
+    return await ctx.db.insert("emailImages", {
+      scope,
+      storageId,
+      url,
+      alt: "",
+      label,
+      sourceKey,
+      createdBy,
+      createdAt: Date.now(),
+    });
+  },
+});
+
+/** The user an imported row is attributed to: earliest superuser, else
+ *  earliest user. Mirrors migration 0049's resolution exactly. */
+export const resolveImportOwner = internalQuery({
+  args: {},
+  returns: v.union(v.id("users"), v.null()),
+  handler: async (ctx) => {
+    const users = await ctx.db.query("users").take(200);
+    if (users.length === 0) return null;
+    const superuser = users.find(
+      (u) => !!u.email && SUPERUSER_EMAILS.includes(u.email.trim().toLowerCase()),
+    );
+    return (superuser ?? users[0])._id;
   },
 });

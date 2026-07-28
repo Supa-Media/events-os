@@ -595,6 +595,12 @@ export const emailImages = defineTable({
   url: v.string(),
   alt: v.string(),
   label: v.optional(v.string()),
+  /** Set ONLY on rows created by `migrations/0052_import_newsletter_images.ts`
+   *  — the stable key from `@events-os/shared`'s `NEWSLETTER_ASSETS`. It is
+   *  what makes that import idempotent (re-running skips a key already on
+   *  file) and what lets the built-in template place a specific asset without
+   *  hardcoding a URL. A hand-uploaded image has none. */
+  sourceKey: v.optional(v.string()),
   createdBy: v.id("users"),
   createdAt: v.number(),
 }).index("by_scope", ["scope"]);
