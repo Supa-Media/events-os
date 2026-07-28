@@ -304,24 +304,29 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "rule",
+        title: "You build the email on the design itself",
+        text: "The composer is a CANVAS, not a form. The email is drawn in front of you at full width, block by block, already looking like the thing that lands in someone's inbox. You click a block ON THE DESIGN to select it; a toolbar appears for that block and nothing else; headings and body copy are typed IN PLACE, in the spot they'll actually sit. Reorder a block or delete it from the block itself, not from a field somewhere off to the side. Next to the canvas sits the PREVIEW, the same email rendered the way a mail app will render it. On a wide screen you keep both in view: the canvas is where you edit, the preview is the honest answer about what a person opening this in Gmail will see.",
+      },
+      {
+        kind: "rule",
         title: "The THEME carries the brand — you never colour a block",
-        text: "An email's look isn't decided block by block. It comes from a THEME — the org's brand colours, fonts, corner radius, and wordmark — edited in one place, **Emails → Themes**. Every block in the email INHERITS it: headings, body copy, buttons, dividers, quotes, poll options. There is deliberately no \"make this heading maroon\" control, and that's the point — when the brand moves, you edit the theme once and every future send follows, instead of hunting fifty old emails for the old red. Themes ship with presets (Public Worship's own brand plus seasonal Summer, Fall, and Winter variations), and you can save your own. Pick a theme per email: the newsletter can wear Advent in December without anyone touching a single block.",
+        text: "An email's look isn't decided block by block. It comes from a THEME — the org's brand colours, fonts, corner radius, and wordmark — edited in one place, **Emails → Themes**. Every block in the email INHERITS it: headings, body copy, buttons, dividers, quotes, poll options. The canvas does not change this, and the freedom it gives you is worth being exact about: LAYOUT is yours — where a block sits, how wide it is, what order things come in. COLOUR is the theme's. Select any block and look at its toolbar: it will offer you layout, and never a colour swatch. There is deliberately no \"make this heading maroon\" control, and the more you can rearrange directly, the more that matters — a covering volunteer can rebuild a newsletter on a Friday afternoon and still cannot put last year's red back on the page. When the brand moves, you edit the theme once and every future send follows, instead of hunting fifty old emails for the old red. Themes ship with presets (Public Worship's own brand plus seasonal Summer, Fall, and Winter variations), and you can save your own. Pick a theme per email: the newsletter can wear Advent in December without anyone touching a single block.",
       },
       {
         kind: "rule",
         title: "It has to be readable on a phone, at night",
-        text: "Emails are DARK-MODE AWARE and RESPONSIVE. Every theme carries a dark set alongside its light one, so a recipient whose phone is in dark mode gets a deliberately designed dark version — not the muddy auto-inversion a mail client would invent for a cream card. Columns stack and buttons go full-width on a narrow screen. And when you edit a theme, the composer CHECKS CONTRAST in **both** schemes and warns you when text would be hard to read (body copy on the card, a button label on the button, links). The warning is advice, not a lock — it's your brand, and you can ship past it — but it's the difference between \"it looked fine on my monitor\" and knowing someone reading on a phone in sunlight can actually read it.",
+        text: "Emails are DARK-MODE AWARE and RESPONSIVE. Every theme carries a dark set alongside its light one, so a recipient whose phone is in dark mode gets a deliberately designed dark version — not the muddy auto-inversion a mail client would invent for a cream card. Columns stack and buttons go full-width on a narrow screen. The canvas draws your blocks at full width, so that's the one thing it can't show you — the preview beside it is where a narrow layout stops being a guess. And when you edit a theme, the composer CHECKS CONTRAST in **both** schemes and warns you when text would be hard to read (body copy on the card, a button label on the button, links). The warning is advice, not a lock — it's your brand, and you can ship past it — but it's the difference between \"it looked fine on my monitor\" and knowing someone reading on a phone in sunlight can actually read it.",
       },
       {
         kind: "reveal",
         prompt:
           "The person who designs the monthly newsletter is away, and this month's issue has to go out Friday. Nobody left is a designer. What now?",
         answer:
-          "Start from the TEMPLATE. Any email can be saved as a reusable starting point, and Public Worship's monthly newsletter ships as a built-in one — layout, theme, and structure already right. You open it, replace the copy, and submit it for approval like any other email. Templates exist exactly so a send isn't hostage to one person's calendar: the design decisions were made once, by the designer, and everyone else fills in the words. (Two-party approval still applies — a template is a head start, not a shortcut past the reviewer.) The templates themselves live on **Emails → Templates**, and they're the DESIGNER's to keep sharp: \"New template\" starts a fresh one from a blank page, \"Edit design\" opens any of them in the same block composer an email uses — blocks, theme and all. That work needs design power, not compose: the person who owns the look never has to be the person who owns a send.",
+          "Start from the TEMPLATE. Any email can be saved as a reusable starting point, and Public Worship's monthly newsletter ships as a built-in one — layout, theme, and structure already right. You open it, replace the copy, and submit it for approval like any other email. Templates exist exactly so a send isn't hostage to one person's calendar: the design decisions were made once, by the designer, and everyone else fills in the words. (Two-party approval still applies — a template is a head start, not a shortcut past the reviewer.) The templates themselves live on **Emails → Templates**, and they're the DESIGNER's to keep sharp: \"New template\" starts a fresh one from a blank page, \"Edit design\" opens any of them on the same canvas an email uses — same blocks, same click-to-edit, same theme. That work needs design power, not compose: the person who owns the look never has to be the person who owns a send.",
       },
       {
         kind: "tip",
-        text: "**Two more things that save real time.** An email can ask a QUESTION inline — add a poll block, and the recipient taps an option right in the email and lands on a short confirm page (tapping is not voting; the confirm page is what records it, so a mail scanner prefetching links can't stuff the ballot). It's one vote per recipient, and re-voting CHANGES their answer rather than adding a second one — so the totals are people, not taps. And the IMAGE LIBRARY holds your reusable illustrations and logos: pick one instead of re-uploading the same graphic into every email.",
+        text: "**Two more things that save real time.** An email can ask a QUESTION inline — add a poll block to the canvas, type the options straight onto it, and the recipient taps one right in the email and lands on a short confirm page (tapping is not voting; the confirm page is what records it, so a mail scanner prefetching links can't stuff the ballot). It's one vote per recipient, and re-voting CHANGES their answer rather than adding a second one — so the totals are people, not taps. And the IMAGE LIBRARY holds your reusable illustrations and logos: pick one and it drops onto the canvas, instead of re-uploading the same graphic into every email.",
       },
       {
         kind: "tip",
@@ -364,7 +369,7 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "Colour lives on the theme, never on a block. That's why there's no per-block colour control: a rebrand is one edit, and no single email can quietly drift off-brand.",
+          "Colour lives on the theme, never on a block — and the canvas doesn't change that. It gives you layout, not brand: select a block and there's no colour control on its toolbar to find. That's the point. A rebrand stays one edit, and no single email can quietly drift off-brand no matter how freely someone rearranges it.",
       },
       {
         prompt: "The Executive Director writes a mass email. Who can approve it before it sends?",
@@ -389,7 +394,7 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 0,
         explanation:
-          "Suppression (and a person's own marketing opt-out) beats BOTH filters and hand-picks — explicitly adding someone to the include list is curation, not consent, and the composer's live preview shows exactly who was dropped and why.",
+          "Suppression (and a person's own marketing opt-out) beats BOTH filters and hand-picks — explicitly adding someone to the include list is curation, not consent, and the segment preview shows exactly who was dropped and why.",
       },
     ],
   },
