@@ -1,6 +1,6 @@
 /**
- * The editor for ONE `EmailCardContent` — how the card is painted, its image,
- * its copy, and its call to action.
+ * The PROPERTIES of one `EmailCardContent` — how the card is painted, where
+ * its image sits, and where its call to action points.
  *
  * Written once and used twice, exactly as the shared shape intends: the
  * full-width `card` block edits a single one of these, and the `columns`
@@ -9,42 +9,34 @@
  * and the composer editor are each written once"), so duplicating this per
  * block kind would defeat the contract's whole point.
  *
+ * ── COPY is not edited here ────────────────────────────────────────────────
+ * The heading, eyebrow, body, attribution and button LABEL all edit in place
+ * on the canvas, where they appear (`canvas/BlockView.tsx`). What is left here
+ * is what a canvas can't yet express: the variant, the image's address and
+ * description, where the image sits, how wide its column is, the text
+ * alignment, and the button's destination. Duplicating a text field here would
+ * put back the form the canvas replaced.
+ *
  * ── The fields follow the variant ──────────────────────────────────────────
- * A card carries eleven fields now, and showing all eleven at once turns the
- * one control that matters (the variant — it decides the fill, the alignment,
- * the heading size and the button style in one tap) into the twelfth thing on
- * a scroll. So the layout-dependent fields appear only where they DO
- * something: the image side and its column width need an image, the width
- * needs the image to be beside the text rather than above it, and the
- * attribution line is the testimonial's own field.
+ * The layout-dependent fields appear only where they DO something: the image
+ * side and its column width need an image, and the width needs the image to be
+ * beside the text rather than above it.
  *
- * The one rule that overrides that: a field is never hidden while it still
- * holds content. The renderer paints `attribution` on every variant, so
- * hiding a filled one behind a variant switch would leave a line in the email
- * with nothing in the editor to explain it — a field that's set stays visible
- * whatever the variant says.
- *
- * ── The validation rules live HERE, inline ─────────────────────────────────
+ * ── The validation rules are mirrored, but rendered elsewhere ──────────────
  * `validateEmailDocument` rejects a card whose `imageAlt` is missing while
  * `imageUrl` is set, one where exactly one of `ctaLabel`/`ctaUrl` is filled,
- * and one whose `ctaUrl` carries a scheme outside http/https/mailto. All
- * three are easy to hit by accident and all fail at SAVE time, server-side,
- * long after the mistake — so each is mirrored as a field-level hint the
- * moment it's true. The hints are advisory-looking (they don't block typing)
- * but they name the exact fix.
- *
- * They mirror the validator EXACTLY, raw-string semantics and all — the
- * predicates live in `lib/emailDesigner.ts` so they can be pinned against
- * `validateEmailDocument` itself in a unit test. A hint that's merely
- * approximately right is worse than none: the document is rejected WHOLE, so
- * a state the server refuses but the form calls fine reads as "the editor
- * stopped saving" across every other block on the page.
+ * and one whose `ctaUrl` carries a scheme outside http/https/mailto. All three
+ * are easy to hit by accident and all fail at SAVE time, server-side, long
+ * after the mistake. The predicates that mirror them live in
+ * `lib/emailDesigner.ts` (pinned against the real validator in a unit test);
+ * `canvas/blockWarnings.ts` turns them into the warnings the block badge
+ * counts and the inspector spells out, above these controls.
  *
  * Choosing an image ALWAYS writes `imageAlt` alongside `imageUrl` (as `""`
  * when there's nothing better), because "" is the contract's legitimate
  * "decorative" value and `undefined` is the one that makes the document
- * unsaveable. The empty-alt warning then nags visibly rather than silently
- * breaking autosave.
+ * unsaveable — so the empty-alt case is a visible advisory rather than a
+ * silently broken autosave.
  */
 import { Text, View } from "react-native";
 import type { EmailCardContent } from "@events-os/shared";
@@ -55,10 +47,7 @@ import {
   IMAGE_WIDTH_PCT_STEP,
   MAX_IMAGE_WIDTH_PCT,
   MIN_IMAGE_WIDTH_PCT,
-  cardCtaUrlProblem,
-  ctaPairProblem,
   imageAltProblem,
-  optionalImageUrlProblem,
   stepImageWidthPct,
 } from "../../../lib/emailDesigner";
 import { ImageLibraryPicker, useImageLibraryRegistration } from "./ImageLibraryPicker";
@@ -97,25 +86,13 @@ export function CardContentEditor({
   const hasImage = typeof content.imageUrl === "string" && content.imageUrl.length > 0;
   // Two different failures, deliberately distinguished: a MISSING alt rejects
   // the document, an empty one is the contract's "decorative" and merely
-  // earns an advisory. See `imageAltProblem`.
+  // earns an advisory. Only used here to drop the field's hint when the
+  // inspector is already saying something louder about it.
   const altProblem = imageAltProblem({ url: content.imageUrl, alt: content.imageAlt });
-  // NOT `?.trim()`: the validator counts a field as filled on the RAW string
-  // (`.length > 0`), so a label backspaced down to one stray space still
-  // rejects the document when there's no url beside it. Trimming here left
-  // that state warning-free in the form and fatal on save. See
-  // `ctaPairProblem`, which is pinned against the real validator in
-  // `lib/emailDesigner.test.ts`.
-  const ctaProblem = ctaPairProblem(content);
-  const ctaUrlProblem = cardCtaUrlProblem(content);
-  const imageUrlIssue = optionalImageUrlProblem(content.imageUrl);
 
   const variant = content.variant ?? "plain";
   const imageSide = content.imageSide ?? "top";
   const beside = hasImage && (imageSide === "left" || imageSide === "right");
-  // Shown for the testimonial, and for any card that already has one — see
-  // the note at the top about never hiding a field that holds content.
-  const showAttribution =
-    variant === "testimonial" || (content.attribution ?? "").length > 0;
 
   return (
     <View>
@@ -152,15 +129,6 @@ export function CardContentEditor({
         autoCapitalize="none"
         keyboardType="url"
       />
-      {/* The card's own arm of the gate: absent is fine, but a url that IS
-          set must be non-empty and http(s). Nothing warned about the scheme
-          before, so pasting a bare `example.com` stopped the save with no
-          explanation anywhere on the page. */}
-      {imageUrlIssue === "missing" ? (
-        <InlineWarning text="This card's image URL is empty. Clear the field, upload a picture, or choose one from the library — the email can't be saved until then." />
-      ) : imageUrlIssue === "scheme" ? (
-        <InlineWarning text="An image URL has to start with http:// or https://. The email can't be saved until this one does." />
-      ) : null}
 
       <View className="mb-1 flex-row flex-wrap items-start gap-2">
         {uploadImage && run ? (
@@ -208,11 +176,6 @@ export function CardContentEditor({
           }
         />
       ) : null}
-      {altProblem === "unsaveable" ? (
-        <InlineWarning text={ALT_MISSING_WARNING} />
-      ) : altProblem === "empty" ? (
-        <InlineWarning text={ALT_EMPTY_WARNING} />
-      ) : null}
 
       {/* Placement only exists once there IS an image — `imageSide` and
           `imageWidthPct` are both ignored by the renderer without one. */}
@@ -247,40 +210,6 @@ export function CardContentEditor({
 
       {beside ? <ImageWidthControl content={content} onChange={onChange} /> : null}
 
-      <TextField
-        label="Eyebrow"
-        value={content.eyebrow ?? ""}
-        onChangeText={(eyebrow) => onChange({ eyebrow })}
-        placeholder="Small line above the heading"
-      />
-
-      <TextField
-        label="Heading"
-        value={content.heading ?? ""}
-        onChangeText={(heading) => onChange({ heading })}
-        placeholder={compact ? "Column heading" : "Card heading"}
-      />
-
-      <TextField
-        label={variant === "testimonial" ? "Quote" : "Body"}
-        value={content.body ?? ""}
-        onChangeText={(body) => onChange({ body })}
-        placeholder="Supports **bold**, *italic*, [links](https://…) and - lists"
-        multiline
-        numberOfLines={compact ? 3 : 4}
-        style={{ minHeight: compact ? 64 : 88, textAlignVertical: "top" }}
-      />
-
-      {showAttribution ? (
-        <TextField
-          label="Attribution"
-          value={content.attribution ?? ""}
-          onChangeText={(attribution) => onChange({ attribution })}
-          placeholder="Who said it"
-          hint={compact ? undefined : "Renders under the quote, in bold."}
-        />
-      ) : null}
-
       <Field label="Text alignment">
         <View className="flex-row gap-2">
           <LevelToggle
@@ -302,16 +231,11 @@ export function CardContentEditor({
       </Field>
 
       <TextField
-        label="Button label"
-        value={content.ctaLabel ?? ""}
-        onChangeText={(ctaLabel) => onChange({ ctaLabel })}
-        placeholder="Read more"
-      />
-      <TextField
         label="Button link"
         value={content.ctaUrl ?? ""}
         onChangeText={(ctaUrl) => onChange({ ctaUrl })}
         placeholder="https://…"
+        hint="The button's LABEL is typed on the card itself. Both halves are needed — a card can't save with only one."
         autoCapitalize="none"
         keyboardType="url"
       />
@@ -334,18 +258,6 @@ export function CardContentEditor({
           />
         </View>
       </Field>
-      {ctaProblem ? (
-        <InlineWarning
-          text={
-            ctaProblem === "label-without-url"
-              ? "This button has a label but no link — add one, or clear the label (a label of just a space still counts as one). A card can't save with only half a button."
-              : "This button has a link but no label — nothing will be visible to click. Add a label, or clear the link."
-          }
-        />
-      ) : null}
-      {ctaUrlProblem ? (
-        <InlineWarning text="A button link has to start with http://, https:// or mailto:. The email can't be saved until this one does." />
-      ) : null}
     </View>
   );
 }
@@ -413,30 +325,3 @@ const IMAGE_WIDTH_PRESETS: readonly { value: number; label: string }[] = [
   { value: 50, label: "Even" },
   { value: 52, label: "52" },
 ];
-
-const ALT_EMPTY_WARNING =
-  "No alt text. Screen readers and image-blocking clients (Gmail and Outlook block images by default) will show nothing here. Leave it empty only if the image is purely decorative.";
-
-const ALT_MISSING_WARNING =
-  "This image has a URL but no alt text at all, and the email can't be saved (including edits to every other block) until it has some. Type a description — or, if the image really is decorative, type a character and delete it to leave the field deliberately empty.";
-
-/**
- * A field-level advisory. Warn-toned rather than danger-toned on purpose:
- * every one of these describes something the designer can knowingly ship
- * (an intentionally decorative image), or is about to fix in the next
- * keystroke (a half-typed button). Red would cry wolf.
- *
- * Silent in a LOCKED campaign: every one of these says "the campaign can't be
- * saved until you fix this", and there is nothing left to save or fix once
- * the design is locked — telling a reviewer to fix a field she cannot edit is
- * the same cry-wolf problem in a different costume.
- */
-export function InlineWarning({ text }: { text: string }) {
-  const readOnly = useDesignerReadOnly();
-  if (readOnly) return null;
-  return (
-    <View className="mb-3 rounded-md border border-warn-soft bg-warn-bg px-2.5 py-2">
-      <Text className="text-xs text-ink">{text}</Text>
-    </View>
-  );
-}

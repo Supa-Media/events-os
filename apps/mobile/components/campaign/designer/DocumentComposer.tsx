@@ -1,14 +1,13 @@
 /**
  * DOCUMENT COMPOSER — the block-based email editor, in one place.
  *
- * This is the whole editing surface that used to live inline in
- * `app/(app)/campaign/[id]/design.tsx`: the undo/redo history, the debounced
- * autosave and its indicator, the block stack with its palette, the live HTML
- * preview, the merge-tag row, and the theme picker above the preview. It was
- * lifted out — behaviour unchanged — the moment a SECOND document became
- * editable (`app/(app)/campaign-template/[id].tsx`, the template editor).
- * Everything a designer knows about composing an email therefore holds in both
- * places by construction rather than by two files agreeing to stay in step.
+ * This is the whole editing surface: the undo/redo history, the debounced
+ * autosave and its indicator, the CANVAS with its palette and inspector, the
+ * live HTML preview, the merge-tag row, and the theme picker above the
+ * preview. Both editable documents render it — the campaign designer
+ * (`app/(app)/campaign/[id]/design.tsx`) and the template editor
+ * (`app/(app)/campaign-template/[id].tsx`) — so everything a designer knows
+ * about composing an email holds in both places by construction.
  *
  * The screens keep what is genuinely theirs: the access gate, the record's own
  * header, and — crucially — WHAT SAVING MEANS. A campaign autosaves through
@@ -16,20 +15,36 @@
  * `campaignTemplates.updateTemplate`; this component only knows it has an
  * `onSave` that resolves or rejects.
  *
- * ── Editing model (unchanged from the campaign designer) ────────────────────
+ * ── The canvas (Stage 1 of docs/plans/email-editor-canvas.md) ───────────────
+ * The editor used to be a stack of form cards on the left and a preview on the
+ * right — "put information on the left and then preview on the right", as the
+ * product owner put it, asking instead for something closer to Canva. So the
+ * form stack is gone: `canvas/EmailCanvas.tsx` draws the document as what it
+ * will look like, at the email's own 600px scale, in document order. Click a
+ * block to select it; a contextual toolbar appears on it and its properties
+ * appear in the inspector; headings, body copy, button labels and poll options
+ * type straight onto the page.
+ *
+ * The sandboxed iframe preview STAYS, beside the canvas, as the read-only
+ * "what Gmail will actually show" pane. The canvas is a second renderer of the
+ * same document and the iframe is the arbiter between them — see the plan's §2
+ * for why that split is the honest one, and `packages/shared/src/emailGeometry.ts`
+ * for the single geometry table that keeps them from drifting.
+ *
+ * ── Editing model (unchanged) ──────────────────────────────────────────────
  * Local `EmailDocument` state wrapped in a linear undo/redo history
  * (`lib/emailDesigner.ts`'s `History<EmailDocument>` — a snapshot zipper),
  * debounce-autosaved 600ms after the last edit. Cmd/Ctrl+Z / +Shift+Z
  * undo/redo on web, mirroring `SiteMapEditor`'s keyboard-shortcut precedent.
  *
  * ── Read-only means it ─────────────────────────────────────────────────────
- * When `editable` is false the block cards render with `readOnly`, which makes
- * every field static and removes every add/remove/upload control, instead of
- * the no-op handlers that used to let someone type into a locked document and
- * lose the words on reload. The two callers arrive there for different
- * reasons — a campaign past `draft`/`changes_requested`, or a viewer without
- * `campaigns.design` power on a template — so the explanatory line is theirs
- * to supply (`lockedNotice`).
+ * When `editable` is false the canvas renders the document with no selection,
+ * no toolbars, no inspector and no palette — a locked page you can read,
+ * instead of live-looking controls wired to no-op handlers, which is what used
+ * to let someone type into a locked document and lose the words on reload. The
+ * two callers arrive there for different reasons — a campaign past
+ * `draft`/`changes_requested`, or a viewer without `campaigns.design` power on
+ * a template — so the explanatory line is theirs to supply (`lockedNotice`).
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Platform, Pressable, Text, View, useWindowDimensions } from "react-native";
@@ -54,18 +69,28 @@ import {
   pushHistory,
   redoHistory,
   removeBlock,
-  reorderBlocks,
   undoHistory,
   updateBlock,
   type History,
 } from "../../../lib/emailDesigner";
-import { SortableRows } from "../../grid/SortableRows";
-import { BlockCard } from "./BlockCard";
+import { confirmAction } from "../helpers";
 import { BlockPalette } from "./BlockPalette";
 import { MergeTagRow } from "./MergeTagRow";
 import { CampaignThemePicker, type ThemeChoice } from "./CampaignThemePicker";
+import { ReadOnlyProvider } from "./DesignerControls";
 import EmailHtmlPreview from "../../email/EmailHtmlPreview";
 import { useDesignerImageUploader } from "./useImageUploader";
+import { EmailCanvas, type CanvasEditingTarget } from "./canvas/EmailCanvas";
+import { BlockInspector } from "./canvas/BlockInspector";
+import { canvasTheme } from "./canvas/canvasStyles";
+import { documentWarnings } from "./canvas/blockWarnings";
+import {
+  canMoveBlock,
+  canvasKeyAction,
+  keyEventIsEditable,
+  selectionAfterDelete,
+  stepSelection,
+} from "./canvas/canvasSelection";
 
 /** Below this width the preview stacks under the editor instead of beside it. */
 const SPLIT_BREAKPOINT = 960;
@@ -85,7 +110,7 @@ export type DocumentComposerProps = {
    *  renders nothing until it arrives, then seeds its history ONCE from it
    *  (later remote changes deliberately don't stomp local edits). */
   doc: EmailDocument | undefined;
-  /** False renders the whole stack locked (see the module doc). */
+  /** False renders the whole canvas locked (see the module doc). */
   editable: boolean;
   /** Why it's locked, in the caller's own words. Only shown when `!editable`. */
   lockedNotice?: string;
@@ -123,8 +148,10 @@ export function DocumentComposer({
 }: DocumentComposerProps) {
   const [history, setHistory] = useState<History<EmailDocument> | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [editing, setEditing] = useState<CanvasEditingTarget>(null);
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [canvasWidth, setCanvasWidth] = useState(0);
   const lastSavedRef = useRef<EmailDocument | null>(null);
   // A "latest" ref for `history` — the debounce timer's closure (and the
   // save-completion callback below) is captured at EFFECT-SETUP time, so
@@ -225,6 +252,7 @@ export function DocumentComposer({
       const { doc: next, id: newId } = insertBlock(history.present, kind, selectedId);
       applyDoc(next);
       setSelectedId(newId);
+      setEditing(null);
     },
     [history, selectedId, applyDoc],
   );
@@ -243,6 +271,7 @@ export function DocumentComposer({
       const { doc: next, id: newId } = duplicateBlock(history.present, blockId);
       applyDoc(next);
       if (newId) setSelectedId(newId);
+      setEditing(null);
     },
     [history, applyDoc],
   );
@@ -250,28 +279,44 @@ export function DocumentComposer({
   const handleDelete = useCallback(
     (blockId: string) => {
       if (!history) return;
+      const ids = history.present.blocks.map((b) => b.id);
       applyDoc(removeBlock(history.present, blockId));
-      setSelectedId((cur) => (cur === blockId ? null : cur));
-    },
-    [history, applyDoc],
-  );
-
-  const handleReorder = useCallback(
-    (orderedIds: string[]) => {
-      if (!history) return;
-      applyDoc(reorderBlocks(history.present, orderedIds));
+      // The block below takes the selection, so deleting three in a row is
+      // three clicks rather than three clicks plus three re-selections.
+      setSelectedId((cur) => (cur === blockId ? selectionAfterDelete(ids, blockId) : cur));
+      setEditing(null);
     },
     [history, applyDoc],
   );
 
   /**
+   * Deleting is the one action that destroys work, and on the canvas it sits
+   * a few pixels from Duplicate. Undo recovers it on web; on a phone there is
+   * no keyboard shortcut and the Undo button may be scrolled away.
+   */
+  const confirmDelete = useCallback(
+    (blockId: string) => {
+      confirmAction({
+        title: "Delete this block?",
+        message: "Its content goes with it. You can undo straight afterwards.",
+        confirmLabel: "Delete block",
+        destructive: true,
+        onConfirm: () => handleDelete(blockId),
+      });
+    },
+    [handleDelete],
+  );
+
+  /**
    * Move a block one place up or down.
    *
-   * The drag handle was the ONLY way to reorder, which needs a pointer and a
-   * 15px grip; on a phone, reordering a fifteen-block newsletter was a
-   * long-press-and-scroll fight. `moveBlock` returns the same doc reference at
-   * either end of the stack, and `pushHistory` is skipped on a no-op, so a
-   * bumped-into-the-ceiling tap costs neither a history step nor a save.
+   * The up/down arrows are the reorder control on every surface — the block's
+   * own toolbar and the inspector's header. They exist because dragging a
+   * fifteen-block newsletter on a phone was a long-press-and-scroll fight, and
+   * nothing about a canvas changes that. `moveBlock` returns the same doc
+   * reference at either end of the stack, and `pushHistory` is skipped on a
+   * no-op, so a bumped-into-the-ceiling tap costs neither a history step nor a
+   * save.
    */
   const handleMove = useCallback(
     (blockId: string, delta: -1 | 1) => {
@@ -301,21 +346,64 @@ export function DocumentComposer({
   const handleUndo = useCallback(() => setHistory((h) => (h ? undoHistory(h) : h)), []);
   const handleRedo = useCallback(() => setHistory((h) => (h ? redoHistory(h) : h)), []);
 
-  // Cmd/Ctrl+Z undo, Cmd/Ctrl+Shift+Z redo — web only (mirrors SiteMapEditor).
+  const blockIds = useMemo(() => doc.blocks.map((b) => b.id), [doc]);
+  const warnings = useMemo(() => documentWarnings(doc), [doc]);
+  const theme = useMemo(() => canvasTheme(doc), [doc]);
+  const selectedBlock = doc.blocks.find((b) => b.id === selectedId) ?? null;
+
+  // Keyboard: undo/redo as before, plus canvas selection. Web only (mirrors
+  // SiteMapEditor); a phone has no keyboard to serve here.
+  //
+  // Every branch bails inside a text field — Backspace in a heading you are
+  // typing must be a backspace, never "delete this block", which is the single
+  // most destructive way to get a canvas shortcut wrong.
   useEffect(() => {
     if (Platform.OS !== "web" || typeof document === "undefined") return;
     function onKeyDown(e: KeyboardEvent) {
       const tag = (e.target as HTMLElement | null)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA") return;
+      if (keyEventIsEditable(tag)) return;
+
       const mod = e.metaKey || e.ctrlKey;
-      if (!mod || e.key.toLowerCase() !== "z") return;
+      if (mod && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) handleRedo();
+        else handleUndo();
+        return;
+      }
+      if (!editable) return;
+
+      const action = canvasKeyAction(e);
+      if (action === null) return;
+      if (action === "deselect") {
+        e.preventDefault();
+        setSelectedId(null);
+        setEditing(null);
+        return;
+      }
+      if (action === "select-prev" || action === "select-next") {
+        e.preventDefault();
+        setSelectedId((cur) => stepSelection(blockIds, cur, action === "select-prev" ? -1 : 1));
+        return;
+      }
+      if (selectedId === null) return;
       e.preventDefault();
-      if (e.shiftKey) handleRedo();
-      else handleUndo();
+      if (action === "move-up") handleMove(selectedId, -1);
+      else if (action === "move-down") handleMove(selectedId, 1);
+      else if (action === "duplicate") handleDuplicate(selectedId);
+      else if (action === "delete") confirmDelete(selectedId);
     }
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [handleUndo, handleRedo]);
+  }, [
+    handleUndo,
+    handleRedo,
+    handleMove,
+    handleDuplicate,
+    confirmDelete,
+    blockIds,
+    selectedId,
+    editable,
+  ]);
 
   const previewHtml = useMemo(
     () =>
@@ -331,8 +419,6 @@ export function DocumentComposer({
   );
 
   if (history === null) return null;
-
-  const blockIds = doc.blocks.map((b) => b.id);
 
   const editorColumn = (
     <View className={split ? "flex-1" : undefined}>
@@ -354,6 +440,26 @@ export function DocumentComposer({
             onPress={handleRedo}
             disabled={!editable || !canRedo(history)}
           />
+          {/* The document-level half of the warnings answer: one line, and a
+              way to jump to the first block that is stopping the save. */}
+          {editable && warnings.blockingBlockIds.length > 0 ? (
+            <Pressable
+              onPress={() => {
+                setSelectedId(warnings.blockingBlockIds[0]);
+                setEditing(null);
+              }}
+              accessibilityRole="button"
+              accessibilityLabel="Show the first block blocking this email from saving"
+              className="flex-row items-center gap-1.5 rounded-md border border-danger bg-danger-bg px-2 py-1"
+            >
+              <Icon name="alert-triangle" size={12} color={colors.danger} />
+              <Text className="text-2xs font-semibold text-danger">
+                {warnings.blockingBlockIds.length === 1
+                  ? "1 block can't save"
+                  : `${warnings.blockingBlockIds.length} blocks can't save`}
+              </Text>
+            </Pressable>
+          ) : null}
         </View>
         <SaveIndicator editable={editable} saveState={saveState} error={saveError} />
       </View>
@@ -375,57 +481,58 @@ export function DocumentComposer({
             {editable ? emptyMessage : lockedEmptyMessage}
           </Text>
         </View>
-      ) : editable ? (
-        <SortableRows
-          ids={blockIds}
-          onReorder={handleReorder}
-          renderRow={({ id: blockId, drag }) => {
-            const index = doc.blocks.findIndex((b) => b.id === blockId);
-            const block = index < 0 ? undefined : doc.blocks[index];
-            if (!block) return null;
-            return (
-              <BlockCard
-                block={block}
-                selected={selectedId === blockId}
-                onSelect={() => setSelectedId(blockId)}
-                onChange={(patch) => handleUpdate(blockId, patch)}
-                onDuplicate={() => handleDuplicate(blockId)}
-                onDelete={() => handleDelete(blockId)}
-                onMoveUp={() => handleMove(blockId, -1)}
-                onMoveDown={() => handleMove(blockId, 1)}
-                canMoveUp={index > 0}
-                canMoveDown={index < doc.blocks.length - 1}
-                drag={drag}
-                uploadImage={uploadImage}
-                run={run}
-              />
-            );
-          }}
-        />
       ) : (
-        // Every write is refused for this caller (a submitted campaign, a
-        // template someone lacks design power on), so the cards render
-        // LOCKED — visibly static fields rather than live-looking ones wired
-        // to no-op handlers, which is what used to let a reviewer type into a
-        // submitted campaign and watch the words vanish on reload.
-        doc.blocks.map((block) => (
-          <BlockCard
-            key={block.id}
-            block={block}
-            selected={false}
-            readOnly
-            onSelect={() => {}}
-            onChange={() => {}}
-            onDuplicate={() => {}}
-            onDelete={() => {}}
+        <View onLayout={(e) => setCanvasWidth(e.nativeEvent.layout.width)}>
+          <EmailCanvas
+            doc={doc}
+            theme={theme}
+            editable={editable}
+            availableWidth={canvasWidth}
+            selectedId={editable ? selectedId : null}
+            onSelect={setSelectedId}
+            editing={editing}
+            onEditingChange={setEditing}
+            onChange={handleUpdate}
+            onDuplicate={handleDuplicate}
+            onDelete={confirmDelete}
+            onMove={handleMove}
+            warningsByBlockId={editable ? warnings.byBlockId : {}}
           />
-        ))
+        </View>
       )}
     </View>
   );
 
-  const previewColumn = (
+  const sideColumn = (
     <View className={split ? "ml-4 w-[380px]" : "mt-6"}>
+      {/* The inspector sits ABOVE the preview: it is the thing you reach for
+          after every click on the canvas, and the preview is the thing you
+          glance at. */}
+      {editable ? (
+        <View className="mb-4">
+          <BlockInspector
+            block={selectedBlock}
+            warnings={selectedId ? (warnings.byBlockId[selectedId] ?? []) : []}
+            onChange={(patch) => {
+              if (selectedId) handleUpdate(selectedId, patch);
+            }}
+            onDuplicate={() => {
+              if (selectedId) handleDuplicate(selectedId);
+            }}
+            onDelete={() => {
+              if (selectedId) confirmDelete(selectedId);
+            }}
+            onMove={(delta) => {
+              if (selectedId) handleMove(selectedId, delta);
+            }}
+            canMoveUp={canMoveBlock(blockIds, selectedId, -1)}
+            canMoveDown={canMoveBlock(blockIds, selectedId, 1)}
+            uploadImage={uploadImage}
+            run={run}
+          />
+        </View>
+      ) : null}
+
       {/* Above the preview, not below it: the theme is the thing the preview
           is FOR, and a picker under a 620px pane is a picker nobody finds. */}
       {editable && onApplyTheme ? (
@@ -436,6 +543,9 @@ export function DocumentComposer({
       <Text className="mb-2 text-xs font-bold uppercase tracking-wider text-faint">
         Live preview
       </Text>
+      {/* The sandboxed iframe/WebView, unchanged — the canvas is a faithful
+          second renderer, and this stays on screen as the arbiter of what a
+          real mail client will do with the document. */}
       <EmailHtmlPreview html={previewHtml} height={split ? 620 : 420} />
       <View className="mt-4">
         <MergeTagRow />
@@ -443,16 +553,23 @@ export function DocumentComposer({
     </View>
   );
 
-  return split ? (
-    <View className="flex-row">
-      {editorColumn}
-      {previewColumn}
-    </View>
-  ) : (
-    <View>
-      {editorColumn}
-      {previewColumn}
-    </View>
+  return (
+    // `ReadOnlyProvider` wraps BOTH columns: every designer control below opts
+    // into the lock by construction rather than by remembering a prop, which
+    // is the whole reason it is context (see `DesignerControls.tsx`).
+    <ReadOnlyProvider value={!editable}>
+      {split ? (
+        <View className="flex-row">
+          {editorColumn}
+          {sideColumn}
+        </View>
+      ) : (
+        <View>
+          {editorColumn}
+          {sideColumn}
+        </View>
+      )}
+    </ReadOnlyProvider>
   );
 }
 

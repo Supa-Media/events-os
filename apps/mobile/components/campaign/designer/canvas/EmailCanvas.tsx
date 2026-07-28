@@ -1,0 +1,454 @@
+/**
+ * THE CANVAS — the document, drawn at its own scale, with the selection
+ * affordances layered over it.
+ *
+ * This is what replaced the stack of form cards. The email is laid out at its
+ * true 600px width and SCALED to fit the column (never reflowed — reflowing
+ * would quietly make the thing you edit a different document from the thing
+ * that sends). Clicking a block selects it; the selected block gets a ring, a
+ * contextual toolbar, and — if the write gate would refuse it — a badge.
+ *
+ * ── The chrome never moves the document ────────────────────────────────────
+ * Selection rings, toolbars and badges are ABSOLUTELY POSITIONED overlays, so
+ * turning selection on and off cannot shift a single pixel of the email. A
+ * ring that pushes the layout by 2px is a canvas that lies.
+ *
+ * ── The chrome does not scale with the document ────────────────────────────
+ * Everything overlaid counter-scales by `1/scale`, so on a phone (where the
+ * document is drawn at ~0.6) the delete button is still a real tap target
+ * rather than a 9px one. The EMAIL scales; the EDITOR's controls don't.
+ *
+ * ── The iframe is still on screen ──────────────────────────────────────────
+ * This surface is a faithful second renderer, not the arbiter. The sandboxed
+ * `EmailHtmlPreview` stays beside it as "what Gmail will actually show" — see
+ * `docs/plans/email-editor-canvas.md` §2 for why that is the honest split.
+ */
+import { useState } from "react";
+import { Platform, Pressable, Text, View } from "react-native";
+import type { EmailBlock, EmailDocument, EmailTheme } from "@events-os/shared";
+import { Icon } from "../../../ui";
+import { colors } from "../../../../lib/theme";
+import { BlockView } from "./BlockView";
+import {
+  CANVAS_WIDTH,
+  WORDMARK_PADDING,
+  blockGutter,
+  canvasScale,
+  containerStyle,
+  footerLegalStyle,
+  pageStyle,
+  wordmarkStyle,
+} from "./canvasStyles";
+import { worstSeverity, type BlockWarning } from "./blockWarnings";
+
+const IS_WEB = Platform.OS === "web";
+
+/** `transformOrigin` takes a CSS string on web and a tuple on native. */
+const TOP_LEFT = IS_WEB ? "0 0" : ([0, 0] as unknown as string);
+
+/** Air around the document inside the page. The top is deeper than the sides
+ *  because the FIRST block's contextual toolbar sits above it, and a toolbar
+ *  clipped off the top of the page is a toolbar the designer can't reach. */
+const CANVAS_PADDING = 28;
+const CANVAS_PADDING_TOP = 44;
+/** How far above its block the contextual toolbar floats, in real pixels. */
+const TOOLBAR_OFFSET = 30;
+
+export type CanvasEditingTarget = { blockId: string; field: string } | null;
+
+export type EmailCanvasProps = {
+  doc: EmailDocument;
+  theme: EmailTheme;
+  editable: boolean;
+  /** How much room the canvas column has. The document scales to fit it. */
+  availableWidth: number;
+  selectedId: string | null;
+  onSelect: (blockId: string | null) => void;
+  editing: CanvasEditingTarget;
+  onEditingChange: (target: CanvasEditingTarget) => void;
+  onChange: (blockId: string, patch: Record<string, unknown>) => void;
+  onDuplicate: (blockId: string) => void;
+  onDelete: (blockId: string) => void;
+  onMove: (blockId: string, delta: -1 | 1) => void;
+  /** Per-block warnings, from `documentWarnings` — the canvas only ever shows
+   *  the COUNT (see `blockWarnings.ts` for why). */
+  warningsByBlockId: Record<string, BlockWarning[]>;
+};
+
+export function EmailCanvas({
+  doc,
+  theme,
+  editable,
+  availableWidth,
+  selectedId,
+  onSelect,
+  editing,
+  onEditingChange,
+  onChange,
+  onDuplicate,
+  onDelete,
+  onMove,
+  warningsByBlockId,
+}: EmailCanvasProps) {
+  const scale = canvasScale(availableWidth - CANVAS_PADDING * 2);
+  // The document's natural height, measured once laid out — the scaled
+  // wrapper needs it, because a transform doesn't change the space a view
+  // takes up and the page would otherwise be 600-wide and full-height.
+  const [naturalHeight, setNaturalHeight] = useState<number | null>(null);
+
+  return (
+    <Pressable
+      // Clicking the page around the email is how you get back to "nothing
+      // selected", the same way it works in every design tool.
+      onPress={() => {
+        onSelect(null);
+        onEditingChange(null);
+      }}
+      accessibilityRole="none"
+      style={[
+        pageStyle(theme),
+        {
+          paddingTop: CANVAS_PADDING_TOP,
+          paddingBottom: CANVAS_PADDING,
+          paddingHorizontal: CANVAS_PADDING,
+          alignItems: "center",
+          borderRadius: 8,
+          // The chrome (toolbars, badges, selection rings) is drawn OUTSIDE
+          // the block's own box, and RN Web clips a View's overflow by
+          // default — without this the first block's toolbar disappears.
+          overflow: "visible",
+        },
+      ]}
+    >
+      <View
+        style={{
+          width: CANVAS_WIDTH * scale,
+          height: naturalHeight === null ? undefined : naturalHeight * scale,
+          overflow: "visible",
+        }}
+      >
+        <View
+          onLayout={(e) => setNaturalHeight(e.nativeEvent.layout.height)}
+          style={[
+            containerStyle(theme),
+            { transform: [{ scale }], transformOrigin: TOP_LEFT },
+          ]}
+        >
+          {theme.wordmark ? (
+            <View style={WORDMARK_PADDING}>
+              <Text style={wordmarkStyle(theme, IS_WEB)}>{theme.wordmark}</Text>
+            </View>
+          ) : null}
+
+          {doc.blocks.map((block, index) => (
+            <CanvasBlock
+              key={block.id}
+              block={block}
+              theme={theme}
+              editable={editable}
+              scale={scale}
+              selected={selectedId === block.id}
+              warnings={warningsByBlockId[block.id] ?? []}
+              editingField={
+                editing && editing.blockId === block.id ? editing.field : null
+              }
+              onSelect={() => {
+                onSelect(block.id);
+                if (editing && editing.blockId !== block.id) onEditingChange(null);
+              }}
+              onStartEditing={(field) => {
+                onSelect(block.id);
+                onEditingChange({ blockId: block.id, field });
+              }}
+              onStopEditing={() => onEditingChange(null)}
+              onChange={(patch) => onChange(block.id, patch)}
+              onDuplicate={() => onDuplicate(block.id)}
+              onDelete={() => onDelete(block.id)}
+              onMove={(delta) => onMove(block.id, delta)}
+              canMoveUp={index > 0}
+              canMoveDown={index < doc.blocks.length - 1}
+            />
+          ))}
+
+          {/* The unsubscribe row every send carries when the document has no
+              `footer` block of its own (`renderCampaignEmail`'s
+              `fallbackFooter`). Drawn so the email's real ending is visible;
+              it is renderer furniture and has nothing to edit. */}
+          {doc.blocks.some((b) => b.kind === "footer") ? null : (
+            <View style={{ paddingHorizontal: 24, paddingTop: 8, paddingBottom: 24 }}>
+              <Text style={footerLegalStyle(theme, IS_WEB)}>
+                Sent with love by Public Worship · Chapter OS{"\n"}
+                Unsubscribe from all Public Worship emails
+              </Text>
+            </View>
+          )}
+        </View>
+      </View>
+    </Pressable>
+  );
+}
+
+/**
+ * One block plus its selection chrome.
+ *
+ * The block's own view is untouched by selection — the ring and the toolbar
+ * are overlays. `pointerEvents="none"` on the ring keeps clicks landing on the
+ * block itself rather than on its own highlight.
+ */
+function CanvasBlock({
+  block,
+  theme,
+  editable,
+  scale,
+  selected,
+  warnings,
+  editingField,
+  onSelect,
+  onStartEditing,
+  onStopEditing,
+  onChange,
+  onDuplicate,
+  onDelete,
+  onMove,
+  canMoveUp,
+  canMoveDown,
+}: {
+  block: EmailBlock;
+  theme: EmailTheme;
+  editable: boolean;
+  scale: number;
+  selected: boolean;
+  warnings: BlockWarning[];
+  editingField: string | null;
+  onSelect: () => void;
+  onStartEditing: (field: string) => void;
+  onStopEditing: () => void;
+  onChange: (patch: Record<string, unknown>) => void;
+  onDuplicate: () => void;
+  onDelete: () => void;
+  onMove: (delta: -1 | 1) => void;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+}) {
+  const severity = worstSeverity(warnings);
+  const inverse = 1 / scale;
+
+  return (
+    <View style={{ paddingHorizontal: blockGutter(block) }}>
+      <Pressable
+        onPress={(e) => {
+          // See `CanvasEditableText` — the page below deselects on press, and
+          // RN Web's press handling bubbles.
+          e?.stopPropagation?.();
+          onSelect();
+        }}
+        disabled={!editable}
+        accessibilityRole="button"
+        accessibilityLabel={`${block.kind} block`}
+        accessibilityState={{ selected }}
+      >
+        <BlockView
+          block={block}
+          theme={theme}
+          editable={editable}
+          selected={selected}
+          editingField={editingField}
+          onStartEditing={onStartEditing}
+          onStopEditing={onStopEditing}
+          onChange={onChange}
+        />
+      </Pressable>
+
+      {selected && editable ? (
+        <View
+          pointerEvents="none"
+          style={{
+            position: "absolute",
+            top: -3,
+            bottom: -3,
+            left: blockGutter(block) - 3,
+            right: blockGutter(block) - 3,
+            borderWidth: 1.5 * inverse,
+            borderColor: colors.accent,
+            borderRadius: 4 * inverse,
+          }}
+        />
+      ) : null}
+
+      {severity && editable ? (
+        <View
+          style={{
+            position: "absolute",
+            top: 0,
+            right: blockGutter(block),
+            transform: [{ scale: inverse }],
+            transformOrigin: IS_WEB ? "100% 0" : ([1, 0] as unknown as string),
+          }}
+        >
+          <WarningBadge count={warnings.length} severity={severity} onPress={onSelect} />
+        </View>
+      ) : null}
+
+      {selected && editable ? (
+        <View
+          style={{
+            position: "absolute",
+            // Sits above the block, at true size whatever the document scale.
+            top: -TOOLBAR_OFFSET * inverse,
+            left: blockGutter(block),
+            transform: [{ scale: inverse }],
+            transformOrigin: TOP_LEFT,
+          }}
+        >
+          <BlockToolbar
+            onDuplicate={onDuplicate}
+            onDelete={onDelete}
+            onMove={onMove}
+            canMoveUp={canMoveUp}
+            canMoveDown={canMoveDown}
+          />
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/**
+ * The count of problems on a block, and nothing more.
+ *
+ * The detail lives in the inspector, one click away — fifteen warning banners
+ * over the artwork is what this badge exists to prevent. Red only when the
+ * write gate would actually refuse the document; amber for advice the designer
+ * is free to ignore (see `blockWarnings.ts`).
+ */
+function WarningBadge({
+  count,
+  severity,
+  onPress,
+}: {
+  count: number;
+  severity: "blocking" | "advisory";
+  onPress: () => void;
+}) {
+  const blocking = severity === "blocking";
+  return (
+    <Pressable
+      onPress={(e) => {
+        e?.stopPropagation?.();
+        onPress();
+      }}
+      hitSlop={6}
+      accessibilityRole="button"
+      accessibilityLabel={
+        blocking
+          ? `${count} problem${count === 1 ? "" : "s"} blocking this email from saving. Select the block to see them.`
+          : `${count} suggestion${count === 1 ? "" : "s"} on this block`
+      }
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 4,
+        paddingHorizontal: 6,
+        paddingVertical: 3,
+        borderRadius: 999,
+        backgroundColor: blocking ? colors.danger : colors.warn,
+      }}
+    >
+      <Icon name="alert-triangle" size={11} color="#FFFFFF" />
+      <Text style={{ color: "#FFFFFF", fontSize: 11, fontWeight: "700" }}>{count}</Text>
+    </Pressable>
+  );
+}
+
+/**
+ * The selected block's contextual toolbar.
+ *
+ * The up/down arrows are KEPT from the form-card designer, deliberately: they
+ * exist because dragging a fifteen-block newsletter on a phone was "a
+ * long-press-and-scroll fight". Anything drag adds later is an addition to
+ * these, never a replacement.
+ */
+function BlockToolbar({
+  onDuplicate,
+  onDelete,
+  onMove,
+  canMoveUp,
+  canMoveDown,
+}: {
+  onDuplicate: () => void;
+  onDelete: () => void;
+  onMove: (delta: -1 | 1) => void;
+  canMoveUp: boolean;
+  canMoveDown: boolean;
+}) {
+  return (
+    <View
+      style={{
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 2,
+        paddingHorizontal: 4,
+        paddingVertical: 3,
+        borderRadius: 8,
+        backgroundColor: colors.raised,
+        borderWidth: 1,
+        borderColor: colors.borderStrong,
+      }}
+    >
+      <ToolbarButton
+        icon="chevron-up"
+        label="Move block up"
+        onPress={() => onMove(-1)}
+        disabled={!canMoveUp}
+      />
+      <ToolbarButton
+        icon="chevron-down"
+        label="Move block down"
+        onPress={() => onMove(1)}
+        disabled={!canMoveDown}
+      />
+      <ToolbarButton icon="copy" label="Duplicate block" onPress={onDuplicate} />
+      <ToolbarButton icon="trash-2" label="Delete block" onPress={onDelete} danger />
+    </View>
+  );
+}
+
+function ToolbarButton({
+  icon,
+  label,
+  onPress,
+  disabled = false,
+  danger = false,
+}: {
+  icon: "copy" | "trash-2" | "chevron-up" | "chevron-down";
+  label: string;
+  onPress: () => void;
+  disabled?: boolean;
+  danger?: boolean;
+}) {
+  return (
+    <Pressable
+      onPress={
+        disabled
+          ? undefined
+          : (e) => {
+              // Without this the press also reaches the canvas page, which
+              // deselects — so "move up" would move the block and then drop
+              // the selection you were about to move again.
+              e?.stopPropagation?.();
+              onPress();
+            }
+      }
+      disabled={disabled}
+      hitSlop={6}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled }}
+      className={`rounded p-1.5 ${
+        disabled ? "opacity-25" : "active:bg-sunken web:hover:bg-sunken"
+      }`}
+    >
+      <Icon name={icon} size={15} color={danger ? colors.danger : colors.muted} />
+    </Pressable>
+  );
+}

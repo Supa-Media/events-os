@@ -2016,6 +2016,12 @@ export * from "./emailTheme";
 // ── Email-campaign block document model (designer contract) ──────────────────
 export * from "./emailBlocks";
 
+// ── Email geometry: the ONE table of shape both renderers read ───────────────
+export * from "./emailGeometry";
+
+// ── Email markdown subset, parsed once for both renderers ────────────────────
+export * from "./emailMarkdown";
+
 // ── Email-campaign block renderer (HTML + plaintext) ──────────────────────────
 export * from "./emailRender";
 
