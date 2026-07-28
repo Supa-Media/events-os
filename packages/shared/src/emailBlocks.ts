@@ -295,13 +295,15 @@ const CARD_IMAGE_SIDES: readonly EmailCardImageSide[] = ["top", "left", "right"]
 const BUTTON_VARIANTS: readonly EmailButtonVariant[] = ["filled", "outline"];
 const ALIGNMENTS: readonly ("left" | "center")[] = ["left", "center"];
 
-/** `"a", "b", or "c"` — so a rejection names every accepted value instead of
- *  making the author guess which literal was wanted. */
+/** `"a" or "b"` / `"a", "b", or "c"` — so a rejection names every accepted
+ *  value instead of making the author guess which literal was wanted. The
+ *  two-value form drops the comma so the pre-existing messages (`button
+ *  "align" must be "left" or "center"`) read exactly as they always have. */
 function oneOfList(values: readonly string[]): string {
   const quoted = values.map((v) => `"${v}"`);
-  return quoted.length <= 1
-    ? (quoted[0] ?? "")
-    : `${quoted.slice(0, -1).join(", ")}, or ${quoted[quoted.length - 1]}`;
+  if (quoted.length <= 1) return quoted[0] ?? "";
+  if (quoted.length === 2) return `${quoted[0]} or ${quoted[1]}`;
+  return `${quoted.slice(0, -1).join(", ")}, or ${quoted[quoted.length - 1]}`;
 }
 
 /** True iff `value` is one of `values` — narrow enough that the callers below

@@ -41,7 +41,13 @@ import { MarkdownEditor } from "../../markdown";
 import { colors } from "../../../lib/theme";
 import {
   BLOCK_KIND_LABELS,
+  MAX_FOOTER_LINKS,
+  footerLinkProblem,
+  linkUrlProblem,
+  imageAltProblem,
   imageUrlProblem,
+  optionalImageUrlProblem,
+  optionalLinkUrlProblem,
   pollHasBlankLabel,
   syncListKeys,
 } from "../../../lib/emailDesigner";
@@ -187,6 +193,29 @@ function BlockEditor({
         <ImageBlockEditor block={block} onChange={onChange} uploadImage={uploadImage} run={run} />
       );
 
+    case "bleed_image":
+      return (
+        <BleedImageEditor
+          block={block}
+          onChange={onChange}
+          uploadImage={uploadImage}
+          run={run}
+        />
+      );
+
+    case "hairline":
+      return (
+        <Text className="text-xs text-faint">
+          A thin full-width rule in the theme&apos;s hairline colour — the gap
+          between two sections, not a border inside a card.
+        </Text>
+      );
+
+    case "footer":
+      return (
+        <FooterEditor block={block} onChange={onChange} uploadImage={uploadImage} run={run} />
+      );
+
     case "button":
       return (
         <View>
@@ -216,6 +245,31 @@ function BlockEditor({
               onPress={() => onChange({ align: "center" })}
             />
           </View>
+          <Field label="Style">
+            <View className="flex-row gap-2">
+              <LevelToggle
+                label="Filled"
+                active={(block.variant ?? "filled") === "filled"}
+                onPress={() => onChange({ variant: "filled" })}
+              />
+              <LevelToggle
+                label="Outline"
+                active={block.variant === "outline"}
+                onPress={() => onChange({ variant: "outline" })}
+              />
+            </View>
+          </Field>
+          {/* The gate rejects a button with no url, and one whose scheme
+              isn't http/https/mailto. Neither said anything before — the save
+              simply stopped working, taking every other block with it. */}
+          {block.label.length === 0 ? (
+            <InlineWarning text="This button has no label, so there'd be nothing to click. The campaign can't be saved until it has one." />
+          ) : null}
+          {linkUrlProblem(block.url) === "missing" ? (
+            <InlineWarning text="This button has no link yet. The campaign can't be saved (including edits to every other block) until it does." />
+          ) : linkUrlProblem(block.url) === "scheme" ? (
+            <InlineWarning text="A button link has to start with http://, https:// or mailto:. The campaign can't be saved until this one does." />
+          ) : null}
         </View>
       );
 
@@ -514,36 +568,79 @@ function PollEditor({
   );
 }
 
-function ImageBlockEditor({
-  block,
+/**
+ * The url + upload + library + alt-text quartet, shared by the `image` block,
+ * the `bleed_image` banner, and the `footer` logo.
+ *
+ * One component because all three carry the SAME two write-gate rules — the
+ * url must be a non-empty http(s) string, and an alt must exist beside it —
+ * and the same accessibility argument for the library: picking a reused image
+ * brings its description with it, so the alt text is written once, properly.
+ * Three hand-rolled copies of that is how one of them ends up subtly out of
+ * step with the validator.
+ *
+ * `optional` is the one real difference. A banner's url is required (the
+ * block is the image), so clearing it leaves an empty string the gate rejects
+ * and the warning says so. A footer's logo is optional, so clearing it writes
+ * `undefined` for BOTH halves — the field is removed rather than emptied,
+ * because `logoUrl: ""` is a rejection while an absent logo is fine.
+ */
+function ImageSourceFields({
+  urlLabel,
+  urlPlaceholder = "https://…",
+  altLabel = "Alt text",
+  url,
+  alt,
+  optional = false,
   onChange,
   uploadImage,
   run,
+  libraryLabel = "Campaign image",
 }: {
-  block: Extract<EmailBlock, { kind: "image" }>;
-  onChange: (patch: Record<string, unknown>) => void;
+  urlLabel: string;
+  urlPlaceholder?: string;
+  altLabel?: string;
+  url: string | undefined;
+  alt: string | undefined;
+  /** Both halves at once — an alt is ALWAYS written alongside a url, because
+   *  `undefined` is the value that makes the document unsaveable while `""`
+   *  is the contract's legitimate "decorative". */
+  onChange: (next: { url: string | undefined; alt: string | undefined }) => void;
+  /** True when the image may be absent entirely (the footer logo). */
+  optional?: boolean;
   uploadImage?: UploadImage;
   run?: ActionRunner["run"];
+  /** Label a fresh upload is filed into the shared library under. */
+  libraryLabel?: string;
 }) {
   const library = useImageLibraryRegistration();
-  // The URL is the field that decides whether this document can be SAVED at
-  // all: `defaultBlockFor("image")` starts it empty, and the write gate
-  // rejects the whole document over it — so an unfilled image block silently
-  // takes every other block's edits down with it until it's dealt with.
-  const urlProblem = imageUrlProblem(block.url);
+  const hasUrl = typeof url === "string" && url.length > 0;
+  // The url is what decides whether the document can be SAVED at all: the
+  // write gate rejects the whole thing over it, so an unfilled image block
+  // silently takes every other block's edits down with it until it's dealt
+  // with. `optional` only changes what ABSENT means, never what a filled-in
+  // bad value means.
+  const urlProblem = optional
+    ? optionalImageUrlProblem(url)
+    : imageUrlProblem(url ?? "");
+  const altProblem = imageAltProblem({ url, alt });
 
   return (
     <View>
       <TextField
-        label="Image URL"
-        value={block.url}
-        onChangeText={(url) => {
-          onChange({ url });
+        label={urlLabel}
+        value={url ?? ""}
+        onChangeText={(next) => {
+          onChange(
+            optional && next.trim() === ""
+              ? { url: undefined, alt: undefined }
+              : { url: next, alt: alt ?? "" },
+          );
           // A typed/pasted URL is not the image this editor uploaded, so any
           // alt text written next must not be backfilled onto that row.
           library.forget();
         }}
-        placeholder="https://…"
+        placeholder={urlPlaceholder}
         autoCapitalize="none"
         keyboardType="url"
       />
@@ -558,8 +655,8 @@ function ImageBlockEditor({
             uploadImage={uploadImage}
             run={run}
             onUploaded={(uploaded, suggestedLabel) => {
-              onChange({ url: uploaded.url });
-              library.register(uploaded.storageId, suggestedLabel || "Campaign image");
+              onChange({ url: uploaded.url, alt: alt ?? "" });
+              library.register(uploaded.storageId, suggestedLabel || libraryLabel);
             }}
           />
         ) : null}
@@ -567,31 +664,68 @@ function ImageBlockEditor({
             was written once, the first time this image was used. `forget()`
             because the picked row already HAS its description; editing the
             alt field from here must not overwrite the row this editor's own
-            upload created (a different image entirely). */}
+            upload created (a different image entirely).
+
+            This is also how the newsletter's own masthead, banners and logo
+            get placed: migration 0052 imported them into this library, so
+            they're a pick rather than a re-upload. */}
         <ImageLibraryPicker
-          onPick={({ url, alt }) => {
-            onChange({ url, alt });
+          onPick={({ url: picked, alt: pickedAlt }) => {
+            onChange({ url: picked, alt: pickedAlt });
             library.forget();
           }}
         />
       </View>
-      <TextField
-        label="Alt text"
-        value={block.alt}
-        onChangeText={(alt) => {
-          onChange({ alt });
-          library.noteAlt(alt);
-        }}
-        placeholder="Describes the image for screen readers / blocked images"
-      />
-      {/* Advisory only, and deliberately SECOND: the write gate accepts an
-          empty alt ("" is the contract's "decorative"), so this must never be
-          the loudest thing on the card while the url — which the gate does
-          reject — is still unfilled. With no url there's no image to describe
-          yet, so it stays quiet. */}
-      {urlProblem === null && block.alt.trim() === "" ? (
+      {!optional || hasUrl ? (
+        <TextField
+          label={altLabel}
+          value={alt ?? ""}
+          onChangeText={(next) => {
+            onChange({ url, alt: next });
+            // Backfills the library row this editor just created, so the
+            // description is written once and reused forever after.
+            library.noteAlt(next);
+          }}
+          placeholder="Describes the image for screen readers / blocked images"
+        />
+      ) : null}
+      {/* Deliberately SECOND, and quiet while the url is still broken: the
+          write gate accepts an empty alt ("" is the contract's "decorative"),
+          so it must never be the loudest thing on the card while the url —
+          which the gate does reject — is unfilled. A MISSING alt is a
+          different matter: that one does block the save. */}
+      {urlProblem !== null ? null : altProblem === "unsaveable" ? (
+        <InlineWarning text="This image has a URL but no alt text at all, and the campaign can't be saved until it has some. Type a description — or, if the image really is decorative, type a character and delete it to leave the field deliberately empty." />
+      ) : altProblem === "empty" ? (
         <InlineWarning text="No alt text. Screen readers and image-blocking clients will show nothing here. Leave it empty only if the image is purely decorative." />
       ) : null}
+    </View>
+  );
+}
+
+function ImageBlockEditor({
+  block,
+  onChange,
+  uploadImage,
+  run,
+}: {
+  block: Extract<EmailBlock, { kind: "image" }>;
+  onChange: (patch: Record<string, unknown>) => void;
+  uploadImage?: UploadImage;
+  run?: ActionRunner["run"];
+}) {
+  const hrefProblem = optionalLinkUrlProblem(block.href);
+
+  return (
+    <View>
+      <ImageSourceFields
+        urlLabel="Image URL"
+        url={block.url}
+        alt={block.alt}
+        onChange={({ url, alt }) => onChange({ url: url ?? "", alt: alt ?? "" })}
+        uploadImage={uploadImage}
+        run={run}
+      />
       <TextField
         label="Link (optional)"
         value={block.href ?? ""}
@@ -600,6 +734,7 @@ function ImageBlockEditor({
         autoCapitalize="none"
         keyboardType="url"
       />
+      {hrefProblem ? <InlineWarning text={IMAGE_HREF_WARNING} /> : null}
       <Field label="Width">
         <View className="flex-row gap-2">
           <LevelToggle
@@ -614,6 +749,179 @@ function ImageBlockEditor({
           />
         </View>
       </Field>
+    </View>
+  );
+}
+
+/** The masthead / section-banner block: an edge-to-edge image with no
+ *  container padding, optionally tappable. Same fields as `image` minus the
+ *  width toggle — a banner is full-bleed by definition. */
+function BleedImageEditor({
+  block,
+  onChange,
+  uploadImage,
+  run,
+}: {
+  block: Extract<EmailBlock, { kind: "bleed_image" }>;
+  onChange: (patch: Record<string, unknown>) => void;
+  uploadImage?: UploadImage;
+  run?: ActionRunner["run"];
+}) {
+  const hrefProblem = optionalLinkUrlProblem(block.href);
+
+  return (
+    <View>
+      <Text className="mb-2 text-2xs text-faint">
+        Runs edge to edge, with no padding around it. In this design the banner
+        IS the section heading — it carries the words as artwork, so it
+        replaces a text heading rather than sitting above one.
+      </Text>
+      <ImageSourceFields
+        urlLabel="Banner image"
+        url={block.url}
+        alt={block.alt}
+        onChange={({ url, alt }) => onChange({ url: url ?? "", alt: alt ?? "" })}
+        uploadImage={uploadImage}
+        run={run}
+        libraryLabel="Newsletter banner"
+      />
+      <TextField
+        label="Link (optional)"
+        value={block.href ?? ""}
+        onChangeText={(href) => onChange({ href: href.trim() ? href : undefined })}
+        placeholder="https://… — makes the banner tappable"
+        autoCapitalize="none"
+        keyboardType="url"
+      />
+      {hrefProblem ? <InlineWarning text={IMAGE_HREF_WARNING} /> : null}
+      <Text className="text-2xs text-faint">
+        Because the banner carries the heading, its alt text is what a screen
+        reader — and anyone whose client blocks images — gets instead of that
+        heading. Write out the words on it.
+      </Text>
+    </View>
+  );
+}
+
+const IMAGE_HREF_WARNING =
+  "A link has to start with http://, https:// or mailto:. Clear the field or fix the address — the campaign can't be saved until then.";
+
+/**
+ * The sign-off block: logo, nav line, and the social/link row.
+ *
+ * The unsubscribe line is NOT edited here and never will be: `emailRender.ts`
+ * appends it to every footer from the send's own unsubscribe URL, because a
+ * send that can lose its unsubscribe link to an editing mistake is a legal
+ * problem, not a design one.
+ */
+function FooterEditor({
+  block,
+  onChange,
+  uploadImage,
+  run,
+}: {
+  block: Extract<EmailBlock, { kind: "footer" }>;
+  onChange: (patch: Record<string, unknown>) => void;
+  uploadImage?: UploadImage;
+  run?: ActionRunner["run"];
+}) {
+  const links = block.links ?? [];
+  const atMax = links.length >= MAX_FOOTER_LINKS;
+
+  function setLinks(next: { label: string; url: string }[]) {
+    onChange({ links: next });
+  }
+
+  return (
+    <View>
+      <ImageSourceFields
+        urlLabel="Logo (optional)"
+        altLabel="Logo alt text"
+        url={block.logoUrl}
+        alt={block.logoAlt}
+        optional
+        onChange={({ url, alt }) => onChange({ logoUrl: url, logoAlt: alt })}
+        uploadImage={uploadImage}
+        run={run}
+        libraryLabel="Footer logo"
+      />
+      <TextField
+        label="Nav line"
+        value={block.navLine ?? ""}
+        onChangeText={(navLine) => onChange({ navLine: navLine || undefined })}
+        placeholder="e.g. Sundays · 10am · The Old Fire Station"
+        hint="One bold line under the logo. Leave empty for none."
+      />
+      <Field
+        label="Links"
+        hint={
+          links.length === 0
+            ? "Socials, a giving page, view-in-browser — they render as one centred row."
+            : undefined
+        }
+      >
+        {links.map((link, index) => {
+          const problem = footerLinkProblem(link);
+          return (
+            <View key={`link-${index}`} className="mb-2">
+              <View className="flex-row items-start gap-2">
+                <View className="flex-1">
+                  <TextField
+                    value={link.label}
+                    onChangeText={(label) =>
+                      setLinks(links.map((l, i) => (i === index ? { ...l, label } : l)))
+                    }
+                    placeholder="Label"
+                  />
+                </View>
+                <View className="flex-1">
+                  <TextField
+                    value={link.url}
+                    onChangeText={(url) =>
+                      setLinks(links.map((l, i) => (i === index ? { ...l, url } : l)))
+                    }
+                    placeholder="https://…"
+                    autoCapitalize="none"
+                    keyboardType="url"
+                  />
+                </View>
+                <Pressable
+                  onPress={() => setLinks(links.filter((_, i) => i !== index))}
+                  hitSlop={6}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Remove link ${index + 1}`}
+                  className="mb-3 rounded p-1 active:bg-sunken web:hover:bg-sunken"
+                >
+                  <Icon name="x" size={13} color={colors.muted} />
+                </Pressable>
+              </View>
+              {/* Unlike a card's call to action — both halves or neither — a
+                  footer link that EXISTS must have both, so a half-filled row
+                  rejects the whole document. */}
+              {problem === "label-missing" ? (
+                <InlineWarning text="This link has no label, so nothing would show. Give it one, or remove the row — the campaign can't be saved until then." />
+              ) : problem === "url-missing" ? (
+                <InlineWarning text="This link has no address. Add one, or remove the row — the campaign can't be saved until then." />
+              ) : problem === "url-scheme" ? (
+                <InlineWarning text="A link has to start with http://, https:// or mailto:. The campaign can't be saved until this one does." />
+              ) : null}
+            </View>
+          );
+        })}
+        <LevelToggle
+          label={atMax ? `Maximum ${MAX_FOOTER_LINKS} links` : "+ Add link"}
+          active={false}
+          disabled={atMax}
+          // A fresh row starts with a real label and the https:// stub, so
+          // adding one doesn't itself make the document unsaveable — the same
+          // choice `defaultBlockFor("button")` makes.
+          onPress={() => setLinks([...links, { label: "Instagram", url: "https://" }])}
+        />
+      </Field>
+      <Text className="text-2xs text-faint">
+        The unsubscribe line is added automatically to every send — it
+        can&apos;t be edited or removed here.
+      </Text>
     </View>
   );
 }

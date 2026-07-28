@@ -12,19 +12,33 @@ import {
 } from "@events-os/shared";
 import {
   BLOCK_KINDS,
+  BLOCK_KIND_LABELS,
+  CARD_VARIANT_OPTIONS,
+  DEFAULT_IMAGE_WIDTH_PCT,
+  MAX_FOOTER_LINKS,
+  MAX_IMAGE_WIDTH_PCT,
+  MIN_IMAGE_WIDTH_PCT,
   canRedo,
   canUndo,
+  cardCtaUrlProblem,
+  clampImageWidthPct,
   ctaPairProblem,
   defaultBlockFor,
   duplicateBlock,
+  footerLinkProblem,
+  imageAltProblem,
   imageUrlProblem,
   initHistory,
   insertBlock,
+  linkUrlProblem,
+  optionalImageUrlProblem,
+  optionalLinkUrlProblem,
   pollHasBlankLabel,
   pushHistory,
   redoHistory,
   removeBlock,
   reorderBlocks,
+  stepImageWidthPct,
   syncListKeys,
   undoHistory,
   updateBlock,
@@ -205,13 +219,15 @@ describe("history (undo/redo)", () => {
 //    quote/poll) and the document-level `theme` field ─────────────────────────
 
 describe("defaultBlockFor — every new block must be SAVEABLE", () => {
-  // `image` is the ONE kind whose default can't validate, and deliberately so:
-  // its `url` must be a non-empty http(s) string, and the only way to satisfy
-  // that up front is a fabricated URL that would render as a broken image and
-  // could be sent for real if nobody noticed. An unsaveable block that says
-  // "image url must be a non-empty string" is the better failure — the
-  // composer's save indicator surfaces it, and filling the field fixes it.
-  const NEEDS_INPUT_BEFORE_SAVING: EmailBlockKind[] = ["image"];
+  // `image` and `bleed_image` are the ONLY kinds whose default can't validate,
+  // and deliberately so: their `url` must be a non-empty http(s) string, and
+  // the only way to satisfy that up front is a fabricated URL that would
+  // render as a broken image and could be sent for real if nobody noticed. An
+  // unsaveable block that says "url must be a non-empty string" is the better
+  // failure — the composer's save indicator surfaces it, and filling the field
+  // fixes it. `footer` is NOT here: every one of its fields is optional, so it
+  // has no excuse for shipping an unsaveable default.
+  const NEEDS_INPUT_BEFORE_SAVING: EmailBlockKind[] = ["image", "bleed_image"];
 
   test("every other kind's default passes the write gate on its own", () => {
     // The composer autosaves 600ms after a block is added, and

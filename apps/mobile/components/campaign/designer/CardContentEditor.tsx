@@ -397,7 +397,7 @@ const ALT_EMPTY_WARNING =
   "No alt text. Screen readers and image-blocking clients (Gmail and Outlook block images by default) will show nothing here. Leave it empty only if the image is purely decorative.";
 
 const ALT_MISSING_WARNING =
-  "This image has no alt text field at all, which the campaign can't be saved with (every other block's edits go down with it). Type a description — or, if the image is purely decorative, tap into the field and back out to leave it deliberately empty.";
+  "This image has a URL but no alt text at all, and the campaign can't be saved (including edits to every other block) until it has some. Type a description — or, if the image really is decorative, type a character and delete it to leave the field deliberately empty.";
 
 /**
  * A field-level advisory. Warn-toned rather than danger-toned on purpose:

@@ -84,36 +84,131 @@ export function fontOptionsFor(current: string): { value: string; label: string 
 
 // ── Token metadata ─────────────────────────────────────────────────────────
 
-/** The eight hex-valued tokens — every `EmailThemeTokens` key except the two
- *  font stacks, the radius, and the wordmark. */
+/** The twelve hex-valued tokens — every `EmailThemeTokens` key except the two
+ *  font stacks, the two letter-spacings, the radius, and the wordmark. */
 export type ColorTokenKey =
   | "accent"
   | "accentInk"
   | "canvas"
   | "surface"
+  | "cream"
+  | "contrast"
+  | "contrastInk"
   | "ink"
   | "muted"
   | "link"
+  | "hairline"
   | "border";
 
-/** The colour tokens, in the order the editor lists them, with the plain-
- *  English description of what each one paints. Ordered by how much of the
- *  email the token is responsible for, so the two that define the whole look
- *  (`accent`, `canvas`) come first. */
-export const COLOR_TOKENS: readonly {
-  key: ColorTokenKey;
-  label: string;
+export type ColorToken = { key: ColorTokenKey; label: string; help: string };
+
+/**
+ * The colour tokens, GROUPED by the part of the email they paint.
+ *
+ * Twelve swatches in one flat column is a wall: `cream` and `contrast` read
+ * as two more arbitrary colours rather than as the third and fourth SURFACE
+ * the design is built from, and `hairline`/`border` — which differ only in
+ * weight — end up ten rows apart. Grouping states the model instead: the
+ * design has four fills (page, card, cream, near-black), each with the text
+ * colour that sits on it, and two weights of rule.
+ *
+ * Each fill keeps its own ink beside it (`accent`+`accentInk`,
+ * `contrast`+`contrastInk`) rather than being filed under a single "text"
+ * group: those pairs are what the contrast warnings measure, and moving one
+ * without looking at the other is the mistake the grouping exists to prevent.
+ */
+export const COLOR_TOKEN_GROUPS: readonly {
+  title: string;
   help: string;
+  tokens: readonly ColorToken[];
 }[] = [
-  { key: "accent", label: "Accent", help: "Buttons, eyebrows, links, the wordmark." },
-  { key: "accentInk", label: "Button label", help: "The text drawn on top of the accent." },
-  { key: "canvas", label: "Page background", help: "Behind the card — the whole viewport." },
-  { key: "surface", label: "Card", help: "The card itself. Most text sits on this." },
-  { key: "ink", label: "Headings", help: "Headings and high-emphasis text." },
-  { key: "muted", label: "Body text", help: "Paragraphs, captions, the footer." },
-  { key: "link", label: "Links", help: "Inline links inside text blocks." },
-  { key: "border", label: "Hairlines", help: "Dividers and the card's border." },
+  {
+    title: "Page & container",
+    help: "The two layers everything else sits on.",
+    tokens: [
+      {
+        key: "canvas",
+        label: "Page background",
+        help: "The whole viewport, behind the email. Cool grey in the real newsletter — not the cream.",
+      },
+      {
+        key: "surface",
+        label: "Container",
+        help: "The email itself. White in the real newsletter; most text sits on this.",
+      },
+    ],
+  },
+  {
+    title: "Card fills",
+    help: "The design uses three distinct card colours, each with its own text colour.",
+    tokens: [
+      { key: "accent", label: "Accent", help: "The brand colour: hero card, eyebrows, the wordmark." },
+      { key: "accentInk", label: "Text on accent", help: "Drawn on top of the accent fill." },
+      { key: "cream", label: "Cream card", help: "The warm fill used by the feature card and the footer." },
+      { key: "contrast", label: "Near-black card", help: "The testimonial card and filled buttons." },
+      { key: "contrastInk", label: "Text on near-black", help: "Testimonial copy and filled-button labels." },
+    ],
+  },
+  {
+    title: "Text",
+    help: "Drawn on the container and the cream card.",
+    tokens: [
+      { key: "ink", label: "Headings", help: "Headings, poll options, high-emphasis text." },
+      { key: "muted", label: "Body text", help: "Paragraphs, captions, the legal footer." },
+      { key: "link", label: "Links", help: "Inline links inside text blocks." },
+    ],
+  },
+  {
+    title: "Lines",
+    help: "Decorative — exempt from the contrast checks below.",
+    tokens: [
+      { key: "hairline", label: "Section rule", help: "The thin full-width rule between sections. Lighter than the border." },
+      { key: "border", label: "Borders", help: "Dividers, the outlined card's border, outline buttons." },
+    ],
+  },
 ];
+
+/** Every colour token, flattened, in the order the editor lists them. Kept as
+ *  the flat list for anything that just needs "all of them" (the dark
+ *  overrides, the swatch tests) — `COLOR_TOKEN_GROUPS` is the source. */
+export const COLOR_TOKENS: readonly ColorToken[] = COLOR_TOKEN_GROUPS.flatMap(
+  (group) => group.tokens,
+);
+
+// ── Letter-spacing ─────────────────────────────────────────────────────────
+
+/**
+ * The letter-spacing values the two tracking tokens can be set to.
+ *
+ * A CLOSED LIST for the same reason the fonts are one: these strings are
+ * interpolated straight into a `style="…"` attribute, `validateEmailTheme`
+ * rejects anything that isn't a bare number-plus-unit, and the designer is
+ * choosing a LOOK ("tight, like the newsletter") rather than authoring CSS.
+ * Free text here buys nothing and can reject the save on a typo.
+ *
+ * The range stops at -0.04em because that's what Public Worship's headings
+ * actually use; past it the letters start colliding at heading sizes.
+ */
+export const TRACKING_PRESETS: readonly { value: string; label: string }[] = [
+  { value: "normal", label: "Normal" },
+  { value: "-0.01em", label: "Slightly tight (-0.01em)" },
+  { value: "-0.02em", label: "Tight (-0.02em)" },
+  { value: "-0.03em", label: "Tighter (-0.03em)" },
+  { value: "-0.04em", label: "Tightest (-0.04em) — the newsletter's headings" },
+];
+
+/** Tracking `Select` options for `current`, appending the theme's own value
+ *  when it isn't one of ours — the same non-destructive rule `fontOptionsFor`
+ *  follows, and for the same reason: a theme seeded before this list existed
+ *  must not open with an empty picker that blanks its tracking on the next
+ *  unrelated edit. */
+export function trackingOptionsFor(current: string): { value: string; label: string }[] {
+  const options = TRACKING_PRESETS.map((t) => ({ ...t }));
+  if (!options.some((o) => o.value === current) && current.trim()) {
+    options.push({ value: current, label: `Custom — ${current}` });
+  }
+  return options;
+}
 
 /**
  * Suggested swatches for a colour token — every value the built-in presets
@@ -243,8 +338,14 @@ export function forceDarkEmailPreview(html: string, darkCanvas: string): string 
 
 /**
  * The document the theme preview renders — one of every block the theme
- * visibly changes: eyebrow, heading, body text with a link, a button, a card
- * with a CTA, and a quote.
+ * visibly changes.
+ *
+ * It has to cover every EDITABLE token, not just the common ones: `cream`,
+ * `contrast`/`contrastInk` and `hairline` are only ever painted by the
+ * feature card, the testimonial card, the footer and the section rule, so a
+ * sample without those four blocks leaves a third of the colour form driving
+ * nothing the designer can see. Turning a knob with no visible effect reads
+ * as a broken control, not as a subtle one.
  *
  * Built fresh per call (rather than as a module constant) because every block
  * needs an id and `newBlockId` is non-deterministic; the ids are never
@@ -269,19 +370,35 @@ export function themeSampleDocument(theme: EmailTheme): EmailDocument {
         url: "https://publicworship.life",
         align: "left",
       },
+      { id: newBlockId(), kind: "hairline" },
       {
         id: newBlockId(),
         kind: "card",
+        variant: "feature",
+        eyebrow: "SONG OF THE MONTH",
         heading: "Song of the month",
-        body: "A card shows a heading, body copy, and its own call to action.",
+        body: "The feature card is the cream one. It carries a heading, body copy, and its own call to action.",
         ctaLabel: "Listen",
         ctaUrl: "https://publicworship.life",
+      },
+      {
+        id: newBlockId(),
+        kind: "card",
+        variant: "testimonial",
+        body: "The testimonial card is near-black, so it shows the contrast pair on its own.",
+        attribution: "A member of the congregation",
       },
       {
         id: newBlockId(),
         kind: "quote",
         text: "Sing to the Lord a new song.",
         attribution: "Psalm 96",
+      },
+      {
+        id: newBlockId(),
+        kind: "footer",
+        navLine: "Public Worship",
+        links: [{ label: "Instagram", url: "https://publicworship.life" }],
       },
     ],
   };

@@ -36,6 +36,19 @@ function styleBlockOf(html: string): string {
   return /<style>([\s\S]*?)<\/style>/.exec(html)?.[1] ?? "";
 }
 
+/** The inline `style="…"` of the first element carrying `cls`. Several fills
+ *  (`surface`, `contrastInk`) are plain white, so "the document contains this
+ *  hex somewhere" proves nothing — these assertions have to look at the
+ *  element that is supposed to be painted. */
+function styleOfClass(html: string, cls: string): string {
+  return new RegExp(`class="${cls}"[^>]*?\\sstyle="([^"]*)"`).exec(html)?.[1] ?? "";
+}
+
+/** Every `width:NN%` on a column cell, in document order. */
+function columnWidths(html: string): string[] {
+  return [...html.matchAll(/class="pw-col" width="([^"]*)"/g)].map((m) => m[1]);
+}
+
 describe("renderCampaignEmail — merge tags", () => {
   test("{{firstName}} substitutes the recipient's first name", () => {
     const html = renderCampaignEmail(
@@ -213,6 +226,14 @@ describe("renderCampaignEmail — every block kind", () => {
         { id: "o2", label: "Option two" },
       ],
     },
+    { id: "12", kind: "bleed_image", url: "https://x.test/bleed.png", alt: "a banner" },
+    { id: "13", kind: "hairline" },
+    {
+      id: "14",
+      kind: "footer",
+      navLine: "Footer nav line",
+      links: [{ label: "Footer link", url: "https://x.test/social" }],
+    },
   ];
 
   test("each known kind produces visible output", () => {
@@ -235,6 +256,12 @@ describe("renderCampaignEmail — every block kind", () => {
     expect(html).toContain("Poll question");
     expect(html).toContain("Option one");
     expect(html).toContain("Option two");
+    expect(html).toContain("https://x.test/bleed.png");
+    expect(html).toContain("a banner");
+    // The hairline is a 1px filled band, distinct from `divider`'s <hr>.
+    expect(html).toContain("height:1px;line-height:1px");
+    expect(html).toContain("Footer nav line");
+    expect(html).toContain("Footer link");
   });
 
   test("an unknown block kind renders nothing (forward compat)", () => {
@@ -332,10 +359,45 @@ describe("renderCampaignEmail — shell / footer", () => {
     expect(html).not.toContain("null");
   });
 
-  test("carries the Public Worship wordmark and footer copy", () => {
+  test("carries the shell's footer copy", () => {
     const html = renderCampaignEmail(doc([]), baseOpts);
-    expect(html).toContain("PUBLIC WORSHIP");
     expect(html).toContain("Sent with love by Public Worship");
+  });
+
+  test("the brand ships NO text wordmark — the masthead is artwork", () => {
+    // The old shell typeset "PUBLIC WORSHIP" above the card. The real
+    // newsletter opens with a full-bleed masthead IMAGE, so the strip is off
+    // by default (`wordmark: ""`) rather than duplicating the artwork in type.
+    const html = renderCampaignEmail(doc([]), baseOpts);
+    expect(DEFAULT_EMAIL_THEME.wordmark).toBe("");
+    expect(html).not.toContain("PUBLIC WORSHIP");
+    expect(withoutStyleBlock(html)).not.toContain('class="pw-mark"');
+  });
+
+  test("a grey page carries a white 600px container — two different surfaces", () => {
+    // The structural invariant of the whole design: `canvas` is the PAGE and
+    // `surface` is the CONTAINER on top of it. The first rebuild had these
+    // inverted (cream page, white card), which is why the correct hex values
+    // still didn't look like the brand.
+    const html = renderCampaignEmail(doc([]), baseOpts);
+    expect(DEFAULT_EMAIL_THEME.canvas).not.toBe(DEFAULT_EMAIL_THEME.surface);
+    expect(html).toContain(`<body style="margin:0;padding:0;background:${DEFAULT_EMAIL_THEME.canvas}"`);
+    expect(styleOfClass(html, "pw-wrap")).toContain(`background:${DEFAULT_EMAIL_THEME.canvas}`);
+    const container = styleOfClass(html, "pw-card");
+    expect(container).toContain("width:600px");
+    expect(container).toContain(`background:${DEFAULT_EMAIL_THEME.surface}`);
+    expect(container).not.toContain(`background:${DEFAULT_EMAIL_THEME.canvas}`);
+  });
+
+  test("each block gets its own table row, inset by the container's 24px gutter", () => {
+    const html = renderCampaignEmail(
+      doc([
+        { id: "1", kind: "heading", text: "One" },
+        { id: "2", kind: "heading", text: "Two" },
+      ]),
+      baseOpts,
+    );
+    expect(html.match(/<tr><td style="padding:0 24px">/g)).toHaveLength(2);
   });
 });
 
@@ -400,12 +462,18 @@ describe("renderCampaignText", () => {
 
 describe("renderCampaignEmail — theming", () => {
   test("a document with NO theme renders Public Worship's real brand", () => {
+    // A hero card, because the accent is a card FILL in this design rather
+    // than something the shell paints on its own — a bare heading would only
+    // prove the ink colour.
     const html = renderCampaignEmail(
-      doc([{ id: "1", kind: "heading", text: "Hello" }]),
+      doc([{ id: "1", kind: "card", variant: "hero", heading: "Hello" }]),
       baseOpts,
     );
     expect(html).toContain("#891d1a");
     expect(html).toContain(DEFAULT_EMAIL_THEME.canvas);
+    expect(styleOfClass(html, "pw-card-hero")).toContain(
+      `background:${DEFAULT_EMAIL_THEME.accent}`,
+    );
   });
 
   test("the old invented palette is gone entirely (it was never the real brand)", () => {
@@ -422,7 +490,10 @@ describe("renderCampaignEmail — theming", () => {
 
   test("a document WITH a theme renders that theme's accent and not the default's", () => {
     const html = renderCampaignEmail(
-      themedDoc([{ id: "1", kind: "button", label: "Go", url: "https://x.test" }], WINTER_THEME),
+      themedDoc(
+        [{ id: "1", kind: "card", variant: "hero", heading: "Go" }],
+        WINTER_THEME,
+      ),
       baseOpts,
     );
     expect(html).toContain(WINTER_THEME.accent);
@@ -620,7 +691,14 @@ describe("renderCampaignEmail — card", () => {
   test("the CTA renders as a themed button linking to ctaUrl", () => {
     const html = renderCampaignEmail(doc([card]), baseOpts);
     expect(html).toContain('href="https://x.test/give"');
-    expect(html).toContain(`background:${DEFAULT_EMAIL_THEME.accent}`);
+    // A filled CTA is the near-black `contrast` pill. The accent is a card
+    // FILL in this design, not the button colour.
+    expect(styleOfClass(html, "pw-btn")).toContain(
+      `background:${DEFAULT_EMAIL_THEME.contrast}`,
+    );
+    expect(styleOfClass(html, "pw-btn")).toContain(
+      `color:${DEFAULT_EMAIL_THEME.contrastInk}`,
+    );
   });
 
   test("a card with only a heading renders just that — no empty image or dead button", () => {
@@ -704,8 +782,9 @@ describe("renderCampaignEmail — columns", () => {
   });
 
   test("one <td> per column, each carrying the stacking class", () => {
+    // Counted by class, not by `<td `: the shell itself is a table now, so
+    // the document contains rows that have nothing to do with this block.
     const html = renderCampaignEmail(doc([columns]), baseOpts);
-    expect(html.match(/<td /g)).toHaveLength(2);
     expect(html.match(/class="pw-col"/g)).toHaveLength(2);
   });
 
@@ -720,7 +799,7 @@ describe("renderCampaignEmail — columns", () => {
       ]),
       baseOpts,
     );
-    expect(html.match(/<td /g)).toHaveLength(3);
+    expect(html.match(/class="pw-col"/g)).toHaveLength(3);
   });
 
   test("each column's content renders in order", () => {
