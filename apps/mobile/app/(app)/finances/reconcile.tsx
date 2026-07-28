@@ -397,6 +397,11 @@ function ReconcileGrid() {
     if (!transferLegs) return;
     setMarkBusy(true);
     try {
+      // Close + clear ONLY on success (`run` swallows the rejection and would
+      // otherwise close the modal on a server refusal). The refusals here are
+      // all "you picked the wrong counterpart" — mismatched amounts, two rows
+      // moving the same way, different books — so the selection has to survive
+      // for the bookkeeper to correct it.
       await run(
         () =>
           markAsTransfer({
@@ -404,10 +409,14 @@ function ReconcileGrid() {
             counterpartTransactionId: transferLegs[1].id as Id<"transactions">,
             ...(note ? { note } : {}),
           }),
-        { errorTitle: "Couldn't mark as transfer" },
+        {
+          errorTitle: "Couldn't mark as transfer",
+          onSuccess: () => {
+            setTransferPromptOpen(false);
+            clearSelection();
+          },
+        },
       );
-      setTransferPromptOpen(false);
-      clearSelection();
     } finally {
       setMarkBusy(false);
     }
@@ -423,10 +432,17 @@ function ReconcileGrid() {
           Promise.all(
             bulkIds.map((id) => markAsPayout({ transactionId: id, processor })),
           ),
-        { errorTitle: "Couldn't mark as payout" },
+        {
+          errorTitle: "Couldn't mark as payout",
+          // Success-only, same reasoning as the transfer path above — a
+          // selection containing an outflow is refused, and the bookkeeper
+          // needs it intact to drop that row.
+          onSuccess: () => {
+            setPayoutPromptOpen(false);
+            clearSelection();
+          },
+        },
       );
-      setPayoutPromptOpen(false);
-      clearSelection();
     } finally {
       setMarkBusy(false);
     }
