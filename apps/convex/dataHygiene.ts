@@ -47,6 +47,7 @@
  *   eventItems.ownerPersonId .... scan by_chapter
  *   academyProgress.personId .... idx by_chapter_and_person
  *   courseCompletions.personId .. idx by_chapter_and_person
+ *   rsvps.personId ............... idx by_person
  *   aiUsageEvents.cardholderPersonId ..... scan by_chapter_and_time (+central)
  *   songs.createdBy ............. scan by_chapter
  *   docs.createdBy .............. scan by_chapter
@@ -73,8 +74,13 @@
  * transaction's read budget. Indexed drains are complete (patched rows leave the
  * person-column index, so the next page returns only still-unmerged rows).
  */
-import { query, mutation } from "./_generated/server";
+import { query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
+// `mutation` is the triggers-wrapped builder, not `./_generated/server`'s —
+// `mergePeople` patches/deletes `people` rows (via `mergePeopleCore`) and
+// `mergeDonors` can insert one (`linkDonorToPerson`'s belt-and-suspenders
+// re-link). See `lib/peopleAggregate.ts`'s module doc.
+import { mutation } from "./lib/peopleAggregate";
 import { ConvexError, v } from "convex/values";
 import { Doc, Id } from "./_generated/dataModel";
 import { normalizeEmail } from "./lib/access";
@@ -105,8 +111,12 @@ const DEDUP_READ_CAP = 1000;
 function normPhone(phone?: string | null): string {
   return (phone ?? "").replace(/\D/g, "");
 }
-/** Lowercase, strip symbols/punctuation, collapse whitespace, trim. */
-function normName(name?: string | null): string {
+/** Lowercase, strip symbols/punctuation, collapse whitespace, trim. Exported
+ *  so `identity.ts`'s guest-identity review queue (name-match bucket) groups
+ *  guest names by the SAME key this file already uses for people-name dedup —
+ *  one normalization rule for "these two names are the same guest", not two
+ *  that could quietly drift apart. */
+export function normName(name?: string | null): string {
   return (name ?? "")
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, "")
@@ -150,8 +160,14 @@ type MatchKind = "email" | "phone" | "name" | "similar";
  * never repeated under a weaker one (dedup by sorted member-id signature), so
  * the `similar` pass only ever surfaces genuinely NEW clusters. Nothing fuzzy —
  * just two extra exact keys.
+ *
+ * Exported so `identity.ts`'s guest-identity review queue (bucket 3 —
+ * suspected-duplicate people) can REUSE this exact clustering instead of
+ * reimplementing it; that queue is gated by `requireReviewGuestIdentity`
+ * (anyone on the team), not `isChapterAdmin`, so it calls this pure function
+ * directly rather than the admin-gated `listPeopleDuplicates` query below.
  */
-function groupDuplicates<T extends { _id: string }>(
+export function groupDuplicates<T extends { _id: string }>(
   items: T[],
   keyOf: (t: T) => {
     email: string;
@@ -202,8 +218,10 @@ function groupDuplicates<T extends { _id: string }>(
   return out;
 }
 
-/** The person fields surfaced to the merge UI's side-by-side comparison. */
-function personCandidate(p: Doc<"people">) {
+/** The person fields surfaced to the merge UI's side-by-side comparison.
+ *  Exported for `identity.ts`'s reuse of `groupDuplicates` — see that
+ *  function's doc. */
+export function personCandidate(p: Doc<"people">) {
   return {
     _id: p._id,
     name: p.name,
@@ -405,6 +423,11 @@ async function repointPersonRefs(
   await repointDrain(ctx, counts, "events", "ownerPersonId", surv, "by_chapter_and_ownerPersonId", (q) => q.eq("chapterId", chapterId).eq("ownerPersonId", dup));
   await repointDrain(ctx, counts, "academyProgress", "personId", surv, "by_chapter_and_person", (q) => q.eq("chapterId", chapterId).eq("personId", dup));
   await repointDrain(ctx, counts, "courseCompletions", "personId", surv, "by_chapter_and_person", (q) => q.eq("chapterId", chapterId).eq("personId", dup));
+  // Person-centric audiences (specs/person-centric-audiences.md) — a guest's
+  // linked rsvp must move with them on merge, same as every other person
+  // reference, or merging two duplicate people orphans the duplicate's rsvp
+  // history (attendance stops showing on the survivor's person page).
+  await repointDrain(ctx, counts, "rsvps", "personId", surv, "by_person", (q) => q.eq("personId", dup));
   // Self-referential manager tree — never make the survivor its own manager.
   await repointDrain(ctx, counts, "people", "managerId", surv, "by_manager", (q) => q.eq("managerId", dup), surv);
 
@@ -540,6 +563,158 @@ function isBlank(v: unknown): boolean {
   return v === undefined || v === null || (typeof v === "string" && v.trim() === "");
 }
 
+/**
+ * The FK-repoint + field-merge + delete core of a people merge, WITHOUT any
+ * access check — every caller does its OWN gating first, then calls this.
+ * Extracted out of `mergePeople`'s handler (below) so `identity.ts#mergeDuplicatePeople`
+ * (gated by `requireReviewGuestIdentity` — "anyone on the team", the founder's
+ * explicit call for the guest-identity review queue) can reuse the exact same
+ * repoint/merge logic WITHOUT re-imposing `mergePeople`'s stricter
+ * `isChapterAdmin` gate. A plain exported async function (not an
+ * `internalMutation`) — this file doesn't otherwise import `internalMutation`
+ * from `./_generated/server`, and a same-transaction direct call is simpler
+ * than a `ctx.runMutation` hop for a same-file, same-caller-ctx reuse.
+ */
+export async function mergePeopleCore(
+  ctx: MutationCtx,
+  { chapterId, survivorId, duplicateId }: {
+    chapterId: Id<"chapters">;
+    survivorId: Id<"people">;
+    duplicateId: Id<"people">;
+  },
+): Promise<{ repointed: Counts; fieldsFilled: string[] }> {
+  if (survivorId === duplicateId) {
+    throw new ConvexError({
+      code: "INVALID_INPUT",
+      message: "Survivor and duplicate must be different people.",
+    });
+  }
+  const survivor = await ctx.db.get(survivorId);
+  const duplicate = await ctx.db.get(duplicateId);
+  if (!survivor || !duplicate) {
+    throw new ConvexError({ code: "NOT_FOUND", message: "Person not found." });
+  }
+  if (survivor.chapterId !== chapterId || duplicate.chapterId !== chapterId) {
+    throw new ConvexError({
+      code: "CROSS_CHAPTER",
+      message: "Both people must belong to this chapter to merge.",
+    });
+  }
+  // Two REAL accounts must never be silently collapsed — refuse the merge.
+  if (survivor.userId && duplicate.userId && survivor.userId !== duplicate.userId) {
+    throw new ConvexError({
+      code: "USER_CONFLICT",
+      message:
+        "Both people are linked to different sign-in accounts. Resolve the accounts before merging.",
+    });
+  }
+
+  // 1) Re-point every foreign key from the duplicate to the survivor.
+  const repointed = await repointPersonRefs(ctx, chapterId, duplicateId, survivorId);
+
+  // 2) Field-merge: survivor keeps its own values; blanks fill from duplicate.
+  const now = Date.now();
+  const patch: Record<string, unknown> = {};
+  const fieldsFilled: string[] = [];
+  const fillScalar = (field: keyof Doc<"people">) => {
+    if (isBlank((survivor as any)[field]) && !isBlank((duplicate as any)[field])) {
+      patch[field] = (duplicate as any)[field];
+      fieldsFilled.push(field as string);
+    }
+  };
+  for (const f of [
+    "email",
+    "phone",
+    "image",
+    "role",
+    "company",
+    "pwEmail",
+    "socialLink",
+    "pocName",
+    "usualRateUsd",
+    "gender",
+    "vettingStatus",
+    "status",
+  ] as (keyof Doc<"people">)[]) {
+    fillScalar(f);
+  }
+  const fillArray = (field: keyof Doc<"people">) => {
+    const sv = (survivor as any)[field] as unknown[] | undefined;
+    const dv = (duplicate as any)[field] as unknown[] | undefined;
+    if ((!sv || sv.length === 0) && dv && dv.length > 0) {
+      patch[field] = dv;
+      fieldsFilled.push(field as string);
+    }
+  };
+  for (const f of ["projects", "commsPreferences"] as (keyof Doc<"people">)[]) {
+    fillArray(f);
+  }
+  // Service Catalog ids (replaces the retired free-text `services` array —
+  // see `schema/people.ts`'s deprecation comment): UNION + dedupe rather
+  // than fill-only-if-empty. Unlike `projects`/`commsPreferences` (ordered
+  // lists a blind union would corrupt), `serviceIds` is an unordered id
+  // set, so combining both people's tags is strictly more correct than
+  // discarding the duplicate's.
+  const survivorServiceIds = survivor.serviceIds ?? [];
+  const duplicateServiceIds = duplicate.serviceIds ?? [];
+  if (duplicateServiceIds.length > 0) {
+    const merged = new Set([...survivorServiceIds, ...duplicateServiceIds]);
+    if (merged.size !== survivorServiceIds.length) {
+      patch.serviceIds = [...merged];
+      fieldsFilled.push("serviceIds");
+    }
+  }
+  // isTeamMember is a capability — OR the two (either being team keeps team).
+  if (survivor.isTeamMember !== true && duplicate.isTeamMember === true) {
+    patch.isTeamMember = true;
+    fieldsFilled.push("isTeamMember");
+  }
+  // Adopt the duplicate's account when the survivor has none (conflict already
+  // refused above).
+  if (!survivor.userId && duplicate.userId) {
+    patch.userId = duplicate.userId;
+    fieldsFilled.push("userId");
+  }
+  // Notes: keep both, plus an audit line naming the merge.
+  const auditLine = `[merged from ${duplicate.name}, ${new Date(now).toISOString()}]`;
+  patch.notes = [survivor.notes?.trim(), duplicate.notes?.trim(), auditLine]
+    .filter((s): s is string => Boolean(s))
+    .join("\n");
+  fieldsFilled.push("notes");
+  // managerId: adopt the duplicate's if the survivor has none, but never let
+  // the survivor end up managed by itself or by the (now-deleted) duplicate.
+  let managerId = survivor.managerId;
+  if (managerId === undefined && duplicate.managerId) managerId = duplicate.managerId;
+  if (managerId === survivorId || managerId === duplicateId) managerId = undefined;
+  if (managerId !== survivor.managerId) {
+    patch.managerId = managerId;
+    if (managerId !== undefined) fieldsFilled.push("managerId");
+  }
+
+  await ctx.db.patch(survivorId, patch);
+
+  // Person-centric audiences Phase 2 — write-through: a blank-filled
+  // email/pwEmail (the duplicate's value adopted onto the survivor's own
+  // scalar field, above) must join the survivor's `personEmails` ledger
+  // exactly like a direct `people.update` edit would. This is INDEPENDENT
+  // of `repointPersonEmails` (step 1, which moves the duplicate's OWN
+  // ledger rows) — the duplicate may predate write-through entirely (no
+  // ledger row ever existed for its `email`), so the ledger's only record
+  // of this address is the one recorded HERE, from the field that actually
+  // got copied.
+  if (fieldsFilled.includes("email") && typeof patch.email === "string") {
+    await recordPersonEmail(ctx, { personId: survivorId, email: patch.email, source: "roster", verified: true });
+  }
+  if (fieldsFilled.includes("pwEmail") && typeof patch.pwEmail === "string") {
+    await recordPersonEmail(ctx, { personId: survivorId, email: patch.pwEmail, source: "pw", verified: true });
+  }
+
+  // 3) Delete the now-merged duplicate row.
+  await ctx.db.delete(duplicateId);
+
+  return { repointed, fieldsFilled };
+}
+
 export const mergePeople = mutation({
   args: {
     chapterId: v.id("chapters"),
@@ -553,121 +728,7 @@ export const mergePeople = mutation({
         message: "Only chapter admins can merge people.",
       });
     }
-    if (survivorId === duplicateId) {
-      throw new ConvexError({
-        code: "INVALID_INPUT",
-        message: "Survivor and duplicate must be different people.",
-      });
-    }
-    const survivor = await ctx.db.get(survivorId);
-    const duplicate = await ctx.db.get(duplicateId);
-    if (!survivor || !duplicate) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Person not found." });
-    }
-    if (survivor.chapterId !== chapterId || duplicate.chapterId !== chapterId) {
-      throw new ConvexError({
-        code: "CROSS_CHAPTER",
-        message: "Both people must belong to this chapter to merge.",
-      });
-    }
-    // Two REAL accounts must never be silently collapsed — refuse the merge.
-    if (survivor.userId && duplicate.userId && survivor.userId !== duplicate.userId) {
-      throw new ConvexError({
-        code: "USER_CONFLICT",
-        message:
-          "Both people are linked to different sign-in accounts. Resolve the accounts before merging.",
-      });
-    }
-
-    // 1) Re-point every foreign key from the duplicate to the survivor.
-    const repointed = await repointPersonRefs(ctx, chapterId, duplicateId, survivorId);
-
-    // 2) Field-merge: survivor keeps its own values; blanks fill from duplicate.
-    const now = Date.now();
-    const patch: Record<string, unknown> = {};
-    const fieldsFilled: string[] = [];
-    const fillScalar = (field: keyof Doc<"people">) => {
-      if (isBlank((survivor as any)[field]) && !isBlank((duplicate as any)[field])) {
-        patch[field] = (duplicate as any)[field];
-        fieldsFilled.push(field as string);
-      }
-    };
-    for (const f of [
-      "email",
-      "phone",
-      "image",
-      "role",
-      "company",
-      "pwEmail",
-      "socialLink",
-      "pocName",
-      "usualRateUsd",
-      "gender",
-      "vettingStatus",
-      "status",
-    ] as (keyof Doc<"people">)[]) {
-      fillScalar(f);
-    }
-    const fillArray = (field: keyof Doc<"people">) => {
-      const sv = (survivor as any)[field] as unknown[] | undefined;
-      const dv = (duplicate as any)[field] as unknown[] | undefined;
-      if ((!sv || sv.length === 0) && dv && dv.length > 0) {
-        patch[field] = dv;
-        fieldsFilled.push(field as string);
-      }
-    };
-    for (const f of ["services", "projects", "commsPreferences"] as (keyof Doc<"people">)[]) {
-      fillArray(f);
-    }
-    // isTeamMember is a capability — OR the two (either being team keeps team).
-    if (survivor.isTeamMember !== true && duplicate.isTeamMember === true) {
-      patch.isTeamMember = true;
-      fieldsFilled.push("isTeamMember");
-    }
-    // Adopt the duplicate's account when the survivor has none (conflict already
-    // refused above).
-    if (!survivor.userId && duplicate.userId) {
-      patch.userId = duplicate.userId;
-      fieldsFilled.push("userId");
-    }
-    // Notes: keep both, plus an audit line naming the merge.
-    const auditLine = `[merged from ${duplicate.name}, ${new Date(now).toISOString()}]`;
-    patch.notes = [survivor.notes?.trim(), duplicate.notes?.trim(), auditLine]
-      .filter((s): s is string => Boolean(s))
-      .join("\n");
-    fieldsFilled.push("notes");
-    // managerId: adopt the duplicate's if the survivor has none, but never let
-    // the survivor end up managed by itself or by the (now-deleted) duplicate.
-    let managerId = survivor.managerId;
-    if (managerId === undefined && duplicate.managerId) managerId = duplicate.managerId;
-    if (managerId === survivorId || managerId === duplicateId) managerId = undefined;
-    if (managerId !== survivor.managerId) {
-      patch.managerId = managerId;
-      if (managerId !== undefined) fieldsFilled.push("managerId");
-    }
-
-    await ctx.db.patch(survivorId, patch);
-
-    // Person-centric audiences Phase 2 — write-through: a blank-filled
-    // email/pwEmail (the duplicate's value adopted onto the survivor's own
-    // scalar field, above) must join the survivor's `personEmails` ledger
-    // exactly like a direct `people.update` edit would. This is INDEPENDENT
-    // of `repointPersonEmails` (step 1, which moves the duplicate's OWN
-    // ledger rows) — the duplicate may predate write-through entirely (no
-    // ledger row ever existed for its `email`), so the ledger's only record
-    // of this address is the one recorded HERE, from the field that actually
-    // got copied.
-    if (fieldsFilled.includes("email") && typeof patch.email === "string") {
-      await recordPersonEmail(ctx, { personId: survivorId, email: patch.email, source: "roster", verified: true });
-    }
-    if (fieldsFilled.includes("pwEmail") && typeof patch.pwEmail === "string") {
-      await recordPersonEmail(ctx, { personId: survivorId, email: patch.pwEmail, source: "pw", verified: true });
-    }
-
-    // 3) Delete the now-merged duplicate row.
-    await ctx.db.delete(duplicateId);
-
-    return { repointed, fieldsFilled };
+    return await mergePeopleCore(ctx, { chapterId, survivorId, duplicateId });
   },
 });
 

@@ -8,6 +8,14 @@
  * @module
  */
 
+// HAND-PATCHED (not from codegen): `npx convex codegen` can't run in this
+// worktree (no deployment configured — see `convex.config.ts`'s doc), so the
+// `peopleByPersona` component wiring below was added by hand to match what
+// codegen would emit for the app's first component. Regenerate for real via
+// `npx convex dev` as soon as a deployment is available; this hand patch is a
+// stopgap, not a replacement.
+import type { ComponentApi } from "@convex-dev/aggregate/_generated/component.js";
+
 import type * as academy from "../academy.js";
 import type * as accessAllowlist from "../accessAllowlist.js";
 import type * as ai from "../ai.js";
@@ -23,6 +31,8 @@ import type * as budgetDecisionEmails from "../budgetDecisionEmails.js";
 import type * as budgetDetail from "../budgetDetail.js";
 import type * as budgetLines from "../budgetLines.js";
 import type * as campaignApprovalEmails from "../campaignApprovalEmails.js";
+import type * as campaignPolls from "../campaignPolls.js";
+import type * as campaignTemplates from "../campaignTemplates.js";
 import type * as campaigns from "../campaigns.js";
 import type * as cards from "../cards.js";
 import type * as checkIns from "../checkIns.js";
@@ -34,7 +44,9 @@ import type * as dashboardDrill from "../dashboardDrill.js";
 import type * as dataHygiene from "../dataHygiene.js";
 import type * as docs from "../docs.js";
 import type * as donorIdentityBackfill from "../donorIdentityBackfill.js";
+import type * as emailImages from "../emailImages.js";
 import type * as emailSuppressions from "../emailSuppressions.js";
+import type * as emailThemes from "../emailThemes.js";
 import type * as engagements from "../engagements.js";
 import type * as eventAttendanceImport from "../eventAttendanceImport.js";
 import type * as eventTypes from "../eventTypes.js";
@@ -43,6 +55,7 @@ import type * as financeGenesisBackfill from "../financeGenesisBackfill.js";
 import type * as financeRoles from "../financeRoles.js";
 import type * as financeSettings from "../financeSettings.js";
 import type * as finances from "../finances.js";
+import type * as formSubmissions from "../formSubmissions.js";
 import type * as givebutterSync from "../givebutterSync.js";
 import type * as giving from "../giving.js";
 import type * as givingActivity from "../givingActivity.js";
@@ -55,6 +68,7 @@ import type * as givingPledges from "../givingPledges.js";
 import type * as guests from "../guests.js";
 import type * as historicalBackfill from "../historicalBackfill.js";
 import type * as http from "../http.js";
+import type * as identity from "../identity.js";
 import type * as increase from "../increase.js";
 import type * as integrationSettings from "../integrationSettings.js";
 import type * as inventory from "../inventory.js";
@@ -125,6 +139,7 @@ import type * as lib_superuser from "../lib/superuser.js";
 import type * as lib_templates from "../lib/templates.js";
 import type * as lib_ticketApiRoutes from "../lib/ticketApiRoutes.js";
 import type * as lib_twilio from "../lib/twilio.js";
+import type * as lib_pollPage from "../lib/pollPage.js";
 import type * as lib_unsubscribePage from "../lib/unsubscribePage.js";
 import type * as maintenance from "../maintenance.js";
 import type * as migrations from "../migrations.js";
@@ -162,6 +177,9 @@ import type * as migrations_0036_add_campaign_power_defaults from "../migrations
 import type * as migrations_0037_link_rsvp_people from "../migrations/0037_link_rsvp_people.js";
 import type * as migrations_0038_backfill_contact_only_people from "../migrations/0038_backfill_contact_only_people.js";
 import type * as migrations_0039_backfill_person_emails from "../migrations/0039_backfill_person_emails.js";
+import type * as migrations_0048_import_form_submissions from "../migrations/0048_import_form_submissions.js";
+import type * as migrations_0050_link_rsvp_identifiers from "../migrations/0050_link_rsvp_identifiers.js";
+import type * as migrations_0052_import_newsletter_images from "../migrations/0052_import_newsletter_images.js";
 import type * as migrations_index from "../migrations/index.js";
 import type * as modules from "../modules.js";
 import type * as moneyViews from "../moneyViews.js";
@@ -197,6 +215,7 @@ import type * as schema_finances from "../schema/finances.js";
 import type * as schema_givingActivity from "../schema/givingActivity.js";
 import type * as schema_givingInterest from "../schema/givingInterest.js";
 import type * as schema_givingPlatform from "../schema/givingPlatform.js";
+import type * as schema_identity from "../schema/identity.js";
 import type * as schema_integrationSettings from "../schema/integrationSettings.js";
 import type * as schema_inventory from "../schema/inventory.js";
 import type * as schema_migrations from "../schema/migrations.js";
@@ -208,6 +227,7 @@ import type * as schema_roles from "../schema/roles.js";
 import type * as schema_seatProposals from "../schema/seatProposals.js";
 import type * as schema_seatStructureLog from "../schema/seatStructureLog.js";
 import type * as schema_seats from "../schema/seats.js";
+import type * as schema_services from "../schema/services.js";
 import type * as schema_shared from "../schema/shared.js";
 import type * as schema_siteMap from "../schema/siteMap.js";
 import type * as schema_smsOptOuts from "../schema/smsOptOuts.js";
@@ -222,6 +242,7 @@ import type * as seatStructure from "../seatStructure.js";
 import type * as seats from "../seats.js";
 import type * as seed from "../seed.js";
 import type * as seedTicketing from "../seedTicketing.js";
+import type * as serviceOptions from "../serviceOptions.js";
 import type * as setlists from "../setlists.js";
 import type * as siteMap from "../siteMap.js";
 import type * as smsOptOuts from "../smsOptOuts.js";
@@ -268,6 +289,8 @@ declare const fullApi: ApiFromModules<{
   budgetDetail: typeof budgetDetail;
   budgetLines: typeof budgetLines;
   campaignApprovalEmails: typeof campaignApprovalEmails;
+  campaignPolls: typeof campaignPolls;
+  campaignTemplates: typeof campaignTemplates;
   campaigns: typeof campaigns;
   cards: typeof cards;
   checkIns: typeof checkIns;
@@ -279,7 +302,9 @@ declare const fullApi: ApiFromModules<{
   dataHygiene: typeof dataHygiene;
   docs: typeof docs;
   donorIdentityBackfill: typeof donorIdentityBackfill;
+  emailImages: typeof emailImages;
   emailSuppressions: typeof emailSuppressions;
+  emailThemes: typeof emailThemes;
   engagements: typeof engagements;
   eventAttendanceImport: typeof eventAttendanceImport;
   eventTypes: typeof eventTypes;
@@ -288,6 +313,7 @@ declare const fullApi: ApiFromModules<{
   financeRoles: typeof financeRoles;
   financeSettings: typeof financeSettings;
   finances: typeof finances;
+  formSubmissions: typeof formSubmissions;
   givebutterSync: typeof givebutterSync;
   giving: typeof giving;
   givingActivity: typeof givingActivity;
@@ -300,6 +326,7 @@ declare const fullApi: ApiFromModules<{
   guests: typeof guests;
   historicalBackfill: typeof historicalBackfill;
   http: typeof http;
+  identity: typeof identity;
   increase: typeof increase;
   integrationSettings: typeof integrationSettings;
   inventory: typeof inventory;
@@ -370,6 +397,7 @@ declare const fullApi: ApiFromModules<{
   "lib/templates": typeof lib_templates;
   "lib/ticketApiRoutes": typeof lib_ticketApiRoutes;
   "lib/twilio": typeof lib_twilio;
+  "lib/pollPage": typeof lib_pollPage;
   "lib/unsubscribePage": typeof lib_unsubscribePage;
   maintenance: typeof maintenance;
   migrations: typeof migrations;
@@ -407,6 +435,9 @@ declare const fullApi: ApiFromModules<{
   "migrations/0037_link_rsvp_people": typeof migrations_0037_link_rsvp_people;
   "migrations/0038_backfill_contact_only_people": typeof migrations_0038_backfill_contact_only_people;
   "migrations/0039_backfill_person_emails": typeof migrations_0039_backfill_person_emails;
+  "migrations/0048_import_form_submissions": typeof migrations_0048_import_form_submissions;
+  "migrations/0050_link_rsvp_identifiers": typeof migrations_0050_link_rsvp_identifiers;
+  "migrations/0052_import_newsletter_images": typeof migrations_0052_import_newsletter_images;
   "migrations/index": typeof migrations_index;
   modules: typeof modules;
   moneyViews: typeof moneyViews;
@@ -442,6 +473,7 @@ declare const fullApi: ApiFromModules<{
   "schema/givingActivity": typeof schema_givingActivity;
   "schema/givingInterest": typeof schema_givingInterest;
   "schema/givingPlatform": typeof schema_givingPlatform;
+  "schema/identity": typeof schema_identity;
   "schema/integrationSettings": typeof schema_integrationSettings;
   "schema/inventory": typeof schema_inventory;
   "schema/migrations": typeof schema_migrations;
@@ -453,6 +485,7 @@ declare const fullApi: ApiFromModules<{
   "schema/seatProposals": typeof schema_seatProposals;
   "schema/seatStructureLog": typeof schema_seatStructureLog;
   "schema/seats": typeof schema_seats;
+  "schema/services": typeof schema_services;
   "schema/shared": typeof schema_shared;
   "schema/siteMap": typeof schema_siteMap;
   "schema/smsOptOuts": typeof schema_smsOptOuts;
@@ -467,6 +500,7 @@ declare const fullApi: ApiFromModules<{
   seats: typeof seats;
   seed: typeof seed;
   seedTicketing: typeof seedTicketing;
+  serviceOptions: typeof serviceOptions;
   setlists: typeof setlists;
   siteMap: typeof siteMap;
   smsOptOuts: typeof smsOptOuts;
@@ -518,4 +552,6 @@ export declare const internal: FilterApi<
   FunctionReference<any, "internal">
 >;
 
-export declare const components: {};
+export declare const components: {
+  peopleByPersona: ComponentApi;
+};

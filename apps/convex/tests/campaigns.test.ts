@@ -2158,6 +2158,14 @@ describe("two-party approval — content drift (targeting v2)", () => {
     const t = newT();
     const s = await asSuperuser(t);
     await configureResend(s);
+    const serviceId = await run(s.t, (ctx) =>
+      ctx.db.insert("serviceOptions", {
+        chapterId: s.chapterId,
+        name: "Audio",
+        isActive: true,
+        createdAt: Date.now(),
+      }),
+    );
     const audienceId = await run(s.t, (ctx) =>
       ctx.db.insert("audiences", {
         scope: "central",
@@ -2197,7 +2205,7 @@ describe("two-party approval — content drift (targeting v2)", () => {
           {
             conditions: [
               { field: "donor_status", op: "is", status: "any" },
-              { field: "has_service", op: "has", service: "audio" },
+              { field: "has_service", op: "has", serviceId },
             ],
           },
         ],
@@ -2956,7 +2964,9 @@ describe("two-party approval — notification emails", () => {
       expect(reviewHtml).toContain("Review this campaign");
       // A real, clickable link — not just the label text — since APP_URL is
       // configured in this test.
-      expect(reviewHtml).toMatch(/<a href="https:\/\/app\.publicworship\.life\/campaign\/[^"]+"[^>]*>Review this campaign/);
+      // Attribute order is not the contract — the themed button helper puts
+      // `class="pw-btn"` ahead of `href`. The target and label are.
+      expect(reviewHtml).toMatch(/<a[^>]*href="https:\/\/app\.publicworship\.life\/campaign\/[^"]+"[^>]*>Review this campaign/);
       // The document's root tag is still the very last thing in the string —
       // nothing was appended past it.
       expect(reviewHtml.trimEnd().endsWith("</html>")).toBe(true);

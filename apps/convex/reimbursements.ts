@@ -82,6 +82,7 @@ import {
 } from "./lib/finance";
 import { assertRoutingNumber, assertAccountNumber } from "./increase";
 import { sendEmail, emailShell } from "./ticketingEmails";
+import { emailButtonRow, emailHeading, emailParagraph } from "./lib/emailShell";
 import { escapeHtml } from "./lib/html";
 import { appUrl, siteUrl } from "./lib/siteUrl";
 import {
@@ -2136,13 +2137,9 @@ export const sendReimbursementReminders = internalAction({
           to: r.payeeEmail,
           subject: `Your reimbursement ${r.reference} is still pending`,
           html: emailShell(`
-          <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">Reimbursement ${escapeHtml(r.reference)}</h1>
-          <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(r.payeeName)} — your ${escapeHtml(dollars)} reimbursement is still open. ${reason}</p>
-          ${
-            link
-              ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${link}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">View request →</a></div>`
-              : ""
-          }`),
+          ${emailHeading(`Reimbursement ${escapeHtml(r.reference)}`)}
+          ${emailParagraph(`Hi ${escapeHtml(r.payeeName)} — your ${escapeHtml(dollars)} reimbursement is still open. ${reason}`)}
+          ${link ? emailButtonRow(link, "View request →") : ""}`),
         });
       }
 
@@ -2169,13 +2166,9 @@ export const sendReimbursementReminders = internalAction({
           to: r.payeeEmail,
           subject: `Your reimbursement ${r.reference} — time to submit your receipts`,
           html: emailShell(`
-          <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">Reimbursement ${escapeHtml(r.reference)}</h1>
-          <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">Hi ${escapeHtml(r.payeeName)} — your planned purchase date (${escapeHtml(formatEmailDate(r.plannedPurchaseDate))}) has passed, and your ${escapeHtml(dollars)} pre-approved reimbursement is still waiting on receipts. Submit your receipts to complete the reimbursement.</p>
-          ${
-            link
-              ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${link}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">Add receipts →</a></div>`
-              : ""
-          }`),
+          ${emailHeading(`Reimbursement ${escapeHtml(r.reference)}`)}
+          ${emailParagraph(`Hi ${escapeHtml(r.payeeName)} — your planned purchase date (${escapeHtml(formatEmailDate(r.plannedPurchaseDate))}) has passed, and your ${escapeHtml(dollars)} pre-approved reimbursement is still waiting on receipts. Submit your receipts to complete the reimbursement.`)}
+          ${link ? emailButtonRow(link, "Add receipts →") : ""}`),
         });
       }
     }
@@ -2282,12 +2275,15 @@ export const sendReimbursementSubmittedEmail = internalAction({
         ? ` They plan to make the purchase on <b>${escapeHtml(formatEmailDate(payload.plannedPurchaseDate))}</b>.`
         : "";
       const html = emailShell(`
-        <h1 style="margin:0 0 12px;font-size:24px;line-height:1.2">Reimbursement ${escapeHtml(payload.reference)}</h1>
-        <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:#7A5A5A">${escapeHtml(payload.payeeName)} submitted a ${escapeHtml(dollars)} reimbursement${forPurpose} at ${escapeHtml(payload.chapterName)}. It's waiting on your review.${planned}</p>
+        ${emailHeading(`Reimbursement ${escapeHtml(payload.reference)}`)}
+        ${emailParagraph(`${escapeHtml(payload.payeeName)} submitted a ${escapeHtml(dollars)} reimbursement${forPurpose} at ${escapeHtml(payload.chapterName)}. It's waiting on your review.${planned}`)}
         ${
           link
-            ? `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;font-weight:600"><a href="${link}" style="color:#fff;background:#D23B3A;text-decoration:none;border:1px solid #D23B3A;border-radius:999px;padding:6px 12px;display:inline-block">Review it →</a></div>`
-            : `<p style="margin:0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;line-height:1.6;color:#7A5A5A">Review it from the Reimbursements tab in the app.</p>`
+            ? emailButtonRow(link, "Review it →")
+            : emailParagraph("Review it from the Reimbursements tab in the app.", {
+                size: 12,
+                margin: "0",
+              })
         }`);
 
       for (const email of payload.recipients) {

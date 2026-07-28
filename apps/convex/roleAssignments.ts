@@ -5,10 +5,14 @@
  * burnout and rotation opportunities. References a role by id (`eventRoles`
  * table), scoped to the event's own roles.
  */
-import { query, mutation } from "./_generated/server";
+import { query } from "./_generated/server";
 import { Doc, Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 import { requireEvent, requireOwned } from "./lib/context";
+// `mutation` is the triggers-wrapped builder, not `./_generated/server`'s —
+// `assign`/`unassign` write `roleAssignments`, a volunteer-persona signal.
+// See `lib/peopleAggregate.ts`'s module doc.
+import { mutation } from "./lib/peopleAggregate";
 
 /** Every role on an event, each with its assigned person (or null). */
 export const listForEvent = query({

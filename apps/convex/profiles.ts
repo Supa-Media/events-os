@@ -13,6 +13,14 @@ import {
   QueryCtx,
   MutationCtx,
 } from "./_generated/server";
+// Triggers-wrapped builders for the four exports below that call
+// `syncStaffPerson`/`reconcilePersonForUser` (`lib/people.ts`) — writes/merges
+// `people` rows and repoints `engagements`/`roleAssignments`. See
+// `lib/peopleAggregate.ts`'s module doc.
+import {
+  mutation as triggerMutation,
+  internalMutation as triggerInternalMutation,
+} from "./lib/peopleAggregate";
 import { Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
 import { getOptionalAuth } from "@supa-media/convex/auth";
@@ -124,7 +132,7 @@ export const listChapters = query({
  * chosen chapter. Idempotent on re-run (upserts the profile, only adds the
  * membership if missing).
  */
-export const completeOnboarding = mutation({
+export const completeOnboarding = triggerMutation({
   args: {
     name: v.string(),
     phone: v.string(),
@@ -190,7 +198,7 @@ export const completeOnboarding = mutation({
 });
 
 /** Edit the current user's profile (name + phone). Name can't be cleared. */
-export const updateProfile = mutation({
+export const updateProfile = triggerMutation({
   args: {
     name: v.optional(v.string()),
     phone: v.optional(v.string()),
@@ -251,7 +259,7 @@ export const updateProfile = mutation({
  * haven't onboarded into a chapter yet (there's no chapter to attach a row to).
  * The client fires this from the authenticated layout once `me.onboarded`.
  */
-export const reconcileMyPerson = mutation({
+export const reconcileMyPerson = triggerMutation({
   args: {},
   handler: async (ctx) => {
     const user = await getOptionalAuth(ctx);
@@ -282,7 +290,7 @@ export const reconcileMyPerson = mutation({
  * People-sync change. Internal-only (one-off migration), invoked from the
  * Convex dashboard or another backend function — never exposed to clients.
  */
-export const backfillStaffPeople = internalMutation({
+export const backfillStaffPeople = triggerInternalMutation({
   args: {},
   handler: async (ctx) => {
     const profiles = await ctx.db.query("userProfiles").collect();

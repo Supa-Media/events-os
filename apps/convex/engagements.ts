@@ -7,7 +7,7 @@
  * splits engagements into two lists (Volunteers / Vendors); paid engagements
  * carry an amount + payment status and roll into the event budget.
  */
-import { query, mutation, QueryCtx } from "./_generated/server";
+import { query, QueryCtx } from "./_generated/server";
 import { Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
 import {
@@ -16,6 +16,11 @@ import {
   getChapterIdOrNull,
 } from "./lib/context";
 import { deleteEventPlacementsForRef } from "./lib/placements";
+import { resolveServiceLabels } from "./lib/serviceCatalog";
+// `mutation` is the triggers-wrapped builder, not `./_generated/server`'s —
+// every mutation here writes `engagements`, whose `personId`/`type` feed the
+// persona ladder. See `lib/peopleAggregate.ts`'s module doc.
+import { mutation } from "./lib/peopleAggregate";
 
 /**
  * A `budgetCategoryId` override, if any, must belong to the CALLER's own
@@ -81,7 +86,11 @@ export const listForEvent = query({
                 name: person.name,
                 email: person.email ?? null,
                 phone: person.phone ?? null,
-                skills: person.services ?? [],
+                // Service Catalog labels (replaces the retired free-text
+                // `people.services` — see `schema/people.ts`'s deprecation
+                // comment), resolved live so a catalog rename is reflected
+                // here without a write-through.
+                skills: await resolveServiceLabels(ctx, person.serviceIds),
                 isPlaceholder: person.isPlaceholder === true,
               }
             : null,

@@ -121,10 +121,17 @@ import {
   audiences,
   campaigns,
   campaignApprovalLog,
+  campaignPollVotes,
   campaignRecipients,
+  campaignTemplates,
+  emailImages,
   emailSuppressions,
   emailReplies,
+  emailThemes,
 } from "./schema/campaigns";
+import { serviceOptions } from "./schema/services";
+import { formSubmissions, formDefinitions } from "./schema/forms";
+import { identityDecisions } from "./schema/identity";
 
 /**
  * Database schema for Chapter OS.
@@ -452,6 +459,38 @@ const schema = defineSchema({
   campaignRecipients,
   emailSuppressions,
   emailReplies,
+  // The composer's design surface: `emailThemes` are the org's saved, editable
+  // token sets (the built-in presets stay in code — see
+  // @events-os/shared's EMAIL_THEME_PRESETS); `campaignTemplates` are saved
+  // starting documents; `emailImages` is the reusable illustration library;
+  // `campaignPollVotes` is one row per (recipient, poll block), written by the
+  // public `/poll/` route. See schema/campaigns.ts's doc for each +
+  // emailThemes.ts / campaignTemplates.ts / emailImages.ts / campaignPolls.ts.
+  emailThemes,
+  campaignTemplates,
+  emailImages,
+  campaignPollVotes,
+
+  // Service Catalog — the managed dropdown behind `people.serviceIds` (see
+  // schema/services.ts's module doc). One level of parent/child nesting,
+  // soft-delete only; `serviceOptions.ts` owns every write.
+  serviceOptions,
+
+  // Form Submissions (PW Forms consolidation) — one table for every Google
+  // Form response, person-scoped (`personId` set) or event-scoped
+  // (`eventId` set, anonymous surveys). `formDefinitions` holds each form's
+  // ordered question list. See schema/forms.ts's module doc +
+  // lib/formCatalog.ts (the 6-form catalog) + formSubmissions.ts (reads +
+  // the internal import write path).
+  formSubmissions,
+  formDefinitions,
+
+  // Guest Identity review (Partiful name-only RSVP resolution) — the
+  // append-only decision ledger behind the human review queue's
+  // suppression/resurfacing logic. See schema/identity.ts's module doc +
+  // identity.ts (queries/mutations) + migrations/0050_link_rsvp_identifiers.ts
+  // (the automated auto-link half).
+  identityDecisions,
 });
 
 export default schema;

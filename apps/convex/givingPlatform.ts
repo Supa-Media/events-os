@@ -25,6 +25,14 @@ import {
   query,
   type QueryCtx,
 } from "./_generated/server";
+// Triggers-wrapped builders for the four exports below that write `people`
+// via `matchOrCreateDonor`/`linkDonorToPerson`/`dualWriteGiftForDonation` —
+// see `lib/peopleAggregate.ts`'s module doc. Every other mutation in this
+// (large) file stays on the raw builders above.
+import {
+  mutation as triggerMutation,
+  internalMutation as triggerInternalMutation,
+} from "./lib/peopleAggregate";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
@@ -1185,7 +1193,7 @@ export const previewDonorMerge = query({
  * `scope`, then applies the provided fields. `status`/rollups are never set here
  * — status is derived on gift writes.
  */
-export const upsertDonor = mutation({
+export const upsertDonor = triggerMutation({
   args: {
     scope: scopeValidator,
     donorId: v.optional(v.id("donors")),
@@ -1706,7 +1714,7 @@ export const removeGift = mutation({
  * records the gift (past dates + the full source vocabulary + receipts all
  * supported), and writes a `created` audit breadcrumb. Manage-gated at `scope`.
  */
-export const addGift = mutation({
+export const addGift = triggerMutation({
   args: {
     scope: scopeValidator,
     name: v.string(),
@@ -1991,7 +1999,7 @@ export const attachGiftToEvent = mutation({
  * Audit: a `split` breadcrumb on the ORIGINAL (snapshot + the per-part book/amount
  * refs) and a `createdBySplit` breadcrumb on EACH child (referencing the original).
  */
-export const splitGift = mutation({
+export const splitGift = triggerMutation({
   args: {
     giftId: v.id("gifts"),
     parts: v.array(v.object({ scope: scopeValidator, amountCents: v.number() })),
@@ -2151,7 +2159,7 @@ export const splitGift = mutation({
  * over the `donations` table and self-reschedules to stay within transaction
  * limits. Internal-only; the orchestrator invokes it once post-deploy.
  */
-export const backfillGiftsFromDonations = internalMutation({
+export const backfillGiftsFromDonations = triggerInternalMutation({
   args: { cursor: v.optional(v.union(v.string(), v.null())) },
   handler: async (ctx, { cursor }) => {
     const page = await ctx.db

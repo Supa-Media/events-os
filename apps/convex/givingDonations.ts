@@ -31,6 +31,10 @@
  * ledger.
  */
 import { action, internalMutation } from "./_generated/server";
+// Triggers-wrapped builder for `prepareGiveDonation` below (writes `people`
+// via `matchOrCreateDonor`/`linkDonorToPerson`) — see
+// `lib/peopleAggregate.ts`'s module doc.
+import { internalMutation as triggerInternalMutation } from "./lib/peopleAggregate";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
@@ -186,7 +190,7 @@ export const startGiveDonationCheckout = action({
  * (which distinguishes a shadow-chapter map signup from a live chapter's
  * direct one).
  */
-export const prepareGiveDonation = internalMutation({
+export const prepareGiveDonation = triggerInternalMutation({
   args: {
     scope: scopeValidator,
     amountCents: v.number(),

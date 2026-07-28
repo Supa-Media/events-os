@@ -43,6 +43,15 @@ import {
   type SelectOption,
 } from "@events-os/shared";
 import { sendEmail, emailShell } from "./ticketingEmails";
+import {
+  EMAIL_CLS,
+  EMAIL_THEME,
+  emailButtonRow,
+  emailHeading,
+  emailOutlineButton,
+  emailPanel,
+  emailParagraph,
+} from "./lib/emailShell";
 import { escapeHtml } from "./lib/html";
 import { statusColumnFor } from "./lib/readiness";
 import { appUrl, siteUrl } from "./lib/siteUrl";
@@ -603,12 +612,19 @@ export const openWorkForChapter = internalQuery({
 
 // ── Email rendering ──────────────────────────────────────────────────────────
 
-const MUTED = "#7A5A5A";
-const ACCENT = "#D23B3A";
+// Brand tokens come from the ONE theme (`@events-os/shared`'s
+// `emailTheme.ts`, via `lib/emailShell.ts`) — the same one campaign email
+// renders on. These are local aliases for readability inside the template
+// strings below, NOT a second palette.
+const MUTED = EMAIL_THEME.muted;
+const ACCENT = EMAIL_THEME.accent;
+const INK = EMAIL_THEME.ink;
+const BORDER = EMAIL_THEME.border;
+const PANEL = EMAIL_THEME.canvas;
 
 const esc = escapeHtml;
 
-const SANS = "-apple-system,'Segoe UI',Roboto,sans-serif";
+const SANS = EMAIL_THEME.bodyFont;
 
 /** The event screen's tab key for a module — `volunteer_expectations` isn't
  *  its own tab, it's folded into the combined "Crew & Duties" tab (see
@@ -632,7 +648,7 @@ function entryCard(
   base: string,
 ): string {
   const metaLine = `
-    <div style="font-family:${SANS};font-size:12px;color:${MUTED};padding-top:2px">
+    <div class="${EMAIL_CLS.text}" style="font-family:${SANS};font-size:12px;color:${MUTED};padding-top:2px">
       ${e.kind === "task" ? "Event task" : "Project"}${e.status ? ` · ${esc(PROJECT_STATUS_LABELS[e.status])}` : ""}${e.context ? ` · ${esc(e.context)}` : ""}${showDue ? ` · due ${formatDue(e.dueDate)}` : ""}
     </div>`;
   const token = e.projectId ? tokenByProject[e.projectId] : undefined;
@@ -648,30 +664,30 @@ function entryCard(
   const detail =
     e.kind === "project"
       ? `
-      ${e.purpose ? `<div style="font-family:${SANS};font-size:13px;color:${MUTED};padding-top:6px">${esc(e.purpose)}</div>` : ""}
-      ${e.blocker ? `<div style="font-family:${SANS};font-size:13px;color:${ACCENT};padding-top:6px"><strong>Blocked:</strong> ${esc(e.blocker)}</div>` : ""}
-      ${e.lastComment ? `<div style="font-family:${SANS};font-size:13px;color:${MUTED};border-left:3px solid #EFE0DC;padding:2px 0 2px 10px;margin-top:8px">"${esc(e.lastComment.body)}"${e.lastComment.authorName ? ` — ${esc(e.lastComment.authorName)}` : ""}</div>` : ""}
+      ${e.purpose ? `<div class="${EMAIL_CLS.text}" style="font-family:${SANS};font-size:13px;color:${MUTED};padding-top:6px">${esc(e.purpose)}</div>` : ""}
+      ${e.blocker ? `<div class="${EMAIL_CLS.eyebrow}" style="font-family:${SANS};font-size:13px;color:${ACCENT};padding-top:6px;text-transform:none;letter-spacing:0"><strong>Blocked:</strong> ${esc(e.blocker)}</div>` : ""}
+      ${e.lastComment ? `<div class="${EMAIL_CLS.text}" style="font-family:${SANS};font-size:13px;color:${MUTED};border-left:3px solid ${BORDER};padding:2px 0 2px 10px;margin-top:8px">"${esc(e.lastComment.body)}"${e.lastComment.authorName ? ` — ${esc(e.lastComment.authorName)}` : ""}</div>` : ""}
       ${
         link
           ? `<div style="font-family:${SANS};font-size:12px;font-weight:600;padding-top:10px">
-        <a href="${link}?intent=in_progress" style="color:${MUTED};text-decoration:none;border:1px solid #E4CFCB;border-radius:999px;padding:5px 10px;display:inline-block;margin:0 4px 4px 0">Mark in progress</a>
-        <a href="${link}?intent=blocked" style="color:${MUTED};text-decoration:none;border:1px solid #E4CFCB;border-radius:999px;padding:5px 10px;display:inline-block;margin:0 4px 4px 0">Mark blocked</a>
-        <a href="${link}?intent=done" style="color:#fff;background:${ACCENT};text-decoration:none;border:1px solid ${ACCENT};border-radius:999px;padding:5px 10px;display:inline-block;margin:0 4px 4px 0">Mark done</a>
-        <a href="${link}" style="color:${ACCENT};text-decoration:none;padding:5px 2px;display:inline-block">Open →</a>
+        ${emailOutlineButton(`${link}?intent=in_progress`, "Mark in progress")}
+        ${emailOutlineButton(`${link}?intent=blocked`, "Mark blocked")}
+        <a class="${EMAIL_CLS.button}" href="${link}?intent=done" style="color:${EMAIL_THEME.accentInk};background:${ACCENT};text-decoration:none;border:1px solid ${ACCENT};border-radius:999px;padding:5px 10px;display:inline-block;margin:0 4px 4px 0">Mark done</a>
+        <a class="${EMAIL_CLS.link}" href="${link}" style="color:${ACCENT};text-decoration:none;padding:5px 2px;display:inline-block">Open →</a>
       </div>`
           : ""
       }`
       : taskLink
         ? `<div style="font-family:${SANS};font-size:12px;font-weight:600;padding-top:8px">
-        <a href="${taskLink}" style="color:${ACCENT};text-decoration:none;padding:5px 2px;display:inline-block">Open →</a>
+        <a class="${EMAIL_CLS.link}" href="${taskLink}" style="color:${ACCENT};text-decoration:none;padding:5px 2px;display:inline-block">Open →</a>
       </div>`
         : "";
-  return `
-      <div style="background:#fff;border:1px solid #EFE0DC;border-radius:12px;padding:12px 16px;margin:0 0 8px">
-        <div style="font-family:${SANS};font-size:14px;font-weight:600">${esc(e.name)}</div>
+  return emailPanel(
+    `<div class="${EMAIL_CLS.text}" style="font-family:${SANS};font-size:14px;font-weight:600;color:${INK}">${esc(e.name)}</div>
         ${metaLine}
-        ${detail}
-      </div>`;
+        ${detail}`,
+    { margin: "0 0 8px" },
+  );
 }
 
 function entryRows(
@@ -701,16 +717,16 @@ function directsOverdueRows(
       const nameHtml = link
         ? `<a href="${link}" style="color:inherit;text-decoration:none">${esc(d.name)}</a>`
         : esc(d.name);
-      return `
-      <div style="background:#fff;border:1px solid #EFE0DC;border-radius:12px;padding:12px 16px;margin:0 0 8px">
-        <div style="font-family:${SANS};font-size:13px;font-weight:700">${nameHtml}</div>
+      return emailPanel(
+        `<div class="${EMAIL_CLS.text}" style="font-family:${SANS};font-size:13px;font-weight:700;color:${INK}">${nameHtml}</div>
         ${d.overdue
           .map(
             (e) =>
-              `<div style="font-family:${SANS};font-size:13px;color:${MUTED};padding-top:4px">${esc(e.name)}${e.context ? ` <span style="color:#A98C8C">· ${esc(e.context)}</span>` : ""} · was due ${formatDue(e.dueDate)}</div>`,
+              `<div class="${EMAIL_CLS.text}" style="font-family:${SANS};font-size:13px;color:${MUTED};padding-top:4px">${esc(e.name)}${e.context ? ` <span>· ${esc(e.context)}</span>` : ""} · was due ${formatDue(e.dueDate)}</div>`,
           )
-          .join("")}
-      </div>`;
+          .join("")}`,
+        { margin: "0 0 8px" },
+      );
     })
     .join("");
 }
@@ -733,8 +749,12 @@ async function tokensFor(
   });
 }
 
+/** A small all-caps section label. Accent-coloured sections use the shared
+ *  eyebrow class so dark mode lifts them with the theme; muted ones use the
+ *  body-text class for the same reason. */
 function sectionHeading(text: string, color = MUTED): string {
-  return `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${color};padding:14px 0 8px">${text}</div>`;
+  const cls = color === ACCENT ? EMAIL_CLS.eyebrow : EMAIL_CLS.text;
+  return `<div class="${cls}" style="font-family:${SANS};font-size:11px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:${color};padding:14px 0 8px">${text}</div>`;
 }
 
 /** Fan the collection over chapters — one bounded query transaction each —
@@ -794,11 +814,11 @@ export const sendWeeklyDigests = internalAction({
         to: r.email,
         subject,
         html: emailShell(`
-        <h1 style="margin:0 0 8px;font-size:24px;line-height:1.2">Your week ahead, ${esc(firstName)}</h1>
-        <p style="margin:0;font-family:${SANS};font-size:14px;line-height:1.6;color:${MUTED}">Everything with your name on it that's due this week — so Sunday-you can set up Monday-you. Project buttons below update status right from this email.</p>
+        ${emailHeading(`Your week ahead, ${esc(firstName)}`, { margin: "0 0 8px" })}
+        ${emailParagraph("Everything with your name on it that's due this week — so Sunday-you can set up Monday-you. Project buttons below update status right from this email.", { margin: "0" })}
         ${overdue.length ? sectionHeading("Overdue", ACCENT) + entryRows(overdue, true, tokens, base) : ""}
         ${dueThisWeek.length ? sectionHeading("Due this week") + entryRows(dueThisWeek, true, tokens, base) : ""}
-        ${directsOverdue.length ? sectionHeading("Your team — overdue", ACCENT) + directsOverdueRows(directsOverdue) + `<p style="margin:4px 0 0;font-family:${SANS};font-size:12px;line-height:1.5;color:${MUTED}">Worth a nudge in your next 1:1 — or a comment on the project.</p>` : ""}`),
+        ${directsOverdue.length ? sectionHeading("Your team — overdue", ACCENT) + directsOverdueRows(directsOverdue) + emailParagraph("Worth a nudge in your next 1:1 — or a comment on the project.", { size: 12, margin: "4px 0 0" }) : ""}`),
       });
     }
     return null;
@@ -824,7 +844,7 @@ export const sendDueReminders = internalAction({
         to: r.email,
         subject,
         html: emailShell(`
-        <h1 style="margin:0 0 8px;font-size:24px;line-height:1.2">Coming up ${dueToday.length ? "today" : "tomorrow"}</h1>
+        ${emailHeading(`Coming up ${dueToday.length ? "today" : "tomorrow"}`, { margin: "0 0 8px" })}
         ${dueToday.length ? sectionHeading("Due today", ACCENT) + entryRows(dueToday, false, tokens, base) : ""}
         ${dueTomorrow.length ? sectionHeading("Due tomorrow") + entryRows(dueTomorrow, false, tokens, base) : ""}`),
       });
@@ -860,15 +880,11 @@ export const sendProjectCommentEmail = internalAction({
       to,
       subject: `${authorName} commented on ${projectName}`,
       html: emailShell(`
-      <h1 style="margin:0 0 8px;font-size:22px;line-height:1.3">New comment on ${esc(projectName)}</h1>
-      <p style="margin:0 0 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6;color:${MUTED}">Hey ${esc(firstName)} — ${esc(authorName)} left an update on your project:</p>
-      <div style="background:#fff;border-left:3px solid ${ACCENT};border-radius:0 12px 12px 0;padding:12px 16px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:14px;line-height:1.6">${esc(body)}</div>
-      ${
-        link
-          ? `<div style="font-family:${SANS};font-size:12px;font-weight:600;padding-top:14px"><a href="${link}" style="color:#fff;background:${ACCENT};text-decoration:none;border:1px solid ${ACCENT};border-radius:999px;padding:6px 12px;display:inline-block">Open the project →</a></div>`
-          : ""
-      }
-      <p style="margin:16px 0 0;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:12px;line-height:1.6;color:${MUTED}">Reply on the project's thread so the progression stays in one place.</p>`),
+      ${emailHeading(`New comment on ${esc(projectName)}`, { size: 22, margin: "0 0 8px" })}
+      ${emailParagraph(`Hey ${esc(firstName)} — ${esc(authorName)} left an update on your project:`)}
+      <div class="${EMAIL_CLS.panel}" style="background:${PANEL};border-left:3px solid ${ACCENT};border-radius:0 12px 12px 0;padding:12px 16px;font-family:${SANS};font-size:14px;line-height:1.6;color:${INK}">${esc(body)}</div>
+      ${link ? `<div style="padding-top:14px">${emailButtonRow(link, "Open the project →")}</div>` : ""}
+      ${emailParagraph("Reply on the project's thread so the progression stays in one place.", { size: 12, margin: "16px 0 0" })}`),
     });
     return null;
   },

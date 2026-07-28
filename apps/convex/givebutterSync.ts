@@ -74,6 +74,10 @@ import {
   mutation,
 } from "./_generated/server";
 import type { ActionCtx } from "./_generated/server";
+// Triggers-wrapped builder for `applyGivebutterTickets`/
+// `applyGivebutterDonations` below (insert `rsvps`/`people` via
+// `matchOrCreateDonor`) — see `lib/peopleAggregate.ts`'s module doc.
+import { internalMutation as triggerInternalMutation } from "./lib/peopleAggregate";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
@@ -294,7 +298,7 @@ export const setResolvedCampaignId = internalMutation({
  *  6. Accumulate soldCount / rollup / RSVP-counter deltas.
  *  7. NEVER schedule any email.
  */
-export const applyGivebutterTickets = internalMutation({
+export const applyGivebutterTickets = triggerInternalMutation({
   args: {
     eventId: v.id("events"),
     tickets: v.array(gbTicketValidator),
@@ -610,7 +614,7 @@ export const applyGivebutterTickets = internalMutation({
  * Skips any donation with a non-positive amount. No-op (skips all) when the
  * event has no `eventPages` row.
  */
-export const applyGivebutterDonations = internalMutation({
+export const applyGivebutterDonations = triggerInternalMutation({
   args: {
     eventId: v.id("events"),
     donations: v.array(gbDonationValidator),

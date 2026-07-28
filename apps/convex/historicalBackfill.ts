@@ -59,6 +59,11 @@ import {
   internalQuery,
 } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
+// Triggers-wrapped builder for `runGivingBackfill`/`runAttendanceBackfill`
+// below (write `people`/`rsvps` via `matchOrCreateDonor`/
+// `matchOrCreatePersonContact`/`applyAttendanceRows`) — see
+// `lib/peopleAggregate.ts`'s module doc.
+import { internalMutation as triggerInternalMutation } from "./lib/peopleAggregate";
 import { internal } from "./_generated/api";
 import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -630,7 +635,7 @@ async function handleContactRow(
  * DB reads (donors by scope, gifts by externalRef, fresh roster reads), so
  * paging never double-imports. Per-page counts (the operator sums them).
  */
-export const runGivingBackfill = internalMutation({
+export const runGivingBackfill = triggerInternalMutation({
   args: { execute: v.optional(v.boolean()), offset: v.optional(v.number()) },
   returns: v.object({
     dryRun: v.boolean(),
@@ -794,7 +799,7 @@ async function ensurePageForBackfill(
  * (classification counts); `true` commits. Pages via `offset` — follow
  * the returned `nextOffset` (null when done). Idempotent on re-run.
  */
-export const runAttendanceBackfill = internalMutation({
+export const runAttendanceBackfill = triggerInternalMutation({
   args: {
     dataset: datasetValidator,
     eventId: v.id("events"),

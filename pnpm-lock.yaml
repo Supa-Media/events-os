@@ -23,6 +23,9 @@ importers:
 
   apps/convex:
     dependencies:
+      '@convex-dev/aggregate':
+        specifier: ^0.2.2
+        version: 0.2.2(convex@1.41.0(react@19.1.0))
       '@convex-dev/auth':
         specifier: ^0.0.90
         version: 0.0.90(@auth/core@0.37.4)(convex@1.41.0(react@19.1.0))(react@19.1.0)
@@ -38,6 +41,9 @@ importers:
       convex:
         specifier: ^1.31.3
         version: 1.41.0(react@19.1.0)
+      convex-helpers:
+        specifier: ^0.1.120
+        version: 0.1.120(@standard-schema/spec@1.1.0)(convex@1.41.0(react@19.1.0))(react@19.1.0)(typescript@5.9.3)(zod@4.4.3)
       fast-png:
         specifier: ^8.0.0
         version: 8.0.0
@@ -946,6 +952,11 @@ packages:
 
   '@codemirror/view@6.43.1':
     resolution: {integrity: sha512-+BIjw/AG3tDQ4pJgTLPYdAW25eDE66YsvM4LKyVPgGzVgZ4a9Wj1SRX8kPVKgBDdPt8oHtZ15F0qx7p0oOHdHw==}
+
+  '@convex-dev/aggregate@0.2.2':
+    resolution: {integrity: sha512-9sskfPZdiH0mdc33Obcf2+gQSPDpyHqUDkYmXDsUqhqe5lLwGKYbrxw7LgxHmYm9c1YLbaXqxKiM1CgucfKAAw==}
+    peerDependencies:
+      convex: ^1.24.8
 
   '@convex-dev/auth@0.0.90':
     resolution: {integrity: sha512-aqw88EB042HvnaF4wcf/f/wTocmT2Bus2VDQRuV79cM0+8kORM0ICK/ByZ6XsHgQ9qr6TmidNbXm6QAgndrdpQ==}
@@ -3564,6 +3575,28 @@ packages:
 
   convert-source-map@2.0.0:
     resolution: {integrity: sha512-Kvp459HrV2FEJ1CAsi1Ku+MY3kasH19TFykTz2xWmMeq6bk2NU3XXvfJ+Q61m0xktWwt+1HSYf3JZsTms3aRJg==}
+
+  convex-helpers@0.1.120:
+    resolution: {integrity: sha512-FPqtmN/10uoxmmhVq0ViNi08AnmHKT/eU1R8+ohmPZoHfg8noZEZCltApY/ASDdhq92o0kLZETggzBvMfHJDLQ==}
+    hasBin: true
+    peerDependencies:
+      '@standard-schema/spec': ^1.0.0
+      convex: ^1.32.0
+      hono: ^4.0.5
+      react: ^17.0.2 || ^18.0.0 || ^19.0.0
+      typescript: ^5.5 || ^6.0.0
+      zod: ^3.25.0 || ^4.0.0
+    peerDependenciesMeta:
+      '@standard-schema/spec':
+        optional: true
+      hono:
+        optional: true
+      react:
+        optional: true
+      typescript:
+        optional: true
+      zod:
+        optional: true
 
   convex-test@0.0.53:
     resolution: {integrity: sha512-bouZQTnTvZi8IHljHL++yClj1vcV+/9ZxEcd8JZz7RDxOfPkRKrkMgkk/xlX4M1EAiwcEJPNiQE7VJFvDM3lCQ==}
@@ -8033,6 +8066,10 @@ snapshots:
       style-mod: 4.1.3
       w3c-keyname: 2.2.8
 
+  '@convex-dev/aggregate@0.2.2(convex@1.41.0(react@19.1.0))':
+    dependencies:
+      convex: 1.41.0(react@19.1.0)
+
   '@convex-dev/auth@0.0.90(@auth/core@0.37.4)(convex@1.41.0(react@19.1.0))(react@19.1.0)':
     dependencies:
       '@auth/core': 0.37.4
@@ -10782,6 +10819,15 @@ snapshots:
       - supports-color
 
   convert-source-map@2.0.0: {}
+
+  convex-helpers@0.1.120(@standard-schema/spec@1.1.0)(convex@1.41.0(react@19.1.0))(react@19.1.0)(typescript@5.9.3)(zod@4.4.3):
+    dependencies:
+      convex: 1.41.0(react@19.1.0)
+    optionalDependencies:
+      '@standard-schema/spec': 1.1.0
+      react: 19.1.0
+      typescript: 5.9.3
+      zod: 4.4.3
 
   convex-test@0.0.53(convex@1.41.0(react@19.1.0)):
     dependencies:

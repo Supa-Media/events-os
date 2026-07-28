@@ -14,6 +14,7 @@
  * verification gate), de-duped by normalized phone. Email-less phone-only
  * imported guests — unreachable by email — ARE reached by SMS.
  */
+import { escapeHtml } from "./lib/html";
 import {
   internalAction,
   internalMutation,
@@ -29,6 +30,12 @@ import { requireEvent, requireUserId } from "./lib/context";
 import { normalizeEmail } from "./lib/access";
 import { rsvpPageUrl } from "./lib/siteUrl";
 import { emailShell, sendEmail } from "./ticketingEmails";
+import {
+  emailButton,
+  emailEyebrow,
+  emailHeading,
+  emailParagraph,
+} from "./lib/emailShell";
 import {
   normalizePhone,
   resolveTwilioCredentials,
@@ -320,18 +327,28 @@ async function deliverEmailBlast(
 ): Promise<{ recipientCount: number; sentCount: number; error?: string }> {
   const { blast, emails, eventName, slug, hostName } = payload;
   const subject = blast.subject || `An update on ${eventName}`;
+  // ESCAPE FIRST, then substitute <br/>. `lib/emailShell.ts`'s helpers all
+  // take already-escaped HTML (they interpolate raw), and every one of these
+  // four values is author- or organiser-supplied: `blast.body` and
+  // `blast.subject` are typed into the composer, `hostName`/`eventName` come
+  // from records anyone with event access can edit. The line-break markup is
+  // deliberate, so it has to be added AFTER escaping or it would be escaped
+  // too.
   const paragraphs = blast.body
     .split(/\n{2,}/)
-    .map(
-      (p) =>
-        `<p style="margin:0 0 14px;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:15px;line-height:1.65;color:#210909">${p.replace(/\n/g, "<br/>")}</p>`,
+    .map((p) =>
+      emailParagraph(escapeHtml(p).replace(/\n/g, "<br/>"), {
+        size: 15,
+        margin: "0 0 14px",
+        strong: true,
+      }),
     )
     .join("");
   const html = emailShell(`
-      <div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:#7A5A5A;margin-bottom:8px">${hostName} · ${eventName}</div>
-      <h1 style="margin:0 0 16px;font-size:24px;line-height:1.25">${subject}</h1>
+      ${emailEyebrow(`${escapeHtml(hostName)} · ${escapeHtml(eventName)}`, { margin: "0 0 8px" })}
+      ${emailHeading(escapeHtml(subject), { margin: "0 0 16px" })}
       ${paragraphs}
-      ${slug ? `<a href="${rsvpPageUrl(slug)}" style="display:inline-block;margin-top:6px;background:#D23B3A;color:#fff;text-decoration:none;font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-weight:600;font-size:14px;padding:12px 24px;border-radius:999px">View event</a>` : ""}`);
+      ${slug ? `<div style="margin-top:6px">${emailButton(rsvpPageUrl(slug), "View event")}</div>` : ""}`);
 
   let sent = 0;
   let lastError: string | undefined;

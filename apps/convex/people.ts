@@ -4,9 +4,10 @@
  * Chapter-scoped roster CRUD. Every function resolves the caller's chapter via
  * `requireChapterId` and scopes reads/writes to it.
  */
-import { query, mutation, QueryCtx } from "./_generated/server";
+import { query, QueryCtx } from "./_generated/server";
 import { Doc, Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
+import { paginationOptsValidator } from "convex/server";
 import {
   requireUserId,
   requireChapterId,
@@ -14,10 +15,28 @@ import {
   getChapterIdOrNull,
 } from "./lib/context";
 import { isChapterAdmin } from "./lib/org";
-import { isCardEligible } from "@events-os/shared";
+import { isCardEligible, type Persona } from "@events-os/shared";
 import { writePersonAudit, diffFields } from "./lib/givingAudit";
 import { recordPersonEmail } from "./lib/personEmails";
 import { composeName, nameHalvesPatch, splitPersonName } from "./lib/personName";
+import { assertServiceIdsInChapter, expandServiceIdsWithChildren } from "./lib/serviceCatalog";
+import { resolvePersonaForRoster, resolvePersonaForPage } from "./lib/people";
+import { requireGivingView, type GivingScope } from "./lib/givingAccess";
+// `mutation`/`internalMutation` come from the triggers-wrapped builders, NOT
+// `./_generated/server`, because this file writes `people` directly
+// (create/update/remove) — see `lib/peopleAggregate.ts`'s module doc.
+import { mutation, internalMutation, peopleByPersona, isCountedInAggregate } from "./lib/peopleAggregate";
+
+const personaFilter = v.union(
+  v.literal("team"),
+  v.literal("vendor"),
+  v.literal("volunteer"),
+  v.literal("guest"),
+  v.literal("contact"),
+  // Not a real persona — an explicit opt-IN to seeing everyone, contacts
+  // included. See `list`'s doc for why the unfiltered default is NOT this.
+  v.literal("all"),
+);
 
 const vettingStatus = v.union(
   v.literal("unvetted"),
@@ -113,23 +132,44 @@ async function sandboxPeopleFilter(
     (p.isPlaceholder === true && engaged.has(String(p._id)));
 }
 
-/** List the chapter roster sorted by name. In a training sandbox (`eventId`
- *  of a training event), lists only the caller + placeholder people.
+/**
+ * List people in the chapter, sorted by name (excluding only
+ * `isPlaceholder`/`isSamplePerson` rows, which aren't real humans). In a
+ * training sandbox (`eventId` of a training event), lists only the caller +
+ * placeholder people instead — see `sandboxPeopleFilter`.
  *
- * `contactsOnly` (person-centric audiences Phase 1 item 1) flips the default
- * roster-facing view: unset/false returns the ROSTER only (excludes
- * `isContactOnly` rows — the fix for the People tab default list, every
- * person picker/mention/duty-assignment surface, and the org-chart consumers
- * that all call this same query with `{}`), `true` returns ONLY contacts —
- * the People tab's deliberate "Contacts" persona filter, so a contact-only
- * row (auto-created from a donor gift, an import, or a public RSVP) is still
- * findable/editable, just never mixed into the default roster. */
+ * Founder's model (the fix for the People *tab* showing 164 of ~275 real
+ * people): a person is never PERMANENTLY hidden by a stored flag; persona is
+ * a FILTER, never a partition. But this query has ~11 callers beyond the
+ * People tab — pickers, mention lists, duty/role assignment, receipt person
+ * lookup — and every one of those was built assuming "the roster" (a real,
+ * participating person), never a bare contact auto-created from a donor
+ * gift/import/RSVP. Flipping the UNFILTERED default to "everyone" would
+ * silently widen 8 of those callers to include contacts with no review.
+ *
+ * So the default stays CONSERVATIVE and unchanged from before this fix:
+ *   - `persona` UNSET (the default): the ROSTER — everyone except the
+ *     "contact" persona (no participation signal at all). This is
+ *     `contactsOnly: false`'s old behavior, preserved exactly.
+ *   - `persona: "all"`: literally everyone, contacts included — the explicit
+ *     opt-in a caller must ask for (the People tab, audience-seeding, and
+ *     donor↔person linking are the only three that do; see their own call
+ *     sites for why).
+ *   - `persona: "team" | "vendor" | "volunteer" | "guest" | "contact"`:
+ *     narrows to exactly that rung of the ladder
+ *     (`@events-os/shared#Persona`: team > vendor > volunteer > guest >
+ *     contact) — `contactsOnly: true` is now `persona: "contact"`.
+ * Every row carries the backend-derived `persona` field regardless of the
+ * filter applied, resolved by `resolvePersonaForRoster` (batched, bounded
+ * DB reads — never per-person), so callers that need the ladder (the People
+ * tab's segmented control + counts) never have to re-derive it client-side.
+ */
 export const list = query({
   args: {
     eventId: v.optional(v.id("events")),
-    contactsOnly: v.optional(v.boolean()),
+    persona: v.optional(personaFilter),
   },
-  handler: async (ctx, { eventId, contactsOnly }) => {
+  handler: async (ctx, { eventId, persona }) => {
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return [];
     const people = await ctx.db
@@ -145,25 +185,372 @@ export const list = query({
     // members, so keep them out of the People roster. Replacing one only
     // consumes that event's copy. Inside a training sandbox the rule flips:
     // placeholders (+ the caller) are the ONLY people offered — sandbox mode
-    // ignores `contactsOnly` (a training drill never shows contacts).
-    const sorted = people
-      .filter(
-        sandbox ??
-          ((p) =>
-            p.isPlaceholder !== true &&
-            p.isSamplePerson !== true &&
-            (contactsOnly === true
-              ? p.isContactOnly === true
-              : p.isContactOnly !== true)),
-      )
-      .sort((a, b) => a.name.localeCompare(b.name));
+    // ignores `persona` (a training drill never classifies its sample bench).
+    const everyone = people.filter(
+      sandbox ?? ((p) => p.isPlaceholder !== true && p.isSamplePerson !== true),
+    );
+    const personaByPerson = sandbox
+      ? null
+      : await resolvePersonaForRoster(ctx, chapterId as Id<"chapters">, everyone);
+    // Sandbox mode short-circuits to `everyone` (its own restricted set) —
+    // no persona filtering applies there, same as before. Outside sandbox:
+    // an explicit persona narrows to that rung, "all" means literally
+    // everyone, and the CONSERVATIVE DEFAULT (unset) is the roster — every
+    // rung except "contact". See this query's doc for why that default is
+    // deliberate.
+    const filtered = !personaByPerson
+      ? everyone
+      : persona === "all"
+        ? everyone
+        : persona
+          ? everyone.filter((p) => personaByPerson.get(p._id) === persona)
+          : everyone.filter((p) => personaByPerson.get(p._id) !== "contact");
+    const sorted = filtered.sort((a, b) => a.name.localeCompare(b.name));
     // Resolve each profile photo storageId to a servable URL for display.
     return await Promise.all(
       sorted.map(async (p) => ({
         ...p,
         imageUrl: p.image ? await ctx.storage.getUrl(p.image) : null,
+        persona: (personaByPerson?.get(p._id) ?? null) as Persona | null,
       })),
     );
+  },
+});
+
+// ── People-CRM overhaul (2026-07-27) ────────────────────────────────────────
+//
+// `list` above stays exactly as it was: ~11 callers (pickers, mentions,
+// duty/role assignment, receipt person lookup, …) depend on its conservative
+// unfiltered default and its plain-array shape, and a regression test guards
+// that default — see `list`'s own doc. The People TAB, though, needs a
+// fundamentally different shape: server-side search/filter/sort over a
+// roster heading into the thousands, paginated, with counts that don't
+// require holding everyone in memory. Rather than reshape `list` (which
+// would ripple through every one of those callers), this is a dedicated
+// query for the grid.
+
+/** A grid row's persona narrows to exactly one rung — no "all" sentinel here
+ *  (unlike `list`'s `persona` arg): this query's own unfiltered default
+ *  already means "everyone, contacts included" (the CRM grid's whole point),
+ *  so there's no separate opt-in needed. */
+const gridPersonaFilter = v.union(
+  v.literal("team"),
+  v.literal("vendor"),
+  v.literal("volunteer"),
+  v.literal("guest"),
+  v.literal("contact"),
+);
+
+const gridSortBy = v.union(v.literal("name"), v.literal("lastName"), v.literal("status"));
+const gridSortDir = v.union(v.literal("asc"), v.literal("desc"));
+
+/** Bound on `getGiverPersonIds`'s donor scan — mirrors
+ *  `givingPlatform.ts#DONOR_LIST_LIMIT` (same table, same chapter-scale
+ *  reasoning; the People grid only needs the id set, not the richer
+ *  per-donor shape `givingPlatform.ts#giverMarks` returns). */
+const GIVER_PERSON_IDS_SCAN_LIMIT = 500;
+
+/**
+ * The chapter's "givers" as a person-id set, for the grid's Givers filter —
+ * same predicate as `givingPlatform.ts#giverMarks` (a linked donor with at
+ * least one recorded gift). Quietly degrades to an empty set for a caller
+ * with no giving access at this chapter (mirrors `giverMarks`'s no-throw
+ * pattern), so the People grid doesn't blow up for a viewer who simply can't
+ * see the giving desk.
+ */
+async function getGiverPersonIds(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<Set<Id<"people">>> {
+  try {
+    await requireGivingView(ctx, chapterId as GivingScope);
+  } catch {
+    return new Set();
+  }
+  const donors = await ctx.db
+    .query("donors")
+    .withIndex("by_scope_and_lifetime", (q) => q.eq("scope", chapterId))
+    .take(GIVER_PERSON_IDS_SCAN_LIMIT);
+  const ids = new Set<Id<"people">>();
+  for (const d of donors) {
+    if (d.personId !== undefined && d.giftCount > 0) ids.add(d.personId);
+  }
+  return ids;
+}
+
+/** One indexed, sorted `.paginate()` call per `sortBy` column — a compound
+ *  index per column (`schema/people.ts`) so the DB itself returns rows
+ *  already in the requested order across the whole walk, cursor included.
+ *  Written as an if/else over three concrete index names rather than one
+ *  dynamic `withIndex(name, …)` call so each branch keeps full type
+ *  inference on its own `q.eq`. */
+async function paginateSortedPeople(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  sortBy: "name" | "lastName" | "status",
+  order: "asc" | "desc",
+  opts: { numItems: number; cursor: string | null },
+) {
+  if (sortBy === "lastName") {
+    return await ctx.db
+      .query("people")
+      .withIndex("by_chapter_and_lastName", (q) => q.eq("chapterId", chapterId))
+      .order(order)
+      .paginate(opts);
+  }
+  if (sortBy === "status") {
+    return await ctx.db
+      .query("people")
+      .withIndex("by_chapter_and_status", (q) => q.eq("chapterId", chapterId))
+      .order(order)
+      .paginate(opts);
+  }
+  return await ctx.db
+    .query("people")
+    .withIndex("by_chapter_and_name", (q) => q.eq("chapterId", chapterId))
+    .order(order)
+    .paginate(opts);
+}
+
+/** Safety bound on how many raw index batches `listPaginated` will re-walk
+ *  in a SINGLE call to backfill a page that search/filter/persona shrank
+ *  below `numItems` — never unbounded. Filtering after `.paginate()` is the
+ *  standard Convex pattern for a query no built-in index can fully express
+ *  (free-text substring search across name/email/phone); looping a bounded
+ *  number of times inside the one call means a rare search still returns a
+ *  full page in one round trip instead of forcing the client through a
+ *  string of near-empty "load more" taps. */
+const PEOPLE_PAGE_BATCH_LOOPS = 10;
+
+/**
+ * The People tab's grid data source: server-side search + filter + sort,
+ * paginated. Replaces the old `people.list({persona:"all"})` +
+ * client-side-filter-everything approach, which shipped every person to the
+ * client on every load and re-derived persona for the WHOLE roster
+ * (`resolvePersonaForRoster`) regardless of what was actually on screen.
+ *
+ * - `search`: case-insensitive substring match against name, email, pwEmail,
+ *   OR phone (phone compared digits-only, mirrors the old client-side
+ *   `personMatchesSearch`).
+ * - `persona`: narrows to exactly that rung (no "all" — see
+ *   `gridPersonaFilter`'s doc; omit the arg for everyone).
+ * - `serviceIds`: multi-select, OR semantics — a person matches if their
+ *   `serviceIds` intersects ANY selected id's expanded match set (itself +
+ *   children), so picking a parent (e.g. "Vocals") also matches everyone
+ *   tagged with a child (e.g. "Vocals:Tenor") — mirrors
+ *   `lib/audienceTargeting.ts#buildServiceIndex`'s `has_service` rollup
+ *   exactly (see `expandServiceIdsWithChildren`), so the grid and audience
+ *   targeting never disagree about what selecting a service means.
+ * - `status` / `giversOnly`: single-value / boolean overlays, same as
+ *   before, just server-side now.
+ *
+ * Persona is derived PER PAGE (`resolvePersonaForPage`), never for the whole
+ * roster — see that function's doc for why `resolvePersonaForRoster` would
+ * be the wrong tool here. Placeholders/sample people are excluded, same as
+ * `list`.
+ */
+export const listPaginated = query({
+  args: {
+    paginationOpts: paginationOptsValidator,
+    search: v.optional(v.string()),
+    persona: v.optional(gridPersonaFilter),
+    serviceIds: v.optional(v.array(v.id("serviceOptions"))),
+    status: v.optional(rosterStatus),
+    giversOnly: v.optional(v.boolean()),
+    sortBy: v.optional(gridSortBy),
+    sortDir: v.optional(gridSortDir),
+  },
+  handler: async (ctx, args) => {
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) {
+      return { page: [], isDone: true, continueCursor: "" };
+    }
+    const cId = chapterId as Id<"chapters">;
+
+    const serviceMatchSet =
+      args.serviceIds && args.serviceIds.length > 0
+        ? await expandServiceIdsWithChildren(ctx, args.serviceIds)
+        : null;
+    const giverIds = args.giversOnly ? await getGiverPersonIds(ctx, cId) : null;
+
+    const search = (args.search ?? "").trim().toLowerCase();
+    const searchDigits = search.replace(/\D/g, "");
+
+    // Every filter EXCEPT persona (which needs a derived value resolved
+    // per-candidate below) — cheap field compares over an already-indexed,
+    // already-sorted raw batch.
+    function passesFieldFilters(p: Doc<"people">): boolean {
+      if (p.isPlaceholder === true || p.isSamplePerson === true) return false;
+      if (args.status && p.status !== args.status) return false;
+      if (serviceMatchSet && !(p.serviceIds ?? []).some((id) => serviceMatchSet.has(id))) {
+        return false;
+      }
+      if (giverIds && !giverIds.has(p._id)) return false;
+      if (search) {
+        const nameHit = p.name.toLowerCase().includes(search);
+        const emailHit =
+          (p.email?.toLowerCase().includes(search) ?? false) ||
+          (p.pwEmail?.toLowerCase().includes(search) ?? false);
+        const phoneHit =
+          searchDigits.length > 0 &&
+          !!p.phone &&
+          p.phone.replace(/\D/g, "").includes(searchDigits);
+        if (!nameHit && !emailHit && !phoneHit) return false;
+      }
+      return true;
+    }
+
+    const sortBy = args.sortBy ?? "name";
+    const order = args.sortDir ?? "asc";
+
+    let cursor: string | null = args.paginationOpts.cursor;
+    let isDone = false;
+    // `Omit<..., "persona">` — `Doc<"people">` now carries its OWN cached
+    // `persona` field (`schema/people.ts`'s new Aggregate-backed cache), but
+    // this result's `persona` is the freshly-computed, page-scoped value
+    // from `resolvePersonaForPage` below, not that cache; omitting avoids
+    // the two conflicting `persona` types colliding in the intersection.
+    const page: Array<
+      Omit<Doc<"people">, "persona"> & { imageUrl: string | null; persona: Persona | null }
+    > = [];
+    for (
+      let loop = 0;
+      loop < PEOPLE_PAGE_BATCH_LOOPS && page.length < args.paginationOpts.numItems && !isDone;
+      loop++
+    ) {
+      const batch = await paginateSortedPeople(ctx, cId, sortBy, order, {
+        numItems: args.paginationOpts.numItems,
+        cursor,
+      });
+      isDone = batch.isDone;
+      cursor = batch.continueCursor;
+      const candidates = batch.page.filter(passesFieldFilters);
+      if (candidates.length === 0) continue;
+      const personaByPerson = await resolvePersonaForPage(ctx, candidates);
+      for (const p of candidates) {
+        const persona = personaByPerson.get(p._id) ?? null;
+        if (args.persona && persona !== args.persona) continue;
+        page.push({
+          ...p,
+          imageUrl: p.image ? await ctx.storage.getUrl(p.image) : null,
+          persona,
+        });
+      }
+    }
+    return { page, isDone, continueCursor: cursor ?? "" };
+  },
+});
+
+/** Bound on `repairPersonaAggregate`'s per-chapter roster scan — generous
+ *  relative to a real chapter (heading into the thousands per the
+ *  People-CRM overhaul brief). `counts` itself no longer scans anything (see
+ *  below) — this bound only matters for the repair tool's from-scratch
+ *  rebuild. */
+const PEOPLE_COUNTS_SCAN_LIMIT = 20000;
+
+/**
+ * Persona-ladder counts (All / Team / Volunteers / Vendors / Guests /
+ * Contacts) for the People grid's header. Previously a whole-chapter scan +
+ * `resolvePersonaForRoster` on every call; now reads `peopleByPersona` (a
+ * `TableAggregate` over `people.persona` — see `lib/peopleAggregate.ts`),
+ * giving O(log n) counts instead of visiting every roster row. Same return
+ * shape as before — the client is unaffected.
+ */
+export const counts = query({
+  args: {},
+  returns: v.object({
+    all: v.number(),
+    team: v.number(),
+    vendor: v.number(),
+    volunteer: v.number(),
+    guest: v.number(),
+    contact: v.number(),
+  }),
+  handler: async (ctx) => {
+    const empty = { all: 0, team: 0, vendor: 0, volunteer: 0, guest: 0, contact: 0 };
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) return empty;
+    const cId = chapterId as Id<"chapters">;
+    const [all, team, vendor, volunteer, guest, contact] = await peopleByPersona.countBatch(ctx, [
+      { namespace: cId },
+      { namespace: cId, bounds: { prefix: ["team"] } },
+      { namespace: cId, bounds: { prefix: ["vendor"] } },
+      { namespace: cId, bounds: { prefix: ["volunteer"] } },
+      { namespace: cId, bounds: { prefix: ["guest"] } },
+      { namespace: cId, bounds: { prefix: ["contact"] } },
+    ]);
+    return { all, team, vendor, volunteer, guest, contact };
+  },
+});
+
+/**
+ * Guard 1 — repair tool. Clears `peopleByPersona` and rebuilds it from
+ * scratch, per chapter, by recomputing every eligible person's REAL persona
+ * from source-of-truth signals (`resolvePersonaForRoster` — the same
+ * whole-chapter batching `counts` used before this PR) and unconditionally
+ * re-patching `persona`, even when the computed value matches what's already
+ * stored. That "patch anyway" is deliberate: the cache field can be correct
+ * while the AGGREGATE is still missing the row entirely (e.g. a write that
+ * slipped through an un-wrapped mutation — see `lib/peopleAggregate.ts`'s
+ * module doc), and only an actual patch fires the write-through trigger that
+ * repopulates the aggregate. Safe to run any time drift is suspected; not on
+ * a cron — this is a manually-invoked, superuser-triggered repair, not a
+ * live code path.
+ *
+ * Run locally:   npx convex run people:repairPersonaAggregate
+ * Run on prod:   npx convex run --prod people:repairPersonaAggregate
+ */
+export const repairPersonaAggregate = internalMutation({
+  args: {},
+  returns: v.object({ chaptersRepaired: v.number(), peopleRepaired: v.number() }),
+  handler: async (ctx) => {
+    await peopleByPersona.clearAll(ctx);
+    const chapters = await ctx.db.query("chapters").take(1000);
+    let peopleRepaired = 0;
+    for (const chapter of chapters) {
+      const roster = await ctx.db
+        .query("people")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", chapter._id))
+        .take(PEOPLE_COUNTS_SCAN_LIMIT);
+      const eligible = roster.filter(isCountedInAggregate);
+      const personaByPerson = await resolvePersonaForRoster(ctx, chapter._id, eligible);
+      for (const p of eligible) {
+        const persona = personaByPerson.get(p._id) ?? "contact";
+        await ctx.db.patch(p._id, { persona });
+        peopleRepaired++;
+      }
+    }
+    return { chaptersRepaired: chapters.length, peopleRepaired };
+  },
+});
+
+/** Bound generous relative to a real chapter's roster (heading into the
+ *  thousands) — a lightweight `{_id, name}` PROJECTION, not full person
+ *  docs, so this stays cheap even at that scale regardless of how many
+ *  people exist. */
+const PEOPLE_NAMES_SCAN_LIMIT = 20000;
+
+/**
+ * `{_id, name}` for every real person in the chapter — powers the People
+ * grid's Manager-name column, which must resolve a name for ANY person in
+ * the chapter regardless of which page of the (now paginated) grid happens
+ * to be loaded. Never used to derive persona/filters/counts — just a name
+ * lookup, which is why this stays cheap at roster scale where
+ * `listPaginated`'s per-row cost would not.
+ */
+export const namesByChapter = query({
+  args: {},
+  returns: v.array(v.object({ _id: v.id("people"), name: v.string() })),
+  handler: async (ctx) => {
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) return [];
+    const people = await ctx.db
+      .query("people")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId as Id<"chapters">))
+      .take(PEOPLE_NAMES_SCAN_LIMIT);
+    return people
+      .filter((p) => p.isPlaceholder !== true && p.isSamplePerson !== true)
+      .map((p) => ({ _id: p._id, name: p.name }));
   },
 });
 
@@ -290,11 +677,10 @@ export const create = mutation({
     name: v.string(),
     email: v.optional(v.string()),
     phone: v.optional(v.string()),
-    // `skills` is the legacy arg name (OTA-lagged clients still send it);
-    // `services` is the Chapter-OS name. Either is accepted; the writer stores
-    // the value in the new `services` field.
-    skills: v.optional(v.array(v.string())),
-    services: v.optional(v.array(v.string())),
+    // Service Catalog ids (`serviceOptions`) — replaces the retired
+    // `skills`/`services` free-text args. See `schema/people.ts`'s
+    // deprecation comment on `services`.
+    serviceIds: v.optional(v.array(v.id("serviceOptions"))),
     vettingStatus: v.optional(vettingStatus),
     status: v.optional(rosterStatus),
     role: v.optional(v.string()),
@@ -317,6 +703,9 @@ export const create = mutation({
       await requireCanSetManager(ctx, chapterId as Id<"chapters">);
       await requireOwned(ctx, "people", args.managerId, "Manager");
     }
+    if (args.serviceIds && args.serviceIds.length > 0) {
+      await assertServiceIdsInChapter(ctx, chapterId as Id<"chapters">, args.serviceIds);
+    }
     const status = args.status ?? "active";
     const personId = await ctx.db.insert("people", {
       chapterId: chapterId as Id<"chapters">,
@@ -327,9 +716,7 @@ export const create = mutation({
       ...(splitPersonName(args.name) ?? {}),
       email: args.email,
       phone: args.phone,
-      // Writer targets the new `services` field only; the legacy `skills` arg
-      // (OTA-lagged clients) is accepted but its value is stored in `services`.
-      services: args.services ?? args.skills,
+      serviceIds: args.serviceIds,
       vettingStatus: args.vettingStatus ?? "unvetted",
       status,
       role: args.role,
@@ -376,9 +763,10 @@ export const update = mutation({
     lastName: v.optional(v.union(v.string(), v.null())),
     email: v.optional(v.string()),
     phone: v.optional(v.string()),
-    // Either arg accepted; the writer stores it in the new `services` field.
-    skills: v.optional(v.union(v.array(v.string()), v.null())),
-    services: v.optional(v.union(v.array(v.string()), v.null())),
+    // Service Catalog ids (`serviceOptions`) — replaces the retired
+    // `skills`/`services` free-text args. See `schema/people.ts`'s
+    // deprecation comment on `services`.
+    serviceIds: v.optional(v.union(v.array(v.id("serviceOptions")), v.null())),
     usualRateUsd: v.optional(v.union(v.number(), v.null())),
     notes: v.optional(v.union(v.string(), v.null())),
     isTeamMember: v.optional(v.boolean()),
@@ -398,6 +786,14 @@ export const update = mutation({
     // Person-centric audiences Phase 2 (specs/person-centric-audiences.md) —
     // the person-level marketing opt-out, layered over `emailSuppressions`.
     marketingOptOut: v.optional(v.boolean()),
+    // Person-form-fields widening (`schema/people.ts`'s doc on each field) —
+    // hand corrections to what the Google Form imports captured.
+    // `consentedAt`/`consentSource` are deliberately NOT editable here: they
+    // record an affirmative-consent EVENT with a timestamp, not a toggle a
+    // staffer should casually flip; only the import write path sets them.
+    location: v.optional(v.union(v.string(), v.null())),
+    referralSource: v.optional(v.union(v.string(), v.null())),
+    isVolunteer: v.optional(v.boolean()),
     // Owner feedback #4: optional "why", recorded on the person-audit breadcrumb
     // when a contact field (name/email/phone) changes.
     why: v.optional(v.string()),
@@ -413,17 +809,13 @@ export const update = mutation({
       await requireOwned(ctx, "people", patch.managerId, "Manager");
       await assertNoManagerCycle(ctx, personId, patch.managerId);
     }
+    if (patch.serviceIds != null && patch.serviceIds.length > 0) {
+      await assertServiceIdsInChapter(ctx, person.chapterId, patch.serviceIds);
+    }
     const fields: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(patch)) {
       // null = explicit clear (store undefined); undefined = leave unchanged.
       if (value !== undefined) fields[key] = value === null ? undefined : value;
-    }
-    // Services rename: the writer targets the new `services` field. Accept the
-    // legacy `skills` arg (OTA-lagged clients) but never write the legacy field.
-    if (patch.services !== undefined || patch.skills !== undefined) {
-      const val = patch.services !== undefined ? patch.services : patch.skills;
-      fields.services = val === null ? undefined : val;
-      delete fields.skills;
     }
     // Person lifecycle lives on `status` only now; the legacy `isActive` flag is
     // no longer written (accept the arg from OTA-lagged clients, then drop it).

@@ -141,6 +141,19 @@ async function seedSeatFor(
   return seatDefId;
 }
 
+/** Insert a bare top-level `serviceOptions` row (Service Catalog) and return
+ *  its id — the `has_service` condition's `serviceId` target. */
+async function seedServiceOption(s: ChapterSetup, name: string): Promise<Id<"serviceOptions">> {
+  return run(s.t, (ctx) =>
+    ctx.db.insert("serviceOptions", {
+      chapterId: s.chapterId,
+      name,
+      isActive: true,
+      createdAt: Date.now(),
+    }),
+  );
+}
+
 async function previewTargeting(
   s: ChapterSetup,
   targeting: AudienceTargeting,
@@ -390,38 +403,41 @@ describe("targeting — negation as an operator", () => {
     expect(contacts.sample.map((r) => r.email)).toEqual(["contact@example.com"]);
   });
 
-  test("has_service: case-insensitive exact match, has_not, and no-services-array behavior", async () => {
+  test("has_service: id match, has_not, and no-serviceIds-array behavior", async () => {
     const t = newT();
     const s = await asSuperuser(t);
+    const audioId = await seedServiceOption(s, "Audio");
+    const lightingId = await seedServiceOption(s, "Lighting");
+    const worshipId = await seedServiceOption(s, "Worship");
     await seedPerson(s, {
       name: "Audio Volunteer",
       email: "audio@example.com",
-      services: ["Audio", "Lighting"],
+      serviceIds: [audioId, lightingId],
     });
     await seedPerson(s, {
       name: "Worship Volunteer",
       email: "worship@example.com",
-      services: ["worship"],
+      serviceIds: [worshipId],
     });
     await seedPerson(s, { name: "No Services", email: "none@example.com" });
 
-    // Case-insensitive exact match: "  AUDIO  " (mixed case + whitespace)
-    // matches a stored "Audio" entry.
+    // Exact id match.
     const has = await previewTargeting(s, {
-      groups: [{ conditions: [{ field: "has_service", op: "has", service: "  AUDIO  " }] }],
+      groups: [{ conditions: [{ field: "has_service", op: "has", serviceId: audioId }] }],
     });
     expect(has.sample.map((r) => r.email)).toEqual(["audio@example.com"]);
 
-    // Non-matching service: nobody has "video".
+    // Non-matching service: nobody has "Video".
+    const videoId = await seedServiceOption(s, "Video");
     const nonMatching = await previewTargeting(s, {
-      groups: [{ conditions: [{ field: "has_service", op: "has", service: "video" }] }],
+      groups: [{ conditions: [{ field: "has_service", op: "has", serviceId: videoId }] }],
     });
     expect(nonMatching.count).toBe(0);
 
-    // has_not: everyone WITHOUT "audio" — including the person with no
-    // `services` array at all (missing data reads as "doesn't have it").
+    // has_not: everyone WITHOUT "Audio" — including the person with no
+    // `serviceIds` array at all (missing data reads as "doesn't have it").
     const hasNot = await previewTargeting(s, {
-      groups: [{ conditions: [{ field: "has_service", op: "has_not", service: "audio" }] }],
+      groups: [{ conditions: [{ field: "has_service", op: "has_not", serviceId: audioId }] }],
     });
     expect(hasNot.sample.map((r) => r.email).sort()).toEqual([
       "none@example.com",
@@ -468,10 +484,11 @@ describe("targeting — exclude groups, hand-picks, consent", () => {
   test("has_service inside an exclude group removes matching skip-list members", async () => {
     const t = newT();
     const s = await asSuperuser(t);
+    const audioId = await seedServiceOption(s, "Audio");
     const auditor = await seedPerson(s, {
       name: "Vetted Audio",
       email: "vetted-audio@example.com",
-      services: ["audio"],
+      serviceIds: [audioId],
     });
     await seedDonorForPerson(s, auditor, { email: "vetted-audio@example.com", status: "active" });
     const otherDonor = await seedPerson(s, { name: "Other Donor", email: "other@example.com" });
@@ -479,7 +496,7 @@ describe("targeting — exclude groups, hand-picks, consent", () => {
 
     const preview = await previewTargeting(s, {
       groups: [{ conditions: [{ field: "donor_status", op: "is", status: "any" }] }],
-      excludeGroups: [{ conditions: [{ field: "has_service", op: "has", service: "AUDIO" }] }],
+      excludeGroups: [{ conditions: [{ field: "has_service", op: "has", serviceId: audioId }] }],
     });
     expect(preview.sample.map((r) => r.email)).toEqual(["other@example.com"]);
     expect(preview.excludedByFilters).toBe(1);
@@ -744,6 +761,7 @@ describe("targeting — central-donor fallback", () => {
   test("has_service against a central-donor fallback row: never admits (not donor-derived), 'has' always false, 'has_not' always true — same reading as attended_*", async () => {
     const t = newT();
     const s = await asSuperuser(t);
+    const audioId = await seedServiceOption(s, "Audio");
     await seedDonorForPerson(s, undefined, {
       email: "central-service@example.com",
       status: "active",
@@ -756,14 +774,14 @@ describe("targeting — central-donor fallback", () => {
     // attended_any has_not above).
     const serviceOnly = await previewTargeting(
       s,
-      { groups: [{ conditions: [{ field: "has_service", op: "has_not", service: "audio" }] }] },
+      { groups: [{ conditions: [{ field: "has_service", op: "has_not", serviceId: audioId }] }] },
       { scope: "central" },
     );
     expect(serviceOnly.count).toBe(0);
 
     // Paired with a donor-derived condition in the SAME group, has_service
-    // "has" is false for the row (donor rows have no `services`) so it keeps
-    // the row out even though the donor condition alone would admit it.
+    // "has" is false for the row (donor rows have no `serviceIds`) so it
+    // keeps the row out even though the donor condition alone would admit it.
     const hasBlocksIt = await previewTargeting(
       s,
       {
@@ -771,7 +789,7 @@ describe("targeting — central-donor fallback", () => {
           {
             conditions: [
               { field: "donor_status", op: "is", status: "any" },
-              { field: "has_service", op: "has", service: "audio" },
+              { field: "has_service", op: "has", serviceId: audioId },
             ],
           },
         ],
@@ -788,7 +806,7 @@ describe("targeting — central-donor fallback", () => {
           {
             conditions: [
               { field: "donor_status", op: "is", status: "any" },
-              { field: "has_service", op: "has_not", service: "audio" },
+              { field: "has_service", op: "has_not", serviceId: audioId },
             ],
           },
         ],
@@ -803,7 +821,7 @@ describe("targeting — central-donor fallback", () => {
       s,
       {
         groups: [{ conditions: [{ field: "donor_status", op: "is", status: "any" }] }],
-        excludeGroups: [{ conditions: [{ field: "has_service", op: "has_not", service: "audio" }] }],
+        excludeGroups: [{ conditions: [{ field: "has_service", op: "has_not", serviceId: audioId }] }],
       },
       { scope: "central" },
     );

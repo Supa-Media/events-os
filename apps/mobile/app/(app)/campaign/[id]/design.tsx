@@ -39,6 +39,7 @@ import {
   ToastView,
 } from "../../../../components/ui";
 import { colors } from "../../../../lib/theme";
+import { errorMessage } from "../../../../lib/errors";
 import { useActionRunner } from "../../../../lib/useActionToast";
 import {
   canRedo,
@@ -59,6 +60,11 @@ import { BlockCard } from "../../../../components/campaign/designer/BlockCard";
 import { BlockPalette } from "../../../../components/campaign/designer/BlockPalette";
 import { MergeTagRow } from "../../../../components/campaign/designer/MergeTagRow";
 import EmailHtmlPreview from "../../../../components/email/EmailHtmlPreview";
+import { SaveAsTemplateAction } from "../../../../components/campaign/SaveAsTemplateAction";
+import type {
+  UploadImage,
+  UploadedImage,
+} from "../../../../components/campaign/designer/DesignerControls";
 
 /** Below this width the preview stacks under the editor instead of beside it. */
 const SPLIT_BREAKPOINT = 960;
@@ -113,7 +119,8 @@ function CampaignDesignBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
 
   const [history, setHistory] = useState<History<EmailDocument> | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
+  const [saveState, setSaveState] = useState<SaveState>("idle");
+  const [saveError, setSaveError] = useState<string | null>(null);
   const lastSavedRef = useRef<EmailDocument | null>(null);
   // A "latest" ref for `history` — the debounce timer's closure (and the
   // save-completion callback below) is captured at EFFECT-SETUP time, so
@@ -152,15 +159,29 @@ function CampaignDesignBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
   const saveDoc = useCallback(
     (toSave: EmailDocument) => {
       setSaveState("saving");
-      void updateDoc({ campaignId, doc: toSave }).then(() => {
-        lastSavedRef.current = toSave;
-        const latest = historyRef.current?.present;
-        if (latest !== undefined && latest !== toSave) {
-          saveDoc(latest);
-          return;
-        }
-        setSaveState("saved");
-      });
+      void updateDoc({ campaignId, doc: toSave })
+        .then(() => {
+          lastSavedRef.current = toSave;
+          setSaveError(null);
+          const latest = historyRef.current?.present;
+          if (latest !== undefined && latest !== toSave) {
+            saveDoc(latest);
+            return;
+          }
+          setSaveState("saved");
+        })
+        // A REJECTION here used to be swallowed by a bare `void …then(…)`,
+        // leaving the indicator stuck on "Saving…" forever with no clue why.
+        // That mattered little when every block was valid the moment it was
+        // added; with the composed blocks it's routinely reachable — a card
+        // with a button label and not yet a link is `INVALID_DOC` until the
+        // pair completes — so the reason is now shown, in the validator's own
+        // words. `lastSavedRef` is deliberately NOT advanced, so the next
+        // edit retries and a transient invalid state heals itself.
+        .catch((err: unknown) => {
+          setSaveError(errorMessage(err));
+          setSaveState("error");
+        });
     },
     [updateDoc, campaignId],
   );
@@ -171,7 +192,19 @@ function CampaignDesignBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
   // state correctly skips a redundant save).
   useEffect(() => {
     if (!editable || history === null) return;
-    if (history.present === lastSavedRef.current) return;
+    if (history.present === lastSavedRef.current) {
+      // Nothing to save — but landing back HERE is exactly how a failed save
+      // gets undone: half a button typed, "Not saved — ctaLabel and ctaUrl
+      // must be set together", Cmd+Z. The editor and the server now agree,
+      // so leaving the error up accuses the designer of an unsaved change
+      // she has already backed out, with no edit left that would clear it.
+      // Only `error` is rewritten: `idle` (freshly loaded, never saved) and
+      // `saving` (a save still in flight for a doc this one supersedes) are
+      // both still true.
+      setSaveState((s) => (s === "error" ? "saved" : s));
+      setSaveError(null);
+      return;
+    }
     const timer = setTimeout(() => saveDoc(history.present), AUTOSAVE_DEBOUNCE_MS);
     return () => clearTimeout(timer);
   }, [history, editable, saveDoc]);
@@ -247,9 +280,9 @@ function CampaignDesignBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
   // Image upload: generate-URL → POST → resolve a servable URL, the
   // `CoverPhotoPicker` / `doc/[id].tsx` precedent (the app's only prior
   // image-upload flows).
-  const uploadImage = useMemo(() => {
+  const uploadImage = useMemo<UploadImage | undefined>(() => {
     if (!editable) return undefined;
-    return async (file: Blob, contentType: string): Promise<string> => {
+    return async (file: Blob, contentType: string): Promise<UploadedImage> => {
       const uploadUrl = await generateUploadUrl();
       const res = await fetch(uploadUrl, {
         method: "POST",
@@ -263,10 +296,13 @@ function CampaignDesignBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
       if (!res.ok) {
         throw new Error(`Image upload failed (HTTP ${res.status})`);
       }
-      const { storageId } = await res.json();
+      const { storageId } = (await res.json()) as { storageId: Id<"_storage"> };
       const url = await convex.query(api.storage.getUrl, { storageId });
       if (!url) throw new Error("Could not resolve uploaded image URL");
-      return url;
+      // The `storageId` rides along because `emailImages.addImage` takes the
+      // storage handle, not a client-supplied URL — it resolves the public
+      // URL itself rather than trusting one it was handed.
+      return { url, storageId };
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editable]);
@@ -309,7 +345,7 @@ function CampaignDesignBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
             disabled={!editable || !canRedo(history)}
           />
         </View>
-        <SaveIndicator editable={editable} saveState={saveState} />
+        <SaveIndicator editable={editable} saveState={saveState} error={saveError} />
       </View>
 
       {!editable ? (
@@ -384,11 +420,18 @@ function CampaignDesignBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
   return (
     <Screen maxWidth={FULL_WIDTH}>
       <ToastView toast={toast} onDismiss={dismiss} />
-      <View className="mb-3 flex-row items-center justify-between gap-3">
+      <View className="mb-3 flex-row flex-wrap items-start justify-between gap-3">
         <Text className="font-display text-lg text-ink" numberOfLines={1}>
           {campaign.name}
         </Text>
-        <Button title="Done" variant="secondary" onPress={() => router.push(`/campaign/${campaignId}` as never)} />
+        <View className="flex-row items-start gap-2">
+          <SaveAsTemplateAction
+            campaignId={campaignId}
+            campaignName={campaign.name}
+            run={run}
+          />
+          <Button title="Done" variant="secondary" onPress={() => router.push(`/campaign/${campaignId}` as never)} />
+        </View>
       </View>
       {split ? (
         <View className="flex-row">
@@ -405,12 +448,19 @@ function CampaignDesignBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
   );
 }
 
+/** Autosave states. `error` exists so a rejected save is VISIBLE — see
+ *  `saveDoc`'s catch for why that's now a routine state rather than a
+ *  never-happens one. */
+type SaveState = "idle" | "saving" | "saved" | "error";
+
 function SaveIndicator({
   editable,
   saveState,
+  error,
 }: {
   editable: boolean;
-  saveState: "idle" | "saving" | "saved";
+  saveState: SaveState;
+  error: string | null;
 }) {
   if (!editable) return null;
   if (saveState === "saving") {
@@ -418,6 +468,13 @@ function SaveIndicator({
   }
   if (saveState === "saved") {
     return <Text className="text-xs text-success">Saved</Text>;
+  }
+  if (saveState === "error") {
+    return (
+      <Text className="max-w-[320px] text-right text-xs text-danger" numberOfLines={3}>
+        Not saved — {error ?? "something went wrong."}
+      </Text>
+    );
   }
   return null;
 }
