@@ -294,38 +294,38 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "rule",
-        title: "A personal thank-you and a campaign are different tools",
-        text: "Notes and a personal thank-you are ONE-TO-ONE — you, this donor, this relationship. An email campaign (the Campaigns desk) is ONE-TO-MANY — one write-up, an audience of many. Because a campaign reaches a lot of people at once, it always needs a SECOND person's sign-off before it sends: the writer picks a reviewer from a dropdown of Compose/Approve-holders (never themselves), and that reviewer alone can approve it, request changes, or deny it — even when the writer is the Executive Director. Compose/Approve is a per-role power the ED assigns from the org chart, the same mechanism as the Giving-desk power above; out of the box the ED, Financial Manager, and Marketing Director all hold it.",
+        title: "A personal thank-you and a bulk email are different tools",
+        text: "Notes and a personal thank-you are ONE-TO-ONE — you, this donor, this relationship. A bulk email (the Emails desk) is ONE-TO-MANY — one write-up, a segment of many. Because one email reaches a lot of people at once, it always needs a SECOND person's sign-off before it sends: the writer picks a reviewer from a dropdown of Compose/Approve-holders (never themselves), and that reviewer alone can approve it, request changes, or reject it — even when the writer is the Executive Director. Emails-desk access is a per-role power the ED assigns from the org chart, the same mechanism as the Giving-desk power above, and it comes in three rungs: **Design** opens the desk and owns the shared look — themes, saved templates, and the image library — but can never send; **Compose** adds drafting, submitting, and sending once approved; **Approve** adds being someone else's reviewer. Each rung includes the ones below it. Out of the box the ED, Financial Manager, and Marketing Director hold Approve, and the Graphic Designer and Social Media Manager hold Design — the people who actually build the newsletter own the tools that shape it, without anyone gaining the power to send on their own.",
       },
       {
         kind: "rule",
-        title: "An audience is groups, skip lists, and hand-picks — and it's always live",
-        text: "A campaign's audience is built from GROUPS of plain-sentence conditions. Someone gets the email if they match ANY one group; inside a group, every line must be true (\"Donor · is · a donor\" and also \"Events · has never been to · any event\"). Saying who's OUT is just as easy as who's in — every line can flip to its negative (\"is not\", \"has never been to\"), so \"all donors who have never been to an event\" is one group, exactly as you'd say it out loud. Want to widen the audience instead? Add another group — \"or anyone who gave $100+\" is a second group, not a rewrite of the first. SKIP LISTS sit below the groups: anyone matching one is removed no matter what, even someone you hand-picked into the include list (an explicit skip always beats a manual include). Hand-picks still work both ways — search a person to always include or always exclude them. Audiences are LIVE — someone who starts matching a group tomorrow (a new donor crosses a giving threshold, a guest RSVPs) is included automatically the next time the audience is used, and someone who starts matching a skip list is dropped automatically too. Each group card shows its own live count, and the \"Check a person\" box explains any individual line by line — every condition gets a ✓ or ✗, then the final answer. One thing hand-picking can NEVER do, on either side: override consent. If a person has unsubscribed (their address is suppressed) or opted out of marketing, they're excluded even if you explicitly added them to the include list — the preview always shows exactly who was dropped and why.",
+        title: "A segment is rule groups, exclusions, and hand-picks — and it's always live",
+        text: "An email's SEGMENT is built from RULE GROUPS of plain-sentence conditions. (Segment is the industry word — the same thing Mailchimp and Klaviyo call one, so what you learn here transfers.) Someone gets the email if they match ANY one rule group; inside a group, every line must be true (\"Donor · is · a donor\" and also \"Events · has never been to · any event\"). Saying who's OUT is just as easy as who's in — every line can flip to its negative (\"is not\", \"has never been to\"), so \"all donors who have never been to an event\" is one rule group, exactly as you'd say it out loud. Want to widen the segment instead? Add another rule group — \"or anyone who gave $100+\" is a second group, not a rewrite of the first. EXCLUSIONS sit below the rule groups: anyone matching one is removed no matter what, even someone you hand-picked into the include list (an explicit exclusion always beats a manual include). Two exclusions are either/or, the same way rule groups are — matching either one leaves you out. Hand-picks still work both ways — search a person to always include or always exclude them. Segments are LIVE — someone who starts matching a rule group tomorrow (a new donor crosses a giving threshold, a guest RSVPs) is included automatically the next time the segment is used, and someone who starts matching an exclusion is dropped automatically too. A plain-English recap above the builder reads your segment back to you as a sentence, each group card shows its own live count, and the \"Check a person\" box explains any individual line by line — every condition gets a ✓ or ✗, then the final answer. One thing hand-picking can NEVER do, on either side: override consent. If a person has unsubscribed (their address is suppressed) or opted out of marketing, they're excluded even if you explicitly added them to the include list — the preview always shows exactly who was dropped and why.",
       },
       {
         kind: "rule",
         title: "The THEME carries the brand — you never colour a block",
-        text: "A campaign's look isn't decided block by block. It comes from a THEME — the org's brand colours, fonts, corner radius, and wordmark — edited in one place, **Campaigns → Themes**. Every block in the email INHERITS it: headings, body copy, buttons, dividers, quotes, poll options. There is deliberately no \"make this heading maroon\" control, and that's the point — when the brand moves, you edit the theme once and every future send follows, instead of hunting fifty campaigns for the old red. Themes ship with presets (Public Worship's own brand plus seasonal Summer, Fall, and Winter variations), and you can save your own. Pick a theme per campaign: the newsletter can wear Advent in December without anyone touching a single block.",
+        text: "An email's look isn't decided block by block. It comes from a THEME — the org's brand colours, fonts, corner radius, and wordmark — edited in one place, **Emails → Themes**. Every block in the email INHERITS it: headings, body copy, buttons, dividers, quotes, poll options. There is deliberately no \"make this heading maroon\" control, and that's the point — when the brand moves, you edit the theme once and every future send follows, instead of hunting fifty old emails for the old red. Themes ship with presets (Public Worship's own brand plus seasonal Summer, Fall, and Winter variations), and you can save your own. Pick a theme per email: the newsletter can wear Advent in December without anyone touching a single block.",
       },
       {
         kind: "rule",
         title: "It has to be readable on a phone, at night",
-        text: "Campaign emails are DARK-MODE AWARE and RESPONSIVE. Every theme carries a dark set alongside its light one, so a recipient whose phone is in dark mode gets a deliberately designed dark version — not the muddy auto-inversion a mail client would invent for a cream card. Columns stack and buttons go full-width on a narrow screen. And when you edit a theme, the composer CHECKS CONTRAST in **both** schemes and warns you when text would be hard to read (body copy on the card, a button label on the button, links). The warning is advice, not a lock — it's your brand, and you can ship past it — but it's the difference between \"it looked fine on my monitor\" and knowing someone reading on a phone in sunlight can actually read it.",
+        text: "Emails are DARK-MODE AWARE and RESPONSIVE. Every theme carries a dark set alongside its light one, so a recipient whose phone is in dark mode gets a deliberately designed dark version — not the muddy auto-inversion a mail client would invent for a cream card. Columns stack and buttons go full-width on a narrow screen. And when you edit a theme, the composer CHECKS CONTRAST in **both** schemes and warns you when text would be hard to read (body copy on the card, a button label on the button, links). The warning is advice, not a lock — it's your brand, and you can ship past it — but it's the difference between \"it looked fine on my monitor\" and knowing someone reading on a phone in sunlight can actually read it.",
       },
       {
         kind: "reveal",
         prompt:
           "The person who designs the monthly newsletter is away, and this month's issue has to go out Friday. Nobody left is a designer. What now?",
         answer:
-          "Start from the TEMPLATE. Any campaign can be saved as a reusable starting point, and Public Worship's monthly newsletter ships as a built-in one — layout, theme, and structure already right. You open it, replace the copy, and submit it for approval like any other campaign. Templates exist exactly so a send isn't hostage to one person's calendar: the design decisions were made once, by the designer, and everyone else fills in the words. (Two-party approval still applies — a template is a head start, not a shortcut past the reviewer.)",
+          "Start from the TEMPLATE. Any email can be saved as a reusable starting point, and Public Worship's monthly newsletter ships as a built-in one — layout, theme, and structure already right. You open it, replace the copy, and submit it for approval like any other email. Templates exist exactly so a send isn't hostage to one person's calendar: the design decisions were made once, by the designer, and everyone else fills in the words. (Two-party approval still applies — a template is a head start, not a shortcut past the reviewer.) The templates themselves live on **Emails → Templates**, and they're the DESIGNER's to keep sharp: \"New template\" starts a fresh one from a blank page, \"Edit design\" opens any of them in the same block composer an email uses — blocks, theme and all. That work needs design power, not compose: the person who owns the look never has to be the person who owns a send.",
       },
       {
         kind: "tip",
-        text: "**Two more things that save real time.** A campaign can ask a QUESTION inline — add a poll block, and the recipient taps an option right in the email and lands on a short confirm page (tapping is not voting; the confirm page is what records it, so a mail scanner prefetching links can't stuff the ballot). It's one vote per recipient, and re-voting CHANGES their answer rather than adding a second one — so the totals are people, not taps. And the IMAGE LIBRARY holds your reusable illustrations and logos: pick one instead of re-uploading the same graphic into every campaign.",
+        text: "**Two more things that save real time.** An email can ask a QUESTION inline — add a poll block, and the recipient taps an option right in the email and lands on a short confirm page (tapping is not voting; the confirm page is what records it, so a mail scanner prefetching links can't stuff the ballot). It's one vote per recipient, and re-voting CHANGES their answer rather than adding a second one — so the totals are people, not taps. And the IMAGE LIBRARY holds your reusable illustrations and logos: pick one instead of re-uploading the same graphic into every email.",
       },
       {
         kind: "tip",
-        text: "**You can start an audience straight from the People tab.** Check off a handful of people in the roster grid, then \"Email selected\" (visible only to a Compose/Approve holder) drops you into a brand-new audience draft with exactly those people already hand-picked. Nothing sends yet — it's a shortcut past the search-and-add step, not a bypass of the review-and-approve flow above, and every suppression/opt-out rule still applies to a hand-pick that arrives this way, same as one you picked by hand.",
+        text: "**You can start a segment straight from the People tab.** Check off a handful of people in the roster grid, then \"Email selected\" (visible only to a Compose/Approve holder) drops you into a brand-new segment draft with exactly those people already hand-picked. Nothing sends yet — it's a shortcut past the search-and-add step, not a bypass of the review-and-approve flow above, and every suppression/opt-out rule still applies to a hand-pick that arrives this way, same as one you picked by hand.",
       },
     ],
     quiz: [
@@ -355,19 +355,19 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         prompt:
-          "The org rebrands: the accent colour changes. How do you get every future campaign onto the new colour?",
+          "The org rebrands: the accent colour changes. How do you get every future email onto the new colour?",
         options: [
-          "Edit each block's colour in every campaign that might be reused",
-          "Edit the THEME once in Campaigns → Themes — every block inherits it",
+          "Edit each block's colour in every email that might be reused",
+          "Edit the THEME once in Emails → Themes — every block inherits it",
           "Ask a developer to change it in the code",
           "You can't — the colours are fixed",
         ],
         answerIndex: 1,
         explanation:
-          "Colour lives on the theme, never on a block. That's why there's no per-block colour control: a rebrand is one edit, and no single campaign can quietly drift off-brand.",
+          "Colour lives on the theme, never on a block. That's why there's no per-block colour control: a rebrand is one edit, and no single email can quietly drift off-brand.",
       },
       {
-        prompt: "The Executive Director writes a mass email campaign. Who can approve it before it sends?",
+        prompt: "The Executive Director writes a mass email. Who can approve it before it sends?",
         options: [
           "The ED themselves — they hold Compose/Approve power",
           "A DIFFERENT person the ED picks as reviewer (e.g. the Marketing Director) — never themselves",
@@ -376,16 +376,16 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "Two-party approval means a campaign always needs a DIFFERENT Compose/Approve-holder's sign-off, chosen at submit time — even the ED's own sends need someone else's approval.",
+          "Two-party approval means an email always needs a DIFFERENT Compose/Approve-holder's sign-off, chosen at submit time — even the ED's own sends need someone else's approval.",
       },
       {
         prompt:
-          "You hand-pick someone into a campaign's audience, but they've unsubscribed from every campaign. What happens?",
+          "You hand-pick someone into an email's segment, but they've unsubscribed from everything we send. What happens?",
         options: [
           "They're excluded — a hand-pick is not consent, suppression always wins",
           "They're included — hand-picking always overrides suppression",
-          "The campaign can't be saved until you remove them",
-          "They receive the campaign, but marked as a bounce afterward",
+          "The email can't be saved until you remove them",
+          "They receive the email, but marked as a bounce afterward",
         ],
         answerIndex: 0,
         explanation:

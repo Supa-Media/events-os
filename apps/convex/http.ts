@@ -973,9 +973,12 @@ http.route({
   }),
 });
 
-// ── Email campaigns: /unsubscribe/<token> ────────────────────────────────────
-// Where a campaign email's unsubscribe link (and its `List-Unsubscribe`
-// header) lands. GET is read-only (mail scanners prefetch links); the actual
+// ── Bulk email: /unsubscribe/<token> ─────────────────────────────────────────
+// Where a bulk email's unsubscribe link (and its `List-Unsubscribe` header)
+// lands — BOTH a campaign recipient's token and an event BLAST recipient's
+// (`blasts.ts`; the resolvers in `campaigns.ts` check both tables, so this
+// route stays a single code path — see its section note there).
+// GET is read-only (mail scanners prefetch links); the actual
 // suppression write only happens on POST — either the page's own confirm
 // button, or a mail client's automatic RFC 8058 one-click
 // `List-Unsubscribe-Post: List-Unsubscribe=One-Click` POST (same handler,
@@ -1135,8 +1138,40 @@ type ResendWebhookPayload = {
     subject?: string;
     text?: string;
     html?: string;
+    /** Present on `email.bounced`. Resend forwards the SES-shaped bounce
+     *  classification: `type` is "Permanent" | "Transient" | "Undetermined",
+     *  `subType` the finer reason ("General", "MailboxFull",
+     *  "Suppressed", …). Older/other payload shapes say "hard"/"soft"
+     *  instead, which `classifyBounce` also understands. */
+    bounce?: { type?: string; subType?: string; message?: string };
   };
 };
+
+/**
+ * Is this bounce PERMANENT (the address is genuinely dead) or TRANSIENT (a
+ * full mailbox, a greylisting 4xx, a momentarily unreachable server)?
+ *
+ * Every `email.bounced` event used to be treated as permanent, which meant one
+ * temporary 4xx from a recipient's mail server put a perfectly good address on
+ * the do-not-email list FOREVER — with no un-suppress mutation to undo it and
+ * no screen that would have shown it happened. Soft bounces are common and
+ * self-resolving; suppressing on one is a self-inflicted deliverability wound.
+ *
+ * "Undetermined" (and a payload with no classification at all) stays on the
+ * SUPPRESS side deliberately: a bounce we can't classify is more likely a real
+ * delivery failure than a transient blip, and continuing to mail an address
+ * that hard-bounces is what actually damages the sending domain's reputation.
+ * The un-suppress mutation (`emailSuppressions.unsuppressEmail`) is the
+ * recovery path for the rare wrong call — which is precisely why it had to
+ * exist before this could be relaxed at all.
+ */
+function classifyBounce(
+  bounce: { type?: string; subType?: string } | undefined,
+): "permanent" | "transient" {
+  const raw = (bounce?.type ?? "").trim().toLowerCase();
+  if (raw === "transient" || raw === "soft") return "transient";
+  return "permanent";
+}
 
 /** "Name <email>" → { name, email }; a bare address → { name: null, email }. */
 function parseFromHeader(raw: string): { name: string | null; email: string } {
@@ -1193,11 +1228,25 @@ http.route({
 
     if (type === "email.bounced" || type === "email.complained") {
       const reason = type === "email.bounced" ? "bounce" : "complaint";
-      for (const address of toList) {
-        await ctx.runMutation(internal.emailSuppressions.recordSuppression, {
-          email: address,
-          reason,
-        });
+      // A complaint is always the recipient's own deliberate "stop" — only a
+      // BOUNCE gets classified (see `classifyBounce`).
+      const permanent =
+        type === "email.complained" || classifyBounce(event.data?.bounce) === "permanent";
+      if (!permanent) {
+        console.log(
+          `[resend] soft bounce for ${toList.length} address(es) — not suppressed (${event.data?.bounce?.subType ?? "no subType"})`,
+        );
+      } else {
+        for (const address of toList) {
+          await ctx.runMutation(internal.emailSuppressions.recordSuppression, {
+            email: address,
+            reason,
+            note:
+              type === "email.bounced" && event.data?.bounce?.subType
+                ? `Hard bounce: ${event.data.bounce.subType}`
+                : undefined,
+          });
+        }
       }
     } else if (type.includes("receiv") || type === "inbound" || type.startsWith("inbound.")) {
       // Inbound reply — match the campaign via the `campaign+<id>@<domain>`

@@ -5,6 +5,7 @@ import {
   renderCampaignText,
   safeEmailHref,
   safeImageSrc,
+  safeUnsubscribeHref,
 } from "./emailRender";
 import type { EmailTheme } from "./emailTheme";
 import { DEFAULT_EMAIL_THEME, WINTER_THEME } from "./emailTheme";
@@ -316,6 +317,129 @@ describe("renderCampaignEmail — URL scheme allowlist (SECURITY)", () => {
       baseOpts,
     );
     expect(html).toContain('href="mailto:hello@example.com"');
+  });
+
+  // The unsubscribe href was the ONE href in this file that was escaped but
+  // never scheme-checked, on both of its two paths (the `footer` block's own
+  // legal row, and the fallback footer a document without a footer block
+  // gets). Escaping stops the attribute break-out; it does nothing about
+  // `javascript:`, which survived intact into the href.
+  const unsubBlocks: Array<[string, EmailBlock[]]> = [
+    ["the fallback footer", []],
+    ["a footer block", [{ id: "f", kind: "footer", navLine: "Events" }]],
+  ];
+  for (const [label, blocks] of unsubBlocks) {
+    test(`a javascript: unsubscribeUrl renders as an inert '#' in ${label}`, () => {
+      const html = renderCampaignEmail(doc(blocks), {
+        ...baseOpts,
+        unsubscribeUrl: "javascript:alert(1)",
+      });
+      expect(html).not.toContain("javascript:");
+      expect(html).toContain('href="#"');
+    });
+
+    test(`a normal unsubscribeUrl is untouched in ${label}`, () => {
+      const html = renderCampaignEmail(doc(blocks), baseOpts);
+      expect(html).toContain(`href="${baseOpts.unsubscribeUrl}"`);
+    });
+
+    test(`a ROOT-RELATIVE unsubscribeUrl survives in ${label}`, () => {
+      // `lib/siteUrl.ts` returns "" with no PUBLIC_SITE_URL/CONVEX_SITE_URL,
+      // so the call sites really do produce `/unsubscribe/<token>`. Collapsing
+      // that to "#" would delete the legally required visible opt-out.
+      const html = renderCampaignEmail(doc(blocks), {
+        ...baseOpts,
+        unsubscribeUrl: "/unsubscribe/tok123",
+      });
+      expect(html).toContain('href="/unsubscribe/tok123"');
+    });
+
+    test(`a PROTOCOL-relative unsubscribeUrl is rejected in ${label}`, () => {
+      // `//evil.test/x` looks like a path and resolves to another host.
+      for (const url of ["//evil.test/u", "/\\evil.test/u"]) {
+        const html = renderCampaignEmail(doc(blocks), { ...baseOpts, unsubscribeUrl: url });
+        expect(html).not.toContain("evil.test");
+        expect(html).toContain('href="#"');
+      }
+    });
+  }
+});
+
+describe("safeUnsubscribeHref (unit)", () => {
+  test("passes through the schemes safeEmailHref allows", () => {
+    expect(safeUnsubscribeHref("https://x.test/u")).toBe("https://x.test/u");
+    expect(safeUnsubscribeHref(" http://x.test/u ")).toBe("http://x.test/u");
+  });
+
+  test("passes through a single-slash root-relative path", () => {
+    expect(safeUnsubscribeHref("/unsubscribe/tok")).toBe("/unsubscribe/tok");
+  });
+
+  test("rejects protocol-relative and dangerous schemes", () => {
+    expect(safeUnsubscribeHref("//evil.test/u")).toBe("#");
+    expect(safeUnsubscribeHref("/\\evil.test/u")).toBe("#");
+    expect(safeUnsubscribeHref("javascript:alert(1)")).toBe("#");
+    expect(safeUnsubscribeHref("data:text/html,x")).toBe("#");
+    expect(safeUnsubscribeHref("unsubscribe/tok")).toBe("#");
+  });
+});
+
+describe("renderCampaignEmail — card align injection (SECURITY)", () => {
+  // `content.align` was the one authored string interpolated into a `style="…"`
+  // attribute raw — every sibling is escaped, clamped, or a lookup key. It
+  // reaches the eyebrow, heading, body and attribution rows, and `columns[]`
+  // through the same function. `validateCardContent` restricts it at every
+  // write today, so this covers a document written before that gate or by a
+  // path that bypassed it — which is precisely what this render layer is for.
+  const attackAlign = 'https://ok.test/a" onmouseover="alert(1)' as unknown as "left";
+
+  const evilCard = {
+    id: "1",
+    kind: "card",
+    heading: "h",
+    eyebrow: "e",
+    body: "b",
+    attribution: "a",
+    align: attackAlign,
+  } as unknown as EmailBlock;
+
+  const evilColumns = {
+    id: "2",
+    kind: "columns",
+    columns: [{ heading: "h", align: attackAlign }],
+  } as unknown as EmailBlock;
+
+  for (const [label, block] of [
+    ["a card", evilCard],
+    ["a column", evilColumns],
+  ] as const) {
+    test(`${label}'s align cannot add an event handler`, () => {
+      const html = renderCampaignEmail(doc([block]), baseOpts);
+      expect(html).not.toContain("onmouseover");
+      expect(html).not.toContain("alert(1)");
+    });
+
+    test(`${label}'s align falls back to the variant default, not a quoted value`, () => {
+      const html = renderCampaignEmail(doc([block]), baseOpts);
+      // Nothing anywhere in the document may reach `text-align:` but the two
+      // legal keywords — and no style attribute may grow a quote or a `<`.
+      for (const value of html.match(/text-align:[^;"]*/g) ?? []) {
+        expect(["text-align:left", "text-align:center"]).toContain(value);
+      }
+      for (const styleAttr of html.match(/style="[^"]*"/g) ?? []) {
+        expect(styleAttr).not.toContain("<");
+      }
+      // The `plain` variant aligns left; the injected string must not survive.
+      expect(styleOfClass(html, "pw-h")).toContain("text-align:left");
+    });
+  }
+
+  test("a legitimate align still wins over the variant default", () => {
+    const html = renderCampaignEmail(
+      doc([{ id: "1", kind: "card", heading: "h", align: "center" }]),
+      baseOpts,
+    );
+    expect(styleOfClass(html, "pw-h")).toContain("text-align:center");
   });
 });
 

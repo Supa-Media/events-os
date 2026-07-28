@@ -288,15 +288,16 @@ export default function PeopleScreen() {
     openId && !openPersonOnPage ? { personId: openId as Id<"people"> } : "skip",
   );
 
-  // People-CRM UX: multi-select + "Email selected" bridge to a new audience
+  // People-CRM UX: multi-select + "Email selected" bridge to a new segment
   // draft. Local state only — nothing persists server-side, mirrors every
-  // other grid's own local-only sort/filter state. `myCampaignsAccess` is
-  // the SAME soft visibility gate `campaigns/audiences.tsx` uses for the
-  // whole screen — the action is hidden entirely for anyone who couldn't
-  // actually open the destination screen.
+  // other grid's own local-only sort/filter state. Gated on `canCompose`,
+  // not `canView`: the bridge lands in the segment CREATE form, and
+  // `audiences.createAudience` is behind `requireCampaignCompose` — a
+  // design-only holder following this link would reach a screen with no
+  // editor on it. Hidden entirely rather than shown-then-denied.
   const [selected, setSelected] = useState<Set<Id<"people">>>(new Set());
   const campaignsAccess = useQuery(api.audiences.myCampaignsAccess, {});
-  const canEmailSelected = campaignsAccess?.canView === true;
+  const canEmailSelected = campaignsAccess?.canCompose === true;
 
   // Manager names by id — a lightweight `{_id, name}` PROJECTION over the
   // whole chapter (`people.namesByChapter`), not the paginated `people`
@@ -510,9 +511,9 @@ export default function PeopleScreen() {
       ) : null}
 
       {/* People-CRM UX: selection bar — appears only once at least one row is
-          checked. "Email selected" is hidden for a caller without campaigns
-          access (`myCampaignsAccess`, the same soft gate the Audiences
-          screen itself uses) rather than shown-then-denied. */}
+          checked. "Email selected" is hidden for a caller who can't compose
+          (`myCampaignsAccess.canCompose`, the same gate the Segments screen
+          puts on its own editor) rather than shown-then-denied. */}
       {selectedCount > 0 ? (
         <View style={styles.selectionBar}>
           <Text className="text-sm font-semibold text-ink">
@@ -1643,7 +1644,7 @@ function PersonDetailBody({
         {/* Marketing preference (person-centric audiences Phase 2) — layered
             OVER the address-level unsubscribe/bounce ledger, which stays
             authoritative and untouched; this only ever excludes THIS person
-            from campaign sends (never transactional email). */}
+            from bulk email sends (never transactional email). */}
         <View className="mb-4">
           <Text className="mb-2 text-2xs font-bold uppercase tracking-wider text-muted">
             Marketing

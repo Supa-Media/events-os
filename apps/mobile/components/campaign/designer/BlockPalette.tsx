@@ -1,12 +1,18 @@
 /**
- * "Add block" row — one button per block kind. Inserts after the currently
- * selected block (or at the end when nothing's selected) via `onAdd`.
+ * "Add block" palette — one button per block kind, GROUPED (see
+ * `lib/emailDesigner.ts#BLOCK_GROUPS`). Inserts after the currently selected
+ * block (or at the end when nothing's selected) via `onAdd`.
+ *
+ * The groups aren't decoration: fourteen identical buttons in one wrapped row
+ * gave a Spacer the same visual weight as a Card, so the composed shapes the
+ * newsletter is actually built from were lost among the primitives. Headings
+ * make "which KIND of thing am I adding?" the first decision.
  */
 import { Pressable, Text, View } from "react-native";
 import type { EmailBlockKind } from "@events-os/shared";
 import { Icon, type IconName } from "../../ui";
 import { colors } from "../../../lib/theme";
-import { BLOCK_KIND_LABELS, BLOCK_KINDS } from "../../../lib/emailDesigner";
+import { BLOCK_GROUPS, BLOCK_KIND_LABELS } from "../../../lib/emailDesigner";
 
 const KIND_ICON: Record<EmailBlockKind, IconName> = {
   heading: "type",
@@ -29,17 +35,32 @@ const KIND_ICON: Record<EmailBlockKind, IconName> = {
 
 export function BlockPalette({ onAdd }: { onAdd: (kind: EmailBlockKind) => void }) {
   return (
-    <View className="flex-row flex-wrap gap-2">
-      {BLOCK_KINDS.map((kind) => (
-        <Pressable
-          key={kind}
-          onPress={() => onAdd(kind)}
-          accessibilityLabel={`Add ${BLOCK_KIND_LABELS[kind]} block`}
-          className="flex-row items-center gap-1.5 rounded-md border border-border-strong bg-raised px-3 py-1.5 active:bg-sunken web:hover:bg-sunken"
-        >
-          <Icon name={KIND_ICON[kind]} size={14} color={colors.accent} />
-          <Text className="text-xs font-semibold text-ink">{BLOCK_KIND_LABELS[kind]}</Text>
-        </Pressable>
+    <View className="gap-3">
+      {BLOCK_GROUPS.map((group) => (
+        <View key={group.title}>
+          <View className="mb-1.5 flex-row flex-wrap items-baseline gap-x-2">
+            <Text className="text-2xs font-bold uppercase tracking-wider text-faint">
+              {group.title}
+            </Text>
+            <Text className="text-2xs text-faint">{group.hint}</Text>
+          </View>
+          <View className="flex-row flex-wrap gap-2">
+            {group.kinds.map((kind) => (
+              <Pressable
+                key={kind}
+                onPress={() => onAdd(kind)}
+                accessibilityRole="button"
+                accessibilityLabel={`Add ${BLOCK_KIND_LABELS[kind]} block`}
+                className="flex-row items-center gap-1.5 rounded-md border border-border-strong bg-raised px-3 py-2 active:bg-sunken web:hover:bg-sunken"
+              >
+                <Icon name={KIND_ICON[kind]} size={14} color={colors.accent} />
+                <Text className="text-xs font-semibold text-ink">
+                  {BLOCK_KIND_LABELS[kind]}
+                </Text>
+              </Pressable>
+            ))}
+          </View>
+        </View>
       ))}
     </View>
   );

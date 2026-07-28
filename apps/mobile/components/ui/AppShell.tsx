@@ -52,14 +52,15 @@ const NAV: NavEntry[] = [
   // seat, or superuser) — the in-screen `requireGivingView` gate is the real
   // one; this is nav visibility only.
   { label: "Giving", icon: "gift", path: "/giving", group: "A" },
-  // Campaigns — the org's email-blast desk (block-based designer + audience
+  // Emails — the org's email desk (block-based designer + audience
   // segments + reply inbox). Its own desk beside Giving (same PARA group:
   // an ongoing-responsibility function, not a one-off project). Gated by
   // `audiences.myCampaignsAccess.canView` (a held campaigns seat, or
   // superuser) — mirrors Giving's `nav.giving` gate exactly; the in-screen
   // guards on each campaigns/campaign route are the real enforcement, this
-  // is nav visibility only.
-  { label: "Campaigns", icon: "mail", path: "/campaigns", group: "A" },
+  // is nav visibility only. The route and the API keep the older "campaign"
+  // name — see `docs/guides/email-terminology.md`.
+  { label: "Emails", icon: "mail", path: "/campaigns", group: "A" },
   // The Academy is for everyone — never permission-gated (see useNav).
   { label: "Academy", icon: "award", path: "/academy", group: "R" },
   // Org Chart — read-only, org-transparent (mirrors `seats.chart`'s "the whole

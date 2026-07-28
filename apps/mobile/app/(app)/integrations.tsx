@@ -45,6 +45,7 @@ export default function IntegrationsScreen() {
   const givebutter = status?.givebutter;
   const twilio = status?.twilio;
   const resend = status?.resend;
+  const campaigns = status?.campaigns;
   const resendInbound = status?.resendInbound;
   const aiEngine = status?.aiEngine;
 
@@ -178,6 +179,7 @@ export default function IntegrationsScreen() {
       <TwilioCard twilio={twilio} loading={status === undefined} />
       <TwilioUsageSummary />
       <ResendCard resend={resend} loading={status === undefined} />
+      <PostalAddressCard campaigns={campaigns} loading={status === undefined} />
       <ResendInboundCard
         resendInbound={resendInbound}
         loading={status === undefined}
@@ -1064,6 +1066,152 @@ function ResendCard({
             disabled={saving || clearing}
           />
         ) : null}
+      </View>
+    </Card>
+  );
+}
+
+/**
+ * Postal address card — the org's physical mailing address, printed in the
+ * footer of every bulk email (newsletter campaigns AND event blasts).
+ *
+ * US CAN-SPAM requires it in every commercial message, and the backend now
+ * REFUSES a bulk send without one (`campaigns.submitForApproval`/`send`,
+ * `blasts.sendBlast` → `integrationSettings.requireOrgMailingAddress`) rather
+ * than quietly rendering a footer with the line missing. This field is the
+ * only way to set it: `setEmailCampaignSettings` was superuser-gated with no
+ * UI at all, so the value was almost certainly null in production and every
+ * campaign sent so far shipped non-compliant.
+ *
+ * NOT secret — every recipient reads it — so it's prefilled and shown in full,
+ * like the Resend from-address. `setEmailCampaignSettings` leaves the webhook
+ * secret and inbound domain untouched when they're omitted, so saving here
+ * can't clobber the other two campaign settings.
+ */
+function PostalAddressCard({
+  campaigns,
+  loading,
+}: {
+  campaigns:
+    | {
+        resendWebhookConfigured: boolean;
+        resendInboundDomain: string | null;
+        orgMailingAddress: string | null;
+        updatedAt: number | null;
+      }
+    | undefined;
+  loading: boolean;
+}) {
+  const setSettings = useMutation(
+    api.integrationSettings.setEmailCampaignSettings,
+  );
+  const [address, setAddress] = useState("");
+  const [initialized, setInitialized] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  // Prefill once status loads (not secret) — the same pattern as the Resend
+  // from-address field, so an admin can correct a typo without retyping it.
+  useEffect(() => {
+    if (!initialized && campaigns !== undefined) {
+      setInitialized(true);
+      setAddress(campaigns.orgMailingAddress ?? "");
+    }
+  }, [campaigns, initialized]);
+
+  const trimmed = address.trim();
+  const changed = trimmed !== (campaigns?.orgMailingAddress ?? "");
+  const canSave = trimmed !== "" && changed;
+
+  async function handleSave() {
+    if (!canSave) return;
+    setError(null);
+    setSaving(true);
+    try {
+      await setSettings({ orgMailingAddress: trimmed });
+      setSavedAt(Date.now());
+    } catch (e) {
+      setError(errorMessage(e, "Couldn't save the postal address."));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Card padding="lg" className="mt-4">
+      <View className="mb-3 flex-row items-center gap-2">
+        <View className="h-7 w-7 items-center justify-center rounded-md bg-mint">
+          <Icon name="map-pin" size={14} color="#1F5A41" />
+        </View>
+        <View className="flex-1">
+          <Text className="text-sm font-semibold text-ink">Postal address</Text>
+          <Text className="text-xs text-muted">
+            Printed in the footer of every newsletter and event announcement.
+            Required by law — bulk email won&apos;t send without it.
+          </Text>
+        </View>
+      </View>
+
+      {loading ? (
+        <Text className="mb-3 text-xs text-muted">Loading status…</Text>
+      ) : campaigns?.orgMailingAddress ? (
+        <View className="mb-3 flex-row items-center gap-1.5">
+          <Icon name="check-circle" size={14} color={colors.success} />
+          <Text className="flex-1 text-sm text-ink">
+            {campaigns.orgMailingAddress}
+            {campaigns.updatedAt
+              ? ` · updated ${formatDate(campaigns.updatedAt)}`
+              : ""}
+          </Text>
+        </View>
+      ) : (
+        <View className="mb-3 flex-row items-center gap-1.5">
+          <Icon name="alert-circle" size={14} color={colors.danger} />
+          <Text className="flex-1 text-sm text-danger">
+            Not set — newsletters and event announcements are blocked until it
+            is.
+          </Text>
+        </View>
+      )}
+
+      <TextField
+        label="Mailing address"
+        value={address}
+        onChangeText={(t) => {
+          setAddress(t);
+          if (error) setError(null);
+          if (savedAt) setSavedAt(null);
+        }}
+        placeholder="Public Worship, 123 Main St, Brooklyn, NY 11201"
+        autoCapitalize="words"
+        autoCorrect={false}
+        editable={!saving}
+        hint="A real postal address recipients could write to — shown to everyone, not secret."
+      />
+
+      {error ? (
+        <View className="mb-3 flex-row items-center gap-1.5">
+          <Icon name="alert-circle" size={14} color={colors.danger} />
+          <Text className="flex-1 text-sm text-danger">{error}</Text>
+        </View>
+      ) : null}
+
+      {savedAt ? (
+        <View className="mb-3 flex-row items-center gap-1.5">
+          <Icon name="check-circle" size={14} color={colors.success} />
+          <Text className="text-sm text-success">Postal address saved.</Text>
+        </View>
+      ) : null}
+
+      <View className="flex-row gap-2">
+        <Button
+          title="Save"
+          icon="check"
+          onPress={() => void handleSave()}
+          loading={saving}
+          disabled={!canSave || saving}
+        />
       </View>
     </Card>
   );

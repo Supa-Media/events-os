@@ -1,7 +1,15 @@
 /**
  * Saved email themes — the design tokens every campaign send is painted with
- * (`@events-os/shared`'s `emailTheme.ts` + `emailRender.ts`). CENTRAL-only,
- * gated exactly like the rest of the campaigns desk (`lib/campaignsAccess.ts`).
+ * (`@events-os/shared`'s `emailTheme.ts` + `emailRender.ts`). CENTRAL-only
+ * (`lib/campaignsAccess.ts`).
+ *
+ * ── Who can do what here ───────────────────────────────────────────────────
+ * A theme is the org's BRAND, shared by every future send, so every mutation
+ * in this file requires the named `campaigns.design` power
+ * (`requireCampaignDesign`) — the Graphic Designer / Social Media Manager /
+ * Marketing Director / ED / FM. `listThemes` stays on plain
+ * `requireCampaignsAccess`: a composer with no design power still has to be
+ * able to SEE the themes in order to pick one for their campaign.
  *
  * ── Presets are code; saved themes are rows ─────────────────────────────────
  * `EMAIL_THEME_PRESETS` (Public Worship, Summer, Fall, Winter) live in the
@@ -37,7 +45,7 @@ import { mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireUserId } from "./lib/context";
-import { requireCampaignsAccess } from "./lib/campaignsAccess";
+import { requireCampaignDesign, requireCampaignsAccess } from "./lib/campaignsAccess";
 import {
   DEFAULT_EMAIL_THEME,
   EMAIL_THEME_PRESETS,
@@ -321,7 +329,7 @@ export const createTheme = mutation({
   },
   returns: v.id("emailThemes"),
   handler: async (ctx, args) => {
-    await requireCampaignsAccess(ctx);
+    await requireCampaignDesign(ctx);
     const userId = (await requireUserId(ctx)) as Id<"users">;
     const { scope, dark, ...tokens } = args;
     const theme = assertValidTheme({ ...tokens, ...(dark ? { dark } : {}) });
@@ -380,7 +388,7 @@ export const updateTheme = mutation({
   },
   returns: v.null(),
   handler: async (ctx, { themeId, dark, ...fields }) => {
-    await requireCampaignsAccess(ctx);
+    await requireCampaignDesign(ctx);
     const existing = await loadTheme(ctx, themeId);
 
     // The merge BASE is the normalized row, not the raw one. A row written
@@ -426,7 +434,7 @@ export const setDefaultTheme = mutation({
   args: { themeId: v.id("emailThemes") },
   returns: v.null(),
   handler: async (ctx, { themeId }) => {
-    await requireCampaignsAccess(ctx);
+    await requireCampaignDesign(ctx);
     const row = await loadTheme(ctx, themeId);
     if (row.archived === true) {
       throw new ConvexError({
@@ -458,7 +466,7 @@ export const archiveTheme = mutation({
   args: { themeId: v.id("emailThemes") },
   returns: v.null(),
   handler: async (ctx, { themeId }) => {
-    await requireCampaignsAccess(ctx);
+    await requireCampaignDesign(ctx);
     const row = await loadTheme(ctx, themeId);
     if (row.isDefault === true) {
       throw new ConvexError({
@@ -489,7 +497,7 @@ export const duplicateTheme = mutation({
   },
   returns: v.id("emailThemes"),
   handler: async (ctx, { scope, sourceThemeId, presetName, name }) => {
-    await requireCampaignsAccess(ctx);
+    await requireCampaignDesign(ctx);
     const userId = (await requireUserId(ctx)) as Id<"users">;
 
     if ((sourceThemeId === undefined) === (presetName === undefined)) {

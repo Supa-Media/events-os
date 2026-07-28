@@ -13,6 +13,29 @@
  * that carry a phone whose `phoneVerified !== false` (the mirror of the email
  * verification gate), de-duped by normalized phone. Email-less phone-only
  * imported guests — unreachable by email — ARE reached by SMS.
+ *
+ * ── A blast is BULK mail, and is treated as such ────────────────────────────
+ * An event announcement is organiser-composed promotional copy sent to a whole
+ * audience — legally the same thing a newsletter campaign is, not a
+ * transactional message. So an EMAIL blast carries exactly what
+ * `campaigns.ts` sends carry, and refuses on the same terms:
+ *  - a per-recipient unsubscribe link in the footer, backed by a
+ *    `blastRecipients` row (`schema/ticketing.ts` documents why that's a table
+ *    rather than a token derived from something already on hand) and resolving
+ *    through the SAME `/unsubscribe/<token>` route campaign recipients use;
+ *  - `List-Unsubscribe` + `List-Unsubscribe-Post` (RFC 8058 one-click) headers,
+ *    minted per recipient;
+ *  - the org's postal mailing address, which `sendBlast` REFUSES to send
+ *    without (`integrationSettings.requireOrgMailingAddress`), re-checked at
+ *    delivery time in `deliverEmailBlast` because an org-wide setting can be
+ *    cleared in the gap;
+ *  - a NAMED send gate, `lib/campaignsAccess.ts#requireBlastSend`, rather than
+ *    an inline membership check — today it still resolves to "any admin of the
+ *    event's chapter", so nothing about who may fire a blast has changed.
+ * SMS blasts keep their own equivalent — the "Reply STOP to opt out." line
+ * `deliverSmsBlast` appends. Transactional mail (receipts, RSVP
+ * confirmations, verification codes) gets NONE of this: `emailShell`'s bulk
+ * footer is opt-in per call site precisely so those messages stay clean.
  */
 import { escapeHtml } from "./lib/html";
 import {
@@ -27,15 +50,20 @@ import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { requireEvent, requireUserId } from "./lib/context";
+import { requireBlastSend } from "./lib/campaignsAccess";
 import { normalizeEmail } from "./lib/access";
-import { rsvpPageUrl } from "./lib/siteUrl";
-import { emailShell, sendEmail } from "./ticketingEmails";
+import { rsvpPageUrl, siteUrl } from "./lib/siteUrl";
 import {
+  EMAIL_THEME,
   emailButton,
   emailEyebrow,
   emailHeading,
   emailParagraph,
+  emailShell,
 } from "./lib/emailShell";
+import { resolveResendSettings, sendResendEmailBatch } from "./lib/resend";
+import { newGuestToken } from "./ticketing";
+import { requireOrgMailingAddress } from "./integrationSettings";
 import {
   normalizePhone,
   resolveTwilioCredentials,
@@ -64,7 +92,16 @@ export const listBlasts = query({
   },
 });
 
-/** Fire a blast (admin). Inserts the row and schedules delivery. */
+/**
+ * Fire a blast. Inserts the row and schedules delivery.
+ *
+ * Gated by the NAMED `requireBlastSend` (`lib/campaignsAccess.ts`), not by an
+ * inline `requireEvent`. Who may fire one is UNCHANGED — the resolver's body
+ * is today exactly the event-admin membership check this line used to do
+ * inline — but "who can send bulk mail to a whole audience" is now a question
+ * with one answer in one file, per CLAUDE.md's "gate it behind a power, even
+ * when it's open today". See that resolver's doc for what it graduates to.
+ */
 export const sendBlast = mutation({
   args: {
     eventId: v.id("events"),
@@ -74,7 +111,7 @@ export const sendBlast = mutation({
     audience: audienceValidator,
   },
   handler: async (ctx, args) => {
-    const event = await requireEvent(ctx, args.eventId);
+    const event = await requireBlastSend(ctx, args.eventId);
     const userId = await requireUserId(ctx);
     // SMS is no longer refused here — `deliverBlast` records a clear error if
     // Twilio isn't configured (and the composer previews availability), so a
@@ -83,6 +120,12 @@ export const sendBlast = mutation({
     if (!body) {
       throw new ConvexError({ code: "EMPTY", message: "Write the blast first." });
     }
+    // An email blast is BULK mail — organiser-composed promotional copy to a
+    // whole event audience — so it carries the same CAN-SPAM obligations a
+    // newsletter campaign does, and refuses on the same terms
+    // (`campaigns.ts#submitForApproval`/`#send`). SMS is unaffected: its
+    // opt-out disclosure is the "Reply STOP" line `deliverSmsBlast` appends.
+    if (args.channel === "email") await requireOrgMailingAddress(ctx);
     const blastId = await ctx.db.insert("blasts", {
       eventId: args.eventId,
       chapterId: event.chapterId,
@@ -320,7 +363,141 @@ export const finishBlast = internalMutation({
   },
 });
 
-/** Deliver an email blast: one branded email per recipient, best-effort. */
+/** How many `blastRecipients` rows one mutation materializes / updates —
+ *  the `campaigns.ts#MATERIALIZE_BATCH_SIZE` slice size, for the same reason
+ *  (an audience can be up to 2000 addresses; one transaction shouldn't try to
+ *  write them all). */
+const BLAST_RECIPIENT_BATCH_SIZE = 100;
+
+/** How many personalized emails ride in ONE Resend request — the batch
+ *  endpoint's own per-request maximum, and the same value
+ *  `campaigns.ts#DELIVER_BATCH_SIZE` uses. */
+const RESEND_BATCH_SIZE = 100;
+
+/** Wait between successive Resend batch requests of the same blast — the
+ *  `campaigns.ts#DELIVER_BATCH_PACING_MS` value, for the identical reason
+ *  (Resend's default limit is ~2 requests/second). Campaigns pace by
+ *  scheduling the next invocation; a blast's audience is capped at 2,000
+ *  addresses (`audienceRsvps`) — at most ~20 requests — so it paces inside the
+ *  one action instead of building a second scheduled state machine. */
+const RESEND_BATCH_PACING_MS = 600;
+
+/** Sleep helper for the pacing above (mirrors `aiActions.ts`'s). */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Materialize (or re-read) one slice of an email blast's per-address rows,
+ * returning each address with the unsubscribe token that names IT and nothing
+ * else. Idempotent per (blast, address) — a retried `deliverBlast` reuses the
+ * tokens it already minted rather than issuing a second set, so a link in an
+ * already-delivered message never goes dead.
+ *
+ * Addresses are normalized (trim + lowercase) here because that's the form
+ * `emailSuppressions` stores and compares against; a duplicate that only
+ * differed by case/whitespace collapses to ONE row and therefore one send.
+ */
+export const ensureBlastRecipients = internalMutation({
+  args: { blastId: v.id("blasts"), emails: v.array(v.string()) },
+  returns: v.array(v.object({ email: v.string(), token: v.string() })),
+  handler: async (ctx, { blastId, emails }) => {
+    const blast = await ctx.db.get(blastId);
+    if (!blast) return [];
+    const out: { email: string; token: string }[] = [];
+    const seen = new Set<string>();
+    for (const raw of emails) {
+      const email = normalizeEmail(raw);
+      if (!email || seen.has(email)) continue;
+      seen.add(email);
+      const existing = await ctx.db
+        .query("blastRecipients")
+        .withIndex("by_blast_and_email", (q) =>
+          q.eq("blastId", blastId).eq("email", email),
+        )
+        .first();
+      if (existing) {
+        out.push({ email, token: existing.unsubscribeToken });
+        continue;
+      }
+      const token = newGuestToken();
+      await ctx.db.insert("blastRecipients", {
+        blastId,
+        eventId: blast.eventId,
+        email,
+        status: "queued",
+        unsubscribeToken: token,
+      });
+      out.push({ email, token });
+    }
+    return out;
+  },
+});
+
+/** Persist one slice of per-recipient delivery outcomes (the
+ *  `campaigns.ts#applyDeliveryBatch` shape, minus the scheduling — a blast
+ *  sends in one pass and finalizes through `finishBlast`). */
+export const applyBlastDelivery = internalMutation({
+  args: {
+    blastId: v.id("blasts"),
+    results: v.array(
+      v.object({
+        email: v.string(),
+        sent: v.boolean(),
+        error: v.optional(v.string()),
+      }),
+    ),
+  },
+  returns: v.null(),
+  handler: async (ctx, { blastId, results }) => {
+    for (const result of results) {
+      const row = await ctx.db
+        .query("blastRecipients")
+        .withIndex("by_blast_and_email", (q) =>
+          q.eq("blastId", blastId).eq("email", result.email),
+        )
+        .first();
+      if (!row) continue;
+      await ctx.db.patch(row._id, {
+        status: result.sent ? "sent" : "failed",
+        error: result.error,
+        sentAt: result.sent ? Date.now() : undefined,
+      });
+    }
+    return null;
+  },
+});
+
+/**
+ * Deliver an email blast: one branded email per recipient, best-effort.
+ *
+ * ── Why this sends through `lib/resend.ts` rather than `sendEmail` ─────────
+ * Every recipient gets a DIFFERENT message: their own `/unsubscribe/<token>`
+ * link in the footer and their own `List-Unsubscribe` header. The shared
+ * `ticketingEmails.sendEmail` chokepoint takes only `{to, subject, html}` —
+ * it has no way to carry per-recipient headers — so this path resolves the
+ * Resend settings once and posts the personalized messages itself.
+ *
+ * ── Why BATCHED (`sendResendEmailBatch`), like campaigns ───────────────────
+ * This used to POST one Resend request per address, sequentially and unpaced
+ * — up to 2,000 requests for a big event, comfortably over Resend's default
+ * ~2 requests/second limit. `sendResendEmailBatch` carries per-recipient
+ * `to`/`html`/`headers` PER ITEM, so nothing about the personalization
+ * changes; `campaigns.ts#deliverCampaignBatch` already sends exactly this way
+ * (100 per request, ~600ms apart) and this now matches it, sub-batching
+ * within the one action rather than across scheduled invocations (a blast is
+ * capped at 2,000 addresses — ~20 requests, ~12s of pacing — so it stays
+ * inside one action comfortably).
+ *
+ * Both failure modes are preserved: a non-2xx RESPONSE is a RECORDED
+ * rejection of the addresses it covers (counted, never fatal), a `fetch`
+ * REJECTION is a real outage and propagates into the catch below, which is
+ * what makes an outage land the blast "failed" rather than "sent with 0".
+ * Resend rejects a batch request WHOLESALE on any per-item validation error
+ * (no per-item results), so the addresses a non-2xx covers are every address
+ * in THAT request — the same coarser granularity `deliverCampaignBatch`
+ * documents, not a different kind of failure.
+ */
 async function deliverEmailBlast(
   ctx: ActionCtx,
   payload: NonNullable<BlastPayload>,
@@ -344,23 +521,107 @@ async function deliverEmailBlast(
       }),
     )
     .join("");
-  const html = emailShell(`
+  // The message body — identical for everyone. Only the FOOTER differs per
+  // recipient (their own unsubscribe link), so the expensive part is built once.
+  const inner = `
       ${emailEyebrow(`${escapeHtml(hostName)} · ${escapeHtml(eventName)}`, { margin: "0 0 8px" })}
       ${emailHeading(escapeHtml(subject), { margin: "0 0 16px" })}
       ${paragraphs}
-      ${slug ? `<div style="margin-top:6px">${emailButton(rsvpPageUrl(slug), "View event")}</div>` : ""}`);
+      ${slug ? `<div style="margin-top:6px">${emailButton(rsvpPageUrl(slug), "View event")}</div>` : ""}`;
+
+  // `sendBlast` already refused a blast with no postal address on file, but it
+  // could have been cleared in the gap before delivery ran — a recorded
+  // failure, never a message that ships without the required line.
+  const mailSettings = await ctx.runQuery(
+    internal.integrationSettings.readCampaignsMailSettings,
+    {},
+  );
+  const orgAddress = mailSettings.orgMailingAddress?.trim();
+  if (!orgAddress) {
+    return {
+      recipientCount: emails.length,
+      sentCount: 0,
+      error:
+        "No postal mailing address on file — a superuser must set it in Profile → Integrations before bulk email can go out.",
+    };
+  }
+
+  const settings = await resolveResendSettings(ctx);
+  if (!settings) {
+    // Recorded, not thrown — the row lands `failed` with a clear reason, the
+    // same shape `deliverSmsBlast` uses for an unconfigured Twilio.
+    return {
+      recipientCount: emails.length,
+      sentCount: 0,
+      error: "Resend isn't connected — configure it in Profile → Integrations.",
+    };
+  }
+
+  // One row (and one token) per address, in slices — see
+  // `ensureBlastRecipients`.
+  const recipients: { email: string; token: string }[] = [];
+  for (let i = 0; i < emails.length; i += BLAST_RECIPIENT_BATCH_SIZE) {
+    recipients.push(
+      ...(await ctx.runMutation(internal.blasts.ensureBlastRecipients, {
+        blastId: blast._id,
+        emails: emails.slice(i, i + BLAST_RECIPIENT_BATCH_SIZE),
+      })),
+    );
+  }
 
   let sent = 0;
   let lastError: string | undefined;
-  for (const email of emails) {
+  const results: { email: string; sent: boolean; error?: string }[] = [];
+  for (let i = 0; i < recipients.length; i += RESEND_BATCH_SIZE) {
+    const slice = recipients.slice(i, i + RESEND_BATCH_SIZE);
+    if (i > 0) await sleep(RESEND_BATCH_PACING_MS);
     try {
-      await sendEmail(ctx, { to: email, subject, html });
-      sent++;
+      const result = await sendResendEmailBatch(
+        settings,
+        slice.map(({ email, token }) => {
+          const unsubscribeUrl = `${siteUrl()}/unsubscribe/${token}`;
+          return {
+            to: email,
+            subject,
+            html: emailShell(inner, EMAIL_THEME, { unsubscribeUrl, orgAddress }),
+            headers: {
+              // RFC 8058 one-click: the same pair campaign sends carry, per
+              // recipient, so a mail client's own "unsubscribe" button POSTs
+              // straight to this recipient's token.
+              "List-Unsubscribe": `<${unsubscribeUrl}>`,
+              "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+            },
+          };
+        }),
+      );
+      if (result.ok) {
+        for (const recipient of slice) {
+          sent++;
+          results.push({ email: recipient.email, sent: true });
+        }
+      } else {
+        lastError = `Resend responded ${result.status}`;
+        for (const recipient of slice) {
+          results.push({ email: recipient.email, sent: false, error: lastError });
+        }
+      }
     } catch (err) {
+      // A transport failure — the outage case. Recorded against every address
+      // in this request, exactly as the per-recipient catch did before.
       lastError = String(err);
+      for (const recipient of slice) {
+        results.push({ email: recipient.email, sent: false, error: lastError });
+      }
     }
   }
-  return { recipientCount: emails.length, sentCount: sent, error: lastError };
+
+  for (let i = 0; i < results.length; i += BLAST_RECIPIENT_BATCH_SIZE) {
+    await ctx.runMutation(internal.blasts.applyBlastDelivery, {
+      blastId: blast._id,
+      results: results.slice(i, i + BLAST_RECIPIENT_BATCH_SIZE),
+    });
+  }
+  return { recipientCount: recipients.length, sentCount: sent, error: lastError };
 }
 
 /** Last 4 digits of an E.164 number — enough to spot-check a usage row

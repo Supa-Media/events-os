@@ -87,7 +87,7 @@ export function SaveAsTemplateAction({
         value={name}
         onChangeText={setName}
         placeholder="e.g. Monthly newsletter"
-        hint="Saves this email's blocks and theme — not its audience or subject."
+        hint="Saves this email's blocks and theme — not its segment or subject."
         autoFocus
       />
       <View className="flex-row justify-end gap-2">

@@ -27,6 +27,7 @@ import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { Icon } from "../../ui";
 import { colors } from "../../../lib/theme";
+import { useDesignerReadOnly } from "./DesignerControls";
 
 /**
  * The library is CENTRAL-scoped, matching every other campaigns surface
@@ -44,14 +45,19 @@ export function ImageLibraryPicker({
   /** Called with the chosen image — the caller writes BOTH url and alt. */
   onPick: (image: { url: string; alt: string }) => void;
 }) {
+  const readOnly = useDesignerReadOnly();
   const [open, setOpen] = useState(false);
   // "skip" until the panel is actually opened: a long newsletter has a
   // dozen card/column/image editors mounted at once, and none of them needs
   // a live subscription to the whole library just to render a button.
   const images = useQuery(
     api.emailImages.listImages,
-    open ? { scope: SCOPE } : "skip",
+    open && !readOnly ? { scope: SCOPE } : "skip",
   );
+
+  // A locked campaign can't take a new image, so the picker isn't offered —
+  // same rule as `ImageUploadButton`. (See `DesignerControls`' read-only doc.)
+  if (readOnly) return null;
 
   return (
     <View className="mb-3">
@@ -72,7 +78,7 @@ export function ImageLibraryPicker({
           ) : images.length === 0 ? (
             <Text className="px-1 py-2 text-xs text-muted">
               Nothing here yet — images you upload are added to the library
-              automatically, and can be reused in any campaign.
+              automatically, and can be reused in any email.
             </Text>
           ) : (
             <ScrollView className="max-h-64">

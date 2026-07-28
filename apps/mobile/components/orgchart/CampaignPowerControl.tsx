@@ -1,14 +1,15 @@
 /**
- * The Campaigns-desk power control (founder requirement, 2026-07-24) — a
- * three-way None / Compose / Approve segmented control shown in a seat's
- * "Powers" section, ONLY to a caller allowed to edit powers (superuser or an
- * `org.editChart` holder). Sibling of `GivingPowerControl.tsx` — same shape,
- * same gate, same self-lockout guard, just a different pair of capabilities
- * (`campaigns.compose`/`campaigns.approve` instead of `giving.view`/
- * `giving.manage`). See that file's doc for the full rationale, which
- * applies here unchanged.
+ * The Campaigns-desk power control (founder requirement, 2026-07-24; the
+ * Design rung added 2026-07-28) — a four-way None / Design / Compose /
+ * Approve segmented control shown in a seat's "Powers" section, ONLY to a
+ * caller allowed to edit powers (superuser or an `org.editChart` holder).
+ * Sibling of `GivingPowerControl.tsx` — same shape, same gate, same
+ * self-lockout guard, just a different set of capabilities
+ * (`campaigns.design`/`campaigns.compose`/`campaigns.approve` instead of
+ * `giving.view`/`giving.manage`). See that file's doc for the full
+ * rationale, which applies here unchanged.
  *
- * Calls `seats.setSeatCampaignPower`, which rewrites ONLY these two
+ * Calls `seats.setSeatCampaignPower`, which rewrites ONLY these three
  * capabilities and never the finance/giving/org powers beside them.
  */
 import { useState } from "react";
@@ -19,19 +20,21 @@ import type { Id } from "@events-os/convex/_generated/dataModel";
 import { colors } from "../../lib/theme";
 import { alertError } from "../../lib/errors";
 
-export type CampaignPower = "none" | "compose" | "approve";
+export type CampaignPower = "none" | "design" | "compose" | "approve";
 
 /** The seat's current campaign power, derived from its capabilities —
- *  `approve` wins over `compose` (an approver can always do everything a
- *  composer can). */
+ *  strongest rung wins (`approve` implies `compose` implies `design`, so a
+ *  seat carrying all three reads as "approve"). */
 export function campaignPowerOf(capabilities: readonly string[]): CampaignPower {
   if (capabilities.includes("campaigns.approve")) return "approve";
   if (capabilities.includes("campaigns.compose")) return "compose";
+  if (capabilities.includes("campaigns.design")) return "design";
   return "none";
 }
 
 const OPTIONS: { value: CampaignPower; label: string }[] = [
   { value: "none", label: "None" },
+  { value: "design", label: "Design" },
   { value: "compose", label: "Compose" },
   { value: "approve", label: "Approve" },
 ];
@@ -62,7 +65,7 @@ export function CampaignPowerControl({
   return (
     <View className="mt-3 gap-2">
       <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-        Campaigns desk access
+        Emails desk access
       </Text>
       <View className="flex-row gap-2">
         {OPTIONS.map((opt) => {
@@ -92,9 +95,10 @@ export function CampaignPowerControl({
         })}
       </View>
       <Text className="text-xs text-muted">
-        Compose: open the desk, draft, and send once approved. Approve: also
-        review and decide on others' campaigns (never their own — a
-        different approver is always required).
+        Design: open the desk and own themes, templates, and the image library
+        — but never send. Compose: also draft and send once approved.
+        Approve: also review and decide on others&apos; emails (never their own
+        — a different approver is always required).
       </Text>
     </View>
   );

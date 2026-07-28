@@ -160,4 +160,29 @@ crons.interval(
   {},
 );
 
+// Hourly: get the Public Worship newsletter artwork into the campaign image
+// library and thence into the built-in template — the half of that feature
+// that otherwise only ever ran if a human typed `npx convex run --prod`.
+//
+// A cron rather than a registered migration ON PURPOSE (the reasoning is
+// written out in full in `migrations/0052_import_newsletter_images.ts`'s
+// header): the source is a per-send CDN that is expected to die, so the run
+// MUST be retryable, and a ledgered migration is by definition a thing that
+// happens exactly once. It also keeps eleven third-party HTTP requests out of
+// the post-deploy `migrations:runPending` step, where a CDN outage would take
+// a production deploy red.
+//
+// Costs one bounded indexed read per hour once complete — it checks the
+// eleven `sourceKey`s are on file and returns without fetching or writing
+// (Convex crons can't unregister themselves; this is the equivalent). While
+// incomplete it re-fetches only the missing assets and logs LOUDLY on
+// failure, which is the signal to upload those files by hand.
+crons.interval(
+  "newsletter artwork import",
+  { hours: 1 },
+  internal.migrations["0052_import_newsletter_images"]
+    .ensureNewsletterImagesImported,
+  {},
+);
+
 export default crons;

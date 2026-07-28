@@ -1,19 +1,29 @@
 /**
- * AUDIENCES — the audience-segment list + inline create/edit form.
+ * SEGMENTS — the segment list + inline create/edit form.
  *
- * An audience is a saved recipe (`api.audiences.*`) that campaigns send to.
+ * A segment is a saved recipe (`api.audiences.*`) that campaigns send to.
+ *
+ * ── Segment, not audience ──────────────────────────────────────────────────
+ * "Segment" is the word on screen everywhere in this file; the Convex table,
+ * its queries and mutations (`audiences`, `listAudiences`,
+ * `previewAudience`, …) deliberately keep their names. This is a LABEL
+ * change, not a rename — nothing about the API moved, and a search for
+ * `audiences` still finds the backend it belongs to. Same rule applies to
+ * "rule group" (the wire calls it a group) and "exclusion" (the wire calls
+ * it an exclude group).
+ *
  * Targeting v2 (specs/audience-targeting-v2.md, founder-approved mockup
- * 2026-07-24) made the editor a GROUP builder (`TargetingBuilder.tsx`):
- * "Send to" groups of plain-sentence conditions (match ANY group; every line
- * in a group must hold; negation is on the line), "Don't send to" skip
- * lists, hand-picked include/exclude (`searchPeopleForAudience`), and a
+ * 2026-07-24) made the editor a RULE GROUP builder (`TargetingBuilder.tsx`):
+ * "Send to" rule groups of plain-sentence conditions (match ANY group; every
+ * line in a group must hold; negation is on the line), EXCLUSIONS,
+ * hand-picked include/exclude (`searchPeopleForAudience`), and a
  * "Check a person" box (`api.audiences.explainAudiencePerson`) that explains
  * any individual condition by condition. The editor shows a LIVE preview
  * (`api.audiences.previewAudience`) as the definition changes — the overall
  * count, per-group counts, and every exclusion reason, including the
  * invariant that suppression/opt-out beat a hand-pick.
  *
- * Every NEW audience gets `targeting`, and migration
+ * Every NEW segment gets `targeting`, and migration
  * (`migrations/0042_wrap_targeting.ts`) wraps stored rows; the pre-v2 chip
  * builder (`FilterChipsBuilder` below) stays mounted ONLY for a
  * not-yet-wrapped `person_filters` row (e.g. one referenced by an in-flight
@@ -21,8 +31,18 @@
  * `guests`/`donors`/`people`-sourced row without `targeting` renders
  * READ-ONLY: badge + summary, editable name/archive only.
  *
+ * ── Who gets the editor ────────────────────────────────────────────────────
+ * `createAudience`/`updateAudience`/`archiveAudience` all sit behind
+ * `requireCampaignCompose` (see `audiences.ts`'s doc), so every write
+ * affordance — the "+ New segment" button, the tap-to-edit on each row, and
+ * the seed auto-open from People's "Email selected" — is HIDDEN unless
+ * `myCampaignsAccess.canCompose`. A design-only holder (the Graphic
+ * Designer) still reads the list and the summaries; she just gets a line
+ * saying where her own tools are instead of a form whose Save throws
+ * `FORBIDDEN`. Same shape as `CampaignsListView`'s designer card.
+ *
  * UI-polish pass (founder feedback: the picker "looks and feels clunky"): a
- * slim recipients count (`LiveRecipientsSummary`) is pinned above the filter
+ * slim people count (`LivePeopleSummary`) is pinned above the filter
  * + hand-pick stack and never blanks back to "Calculating…" once it's loaded
  * once; the numeric filter fields and the hand-pick search box are debounced
  * (`FILTER_DEBOUNCE_MS`) before they drive a query; and every query besides
@@ -33,6 +53,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, StyleSheet, Pressable } from "react-native";
+import { useRouter } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import type { FunctionArgs, FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
@@ -52,7 +73,7 @@ import {
 import { ErrorBoundary } from "../ErrorBoundary";
 import { colors, spacing } from "../../lib/theme";
 import { useActionRunner } from "../../lib/useActionToast";
-import { confirmAction, describeAudience, pluralCount } from "./helpers";
+import { confirmAction, describeAudience, pluralCount, pluralPeople } from "./helpers";
 import {
   centsToDollarsStr,
   dollarsStrToCents,
@@ -67,12 +88,11 @@ import {
 import {
   PersonCheckSection,
   TargetingBuilder,
-  summarizeTargeting,
   targetingToUi,
   toWireTargeting,
-  type Targeting,
   type UiGroup,
 } from "./TargetingBuilder";
+import { summarizeTargeting, type Targeting } from "./targetingText";
 
 /** Debounce for both the numeric filter TextFields and the hand-pick search
  *  box before they drive their query — matches the house pattern in
@@ -85,11 +105,11 @@ type PreviewArgs = FunctionArgs<typeof api.audiences.previewAudience>;
 type PersonFilters = Audience["filters"];
 type SearchResult = FunctionReturnType<typeof api.audiences.searchPeopleForAudience>[number];
 
-/** Every audience/campaign this UI creates is org-wide — see the file doc. */
+/** Every segment/campaign this UI creates is org-wide — see the file doc. */
 const CENTRAL_SCOPE = "central" as const;
 
 function sourceLabel(source: string, hasTargeting: boolean): string {
-  if (hasTargeting) return "Groups";
+  if (hasTargeting) return "Rule groups";
   if (source === "person_filters") return "Filters + hand-picked";
   if (source === "guests") return "Guests";
   if (source === "donors") return "Donors";
@@ -99,33 +119,38 @@ function sourceLabel(source: string, hasTargeting: boolean): string {
 
 export function AudiencesView({
   seedIncludeIds,
+  canCompose,
 }: {
   /**
    * People-CRM UX — the People grid's "Email selected" bridge: a set of
-   * hand-picked person ids to pre-seed into a brand-NEW audience's draft the
-   * moment this view mounts (never applied to an existing/editing audience —
-   * only meaningful for the "+ New audience" flow). Purely a client-side
+   * hand-picked person ids to pre-seed into a brand-NEW segment's draft the
+   * moment this view mounts (never applied to an existing/editing segment —
+   * only meaningful for the "+ New segment" flow). Purely a client-side
    * draft seed: nothing is written until the marketer reviews and hits Save,
    * same as picking each person by hand in `HandPickSection` below.
    */
   seedIncludeIds?: Id<"people">[];
-} = {}) {
+  /** `myCampaignsAccess.canCompose`, resolved by the route before this
+   *  mounts. False hides every write affordance — see the file doc. */
+  canCompose: boolean;
+}) {
   const audiences = useQuery(api.audiences.listAudiences, {});
   const [editingId, setEditingId] = useState<Id<"audiences"> | "new" | null>(null);
   const { run, toast, dismiss } = useActionRunner();
 
   // Auto-open a fresh draft when arriving with a seed — the marketer lands
   // straight in the form with their picks already in the hand-pick list,
-  // rather than having to tap "+ New audience" themselves.
+  // rather than having to tap "+ New segment" themselves. Never for a
+  // reader who can't compose: the form's Save would throw `FORBIDDEN`.
   useEffect(() => {
-    if (seedIncludeIds && seedIncludeIds.length > 0) setEditingId("new");
+    if (canCompose && seedIncludeIds && seedIncludeIds.length > 0) setEditingId("new");
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   if (audiences === undefined) {
     return (
       <View style={{ paddingVertical: spacing.lg }}>
-        <Text className="text-sm text-faint">Loading audiences…</Text>
+        <Text className="text-sm text-faint">Loading segments…</Text>
       </View>
     );
   }
@@ -139,7 +164,9 @@ export function AudiencesView({
     <>
       <ToastView toast={toast} onDismiss={dismiss} />
 
-      {editingId === "new" || editingAudience ? (
+      {!canCompose ? (
+        <ReadOnlyNote />
+      ) : editingId === "new" || editingAudience ? (
         <AudienceForm
           key={editingId === "new" ? "new" : editingAudience!._id}
           initial={editingAudience}
@@ -148,15 +175,19 @@ export function AudiencesView({
           seedIncludeIds={editingId === "new" ? seedIncludeIds : undefined}
         />
       ) : (
-        <Button title="+ New audience" onPress={() => setEditingId("new")} className="self-start" />
+        <Button title="+ New segment" onPress={() => setEditingId("new")} className="self-start" />
       )}
 
       {audiences.length === 0 && editingId !== "new" ? (
         <View className="mt-4">
           <EmptyState
             icon="users"
-            title="No audiences yet"
-            message="Create a segment above — filters, hand-picked people, or both — to send a campaign to."
+            title="No segments yet"
+            message={
+              canCompose
+                ? "Create a segment above — rules, hand-picked people, or both — to send an email to."
+                : "Nobody has saved a segment yet. When someone does, it shows up here with the rules it matches on."
+            }
           />
         </View>
       ) : (
@@ -170,7 +201,7 @@ export function AudiencesView({
               ? summarizeTargeting(a.targeting, handPickCounts)
               : describeAudience(a.source, a.filters, handPickCounts, a.excludeFilters);
             return (
-              <Card key={a._id} onPress={() => setEditingId(a._id)}>
+              <Card key={a._id} onPress={canCompose ? () => setEditingId(a._id) : undefined}>
                 <View style={styles.cardTop}>
                   <Text style={styles.name} numberOfLines={1}>
                     {a.name}
@@ -182,8 +213,8 @@ export function AudiencesView({
                 </Text>
                 {a.source !== "person_filters" && !a.targeting ? (
                   <Text style={styles.legacyNote}>
-                    Previous-format audience — still works for sending, and will move to the new
-                    filter picker automatically.
+                    Previous-format segment — still works for sending, and will move to the new
+                    rule builder automatically.
                   </Text>
                 ) : null}
               </Card>
@@ -192,6 +223,40 @@ export function AudiencesView({
         </View>
       )}
     </>
+  );
+}
+
+/**
+ * What stands in for the "+ New segment" button when the caller holds
+ * `campaigns.design` but not `campaigns.compose` (the Graphic Designer /
+ * Social Media Manager). Mirrors `CampaignsListView#DesignerDeskCard`: a
+ * hidden button with nothing in its place reads as a broken screen, so this
+ * says in one line which half of the desk is theirs and walks them there.
+ */
+function ReadOnlyNote() {
+  const router = useRouter();
+  return (
+    <Card style={styles.readOnlyNote}>
+      <Text className="text-sm text-muted">
+        Segments are set up by whoever holds compose power — you can read who
+        each one reaches. Yours is what the emails are built from: the themes,
+        the saved templates and the image library.
+      </Text>
+      <View style={styles.readOnlyActions}>
+        <Button
+          title="Templates"
+          icon="bookmark"
+          variant="secondary"
+          onPress={() => router.push("/campaigns/templates" as never)}
+        />
+        <Button
+          title="Themes"
+          icon="droplet"
+          variant="secondary"
+          onPress={() => router.push("/campaigns/themes" as never)}
+        />
+      </View>
+    </Card>
   );
 }
 
@@ -216,7 +281,7 @@ function AudienceForm({
   const [filters, setFilters] = useState<PersonFilters>(initial?.filters ?? {});
 
   // ── Targeting v2 (the group/skip-list builder) ────────────────────────────
-  // Every NEW audience is v2, and every stored row that carries `targeting`
+  // Every NEW segment is v2, and every stored row that carries `targeting`
   // (migration 0042 wraps legacy rows) edits through the group builder; the
   // legacy chip builder below stays mounted ONLY for a not-yet-wrapped row.
   // Rows commit into UI state on every valid keystroke (WYSIWYG — see
@@ -309,7 +374,7 @@ function AudienceForm({
     [setFieldStatus],
   );
 
-  // New audiences are ALWAYS person_filters (the source dropdown is gone —
+  // New segments are ALWAYS person_filters (the source dropdown is gone —
   // see the file doc); an existing legacy-sourced row stays read-only.
   const source = initial?.source ?? "person_filters";
   const isPersonFilters = source === "person_filters";
@@ -341,7 +406,7 @@ function AudienceForm({
     if (isTargetingV2) {
       // Incomplete rows (an id control not chosen yet) never reach the wire
       // shape — blocking Save on them (with the hint below the buttons)
-      // beats silently saving a narrower audience than what's on screen.
+      // beats silently saving a narrower segment than what's on screen.
       if (wire.incompleteCount > 0) return;
       setSaving(true);
       try {
@@ -355,7 +420,7 @@ function AudienceForm({
                   includePersonIds: includeIds,
                   excludePersonIds: excludeIds,
                 }),
-              { errorTitle: "Couldn't save audience" },
+              { errorTitle: "Couldn't save segment" },
             )
           : await run(
               () =>
@@ -368,7 +433,7 @@ function AudienceForm({
                   includePersonIds: includeIds.length ? includeIds : undefined,
                   excludePersonIds: excludeIds.length ? excludeIds : undefined,
                 }),
-              { errorTitle: "Couldn't create audience" },
+              { errorTitle: "Couldn't create segment" },
             );
         if (result !== undefined) onDone();
       } finally {
@@ -415,7 +480,7 @@ function AudienceForm({
                 includePersonIds: includeIds,
                 excludePersonIds: excludeIds,
               }),
-            { errorTitle: "Couldn't save audience" },
+            { errorTitle: "Couldn't save segment" },
           )
         : await run(
             () =>
@@ -428,7 +493,7 @@ function AudienceForm({
                 includePersonIds: includeIds.length ? includeIds : undefined,
                 excludePersonIds: excludeIds.length ? excludeIds : undefined,
               }),
-            { errorTitle: "Couldn't create audience" },
+            { errorTitle: "Couldn't create segment" },
           );
       if (result !== undefined) onDone();
     } finally {
@@ -439,13 +504,13 @@ function AudienceForm({
   function handleArchive() {
     if (!initial) return;
     confirmAction({
-      title: "Archive audience?",
-      message: `"${initial.name}" will be hidden from campaigns. Campaigns already using it are unaffected.`,
+      title: "Archive segment?",
+      message: `"${initial.name}" will be hidden when picking who an email goes to. Emails already using it are unaffected.`,
       confirmLabel: "Archive",
       destructive: true,
       onConfirm: () => {
         void run(() => archive({ audienceId: initial._id }), {
-          errorTitle: "Couldn't archive audience",
+          errorTitle: "Couldn't archive segment",
         }).then((result) => {
           if (result !== undefined) onDone();
         });
@@ -462,8 +527,8 @@ function AudienceForm({
           <Badge label={sourceLabel(source, false)} tone="accent" />
           {!isPersonFilters ? (
             <Text className="mt-1 text-xs text-muted">
-              {describeAudience(source, filters)} — this is a previous-format audience. It still
-              works for sending, and will move to the new group builder automatically; until then,
+              {describeAudience(source, filters)} — this is a previous-format segment. It still
+              works for sending, and will move to the new rule builder automatically; until then,
               only its name can be changed here.
             </Text>
           ) : null}
@@ -471,11 +536,12 @@ function AudienceForm({
       ) : null}
 
       <ErrorBoundary inline>
-        <LiveRecipientsSummary
+        <LivePeopleSummary
           args={previewArgs}
           pendingEdit={
             dirtyKeys.size > 0 || (isTargetingV2 && wire.targeting !== debouncedTargeting)
           }
+          unfinishedRows={isTargetingV2 ? wire.incompleteCount : 0}
         />
       </ErrorBoundary>
 
@@ -534,7 +600,7 @@ function AudienceForm({
               controller={numberFieldController}
               keyPrefix={EXCLUDE_FIELD_PREFIX}
               label="Exclude people who…"
-              hint="Anyone matching these is removed from the audience, even if hand-picked."
+              hint="Anyone matching these is removed from the segment, even if hand-picked."
               tone="exclude"
               // Verification round finding C: "only verified email" reads
               // backwards as an exclude criterion ("exclude anyone whose
@@ -568,13 +634,16 @@ function AudienceForm({
       ) : null}
 
       <ErrorBoundary inline>
-        <AudiencePreviewCard args={previewArgs} />
+        <AudiencePreviewCard
+          args={previewArgs}
+          unfinishedRows={isTargetingV2 ? wire.incompleteCount : 0}
+        />
       </ErrorBoundary>
 
       <View className="mt-3 flex-row items-center justify-between gap-2">
         <View className="flex-row gap-2">
           <Button
-            title={initial ? "Save" : "Create audience"}
+            title={initial ? "Save" : "Create segment"}
             onPress={handleSave}
             loading={saving}
             disabled={
@@ -862,7 +931,7 @@ function FilterChipsBuilder({
         <Text className="mt-2 text-xs text-faint">
           {tone === "exclude"
             ? "Tap a category above to remove anyone matching it — leave everything off to exclude nobody."
-            : "Tap a category above to narrow this audience — leave everything off to target everyone."}
+            : "Tap a category above to narrow this segment — leave everything off to target everyone."}
         </Text>
       ) : null}
 
@@ -1228,15 +1297,21 @@ function HandPickSection({
   );
 }
 
-// ── Live recipients summary (pinned) ────────────────────────────────────────
+// ── Live people summary (pinned) ────────────────────────────────────────────
 
 /**
- * A slim, always-visible recipient count pinned above the filter + hand-pick
- * stack — the detailed `AudiencePreviewCard` sits below all of it, so it's
- * easy to lose track of the count while adjusting criteria above it. Once a
- * count has loaded once, this NEVER blanks back to "Calculating…" on a
- * refetch — it keeps showing the last known count with a small "Updating…"
- * indicator instead, so the number on screen is always meaningful.
+ * A slim, always-visible count of the PEOPLE this segment reaches, pinned
+ * above the filter + hand-pick stack — the detailed `AudiencePreviewCard`
+ * sits below all of it, so it's easy to lose track of the count while
+ * adjusting criteria above it. Once a count has loaded once, this NEVER
+ * blanks back to "Calculating…" on a refetch — it keeps showing the last
+ * known count with a small "Updating…" indicator instead, so the number on
+ * screen is always meaningful.
+ *
+ * "People", not "recipients": a recipient is a delivery row on one specific
+ * send. This pinned figure and the detailed card below it are the same
+ * number and now say so in the same word — they used to read "12 recipients"
+ * here and "12 people" twenty lines down, in the same form.
  *
  * `pendingEdit` (true while any numeric filter field has an uncommitted
  * keystroke sitting in it, mid-debounce) ALSO drives the "Updating…" cue —
@@ -1244,12 +1319,15 @@ function HandPickSection({
  * it's about to change once the debounce fires (or WOULD change, if the
  * field weren't flushed straight into Save first — see `handleSave`).
  */
-function LiveRecipientsSummary({
+function LivePeopleSummary({
   args,
   pendingEdit,
+  unfinishedRows,
 }: {
   args: PreviewArgs;
   pendingEdit: boolean;
+  /** See `unfinishedCountHold` — while > 0 the number is withheld, not shown. */
+  unfinishedRows: number;
 }) {
   const preview = useQuery(api.audiences.previewAudience, args) as PreviewResult | undefined;
   const [lastKnown, setLastKnown] = useState<PreviewResult | null>(null);
@@ -1259,48 +1337,92 @@ function LiveRecipientsSummary({
 
   const shown = preview ?? lastKnown;
   const isUpdating = pendingEdit || (preview === undefined && lastKnown !== null);
+  const hold = unfinishedCountHold(unfinishedRows);
 
   return (
     <View className="mb-3 flex-row items-center gap-2 rounded-md border border-border bg-sunken px-3 py-2">
       <Icon name="users" size={15} color={colors.muted} />
-      {shown ? (
-        <Text className="text-sm font-semibold text-ink">{pluralCount(shown.count, "recipient")}</Text>
+      {hold ? (
+        <Text className="text-sm text-warn">{hold}</Text>
+      ) : shown ? (
+        <Text className="text-sm font-semibold text-ink">{pluralPeople(shown.count)}</Text>
       ) : (
         <Text className="text-sm text-faint">Calculating…</Text>
       )}
-      {isUpdating ? <Text className="text-xs text-muted">Updating…</Text> : null}
+      {isUpdating && !hold ? <Text className="text-xs text-muted">Updating…</Text> : null}
     </View>
   );
 }
 
+/**
+ * What the segment's total says while a rule row is half-written, or null when
+ * there's a real number to show.
+ *
+ * An unfinished row (`Role is [Pick a role…]`) is dropped from the wire shape
+ * — see `TargetingBuilder.tsx`'s doc — so the preview answers for a WIDER
+ * definition than the one on screen, and for a brand-new segment whose only
+ * row is unfinished that's "the whole org". A number that big, sitting under
+ * the word "people", is read as a promise about who is about to be emailed;
+ * it has to be withheld rather than qualified.
+ */
+function unfinishedCountHold(unfinishedRows: number): string | null {
+  if (unfinishedRows <= 0) return null;
+  return unfinishedRows === 1
+    ? "Not counted yet — one line still needs a choice"
+    : `Not counted yet — ${unfinishedRows} lines still need a choice`;
+}
+
 // ── Preview card ──────────────────────────────────────────────────────────
 
-function AudiencePreviewCard({ args }: { args: PreviewArgs }) {
+function AudiencePreviewCard({
+  args,
+  unfinishedRows,
+}: {
+  args: PreviewArgs;
+  unfinishedRows: number;
+}) {
   const preview = useQuery(api.audiences.previewAudience, args) as PreviewResult | undefined;
+  // Same rule as the pinned total above: while a row is unfinished the preview
+  // describes a wider definition than the screen does, so the count (and the
+  // sample addresses that make it concrete) are withheld, not qualified.
+  const hold = unfinishedCountHold(unfinishedRows);
+  if (hold) {
+    return (
+      <Field label="People in this segment">
+        <Text className="text-sm text-warn">{hold} (a role, chapter, or event).</Text>
+      </Field>
+    );
+  }
   if (preview === undefined) {
     return (
-      <Field label="Recipients">
+      <Field label="People in this segment">
         <Text className="text-sm text-faint">Calculating…</Text>
       </Field>
     );
   }
   const exclusionBits = [
-    preview.excludedSuppressed > 0 ? `${pluralCount(preview.excludedSuppressed, "suppressed contact")}` : null,
-    preview.excludedUnverified > 0 ? `${pluralCount(preview.excludedUnverified, "unverified contact")}` : null,
-    preview.excludedOptOut > 0 ? `${pluralCount(preview.excludedOptOut, "person")} opted out` : null,
+    // "Subscriber" is the EMAIL-ADDRESS sense of the overloaded word
+    // "contact" — a suppressed/unverified address. "Contact" is kept for the
+    // PERSONA only (`isContactOnly`, the hand-pick list's "(contact)" tag);
+    // this line used to use it for both in a single sentence.
+    preview.excludedSuppressed > 0
+      ? `${pluralCount(preview.excludedSuppressed, "suppressed subscriber")}`
+      : null,
+    preview.excludedUnverified > 0
+      ? `${pluralCount(preview.excludedUnverified, "unverified subscriber")}`
+      : null,
+    preview.excludedOptOut > 0 ? `${pluralPeople(preview.excludedOptOut)} opted out` : null,
     // Property-level exclusions (`excludeFilters`) — a PRIMARY count, like
     // the others above (never diagnostics-gated — see
     // `lib/audienceResolve.ts#AudienceResolution`'s doc).
     preview.excludedByFilters > 0
-      ? `${pluralCount(preview.excludedByFilters, "person")} matched an exclude filter`
+      ? `${pluralPeople(preview.excludedByFilters)} matched an exclude filter`
       : null,
   ].filter((b): b is string => b !== null);
 
   return (
-    <Field label="Recipients">
-      <Text className="text-base font-semibold text-ink">
-        {pluralCount(preview.count, "person")}
-      </Text>
+    <Field label="People in this segment">
+      <Text className="text-base font-semibold text-ink">{pluralPeople(preview.count)}</Text>
       {exclusionBits.length > 0 ? (
         <Text className="mt-0.5 text-xs text-muted">{exclusionBits.join(" · ")} excluded</Text>
       ) : null}
@@ -1322,7 +1444,7 @@ function AudiencePreviewCard({ args }: { args: PreviewArgs }) {
       ) : null}
       {preview.handPickedUnverified > 0 ? (
         <Text className="mt-0.5 text-xs text-muted">
-          {pluralCount(preview.handPickedUnverified, "hand-picked person")}{" "}
+          {pluralPeople(preview.handPickedUnverified)} hand-picked{" "}
           {preview.handPickedUnverified === 1 ? "has" : "have"} no verified email.
         </Text>
       ) : null}
@@ -1335,13 +1457,13 @@ function AudiencePreviewCard({ args }: { args: PreviewArgs }) {
       ) : null}
       {preview.handPickedExcludedByFilters > 0 ? (
         <Text className="mt-0.5 text-xs text-muted">
-          {pluralCount(preview.handPickedExcludedByFilters, "hand-picked person")}{" "}
+          {pluralPeople(preview.handPickedExcludedByFilters)} hand-picked{" "}
           {preview.handPickedExcludedByFilters === 1 ? "was" : "were"} removed by an exclude filter.
         </Text>
       ) : null}
       {preview.truncated ? (
         <Text className="mt-0.5 text-xs text-warn">
-          Showing the first 5,000 — this audience matches more than the cap.
+          Showing the first 5,000 — this segment matches more than the cap.
         </Text>
       ) : null}
       {preview.sample.length > 0 ? (
@@ -1360,6 +1482,8 @@ function AudiencePreviewCard({ args }: { args: PreviewArgs }) {
 
 const styles = StyleSheet.create({
   list: { marginTop: spacing.md, gap: spacing.md },
+  readOnlyNote: { gap: spacing.sm },
+  readOnlyActions: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
   form: { gap: spacing.xs, marginBottom: spacing.md },
   cardTop: {
     flexDirection: "row",

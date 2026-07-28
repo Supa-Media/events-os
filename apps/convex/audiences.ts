@@ -7,7 +7,14 @@
  * `campaigns.ts#materializeRecipients`).
  *
  * Access: the whole surface is CENTRAL-only (`lib/campaignsAccess.ts`) — see
- * that file's doc for why.
+ * that file's doc for why. READS (list/get/preview) are desk visibility
+ * (`requireCampaignsAccess`); the three WRITES (create/update/archive) are
+ * `requireCampaignCompose`, for the same reason every campaign write moved
+ * there when the desk widened to the `campaigns.design` rung: an audience is
+ * a SEND TARGET, and `campaigns.ts#computeCampaignSnapshotHash` covers an
+ * audience's targeting, so editing one silently invalidates an
+ * already-approved campaign (which then refuses to send). A design-only
+ * holder who cannot create a campaign must not be able to re-aim one.
  */
 import { internalQuery, mutation, query } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
@@ -15,7 +22,10 @@ import { Doc, Id } from "./_generated/dataModel";
 import { requireUserId } from "./lib/context";
 import {
   hasCampaignApprovalPower,
+  hasCampaignCompose,
+  hasCampaignDesign,
   hasCampaignsAccess,
+  requireCampaignCompose,
   requireCampaignsAccess,
 } from "./lib/campaignsAccess";
 import {
@@ -95,14 +105,39 @@ function normalizeExcludeFilters(excludeFilters: AudienceFilters | undefined): A
 /** Soft visibility check for the campaigns nav entry — never throws, so a
  *  non-privileged user's screen just doesn't render the affordance instead of
  *  crashing. Every actual read/write below uses the throwing
- *  `requireCampaignsAccess` instead. `canApprove` (two-party approval,
- *  2026-07-24) lets the UI decide whether to offer the "pick a reviewer"
- *  dropdown / the reviewer-only decision surface without a separate query. */
+ *  `requireCampaignsAccess` instead.
+ *
+ *  ONE query, one field per rung of the ladder (`lib/campaignsAccess.ts`'s
+ *  module doc), so a screen never has to infer a power it doesn't hold:
+ *
+ *   - `canView`   — the desk opens at all (design-or-above, or the legacy
+ *                   central-ED/FM title). UNCHANGED in meaning; several
+ *                   screens gate their whole body on it.
+ *   - `canDesign` — themes, saved templates, the image library are editable.
+ *   - `canCompose`— campaigns can be created and edited. FALSE for a
+ *                   design-only holder (the Graphic Designer), who opens the
+ *                   desk for the design system, not for the send.
+ *   - `canApprove`— (two-party approval, 2026-07-24) the UI can offer the
+ *                   "pick a reviewer" dropdown / the reviewer-only decision
+ *                   surface.
+ *
+ *  `canDesign`/`canCompose` were added 2026-07-28 with the `campaigns.design`
+ *  rung: without them a design-only holder got a fully interactive campaign
+ *  desk whose every write threw `FORBIDDEN` — a create form that refuses to
+ *  create, a composer whose every keystroke fails to autosave. The client
+ *  hides the compose-only affordances on `canCompose` instead. */
 export const myCampaignsAccess = query({
   args: {},
-  returns: v.object({ canView: v.boolean(), canApprove: v.boolean() }),
+  returns: v.object({
+    canView: v.boolean(),
+    canDesign: v.boolean(),
+    canCompose: v.boolean(),
+    canApprove: v.boolean(),
+  }),
   handler: async (ctx) => ({
     canView: await hasCampaignsAccess(ctx),
+    canDesign: await hasCampaignDesign(ctx),
+    canCompose: await hasCampaignCompose(ctx),
     canApprove: await hasCampaignApprovalPower(ctx),
   }),
 });
@@ -157,7 +192,7 @@ export const createAudience = mutation({
     ctx,
     { scope, name, source, filters, excludeFilters, targeting, includePersonIds, excludePersonIds },
   ) => {
-    await requireCampaignsAccess(ctx);
+    await requireCampaignCompose(ctx);
     const userId = (await requireUserId(ctx)) as Id<"users">;
     const trimmed = name.trim();
     if (!trimmed) {
@@ -205,7 +240,7 @@ export const updateAudience = mutation({
     ctx,
     { audienceId, name, filters, excludeFilters, targeting, includePersonIds, excludePersonIds },
   ) => {
-    await requireCampaignsAccess(ctx);
+    await requireCampaignCompose(ctx);
     const existing = await ctx.db.get(audienceId);
     if (!existing) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Audience not found." });
@@ -244,7 +279,7 @@ export const updateAudience = mutation({
 export const archiveAudience = mutation({
   args: { audienceId: v.id("audiences") },
   handler: async (ctx, { audienceId }) => {
-    await requireCampaignsAccess(ctx);
+    await requireCampaignCompose(ctx);
     const existing = await ctx.db.get(audienceId);
     if (!existing) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Audience not found." });

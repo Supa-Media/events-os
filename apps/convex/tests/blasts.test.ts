@@ -1,14 +1,32 @@
-import { describe, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { ConvexError } from "convex/values";
 import { api, internal } from "../_generated/api";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import type { Id } from "../_generated/dataModel";
 
 /**
- * Blasts — host announcements. Covers the two things that decide who gets a
- * message: audience → recipient-set resolution (with email de-dup), and the
- * guardrails on sending (SMS not wired, empty body rejected).
+ * Blasts — host announcements. Covers the three things that decide who gets a
+ * message and what it contains: audience → recipient-set resolution (with
+ * email de-dup), the guardrails on sending (SMS not wired, empty body
+ * rejected, no postal address rejected), and the bulk-mail furniture an email
+ * blast legally has to carry (per-recipient unsubscribe link + headers,
+ * postal address) — which transactional mail must NOT get.
  */
+
+const MAILING_ADDRESS = "Public Worship, 123 Main St, Brooklyn, NY 11201";
+
+/** Seed the org's CAN-SPAM postal address. Written straight to the singleton
+ *  rather than through `setEmailCampaignSettings`, which is superuser-gated —
+ *  a blast is fired by an ordinary event admin, who can't set it themselves. */
+async function configureMailingAddress(s: ChapterSetup): Promise<void> {
+  await run(s.t, (ctx) =>
+    ctx.db.insert("integrationSettings", {
+      orgMailingAddress: MAILING_ADDRESS,
+      updatedBy: s.userId,
+      updatedAt: Date.now(),
+    }),
+  );
+}
 
 async function seedEventWithGuests(s: ChapterSetup): Promise<Id<"events">> {
   return await run(s.t, async (ctx) => {
@@ -268,6 +286,7 @@ describe("sendBlast guardrails", () => {
     try {
       const t = newT();
       const s = await setupChapter(t);
+      await configureMailingAddress(s);
       const eventId = await seedEventWithGuests(s);
       await s.as.mutation(api.blasts.sendBlast, {
         eventId,
@@ -303,6 +322,7 @@ describe("sendBlast guardrails", () => {
       process.env.AUTH_EMAIL_FROM = "env-from@used.com";
       const t = newT();
       const s = await setupChapter(t);
+      await configureMailingAddress(s);
       const eventId = await seedEventWithGuests(s);
 
       globalThis.fetch = (async () => {
@@ -329,5 +349,412 @@ describe("sendBlast guardrails", () => {
       if (realFrom === undefined) delete process.env.AUTH_EMAIL_FROM;
       else process.env.AUTH_EMAIL_FROM = realFrom;
     }
+  });
+
+  test("an email blast is refused when no postal address is on file (CAN-SPAM)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEventWithGuests(s);
+    // No `configureMailingAddress` — the production default, since nothing in
+    // the app could set the field before this fix.
+    const error = await s.as
+      .mutation(api.blasts.sendBlast, {
+        eventId,
+        channel: "email",
+        body: "hello",
+        audience: "everyone",
+      })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(ConvexError);
+    expect((error as ConvexError<{ code: string }>).data.code).toBe(
+      "NO_MAILING_ADDRESS",
+    );
+    // Nothing was recorded — the refusal is loud and total, not a blast row
+    // that quietly lands "failed".
+    expect(await s.as.query(api.blasts.listBlasts, { eventId })).toHaveLength(0);
+  });
+
+  /**
+   * `sendBlast` is bulk mail on no campaign power at all — a plain chapter
+   * admin whose `myCampaignsAccess` is all-false can fire one at a whole event
+   * audience (proven by running it, adversarial review 2026-07-28). That stays
+   * TRUE and deliberate: organisers own their own announcements. What changed
+   * is that the check is now a NAMED resolver
+   * (`lib/campaignsAccess.ts#requireBlastSend`) instead of an inline
+   * `requireEvent`, so restricting it later is one file's body.
+   *
+   * This test pins BOTH halves: the event admin still sends, and someone
+   * outside the event's chapter still cannot — i.e. the gate is genuinely
+   * applied at the call site, not merely defined.
+   */
+  test("sendBlast goes through the named blast gate: the event's admin sends, an outsider can't", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      await configureMailingAddress(s);
+      const eventId = await seedEventWithGuests(s);
+
+      // No campaign power whatsoever — a plain chapter admin.
+      expect(await s.as.query(api.audiences.myCampaignsAccess, {})).toEqual({
+        canView: false,
+        canDesign: false,
+        canCompose: false,
+        canApprove: false,
+      });
+      await s.as.mutation(api.blasts.sendBlast, {
+        eventId,
+        channel: "email",
+        body: "See you soon",
+        audience: "going",
+      });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      expect(await s.as.query(api.blasts.listBlasts, { eventId })).toHaveLength(1);
+
+      // An admin of a DIFFERENT chapter is refused, and records nothing.
+      const outsider = await setupChapter(t, {
+        email: "outsider@publicworship.life",
+        chapterName: "Boston",
+      });
+      await expect(
+        outsider.as.mutation(api.blasts.sendBlast, {
+          eventId,
+          channel: "email",
+          body: "not mine to send",
+          audience: "going",
+        }),
+      ).rejects.toThrow(ConvexError);
+      expect(await s.as.query(api.blasts.listBlasts, { eventId })).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("an SMS blast is NOT gated on the postal address — its opt-out is the STOP line", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      const eventId = await seedEventWithGuests(s);
+      await s.as.mutation(api.blasts.sendBlast, {
+        eventId,
+        channel: "sms",
+        body: "hi",
+        audience: "everyone",
+      });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      expect(await s.as.query(api.blasts.listBlasts, { eventId })).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ── Bulk-mail furniture (unsubscribe link, headers, postal address) ──────────
+
+type CapturedSend = {
+  to: string;
+  subject: string;
+  html: string;
+  headers?: Record<string, string>;
+};
+
+/** Fire an email blast with `fetch` stubbed, returning every message Resend
+ *  would have been asked to send. `deliverEmailBlast` posts the whole slice as
+ *  ONE `/emails/batch` request (`lib/resend.ts#sendResendEmailBatch`), so the
+ *  captured body is an ARRAY of per-recipient items — the same shape
+ *  `campaigns.test.ts` reads. */
+async function sendEmailBlastCapturing(
+  s: ChapterSetup,
+  eventId: Id<"events">,
+  audience: "everyone" | "going" | "maybe" | "ticket_holders",
+): Promise<CapturedSend[]> {
+  const sends: CapturedSend[] = [];
+  globalThis.fetch = (async (_url: string, init?: { body?: string }) => {
+    const items: CapturedSend[] = init?.body ? JSON.parse(init.body) : [];
+    for (const item of items) {
+      sends.push({
+        to: item.to,
+        subject: item.subject,
+        html: item.html,
+        headers: item.headers,
+      });
+    }
+    return { ok: true, status: 200, text: async () => "{}" };
+  }) as unknown as typeof fetch;
+
+  await s.as.mutation(api.blasts.sendBlast, {
+    eventId,
+    channel: "email",
+    subject: "Doors at 6",
+    body: "See you soon",
+    audience,
+  });
+  await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+  return sends;
+}
+
+describe("an email blast carries the bulk-mail furniture", () => {
+  const realFetch = globalThis.fetch;
+  const realKey = process.env.RESEND_API_KEY;
+  afterEach(() => {
+    globalThis.fetch = realFetch;
+    if (realKey === undefined) delete process.env.RESEND_API_KEY;
+    else process.env.RESEND_API_KEY = realKey;
+    vi.useRealTimers();
+  });
+
+  test("every recipient gets their OWN unsubscribe token, link, and one-click headers", async () => {
+    vi.useFakeTimers();
+    process.env.RESEND_API_KEY = "re_test_key";
+    const t = newT();
+    const s = await setupChapter(t);
+    await configureMailingAddress(s);
+    const eventId = await seedEventWithGuests(s);
+
+    const sends = await sendEmailBlastCapturing(s, eventId, "going"); // ann@, ben@
+    expect(sends.map((x) => x.to).sort()).toEqual([
+      "ann@example.com",
+      "ben@example.com",
+    ]);
+
+    const tokens = new Set<string>();
+    for (const send of sends) {
+      const header = send.headers?.["List-Unsubscribe"];
+      expect(header).toMatch(/^<.*\/unsubscribe\/.+>$/);
+      expect(send.headers?.["List-Unsubscribe-Post"]).toBe(
+        "List-Unsubscribe=One-Click",
+      );
+      // The footer carries BOTH legally required things.
+      expect(send.html).toContain(MAILING_ADDRESS);
+      expect(send.html).toContain("Unsubscribe");
+      const token = /\/unsubscribe\/([^>"]+)/.exec(header ?? "")?.[1];
+      expect(token).toBeTruthy();
+      // The visible link and the header point at the SAME token.
+      expect(send.html).toContain(`/unsubscribe/${token}`);
+      tokens.add(token!);
+    }
+    // Two recipients, two DIFFERENT tokens — not one shared blast-wide link.
+    expect(tokens.size).toBe(2);
+
+    const rows = await run(s.t, (ctx) => ctx.db.query("blastRecipients").collect());
+    expect(rows.map((r) => r.email).sort()).toEqual([
+      "ann@example.com",
+      "ben@example.com",
+    ]);
+    expect(rows.every((r) => r.status === "sent")).toBe(true);
+  });
+
+  test("a recipient's token unsubscribes THEM and nobody else", async () => {
+    vi.useFakeTimers();
+    process.env.RESEND_API_KEY = "re_test_key";
+    const t = newT();
+    const s = await setupChapter(t);
+    await configureMailingAddress(s);
+    const eventId = await seedEventWithGuests(s);
+    await sendEmailBlastCapturing(s, eventId, "going"); // ann@, ben@
+    vi.useRealTimers();
+
+    const annRow = await run(s.t, async (ctx) =>
+      (await ctx.db.query("blastRecipients").collect()).find(
+        (r) => r.email === "ann@example.com",
+      ),
+    );
+    expect(annRow).toBeTruthy();
+
+    // The SAME `/unsubscribe/<token>` route campaign recipients use — no
+    // second code path, no separate page.
+    const confirm = await t.fetch(`/unsubscribe/${annRow!.unsubscribeToken}`, {
+      method: "GET",
+    });
+    expect(confirm.status).toBe(200);
+    expect(await confirm.text()).toContain("ann@example.com");
+
+    const res = await t.fetch(`/unsubscribe/${annRow!.unsubscribeToken}`, {
+      method: "POST",
+    });
+    expect(res.status).toBe(200);
+
+    const suppressed = await run(s.t, (ctx) =>
+      ctx.db.query("emailSuppressions").collect(),
+    );
+    expect(suppressed.map((r) => r.email)).toEqual(["ann@example.com"]);
+    expect(suppressed[0].reason).toBe("unsubscribe");
+
+    // Ben's row is untouched, and a NEW blast still reaches him — one
+    // recipient's token can never silence another's.
+    const ben = await run(s.t, async (ctx) =>
+      (await ctx.db.query("blastRecipients").collect()).find(
+        (r) => r.email === "ben@example.com",
+      ),
+    );
+    expect(ben?.unsubscribedAt).toBeUndefined();
+
+    const blastId = await insertBlast(s, eventId, "going");
+    const payload = await s.t.query(internal.blasts.getBlastPayload, { blastId });
+    expect(payload?.emails).toEqual(["ben@example.com"]);
+  });
+
+  /**
+   * Delivery used to POST one Resend request PER ADDRESS, sequentially and
+   * unpaced — up to 2,000 for a big event, an order of magnitude over Resend's
+   * default ~2 requests/second. `lib/resend.ts#sendResendEmailBatch` exists for
+   * exactly this and `campaigns.ts#deliverCampaignBatch` already uses it; this
+   * pins that a blast now does too, WITHOUT flattening the per-recipient
+   * personalization that made the per-address loop tempting in the first place.
+   *
+   * Real timers, and the delivery action is called directly rather than
+   * through the scheduler: the ~600ms pacing between requests is a real sleep.
+   */
+  test("a blast bigger than one request is sent as paced batches of 100, still personalized per address", async () => {
+    process.env.RESEND_API_KEY = "re_test_key";
+    const t = newT();
+    const s = await setupChapter(t);
+    await configureMailingAddress(s);
+    const RECIPIENTS = 150;
+    const eventId = await run(s.t, async (ctx) => {
+      const now = Date.now();
+      const eventTypeId = await ctx.db.insert("eventTypes", {
+        chapterId: s.chapterId,
+        name: "Big night",
+        slug: "big-night",
+        version: 1,
+        createdBy: s.userId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const eventId = await ctx.db.insert("events", {
+        chapterId: s.chapterId,
+        eventTypeId,
+        templateVersion: 1,
+        name: "Big night",
+        eventDate: now,
+        status: "planning",
+        createdBy: s.userId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      for (let i = 0; i < RECIPIENTS; i++) {
+        await ctx.db.insert("rsvps", {
+          eventId,
+          chapterId: s.chapterId,
+          name: `Guest ${i}`,
+          email: `guest${i}@example.com`,
+          status: "going",
+          token: `tok-${i}`,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+      return eventId;
+    });
+
+    const requests: { url: string; items: CapturedSend[] }[] = [];
+    globalThis.fetch = (async (url: string, init?: { body?: string }) => {
+      requests.push({ url, items: init?.body ? JSON.parse(init.body) : [] });
+      return { ok: true, status: 200, text: async () => "{}" };
+    }) as unknown as typeof fetch;
+
+    const blastId = await insertBlast(s, eventId, "going");
+    await t.action(internal.blasts.deliverBlast, { blastId });
+
+    // 150 addresses, 100 per request → 2 requests, not 150.
+    expect(requests).toHaveLength(2);
+    for (const request of requests) {
+      expect(request.url).toContain("/emails/batch");
+    }
+    expect(requests[0].items).toHaveLength(100);
+    expect(requests[1].items).toHaveLength(50);
+
+    // Per-item personalization survived batching: every address got its own
+    // token in BOTH the footer link and the one-click header.
+    const items = requests.flatMap((r) => r.items);
+    expect(new Set(items.map((i) => i.to)).size).toBe(RECIPIENTS);
+    const tokens = new Set<string>();
+    for (const item of items) {
+      const header = item.headers?.["List-Unsubscribe"];
+      expect(item.headers?.["List-Unsubscribe-Post"]).toBe("List-Unsubscribe=One-Click");
+      const token = /\/unsubscribe\/([^>"]+)/.exec(header ?? "")?.[1];
+      expect(token).toBeTruthy();
+      expect(item.html).toContain(`/unsubscribe/${token}`);
+      expect(item.html).toContain(MAILING_ADDRESS);
+      tokens.add(token!);
+    }
+    expect(tokens.size).toBe(RECIPIENTS);
+
+    const rows = await run(s.t, (ctx) => ctx.db.query("blastRecipients").collect());
+    expect(rows).toHaveLength(RECIPIENTS);
+    expect(rows.every((r) => r.status === "sent")).toBe(true);
+    const blast = await run(s.t, (ctx) => ctx.db.get(blastId));
+    expect(blast?.status).toBe("sent");
+    expect(blast?.sentCount).toBe(RECIPIENTS);
+  }, 20000);
+
+  /** The OTHER failure mode, unchanged by batching: a non-2xx RESPONSE is a
+   *  recorded rejection of the addresses it covers — never a throw, and never
+   *  a silent "sent". (Its sibling, a `fetch` REJECTION propagating as an
+   *  outage, is covered by the FIX 1 regression above.) */
+  test("a non-2xx from Resend rejects those addresses and records the reason", async () => {
+    vi.useFakeTimers();
+    process.env.RESEND_API_KEY = "re_test_key";
+    const t = newT();
+    const s = await setupChapter(t);
+    await configureMailingAddress(s);
+    const eventId = await seedEventWithGuests(s);
+
+    globalThis.fetch = (async () => ({
+      ok: false,
+      status: 422,
+      text: async () => '{"message":"nope"}',
+    })) as unknown as typeof fetch;
+
+    await s.as.mutation(api.blasts.sendBlast, {
+      eventId,
+      channel: "email",
+      body: "hello",
+      audience: "going", // ann@, ben@
+    });
+    await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+    const history = await s.as.query(api.blasts.listBlasts, { eventId });
+    expect(history[0].status).toBe("failed");
+    expect(history[0].sentCount).toBe(0);
+    expect(history[0].error).toMatch(/Resend responded 422/);
+    const rows = await run(s.t, (ctx) => ctx.db.query("blastRecipients").collect());
+    expect(rows).toHaveLength(2);
+    expect(rows.every((r) => r.status === "failed")).toBe(true);
+    expect(rows.every((r) => /422/.test(r.error ?? ""))).toBe(true);
+  });
+
+  test("a TRANSACTIONAL email gets no unsubscribe link and no List-Unsubscribe header", async () => {
+    // `emailShell` is shared by both kinds of mail — the bulk footer is
+    // opt-in per call site, and this is the assertion that keeps it that way.
+    // An RSVP verification code must never offer to suppress the very address
+    // the recipient's own receipts arrive at.
+    process.env.RESEND_API_KEY = "re_test_key";
+    const sends: CapturedSend[] = [];
+    globalThis.fetch = (async (_url: string, init?: { body?: string }) => {
+      const body = init?.body ? JSON.parse(init.body) : {};
+      sends.push({
+        to: body.to,
+        subject: body.subject,
+        html: body.html,
+        headers: body.headers,
+      });
+      return { ok: true, status: 200, text: async () => "{}" };
+    }) as unknown as typeof fetch;
+
+    const t = newT();
+    const s = await setupChapter(t);
+    await configureMailingAddress(s);
+    await t.action(internal.ticketingEmails.sendVerificationEmail, {
+      email: "guest@example.com",
+      code: "123456",
+    });
+
+    expect(sends).toHaveLength(1);
+    expect(sends[0].html.toLowerCase()).not.toContain("unsubscribe");
+    expect(sends[0].html).not.toContain(MAILING_ADDRESS);
+    expect(sends[0].headers).toBeUndefined();
   });
 });

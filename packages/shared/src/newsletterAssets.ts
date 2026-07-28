@@ -57,8 +57,9 @@ export type NewsletterAsset = {
   height: number;
   /**
    * The original CDN URL, kept ONLY for the one-time import. Expect this to
-   * rot — `0050`'s whole purpose is to stop depending on it. A failure to
-   * fetch here is expected eventually and is reported, never swallowed.
+   * rot — `migrations/0052`'s whole purpose is to stop depending on it. A
+   * failure to fetch here is expected eventually and is reported, never
+   * swallowed.
    */
   sourceUrl: string;
 };
@@ -166,3 +167,43 @@ export const NEWSLETTER_ASSETS: readonly NewsletterAsset[] = [
 export function newsletterAsset(sourceKey: string): NewsletterAsset | null {
   return NEWSLETTER_ASSETS.find((a) => a.sourceKey === sourceKey) ?? null;
 }
+
+/**
+ * WHERE each asset goes — the join that was missing between the import and the
+ * built-in template.
+ *
+ * The import (`migrations/0052`) writes eleven `emailImages` rows keyed by
+ * `sourceKey`, and the built-in template
+ * (`emailTemplates.ts#PUBLIC_WORSHIP_NEWSLETTER_TEMPLATE`) ships eleven EMPTY
+ * artwork slots. Those two landed back to back and nothing read `sourceKey` to
+ * connect them, so a completed import still left the template blank. This map
+ * is that connection; `emailTemplates.ts#fillTemplateArtwork` walks it.
+ *
+ * `blockId` is safe to hardcode because the template's ids are DETERMINISTIC:
+ * `newBlockId("nl-hero")` returns exactly `"blk_nl-hero"` (that determinism is
+ * load-bearing for the seeder's no-churn diff, and is asserted by its own
+ * test). The shared test below asserts every id here really exists in the
+ * template, so a block rename breaks CI instead of silently un-filling a slot.
+ *
+ * NOTE the one deliberate name mismatch: the asset is `banner-testimonial`
+ * while the block it fills is `blk_nl-banner-voice` ("a voice from the
+ * community"). Neither name is wrong and `sourceKey` may never change once
+ * imported, so the mismatch is recorded here rather than renamed away.
+ */
+export const NEWSLETTER_TEMPLATE_SLOTS: readonly {
+  blockId: string;
+  sourceKey: string;
+}[] = [
+  { sourceKey: "masthead", blockId: "blk_nl-masthead" },
+  { sourceKey: "hero-photo", blockId: "blk_nl-hero" },
+  { sourceKey: "banner-whats-on", blockId: "blk_nl-banner-whats-on" },
+  { sourceKey: "event-photo", blockId: "blk_nl-event" },
+  { sourceKey: "banner-support", blockId: "blk_nl-banner-support" },
+  { sourceKey: "support-photo", blockId: "blk_nl-support" },
+  { sourceKey: "supply-photo", blockId: "blk_nl-supply" },
+  { sourceKey: "serve-photo", blockId: "blk_nl-serve" },
+  // `banner-testimonial` → `blk_nl-banner-voice`. See the note above.
+  { sourceKey: "banner-testimonial", blockId: "blk_nl-banner-voice" },
+  { sourceKey: "song-artwork", blockId: "blk_nl-song" },
+  { sourceKey: "footer-logo", blockId: "blk_nl-footer" },
+];

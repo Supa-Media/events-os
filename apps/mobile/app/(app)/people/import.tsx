@@ -221,7 +221,7 @@ export default function PeopleImportScreen() {
                 ) : null}
               </View>
               <Text className="mt-2 text-xs text-muted">
-                Find them under People → Contacts. They're all reachable by campaigns
+                Find them under People → Contacts. They're all emailable
                 unless they unsubscribe (or were already on the unsubscribe list).
               </Text>
             </Card>

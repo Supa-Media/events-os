@@ -11,6 +11,7 @@ import {
   type EmailPollOption,
 } from "@events-os/shared";
 import {
+  BLOCK_GROUPS,
   BLOCK_KINDS,
   BLOCK_KIND_LABELS,
   CARD_VARIANT_OPTIONS,
@@ -25,6 +26,7 @@ import {
   ctaPairProblem,
   defaultBlockFor,
   duplicateBlock,
+  explainDocError,
   footerLinkProblem,
   bleedImageUrlProblem,
   imageAltProblem,
@@ -32,6 +34,7 @@ import {
   initHistory,
   insertBlock,
   linkUrlProblem,
+  moveBlock,
   optionalImageUrlProblem,
   optionalLinkUrlProblem,
   pollHasBlankLabel,
@@ -840,5 +843,307 @@ describe("syncListKeys", () => {
     }
     // And the reconcile agrees, so the render that follows doesn't re-key.
     expect(syncListKeys(nextKeys, nextColumns.length)).toBe(nextKeys);
+  });
+});
+
+// ── Composer ergonomics: the grouped palette and keyboard-free reordering ───
+
+describe("BLOCK_GROUPS (the grouped palette)", () => {
+  test("covers every kind in the contract exactly once", () => {
+    const grouped = BLOCK_GROUPS.flatMap((g) => g.kinds);
+    expect(new Set(grouped).size).toBe(grouped.length);
+    expect([...grouped].sort()).toEqual([...BLOCK_KINDS].sort());
+  });
+
+  test("BLOCK_KINDS is the flattened groups, in group order", () => {
+    // Derived, not maintained in parallel: a kind added to a group shows up
+    // in the flat list (and therefore in every test that walks it) for free.
+    expect(BLOCK_KINDS).toEqual(BLOCK_GROUPS.flatMap((g) => [...g.kinds]));
+  });
+
+  test("every group has a title and a hint, and no group is empty", () => {
+    for (const group of BLOCK_GROUPS) {
+      expect(group.title.length).toBeGreaterThan(0);
+      expect(group.hint.length).toBeGreaterThan(0);
+      expect(group.kinds.length).toBeGreaterThan(0);
+    }
+  });
+
+  test("the composed newsletter shapes lead the palette", () => {
+    // The reason the groups exist: a Spacer had the same visual weight as a
+    // Card, so the shapes an issue is actually built from were lost in the
+    // middle of fourteen identical buttons.
+    expect(BLOCK_GROUPS[0].kinds).toContain("card");
+    expect(BLOCK_GROUPS[0].kinds).toContain("bleed_image");
+    expect(BLOCK_GROUPS[0].kinds).not.toContain("spacer");
+  });
+});
+
+describe("moveBlock", () => {
+  function docOf(...kinds: EmailBlockKind[]): EmailDocument {
+    return {
+      blocks: kinds.map((kind, i) => defaultBlockFor(kind, `b${i + 1}`)),
+    };
+  }
+
+  test("moves a block up one place", () => {
+    const doc = docOf("heading", "text", "divider");
+    expect(moveBlock(doc, "b2", -1).blocks.map((b) => b.id)).toEqual(["b2", "b1", "b3"]);
+  });
+
+  test("moves a block down one place", () => {
+    const doc = docOf("heading", "text", "divider");
+    expect(moveBlock(doc, "b2", 1).blocks.map((b) => b.id)).toEqual(["b1", "b3", "b2"]);
+  });
+
+  test("is a REFERENCE no-op at either end", () => {
+    // Reference equality matters, not just contents: `design.tsx` skips the
+    // history push (and therefore the autosave) when the doc comes back
+    // unchanged, so a tap on a disabled edge costs nothing.
+    const doc = docOf("heading", "text");
+    expect(moveBlock(doc, "b1", -1)).toBe(doc);
+    expect(moveBlock(doc, "b2", 1)).toBe(doc);
+  });
+
+  test("is a no-op for an unknown id", () => {
+    const doc = docOf("heading", "text");
+    expect(moveBlock(doc, "nope", 1)).toBe(doc);
+  });
+
+  test("keeps document-level fields (the theme survives a reorder)", () => {
+    const doc: EmailDocument = {
+      theme: { ...DEFAULT_EMAIL_THEME, name: "Advent" },
+      blocks: docOf("heading", "text").blocks,
+    };
+    expect(moveBlock(doc, "b1", 1).theme?.name).toBe("Advent");
+  });
+
+  test("a move up and back down round-trips to the original order", () => {
+    const doc = docOf("heading", "text", "divider");
+    const there = moveBlock(doc, "b3", -1);
+    const back = moveBlock(there, "b3", 1);
+    expect(back.blocks.map((b) => b.id)).toEqual(doc.blocks.map((b) => b.id));
+  });
+});
+
+// ── The save-rejection translator ───────────────────────────────────────────
+//
+// Every case below is driven by a document the REAL validator rejected, never
+// by a hand-typed message: the whole point of the table is that it names the
+// control the designer is looking at, and the only way it can be wrong is by
+// matching a message it wasn't written for.
+
+describe("explainDocError", () => {
+  /** Reject `doc` with the real write gate and hand the reason over. */
+  function explainRejectionOf(doc: unknown) {
+    const result = validateEmailDocument(doc);
+    if (result.ok) throw new Error("expected the validator to reject this document");
+    return explainDocError(result.error);
+  }
+
+  /** Field names that only exist in the CONTRACT — never on screen. */
+  const CONTRACT_ONLY_WORDS = [
+    "ctaLabel",
+    "ctaUrl",
+    "ctaStyle",
+    "imageUrl",
+    "imageAlt",
+    "imageSide",
+    "imageWidthPct",
+    "logoUrl",
+    "logoAlt",
+    "navLine",
+    "bleed_image",
+    "markdown",
+    "blocks[",
+  ];
+
+  const REJECTED_DOCUMENTS: { name: string; doc: unknown; expect: RegExp }[] = [
+    {
+      name: "a card with half a button",
+      doc: { blocks: [{ id: "b1", kind: "card", heading: "Hi", ctaLabel: "Read more" }] },
+      expect: /Button link/,
+    },
+    {
+      name: "a card whose button link has a rejected scheme",
+      doc: {
+        blocks: [{ id: "b1", kind: "card", ctaLabel: "Call", ctaUrl: "tel:+441234567890" }],
+      },
+      expect: /Button link/,
+    },
+    {
+      name: "a card image with no alt at all",
+      doc: { blocks: [{ id: "b1", kind: "card", imageUrl: "https://x.test/a.png" }] },
+      expect: /Alt text/,
+    },
+    {
+      name: "an image block with an empty url",
+      doc: { blocks: [{ id: "b1", kind: "image", url: "", alt: "" }] },
+      expect: /Image URL/,
+    },
+    {
+      name: "an image block with a bad scheme",
+      doc: { blocks: [{ id: "b1", kind: "image", url: "ftp://x.test/a.png", alt: "" }] },
+      expect: /http/,
+    },
+    {
+      name: "a button with no label",
+      doc: { blocks: [{ id: "b1", kind: "button", label: "", url: "https://x.test" }] },
+      expect: /Button label/,
+    },
+    {
+      name: "a button with no link",
+      doc: { blocks: [{ id: "b1", kind: "button", label: "Go", url: "" }] },
+      expect: /Link URL/,
+    },
+    {
+      name: "a button link with a rejected scheme",
+      doc: { blocks: [{ id: "b1", kind: "button", label: "Go", url: "ftp://x.test" }] },
+      expect: /Link URL/,
+    },
+    {
+      name: "a banner with a bad scheme",
+      doc: { blocks: [{ id: "b1", kind: "bleed_image", url: "ftp://x.test/a.png", alt: "" }] },
+      expect: /banner/i,
+    },
+    {
+      name: "a banner with no alt",
+      doc: { blocks: [{ id: "b1", kind: "bleed_image", url: "https://x.test/a.png" }] },
+      expect: /Alt text/,
+    },
+    {
+      name: "a footer link with no label",
+      doc: {
+        blocks: [{ id: "b1", kind: "footer", links: [{ label: "", url: "https://x.test" }] }],
+      },
+      expect: /footer link/i,
+    },
+    {
+      name: "a footer link with no address",
+      doc: { blocks: [{ id: "b1", kind: "footer", links: [{ label: "Insta", url: "" }] }] },
+      expect: /footer link/i,
+    },
+    {
+      name: "a footer logo blanked rather than removed",
+      doc: { blocks: [{ id: "b1", kind: "footer", logoUrl: "", logoAlt: "" }] },
+      expect: /Logo/,
+    },
+    {
+      name: "a footer logo with no alt",
+      doc: { blocks: [{ id: "b1", kind: "footer", logoUrl: "https://x.test/l.png" }] },
+      expect: /Logo alt text/,
+    },
+    {
+      name: "an eyebrow with no text",
+      doc: { blocks: [{ id: "b1", kind: "eyebrow", text: "" }] },
+      expect: /Eyebrow text/,
+    },
+    {
+      name: "a quote with no text",
+      doc: { blocks: [{ id: "b1", kind: "quote", text: "" }] },
+      expect: /Quote text/,
+    },
+    {
+      name: "a poll with no question",
+      doc: {
+        blocks: [
+          {
+            id: "b1",
+            kind: "poll",
+            question: "",
+            options: [
+              { id: "o1", label: "A" },
+              { id: "o2", label: "B" },
+            ],
+          },
+        ],
+      },
+      expect: /Question/,
+    },
+    {
+      name: "a poll option with a blank label",
+      doc: {
+        blocks: [
+          {
+            id: "b1",
+            kind: "poll",
+            question: "Which?",
+            options: [
+              { id: "o1", label: "A" },
+              { id: "o2", label: "" },
+            ],
+          },
+        ],
+      },
+      expect: /poll option/i,
+    },
+    {
+      name: "a columns block with one column",
+      doc: { blocks: [{ id: "b1", kind: "columns", columns: [{ heading: "Only" }] }] },
+      expect: /Columns/,
+    },
+    {
+      name: "two blocks sharing an id",
+      doc: {
+        blocks: [
+          { id: "same", kind: "divider" },
+          { id: "same", kind: "divider" },
+        ],
+      },
+      expect: /id/,
+    },
+  ];
+
+  for (const { name, doc, expect: pattern } of REJECTED_DOCUMENTS) {
+    test(`${name} is explained in the composer's own words`, () => {
+      const explained = explainRejectionOf(doc);
+      expect(explained.recognized).toBe(true);
+      expect(explained.message).toMatch(pattern);
+      // The raw message is ALWAYS kept — "Details" in the save indicator
+      // shows it, and it's what someone greps the validator for.
+      expect(explained.raw.length).toBeGreaterThan(0);
+    });
+  }
+
+  test("no explanation leaks a contract-only field name", () => {
+    // The bug this whole table exists for: a designer told her save failed
+    // because of "ctaLabel", a word that appears nowhere on her screen.
+    for (const { doc } of REJECTED_DOCUMENTS) {
+      const explained = explainRejectionOf(doc);
+      for (const word of CONTRACT_ONLY_WORDS) {
+        expect([explained.raw, explained.message]).toEqual([
+          explained.raw,
+          expect.not.stringContaining(word),
+        ]);
+      }
+    }
+  });
+
+  test("names the offending block, 1-based, the way the stack is counted", () => {
+    const explained = explainRejectionOf({
+      blocks: [
+        defaultBlockFor("divider", "b1"),
+        defaultBlockFor("divider", "b2"),
+        { id: "b3", kind: "button", label: "Go", url: "" },
+      ],
+    });
+    expect(explained.blockNumber).toBe(3);
+    expect(explained.message).toMatch(/^Block 3: /);
+  });
+
+  test("an unrecognised message passes through untranslated rather than vanishing", () => {
+    const explained = explainDocError("NOT_EDITABLE: this campaign is locked.");
+    expect(explained.recognized).toBe(false);
+    expect(explained.message).toBe("NOT_EDITABLE: this campaign is locked.");
+    expect(explained.blockNumber).toBeNull();
+  });
+
+  test("a rejected THEME is explained without naming a colour token", () => {
+    const explained = explainRejectionOf({
+      blocks: [],
+      theme: { ...DEFAULT_EMAIL_THEME, accent: "not-a-colour" },
+    });
+    expect(explained.recognized).toBe(true);
+    expect(explained.message).toMatch(/theme/i);
   });
 });

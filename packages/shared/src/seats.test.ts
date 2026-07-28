@@ -175,6 +175,10 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
     // 2026-07-24: added campaigns.approve + campaigns.compose (founder
     // requirement — two-party campaign approval; the ED can compose/send,
     // but every send needs a DIFFERENT approval-power holder's sign-off).
+    // 2026-07-28: + campaigns.design (approve implies compose implies
+    // design; every implied rung is listed explicitly on the def so the
+    // seat chart, not a resolver's implication map, is the honest answer to
+    // "who can edit a shared template/theme/image?").
     executive_director: [
       "finance.central",
       "finance.accounts",
@@ -186,12 +190,14 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
       "nav.giving",
       "campaigns.approve",
       "campaigns.compose",
+      "campaigns.design",
     ],
     // 2026-07-19: added giving.view + nav.giving (owner decision — FM gets
     // central-lens donor READ as an assignable power default). 2026-07-24:
     // added campaigns.approve + campaigns.compose (founder requirement — the
     // FM is one of the org's valid campaign approvers alongside the ED and
-    // Marketing Director).
+    // Marketing Director). 2026-07-28: + campaigns.design (implied by
+    // approve, listed explicitly — see the ED's note above).
     financial_manager: [
       "finance.manager",
       "finance.central",
@@ -202,6 +208,7 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
       "nav.giving",
       "campaigns.approve",
       "campaigns.compose",
+      "campaigns.design",
     ],
     development_director: ["giving.manage", "giving.view", "nav.giving"],
     partnership_associate: ["giving.view", "nav.giving"],
@@ -213,10 +220,15 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
     songwriters: [],
     // 2026-07-24: added campaigns.approve + campaigns.compose (founder
     // requirement, verbatim: "ED approved by Marketing Director" — named as
-    // a valid second party for two-party campaign approval).
-    marketing_director: ["campaigns.approve", "campaigns.compose"],
-    social_media_manager: [],
-    graphic_designer: [],
+    // a valid second party for two-party campaign approval). 2026-07-28:
+    // + campaigns.design (implied by approve; the MD owns the brand).
+    marketing_director: ["campaigns.approve", "campaigns.compose", "campaigns.design"],
+    // 2026-07-28: campaigns.design ONLY — the two seats that actually build
+    // the newsletter own themes/templates/the image library, but a mass send
+    // stays a two-party decision above them. The ED can promote either seat
+    // to Compose/Approve at runtime (`seats.ts#setSeatCampaignPower`).
+    social_media_manager: ["campaigns.design"],
+    graphic_designer: ["campaigns.design"],
     marketing_associate: [],
     // 2026-07-19: added giving.view + nav.giving (owner decision — Expansion
     // Director stewards the launch pipeline giving funds; central-lens READ as

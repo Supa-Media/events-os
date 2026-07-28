@@ -338,7 +338,7 @@ export const getPollResults = query({
     await requireCampaignsAccess(ctx);
     const campaign = await ctx.db.get(campaignId);
     if (!campaign) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
+      throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
     const blocks = pollBlocksOf(campaign.doc).slice(0, POLL_BLOCKS_PER_CAMPAIGN);
     const results = [];

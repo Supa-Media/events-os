@@ -15,6 +15,16 @@
  * NB: `apps/convex/migrations.ts` (the sibling file) holds the historical
  * hand-run migration bodies + the `runPending` runner; this folder is the
  * registry. Both coexist exactly like `schema.ts` + `schema/` in this project.
+ *
+ * NOT EVERY NUMBERED FILE IS IN THE REGISTRY. Some are numbered purely for
+ * discoverability and run by other means — a `MutationCtx` can't `fetch` or
+ * touch the filesystem, so anything that needs to must be an action:
+ *  - `0037` / `0048` are human-run (`npx convex run`), by design.
+ *  - `0050` is human-run and self-reschedules in batches.
+ *  - `0052` is driven by an HOURLY CRON (`crons.ts` → "newsletter artwork
+ *    import"), because its source is a dying CDN and the run therefore has to
+ *    be retryable — which is the one thing the ledger guarantees it isn't.
+ *    Its own header spells the reasoning out.
  */
 import type { MutationCtx } from "../_generated/server";
 
@@ -61,6 +71,8 @@ import { seedServiceCatalog } from "./0046_seed_service_catalog";
 import { serviceConditionsToIds } from "./0047_service_conditions_to_ids";
 import { seedBuiltInCampaignTemplates } from "./0049_seed_builtin_campaign_templates";
 import { backfillPeoplePersona } from "./0051_backfill_people_persona";
+import { addCampaignDesignDefaults } from "./0053_add_campaign_design_defaults";
+import { seedOrgMailingAddress } from "./0054_seed_org_mailing_address";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -254,4 +266,16 @@ export const MIGRATIONS: Migration[] = [
   // recompute; aggregate inserts are `insertIfDoesNotExist`, safe to
   // repeat). See 0051.
   backfillPeoplePersona,
+  // The `campaigns.design` rung — grant it to `graphic_designer` /
+  // `social_media_manager` (the seats that actually build the newsletter and
+  // held NO campaign capability, so couldn't open the desk at all), and top
+  // it up on any row already carrying compose/approve, where it's implied and
+  // therefore changes no access. Never grants it to a seat an ED deliberately
+  // set to "none". Idempotent. See 0053.
+  addCampaignDesignDefaults,
+  // Seeds the org's CAN-SPAM postal address, which the same release made a
+  // hard requirement for every bulk send. Without it the deploy would refuse
+  // every newsletter and event announcement until a superuser set the field
+  // by hand. Never overwrites an address a human already entered. See 0054.
+  seedOrgMailingAddress,
 ];

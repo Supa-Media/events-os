@@ -20,6 +20,10 @@ export type CampaignStatus =
   | "changes_requested"
   | "denied";
 
+/** The words on screen. The STATUS STRINGS are the backend's contract and
+ *  never change here; only the labels do — "denied" reads as "Rejected",
+ *  which is the vocabulary the whole review flow now uses (a reviewer
+ *  rejects a campaign; nobody is being denied anything). */
 const STATUS_LABEL: Record<CampaignStatus, string> = {
   draft: "Draft",
   pending_approval: "Awaiting approval",
@@ -28,7 +32,7 @@ const STATUS_LABEL: Record<CampaignStatus, string> = {
   sent: "Sent",
   failed: "Failed",
   changes_requested: "Changes requested",
-  denied: "Denied",
+  denied: "Rejected",
 };
 
 const STATUS_TONE: Record<CampaignStatus, BadgeTone> = {
@@ -83,6 +87,22 @@ export function confirmAction({
 /** "1 recipient" / "3 recipients". */
 export function pluralCount(n: number, noun: string): string {
   return `${n} ${noun}${n === 1 ? "" : "s"}`;
+}
+
+/**
+ * "1 person" / "12 people" — `pluralCount` can't handle the irregular plural
+ * (it produced "12 persons"), and this is the count the campaigns desk uses
+ * most.
+ *
+ * WHICH NOUN, and why it matters: **people** is how many humans a segment
+ * reaches — a live, changing estimate, which is what every pre-send surface
+ * shows. **Recipients** are a specific send's delivery rows: fixed at
+ * materialize time, countable as sent/failed/suppressed. Using "recipients"
+ * for a draft's audience preview quietly promises the number is settled when
+ * it isn't (a segment resolves fresh at send time, and people opt out).
+ */
+export function pluralPeople(n: number): string {
+  return `${n} ${n === 1 ? "person" : "people"}`;
 }
 
 /** "1 reply" / "3 replies" — `pluralCount` can't handle the irregular plural. */

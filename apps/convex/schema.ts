@@ -40,6 +40,7 @@ import {
   eventComments,
   pageReactions,
   blasts,
+  blastRecipients,
 } from "./schema/ticketing";
 import {
   funds,
@@ -126,6 +127,7 @@ import {
   campaignTemplates,
   emailImages,
   emailSuppressions,
+  emailSuppressionAudit,
   emailReplies,
   emailThemes,
 } from "./schema/campaigns";
@@ -240,6 +242,12 @@ const schema = defineSchema({
   eventComments,
   pageReactions,
   blasts,
+  // Per-address record of an EMAIL blast, minted so each recipient's
+  // announcement can carry its OWN working unsubscribe link/header (bulk mail
+  // legally needs one). Resolves through the same /unsubscribe/<token> route
+  // campaign recipients do — see schema/ticketing.ts's doc for why it's a
+  // table rather than a derived token.
+  blastRecipients,
 
   // Finance — the native money layer (Increase + Stripe FC) that replaces
   // KleerCard / Bill.com. Funds/categories/teams organize money; `budgets`
@@ -458,6 +466,9 @@ const schema = defineSchema({
   campaignApprovalLog,
   campaignRecipients,
   emailSuppressions,
+  // Append-only "who un-suppressed this address, and why" trail — the two
+  // ADMIN suppression mutations only. See schema/campaigns.ts's doc.
+  emailSuppressionAudit,
   emailReplies,
   // The composer's design surface: `emailThemes` are the org's saved, editable
   // token sets (the built-in presets stay in code — see

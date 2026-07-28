@@ -48,7 +48,7 @@
  */
 import { Text, View } from "react-native";
 import type { EmailCardContent } from "@events-os/shared";
-import { Field, Select, TextField } from "../../ui";
+import { Field } from "../../ui";
 import {
   CARD_VARIANT_OPTIONS,
   DEFAULT_IMAGE_WIDTH_PCT,
@@ -62,7 +62,17 @@ import {
   stepImageWidthPct,
 } from "../../../lib/emailDesigner";
 import { ImageLibraryPicker, useImageLibraryRegistration } from "./ImageLibraryPicker";
-import { ImageUploadButton, LevelToggle, type UploadImage } from "./DesignerControls";
+// `TextField`/`Select` are the DESIGNER's read-only-aware wrappers around the
+// UI kit's own — see `DesignerControls`' read-only doc. Importing the kit's
+// versions directly here is what let a locked campaign render typable fields.
+import {
+  ImageUploadButton,
+  LevelToggle,
+  Select,
+  TextField,
+  useDesignerReadOnly,
+  type UploadImage,
+} from "./DesignerControls";
 import type { ActionRunner } from "../../../lib/useActionToast";
 
 export function CardContentEditor({
@@ -147,9 +157,9 @@ export function CardContentEditor({
           before, so pasting a bare `example.com` stopped the save with no
           explanation anywhere on the page. */}
       {imageUrlIssue === "missing" ? (
-        <InlineWarning text="This card's image URL is empty. Clear the field, upload a picture, or choose one from the library — the campaign can't be saved until then." />
+        <InlineWarning text="This card's image URL is empty. Clear the field, upload a picture, or choose one from the library — the email can't be saved until then." />
       ) : imageUrlIssue === "scheme" ? (
-        <InlineWarning text="An image URL has to start with http:// or https://. The campaign can't be saved until this one does." />
+        <InlineWarning text="An image URL has to start with http:// or https://. The email can't be saved until this one does." />
       ) : null}
 
       <View className="mb-1 flex-row flex-wrap items-start gap-2">
@@ -165,7 +175,7 @@ export function CardContentEditor({
                 // contract's "decorative" and merely earns the warning below.
                 imageAlt: content.imageAlt ?? "",
               });
-              library.register(uploaded.storageId, suggestedLabel || "Campaign image");
+              library.register(uploaded.storageId, suggestedLabel || "Email image");
             }}
           />
         ) : null}
@@ -334,7 +344,7 @@ export function CardContentEditor({
         />
       ) : null}
       {ctaUrlProblem ? (
-        <InlineWarning text="A button link has to start with http://, https:// or mailto:. The campaign can't be saved until this one does." />
+        <InlineWarning text="A button link has to start with http://, https:// or mailto:. The email can't be saved until this one does." />
       ) : null}
     </View>
   );
@@ -408,15 +418,22 @@ const ALT_EMPTY_WARNING =
   "No alt text. Screen readers and image-blocking clients (Gmail and Outlook block images by default) will show nothing here. Leave it empty only if the image is purely decorative.";
 
 const ALT_MISSING_WARNING =
-  "This image has a URL but no alt text at all, and the campaign can't be saved (including edits to every other block) until it has some. Type a description — or, if the image really is decorative, type a character and delete it to leave the field deliberately empty.";
+  "This image has a URL but no alt text at all, and the email can't be saved (including edits to every other block) until it has some. Type a description — or, if the image really is decorative, type a character and delete it to leave the field deliberately empty.";
 
 /**
  * A field-level advisory. Warn-toned rather than danger-toned on purpose:
  * every one of these describes something the designer can knowingly ship
  * (an intentionally decorative image), or is about to fix in the next
  * keystroke (a half-typed button). Red would cry wolf.
+ *
+ * Silent in a LOCKED campaign: every one of these says "the campaign can't be
+ * saved until you fix this", and there is nothing left to save or fix once
+ * the design is locked — telling a reviewer to fix a field she cannot edit is
+ * the same cry-wolf problem in a different costume.
  */
 export function InlineWarning({ text }: { text: string }) {
+  const readOnly = useDesignerReadOnly();
+  if (readOnly) return null;
   return (
     <View className="mb-3 rounded-md border border-warn-soft bg-warn-bg px-2.5 py-2">
       <Text className="text-xs text-ink">{text}</Text>

@@ -44,7 +44,7 @@ export function RepliesView() {
       <EmptyState
         icon="inbox"
         title="No replies yet"
-        message="Replies show up here once a recipient responds to a sent campaign. This needs an inbound email domain connected for the org — ask a super admin to set that up in Profile → Integrations if replies aren't arriving."
+        message="Replies show up here once a recipient responds to a sent email. This needs an inbound email domain connected for the org — ask a super admin to set that up in Profile → Integrations if replies aren't arriving."
       />
     );
   }
@@ -80,7 +80,7 @@ export function RepliesView() {
               {r.textBody || ""}
             </Text>
             <Text style={styles.campaign} numberOfLines={1}>
-              {matchedCampaign ? `Re: ${matchedCampaign}` : "Didn't match a campaign"}
+              {matchedCampaign ? `Re: ${matchedCampaign}` : "Didn't match an email"}
             </Text>
           </ReplyRow>
         );

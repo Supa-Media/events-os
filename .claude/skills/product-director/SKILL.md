@@ -92,8 +92,18 @@ on green).
      breaks autosave for the whole document, not just that field.
    - **"Does it actually do what it claims?"** — for EVERY new backend
      function, find its production caller; anything reachable only from tests
-     is a finding. Check each claim in the PR body against the code. A false
-     claim in a PR body is a real defect.
+     is a finding. Its TWIN, equally load-bearing: is the function reachable
+     only from a screen that THROWS for the persona it was built for? A caller
+     that exists but can never send the argument that matters (a `doc` no
+     screen can produce) is the same defect wearing a disguise.
+   - **Access-ladder changes** — whenever a rung is added BELOW an existing
+     one, two sweeps are mandatory. (a) Grep every call site of the gate the
+     new rung now satisfies and classify each as read or write: a visibility
+     check that was a *correct* authorization check only because visibility
+     implied the higher rung silently becomes an escalation. (b) Grep the
+     client-facing access query's RETURN SHAPE — if it doesn't distinguish the
+     new rung, every screen renders for a persona whose every write throws,
+     and the API-layer tests will all pass while the product is broken.
    Then FIX what they find and re-verify. Treat a subagent's "all green" as a
    hypothesis: re-run the suites yourself.
    **Reviews are not a substitute for CI.** Four review passes missed a
@@ -114,6 +124,20 @@ on green).
 - **opus**: only genuinely complex reasoning — e.g. AI-quality evaluation
   design, gnarly cross-system migrations. Prefer sonnet when in doubt.
 - Launch independent agents in one message and run them in the background.
+- **Before dispatching review agents, give them ONE ignored path for scratch
+  probes and add it to `.git/info/exclude` first.** Reviewers prove findings
+  by running code, so they write throwaway tests; crash-safety `git add -A`
+  snapshots then sweep those onto the branch. One landed in
+  `apps/convex/tests/` this run, where the suite would have picked it up.
+- **Briefs must say what has to be TRUE, not only which function to call.** A
+  brief that said "route this through `safeEmailHref` like every other href"
+  would, followed literally, have deleted the CAN-SPAM unsubscribe link from
+  any deployment with no site-URL env var (it collapses a legitimate
+  root-relative path to `#`). The agent caught it because it tested the
+  outcome. State the invariant; let the agent pick the mechanism.
+- **Verify a reported failure before dispatching a fix for it** — two lanes'
+  fixes composed without coordination this run, and a flake one lane reported
+  had already been cured by another's change.
 - **Poll every 5 minutes, always (founder directive 2026-07-24).** Never
   passively wait for completion notifications and never just trust a
   subagent's self-report: while ANY subagent, CI run, or deploy is
@@ -262,6 +286,63 @@ Before finishing a run of this skill, you MUST:
    run's PR.
 
 ## Learnings Log (newest first)
+
+### 2026-07-28 — Run 10 (campaign flow UX + terminology + compliance → PR #462)
+- **The headline: a capability rung is not a feature. `myCampaignsAccess`
+  returned `{canView, canApprove}` and nothing else, so when I added the
+  `campaigns.design` rung, the designer got the desk and every primary button
+  threw FORBIDDEN.** My own regression test passed at the API layer while the
+  product was broken, because no client could ask the question the backend had
+  just learned to answer. **When you add a rung to an access ladder, the FIRST
+  follow-up is "what does the client query return, and does it distinguish the
+  new rung?"** Grep for the access query's return shape in the same breath as
+  the resolver.
+- **Widening a visibility gate silently widens every authorization that was
+  leaning on it.** `campaigns.ts` gated 19 writes on `requireCampaignsAccess`
+  — a *correct* compose gate for as long as desk access implied
+  compose-or-above. Adding a lower rung turned all 19 into "any designer may
+  do this", plus audience writes and suppression. Nobody wrote a bug; the
+  meaning of an existing check changed underneath it. **Before adding a rung
+  BELOW an existing one, grep every call site of the gate it satisfies and
+  classify each read/write.** This is now the standing rule, not a war story.
+- **"Reachable only from tests" has a twin: "reachable only from a screen
+  that throws."** The dead-surface lens must ask both — does a production
+  caller exist, AND can the persona the feature is *for* actually reach it?
+  `updateTemplate` had a caller; the caller could only ever send `name` and
+  `description`, so template CONTENT was uneditable and the designer's
+  "ownership of templates" was rename/re-describe/archive.
+- **Agents in a shared worktree: my crash-safety `git add -A` snapshots swept
+  three reviewers' scratch probes onto the branch, and one landed in
+  `apps/convex/tests/` where the suite would have picked it up.** Tell review
+  agents to write probes under a single ignored path, and add that path to
+  `.git/info/exclude` BEFORE dispatching, not after finding one in `git
+  status`.
+- **A subagent pushing back on my brief was right, and I should design for
+  that.** I said "route the unsubscribe URL through `safeEmailHref` like every
+  other href"; `siteUrl()` returns `""` when unset, so that would have
+  collapsed a legitimate root-relative `/unsubscribe/<token>` to `#` and
+  DELETED the CAN-SPAM opt-out from any misconfigured deployment. Briefs
+  should say what must be TRUE, not only which function to call.
+- **Two lanes' fixes composed without coordination** — a test flake one lane
+  reported was already cured by another lane's fix. Verify a reported failure
+  yourself before dispatching a fix for it; it may no longer exist.
+- **Never read a SKIPPED check as a passing check.** PR #462's Lint job
+  reported `skipped`; I confirmed against the last merged PR that this is
+  standing framework-workflow config rather than something the PR caused, and
+  ran eslint locally anyway. Skipped is absence of evidence.
+- **New standing product principle from the founder (2026-07-28), quoted:**
+  *"when I think campaign, I think a string of things."* Vocabulary is his
+  call, and industry convention is an input, not the answer — I had cited
+  Mailchimp's "campaign = one email" as *the* standard when Klaviyo,
+  Customer.io, Braze and Iterable all use it for a SERIES. **Check whether the
+  convention you're citing is the dominant one or merely the famous one.**
+  Corollary he was right about: naming the small thing with the big word burns
+  the big word for later.
+- **Refusing to merge a green PR can be the correct call.** This PR makes the
+  CAN-SPAM postal address mandatory; merging deploys Convex, and the field is
+  null in production, so squash-merge-on-green would have taken sending down
+  for everyone. The rule exists to prevent self-inflicted outages, not to
+  cause them — surface the blocker and get the human's call.
 
 ### 2026-07-28 — Run 9 (the same designer: "it looks nothing like this")
 - **The headline lesson, and it is a general one: I built a GENERIC FRAMEWORK
@@ -631,78 +712,3 @@ Before finishing a run of this skill, you MUST:
 - UI clunkiness had an in-repo precedent fix: BlastComposerCard's 400ms
   debounce vs AudiencesView's none — cite sibling patterns in briefs so
   agents copy the house solution.
-
-### 2026-07-24 — Run 2 addendum 6 (Phase 3 #407 shipped — workstream complete)
-- Full email workstream shipped in one session-day: #323 revival → #399
-  approval gate → #401 identity backbone → 0039 hotfix (#405) → #402
-  personEmails → #407 audience picker. Pattern that converged: implement →
-  adversarial-verify (empirical probes) → consolidated fix round → local
-  full suite before push → PR → CI → squash-merge → verify deploys.
-  Local-suite-first made #402 and #407 first-try-green in CI.
-- Deploy-Convex runs migrations:runPending POST-deploy: a migration can
-  pass convex-test + CI and still fail prod (single-paginate rule is
-  unenforced locally — 0039). Deploy verification caught it; user impact
-  zero because the resolver had a designed fallback. Every migration now
-  needs the one-paginate-per-invocation review, and resolvers use bounded
-  take/collect scans only.
-- Same-day feature collision class: #399's snapshot hash didn't know about
-  #407's new hand-pick fields — verifier's cross-feature probe caught the
-  approval-integrity hole (post-approval hand-pick edits sailed through).
-  When two features land same-day on one surface, have the LATER PR's
-  verifier explicitly probe the EARLIER feature's invariants against the
-  new fields.
-- Founder ops directives now encoded: 5-min Monitor-ticker polling (never
-  send_later — blocks with permission prompts), never trust subagent
-  self-reports (verify against repo/CI), docs in CLAUDE.md + this skill.
-- OUTSTANDING for a future run: manual 0037 guest backfill in prod (founder
-  triggers; dry-run first) — until it runs, legacy guests audiences stay on
-  the legacy resolver (0040 deliberately skipped them); after it runs,
-  migrate them and retire the legacy resolvers. Also upstream candidates
-  per upstream-first: Monitor-ticker guidance → supa-framework claude
-  template; generic email-send primitive → @supa-media/convex.
-
-### 2026-07-24 — Run 2 addendum 5 (Phase 2 personEmails #402 shipped)
-- pnpm vitest + tsc NOW WORK in the cloud sandbox (the 401-on-install
-  constraint lifted mid-session). Require implementation agents to run the
-  full suite + tsc locally BEFORE pushing — Phase 2 was this session's
-  first first-try-green CI, vs 4 fix rounds for the blind-push approval PR.
-  Verifiers should run empirical probes too (Phase 2's verifier proved
-  no-unsubscribe-bypass by executing the resolver, not reading it).
-- Write-through-ledger failure class: when adding a mirror table
-  (personEmails) maintained at mutation sites, the classic misses are
-  admin MERGE flows (blank-fill), LOGIN-time reconciliation, and AI/tool
-  insert paths — and BOTH repoint-references helpers must learn the new FK
-  table or merges orphan rows. Audit those four site classes explicitly.
-- Suppression invariant held as designed: resolve ONE send address per
-  person, check that one string against suppressions — never retry
-  per-address (that would route around an unsubscribe).
-
-
-[Folded 2026-07-27: Run 2 addenda 2-4 (#323 revival, #399 approval gate,
-#401 identity backbone). Durable bits promoted to the invariants above
-(pinned-spec sweep; budget 3-4 CI rounds on a large feature PR; prompt
-adversarial verifiers with the domain's specific bypass classes; APP_URL
-email-link assertion + loud degrade). Also still true, in brief: for a
-BOUNDARY change (a flag every consumer must respect) budget three audit
-layers — implementer self-audit, adversarial verifier, systematic grep
-sweep; none alone sufficed. Sites deliberately left inclusive need a
-comment saying so or a later sweep "fixes" them backwards. Resolve merge
-conflicts by RECONSTRUCTING from verbatim parent-tip sources (`git show
-parent:file`), never from the raw diff. The orchestrator should fix
-one-line CI/verifier findings directly rather than round-tripping to the
-author agent.]
-
-[Folded 2026-07-26: Run 2 (email readiness), Run 2 team-chat addendum, and
-Run 1 addenda 2-3 — durable bits now live in the invariants (git
-archaeology/shallow-clone, actions_list token cap, check-runs-not-status,
-deploy-verification, stacked-PR "unstable") and principles 7/8. The
-2026-07-23 "sandbox can't pnpm install (401)" constraint is LIFTED — full
-local suites are the norm; the bundler still only runs in deploys.]
-
-[Runs 1 and its addenda (2026-07-23) folded into the instructions above:
-parallel recon with exact symptoms, schema-ready-but-UI-missing gaps,
-principles 1/2/4, refactor-PR sequencing, `.gitignore` needs
-`!.claude/skills/` for this file to be committable, parallelize across
-files / serialize within a file, re-check queued briefs when a removal
-lands mid-run, "remove X entirely" → inventory look-alike surfaces in the
-PR body.]

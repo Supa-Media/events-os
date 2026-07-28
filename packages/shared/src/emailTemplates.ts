@@ -23,6 +23,12 @@
  * artwork from the image library (migration 0052 imports it, keyed by
  * `sourceKey` in `newsletterAssets.ts`).
  *
+ * The slots do not STAY empty: `fillTemplateArtwork` below places the imported
+ * library rows into them by `sourceKey`, and `lib/builtInTemplates.ts` runs the
+ * document through it on every seed. Empty is the shipped state, not the final
+ * one — but it remains a legitimate, renderable state for any deployment that
+ * hasn't run the import.
+ *
  * ── Determinism ────────────────────────────────────────────────────────────
  * Block ids are seeded (`newBlockId("nl-hero")` → `"blk_nl-hero"`), never
  * random. `ensureBuiltInTemplates` is idempotent and re-runs on every deploy;
@@ -30,8 +36,9 @@
  */
 
 import type { EmailDocument } from "./emailBlocks";
-import { newBlockId } from "./emailBlocks";
+import { isAllowedImageUrl, newBlockId } from "./emailBlocks";
 import { PUBLIC_WORSHIP_THEME } from "./emailTheme";
+import { NEWSLETTER_TEMPLATE_SLOTS } from "./newsletterAssets";
 
 /** A named starting point. `doc` is a complete, valid `EmailDocument`. */
 export type CampaignTemplate = {
@@ -186,3 +193,153 @@ export const PUBLIC_WORSHIP_NEWSLETTER_TEMPLATE: CampaignTemplate = {
 export const BUILT_IN_CAMPAIGN_TEMPLATES: readonly CampaignTemplate[] = [
   PUBLIC_WORSHIP_NEWSLETTER_TEMPLATE,
 ];
+
+/** One library image, reduced to the two things a block needs. Keyed by
+ *  `emailImages.sourceKey` in the map `fillTemplateArtwork` takes. */
+export type ResolvedArtwork = { url: string; alt: string };
+
+/**
+ * Which alt text survives when artwork is placed into a block.
+ *
+ * The library row wins ONLY when it has something to say. Every row the
+ * newsletter import writes carries `alt: ""` by design, so letting an empty
+ * library alt through would erase authored alt text on the next seed — a
+ * silent accessibility regression, and one that gets worse the better the
+ * template's copy gets. Falls back to `""` (the validator's legal
+ * "decorative" value) when neither side has anything.
+ */
+function preferAuthoredAlt(libraryAlt: string, authoredAlt: string | undefined): string {
+  if (libraryAlt.length > 0) return libraryAlt;
+  return authoredAlt ?? "";
+}
+
+/**
+ * Place imported artwork into a template's empty slots.
+ *
+ * ── The gap this closes ────────────────────────────────────────────────────
+ * `migrations/0052` imports the newsletter artwork into `emailImages`, each
+ * row stamped with a stable `sourceKey`. The built-in template ships with
+ * every image slot EMPTY (deliberately — a hardcoded CDN URL would rot, see
+ * this module's header). Until this function existed, nothing read
+ * `sourceKey`, so a successful import left the template exactly as blank as
+ * before. `NEWSLETTER_TEMPLATE_SLOTS` says which asset belongs in which block;
+ * this walks it.
+ *
+ * ── PURE, and Convex-free ──────────────────────────────────────────────────
+ * `resolved` is passed IN rather than read here, so this module keeps the
+ * `emailBlocks.ts` no-deps rule and stays testable without a backend. The
+ * input document is never mutated: blocks that aren't filled are returned by
+ * reference and filled ones are fresh objects.
+ *
+ * ── A MISSING KEY IS SKIPPED, NEVER BLANKED ────────────────────────────────
+ * The import is expected to partially fail (its source is a dying CDN), so a
+ * half-imported library must produce a half-filled template — never a template
+ * whose remaining slots got stamped with `""` or `undefined`. A slot with no
+ * matching row is simply left exactly as the template shipped it.
+ *
+ * ── Alt text comes from the LIBRARY ROW, but NEVER an EMPTY one ────────────
+ * Not from `NEWSLETTER_ASSETS`. Every imported row starts with empty alt on
+ * purpose (the banners carry words nobody has transcribed); when a human
+ * finally writes it via `emailImages.updateImage`, the next seed carries it
+ * into the template. Sourcing alt from the manifest would freeze it at "".
+ *
+ * The corollary — and this is a trap that was live until it was guarded — is
+ * that the library's alt may only WIN when it actually says something. Every
+ * imported row's alt is `""`, so an unconditional `imageAlt: art.alt` silently
+ * wipes whatever the shipped template authored the moment anyone writes alt
+ * text into it. That the shipped newsletter authors no alt on its card/footer
+ * slots today is luck, not safety. So: a non-empty library alt replaces the
+ * block's, an empty one leaves the authored text exactly as it was, and a
+ * block with neither still gets `""` — which the validator REQUIRES once
+ * `imageUrl`/`logoUrl` is set (`""` is the legal "decorative" value).
+ *
+ * ── `bleed_image` GETS THE SAME RULE, and needs it most ────────────────────
+ * This case used to write `url` alone, on the reasoning that "a bleed_image
+ * always has an alt already". That is false for this newsletter: FOUR of its
+ * five bleed blocks ship `alt: ""` and only the song artwork authors copy
+ * ("Song of the month"). Writing url-only therefore shipped ten of the
+ * template's eleven `<img>` tags with `alt=""` on a successful import — and
+ * because Gmail and Outlook block remote images by default, a recipient saw
+ * four blank bands where the SECTION HEADINGS should be (in this design the
+ * banner IS the heading). `renderCampaignText` has the same hole from the
+ * other side: its bleed case falls back to `null` on an empty alt, so the
+ * plaintext part lost all section structure.
+ *
+ * It also severed the escape hatch for exactly the images that carry words:
+ * alt typed into `emailImages.updateImage` reached cards and the footer but
+ * never a banner, so there was no way to fix them at all. Routing bleed
+ * blocks through `preferAuthoredAlt` closes both — a transcribed library alt
+ * now lands on the banners, and an empty one still leaves the song artwork's
+ * authored copy exactly as the template wrote it.
+ *
+ * ── A url that isn't plainly http(s) is SKIPPED, not written ───────────────
+ * Urls come from `ctx.storage.getUrl()` today, so this is defensive only —
+ * but the blast radius if it weren't is the whole seed, not one image. A
+ * `javascript:` url would fail `validateEmailDocument` inside
+ * `assertValidTemplateDoc`, breaking `seedBuiltInTemplates` on EVERY deploy
+ * and every `createCampaign`; a `null` url would throw a raw TypeError off
+ * `art.url.length`. One bad library row must cost that row's slot, nothing
+ * more.
+ */
+export function fillTemplateArtwork(
+  doc: EmailDocument,
+  resolved: ReadonlyMap<string, ResolvedArtwork>,
+): EmailDocument {
+  // Re-key the slot map by block id, dropping every slot with no image on
+  // file. An empty result means there is nothing to do at all — returning the
+  // document untouched keeps the seeder's JSON diff byte-identical, so an
+  // import that hasn't run yet doesn't churn `updatedAt` on every deploy.
+  const byBlockId = new Map<string, ResolvedArtwork>();
+  for (const slot of NEWSLETTER_TEMPLATE_SLOTS) {
+    const art = resolved.get(slot.sourceKey);
+    // `isAllowedImageUrl` is the SAME predicate `validateEmailDocument` uses,
+    // deliberately: a url that gets past this line is one the write gate will
+    // also accept, so a filled template can never fail `assertValidTemplateDoc`
+    // because of its artwork. `typeof` first, because a non-string `url` (a
+    // `null` from a storage read that came back empty) would otherwise throw
+    // off `.length` and take the whole seed with it.
+    if (!art || typeof art.url !== "string") continue;
+    if (art.url.length === 0 || !isAllowedImageUrl(art.url)) continue;
+    // `alt` is coerced for the same reason `url` is type-checked: a DB row
+    // whose `alt` came back null must cost this slot its alt, not throw out of
+    // `preferAuthoredAlt` and abort the seed.
+    byBlockId.set(slot.blockId, {
+      url: art.url,
+      alt: typeof art.alt === "string" ? art.alt : "",
+    });
+  }
+  if (byBlockId.size === 0) return doc;
+
+  return {
+    ...doc,
+    blocks: doc.blocks.map((block) => {
+      const art = byBlockId.get(block.id);
+      if (!art) return block;
+      switch (block.kind) {
+        case "bleed_image":
+          return {
+            ...block,
+            url: art.url,
+            alt: preferAuthoredAlt(art.alt, block.alt),
+          };
+        case "card":
+          return {
+            ...block,
+            imageUrl: art.url,
+            imageAlt: preferAuthoredAlt(art.alt, block.imageAlt),
+          };
+        case "footer":
+          return {
+            ...block,
+            logoUrl: art.url,
+            logoAlt: preferAuthoredAlt(art.alt, block.logoAlt),
+          };
+        // A slot pointing at a block kind that holds no image is a mapping
+        // bug, not a document to corrupt — leave it alone. The shared test
+        // asserts every mapped block id exists, which is the real guard.
+        default:
+          return block;
+      }
+    }),
+  };
+}

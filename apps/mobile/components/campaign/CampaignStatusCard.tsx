@@ -8,11 +8,14 @@
  *             row (the design itself is editable again — see `design.tsx`).
  *   pending_approval → THREE possible views, mutually exclusive, driven by
  *             `getCampaignApproval`: the chosen REVIEWER sees the review card
- *             (audience, purpose, live recipient count, Approve/Request
- *             changes/Deny); the SUBMITTER sees a "submitted, awaiting
- *             so-and-so" line + Cancel; anyone else sees a plain status line.
+ *             (THE EMAIL ITSELF, then segment, purpose, live people count,
+ *             Approve/Request changes/Reject); the SUBMITTER sees a
+ *             "submitted, awaiting so-and-so" line + Cancel; anyone else sees
+ *             a plain status line.
  *   approved → "Approved by so-and-so" + the real Send button.
- *   denied   → the reviewer's note + "Move back to draft".
+ *   denied   → the reviewer's note + "Move back to draft". (The status STRING
+ *             stays `denied` — the contract's — while every word on screen
+ *             says "rejected".)
  *   sending  → live progress from the campaign's own counts.
  *   sent     → results (sent / failed / suppressed) + reply count.
  *   failed   → results + whatever error the send action left behind, +
@@ -28,13 +31,16 @@
  * use the fresh `preview.truncated`/`truncatedCount` (exact, since it's a
  * fresh query) to name how many would be left out.
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Modal, Pressable, Text, View } from "react-native";
+import { useRouter } from "expo-router";
 import { useAction, useMutation, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
+import { renderCampaignEmail, type EmailDocument } from "@events-os/shared";
 import { Badge, Button, Card, Field, Icon, ProgressBar, Select, TextField } from "../ui";
+import EmailHtmlPreview from "../email/EmailHtmlPreview";
 import { colors } from "../../lib/theme";
 import {
   campaignStatusLabel,
@@ -43,6 +49,7 @@ import {
   describeAudience,
   formatSenderDisplay,
   pluralCount,
+  pluralPeople,
   pluralReply,
 } from "./helpers";
 import type { ActionRunner } from "../../lib/useActionToast";
@@ -52,7 +59,7 @@ type PreviewResult = FunctionReturnType<typeof api.audiences.previewAudience>;
 type Approval = FunctionReturnType<typeof api.campaigns.getCampaignApproval>;
 type AudienceRow = FunctionReturnType<typeof api.audiences.listAudiences>[number];
 
-/** "Audience hit the 5,000 cap when this was sent — some contacts were left
+/** "The segment hit the 5,000 cap when this was sent — some contacts were left
  *  out." — shown wherever a campaign's PERSISTED `audienceTruncated` is true
  *  (sending/sent/failed views); the exact count isn't stored (only the
  *  boolean — see `schema/campaigns.ts`), unlike the pre-send confirm, which
@@ -61,8 +68,8 @@ function AudienceCapWarning({ truncated }: { truncated: boolean | undefined }) {
   if (!truncated) return null;
   return (
     <Text className="mt-1 text-xs text-warn">
-      Audience hit the 5,000 cap when this was sent — some contacts were left out. Raise the
-      cap deliberately if this audience needs to reach everyone.
+      The segment hit the 5,000 cap when this was sent — some contacts were left out. Raise
+      the cap deliberately if this segment needs to reach everyone.
     </Text>
   );
 }
@@ -123,7 +130,7 @@ export function CampaignStatusCard({
           <AudienceCapWarning truncated={campaign.audienceTruncated} />
           {campaign.status === "failed" ? (
             <Text className="mt-1 text-sm text-danger">
-              {campaign.error ?? "The send didn't complete. Check the campaign's audience and design, then try again."}
+              {campaign.error ?? "The send didn't complete. Check the email's segment and design, then try again."}
             </Text>
           ) : null}
         </View>
@@ -244,7 +251,7 @@ function RequestApprovalRow({
   return (
     <View className="mt-3 gap-2">
       <Text className="text-sm text-muted">
-        {hasAudience ? "Ready to submit for review." : "Pick an audience above before submitting."}
+        {hasAudience ? "Ready to submit for review." : "Pick a segment above before submitting."}
       </Text>
       {!hasSubject ? (
         <Text className="text-xs text-warn">Add a subject line before requesting approval.</Text>
@@ -325,7 +332,7 @@ function RequestApprovalModal({
               label="Purpose"
               value={purpose}
               onChangeText={setPurpose}
-              placeholder="Why is this campaign going out?"
+              placeholder="Why is this email going out?"
               multiline
               numberOfLines={3}
               autoFocus
@@ -345,7 +352,7 @@ function RequestApprovalModal({
             />
             {preview ? (
               <Text className="text-xs text-muted">
-                Sends to {pluralCount(preview.count, "person")} once approved.
+                Sends to {pluralPeople(preview.count)} once approved.
               </Text>
             ) : null}
           </View>
@@ -396,7 +403,7 @@ function PendingSubmitterView({
           onPress={() =>
             confirmAction({
               title: "Cancel this approval request?",
-              message: "The campaign goes back to draft — you can resubmit later.",
+              message: "The email goes back to draft — you can resubmit later.",
               confirmLabel: "Cancel request",
               destructive: true,
               onConfirm: () => {
@@ -414,6 +421,74 @@ function PendingSubmitterView({
 }
 
 // ── pending_approval — reviewer's view ──────────────────────────────────────
+
+/** The sample recipient the review render is addressed to — never sent
+ *  anywhere, and the same one the composer previews against
+ *  (`designer/DocumentComposer.tsx#PREVIEW_RECIPIENT`) so the two screens show
+ *  one email. */
+const REVIEW_RECIPIENT = { name: "Ada Lovelace", email: "ada@example.com" };
+
+/**
+ * THE EMAIL, at the top of the review card.
+ *
+ * This is a DESIGN approval: a reviewer is being asked whether this email
+ * should go to several thousand people. The card used to show the segment,
+ * the recipient count, the purpose and the subject line — everything ABOUT
+ * the email and nothing OF it, with not even a link to the composer. The one
+ * artifact under review was the only thing missing, so "Approve" meant
+ * approving a description.
+ *
+ * Rendered exactly as `design.tsx` renders its live preview — same
+ * `renderCampaignEmail`, same sample recipient — because a reviewer and a
+ * designer disagreeing about what the email looks like is the failure this is
+ * here to prevent. The full-height composer (read-only for a submitted
+ * campaign) is one tap away for anything this pane is too small for.
+ */
+function ReviewEmailPreview({ campaign }: { campaign: Campaign }) {
+  const router = useRouter();
+  const html = useMemo(
+    () =>
+      renderCampaignEmail(campaign.doc as EmailDocument, {
+        recipient: REVIEW_RECIPIENT,
+        unsubscribeUrl: "#",
+      }),
+    [campaign.doc],
+  );
+
+  return (
+    <View className="gap-1">
+      <View className="flex-row items-center justify-between gap-2">
+        <Text className="text-2xs font-bold uppercase tracking-wider text-faint">
+          The email
+        </Text>
+        <Pressable
+          onPress={() => router.push(`/campaign/${campaign._id}/design` as never)}
+          hitSlop={6}
+          accessibilityRole="button"
+          accessibilityLabel="Open this email in the composer"
+        >
+          <Text className="text-xs font-semibold text-accent">Open full size</Text>
+        </Pressable>
+      </View>
+      <Text className="text-sm text-ink">{campaign.subject}</Text>
+      {campaign.previewText ? (
+        <Text className="text-xs text-muted">{campaign.previewText}</Text>
+      ) : null}
+      <Text className="mb-1 text-xs text-muted">
+        From {campaign.fromEmail
+          ? formatSenderDisplay(campaign.fromName, campaign.fromEmail)
+          : "the org's default sender"}
+      </Text>
+      {campaign.doc.blocks.length === 0 ? (
+        <Text className="text-sm text-warn">
+          This email has no design yet — there is nothing to approve.
+        </Text>
+      ) : (
+        <EmailHtmlPreview html={html} height={420} />
+      )}
+    </View>
+  );
+}
 
 function ReviewCard({
   campaign,
@@ -439,7 +514,11 @@ function ReviewCard({
     try {
       await run(fn, {
         errorTitle:
-          kind === "approve" ? "Couldn't approve" : kind === "deny" ? "Couldn't deny" : "Couldn't request changes",
+          kind === "approve"
+            ? "Couldn't approve"
+            : kind === "deny"
+              ? "Couldn't reject"
+              : "Couldn't request changes",
       });
     } finally {
       setBusy(null);
@@ -461,8 +540,9 @@ function ReviewCard({
 
   return (
     <View className="mt-2 gap-3">
+      <ReviewEmailPreview campaign={campaign} />
       <View className="gap-1">
-        <Text className="text-2xs font-bold uppercase tracking-wider text-faint">Audience</Text>
+        <Text className="text-2xs font-bold uppercase tracking-wider text-faint">Segment</Text>
         <Text className="text-sm text-ink">
           {audience
             ? describeAudience(
@@ -474,12 +554,12 @@ function ReviewCard({
                 },
                 audience.excludeFilters,
               )
-            : "Audience deleted"}
+            : "Segment deleted"}
         </Text>
         <Text className="text-sm text-muted">
           {preview === undefined
-            ? "Resolving recipients…"
-            : `${pluralCount(preview.count, "recipient")}${excludedBits.length > 0 ? ` (${excludedBits.join(", ")} excluded)` : ""}`}
+            ? "Working out who this reaches…"
+            : `${pluralPeople(preview.count)}${excludedBits.length > 0 ? ` (${excludedBits.join(", ")} excluded)` : ""}`}
         </Text>
         {preview && preview.unlinkedCentralDonors > 0 ? (
           <Text className="text-xs text-muted">
@@ -491,17 +571,13 @@ function ReviewCard({
         <Text className="text-2xs font-bold uppercase tracking-wider text-faint">Purpose</Text>
         <Text className="text-sm text-ink">{campaign.purpose ?? "—"}</Text>
       </View>
-      <View className="gap-1">
-        <Text className="text-2xs font-bold uppercase tracking-wider text-faint">Subject</Text>
-        <Text className="text-sm text-ink">{campaign.subject}</Text>
-      </View>
       {approval?.submitterName ? (
         <Text className="text-xs text-muted">Submitted by {approval.submitterName}</Text>
       ) : null}
 
       <View className="flex-row flex-wrap justify-end gap-2">
         <Button
-          title="Deny"
+          title="Reject"
           variant="secondary"
           size="sm"
           disabled={busy !== null}
@@ -537,9 +613,9 @@ function ReviewCard({
       ) : null}
       {modal === "deny" ? (
         <NoteModal
-          title="Deny this campaign"
-          prompt="Why is this campaign being denied? The submitter will see this note."
-          submitLabel="Deny"
+          title="Reject this email"
+          prompt="Why is this email being rejected? The submitter will see this note."
+          submitLabel="Reject"
           destructive
           onCancel={() => setModal(null)}
           onSubmit={async (note) => {
@@ -640,7 +716,7 @@ function DeniedActions({ campaign, run }: { campaign: Campaign; run: ActionRunne
         onPress={() => {
           setBusy(true);
           void run(() => revert({ campaignId: campaign._id }), {
-            errorTitle: "Couldn't move this campaign back to draft",
+            errorTitle: "Couldn't move this email back to draft",
           }).finally(() => setBusy(false));
         }}
       />
@@ -688,16 +764,18 @@ function DraftSendRow({
       ? formatSenderDisplay(campaign.fromName, campaign.fromEmail)
       : (senderDefaults?.orgFromAddress ?? "the org default sender");
     const capNote = preview.truncated
-      ? ` Audience hit the 5,000 cap — ${pluralCount(preview.truncatedCount, "person")} left out; raise the cap deliberately.`
+      ? ` The segment hit the 5,000 cap — ${pluralPeople(preview.truncatedCount)} left out; raise the cap deliberately.`
       : "";
+    // The record is a `campaigns` row and the mutation is `campaigns.send`;
+    // every word on screen says "email" — see docs/guides/email-terminology.md.
     confirmAction({
-      title: retry ? "Retry sending this campaign?" : "Send campaign?",
-      message: `Sends to ${preview.count} ${preview.count === 1 ? "person" : "people"}${excludedNote} as ${senderDisplay}.${capNote} This can't be undone.`,
+      title: retry ? "Retry sending this email?" : "Send this email?",
+      message: `Sends to ${pluralPeople(preview.count)}${excludedNote} from ${senderDisplay}.${capNote} This can't be undone.`,
       confirmLabel: retry ? "Retry send" : "Send",
       onConfirm: () => {
         setSending(true);
         void run(() => send({ campaignId: campaign._id }), {
-          errorTitle: retry ? "Couldn't retry the send" : "Couldn't send campaign",
+          errorTitle: retry ? "Couldn't retry the send" : "Couldn't send this email",
         }).finally(() => setSending(false));
       },
     });
@@ -706,7 +784,7 @@ function DraftSendRow({
   return (
     <View className={retry ? "gap-2" : "mt-3 gap-2"}>
       <Text className="text-sm text-muted">
-        {audienceName ? `Audience: ${audienceName}` : "Pick an audience above before sending."}
+        {audienceName ? `Segment: ${audienceName}` : "Pick a segment above before sending."}
       </Text>
       {!hasSubject ? (
         <Text className="text-xs text-warn">Add a subject line before sending.</Text>
@@ -716,7 +794,7 @@ function DraftSendRow({
       ) : null}
       <View className="flex-row justify-end">
         <Button
-          title={retry ? "Retry send" : "Send campaign"}
+          title={retry ? "Retry send" : "Send email"}
           icon="send"
           onPress={handleSend}
           loading={sending}
