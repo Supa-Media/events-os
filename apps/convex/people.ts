@@ -8,6 +8,8 @@ import { query, QueryCtx } from "./_generated/server";
 import { Doc, Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
 import { paginationOptsValidator } from "convex/server";
+import { paginator } from "convex-helpers/server/pagination";
+import schema from "./schema";
 import {
   requireUserId,
   requireChapterId,
@@ -278,12 +280,20 @@ async function getGiverPersonIds(
   return ids;
 }
 
-/** One indexed, sorted `.paginate()` call per `sortBy` column — a compound
+/** One indexed, sorted paginated read per `sortBy` column — a compound
  *  index per column (`schema/people.ts`) so the DB itself returns rows
  *  already in the requested order across the whole walk, cursor included.
  *  Written as an if/else over three concrete index names rather than one
  *  dynamic `withIndex(name, …)` call so each branch keeps full type
- *  inference on its own `q.eq`. */
+ *  inference on its own `q.eq`.
+ *
+ *  USES `convex-helpers`' `paginator`, NOT `ctx.db…paginate()`. `listPaginated`
+ *  calls this repeatedly in ONE query to backfill a page that filtering shrank,
+ *  and built-in `.paginate()` permits exactly one paginated query per function
+ *  — the second call threw "This query or mutation function ran multiple
+ *  paginated queries" and took the whole People tab down in production
+ *  (2026-07-27). `paginator` is documented as safe to call multiple times in a
+ *  single query. Do NOT swap this back to `ctx.db`. */
 async function paginateSortedPeople(
   ctx: QueryCtx,
   chapterId: Id<"chapters">,
@@ -292,20 +302,20 @@ async function paginateSortedPeople(
   opts: { numItems: number; cursor: string | null },
 ) {
   if (sortBy === "lastName") {
-    return await ctx.db
+    return await paginator(ctx.db, schema)
       .query("people")
       .withIndex("by_chapter_and_lastName", (q) => q.eq("chapterId", chapterId))
       .order(order)
       .paginate(opts);
   }
   if (sortBy === "status") {
-    return await ctx.db
+    return await paginator(ctx.db, schema)
       .query("people")
       .withIndex("by_chapter_and_status", (q) => q.eq("chapterId", chapterId))
       .order(order)
       .paginate(opts);
   }
-  return await ctx.db
+  return await paginator(ctx.db, schema)
     .query("people")
     .withIndex("by_chapter_and_name", (q) => q.eq("chapterId", chapterId))
     .order(order)
