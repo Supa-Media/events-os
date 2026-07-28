@@ -86,9 +86,10 @@ import { canvasTheme } from "./canvas/canvasStyles";
 import { documentWarnings } from "./canvas/blockWarnings";
 import {
   canMoveBlock,
-  canvasKeyAction,
-  keyEventIsEditable,
+  composerKeyIntent,
+  keyEventIsInsideCanvas,
   selectionAfterDelete,
+  selectionAfterHistoryChange,
   stepSelection,
 } from "./canvas/canvasSelection";
 
@@ -152,6 +153,10 @@ export function DocumentComposer({
   const [saveState, setSaveState] = useState<SaveState>("idle");
   const [saveError, setSaveError] = useState<string | null>(null);
   const [canvasWidth, setCanvasWidth] = useState(0);
+  // The canvas's own DOM subtree on web, so its keyboard shortcuts can be
+  // scoped to it (see `keyEventIsInsideCanvas`). Null on native, where there
+  // is no keyboard handler at all.
+  const canvasRef = useRef<View | null>(null);
   const lastSavedRef = useRef<EmailDocument | null>(null);
   // A "latest" ref for `history` — the debounce timer's closure (and the
   // save-completion callback below) is captured at EFFECT-SETUP time, so
@@ -343,8 +348,35 @@ export function DocumentComposer({
     return true;
   }, []);
 
-  const handleUndo = useCallback(() => setHistory((h) => (h ? undoHistory(h) : h)), []);
-  const handleRedo = useCallback(() => setHistory((h) => (h ? redoHistory(h) : h)), []);
+  /**
+   * Undo/redo, and the SELECTION that has to move with them.
+   *
+   * Neither history step knows about selection, so undoing the insert of a
+   * block used to leave `selectedId` pointing at a block that no longer
+   * exists — nothing on screen was ringed, the inspector was empty, and the
+   * next ArrowDown jumped to the first block of the document rather than
+   * stepping from where the designer was. A selection that has been undone
+   * away is dropped, and any in-place edit with it.
+   */
+  const stepHistory = useCallback(
+    (step: (h: History<EmailDocument>) => History<EmailDocument>) => {
+      // Read through the ref rather than updating inside `setHistory`: the
+      // selection has to move in the same commit, and a state updater that
+      // calls other setters is one React is free to run twice.
+      const current = historyRef.current;
+      if (current === null) return;
+      const next = step(current);
+      if (next === current) return;
+      const ids = next.present.blocks.map((b) => b.id);
+      setHistory(next);
+      setSelectedId((cur) => selectionAfterHistoryChange(ids, cur));
+      setEditing(null);
+    },
+    [],
+  );
+
+  const handleUndo = useCallback(() => stepHistory(undoHistory), [stepHistory]);
+  const handleRedo = useCallback(() => stepHistory(redoHistory), [stepHistory]);
 
   const blockIds = useMemo(() => doc.blocks.map((b) => b.id), [doc]);
   const warnings = useMemo(() => documentWarnings(doc), [doc]);
@@ -354,39 +386,60 @@ export function DocumentComposer({
   // Keyboard: undo/redo as before, plus canvas selection. Web only (mirrors
   // SiteMapEditor); a phone has no keyboard to serve here.
   //
-  // Every branch bails inside a text field — Backspace in a heading you are
-  // typing must be a backspace, never "delete this block", which is the single
-  // most destructive way to get a canvas shortcut wrong.
+  // Two guards, and both of them are load-bearing:
+  //
+  //  1. EVERY branch bails wherever the user is typing — not just in an
+  //     `<input>`, but in any contenteditable editor, which is what the
+  //     inspector's CodeMirror markdown box actually is. Backspace in a body
+  //     you are writing must be a backspace, never "delete this block", which
+  //     is the single most destructive way to get a canvas shortcut wrong.
+  //  2. The CANVAS's keys are claimed only for events that came from inside
+  //     the canvas. The listener has to be on `document` because undo/redo
+  //     belongs to the whole editor, but a window-wide `preventDefault()` on
+  //     ArrowUp/ArrowDown is a screen that has stopped scrolling by keyboard.
   useEffect(() => {
     if (Platform.OS !== "web" || typeof document === "undefined") return;
     function onKeyDown(e: KeyboardEvent) {
-      const tag = (e.target as HTMLElement | null)?.tagName;
-      if (keyEventIsEditable(tag)) return;
+      const target = e.target as HTMLElement | null;
+      const intent = composerKeyIntent(
+        // Field by field: a DOM event's `metaKey`/`altKey` live on its
+        // prototype, so spreading one hands over an object with none of them.
+        {
+          key: e.key,
+          altKey: e.altKey,
+          metaKey: e.metaKey,
+          ctrlKey: e.ctrlKey,
+          shiftKey: e.shiftKey,
+          target,
+        },
+        {
+          editable,
+          insideCanvas: keyEventIsInsideCanvas(
+            canvasRef.current as unknown as HTMLElement | null,
+            target,
+          ),
+        },
+      );
+      if (intent.kind === "ignore") return;
 
-      const mod = e.metaKey || e.ctrlKey;
-      if (mod && e.key.toLowerCase() === "z") {
-        e.preventDefault();
-        if (e.shiftKey) handleRedo();
-        else handleUndo();
-        return;
-      }
-      if (!editable) return;
+      // Anything the composer claims, it claims WHOLE — including a shortcut
+      // that turns out to have nothing to act on. Returning before this on an
+      // empty selection is how Cmd+D used to open the bookmark dialog.
+      e.preventDefault();
+      if (intent.kind === "undo") return handleUndo();
+      if (intent.kind === "redo") return handleRedo();
 
-      const action = canvasKeyAction(e);
-      if (action === null) return;
+      const { action } = intent;
       if (action === "deselect") {
-        e.preventDefault();
         setSelectedId(null);
         setEditing(null);
         return;
       }
       if (action === "select-prev" || action === "select-next") {
-        e.preventDefault();
         setSelectedId((cur) => stepSelection(blockIds, cur, action === "select-prev" ? -1 : 1));
         return;
       }
       if (selectedId === null) return;
-      e.preventDefault();
       if (action === "move-up") handleMove(selectedId, -1);
       else if (action === "move-down") handleMove(selectedId, 1);
       else if (action === "duplicate") handleDuplicate(selectedId);
@@ -482,7 +535,19 @@ export function DocumentComposer({
           </Text>
         </View>
       ) : (
-        <View onLayout={(e) => setCanvasWidth(e.nativeEvent.layout.width)}>
+        <View
+          ref={canvasRef}
+          // Focusable by CLICK but not by Tab. Scoping the canvas's shortcuts
+          // to its own subtree only helps if clicking the canvas actually puts
+          // focus inside it; a block's `Pressable` does that, but the page
+          // around the document doesn't, and browsers differ on which elements
+          // take focus from a mouse. `-1` makes the answer the same
+          // everywhere without adding a stop to the tab order. No focus ring
+          // follows: UA styles paint one on `:focus-visible`, which a click
+          // isn't.
+          tabIndex={-1}
+          onLayout={(e) => setCanvasWidth(e.nativeEvent.layout.width)}
+        >
           <EmailCanvas
             doc={doc}
             theme={theme}

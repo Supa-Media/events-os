@@ -116,6 +116,37 @@ function altWarnings(
 }
 
 /**
+ * A required-and-now-typeable string that has been emptied.
+ *
+ * `validateEmailDocument` refuses an eyebrow, a quote or a poll question whose
+ * text is `""` (`emailBlocks.ts` — "must be a non-empty string"), and every
+ * one of those is now a live `TextInput` ON THE CANVAS: backspacing the last
+ * character commits the empty string and takes autosave down for the whole
+ * document. Before the canvas they were seeded once by `defaultBlockFor` and
+ * had no editor that could clear them, which is why this file used to say they
+ * carried nothing the gate could refuse.
+ *
+ * Deliberately `.length === 0`, never `.trim()`: the validator tests the raw
+ * string, so a single space IS a saveable value and warning about it would be
+ * crying wolf.
+ */
+function emptyTextWarnings(
+  value: string,
+  key: string,
+  field: string,
+  noun: string,
+): BlockWarning[] {
+  if (typeof value === "string" && value.length > 0) return [];
+  return [
+    blocking(
+      `${key}-empty`,
+      field,
+      `This ${noun} is empty. Click it on the canvas and type something — the email can't be saved (including edits to every other block) until it has some text.`,
+    ),
+  ];
+}
+
+/**
  * One card's warnings — reused verbatim for each cell of a `columns` block,
  * exactly as `CardContentEditor` was, so a column can never be checked more
  * loosely than a full-width card.
@@ -339,16 +370,38 @@ function collect(block: EmailBlock): BlockWarning[] {
       return out;
     }
 
-    case "poll":
-      return pollHasBlankLabel(block.options)
-        ? [
-            blocking(
-              "option-label",
-              "Options",
-              "Every option needs a label before this email can be saved.",
-            ),
-          ]
-        : [];
+    case "eyebrow":
+      // Typed on the canvas (`BlockView`'s eyebrow `EditableField`), so
+      // backspacing the last character commits `""` — which
+      // `validateEmailDocument` refuses outright.
+      return emptyTextWarnings(block.text, "text", "Eyebrow", "eyebrow");
+
+    case "quote": {
+      const out = emptyTextWarnings(block.text, "text", "Quote", "quote");
+      // `attribution` is deliberately NOT checked: the contract accepts any
+      // string including "", and the canvas only shows the row at all when
+      // the block is selected.
+      return out;
+    }
+
+    case "poll": {
+      const out = emptyTextWarnings(
+        block.question,
+        "question",
+        "Question",
+        "poll question",
+      );
+      if (pollHasBlankLabel(block.options)) {
+        out.push(
+          blocking(
+            "option-label",
+            "Options",
+            "Every option needs a label before this email can be saved.",
+          ),
+        );
+      }
+      return out;
+    }
 
     case "card":
       return cardContentWarnings(block, "card", "");
@@ -359,10 +412,17 @@ function collect(block: EmailBlock): BlockWarning[] {
       );
 
     default:
-      // heading / text / divider / spacer / eyebrow / quote / hairline carry
-      // no field the gate can refuse once the block exists — their required
-      // strings are seeded non-empty by `defaultBlockFor` and the editors
-      // cannot clear them into an invalid state.
+      // heading / text / divider / spacer / hairline carry no field the gate
+      // can refuse: `heading.text` and `text.markdown` are valid EMPTY (the
+      // canvas draws a placeholder), and the rest have no strings at all.
+      //
+      // Anything added to this list needs checking against
+      // `validateEmailDocument` first, not assumed — `eyebrow`, `quote` and
+      // `poll` used to sit here on exactly that assumption, and stayed here
+      // through the PR that made all three typeable on the canvas. The
+      // generative sweep in `blockWarnings.test.ts` is what catches the next
+      // one: it enumerates every canvas-clearable field of every block kind
+      // and holds this module to the gate's own answer.
       return [];
   }
 }

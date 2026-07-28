@@ -35,8 +35,10 @@ import {
   EYEBROW_MARGIN_BOTTOM,
   FOOTER_LOGO,
   POLL_MARGIN_BOTTOM,
+  QUOTE_ATTRIBUTION_PREFIX,
   bleedPlaceholderStyle,
   bodyTextStyle,
+  buttonAlign,
   buttonBoxStyle,
   buttonLabelStyle,
   cardAlign,
@@ -190,7 +192,11 @@ export function BlockView(props: BlockViewProps) {
         <View
           style={{
             marginBottom: BUTTON_MARGIN_BOTTOM,
-            alignItems: block.align === "center" ? "center" : "flex-start",
+            // A button with no `align` of its own SENDS centred
+            // (`renderButtonBlock`), and `defaultBlockFor` sets none — so
+            // every freshly added button hit this. The default is read from
+            // the geometry table, not restated here.
+            alignItems: buttonAlign(block.align) === "center" ? "center" : "flex-start",
           }}
         >
           <View style={buttonBoxStyle(t, variant, null)}>
@@ -235,7 +241,12 @@ export function BlockView(props: BlockViewProps) {
               {...props}
               field="attribution"
               value={block.attribution ?? ""}
-              placeholder="— who said it"
+              // The em dash is the RENDERER's (`renderQuoteBlock` emits
+              // `— ${attribution}`), so the canvas draws it and the field
+              // edits the bare name. A placeholder carrying the dash invited
+              // typing a second one, and the email shipped "— — Ada".
+              staticPrefix={QUOTE_ATTRIBUTION_PREFIX}
+              placeholder="Who said it"
               label="attribution"
               style={quoteAttributionStyle(t, IS_WEB)}
               onChangeText={(attribution) => props.onChange({ attribution })}
@@ -565,6 +576,7 @@ function EditableField({
   onChangeText,
   multiline,
   renderStatic,
+  staticPrefix,
 }: {
   field: string;
   value: string;
@@ -578,6 +590,7 @@ function EditableField({
   onChangeText: (next: string) => void;
   multiline?: boolean;
   renderStatic?: () => React.ReactNode;
+  staticPrefix?: string;
 }) {
   return (
     <CanvasEditableText
@@ -592,6 +605,7 @@ function EditableField({
       multiline={multiline}
       accessibilityLabel={label}
       renderStatic={renderStatic}
+      staticPrefix={staticPrefix}
     />
   );
 }

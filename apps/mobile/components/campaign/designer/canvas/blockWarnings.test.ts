@@ -6,6 +6,7 @@ import {
   type EmailBlock,
   type EmailDocument,
 } from "@events-os/shared";
+import { BLOCK_KINDS } from "../../../../lib/emailDesigner";
 import {
   blockWarnings,
   cardContentWarnings,
@@ -156,6 +157,7 @@ describe("blockWarnings — the states the write gate refuses", () => {
   test("the kinds with nothing the gate can refuse stay silent", () => {
     const quiet: EmailBlock[] = [
       { id: "1", kind: "heading", text: "Hi" },
+      // Both of these are valid EMPTY — the canvas draws a placeholder.
       { id: "2", kind: "text", markdown: "" },
       { id: "3", kind: "divider" },
       { id: "4", kind: "spacer", size: "md" },
@@ -164,6 +166,33 @@ describe("blockWarnings — the states the write gate refuses", () => {
       { id: "7", kind: "quote", text: "A line" },
     ];
     for (const block of quiet) expect(blockWarnings(block)).toEqual([]);
+  });
+
+  test("an eyebrow typed empty on the canvas is blocking", () => {
+    // The canvas made this typeable (`BlockView`'s eyebrow `EditableField`),
+    // and the gate refuses `text: ""` — so backspacing the last character
+    // stopped autosave for the entire document with nothing on screen.
+    expect(keys({ id: "e", kind: "eyebrow", text: "", icon: "◆" })).toEqual(["text-empty"]);
+    expect(keys({ id: "e", kind: "eyebrow", text: " " })).toEqual([]);
+  });
+
+  test("a quote typed empty is blocking; its attribution is free to be empty", () => {
+    expect(keys({ id: "q", kind: "quote", text: "" })).toEqual(["text-empty"]);
+    expect(keys({ id: "q", kind: "quote", text: "A line", attribution: "" })).toEqual([]);
+  });
+
+  test("a poll's question is checked as well as its option labels", () => {
+    const options = [
+      { id: "1", label: "A" },
+      { id: "2", label: "" },
+    ];
+    expect(keys({ id: "p", kind: "poll", question: "", options })).toEqual([
+      "question-empty",
+      "option-label",
+    ]);
+    expect(
+      keys({ id: "p", kind: "poll", question: "", options: [{ id: "1", label: "A" }] }),
+    ).toEqual(["question-empty"]);
   });
 
   test("cardContentWarnings is the same check for a card and for a column", () => {
@@ -205,7 +234,7 @@ describe("documentWarnings", () => {
 });
 
 /**
- * The property that actually matters.
+ * THE PROPERTY THAT ACTUALLY MATTERS.
  *
  * A warning is only worth anything if it fires on EXACTLY the states the
  * server refuses: one that fires where the gate is happy cries wolf, and a
@@ -213,93 +242,215 @@ describe("documentWarnings", () => {
  * because a rejected document is rejected whole and takes every other block's
  * edits down with it.
  *
- * So every case below is driven through the REAL `validateEmailDocument`, and
- * "is there a blocking warning?" must agree with "did the gate refuse it?".
+ * ── Why this is generated rather than listed ───────────────────────────────
+ * It used to be a hand-picked list of two dozen cases, and it was green the
+ * whole time three canvas-editable fields — an eyebrow's text, a quote's text,
+ * a poll's question — could each be backspaced into a document the gate
+ * refuses with no badge, no toolbar chip and no warning anywhere. A list only
+ * ever covers the cases someone thought of; the next field the canvas makes
+ * typeable is exactly the one nobody adds a case for.
+ *
+ * So: every block kind, and for each, EVERY string the canvas can clear,
+ * found by walking the block rather than by being named. A new field on a
+ * block is swept the day it is added, without anyone remembering to.
  */
 describe("blocking warnings agree with the real write gate", () => {
-  const cases: { name: string; blocks: EmailBlock[] }[] = [
-    { name: "empty document", blocks: [] },
-    { name: "clean heading", blocks: [{ id: "1", kind: "heading", text: "Hi" }] },
-    { name: "button, no url", blocks: [{ id: "1", kind: "button", label: "Go", url: "" }] },
-    { name: "button, bad scheme", blocks: [{ id: "1", kind: "button", label: "Go", url: "tel:1" }] },
-    {
-      name: "button, complete",
-      blocks: [{ id: "1", kind: "button", label: "Go", url: "https://x.test" }],
-    },
-    { name: "image, no url", blocks: [{ id: "1", kind: "image", url: "", alt: "" }] },
-    {
-      name: "image, url with empty alt (saveable)",
-      blocks: [{ id: "1", kind: "image", url: "https://x.test/a.png", alt: "" }],
-    },
-    {
-      name: "image, url with missing alt",
-      blocks: [{ id: "1", kind: "image", url: "https://x.test/a.png" } as unknown as EmailBlock],
-    },
-    {
-      name: "image, bad href",
-      blocks: [
-        { id: "1", kind: "image", url: "https://x.test/a.png", alt: "A", href: "data:x" },
-      ],
-    },
-    { name: "banner, unfilled", blocks: [{ id: "1", kind: "bleed_image", alt: "" }] },
-    {
-      name: "banner, bad scheme",
-      blocks: [{ id: "1", kind: "bleed_image", url: "ftp://x/a.png", alt: "A" }],
-    },
-    { name: "footer, bare", blocks: [{ id: "1", kind: "footer", navLine: "Public Worship" }] },
-    {
-      name: "footer, empty logo url",
-      blocks: [{ id: "1", kind: "footer", logoUrl: "" }],
-    },
-    {
-      name: "footer, half link",
-      blocks: [{ id: "1", kind: "footer", links: [{ label: "Insta", url: "" }] }],
-    },
-    {
-      name: "poll, blank option",
-      blocks: [
-        {
-          id: "1",
-          kind: "poll",
-          question: "Which?",
-          options: [
-            { id: "a", label: "A" },
-            { id: "b", label: "" },
-          ],
-        },
-      ],
-    },
-    { name: "card, label without url", blocks: [{ id: "1", kind: "card", ctaLabel: "Go" }] },
-    { name: "card, url without label", blocks: [{ id: "1", kind: "card", ctaUrl: "https://x.t" }] },
-    {
-      name: "card, paired cta with bad scheme",
-      blocks: [{ id: "1", kind: "card", ctaLabel: "Go", ctaUrl: "tel:1" }],
-    },
-    {
-      name: "card, image without alt",
-      blocks: [{ id: "1", kind: "card", imageUrl: "https://x.test/a.png" }],
-    },
-    {
-      name: "card, empty image url",
-      blocks: [{ id: "1", kind: "card", imageUrl: "", imageAlt: "" }],
-    },
-    {
-      name: "columns, one bad column",
-      blocks: [
-        { id: "1", kind: "columns", columns: [{ heading: "A" }, { ctaUrl: "https://x.t" }] },
-      ],
-    },
-    {
-      name: "columns, both fine",
-      blocks: [{ id: "1", kind: "columns", columns: [{ heading: "A" }, { heading: "B" }] }],
-    },
-  ];
+  /**
+   * Keys that are NOT free text somebody types.
+   *
+   * Ids (a vote is recorded against a poll option's id), the discriminant, and
+   * the closed choices, which are chosen from toggles that can only ever write
+   * a legal value. Everything NOT listed here is treated as clearable — the
+   * list is deliberately the small closed one, so an unfamiliar new field is
+   * covered by default rather than skipped by default.
+   */
+  const NOT_TYPED_TEXT = new Set([
+    "id",
+    "kind",
+    "level",
+    "size",
+    "width",
+    "variant",
+    "align",
+    "inset",
+    "imageSide",
+    "imageWidthPct",
+    "ctaStyle",
+  ]);
 
-  for (const { name, blocks } of cases) {
-    test(name, () => {
-      const result = validateEmailDocument(doc(blocks));
-      const blocking = documentWarnings(doc(blocks)).blockingCount > 0;
-      expect(blocking).toBe(!result.ok);
+  /** Every string the canvas (or the inspector) could put an empty value into,
+   *  as a path into the block. */
+  function typedStringPaths(value: unknown, path: readonly string[] = []): string[][] {
+    if (typeof value === "string") return [[...path]];
+    if (Array.isArray(value)) {
+      return value.flatMap((item, i) => typedStringPaths(item, [...path, String(i)]));
+    }
+    if (value !== null && typeof value === "object") {
+      return Object.entries(value as Record<string, unknown>).flatMap(([key, child]) =>
+        NOT_TYPED_TEXT.has(key) ? [] : typedStringPaths(child, [...path, key]),
+      );
+    }
+    return [];
+  }
+
+  function withValueAt<T>(source: T, path: readonly string[], value: string): T {
+    const copy: unknown = Array.isArray(source)
+      ? [...(source as unknown[])]
+      : { ...(source as object) };
+    const [head, ...rest] = path;
+    const container = copy as Record<string, unknown>;
+    container[head] =
+      rest.length === 0 ? value : withValueAt(container[head], rest, value);
+    return copy as T;
+  }
+
+  /**
+   * One fully-populated, VALID block per kind — every field the canvas can
+   * type into filled in, so the sweep below has something to clear. Data, not
+   * a case list: the cases come out of walking these.
+   */
+  const cardContent = {
+    variant: "feature" as const,
+    eyebrow: "Small line",
+    heading: "Card heading",
+    body: "Body **copy**.",
+    attribution: "Ada Lovelace",
+    ctaLabel: "Read more",
+    ctaUrl: "https://x.test/more",
+    imageUrl: "https://x.test/a.png",
+    imageAlt: "A picture",
+    imageSide: "left" as const,
+    imageWidthPct: 44,
+    align: "left" as const,
+    ctaStyle: "filled" as const,
+  };
+
+  const populated: Record<string, EmailBlock> = {
+    heading: { id: "x", kind: "heading", text: "Heading", level: 1 },
+    text: { id: "x", kind: "text", markdown: "One.\n\nTwo." },
+    image: {
+      id: "x",
+      kind: "image",
+      url: "https://x.test/a.png",
+      alt: "A picture",
+      href: "https://x.test",
+      width: "half",
+    },
+    button: {
+      id: "x",
+      kind: "button",
+      label: "Give",
+      url: "https://x.test",
+      align: "center",
+      variant: "filled",
+    },
+    bleed_image: {
+      id: "x",
+      kind: "bleed_image",
+      url: "https://x.test/b.png",
+      alt: "A banner",
+      href: "https://x.test",
+      inset: true,
+    },
+    hairline: { id: "x", kind: "hairline" },
+    divider: { id: "x", kind: "divider" },
+    spacer: { id: "x", kind: "spacer", size: "md" },
+    eyebrow: { id: "x", kind: "eyebrow", text: "THIS MONTH", icon: "◆" },
+    quote: { id: "x", kind: "quote", text: "A line worth pulling out.", attribution: "Ada" },
+    poll: {
+      id: "x",
+      kind: "poll",
+      question: "What should we do next?",
+      options: [
+        { id: "o1", label: "Option 1" },
+        { id: "o2", label: "Option 2" },
+      ],
+    },
+    footer: {
+      id: "x",
+      kind: "footer",
+      logoUrl: "https://x.test/logo.png",
+      logoAlt: "Public Worship",
+      navLine: "Sundays · 10am",
+      links: [
+        { label: "Instagram", url: "https://ig.test" },
+        { label: "Give", url: "https://give.test" },
+      ],
+    },
+    card: { id: "x", kind: "card", ...cardContent },
+    columns: {
+      id: "x",
+      kind: "columns",
+      columns: [cardContent, { ...cardContent, variant: "outlined" }],
+    },
+  };
+
+  /** The assertion, both ways round: a blocking warning iff the gate refuses.
+   *  The gate's own message rides along on both sides so a failure names the
+   *  rule that disagreed instead of just "expected true to be false". */
+  function expectParity(label: string, block: EmailBlock) {
+    const document = doc([block]);
+    const gate = validateEmailDocument(document);
+    const summary = documentWarnings(document);
+    const reason = gate.ok ? null : gate.error;
+    expect({ label, blocking: summary.blockingCount > 0, reason }).toEqual({
+      label,
+      blocking: !gate.ok,
+      reason,
     });
   }
+
+  test("the fixtures cover every block kind the palette can add", () => {
+    // A new block kind fails HERE — loudly, and before it can reach the sweep
+    // as a silent hole.
+    expect(Object.keys(populated).sort()).toEqual([...BLOCK_KINDS].sort());
+  });
+
+  test("every populated fixture is saveable and warning-free", () => {
+    for (const [kind, block] of Object.entries(populated)) {
+      expect({ kind, ...validateEmailDocument(doc([block])) }).toEqual({ kind, ok: true, doc: doc([block]) });
+      expect({ kind, warnings: blockWarnings(block) }).toEqual({ kind, warnings: [] });
+    }
+  });
+
+  test("an empty document is saveable and silent", () => {
+    expectParity("empty document", { id: "x", kind: "divider" });
+    expect(documentWarnings(doc([])).blockingCount).toBe(0);
+    expect(validateEmailDocument(doc([])).ok).toBe(true);
+  });
+
+  /**
+   * The sweep. For every kind, for every string the canvas can clear:
+   *  - `""`, which is what backspacing the last character commits, and
+   *  - `" "`, which the gate accepts wherever it tests `.length > 0` — so a
+   *    warning that trimmed would be crying wolf on a document that saves.
+   */
+  for (const [kind, block] of Object.entries(populated)) {
+    const paths = typedStringPaths(block);
+    for (const path of paths) {
+      const field = path.join(".");
+      for (const [name, value] of [
+        ["cleared", ""],
+        ["a single space", " "],
+      ] as const) {
+        test(`${kind}: ${field} ${name}`, () => {
+          expectParity(`${kind}.${field} = ${JSON.stringify(value)}`, withValueAt(block, path, value));
+        });
+      }
+    }
+  }
+
+  test("the sweep is actually sweeping — every kind contributed at least the fields it has", () => {
+    // Cheap guard against a walker bug quietly reducing the sweep to nothing:
+    // these counts are what the fixtures above contain today.
+    expect(typedStringPaths(populated.eyebrow)).toEqual([["text"], ["icon"]]);
+    expect(typedStringPaths(populated.quote)).toEqual([["text"], ["attribution"]]);
+    expect(typedStringPaths(populated.poll)).toEqual([
+      ["question"],
+      ["options", "0", "label"],
+      ["options", "1", "label"],
+    ]);
+    expect(typedStringPaths(populated.columns).length).toBeGreaterThan(10);
+    expect(typedStringPaths(populated.divider)).toEqual([]);
+  });
 });

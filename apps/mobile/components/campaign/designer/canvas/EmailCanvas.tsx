@@ -31,20 +31,25 @@ import { colors } from "../../../../lib/theme";
 import { BlockView } from "./BlockView";
 import {
   CANVAS_WIDTH,
+  FALLBACK_FOOTER_PADDING,
   WORDMARK_PADDING,
   blockGutter,
   canvasScale,
   containerStyle,
-  footerLegalStyle,
+  fallbackFooterTextStyle,
   pageStyle,
+  transformOrigin,
   wordmarkStyle,
 } from "./canvasStyles";
 import { worstSeverity, type BlockWarning } from "./blockWarnings";
 
 const IS_WEB = Platform.OS === "web";
 
-/** `transformOrigin` takes a CSS string on web and a tuple on native. */
-const TOP_LEFT = IS_WEB ? "0 0" : ([0, 0] as unknown as string);
+/** `transformOrigin` takes a CSS string on web and an `[x, y, z]` TUPLE on
+ *  native, where a two-element tuple is a dev-build crash rather than a
+ *  fallback — see `canvasStyles.ts#transformOrigin`. */
+const TOP_LEFT = transformOrigin("top-left", IS_WEB);
+const TOP_RIGHT = transformOrigin("top-right", IS_WEB);
 
 /** Air around the document inside the page. The top is deeper than the sides
  *  because the FIRST block's contextual toolbar sits above it, and a toolbar
@@ -175,8 +180,8 @@ export function EmailCanvas({
               `fallbackFooter`). Drawn so the email's real ending is visible;
               it is renderer furniture and has nothing to edit. */}
           {doc.blocks.some((b) => b.kind === "footer") ? null : (
-            <View style={{ paddingHorizontal: 24, paddingTop: 8, paddingBottom: 24 }}>
-              <Text style={footerLegalStyle(theme, IS_WEB)}>
+            <View style={FALLBACK_FOOTER_PADDING}>
+              <Text style={fallbackFooterTextStyle(theme, IS_WEB)}>
                 Sent with love by Public Worship · Chapter OS{"\n"}
                 Unsubscribe from all Public Worship emails
               </Text>
@@ -282,7 +287,7 @@ function CanvasBlock({
             top: 0,
             right: blockGutter(block),
             transform: [{ scale: inverse }],
-            transformOrigin: IS_WEB ? "100% 0" : ([1, 0] as unknown as string),
+            transformOrigin: TOP_RIGHT,
           }}
         >
           <WarningBadge count={warnings.length} severity={severity} onPress={onSelect} />

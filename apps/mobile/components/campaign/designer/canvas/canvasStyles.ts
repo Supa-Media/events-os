@@ -56,6 +56,31 @@ export function canvasScale(availableWidth: number): number {
   return Math.min(1, availableWidth / CANVAS_WIDTH);
 }
 
+/**
+ * `transformOrigin`, in the form the CURRENT PLATFORM actually accepts.
+ *
+ * RN Web takes the CSS string. Native takes a THREE-element `[x, y, z]` tuple
+ * and `processTransformOrigin` asserts `length === 3` under `__DEV__` — a
+ * two-element tuple is an immediate red screen on a dev client, which is
+ * exactly what a `[0, 0] as unknown as string` cast bought us here before.
+ *
+ * The tuples are what `processTransformOrigin` itself derives from the
+ * equivalent CSS strings, percentages included: `["100%", 0, 0]` is the
+ * block's RIGHT edge, whereas the bare number `1` would be one PIXEL from its
+ * left — a counter-scaled badge anchored 1px from the wrong edge, and nothing
+ * on web to notice it by. `canvasStyles.test.ts` pins both against the real
+ * RN implementation.
+ */
+export type CanvasCorner = "top-left" | "top-right";
+
+export function transformOrigin(
+  corner: CanvasCorner,
+  isWeb: boolean,
+): string | (string | number)[] {
+  if (corner === "top-right") return isWeb ? "100% 0" : ["100%", 0, 0];
+  return isWeb ? "0 0" : [0, 0, 0];
+}
+
 /** The document's theme, normalized exactly as the HTML renderer normalizes
  *  it — at the edge, once, so everything downstream can assume every token. */
 export function canvasTheme(doc: EmailDocument | undefined): EmailTheme {
@@ -168,6 +193,20 @@ export function bodyTextStyle(
 export const BODY_PARAGRAPH_SPACING = G.body.marginBottom;
 export const BODY_LIST_INDENT = G.body.listIndent;
 
+/**
+ * The trailing gap under one paragraph (or list) of a body.
+ *
+ * Takes `isLast` and ignores it, ON PURPOSE: `emailRender.ts` stamps
+ * `margin:0 0 ${G.body.marginBottom}px` onto EVERY `<p>` and `<ul>` it emits,
+ * with nothing stripping it off the final child, so a canvas that zeroed the
+ * last one drew every body 12px shorter than it sends. The parameter stays so
+ * that the next person to think "surely the last paragraph shouldn't have a
+ * margin" finds this comment instead of the renderer's inbox.
+ */
+export function bodyParagraphSpacing(_isLast: boolean): number {
+  return BODY_PARAGRAPH_SPACING;
+}
+
 export function linkTextStyle(t: EmailTheme): TextStyle {
   return { color: t.link, textDecorationLine: "underline" };
 }
@@ -249,6 +288,19 @@ export function buttonLabelStyle(
 }
 
 export const BUTTON_MARGIN_BOTTOM = G.button.marginBottom;
+
+/** What a `button` block with no `align` of its own actually sends. Read from
+ *  the geometry table rather than restated, because the canvas and the
+ *  inspector both have to agree with `renderButtonBlock` — see
+ *  `EMAIL_GEOMETRY.button.defaultAlign`. */
+export const BUTTON_DEFAULT_ALIGN: "left" | "center" = G.button.defaultAlign;
+
+/** The alignment a standalone button actually renders at — the author's
+ *  `align` when set, otherwise the renderer's default. The canvas twin of
+ *  `safeAlign(block.align, G.button.defaultAlign)`. */
+export function buttonAlign(align: "left" | "center" | undefined): "left" | "center" {
+  return align === "left" || align === "center" ? align : BUTTON_DEFAULT_ALIGN;
+}
 
 // ── Cards and columns ──────────────────────────────────────────────────────
 
@@ -444,6 +496,18 @@ export function quoteTextStyle(t: EmailTheme, isWeb: boolean): TextStyle {
   };
 }
 
+/**
+ * The em dash the RENDERER puts in front of a quote's attribution
+ * (`emailRender.ts#renderQuoteBlock` emits `— ${attribution}`).
+ *
+ * A string rather than a number, so it can't live in `EMAIL_GEOMETRY` — but it
+ * is drift of exactly the same kind, so `canvasStyles.test.ts` pins it against
+ * the real rendered HTML. The canvas draws it and the field edits the bare
+ * name: showing a dash in the PLACEHOLDER instead is what got one typed into
+ * the value, sending "— — Ada".
+ */
+export const QUOTE_ATTRIBUTION_PREFIX = "— ";
+
 export function quoteAttributionStyle(t: EmailTheme, isWeb: boolean): TextStyle {
   return {
     fontFamily: canvasFontFamily(t.bodyFont, isWeb),
@@ -556,3 +620,29 @@ export const FOOTER_LOGO = {
   maxWidth: G.footer.logoMaxWidth,
   marginBottom: G.footer.logoMarginBottom,
 } as const;
+
+// ── The fallback footer ────────────────────────────────────────────────────
+//
+// The unsubscribe row `renderCampaignEmail` appends when the document carries
+// no `footer` block of its own. It is renderer furniture with nothing to edit,
+// but it is part of the email's real height, so the canvas draws it — from
+// `G.fallbackFooter`, which is its OWN entry in the geometry table. It happens
+// to coincide with `G.footer.legalSize`/`legalLine` today; reading those
+// instead would make the canvas silently wrong the first time a designer
+// changed one without the other.
+
+export const FALLBACK_FOOTER_PADDING = {
+  paddingTop: G.fallbackFooter.padTop,
+  paddingHorizontal: G.fallbackFooter.padX,
+  paddingBottom: G.fallbackFooter.padBottom,
+} as const;
+
+export function fallbackFooterTextStyle(t: EmailTheme, isWeb: boolean): TextStyle {
+  return {
+    fontFamily: canvasFontFamily(t.bodyFont, isWeb),
+    fontSize: G.fallbackFooter.size,
+    lineHeight: linePx(G.fallbackFooter.size, G.fallbackFooter.line),
+    color: t.muted,
+    textAlign: "center",
+  };
+}

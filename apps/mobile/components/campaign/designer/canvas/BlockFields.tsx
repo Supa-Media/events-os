@@ -49,6 +49,7 @@ import {
 } from "../DesignerControls";
 import { CardContentEditor } from "../CardContentEditor";
 import { ImageLibraryPicker, useImageLibraryRegistration } from "../ImageLibraryPicker";
+import { buttonAlign } from "./canvasStyles";
 
 const MARKDOWN_HEIGHT = 220;
 
@@ -216,16 +217,21 @@ export function BlockFields({
             autoCapitalize="none"
             keyboardType="url"
           />
+          {/* A button with no `align` sends CENTRED (`renderButtonBlock`),
+              and `defaultBlockFor` sets none — so asserting "Left" here was
+              the inspector telling the designer the opposite of what she was
+              about to send. The default comes from the geometry table, so the
+              canvas, the inspector and the renderer cannot disagree. */}
           <Field label="Alignment">
             <View className="flex-row gap-2">
               <LevelToggle
                 label="Left"
-                active={(block.align ?? "left") === "left"}
+                active={buttonAlign(block.align) === "left"}
                 onPress={() => onChange({ align: "left" })}
               />
               <LevelToggle
                 label="Center"
-                active={block.align === "center"}
+                active={buttonAlign(block.align) === "center"}
                 onPress={() => onChange({ align: "center" })}
               />
             </View>

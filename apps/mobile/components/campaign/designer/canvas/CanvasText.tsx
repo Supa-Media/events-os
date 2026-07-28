@@ -29,7 +29,7 @@ import {
   type MarkdownInlineNode,
   type MarkdownSubsetBlock,
 } from "@events-os/shared";
-import { BODY_LIST_INDENT, BODY_PARAGRAPH_SPACING } from "./canvasStyles";
+import { BODY_LIST_INDENT, bodyParagraphSpacing } from "./canvasStyles";
 
 /** One inline run and its children, as nested `<Text>` — RN inherits type
  *  styles down a `<Text>` tree the same way HTML does. */
@@ -83,8 +83,11 @@ export function CanvasMarkdown({
   return (
     <>
       {blocks.map((block, index) => {
-        const last = index === blocks.length - 1;
-        const spacing = last ? 0 : BODY_PARAGRAPH_SPACING;
+        // Including the LAST one — see `bodyParagraphSpacing`. The canvas
+        // scales rather than reflows so that its vertical geometry is honest;
+        // a body that ends 12px higher than the email's is exactly the drift
+        // that costs.
+        const spacing = bodyParagraphSpacing(index === blocks.length - 1);
         if (block.kind === "paragraph") {
           return (
             <Text
@@ -139,6 +142,15 @@ export function CanvasEditableText({
   /** Rendered instead of plain text when NOT editing — how a `text` block
    *  shows formatted markdown but edits raw. */
   renderStatic,
+  /**
+   * Drawn in front of the value when NOT editing, and never part of it.
+   *
+   * For punctuation the RENDERER adds — a quote's `— ` — so the canvas shows
+   * the line the email will show while the field still edits the bare string.
+   * Folding it into the value instead is how a typed dash ends up doubled in
+   * the send.
+   */
+  staticPrefix,
 }: {
   value: string;
   placeholder: string;
@@ -151,6 +163,7 @@ export function CanvasEditableText({
   multiline?: boolean;
   accessibilityLabel: string;
   renderStatic?: () => React.ReactNode;
+  staticPrefix?: string;
 }) {
   if (editable && editing) {
     return (
@@ -187,7 +200,7 @@ export function CanvasEditableText({
   ) : renderStatic ? (
     <>{renderStatic()}</>
   ) : (
-    <Text style={style}>{value}</Text>
+    <Text style={style}>{staticPrefix ? `${staticPrefix}${value}` : value}</Text>
   );
 
   if (!editable) return <>{body}</>;
