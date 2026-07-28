@@ -33,7 +33,17 @@ on green).
      surface, existing skills/conventions.
    Give each agent concrete questions, the tester's exact symptoms, and ask
    for file:line references + ranked root-cause hypotheses. Forbid code dumps.
-3. **Synthesize yourself.** Classify each feedback item: data-trust bug /
+3. **Synthesize yourself.** When the feedback REFERENCES A SPECIFIC ARTEFACT
+   (an existing newsletter, a screenshot of a competitor, "make it look like
+   this"), your first move is a DIFF TABLE against that artefact, before any
+   design: every distinct background fill, every card/section treatment, every
+   column ratio, every button style, the type scale and tracking, and which
+   images are decoration versus which carry text. Ship the table as the spec.
+   Building a capability that *could* express the artefact is not the same as
+   reproducing it — a generic framework with the right hex values in it reads
+   as "nothing like this" to the person who made the original, and that is a
+   correct verdict, not a fussy one.
+   Classify each feedback item: data-trust bug /
    UX-clarity gap / missing feature / process-policy item / already-exists
    (tester didn't find it). Confirm root causes against the recon reports
    before asserting them. Distinguish "bug" from "intentional design that
@@ -252,6 +262,57 @@ Before finishing a run of this skill, you MUST:
    run's PR.
 
 ## Learnings Log (newest first)
+
+### 2026-07-28 — Run 9 (the same designer: "it looks nothing like this")
+- **The headline lesson, and it is a general one: I built a GENERIC FRAMEWORK
+  and painted her colours onto it.** Run 8 shipped themes, dark mode,
+  templates, polls and an image library — all real, all tested, all merged —
+  and the designer's verdict was that it looked nothing like her newsletter.
+  She was right. Feedback that says "this doesn't look like us" is a request
+  to reproduce a SPECIFIC ARTEFACT, not to build a capability that could in
+  principle express it. I had her actual HTML the whole time and treated it as
+  a colour reference instead of a specification.
+- **What "structural" meant, concretely** — worth keeping because these are
+  the categories that generic-framework thinking always misses:
+  page/container inverted (cream page + white card, where the real design is a
+  grey page + white container with cream as a CARD fill); one card style where
+  the design had four; no concept of full-bleed artwork, where the section
+  banners CARRY the headings; symmetric columns where the source is 44/56 and
+  52/48; one button style where there are filled and outline; browser-default
+  letter-spacing where headings are -0.04em.
+- **When feedback references an artefact, DIFF against it before designing.**
+  Enumerate: every distinct background fill, every distinct card treatment,
+  every column ratio, every button style, the type scale and tracking, and
+  which images are decoration versus which carry text. That table is the spec.
+  I produced exactly that table AFTER being told I'd failed; producing it
+  first would have cost twenty minutes and saved the whole rebuild.
+- **"No images" was the wrong risk trade, twice.** I refused to ship artwork
+  because a hardcoded URL would rot — correct — and concluded the template
+  should ship empty, which left something unrecognisable rather than a neutral
+  skeleton. Then in the rebuild I reached for a GUESSED placeholder URL and my
+  own Run-8 test ("no block references an image URL this deployment doesn't
+  own") caught it. The actual answer was a third option: import the assets to
+  stable storage (a one-off action, not a registry migration — a MutationCtx
+  cannot fetch), and render unfilled slots from theme tokens so an empty state
+  costs zero external requests. **When both options look wrong, the framing is
+  usually wrong.**
+- **Empty states must hold their geometry.** A card with no image returned ""
+  and collapsed to stacked text, so the template's layout was invisible until
+  artwork was attached — which defeats shipping a template. A placeholder that
+  preserves the cell is not decoration; it is the thing being demonstrated.
+- **Adversarial review keeps paying, and the test lens is the sharpest.** The
+  test agent found `headingTracking` never reached a standalone `heading`
+  block, so an author's headline set looser than the cards beside it in the
+  same email — invisible in every fixture because the template uses cards. The
+  mobile agent independently found FOUR pre-existing parity gaps where the
+  server rejected the whole document and the UI said nothing.
+- **Check `mergeable_state` and the BASE's deploy health before diagnosing
+  your own.** CI produced no check runs for 30 minutes because the PR was
+  `dirty`; separately, main's post-deploy migration step had been failing for
+  hours (a looped `.paginate()` in someone else's migration) which I flagged
+  and which others fixed. Both were invisible from my branch. Add to the §6
+  habit: on any confusing CI state, look at the base branch's last deploy
+  before looking at your own diff.
 
 ### 2026-07-27 — Run 8 (designer feedback on campaign email → themes/templates/polls)
 - Shape: 3 recon lanes → I wrote the shared contract MYSELF → 4 implementation
