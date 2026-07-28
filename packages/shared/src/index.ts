@@ -2022,5 +2022,8 @@ export * from "./emailRender";
 // ── Built-in campaign templates (the seeded monthly newsletter) ──────────────
 export * from "./emailTemplates";
 
+// ── Newsletter artwork manifest (one-time import into the image library) ─────
+export * from "./newsletterAssets";
+
 // ── @mention markup for plain-text notes fields ───────────────────────────────
 export * from "./mentions";
