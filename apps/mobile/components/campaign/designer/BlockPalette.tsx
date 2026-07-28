@@ -13,6 +13,11 @@ const KIND_ICON: Record<EmailBlockKind, IconName> = {
   text: "align-left",
   image: "image",
   button: "mouse-pointer",
+  // A banner is the image WIDENED past the container — "maximize" reads as
+  // that, where a second "image" glyph would make the two indistinguishable.
+  bleed_image: "maximize",
+  hairline: "divide",
+  footer: "layout",
   divider: "minus",
   spacer: "move",
   eyebrow: "tag",

@@ -13,14 +13,15 @@
  * template makes the LAYOUT institutional knowledge instead of personal
  * knowledge.
  *
- * ── On the deliberate absence of images ────────────────────────────────────
- * Every card below is authored WITHOUT an `imageUrl`, and that is a decision,
- * not an omission. A seeded template can only reference an image by absolute
- * URL, and any URL hardcoded here would point at an asset this deployment does
- * not own — every new campaign would open with broken-image icons, and a send
- * that slipped out would carry them to real inboxes. The composer's image
- * picker (and the new image library) is the correct place to attach the real
- * artwork; the template's job is to carry the STRUCTURE and the voice.
+ * ── On artwork ─────────────────────────────────────────────────────────────
+ * An earlier version of this template shipped with NO images at all, reasoning
+ * that a hardcoded URL would break. That was right about the risk and wrong
+ * about the result: this newsletter's masthead and section banners CARRY the
+ * headings, so stripping them didn't leave a neutral skeleton, it left a
+ * different design. Every image slot now holds `""`, so the
+ * layout is correct from the first open and the author swaps in the real
+ * artwork from the image library (migration 0052 imports it, keyed by
+ * `sourceKey` in `newsletterAssets.ts`).
  *
  * ── Determinism ────────────────────────────────────────────────────────────
  * Block ids are seeded (`newBlockId("nl-hero")` → `"blk_nl-hero"`), never
@@ -43,8 +44,9 @@ export type CampaignTemplate = {
  * Public Worship's monthly newsletter, rebuilt block-for-block from the real
  * thing — the layout the designer sends every month:
  *
- *   wordmark → hero → what's on this month (2-up) → support us → a voice from
- *   the community → song of the month → sign-off
+ *   masthead → maroon hero → banner → cream event card → banner → three
+ *   outlined support cards → banner → dark testimonial → song artwork →
+ *   hairline → cream footer
  *
  * The copy is written as GUIDANCE, not filler: each block says what belongs
  * there in the newsletter's own voice, so someone covering for the designer
@@ -53,115 +55,127 @@ export type CampaignTemplate = {
 export const PUBLIC_WORSHIP_NEWSLETTER_TEMPLATE: CampaignTemplate = {
   name: "Monthly newsletter",
   description:
-    "The Public Worship monthly: hero, what's on, support us, a community voice, and the song of the month. Start here for the regular send.",
+    "The Public Worship monthly, section for section: masthead, maroon hero, what's on, support us, a community voice, and the song of the month.",
   doc: {
     theme: PUBLIC_WORSHIP_THEME,
     blocks: [
-      // ── Hero ───────────────────────────────────────────────────────────
+      // ── Masthead ───────────────────────────────────────────────────────
       {
-        id: newBlockId("nl-eyebrow-hero"),
-        kind: "eyebrow",
-        text: "This month at Public Worship",
-        icon: "◆",
+        id: newBlockId("nl-masthead"),
+        kind: "bleed_image",
+        alt: "",
       },
+
+      // ── Maroon hero ────────────────────────────────────────────────────
       {
-        id: newBlockId("nl-hero-heading"),
-        kind: "heading",
-        level: 1,
-        text: "Hey {{firstName}} —",
+        id: newBlockId("nl-hero"),
+        kind: "card",
+        variant: "hero",
+        imageSide: "top",
+        heading: "Hey {{firstName}} — it's officially summer",
+        body:
+          "Open with the month in two or three sentences. What happened, what it meant, and what you want people to feel before they scroll.",
+        ctaLabel: "Read more",
+        ctaUrl: "https://publicworship.life",
       },
-      {
-        id: newBlockId("nl-hero-body"),
-        kind: "text",
-        markdown:
-          "Open with the month in two or three sentences. What happened, what it meant, and what you want people to feel before they scroll. Keep it warm and specific — one real moment beats a list of announcements.",
-      },
-      { id: newBlockId("nl-hero-rule"), kind: "divider" },
 
       // ── What's on ──────────────────────────────────────────────────────
       {
-        id: newBlockId("nl-eyebrow-events"),
-        kind: "eyebrow",
-        text: "What's on",
-        icon: "✦",
+        id: newBlockId("nl-banner-whats-on"),
+        kind: "bleed_image",
+        alt: "",
       },
       {
-        id: newBlockId("nl-events-columns"),
-        kind: "columns",
-        columns: [
-          {
-            heading: "First event",
-            body:
-              "Date, place, and the one line that tells someone why to come. Add the cover image from the library.",
-            ctaLabel: "RSVP",
-            ctaUrl: "https://publicworship.life",
-          },
-          {
-            heading: "Second event",
-            body:
-              "Same shape. If there's only one event this month, delete a column — two is the minimum, so swap this row for a single card block instead.",
-            ctaLabel: "RSVP",
-            ctaUrl: "https://publicworship.life",
-          },
-        ],
-      },
-      { id: newBlockId("nl-events-rule"), kind: "divider" },
-
-      // ── Support us ─────────────────────────────────────────────────────
-      {
-        id: newBlockId("nl-eyebrow-support"),
-        kind: "eyebrow",
-        text: "Support us",
-        icon: "❯",
-      },
-      {
-        id: newBlockId("nl-support-card"),
+        id: newBlockId("nl-event"),
         kind: "card",
-        heading: "Help us keep the room open",
+        variant: "feature",
+        imageSide: "right",
+        imageWidthPct: 44,
+        heading: "Brief headline about the event here",
+        body: "Date, place, and the one line that tells someone why to come.",
+        ctaLabel: "RSVP",
+        ctaUrl: "https://publicworship.life",
+      },
+
+      // ── Support us — three outlined cards, photo beside text ───────────
+      {
+        id: newBlockId("nl-banner-support"),
+        kind: "bleed_image",
+        alt: "",
+      },
+      {
+        id: newBlockId("nl-support"),
+        kind: "card",
+        variant: "outlined",
+        imageSide: "left",
+        imageWidthPct: 40,
+        heading: "Copy about support",
         body:
-          "Say what giving actually pays for this month — the room, the gear, the people. Concrete beats general: what does one gift make possible?",
+          "Your donations play a crucial role in supporting our mission — say what giving actually pays for this month.",
         ctaLabel: "Give",
         ctaUrl: "https://publicworship.life/give",
+      },
+      {
+        id: newBlockId("nl-supply"),
+        kind: "card",
+        variant: "outlined",
+        imageSide: "left",
+        imageWidthPct: 40,
+        heading: "Public Worship Supply",
+        body:
+          "Every purchase from PW Supply goes towards equipment, transportation, and food for volunteers.",
+        ctaLabel: "Shop",
+        ctaUrl: "https://publicworship.life",
+      },
+      {
+        id: newBlockId("nl-serve"),
+        kind: "card",
+        variant: "outlined",
+        imageSide: "left",
+        imageWidthPct: 40,
+        heading: "Serve with us!",
+        body:
+          "We want to hear from you. If you're interested in collaborating, or have questions about future events...",
+        ctaLabel: "Get in touch",
+        ctaUrl: "mailto:hello@publicworship.life",
       },
 
       // ── A voice from the community ─────────────────────────────────────
       {
-        id: newBlockId("nl-quote"),
-        kind: "quote",
-        text:
+        id: newBlockId("nl-banner-voice"),
+        kind: "bleed_image",
+        alt: "",
+      },
+      {
+        id: newBlockId("nl-testimonial"),
+        kind: "card",
+        variant: "testimonial",
+        heading: "The Heart Speaks",
+        body:
           "Drop in something someone actually said this month — a message, a note after a night, a line from a conversation. Real words, lightly edited.",
         attribution: "Their name, and how they're connected",
       },
-      { id: newBlockId("nl-quote-rule"), kind: "divider" },
 
       // ── Song of the month ──────────────────────────────────────────────
       {
-        id: newBlockId("nl-eyebrow-song"),
-        kind: "eyebrow",
-        text: "Song of the month",
-        icon: "♪",
+        id: newBlockId("nl-song"),
+        kind: "bleed_image",
+        inset: true,
+        alt: "Song of the month",
+        href: "https://open.spotify.com/",
       },
-      {
-        id: newBlockId("nl-song-body"),
-        kind: "text",
-        markdown:
-          "One short paragraph on why this one. Then add the artwork above as an image block and set its **link** to the streaming URL — tapping the artwork should take people straight to the song.",
-      },
-      {
-        id: newBlockId("nl-song-button"),
-        kind: "button",
-        label: "Listen",
-        url: "https://publicworship.life",
-        align: "center",
-      },
+      { id: newBlockId("nl-rule"), kind: "hairline" },
 
-      // ── Sign-off ───────────────────────────────────────────────────────
-      { id: newBlockId("nl-signoff-spacer"), kind: "spacer", size: "md" },
+      // ── Footer ─────────────────────────────────────────────────────────
       {
-        id: newBlockId("nl-signoff"),
-        kind: "text",
-        markdown:
-          "See you this month,\n\n**The Public Worship team**",
+        id: newBlockId("nl-footer"),
+        kind: "footer",
+        navLine: "Events | Supply",
+        links: [
+          { label: "TikTok", url: "https://www.tiktok.com/@publicworship.life" },
+          { label: "Instagram", url: "https://www.instagram.com/publicworship.life/" },
+          { label: "Website", url: "https://www.publicworship.life" },
+        ],
       },
     ],
   },

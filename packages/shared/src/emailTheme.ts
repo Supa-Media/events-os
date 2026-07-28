@@ -55,10 +55,24 @@ export type EmailThemeTokens = {
   ink: string;
   /** Secondary/body text, drawn on `surface`. */
   muted: string;
-  /** The page behind the card (the mail client's viewport background). */
+  /** The page behind the container (the mail client's viewport background).
+   *  In the real newsletter this is a COOL GREY, not the cream — the cream is
+   *  a card colour, not the page. */
   canvas: string;
-  /** The card itself — what most text actually sits on. */
+  /** The email container — what most content sits on. White in the real
+   *  newsletter; the cream sits on top of it in specific cards. */
   surface: string;
+  /** The warm card background used by the feature card and the footer block
+   *  (`#fff9ee`). A THIRD surface, not a variant of `surface` — the design
+   *  uses white, cream and near-black as three distinct card fills. */
+  cream: string;
+  /** The near-black used for filled buttons and the testimonial card
+   *  (`#210706`). Named for its role, not its colour. */
+  contrast: string;
+  /** Text drawn on `contrast` (filled button labels, testimonial copy). */
+  contrastInk: string;
+  /** The thin rule between sections (`#bfc3c8`) — lighter than `border`. */
+  hairline: string;
   /** Hairlines: dividers, card borders. Decorative; exempt from contrast. */
   border: string;
   /** Inline links inside text blocks. */
@@ -69,6 +83,12 @@ export type EmailThemeTokens = {
   bodyFont: string;
   /** Card corner radius in px. 0 = square. */
   radius: number;
+  /** Heading letter-spacing, e.g. "-0.04em". The real newsletter sets its
+   *  headings TIGHT; leaving this at browser default is a large part of why
+   *  a copy of the palette still doesn't look like the brand. */
+  headingTracking: string;
+  /** Body letter-spacing, e.g. "-0.01em". */
+  bodyTracking: string;
   /** The small all-caps strip above the card. Empty string = no wordmark. */
   wordmark: string;
 };
@@ -101,17 +121,23 @@ const SERIF = "Georgia,'Times New Roman',Times,serif";
 export const PUBLIC_WORSHIP_THEME: EmailTheme = {
   name: "Public Worship",
   accent: "#891d1a",
-  accentInk: "#fff9ee",
+  accentInk: "#ffffff",
   ink: "#210706",
-  muted: "#6b4a44",
-  canvas: "#fff9ee",
+  muted: "#210706",
+  canvas: "#f0f1f5",
   surface: "#ffffff",
-  border: "#e8d9c8",
-  link: "#891d1a",
+  cream: "#fff9ee",
+  contrast: "#210706",
+  contrastInk: "#ffffff",
+  hairline: "#bfc3c8",
+  border: "#000000",
+  link: "#1a62ff",
   headingFont: INTER,
   bodyFont: INTER,
-  radius: 16,
-  wordmark: "PUBLIC WORSHIP",
+  radius: 21,
+  headingTracking: "-0.04em",
+  bodyTracking: "-0.01em",
+  wordmark: "",
   dark: {
     // The card inverts to a deep warm brown rather than pure black — a cream
     // brand going to #000 reads as a different organisation. `accent` lifts
@@ -119,11 +145,15 @@ export const PUBLIC_WORSHIP_THEME: EmailTheme = {
     accent: "#e8736e",
     accentInk: "#210706",
     ink: "#fff9ee",
-    muted: "#d8c3ba",
-    canvas: "#170504",
-    surface: "#241110",
-    border: "#3d201d",
-    link: "#e8736e",
+    muted: "#e6dcd6",
+    canvas: "#0d0d10",
+    surface: "#1a1412",
+    cream: "#241d16",
+    contrast: "#efe6dd",
+    contrastInk: "#1a1412",
+    hairline: "#3d3733",
+    border: "#4a423d",
+    link: "#8fb4ff",
   },
 };
 
@@ -134,26 +164,36 @@ export const SUMMER_THEME: EmailTheme = {
   // button label at 4.41:1, just under AA. `emailThemeContrastWarnings` caught
   // it — the preset is held to the same bar the editor holds the designer to.
   accent: "#bb4f18",
-  accentInk: "#fffaf2",
+  accentInk: "#ffffff",
   ink: "#2b1408",
-  muted: "#7a5340",
-  canvas: "#fff6e8",
+  muted: "#2b1408",
+  canvas: "#f3f1ee",
   surface: "#ffffff",
-  border: "#f0dcc4",
-  link: "#bb4f18",
+  cream: "#fff6e8",
+  contrast: "#2b1408",
+  contrastInk: "#ffffff",
+  hairline: "#cfc7bd",
+  border: "#2b1408",
+  link: "#1a62ff",
   headingFont: INTER,
   bodyFont: INTER,
-  radius: 16,
-  wordmark: "PUBLIC WORSHIP",
+  radius: 21,
+  headingTracking: "-0.04em",
+  bodyTracking: "-0.01em",
+  wordmark: "",
   dark: {
     accent: "#f0956a",
     accentInk: "#2b1408",
     ink: "#fff6e8",
-    muted: "#dcc0aa",
-    canvas: "#1a0d05",
-    surface: "#291710",
-    border: "#43281c",
-    link: "#f0956a",
+    muted: "#efe2d8",
+    canvas: "#100c08",
+    surface: "#1d1510",
+    cream: "#281d15",
+    contrast: "#f3e7dc",
+    contrastInk: "#1d1510",
+    hairline: "#403830",
+    border: "#4d443b",
+    link: "#8fb4ff",
   },
 };
 
@@ -161,26 +201,36 @@ export const SUMMER_THEME: EmailTheme = {
 export const FALL_THEME: EmailTheme = {
   name: "Fall",
   accent: "#7a3410",
-  accentInk: "#fdf3e7",
+  accentInk: "#ffffff",
   ink: "#241207",
-  muted: "#6d4c39",
-  canvas: "#fdf3e7",
-  surface: "#fffdfa",
-  border: "#e6d2ba",
-  link: "#7a3410",
+  muted: "#241207",
+  canvas: "#f1efec",
+  surface: "#ffffff",
+  cream: "#fdf3e7",
+  contrast: "#241207",
+  contrastInk: "#ffffff",
+  hairline: "#cbc3b8",
+  border: "#241207",
+  link: "#1a62ff",
   headingFont: SERIF,
   bodyFont: INTER,
-  radius: 12,
-  wordmark: "PUBLIC WORSHIP",
+  radius: 21,
+  headingTracking: "-0.03em",
+  bodyTracking: "-0.01em",
+  wordmark: "",
   dark: {
     accent: "#d98b5c",
     accentInk: "#241207",
     ink: "#fdf3e7",
-    muted: "#d5bda8",
-    canvas: "#150a04",
-    surface: "#25150d",
-    border: "#3d2618",
-    link: "#d98b5c",
+    muted: "#ece0d4",
+    canvas: "#0f0b07",
+    surface: "#1c1410",
+    cream: "#261c14",
+    contrast: "#f0e6da",
+    contrastInk: "#1c1410",
+    hairline: "#3e352d",
+    border: "#4b4139",
+    link: "#8fb4ff",
   },
 };
 
@@ -189,26 +239,36 @@ export const FALL_THEME: EmailTheme = {
 export const WINTER_THEME: EmailTheme = {
   name: "Winter",
   accent: "#1f4a63",
-  accentInk: "#f4f9fc",
+  accentInk: "#ffffff",
   ink: "#0e1c24",
-  muted: "#4e6672",
-  canvas: "#f4f9fc",
+  muted: "#0e1c24",
+  canvas: "#eef1f3",
   surface: "#ffffff",
-  border: "#d3e2ea",
-  link: "#1f4a63",
+  cream: "#f4f9fc",
+  contrast: "#0e1c24",
+  contrastInk: "#ffffff",
+  hairline: "#c2ccd2",
+  border: "#0e1c24",
+  link: "#1a62ff",
   headingFont: SERIF,
   bodyFont: INTER,
-  radius: 8,
-  wordmark: "PUBLIC WORSHIP",
+  radius: 21,
+  headingTracking: "-0.03em",
+  bodyTracking: "-0.01em",
+  wordmark: "",
   dark: {
     accent: "#7db6d6",
     accentInk: "#0e1c24",
     ink: "#f4f9fc",
-    muted: "#a9c1cd",
-    canvas: "#060f14",
-    surface: "#10222c",
-    border: "#1f3945",
-    link: "#7db6d6",
+    muted: "#dde7ec",
+    canvas: "#05090c",
+    surface: "#0f1a20",
+    cream: "#16242c",
+    contrast: "#e6eef2",
+    contrastInk: "#0f1a20",
+    hairline: "#2b3a43",
+    border: "#3a4a54",
+    link: "#8fb4ff",
   },
 };
 
@@ -237,9 +297,17 @@ const TOKEN_KEYS = [
   "muted",
   "canvas",
   "surface",
+  "cream",
+  "contrast",
+  "contrastInk",
+  "hairline",
   "border",
   "link",
 ] as const;
+
+/** Non-colour string tokens that normalize/validate the same way as the font
+ *  stacks — letter-spacing values written straight into a style attribute. */
+const TRACKING_KEYS = ["headingTracking", "bodyTracking"] as const;
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -267,6 +335,17 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
 export function safeFontStack(stack: string): string | null {
   const cleaned = stack.replace(FONT_STACK_FORBIDDEN_G, "").trim();
   return cleaned.length > 0 ? cleaned : null;
+}
+
+/**
+ * Sanitize a letter-spacing value. It lands in the same `style="…"` attribute
+ * a font stack does, so it gets the same treatment — but the grammar is far
+ * narrower (a signed number plus a unit), so it is validated by SHAPE rather
+ * than by blocklist. Returns null when it isn't one.
+ */
+export function safeTracking(value: string): string | null {
+  const v = value.trim();
+  return /^-?(?:\d+)?(?:\.\d+)?(?:em|rem|px)$|^normal$|^0$/.test(v) ? v : null;
 }
 
 /** Global twin of `FONT_STACK_FORBIDDEN` — the validator only needs to know
@@ -310,6 +389,15 @@ export function normalizeEmailTheme(
   const bodyFont =
     (typeof input.bodyFont === "string" ? safeFontStack(input.bodyFont) : null) ??
     base.bodyFont;
+  const tracking = {} as Record<string, string>;
+  for (const key of TRACKING_KEYS) {
+    const raw = input[key];
+    tracking[key] =
+      typeof raw === "string" && safeTracking(raw) !== null
+        ? (safeTracking(raw) as string)
+        : base[key];
+  }
+
   const radius =
     typeof input.radius === "number" && Number.isFinite(input.radius)
       ? Math.max(0, Math.min(40, Math.round(input.radius)))
@@ -343,6 +431,7 @@ export function normalizeEmailTheme(
     headingFont,
     bodyFont,
     radius,
+    ...(tracking as unknown as Pick<EmailThemeTokens, (typeof TRACKING_KEYS)[number]>),
     wordmark,
     ...(dark ? { dark } : {}),
   };
@@ -461,6 +550,23 @@ const CONTRAST_PAIRS: readonly {
     label: "Headings and poll options on the card",
     fg: "ink",
     bg: "surface",
+    required: AA_CONTRAST_BODY,
+  },
+  {
+    // Body copy on the cream card (the event card and the footer block).
+    id: "ink-on-cream",
+    label: "Text on the cream card",
+    fg: "ink",
+    bg: "cream",
+    required: AA_CONTRAST_BODY,
+  },
+  {
+    // The testimonial card is near-black with light copy — its own pair,
+    // because nothing else in the theme measures that combination.
+    id: "contrastInk-on-contrast",
+    label: "Testimonial copy and filled-button labels",
+    fg: "contrastInk",
+    bg: "contrast",
     required: AA_CONTRAST_BODY,
   },
   {
@@ -620,6 +726,16 @@ export function validateEmailTheme(input: unknown): ValidateEmailThemeResult {
     input.radius > 40
   ) {
     return { ok: false, error: 'theme "radius" must be a number between 0 and 40' };
+  }
+
+  for (const key of TRACKING_KEYS) {
+    const raw = input[key];
+    if (typeof raw !== "string" || safeTracking(raw) === null) {
+      return {
+        ok: false,
+        error: `theme "${key}" must be a letter-spacing value like -0.04em`,
+      };
+    }
   }
 
   if (typeof input.wordmark !== "string") {

@@ -17,10 +17,12 @@ import {
   MIN_COLUMNS,
   MIN_POLL_OPTIONS,
   isAllowedImageUrl,
+  isAllowedLinkUrl,
   newBlockId,
   type EmailBlock,
   type EmailBlockKind,
   type EmailCardContent,
+  type EmailCardVariant,
   type EmailDocument,
   type EmailPollOption,
 } from "@events-os/shared";
@@ -50,13 +52,17 @@ function emptyCardContent(heading: string): EmailCardContent {
  * (`quote.text`, `poll.question`, every poll option label, `eyebrow.text`)
  * get real placeholder copy rather than `""`.
  *
- * THE `image` EXCEPTION: its `url` must be a non-empty http(s) string, and the
- * only way to satisfy that up front is a fabricated URL that would render as
- * a broken image and could be sent for real if nobody noticed. So it starts
- * `url: ""` — unsaveable until filled — and `ImageBlockEditor` says so
- * inline, in the words of the rule that's actually blocking the save (see
- * `imageUrlProblem`). `emailDesigner.test.ts` pins this as the one kind
- * exempt from the "every default is saveable" guard.
+ * THE IMAGE EXCEPTION: `image` and `bleed_image` both require a non-empty
+ * http(s) `url`, and the only way to satisfy that up front is a fabricated URL
+ * that would render as a broken image and could be sent for real if nobody
+ * noticed. So they start `url: ""` — unsaveable until filled — and their
+ * editors say so inline, in the words of the rule that's actually blocking the
+ * save (see `imageUrlProblem`). `emailDesigner.test.ts` pins these as the only
+ * kinds exempt from the "every default is saveable" guard.
+ *
+ * `footer` is deliberately NOT in that exception: every one of its fields is
+ * optional, so it starts with a nav line and no logo — a block that renders
+ * something recognisable and saves on the spot.
  */
 export function defaultBlockFor(kind: EmailBlockKind, id: string): EmailBlock {
   switch (kind) {
@@ -68,6 +74,17 @@ export function defaultBlockFor(kind: EmailBlockKind, id: string): EmailBlock {
       return { id, kind: "image", url: "", alt: "" };
     case "button":
       return { id, kind: "button", label: "Click here", url: "https://" };
+    case "bleed_image":
+      // The masthead/banner twin of `image`, and the same exception: an
+      // edge-to-edge strip can't be given a plausible starting URL.
+      return { id, kind: "bleed_image", url: "", alt: "" };
+    case "hairline":
+      return { id, kind: "hairline" };
+    case "footer":
+      // Every field is optional, so this saves as-is. It starts with the nav
+      // line only: a logo needs a real image (see the exception above), and
+      // fabricated social links would ship as dead ones if nobody looked.
+      return { id, kind: "footer", navLine: "Public Worship" };
     case "divider":
       return { id, kind: "divider" };
     case "spacer":
@@ -119,6 +136,12 @@ export const BLOCK_KIND_LABELS: Record<EmailBlockKind, string> = {
   text: "Text",
   image: "Image",
   button: "Button",
+  // "Banner", not "Bleed image": the designer's word for the thing (the strip
+  // that carries the section heading as artwork), not the CSS term for how
+  // it's painted.
+  bleed_image: "Banner",
+  hairline: "Hairline",
+  footer: "Footer",
   divider: "Divider",
   spacer: "Spacer",
   eyebrow: "Eyebrow",
@@ -132,23 +155,73 @@ export const BLOCK_KIND_LABELS: Record<EmailBlockKind, string> = {
  * All block kinds, in the order the "Add block" palette renders them.
  *
  * Ordered by how the newsletter is actually built, not alphabetically: the
- * COMPOSED blocks (eyebrow → card → columns → quote → poll) come first
- * because they're the shapes the designer reaches for, and the primitives
- * (heading/text/image/button/divider/spacer) follow as the escape hatch.
+ * COMPOSED blocks (banner → card → columns → quote → poll → footer) come first
+ * because they're the shapes the designer reaches for — a real issue reads
+ * masthead, hero card, banner, event card, banner, three support cards,
+ * banner, testimonial, song, footer — and the primitives (heading/text/image/
+ * button/hairline/divider/spacer) follow as the escape hatch.
  */
 export const BLOCK_KINDS: EmailBlockKind[] = [
+  "bleed_image",
   "eyebrow",
   "card",
   "columns",
   "quote",
   "poll",
+  "footer",
   "heading",
   "text",
   "image",
   "button",
+  "hairline",
   "divider",
   "spacer",
 ];
+
+// ── Card presentation choices ──────────────────────────────────────────────
+
+/** The card variants, with the plain-English description of the treatment
+ *  each one selects. Order matters: `plain` first because it's what an
+ *  untouched card already is, then the four the newsletter is built from, in
+ *  the order they appear down a real issue. */
+export const CARD_VARIANT_OPTIONS: readonly { value: EmailCardVariant; label: string }[] = [
+  { value: "plain", label: "Plain — no fill, no border" },
+  { value: "hero", label: "Hero — accent fill, centred, big headline" },
+  { value: "feature", label: "Feature — cream fill, text beside the image" },
+  { value: "outlined", label: "Outlined — white with a hairline border" },
+  { value: "testimonial", label: "Testimonial — near-black, quote and name" },
+];
+
+/**
+ * Bounds on a card's image column, mirroring `emailBlocks.ts`'s own
+ * `MIN_IMAGE_WIDTH_PCT`/`MAX_IMAGE_WIDTH_PCT` (private there, so this is a
+ * mirror rather than an import — `emailDesigner.test.ts` pins both ends
+ * against the real write gate so the two can't drift).
+ */
+export const MIN_IMAGE_WIDTH_PCT = 20;
+export const MAX_IMAGE_WIDTH_PCT = 80;
+/** What the renderer uses when a card doesn't say — see `renderCardInner`. */
+export const DEFAULT_IMAGE_WIDTH_PCT = 45;
+/** ± step for the width control. Small enough to hit the newsletter's own
+ *  asymmetric rows (44, 52), big enough that the range isn't 60 taps wide. */
+export const IMAGE_WIDTH_PCT_STEP = 2;
+
+/** Clamp an image-column width into the range the write gate accepts, as a
+ *  whole number. The control can then never produce a value that would reject
+ *  the document. */
+export function clampImageWidthPct(pct: number): number {
+  if (!Number.isFinite(pct)) return DEFAULT_IMAGE_WIDTH_PCT;
+  return Math.max(
+    MIN_IMAGE_WIDTH_PCT,
+    Math.min(MAX_IMAGE_WIDTH_PCT, Math.round(pct)),
+  );
+}
+
+/** Nudge an image-column width by `delta`, treating "not set yet" as the
+ *  renderer's own default so the first tap moves from what's on screen. */
+export function stepImageWidthPct(current: number | undefined, delta: number): number {
+  return clampImageWidthPct((current ?? DEFAULT_IMAGE_WIDTH_PCT) + delta);
+}
 
 // ── Editor-side mirrors of the write gate ──────────────────────────────────
 //
@@ -172,6 +245,79 @@ export function imageUrlProblem(url: string): "missing" | "scheme" | null {
   return isAllowedImageUrl(url) ? null : "scheme";
 }
 
+/** Why the write gate would reject a REQUIRED link url (`button.url`, a
+ *  footer link's `url`), or null when it would accept it. The link twin of
+ *  `imageUrlProblem`: the gate tests emptiness on the raw string and the
+ *  scheme against http/https/mailto. */
+export function linkUrlProblem(url: string): "missing" | "scheme" | null {
+  if (url.length === 0) return "missing";
+  return isAllowedLinkUrl(url) ? null : "scheme";
+}
+
+/**
+ * The same question for an OPTIONAL image url (`footer.logoUrl`).
+ *
+ * `undefined` is the field being absent, which the gate is happy with — so the
+ * editors write `undefined` (never `""`) when the designer clears one. `""` is
+ * NOT the same thing: the gate rejects `logoUrl: ""` outright ("must be a
+ * non-empty string"), which is reachable from a document written by an older
+ * client, so it still has to warn.
+ */
+export function optionalImageUrlProblem(
+  url: string | undefined,
+): "missing" | "scheme" | null {
+  return url === undefined ? null : imageUrlProblem(url);
+}
+
+/** The optional-link twin — `bleed_image.href`, `image.href`. Same rule:
+ *  absent is fine, empty is not. */
+export function optionalLinkUrlProblem(
+  url: string | undefined,
+): "missing" | "scheme" | null {
+  return url === undefined ? null : linkUrlProblem(url);
+}
+
+/**
+ * What's wrong with the alt text beside an image, in the write gate's terms.
+ *
+ * Two states, deliberately distinguished, because they have opposite
+ * consequences and the editor used to show one warning for both:
+ *  - `"unsaveable"` — there's an image and the alt is MISSING (`undefined`).
+ *    The gate rejects the whole document over it. Only reachable from a
+ *    document written before the editors started writing `""` alongside every
+ *    url, or one hand-edited elsewhere.
+ *  - `"empty"` — the alt is present but blank. The gate ACCEPTS this: `""` is
+ *    the contract's "this image is decorative". Advisory only.
+ *
+ * With no image there is nothing to describe, so both stay quiet.
+ */
+export function imageAltProblem(image: {
+  url?: string;
+  alt?: string;
+}): "unsaveable" | "empty" | null {
+  if (typeof image.url !== "string" || image.url.length === 0) return null;
+  if (typeof image.alt !== "string") return "unsaveable";
+  return image.alt.trim() === "" ? "empty" : null;
+}
+
+/** Cap on a `footer` block's link row, mirroring `emailBlocks.ts`'s own
+ *  `MAX_FOOTER_LINKS` (private there). Pinned against the gate in
+ *  `emailDesigner.test.ts`. */
+export const MAX_FOOTER_LINKS = 8;
+
+/** Why the write gate would reject one footer link, or null. Unlike a card's
+ *  call to action — where both halves or neither is the rule — a footer link
+ *  that exists at all must have BOTH a label and a valid url, so a blank row
+ *  is a rejection rather than a no-op. */
+export function footerLinkProblem(link: {
+  label: string;
+  url: string;
+}): "label-missing" | "url-missing" | "url-scheme" | null {
+  if (link.label.length === 0) return "label-missing";
+  const url = linkUrlProblem(link.url);
+  return url === "missing" ? "url-missing" : url === "scheme" ? "url-scheme" : null;
+}
+
 /** Which half of a card's call-to-action pair is filled without the other, or
  *  null when the gate is happy (both filled, or neither).
  *
@@ -188,6 +334,16 @@ export function ctaPairProblem(content: {
   const hasUrl = typeof content.ctaUrl === "string" && content.ctaUrl.length > 0;
   if (hasLabel === hasUrl) return null;
   return hasLabel ? "label-without-url" : "url-without-label";
+}
+
+/** Whether a card's `ctaUrl` carries a scheme the write gate refuses. Separate
+ *  from `ctaPairProblem` because the gate checks them separately: a card can
+ *  have both halves filled (pair OK) and still be rejected for a `tel:` link.
+ *  Nothing warned about that before, so it failed at save with no hint. */
+export function cardCtaUrlProblem(content: { ctaUrl?: string }): "scheme" | null {
+  const url = content.ctaUrl;
+  if (typeof url !== "string" || url.length === 0) return null;
+  return isAllowedLinkUrl(url) ? null : "scheme";
 }
 
 /** True when some poll option carries a label the write gate would reject.

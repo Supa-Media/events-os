@@ -37,7 +37,9 @@
 
 import type {
   EmailBlock,
+  EmailButtonVariant,
   EmailCardContent,
+  EmailCardVariant,
   EmailDocument,
   EmailPollOption,
 } from "./emailBlocks";
@@ -210,7 +212,13 @@ const CLS = {
   quoteAttr: "pw-quote-attr",
   foot: "pw-foot",
   col: "pw-col",
+  colGap: "pw-col-gap",
   colWrap: "pw-col-wrap",
+  cardPlain: "pw-card-plain",
+  cardHero: "pw-card-hero",
+  cardFeature: "pw-card-feature",
+  cardOutlined: "pw-card-outlined",
+  cardTestimonial: "pw-card-testimonial",
   pollOpt: "pw-poll-opt",
 } as const;
 
@@ -222,15 +230,20 @@ function listStyle(t: EmailTheme): string {
   return `margin:0 0 12px;padding-left:20px;font-family:${t.bodyFont};font-size:15px;line-height:1.6;color:${t.muted}`;
 }
 
-function markdownSubsetToHtml(escapedMarkdown: string, t: EmailTheme): string {
+function markdownSubsetToHtml(
+  escapedMarkdown: string,
+  t: EmailTheme,
+  color?: string,
+): string {
   const out: string[] = [];
   let paraLines: string[] = [];
   let listItems: string[] = [];
 
   const flushPara = () => {
     if (paraLines.length === 0) return;
+    const style = color ? `${textStyle(t)};color:${color}` : textStyle(t);
     out.push(
-      `<p class="${CLS.text}" style="${textStyle(t)}">${inlineMarkdown(paraLines.join(" "), t)}</p>`,
+      `<p class="${CLS.text}" style="${style}">${inlineMarkdown(paraLines.join(" "), t)}</p>`,
     );
     paraLines = [];
   };
@@ -294,8 +307,93 @@ function renderImageBlock(
   return `<a href="${esc(safeEmailHref(block.href))}" style="display:block;text-decoration:none">${img}</a>`;
 }
 
-function renderButtonHtml(label: string, url: string, t: EmailTheme): string {
-  return `<a class="${CLS.button}" href="${esc(safeEmailHref(url))}" style="display:inline-block;background:${t.accent};color:${t.accentInk};text-decoration:none;font-family:${t.bodyFont};font-weight:600;font-size:14px;padding:12px 24px;border-radius:999px">${label}</a>`;
+/**
+ * Per-variant geometry, read off the real newsletter rather than invented.
+ * The theme supplies every COLOUR; this table supplies the SHAPE — fill role,
+ * padding, type scale, alignment and CTA treatment — which is what actually
+ * distinguishes the four cards from each other.
+ */
+type CardSpec = {
+  fill: "accent" | "cream" | "surface" | "contrast" | "none";
+  bordered: boolean;
+  padY: number;
+  padX: number;
+  headingSize: number;
+  headingLine: number;
+  bodyColor: "ink" | "accentInk" | "contrastInk";
+  align: "left" | "center";
+  cta: EmailButtonVariant;
+  ctaAlign: "left" | "center";
+  ctaMaxWidth: number | null;
+};
+
+const CARD_SPECS: Record<EmailCardVariant, CardSpec> = {
+  // Big maroon opener: image over a tight 38px headline, centred, near-black
+  // pill. line-height 0.9 rather than the source's 0.6 — 0.6 clips descenders
+  // on any headline that wraps, which the source avoids only by hand-breaking
+  // every line, and a template can't rely on the author doing that.
+  hero: {
+    fill: "accent", bordered: false, padY: 42, padX: 20,
+    headingSize: 38, headingLine: 0.9, bodyColor: "accentInk",
+    align: "center", cta: "filled", ctaAlign: "center", ctaMaxWidth: 242,
+  },
+  feature: {
+    fill: "cream", bordered: false, padY: 26, padX: 26,
+    headingSize: 27, headingLine: 1, bodyColor: "ink",
+    align: "left", cta: "filled", ctaAlign: "left", ctaMaxWidth: 190,
+  },
+  outlined: {
+    fill: "surface", bordered: true, padY: 26, padX: 26,
+    headingSize: 21, headingLine: 1.06, bodyColor: "ink",
+    align: "left", cta: "outline", ctaAlign: "left", ctaMaxWidth: 140,
+  },
+  testimonial: {
+    fill: "contrast", bordered: false, padY: 28, padX: 28,
+    headingSize: 21, headingLine: 1.06, bodyColor: "contrastInk",
+    align: "center", cta: "filled", ctaAlign: "center", ctaMaxWidth: null,
+  },
+  // The pre-variant behaviour, kept so a document written before variants
+  // existed renders exactly as it did.
+  plain: {
+    fill: "none", bordered: false, padY: 0, padX: 0,
+    headingSize: 20, headingLine: 1.3, bodyColor: "ink",
+    align: "left", cta: "filled", ctaAlign: "left", ctaMaxWidth: null,
+  },
+};
+
+function cardFill(spec: CardSpec, t: EmailTheme): string | null {
+  switch (spec.fill) {
+    case "accent": return t.accent;
+    case "cream": return t.cream;
+    case "surface": return t.surface;
+    case "contrast": return t.contrast;
+    default: return null;
+  }
+}
+
+function cardTextColor(spec: CardSpec, t: EmailTheme): string {
+  return spec.bodyColor === "accentInk"
+    ? t.accentInk
+    : spec.bodyColor === "contrastInk"
+      ? t.contrastInk
+      : t.ink;
+}
+
+function renderButtonHtml(
+  label: string,
+  url: string,
+  t: EmailTheme,
+  variant: EmailButtonVariant = "filled",
+  maxWidth: number | null = null,
+): string {
+  // Outline is transparent with a 1px rule and ink-coloured text; filled is
+  // the near-black pill. The newsletter uses both and picking one made every
+  // CTA look identical.
+  const bg = variant === "outline" ? "transparent" : t.contrast;
+  const fg = variant === "outline" ? t.ink : t.contrastInk;
+  const border = variant === "outline" ? `1px solid ${t.border}` : "1px solid transparent";
+  const width = maxWidth ? `max-width:${maxWidth}px;width:100%;` : "";
+  return `<a class="${CLS.button}" href="${esc(safeEmailHref(url))}" style="display:inline-block;box-sizing:border-box;${width}background:${bg};color:${fg};border:${border};text-decoration:none;font-family:${t.bodyFont};font-weight:700;font-size:15px;letter-spacing:${t.bodyTracking};padding:11px 22px;border-radius:999px;text-align:center">${label}</a>`;
 }
 
 function renderButtonBlock(
@@ -305,7 +403,218 @@ function renderButtonBlock(
 ): string {
   const label = substituteMergeTagsHtml(esc(block.label), recipient);
   const align = block.align === "left" ? "left" : "center";
-  return `<div style="text-align:${align};margin:0 0 16px">${renderButtonHtml(label, block.url, t)}</div>`;
+  return `<div style="text-align:${align};margin:0 0 16px">${renderButtonHtml(label, block.url, t, block.variant ?? "filled")}</div>`;
+}
+
+/**
+ * The image half of a card.
+ *
+ * An empty slot returns a neutral tile rather than nothing, so a card that
+ * DECLARES a side-by-side layout keeps that geometry before its artwork is
+ * attached. Returning "" instead silently collapsed the built-in template to
+ * a stack of text, which is how the layout stopped being visible at all.
+ */
+function cardImageHtml(content: EmailCardContent, t: EmailTheme): string {
+  const radius = Math.max(0, t.radius - 8);
+  if (!content.imageUrl) {
+    const sideways = content.imageSide === "left" || content.imageSide === "right";
+    if (!sideways) return "";
+    return `<div style="background:${t.cream};border:1px dashed ${t.hairline};border-radius:${radius}px;padding:34px 10px;text-align:center;font-family:${t.bodyFont};font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:${t.muted}">Image</div>`;
+  }
+  return `<img src="${esc(safeImageSrc(content.imageUrl))}" alt="${esc(content.imageAlt ?? "")}" style="display:block;width:100%;max-width:100%;border:0;border-radius:${radius}px" />`;
+}
+
+/**
+ * The text half of a card: eyebrow, heading, body, attribution, CTA — painted
+ * per the variant's `CardSpec` rather than one fixed treatment.
+ */
+function cardTextHtml(
+  content: EmailCardContent,
+  spec: CardSpec,
+  t: EmailTheme,
+  recipient: CampaignRecipient,
+): string {
+  const fg = cardTextColor(spec, t);
+  const align = content.align ?? spec.align;
+  const parts: string[] = [];
+
+  if (content.eyebrow) {
+    parts.push(
+      `<div class="${CLS.eyebrow}" style="margin:0 0 8px;font-family:${t.bodyFont};font-weight:700;letter-spacing:0.1em;font-size:12px;text-transform:uppercase;color:${fg};text-align:${align}">${substituteMergeTagsHtml(esc(content.eyebrow), recipient)}</div>`,
+    );
+  }
+  if (content.heading) {
+    parts.push(
+      `<h3 class="${CLS.heading}" style="margin:0 0 12px;font-family:${t.headingFont};font-size:${spec.headingSize}px;line-height:${spec.headingLine};letter-spacing:${t.headingTracking};font-weight:700;color:${fg};text-align:${align}">${substituteMergeTagsHtml(esc(content.heading), recipient)}</h3>`,
+    );
+  }
+  if (content.body) {
+    const italic = content.variant === "testimonial" ? "font-style:italic;" : "";
+    const size = content.variant === "testimonial" ? 20 : 16;
+    parts.push(
+      `<div class="${CLS.text}" style="margin:0 0 14px;font-family:${t.bodyFont};font-size:${size}px;line-height:1.35;letter-spacing:${t.bodyTracking};${italic}color:${fg};text-align:${align}">${markdownSubsetToHtml(substituteMergeTagsHtml(esc(content.body), recipient), t, fg)}</div>`,
+    );
+  }
+  if (content.attribution) {
+    parts.push(
+      `<div class="${CLS.quoteAttr}" style="margin:0 0 14px;font-family:${t.bodyFont};font-size:13px;font-weight:700;letter-spacing:${t.bodyTracking};color:${fg};text-align:${align}">${substituteMergeTagsHtml(esc(content.attribution), recipient)}</div>`,
+    );
+  }
+  if (content.ctaLabel && content.ctaUrl) {
+    const label = substituteMergeTagsHtml(esc(content.ctaLabel), recipient);
+    parts.push(
+      `<div style="text-align:${spec.ctaAlign};margin:2px 0 0">${renderButtonHtml(label, content.ctaUrl, t, content.ctaStyle ?? spec.cta, spec.ctaMaxWidth)}</div>`,
+    );
+  }
+  return parts.join("");
+}
+
+/**
+ * A card's interior — stacked when the image is on top (or absent), a
+ * two-column table when it sits beside the text.
+ *
+ * The columns are ASYMMETRIC by default (`imageWidthPct`), because the source
+ * newsletter's rows are 44/56 and 52/48. Forcing 50/50 is one of the specific
+ * things that made the first rebuild read as generic.
+ */
+function renderCardInner(
+  content: EmailCardContent,
+  spec: CardSpec,
+  t: EmailTheme,
+  recipient: CampaignRecipient,
+): string {
+  const image = cardImageHtml(content, t);
+  const text = cardTextHtml(content, spec, t, recipient);
+  const side = content.imageSide ?? "top";
+
+  if (!image || side === "top") {
+    return `${image ? `<div style="margin:0 0 16px">${image}</div>` : ""}${text}`;
+  }
+
+  const imgPct = Math.min(80, Math.max(20, content.imageWidthPct ?? 45));
+  const textPct = 100 - imgPct;
+  const imgCell = `<td class="${CLS.col}" width="${imgPct}%" valign="top" style="width:${imgPct}%;vertical-align:top;padding:0">${image}</td>`;
+  const gap = `<td class="${CLS.colGap}" width="4%" style="width:4%;font-size:0">&nbsp;</td>`;
+  const textCell = `<td class="${CLS.col}" width="${textPct - 4}%" valign="top" style="width:${textPct - 4}%;vertical-align:top;padding:0">${text}</td>`;
+  const cells = side === "left" ? `${imgCell}${gap}${textCell}` : `${textCell}${gap}${imgCell}`;
+  return `<table class="${CLS.colWrap}" role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border-collapse:collapse"><tr>${cells}</tr></table>`;
+}
+
+function renderCardBlock(
+  block: Extract<EmailBlock, { kind: "card" }>,
+  recipient: CampaignRecipient,
+  t: EmailTheme,
+): string {
+  const variant = block.variant ?? "plain";
+  const spec = CARD_SPECS[variant] ?? CARD_SPECS.plain;
+  const fill = cardFill(spec, t);
+  const inner = renderCardInner(block, spec, t, recipient);
+
+  if (variant === "plain") {
+    return `<div class="${CLS.cardPlain}" style="margin:0 0 20px">${inner}</div>`;
+  }
+  const bg = fill ? `background:${fill};` : "";
+  const border = spec.bordered ? `border:1px solid ${t.border};` : "";
+  const cls =
+    variant === "hero"
+      ? CLS.cardHero
+      : variant === "feature"
+        ? CLS.cardFeature
+        : variant === "testimonial"
+          ? CLS.cardTestimonial
+          : CLS.cardOutlined;
+  return `<div class="${cls}" style="${bg}${border}border-radius:${t.radius}px;padding:${spec.padY}px ${spec.padX}px;margin:0 0 16px">${inner}</div>`;
+}
+
+/**
+ * A responsive multi-column row.
+ *
+ * `<table>` rather than divs because Outlook's Word engine has no flex/grid.
+ * Each `<td>` carries `pw-col`, which the `@media (max-width:450px)` rule
+ * flips to `display:block;width:100%` — the same breakpoint the designer's
+ * own newsletter stacks at.
+ */
+function renderColumnsBlock(
+  block: Extract<EmailBlock, { kind: "columns" }>,
+  recipient: CampaignRecipient,
+  t: EmailTheme,
+): string {
+  const count = block.columns.length || 1;
+  const pct = Math.floor(100 / count);
+  const cells = block.columns
+    .map((col, i) => {
+      const spec = CARD_SPECS[col.variant ?? "plain"] ?? CARD_SPECS.plain;
+      const fill = cardFill(spec, t);
+      const bg = fill ? `background:${fill};` : "";
+      const border = spec.bordered ? `border:1px solid ${t.border};` : "";
+      const pad = spec.padY ? `padding:${spec.padY}px ${spec.padX}px;` : "";
+      const radius = fill || spec.bordered ? `border-radius:${t.radius}px;` : "";
+      const last = i === block.columns.length - 1;
+      const gutter = last ? "0" : "0 14px 0 0";
+      return `<td class="${CLS.col}" width="${pct}%" valign="top" style="width:${pct}%;padding:${gutter};vertical-align:top"><div style="${bg}${border}${radius}${pad}">${renderCardInner(col, spec, t, recipient)}</div></td>`;
+    })
+    .join("");
+  return `<table class="${CLS.colWrap}" role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border-collapse:collapse;margin:0 0 16px"><tr>${cells}</tr></table>`;
+}
+
+/** Edge-to-edge image — the masthead and the section banners. Rendered with
+ *  NO container padding (see `blockPadding`), because in this design the
+ *  banner IS the section heading and a 24px inset reads as a mistake. */
+function renderBleedImage(
+  block: Extract<EmailBlock, { kind: "bleed_image" }>,
+  t: EmailTheme,
+): string {
+  // An UNFILLED slot draws a neutral band from theme tokens rather than
+  // requesting anything. A template must be able to say "the masthead goes
+  // here" without naming a URL the deployment may not own — a placeholder
+  // pointing at a guessed path is how you ship broken images to real inboxes.
+  if (!block.url) {
+    const label = block.alt || "Add artwork from the image library";
+    return `<div style="background:${t.cream};border:1px dashed ${t.hairline};border-radius:${Math.max(0, t.radius - 12)}px;padding:22px 16px;text-align:center;font-family:${t.bodyFont};font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:${t.muted}">${esc(label)}</div>`;
+  }
+  const img = `<img src="${esc(safeImageSrc(block.url))}" alt="${esc(block.alt)}" width="600" style="display:block;width:100%;max-width:100%;border:0" />`;
+  return block.href
+    ? `<a href="${esc(safeEmailHref(block.href))}" style="display:block;text-decoration:none">${img}</a>`
+    : img;
+}
+
+function renderHairline(t: EmailTheme): string {
+  return `<div class="${CLS.rule}" style="height:1px;line-height:1px;font-size:0;background:${t.hairline};border-radius:999px;margin:8px 0 16px">&nbsp;</div>`;
+}
+
+/** The sign-off card: logo, nav line, links, and the required legal row. */
+function renderFooterBlock(
+  block: Extract<EmailBlock, { kind: "footer" }>,
+  t: EmailTheme,
+  opts: RenderEmailOptions,
+): string {
+  const parts: string[] = [];
+  if (block.logoUrl) {
+    parts.push(
+      `<div style="text-align:center;margin:0 0 14px"><img src="${esc(safeImageSrc(block.logoUrl))}" alt="${esc(block.logoAlt ?? "")}" style="display:inline-block;max-width:210px;width:100%;border:0" /></div>`,
+    );
+  }
+  if (block.navLine) {
+    parts.push(
+      `<div style="text-align:center;margin:0 0 12px;font-family:${t.bodyFont};font-size:17px;font-weight:700;letter-spacing:${t.bodyTracking};color:${t.ink}">${esc(block.navLine)}</div>`,
+    );
+  }
+  if (block.links?.length) {
+    const links = block.links
+      .map(
+        (l) =>
+          `<a class="${CLS.link}" href="${esc(safeEmailHref(l.url))}" style="color:${t.link};text-decoration:underline">${esc(l.label)}</a>`,
+      )
+      .join(`<span style="color:${t.muted}"> | </span>`);
+    parts.push(
+      `<div style="text-align:center;margin:0 0 12px;font-family:${t.bodyFont};font-size:13px;color:${t.muted}">${links}</div>`,
+    );
+  }
+  const address = opts.orgAddress ? `<div>${esc(opts.orgAddress)}</div>` : "";
+  parts.push(
+    `<div class="${CLS.foot}" style="text-align:center;font-family:${t.bodyFont};font-size:12px;line-height:1.6;color:${t.muted}">${address}<div><a href="${esc(opts.unsubscribeUrl)}" style="color:${t.muted};text-decoration:underline">Unsubscribe</a> from all Public Worship emails.</div></div>`,
+  );
+  return `<div class="${CLS.cardFeature}" style="background:${t.cream};border-radius:${t.radius}px;padding:26px 24px;margin:0 0 8px">${parts.join("")}</div>`;
 }
 
 function renderDividerBlock(t: EmailTheme): string {
@@ -329,80 +638,6 @@ function renderEyebrowBlock(
   // Outlook drops inline padding on inline elements.
   const icon = block.icon ? `${esc(block.icon)}&nbsp;&nbsp;` : "";
   return `<div class="${CLS.eyebrow}" style="margin:0 0 10px;font-family:${t.bodyFont};font-weight:700;letter-spacing:0.1em;font-size:12px;text-transform:uppercase;color:${t.accent}">${icon}${text}</div>`;
-}
-
-/**
- * The inner parts of a card, in order, with no wrapper — shared verbatim by
- * the full-width `card` block and each column of a `columns` block so the two
- * cannot drift apart visually.
- */
-function renderCardContent(
-  content: EmailCardContent,
-  recipient: CampaignRecipient,
-  t: EmailTheme,
-  opts: { headingSize: number },
-): string {
-  const parts: string[] = [];
-
-  if (content.imageUrl) {
-    parts.push(
-      `<img src="${esc(safeImageSrc(content.imageUrl))}" alt="${esc(content.imageAlt ?? "")}" style="display:block;width:100%;max-width:100%;border:0;border-radius:${t.radius}px;margin:0 0 14px" />`,
-    );
-  }
-  if (content.heading) {
-    const heading = substituteMergeTagsHtml(esc(content.heading), recipient);
-    parts.push(
-      `<h3 class="${CLS.heading}" style="margin:0 0 8px;font-size:${opts.headingSize}px;line-height:1.3;color:${t.ink};font-family:${t.headingFont};font-weight:700">${heading}</h3>`,
-    );
-  }
-  if (content.body) {
-    parts.push(
-      markdownSubsetToHtml(substituteMergeTagsHtml(esc(content.body), recipient), t),
-    );
-  }
-  if (content.ctaLabel && content.ctaUrl) {
-    const label = substituteMergeTagsHtml(esc(content.ctaLabel), recipient);
-    parts.push(
-      `<div style="margin:4px 0 0">${renderButtonHtml(label, content.ctaUrl, t)}</div>`,
-    );
-  }
-  return parts.join("");
-}
-
-function renderCardBlock(
-  block: Extract<EmailBlock, { kind: "card" }>,
-  recipient: CampaignRecipient,
-  t: EmailTheme,
-): string {
-  return `<div style="margin:0 0 20px">${renderCardContent(block, recipient, t, { headingSize: 20 })}</div>`;
-}
-
-/**
- * A responsive multi-column row.
- *
- * `<table>` rather than divs because Outlook's Word engine has no flex/grid.
- * Each `<td>` carries `pw-col`, which the `@media (max-width:450px)` rule
- * flips to `display:block;width:100%` — the same breakpoint the designer's
- * own newsletter stacks at. Clients that strip `<style>` keep the side-by-side
- * table, which is the correct desktop rendering anyway.
- */
-function renderColumnsBlock(
-  block: Extract<EmailBlock, { kind: "columns" }>,
-  recipient: CampaignRecipient,
-  t: EmailTheme,
-): string {
-  const count = block.columns.length || 1;
-  const pct = Math.floor(100 / count);
-  const cells = block.columns
-    .map((col, i) => {
-      const last = i === block.columns.length - 1;
-      // Gutter as right-padding on every cell but the last — a `border-spacing`
-      // or margin-based gutter is unreliable across Outlook and Gmail alike.
-      const pad = last ? "0" : "0 16px 0 0";
-      return `<td class="${CLS.col}" width="${pct}%" valign="top" style="width:${pct}%;padding:${pad};vertical-align:top">${renderCardContent(col, recipient, t, { headingSize: 17 })}</td>`;
-    })
-    .join("");
-  return `<table class="${CLS.colWrap}" role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border-collapse:collapse;margin:0 0 20px"><tr>${cells}</tr></table>`;
 }
 
 function renderQuoteBlock(
@@ -485,6 +720,12 @@ function renderBlockHtml(
       return renderQuoteBlock(block, recipient, t);
     case "poll":
       return renderPollBlock(block, recipient, t, opts);
+    case "bleed_image":
+      return renderBleedImage(block, t);
+    case "hairline":
+      return renderHairline(t);
+    case "footer":
+      return renderFooterBlock(block, t, opts);
     default:
       return "";
   }
@@ -537,6 +778,13 @@ function darkRules(d: EmailThemeTokens): [string, string][] {
       `.${CLS.pollOpt}`,
       `border-color:${d.border} !important; color:${d.ink} !important;`,
     ],
+    [`.${CLS.cardHero}`, `background:${d.accent} !important;`],
+    [`.${CLS.cardFeature}`, `background:${d.cream} !important;`],
+    [
+      `.${CLS.cardOutlined}`,
+      `background:${d.surface} !important; border-color:${d.border} !important;`,
+    ],
+    [`.${CLS.cardTestimonial}`, `background:${d.contrast} !important;`],
     [`.${CLS.foot}`, `color:${d.muted} !important;`],
     [`.${CLS.foot} a`, `color:${d.muted} !important;`],
   ];
@@ -551,10 +799,11 @@ img { -ms-interpolation-mode:bicubic; }
 a { text-decoration:underline; }
 
 @media only screen and (max-width:599px) {
-  .${CLS.wrap} { padding:20px 10px !important; }
-  .${CLS.card} { padding:24px 18px !important; border-radius:${Math.max(0, t.radius - 4)}px !important; }
-  .${CLS.h1} { font-size:24px !important; line-height:1.2 !important; }
-  .${CLS.button} { display:block !important; text-align:center !important; }
+  .${CLS.card} { width:100% !important; max-width:100% !important; }
+  .${CLS.h1} { font-size:26px !important; line-height:1.15 !important; }
+  .${CLS.cardHero} { padding:28px 18px !important; }
+  .${CLS.cardHero} .${CLS.heading} { font-size:30px !important; }
+  .${CLS.cardFeature}, .${CLS.cardOutlined}, .${CLS.cardTestimonial} { padding:20px 18px !important; }
 }
 
 /* Stack columns. 450px is where two 240px-ish cards stop being readable —
@@ -564,8 +813,10 @@ a { text-decoration:underline; }
     display:block !important;
     width:100% !important;
     max-width:100% !important;
-    padding:0 0 20px 0 !important;
+    padding:0 0 16px 0 !important;
   }
+  /* The inter-column spacer must vanish, not become a 16px-tall empty row. */
+  .${CLS.colGap} { display:none !important; width:0 !important; }
 }
 
 @media (prefers-color-scheme: dark) {
@@ -589,26 +840,58 @@ ${darkRules(d).map(([sel, decls]) => `[data-ogsc] ${sel} { ${decls} }`).join("\n
  * own `theme` (or Public Worship's brand when it has none), with a required
  * visible unsubscribe link in the footer.
  */
+/**
+ * Which blocks bleed to the container edge. The masthead and the section
+ * banners are artwork that CARRIES the heading — inset by the usual 24px they
+ * read as a mistake rather than a design.
+ */
+function blockPadding(block: EmailBlock): string {
+  if (block.kind !== "bleed_image") return "0 24px";
+  // An unfilled slot keeps the normal inset so the dashed band reads as a
+  // placeholder inside the layout rather than a full-width grey stripe.
+  return block.inset || !block.url ? "0 24px" : "0";
+}
+
+/**
+ * Render a full campaign email document to a complete, email-client-safe
+ * HTML document.
+ *
+ * Structure follows the real newsletter: a COOL GREY page (`canvas`) behind a
+ * 600px WHITE container (`surface`), with each block supplying its own fill.
+ * The previous version had this inverted — a cream page behind a white card —
+ * which is why applying the right hex values still didn't look like the brand.
+ */
 export function renderCampaignEmail(
   doc: EmailDocument,
   opts: RenderEmailOptions,
 ): string {
   // Normalize at the EDGE, once. Everything downstream can then treat every
-  // token as present and well-formed — no per-token fallbacks scattered
-  // through the renderers, and a malformed stored theme degrades to on-brand
-  // rather than painting "undefined" into a style attribute.
+  // token as present and well-formed.
   const t = doc.theme ? normalizeEmailTheme(doc.theme) : DEFAULT_EMAIL_THEME;
 
-  const bodyHtml = doc.blocks
-    .map((b) => renderBlockHtml(b, opts.recipient, t, opts))
+  const rows = doc.blocks
+    .map((b) => {
+      const html = renderBlockHtml(b, opts.recipient, t, opts);
+      if (!html) return "";
+      return `<tr><td style="padding:${blockPadding(b)}">${html}</td></tr>`;
+    })
     .join("");
+
   const preview = opts.subjectPreview
     ? `<div style="display:none;max-height:0;overflow:hidden;opacity:0;mso-hide:all">${esc(opts.subjectPreview)}</div>`
     : "";
-  const addressLine = opts.orgAddress ? `<div>${esc(opts.orgAddress)}</div>` : "";
   const wordmark = t.wordmark
-    ? `<div class="${CLS.mark}" style="text-align:center;padding-bottom:16px;font-family:${t.bodyFont};font-weight:700;letter-spacing:0.12em;font-size:12px;color:${t.accent}">${esc(t.wordmark)}</div>`
+    ? `<tr><td class="${CLS.mark}" style="padding:18px 24px 6px;text-align:center;font-family:${t.bodyFont};font-weight:700;letter-spacing:0.12em;font-size:12px;color:${t.accent}">${esc(t.wordmark)}</td></tr>`
     : "";
+
+  // The unsubscribe link is REQUIRED on every send. A document carrying a
+  // `footer` block renders it there; one without still gets this fallback, so
+  // it can never go out missing.
+  const hasFooter = doc.blocks.some((b) => b.kind === "footer");
+  const address = opts.orgAddress ? `<div>${esc(opts.orgAddress)}</div>` : "";
+  const fallbackFooter = hasFooter
+    ? ""
+    : `<tr><td class="${CLS.foot}" style="padding:8px 24px 24px;text-align:center;font-family:${t.bodyFont};font-size:12px;line-height:1.6;color:${t.muted}">${address}<div>Sent with love by Public Worship · Chapter OS</div><div style="padding-top:6px"><a href="${esc(opts.unsubscribeUrl)}" style="color:${t.muted};text-decoration:underline">Unsubscribe from all Public Worship emails</a></div></td></tr>`;
 
   return `<!doctype html>
 <html lang="en">
@@ -621,19 +904,15 @@ export function renderCampaignEmail(
 <style>${styleBlock(t)}</style>
 </head>
 <body style="margin:0;padding:0;background:${t.canvas}">
-${preview}<div class="${CLS.wrap}" style="margin:0;padding:32px 12px;background:${t.canvas};font-family:${t.bodyFont};color:${t.ink}">
-  <div style="max-width:600px;margin:0 auto">
-    ${wordmark}
-    <div class="${CLS.card}" style="background:${t.surface};border:1px solid ${t.border};border-radius:${t.radius}px;padding:32px 28px">
-      ${bodyHtml}
-    </div>
-    <div class="${CLS.foot}" style="text-align:center;padding-top:16px;font-family:${t.bodyFont};font-size:11px;line-height:1.5;color:${t.muted}">
-      ${addressLine}
-      <div>Sent with love by Public Worship · Chapter OS</div>
-      <div style="padding-top:8px"><a href="${esc(opts.unsubscribeUrl)}" style="color:${t.muted};text-decoration:underline">Unsubscribe from all Public Worship emails</a></div>
-    </div>
-  </div>
-</div>
+${preview}<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" class="${CLS.wrap}" style="width:100%;border-collapse:collapse;background:${t.canvas};padding:0">
+  <tr><td align="center" style="padding:0">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" class="${CLS.card}" style="width:600px;max-width:600px;border-collapse:collapse;background:${t.surface};font-family:${t.bodyFont};color:${t.ink}">
+      ${wordmark}
+      ${rows}
+      ${fallbackFooter}
+    </table>
+  </td></tr>
+</table>
 </body>
 </html>`;
 }
@@ -728,6 +1007,20 @@ function renderBlockText(
       // otherwise never see; a bare decorative image still contributes nothing.
       if (block.href) return `${block.alt || "Image"}: ${block.href}`;
       return null;
+    }
+    case "bleed_image":
+      // The banners carry the section headings as artwork — dropping them
+      // leaves the plaintext with no section structure at all.
+      if (!block.url) return null;
+      if (block.href) return `${block.alt || "Image"}: ${block.href}`;
+      return block.alt ? block.alt : null;
+    case "hairline":
+      return "---";
+    case "footer": {
+      const lines: string[] = [];
+      if (block.navLine) lines.push(block.navLine);
+      for (const l of block.links ?? []) lines.push(`${l.label}: ${l.url}`);
+      return lines.length > 0 ? lines.join("\n") : null;
     }
     case "spacer":
       return null;
