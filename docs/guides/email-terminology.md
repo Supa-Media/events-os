@@ -1,6 +1,6 @@
 # Email terminology — the words we use, and why
 
-The vocabulary for the Campaigns desk. Every label in the UI, every field
+The vocabulary for the Emails desk. Every label in the UI, every field
 name in the schema, and every Academy lesson uses these words and only these
 words. Where we had a word of our own invention, it is retired here.
 
@@ -22,10 +22,10 @@ try to read our own docs against an industry article.
 | ~~contact~~ → **Subscriber** | Subscriber / Profile | A person *in their email capacity*. "Contact" stays for the CRM sense; a subscriber is the emailable projection of one, and only a subscriber has a consent state. |
 | ~~Campaign~~ → **Email** | Marketing Email (HubSpot) / Broadcast (Resend) | **One email, sent once, to a chosen segment.** See below for why this stopped being called a Campaign. |
 | *(reserved)* **Campaign** | Campaign / Flow / Journey | A SERIES of emails. Not built. The word is deliberately kept free for it. |
-| **Template** | Template | A saved, reusable document. The starting point a campaign is created from. |
+| **Template** | Template | A saved, reusable document. The starting point an Email is created from. |
 | **Theme** | Brand / Design tokens | The colours, fonts, radius and tracking a document renders with. Owned by the designer, changeable whenever she wants. |
 | **Block** | Block / Content block | One row of the document (heading, card, banner, footer…). |
-| **Recipient** | Recipient | One person's copy of one campaign, with its own unsubscribe token and delivery state. |
+| **Recipient** | Recipient | One person's copy of one Email, with its own unsubscribe token and delivery state. |
 | **Merge tag** | Merge tag | `{{firstName}}` — Mailchimp's exact term. |
 | **Subject line** / **Preview text** | Same | Unchanged; both already match. |
 | ~~blast~~ → **Event announcement** | Announcement | The one-off send attached to an event. "Blast" is an internal joke word that had leaked into UI copy, and it describes the compliance posture we are trying not to have. |

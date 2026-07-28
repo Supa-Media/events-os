@@ -92,7 +92,7 @@ function CampaignDesignBody({
   // only for a caller who can compose: `updateCampaignDoc` /
   // `setCampaignTheme` both require `campaigns.compose`, so without this a
   // design-only holder typed into a live-looking composer whose every
-  // autosave came back "Not saved — … requires campaign compose power."
+  // autosave came back "Not saved — … requires email compose power."
   const editable =
     canCompose && (campaign?.status === "draft" || campaign?.status === "changes_requested");
 
