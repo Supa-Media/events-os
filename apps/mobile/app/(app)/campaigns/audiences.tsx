@@ -6,7 +6,12 @@ import type { Id } from "@events-os/convex/_generated/dataModel";
 import { Screen, Narrow, EmptyState } from "../../../components/ui";
 import { AudiencesView } from "../../../components/campaign/AudiencesView";
 
-/** AUDIENCES tab — segment list + inline create/edit with a live preview.
+/** SEGMENTS tab — segment list + inline create/edit with a live preview.
+ *
+ * The route stays `/campaigns/audiences` and the body is still
+ * `AudiencesView`: "Segment" is the on-screen label for what the backend
+ * calls an audience (see `AudiencesView.tsx`'s doc), a vocabulary change
+ * only — no API, table, or path was renamed.
  *
  * Gated the same way `campaigns/index.tsx` (and `giving/donors.tsx` before
  * it) gates its own screen — see that file's doc.

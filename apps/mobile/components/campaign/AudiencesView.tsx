@@ -62,7 +62,7 @@ import {
 import { ErrorBoundary } from "../ErrorBoundary";
 import { colors, spacing } from "../../lib/theme";
 import { useActionRunner } from "../../lib/useActionToast";
-import { confirmAction, describeAudience, pluralCount } from "./helpers";
+import { confirmAction, describeAudience, pluralCount, pluralPeople } from "./helpers";
 import {
   centsToDollarsStr,
   dollarsStrToCents,
@@ -225,7 +225,7 @@ function AudienceForm({
   const [filters, setFilters] = useState<PersonFilters>(initial?.filters ?? {});
 
   // ── Targeting v2 (the group/skip-list builder) ────────────────────────────
-  // Every NEW audience is v2, and every stored row that carries `targeting`
+  // Every NEW segment is v2, and every stored row that carries `targeting`
   // (migration 0042 wraps legacy rows) edits through the group builder; the
   // legacy chip builder below stays mounted ONLY for a not-yet-wrapped row.
   // Rows commit into UI state on every valid keystroke (WYSIWYG — see
@@ -318,7 +318,7 @@ function AudienceForm({
     [setFieldStatus],
   );
 
-  // New audiences are ALWAYS person_filters (the source dropdown is gone —
+  // New segments are ALWAYS person_filters (the source dropdown is gone —
   // see the file doc); an existing legacy-sourced row stays read-only.
   const source = initial?.source ?? "person_filters";
   const isPersonFilters = source === "person_filters";
@@ -350,7 +350,7 @@ function AudienceForm({
     if (isTargetingV2) {
       // Incomplete rows (an id control not chosen yet) never reach the wire
       // shape — blocking Save on them (with the hint below the buttons)
-      // beats silently saving a narrower audience than what's on screen.
+      // beats silently saving a narrower segment than what's on screen.
       if (wire.incompleteCount > 0) return;
       setSaving(true);
       try {
@@ -364,7 +364,7 @@ function AudienceForm({
                   includePersonIds: includeIds,
                   excludePersonIds: excludeIds,
                 }),
-              { errorTitle: "Couldn't save audience" },
+              { errorTitle: "Couldn't save segment" },
             )
           : await run(
               () =>
@@ -377,7 +377,7 @@ function AudienceForm({
                   includePersonIds: includeIds.length ? includeIds : undefined,
                   excludePersonIds: excludeIds.length ? excludeIds : undefined,
                 }),
-              { errorTitle: "Couldn't create audience" },
+              { errorTitle: "Couldn't create segment" },
             );
         if (result !== undefined) onDone();
       } finally {
@@ -424,7 +424,7 @@ function AudienceForm({
                 includePersonIds: includeIds,
                 excludePersonIds: excludeIds,
               }),
-            { errorTitle: "Couldn't save audience" },
+            { errorTitle: "Couldn't save segment" },
           )
         : await run(
             () =>
@@ -437,7 +437,7 @@ function AudienceForm({
                 includePersonIds: includeIds.length ? includeIds : undefined,
                 excludePersonIds: excludeIds.length ? excludeIds : undefined,
               }),
-            { errorTitle: "Couldn't create audience" },
+            { errorTitle: "Couldn't create segment" },
           );
       if (result !== undefined) onDone();
     } finally {
@@ -448,13 +448,13 @@ function AudienceForm({
   function handleArchive() {
     if (!initial) return;
     confirmAction({
-      title: "Archive audience?",
+      title: "Archive segment?",
       message: `"${initial.name}" will be hidden from campaigns. Campaigns already using it are unaffected.`,
       confirmLabel: "Archive",
       destructive: true,
       onConfirm: () => {
         void run(() => archive({ audienceId: initial._id }), {
-          errorTitle: "Couldn't archive audience",
+          errorTitle: "Couldn't archive segment",
         }).then((result) => {
           if (result !== undefined) onDone();
         });
@@ -471,8 +471,8 @@ function AudienceForm({
           <Badge label={sourceLabel(source, false)} tone="accent" />
           {!isPersonFilters ? (
             <Text className="mt-1 text-xs text-muted">
-              {describeAudience(source, filters)} — this is a previous-format audience. It still
-              works for sending, and will move to the new group builder automatically; until then,
+              {describeAudience(source, filters)} — this is a previous-format segment. It still
+              works for sending, and will move to the new rule builder automatically; until then,
               only its name can be changed here.
             </Text>
           ) : null}
@@ -480,7 +480,7 @@ function AudienceForm({
       ) : null}
 
       <ErrorBoundary inline>
-        <LiveRecipientsSummary
+        <LivePeopleSummary
           args={previewArgs}
           pendingEdit={
             dirtyKeys.size > 0 || (isTargetingV2 && wire.targeting !== debouncedTargeting)
@@ -543,7 +543,7 @@ function AudienceForm({
               controller={numberFieldController}
               keyPrefix={EXCLUDE_FIELD_PREFIX}
               label="Exclude people who…"
-              hint="Anyone matching these is removed from the audience, even if hand-picked."
+              hint="Anyone matching these is removed from the segment, even if hand-picked."
               tone="exclude"
               // Verification round finding C: "only verified email" reads
               // backwards as an exclude criterion ("exclude anyone whose
@@ -583,7 +583,7 @@ function AudienceForm({
       <View className="mt-3 flex-row items-center justify-between gap-2">
         <View className="flex-row gap-2">
           <Button
-            title={initial ? "Save" : "Create audience"}
+            title={initial ? "Save" : "Create segment"}
             onPress={handleSave}
             loading={saving}
             disabled={
@@ -871,7 +871,7 @@ function FilterChipsBuilder({
         <Text className="mt-2 text-xs text-faint">
           {tone === "exclude"
             ? "Tap a category above to remove anyone matching it — leave everything off to exclude nobody."
-            : "Tap a category above to narrow this audience — leave everything off to target everyone."}
+            : "Tap a category above to narrow this segment — leave everything off to target everyone."}
         </Text>
       ) : null}
 
@@ -1237,15 +1237,21 @@ function HandPickSection({
   );
 }
 
-// ── Live recipients summary (pinned) ────────────────────────────────────────
+// ── Live people summary (pinned) ────────────────────────────────────────────
 
 /**
- * A slim, always-visible recipient count pinned above the filter + hand-pick
- * stack — the detailed `AudiencePreviewCard` sits below all of it, so it's
- * easy to lose track of the count while adjusting criteria above it. Once a
- * count has loaded once, this NEVER blanks back to "Calculating…" on a
- * refetch — it keeps showing the last known count with a small "Updating…"
- * indicator instead, so the number on screen is always meaningful.
+ * A slim, always-visible count of the PEOPLE this segment reaches, pinned
+ * above the filter + hand-pick stack — the detailed `AudiencePreviewCard`
+ * sits below all of it, so it's easy to lose track of the count while
+ * adjusting criteria above it. Once a count has loaded once, this NEVER
+ * blanks back to "Calculating…" on a refetch — it keeps showing the last
+ * known count with a small "Updating…" indicator instead, so the number on
+ * screen is always meaningful.
+ *
+ * "People", not "recipients": a recipient is a delivery row on one specific
+ * send. This pinned figure and the detailed card below it are the same
+ * number and now say so in the same word — they used to read "12 recipients"
+ * here and "12 people" twenty lines down, in the same form.
  *
  * `pendingEdit` (true while any numeric filter field has an uncommitted
  * keystroke sitting in it, mid-debounce) ALSO drives the "Updating…" cue —
@@ -1253,7 +1259,7 @@ function HandPickSection({
  * it's about to change once the debounce fires (or WOULD change, if the
  * field weren't flushed straight into Save first — see `handleSave`).
  */
-function LiveRecipientsSummary({
+function LivePeopleSummary({
   args,
   pendingEdit,
 }: {
@@ -1273,7 +1279,7 @@ function LiveRecipientsSummary({
     <View className="mb-3 flex-row items-center gap-2 rounded-md border border-border bg-sunken px-3 py-2">
       <Icon name="users" size={15} color={colors.muted} />
       {shown ? (
-        <Text className="text-sm font-semibold text-ink">{pluralCount(shown.count, "recipient")}</Text>
+        <Text className="text-sm font-semibold text-ink">{pluralPeople(shown.count)}</Text>
       ) : (
         <Text className="text-sm text-faint">Calculating…</Text>
       )}
@@ -1288,28 +1294,34 @@ function AudiencePreviewCard({ args }: { args: PreviewArgs }) {
   const preview = useQuery(api.audiences.previewAudience, args) as PreviewResult | undefined;
   if (preview === undefined) {
     return (
-      <Field label="Recipients">
+      <Field label="People in this segment">
         <Text className="text-sm text-faint">Calculating…</Text>
       </Field>
     );
   }
   const exclusionBits = [
-    preview.excludedSuppressed > 0 ? `${pluralCount(preview.excludedSuppressed, "suppressed contact")}` : null,
-    preview.excludedUnverified > 0 ? `${pluralCount(preview.excludedUnverified, "unverified contact")}` : null,
-    preview.excludedOptOut > 0 ? `${pluralCount(preview.excludedOptOut, "person")} opted out` : null,
+    // "Subscriber" is the EMAIL-ADDRESS sense of the overloaded word
+    // "contact" — a suppressed/unverified address. "Contact" is kept for the
+    // PERSONA only (`isContactOnly`, the hand-pick list's "(contact)" tag);
+    // this line used to use it for both in a single sentence.
+    preview.excludedSuppressed > 0
+      ? `${pluralCount(preview.excludedSuppressed, "suppressed subscriber")}`
+      : null,
+    preview.excludedUnverified > 0
+      ? `${pluralCount(preview.excludedUnverified, "unverified subscriber")}`
+      : null,
+    preview.excludedOptOut > 0 ? `${pluralPeople(preview.excludedOptOut)} opted out` : null,
     // Property-level exclusions (`excludeFilters`) — a PRIMARY count, like
     // the others above (never diagnostics-gated — see
     // `lib/audienceResolve.ts#AudienceResolution`'s doc).
     preview.excludedByFilters > 0
-      ? `${pluralCount(preview.excludedByFilters, "person")} matched an exclude filter`
+      ? `${pluralPeople(preview.excludedByFilters)} matched an exclude filter`
       : null,
   ].filter((b): b is string => b !== null);
 
   return (
-    <Field label="Recipients">
-      <Text className="text-base font-semibold text-ink">
-        {pluralCount(preview.count, "person")}
-      </Text>
+    <Field label="People in this segment">
+      <Text className="text-base font-semibold text-ink">{pluralPeople(preview.count)}</Text>
       {exclusionBits.length > 0 ? (
         <Text className="mt-0.5 text-xs text-muted">{exclusionBits.join(" · ")} excluded</Text>
       ) : null}
@@ -1331,7 +1343,7 @@ function AudiencePreviewCard({ args }: { args: PreviewArgs }) {
       ) : null}
       {preview.handPickedUnverified > 0 ? (
         <Text className="mt-0.5 text-xs text-muted">
-          {pluralCount(preview.handPickedUnverified, "hand-picked person")}{" "}
+          {pluralPeople(preview.handPickedUnverified)} hand-picked{" "}
           {preview.handPickedUnverified === 1 ? "has" : "have"} no verified email.
         </Text>
       ) : null}
@@ -1344,13 +1356,13 @@ function AudiencePreviewCard({ args }: { args: PreviewArgs }) {
       ) : null}
       {preview.handPickedExcludedByFilters > 0 ? (
         <Text className="mt-0.5 text-xs text-muted">
-          {pluralCount(preview.handPickedExcludedByFilters, "hand-picked person")}{" "}
+          {pluralPeople(preview.handPickedExcludedByFilters)} hand-picked{" "}
           {preview.handPickedExcludedByFilters === 1 ? "was" : "were"} removed by an exclude filter.
         </Text>
       ) : null}
       {preview.truncated ? (
         <Text className="mt-0.5 text-xs text-warn">
-          Showing the first 5,000 — this audience matches more than the cap.
+          Showing the first 5,000 — this segment matches more than the cap.
         </Text>
       ) : null}
       {preview.sample.length > 0 ? (

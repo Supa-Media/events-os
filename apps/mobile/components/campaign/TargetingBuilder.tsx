@@ -63,6 +63,7 @@ import {
   intToStr,
   resolveNumberField,
 } from "./audienceFilterFields";
+import { pluralPeople } from "./helpers";
 import {
   describeCondition,
   targetingSentences,
@@ -866,8 +867,8 @@ function GroupCard({
           {count === undefined
             ? "…"
             : excludeSide
-              ? `${count} ${count === 1 ? "person" : "people"} left out`
-              : `${count} ${count === 1 ? "person matches" : "people match"}`}
+              ? `${pluralPeople(count)} left out`
+              : `${pluralPeople(count)} ${count === 1 ? "matches" : "match"}`}
         </Text>
         {canDelete ? (
           <Button
