@@ -1527,7 +1527,7 @@ export const EVENTS_SECTIONS: Omit<AcademySection, "order">[] = [
           ["Edit rows, statuses, offsets, owners", "**Free hand** — revertible plan internals"],
           ["Delete anything, or mark anything *ready*", "**Asks first**"],
           ["Change the event date or status", "**Asks first**"],
-          ["Anything crew- or public-facing (messages, blasts, pages)", "**Asks first**"],
+          ["Anything crew- or public-facing (messages, announcements, pages)", "**Asks first**"],
         ],
       },
       {
@@ -1549,7 +1549,7 @@ export const EVENTS_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         prompt: "Which of these will the assistant do WITHOUT asking first?",
         options: [
-          "Send the reminder blast to crew",
+          "Send the reminder announcement to crew",
           "Mark Supplies & Logistics ready",
           "Update statuses, offsets, and owners in one revertible batch",
           "Delete the stale comms rows",
