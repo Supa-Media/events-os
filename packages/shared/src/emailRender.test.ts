@@ -5,6 +5,7 @@ import {
   renderCampaignText,
   safeEmailHref,
   safeImageSrc,
+  safeUnsubscribeHref,
 } from "./emailRender";
 import type { EmailTheme } from "./emailTheme";
 import { DEFAULT_EMAIL_THEME, WINTER_THEME } from "./emailTheme";
@@ -341,7 +342,46 @@ describe("renderCampaignEmail — URL scheme allowlist (SECURITY)", () => {
       const html = renderCampaignEmail(doc(blocks), baseOpts);
       expect(html).toContain(`href="${baseOpts.unsubscribeUrl}"`);
     });
+
+    test(`a ROOT-RELATIVE unsubscribeUrl survives in ${label}`, () => {
+      // `lib/siteUrl.ts` returns "" with no PUBLIC_SITE_URL/CONVEX_SITE_URL,
+      // so the call sites really do produce `/unsubscribe/<token>`. Collapsing
+      // that to "#" would delete the legally required visible opt-out.
+      const html = renderCampaignEmail(doc(blocks), {
+        ...baseOpts,
+        unsubscribeUrl: "/unsubscribe/tok123",
+      });
+      expect(html).toContain('href="/unsubscribe/tok123"');
+    });
+
+    test(`a PROTOCOL-relative unsubscribeUrl is rejected in ${label}`, () => {
+      // `//evil.test/x` looks like a path and resolves to another host.
+      for (const url of ["//evil.test/u", "/\\evil.test/u"]) {
+        const html = renderCampaignEmail(doc(blocks), { ...baseOpts, unsubscribeUrl: url });
+        expect(html).not.toContain("evil.test");
+        expect(html).toContain('href="#"');
+      }
+    });
   }
+});
+
+describe("safeUnsubscribeHref (unit)", () => {
+  test("passes through the schemes safeEmailHref allows", () => {
+    expect(safeUnsubscribeHref("https://x.test/u")).toBe("https://x.test/u");
+    expect(safeUnsubscribeHref(" http://x.test/u ")).toBe("http://x.test/u");
+  });
+
+  test("passes through a single-slash root-relative path", () => {
+    expect(safeUnsubscribeHref("/unsubscribe/tok")).toBe("/unsubscribe/tok");
+  });
+
+  test("rejects protocol-relative and dangerous schemes", () => {
+    expect(safeUnsubscribeHref("//evil.test/u")).toBe("#");
+    expect(safeUnsubscribeHref("/\\evil.test/u")).toBe("#");
+    expect(safeUnsubscribeHref("javascript:alert(1)")).toBe("#");
+    expect(safeUnsubscribeHref("data:text/html,x")).toBe("#");
+    expect(safeUnsubscribeHref("unsubscribe/tok")).toBe("#");
+  });
 });
 
 describe("renderCampaignEmail — card align injection (SECURITY)", () => {

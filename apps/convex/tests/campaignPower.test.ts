@@ -612,6 +612,63 @@ describe("campaigns.design — the desk's bottom rung", () => {
     ).rejects.toThrow(/compose power/i);
   });
 
+  /**
+   * The three AUDIENCE writes were missed when the desk widened — they stayed
+   * on `requireCampaignsAccess`, which now admits the design rung, so a
+   * design-only Graphic Designer who is correctly refused `createCampaign`
+   * could still create, rename and archive the audiences campaigns send AT
+   * (proven by running it, adversarial review 2026-07-28).
+   *
+   * That is not a cosmetic mismatch. `computeCampaignSnapshotHash` covers an
+   * audience's targeting, so editing one silently invalidates an
+   * already-approved campaign, which then refuses at send with "content or
+   * audience changed since it was approved" — a send broken by someone who
+   * could never have composed it. Reads stay open; a designer must still see
+   * who a newsletter goes to.
+   */
+  test("a design-only holder cannot create, edit, or archive an AUDIENCE either", async () => {
+    const s = await designerSetup();
+    const audienceId = await run(s.t, (ctx) =>
+      ctx.db.insert("audiences", {
+        scope: "central",
+        name: "Everyone",
+        source: "people",
+        filters: {},
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+
+    // Reads: open, like every other read on the desk.
+    expect(await s.as.query(api.audiences.listAudiences, { scope: "central" })).toHaveLength(1);
+    await expect(
+      s.as.query(api.audiences.getAudience, { audienceId }),
+    ).resolves.toBeDefined();
+
+    // Writes: compose, exactly like the campaign that sends at them.
+    await expect(
+      s.as.mutation(api.audiences.createAudience, {
+        scope: "central",
+        name: "Donors",
+        source: "donors",
+        filters: {},
+      }),
+    ).rejects.toThrow(/compose power/i);
+    await expect(
+      s.as.mutation(api.audiences.updateAudience, { audienceId, name: "Re-aimed" }),
+    ).rejects.toThrow(/compose power/i);
+    await expect(
+      s.as.mutation(api.audiences.archiveAudience, { audienceId }),
+    ).rejects.toThrow(/compose power/i);
+
+    // Nothing landed.
+    const rows = await run(s.t, (ctx) => ctx.db.query("audiences").collect());
+    expect(rows).toHaveLength(1);
+    expect(rows[0].name).toBe("Everyone");
+    expect(rows[0].archived).toBeUndefined();
+  });
+
   test("a legacy central-ED TITLE with no seat READS the desk but can't write the design system", async () => {
     // `isCentralEdOrFm`'s title path (kept for backward compat) opens the
     // desk — but the three POWERS are seat-capability-only, which is exactly

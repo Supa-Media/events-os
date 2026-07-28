@@ -53,7 +53,7 @@ import {
   DEFAULT_EMAIL_THEME,
   normalizeEmailTheme,
   resolveDarkTheme,
-  safeEmailHref,
+  safeUnsubscribeHref,
 } from "@events-os/shared";
 import { escapeHtml } from "./html";
 
@@ -392,11 +392,14 @@ export function emailShell(
   // `…u"><script>…</script><a href="` closed the attribute and put a real
   // `<script>` ELEMENT in the document, and `javascript:` survived into the
   // href. `escapeHtml` alone would fix the first and not the second, so it
-  // gets the same `esc(safeEmailHref(...))` pairing every href in
-  // `emailRender.ts` has.
+  // gets the same escape + sanitize pairing every href in `emailRender.ts`
+  // has — through `safeUnsubscribeHref`, which is the campaign renderer's
+  // own helper for this exact field (it allows the root-relative
+  // `/unsubscribe/<token>` that `siteUrl()` yields on a deployment with no
+  // site URL configured, and nothing else that lacks a safe scheme).
   const bulkFooter = bulk
     ? `<div style="margin-top:6px">${escapeHtml(bulk.orgAddress)}</div>` +
-      `<div style="margin-top:4px"><a href="${escapeHtml(safeEmailHref(bulk.unsubscribeUrl))}" style="color:${t.muted};text-decoration:underline">Unsubscribe</a> from Public Worship announcements.</div>`
+      `<div style="margin-top:4px"><a href="${escapeHtml(safeUnsubscribeHref(bulk.unsubscribeUrl))}" style="color:${t.muted};text-decoration:underline">Unsubscribe</a> from Public Worship announcements.</div>`
     : "";
   return `<!doctype html>
 <html lang="en">

@@ -1906,6 +1906,138 @@ describe("the org postal mailing address gates every bulk send", () => {
     ).toBe("NO_MAILING_ADDRESS");
   });
 
+  /**
+   * The gap `send`'s gate alone can never close: the address is an ORG-WIDE
+   * setting, and delivery happens later, in an action, batch by batch.
+   * `send` refused; `deliverCampaignBatch` still read the (now null) setting,
+   * passed it to the renderer, whose `opts.orgAddress ? … : ""` quietly
+   * dropped the legally required line — mail went out non-compliant and the
+   * campaign landed "sent". Proven by running it (adversarial review,
+   * 2026-07-28). The delivery path now refuses instead.
+   */
+  test("delivery refuses when the address is cleared AFTER send — no mail, recorded failure, approval intact", async () => {
+    vi.useFakeTimers();
+    const realFetch = globalThis.fetch;
+    try {
+      const t = newT();
+      const s = await asSuperuser(t);
+      const campaignId = await seedDraftCampaign(s);
+      await run(s.t, (ctx) =>
+        ctx.db.insert("people", {
+          chapterId: s.chapterId,
+          name: "Riley Reader",
+          email: "riley@example.com",
+          status: "active",
+          createdAt: Date.now(),
+        }),
+      );
+      let fetchCount = 0;
+      globalThis.fetch = (async () => {
+        fetchCount++;
+        return { ok: true, status: 200, text: async () => "{}" };
+      }) as unknown as typeof fetch;
+
+      await approveCampaignViaFlow(s, campaignId);
+      // `send` only SCHEDULES materialize/deliver — clearing the address now
+      // lands it in the real gap between the pre-flight and the render.
+      await s.as.mutation(api.campaigns.send, { campaignId });
+      await s.as.mutation(api.integrationSettings.setEmailCampaignSettings, {
+        orgMailingAddress: null,
+      });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      // Not one message left the building.
+      expect(fetchCount).toBe(0);
+      const campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
+      expect(campaign.status).toBe("failed");
+      expect(campaign.error).toMatch(/postal mailing address/i);
+      expect(campaign.sentCount ?? 0).toBe(0);
+      const recipients = await run(s.t, (ctx) =>
+        ctx.db
+          .query("campaignRecipients")
+          .withIndex("by_campaign", (q) => q.eq("campaignId", campaignId))
+          .collect(),
+      );
+      expect(recipients.every((r) => r.status === "queued")).toBe(true);
+
+      // The approval is NOT burnt: filling the field back in and sending again
+      // is the whole fix — no re-submission, no second reviewer — and the mail
+      // that finally ships carries the address.
+      const sends: string[] = [];
+      globalThis.fetch = (async (_url: string, init?: { body?: string }) => {
+        const items = init?.body ? JSON.parse(init.body) : [];
+        for (const item of items) sends.push(item.html as string);
+        return { ok: true, status: 200, text: async () => "{}" };
+      }) as unknown as typeof fetch;
+      await s.as.mutation(api.integrationSettings.setEmailCampaignSettings, {
+        orgMailingAddress: "Public Worship, 123 Main St, Brooklyn, NY 11201",
+      });
+      await s.as.mutation(api.campaigns.send, { campaignId });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      const resent = await s.as.query(api.campaigns.getCampaign, { campaignId });
+      expect(resent.status).toBe("sent");
+      expect(sends).toHaveLength(1);
+      expect(sends[0]).toContain("Public Worship, 123 Main St, Brooklyn, NY 11201");
+    } finally {
+      globalThis.fetch = realFetch;
+      vi.useRealTimers();
+    }
+  });
+
+  /** `sweepStuckSends` reschedules `deliverCampaignBatch` DIRECTLY — it never
+   *  passes through `send`, so `send`'s gate is no gate at all for this path.
+   *  The check has to live where the render does. */
+  test("the stuck-send sweep can't launder a send past the address check", async () => {
+    vi.useFakeTimers();
+    const realFetch = globalThis.fetch;
+    try {
+      const t = newT();
+      const s = await asSuperuser(t);
+      const campaignId = await seedDraftCampaign(s);
+      await run(s.t, (ctx) =>
+        ctx.db.insert("people", {
+          chapterId: s.chapterId,
+          name: "Riley Reader",
+          email: "riley@example.com",
+          status: "active",
+          createdAt: Date.now(),
+        }),
+      );
+      let fetchCount = 0;
+      globalThis.fetch = (async () => {
+        fetchCount++;
+        return { ok: true, status: 200, text: async () => "{}" };
+      }) as unknown as typeof fetch;
+
+      // Materialize the recipients, then strand the campaign: "sending", rows
+      // queued, `updatedAt` older than the sweep's staleness cutoff — exactly
+      // what a crash mid-action leaves behind.
+      await run(s.t, (ctx) => ctx.db.patch(campaignId, { status: "sending" }));
+      await t.action(internal.campaigns.materializeRecipients, { campaignId });
+      await s.as.mutation(api.integrationSettings.setEmailCampaignSettings, {
+        orgMailingAddress: null,
+      });
+      await run(s.t, (ctx) =>
+        ctx.db.patch(campaignId, {
+          status: "sending",
+          updatedAt: Date.now() - 60 * 60 * 1000,
+        }),
+      );
+
+      expect(await t.mutation(internal.campaigns.sweepStuckSends, {})).toBe(1);
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      expect(fetchCount).toBe(0);
+      const campaign = await s.as.query(api.campaigns.getCampaign, { campaignId });
+      expect(campaign.status).toBe("failed");
+      expect(campaign.error).toMatch(/postal mailing address/i);
+    } finally {
+      globalThis.fetch = realFetch;
+      vi.useRealTimers();
+    }
+  });
+
   test("with an address on file, the rendered campaign email actually carries it", async () => {
     vi.useFakeTimers();
     const realFetch = globalThis.fetch;

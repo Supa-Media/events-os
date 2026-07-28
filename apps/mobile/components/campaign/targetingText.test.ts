@@ -170,3 +170,136 @@ describe("summarizeTargeting — the segment list line", () => {
     expect(summarizeTargeting({ groups: [{ conditions: [] }] })).toBe("Everyone");
   });
 });
+
+// ── The builder mid-edit ───────────────────────────────────────────────────
+//
+// `toWireTargeting` is the seam where what's ON SCREEN becomes what the
+// backend is asked about, and the two are NOT the same document while a row
+// is half-written. Every defect below is the same failure — the screen stating
+// a fact about who receives an email that the definition on screen doesn't
+// support — so these read the real function, not a re-implementation of it.
+
+/** `Role is [Pick a role…]` — a row whose value control hasn't been chosen. */
+const unsetRoleRow = { key: "r-role", kind: "seat", op: "holds", seatId: null } as const;
+/** `Person type is a team member` — finished. */
+const teamMemberRow = { key: "r-kind", kind: "kind", personKind: "team" } as const;
+
+describe("toWireTargeting — the count belongs to the card that produced it", () => {
+  // REGRESSION (HIGH) — an exclusion whose rows are all incomplete is held
+  // back from the wire (the backend rejects an empty exclude group), which
+  // RENUMBERS every exclusion after it. The cards indexed
+  // `perExcludeGroupCounts` by their own UI position, so "Exclusion 1" —
+  // which excludes nobody — printed the figure computed for "Exclusion 2",
+  // and "Exclusion 2", which actually removes those people, printed "…".
+  const wire = toWireTargeting(
+    [{ key: "g1", rows: [] }],
+    [
+      { key: "x1", rows: [unsetRoleRow] },
+      { key: "x2", rows: [teamMemberRow] },
+    ] as UiGroup[],
+  );
+
+  test("the unfinished exclusion really is held back — hence the renumbering", () => {
+    expect(wire.targeting.excludeGroups).toEqual([
+      { conditions: [{ field: "kind", op: "is", kind: "team" }] },
+    ]);
+    expect(wire.incompleteCount).toBe(1);
+  });
+
+  test("each exclusion card maps to its own wire slot, or to none at all", () => {
+    // Card 1 never reached the wire, so no count was computed for it.
+    expect(wire.excludeWireIndexes[0]).toBeNull();
+    // Card 2 is the group the backend counted — at wire index 0, not 1.
+    expect(wire.excludeWireIndexes[1]).toBe(0);
+  });
+
+  test("keying by the map puts the 41 on the card that removes those 41", () => {
+    // Exactly what the backend returns for the wire shape above.
+    const perExcludeGroupCounts = [41];
+    const countFor = (cardIndex: number) => {
+      const wireIndex = wire.excludeWireIndexes[cardIndex];
+      return wireIndex == null ? undefined : perExcludeGroupCounts[wireIndex];
+    };
+    expect(countFor(0)).toBeUndefined();
+    expect(countFor(1)).toBe(41);
+    // The bug, stated as the thing that must never come back: the card's own
+    // position is not a valid index into the counts.
+    expect(perExcludeGroupCounts[0]).toBe(41);
+    expect(countFor(0)).not.toBe(perExcludeGroupCounts[0]);
+  });
+
+  test("the recap keeps one phrase per card, in the cards' order", () => {
+    // The held-back exclusion used to vanish from the recap entirely, leaving
+    // the remaining phrase lined up against the wrong card.
+    expect(targetingSentences(wire.reading).skip).toEqual([
+      "anyone who matches a line you haven't finished yet",
+      "anyone who is a team member",
+    ]);
+  });
+});
+
+describe("toWireTargeting — an unfinished rule row can't read as 'everyone'", () => {
+  // REGRESSION (HIGH) — new segment → "+ Add a condition" → Role. The row
+  // lands with `seatId: null`, so the wire group is empty, so the recap said
+  // "Send to everyone." and the live count reported the whole org, while the
+  // control directly beneath read `is [Pick a role…]`. Save is blocked, but
+  // the sentence and the number a marketer reads while building are the
+  // maximum-blast-radius answer.
+  const wire = toWireTargeting([{ key: "g1", rows: [unsetRoleRow] }] as UiGroup[], []);
+
+  test("the wire shape genuinely is the empty (= everyone) one", () => {
+    expect(wire.targeting.groups).toEqual([{ conditions: [] }]);
+  });
+
+  test("but the recap says the line is unfinished", () => {
+    const { send } = targetingSentences(wire.reading);
+    expect(send).toEqual(["anyone who matches a line you haven't finished yet"]);
+    expect(send).not.toContain("everyone");
+  });
+
+  test("and the count is withheld — `incompleteCount` is what holds it", () => {
+    // `AudiencesView.tsx` (`unfinishedCountHold`) and each card's own count
+    // line both hold on this; it was already returned and simply discarded.
+    expect(wire.incompleteCount).toBe(1);
+    expect(wire.reading.groups[0].unfinishedCount).toBe(1);
+  });
+
+  test("a finished row alongside an unfinished one is still not the whole story", () => {
+    const mixed = toWireTargeting(
+      [{ key: "g1", rows: [teamMemberRow, unsetRoleRow] }] as UiGroup[],
+      [],
+    );
+    // The wire asks about team members — a WIDER set than the screen defines.
+    expect(mixed.targeting.groups).toEqual([{ conditions: [{ field: "kind", op: "is", kind: "team" }] }]);
+    expect(targetingSentences(mixed.reading).send).toEqual([
+      "anyone who is a team member and matches a line you haven't finished yet",
+    ]);
+    expect(mixed.incompleteCount).toBe(1);
+  });
+});
+
+describe("toWireTargeting — the settled case is unchanged", () => {
+  test("finished cards map one-to-one onto their wire groups", () => {
+    const wire = toWireTargeting(
+      [{ key: "g1", rows: [teamMemberRow] }] as UiGroup[],
+      [
+        { key: "x1", rows: [teamMemberRow] },
+        { key: "x2", rows: [teamMemberRow] },
+      ] as UiGroup[],
+    );
+    expect(wire.incompleteCount).toBe(0);
+    expect(wire.excludeWireIndexes).toEqual([0, 1]);
+    expect(wire.targeting.excludeGroups).toHaveLength(2);
+    expect(targetingSentences(wire.reading)).toEqual({
+      send: ["anyone who is a team member"],
+      skip: ["anyone who is a team member", "anyone who is a team member"],
+    });
+  });
+
+  test("no exclusions at all leaves the key off the wire shape entirely", () => {
+    const wire = toWireTargeting([{ key: "g1", rows: [] }], []);
+    expect(wire.targeting).toEqual({ groups: [{ conditions: [] }] });
+    expect(wire.excludeWireIndexes).toEqual([]);
+    expect(targetingSentences(wire.reading)).toEqual({ send: ["everyone"], skip: [] });
+  });
+});

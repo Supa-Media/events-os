@@ -55,10 +55,11 @@ export type RenderEmailOptions = {
   subjectPreview?: string;
   recipient: CampaignRecipient;
   /** The per-recipient `/unsubscribe/<token>` URL. Sanitized at render like
-   *  every other href in this file (`esc(safeEmailHref(...))`): it is built
-   *  from `siteUrl()` at every call site today, but "the caller built it
-   *  safely" is not a property this layer can verify, and it was the one href
-   *  here that skipped the scheme check. */
+   *  every other href in this file, via `safeUnsubscribeHref` (see there for
+   *  why it is not plain `safeEmailHref`): it is built from `siteUrl()` at
+   *  every call site today, but "the caller built it safely" is not a property
+   *  this layer can verify, and it was the one href here that skipped the
+   *  scheme check entirely. */
   unsubscribeUrl: string;
   orgAddress?: string | null;
   /**
@@ -102,6 +103,30 @@ export function safeEmailHref(url: string): string {
  *  dangerous/broken one. */
 export function safeImageSrc(url: string): string {
   return isAllowedImageUrl(url) ? url.trim() : "";
+}
+
+/**
+ * Sanitize the UNSUBSCRIBE url — `safeEmailHref` plus root-relative paths.
+ *
+ * This href used to be escaped but never scheme-checked, on both of its paths
+ * here and in `emailShell.ts`'s bulk footer, so `javascript:` reached it while
+ * every other href in this file went through `safeEmailHref`. It cannot simply
+ * BE `safeEmailHref`, though: `lib/siteUrl.ts` returns `""` when neither
+ * `PUBLIC_SITE_URL` nor `CONVEX_SITE_URL` is set, so the call sites legitimately
+ * produce the root-relative `/unsubscribe/<token>` — and `safeEmailHref` treats
+ * a scheme-less string as unsafe. Collapsing that to `#` would delete the
+ * visible opt-out CAN-SPAM requires from exactly the deployment that is already
+ * misconfigured.
+ *
+ * So a path beginning with a single `/` is passed through, and everything else
+ * must clear the normal scheme allowlist. The single-slash rule matters: `//`
+ * (and `/\`, which several URL parsers fold into it) is PROTOCOL-RELATIVE and
+ * resolves to an attacker's host, not to a path on ours.
+ */
+export function safeUnsubscribeHref(url: string): string {
+  const trimmed = url.trim();
+  if (/^\/(?![/\\])/.test(trimmed)) return trimmed;
+  return safeEmailHref(trimmed);
 }
 
 /**
@@ -643,7 +668,7 @@ function renderFooterBlock(
   }
   const address = opts.orgAddress ? `<div>${esc(opts.orgAddress)}</div>` : "";
   parts.push(
-    `<div class="${CLS.foot}" style="text-align:center;font-family:${t.bodyFont};font-size:12px;line-height:1.6;color:${t.muted}">${address}<div><a href="${esc(safeEmailHref(opts.unsubscribeUrl))}" style="color:${t.muted};text-decoration:underline">Unsubscribe</a> from all Public Worship emails.</div></div>`,
+    `<div class="${CLS.foot}" style="text-align:center;font-family:${t.bodyFont};font-size:12px;line-height:1.6;color:${t.muted}">${address}<div><a href="${esc(safeUnsubscribeHref(opts.unsubscribeUrl))}" style="color:${t.muted};text-decoration:underline">Unsubscribe</a> from all Public Worship emails.</div></div>`,
   );
   return `<div class="${CLS.cardFeature}" style="background:${t.cream};border-radius:${t.radius}px;padding:26px 24px;margin:0 0 8px">${parts.join("")}</div>`;
 }
@@ -922,7 +947,7 @@ export function renderCampaignEmail(
   const address = opts.orgAddress ? `<div>${esc(opts.orgAddress)}</div>` : "";
   const fallbackFooter = hasFooter
     ? ""
-    : `<tr><td class="${CLS.foot}" style="padding:8px 24px 24px;text-align:center;font-family:${t.bodyFont};font-size:12px;line-height:1.6;color:${t.muted}">${address}<div>Sent with love by Public Worship · Chapter OS</div><div style="padding-top:6px"><a href="${esc(safeEmailHref(opts.unsubscribeUrl))}" style="color:${t.muted};text-decoration:underline">Unsubscribe from all Public Worship emails</a></div></td></tr>`;
+    : `<tr><td class="${CLS.foot}" style="padding:8px 24px 24px;text-align:center;font-family:${t.bodyFont};font-size:12px;line-height:1.6;color:${t.muted}">${address}<div>Sent with love by Public Worship · Chapter OS</div><div style="padding-top:6px"><a href="${esc(safeUnsubscribeHref(opts.unsubscribeUrl))}" style="color:${t.muted};text-decoration:underline">Unsubscribe from all Public Worship emails</a></div></td></tr>`;
 
   return `<!doctype html>
 <html lang="en">

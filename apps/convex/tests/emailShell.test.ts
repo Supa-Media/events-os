@@ -64,6 +64,26 @@ describe("emailShell — bulk unsubscribe href (SECURITY)", () => {
     expect(html).toContain(orgAddress);
   });
 
+  test("the root-relative url an unconfigured siteUrl() yields still renders", () => {
+    // `blasts.ts` builds `${siteUrl()}/unsubscribe/${token}`, and `siteUrl()`
+    // is "" with neither PUBLIC_SITE_URL nor CONVEX_SITE_URL set. Sanitizing
+    // that away would drop the opt-out CAN-SPAM requires.
+    const html = emailShell(inner, DEFAULT_EMAIL_THEME, {
+      unsubscribeUrl: "/unsubscribe/tok123",
+      orgAddress,
+    });
+    expect(html).toContain('href="/unsubscribe/tok123"');
+  });
+
+  test("a protocol-relative url pointing at another host is rejected", () => {
+    const html = emailShell(inner, DEFAULT_EMAIL_THEME, {
+      unsubscribeUrl: "//evil.test/unsubscribe",
+      orgAddress,
+    });
+    expect(html).not.toContain("evil.test");
+    expect(html).toContain('href="#"');
+  });
+
   test("omitting `bulk` still emits no unsubscribe furniture at all", () => {
     const html = emailShell(inner);
     expect(html.toLowerCase()).not.toContain("unsubscribe");
