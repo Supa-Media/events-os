@@ -42,6 +42,7 @@ import { colors } from "../../../lib/theme";
 import {
   BLOCK_KIND_LABELS,
   MAX_FOOTER_LINKS,
+  bleedImageUrlProblem,
   footerLinkProblem,
   linkUrlProblem,
   imageAltProblem,
@@ -588,10 +589,14 @@ function PollEditor({
 function ImageSourceFields({
   urlLabel,
   urlPlaceholder = "https://…",
+  urlHint,
   altLabel = "Alt text",
+  altHint,
   url,
   alt,
-  optional = false,
+  urlProblem,
+  clearsToUndefined = false,
+  alwaysShowAlt = false,
   onChange,
   uploadImage,
   run,
@@ -599,15 +604,34 @@ function ImageSourceFields({
 }: {
   urlLabel: string;
   urlPlaceholder?: string;
+  urlHint?: string;
   altLabel?: string;
+  altHint?: string;
   url: string | undefined;
   alt: string | undefined;
+  /**
+   * What the write gate makes of this url RIGHT NOW, computed by the caller.
+   *
+   * The three images do not share one rule and pretending they do is how a
+   * warning ends up lying: an `image` needs a url, a `footer` logo may be
+   * absent but not empty, and a `bleed_image` may be either (an unfilled
+   * banner renders as a placeholder band). Each caller passes the predicate
+   * that mirrors ITS arm of the validator — `imageUrlProblem`,
+   * `optionalImageUrlProblem`, `bleedImageUrlProblem` — and this component
+   * only knows how to say it.
+   */
+  urlProblem: "missing" | "scheme" | null;
+  /** Blanking the field writes `undefined` for both halves rather than `""` —
+   *  for the images whose url is optional, where the gate rejects `""` (the
+   *  footer logo) or where an absent key is simply tidier than an empty one. */
+  clearsToUndefined?: boolean;
+  /** Keep the alt field visible even with no url — the banner's alt IS the
+   *  section heading, so it's worth writing before the artwork arrives. */
+  alwaysShowAlt?: boolean;
   /** Both halves at once — an alt is ALWAYS written alongside a url, because
    *  `undefined` is the value that makes the document unsaveable while `""`
    *  is the contract's legitimate "decorative". */
   onChange: (next: { url: string | undefined; alt: string | undefined }) => void;
-  /** True when the image may be absent entirely (the footer logo). */
-  optional?: boolean;
   uploadImage?: UploadImage;
   run?: ActionRunner["run"];
   /** Label a fresh upload is filed into the shared library under. */
@@ -615,14 +639,6 @@ function ImageSourceFields({
 }) {
   const library = useImageLibraryRegistration();
   const hasUrl = typeof url === "string" && url.length > 0;
-  // The url is what decides whether the document can be SAVED at all: the
-  // write gate rejects the whole thing over it, so an unfilled image block
-  // silently takes every other block's edits down with it until it's dealt
-  // with. `optional` only changes what ABSENT means, never what a filled-in
-  // bad value means.
-  const urlProblem = optional
-    ? optionalImageUrlProblem(url)
-    : imageUrlProblem(url ?? "");
   const altProblem = imageAltProblem({ url, alt });
 
   return (
@@ -632,7 +648,7 @@ function ImageSourceFields({
         value={url ?? ""}
         onChangeText={(next) => {
           onChange(
-            optional && next.trim() === ""
+            clearsToUndefined && next.trim() === ""
               ? { url: undefined, alt: undefined }
               : { url: next, alt: alt ?? "" },
           );
@@ -641,6 +657,7 @@ function ImageSourceFields({
           library.forget();
         }}
         placeholder={urlPlaceholder}
+        hint={urlHint}
         autoCapitalize="none"
         keyboardType="url"
       />
@@ -676,9 +693,10 @@ function ImageSourceFields({
           }}
         />
       </View>
-      {!optional || hasUrl ? (
+      {alwaysShowAlt || hasUrl ? (
         <TextField
           label={altLabel}
+          hint={altHint}
           value={alt ?? ""}
           onChangeText={(next) => {
             onChange({ url, alt: next });
@@ -722,6 +740,10 @@ function ImageBlockEditor({
         urlLabel="Image URL"
         url={block.url}
         alt={block.alt}
+        // An `image`'s url is REQUIRED — this is the one kind whose default
+        // can't be saved until the designer fills it in.
+        urlProblem={imageUrlProblem(block.url)}
+        alwaysShowAlt
         onChange={({ url, alt }) => onChange({ url: url ?? "", alt: alt ?? "" })}
         uploadImage={uploadImage}
         run={run}
@@ -753,9 +775,16 @@ function ImageBlockEditor({
   );
 }
 
-/** The masthead / section-banner block: an edge-to-edge image with no
- *  container padding, optionally tappable. Same fields as `image` minus the
- *  width toggle — a banner is full-bleed by definition. */
+/**
+ * The masthead / section-banner block: an edge-to-edge image, optionally
+ * tappable, optionally inset.
+ *
+ * Its url is the one image url in the contract that may be blank. An unfilled
+ * banner renders as a neutral placeholder band (no external request), which is
+ * how a template says "the masthead goes here" without naming a URL this
+ * deployment doesn't own — so the empty state is described, never warned
+ * about. What DOES warn is a filled-in url the gate would refuse.
+ */
 function BleedImageEditor({
   block,
   onChange,
@@ -768,6 +797,7 @@ function BleedImageEditor({
   run?: ActionRunner["run"];
 }) {
   const hrefProblem = optionalLinkUrlProblem(block.href);
+  const empty = (block.url ?? "").length === 0;
 
   return (
     <View>
@@ -778,9 +808,19 @@ function BleedImageEditor({
       </Text>
       <ImageSourceFields
         urlLabel="Banner image"
+        urlHint={
+          empty
+            ? "Empty is fine — the banner renders as a plain placeholder band until you choose the artwork."
+            : undefined
+        }
+        altLabel="Alt text"
+        altHint="The banner carries the heading, so this is what a screen reader — and anyone whose client blocks images — gets instead of it. Write out the words on it."
         url={block.url}
         alt={block.alt}
-        onChange={({ url, alt }) => onChange({ url: url ?? "", alt: alt ?? "" })}
+        urlProblem={bleedImageUrlProblem(block.url)}
+        clearsToUndefined
+        alwaysShowAlt
+        onChange={({ url, alt }) => onChange({ url, alt: alt ?? "" })}
         uploadImage={uploadImage}
         run={run}
         libraryLabel="Newsletter banner"
@@ -794,11 +834,20 @@ function BleedImageEditor({
         keyboardType="url"
       />
       {hrefProblem ? <InlineWarning text={IMAGE_HREF_WARNING} /> : null}
-      <Text className="text-2xs text-faint">
-        Because the banner carries the heading, its alt text is what a screen
-        reader — and anyone whose client blocks images — gets instead of that
-        heading. Write out the words on it.
-      </Text>
+      <Field label="Width">
+        <View className="flex-row gap-2">
+          <LevelToggle
+            label="Edge to edge"
+            active={!block.inset}
+            onPress={() => onChange({ inset: undefined })}
+          />
+          <LevelToggle
+            label="Inset"
+            active={block.inset === true}
+            onPress={() => onChange({ inset: true })}
+          />
+        </View>
+      </Field>
     </View>
   );
 }
@@ -839,7 +888,10 @@ function FooterEditor({
         altLabel="Logo alt text"
         url={block.logoUrl}
         alt={block.logoAlt}
-        optional
+        // Absent is fine; EMPTY is not — the gate rejects `logoUrl: ""`, so
+        // clearing the field removes the key instead of blanking it.
+        urlProblem={optionalImageUrlProblem(block.logoUrl)}
+        clearsToUndefined
         onChange={({ url, alt }) => onChange({ logoUrl: url, logoAlt: alt })}
         uploadImage={uploadImage}
         run={run}

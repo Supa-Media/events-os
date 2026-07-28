@@ -223,11 +223,11 @@ const CLS = {
 } as const;
 
 function textStyle(t: EmailTheme): string {
-  return `margin:0 0 12px;font-family:${t.bodyFont};font-size:15px;line-height:1.6;color:${t.muted}`;
+  return `margin:0 0 12px;font-family:${t.bodyFont};font-size:16px;line-height:1.35;letter-spacing:${t.bodyTracking};color:${t.muted}`;
 }
 
 function listStyle(t: EmailTheme): string {
-  return `margin:0 0 12px;padding-left:20px;font-family:${t.bodyFont};font-size:15px;line-height:1.6;color:${t.muted}`;
+  return `margin:0 0 12px;padding-left:20px;font-family:${t.bodyFont};font-size:16px;line-height:1.35;letter-spacing:${t.bodyTracking};color:${t.muted}`;
 }
 
 function markdownSubsetToHtml(
@@ -285,7 +285,11 @@ function renderHeadingBlock(
   const size = level === 2 ? 20 : 28;
   const cls = level === 2 ? CLS.heading : `${CLS.heading} ${CLS.h1}`;
   const text = substituteMergeTagsHtml(esc(block.text), recipient);
-  return `<h${level} class="${cls}" style="margin:0 0 12px;font-size:${size}px;line-height:1.25;color:${t.ink};font-family:${t.headingFont};font-weight:700">${text}</h${level}>`;
+  // `letter-spacing` is NOT optional here. Card headings get
+  // `headingTracking`, so a standalone heading block without it renders
+  // visibly looser than every card around it in the same email — the kind of
+  // inconsistency that reads as sloppiness rather than as a bug.
+  return `<h${level} class="${cls}" style="margin:0 0 12px;font-size:${size}px;line-height:1.2;letter-spacing:${t.headingTracking};color:${t.ink};font-family:${t.headingFont};font-weight:700">${text}</h${level}>`;
 }
 
 function renderTextBlock(
@@ -649,7 +653,7 @@ function renderQuoteBlock(
   const attribution = block.attribution
     ? `<div class="${CLS.quoteAttr}" style="margin:10px 0 0;font-family:${t.bodyFont};font-size:13px;font-weight:600;letter-spacing:0.04em;color:${t.muted}">— ${substituteMergeTagsHtml(esc(block.attribution), recipient)}</div>`
     : "";
-  return `<blockquote class="${CLS.quote}" style="margin:0 0 20px;padding:4px 0 4px 18px;border-left:3px solid ${t.accent}"><div class="${CLS.quoteText}" style="margin:0;font-family:${t.headingFont};font-size:19px;line-height:1.5;font-style:italic;color:${t.ink}">${text}</div>${attribution}</blockquote>`;
+  return `<blockquote class="${CLS.quote}" style="margin:0 0 20px;padding:4px 0 4px 18px;border-left:3px solid ${t.accent}"><div class="${CLS.quoteText}" style="margin:0;font-family:${t.headingFont};font-size:20px;line-height:1.35;letter-spacing:${t.bodyTracking};font-style:italic;color:${t.ink}">${text}</div>${attribution}</blockquote>`;
 }
 
 /**

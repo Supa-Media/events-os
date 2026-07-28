@@ -267,11 +267,17 @@ describe("normalizeEmailTheme — preserving custom values", () => {
     muted: "#445566",
     canvas: "#f0f1f2",
     surface: "#fdfdfd",
+    cream: "#fbf4e9",
+    contrast: "#120a04",
+    contrastInk: "#fdfdfd",
+    hairline: "#cccccc",
     border: "#dddddd",
     link: "#0055aa",
     headingFont: "Fraunces,Georgia,serif",
     bodyFont: "Inter,Arial,sans-serif",
     radius: 4,
+    headingTracking: "-0.02em",
+    bodyTracking: "0",
     wordmark: "ADVENT",
   };
 

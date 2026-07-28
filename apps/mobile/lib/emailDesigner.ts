@@ -52,17 +52,19 @@ function emptyCardContent(heading: string): EmailCardContent {
  * (`quote.text`, `poll.question`, every poll option label, `eyebrow.text`)
  * get real placeholder copy rather than `""`.
  *
- * THE IMAGE EXCEPTION: `image` and `bleed_image` both require a non-empty
- * http(s) `url`, and the only way to satisfy that up front is a fabricated URL
- * that would render as a broken image and could be sent for real if nobody
- * noticed. So they start `url: ""` — unsaveable until filled — and their
- * editors say so inline, in the words of the rule that's actually blocking the
- * save (see `imageUrlProblem`). `emailDesigner.test.ts` pins these as the only
- * kinds exempt from the "every default is saveable" guard.
+ * THE `image` EXCEPTION: its `url` must be a non-empty http(s) string, and the
+ * only way to satisfy that up front is a fabricated URL that would render as
+ * a broken image and could be sent for real if nobody noticed. So it starts
+ * `url: ""` — unsaveable until filled — and `ImageBlockEditor` says so
+ * inline, in the words of the rule that's actually blocking the save (see
+ * `imageUrlProblem`). `emailDesigner.test.ts` pins this as the one kind
+ * exempt from the "every default is saveable" guard.
  *
- * `footer` is deliberately NOT in that exception: every one of its fields is
- * optional, so it starts with a nav line and no logo — a block that renders
- * something recognisable and saves on the spot.
+ * `bleed_image` and `footer` are deliberately NOT exceptions. A banner's url
+ * is optional (an unfilled slot renders as a neutral placeholder band — the
+ * contract's own answer to "the masthead goes here" without naming a URL this
+ * deployment may not own), and every field of a footer is optional, so both
+ * start as saveable blocks that already have the right SHAPE in the preview.
  */
 export function defaultBlockFor(kind: EmailBlockKind, id: string): EmailBlock {
   switch (kind) {
@@ -75,9 +77,11 @@ export function defaultBlockFor(kind: EmailBlockKind, id: string): EmailBlock {
     case "button":
       return { id, kind: "button", label: "Click here", url: "https://" };
     case "bleed_image":
-      // The masthead/banner twin of `image`, and the same exception: an
-      // edge-to-edge strip can't be given a plausible starting URL.
-      return { id, kind: "bleed_image", url: "", alt: "" };
+      // No `url`: an unfilled banner is a legitimate, SAVEABLE state that
+      // renders as a placeholder band, so the block lands with the layout
+      // right and the designer fills the artwork in when she has it. `alt` is
+      // required by the contract even while empty — "" is "decorative".
+      return { id, kind: "bleed_image", alt: "" };
     case "hairline":
       return { id, kind: "hairline" };
     case "footer":
@@ -252,6 +256,21 @@ export function imageUrlProblem(url: string): "missing" | "scheme" | null {
 export function linkUrlProblem(url: string): "missing" | "scheme" | null {
   if (url.length === 0) return "missing";
   return isAllowedLinkUrl(url) ? null : "scheme";
+}
+
+/**
+ * Why the write gate would reject a BANNER's url (`bleed_image.url`), or null.
+ *
+ * The one image url in the contract that is allowed to be blank: absent AND
+ * empty are both saveable, because an unfilled banner renders as a neutral
+ * placeholder band rather than a broken image. So the only rejection left is
+ * a filled-in url with a scheme outside http(s) — and the "no url yet" state
+ * must NOT warn, or every freshly-added banner would claim to be blocking a
+ * save it isn't blocking.
+ */
+export function bleedImageUrlProblem(url: string | undefined): "scheme" | null {
+  if (url === undefined || url.length === 0) return null;
+  return isAllowedImageUrl(url) ? null : "scheme";
 }
 
 /**

@@ -384,6 +384,16 @@ export function themeSampleDocument(theme: EmailTheme): EmailDocument {
       {
         id: newBlockId(),
         kind: "card",
+        variant: "outlined",
+        heading: "What's on",
+        body: "The outlined card is the only place the border colour shows, and its button is the outline one.",
+        ctaLabel: "See the dates",
+        ctaUrl: "https://publicworship.life",
+        ctaStyle: "outline",
+      },
+      {
+        id: newBlockId(),
+        kind: "card",
         variant: "testimonial",
         body: "The testimonial card is near-black, so it shows the contrast pair on its own.",
         attribution: "A member of the congregation",

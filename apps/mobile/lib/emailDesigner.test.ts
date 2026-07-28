@@ -26,6 +26,7 @@ import {
   defaultBlockFor,
   duplicateBlock,
   footerLinkProblem,
+  bleedImageUrlProblem,
   imageAltProblem,
   imageUrlProblem,
   initHistory,
@@ -219,15 +220,17 @@ describe("history (undo/redo)", () => {
 //    quote/poll) and the document-level `theme` field ─────────────────────────
 
 describe("defaultBlockFor — every new block must be SAVEABLE", () => {
-  // `image` and `bleed_image` are the ONLY kinds whose default can't validate,
-  // and deliberately so: their `url` must be a non-empty http(s) string, and
-  // the only way to satisfy that up front is a fabricated URL that would
-  // render as a broken image and could be sent for real if nobody noticed. An
-  // unsaveable block that says "url must be a non-empty string" is the better
-  // failure — the composer's save indicator surfaces it, and filling the field
-  // fixes it. `footer` is NOT here: every one of its fields is optional, so it
-  // has no excuse for shipping an unsaveable default.
-  const NEEDS_INPUT_BEFORE_SAVING: EmailBlockKind[] = ["image", "bleed_image"];
+  // `image` is the ONE kind whose default can't validate, and deliberately so:
+  // its `url` must be a non-empty http(s) string, and the only way to satisfy
+  // that up front is a fabricated URL that would render as a broken image and
+  // could be sent for real if nobody noticed. An unsaveable block that says
+  // "image url must be a non-empty string" is the better failure — the
+  // composer's save indicator surfaces it, and filling the field fixes it.
+  //
+  // The newsletter blocks are NOT exceptions and must never become ones: a
+  // banner's url is optional (an empty one renders as a placeholder band) and
+  // every field of a footer is optional, so both have to save on insert.
+  const NEEDS_INPUT_BEFORE_SAVING: EmailBlockKind[] = ["image"];
 
   test("every other kind's default passes the write gate on its own", () => {
     // The composer autosaves 600ms after a block is added, and
@@ -431,6 +434,342 @@ describe("pollHasBlankLabel", () => {
 
   test("a genuinely empty label warns", () => {
     expect(pollHasBlankLabel(optionsFor([""]))).toBe(true);
+  });
+});
+
+// ── The newsletter blocks: banner, hairline, footer ────────────────────────
+
+describe("the block tables cover every kind in the contract", () => {
+  test("BLOCK_KINDS lists each kind exactly once", () => {
+    expect(new Set(BLOCK_KINDS).size).toBe(BLOCK_KINDS.length);
+  });
+
+  test("every kind has a label, a default, and a palette entry", () => {
+    // The four tables (`BLOCK_KIND_LABELS`, `BLOCK_KINDS`, `defaultBlockFor`,
+    // `KIND_ICON`) are separate by necessity — `KIND_ICON` lives with the
+    // palette component — and a kind added to the union without all four is
+    // an editor that renders a blank card or crashes on a missing label.
+    // `KIND_ICON` is typed `Record<EmailBlockKind, IconName>`, so the compiler
+    // holds that one; these three are checked here.
+    for (const kind of BLOCK_KINDS) {
+      expect([kind, typeof BLOCK_KIND_LABELS[kind]]).toEqual([kind, "string"]);
+      expect(defaultBlockFor(kind, "x").kind).toBe(kind);
+    }
+  });
+
+  test("BLOCK_KINDS covers every kind the labels table knows", () => {
+    // `BLOCK_KIND_LABELS` is a `Record<EmailBlockKind, string>`, so the
+    // compiler forces it to be exhaustive — which makes it the honest list of
+    // the union at runtime, and a kind missing from the PALETTE (a kind
+    // nobody can add) shows up as a difference here.
+    expect([...BLOCK_KINDS].sort()).toEqual(Object.keys(BLOCK_KIND_LABELS).sort());
+  });
+});
+
+describe("bleed_image (the banner block)", () => {
+  test("its default saves as-is — an unfilled banner is a placeholder, not an error", () => {
+    // The contract makes a banner's url OPTIONAL precisely so a template can
+    // say "the masthead goes here" without naming a URL. A default that
+    // warned (or blocked the save) would contradict that on every insert.
+    const banner = defaultBlockFor("bleed_image", "b1");
+    if (banner.kind !== "bleed_image") throw new Error("expected a bleed_image block");
+    expect(banner.url).toBeUndefined();
+    expect(banner.alt).toBe("");
+    expect(gateAccepts(banner)).toBe(true);
+    expect(bleedImageUrlProblem(banner.url)).toBeNull();
+  });
+
+  test("bleedImageUrlProblem flags exactly the urls the gate rejects", () => {
+    const CASES: (string | undefined)[] = [
+      undefined,
+      "",
+      "   ",
+      "example.com",
+      "ftp://x/b.png",
+      "javascript:alert(1)",
+      "https://x/b.png",
+      "http://x/b.png",
+    ];
+    for (const url of CASES) {
+      const block = {
+        id: "b1",
+        kind: "bleed_image" as const,
+        alt: "",
+        ...(url === undefined ? {} : { url }),
+      };
+      const key = String(url);
+      expect([key, bleedImageUrlProblem(url) === null]).toEqual([
+        key,
+        gateAccepts(block as EmailBlock),
+      ]);
+    }
+  });
+
+  test("the empty banner does NOT warn — the gate saves it", () => {
+    // The mirror of the `image` block's rule, and the opposite answer: warning
+    // here would tell the designer her campaign can't be saved when it can.
+    expect(bleedImageUrlProblem(undefined)).toBeNull();
+    expect(bleedImageUrlProblem("")).toBeNull();
+    expect(bleedImageUrlProblem("example.com")).toBe("scheme");
+  });
+
+  test("inset is a plain boolean the gate accepts either way", () => {
+    for (const inset of [undefined, true, false]) {
+      const block = {
+        id: "b1",
+        kind: "bleed_image" as const,
+        alt: "",
+        ...(inset === undefined ? {} : { inset }),
+      };
+      expect([String(inset), gateAccepts(block as EmailBlock)]).toEqual([
+        String(inset),
+        true,
+      ]);
+    }
+  });
+
+  test("a missing alt is REJECTED — the same rule the card images carry", () => {
+    const withAlt: EmailBlock = {
+      id: "b1",
+      kind: "bleed_image",
+      url: "https://x/b.png",
+      alt: "",
+    };
+    // `alt: ""` saves (decorative); dropping the field entirely does not.
+    expect(gateAccepts(withAlt)).toBe(true);
+    const { alt: _alt, ...withoutAlt } = withAlt;
+    expect(gateAccepts(withoutAlt as EmailBlock)).toBe(false);
+    expect(imageAltProblem({ url: "https://x/b.png", alt: undefined })).toBe("unsaveable");
+    expect(imageAltProblem({ url: "https://x/b.png", alt: "" })).toBe("empty");
+    expect(imageAltProblem({ url: "https://x/b.png", alt: "A banner" })).toBeNull();
+  });
+
+  test("an optional href warns on exactly what the gate refuses", () => {
+    const CASES: (string | undefined)[] = [
+      undefined,
+      "",
+      "https://x",
+      "mailto:a@b.c",
+      "example.com",
+      "javascript:alert(1)",
+    ];
+    for (const href of CASES) {
+      const block = {
+        id: "b1",
+        kind: "bleed_image" as const,
+        url: "https://x/b.png",
+        alt: "",
+        ...(href === undefined ? {} : { href }),
+      };
+      const key = String(href);
+      expect([key, optionalLinkUrlProblem(href) === null]).toEqual([
+        key,
+        gateAccepts(block as EmailBlock),
+      ]);
+    }
+  });
+});
+
+describe("footer", () => {
+  test("its default saves as-is — nothing about a footer is required", () => {
+    expect(gateAccepts(defaultBlockFor("footer", "f1"))).toBe(true);
+  });
+
+  test("a logo url follows the same rules as any other image", () => {
+    for (const logoUrl of [undefined, "", "example.com", "ftp://x/l.png", "https://x/l.png"]) {
+      const block = {
+        id: "f1",
+        kind: "footer" as const,
+        ...(logoUrl === undefined ? {} : { logoUrl, logoAlt: "" }),
+      };
+      const key = String(logoUrl);
+      expect([key, optionalImageUrlProblem(logoUrl) === null]).toEqual([
+        key,
+        gateAccepts(block as EmailBlock),
+      ]);
+    }
+  });
+
+  test("a logo with no alt is REJECTED, and '' is the decorative escape", () => {
+    // The rule the card images carry, applied to the one image in the footer.
+    const withLogo = { id: "f1", kind: "footer" as const, logoUrl: "https://x/l.png" };
+    expect(gateAccepts(withLogo as EmailBlock)).toBe(false);
+    expect(imageAltProblem({ url: withLogo.logoUrl, alt: undefined })).toBe("unsaveable");
+    expect(gateAccepts({ ...withLogo, logoAlt: "" } as EmailBlock)).toBe(true);
+    expect(imageAltProblem({ url: withLogo.logoUrl, alt: "" })).toBe("empty");
+  });
+
+  test("footerLinkProblem flags exactly the link rows the gate rejects", () => {
+    const CASES = [
+      { label: "Instagram", url: "https://x" },
+      { label: "Mail us", url: "mailto:a@b.c" },
+      { label: "", url: "https://x" },
+      { label: "Instagram", url: "" },
+      { label: "Instagram", url: "example.com" },
+      { label: "Instagram", url: "javascript:alert(1)" },
+      { label: " ", url: "https://x" },
+      { label: "Instagram", url: " " },
+    ];
+    for (const link of CASES) {
+      const key = JSON.stringify(link);
+      const block: EmailBlock = { id: "f1", kind: "footer", links: [link] };
+      expect([key, footerLinkProblem(link) === null]).toEqual([key, gateAccepts(block)]);
+    }
+  });
+
+  test("a whitespace label is SAVEABLE — the gate tests the raw string", () => {
+    // Same raw-string semantics `pollHasBlankLabel` is pinned on: warning here
+    // would tell the designer her campaign can't be saved when it saves fine.
+    expect(footerLinkProblem({ label: " ", url: "https://x" })).toBeNull();
+  });
+
+  test("the freshly-added link row is saveable on the spot", () => {
+    // What `FooterEditor`'s "+ Add link" inserts. A row that made the document
+    // unsaveable the instant it appeared would block every other block's edits
+    // while the designer was still typing the label.
+    const row = { label: "Instagram", url: "https://" };
+    expect(footerLinkProblem(row)).toBeNull();
+    expect(gateAccepts({ id: "f1", kind: "footer", links: [row] })).toBe(true);
+  });
+
+  test("MAX_FOOTER_LINKS mirrors the gate's own cap", () => {
+    const row = { label: "Instagram", url: "https://x" };
+    const atCap = Array.from({ length: MAX_FOOTER_LINKS }, () => ({ ...row }));
+    expect(gateAccepts({ id: "f1", kind: "footer", links: atCap })).toBe(true);
+    expect(gateAccepts({ id: "f1", kind: "footer", links: [...atCap, { ...row }] })).toBe(
+      false,
+    );
+  });
+});
+
+describe("hairline", () => {
+  test("has no fields to get wrong", () => {
+    expect(defaultBlockFor("hairline", "h1")).toEqual({ id: "h1", kind: "hairline" });
+    expect(gateAccepts({ id: "h1", kind: "hairline" })).toBe(true);
+  });
+});
+
+// ── Card presentation fields ───────────────────────────────────────────────
+
+describe("card variants and layout", () => {
+  test("every variant the picker offers is one the gate accepts", () => {
+    for (const option of CARD_VARIANT_OPTIONS) {
+      const block: EmailBlock = { id: "c1", kind: "card", heading: "Hi", variant: option.value };
+      expect([option.value, gateAccepts(block)]).toEqual([option.value, true]);
+    }
+  });
+
+  test("the picker offers every variant in the contract", () => {
+    // A variant the renderer paints but the picker can't reach is a feature
+    // nobody can use; one the picker offers but the gate refuses is a save
+    // that fails on a tap.
+    expect([...CARD_VARIANT_OPTIONS.map((o) => o.value)].sort()).toEqual(
+      ["feature", "hero", "outlined", "plain", "testimonial"].sort(),
+    );
+  });
+
+  test("clampImageWidthPct never produces a width the gate rejects", () => {
+    for (const raw of [-100, 0, 19.6, 20, 45, 52.4, 80, 81, 1000, Number.NaN]) {
+      const pct = clampImageWidthPct(raw);
+      const block: EmailBlock = {
+        id: "c1",
+        kind: "card",
+        heading: "Hi",
+        imageUrl: "https://x/p.png",
+        imageAlt: "",
+        imageSide: "left",
+        imageWidthPct: pct,
+      };
+      expect([raw, gateAccepts(block)]).toEqual([raw, true]);
+      expect(Number.isInteger(pct)).toBe(true);
+    }
+  });
+
+  test("the mirrored bounds are the gate's own bounds", () => {
+    function cardAt(pct: number): EmailBlock {
+      return { id: "c1", kind: "card", heading: "Hi", imageWidthPct: pct };
+    }
+    expect(gateAccepts(cardAt(MIN_IMAGE_WIDTH_PCT))).toBe(true);
+    expect(gateAccepts(cardAt(MAX_IMAGE_WIDTH_PCT))).toBe(true);
+    expect(gateAccepts(cardAt(MIN_IMAGE_WIDTH_PCT - 1))).toBe(false);
+    expect(gateAccepts(cardAt(MAX_IMAGE_WIDTH_PCT + 1))).toBe(false);
+  });
+
+  test("stepImageWidthPct starts from the renderer's default and stops at the ends", () => {
+    expect(stepImageWidthPct(undefined, 2)).toBe(DEFAULT_IMAGE_WIDTH_PCT + 2);
+    expect(stepImageWidthPct(undefined, -2)).toBe(DEFAULT_IMAGE_WIDTH_PCT - 2);
+    expect(stepImageWidthPct(MIN_IMAGE_WIDTH_PCT, -10)).toBe(MIN_IMAGE_WIDTH_PCT);
+    expect(stepImageWidthPct(MAX_IMAGE_WIDTH_PCT, 10)).toBe(MAX_IMAGE_WIDTH_PCT);
+  });
+
+  test("an eyebrow and an attribution are plain strings the gate accepts", () => {
+    expect(
+      gateAccepts({
+        id: "c1",
+        kind: "card",
+        variant: "testimonial",
+        eyebrow: "WHAT PEOPLE SAY",
+        attribution: "Sam, Tuesday nights",
+        align: "center",
+        ctaStyle: "outline",
+        imageSide: "right",
+        imageWidthPct: 44,
+      }),
+    ).toBe(true);
+  });
+});
+
+describe("link url warnings", () => {
+  test("linkUrlProblem flags exactly the button urls the gate rejects", () => {
+    const CASES = [
+      "",
+      " ",
+      "https://",
+      "https://x",
+      "http://x",
+      "mailto:a@b.c",
+      "example.com",
+      "ftp://x",
+      "javascript:alert(1)",
+    ];
+    for (const url of CASES) {
+      const block: EmailBlock = { id: "b1", kind: "button", label: "Go", url };
+      expect([url, linkUrlProblem(url) === null]).toEqual([url, gateAccepts(block)]);
+    }
+  });
+
+  test("the freshly-added button is saveable — its https:// stub passes", () => {
+    const button = defaultBlockFor("button", "b1");
+    expect(gateAccepts(button)).toBe(true);
+  });
+
+  test("cardCtaUrlProblem catches the scheme the pair check can't see", () => {
+    // The gate checks the PAIR first and the scheme second, so a card with
+    // both halves filled and a `tel:` link is rejected by a rule
+    // `ctaPairProblem` says nothing about — which used to mean no warning at
+    // all, and a save that stopped working.
+    const content = { ctaLabel: "Call us", ctaUrl: "tel:+441234" };
+    expect(ctaPairProblem(content)).toBeNull();
+    expect(cardCtaUrlProblem(content)).toBe("scheme");
+    expect(gateAccepts({ id: "c1", kind: "card", ...content })).toBe(false);
+  });
+
+  test("together, the two card CTA warnings cover the gate exactly", () => {
+    const CASES = [
+      {},
+      { ctaLabel: "Read", ctaUrl: "https://x" },
+      { ctaLabel: "Read", ctaUrl: "mailto:a@b.c" },
+      { ctaLabel: "Read" },
+      { ctaUrl: "https://x" },
+      { ctaLabel: "Read", ctaUrl: "example.com" },
+      { ctaLabel: "", ctaUrl: "ftp://x" },
+      { ctaLabel: " ", ctaUrl: "tel:+44" },
+    ];
+    for (const content of CASES) {
+      const key = JSON.stringify(content);
+      const quiet = ctaPairProblem(content) === null && cardCtaUrlProblem(content) === null;
+      expect([key, quiet]).toEqual([key, gateAccepts({ id: "c1", kind: "card", ...content })]);
+    }
   });
 });
 
