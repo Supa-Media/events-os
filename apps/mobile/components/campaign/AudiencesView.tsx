@@ -1,19 +1,29 @@
 /**
- * AUDIENCES — the audience-segment list + inline create/edit form.
+ * SEGMENTS — the segment list + inline create/edit form.
  *
- * An audience is a saved recipe (`api.audiences.*`) that campaigns send to.
+ * A segment is a saved recipe (`api.audiences.*`) that campaigns send to.
+ *
+ * ── Segment, not audience ──────────────────────────────────────────────────
+ * "Segment" is the word on screen everywhere in this file; the Convex table,
+ * its queries and mutations (`audiences`, `listAudiences`,
+ * `previewAudience`, …) deliberately keep their names. This is a LABEL
+ * change, not a rename — nothing about the API moved, and a search for
+ * `audiences` still finds the backend it belongs to. Same rule applies to
+ * "rule group" (the wire calls it a group) and "exclusion" (the wire calls
+ * it an exclude group).
+ *
  * Targeting v2 (specs/audience-targeting-v2.md, founder-approved mockup
- * 2026-07-24) made the editor a GROUP builder (`TargetingBuilder.tsx`):
- * "Send to" groups of plain-sentence conditions (match ANY group; every line
- * in a group must hold; negation is on the line), "Don't send to" skip
- * lists, hand-picked include/exclude (`searchPeopleForAudience`), and a
+ * 2026-07-24) made the editor a RULE GROUP builder (`TargetingBuilder.tsx`):
+ * "Send to" rule groups of plain-sentence conditions (match ANY group; every
+ * line in a group must hold; negation is on the line), EXCLUSIONS,
+ * hand-picked include/exclude (`searchPeopleForAudience`), and a
  * "Check a person" box (`api.audiences.explainAudiencePerson`) that explains
  * any individual condition by condition. The editor shows a LIVE preview
  * (`api.audiences.previewAudience`) as the definition changes — the overall
  * count, per-group counts, and every exclusion reason, including the
  * invariant that suppression/opt-out beat a hand-pick.
  *
- * Every NEW audience gets `targeting`, and migration
+ * Every NEW segment gets `targeting`, and migration
  * (`migrations/0042_wrap_targeting.ts`) wraps stored rows; the pre-v2 chip
  * builder (`FilterChipsBuilder` below) stays mounted ONLY for a
  * not-yet-wrapped `person_filters` row (e.g. one referenced by an in-flight
@@ -22,7 +32,7 @@
  * READ-ONLY: badge + summary, editable name/archive only.
  *
  * UI-polish pass (founder feedback: the picker "looks and feels clunky"): a
- * slim recipients count (`LiveRecipientsSummary`) is pinned above the filter
+ * slim people count (`LivePeopleSummary`) is pinned above the filter
  * + hand-pick stack and never blanks back to "Calculating…" once it's loaded
  * once; the numeric filter fields and the hand-pick search box are debounced
  * (`FILTER_DEBOUNCE_MS`) before they drive a query; and every query besides
@@ -67,12 +77,11 @@ import {
 import {
   PersonCheckSection,
   TargetingBuilder,
-  summarizeTargeting,
   targetingToUi,
   toWireTargeting,
-  type Targeting,
   type UiGroup,
 } from "./TargetingBuilder";
+import { summarizeTargeting, type Targeting } from "./targetingText";
 
 /** Debounce for both the numeric filter TextFields and the hand-pick search
  *  box before they drive their query — matches the house pattern in
@@ -85,11 +94,11 @@ type PreviewArgs = FunctionArgs<typeof api.audiences.previewAudience>;
 type PersonFilters = Audience["filters"];
 type SearchResult = FunctionReturnType<typeof api.audiences.searchPeopleForAudience>[number];
 
-/** Every audience/campaign this UI creates is org-wide — see the file doc. */
+/** Every segment/campaign this UI creates is org-wide — see the file doc. */
 const CENTRAL_SCOPE = "central" as const;
 
 function sourceLabel(source: string, hasTargeting: boolean): string {
-  if (hasTargeting) return "Groups";
+  if (hasTargeting) return "Rule groups";
   if (source === "person_filters") return "Filters + hand-picked";
   if (source === "guests") return "Guests";
   if (source === "donors") return "Donors";
@@ -102,9 +111,9 @@ export function AudiencesView({
 }: {
   /**
    * People-CRM UX — the People grid's "Email selected" bridge: a set of
-   * hand-picked person ids to pre-seed into a brand-NEW audience's draft the
-   * moment this view mounts (never applied to an existing/editing audience —
-   * only meaningful for the "+ New audience" flow). Purely a client-side
+   * hand-picked person ids to pre-seed into a brand-NEW segment's draft the
+   * moment this view mounts (never applied to an existing/editing segment —
+   * only meaningful for the "+ New segment" flow). Purely a client-side
    * draft seed: nothing is written until the marketer reviews and hits Save,
    * same as picking each person by hand in `HandPickSection` below.
    */
@@ -116,7 +125,7 @@ export function AudiencesView({
 
   // Auto-open a fresh draft when arriving with a seed — the marketer lands
   // straight in the form with their picks already in the hand-pick list,
-  // rather than having to tap "+ New audience" themselves.
+  // rather than having to tap "+ New segment" themselves.
   useEffect(() => {
     if (seedIncludeIds && seedIncludeIds.length > 0) setEditingId("new");
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -125,7 +134,7 @@ export function AudiencesView({
   if (audiences === undefined) {
     return (
       <View style={{ paddingVertical: spacing.lg }}>
-        <Text className="text-sm text-faint">Loading audiences…</Text>
+        <Text className="text-sm text-faint">Loading segments…</Text>
       </View>
     );
   }
@@ -148,15 +157,15 @@ export function AudiencesView({
           seedIncludeIds={editingId === "new" ? seedIncludeIds : undefined}
         />
       ) : (
-        <Button title="+ New audience" onPress={() => setEditingId("new")} className="self-start" />
+        <Button title="+ New segment" onPress={() => setEditingId("new")} className="self-start" />
       )}
 
       {audiences.length === 0 && editingId !== "new" ? (
         <View className="mt-4">
           <EmptyState
             icon="users"
-            title="No audiences yet"
-            message="Create a segment above — filters, hand-picked people, or both — to send a campaign to."
+            title="No segments yet"
+            message="Create a segment above — rules, hand-picked people, or both — to send a campaign to."
           />
         </View>
       ) : (
@@ -182,8 +191,8 @@ export function AudiencesView({
                 </Text>
                 {a.source !== "person_filters" && !a.targeting ? (
                   <Text style={styles.legacyNote}>
-                    Previous-format audience — still works for sending, and will move to the new
-                    filter picker automatically.
+                    Previous-format segment — still works for sending, and will move to the new
+                    rule builder automatically.
                   </Text>
                 ) : null}
               </Card>

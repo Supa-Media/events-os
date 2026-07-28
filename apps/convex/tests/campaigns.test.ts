@@ -808,10 +808,17 @@ describe("campaign CRUD", () => {
 
 // ── Send pipeline ─────────────────────────────────────────────────────────
 
+/** Everything a campaign needs configured before it can legally be submitted
+ *  or sent: a Resend key/from-address AND the org's CAN-SPAM postal address
+ *  (`submitForApproval`/`send` both refuse without it — see
+ *  `integrationSettings.requireOrgMailingAddress`). */
 async function configureResend(s: ChapterSetup): Promise<void> {
   await s.as.mutation(api.integrationSettings.setResendSettings, {
     apiKey: "re_test_key",
     fromAddress: "Chapter OS <os@publicworship.life>",
+  });
+  await s.as.mutation(api.integrationSettings.setEmailCampaignSettings, {
+    orgMailingAddress: "Public Worship, 123 Main St, Brooklyn, NY 11201",
   });
 }
 

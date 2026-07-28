@@ -308,6 +308,36 @@ img { -ms-interpolation-mode:bicubic; }
 }
 
 /**
+ * The BULK-MAIL footer furniture — an unsubscribe link and the sender's
+ * physical postal address, the two things US CAN-SPAM requires of every
+ * commercial/promotional message and RFC 8058 pairs with the
+ * `List-Unsubscribe` header.
+ *
+ * ── Why both fields are REQUIRED together ──────────────────────────────────
+ * `emailShell` is shared by TRANSACTIONAL mail (ticket receipts, RSVP
+ * confirmations, verification codes, approval notices) and BULK mail (event
+ * blasts). Transactional mail must NOT carry an unsubscribe link — an opt-out
+ * from "here is the ticket you just bought" is meaningless, and offering one
+ * invites a recipient to suppress the address their own receipts arrive at.
+ * So the furniture is OPT-IN per call site: omit this argument and the footer
+ * is byte-for-byte what it has always been.
+ *
+ * `orgAddress` is not optional WITHIN the object on purpose. The campaign
+ * renderer's `opts.orgAddress ? … : ""` is exactly the silent degrade this
+ * repo warns about for email links — an unset org address quietly produced a
+ * footer missing its legally required line. Here the type makes "bulk mail
+ * with no postal address" unrepresentable, and the call sites
+ * (`blasts.ts#sendBlast`, `campaigns.ts#send`/`#submitForApproval`) refuse the
+ * send outright rather than rendering a footer without one.
+ */
+export type BulkMailFooter = {
+  /** Absolute `/unsubscribe/<token>` URL — PER RECIPIENT, never shared. */
+  unsubscribeUrl: string;
+  /** The org's physical mailing address (`integrationSettings.orgMailingAddress`). */
+  orgAddress: string;
+};
+
+/**
  * Wrap a fragment in the branded transactional shell: a centered card on the
  * theme's canvas, under the theme's wordmark, above the standard footer.
  *
@@ -315,11 +345,25 @@ img { -ms-interpolation-mode:bicubic; }
  * defaults to `DEFAULT_EMAIL_THEME` — the parameter exists so a future
  * per-org transactional theme (the same `emailThemes` row campaigns already
  * read) can be threaded through without touching a single call site.
+ *
+ * `bulk`, when passed, appends the unsubscribe link + postal address to the
+ * footer — see `BulkMailFooter` for why that's opt-in and why both halves
+ * travel together.
  */
-export function emailShell(inner: string, theme: EmailTheme = EMAIL_THEME): string {
+export function emailShell(
+  inner: string,
+  theme: EmailTheme = EMAIL_THEME,
+  bulk?: BulkMailFooter,
+): string {
   const t = theme;
   const wordmark = t.wordmark
     ? `<div class="${EMAIL_CLS.mark}" style="text-align:center;padding-bottom:16px;font-family:${t.bodyFont};font-weight:700;letter-spacing:0.12em;font-size:12px;color:${t.accent}">${escapeHtml(t.wordmark)}</div>`
+    : "";
+  // `href` is interpolated raw for the same reason `emailButton`'s is: every
+  // call site builds it from `siteUrl()` + a minted token, never user input.
+  const bulkFooter = bulk
+    ? `<div style="margin-top:6px">${escapeHtml(bulk.orgAddress)}</div>` +
+      `<div style="margin-top:4px"><a href="${bulk.unsubscribeUrl}" style="color:${t.muted};text-decoration:underline">Unsubscribe</a> from Public Worship announcements.</div>`
     : "";
   return `<!doctype html>
 <html lang="en">
@@ -337,7 +381,7 @@ export function emailShell(inner: string, theme: EmailTheme = EMAIL_THEME): stri
     <div class="${EMAIL_CLS.card}" style="background:${t.surface};border:1px solid ${t.border};border-radius:${t.radius}px;padding:32px 28px">
       ${inner}
     </div>
-    <div class="${EMAIL_CLS.foot}" style="text-align:center;padding-top:16px;font-family:${t.bodyFont};font-size:11px;line-height:1.5;color:${t.muted}">Sent with love by Public Worship · Chapter OS</div>
+    <div class="${EMAIL_CLS.foot}" style="text-align:center;padding-top:16px;font-family:${t.bodyFont};font-size:11px;line-height:1.5;color:${t.muted}">Sent with love by Public Worship · Chapter OS${bulkFooter}</div>
   </div>
 </div>
 </body>

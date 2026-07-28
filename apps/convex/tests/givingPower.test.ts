@@ -127,10 +127,11 @@ describe("setSeatGivingPower — gate", () => {
 // ── Transitions touch ONLY the giving trio ───────────────────────────────────
 
 describe("setSeatGivingPower — capability transitions", () => {
-  // Post two-party-campaign-approval (2026-07-24), `financial_manager`'s
-  // template ALSO carries `campaigns.approve`/`campaigns.compose` by
-  // default — `setSeatGivingPower` only ever touches the giving trio, so
-  // these two ride along untouched through every assertion below.
+  // Post two-party-campaign-approval (2026-07-24) plus the `campaigns.design`
+  // rung (2026-07-28), `financial_manager`'s template ALSO carries the whole
+  // campaign ladder by default — `setSeatGivingPower` only ever touches the
+  // giving trio, so all three ride along untouched through every assertion
+  // below.
   const FINANCE_CAPS = [
     "finance.manager",
     "finance.central",
@@ -139,6 +140,7 @@ describe("setSeatGivingPower — capability transitions", () => {
     "nav.finances",
     "campaigns.approve",
     "campaigns.compose",
+    "campaigns.design",
   ];
 
   test("manage → view → none rewrites only giving caps, never finance caps", async () => {

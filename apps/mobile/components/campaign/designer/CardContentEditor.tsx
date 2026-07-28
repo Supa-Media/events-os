@@ -48,7 +48,7 @@
  */
 import { Text, View } from "react-native";
 import type { EmailCardContent } from "@events-os/shared";
-import { Field, Select, TextField } from "../../ui";
+import { Field } from "../../ui";
 import {
   CARD_VARIANT_OPTIONS,
   DEFAULT_IMAGE_WIDTH_PCT,
@@ -62,7 +62,17 @@ import {
   stepImageWidthPct,
 } from "../../../lib/emailDesigner";
 import { ImageLibraryPicker, useImageLibraryRegistration } from "./ImageLibraryPicker";
-import { ImageUploadButton, LevelToggle, type UploadImage } from "./DesignerControls";
+// `TextField`/`Select` are the DESIGNER's read-only-aware wrappers around the
+// UI kit's own — see `DesignerControls`' read-only doc. Importing the kit's
+// versions directly here is what let a locked campaign render typable fields.
+import {
+  ImageUploadButton,
+  LevelToggle,
+  Select,
+  TextField,
+  useDesignerReadOnly,
+  type UploadImage,
+} from "./DesignerControls";
 import type { ActionRunner } from "../../../lib/useActionToast";
 
 export function CardContentEditor({
@@ -415,8 +425,15 @@ const ALT_MISSING_WARNING =
  * every one of these describes something the designer can knowingly ship
  * (an intentionally decorative image), or is about to fix in the next
  * keystroke (a half-typed button). Red would cry wolf.
+ *
+ * Silent in a LOCKED campaign: every one of these says "the campaign can't be
+ * saved until you fix this", and there is nothing left to save or fix once
+ * the design is locked — telling a reviewer to fix a field she cannot edit is
+ * the same cry-wolf problem in a different costume.
  */
 export function InlineWarning({ text }: { text: string }) {
+  const readOnly = useDesignerReadOnly();
+  if (readOnly) return null;
   return (
     <View className="mb-3 rounded-md border border-warn-soft bg-warn-bg px-2.5 py-2">
       <Text className="text-xs text-ink">{text}</Text>

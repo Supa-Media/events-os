@@ -1,7 +1,14 @@
 /**
  * The reusable illustration library the campaign composer's image picker reads
- * (`schema/campaigns.ts#emailImages`). CENTRAL-only, gated exactly like the
- * rest of the campaigns desk (`lib/campaignsAccess.ts`).
+ * (`schema/campaigns.ts#emailImages`). CENTRAL-only
+ * (`lib/campaignsAccess.ts`).
+ *
+ * ── Who can do what here ───────────────────────────────────────────────────
+ * `listImages` is a plain desk READ (`requireCampaignsAccess`) — a composer
+ * has to be able to pick a picture. Every WRITE requires the named
+ * `campaigns.design` power (`requireCampaignDesign`), because the library is
+ * shared and `deleteImage` is a HARD delete of the blob: one careless call
+ * breaks the artwork in every campaign that already embedded that URL.
  *
  * Modelled on `schema/finances.ts#receipts` / `receipts.ts`: the file itself
  * lives in Convex storage and the row carries its `storageId` PLUS the
@@ -20,7 +27,7 @@ import { ConvexError, v } from "convex/values";
 import { internalMutation, internalQuery, mutation, query } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import { requireUserId } from "./lib/context";
-import { requireCampaignsAccess } from "./lib/campaignsAccess";
+import { requireCampaignDesign, requireCampaignsAccess } from "./lib/campaignsAccess";
 import { SUPERUSER_EMAILS } from "./lib/superuser";
 
 const scopeValidator = v.union(v.id("chapters"), v.literal("central"));
@@ -62,7 +69,7 @@ export const addImage = mutation({
   },
   returns: v.id("emailImages"),
   handler: async (ctx, { scope, storageId, alt, label }) => {
-    await requireCampaignsAccess(ctx);
+    await requireCampaignDesign(ctx);
     const userId = (await requireUserId(ctx)) as Id<"users">;
 
     const url = await ctx.storage.getUrl(storageId);
@@ -98,7 +105,7 @@ export const updateImage = mutation({
   },
   returns: v.null(),
   handler: async (ctx, { imageId, alt, label }) => {
-    await requireCampaignsAccess(ctx);
+    await requireCampaignDesign(ctx);
     const existing = await ctx.db.get(imageId);
     if (!existing) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Image not found." });
@@ -130,7 +137,7 @@ export const deleteImage = mutation({
   args: { imageId: v.id("emailImages") },
   returns: v.null(),
   handler: async (ctx, { imageId }) => {
-    await requireCampaignsAccess(ctx);
+    await requireCampaignDesign(ctx);
     const existing = await ctx.db.get(imageId);
     if (!existing) return null; // already gone — deleting is idempotent
     await ctx.storage.delete(existing.storageId);

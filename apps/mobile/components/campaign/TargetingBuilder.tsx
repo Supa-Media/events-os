@@ -1,27 +1,48 @@
 /**
- * TARGETING BUILDER (targeting v2 — specs/audience-targeting-v2.md, Phase C)
- * — the group/condition audience editor that replaced the flat criteria-chip
- * builder for every audience carrying `targeting` (migration 0042 wraps all
+ * SEGMENT BUILDER (targeting v2 — specs/audience-targeting-v2.md, Phase C)
+ * — the rule-group/condition editor that replaced the flat criteria-chip
+ * builder for every segment carrying `targeting` (migration 0042 wraps all
  * legacy rows, so that's effectively everything; `AudiencesView.tsx` keeps
  * the old chip builder mounted only for a not-yet-wrapped row).
  *
  * The model the founder approved (interactive mockup, 2026-07-24), in the
  * builder's own vocabulary — plain words, no boolean jargon:
- *  - "Send to" GROUPS — someone gets the email if they match ANY one group;
- *    inside a group every sentence-row must be true ("and also…"). A group
- *    with no rows means "everyone".
- *  - "Don't send to" SKIP LISTS — anyone matching one is removed, even if a
- *    group (or a hand-pick) includes them.
+ *  - "Send to" RULE GROUPS — someone gets the email if they match ANY one
+ *    rule group; inside one, every sentence-row must be true ("and also…").
+ *    A rule group with no rows means "everyone". ("Rule group" rather than
+ *    bare "group": Mailchimp's Groups are interest tags, a different thing.)
+ *  - EXCLUSIONS (formerly "skip lists") — anyone matching one is removed,
+ *    even if a rule group (or a hand-pick) includes them. Exclusions are
+ *    OR'd with each other, which is the model's least obvious corner: "skip
+ *    Worship Leaders or Tech Leads" is TWO exclusions, not two lines in one.
  *  - Negation is ON the row ("has never been to", "is not"), not a separate
  *    mode.
- *  - Every group card shows its own live match count; the check-a-person box
+ *  - Every card shows its own live match count; the check-a-person box
  *    (`PersonCheckSection`) explains any individual, condition by condition.
+ *
+ * ── Making the logic legible, not merely documented ────────────────────────
+ * The AND/OR structure used to be stated only in the two `Field` hints, i.e.
+ * in prose above the controls where nobody reads it. It's now visible IN the
+ * UI: a plain-English recap panel reads the whole definition back as the
+ * sentence it actually means (`targetingText.ts#targetingSentences`), each
+ * card says in one line how its own rows combine, AND connectors sit between
+ * rows, and OR dividers sit between rule groups AND between exclusions — the
+ * exclusion side had no divider at all before, which is precisely where the
+ * either/or was invisible.
+ *
+ * ── Choosing the field FIRST ───────────────────────────────────────────────
+ * "+ and also…" used to insert a Donor row and "+ Add a skip list" a Role
+ * row, so every condition began as the wrong condition: you picked a field,
+ * the row reset, then you filled it in. Adding a row now opens
+ * `AddConditionMenu` — pick what the line is about, and the row arrives as
+ * that. Nothing is inserted until a field is chosen, so there is never work
+ * to delete before starting.
  *
  * State model: the UI edits `UiGroup[]` rows that mirror the wire conditions
  * but allow a not-yet-chosen id (`eventId`/`seatId`/`chapterId` = null) while
  * the author is mid-edit — `toWireTargeting` drops incomplete rows for the
  * live preview and reports their count so Save can block on them instead of
- * silently sending a narrower audience than what's on screen. Numeric inputs
+ * silently sending a narrower segment than what's on screen. Numeric inputs
  * commit on every valid keystroke (no field-level debounce to flush at save
  * time — WYSIWYG by construction); the PREVIEW is what debounces, one level
  * up in `AudiencesView.tsx`.
@@ -32,7 +53,7 @@ import { useQuery } from "convex/react";
 import type { FunctionArgs, FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { Button, Field, Icon, Select, ServiceOptionsPicker, TextField } from "../ui";
+import { Button, Field, Icon, OptionTag, Select, ServiceOptionsPicker, TextField } from "../ui";
 import { colors, spacing } from "../../lib/theme";
 import { buildServiceLabelMap, parentIdsWithChildren } from "../../lib/serviceCatalog";
 import {
@@ -42,12 +63,29 @@ import {
   intToStr,
   resolveNumberField,
 } from "./audienceFilterFields";
+import {
+  describeCondition,
+  targetingSentences,
+  type ConditionLookups,
+  type Targeting,
+  type TargetingCondition,
+} from "./targetingText";
 
 type PreviewArgs = FunctionArgs<typeof api.audiences.previewAudience>;
 type PreviewResult = FunctionReturnType<typeof api.audiences.previewAudience>;
-export type Targeting = NonNullable<PreviewArgs["targeting"]>;
-export type TargetingGroup = Targeting["groups"][number];
-export type TargetingCondition = TargetingGroup["conditions"][number];
+// The sentence layer lives in `targetingText.ts` (dependency-free, so it's
+// unit-testable); re-exported here because this module is the import path
+// every consumer already uses.
+export {
+  describeCondition,
+  describeGroupSentence,
+  summarizeTargeting,
+  targetingSentences,
+  type ConditionLookups,
+  type Targeting,
+  type TargetingCondition,
+  type TargetingGroup,
+} from "./targetingText";
 type ExplainResult = FunctionReturnType<typeof api.audiences.explainAudiencePerson>;
 type SearchResult = FunctionReturnType<typeof api.audiences.searchPeopleForAudience>[number];
 
@@ -234,97 +272,6 @@ export function toWireTargeting(
   };
 }
 
-// ── Plain-language sentences (shared by rows, person-check, list summary) ──
-
-const DONOR_STATUS_PHRASE: Record<string, string> = {
-  any: "a donor",
-  prospect: "a prospect donor",
-  active: "an active donor",
-  lapsed: "a lapsed donor",
-};
-
-export type ConditionLookups = {
-  eventName?: (id: string) => string | undefined;
-  seatTitle?: (id: string) => string | undefined;
-  chapterName?: (id: string) => string | undefined;
-  serviceLabel?: (id: string) => string | undefined;
-};
-
-/** One condition as the sentence the row's controls spell — used verbatim by
- *  the person-check readout and the audience-list summary so the three
- *  surfaces can never describe the same condition differently. */
-export function describeCondition(c: TargetingCondition, lookups: ConditionLookups = {}): string {
-  switch (c.field) {
-    case "donor_status":
-      return `${c.op === "is_not" ? "is not" : "is"} ${DONOR_STATUS_PHRASE[c.status]}`;
-    case "giving_lifetime":
-      return `has given ${c.op === "gte" ? "at least" : "at most"} $${centsToDollarsStr(c.cents)} in total`;
-    case "gift_count":
-      return `has given ${c.op === "gte" ? "at least" : "at most"} ${c.count} time${c.count === 1 ? "" : "s"}`;
-    case "last_gift":
-      return c.op === "within_days"
-        ? `gave in the last ${c.days} days`
-        : `hasn't given in the last ${c.days} days`;
-    case "backer":
-      return `${c.op === "is_not" ? "is not" : "is"} ${c.status === "active" ? "an active backer" : "a lapsed backer"}`;
-    case "attended_event": {
-      const name = lookups.eventName?.(c.eventId) ?? "the chosen event";
-      return `${c.op === "has_not" ? "has never been to" : "has been to"} ${name}${
-        c.rsvpStatus ? ` (RSVP: ${c.rsvpStatus.replace("_", " ")})` : ""
-      }${c.withinDays != null ? ` in the last ${c.withinDays} days` : ""}`;
-    }
-    case "attended_any": {
-      const where = c.chapterId
-        ? `an event${lookups.chapterName?.(c.chapterId) ? ` in ${lookups.chapterName(c.chapterId)}` : ""}`
-        : "any event";
-      return `${c.op === "has_not" ? "has never been to" : "has been to"} ${where}${
-        c.rsvpStatus ? ` (RSVP: ${c.rsvpStatus.replace("_", " ")})` : ""
-      }${c.withinDays != null ? ` in the last ${c.withinDays} days` : ""}`;
-    }
-    case "chapter": {
-      const name = lookups.chapterName?.(c.chapterId) ?? "the chosen chapter";
-      return `${c.op === "is_not" ? "is not in" : "is in"} ${name}`;
-    }
-    case "seat": {
-      const title = lookups.seatTitle?.(c.seatId) ?? "the chosen role";
-      return `${c.op === "not_holds" ? "is not" : "is"} ${title}`;
-    }
-    case "kind":
-      return c.kind === "team" ? "is a team member" : "is a contact";
-    case "email_verified":
-      return "has a verified email";
-    case "has_service": {
-      const label = lookups.serviceLabel?.(c.serviceId) ?? "the chosen service";
-      return `${c.op === "has_not" ? "does not have" : "has"} "${label}"`;
-    }
-  }
-}
-
-/** Compact one-line summary for the audiences list card ("Donors who have
- *  never been to any event · or 1 more group · 1 skip list · +2 hand-picked").
- *  No name lookups on the list — generic phrases stand in for chosen
- *  events/roles/chapters. */
-export function summarizeTargeting(
-  targeting: Targeting,
-  handPicks?: { includeCount?: number; excludeCount?: number },
-): string {
-  const first = targeting.groups[0];
-  const firstText =
-    first && first.conditions.length > 0
-      ? `Anyone who ${first.conditions.map((c) => describeCondition(c)).join(" and ")}`
-      : "Everyone";
-  const parts = [firstText];
-  if (targeting.groups.length > 1) {
-    const more = targeting.groups.length - 1;
-    parts.push(`or ${more} more group${more === 1 ? "" : "s"}`);
-  }
-  const skips = targeting.excludeGroups?.length ?? 0;
-  if (skips > 0) parts.push(`${skips} skip list${skips === 1 ? "" : "s"}`);
-  if (handPicks?.includeCount) parts.push(`+${handPicks.includeCount} hand-picked`);
-  if (handPicks?.excludeCount) parts.push(`−${handPicks.excludeCount} excluded`);
-  return parts.join(" · ");
-}
-
 // ── Option data (events / seats / chapters), shared across rows ────────────
 
 function useTargetingOptions() {
@@ -394,6 +341,14 @@ const FIELD_OPTIONS = [
   { value: "email_verified", label: "Email" },
   { value: "service", label: "Has service" },
 ];
+
+/** Fields a given side of the builder may offer. #424 finding C:
+ *  verified-email reads backwards as an exclusion ("leave out anyone whose
+ *  address IS verified") and the backend rejects it, so it isn't offered
+ *  there at all. */
+function fieldOptionsFor(excludeSide: boolean) {
+  return excludeSide ? FIELD_OPTIONS.filter((o) => o.value !== "email_verified") : FIELD_OPTIONS;
+}
 
 function defaultRow(kind: string): UiRow {
   const key = nextKey();
@@ -506,11 +461,7 @@ function ConditionRow({
   const [servicePickerOpen, setServicePickerOpen] = useState(false);
   // Swapping the field keeps the row identity (its `key`) so list order and
   // focus don't jump; everything else resets to that field's default shape.
-  const fieldOptions = excludeSide
-    ? // #424 finding C: verified-email reads backwards in a skip list — the
-      // backend rejects it, so don't offer it here at all.
-      FIELD_OPTIONS.filter((o) => o.value !== "email_verified")
-    : FIELD_OPTIONS;
+  const fieldOptions = fieldOptionsFor(excludeSide);
 
   const opSelect = (opts: { value: string; label: string }[], value: string, set: (v: string) => void) => (
     <View style={rowStyles.opBox}>
@@ -802,7 +753,84 @@ function ConditionRow({
   );
 }
 
+// ── Adding a line: pick the field FIRST ─────────────────────────────────────
+
+/**
+ * A button that, instead of inserting a row, first asks what the line is
+ * about — then inserts a row of exactly that kind.
+ *
+ * Every "add" in this builder used to insert a fixed default (a Donor row
+ * from "+ and also…", a Role row from "+ Add a skip list"), so the common
+ * case was: get the wrong condition, hunt for the field select, change it,
+ * watch the row reset, then fill it in. Choosing first removes that whole
+ * detour and means a half-built row never exists — there is nothing to
+ * delete to get started. It also cuts the founder's benchmark ("came to an
+ * event in the last 90 days, except staff") from ~12 interactions to 6.
+ */
+function AddConditionMenu({
+  label,
+  excludeSide,
+  onPick,
+}: {
+  label: string;
+  excludeSide: boolean;
+  onPick: (kind: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+
+  if (!open) {
+    return (
+      <Button
+        title={label}
+        variant="secondary"
+        onPress={() => setOpen(true)}
+        className="mt-2 self-start"
+      />
+    );
+  }
+
+  return (
+    <View style={addStyles.menu}>
+      <Text style={addStyles.prompt}>What should this line be about?</Text>
+      <View style={addStyles.chips}>
+        {fieldOptionsFor(excludeSide).map((o) => (
+          <OptionTag
+            key={o.value}
+            label={o.label}
+            size="md"
+            onPress={() => {
+              onPick(o.value);
+              setOpen(false);
+            }}
+          />
+        ))}
+      </View>
+      <Button
+        title="Cancel"
+        variant="ghost"
+        onPress={() => setOpen(false)}
+        className="self-start"
+      />
+    </View>
+  );
+}
+
 // ── Group cards ─────────────────────────────────────────────────────────────
+
+/** The one-liner INSIDE a card that says how its own rows combine — the
+ *  AND/OR model where it's being used, rather than only in the section hint
+ *  above every card. */
+function combineNote(excludeSide: boolean, rowCount: number): string | null {
+  if (rowCount === 0) return null;
+  if (excludeSide) {
+    return rowCount === 1
+      ? "Anyone this is true of is left out. Need a second, unrelated reason? Add another exclusion — they're either/or."
+      : `Left out only when ALL ${rowCount} lines are true of the same person. For an either/or, use separate exclusions.`;
+  }
+  return rowCount === 1
+    ? "Anyone this is true of is in."
+    : `In only when ALL ${rowCount} lines are true of the same person.`;
+}
 
 function GroupCard({
   group,
@@ -825,19 +853,20 @@ function GroupCard({
   onInvalid: (key: string, invalid: boolean) => void;
   canDelete: boolean;
 }) {
+  const note = combineNote(excludeSide, group.rows.length);
   return (
     <View style={[groupStyles.card, excludeSide ? groupStyles.cardExclude : null]}>
       <View style={groupStyles.head}>
         <View style={[groupStyles.tag, excludeSide ? groupStyles.tagExclude : null]}>
           <Text style={[groupStyles.tagText, excludeSide ? groupStyles.tagTextExclude : null]}>
-            {excludeSide ? `Skip list ${index + 1}` : `Group ${index + 1}`}
+            {excludeSide ? `Exclusion ${index + 1}` : `Rule group ${index + 1}`}
           </Text>
         </View>
         <Text style={groupStyles.count}>
           {count === undefined
             ? "…"
             : excludeSide
-              ? `${count} ${count === 1 ? "person" : "people"} skipped`
+              ? `${count} ${count === 1 ? "person" : "people"} left out`
               : `${count} ${count === 1 ? "person matches" : "people match"}`}
         </Text>
         {canDelete ? (
@@ -849,16 +878,25 @@ function GroupCard({
         ) : null}
       </View>
 
+      {note ? <Text style={groupStyles.combine}>{note}</Text> : null}
+
       {group.rows.length === 0 ? (
         <Text style={groupStyles.everyone}>
           {excludeSide
-            ? "Add at least one line — an empty skip list isn't allowed."
-            : "No conditions — this group means everyone."}
+            ? "Add at least one line — an exclusion that says nothing isn't allowed."
+            : "No conditions yet — as it stands, this rule group means everyone."}
         </Text>
       ) : (
         group.rows.map((row, ri) => (
           <View key={row.key}>
-            {ri > 0 ? <Text style={groupStyles.andAlso}>and also</Text> : null}
+            {ri > 0 ? (
+              <View style={groupStyles.andRow}>
+                <View style={groupStyles.andChip}>
+                  <Text style={groupStyles.andChipText}>AND</Text>
+                </View>
+                <Text style={groupStyles.andHint}>this has to be true of them too</Text>
+              </View>
+            ) : null}
             <ConditionRow
               row={row}
               excludeSide={excludeSide}
@@ -873,12 +911,75 @@ function GroupCard({
         ))
       )}
 
-      <Button
-        title="+ and also…"
-        variant="secondary"
-        onPress={() => onChange({ ...group, rows: [...group.rows, defaultRow("donor")] })}
-        className="mt-1 self-start"
+      <AddConditionMenu
+        label={group.rows.length === 0 ? "+ Add a condition" : "+ and also…"}
+        excludeSide={excludeSide}
+        onPick={(kind) => onChange({ ...group, rows: [...group.rows, defaultRow(kind)] })}
       />
+    </View>
+  );
+}
+
+/** The OR seam between two cards — the relationship the model has always had
+ *  between rule groups AND between exclusions, but which only the rule-group
+ *  side ever drew. `caption` says what the OR does on this side. */
+function OrDivider({ caption }: { caption: string }) {
+  return (
+    <View style={groupStyles.orDivider}>
+      <View style={groupStyles.orLine} />
+      <View style={groupStyles.orMid}>
+        <Text style={groupStyles.orText}>OR</Text>
+        <Text style={groupStyles.orCaption}>{caption}</Text>
+      </View>
+      <View style={groupStyles.orLine} />
+    </View>
+  );
+}
+
+/**
+ * "In plain English" — the whole definition on screen read back as the
+ * sentence it means (`targetingText.ts#targetingSentences`).
+ *
+ * This is the piece that makes the AND/OR model legible rather than merely
+ * documented: whatever the author just did to the controls, this line says
+ * who that reaches. It reads off the SAME `UiGroup[]` the cards render (via
+ * the wire conversion, so incomplete rows are dropped exactly as the preview
+ * drops them) — never off the debounced preview args, so it never lags a
+ * beat behind the thing it's describing.
+ */
+function PlainEnglishRecap({
+  targeting,
+  lookups,
+}: {
+  targeting: Targeting;
+  lookups: ConditionLookups;
+}) {
+  const { send, skip } = targetingSentences(targeting, lookups);
+  return (
+    <View style={recapStyles.box}>
+      <Text style={recapStyles.head}>In plain English</Text>
+      <Text style={recapStyles.line}>
+        <Text style={recapStyles.lead}>Send to </Text>
+        {send.map((s, i) => (
+          <Text key={i}>
+            {i > 0 ? <Text style={recapStyles.joiner}> — or </Text> : null}
+            {s}
+          </Text>
+        ))}
+        .
+      </Text>
+      {skip.length > 0 ? (
+        <Text style={recapStyles.line}>
+          <Text style={recapStyles.lead}>Never send to </Text>
+          {skip.map((s, i) => (
+            <Text key={i}>
+              {i > 0 ? <Text style={recapStyles.joiner}> — or </Text> : null}
+              {s}
+            </Text>
+          ))}
+          .
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -908,22 +1009,24 @@ export function TargetingBuilder({
 }) {
   const options = useTargetingOptions();
   const preview = useQuery(api.audiences.previewAudience, previewArgs) as PreviewResult | undefined;
+  // Read straight off the LIVE ui state (not the form's debounced preview
+  // args) so the recap never trails the controls it's describing.
+  const liveTargeting = useMemo(
+    () => toWireTargeting(groups, excludeGroups).targeting,
+    [groups, excludeGroups],
+  );
 
   return (
     <View>
+      <PlainEnglishRecap targeting={liveTargeting} lookups={options.lookups} />
+
       <Field
         label="Send to"
-        hint="Someone gets the email if they match ANY one of these groups. Inside a group, every line must be true."
+        hint="Someone gets the email if they match ANY ONE rule group below. Inside a rule group, every line has to be true of the same person."
       >
         {groups.map((g, gi) => (
           <View key={g.key}>
-            {gi > 0 ? (
-              <View style={groupStyles.orDivider}>
-                <View style={groupStyles.orLine} />
-                <Text style={groupStyles.orText}>or</Text>
-                <View style={groupStyles.orLine} />
-              </View>
-            ) : null}
+            {gi > 0 ? <OrDivider caption="matching either one is enough" /> : null}
             <GroupCard
               group={g}
               index={gi}
@@ -937,43 +1040,43 @@ export function TargetingBuilder({
             />
           </View>
         ))}
-        <Button
-          title="+ Add another group"
-          variant="secondary"
-          onPress={() =>
-            onGroupsChange([...groups, { key: nextKey(), rows: [defaultRow("donor")] }])
+        <AddConditionMenu
+          label="+ Add another rule group"
+          excludeSide={false}
+          onPick={(kind) =>
+            onGroupsChange([...groups, { key: nextKey(), rows: [defaultRow(kind)] }])
           }
-          className="mt-2 self-start"
         />
       </Field>
 
       <Field
-        label="Don't send to"
-        hint="Anyone matching a skip list is left out, even if a group above (or a hand-pick) includes them."
+        label="Exclusions"
+        hint="Anyone matching an exclusion is left out, even if a rule group above (or a hand-pick) includes them. Each exclusion is all-or-nothing, and exclusions are either/or: to leave out Worship Leaders OR Tech Leads, add two."
       >
         {excludeGroups.map((g, gi) => (
-          <GroupCard
-            key={g.key}
-            group={g}
-            index={gi}
-            excludeSide
-            count={preview?.perExcludeGroupCounts[gi]}
-            options={options}
-            onChange={(next) =>
-              onExcludeGroupsChange(excludeGroups.map((x, i) => (i === gi ? next : x)))
-            }
-            onDelete={() => onExcludeGroupsChange(excludeGroups.filter((_, i) => i !== gi))}
-            onInvalid={onInvalid}
-            canDelete
-          />
+          <View key={g.key}>
+            {gi > 0 ? <OrDivider caption="either one leaves them out" /> : null}
+            <GroupCard
+              group={g}
+              index={gi}
+              excludeSide
+              count={preview?.perExcludeGroupCounts[gi]}
+              options={options}
+              onChange={(next) =>
+                onExcludeGroupsChange(excludeGroups.map((x, i) => (i === gi ? next : x)))
+              }
+              onDelete={() => onExcludeGroupsChange(excludeGroups.filter((_, i) => i !== gi))}
+              onInvalid={onInvalid}
+              canDelete
+            />
+          </View>
         ))}
-        <Button
-          title="+ Add a skip list"
-          variant="secondary"
-          onPress={() =>
-            onExcludeGroupsChange([...excludeGroups, { key: nextKey(), rows: [defaultRow("seat")] }])
+        <AddConditionMenu
+          label="+ Add an exclusion"
+          excludeSide
+          onPick={(kind) =>
+            onExcludeGroupsChange([...excludeGroups, { key: nextKey(), rows: [defaultRow(kind)] }])
           }
-          className="mt-2 self-start"
         />
       </Field>
     </View>
@@ -987,8 +1090,8 @@ const VERDICT_COPY: Record<
   { text: (name: string) => string; tone: "in" | "out" }
 > = {
   recipient: { text: (n) => `${n} will get this email`, tone: "in" },
-  no_match: { text: (n) => `${n} won't get it — doesn't match any group`, tone: "out" },
-  excluded: { text: (n) => `${n} won't get it — on a skip list`, tone: "out" },
+  no_match: { text: (n) => `${n} won't get it — doesn't match any rule group`, tone: "out" },
+  excluded: { text: (n) => `${n} won't get it — caught by an exclusion`, tone: "out" },
   hand_pick_excluded: { text: (n) => `${n} won't get it — excluded by hand`, tone: "out" },
   opted_out: { text: (n) => `${n} won't get it — asked not to receive emails like this`, tone: "out" },
   suppressed: { text: (n) => `${n} won't get it — unsubscribed`, tone: "out" },
@@ -1084,13 +1187,13 @@ export function PersonCheckSection({
             </Text>
           </View>
           {explanation.handPicked ? (
-            <Text className="mt-1 text-xs text-muted">Hand-picked into this audience.</Text>
+            <Text className="mt-1 text-xs text-muted">Hand-picked into this segment.</Text>
           ) : null}
 
           {explanation.groups.map((g, gi) => (
             <View key={`g-${gi}`} className="mt-2">
               <Text style={checkStyles.groupHead}>
-                Group {gi + 1} — {g.matched ? `yes, ${selected.name} matches` : "not a match"}
+                Rule group {gi + 1} — {g.matched ? `yes, ${selected.name} matches` : "not a match"}
               </Text>
               {g.conditions.length === 0 ? (
                 <Text style={checkStyles.cond}>
@@ -1111,7 +1214,8 @@ export function PersonCheckSection({
           {explanation.excludeGroups.map((g, gi) => (
             <View key={`x-${gi}`} className="mt-2">
               <Text style={checkStyles.groupHead}>
-                Skip list {gi + 1} — {g.matched ? "matches, so they're skipped" : "doesn't apply"}
+                Exclusion {gi + 1} —{" "}
+                {g.matched ? "matches, so they're left out" : "doesn't apply"}
               </Text>
               {g.conditions.map((cv, ci) => (
                 <Text key={ci} style={[checkStyles.cond, cv.pass ? null : checkStyles.condFail]}>
@@ -1181,7 +1285,28 @@ const groupStyles = StyleSheet.create({
   tagTextExclude: { color: colors.warn },
   count: { marginLeft: "auto", fontSize: 13, color: colors.muted },
   everyone: { fontSize: 13, color: colors.muted, paddingVertical: spacing.xs },
-  andAlso: { fontSize: 12, color: colors.faint, marginLeft: 2 },
+  combine: { fontSize: 12, color: colors.faint, marginTop: 2, marginBottom: 2 },
+  andRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: spacing.sm,
+    marginTop: spacing.xs,
+  },
+  andChip: {
+    backgroundColor: colors.sunken,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 999,
+    paddingHorizontal: 8,
+    paddingVertical: 1,
+  },
+  andChipText: {
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 0.8,
+    color: colors.muted,
+  },
+  andHint: { fontSize: 11, color: colors.faint },
   orDivider: {
     flexDirection: "row",
     alignItems: "center",
@@ -1189,6 +1314,7 @@ const groupStyles = StyleSheet.create({
     marginVertical: spacing.sm,
   },
   orLine: { flex: 1, height: 1, backgroundColor: colors.border },
+  orMid: { alignItems: "center", gap: 2 },
   orText: {
     fontSize: 12,
     fontWeight: "700",
@@ -1199,6 +1325,45 @@ const groupStyles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 3,
   },
+  orCaption: { fontSize: 11, color: colors.faint },
+});
+
+const addStyles = StyleSheet.create({
+  menu: {
+    marginTop: spacing.sm,
+    gap: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: 12,
+    backgroundColor: colors.sunken,
+    padding: spacing.md,
+  },
+  prompt: { fontSize: 13, fontWeight: "600", color: colors.text },
+  chips: { flexDirection: "row", flexWrap: "wrap", gap: spacing.sm },
+});
+
+const recapStyles = StyleSheet.create({
+  box: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderLeftWidth: 3,
+    borderLeftColor: colors.accent,
+    borderRadius: 12,
+    backgroundColor: colors.sunken,
+    padding: spacing.md,
+    marginBottom: spacing.sm,
+    gap: 2,
+  },
+  head: {
+    fontSize: 10,
+    fontWeight: "700",
+    letterSpacing: 0.8,
+    textTransform: "uppercase",
+    color: colors.faint,
+  },
+  line: { fontSize: 14, color: colors.text, lineHeight: 20 },
+  lead: { fontWeight: "700", color: colors.text },
+  joiner: { fontWeight: "700", color: colors.muted },
 });
 
 const checkStyles = StyleSheet.create({

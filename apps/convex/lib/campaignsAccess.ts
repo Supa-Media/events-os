@@ -1,24 +1,51 @@
 /**
  * Access gate for the email-campaigns surface (`audiences.ts`, `campaigns.ts`).
  *
+ * ── The ladder ─────────────────────────────────────────────────────────────
+ * Three NESTED capabilities, weakest first (see `SEAT_CAPABILITIES`'s doc in
+ * `@events-os/shared` for the full prose):
+ *
+ *   `campaigns.design`  — own the shared design system: themes, saved
+ *                         templates, the reusable image library.
+ *   `campaigns.compose` — implies design; draft/submit/send a campaign.
+ *   `campaigns.approve` — implies compose; be a campaign's reviewer.
+ *
  * DESK VISIBILITY (`hasCampaignsAccess`/`requireCampaignsAccess`) — superuser,
  * OR a central Executive Director / Financial Manager
  * (`lib/finance.ts#isCentralEdOrFm`, the legacy title-based path, kept for
- * backward compat), OR a person holding a CENTRAL seat carrying
- * `campaigns.compose` or `campaigns.approve` (today: `executive_director`,
- * `financial_manager`, `marketing_director` — see `SEAT_DEFS`). Widened from
- * "ED/FM only" by the founder's two-party campaign-approval requirement
- * (2026-07-24), which named the Marketing Director as a valid approver
- * alongside the ED/FM — that only works if a Marketing Director's seat can
- * open the desk in the first place.
+ * backward compat), OR a person holding a CENTRAL seat carrying ANY rung of
+ * the ladder (today: `executive_director`, `financial_manager`,
+ * `marketing_director` at approve; `graphic_designer`, `social_media_manager`
+ * at design — see `SEAT_DEFS`). Widened from "ED/FM only" by the founder's
+ * two-party campaign-approval requirement (2026-07-24), which named the
+ * Marketing Director as a valid approver alongside the ED/FM — that only
+ * works if a Marketing Director's seat can open the desk in the first place —
+ * and widened again (2026-07-28) to the design rung, because the person who
+ * actually builds the newsletter is the Graphic Designer and gating the desk
+ * on compose-or-above locked them out of their own tools.
  *
- * APPROVAL POWER (`hasCampaignApprovalPower`/`requireCampaignApprovalPower`)
- * is DELIBERATELY seat-capability-only (no legacy-title fallback) — unlike
- * desk visibility, this is a BRAND NEW power this PR introduces, so there's
- * no pre-existing title-based behavior to stay backward compatible with; it
- * exists purely so it can be granted/revoked per-seat at runtime
- * (`seats.ts#setSeatCampaignPower`), exactly like the giving desk's
- * view/manage power (`lib/givingAccess.ts`'s doc).
+ * THE THREE POWERS (`has/requireCampaignDesign`, `has/requireCampaignCompose`,
+ * `has/requireCampaignApprovalPower`) are DELIBERATELY seat-capability-only
+ * (superuser bootstrap aside — no legacy-title fallback), unlike desk
+ * visibility. Two reasons, and they apply to all three identically:
+ *
+ *   1. They exist so they can be granted/revoked per-seat at runtime
+ *      (`seats.ts#setSeatCampaignPower`), exactly like the giving desk's
+ *      view/manage power (`lib/givingAccess.ts`'s doc). A power that a
+ *      legacy `specializedRoles` title can satisfy isn't revocable from the
+ *      org chart, which defeats the point.
+ *   2. Gating the shared design system on plain `requireCampaignsAccess`
+ *      made the write gate WEAKER than `campaigns.compose` — the legacy
+ *      ED/FM title path satisfies desk visibility while holding no
+ *      capability at all, so anyone who could open the desk could archive
+ *      the shared built-in newsletter template or hard-delete an image
+ *      library blob. Those writes now sit behind `requireCampaignDesign`.
+ *
+ * Consequence worth stating plainly: a central ED/FM identified ONLY by a
+ * legacy `specializedRoles` title, with no seat assignment, can still open
+ * and READ the desk but can no longer edit templates/themes/images or start
+ * a campaign from a template. The fix is to take the ED/FM seat — whose
+ * template carries all three rungs — not to widen the power.
  *
  * The caller's people rows are resolved the SAME union-across-every-
  * non-placeholder-`people`-row-for-the-userId way `lib/givingAccess.ts`
@@ -37,15 +64,36 @@ import { requireUserId } from "./context";
  *  `lib/seats.ts#PERSON_SEAT_ASSIGNMENT_LIMIT` / `holdsApprovalSeatAt`. */
 const PERSON_SEAT_ASSIGNMENT_LIMIT = 200;
 
-type CampaignCapability = "campaigns.compose" | "campaigns.approve";
+type CampaignCapability =
+  | "campaigns.design"
+  | "campaigns.compose"
+  | "campaigns.approve";
 
 /**
- * True iff `personId` holds ANY seat AT `scope` whose def carries `cap` (or,
- * for `"campaigns.compose"`, `"campaigns.approve"` — approve implies
- * compose). Models `lib/seats.ts#holdsApprovalSeatAt`'s shape (indexed
- * `by_person` scan, skip `derived` seats — computed/rolled-up seats are
- * never real occupancy) for the two campaign capabilities, which live
- * outside that file's finance-only ladder.
+ * Which capabilities SATISFY a requested rung — the ladder's implications,
+ * written once so no call site has to remember them. `campaigns.approve`
+ * implies `campaigns.compose`, which in turn implies `campaigns.design`.
+ *
+ * The seat TEMPLATES list every implied rung explicitly (see `SEAT_DEFS`), so
+ * for a freshly-seeded org this map is redundant — it's what keeps a row
+ * written by an older migration, or by a hand edit that only added
+ * `campaigns.approve`, resolving correctly.
+ */
+const CAMPAIGN_CAPABILITY_SATISFIERS: Record<
+  CampaignCapability,
+  readonly CampaignCapability[]
+> = {
+  "campaigns.approve": ["campaigns.approve"],
+  "campaigns.compose": ["campaigns.compose", "campaigns.approve"],
+  "campaigns.design": ["campaigns.design", "campaigns.compose", "campaigns.approve"],
+};
+
+/**
+ * True iff `personId` holds ANY seat AT `scope` whose def carries `cap` or
+ * anything that implies it (`CAMPAIGN_CAPABILITY_SATISFIERS`). Models
+ * `lib/seats.ts#holdsApprovalSeatAt`'s shape (indexed `by_person` scan, skip
+ * `derived` seats — computed/rolled-up seats are never real occupancy) for
+ * the campaign ladder, which lives outside that file's finance-only one.
  */
 export async function holdsCampaignCapabilityAt(
   ctx: QueryCtx,
@@ -58,14 +106,13 @@ export async function holdsCampaignCapabilityAt(
     .withIndex("by_person", (q) => q.eq("personId", personId))
     .take(PERSON_SEAT_ASSIGNMENT_LIMIT);
 
+  const satisfiers = CAMPAIGN_CAPABILITY_SATISFIERS[cap];
   for (const assignment of assignments) {
     if (assignment.scope !== scope) continue;
     const def = await ctx.db.get(assignment.seatDefId);
-    if (def?.derived) continue; // computed/rolled-up seats are never real occupancy
-    if (def?.capabilities.includes(cap)) return true;
-    if (cap === "campaigns.compose" && def?.capabilities.includes("campaigns.approve")) {
-      return true; // approve implies compose
-    }
+    if (!def) continue;
+    if (def.derived) continue; // computed/rolled-up seats are never real occupancy
+    if (satisfiers.some((c) => def.capabilities.includes(c))) return true;
   }
   return false;
 }
@@ -97,21 +144,76 @@ async function holdsCentralCampaignCapability(
 export async function hasCampaignsAccess(ctx: QueryCtx): Promise<boolean> {
   if (await isSuperuser(ctx)) return true;
   if (await isCentralEdOrFm(ctx)) return true;
-  return (
-    (await holdsCentralCampaignCapability(ctx, "campaigns.compose")) ||
-    (await holdsCentralCampaignCapability(ctx, "campaigns.approve"))
-  );
+  // ONE check, not three: `campaigns.design` is the ladder's bottom rung and
+  // compose/approve both imply it (`CAMPAIGN_CAPABILITY_SATISFIERS`), so
+  // "holds design-or-above" is exactly "holds any campaign capability".
+  return holdsCentralCampaignCapability(ctx, "campaigns.design");
 }
 
-/** The throwing gate for every campaigns/audiences read+write. Use
- *  `hasCampaignsAccess` directly (soft, non-throwing) for a passive
- *  visibility check like `myCampaignsAccess`. */
+/** The throwing gate for every campaigns/audiences READ, and for desk
+ *  visibility generally. Use `hasCampaignsAccess` directly (soft,
+ *  non-throwing) for a passive visibility check like `myCampaignsAccess`.
+ *
+ *  NOT the right gate for a WRITE to the shared design system (themes,
+ *  templates, the image library) — that's `requireCampaignDesign`, which is
+ *  strictly stronger; see the module doc. */
 export async function requireCampaignsAccess(ctx: QueryCtx): Promise<void> {
   if (!(await hasCampaignsAccess(ctx))) {
     throw new ConvexError({
       code: "FORBIDDEN",
       message:
-        "Email campaigns are available to the Executive Director / Financial Manager, or a seat granted campaign compose or approve power.",
+        "Email campaigns are available to the Executive Director / Financial Manager, or a seat granted campaign design, compose, or approve power.",
+    });
+  }
+}
+
+/** True iff the caller holds CENTRAL `campaigns.design` power — or anything
+ *  that implies it (compose, approve) — superuser included (the bootstrap
+ *  path mirrored across the repo). Distinct from `hasCampaignsAccess`: the
+ *  legacy central-ED/FM TITLE path opens the desk but does NOT carry this
+ *  power (module doc, reason 2). */
+export async function hasCampaignDesign(ctx: QueryCtx): Promise<boolean> {
+  if (await isSuperuser(ctx)) return true;
+  return holdsCentralCampaignCapability(ctx, "campaigns.design");
+}
+
+/** Assert `hasCampaignDesign`, else throw. The gate on every write to the
+ *  SHARED design system — `emailThemes.ts`'s mutations,
+ *  `campaignTemplates.ts`'s create/update/archive, and `emailImages.ts`'s
+ *  add/update/delete. Every one of those edits something the whole desk
+ *  shares (an archived built-in template, a hard-deleted image blob), which
+ *  is why it's a named power rather than a side effect of being able to see
+ *  the desk. Reads of those same surfaces stay on `requireCampaignsAccess` —
+ *  a composer with no design power still has to be able to PICK a theme. */
+export async function requireCampaignDesign(ctx: QueryCtx): Promise<void> {
+  if (!(await hasCampaignDesign(ctx))) {
+    throw new ConvexError({
+      code: "FORBIDDEN",
+      message:
+        "Editing campaign templates, themes, and the image library requires campaign design power.",
+    });
+  }
+}
+
+/** True iff the caller holds CENTRAL `campaigns.compose` power — or
+ *  `campaigns.approve`, which implies it — superuser included. A
+ *  design-only holder (the Graphic Designer / Social Media Manager) is
+ *  FALSE here: they own the design system, never a send. */
+export async function hasCampaignCompose(ctx: QueryCtx): Promise<boolean> {
+  if (await isSuperuser(ctx)) return true;
+  return holdsCentralCampaignCapability(ctx, "campaigns.compose");
+}
+
+/** Assert `hasCampaignCompose`, else throw. The gate on anything that brings
+ *  a CAMPAIGN into existence or moves it along — notably
+ *  `campaignTemplates.createCampaignFromTemplate`, which despite living in
+ *  the templates module creates a draft campaign and so is a compose action,
+ *  not a design one. */
+export async function requireCampaignCompose(ctx: QueryCtx): Promise<void> {
+  if (!(await hasCampaignCompose(ctx))) {
+    throw new ConvexError({
+      code: "FORBIDDEN",
+      message: "Creating or editing a campaign requires campaign compose power.",
     });
   }
 }
@@ -182,8 +284,11 @@ export async function resolveCampaignCallerPersonIds(
  * — campaigns has no chapter/scope context of its own
  * (`lib/finance.ts#resolveCallerPersonId` needs a `chapterId`; this doesn't),
  * so this walks every non-placeholder `people` row the caller's userId owns
- * and picks the first one that itself carries a central campaign capability
- * (compose or approve) — falling back to the first non-placeholder row (the
+ * and picks the first one that itself can COMPOSE at central (compose, or
+ * approve which implies it) — deliberately NOT the weaker `campaigns.design`
+ * rung, because the row this returns is stamped as the campaign's actor, and
+ * a design-only roster row has no business being recorded as a campaign's
+ * submitter — falling back to the first non-placeholder row (the
  * "access came from `isCentralEdOrFm`'s legacy title, not a seat on this
  * particular roster row" case, and the superuser bootstrap case) so a
  * caller who cleared `requireCampaignsAccess` is never blocked from acting
@@ -196,10 +301,7 @@ export async function resolveCampaignCallerPersonId(
   const real = await ownPeopleRows(ctx);
 
   for (const person of real) {
-    if (
-      (await holdsCampaignCapabilityAt(ctx, person._id, "central", "campaigns.compose")) ||
-      (await holdsCampaignCapabilityAt(ctx, person._id, "central", "campaigns.approve"))
-    ) {
+    if (await holdsCampaignCapabilityAt(ctx, person._id, "central", "campaigns.compose")) {
       return person._id;
     }
   }

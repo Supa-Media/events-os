@@ -36,9 +36,10 @@ import {
   type EmailCardContent,
   type EmailPollOption,
 } from "@events-os/shared";
-import { Icon, TextField, Select, Field } from "../../ui";
+import { Icon, Field } from "../../ui";
 import { MarkdownEditor } from "../../markdown";
 import { colors } from "../../../lib/theme";
+import { confirmAction } from "../helpers";
 import {
   BLOCK_KIND_LABELS,
   MAX_FOOTER_LINKS,
@@ -57,6 +58,10 @@ import {
   EditorGroup,
   ImageUploadButton,
   LevelToggle,
+  ReadOnlyProvider,
+  Select,
+  TextField,
+  useDesignerReadOnly,
   type UploadImage,
 } from "./DesignerControls";
 import { CardContentEditor, InlineWarning } from "./CardContentEditor";
@@ -76,6 +81,39 @@ const COMPACT_MARKDOWN_HEIGHT = 180;
  */
 const EYEBROW_GLYPHS = ["◆", "★", "✦", "❯", "🎵", "✨"] as const;
 
+/** A block-toolbar icon button — one comfortable tap target, one place to
+ *  change the size. 14px glyphs in a 4px box were the previous norm; the
+ *  padding here is what makes "delete" hittable without being hair-trigger. */
+function ToolbarButton({
+  icon,
+  label,
+  onPress,
+  disabled = false,
+  danger = false,
+}: {
+  icon: "copy" | "trash-2" | "chevron-up" | "chevron-down";
+  label: string;
+  onPress: () => void;
+  disabled?: boolean;
+  danger?: boolean;
+}) {
+  return (
+    <Pressable
+      onPress={disabled ? undefined : onPress}
+      disabled={disabled}
+      hitSlop={8}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ disabled }}
+      className={`rounded p-1.5 ${
+        disabled ? "opacity-25" : "active:bg-sunken web:hover:bg-sunken"
+      }`}
+    >
+      <Icon name={icon} size={16} color={danger ? colors.danger : colors.muted} />
+    </Pressable>
+  );
+}
+
 export function BlockCard({
   block,
   selected,
@@ -83,9 +121,14 @@ export function BlockCard({
   onChange,
   onDuplicate,
   onDelete,
+  onMoveUp,
+  onMoveDown,
+  canMoveUp = false,
+  canMoveDown = false,
   drag,
   uploadImage,
   run,
+  readOnly = false,
 }: {
   block: EmailBlock;
   selected: boolean;
@@ -93,6 +136,11 @@ export function BlockCard({
   onChange: (patch: Record<string, unknown>) => void;
   onDuplicate: () => void;
   onDelete: () => void;
+  /** Reorder without a pointer. Omitted → only the drag handle reorders. */
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
+  canMoveUp?: boolean;
+  canMoveDown?: boolean;
   drag?: GestureType;
   /** Image upload (see `ImageBlockEditor`); omitted → URL / library only. */
   uploadImage?: UploadImage;
@@ -100,47 +148,94 @@ export function BlockCard({
    *  required whenever `uploadImage` is passed (both come from the design
    *  screen together). */
   run?: ActionRunner["run"];
+  /**
+   * Renders the block's content but accepts no edits — for a campaign past
+   * `draft`/`changes_requested`, where `updateCampaignDoc` throws
+   * `NOT_EDITABLE` anyway.
+   *
+   * This used to be faked by passing no-op `onChange`/`onDuplicate`/`onDelete`
+   * handlers into a fully live editor: a reviewer could type into a subject
+   * heading, see her words appear, and lose every one of them with nothing on
+   * screen admitting it. The lock is now real and VISIBLE — fields go static,
+   * every add/remove/upload affordance disappears, and the header says why.
+   */
+  readOnly?: boolean;
 }) {
+  const label = BLOCK_KIND_LABELS[block.kind];
   return (
-    <Pressable onPress={onSelect} accessibilityRole="button" accessibilityLabel={`${BLOCK_KIND_LABELS[block.kind]} block`}>
-      <View
-        className={`mb-3 rounded-lg border bg-raised p-3 ${
-          selected ? "border-accent" : "border-border"
-        }`}
-        style={selected ? { borderWidth: 1.5 } : undefined}
+    <ReadOnlyProvider value={readOnly}>
+      <Pressable
+        onPress={onSelect}
+        accessibilityRole="button"
+        accessibilityLabel={`${label} block`}
       >
-        <View className="mb-2 flex-row items-center gap-2">
-          {drag ? (
-            <GestureDetector gesture={drag}>
-              <View hitSlop={6} className="cursor-grab rounded p-1 active:bg-sunken web:hover:bg-sunken">
-                <Icon name="menu" size={15} color={colors.faint} />
+        <View
+          className={`mb-3 rounded-lg border p-3 ${
+            readOnly ? "bg-sunken" : "bg-raised"
+          } ${selected ? "border-accent" : "border-border"}`}
+          style={selected ? { borderWidth: 1.5 } : undefined}
+        >
+          <View className="mb-2 flex-row items-center gap-2">
+            {drag && !readOnly ? (
+              <GestureDetector gesture={drag}>
+                <View hitSlop={6} className="cursor-grab rounded p-1 active:bg-sunken web:hover:bg-sunken">
+                  <Icon name="menu" size={15} color={colors.faint} />
+                </View>
+              </GestureDetector>
+            ) : null}
+            <Text className="flex-1 text-xs font-bold uppercase tracking-wider text-faint">
+              {label}
+            </Text>
+            {readOnly ? (
+              <View className="flex-row items-center gap-1">
+                <Icon name="lock" size={12} color={colors.faint} />
+                <Text className="text-2xs uppercase tracking-wider text-faint">Locked</Text>
               </View>
-            </GestureDetector>
-          ) : null}
-          <Text className="flex-1 text-xs font-bold uppercase tracking-wider text-faint">
-            {BLOCK_KIND_LABELS[block.kind]}
-          </Text>
-          <Pressable
-            onPress={onDuplicate}
-            hitSlop={6}
-            accessibilityLabel="Duplicate block"
-            className="rounded p-1 active:bg-sunken web:hover:bg-sunken"
-          >
-            <Icon name="copy" size={14} color={colors.muted} />
-          </Pressable>
-          <Pressable
-            onPress={onDelete}
-            hitSlop={6}
-            accessibilityLabel="Delete block"
-            className="rounded p-1 active:bg-sunken web:hover:bg-sunken"
-          >
-            <Icon name="trash-2" size={14} color={colors.danger} />
-          </Pressable>
-        </View>
+            ) : (
+              <>
+                {onMoveUp ? (
+                  <ToolbarButton
+                    icon="chevron-up"
+                    label={`Move ${label} block up`}
+                    onPress={onMoveUp}
+                    disabled={!canMoveUp}
+                  />
+                ) : null}
+                {onMoveDown ? (
+                  <ToolbarButton
+                    icon="chevron-down"
+                    label={`Move ${label} block down`}
+                    onPress={onMoveDown}
+                    disabled={!canMoveDown}
+                  />
+                ) : null}
+                <ToolbarButton icon="copy" label="Duplicate block" onPress={onDuplicate} />
+                <ToolbarButton
+                  icon="trash-2"
+                  label="Delete block"
+                  danger
+                  // Deleting is the one toolbar action that destroys work, and
+                  // it sits a few pixels from Duplicate. Undo would recover it
+                  // on web; on a phone there is no keyboard shortcut and the
+                  // Undo button is scrolled off the top of a long newsletter.
+                  onPress={() =>
+                    confirmAction({
+                      title: `Delete this ${label.toLowerCase()} block?`,
+                      message: "Its content goes with it. You can undo straight afterwards.",
+                      confirmLabel: "Delete block",
+                      destructive: true,
+                      onConfirm: onDelete,
+                    })
+                  }
+                />
+              </>
+            )}
+          </View>
 
-        <BlockEditor block={block} onChange={onChange} uploadImage={uploadImage} run={run} />
-      </View>
-    </Pressable>
+          <BlockEditor block={block} onChange={onChange} uploadImage={uploadImage} run={run} />
+        </View>
+      </Pressable>
+    </ReadOnlyProvider>
   );
 }
 
@@ -155,6 +250,9 @@ function BlockEditor({
   uploadImage?: UploadImage;
   run?: ActionRunner["run"];
 }) {
+  // Only the `text` block needs to ask: every other editor is built from the
+  // read-only-aware controls in `DesignerControls`, which lock themselves.
+  const readOnly = useDesignerReadOnly();
   switch (block.kind) {
     case "heading":
       return (
@@ -185,7 +283,12 @@ function BlockEditor({
           value={block.markdown}
           onChange={(markdown) => onChange({ markdown })}
           minHeight={COMPACT_MARKDOWN_HEIGHT}
-          placeholder="Write your message… supports **bold**, *italic*, links, and - lists"
+          editable={!readOnly}
+          placeholder={
+            readOnly
+              ? undefined
+              : "Write your message… supports **bold**, *italic*, links, and - lists"
+          }
         />
       );
 
@@ -346,6 +449,7 @@ function EyebrowEditor({
   block: Extract<EmailBlock, { kind: "eyebrow" }>;
   onChange: (patch: Record<string, unknown>) => void;
 }) {
+  const readOnly = useDesignerReadOnly();
   const glyph = block.icon ?? "";
   return (
     <View>
@@ -359,30 +463,38 @@ function EyebrowEditor({
       />
       <Field
         label="Glyph"
-        hint="Any character works — these are just the ones the newsletter uses."
+        hint={
+          readOnly
+            ? undefined
+            : "Any character works — these are just the ones the newsletter uses."
+        }
       >
-        <View className="flex-row flex-wrap items-center gap-2">
-          {EYEBROW_GLYPHS.map((g) => (
-            <Pressable
-              key={g}
-              onPress={() => onChange({ icon: glyph === g ? undefined : g })}
-              accessibilityRole="button"
-              accessibilityLabel={`Use the ${g} glyph`}
-              accessibilityState={{ selected: glyph === g }}
-              className={`h-9 w-9 items-center justify-center rounded-md border ${
-                glyph === g ? "border-accent bg-accent-soft" : "border-border bg-raised"
-              }`}
-            >
-              <Text className="text-base text-ink">{g}</Text>
-            </Pressable>
-          ))}
-          <LevelToggle
-            label="None"
-            active={glyph === ""}
-            onPress={() => onChange({ icon: undefined })}
-          />
-        </View>
-        <View className="mt-2">
+        {/* The suggestions are an EDITING affordance — a locked eyebrow keeps
+            the field below, which shows the glyph it actually carries. */}
+        {readOnly ? null : (
+          <View className="flex-row flex-wrap items-center gap-2">
+            {EYEBROW_GLYPHS.map((g) => (
+              <Pressable
+                key={g}
+                onPress={() => onChange({ icon: glyph === g ? undefined : g })}
+                accessibilityRole="button"
+                accessibilityLabel={`Use the ${g} glyph`}
+                accessibilityState={{ selected: glyph === g }}
+                className={`h-9 w-9 items-center justify-center rounded-md border ${
+                  glyph === g ? "border-accent bg-accent-soft" : "border-border bg-raised"
+                }`}
+              >
+                <Text className="text-base text-ink">{g}</Text>
+              </Pressable>
+            ))}
+            <LevelToggle
+              label="None"
+              active={glyph === ""}
+              onPress={() => onChange({ icon: undefined })}
+            />
+          </View>
+        )}
+        <View className={readOnly ? undefined : "mt-2"}>
           <TextField
             value={glyph}
             onChangeText={(icon) => onChange({ icon: icon || undefined })}
@@ -411,6 +523,7 @@ function ColumnsEditor({
   uploadImage?: UploadImage;
   run?: ActionRunner["run"];
 }) {
+  const readOnly = useDesignerReadOnly();
   const columns = block.columns;
   const atMin = columns.length <= MIN_COLUMNS;
   const atMax = columns.length >= MAX_COLUMNS;
@@ -458,16 +571,18 @@ function ColumnsEditor({
           key={keysRef.current[index]}
           title={`Column ${index + 1}`}
           right={
-            <Pressable
-              onPress={atMin ? undefined : () => removeColumn(index)}
-              disabled={atMin}
-              hitSlop={6}
-              accessibilityRole="button"
-              accessibilityLabel={`Remove column ${index + 1}`}
-              className={`rounded p-1 ${atMin ? "opacity-30" : "active:bg-sunken web:hover:bg-sunken"}`}
-            >
-              <Icon name="x" size={13} color={colors.muted} />
-            </Pressable>
+            readOnly ? undefined : (
+              <Pressable
+                onPress={atMin ? undefined : () => removeColumn(index)}
+                disabled={atMin}
+                hitSlop={6}
+                accessibilityRole="button"
+                accessibilityLabel={`Remove column ${index + 1}`}
+                className={`rounded p-1 ${atMin ? "opacity-30" : "active:bg-sunken web:hover:bg-sunken"}`}
+              >
+                <Icon name="x" size={13} color={colors.muted} />
+              </Pressable>
+            )
           }
         >
           <CardContentEditor
@@ -479,12 +594,14 @@ function ColumnsEditor({
           />
         </EditorGroup>
       ))}
-      <LevelToggle
-        label={atMax ? `Maximum ${MAX_COLUMNS} columns` : "+ Add column"}
-        active={false}
-        disabled={atMax}
-        onPress={() => onChange({ columns: [...columns, { heading: "" }] })}
-      />
+      {readOnly ? null : (
+        <LevelToggle
+          label={atMax ? `Maximum ${MAX_COLUMNS} columns` : "+ Add column"}
+          active={false}
+          disabled={atMax}
+          onPress={() => onChange({ columns: [...columns, { heading: "" }] })}
+        />
+      )}
       <Text className="mt-2 text-2xs text-faint">
         Columns stack to full width on a phone.
       </Text>
@@ -500,6 +617,7 @@ function PollEditor({
   block: Extract<EmailBlock, { kind: "poll" }>;
   onChange: (patch: Record<string, unknown>) => void;
 }) {
+  const readOnly = useDesignerReadOnly();
   const options = block.options;
   const atMin = options.length <= MIN_POLL_OPTIONS;
   const atMax = options.length >= MAX_POLL_OPTIONS;

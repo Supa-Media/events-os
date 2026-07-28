@@ -1210,38 +1210,56 @@ export const setSeatGivingPower = mutation({
 
 // ── Campaign power editor (founder requirement, 2026-07-24) ────────────────
 //
-// The sibling of `setSeatGivingPower` above, for the two-party campaign-
-// approval capabilities (`campaigns.compose`/`campaigns.approve` —
-// `apps/convex/lib/campaignsAccess.ts`). Same gate (`requireChartEditor`),
+// The sibling of `setSeatGivingPower` above, for the campaign capability
+// ladder (`campaigns.design`/`campaigns.compose`/`campaigns.approve` —
+// `apps/convex/lib/campaignsAccess.ts`; the `design` rung added 2026-07-28
+// so a Graphic Designer can own themes/templates/images without gaining the
+// power to send). Same gate (`requireChartEditor`),
 // same self-lockout guard (`assertNoSelfLockout`), same "touch ONLY these
 // capabilities, preserve everything else verbatim" shape — see
 // `setSeatGivingPower`'s doc for the full rationale, which applies here
 // unchanged.
 
-/** The two campaign capabilities this editor owns — the ONLY caps it ever
+/** The three campaign capabilities this editor owns — the ONLY caps it ever
  *  touches. */
-const CAMPAIGN_CAPS: readonly SeatCapability[] = ["campaigns.compose", "campaigns.approve"];
+const CAMPAIGN_CAPS: readonly SeatCapability[] = [
+  "campaigns.compose",
+  "campaigns.approve",
+  "campaigns.design",
+];
 
 const campaignPowerValidator = v.union(
   v.literal("none"),
+  v.literal("design"),
   v.literal("compose"),
   v.literal("approve"),
 );
 
-/** The campaign capabilities a given power level grants. `approve` IMPLIES
- *  `compose` (an approver can always do everything a composer can — see
- *  `campaigns.compose`'s doc in `@events-os/shared`); `compose` grants just
- *  itself; `none` strips both. */
-function campaignCapsForPower(power: "none" | "compose" | "approve"): SeatCapability[] {
-  if (power === "approve") return ["campaigns.approve", "campaigns.compose"];
-  if (power === "compose") return ["campaigns.compose"];
+type CampaignPower = "none" | "design" | "compose" | "approve";
+
+/** The campaign capabilities a given power level grants — the NESTED ladder
+ *  from `SEAT_CAPABILITIES`'s doc in `@events-os/shared`, materialized. Each
+ *  rung lists every capability it implies EXPLICITLY (rather than relying on
+ *  the resolver's implication map) so a seat def row is self-describing and
+ *  the org chart's "Powers" chips read honestly.
+ *
+ *  `approve` → be a campaign's reviewer, and everything below.
+ *  `compose` → draft/submit/send a campaign, and everything below.
+ *  `design`  → own the shared design system (themes, templates, image
+ *              library) and open the desk — but never compose or send.
+ *  `none`    → strip all three. */
+function campaignCapsForPower(power: CampaignPower): SeatCapability[] {
+  if (power === "approve")
+    return ["campaigns.approve", "campaigns.compose", "campaigns.design"];
+  if (power === "compose") return ["campaigns.compose", "campaigns.design"];
+  if (power === "design") return ["campaigns.design"];
   return [];
 }
 
 /**
- * Set a seat's CAMPAIGN power to `none` / `compose` / `approve`, rewriting
- * ONLY the two campaign capabilities on the def and leaving every other
- * capability exactly as-is. `seatDefs` rows are shared across every chapter,
+ * Set a seat's CAMPAIGN power to `none` / `design` / `compose` / `approve`,
+ * rewriting ONLY the three campaign capabilities on the def and leaving every
+ * other capability exactly as-is. `seatDefs` rows are shared across every chapter,
  * so one edit applies everywhere the seat is occupied — but campaigns is
  * central-only in practice (only central seats matter for this power today).
  *

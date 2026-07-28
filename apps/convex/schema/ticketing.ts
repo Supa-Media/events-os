@@ -403,3 +403,47 @@ export const blasts = defineTable({
   createdAt: v.number(),
   sentAt: v.optional(v.number()),
 }).index("by_event", ["eventId"]);
+
+export const BLAST_RECIPIENT_STATUSES = ["queued", "sent", "failed"] as const;
+
+/**
+ * One materialized recipient row per EMAIL blast address — the blast-side twin
+ * of `schema/campaigns.ts#campaignRecipients`, and the reason an event
+ * announcement can carry a real unsubscribe link.
+ *
+ * ── Why a table rather than a derived token ────────────────────────────────
+ * An event blast is bulk mail (organiser-composed promotional copy to a whole
+ * audience), so CAN-SPAM/RFC 8058 require a working per-recipient unsubscribe.
+ * The two candidate designs were:
+ *
+ *  1. Derive the token from something already stable — e.g. the guest's
+ *     `rsvps.token`. Rejected: that token is the guest's SECRET RSVP-edit
+ *     credential. Putting it in an emailed href hands it to every link
+ *     scanner/proxy that prefetches the message, and an address can span
+ *     several `rsvps` rows (an RSVP + a ticket purchase de-dupe to ONE email),
+ *     so there is no 1:1 "stable id" for the thing being unsubscribed anyway.
+ *     A signed/HMAC token avoids the leak but can't be reversed to an address,
+ *     so `/unsubscribe/<token>` would need a whole second resolution path.
+ *  2. Materialize a row per (blast, address) with its own random token — this.
+ *     It reuses `campaignRecipients`' exact shape and `newGuestToken()`, so the
+ *     existing `/unsubscribe/<token>` route resolves it with no new code path
+ *     (`campaigns.ts#getRecipientByToken`/`unsubscribeByToken` fall back to
+ *     this table), one recipient's token can only ever name THEIR OWN address,
+ *     and a blast finally gets the per-address delivery record it never had.
+ *
+ * `unsubscribedAt` (rather than a "suppressed" status) records the opt-out
+ * without overwriting what actually happened to the send.
+ */
+export const blastRecipients = defineTable({
+  blastId: v.id("blasts"),
+  eventId: v.id("events"),
+  email: v.string(), // normalized lowercase
+  status: v.union(...BLAST_RECIPIENT_STATUSES.map((s) => v.literal(s))),
+  error: v.optional(v.string()),
+  unsubscribeToken: v.string(),
+  sentAt: v.optional(v.number()),
+  unsubscribedAt: v.optional(v.number()),
+})
+  .index("by_blast", ["blastId"])
+  .index("by_blast_and_email", ["blastId", "email"])
+  .index("by_token", ["unsubscribeToken"]);

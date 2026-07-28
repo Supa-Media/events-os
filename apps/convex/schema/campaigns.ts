@@ -485,6 +485,34 @@ export const emailSuppressions = defineTable({
   createdAt: v.number(),
 }).index("by_email", ["email"]);
 
+export const EMAIL_SUPPRESSION_AUDIT_ACTIONS = ["suppressed", "unsuppressed"] as const;
+
+/**
+ * APPEND-ONLY trail of every HUMAN change to the suppression ledger — the
+ * `giftAudit`/`donorAudit` narration pattern applied to do-not-email.
+ *
+ * Automated writes (an unsubscribe click, a bounce, a complaint) are NOT
+ * logged here: the `emailSuppressions` row itself is that record, carrying its
+ * own `reason` + `createdAt`. This table exists for the two ADMIN mutations
+ * (`emailSuppressions.suppressEmail` / `unsuppressEmail`), where the row alone
+ * can't answer "who did this?" — and, for an un-suppress, where the row is
+ * DELETED and would otherwise leave no trace that a bounced/complained address
+ * was deliberately put back into circulation.
+ */
+export const emailSuppressionAudit = defineTable({
+  email: v.string(), // normalized lowercase
+  action: v.union(...EMAIL_SUPPRESSION_AUDIT_ACTIONS.map((a) => v.literal(a))),
+  /** The reason the row carried — the NEW reason on a suppress, the reason
+   *  being cleared on an un-suppress (so "we un-suppressed a hard bounce" is
+   *  distinguishable from "we un-suppressed a complaint"). */
+  reason: v.optional(v.union(...EMAIL_SUPPRESSION_REASONS.map((r) => v.literal(r)))),
+  actorUserId: v.id("users"),
+  note: v.optional(v.string()), // the actor's optional "why"
+  at: v.number(),
+})
+  .index("by_email", ["email"])
+  .index("by_at", ["at"]);
+
 // ── Theming, templates, the image library, and polls ─────────────────────────
 // The composer used to paint every send with a palette hardcoded in
 // `emailRender.ts` — a red/cream/Georgia look that was invented before anyone

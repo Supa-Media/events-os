@@ -67,21 +67,38 @@ export const MULTI_HOLDER_CAP = 50 as const;
  *  — a central holder sees every scope, a chapter `giving.view` seat sees only
  *  its own chapter.
  *
- *  `campaigns.compose` / `campaigns.approve` (founder requirement, 2026-07-24
- *  — two-party approval for mass email): `campaigns.compose` may open the
- *  Campaigns desk, draft a campaign, submit it for approval, and send it once
- *  a DIFFERENT approval-power holder has approved it. `campaigns.approve`
- *  IMPLIES `campaigns.compose` (an approver can always do everything a
- *  composer can) and additionally lets its holder be picked as a campaign's
- *  reviewer and decide (approve / deny / request changes) on one — but never
- *  on a campaign they themselves submitted, even for a single person holding
- *  the seat that grants it (the Executive Director included — see
+ *  `campaigns.design` / `campaigns.compose` / `campaigns.approve` (founder
+ *  requirement, 2026-07-24 — two-party approval for mass email; the `design`
+ *  rung added 2026-07-28): a NESTED ladder, weakest first, resolved by
+ *  `apps/convex/lib/campaignsAccess.ts` and mirroring the giving trio's
+ *  seat-derived, per-scope resolution shape (central-only in practice —
+ *  campaigns has no chapter surface).
+ *
+ *  `campaigns.design` may open the Campaigns desk and own the SHARED DESIGN
+ *  SYSTEM behind it — email themes (`emailThemes.ts`), saved templates
+ *  (`campaignTemplates.ts`), and the reusable image library
+ *  (`emailImages.ts`) — WITHOUT ever being able to compose, submit, approve,
+ *  or send a campaign. It exists because the person who actually builds the
+ *  newsletter is the Graphic Designer / Social Media Manager, and gating the
+ *  desk on compose-or-above locked exactly those two seats out of the tools
+ *  they own. Every one of those write paths edits something SHARED — an
+ *  archived built-in template or a hard-deleted image blob affects everyone —
+ *  so it is now a named power rather than a side effect of desk visibility.
+ *
+ *  `campaigns.compose` IMPLIES `campaigns.design` (a composer can obviously
+ *  edit a template they're about to start from) and additionally may draft a
+ *  campaign, submit it for approval, and send it once a DIFFERENT
+ *  approval-power holder has approved it.
+ *
+ *  `campaigns.approve` IMPLIES `campaigns.compose` (and so `campaigns.design`
+ *  too — an approver can always do everything a composer can) and
+ *  additionally lets its holder be picked as a campaign's reviewer and decide
+ *  (approve / deny / request changes) on one — but never on a campaign they
+ *  themselves submitted, even for a single person holding the seat that
+ *  grants it (the Executive Director included — see
  *  `apps/convex/campaigns.ts`'s state-machine doc for the separation-of-duties
- *  enforcement). Resolved by `apps/convex/lib/campaignsAccess.ts`, mirroring
- *  the giving trio's seat-derived, per-scope resolution shape (central-only
- *  in practice — campaigns has no chapter surface). Test-sends and
- *  transactional email are NOT gated by either capability — only a real mass
- *  send is. */
+ *  enforcement). Test-sends and transactional email are NOT gated by any of
+ *  the three — only a real mass send is. */
 export const SEAT_CAPABILITIES = [
   "finance.manager",
   "finance.viewer",
@@ -96,6 +113,7 @@ export const SEAT_CAPABILITIES = [
   "nav.giving",
   "campaigns.compose",
   "campaigns.approve",
+  "campaigns.design",
 ] as const;
 export type SeatCapability = (typeof SEAT_CAPABILITIES)[number];
 
@@ -183,8 +201,13 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       // Founder requirement (2026-07-24): the ED can compose/send campaigns,
       // but every send still needs sign-off from a DIFFERENT approval-power
       // holder (e.g. the Marketing Director) — see `campaigns.approve`'s doc.
+      // `campaigns.design` (2026-07-28) rides along because approve implies
+      // compose implies design; it's listed explicitly so the seat chart —
+      // not an implication rule buried in a resolver — stays the honest
+      // answer to "who can edit a shared template/theme/image?".
       "campaigns.approve",
       "campaigns.compose",
+      "campaigns.design",
     ],
     legacyTitle: "executive_director",
   },
@@ -215,8 +238,11 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       "nav.giving",
       // Founder requirement (2026-07-24): the FM is one of the org's
       // valid campaign approvers alongside the ED and Marketing Director.
+      // `campaigns.design` (2026-07-28) — approve implies it; listed
+      // explicitly, same reason as the ED's.
       "campaigns.approve",
       "campaigns.compose",
+      "campaigns.design",
     ],
     legacyTitle: "finance_manager",
   },
@@ -318,8 +344,10 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     // Founder requirement (2026-07-24, verbatim): "ED approved by Marketing
     // Director" — named as a valid second party for two-party campaign
     // approval, so the Marketing Director gets full campaign power by
-    // default (compose implied by approve).
-    capabilities: ["campaigns.approve", "campaigns.compose"],
+    // default (compose implied by approve, design implied by compose —
+    // `campaigns.design` added 2026-07-28; the MD owns the brand, so the
+    // design system is squarely their desk).
+    capabilities: ["campaigns.approve", "campaigns.compose", "campaigns.design"],
   },
   social_media_manager: {
     id: "social_media_manager",
@@ -332,7 +360,14 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       "Plan the content calendar",
       "Track engagement metrics",
     ],
-    capabilities: [],
+    // 2026-07-28: `campaigns.design` — the Social Media Manager builds the
+    // content the newsletter is made of and maintains the shared image
+    // library, so they own themes/templates/images. Deliberately NOT
+    // `campaigns.compose`: a mass send is still a two-party decision the
+    // Marketing Director / ED / FM makes, and the ED can promote this seat
+    // to Compose or Approve at runtime from the org chart
+    // (`apps/convex/seats.ts#setSeatCampaignPower`).
+    capabilities: ["campaigns.design"],
   },
   graphic_designer: {
     id: "graphic_designer",
@@ -345,7 +380,12 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       "Keep visual assets on-brand",
       "Support marketing campaigns",
     ],
-    capabilities: [],
+    // 2026-07-28: `campaigns.design` — this is the seat that ACTUALLY builds
+    // the newsletter, and it held no campaign capability at all, so the
+    // designer couldn't even open the Campaigns desk. Same rung (and same
+    // deliberate absence of `campaigns.compose`) as the Social Media Manager
+    // above.
+    capabilities: ["campaigns.design"],
   },
   marketing_associate: {
     id: "marketing_associate",

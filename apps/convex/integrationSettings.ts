@@ -77,6 +77,49 @@ function last4(key: string): string {
   return key.slice(-4);
 }
 
+/** Where a human actually sets the postal address — repeated verbatim in every
+ *  refusal so the error tells you the fix, not just the problem. */
+export const MAILING_ADDRESS_LOCATION = "Profile → Integrations → Postal address";
+
+/**
+ * The org's CAN-SPAM postal mailing address, or `null` when it's unset/blank.
+ * Blank-after-trim is deliberately folded into `null`: a whitespace-only
+ * address satisfies no legal requirement and must not pass a presence check.
+ */
+export async function readOrgMailingAddress(ctx: QueryCtx): Promise<string | null> {
+  const settings = await getSettings(ctx);
+  return settings?.orgMailingAddress?.trim() || null;
+}
+
+/**
+ * The gate every BULK-EMAIL send goes through — campaigns
+ * (`campaigns.ts#submitForApproval`/`#send`) and event blasts
+ * (`blasts.ts#sendBlast`). Throws when no postal address is on file.
+ *
+ * ── Why this is a throw and not a fallback ─────────────────────────────────
+ * US CAN-SPAM requires the sender's physical mailing address in EVERY
+ * commercial message. The renderer's `orgAddress ? … : ""` (emailRender.ts)
+ * means an unset address silently produces a footer missing that line — the
+ * send "succeeds", nobody is told, and every message in it is non-compliant.
+ * There is no safe default to substitute, so the only honest behaviour is to
+ * refuse the send LOUDLY and name where to fix it.
+ *
+ * Transactional mail (receipts, RSVP confirmations, verification codes,
+ * approval notices) is deliberately NOT gated on this — CAN-SPAM's
+ * requirements attach to commercial/promotional content, and a receipt must
+ * never be blocked by an unrelated marketing setting.
+ */
+export async function requireOrgMailingAddress(ctx: QueryCtx): Promise<string> {
+  const address = await readOrgMailingAddress(ctx);
+  if (!address) {
+    throw new ConvexError({
+      code: "NO_MAILING_ADDRESS",
+      message: `Bulk email needs the organisation's postal mailing address (US CAN-SPAM requires it in every message). A superuser can set it at ${MAILING_ADDRESS_LOCATION}.`,
+    });
+  }
+  return address;
+}
+
 /**
  * Loosely validate + normalize a Resend "From" address: must look like an
  * email (`addr@dom`) or the `"Name <addr@dom>"` form Resend also accepts —

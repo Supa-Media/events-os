@@ -10,17 +10,23 @@ import { Pill } from "../../../components/ui";
  * provides the app chrome; this layout adds the in-app campaigns tabs above
  * the active screen, cloning the `giving/_layout` pill-nav pattern exactly.
  *
- * Campaigns · Audiences · Themes · Replies. The tabs render only for a caller
- * who can see the desk (`audiences.myCampaignsAccess.canView`) — each screen
- * keeps its own backend gate too, same as Giving.
+ * Campaigns · Segments · Templates · Themes · Replies. The tabs render only
+ * for a caller who can see the desk (`audiences.myCampaignsAccess.canView`) —
+ * each screen keeps its own backend gate too, same as Giving.
  *
- * Themes sits between the two AUTHORING tabs and the inbox: it's where the
- * email's branding is edited (`themes.tsx`), so it belongs beside the things
- * you make, not beside the replies you read.
+ * "Segments" is the label for what the backend still calls audiences
+ * (`api.audiences.*`, the `audiences` table): the route and every function
+ * name are unchanged, this is vocabulary only — see `AudiencesView.tsx`.
+ *
+ * Templates and Themes sit between the AUTHORING tabs and the inbox: they're
+ * the two libraries an email is assembled from (a starting document and its
+ * branding), so they belong beside the things you make, not beside the
+ * replies you read.
  */
 const TABS: { label: string; path: string }[] = [
   { label: "Campaigns", path: "/campaigns" },
-  { label: "Audiences", path: "/campaigns/audiences" },
+  { label: "Segments", path: "/campaigns/audiences" },
+  { label: "Templates", path: "/campaigns/templates" },
   { label: "Themes", path: "/campaigns/themes" },
   { label: "Replies", path: "/campaigns/replies" },
 ];

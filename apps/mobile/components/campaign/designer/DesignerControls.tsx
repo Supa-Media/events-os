@@ -9,17 +9,104 @@
  * is the "extract on second use" rule the UI kit itself follows: a control
  * earns its own module the moment a second caller needs it, not before.
  */
-import { useState, type ReactNode } from "react";
+import {
+  createContext,
+  useContext,
+  useState,
+  type ComponentProps,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import { ActivityIndicator, Platform, Pressable, Text, View } from "react-native";
 // expo-image-picker is Expo Go-safe (classified `core` in native-deps.json);
 // only used on native, mirroring `CoverPhotoPicker`'s upload flow.
 import * as ImagePicker from "expo-image-picker";
 import type { Id } from "@events-os/convex/_generated/dataModel";
+import { Field, Select as UiSelect, TextField as UiTextField } from "../../ui";
 import { colors } from "../../../lib/theme";
 import type { ActionRunner } from "../../../lib/useActionToast";
 
+/**
+ * ── READ-ONLY MODE ─────────────────────────────────────────────────────────
+ *
+ * Past `draft`/`changes_requested` the server refuses every doc write
+ * (`campaigns.ts#assertEditable` → `NOT_EDITABLE`), and the composer used to
+ * render the SAME live-looking editors anyway with no-op handlers: a reviewer
+ * opening a submitted campaign could type into a heading, watch the text
+ * appear, and lose it — the keystrokes went nowhere and nothing said so.
+ *
+ * Threading a `readOnly` prop through every editor and every field would work
+ * exactly as long as nobody forgets one, and one forgotten field is the whole
+ * bug back. So it's CONTEXT: `BlockCard` provides it once, and the controls
+ * below opt in by construction. The two rules the designer's editors follow:
+ *
+ *   - use the wrappers exported here (`TextField`, `Select`) instead of the
+ *     UI kit's own, so a locked field renders as static text rather than an
+ *     input that quietly discards what you type;
+ *   - never render an add/remove/upload affordance while locked.
+ */
+const ReadOnlyContext = createContext(false);
+
+/** Marks everything beneath as locked. `BlockCard` is the only caller. */
+export function ReadOnlyProvider({
+  value,
+  children,
+}: {
+  value: boolean;
+  children: ReactNode;
+}) {
+  return <ReadOnlyContext.Provider value={value}>{children}</ReadOnlyContext.Provider>;
+}
+
+/** True inside a locked block editor. */
+export function useDesignerReadOnly(): boolean {
+  return useContext(ReadOnlyContext);
+}
+
+/**
+ * `ui/TextField`, made honest about a locked campaign: the input keeps its
+ * label and its value but stops accepting keystrokes and reads as disabled.
+ * A `TextInput` with `editable={false}` is un-typable and un-focusable on
+ * both web and native, which is the property that matters — the previous
+ * "type and lose it" behaviour was a fully interactive input wired to a no-op.
+ */
+export function TextField(props: ComponentProps<typeof UiTextField>): ReactElement {
+  const readOnly = useDesignerReadOnly();
+  if (!readOnly) return <UiTextField {...props} />;
+  return (
+    <UiTextField
+      {...props}
+      editable={false}
+      // Nothing to type INTO a locked field, so the placeholder's invitation
+      // ("https://…", "Heading text") would be a lie too.
+      placeholder={undefined}
+      style={[props.style, { opacity: 0.6 }]}
+    />
+  );
+}
+
+/**
+ * `ui/Select`, likewise. The UI kit's Select has no disabled state (and it's
+ * shared with the whole app, so growing one is not this screen's call) — a
+ * locked one renders as the chosen option in plain text under the same label,
+ * which is what a reviewer needs to READ anyway.
+ */
+export function Select(props: ComponentProps<typeof UiSelect>): ReactElement {
+  const readOnly = useDesignerReadOnly();
+  if (!readOnly) return <UiSelect {...props} />;
+  const current = props.options.find((o) => !o.header && o.value === props.value);
+  return (
+    <Field label={props.label} hint={props.hint}>
+      <Text className="text-base text-muted">{current?.label ?? "—"}</Text>
+    </Field>
+  );
+}
+
 /** A small two-state toggle button — heading level, button align, column
- *  count, image width. The designer's segmented control. */
+ *  count, image width. The designer's segmented control.
+ *
+ *  Disabled whenever the campaign is locked, on top of its own `disabled`
+ *  (a bound reached, e.g. the maximum column count). */
 export function LevelToggle({
   label,
   active,
@@ -31,15 +118,17 @@ export function LevelToggle({
   onPress: () => void;
   disabled?: boolean;
 }) {
+  const readOnly = useDesignerReadOnly();
+  const off = disabled || readOnly;
   return (
     <Pressable
-      onPress={disabled ? undefined : onPress}
-      disabled={disabled}
+      onPress={off ? undefined : onPress}
+      disabled={off}
       accessibilityRole="button"
-      accessibilityState={{ selected: active, disabled }}
+      accessibilityState={{ selected: active, disabled: off }}
       className={`rounded-md border px-2.5 py-1 ${
         active ? "border-accent bg-accent-soft" : "border-border bg-raised"
-      } ${disabled ? "opacity-40" : ""}`}
+      } ${off ? "opacity-40" : ""}`}
     >
       <Text
         className={`text-xs font-medium ${active ? "font-semibold text-accent" : "text-muted"}`}
@@ -87,6 +176,7 @@ export function ImageUploadButton({
   run: ActionRunner["run"];
   label?: string;
 }) {
+  const readOnly = useDesignerReadOnly();
   const [uploading, setUploading] = useState(false);
 
   async function uploadBlob(blob: Blob, contentType: string, fileName: string) {
@@ -133,6 +223,10 @@ export function ImageUploadButton({
       asset.fileName ?? "",
     );
   }
+
+  // Nothing to upload INTO a locked campaign — the affordance goes away
+  // entirely rather than failing on tap.
+  if (readOnly) return null;
 
   return (
     <Pressable

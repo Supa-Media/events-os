@@ -112,6 +112,7 @@ import {
   resolveCampaignCallerPersonIds,
 } from "./lib/campaignsAccess";
 import { siteUrl } from "./lib/siteUrl";
+import { requireOrgMailingAddress } from "./integrationSettings";
 import {
   emailDomain,
   formatFromAddress,
@@ -836,6 +837,11 @@ export const submitForApproval = mutation({
         message: "Resend isn't connected — configure it in Profile → Integrations.",
       });
     }
+    // CAN-SPAM: no postal address on file means every message in this campaign
+    // would ship a footer missing its legally required line. Caught HERE, at
+    // submit, so a reviewer is never asked to sign off on a send that can't
+    // legally go out (`send` re-checks — see its own call).
+    await requireOrgMailingAddress(ctx);
 
     const reviewer = await ctx.db.get(reviewerPersonId);
     if (!reviewer) {
@@ -1326,6 +1332,13 @@ export const send = mutation({
       );
       return null;
     }
+    // CAN-SPAM, re-checked at the last possible moment (the address can be
+    // cleared between approval and send). Deliberately a THROW rather than
+    // `recordSendFailure`: a missing org-wide setting is not a fault of THIS
+    // campaign, so it must not burn the campaign's approval by flipping it to
+    // "failed" — the composer sees the error, a superuser fills the field in,
+    // and the same approved campaign sends unchanged.
+    await requireOrgMailingAddress(ctx);
 
     await ctx.db.patch(campaignId, {
       status: "sending",
@@ -1931,9 +1944,24 @@ export const markReplyRead = mutation({
 });
 
 // ── /unsubscribe/<token> (http.ts) ───────────────────────────────────────────
+//
+// TWO kinds of bulk mail mint tokens that land here, and there is deliberately
+// only ONE resolution path for both:
+//  - `campaignRecipients` — the newsletter composer's per-address rows.
+//  - `blastRecipients` — an EVENT BLAST's per-address rows (`blasts.ts`).
+//    Event announcements are organiser-composed promotional mail to a whole
+//    event audience, i.e. bulk mail, and used to ship with no unsubscribe at
+//    all. Rather than a second route/page/handler (three more places for the
+//    two flavours to drift apart), the two lookups below simply fall back to
+//    the blast table — `http.ts`'s route and `lib/unsubscribePage.ts` are
+//    untouched and can't tell the difference.
+// Tokens are 32 random chars from the same `newGuestToken()` alphabet, so a
+// collision between the tables is not a practical concern; the campaign table
+// is checked first purely because it is the older, higher-volume one.
 
 /** Read-only lookup for the GET confirm page — just enough to show "unsubscribe
- *  `<email>`?" without a write. */
+ *  `<email>`?" without a write. Campaign recipients first, then blast
+ *  recipients (see the section note above). */
 export const getRecipientByToken = internalQuery({
   args: { token: v.string() },
   returns: v.union(v.object({ email: v.string() }), v.null()),
@@ -1942,14 +1970,23 @@ export const getRecipientByToken = internalQuery({
       .query("campaignRecipients")
       .withIndex("by_token", (q) => q.eq("unsubscribeToken", token))
       .first();
-    return row ? { email: row.email } : null;
+    if (row) return { email: row.email };
+    const blastRow = await ctx.db
+      .query("blastRecipients")
+      .withIndex("by_token", (q) => q.eq("unsubscribeToken", token))
+      .first();
+    return blastRow ? { email: blastRow.email } : null;
   },
 });
 
 /** The actual unsubscribe write (POST only — see `lib/unsubscribePage.ts`'s
  *  module doc on why GET never writes). Idempotent: a repeat POST for an
  *  already-suppressed address just re-marks the row, no duplicate
- *  `emailSuppressions` row. */
+ *  `emailSuppressions` row. Resolves a BLAST recipient's token too (see the
+ *  section note above); either way the suppression is deployment-wide, so one
+ *  opt-out silences newsletters AND event announcements. A token only ever
+ *  names the ONE address its own row carries — nobody can unsubscribe anybody
+ *  else. */
 export const unsubscribeByToken = internalMutation({
   args: { token: v.string() },
   returns: v.union(v.object({ email: v.string() }), v.null()),
@@ -1958,22 +1995,32 @@ export const unsubscribeByToken = internalMutation({
       .query("campaignRecipients")
       .withIndex("by_token", (q) => q.eq("unsubscribeToken", token))
       .first();
-    if (!row) return null;
+    const blastRow = row
+      ? null
+      : await ctx.db
+          .query("blastRecipients")
+          .withIndex("by_token", (q) => q.eq("unsubscribeToken", token))
+          .first();
+    const email = row?.email ?? blastRow?.email;
+    if (!email) return null;
 
     const existing = await ctx.db
       .query("emailSuppressions")
-      .withIndex("by_email", (q) => q.eq("email", row.email))
+      .withIndex("by_email", (q) => q.eq("email", email))
       .first();
     if (!existing) {
       await ctx.db.insert("emailSuppressions", {
-        email: row.email,
+        email,
         reason: "unsubscribe",
-        campaignId: row.campaignId,
+        campaignId: row?.campaignId,
         createdAt: Date.now(),
       });
     }
-    await ctx.db.patch(row._id, { status: "suppressed" });
-    return { email: row.email };
+    if (row) await ctx.db.patch(row._id, { status: "suppressed" });
+    // A blast row keeps its delivery outcome ("sent"/"failed") and records the
+    // opt-out alongside it, rather than overwriting what actually happened.
+    if (blastRow) await ctx.db.patch(blastRow._id, { unsubscribedAt: Date.now() });
+    return { email };
   },
 });
 

@@ -12,7 +12,11 @@ import { runAddCampaignPowerDefaults } from "../migrations/0036_add_campaign_pow
  * transitions, the end-to-end enforcement effect (`myCampaignsAccess` flips
  * with the power), and the `0036` backfill's idempotence. Mirrors
  * `givingPower.test.ts`'s structure exactly — same gate, same self-lockout
- * guard, same "touch only these two caps" contract.
+ * guard, same "touch only these caps" contract.
+ *
+ * Also covers the `campaigns.design` rung (2026-07-28): the bottom of the
+ * ladder, which opens the desk and owns the shared design system (themes,
+ * templates, image library) WITHOUT granting compose or approve.
  */
 
 // ── Setup helpers (mirrors givingPower.test.ts) ─────────────────────────────
@@ -259,6 +263,252 @@ describe("setSeatCampaignPower — campaigns access enforcement effect", () => {
       canView: true,
       canApprove: false,
     });
+  });
+});
+
+// ── The `campaigns.design` rung (2026-07-28) ────────────────────────────────
+
+/** A complete, valid token set — the shape `emailThemes.createTheme` demands
+ *  (copied from `emailThemes.test.ts#themeArgs`; kept local so this file has
+ *  no cross-test import). */
+function themeArgs(overrides: Record<string, unknown> = {}) {
+  return {
+    scope: "central" as const,
+    name: "Advent",
+    accent: "#1f4a63",
+    accentInk: "#ffffff",
+    ink: "#0e1c24",
+    muted: "#4e6672",
+    canvas: "#f4f9fc",
+    surface: "#ffffff",
+    cream: "#f4f9fc",
+    contrast: "#0e1c24",
+    contrastInk: "#ffffff",
+    hairline: "#c2ccd2",
+    border: "#d3e2ea",
+    link: "#1f4a63",
+    headingFont: "Georgia,serif",
+    bodyFont: "Inter,Arial,sans-serif",
+    radius: 12,
+    headingTracking: "-0.03em",
+    bodyTracking: "-0.01em",
+    wordmark: "PUBLIC WORSHIP",
+    ...overrides,
+  };
+}
+
+describe("campaigns.design — the desk's bottom rung", () => {
+  /** A caller holding ONLY the `graphic_designer` seat at central — the seat
+   *  the bug report is about, which held no campaign capability at all. */
+  async function designerSetup(): Promise<ChapterSetup> {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const s = await setupChapter(t, { email: "designer@publicworship.life" });
+    const personId = await seedSelfPerson(s, "Graphic Designer");
+    await directlyAssign(s, "graphic_designer", "central", personId);
+    return s;
+  }
+
+  test("graphic_designer's post-seed default opens the desk but grants no approval power", async () => {
+    const s = await designerSetup();
+    expect(await capsOf(s, "graphic_designer")).toEqual(["campaigns.design"]);
+    expect(await s.as.query(api.audiences.myCampaignsAccess, {})).toEqual({
+      canView: true,
+      canApprove: false,
+    });
+  });
+
+  test("social_media_manager gets the same rung by default", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const s = await setupChapter(t, { email: "social@publicworship.life" });
+    const personId = await seedSelfPerson(s, "Social Media Manager");
+    await directlyAssign(s, "social_media_manager", "central", personId);
+    expect(await s.as.query(api.audiences.myCampaignsAccess, {})).toEqual({
+      canView: true,
+      canApprove: false,
+    });
+  });
+
+  test("a design-only holder owns the shared design system: themes, templates, images", async () => {
+    const s = await designerSetup();
+
+    // Themes — create, then edit.
+    const themeId = await s.as.mutation(api.emailThemes.createTheme, themeArgs());
+    await s.as.mutation(api.emailThemes.updateTheme, { themeId, accent: "#891d1a" });
+
+    // Templates — write and archive one.
+    const templateId = await run(s.t, (ctx) =>
+      ctx.db.insert("campaignTemplates", {
+        scope: "central",
+        name: "Monthly newsletter",
+        doc: { blocks: [{ id: "b1", kind: "heading", text: "Hello" }] },
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    await s.as.mutation(api.campaignTemplates.updateTemplate, {
+      templateId,
+      name: "Monthly newsletter (v2)",
+    });
+    await s.as.mutation(api.campaignTemplates.archiveTemplate, { templateId });
+
+    // Image library — the write path a designer lives in.
+    const storageId = await run(s.t, (ctx) =>
+      ctx.storage.store(new Blob(["png"], { type: "image/png" })),
+    );
+    const imageId = await s.as.mutation(api.emailImages.addImage, {
+      scope: "central",
+      storageId,
+      alt: "Choir at the park",
+    });
+    await s.as.mutation(api.emailImages.updateImage, { imageId, alt: "Choir, July" });
+    await s.as.mutation(api.emailImages.deleteImage, { imageId });
+  });
+
+  test("a design-only holder can NEVER start a campaign from a template (that's compose)", async () => {
+    const s = await designerSetup();
+    const audienceId = await run(s.t, (ctx) =>
+      ctx.db.insert("audiences", {
+        scope: "central",
+        name: "Everyone",
+        source: "people",
+        filters: {},
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const templateId = await run(s.t, (ctx) =>
+      ctx.db.insert("campaignTemplates", {
+        scope: "central",
+        name: "Monthly newsletter",
+        doc: { blocks: [{ id: "b1", kind: "heading", text: "Hello" }] },
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+
+    // Reading the list is fine — a designer has to see what they maintain.
+    expect(
+      await s.as.query(api.campaignTemplates.listTemplates, { scope: "central" }),
+    ).toHaveLength(1);
+
+    await expect(
+      s.as.mutation(api.campaignTemplates.createCampaignFromTemplate, {
+        templateId,
+        name: "October newsletter",
+        subject: "What's on",
+        audienceId,
+      }),
+    ).rejects.toThrow(/compose power/i);
+  });
+
+  test("a legacy central-ED TITLE with no seat READS the desk but can't write the design system", async () => {
+    // `isCentralEdOrFm`'s title path (kept for backward compat) opens the
+    // desk — but the three POWERS are seat-capability-only, which is exactly
+    // the hole that let any desk viewer archive the shared built-in template.
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const s = await setupChapter(t, { email: "titled-ed@publicworship.life" });
+    const personId = await seedSelfPerson(s, "ED by title only");
+    await run(s.t, (ctx) =>
+      ctx.db.insert("specializedRoles", {
+        personId,
+        scope: "central",
+        title: "executive_director",
+        roleKind: "leadership",
+        createdAt: Date.now(),
+      }),
+    );
+
+    expect(await s.as.query(api.audiences.myCampaignsAccess, {})).toEqual({
+      canView: true,
+      canApprove: false,
+    });
+    await expect(
+      s.as.query(api.emailThemes.listThemes, { scope: "central" }),
+    ).resolves.toBeDefined();
+    await expect(
+      s.as.mutation(api.emailThemes.createTheme, themeArgs()),
+    ).rejects.toThrow(/design power/i);
+  });
+
+  test("setSeatCampaignPower — the full ladder, each rung materializing what it implies", async () => {
+    const s = await seatSetup({ email: "seyi@publicworship.life" });
+    const designer = await defBySlug(s, "graphic_designer");
+
+    const asApprove = await s.as.mutation(api.seats.setSeatCampaignPower, {
+      seatDefId: designer._id,
+      power: "approve",
+    });
+    expect(asApprove).toEqual([
+      "campaigns.approve",
+      "campaigns.compose",
+      "campaigns.design",
+    ]);
+
+    const asCompose = await s.as.mutation(api.seats.setSeatCampaignPower, {
+      seatDefId: designer._id,
+      power: "compose",
+    });
+    expect(asCompose).toEqual(["campaigns.compose", "campaigns.design"]);
+
+    const asDesign = await s.as.mutation(api.seats.setSeatCampaignPower, {
+      seatDefId: designer._id,
+      power: "design",
+    });
+    expect(asDesign).toEqual(["campaigns.design"]);
+
+    const asNone = await s.as.mutation(api.seats.setSeatCampaignPower, {
+      seatDefId: designer._id,
+      power: "none",
+    });
+    expect(asNone).toEqual([]);
+    expect(await capsOf(s, "graphic_designer")).toEqual([]);
+  });
+
+  test("stripping a designer seat to none closes the desk again", async () => {
+    const s = await designerSetup();
+    const designerDef = await defBySlug(s, "graphic_designer");
+
+    // A DIFFERENT identity (the ED) makes the edit — no self-lockout question.
+    const edUserId = await run(s.t, (ctx) =>
+      ctx.db.insert("users", { email: "ed3@publicworship.life" }),
+    );
+    const edPersonId = await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "ED",
+        userId: edUserId,
+        createdAt: Date.now(),
+      }),
+    );
+    await directlyAssign(s, "executive_director", "central", edPersonId);
+    const edAs = s.t.withIdentity({ subject: `${edUserId}|session`, issuer: "test" });
+    await edAs.mutation(api.seats.setSeatCampaignPower, {
+      seatDefId: designerDef._id,
+      power: "none",
+    });
+
+    expect(await s.as.query(api.audiences.myCampaignsAccess, {})).toEqual({
+      canView: false,
+      canApprove: false,
+    });
+  });
+
+  test("an ED can't strip campaigns.design off their OWN seat either (self-lockout)", async () => {
+    const s = await seatSetup();
+    await makeCallerEd(s);
+    const ed = await defBySlug(s, "executive_director");
+    await expect(
+      s.as.mutation(api.seats.setSeatCampaignPower, {
+        seatDefId: ed._id,
+        power: "design",
+      }),
+    ).rejects.toThrow(/remove your own/i);
   });
 });
 

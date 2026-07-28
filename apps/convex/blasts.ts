@@ -13,6 +13,24 @@
  * that carry a phone whose `phoneVerified !== false` (the mirror of the email
  * verification gate), de-duped by normalized phone. Email-less phone-only
  * imported guests — unreachable by email — ARE reached by SMS.
+ *
+ * ── A blast is BULK mail, and is treated as such ────────────────────────────
+ * An event announcement is organiser-composed promotional copy sent to a whole
+ * audience — legally the same thing a newsletter campaign is, not a
+ * transactional message. So an EMAIL blast carries exactly what
+ * `campaigns.ts` sends carry, and refuses on the same terms:
+ *  - a per-recipient unsubscribe link in the footer, backed by a
+ *    `blastRecipients` row (`schema/ticketing.ts` documents why that's a table
+ *    rather than a token derived from something already on hand) and resolving
+ *    through the SAME `/unsubscribe/<token>` route campaign recipients use;
+ *  - `List-Unsubscribe` + `List-Unsubscribe-Post` (RFC 8058 one-click) headers,
+ *    minted per recipient;
+ *  - the org's postal mailing address, which `sendBlast` REFUSES to send
+ *    without (`integrationSettings.requireOrgMailingAddress`).
+ * SMS blasts keep their own equivalent — the "Reply STOP to opt out." line
+ * `deliverSmsBlast` appends. Transactional mail (receipts, RSVP
+ * confirmations, verification codes) gets NONE of this: `emailShell`'s bulk
+ * footer is opt-in per call site precisely so those messages stay clean.
  */
 import { escapeHtml } from "./lib/html";
 import {
@@ -28,14 +46,18 @@ import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { requireEvent, requireUserId } from "./lib/context";
 import { normalizeEmail } from "./lib/access";
-import { rsvpPageUrl } from "./lib/siteUrl";
-import { emailShell, sendEmail } from "./ticketingEmails";
+import { rsvpPageUrl, siteUrl } from "./lib/siteUrl";
 import {
+  EMAIL_THEME,
   emailButton,
   emailEyebrow,
   emailHeading,
   emailParagraph,
+  emailShell,
 } from "./lib/emailShell";
+import { resolveResendSettings, sendResendEmail } from "./lib/resend";
+import { newGuestToken } from "./ticketing";
+import { requireOrgMailingAddress } from "./integrationSettings";
 import {
   normalizePhone,
   resolveTwilioCredentials,
@@ -83,6 +105,12 @@ export const sendBlast = mutation({
     if (!body) {
       throw new ConvexError({ code: "EMPTY", message: "Write the blast first." });
     }
+    // An email blast is BULK mail — organiser-composed promotional copy to a
+    // whole event audience — so it carries the same CAN-SPAM obligations a
+    // newsletter campaign does, and refuses on the same terms
+    // (`campaigns.ts#submitForApproval`/`#send`). SMS is unaffected: its
+    // opt-out disclosure is the "Reply STOP" line `deliverSmsBlast` appends.
+    if (args.channel === "email") await requireOrgMailingAddress(ctx);
     const blastId = await ctx.db.insert("blasts", {
       eventId: args.eventId,
       chapterId: event.chapterId,
@@ -320,7 +348,106 @@ export const finishBlast = internalMutation({
   },
 });
 
-/** Deliver an email blast: one branded email per recipient, best-effort. */
+/** How many `blastRecipients` rows one mutation materializes / updates —
+ *  the `campaigns.ts#MATERIALIZE_BATCH_SIZE` slice size, for the same reason
+ *  (an audience can be up to 2000 addresses; one transaction shouldn't try to
+ *  write them all). */
+const BLAST_RECIPIENT_BATCH_SIZE = 100;
+
+/**
+ * Materialize (or re-read) one slice of an email blast's per-address rows,
+ * returning each address with the unsubscribe token that names IT and nothing
+ * else. Idempotent per (blast, address) — a retried `deliverBlast` reuses the
+ * tokens it already minted rather than issuing a second set, so a link in an
+ * already-delivered message never goes dead.
+ *
+ * Addresses are normalized (trim + lowercase) here because that's the form
+ * `emailSuppressions` stores and compares against; a duplicate that only
+ * differed by case/whitespace collapses to ONE row and therefore one send.
+ */
+export const ensureBlastRecipients = internalMutation({
+  args: { blastId: v.id("blasts"), emails: v.array(v.string()) },
+  returns: v.array(v.object({ email: v.string(), token: v.string() })),
+  handler: async (ctx, { blastId, emails }) => {
+    const blast = await ctx.db.get(blastId);
+    if (!blast) return [];
+    const out: { email: string; token: string }[] = [];
+    const seen = new Set<string>();
+    for (const raw of emails) {
+      const email = normalizeEmail(raw);
+      if (!email || seen.has(email)) continue;
+      seen.add(email);
+      const existing = await ctx.db
+        .query("blastRecipients")
+        .withIndex("by_blast_and_email", (q) =>
+          q.eq("blastId", blastId).eq("email", email),
+        )
+        .first();
+      if (existing) {
+        out.push({ email, token: existing.unsubscribeToken });
+        continue;
+      }
+      const token = newGuestToken();
+      await ctx.db.insert("blastRecipients", {
+        blastId,
+        eventId: blast.eventId,
+        email,
+        status: "queued",
+        unsubscribeToken: token,
+      });
+      out.push({ email, token });
+    }
+    return out;
+  },
+});
+
+/** Persist one slice of per-recipient delivery outcomes (the
+ *  `campaigns.ts#applyDeliveryBatch` shape, minus the scheduling — a blast
+ *  sends in one pass and finalizes through `finishBlast`). */
+export const applyBlastDelivery = internalMutation({
+  args: {
+    blastId: v.id("blasts"),
+    results: v.array(
+      v.object({
+        email: v.string(),
+        sent: v.boolean(),
+        error: v.optional(v.string()),
+      }),
+    ),
+  },
+  returns: v.null(),
+  handler: async (ctx, { blastId, results }) => {
+    for (const result of results) {
+      const row = await ctx.db
+        .query("blastRecipients")
+        .withIndex("by_blast_and_email", (q) =>
+          q.eq("blastId", blastId).eq("email", result.email),
+        )
+        .first();
+      if (!row) continue;
+      await ctx.db.patch(row._id, {
+        status: result.sent ? "sent" : "failed",
+        error: result.error,
+        sentAt: result.sent ? Date.now() : undefined,
+      });
+    }
+    return null;
+  },
+});
+
+/**
+ * Deliver an email blast: one branded email per recipient, best-effort.
+ *
+ * ── Why this sends through `sendResendEmail` rather than `sendEmail` ───────
+ * Every recipient gets a DIFFERENT message: their own `/unsubscribe/<token>`
+ * link in the footer and their own `List-Unsubscribe` header. The shared
+ * `ticketingEmails.sendEmail` chokepoint takes only `{to, subject, html}` —
+ * it has no way to carry per-recipient headers — so this path resolves the
+ * Resend settings once and posts each personalized message itself. The two
+ * failure modes are unchanged from `sendEmailReporting`: a non-2xx RESPONSE
+ * is one rejected address (counted, not fatal), a `fetch` REJECTION is a real
+ * outage and propagates into the per-recipient catch below.
+ */
 async function deliverEmailBlast(
   ctx: ActionCtx,
   payload: NonNullable<BlastPayload>,
@@ -344,23 +471,92 @@ async function deliverEmailBlast(
       }),
     )
     .join("");
-  const html = emailShell(`
+  // The message body — identical for everyone. Only the FOOTER differs per
+  // recipient (their own unsubscribe link), so the expensive part is built once.
+  const inner = `
       ${emailEyebrow(`${escapeHtml(hostName)} · ${escapeHtml(eventName)}`, { margin: "0 0 8px" })}
       ${emailHeading(escapeHtml(subject), { margin: "0 0 16px" })}
       ${paragraphs}
-      ${slug ? `<div style="margin-top:6px">${emailButton(rsvpPageUrl(slug), "View event")}</div>` : ""}`);
+      ${slug ? `<div style="margin-top:6px">${emailButton(rsvpPageUrl(slug), "View event")}</div>` : ""}`;
+
+  // `sendBlast` already refused a blast with no postal address on file, but it
+  // could have been cleared in the gap before delivery ran — a recorded
+  // failure, never a message that ships without the required line.
+  const mailSettings = await ctx.runQuery(
+    internal.integrationSettings.readCampaignsMailSettings,
+    {},
+  );
+  const orgAddress = mailSettings.orgMailingAddress?.trim();
+  if (!orgAddress) {
+    return {
+      recipientCount: emails.length,
+      sentCount: 0,
+      error:
+        "No postal mailing address on file — a superuser must set it in Profile → Integrations before bulk email can go out.",
+    };
+  }
+
+  const settings = await resolveResendSettings(ctx);
+  if (!settings) {
+    // Recorded, not thrown — the row lands `failed` with a clear reason, the
+    // same shape `deliverSmsBlast` uses for an unconfigured Twilio.
+    return {
+      recipientCount: emails.length,
+      sentCount: 0,
+      error: "Resend isn't connected — configure it in Profile → Integrations.",
+    };
+  }
+
+  // One row (and one token) per address, in slices — see
+  // `ensureBlastRecipients`.
+  const recipients: { email: string; token: string }[] = [];
+  for (let i = 0; i < emails.length; i += BLAST_RECIPIENT_BATCH_SIZE) {
+    recipients.push(
+      ...(await ctx.runMutation(internal.blasts.ensureBlastRecipients, {
+        blastId: blast._id,
+        emails: emails.slice(i, i + BLAST_RECIPIENT_BATCH_SIZE),
+      })),
+    );
+  }
 
   let sent = 0;
   let lastError: string | undefined;
-  for (const email of emails) {
+  const results: { email: string; sent: boolean; error?: string }[] = [];
+  for (const recipient of recipients) {
+    const unsubscribeUrl = `${siteUrl()}/unsubscribe/${recipient.token}`;
     try {
-      await sendEmail(ctx, { to: email, subject, html });
-      sent++;
+      const result = await sendResendEmail(settings, {
+        to: recipient.email,
+        subject,
+        html: emailShell(inner, EMAIL_THEME, { unsubscribeUrl, orgAddress }),
+        headers: {
+          // RFC 8058 one-click: the same pair campaign sends carry, per
+          // recipient, so a mail client's own "unsubscribe" button POSTs
+          // straight to this recipient's token.
+          "List-Unsubscribe": `<${unsubscribeUrl}>`,
+          "List-Unsubscribe-Post": "List-Unsubscribe=One-Click",
+        },
+      });
+      if (result.ok) {
+        sent++;
+        results.push({ email: recipient.email, sent: true });
+      } else {
+        lastError = `Resend responded ${result.status}`;
+        results.push({ email: recipient.email, sent: false, error: lastError });
+      }
     } catch (err) {
       lastError = String(err);
+      results.push({ email: recipient.email, sent: false, error: lastError });
     }
   }
-  return { recipientCount: emails.length, sentCount: sent, error: lastError };
+
+  for (let i = 0; i < results.length; i += BLAST_RECIPIENT_BATCH_SIZE) {
+    await ctx.runMutation(internal.blasts.applyBlastDelivery, {
+      blastId: blast._id,
+      results: results.slice(i, i + BLAST_RECIPIENT_BATCH_SIZE),
+    });
+  }
+  return { recipientCount: recipients.length, sentCount: sent, error: lastError };
 }
 
 /** Last 4 digits of an E.164 number — enough to spot-check a usage row

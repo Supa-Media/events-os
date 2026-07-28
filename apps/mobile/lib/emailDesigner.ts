@@ -156,31 +156,50 @@ export const BLOCK_KIND_LABELS: Record<EmailBlockKind, string> = {
 };
 
 /**
- * All block kinds, in the order the "Add block" palette renders them.
+ * The "Add block" palette, GROUPED.
  *
- * Ordered by how the newsletter is actually built, not alphabetically: the
- * COMPOSED blocks (banner → card → columns → quote → poll → footer) come first
- * because they're the shapes the designer reaches for — a real issue reads
- * masthead, hero card, banner, event card, banner, three support cards,
- * banner, testimonial, song, footer — and the primitives (heading/text/image/
- * button/hairline/divider/spacer) follow as the escape hatch.
+ * Fourteen equally-weighted buttons in one wrapped row is a wall, not a
+ * palette: nothing tells the designer that a Card and a Spacer are different
+ * kinds of decision. The groups are the three real ones —
+ *
+ *   Sections   the composed shapes a real issue is built from, in the order
+ *              they appear down one (masthead → eyebrow → hero card → columns
+ *              → testimonial → poll → footer);
+ *   Basics     the primitives, for anything the sections don't cover;
+ *   Space      the rules and gaps, which are adjustments rather than content.
+ *
+ * `BLOCK_KINDS` is DERIVED from this, so the palette's contents and its order
+ * can't drift from the flat list the tests pin against the contract.
  */
-export const BLOCK_KINDS: EmailBlockKind[] = [
-  "bleed_image",
-  "eyebrow",
-  "card",
-  "columns",
-  "quote",
-  "poll",
-  "footer",
-  "heading",
-  "text",
-  "image",
-  "button",
-  "hairline",
-  "divider",
-  "spacer",
+export const BLOCK_GROUPS: readonly {
+  title: string;
+  /** One line under the heading, so a group explains what it's FOR. */
+  hint: string;
+  kinds: readonly EmailBlockKind[];
+}[] = [
+  {
+    title: "Sections",
+    hint: "The shapes a newsletter is built from.",
+    kinds: ["bleed_image", "eyebrow", "card", "columns", "quote", "poll", "footer"],
+  },
+  {
+    title: "Basics",
+    hint: "Plain building blocks for anything else.",
+    kinds: ["heading", "text", "image", "button"],
+  },
+  {
+    title: "Space",
+    hint: "Rules and gaps between sections.",
+    kinds: ["hairline", "divider", "spacer"],
+  },
 ];
+
+/**
+ * All block kinds, in the order the "Add block" palette renders them —
+ * flattened out of `BLOCK_GROUPS` so the two are the same list by
+ * construction.
+ */
+export const BLOCK_KINDS: EmailBlockKind[] = BLOCK_GROUPS.flatMap((g) => [...g.kinds]);
 
 // ── Card presentation choices ──────────────────────────────────────────────
 
@@ -469,6 +488,226 @@ export function updateBlock<B extends EmailBlock>(
     blocks: doc.blocks.map((b) =>
       b.id === id ? ({ ...b, ...patch } as EmailBlock) : b,
     ),
+  };
+}
+
+/**
+ * Move the block with `id` one place up (`delta: -1`) or down (`delta: +1`).
+ *
+ * The keyboard-and-thumb twin of the drag handle: dragging is the only way to
+ * reorder today, which needs a pointer, a steady hand, and a grip target
+ * that's 15px wide. Returns the doc UNCHANGED (same reference, so history and
+ * autosave both correctly treat it as a no-op) when the block isn't found or
+ * is already at that end of the stack.
+ */
+export function moveBlock(
+  doc: EmailDocument,
+  id: string,
+  delta: -1 | 1,
+): EmailDocument {
+  const index = doc.blocks.findIndex((b) => b.id === id);
+  if (index < 0) return doc;
+  const target = index + delta;
+  if (target < 0 || target >= doc.blocks.length) return doc;
+  const blocks = doc.blocks.slice();
+  const [moved] = blocks.splice(index, 1);
+  blocks.splice(target, 0, moved);
+  return { ...doc, blocks };
+}
+
+// ── Translating the write gate's rejections into the designer's own words ───
+
+/**
+ * A save rejection, explained in the labels on the designer's screen.
+ *
+ * `updateCampaignDoc` rejects a document with `validateEmailDocument`'s own
+ * message, and that message is written for whoever is reading the CONTRACT:
+ * `blocks[3]: card: "ctaLabel" and "ctaUrl" must be set together`. Nothing on
+ * screen is called `ctaLabel` — the fields say "Button label" and "Button
+ * link" — so the one moment the composer most needs to be understood is the
+ * one moment it speaks a private vocabulary.
+ *
+ * This maps the gate's messages onto the composer's labels. It is deliberately
+ * TOTAL: an unrecognised message passes through as-is rather than being
+ * swallowed, because a rejection nobody can read still beats a rejection
+ * nobody can see. `raw` is always carried so the original stays one tap away
+ * (see `design.tsx`'s SaveIndicator).
+ */
+export type DocErrorExplanation = {
+  /** Plain copy in the composer's own labels. */
+  message: string;
+  /** The validator's exact words — always kept, shown behind "Details". */
+  raw: string;
+  /** 1-based position of the offending block, when the message names one. */
+  blockNumber: number | null;
+  /** False when nothing matched and `message` is just `raw`. */
+  recognized: boolean;
+};
+
+/**
+ * Ordered patterns. FIRST match wins, so the more specific pattern must come
+ * first: `bleed_image "url"` before `image "url"` (the second is a substring
+ * of the first), a footer link's `"label"` before a poll option's, and every
+ * `button "…"` rule before the card rules that share a field name (`variant`,
+ * `align`). Getting that order wrong doesn't break the save — it just names
+ * the wrong control, which is the exact failure this whole table exists to
+ * stop, so `emailDesigner.test.ts` drives every rule from a document the REAL
+ * validator rejected rather than from a hand-written string.
+ */
+const DOC_ERROR_RULES: readonly { pattern: RegExp; message: string }[] = [
+  // ── Card / column content ────────────────────────────────────────────────
+  {
+    pattern: /"ctaLabel" and "ctaUrl" must be set together/,
+    message:
+      "A card's button needs both halves — fill in the Button link, or clear the Button label (a label of just a space still counts).",
+  },
+  {
+    pattern: /"ctaUrl" must start with/,
+    message: "A card's Button link has to start with http://, https:// or mailto:.",
+  },
+  {
+    pattern: /"imageAlt" is required/,
+    message:
+      "A card with an image needs Alt text. Describe the picture — or leave the field deliberately empty if it's decorative.",
+  },
+  {
+    pattern: /"imageUrl" must be a non-empty string/,
+    message: "A card's Image field is empty. Fill it in, or clear it entirely.",
+  },
+  {
+    pattern: /"imageUrl" must start with/,
+    message: "A card's Image URL has to start with http:// or https://.",
+  },
+  {
+    pattern: /"imageWidthPct"/,
+    message: `A card's Image width has to be between ${MIN_IMAGE_WIDTH_PCT}% and ${MAX_IMAGE_WIDTH_PCT}%.`,
+  },
+  // ── Footer (before the image rules — a logo IS an image url) ─────────────
+  {
+    pattern: /footer links\[\d+\] "label"/,
+    message: "A footer link has no Label. Give it one, or remove the row.",
+  },
+  {
+    pattern: /footer links\[\d+\] "url" must be a non-empty string/,
+    message: "A footer link has no address. Add one, or remove the row.",
+  },
+  {
+    pattern: /footer links\[\d+\] "url" must start with/,
+    message: "A footer link has to start with http://, https:// or mailto:.",
+  },
+  {
+    pattern: /footer "logoUrl" must be a non-empty string/,
+    message: "The footer's Logo field is empty. Choose an image, or clear the field.",
+  },
+  {
+    pattern: /footer "logoUrl" must start with/,
+    message: "The footer's Logo URL has to start with http:// or https://.",
+  },
+  {
+    pattern: /footer "logoAlt" is required/,
+    message: "The footer's logo needs Logo alt text (empty is fine if it's decorative).",
+  },
+  {
+    pattern: /footer must have/,
+    message: `The footer can carry ${MAX_FOOTER_LINKS} links at most.`,
+  },
+  // ── Banner (before `image`, whose messages it contains as a substring) ────
+  {
+    pattern: /bleed_image "url" must start with/,
+    message: "The banner's image URL has to start with http:// or https://.",
+  },
+  {
+    pattern: /bleed_image "alt"/,
+    message:
+      "The banner needs Alt text — it carries the section heading, so write out the words on it.",
+  },
+  {
+    pattern: /bleed_image "href"/,
+    message: "The banner's Link has to start with http://, https:// or mailto:.",
+  },
+  // ── Button (before the card rules that share a field name) ───────────────
+  { pattern: /button "label"/, message: "A button needs a Button label." },
+  {
+    pattern: /button "url" must be a non-empty string/,
+    message: "A button needs a Link URL.",
+  },
+  {
+    pattern: /button "url" must start with/,
+    message: "A button's Link URL has to start with http://, https:// or mailto:.",
+  },
+  { pattern: /button "variant" must be/, message: "A button's Style isn't one this design supports." },
+  { pattern: /button "align" must be/, message: "A button's alignment isn't one this design supports." },
+  // ── Image ────────────────────────────────────────────────────────────────
+  {
+    pattern: /image "url" must be a non-empty string/,
+    message:
+      "An image block has no Image URL yet. Upload a picture, or choose one from the library.",
+  },
+  {
+    pattern: /image "url" must start with/,
+    message: "An Image URL has to start with http:// or https://.",
+  },
+  {
+    pattern: /image "alt"/,
+    message:
+      "An image needs Alt text. Describe the picture — or leave the field deliberately empty if it's decorative.",
+  },
+  {
+    pattern: /image "href"/,
+    message: "An image's Link has to start with http://, https:// or mailto:.",
+  },
+  { pattern: /image "width" must be/, message: "An image's Width isn't one this design supports." },
+  // ── Poll (before nothing in particular, but after the footer's "label") ──
+  { pattern: /poll "question"/, message: "A poll needs a Question." },
+  { pattern: /poll must have/, message: "A poll needs between 2 and 6 options." },
+  { pattern: /poll options\[\d+\] "label"/, message: "Every poll option needs a label." },
+  { pattern: /poll options/, message: "One of the poll's options is malformed." },
+  // ── The remaining kinds ──────────────────────────────────────────────────
+  { pattern: /eyebrow "text"/, message: "An eyebrow needs its Eyebrow text." },
+  { pattern: /quote "text"/, message: "A quote needs its Quote text." },
+  { pattern: /columns must have/, message: "Columns needs 2 or 3 columns." },
+  { pattern: /spacer "size"/, message: "A spacer's Height isn't one this design supports." },
+  { pattern: /heading "level"/, message: "A heading's size isn't one this design supports." },
+  // ── Card presentation (last: these field names are the least specific) ───
+  { pattern: /"variant" must be/, message: "A card's Style isn't one this design supports." },
+  { pattern: /"imageSide" must be/, message: "A card's Image placement isn't one this design supports." },
+  { pattern: /"ctaStyle" must be/, message: "A card's Button style isn't one this design supports." },
+  { pattern: /"align" must be/, message: "A card's Text alignment isn't one this design supports." },
+  {
+    pattern: /duplicate id/,
+    message: "Two blocks somehow share an id. Undo the last change and try again.",
+  },
+  {
+    pattern: /unknown block kind/,
+    message: "This email has a block this version of the app doesn't know how to save.",
+  },
+  {
+    pattern: /^theme:/,
+    message:
+      "This campaign's theme carries a value the email renderer won't accept. Pick a theme again, or fix it on the Themes tab.",
+  },
+];
+
+/** `blocks[3]: …` → 4 (1-based, as the composer numbers the stack). */
+function blockNumberFrom(raw: string): number | null {
+  const match = /^blocks\[(\d+)\]/.exec(raw);
+  if (!match) return null;
+  const index = Number(match[1]);
+  return Number.isFinite(index) ? index + 1 : null;
+}
+
+/** See {@link DocErrorExplanation}. */
+export function explainDocError(raw: string): DocErrorExplanation {
+  const blockNumber = blockNumberFrom(raw);
+  const rule = DOC_ERROR_RULES.find((r) => r.pattern.test(raw));
+  if (!rule) {
+    return { message: raw, raw, blockNumber, recognized: false };
+  }
+  return {
+    message: blockNumber === null ? rule.message : `Block ${blockNumber}: ${rule.message}`,
+    raw,
+    blockNumber,
+    recognized: true,
   };
 }
 

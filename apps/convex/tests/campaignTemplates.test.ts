@@ -6,6 +6,8 @@ import type { Id } from "../_generated/dataModel";
 import {
   BUILT_IN_CAMPAIGN_TEMPLATES,
   DEFAULT_EMAIL_THEME,
+  NEWSLETTER_ASSETS,
+  NEWSLETTER_TEMPLATE_SLOTS,
   PUBLIC_WORSHIP_NEWSLETTER_TEMPLATE,
   PUBLIC_WORSHIP_THEME,
   validateEmailDocument,
@@ -276,6 +278,25 @@ describe("ensureBuiltInTemplates", () => {
     expect(newsletter?.doc.theme).toBeDefined();
   });
 
+  test("an unchanged re-seed does not touch the row", async () => {
+    // The seeder promises it patches ONLY when the shipped content differs.
+    // That promise was false: Convex normalizes object key order on write, so
+    // the stored document never string-matched the in-memory one and every
+    // deploy rewrote the row. The comparison is key-order-insensitive now.
+    const t = newT();
+    const s = await asSuperuser(t);
+    const [templateId] = await t.mutation(
+      internal.campaignTemplates.ensureBuiltInTemplates,
+      { scope: "central", createdBy: s.userId },
+    );
+    await run(s.t, (ctx) => ctx.db.patch(templateId, { updatedAt: 1 }));
+    await t.mutation(internal.campaignTemplates.ensureBuiltInTemplates, {
+      scope: "central",
+      createdBy: s.userId,
+    });
+    expect((await run(s.t, (ctx) => ctx.db.get(templateId)))?.updatedAt).toBe(1);
+  });
+
   test("refreshes a drifted built-in row in place", async () => {
     const t = newT();
     const s = await asSuperuser(t);
@@ -418,5 +439,243 @@ describe("0049_seed_builtin_campaign_templates", () => {
     const result = await run(t, (ctx) => runSeedBuiltInCampaignTemplates(ctx));
     expect(result.seeded).toBe(0);
     expect(result.skipped).toBe("no users");
+  });
+});
+
+// ── Artwork ───────────────────────────────────────────────────────────────
+
+/**
+ * The seam PR #455 (import the artwork, keyed by `sourceKey`) and PR #460
+ * (rebuild the template with empty slots) left open: nothing read `sourceKey`
+ * to fill a slot, so a completed import produced a template that still
+ * rendered blank.
+ *
+ * The ORDERING is the part that actually broke it — the images land AFTER the
+ * template is already seeded, and the seeder compares documents to avoid
+ * churning `updatedAt`. If the artwork were resolved after that comparison,
+ * every subsequent seed would decide "unchanged" and never fill anything.
+ */
+describe("seedBuiltInTemplates — artwork from the image library", () => {
+  async function fakeStorageId(t: ReturnType<typeof newT>): Promise<Id<"_storage">> {
+    return (await run(t, (ctx) =>
+      (ctx.storage as unknown as { store: (b: Blob) => Promise<Id<"_storage">> }).store(
+        new Blob([new Uint8Array(64)]),
+      ),
+    )) as Id<"_storage">;
+  }
+
+  /** Stand in for what `migrations/0052` writes: one library row per asset. */
+  async function importArtwork(
+    s: ChapterSetup,
+    opts: { alt?: string; only?: string[] } = {},
+  ) {
+    for (const asset of NEWSLETTER_ASSETS) {
+      if (opts.only && !opts.only.includes(asset.sourceKey)) continue;
+      const storageId = await fakeStorageId(s.t);
+      await run(s.t, (ctx) =>
+        ctx.db.insert("emailImages", {
+          scope: "central" as const,
+          storageId,
+          url: `https://files.example.com/${asset.sourceKey}.png`,
+          alt: opts.alt ?? "",
+          label: asset.label,
+          sourceKey: asset.sourceKey,
+          createdBy: s.userId,
+          createdAt: Date.now(),
+        }),
+      );
+    }
+  }
+
+  async function seed(s: ChapterSetup): Promise<Id<"campaignTemplates">> {
+    const [id] = await s.t.mutation(internal.campaignTemplates.ensureBuiltInTemplates, {
+      scope: "central",
+      createdBy: s.userId,
+    });
+    return id;
+  }
+
+  function slotUrls(doc: { blocks: { id: string; kind: string }[] }) {
+    const urls = new Map<string, unknown>();
+    for (const slot of NEWSLETTER_TEMPLATE_SLOTS) {
+      const block = doc.blocks.find((b) => b.id === slot.blockId) as
+        | Record<string, unknown>
+        | undefined;
+      urls.set(
+        slot.sourceKey,
+        block?.kind === "bleed_image"
+          ? block.url
+          : block?.kind === "card"
+            ? block.imageUrl
+            : block?.kind === "footer"
+              ? block.logoUrl
+              : undefined,
+      );
+    }
+    return urls;
+  }
+
+  test("seeding with the artwork already on file fills every slot", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await importArtwork(s);
+
+    const templateId = await seed(s);
+    const row = await run(s.t, (ctx) => ctx.db.get(templateId));
+    for (const [sourceKey, url] of slotUrls(row!.doc)) {
+      expect(url, sourceKey).toBe(`https://files.example.com/${sourceKey}.png`);
+    }
+  });
+
+  test("with NO images the template seeds empty and a re-seed does not churn updatedAt", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+
+    const templateId = await seed(s);
+    const first = await run(s.t, (ctx) => ctx.db.get(templateId));
+    for (const [sourceKey, url] of slotUrls(first!.doc)) {
+      expect(url, sourceKey).toBeUndefined();
+    }
+
+    // A sentinel makes "was it patched?" unambiguous rather than depending on
+    // two Date.now() calls landing in different milliseconds.
+    await run(s.t, (ctx) => ctx.db.patch(templateId, { updatedAt: 1 }));
+    await seed(s);
+    expect((await run(s.t, (ctx) => ctx.db.get(templateId)))?.updatedAt).toBe(1);
+  });
+
+  test("seed empty → import → re-seed FILLS it (the ordering hazard)", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+
+    // 1. The template is seeded first, with an empty library — the real
+    //    sequence, since 0049 runs on deploy and the import is run by hand.
+    const templateId = await seed(s);
+    expect([...slotUrls((await run(s.t, (ctx) => ctx.db.get(templateId)))!.doc).values()]
+      .every((u) => u === undefined)).toBe(true);
+
+    // 2. The artwork arrives.
+    await importArtwork(s);
+
+    // 3. The next seed must notice. This is what was broken.
+    await seed(s);
+    const row = await run(s.t, (ctx) => ctx.db.get(templateId));
+    for (const [sourceKey, url] of slotUrls(row!.doc)) {
+      expect(url, sourceKey).toBe(`https://files.example.com/${sourceKey}.png`);
+    }
+    expect(validateEmailDocument(row!.doc).ok).toBe(true);
+  });
+
+  test("a re-seed once the artwork is in place is a no-op", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await importArtwork(s);
+    const templateId = await seed(s);
+
+    await run(s.t, (ctx) => ctx.db.patch(templateId, { updatedAt: 1 }));
+    await seed(s);
+    expect((await run(s.t, (ctx) => ctx.db.get(templateId)))?.updatedAt).toBe(1);
+  });
+
+  test("a partial import fills only what it has — the rest stay empty, not blank strings", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await importArtwork(s, { only: ["masthead", "footer-logo"] });
+    const templateId = await seed(s);
+
+    const urls = slotUrls((await run(s.t, (ctx) => ctx.db.get(templateId)))!.doc);
+    expect(urls.get("masthead")).toBe("https://files.example.com/masthead.png");
+    expect(urls.get("footer-logo")).toBe("https://files.example.com/footer-logo.png");
+    expect(urls.get("hero-photo")).toBeUndefined();
+    expect(urls.get("banner-support")).toBeUndefined();
+  });
+
+  test("alt text comes off the library row, so a human's edit reaches the template", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await importArtwork(s);
+
+    // A human writes the alt text the import deliberately left empty.
+    const heroImage = await run(s.t, (ctx) =>
+      ctx.db
+        .query("emailImages")
+        .withIndex("by_scope", (q) => q.eq("scope", "central" as const))
+        .collect(),
+    ).then((rows) => rows.find((r) => r.sourceKey === "hero-photo")!);
+    await s.as.mutation(api.emailImages.updateImage, {
+      imageId: heroImage._id,
+      alt: "The team on the steps after the June night",
+    });
+
+    await seed(s);
+    const row = await run(s.t, (ctx) =>
+      ctx.db
+        .query("campaignTemplates")
+        .withIndex("by_scope", (q) => q.eq("scope", "central" as const))
+        .collect(),
+    ).then((rows) => rows.find((r) => r.isBuiltIn));
+    const hero = row!.doc.blocks.find(
+      (b: { id: string }) => b.id === "blk_nl-hero",
+    ) as { imageAlt?: string };
+    expect(hero.imageAlt).toBe("The team on the steps after the June night");
+  });
+
+  test("an archived built-in stays archived AND unfilled", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const templateId = await seed(s);
+    await s.as.mutation(api.campaignTemplates.archiveTemplate, { templateId });
+
+    await importArtwork(s);
+    await seed(s);
+
+    const row = await run(s.t, (ctx) => ctx.db.get(templateId));
+    expect(row?.archived).toBe(true);
+    // Deliberate: a row someone deleted is never patched again, so it never
+    // receives the artwork either.
+    for (const [sourceKey, url] of slotUrls(row!.doc)) {
+      expect(url, sourceKey).toBeUndefined();
+    }
+  });
+
+  test("a hand-uploaded image with no sourceKey is never placed", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const storageId = await fakeStorageId(t);
+    await run(s.t, (ctx) =>
+      ctx.db.insert("emailImages", {
+        scope: "central" as const,
+        storageId,
+        url: "https://files.example.com/someones-snapshot.png",
+        alt: "A snapshot",
+        createdBy: s.userId,
+        createdAt: Date.now(),
+      }),
+    );
+
+    const templateId = await seed(s);
+    const row = await run(s.t, (ctx) => ctx.db.get(templateId));
+    expect(JSON.stringify(row!.doc)).not.toContain("someones-snapshot");
+  });
+
+  test("artwork is resolved per scope — a chapter's library never leaks into central", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const storageId = await fakeStorageId(t);
+    await run(s.t, (ctx) =>
+      ctx.db.insert("emailImages", {
+        scope: s.chapterId,
+        storageId,
+        url: "https://files.example.com/chapter-masthead.png",
+        alt: "",
+        sourceKey: "masthead",
+        createdBy: s.userId,
+        createdAt: Date.now(),
+      }),
+    );
+
+    const templateId = await seed(s);
+    const row = await run(s.t, (ctx) => ctx.db.get(templateId));
+    expect(JSON.stringify(row!.doc)).not.toContain("chapter-masthead");
   });
 });

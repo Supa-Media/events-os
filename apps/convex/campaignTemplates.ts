@@ -1,7 +1,17 @@
 /**
  * Campaign templates — saved starting documents for the composer
- * (`schema/campaigns.ts#campaignTemplates`). CENTRAL-only, gated exactly like
- * the rest of the campaigns desk (`lib/campaignsAccess.ts`).
+ * (`schema/campaigns.ts#campaignTemplates`). CENTRAL-only
+ * (`lib/campaignsAccess.ts`).
+ *
+ * ── Who can do what here ───────────────────────────────────────────────────
+ * Templates are SHARED — archiving the built-in newsletter takes it away from
+ * everyone — so writing one is the named `campaigns.design` power
+ * (`requireCampaignDesign`), not a side effect of being able to see the desk.
+ * `listTemplates` stays on plain `requireCampaignsAccess`: a composer with no
+ * design power must still be able to read the list they start from.
+ * `createCampaignFromTemplate` is the odd one out — it lives here but CREATES
+ * A CAMPAIGN, so it requires `campaigns.compose` (`requireCampaignCompose`),
+ * which a design-only Graphic Designer deliberately does NOT hold.
  *
  * A template is just an `EmailDocument` with a name: `createCampaignFromTemplate`
  * copies it into a fresh draft campaign, and `createTemplateFromCampaign`
@@ -29,7 +39,11 @@ import { internalMutation, mutation, query } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireUserId } from "./lib/context";
-import { requireCampaignsAccess } from "./lib/campaignsAccess";
+import {
+  requireCampaignCompose,
+  requireCampaignDesign,
+  requireCampaignsAccess,
+} from "./lib/campaignsAccess";
 import { applyThemeToDoc, docHasTheme } from "./campaigns";
 import { resolveScopeTheme } from "./emailThemes";
 import { validateEmailDocument } from "@events-os/shared";
@@ -93,7 +107,7 @@ export const createTemplateFromCampaign = mutation({
   },
   returns: v.id("campaignTemplates"),
   handler: async (ctx, { campaignId, name, description }) => {
-    await requireCampaignsAccess(ctx);
+    await requireCampaignDesign(ctx);
     const userId = (await requireUserId(ctx)) as Id<"users">;
     const campaign = await ctx.db.get(campaignId);
     if (!campaign) {
@@ -137,7 +151,9 @@ export const createCampaignFromTemplate = mutation({
   },
   returns: v.id("campaigns"),
   handler: async (ctx, { templateId, name, subject, audienceId }) => {
-    await requireCampaignsAccess(ctx);
+    // COMPOSE, not design: this mints a draft campaign. A design-only holder
+    // may edit the template all day and still never start a send from it.
+    await requireCampaignCompose(ctx);
     const userId = (await requireUserId(ctx)) as Id<"users">;
     const template = await loadTemplate(ctx, templateId);
 
@@ -185,7 +201,7 @@ export const updateTemplate = mutation({
   },
   returns: v.null(),
   handler: async (ctx, { templateId, name, description, doc }) => {
-    await requireCampaignsAccess(ctx);
+    await requireCampaignDesign(ctx);
     await loadTemplate(ctx, templateId);
 
     const patch: Record<string, unknown> = { updatedAt: Date.now() };
@@ -210,7 +226,7 @@ export const archiveTemplate = mutation({
   args: { templateId: v.id("campaignTemplates") },
   returns: v.null(),
   handler: async (ctx, { templateId }) => {
-    await requireCampaignsAccess(ctx);
+    await requireCampaignDesign(ctx);
     await loadTemplate(ctx, templateId);
     await ctx.db.patch(templateId, { archived: true, updatedAt: Date.now() });
     return null;
