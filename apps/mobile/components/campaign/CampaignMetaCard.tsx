@@ -115,7 +115,9 @@ export function CampaignMetaCard({
     <Card className="mb-4">
       {!editable ? (
         <Text className="mb-3 text-xs text-muted">
-          This campaign has been sent — its details are locked.
+          {campaign.status === "pending_approval"
+            ? "Awaiting approval — the details are locked until a reviewer decides."
+            : "This campaign has left the draft stage — its details are locked."}
         </Text>
       ) : null}
       <TextField

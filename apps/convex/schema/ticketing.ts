@@ -432,7 +432,11 @@ export const BLAST_RECIPIENT_STATUSES = ["queued", "sent", "failed"] as const;
  *     and a blast finally gets the per-address delivery record it never had.
  *
  * `unsubscribedAt` (rather than a "suppressed" status) records the opt-out
- * without overwriting what actually happened to the send.
+ * without overwriting what actually happened to the send. `eventId` is
+ * denormalized off the parent `blasts` row (which carries both `eventId` and
+ * `chapterId` for the same reason) so a row read by token — the
+ * `/unsubscribe/` path, which has no blast in hand — can say what it was for
+ * without a second lookup.
  */
 export const blastRecipients = defineTable({
   blastId: v.id("blasts"),

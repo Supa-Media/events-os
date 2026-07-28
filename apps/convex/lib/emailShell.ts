@@ -34,6 +34,14 @@
  *    that outranks an inline style), and never introduces layout that a
  *    stripping client would miss.
  *
+ * ── The bulk-mail seam ─────────────────────────────────────────────────────
+ * This shell wraps BOTH transactional mail and event blasts, which are
+ * legally different things. The unsubscribe link + postal address a blast must
+ * carry are therefore an OPT-IN third argument (`BulkMailFooter`), never
+ * unconditional: pass nothing and a receipt renders exactly as it always has,
+ * with no way for a recipient to suppress the address their own confirmations
+ * arrive at. `blasts.ts` is the only caller that opts in.
+ *
  * The helpers below (`emailHeading`, `emailParagraph`, `emailButton`, …) exist
  * so a fragment built in another module (`reminders.ts`, `cards.ts`,
  * `reimbursements.ts`, …) gets BOTH the inline light style and the class name
