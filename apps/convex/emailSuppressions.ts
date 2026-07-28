@@ -36,7 +36,10 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { normalizeEmail } from "./lib/access";
 import { requireUserId } from "./lib/context";
-import { requireCampaignsAccess } from "./lib/campaignsAccess";
+import {
+  requireCampaignCompose,
+  requireCampaignsAccess,
+} from "./lib/campaignsAccess";
 import { EMAIL_SUPPRESSION_REASONS } from "./schema/campaigns";
 import type { Id } from "./_generated/dataModel";
 
@@ -136,10 +139,20 @@ export const recordSuppression = internalMutation({
 });
 
 // ── Admin surface ───────────────────────────────────────────────────────────
-// Gated by `requireCampaignsAccess` — the named resolver that already owns
-// "who may operate the email desk" (`lib/campaignsAccess.ts`). Suppression
-// management deliberately does NOT check seats inline here: if it ever needs
-// to be narrower than desk access (e.g. only an approver may resurrect a
+// Reads are gated by `requireCampaignsAccess`; WRITES by
+// `requireCampaignCompose` — both named resolvers from `lib/campaignsAccess.ts`,
+// never an inline seat check.
+//
+// The split is not decoration. Desk access is now satisfied by the bottom rung
+// `campaigns.design`, added so the Graphic Designer can own themes, templates
+// and the image library. Suppression is neither: it is the org-wide record of
+// who has told us to stop emailing them, shared across every chapter, and
+// un-suppressing an address puts mail back into an inbox that asked for none.
+// Gating it on desk access would have handed that to every design seat the
+// moment the desk widened — the whole reason to name powers rather than reuse
+// "can see this screen" as an authorization.
+//
+// If it ever needs to be narrower still (e.g. only an approver may resurrect a
 // hard-bounced address), that becomes a new `campaigns.suppressions` power on
 // the seat chart and a change to ONE resolver, with no call-site churn.
 
@@ -194,7 +207,7 @@ export const suppressEmail = mutation({
   args: { email: v.string(), note: v.optional(v.string()) },
   returns: v.object({ email: v.string(), alreadySuppressed: v.boolean() }),
   handler: async (ctx, { email, note }) => {
-    await requireCampaignsAccess(ctx);
+    await requireCampaignCompose(ctx);
     const normalized = requireNormalizedEmail(email);
     const trimmedNote = note?.trim() || undefined;
     const existing = await findByEmail(ctx, normalized);
@@ -233,7 +246,7 @@ export const unsuppressEmail = mutation({
   args: { email: v.string(), note: v.optional(v.string()) },
   returns: v.object({ email: v.string(), wasSuppressed: v.boolean() }),
   handler: async (ctx, { email, note }) => {
-    await requireCampaignsAccess(ctx);
+    await requireCampaignCompose(ctx);
     const normalized = requireNormalizedEmail(email);
     const existing = await findByEmail(ctx, normalized);
     if (!existing) return { email: normalized, wasSuppressed: false };

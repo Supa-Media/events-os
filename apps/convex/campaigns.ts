@@ -107,6 +107,7 @@ import { requireUserId } from "./lib/context";
 import {
   hasCampaignApprovalPower,
   holdsCampaignCapabilityAt,
+  requireCampaignCompose,
   requireCampaignsAccess,
   resolveCampaignCallerPersonId,
   resolveCampaignCallerPersonIds,
@@ -315,7 +316,7 @@ export const createCampaign = mutation({
     ctx,
     { scope, name, subject, previewText, audienceId, doc, fromName, fromEmail },
   ) => {
-    await requireCampaignsAccess(ctx);
+    await requireCampaignCompose(ctx);
     const userId = (await requireUserId(ctx)) as Id<"users">;
 
     const trimmedName = name.trim();
@@ -403,7 +404,7 @@ export const updateCampaignMeta = mutation({
     ctx,
     { campaignId, name, subject, previewText, audienceId, fromName, fromEmail },
   ) => {
-    await requireCampaignsAccess(ctx);
+    await requireCampaignCompose(ctx);
     const existing = await ctx.db.get(campaignId);
     if (!existing) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
@@ -453,7 +454,7 @@ export const updateCampaignMeta = mutation({
 export const updateCampaignDoc = mutation({
   args: { campaignId: v.id("campaigns"), doc: v.any() },
   handler: async (ctx, { campaignId, doc }) => {
-    await requireCampaignsAccess(ctx);
+    await requireCampaignCompose(ctx);
     const existing = await ctx.db.get(campaignId);
     if (!existing) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
@@ -491,7 +492,7 @@ export const setCampaignTheme = mutation({
   },
   returns: v.null(),
   handler: async (ctx, { campaignId, themeId, presetName }) => {
-    await requireCampaignsAccess(ctx);
+    await requireCampaignCompose(ctx);
     const campaign = await ctx.db.get(campaignId);
     if (!campaign) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
@@ -790,7 +791,7 @@ export const submitForApproval = mutation({
   },
   returns: v.null(),
   handler: async (ctx, { campaignId, purpose, reviewerPersonId }) => {
-    await requireCampaignsAccess(ctx);
+    await requireCampaignCompose(ctx);
     const campaign = await ctx.db.get(campaignId);
     if (!campaign) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
@@ -924,7 +925,7 @@ export const cancelApprovalRequest = mutation({
   args: { campaignId: v.id("campaigns") },
   returns: v.null(),
   handler: async (ctx, { campaignId }) => {
-    await requireCampaignsAccess(ctx);
+    await requireCampaignCompose(ctx);
     const campaign = await ctx.db.get(campaignId);
     if (!campaign) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
@@ -1052,7 +1053,7 @@ export const revertToDraft = mutation({
   args: { campaignId: v.id("campaigns") },
   returns: v.null(),
   handler: async (ctx, { campaignId }) => {
-    await requireCampaignsAccess(ctx);
+    await requireCampaignCompose(ctx);
     const campaign = await ctx.db.get(campaignId);
     if (!campaign) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
@@ -1175,14 +1176,23 @@ export const listPendingApprovals = query({
 
 // ── Internal access/read helpers (action-callable) ───────────────────────────
 
-/** `requireCampaignsAccess`, callable from an action via `ctx.runQuery` (an
+/** `requireCampaignCompose`, callable from an action via `ctx.runQuery` (an
  *  action has no `ctx.db`, so the gate — which reads `people`/`specializedRoles`
- *  — can't run directly there). Throws through to the caller unchanged. */
+ *  — can't run directly there). Throws through to the caller unchanged.
+ *
+ *  COMPOSE, not mere desk access. `seats.ts` says test-sends aren't gated by
+ *  the campaign capabilities, and that remains true in the sense it was
+ *  written: a test send needs no APPROVAL — you don't need two-party sign-off
+ *  to mail yourself a draft. It must not be read as letting a `campaigns.design`
+ *  holder take any campaign in the org, including one mid-approval, and mail
+ *  its contents to an arbitrary address of their choosing. `sendTest` takes a
+ *  campaign id, not a template, so a designer proofing her own template isn't
+ *  served by it anyway — that's what the composer preview is for. */
 export const assertAccessForAction = internalQuery({
   args: {},
   returns: v.null(),
   handler: async (ctx) => {
-    await requireCampaignsAccess(ctx);
+    await requireCampaignCompose(ctx);
     return null;
   },
 });
@@ -1275,7 +1285,7 @@ export const send = mutation({
   args: { campaignId: v.id("campaigns") },
   returns: v.null(),
   handler: async (ctx, { campaignId }) => {
-    await requireCampaignsAccess(ctx);
+    await requireCampaignCompose(ctx);
     const campaign = await ctx.db.get(campaignId);
     if (!campaign) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Campaign not found." });
@@ -1935,7 +1945,7 @@ export const markReplyRead = mutation({
   args: { replyId: v.id("emailReplies") },
   returns: v.null(),
   handler: async (ctx, { replyId }) => {
-    await requireCampaignsAccess(ctx);
+    await requireCampaignCompose(ctx);
     const reply = await ctx.db.get(replyId);
     if (!reply) return null; // already deleted — marking read is best-effort
     if (!reply.read) await ctx.db.patch(replyId, { read: true });

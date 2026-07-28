@@ -412,6 +412,96 @@ describe("campaigns.design — the desk's bottom rung", () => {
     ).rejects.toThrow(/compose power/i);
   });
 
+  /**
+   * The escalation that adding `campaigns.design` created, and the reason
+   * every campaign WRITE moved off `requireCampaignsAccess`.
+   *
+   * `campaigns.ts` gated its mutations on desk access. Desk access used to
+   * mean compose-or-above, so that was a correct — if implicit — compose
+   * gate. Widening the desk to admit the new bottom rung silently turned all
+   * nineteen of those call sites into "any designer may do this": draft a
+   * campaign, submit it for approval, mail a test copy of any campaign to any
+   * address, and suppress or UN-suppress an address org-wide.
+   *
+   * That is the exact failure mode CLAUDE.md's "gate it behind a power" rule
+   * exists to prevent, arriving from the other direction: the powers were
+   * named properly, but a screen-visibility check was doing authorization
+   * work, so broadening visibility broadened authority. Reads stay on desk
+   * access; writes are compose.
+   */
+  test("a design-only holder cannot write ANY campaign path (the desk-widening escalation)", async () => {
+    const s = await designerSetup();
+    const audienceId = await run(s.t, (ctx) =>
+      ctx.db.insert("audiences", {
+        scope: "central",
+        name: "Everyone",
+        source: "people",
+        filters: {},
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+
+    // Reads: still open. A designer must be able to see the desk they work in.
+    await expect(s.as.query(api.campaigns.listCampaigns, {})).resolves.toBeDefined();
+
+    // Writes: all closed.
+    await expect(
+      s.as.mutation(api.campaigns.createCampaign, {
+        scope: "central",
+        name: "October newsletter",
+        subject: "What's on",
+        audienceId,
+        doc: { blocks: [{ id: "b1", kind: "heading", text: "Hello" }] },
+      }),
+    ).rejects.toThrow(/compose power/i);
+
+    // A campaign that already exists must be equally untouchable — the
+    // designer isn't blocked merely by having nothing to edit.
+    const campaignId = await run(s.t, (ctx) =>
+      ctx.db.insert("campaigns", {
+        scope: "central",
+        name: "October newsletter",
+        subject: "What's on",
+        audienceId,
+        status: "draft",
+        doc: { blocks: [{ id: "b1", kind: "heading", text: "Hello" }] },
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    await expect(
+      s.as.mutation(api.campaigns.updateCampaignDoc, {
+        campaignId,
+        doc: { blocks: [{ id: "b1", kind: "heading", text: "Changed" }] },
+      }),
+    ).rejects.toThrow(/compose power/i);
+    await expect(
+      s.as.mutation(api.campaigns.updateCampaignMeta, { campaignId, name: "Renamed" }),
+    ).rejects.toThrow(/compose power/i);
+    await expect(
+      s.as.mutation(api.campaigns.submitForApproval, {
+        campaignId,
+        purpose: "Monthly newsletter",
+        reviewerPersonId: await seedSelfPerson(s, "Some reviewer"),
+      }),
+    ).rejects.toThrow(/compose power/i);
+    await expect(
+      s.as.mutation(api.campaigns.send, { campaignId }),
+    ).rejects.toThrow(/compose power/i);
+
+    // Suppression is org-wide and shared across chapters: un-suppressing puts
+    // mail back into an inbox that asked for none. Never a design power.
+    await expect(
+      s.as.mutation(api.emailSuppressions.suppressEmail, { email: "ben@example.com" }),
+    ).rejects.toThrow(/compose power/i);
+    await expect(
+      s.as.mutation(api.emailSuppressions.unsuppressEmail, { email: "ben@example.com" }),
+    ).rejects.toThrow(/compose power/i);
+  });
+
   test("a legacy central-ED TITLE with no seat READS the desk but can't write the design system", async () => {
     // `isCentralEdOrFm`'s title path (kept for backward compat) opens the
     // desk — but the three POWERS are seat-capability-only, which is exactly
