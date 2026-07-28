@@ -20,7 +20,8 @@ try to read our own docs against an industry article.
 | ~~Group~~ → **Rule group** | Condition group | A parenthesised bundle of conditions inside a segment. "Group" collided with people-groups. |
 | **Suppression list** | Suppression list | Org-wide, never bypassable: unsubscribes, complaints, hard bounces. Not a segment, not editable as one. |
 | ~~contact~~ → **Subscriber** | Subscriber / Profile | A person *in their email capacity*. "Contact" stays for the CRM sense; a subscriber is the emailable projection of one, and only a subscriber has a consent state. |
-| **Campaign** | Campaign | **One email, sent once, to a chosen audience.** Kept deliberately singular — see below. |
+| ~~Campaign~~ → **Email** | Marketing Email (HubSpot) / Broadcast (Resend) | **One email, sent once, to a chosen segment.** See below for why this stopped being called a Campaign. |
+| *(reserved)* **Campaign** | Campaign / Flow / Journey | A SERIES of emails. Not built. The word is deliberately kept free for it. |
 | **Template** | Template | A saved, reusable document. The starting point a campaign is created from. |
 | **Theme** | Brand / Design tokens | The colours, fonts, radius and tracking a document renders with. Owned by the designer, changeable whenever she wants. |
 | **Block** | Block / Content block | One row of the document (heading, card, banner, footer…). |
@@ -33,25 +34,43 @@ try to read our own docs against an industry article.
 
 ## The one modelling decision worth stating plainly
 
-**A campaign is one email.** It is *not* a container that holds several emails.
+**The thing you write and send is an Email.** One email, sent once. It is
+*not* a container holding several emails.
 
-This is the point where the industry genuinely disagrees with itself —
-Mailchimp's "campaign" is one email, Braze's is a multi-step journey — so we
-had to pick, and picking the smaller unit is right for us:
+It was briefly called a Campaign, on the strength of Mailchimp's convention.
+That was the wrong call, for a reason the product owner put plainly: *"when I
+think campaign, I think a string of things."* That intuition matches where the
+industry has actually drifted — Klaviyo, Customer.io, Braze and Iterable all
+use "campaign" for a SERIES; HubSpot calls the single thing a Marketing Email;
+Resend, our own sending provider, calls it a Broadcast. Mailchimp's
+one-email-per-campaign usage is now the outlier, not the standard.
 
-- Every existing table (`campaignRecipients`, approval state, snapshot hash,
-  poll votes) is already keyed one-to-one to a single send. Re-modelling
-  campaign-as-container would be a schema migration bought with nothing.
-- Two-party approval approves **a specific rendered document**. A container
-  makes "what was approved?" ambiguous, which is the one question this
-  product cannot be vague about.
-- The real need behind "emails within a campaign" — *don't start from scratch
-  every month* — is what **templates** are for, plus the send history that
-  lets you duplicate last month's and edit it.
+Two reasons this is better than a coin-flip between synonyms:
 
-So: **Template → Campaign → Send.** If we ever need true multi-step (a drip
-series, a welcome sequence), that arrives as a new noun — **Flow** or
-**Journey**, both industry-standard — and does not retrofit onto Campaign.
+1. **It says what it is.** Nobody has to be told that an Email is one email.
+2. **It keeps the right word free.** If we ever build a welcome sequence or a
+   drip series, "Campaign" is the natural name for that container. Spending it
+   on the individual email would have left us naming the series something
+   worse.
+
+We chose Email over Resend's "Broadcast" deliberately: broadcast carries the
+same one-way, blast-at-people connotation we just retired "blast" for, and
+"Email" is plainer to a volunteer covering for the designer.
+
+So: **Template → Email → Send.** A series, if it is ever built, is a
+**Campaign** that contains Emails — and that is a new table, not a retrofit.
+
+### What the rename does and does not touch
+
+User-facing text — labels, copy, the Academy, these docs — says Email.
+
+Internal identifiers lag deliberately: the `campaigns` table, the
+`/campaign/[id]` routes, and the `campaigns.compose` / `campaigns.design` /
+`campaigns.approve` capability strings keep their names for now. The
+capability strings are **persisted in `seatDefs.capabilities` rows**, so
+renaming them is a migration, not a find-and-replace — and a half-renamed
+permission system is a genuinely dangerous object. Each carries a comment
+pointing here; the migration follows as its own reviewed change.
 
 ## Opt-out: what we hold ourselves to
 
