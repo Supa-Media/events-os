@@ -719,6 +719,36 @@ describe("card variants and layout", () => {
   });
 });
 
+describe("a card's own image url", () => {
+  test("optionalImageUrlProblem flags exactly what the card arm rejects", () => {
+    // The card's rule is its own: absent is fine (there's no image), but a url
+    // that IS set must be non-empty and http(s). The scheme half had no
+    // warning at all, so a pasted `example.com` stopped every save on the page
+    // with nothing on screen to explain it.
+    const CASES: (string | undefined)[] = [
+      undefined,
+      "",
+      "example.com",
+      "ftp://x/p.png",
+      "javascript:alert(1)",
+      "https://x/p.png",
+    ];
+    for (const imageUrl of CASES) {
+      const block = {
+        id: "c1",
+        kind: "card" as const,
+        heading: "Hi",
+        ...(imageUrl === undefined ? {} : { imageUrl, imageAlt: "" }),
+      };
+      const key = String(imageUrl);
+      expect([key, optionalImageUrlProblem(imageUrl) === null]).toEqual([
+        key,
+        gateAccepts(block as EmailBlock),
+      ]);
+    }
+  });
+});
+
 describe("link url warnings", () => {
   test("linkUrlProblem flags exactly the button urls the gate rejects", () => {
     const CASES = [

@@ -802,9 +802,9 @@ function BleedImageEditor({
   return (
     <View>
       <Text className="mb-2 text-2xs text-faint">
-        Runs edge to edge, with no padding around it. In this design the banner
-        IS the section heading — it carries the words as artwork, so it
-        replaces a text heading rather than sitting above one.
+        Runs edge to edge by default, with no padding around it. In this design
+        the banner IS the section heading — it carries the words as artwork, so
+        it replaces a text heading rather than sitting above one.
       </Text>
       <ImageSourceFields
         urlLabel="Banner image"

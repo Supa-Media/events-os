@@ -112,8 +112,13 @@ export function ThemeEditor({
       </Card>
 
       <SectionLabel>Colours</SectionLabel>
+      {/* One card per group, not one card with four headings inside it: the
+          groups are the model (four fills, two weights of rule), and a card
+          boundary says that louder than a bold line does. `mb-3` because
+          `Card` carries no margin of its own and these are the only place
+          two of them ever stack. */}
       {COLOR_TOKEN_GROUPS.map((group) => (
-        <Card key={group.title}>
+        <Card key={group.title} className="mb-3">
           <GroupHeading title={group.title} help={group.help} />
           {group.tokens.map((token) => (
             <ColorField

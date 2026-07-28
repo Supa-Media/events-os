@@ -58,6 +58,7 @@ import {
   cardCtaUrlProblem,
   ctaPairProblem,
   imageAltProblem,
+  optionalImageUrlProblem,
   stepImageWidthPct,
 } from "../../../lib/emailDesigner";
 import { ImageLibraryPicker, useImageLibraryRegistration } from "./ImageLibraryPicker";
@@ -96,6 +97,7 @@ export function CardContentEditor({
   // `lib/emailDesigner.test.ts`.
   const ctaProblem = ctaPairProblem(content);
   const ctaUrlProblem = cardCtaUrlProblem(content);
+  const imageUrlIssue = optionalImageUrlProblem(content.imageUrl);
 
   const variant = content.variant ?? "plain";
   const imageSide = content.imageSide ?? "top";
@@ -140,6 +142,15 @@ export function CardContentEditor({
         autoCapitalize="none"
         keyboardType="url"
       />
+      {/* The card's own arm of the gate: absent is fine, but a url that IS
+          set must be non-empty and http(s). Nothing warned about the scheme
+          before, so pasting a bare `example.com` stopped the save with no
+          explanation anywhere on the page. */}
+      {imageUrlIssue === "missing" ? (
+        <InlineWarning text="This card's image URL is empty. Clear the field, upload a picture, or choose one from the library — the campaign can't be saved until then." />
+      ) : imageUrlIssue === "scheme" ? (
+        <InlineWarning text="An image URL has to start with http:// or https://. The campaign can't be saved until this one does." />
+      ) : null}
 
       <View className="mb-1 flex-row flex-wrap items-start gap-2">
         {uploadImage && run ? (
