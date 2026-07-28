@@ -59,6 +59,8 @@ import {
   RECEIPT_GRACE_DAYS,
   MAX_NOTE_LENGTH,
   countsAsSpend,
+  PAYOUT_PROCESSORS,
+  PAYOUT_PROCESSOR_LABELS,
   easternParts,
   quarterOfMonth,
   formatCents,
@@ -251,6 +253,18 @@ const txnSummaryFields = {
   // "what did I just flag" in session-local state, which forgot the flag on
   // every reload and never showed a manager-flagged charge at all.
   isPersonal: v.boolean(),
+  // Marking state, surfaced for the same reason `isPersonal` is: the grid must
+  // SHOW what's been marked (badge + row action state) straight from the
+  // payload, not from session-local memory of "what did I just mark".
+  // `isMarkedTransfer` is the bookkeeper-marked internal transfer
+  // (`finances.markAsTransfer`) — deliberately NOT true for an app-created
+  // transfer leg, which has no un-mark action. `payoutProcessor` is the
+  // processor-payout label (`markAsPayout`), null when unmarked.
+  isMarkedTransfer: v.boolean(),
+  payoutProcessor: v.union(
+    ...PAYOUT_PROCESSORS.map((p) => v.literal(p)),
+    v.null(),
+  ),
   // The card's last-4 (parsed out of the sync description), for display.
   cardLast4: v.union(v.string(), v.null()),
   // Receipt-reminder timeline stage ("none" until a day-1/day-3 nudge fires;
@@ -331,6 +345,8 @@ const reconcileFilterValidator = v.union(
   v.literal("uncategorized"),
   v.literal("ready"),
   v.literal("personal_unpaid"),
+  v.literal("transfers"),
+  v.literal("payouts"),
 );
 
 // Per-filter counts returned alongside the rows so each pill shows its number.
@@ -342,6 +358,8 @@ const reconcileCounts = v.object({
   uncategorized: v.number(),
   ready: v.number(),
   personal_unpaid: v.number(),
+  transfers: v.number(),
+  payouts: v.number(),
 });
 
 // Per-fund SPEND for the dashboard period (period reads are naturally bounded;
@@ -768,6 +786,8 @@ function toTxnSummary(tr: Doc<"transactions">) {
     needsBudget: needsBudget(tr),
     hasReceipt: tr.receiptStorageId != null,
     isPersonal: tr.isPersonal === true,
+    isMarkedTransfer: isMarkedTransfer(tr),
+    payoutProcessor: tr.payoutProcessor ?? null,
     cardLast4: tr.cardLast4 ?? null,
     reminderStage: tr.receiptReminderStage ?? ("none" as const),
   };
@@ -857,6 +877,64 @@ export function isSpend(tr: Doc<"transactions">): boolean {
  *  (single source of truth — see `isSuggestible` below). */
 export function needsBudget(tr: Doc<"transactions">): boolean {
   return isSpend(tr) && tr.budgetId == null;
+}
+
+/**
+ * True iff this row is an internal bank transfer a bookkeeper MARKED in
+ * Reconcile (`markAsTransfer`), as opposed to a `flow:"transfer"` leg that got
+ * there any other way. Both are excluded from spend; only a MARKED one owes a
+ * receipt and can be un-marked.
+ *
+ * The tell is `preMarkFlow`, which ONLY `markAsTransfer` ever writes and only
+ * `unmarkTransfer` ever clears. Deliberately NOT "`flow:"transfer"` with a
+ * source other than `"transfer"`" — that reads as a reasonable discriminator
+ * and is wrong on real data: the app writes transfer legs under several other
+ * sources (`reimbursement`, `repayment`, and the retired `skim`/
+ * `launch_grant`/`settlement` kinds still on historical prod rows). Treating
+ * those as "marked" would drag years of settled history into the receipt
+ * chase, and would offer an Un-mark button that rewrites a booked historical
+ * leg to `outflow`. A positive marker can't make that mistake.
+ */
+export function isMarkedTransfer(tr: Doc<"transactions">): boolean {
+  return tr.flow === "transfer" && tr.preMarkFlow != null;
+}
+
+/** True iff this row is a donation-processor settlement deposit a bookkeeper
+ *  marked (`markAsPayout`). Deliberately still `flow:"inflow"` — see
+ *  `PAYOUT_PROCESSORS` (`@events-os/shared`) for why marking one as a transfer
+ *  would erase the org's revenue. */
+export function isProcessorPayout(tr: Doc<"transactions">): boolean {
+  return tr.payoutProcessor != null;
+}
+
+/**
+ * True iff a row still owes a receipt / supporting document — the ONE
+ * predicate behind the Reconcile `missing_receipt` pill AND the `receiptChase`
+ * list (they're kept in lockstep on purpose; this function is that lockstep,
+ * replacing the two hand-copied expressions that used to drift).
+ *
+ * Founder ask, with the marking feature: an internal transfer and a processor
+ * payout "should still have receipts". Documentation obligation is therefore
+ * NOT the same axis as spend:
+ *  - a SPEND charge owes a receipt (the original rule, `isSpend`),
+ *  - a MARKED INTERNAL TRANSFER owes one too — it's `flow:"transfer"`, so
+ *    `isSpend` is false and it would otherwise vanish from the chase the
+ *    instant someone marked it (the same disappearing act the Academy's old
+ *    "just mark it Excluded" advice caused),
+ *  - a MARKED PROCESSOR PAYOUT owes one as well — an `inflow` was NEVER in
+ *    this bucket to begin with, so this is the first time a deposit can be
+ *    chased for its settlement report at all.
+ * A transfer/payout that was never marked is untouched: an unmarked inflow
+ * still owes nothing, exactly as before.
+ *
+ * `reconciled` still ends the chase for every class (a treasurer who closed a
+ * row document-less made a call — there's nobody left to chase), and
+ * `excluded` never enters it.
+ */
+export function needsDocumentation(tr: Doc<"transactions">): boolean {
+  if (tr.receiptStorageId != null) return false;
+  if (tr.status === "reconciled" || tr.status === "excluded") return false;
+  return isSpend(tr) || isMarkedTransfer(tr) || isProcessorPayout(tr);
 }
 
 /**
@@ -7493,15 +7571,19 @@ export const listTransactions = query({
  *                       also keeps inflow/transfer/personal rows, so it would
  *                       NOT sum to that tile's figure the way this does
  *   - `needs_budget`   a spend row with no budget yet (`isSpend && budgetId == null`)
- *   - `missing_receipt` a chargeable (spend) row with no receipt attached AND
- *     not yet `reconciled` — a treasurer who closed a row receipt-less made a
- *     call, so it drops out of the chase-worthy count (the row stays visible
- *     under `all`/`ready`, just not counted here). Deliberately the SAME
- *     predicate `receiptChase` uses (same scope resolution too), so this pill
- *     and the Chase-receipts list it opens into never disagree — see that
- *     query's doc comment.
+ *   - `missing_receipt` a row that still owes a receipt / supporting document
+ *     and isn't yet `reconciled` — `needsDocumentation`, which covers spend
+ *     charges PLUS marked internal transfers and marked processor payouts (a
+ *     marked row must not vanish from the chase just because it stopped being
+ *     spend; see that predicate's doc comment). A treasurer who closed a row
+ *     document-less made a call, so it drops out of the chase-worthy count
+ *     (the row stays visible under `all`/`ready`, just not counted here).
+ *     `receiptChase` calls the SAME function (same scope resolution too), so
+ *     this pill and the Chase list it opens into cannot disagree.
  *   - `uncategorized`  status `unreviewed`
  *   - `ready`          status `reconciled`
+ *   - `transfers`      an internal bank transfer marked via `markAsTransfer`
+ *   - `payouts`        a processor settlement deposit marked via `markAsPayout`
  *
  * Kept to a SINGLE bounded scan over `by_chapter_and_postedAt`: that one desc
  * read yields both the newest-first ordering the grid wants AND every pill's
@@ -7560,6 +7642,8 @@ export const listReconcile = query({
       uncategorized: 0,
       ready: 0,
       personal_unpaid: 0,
+      transfers: 0,
+      payouts: 0,
     };
     const homeChapterId = await readChapterId(ctx);
     if (!homeChapterId) return { rows: [], counts: zero, viewerPersonId: null };
@@ -7644,22 +7728,24 @@ export const listReconcile = query({
     for (const tr of all) {
       if (isSpend(tr)) counts.spend += 1;
       if (needsBudget(tr)) counts.needs_budget += 1;
-      if (isSpend(tr) && tr.receiptStorageId == null && tr.status !== "reconciled")
-        counts.missing_receipt += 1;
+      if (needsDocumentation(tr)) counts.missing_receipt += 1;
       if (tr.status === "unreviewed") counts.uncategorized += 1;
       if (tr.status === "reconciled") counts.ready += 1;
       if (isPersonalUnpaid(tr)) counts.personal_unpaid += 1;
+      if (isMarkedTransfer(tr)) counts.transfers += 1;
+      if (isProcessorPayout(tr)) counts.payouts += 1;
     }
 
     const predicates: Record<string, (tr: Doc<"transactions">) => boolean> = {
       all: () => true,
       spend: (tr) => isSpend(tr),
       needs_budget: (tr) => needsBudget(tr),
-      missing_receipt: (tr) =>
-        isSpend(tr) && tr.receiptStorageId == null && tr.status !== "reconciled",
+      missing_receipt: (tr) => needsDocumentation(tr),
       uncategorized: (tr) => tr.status === "unreviewed",
       ready: (tr) => tr.status === "reconciled",
       personal_unpaid: (tr) => isPersonalUnpaid(tr),
+      transfers: (tr) => isMarkedTransfer(tr),
+      payouts: (tr) => isProcessorPayout(tr),
     };
     const selected = all.filter(predicates[filter]);
 
@@ -7764,13 +7850,18 @@ const chaseGroup = v.object({
  * chasing 16 volunteers doesn't mean re-deriving the same answer from the
  * reconcile grid's flat Missing-receipt filter each week.
  *
- * "Needs a receipt" here = a SPEND charge (`isSpend` — transfers / excluded /
- * personal rows never owe one) with no receipt attached AND not yet
- * `reconciled` (a treasurer who closed a row receipt-less made a call —
- * there's nobody left to chase). This is EXACTLY `listReconcile`'s
- * `missing_receipt` predicate — the two are kept in lockstep on purpose so
- * the Reconcile pill's count and this list's `count` can never disagree; see
- * that query's doc comment.
+ * "Needs a receipt" here = `needsDocumentation` — a spend charge, a MARKED
+ * internal transfer, or a MARKED processor payout, with nothing attached and
+ * not yet `reconciled` (a treasurer who closed a row document-less made a
+ * call — there's nobody left to chase). Both this list and `listReconcile`'s
+ * `missing_receipt` pill call that one function, so the pill's count and this
+ * list's `count` cannot disagree.
+ *
+ * Note the two marked classes have no cardholder to chase (a bank transfer and
+ * a processor deposit carry no `cardId`/`personId`), so they land in the
+ * "Unattributed" group — pinned last, which is the right priority: the
+ * treasurer owes those a statement or settlement report, not a person owing a
+ * receipt for a card charge.
  *
  * `scope`/`chapterId` mirror `listReconcile`'s args and resolution byte for
  * byte (central desk / central drill-down / caller's own chapter, same authz
@@ -7829,10 +7920,7 @@ export const receiptChase = query({
         .take(ROLLUP_SCAN_LIMIT)
     )
       .filter((tr) => txnMatchesMode(tr, sandboxMode))
-      .filter(
-        (tr) =>
-          isSpend(tr) && tr.status !== "reconciled" && tr.receiptStorageId == null,
-      );
+      .filter(needsDocumentation);
 
     const resolveCardholder = makeCardholderResolver(ctx);
     const byHolder = new Map<string, typeof chaseGroup.type>();
@@ -8637,6 +8725,336 @@ export const attachReceipt = mutation({
 // payee, creates the repayment record, and emails them. Any `isPersonal:true`
 // row this old setter left behind with no `repaymentId` is backfilled by
 // migration `0045_backfill_personal_repayments`.
+
+// ── Marking: internal transfers & processor payouts ──────────────────────────
+// Founder ask: an ingested bank row reading "PUBLIC WORSHIP | Transfer" landed
+// in "Needs budget" as ordinary spend, because EVERY ingest path sets `flow`
+// purely from the sign of the amount (`amountCents < 0 ? "outflow" : "inflow"`)
+// and nothing has ever recognised a transfer. There was also no way to fix one
+// after the fact — `flow` was only ever settable when hand-creating a brand-new
+// row. These four mutations are that missing reclassification path.
+//
+// MANUAL ONLY, BY DECISION (founder, this PR: "manual marking only, in the
+// future there should be not a lot of transfers"). No merchant-name heuristic,
+// no rule engine, nothing that reclassifies at ingest — a human marks each
+// row. Worth revisiting only if the volume ever justifies it, and only after
+// real descriptors have been observed.
+//
+// The two cases are deliberately NOT symmetrical, and that asymmetry is the
+// whole point (see `PAYOUT_PROCESSORS` in `@events-os/shared`):
+//  - an INTERNAL TRANSFER is money moving between the org's own accounts. Both
+//    legs are real ledger rows, so counting either as spend double-counts.
+//    Marked -> `flow:"transfer"`, excluded from spend, and REQUIRES both legs
+//    (founder: "yes lets require marking the other leg") — marking one side
+//    alone would leave the other as unexplained income forever.
+//  - a PROCESSOR PAYOUT is real revenue arriving. It gets a LABEL and stays
+//    `flow:"inflow"`; it has no second leg to pair with (founder: "payouts have
+//    no other leg to mark"), because donations live in `gifts` and never reach
+//    this table. Marking one as a transfer would erase the org's income.
+//
+// Both classes keep owing a receipt (`needsDocumentation`) — marking a row must
+// never be a way to make it stop being chased.
+
+/** Bookkeeper+ is the floor for every marking mutation below: this moves a row
+ *  in and out of spend totals, which is the same weight class as
+ *  `setTransactionStatus`'s exclude. */
+const MARK_MIN_ROLE = "bookkeeper" as const;
+
+/**
+ * Mark TWO already-ingested rows as the two legs of one internal transfer.
+ *
+ * Both legs are required and are marked atomically — there is no "mark one
+ * side" entry point, by design. The pair is linked by a shared
+ * `transferGroupId` (the same linkage `transfers.ts#recordTransfer` uses for
+ * the pairs IT creates), each leg's original `flow` is preserved in
+ * `preMarkFlow` so `unmarkTransfer` is lossless, and both legs become
+ * `flow:"transfer"` — which is what actually drops them out of `isSpend`,
+ * "Needs budget", and every category/budget total.
+ *
+ * SAME SCOPE ONLY. A central<->chapter movement already has a first-class tool
+ * that books a proper directional pair (`transfers.recordTransfer`); this one
+ * is for reclassifying bank rows that were ingested inside a single scope, so
+ * it leaves `transferDirection` unset rather than inventing a crossing that
+ * didn't happen. Cross-scope callers get pointed at the right tool.
+ *
+ * `source` is NOT rewritten to `"transfer"`: the row genuinely did come from
+ * the bank feed, and provenance isn't ours to overwrite. (It's `preMarkFlow`,
+ * not `source`, that tells a marked leg from any other `flow:"transfer"` row —
+ * see `isMarkedTransfer` for why the `source` reading is wrong.)
+ *
+ * Attribution (`budgetId`/`categoryId`/`fundId`) is deliberately left ALONE.
+ * It already stops counting the moment `flow` changes (`isSpend` is false), so
+ * clearing it would destroy a bookkeeper's earlier work to no numerical effect
+ * — and marking has to be reversible.
+ */
+export const markAsTransfer = mutation({
+  args: {
+    transactionId: v.id("transactions"),
+    /** The other side of the same movement. Required — see the doc comment. */
+    counterpartTransactionId: v.id("transactions"),
+    /** Optional "why", stored on BOTH legs' `note` when they have none. */
+    note: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    if (args.transactionId === args.counterpartTransactionId) {
+      throw new ConvexError({
+        code: "SAME_TRANSACTION",
+        message: "A transfer needs two different rows — pick the other side of the movement.",
+      });
+    }
+    // Authorize each leg at its OWN scope, independently: a caller without
+    // reconcile rights on one side must not be able to reach it through the
+    // side they do control.
+    const a = await requireReconcileTxn(ctx, args.transactionId, MARK_MIN_ROLE);
+    const b = await requireReconcileTxn(ctx, args.counterpartTransactionId, MARK_MIN_ROLE);
+
+    if (a.txn.chapterId !== b.txn.chapterId) {
+      throw new ConvexError({
+        code: "CROSS_SCOPE_TRANSFER",
+        message:
+          "Those rows belong to different books. Record a central-to-chapter movement with the Transfers tool instead.",
+      });
+    }
+    for (const leg of [a.txn, b.txn]) {
+      if (leg.flow === "transfer") {
+        throw new ConvexError({
+          code: "ALREADY_TRANSFER",
+          message: "One of those rows is already part of a transfer.",
+        });
+      }
+      if (leg.payoutProcessor != null) {
+        throw new ConvexError({
+          code: "ALREADY_PAYOUT",
+          message:
+            "One of those rows is marked as a processor payout. Un-mark it first if it's really an internal transfer.",
+        });
+      }
+      if (leg.isPersonal === true) {
+        throw new ConvexError({
+          code: "IS_PERSONAL",
+          message:
+            "A personal charge is repaid, not transferred — un-mark it as personal first.",
+        });
+      }
+    }
+    // One leg out, one leg in. This is what makes `preMarkFlow` recoverable
+    // and is a real guard: two outflows are never one movement.
+    const outLeg = a.txn.flow === "outflow" ? a : b.txn.flow === "outflow" ? b : null;
+    const inLeg = a.txn.flow === "inflow" ? a : b.txn.flow === "inflow" ? b : null;
+    if (!outLeg || !inLeg) {
+      throw new ConvexError({
+        code: "NOT_A_PAIR",
+        message:
+          "A transfer is one row leaving an account and one arriving — those two move the same way.",
+      });
+    }
+    if (a.txn.amountCents !== b.txn.amountCents) {
+      throw new ConvexError({
+        code: "AMOUNT_MISMATCH",
+        message:
+          "Those two amounts don't match. Pick the row on the other side of the same movement.",
+      });
+    }
+    if ((a.txn.currency ?? "usd") !== (b.txn.currency ?? "usd")) {
+      throw new ConvexError({
+        code: "CURRENCY_MISMATCH",
+        message: "Those two rows are in different currencies.",
+      });
+    }
+
+    // Reuse the created-pair linkage so a reader that already understands
+    // `transferGroupId` sees a marked pair as one movement too. Keyed on the
+    // OUTFLOW leg's timestamp so the id reads as "when the money left".
+    const groupId = `marked-${a.txn.chapterId}-${outLeg.txn.postedAt}-${crypto.randomUUID().slice(0, 8)}`;
+    const trimmedNote = args.note?.trim() || null;
+    if (trimmedNote && trimmedNote.length > MAX_NOTE_LENGTH) {
+      throw new ConvexError({
+        code: "NOTE_TOO_LONG",
+        message: `A note can't be longer than ${MAX_NOTE_LENGTH} characters.`,
+      });
+    }
+
+    for (const leg of [outLeg, inLeg]) {
+      await ctx.db.patch(leg.txn._id, {
+        flow: "transfer",
+        preMarkFlow: leg.txn.flow as "outflow" | "inflow",
+        transferGroupId: groupId,
+        // Only fill a note that isn't already saying something.
+        ...(trimmedNote && !leg.txn.note ? { note: trimmedNote } : {}),
+      });
+      // Audit BOTH legs — "who reclassified this row, and from what". Founder
+      // ask alongside the feature ("we should also have an audit trail"); a
+      // marking that silently moved money out of spend totals with no record
+      // of who did it is exactly what the log exists to prevent.
+      await logFinanceAudit(ctx, {
+        chapterId: leg.txn.chapterId,
+        subjectType: "transaction",
+        subjectId: leg.txn._id,
+        action: "transfer_mark",
+        actorPersonId: leg.actorPersonId,
+        field: "flow",
+        before: leg.txn.flow,
+        after: "transfer",
+        reason: trimmedNote,
+        amountCents: leg.txn.amountCents,
+      });
+    }
+    return null;
+  },
+});
+
+/**
+ * Undo a transfer marking, restoring BOTH legs to the `flow` they were
+ * ingested with (`preMarkFlow`) and clearing the pair's linkage.
+ *
+ * Symmetric with `markAsTransfer`: marking is always a pair, so un-marking is
+ * too — leaving one leg behind as a lone `flow:"transfer"` row would recreate
+ * the exact unexplained-money problem the pairing requirement exists to stop.
+ * Refuses on a leg the app CREATED (`source:"transfer"`,
+ * `transfers.recordTransfer`): that pair isn't a reclassified bank row and has
+ * no ingest flow to restore — reversing it means deleting a booked movement,
+ * which is that tool's business, not this one's.
+ */
+export const unmarkTransfer = mutation({
+  args: { transactionId: v.id("transactions") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { txn, actorPersonId } = await requireReconcileTxn(
+      ctx,
+      args.transactionId,
+      MARK_MIN_ROLE,
+    );
+    if (!isMarkedTransfer(txn)) {
+      throw new ConvexError({
+        code: "NOT_MARKED_TRANSFER",
+        message:
+          txn.flow === "transfer"
+            ? "That's a recorded transfer, not a marked one — undo it from the Transfers tool."
+            : "That row isn't marked as an internal transfer.",
+      });
+    }
+    // Both legs, found through the shared group id.
+    const legs = txn.transferGroupId
+      ? await ctx.db
+          .query("transactions")
+          .withIndex("by_transfer_group", (q) =>
+            q.eq("transferGroupId", txn.transferGroupId),
+          )
+          .collect()
+      : [txn];
+    for (const leg of legs) {
+      // Defensive: `isMarkedTransfer` already guarantees `preMarkFlow` on the
+      // leg the caller named, but the pair is re-read from the index and a
+      // half-written group would otherwise leave a row stuck as a transfer
+      // forever. `outflow` is the safe fallback — it puts the row BACK in
+      // front of a human (spend, needs budget, owes a receipt) rather than
+      // quietly parking it as income nobody reviews.
+      const restored = leg.preMarkFlow ?? "outflow";
+      await ctx.db.patch(leg._id, {
+        flow: restored,
+        preMarkFlow: undefined,
+        transferGroupId: undefined,
+      });
+      await logFinanceAudit(ctx, {
+        chapterId: leg.chapterId,
+        subjectType: "transaction",
+        subjectId: leg._id,
+        action: "transfer_mark",
+        actorPersonId,
+        field: "flow",
+        before: "transfer",
+        after: restored,
+        amountCents: leg.amountCents,
+      });
+    }
+    return null;
+  },
+});
+
+/**
+ * Mark an inflow as a donation-processor settlement deposit.
+ *
+ * Single-sided on purpose (founder: "payouts have no other leg to mark").
+ * Givebutter/Stripe donations are written to `gifts`, never to `transactions`,
+ * so this deposit is the ONLY ledger record of that income — there is no
+ * counterpart row to pair it with, and nothing to double-count against.
+ *
+ * The row stays `flow:"inflow"`. This is a label, not a reclassification: see
+ * `PAYOUT_PROCESSORS` (`@events-os/shared`) for why marking a payout as a
+ * transfer would delete the org's revenue from every total, and for the
+ * reimbursement-payout incident that already proved it once.
+ */
+export const markAsPayout = mutation({
+  args: {
+    transactionId: v.id("transactions"),
+    processor: v.union(...PAYOUT_PROCESSORS.map((p) => v.literal(p))),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { txn, actorPersonId } = await requireReconcileTxn(
+      ctx,
+      args.transactionId,
+      MARK_MIN_ROLE,
+    );
+    if (txn.flow !== "inflow") {
+      throw new ConvexError({
+        code: "NOT_AN_INFLOW",
+        message:
+          "A payout is money arriving — only an inflow can be marked as one.",
+      });
+    }
+    const before = txn.payoutProcessor ?? null;
+    if (before === args.processor) return null; // true no-op, nothing to log
+    await ctx.db.patch(args.transactionId, { payoutProcessor: args.processor });
+    await logFinanceAudit(ctx, {
+      chapterId: txn.chapterId,
+      subjectType: "transaction",
+      subjectId: args.transactionId,
+      action: "payout_mark",
+      actorPersonId,
+      field: "payoutProcessor",
+      before: before ? PAYOUT_PROCESSOR_LABELS[before] : null,
+      after: PAYOUT_PROCESSOR_LABELS[args.processor],
+      amountCents: txn.amountCents,
+    });
+    return null;
+  },
+});
+
+/** Undo a payout marking. The row was never moved out of inflow, so this only
+ *  clears the label — no totals change either way. */
+export const unmarkPayout = mutation({
+  args: { transactionId: v.id("transactions") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { txn, actorPersonId } = await requireReconcileTxn(
+      ctx,
+      args.transactionId,
+      MARK_MIN_ROLE,
+    );
+    const before = txn.payoutProcessor ?? null;
+    if (!before) {
+      throw new ConvexError({
+        code: "NOT_MARKED_PAYOUT",
+        message: "That row isn't marked as a processor payout.",
+      });
+    }
+    await ctx.db.patch(args.transactionId, { payoutProcessor: undefined });
+    await logFinanceAudit(ctx, {
+      chapterId: txn.chapterId,
+      subjectType: "transaction",
+      subjectId: args.transactionId,
+      action: "payout_mark",
+      actorPersonId,
+      field: "payoutProcessor",
+      before: PAYOUT_PROCESSOR_LABELS[before],
+      after: null,
+      amountCents: txn.amountCents,
+    });
+    return null;
+  },
+});
 
 /**
  * R1a — set (or clear) a transaction's freeform note: "who was this for and
