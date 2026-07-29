@@ -3306,6 +3306,50 @@ describe("templates merge — send-path functions refuse a template-kind row", (
     });
   }
 
+  test("sweepStuckSends skips a template row that somehow acquired a live status", async () => {
+    // No public mutation can put a template into "sending" (proven by the
+    // adversarial probes) — this pins the belt-and-suspenders guard so a
+    // FUTURE bug that lets one through can't also get delivery scheduled
+    // against it. Planted via raw insert precisely because the front door
+    // is closed.
+    const t = newT();
+    const s = await asSuperuser(t);
+    const templateId = await seedTemplateRow(s);
+    await run(s.t, (ctx) =>
+      ctx.db.patch(templateId, { status: "sending", updatedAt: 1 }),
+    );
+    const rescheduled = await run(s.t, (ctx) =>
+      // Same body the cron invokes.
+      ctx.runMutation(internal.campaigns.sweepStuckSends, {}),
+    );
+    expect(rescheduled).toBe(0);
+    const row = await run(s.t, (ctx) => ctx.db.get(templateId));
+    expect(row?.status).toBe("sending"); // untouched, not "repaired" either
+  });
+
+  test("an inbound reply to a guessed template plus-address never bumps the template", async () => {
+    // The plus-address resolver is attacker-influenced input (anyone can
+    // mail campaign+<id>@domain). The reply row itself is kept — unmatched
+    // replies deliberately survive — but the campaign-side counter is gated
+    // on row kind.
+    const t = newT();
+    const s = await asSuperuser(t);
+    const templateId = await seedTemplateRow(s);
+    await run(s.t, (ctx) =>
+      ctx.runMutation(internal.campaigns.recordInboundReply, {
+        campaignId: templateId,
+        fromEmail: "curious@example.com",
+        textBody: "hello?",
+      }),
+    );
+    const row = await run(s.t, (ctx) => ctx.db.get(templateId));
+    expect(row?.replyCount ?? 0).toBe(0);
+    const replies = await run(s.t, (ctx) =>
+      ctx.db.query("emailReplies").take(10),
+    );
+    expect(replies).toHaveLength(1); // the reply record itself survives
+  });
+
   test("submitForApproval refuses a template-kind row", async () => {
     const t = newT();
     const s = await asSuperuser(t);

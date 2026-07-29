@@ -1,8 +1,11 @@
 import { describe, expect, test } from "vitest";
 import {
   EMAIL_TIPTAP_MARK_TYPES,
+  EMAIL_TIPTAP_MAX_ATTR_STRING_LENGTH,
   EMAIL_TIPTAP_MAX_DEPTH,
   EMAIL_TIPTAP_MAX_NODES,
+  EMAIL_TIPTAP_MAX_SERIALIZED_BYTES,
+  EMAIL_TIPTAP_MAX_TEXT_LENGTH,
   EMAIL_TIPTAP_NODE_TYPES,
   findPollNodes,
   validateTiptapEmailDoc,
@@ -464,6 +467,146 @@ describe("validateTiptapEmailDoc: hostile input", () => {
       const content = Array.from({ length: 100 }, () => ({ type: "hardBreak" }));
       const doc = { type: "doc", content };
       expect(validateTiptapEmailDoc(doc)).toEqual({ ok: true });
+    });
+  });
+
+  describe("string-length and total-size caps (byte-bomb defense)", () => {
+    test("a text node within the cap is accepted", () => {
+      const doc = {
+        type: "doc",
+        content: [{ type: "paragraph", content: [{ type: "text", text: "x".repeat(EMAIL_TIPTAP_MAX_TEXT_LENGTH) }] }],
+      };
+      expect(validateTiptapEmailDoc(doc)).toEqual({ ok: true });
+    });
+
+    test("a single text node one char over the cap is rejected", () => {
+      const doc = {
+        type: "doc",
+        content: [
+          { type: "paragraph", content: [{ type: "text", text: "x".repeat(EMAIL_TIPTAP_MAX_TEXT_LENGTH + 1) }] },
+        ],
+      };
+      expect(validateTiptapEmailDoc(doc).ok).toBe(false);
+    });
+
+    test("a single 10MB text node is rejected outright, not silently accepted", () => {
+      const bigText = "A".repeat(10 * 1024 * 1024);
+      const doc = { type: "doc", content: [{ type: "paragraph", content: [{ type: "text", text: bigText }] }] };
+      const result = validateTiptapEmailDoc(doc);
+      expect(result.ok).toBe(false);
+    });
+
+    test("an attr string (e.g. a button's authored 'text') within the cap is accepted", () => {
+      const doc = {
+        type: "doc",
+        content: [
+          { type: "button", attrs: { text: "x".repeat(EMAIL_TIPTAP_MAX_ATTR_STRING_LENGTH), url: "https://example.com" } },
+        ],
+      };
+      expect(validateTiptapEmailDoc(doc)).toEqual({ ok: true });
+    });
+
+    test("an attr string over the cap is rejected", () => {
+      const doc = {
+        type: "doc",
+        content: [
+          {
+            type: "button",
+            attrs: { text: "x".repeat(EMAIL_TIPTAP_MAX_ATTR_STRING_LENGTH + 1), url: "https://example.com" },
+          },
+        ],
+      };
+      expect(validateTiptapEmailDoc(doc).ok).toBe(false);
+    });
+
+    test("an oversized mark attr string (link href, well past the URL scheme rejects it anyway) — pinned via textStyle.letterSpacing instead, which has no scheme check to short-circuit on first", () => {
+      const doc = {
+        type: "doc",
+        content: [
+          {
+            type: "paragraph",
+            content: [
+              {
+                type: "text",
+                text: "hi",
+                marks: [{ type: "textStyle", attrs: { letterSpacing: "x".repeat(EMAIL_TIPTAP_MAX_ATTR_STRING_LENGTH + 1) } }],
+              },
+            ],
+          },
+        ],
+      };
+      expect(validateTiptapEmailDoc(doc).ok).toBe(false);
+    });
+
+    test("pwPoll question/option id/label each independently capped", () => {
+      const tooLong = "x".repeat(EMAIL_TIPTAP_MAX_ATTR_STRING_LENGTH + 1);
+      const base = { id: "p1", question: "Q?", options: [{ id: "a", label: "A" }, { id: "b", label: "B" }] };
+
+      expect(
+        validateTiptapEmailDoc({
+          type: "doc",
+          content: [{ type: "pwPoll", attrs: { ...base, question: tooLong } }],
+        }).ok,
+      ).toBe(false);
+
+      expect(
+        validateTiptapEmailDoc({
+          type: "doc",
+          content: [
+            {
+              type: "pwPoll",
+              attrs: { ...base, options: [{ id: "a", label: tooLong }, { id: "b", label: "B" }] },
+            },
+          ],
+        }).ok,
+      ).toBe(false);
+
+      expect(
+        validateTiptapEmailDoc({
+          type: "doc",
+          content: [{ type: "pwPoll", attrs: base }],
+        }),
+      ).toEqual({ ok: true });
+    });
+
+    test("2000 text nodes each just under the attr cap (the 'many small strings' byte-bomb shape) trips the total-size cap even though no single node trips the per-node caps", () => {
+      const content = Array.from({ length: EMAIL_TIPTAP_MAX_NODES }, () => ({
+        type: "paragraph",
+        content: [{ type: "text", text: "x".repeat(EMAIL_TIPTAP_MAX_TEXT_LENGTH) }],
+      }));
+      const doc = { type: "doc", content };
+      // 2000 * 20_000 chars is ~40MB of text alone — far past the 1MB total
+      // cap despite every single node individually passing its own check.
+      const result = validateTiptapEmailDoc(doc);
+      expect(result.ok).toBe(false);
+    });
+
+    test("a doc within the total-size cap is accepted", () => {
+      const doc = {
+        type: "doc",
+        content: [{ type: "paragraph", content: [{ type: "text", text: "x".repeat(1000) }] }],
+      };
+      expect(JSON.stringify(doc).length).toBeLessThan(EMAIL_TIPTAP_MAX_SERIALIZED_BYTES);
+      expect(validateTiptapEmailDoc(doc)).toEqual({ ok: true });
+    });
+
+    test("a doc just over the total-size cap is rejected even when built from many small, individually-valid nodes", () => {
+      // Each node is well under BOTH per-node caps; only the aggregate trips.
+      const content = Array.from({ length: 1500 }, () => ({
+        type: "paragraph",
+        content: [{ type: "text", text: "x".repeat(900) }],
+      }));
+      const doc = { type: "doc", content };
+      expect(JSON.stringify(doc).length).toBeGreaterThan(EMAIL_TIPTAP_MAX_SERIALIZED_BYTES);
+      expect(validateTiptapEmailDoc(doc).ok).toBe(false);
+    });
+
+    test("total-size cap is measured BEFORE the per-node walk — a cyclic doc still fails cleanly (never throws)", () => {
+      const cyclic: Record<string, unknown> = { type: "paragraph" };
+      cyclic.content = [cyclic];
+      const doc = { type: "doc", content: [cyclic] };
+      expect(() => validateTiptapEmailDoc(doc)).not.toThrow();
+      expect(validateTiptapEmailDoc(doc).ok).toBe(false);
     });
   });
 });

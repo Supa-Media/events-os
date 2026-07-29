@@ -13,6 +13,23 @@
  * dependency needed (`packages/shared` must stay zero-dependency, and this
  * package doesn't have one either) — and asserts EVERY generated doc both
  * validates AND renders without throwing.
+ *
+ * ── `is*Variable` docs (2026-07-29, adversarial-review HIGH fix follow-up) ──
+ * The generator ALSO produces `isUrlVariable`/`isSrcVariable`/
+ * `isExternalLinkVariable`-flagged attrs (referencing the `firstName`
+ * variable — every doc's own `variableValues.firstName` is exactly the
+ * "recipient's own profile name" vector `urlSanitize.ts`'s module doc
+ * describes) at a fixed, deterministic rate, so this property test's own
+ * "every seed" sweep exercises the render-time URL chokepoint (`urlSanitize.
+ * ts`) too, not just the ordinary literal-URL path. The first three tests
+ * below resolve `firstName` to a BENIGN value ("Alex") — unaffected by
+ * whether a given seed happens to route it through an `isXVariable` attr, so
+ * this addition doesn't change what those tests were already pinning. A
+ * fourth test resolves the SAME generated docs against a HOSTILE `firstName`
+ * (a `javascript:`/`data:` payload) and asserts render still never throws
+ * AND the raw payload never reaches the output — pinning this whole class of
+ * bug (not just the specific sinks the original adversarial review's PoC
+ * happened to try) against ever regressing.
  */
 import { describe, expect, test } from "vitest";
 import type { JSONContent } from "@tiptap/core";
@@ -46,6 +63,11 @@ function genText(rng: () => number, withMarks: boolean): JSONContent {
     { type: "underline" },
     { type: "textStyle", attrs: { color: "#111827", letterSpacing: rng() < 0.5 ? "0.02em" : undefined } },
     { type: "link", attrs: { href: "https://example.com" } },
+    // `isUrlVariable`: `href` holds a variable NAME, not a URL — the write
+    // gate correctly skips its scheme check here (see `tiptapEmail.ts
+    // #checkUrlAttr`); the render-time chokepoint (`urlSanitize.ts`) is what
+    // has to catch a hostile resolved value instead.
+    { type: "link", attrs: { href: "firstName", isUrlVariable: true } },
   ];
   const marks = [pick(rng, markPool)];
   return { type: "text", text, marks };
@@ -71,14 +93,60 @@ function genTopLevelNode(rng: () => number): JSONContent {
     "paragraph",
     "pwParagraph",
     "button",
+    "buttonUrlVariable",
     "pwBleedImage",
     "pwPoll",
     "horizontalRule",
     "spacer",
     "blockquote",
+    "image",
+    "imageSrcVariable",
+    "logoSrcVariable",
+    "inlineImageVariable",
   ] as const);
 
   switch (kind) {
+    // ── `is*Variable` sinks (see this file's module doc) — same "resolves
+    // through `variableValues.firstName`" shape as the `link` mark's
+    // variable variant above, one per node-pack sink that has one. ─────────
+    case "buttonUrlVariable":
+      return { type: "button", attrs: { text: "Go", url: "firstName", isUrlVariable: true } };
+    // `pwBleedImage` deliberately has NO `isSrcVariable` variant here, unlike
+    // every sibling case below: `NODE_URL_ATTR_RULES.pwBleedImage` in
+    // `tiptapEmail.ts` has no `variableFlag` entry for `src` (a pre-existing
+    // write-gate/renderer correspondence GAP this task didn't ask this file
+    // to fix — the gate is merely stricter than it needs to be here, not
+    // unsafe, since it always demands a literal allowed-scheme URL), so a
+    // doc setting `isSrcVariable: true` on this node fails validation and
+    // this generator only ever produces docs meant to validate.
+    // `maily.urlSanitize.test.ts` covers that sink's render-time behavior
+    // directly instead.
+    case "image":
+      return { type: "image", attrs: { src: genImageUrl(rng), alt: "Photo" } };
+    case "imageSrcVariable":
+      return { type: "image", attrs: { src: "firstName", isSrcVariable: true, alt: "Photo" } };
+    case "logoSrcVariable":
+      return { type: "logo", attrs: { src: "firstName", isSrcVariable: true, size: "md" } };
+    case "inlineImageVariable":
+      return {
+        type: "paragraph",
+        content: [
+          {
+            type: "inlineImage",
+            attrs: { src: "firstName", isSrcVariable: true, externalLink: "firstName", isExternalLinkVariable: true },
+          },
+        ],
+      };
+    // `linkCard.link` deliberately has NO variant here: it has no
+    // `isXVariable` flag upstream at all (`link()` always consults
+    // `variableValues` for whatever literal string `link` holds — see
+    // `tiptapEmail.ts#NODE_URL_ATTR_RULES`'s comment on this node, and
+    // `maily.tsx#linkCard`'s matching "DEVIATION FROM UPSTREAM" comment), so
+    // the write gate always validates `link` as a literal URL — a doc that
+    // set it to a bare variable NAME like `"firstName"` would never pass
+    // validation in the first place, and this generator only ever produces
+    // docs meant to validate. `maily.urlSanitize.test.ts` covers that sink's
+    // render-time behavior directly instead.
     case "heading":
       return { type: "heading", attrs: { level: pick(rng, [1, 2, 3]) }, content: genInline(rng, 3) };
     case "pwHeading":
@@ -172,6 +240,38 @@ describe("correspondence property: generated valid docs validate AND render with
         maily.render({ plainText: true }),
         `seed ${seed} threw at plaintext render:\n${JSON.stringify(doc)}`,
       ).resolves.toBeTypeOf("string");
+    }
+  });
+});
+
+describe("correspondence property, hostile variant: is*Variable docs with a HOSTILE resolved value never leak it raw", () => {
+  // Same generated docs as above (a fraction of every seed routes at least
+  // one link/src through an `isXVariable` attr — see `genText`/
+  // `genTopLevelNode`'s variable-flagged cases) — resolved against a
+  // recipient-controlled `firstName` carrying an XSS/phishing payload
+  // instead of a benign name. See `urlSanitize.ts`'s module doc for exactly
+  // this scenario: a hostile profile name, reached through a doc attr the
+  // write gate correctly can't scheme-check because it only ever holds a
+  // variable NAME.
+  const SEED_COUNT = 200;
+  const HOSTILE_VALUES = ["javascript:alert(document.cookie)", "vbscript:msgbox(1)", "data:text/html,<script>alert(1)</script>"];
+
+  test(`${SEED_COUNT} generated docs, rendered with a hostile firstName, never throw and never leak the raw payload`, async () => {
+    for (let seed = 0; seed < SEED_COUNT; seed++) {
+      const doc = genDoc(seed);
+      const hostile = HOSTILE_VALUES[seed % HOSTILE_VALUES.length];
+      const maily = new Maily(doc);
+      maily.setVariableValues({ firstName: hostile, name: "friend" });
+
+      let html: string;
+      try {
+        html = await maily.render();
+      } catch (e) {
+        throw new Error(`seed ${seed} threw at render with hostile firstName:\n${JSON.stringify(doc)}\n${e}`);
+      }
+      if (html.includes(hostile)) {
+        throw new Error(`seed ${seed} leaked the raw hostile value "${hostile}" into rendered HTML:\n${html}`);
+      }
     }
   });
 });

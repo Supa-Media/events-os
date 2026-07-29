@@ -38,6 +38,16 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      # @events-os/email-render (the vendored maily renderer) is, like
+      # router/landing, invisible to the framework's reusable CI — its tests
+      # would run nowhere without this job. It ships in the production Convex
+      # bundle, so an untested change here reaches real inboxes.
+      - name: Test @events-os/email-render
+        run: pnpm --filter @events-os/email-render exec vitest run
+
+      - name: Typecheck @events-os/email-render
+        run: pnpm --filter @events-os/email-render exec tsc --noEmit
+
       - name: Test @events-os/router
         run: pnpm --filter @events-os/router test
 

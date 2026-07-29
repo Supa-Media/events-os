@@ -26,7 +26,7 @@
  * `campaignTemplates` row simply couldn't be reached by anything in
  * `campaigns.ts`, and vice versa. Now both kinds share one table, so every
  * function below that loads a row BY ID re-asserts its kind explicitly
- * (`loadTemplate` → `requireTemplateKindRow`) before doing anything with it —
+ * (`loadTemplate`, which answers NOT_FOUND for an email-kind id — mirroring the old two-table shape) before doing anything with it —
  * a design-only holder who somehow got hold of an EMAIL's id (e.g. by reusing
  * a `campaignId` argument shape) must be refused here exactly as if the row
  * had never existed, the same as `campaigns.ts`'s own functions refuse a

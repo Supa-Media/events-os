@@ -1900,6 +1900,13 @@ export const sweepStuckSends = internalMutation({
     let rescheduled = 0;
     for (const campaign of candidates) {
       if (campaign.updatedAt >= cutoff) continue; // still actively progressing
+      // Belt-and-suspenders from adversarial review: a template row can never
+      // legitimately reach "sending" through any public mutation (proven by
+      // probe), so this only fires if a FUTURE bug lets one acquire a live
+      // status — in which case rescheduling delivery against it would be the
+      // second bug. Skip rather than throw: the sweep must keep draining the
+      // rest of the backlog.
+      if (isTemplateRow(campaign)) continue;
       rescheduled++;
       if (campaign.recipientCount === undefined) {
         await ctx.scheduler.runAfter(0, internal.campaigns.materializeRecipients, {
@@ -2302,7 +2309,12 @@ export const recordInboundReply = internalMutation({
     });
     if (campaignId) {
       const campaign = await ctx.db.get(campaignId);
-      if (campaign) {
+      // Kind guard (adversarial review): the plus-address resolver is
+      // attacker-influenced input — an inbound mail to a guessed template id
+      // must not accrue reply counts against a template. The reply row above
+      // is still kept (unmatched replies deliberately survive, per this
+      // mutation's doc); only the campaign-side counter is gated.
+      if (campaign && !isTemplateRow(campaign)) {
         await ctx.db.patch(campaignId, { replyCount: (campaign.replyCount ?? 0) + 1 });
       }
     }

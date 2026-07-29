@@ -24,10 +24,17 @@
  * "unknown type", which is the obvious one):
  *   - `heading`/`pwHeading`: maily's `headings[\`h${Number(attrs.level)||1}\`]`
  *     lookup DESTRUCTURES the result — an out-of-range level (4, 0, a
- *     negative number, a non-integer) makes that lookup `undefined` and the
- *     destructure throws. `headingLevelIsSafe` below mirrors maily's own
- *     `Number(level) || 1` coercion so it rejects exactly the inputs that
- *     would throw, not a stricter set.
+ *     negative number, a non-integer) used to make that lookup `undefined`
+ *     and the destructure throw (the actual bug this check was written to
+ *     catch, found while vendoring — see `maily.tsx`'s own "DEVIATION FROM
+ *     UPSTREAM" note on `heading()`). The vendored renderer now CLAMPS the
+ *     coerced level to `{1,2,3}` before it becomes a lookup key, so an
+ *     out-of-range level no longer actually throws — `headingLevelIsSafe`
+ *     below is defense-in-depth over a fixed bug now, not the only thing
+ *     standing between a bad doc and a crash, but it still mirrors maily's
+ *     own `Number(level) || 1` coercion exactly, so it keeps rejecting
+ *     precisely the inputs the renderer has to clamp rather than a stricter
+ *     (or looser) set.
  *   - Any href/src-bearing attr (`button.url`, `image.src`/`externalLink`,
  *     `logo.src`, `linkCard.link`, `inlineImage.src`/`externalLink`,
  *     `pwBleedImage.src`/`href`, the `link` mark's `href`): the renderer
@@ -64,8 +71,17 @@
  * exists only to keep old sends rendering. Semantics are identical: http/
  * https/mailto for links, http/https for images. `emailRender.ts`'s
  * `safeEmailHref`/`safeImageSrc` re-check the block format at RENDER time as
- * defense-in-depth; the tiptap render side (`pwBleedImage`) does the same
- * with its own copy of these two functions — see that file's comment.
+ * defense-in-depth; the tiptap render side has its own equivalent
+ * (`packages/email-render/src/urlSanitize.ts`'s `safeRenderHref`/
+ * `safeRenderImageSrc`) — ONE chokepoint every href/src-bearing sink in
+ * `maily.tsx` passes through post-resolution, not just `pwBleedImage` (which
+ * is where this pattern started, before a 2026-07-29 adversarial review found
+ * every OTHER sink lacked it — see that file's module doc for the full
+ * story, including the reason this matters MORE for the tiptap format than
+ * the check right above it looks like it should: an `isXVariable`-flagged
+ * attr holds a variable NAME here, not a URL, so THIS gate below correctly
+ * has nothing to check for it — the render-time chokepoint is where that
+ * variable's resolved value is actually checked).
  */
 
 import { MAX_POLL_OPTIONS, MIN_POLL_OPTIONS } from "./emailBlocks";
@@ -149,6 +165,40 @@ export type EmailTiptapMarkType = (typeof EMAIL_TIPTAP_MARK_TYPES)[number];
 export const EMAIL_TIPTAP_MAX_DEPTH = 20;
 export const EMAIL_TIPTAP_MAX_NODES = 2000;
 
+// A node/mark COUNT cap (above) bounds how many strings a doc can carry, but
+// says nothing about how LONG any one of them is — a single 10MB `text` node
+// sails through `EMAIL_TIPTAP_MAX_NODES` (it's one node), and 2000 of them
+// (the max the count cap allows) would be a 20GB byte bomb. Three caps close
+// that gap, all enforced by `validateTiptapEmailDoc` (never by a per-node
+// helper alone, so nothing can be reached by a path that skips it):
+//   - `EMAIL_TIPTAP_MAX_TEXT_LENGTH`: a single `text` node's `text` string.
+//     Generous — the newsletter's longest single run of unbroken prose is
+//     nowhere near this; a legitimate author never approaches it, only a
+//     hostile doc does.
+//   - `EMAIL_TIPTAP_MAX_ATTR_STRING_LENGTH`: any OTHER authored string this
+//     file's checks touch — an href/src, a poll question or option label, a
+//     button's text, a hex colour, `letterSpacing`, etc. Tighter than the
+//     text cap on purpose: none of these are prose: a URL, a button label, a
+//     poll question have no legitimate reason to run tens of thousands of
+//     characters, and a generous cap here would leave the "many small attrs"
+//     byte-bomb shape (thousands of nodes, each with a few near-cap attr
+//     strings) nearly as open as no cap at all.
+//   - `EMAIL_TIPTAP_MAX_SERIALIZED_BYTES`: the whole document, checked FIRST
+//     (before the per-node walk even starts) via `JSON.stringify(doc).length`
+//     — an approximation of byte size (UTF-16 code units, not UTF-8 bytes;
+//     exact for the ASCII-heavy content real campaigns author, and "how many
+//     bytes did this multi-byte character actually cost" is not a
+//     distinction that matters for a byte-bomb defense) that costs one
+//     allocation proportional to the ATTACK's own size, not the cap — a
+//     10MB-text-node doc fails this check after one `JSON.stringify`, never
+//     reaching the recursive node walk at all. This is the one check in this
+//     file that runs before, not during, that walk, specifically so a byte
+//     bomb is rejected in time proportional to itself rather than to
+//     `EMAIL_TIPTAP_MAX_NODES` node-visits over a multi-megabyte string.
+export const EMAIL_TIPTAP_MAX_TEXT_LENGTH = 20_000;
+export const EMAIL_TIPTAP_MAX_ATTR_STRING_LENGTH = 2_000;
+export const EMAIL_TIPTAP_MAX_SERIALIZED_BYTES = 1_000_000;
+
 // ── URL scheme allowlist — see module doc for why this is a PORT, not an
 // import, of emailBlocks.ts's identical functions. ──────────────────────────
 const ALLOWED_LINK_SCHEMES = ["http:", "https:", "mailto:"];
@@ -171,6 +221,33 @@ function isAllowedImageUrl(url: string): boolean {
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** A single string-length check, shared by every call site below so the cap
+ *  can only ever mean one thing. `label` is just for the error message. */
+function checkStringLength(value: string, max: number, path: string, label: string): string | null {
+  if (value.length > max) {
+    return `${path}: "${label}" exceeds max length (${max} chars)`;
+  }
+  return null;
+}
+
+/**
+ * Cap every STRING-valued entry directly on `attrs` (one level, not
+ * recursive — nested string-bearing structures, e.g. `pwPoll`'s `options`
+ * array, are capped by their own dedicated check, since a generic walk here
+ * can't tell "an authored string" from "a structural key" once attrs nest).
+ * Deliberately generic rather than an explicit list of known attr names: a
+ * new node-pack attr that carries a string is caught by this the moment it's
+ * added, with no second place to remember to update.
+ */
+function checkAttrStringLengths(attrs: Record<string, unknown>, path: string): string | null {
+  for (const [key, value] of Object.entries(attrs)) {
+    if (typeof value !== "string") continue;
+    const err = checkStringLength(value, EMAIL_TIPTAP_MAX_ATTR_STRING_LENGTH, path, key);
+    if (err) return err;
+  }
+  return null;
 }
 
 // ── Node-specific structural checks ──────────────────────────────────────
@@ -225,8 +302,17 @@ const VALID_HEADING_LEVELS = new Set([1, 2, 3]);
 
 /** Mirrors `heading()`/`pwHeading()`'s own `Number(attrs.level) || 1`
  *  coercion in `maily.tsx` — anything that coercion sends outside {1,2,3}
- *  makes the renderer's `headings[level]` lookup destructure `undefined`
- *  and throw. `undefined` itself is safe (coerces to the default, 1). */
+ *  is exactly what the renderer's OWN clamp now catches before its
+ *  `headings[level]` lookup (see `maily.tsx`'s "DEVIATION FROM UPSTREAM"
+ *  note on `heading()` — an out-of-range level used to make that lookup
+ *  destructure `undefined` and throw; it no longer does, because the
+ *  renderer clamps first). This check is defense-in-depth over that FIXED
+ *  bug, not a guard against a live crash — kept strict (rejecting at write
+ *  time exactly what the renderer would otherwise have to silently
+ *  reinterpret at render time) rather than loosened to match the renderer's
+ *  now-safe fallback, so an author sees a clear validation error instead of
+ *  a silently-substituted heading level. `undefined` itself is safe (coerces
+ *  to the default, 1). */
 function headingLevelIsSafe(level: unknown): boolean {
   if (level === undefined) return true;
   const n = Number(level) || 1;
@@ -237,9 +323,13 @@ function validatePwPollAttrs(attrs: Record<string, unknown>, path: string): stri
   if (typeof attrs.id !== "string" || attrs.id.length === 0) {
     return `${path}: pwPoll "id" must be a non-empty string`;
   }
+  let err = checkStringLength(attrs.id, EMAIL_TIPTAP_MAX_ATTR_STRING_LENGTH, path, "id");
+  if (err) return err;
   if (typeof attrs.question !== "string" || attrs.question.length === 0) {
     return `${path}: pwPoll "question" must be a non-empty string`;
   }
+  err = checkStringLength(attrs.question, EMAIL_TIPTAP_MAX_ATTR_STRING_LENGTH, path, "question");
+  if (err) return err;
   if (!Array.isArray(attrs.options)) {
     return `${path}: pwPoll "options" must be an array`;
   }
@@ -256,6 +346,10 @@ function validatePwPollAttrs(attrs: Record<string, unknown>, path: string): stri
     if (typeof opt.label !== "string" || opt.label.length === 0) {
       return `${path}: pwPoll options[${i}] "label" must be a non-empty string`;
     }
+    err = checkStringLength(opt.id, EMAIL_TIPTAP_MAX_ATTR_STRING_LENGTH, `${path} options[${i}]`, "id");
+    if (err) return err;
+    err = checkStringLength(opt.label, EMAIL_TIPTAP_MAX_ATTR_STRING_LENGTH, `${path} options[${i}]`, "label");
+    if (err) return err;
     if (ids.has(opt.id)) return `${path}: pwPoll options[${i}] duplicate id "${opt.id}"`;
     ids.add(opt.id);
   }
@@ -278,6 +372,8 @@ function validateMark(mark: unknown, path: string): string | null {
   if (mark.type === "textStyle" && attrs.letterSpacing !== undefined && typeof attrs.letterSpacing !== "string") {
     return `${path}: textStyle mark "letterSpacing" must be a string`;
   }
+  const lengthErr = checkAttrStringLengths(attrs, path);
+  if (lengthErr) return lengthErr;
   return null;
 }
 
@@ -344,8 +440,23 @@ function validateNode(node: unknown, path: string, depth: number, budget: NodeBu
     return `${path}: button "maxWidth" must be a number`;
   }
 
+  // `pwPoll`'s attr strings (id/question/option id/label) are capped inside
+  // `validatePwPollAttrs` itself, at the tighter per-field granularity a
+  // generic top-level walk can't reach (`options` is an array, not a
+  // string) — skip the generic pass for this node type so its `options`
+  // array isn't silently ignored by `checkAttrStringLengths` in a way that
+  // reads as "checked" when only the shallow attrs were.
+  if (node.type !== "pwPoll") {
+    const attrLengthErr = checkAttrStringLengths(attrs, `${path} (${node.type})`);
+    if (attrLengthErr) return attrLengthErr;
+  }
+
   if (node.text !== undefined && typeof node.text !== "string") {
     return `${path}: "text" must be a string`;
+  }
+  if (typeof node.text === "string") {
+    const textLengthErr = checkStringLength(node.text, EMAIL_TIPTAP_MAX_TEXT_LENGTH, path, "text");
+    if (textLengthErr) return textLengthErr;
   }
 
   const marksErr = validateMarks(node.marks, path);
@@ -396,6 +507,30 @@ export function validateTiptapEmailDoc(doc: unknown): ValidateTiptapEmailDocResu
   if (!isPlainObject(doc)) return { ok: false, error: "document must be an object" };
   if (doc.type !== "doc") return { ok: false, error: '"type" must be "doc"' };
   if (!Array.isArray(doc.content)) return { ok: false, error: '"content" must be an array' };
+
+  // The total-size cap — deliberately BEFORE the per-node walk below, not
+  // after (see `EMAIL_TIPTAP_MAX_SERIALIZED_BYTES`'s own comment): a
+  // multi-megabyte doc is rejected in one `JSON.stringify` + length check,
+  // never reaching a per-node/per-attr walk over that much data at all.
+  //
+  // `JSON.stringify` is itself capable of throwing — a cyclic object graph
+  // (`TypeError: Converting circular structure to JSON`) or a doc nested tens
+  // of thousands of levels deep (`RangeError: Maximum call stack size
+  // exceeded`, from `JSON.stringify`'s OWN recursion, which has no depth cap
+  // of its own — reached before `validateNode`'s bounded walk below ever
+  // gets a turn). Both are exactly the hostile shapes `EMAIL_TIPTAP_MAX_DEPTH`
+  // exists to reject, just reached one line earlier than that check now that
+  // this size check runs first — so both are caught here and folded into an
+  // ordinary `{ ok: false }`, keeping this function TOTAL (see its own doc)
+  // rather than letting the size check's own implementation detail become a
+  // new way to throw that `EMAIL_TIPTAP_MAX_DEPTH` no longer fully covers.
+  try {
+    if (JSON.stringify(doc).length > EMAIL_TIPTAP_MAX_SERIALIZED_BYTES) {
+      return { ok: false, error: `document exceeds max serialized size (${EMAIL_TIPTAP_MAX_SERIALIZED_BYTES} bytes)` };
+    }
+  } catch {
+    return { ok: false, error: "document could not be measured (too deep or cyclic)" };
+  }
 
   if (doc.attrs !== undefined) {
     if (!isPlainObject(doc.attrs)) return { ok: false, error: '"attrs" must be an object' };

@@ -110,14 +110,13 @@ import {
 // union structurally.
 import { render as reactEmailRenderAsync } from '@react-email/render';
 import type { JSONContent } from '@tiptap/core';
-// WS1 addition (not upstream): defense-in-depth URL sanitization for the
-// PW node pack's `pwBleedImage`, the same "checked at write-gate AND at
-// render" pattern `emailRender.ts`'s `safeEmailHref`/`safeImageSrc` already
-// use for the legacy block renderer — `validateTiptapEmailDoc`
-// (`@events-os/shared`) is the write gate; this is the render-time half,
-// covering any doc written before that gate existed or by a path that
-// bypassed it.
-import { isAllowedImageUrl, isAllowedLinkUrl } from '@events-os/shared';
+// WS1 addition (2026-07-29, adversarial-review HIGH fix): the render-time
+// URL scheme CHOKEPOINT every href/src in this class now passes through
+// post-resolution — see `urlSanitize.ts`'s module doc for the full story
+// (variable-resolved URLs used to bypass the write gate's scheme allowlist
+// entirely; this is what closes that gap for every sink, not just
+// `pwBleedImage`, which had its own earlier, narrower copy of this check).
+import { safeRenderHref, safeRenderImageSrc } from './urlSanitize';
 import { deepMerge, generateKey } from './utils';
 import type { MetaDescriptors } from './meta';
 import { meta } from './meta';
@@ -982,6 +981,16 @@ export class Maily {
     } else {
       href = this.linkValues.get(href) || href;
     }
+    // DEVIATION FROM UPSTREAM (2026-07-29, adversarial-review HIGH fix): the
+    // write gate's scheme allowlist (`tiptapEmail.ts#checkUrlAttr`) skips
+    // this attr entirely when `isUrlVariable` is true — the doc only ever
+    // held a variable NAME, not a URL, so there was nothing to check at
+    // write time. `variableUrlValue`/`linkValues` above resolve that name to
+    // a real value with no scheme check of their own upstream, so a hostile
+    // `variableValues` entry (a recipient's own profile name, see
+    // `urlSanitize.ts`'s module doc) reached a real `href` unchecked. Gated
+    // here, post-resolution, same as every other sink in this class now.
+    href = safeRenderHref(href);
 
     return (
       <Link
@@ -1407,9 +1416,13 @@ export class Maily {
       options
     );
 
-    const href = isUrlVariable
-      ? this.variableUrlValue(url, options)
-      : this.linkValues.get(url) || url;
+    // DEVIATION FROM UPSTREAM (2026-07-29, adversarial-review HIGH fix): see
+    // the `link` mark's matching comment above — `isUrlVariable`/`linkValues`
+    // resolution has no scheme check of its own, so the result is gated here
+    // before it becomes a real `href` (`safeRenderHref`, `urlSanitize.ts`).
+    const href = safeRenderHref(
+      isUrlVariable ? this.variableUrlValue(url, options) : this.linkValues.get(url) || url,
+    );
     const text = isTextVariable ? this.variableUrlValue(_text, options) : _text;
 
     paddingTop += 2;
@@ -1499,7 +1512,11 @@ export class Maily {
       return <></>;
     }
 
-    src = isSrcVariable ? this.variableUrlValue(src, options) : src;
+    // DEVIATION FROM UPSTREAM (2026-07-29, adversarial-review HIGH fix): see
+    // the `link` mark's matching comment — `isSrcVariable` resolution has no
+    // scheme check of its own, so the result is gated here (`safeRenderImageSrc`,
+    // `urlSanitize.ts`) before it becomes a real `src`.
+    src = safeRenderImageSrc(isSrcVariable ? this.variableUrlValue(src, options) : src);
 
     const { shouldRemoveBottomMargin } = this.getMarginOverrideConditions(
       node,
@@ -1564,10 +1581,21 @@ export class Maily {
       options
     );
 
-    src = isSrcVariable ? this.variableUrlValue(src, options) : src;
-    externalLink = isExternalLinkVariable
-      ? this.variableUrlValue(externalLink, options)
-      : externalLink;
+    // DEVIATION FROM UPSTREAM (2026-07-29, adversarial-review HIGH fix): see
+    // the `link` mark's matching comment — `isSrcVariable`/
+    // `isExternalLinkVariable` resolution has no scheme check of its own, so
+    // both results are gated here (`urlSanitize.ts`) before they become a
+    // real `src`/`href`. `externalLink`'s gate keeps `"#"` un-passed-through
+    // as a literal empty string on failure (not the href fallback `"#"`) so
+    // the `externalLink ? <a>… : image` branch below still treats an
+    // invalid/hostile link exactly like an absent one — no dead-link wrapper
+    // around the image, matching this method's own pre-existing
+    // falsy-means-unwrapped convention.
+    src = safeRenderImageSrc(isSrcVariable ? this.variableUrlValue(src, options) : src);
+    externalLink = safeRenderHref(
+      isExternalLinkVariable ? this.variableUrlValue(externalLink, options) : externalLink,
+      '',
+    );
 
     // Handle width value
     const imageWidth = width === 'auto' ? 'auto' : Number(width);
@@ -1713,8 +1741,21 @@ export class Maily {
 
     const { title, description, link, linkTitle, image, badgeText, subTitle } =
       attrs || {};
-    const href =
-      this.linkValues.get(link) || this.variableValues.get(link) || link || '#';
+    // DEVIATION FROM UPSTREAM (2026-07-29, adversarial-review HIGH fix):
+    // `linkCard` has no `isXVariable` flag upstream — this lookup into
+    // `variableValues` runs UNCONDITIONALLY, so an author who sets `link` to
+    // the literal string `"firstName"` reaches the same hostile-recipient-
+    // name vector as every `isXVariable`-flagged sink, with no flag for the
+    // write gate to key off at all (see `tiptapEmail.ts#NODE_URL_ATTR_RULES`'s
+    // comment on this node — it already documents this asymmetry and always
+    // validates `link` as a literal URL for exactly this reason). The lookup
+    // itself is kept (removing it would be a behavior change to a
+    // load-bearing feature — an author WANTING `link` to reference a set
+    // variable, upstream's actual intent for this field) and the chokepoint
+    // covers it instead: gated below before it becomes a real `href`.
+    const href = safeRenderHref(
+      this.linkValues.get(link) || this.variableValues.get(link) || link || '#',
+    );
 
     return (
       <a
@@ -2191,10 +2232,13 @@ export class Maily {
       isExternalLinkVariable,
     } = attrs || {};
 
-    src = isSrcVariable ? this.variableUrlValue(src, options) : src;
-    externalLink = isExternalLinkVariable
-      ? this.variableUrlValue(externalLink, options)
-      : externalLink;
+    // DEVIATION FROM UPSTREAM (2026-07-29, adversarial-review HIGH fix): same
+    // gate, same reasoning, as `image()` above.
+    src = safeRenderImageSrc(isSrcVariable ? this.variableUrlValue(src, options) : src);
+    externalLink = safeRenderHref(
+      isExternalLinkVariable ? this.variableUrlValue(externalLink, options) : externalLink,
+      '',
+    );
 
     const image = (
       <img
@@ -2250,9 +2294,13 @@ export class Maily {
    * padding itself (`<td style={{ padding: 0 }}>`), capped at the theme's
    * own container `maxWidth` so it lines up with every other row's width.
    *
-   * `src`/`href` are re-checked here (`isAllowedImageUrl`/`isAllowedLinkUrl`,
-   * `@events-os/shared`) as defense-in-depth on top of the write gate
-   * (`validateTiptapEmailDoc`) — see this file's import comment for why.
+   * `src`/`href` are re-checked here (`safeRenderImageSrc`/`safeRenderHref`,
+   * `urlSanitize.ts`) as defense-in-depth on top of the write gate
+   * (`validateTiptapEmailDoc`) — this was the FIRST sink in this class to get
+   * a post-resolution check (WS4) and every other href/src sink now shares
+   * the exact same chokepoint (2026-07-29, adversarial-review HIGH fix) —
+   * see `urlSanitize.ts`'s module doc for why the others didn't have one
+   * until then.
    *
    * DEVIATION FROM UPSTREAM (WS4, fidelity gap 1 fix, 2026-07-29): this node
    * doesn't exist upstream at all (see the "provenance" comment atop this
@@ -2283,8 +2331,8 @@ export class Maily {
       return <></>;
     }
 
-    src = isSrcVariable ? this.variableUrlValue(src, options) : src;
-    href = href ? this.linkValues.get(href) || href : href;
+    src = safeRenderImageSrc(isSrcVariable ? this.variableUrlValue(src, options) : src);
+    href = safeRenderHref(href ? this.linkValues.get(href) || href : href, '');
 
     const { shouldRemoveBottomMargin } = this.getMarginOverrideConditions(
       node,
@@ -2302,7 +2350,7 @@ export class Maily {
       marginBottom: shouldRemoveBottomMargin ? 0 : 32,
     };
 
-    if (typeof src !== 'string' || !isAllowedImageUrl(src)) {
+    if (!src) {
       const label =
         typeof alt === 'string' && alt.trim().length > 0
           ? alt
@@ -2345,7 +2393,12 @@ export class Maily {
         </table>
       );
     }
-    const safeHref = typeof href === 'string' && isAllowedLinkUrl(href) ? href : undefined;
+    // `safeRenderHref(…, '')` above already resolved an invalid/missing href
+    // to `''` (falsy) — `safeHref` here is just that value made explicitly
+    // `undefined` for the `? :` below, matching this method's pre-existing
+    // "falsy href means unwrapped image" convention (same as `image()`'s/
+    // `inlineImage()`'s `externalLink`).
+    const safeHref = href || undefined;
 
     const image = (
       <Img
@@ -2453,7 +2506,20 @@ export class Maily {
           <Row key={generateKey()} style={{ marginBottom: '8px' }}>
             <Column>
               {hasRealUrl ? (
-                <Link href={this.getVariableValue(variableName, undefined, options)} style={optionStyle}>
+                // DEVIATION FROM UPSTREAM (2026-07-29, adversarial-review
+                // HIGH fix): this href used to reach `<Link>` with NO scheme
+                // check at all — the "own variable machinery" this method's
+                // doc describes shares its `variableValues` map with every
+                // hostile-recipient-name vector this file's other sinks now
+                // guard against, and this one had no guard of its own. In
+                // practice this key (`pw_poll_<id>_<optId>_url`) is always
+                // server-built (`apps/convex/campaigns.ts`), never authored —
+                // but "the caller only ever sets this key to something safe"
+                // is exactly the property a chokepoint exists so nothing has
+                // to assume. Root-relative allowed (`safeRenderHref`'s
+                // default): `siteUrl()` legitimately returns a root-relative
+                // vote URL when neither site-URL env var is configured.
+                <Link href={safeRenderHref(this.getVariableValue(variableName, undefined, options))} style={optionStyle}>
                   {opt.label}
                 </Link>
               ) : (

@@ -58,9 +58,13 @@ export function requireEmailKindRow(campaign: Doc<"campaigns">): void {
   }
 }
 
-/** The template-side twin of `requireEmailKindRow` — the gate every
- *  `campaignTemplates.ts` write/read-by-id uses so an email-kind row can
- *  never be renamed, restyled, or archived through the template door. */
+/** The template-side twin of `requireEmailKindRow`. Currently UNCALLED —
+ *  `campaignTemplates.ts` deliberately answers a wrong-kind id with NOT_FOUND
+ *  via `loadTemplate` instead (mirroring the old two-table shape), so this
+ *  louder gate exists only as the symmetric API for future call sites that
+ *  want the explicit error. If you reach for it, say why NOT_FOUND is wrong
+ *  for your surface. (Adversarial review 2026-07-29 flagged the stale claim
+ *  that this was load-bearing; it never was.) */
 export function requireTemplateKindRow(campaign: Doc<"campaigns">): void {
   if (!isTemplateRow(campaign)) {
     throw new ConvexError({
