@@ -187,6 +187,73 @@ describe("validateTiptapEmailDoc: doc.attrs.pwCanvasColor", () => {
       validateTiptapEmailDoc({ type: "doc", attrs: { someOtherThing: "whatever" }, content: [] }),
     ).toEqual({ ok: true });
   });
+
+  // Every doc saved through the real editor has this explicitly `null`
+  // (`PwDocAttrsExtension`'s `default: null`, not simply omitted) — must be
+  // treated exactly like "absent", not rejected. See `validateDocAttrs`'s doc.
+  test("a null pwCanvasColor (the real editor's round-trip shape when unset) is accepted", () => {
+    expect(validateTiptapEmailDoc({ type: "doc", attrs: { pwCanvasColor: null }, content: [] })).toEqual({
+      ok: true,
+    });
+  });
+});
+
+// Founder bug #5: `doc.attrs.pwFontFamily` — the document-level font control.
+// See `emailFont.ts` (this package) for the allowlist and `renderEmail.ts`'s
+// doc (`packages/email-render`) for the read side.
+describe("validateTiptapEmailDoc: doc.attrs.pwFontFamily", () => {
+  test("attrs with no pwFontFamily key is accepted", () => {
+    expect(validateTiptapEmailDoc({ type: "doc", attrs: {}, content: [] })).toEqual({ ok: true });
+  });
+
+  test.each(["sans", "serif", "mono"])("accepts the known stack id %s", (id) => {
+    expect(validateTiptapEmailDoc({ type: "doc", attrs: { pwFontFamily: id }, content: [] })).toEqual({
+      ok: true,
+    });
+  });
+
+  test("rejects an arbitrary font-family string (not one of the curated stacks)", () => {
+    const result = validateTiptapEmailDoc({
+      type: "doc",
+      attrs: { pwFontFamily: "Comic Sans MS" },
+      content: [],
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("pwFontFamily");
+  });
+
+  test("rejects a non-string value", () => {
+    const result = validateTiptapEmailDoc({ type: "doc", attrs: { pwFontFamily: 123 }, content: [] });
+    expect(result.ok).toBe(false);
+  });
+
+  test("both pwCanvasColor and pwFontFamily can be set together", () => {
+    expect(
+      validateTiptapEmailDoc({
+        type: "doc",
+        attrs: { pwCanvasColor: "#f0f1f5", pwFontFamily: "serif" },
+        content: [],
+      }),
+    ).toEqual({ ok: true });
+  });
+
+  // Same "real editor's round-trip shape" concern as pwCanvasColor's own
+  // null test above — `PwDocAttrsExtension` declares BOTH attrs.
+  test("a null pwFontFamily (the real editor's round-trip shape when unset) is accepted", () => {
+    expect(validateTiptapEmailDoc({ type: "doc", attrs: { pwFontFamily: null }, content: [] })).toEqual({
+      ok: true,
+    });
+  });
+
+  test("the real editor's round-trip shape for a document that never touched either attr — both explicitly null", () => {
+    expect(
+      validateTiptapEmailDoc({
+        type: "doc",
+        attrs: { pwCanvasColor: null, pwFontFamily: null },
+        content: [],
+      }),
+    ).toEqual({ ok: true });
+  });
 });
 
 // ── Hostile input ────────────────────────────────────────────────────────

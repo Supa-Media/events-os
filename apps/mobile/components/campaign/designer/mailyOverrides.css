@@ -1,0 +1,52 @@
+/**
+ * MAILY BUBBLE-MENU OVERRIDES — founder bug #4 ("cluttered and broken —
+ * labels overlap", e.g. "Nodne"/"N6ne"). Seen in the harness
+ * (`__adv__/harness/`) as TWO distinct overlaps, same underlying cause:
+ *
+ *  1. A button's "Border Radius" (`round`)/"Style" (`outline`) dropdowns
+ *     render with their text OVERFLOWING their own box, bleeding into the
+ *     next control.
+ *  2. A section's two spacing dropdowns (each showing "None" plus a small
+ *     leading icon) render the icon literally ON TOP of the text — the exact
+ *     shape of "Nodne"/"N6ne": a glyph fused into a letter.
+ *
+ * ── Root cause: Tailwind v3 preflight vs. Tailwind v4 `@layer`, not maily ──
+ * maily's `Select` (`@maily-to/core`'s shared bubble-menu control — used for
+ * border-radius/variant/size on buttons, column count, spacer size, and
+ * more) is a real `<select appearance:none>` with Tailwind v4 utility classes
+ * (`mly:px-1.5`, `mly:pr-7`, `mly:pl-7` for the icon variant) wrapped in
+ * `@layer utilities { … }` — confirmed by reading `@maily-to/core/dist/
+ * index.css` directly (`@layer theme, base, components, utilities;` at the
+ * top). This app's OWN global Tailwind v3 output (`global.css` via
+ * `nativewind`) ships NO `@layer` at all — plain, unlayered rules, including
+ * preflight's `select { padding: 0; … }`. Per the CSS cascade spec, ANY
+ * unlayered rule beats EVERY layered rule, regardless of selector
+ * specificity or source order — so this app's plain `select { padding: 0 }`
+ * silently defeats maily's `@layer`-wrapped `padding-inline`/`pl-7`/`pr-7`
+ * classes wherever both stylesheets are on the same page (confirmed via
+ * `getComputedStyle`: `padding-left` measured `0px` on every one of these
+ * selects, icon or not, in spite of their classes). Nothing here is maily
+ * misbehaving — it's two real, correct stylesheets whose cascade-layer
+ * conventions don't compose the way either author expected.
+ *
+ * ── The fix ─────────────────────────────────────────────────────────────
+ * Restate the padding maily's OWN (defeated) utility classes intended, as a
+ * PLAIN unlayered rule of our own — unlayered beats layered, so this reliably
+ * wins over the preflight reset the same way the preflight reset beat maily.
+ * `min-width` + `flex-shrink: 0` separately fixes overlap #1 (a `<select>`'s
+ * `max-content` intrinsic-size calculation is ALSO unreliable once
+ * `appearance-none` strips its native chrome — measured, doesn't self-size to
+ * its selected option's actual text width no matter what keyword is used
+ * here, hence the concrete pixel minimum rather than `max-content`).
+ */
+select.mly\:appearance-none {
+  min-width: 96px;
+  flex-shrink: 0;
+  padding-right: 28px; /* restores `pr-7`'s intent — room for the chevron */
+  padding-left: 6px; /* restores `px-1.5`'s intent — the no-icon default */
+}
+/* Icon-bearing selects (`mly:pl-7`, e.g. the spacing dropdowns) need more
+ * room on the left for the icon itself — restores `pl-7`'s intent. */
+select.mly\:appearance-none.mly\:pl-7 {
+  padding-left: 28px;
+}

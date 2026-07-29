@@ -2011,6 +2011,7 @@ export * from "./sms";
 export * from "./names";
 
 // ── Email-campaign theme tokens, presets, and contrast checking ──────────────
+export * from "./emailFont";
 export * from "./emailTheme";
 
 // ── Email-campaign block document model (designer contract) ──────────────────

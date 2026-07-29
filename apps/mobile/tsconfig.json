@@ -13,5 +13,11 @@
     "**/*.tsx",
     "nativewind-env.d.ts",
     "../convex/pdfiumWasm.d.ts"
-  ]
+  ],
+  // `__adv__/` is a git-ignored, esbuild-only investigation harness (real
+  // production files rendered against stubbed data — see
+  // `__adv__/harness/entry.tsx`'s own doc), never bundled by Metro and never
+  // type-checked by this project's own tooling — it doesn't belong in the
+  // app's typecheck any more than a scratch script would.
+  "exclude": ["__adv__"]
 }

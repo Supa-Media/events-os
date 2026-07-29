@@ -85,6 +85,7 @@
  */
 
 import { MAX_POLL_OPTIONS, MIN_POLL_OPTIONS } from "./emailBlocks";
+import { isPwFontStackId } from "./emailFont";
 import { isHexColor } from "./emailTheme";
 
 // ── Node/mark whitelists ─────────────────────────────────────────────────
@@ -478,18 +479,42 @@ export type ValidateTiptapEmailDocResult = { ok: true } | { ok: false; error: st
 /**
  * Doc-level `attrs` — NOT a node, so `validateNode`'s per-node walk never
  * touches this; it is checked once, directly on the top-level `doc` object.
- * The only doc-level attr the write gate knows about today is
+ * The two doc-level attrs the write gate knows about today are
  * `pwCanvasColor` (see this file's module doc, the `doc.attrs.pwCanvasColor`
- * bullet) — `undefined`/absent is fine (white canvas, `renderEmailTiptap`'s
- * documented default); present-but-not-a-valid-hex-string is rejected
- * outright rather than silently ignored, so a typo'd colour fails loud at
- * save time instead of quietly not painting anything at send time.
+ * bullet) and `pwFontFamily` (founder bug #5, `emailFont.ts`) —
+ * `undefined`/absent is fine for both (today's defaults, `renderEmailTiptap`'s
+ * documented behavior); present-but-invalid is rejected outright rather than
+ * silently ignored, so a typo'd colour or an unknown font id fails loud at
+ * save time instead of quietly not applying at send time.
+ *
+ * `null` is treated exactly like `undefined` (not "invalid, reject") for
+ * BOTH — not a defensive nicety, a required one:
+ * `MailyDocumentHost.web.tsx`'s `PwDocAttrsExtension` declares both as
+ * ProseMirror global attrs with `default: null` so they survive an editor
+ * round-trip at all (see that file's own doc) — which means EVERY doc that
+ * ever passes through the real editor and gets `editor.getJSON()`'d comes
+ * back with `attrs: { pwCanvasColor: null, pwFontFamily: null }` explicitly
+ * present, not simply omitted, the instant neither has been set. Rejecting
+ * `null` here would mean no tiptap document could ever be saved through the
+ * real editor at all — caught by this file's own test the moment the two
+ * attrs were declared as real schema attrs (`pwDocAttrs.test.ts`).
  */
 function validateDocAttrs(attrs: Record<string, unknown>): string | null {
-  if (attrs.pwCanvasColor !== undefined) {
+  if (attrs.pwCanvasColor !== undefined && attrs.pwCanvasColor !== null) {
     if (typeof attrs.pwCanvasColor !== "string" || !isHexColor(attrs.pwCanvasColor)) {
       return '"attrs.pwCanvasColor" must be a hex colour like #f0f1f5';
     }
+  }
+  // `pwFontFamily` (WS4, founder bug #5 — document-level font, no theme
+  // system): an ALLOWLIST of stack IDs, not a free-text font name — see
+  // `emailFont.ts`'s module doc for why arbitrary input is rejected outright
+  // rather than passed through.
+  if (
+    attrs.pwFontFamily !== undefined &&
+    attrs.pwFontFamily !== null &&
+    !isPwFontStackId(attrs.pwFontFamily)
+  ) {
+    return '"attrs.pwFontFamily" must be one of the known font stacks';
   }
   return null;
 }

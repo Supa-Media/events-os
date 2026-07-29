@@ -67,7 +67,15 @@
  * default.
  */
 import type { JSONContent } from "@tiptap/core";
-import { DEFAULT_EMAIL_THEME, isHexColor, resolveDarkTheme, safeUnsubscribeHref } from "@events-os/shared";
+import {
+  DEFAULT_EMAIL_THEME,
+  isHexColor,
+  isPwFontStackId,
+  PW_FONT_STACKS,
+  resolveDarkTheme,
+  safeUnsubscribeHref,
+  type PwFontStackId,
+} from "@events-os/shared";
 import { Maily } from "./maily";
 import { injectBeforeBodyClose, injectBeforeHeadClose, overrideColorSchemeMeta } from "./postprocess";
 
@@ -180,6 +188,22 @@ function resolveCanvasColor(doc: JSONContent): string | undefined {
 }
 
 /**
+ * Read `doc.attrs.pwFontFamily` off a tiptap doc (WS4, founder bug #5) —
+ * same re-validated-as-defense-in-depth, fail-to-`undefined` posture as
+ * `resolveCanvasColor` right above (the write gate already checked this at
+ * save time; this is the render-time backstop, never a thrown error). An
+ * absent/invalid value resolves to `undefined`, and the caller then simply
+ * doesn't call `maily.setTheme({ font })` — exactly today's default (Inter,
+ * unchanged) rather than a broken font declaration.
+ */
+function resolveFontStackId(doc: JSONContent): PwFontStackId | undefined {
+  const attrs = doc.attrs;
+  if (!attrs || typeof attrs !== "object") return undefined;
+  const value = (attrs as Record<string, unknown>).pwFontFamily;
+  return isPwFontStackId(value) ? value : undefined;
+}
+
+/**
  * Render a `docFormat: "tiptap"` campaign doc to send-ready HTML + plaintext.
  *
  * Instantiates the vendored `Maily` class PER CALL — never a module-level
@@ -211,6 +235,17 @@ export async function renderEmailTiptap(
   const canvasColor = resolveCanvasColor(doc);
   if (canvasColor) {
     maily.setTheme({ body: { backgroundColor: canvasColor } });
+  }
+
+  // The document FONT (WS4, founder bug #5) — same "document, not a theme
+  // table" posture as the canvas colour right above. `PW_FONT_STACKS[id]`
+  // is a `{fontFamily, fallbackFontFamily, webFont?}` triple maily's own
+  // `<Font>` tag turns into a document-wide `* { font-family: … }` rule
+  // (`maily.tsx`'s `markup()`) — see `emailFont.ts`'s module doc for why
+  // these three stacks specifically.
+  const fontStackId = resolveFontStackId(doc);
+  if (fontStackId) {
+    maily.setTheme({ font: PW_FONT_STACKS[fontStackId] });
   }
 
   const rawHtml = await maily.render();
