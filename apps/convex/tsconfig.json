@@ -7,6 +7,14 @@
     "skipLibCheck": true,
     "allowJs": true,
     "types": ["node"],
+    // `@events-os/email-render` (WS2b) ships raw, un-prebuilt `.tsx` source
+    // (its `package.json` `main`/`types` point at `src/index.ts`, not a
+    // `dist/`) — importing `renderEmailTiptap` from it pulls the vendored
+    // `maily.tsx` into THIS program, and without a `jsx` option tsc refuses
+    // to parse it (TS6142) even though nothing in `apps/convex` itself is
+    // JSX. Convex functions never render JSX themselves, so this has no
+    // effect beyond letting that one dependency's `.tsx` file parse.
+    "jsx": "react-jsx",
     "noEmit": true,
     "paths": {
       "@shared/*": ["../../packages/shared/src/*"]

@@ -56,19 +56,20 @@
  * `history.present` is a stable object reference there; `editor.getJSON()`
  * builds a fresh object on every call, so this compares SERIALIZED content.
  *
- * TODO(WS2b): `onSave` ultimately calls `campaigns.updateCampaignDoc` /
- * `campaignTemplates.updateTemplate` (via `DocumentComposer.tsx`), neither of
- * which accepts a tiptap-shaped `doc` yet — every real autosave in this
- * lifetime of the branch will reject with `INVALID_DOC` until that lands.
- * This file's autosave logic is written CORRECTLY against the target
- * contract regardless; its behavior is covered by `mailyAutosave.test.ts`
- * against mocked decisions, not an end-to-end save here.
+ * `onSave` ultimately calls `campaigns.updateCampaignDoc` /
+ * `campaignTemplates.updateTemplate` (via `DocumentComposer.tsx`) — both
+ * dispatch on the row's own `docFormat` (WS2b) and validate a tiptap-shaped
+ * `doc` with `validateTiptapEmailDoc`, so a real autosave here round-trips.
+ * This file's autosave logic is covered by `mailyAutosave.test.ts` against
+ * mocked decisions, and end to end by `apps/convex/tests/campaignsTiptap.test.ts`.
  *
  * ── Preview ──────────────────────────────────────────────────────────────
- * TODO(WS2b): `api.emailPreview.renderCampaignPreview` doesn't exist yet
- * (`lib/emailPreview.ts`'s own TODO). Every fetch here rejects today, which
- * this component treats as a routine, expected state — "Preview isn't
- * available yet" — never a live preview it can't actually produce.
+ * `api.emailPreview.renderCampaignPreview` (`apps/convex/emailPreview.ts`,
+ * WS2b) is a real action — `lib/emailPreview.ts#fetchCampaignPreview` calls
+ * it directly. A fetch can still reject (network, `WRONG_FORMAT` on a
+ * misrouted call, an org the caller can't read), which this component treats
+ * as a routine, expected state — "Preview isn't available yet" — never a
+ * live preview it can't actually produce.
  *
  * ── Read-only ────────────────────────────────────────────────────────────
  * `editable={false}` (1) calls `editor.setEditable(false)` so ProseMirror
@@ -362,9 +363,10 @@ export function MailyDocumentHost({
   );
 }
 
-/** Same shape as `BlocksDocumentComposer`'s own `SaveIndicator`, without the
- *  document-validator error explainer (there's no tiptap validator yet —
- *  TODO(WS2b) — so a save failure shows the server's raw message). */
+/** Same shape as `BlocksDocumentComposer`'s own `SaveIndicator`, without a
+ *  per-field document-validator error explainer — a rejected tiptap save
+ *  (`validateTiptapEmailDoc`'s `INVALID_DOC`) surfaces the server's own
+ *  message here instead of a client-side breakdown. */
 function SaveIndicator({
   editable,
   saveState,

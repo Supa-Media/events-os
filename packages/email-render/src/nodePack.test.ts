@@ -197,6 +197,71 @@ describe("pwBleedImage", () => {
     expect(html).not.toContain("javascript:alert(1)");
   });
 
+  // WS4, fidelity gap 1 fix: an empty/invalid `src` used to return an empty
+  // fragment (dropping the whole section silently) — see this method's own
+  // doc comment for why. It now draws a visible placeholder band.
+  describe("unfilled placeholder (WS4, fidelity gap 1 fix)", () => {
+    test("no src at all: renders a table carrying the alt text, no <img>", async () => {
+      const doc: JSONContent = { type: "doc", content: [{ type: "pwBleedImage", attrs: { alt: "What's On" } }] };
+      const html = await new Maily(doc).render();
+      expect(html).toContain("What&#x27;s On");
+      expect(html).not.toMatch(/<img/);
+    });
+
+    test("empty string src: same placeholder treatment as absent", async () => {
+      const doc: JSONContent = { type: "doc", content: [{ type: "pwBleedImage", attrs: { src: "", alt: "Masthead" } }] };
+      const html = await new Maily(doc).render();
+      expect(html).toContain("Masthead");
+      expect(html).not.toMatch(/<img/);
+    });
+
+    test("an invalid (javascript:) src also falls back to the placeholder, not an empty fragment", async () => {
+      const doc: JSONContent = {
+        type: "doc",
+        content: [{ type: "pwBleedImage", attrs: { src: "javascript:alert(1)", alt: "Banner" } }],
+      };
+      const html = await new Maily(doc).render();
+      expect(html).toContain("Banner");
+      expect(html).not.toMatch(/<img/);
+    });
+
+    test("empty alt falls back to the generic 'Artwork slot' label, not a blank band", async () => {
+      const doc: JSONContent = { type: "doc", content: [{ type: "pwBleedImage", attrs: { src: "", alt: "" } }] };
+      const html = await new Maily(doc).render();
+      expect(html).toContain("Artwork slot");
+    });
+
+    test("no alt attr at all also falls back to 'Artwork slot'", async () => {
+      const doc: JSONContent = { type: "doc", content: [{ type: "pwBleedImage", attrs: {} }] };
+      const html = await new Maily(doc).render();
+      expect(html).toContain("Artwork slot");
+    });
+
+    test("renders a real table (Outlook-safe), not a div/span", async () => {
+      const doc: JSONContent = { type: "doc", content: [{ type: "pwBleedImage", attrs: { alt: "Banner" } }] };
+      const html = await new Maily(doc).render();
+      expect(html).toMatch(/<table[^>]*role="presentation"[^>]*>[\s\S]*<\/table>/);
+    });
+
+    test("interleaved with ordinary content: the placeholder still renders in document order", async () => {
+      const doc: JSONContent = {
+        type: "doc",
+        content: [
+          { type: "paragraph", content: [{ type: "text", text: "Before" }] },
+          { type: "pwBleedImage", attrs: { alt: "Between" } },
+          { type: "paragraph", content: [{ type: "text", text: "After" }] },
+        ],
+      };
+      const html = await new Maily(doc).render();
+      const beforeIdx = html.indexOf("Before");
+      const betweenIdx = html.indexOf("Between");
+      const afterIdx = html.indexOf("After");
+      expect(beforeIdx).toBeGreaterThan(-1);
+      expect(betweenIdx).toBeGreaterThan(beforeIdx);
+      expect(afterIdx).toBeGreaterThan(betweenIdx);
+    });
+  });
+
   test("a javascript: href is dropped, image still renders unlinked", async () => {
     const doc: JSONContent = {
       type: "doc",
@@ -346,5 +411,58 @@ describe("cross-node-pack: everything in one document renders without throwing",
     expect(html).toContain("RSVP");
     expect(html).toContain("Join us?");
     expect(html).toContain("https://example.com/vote/y");
+  });
+});
+
+// WS4, fidelity gap 3 fix: an authored `alt: ""` (the write gate's legal
+// "decorative, on purpose" value — see `tiptapEmail.ts`'s module doc) must
+// survive as `alt=""`, not be overridden with the literal word "Image"/"Logo"
+// the way an genuinely ABSENT alt still is.
+describe("stock image/logo: authored empty alt is preserved (WS4, fidelity gap 3 fix)", () => {
+  test("image(): an authored empty alt renders alt=\"\", not alt=\"Image\"", async () => {
+    const doc: JSONContent = {
+      type: "doc",
+      content: [{ type: "image", attrs: { src: "https://example.com/photo.png", alt: "" } }],
+    };
+    const html = await new Maily(doc).render();
+    expect(html).toMatch(/alt=""/);
+    expect(html).not.toContain('alt="Image"');
+  });
+
+  test("image(): a genuinely absent alt still falls back to title, or 'Image'", async () => {
+    const doc: JSONContent = {
+      type: "doc",
+      content: [{ type: "image", attrs: { src: "https://example.com/photo.png" } }],
+    };
+    const html = await new Maily(doc).render();
+    expect(html).toContain('alt="Image"');
+  });
+
+  test("image(): an absent alt with a title falls back to the title, not 'Image'", async () => {
+    const doc: JSONContent = {
+      type: "doc",
+      content: [{ type: "image", attrs: { src: "https://example.com/photo.png", title: "A real title" } }],
+    };
+    const html = await new Maily(doc).render();
+    expect(html).toContain('alt="A real title"');
+  });
+
+  test("logo(): an authored empty alt renders alt=\"\", not alt=\"Logo\"", async () => {
+    const doc: JSONContent = {
+      type: "doc",
+      content: [{ type: "logo", attrs: { src: "https://example.com/logo.png", alt: "", size: "md" } }],
+    };
+    const html = await new Maily(doc).render();
+    expect(html).toMatch(/alt=""/);
+    expect(html).not.toContain('alt="Logo"');
+  });
+
+  test("logo(): a genuinely absent alt still falls back to title, or 'Logo'", async () => {
+    const doc: JSONContent = {
+      type: "doc",
+      content: [{ type: "logo", attrs: { src: "https://example.com/logo.png", size: "md" } }],
+    };
+    const html = await new Maily(doc).render();
+    expect(html).toContain('alt="Logo"');
   });
 });

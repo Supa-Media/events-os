@@ -7,12 +7,9 @@
  * keeps the decision testable as plain data (no React, no Convex client) so
  * `DocumentComposer.tsx` stays a two-line `if`.
  *
- * TODO(WS2b): `campaigns.docFormat` isn't a column in `schema/campaigns.ts`
- * yet — every row in production resolves to `"blocks"` until that backend
- * lane adds it. `composerHostForRow` already reads a row shaped with an
- * OPTIONAL `docFormat`, so passing today's `campaign`/`template` query
- * results in compiles clean (the field is simply always absent) and needs no
- * call-site change once the column lands.
+ * `campaigns.docFormat` is a real, optional column (`schema/campaigns.ts`,
+ * WS2b) — absent (every pre-2026-07-29 row) resolves to `"blocks"`, and a
+ * row created with `docFormat: "tiptap"` resolves here for real.
  */
 import { emailDocFormatOf, type EmailDocFormat } from "@events-os/shared";
 

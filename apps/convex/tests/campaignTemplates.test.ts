@@ -227,7 +227,11 @@ describe("the template composer's write path", () => {
     expect(after.doc.theme?.accent).toBe(before.doc.theme?.accent);
   });
 
-  test("setTemplateTheme restyles the stored document, and only a designer may", async () => {
+  // Themes freeze (2026-07-29, `docs/plans/maily-editor-overhaul.md`'s
+  // "Themes freeze") — `setTemplateTheme` throws `THEMES_RETIRED` for every
+  // row, unconditionally, before it would ever reach a preset/scope check.
+  // See `emailThemes.ts#throwThemesRetired`'s doc.
+  test("setTemplateTheme is retired — THEMES_RETIRED for every caller who could design, FORBIDDEN for one who can't", async () => {
     const t = newT();
     const s = await asSuperuser(t);
     const templateId = await s.as.mutation(api.campaignTemplates.createTemplate, {
@@ -235,6 +239,7 @@ describe("the template composer's write path", () => {
       name: "Shell",
       doc: { blocks: [{ id: "b1", kind: "heading", text: "Hello", level: 1 }] },
     });
+    const before = await s.as.query(api.campaignTemplates.getTemplate, { templateId });
 
     const outsider = await setupChapter(t, { email: "nobody@publicworship.life" });
     await expect(
@@ -244,54 +249,16 @@ describe("the template composer's write path", () => {
       }),
     ).rejects.toBeInstanceOf(ConvexError);
 
-    await s.as.mutation(api.campaignTemplates.setTemplateTheme, {
-      templateId,
-      presetName: PUBLIC_WORSHIP_THEME.name,
-    });
-    const row = await s.as.query(api.campaignTemplates.getTemplate, { templateId });
-    expect(row.doc.theme?.accent).toBe(PUBLIC_WORSHIP_THEME.accent);
-    // The blocks are untouched — restyling is not a rewrite.
-    expect(row.doc.blocks).toHaveLength(1);
-  });
-
-  test("setTemplateTheme demands exactly one of a saved theme or a preset", async () => {
-    const t = newT();
-    const s = await asSuperuser(t);
-    const templateId = await s.as.mutation(api.campaignTemplates.createTemplate, {
-      scope: "central",
-      name: "Shell",
-    });
-    await expect(
-      s.as.mutation(api.campaignTemplates.setTemplateTheme, { templateId }),
-    ).rejects.toMatchObject({ data: { code: "INVALID_ARGUMENT" } });
     await expect(
       s.as.mutation(api.campaignTemplates.setTemplateTheme, {
         templateId,
-        presetName: "no such preset",
+        presetName: PUBLIC_WORSHIP_THEME.name,
       }),
-    ).rejects.toMatchObject({ data: { code: "NOT_FOUND" } });
-  });
-
-  test("a saved theme from another scope is refused", async () => {
-    const t = newT();
-    const s = await asSuperuser(t);
-    const templateId = await s.as.mutation(api.campaignTemplates.createTemplate, {
-      scope: "central",
-      name: "Shell",
-    });
-    const themeId = await run(s.t, (ctx) =>
-      ctx.db.insert("emailThemes", {
-        ...PUBLIC_WORSHIP_THEME,
-        scope: s.chapterId,
-        name: "Chapter look",
-        createdBy: s.userId,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      }),
-    );
-    await expect(
-      s.as.mutation(api.campaignTemplates.setTemplateTheme, { templateId, themeId }),
-    ).rejects.toMatchObject({ data: { code: "SCOPE_MISMATCH" } });
+    ).rejects.toMatchObject({ data: { code: "THEMES_RETIRED" } });
+    const row = await s.as.query(api.campaignTemplates.getTemplate, { templateId });
+    // Nothing changed — the blocks AND the theme are untouched.
+    expect(row.doc.blocks).toHaveLength(1);
+    expect(row.doc.theme?.name).toBe(before.doc.theme?.name);
   });
 });
 

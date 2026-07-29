@@ -276,3 +276,77 @@ describe("renderEmailTiptap: no singleton mutation bleed across calls (the two v
     expect(withoutPreview.html).not.toContain("Unique preview marker XYZ");
   });
 });
+
+// WS4, fidelity gap 2 fix: `doc.attrs.pwCanvasColor` reaching a real `<body
+// style="...background-color:...">` — see this file's module doc, "The page
+// canvas colour", and `tiptapNewsletterTemplate.ts`'s doc for the mechanism.
+describe("renderEmailTiptap: doc.attrs.pwCanvasColor → the page canvas colour", () => {
+  test("a doc with no attrs at all renders the default white body — unchanged behavior", async () => {
+    const { html } = await renderEmailTiptap(baseDoc, {
+      variables: {},
+      unsubscribeUrl: "https://example.com/u/1",
+      orgAddress: "Addr",
+    });
+    const bodyMatch = html.match(/<body[^>]*style="([^"]*)"/i);
+    expect(bodyMatch?.[1]).toContain("background-color:#ffffff");
+  });
+
+  test("attrs.pwCanvasColor paints the <body> background with that hex colour", async () => {
+    const doc: JSONContent = { ...baseDoc, attrs: { pwCanvasColor: "#f0f1f5" } };
+    const { html } = await renderEmailTiptap(doc, {
+      variables: {},
+      unsubscribeUrl: "https://example.com/u/1",
+      orgAddress: "Addr",
+    });
+    const bodyMatch = html.match(/<body[^>]*style="([^"]*)"/i);
+    expect(bodyMatch?.[1]).toContain("background-color:#f0f1f5");
+    expect(bodyMatch?.[1]).not.toContain("background-color:#ffffff");
+  });
+
+  test("the container stays white and 600px even when the canvas colour moves", async () => {
+    const doc: JSONContent = { ...baseDoc, attrs: { pwCanvasColor: "#f0f1f5" } };
+    const { html } = await renderEmailTiptap(doc, {
+      variables: {},
+      unsubscribeUrl: "https://example.com/u/1",
+      orgAddress: "Addr",
+    });
+    expect(html).toMatch(/class="pw-container"/);
+    expect(html).toContain("max-width:600px");
+    expect(html).toMatch(/background-color:#ffffff/);
+  });
+
+  test("an invalid hex value is ignored — falls back to the default white body, not a broken CSS value", async () => {
+    const doc: JSONContent = { ...baseDoc, attrs: { pwCanvasColor: "javascript:alert(1)" } };
+    const { html } = await renderEmailTiptap(doc, {
+      variables: {},
+      unsubscribeUrl: "https://example.com/u/1",
+      orgAddress: "Addr",
+    });
+    expect(html).not.toContain("javascript:alert(1)");
+    const bodyMatch = html.match(/<body[^>]*style="([^"]*)"/i);
+    expect(bodyMatch?.[1]).toContain("background-color:#ffffff");
+  });
+
+  test("a non-string attrs.pwCanvasColor is ignored, not thrown", async () => {
+    const doc: JSONContent = { ...baseDoc, attrs: { pwCanvasColor: 12345 } };
+    await expect(
+      renderEmailTiptap(doc, { variables: {}, unsubscribeUrl: "https://example.com/u/1", orgAddress: "Addr" }),
+    ).resolves.toBeTruthy();
+  });
+
+  test("a canvas colour set on one call does not leak into a call with none (no setTheme() singleton bleed)", async () => {
+    const withCanvas = await renderEmailTiptap(
+      { ...baseDoc, attrs: { pwCanvasColor: "#f0f1f5" } },
+      { variables: {}, unsubscribeUrl: "https://example.com/u/1", orgAddress: "Addr" },
+    );
+    const withoutCanvas = await renderEmailTiptap(baseDoc, {
+      variables: {},
+      unsubscribeUrl: "https://example.com/u/1",
+      orgAddress: "Addr",
+    });
+    const withCanvasBody = withCanvas.html.match(/<body[^>]*style="([^"]*)"/i)?.[1];
+    const withoutCanvasBody = withoutCanvas.html.match(/<body[^>]*style="([^"]*)"/i)?.[1];
+    expect(withCanvasBody).toContain("background-color:#f0f1f5");
+    expect(withoutCanvasBody).toContain("background-color:#ffffff");
+  });
+});

@@ -12,8 +12,11 @@
  *
  * This is the whole editing surface: the undo/redo history, the debounced
  * autosave and its indicator, the CANVAS with its palette and inspector, the
- * live HTML preview, the merge-tag row, and the theme picker above the
- * preview. Both editable documents render it via `DocumentComposer` — the
+ * live HTML preview, and the merge-tag row. Themes are RETIRED (2026-07-29,
+ * "Themes freeze" — `docs/plans/maily-editor-overhaul.md`): there is no
+ * picker here anymore; a blocks document keeps whatever theme snapshot it
+ * was created with, baked in, forever. Both editable documents render this
+ * via `DocumentComposer` — the
  * campaign designer (`app/(app)/campaign/[id]/design.tsx`) and the template
  * editor (`app/(app)/campaign-template/[id].tsx`) — so everything a designer
  * knows about composing a BLOCKS email holds in both places by construction.
@@ -61,7 +64,6 @@ import {
   renderCampaignEmail,
   type EmailBlockKind,
   type EmailDocument,
-  type EmailTheme,
 } from "@events-os/shared";
 import { Button, Icon } from "../../ui";
 import { colors } from "../../../lib/theme";
@@ -86,7 +88,6 @@ import {
 import { confirmAction } from "../helpers";
 import { BlockPalette } from "./BlockPalette";
 import { MergeTagRow } from "./MergeTagRow";
-import { CampaignThemePicker, type ThemeChoice } from "./CampaignThemePicker";
 import { ReadOnlyProvider } from "./DesignerControls";
 import EmailHtmlPreview from "../../email/EmailHtmlPreview";
 import { useDesignerImageUploader } from "./useImageUploader";
@@ -128,17 +129,7 @@ export type BlocksDocumentComposerProps = {
   /** Persist the document. MUST reject on failure — a rejection is what the
    *  save indicator turns into a reason via `explainDocError`. */
   onSave: (doc: EmailDocument) => Promise<unknown>;
-  /**
-   * Restyle. Resolves to the theme that actually landed (or null when the
-   * write was refused), which the composer folds back into its local history:
-   * the theme is applied SERVER-side to the document as stored, and this
-   * screen autosaves `history.present` wholesale, so without the fold the very
-   * next keystroke would push the old theme straight back over the restyle.
-   *
-   * Omit to hide the picker entirely.
-   */
-  onApplyTheme?: (choice: ThemeChoice) => Promise<EmailTheme | null>;
-  /** Surfaces failures (uploads, theme writes) — the screen owns the toast. */
+  /** Surfaces failures (uploads) — the screen owns the toast. */
   run: ActionRunner["run"];
   /** Copy for the "nothing here yet" state while it can still be filled in. */
   emptyMessage?: string;
@@ -152,7 +143,6 @@ export function BlocksDocumentComposer({
   editable,
   lockedNotice,
   onSave,
-  onApplyTheme,
   run,
   emptyMessage = "Add a block above to start writing this email.",
   lockedEmptyMessage = "This email has no blocks yet.",
@@ -370,20 +360,6 @@ export function BlocksDocumentComposer({
     },
     [history, applyDoc],
   );
-
-  const onApplyThemeRef = useRef(onApplyTheme);
-  onApplyThemeRef.current = onApplyTheme;
-
-  /** See `onApplyTheme`'s doc for why the result has to be folded back into
-   *  the local history rather than left to the server. */
-  const applyTheme = useCallback(async (choice: ThemeChoice): Promise<boolean> => {
-    const apply = onApplyThemeRef.current;
-    if (!apply) return false;
-    const theme = await apply(choice);
-    if (!theme) return false;
-    setHistory((h) => (h ? pushHistory(h, { ...h.present, theme }) : h));
-    return true;
-  }, []);
 
   /**
    * Undo/redo, and the SELECTION that has to move with them.
@@ -636,13 +612,6 @@ export function BlocksDocumentComposer({
         </View>
       ) : null}
 
-      {/* Above the preview, not below it: the theme is the thing the preview
-          is FOR, and a picker under a 620px pane is a picker nobody finds. */}
-      {editable && onApplyTheme ? (
-        <View className="mb-3">
-          <CampaignThemePicker currentThemeName={doc.theme?.name} onApply={applyTheme} />
-        </View>
-      ) : null}
       <Text className="mb-2 text-xs font-bold uppercase tracking-wider text-faint">
         Live preview
       </Text>

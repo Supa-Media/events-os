@@ -33,8 +33,9 @@ type BlocksBranchProps = { docFormat: "blocks" } & BlocksDocumentComposerProps;
 type TiptapBranchProps = { docFormat: "tiptap" } & MailyDocumentHostProps;
 
 /** Discriminated on `docFormat` — TypeScript enforces that a caller building
- *  the "tiptap" branch can't accidentally hand over blocks-only props (an
- *  `onApplyTheme`, an `EmailDocument`) and vice versa. */
+ *  the "tiptap" branch can't accidentally hand over blocks-only props (a
+ *  block-shaped `EmailDocument`, `onApplyTheme` back when that existed) and
+ *  vice versa. */
 export type DocumentComposerProps = BlocksBranchProps | TiptapBranchProps;
 
 export function DocumentComposer(props: DocumentComposerProps) {

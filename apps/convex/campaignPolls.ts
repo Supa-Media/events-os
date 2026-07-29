@@ -37,6 +37,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { requireCampaignsAccess } from "./lib/campaignsAccess";
 import { isTemplateRow } from "./lib/campaignKind";
 import { AUDIENCE_RESOLVE_LIMIT } from "./lib/audienceResolve";
+import { findPollNodes } from "@events-os/shared";
 
 /**
  * How many vote rows one poll block's tally will read.
@@ -81,33 +82,28 @@ const POLL_BLOCKS_PER_CAMPAIGN = 25;
  */
 const POLL_RESULTS_READ_BUDGET = 8000;
 
+/** `PollBlock`/`PollOption` are local aliases of the shared, format-dual
+ *  `NormalizedPoll`/`NormalizedPollOption` (`@events-os/shared`'s
+ *  `tiptapEmail.ts#findPollNodes`) — kept as distinct names here only so this
+ *  file's own type annotations below don't have to change. `pollBlocksOf`
+ *  (below) used to be this file's OWN "find polls in this doc" walk,
+ *  blocks-format only; it's now a thin call into the shared helper, which
+ *  ALSO reads a tiptap-format doc's `pwPoll` nodes — see that helper's doc
+ *  for why the backend and mobile's `CampaignPollResults.tsx` sniff were
+ *  replaced with the one shared implementation. */
 type PollOption = { id: string; label: string };
-type PollBlock = { id: string; kind: "poll"; question: string; options: PollOption[] };
+type PollBlock = { id: string; question: string; options: PollOption[] };
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** Every `poll` block in a stored `EmailDocument`, read DEFENSIVELY: `doc` is
- *  `v.any()` in the schema, and a row could predate any given block kind, so
- *  anything that isn't shaped like a poll is skipped rather than trusted. */
+/** Every poll in a stored campaign doc, EITHER format — see `findPollNodes`'s
+ *  own doc for the exact per-format shape it recognizes and its "skip
+ *  anything malformed rather than throw" read discipline (this is a READ
+ *  path, not the write gate). */
 function pollBlocksOf(doc: unknown): PollBlock[] {
-  if (!isPlainObject(doc) || !Array.isArray(doc.blocks)) return [];
-  const out: PollBlock[] = [];
-  for (const block of doc.blocks) {
-    if (!isPlainObject(block)) continue;
-    if (block.kind !== "poll") continue;
-    if (typeof block.id !== "string" || typeof block.question !== "string") continue;
-    if (!Array.isArray(block.options)) continue;
-    const options: PollOption[] = [];
-    for (const opt of block.options) {
-      if (!isPlainObject(opt)) continue;
-      if (typeof opt.id !== "string" || typeof opt.label !== "string") continue;
-      options.push({ id: opt.id, label: opt.label });
-    }
-    out.push({ id: block.id, kind: "poll", question: block.question, options });
-  }
-  return out;
+  return findPollNodes(doc);
 }
 
 type PollContext = {

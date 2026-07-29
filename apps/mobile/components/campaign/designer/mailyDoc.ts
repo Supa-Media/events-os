@@ -8,18 +8,12 @@
  * import, fully erased) so this loads under the repo's node-environment Jest
  * config the same way `targetingText.ts` does.
  *
- * TODO(WS2b): `campaigns.createCampaign` / `campaignTemplates.createTemplate`
- * both still run `validateEmailDocument`/`assertValidDoc` — the OLD blocks
- * validator — against whatever `doc` they're handed. Seeding a brand-new
- * email or template with `TIPTAP_STARTER_DOC` (below) will therefore throw
- * `INVALID_DOC` server-side, and neither mutation yet accepts a `docFormat`
- * argument to say "this one's tiptap" (the arg validators are strict, so
- * passing one today is also a `tsc` error, not just a runtime one). This
- * module is written CORRECTLY against the target contract regardless —
- * `packages/shared/src/emailDocFormat.ts`'s "new documents are maily-format
- * from now on" — so the call sites (`CampaignsListView.tsx`,
- * `CampaignTemplatesView.tsx`) need no further change once WS2b lands
- * format-aware validation dispatch.
+ * `campaigns.createCampaign` / `campaignTemplates.createTemplate` both accept
+ * a `docFormat` argument (WS2b) and dispatch validation on it —
+ * `validateTiptapEmailDoc` for `docFormat: "tiptap"` — so seeding a brand-new
+ * email or template with this module's starter doc, alongside
+ * `docFormat: "tiptap"`, round-trips for real (`CampaignsListView.tsx`,
+ * `CampaignTemplatesView.tsx`).
  */
 import type { JSONContent } from "@tiptap/core";
 

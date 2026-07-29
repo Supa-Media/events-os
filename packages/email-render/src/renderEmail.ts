@@ -34,9 +34,40 @@
  * — the editor changed, the law didn't. This shell's job is only to make
  * sure those two things are actually PRESENT and correctly formatted in the
  * output; it has no opinion on whether a send may proceed.
+ *
+ * ── The page canvas colour (WS4, fidelity gap 2 fix, 2026-07-29) ───────────
+ * Public Worship's newsletter is a grey `#f0f1f5` page behind the white
+ * 600px container — until this fix, nothing here ever called `maily.
+ * setTheme()`, so every tiptap send rendered `DEFAULT_RENDERER_THEME`'s
+ * white body regardless of brand (see `newsletter.fidelity.test.ts`'s
+ * former `FIDELITY GAP` pin, now flipped).
+ *
+ * Themes-the-system are dead — a founder decision, and this repo's standing
+ * one: no theme table, no token system for campaign send. So the canvas
+ * colour does NOT come from a config object here; it comes from the DOCUMENT
+ * itself — `doc.attrs.pwCanvasColor`, a plain hex string on the tiptap doc's
+ * own top-level `attrs` (write-gated by `validateTiptapEmailDoc`'s
+ * `validateDocAttrs`, `@events-os/shared`'s `tiptapEmail.ts`) — so the colour
+ * travels with duplication and templates exactly like every other authored
+ * value in the doc, with no second place to keep it in sync. `resolveCanvas
+ * Color` below re-validates it as defense-in-depth (the same "checked at the
+ * write gate AND at render" posture as `pwBleedImage`'s URL checks) and
+ * FAILS OPEN to `undefined` — a missing or invalid value renders exactly
+ * today's default (white), never a broken CSS value or a thrown error.
+ * Only `body`'s background moves; the container stays white/600px
+ * (`DEFAULT_RENDERER_THEME.container`'s own defaults, untouched) — the
+ * design constraint is "grey page, white card", not "recolour everything".
+ *
+ * `darkModeStyle()` below is unaffected by this: its `body { background: … }`
+ * rule already carries `!important` and targets the SAME `<body>` tag
+ * `bodyStyles` (in `maily.tsx`'s `markup()`) sets `backgroundColor` on
+ * inline, dark-mode override semantics this fix doesn't change — a light
+ * canvas colour is exactly the kind of light-mode-only style dark mode is
+ * meant to override, same as it always did against the previous white
+ * default.
  */
 import type { JSONContent } from "@tiptap/core";
-import { DEFAULT_EMAIL_THEME, resolveDarkTheme, safeUnsubscribeHref } from "@events-os/shared";
+import { DEFAULT_EMAIL_THEME, isHexColor, resolveDarkTheme, safeUnsubscribeHref } from "@events-os/shared";
 import { Maily } from "./maily";
 import { injectBeforeBodyClose, injectBeforeHeadClose, overrideColorSchemeMeta } from "./postprocess";
 
@@ -133,6 +164,22 @@ function darkModeStyle(): string {
 }
 
 /**
+ * Read `doc.attrs.pwCanvasColor` off a tiptap doc, re-validated as defense-
+ * in-depth on top of the write gate (`validateTiptapEmailDoc`'s
+ * `validateDocAttrs`, `@events-os/shared`) — see this file's module doc, "The
+ * page canvas colour". Anything not a valid hex string (absent, wrong type,
+ * malformed) resolves to `undefined` rather than throwing or passing a bad
+ * value through to a real CSS `background` — the caller then simply doesn't
+ * call `maily.setTheme()`, which is exactly today's white-canvas default.
+ */
+function resolveCanvasColor(doc: JSONContent): string | undefined {
+  const attrs = doc.attrs;
+  if (!attrs || typeof attrs !== "object") return undefined;
+  const value = (attrs as Record<string, unknown>).pwCanvasColor;
+  return typeof value === "string" && isHexColor(value) ? value : undefined;
+}
+
+/**
  * Render a `docFormat: "tiptap"` campaign doc to send-ready HTML + plaintext.
  *
  * Instantiates the vendored `Maily` class PER CALL — never a module-level
@@ -156,6 +203,15 @@ export async function renderEmailTiptap(
   const maily = new Maily(doc);
   maily.setVariableValues(opts.variables);
   if (opts.preview) maily.setPreviewText(opts.preview);
+
+  // Only `body`'s background moves — the container stays white/600px (its
+  // own `DEFAULT_RENDERER_THEME` defaults, left untouched by this partial
+  // `setTheme()` merge). See this file's module doc, "The page canvas
+  // colour", for why this reads off the DOCUMENT rather than a theme config.
+  const canvasColor = resolveCanvasColor(doc);
+  if (canvasColor) {
+    maily.setTheme({ body: { backgroundColor: canvasColor } });
+  }
 
   const rawHtml = await maily.render();
   const rawText = await maily.render({ plainText: true });

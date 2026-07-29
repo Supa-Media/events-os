@@ -239,8 +239,8 @@ function ReadOnlyNote() {
     <Card style={styles.readOnlyNote}>
       <Text className="text-sm text-muted">
         Segments are set up by whoever holds compose power — you can read who
-        each one reaches. Yours is what the emails are built from: the themes,
-        the saved templates and the image library.
+        each one reaches. Yours is what the emails are built from: the saved
+        templates and the image library.
       </Text>
       <View style={styles.readOnlyActions}>
         <Button
@@ -248,12 +248,6 @@ function ReadOnlyNote() {
           icon="bookmark"
           variant="secondary"
           onPress={() => router.push("/campaigns/templates" as never)}
-        />
-        <Button
-          title="Themes"
-          icon="droplet"
-          variant="secondary"
-          onPress={() => router.push("/campaigns/themes" as never)}
         />
       </View>
     </Card>

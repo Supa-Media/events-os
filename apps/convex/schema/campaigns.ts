@@ -384,6 +384,18 @@ export const campaigns = defineTable({
   // relaxation of that requirement.
   audienceId: v.optional(v.id("audiences")),
   doc: v.any(),
+  /** Which document shape `doc` is (`@events-os/shared`'s `emailDocFormat.ts`
+   *  — that file is the ONE contract for this field, read it before touching
+   *  this comment). Absent = `"blocks"` (every row written before
+   *  2026-07-29). Set ONCE, at CREATE time (`createCampaign`/`createTemplate`;
+   *  duplication copies the source row's format), and IMMUTABLE thereafter —
+   *  `updateCampaignDoc`/`updateTemplate` dispatch validation on whatever
+   *  format the row was created with and never accept a `docFormat` argument
+   *  of their own, so there is no path that changes it after the fact
+   *  (changing it would be a hash-visible content-shape change with no UI
+   *  meaning, and would let a doc silently escape the validator it was
+   *  written against). */
+  docFormat: v.optional(v.union(v.literal("blocks"), v.literal("tiptap"))),
   /** Absent = `"email"` (every pre-merge row). See the doc above `CAMPAIGN_KINDS`. */
   kind: v.optional(v.union(v.literal("email"), v.literal("template"))),
   // ── Template-kind fields (mirror the retired `campaignTemplates` table's

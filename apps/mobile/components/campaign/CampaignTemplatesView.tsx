@@ -196,14 +196,14 @@ function NewTemplateAction({
     try {
       // "New documents are maily-format from now on"
       // (docs/plans/maily-editor-overhaul.md, "New template flow").
-      // TODO(WS2b): `createTemplate` still validates this against the OLD
-      // blocks shape (`assertValidDoc`) and has no `docFormat` argument to
-      // accept yet — this call will 400 with `INVALID_DOC` until the
-      // backend lane lands format-aware validation dispatch. Written
-      // correctly against the target contract regardless (see
-      // `mailyDoc.ts`'s own TODO(WS2b)).
       const templateId = await run(
-        () => createTemplate({ scope: SCOPE, ...rest, doc: newTiptapDocSeed() }),
+        () =>
+          createTemplate({
+            scope: SCOPE,
+            ...rest,
+            doc: newTiptapDocSeed(),
+            docFormat: "tiptap",
+          }),
         { errorTitle: "Couldn't create the template" },
       );
       // `run` resolves undefined when it swallowed a failure — only navigate

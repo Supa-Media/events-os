@@ -128,6 +128,64 @@ describe("validateTiptapEmailDoc: happy paths", () => {
   });
 });
 
+// WS4, fidelity gap 2 fix: `doc.attrs.pwCanvasColor` — the page canvas
+// colour, authored on the document instead of a theme table. See
+// `validateDocAttrs` (this file) and `renderEmailTiptap`'s doc
+// (`packages/email-render/src/renderEmail.ts`) for the read side.
+describe("validateTiptapEmailDoc: doc.attrs.pwCanvasColor", () => {
+  test("a doc with no attrs at all is accepted", () => {
+    expect(validateTiptapEmailDoc({ type: "doc", content: [] })).toEqual({ ok: true });
+  });
+
+  test("attrs with no pwCanvasColor key is accepted", () => {
+    expect(validateTiptapEmailDoc({ type: "doc", attrs: {}, content: [] })).toEqual({ ok: true });
+  });
+
+  test("a valid 6-digit hex colour is accepted", () => {
+    expect(validateTiptapEmailDoc({ type: "doc", attrs: { pwCanvasColor: "#f0f1f5" }, content: [] })).toEqual({
+      ok: true,
+    });
+  });
+
+  test("a valid 3-digit hex colour is accepted", () => {
+    expect(validateTiptapEmailDoc({ type: "doc", attrs: { pwCanvasColor: "#fff" }, content: [] })).toEqual({
+      ok: true,
+    });
+  });
+
+  test("rejects a non-hex string", () => {
+    const result = validateTiptapEmailDoc({ type: "doc", attrs: { pwCanvasColor: "grey" }, content: [] });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain("pwCanvasColor");
+  });
+
+  test("rejects a javascript: value (this attr becomes a real CSS background, not an href/src, but still hostile input)", () => {
+    const result = validateTiptapEmailDoc({
+      type: "doc",
+      attrs: { pwCanvasColor: "javascript:alert(1)" },
+      content: [],
+    });
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects a non-string value", () => {
+    const result = validateTiptapEmailDoc({ type: "doc", attrs: { pwCanvasColor: 12345 }, content: [] });
+    expect(result.ok).toBe(false);
+  });
+
+  test("rejects attrs that isn't an object", () => {
+    const result = validateTiptapEmailDoc({ type: "doc", attrs: "nope", content: [] });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.error).toContain('"attrs" must be an object');
+  });
+
+  test("an unrelated doc-level attr is tolerated (validator only inspects pwCanvasColor)", () => {
+    expect(
+      validateTiptapEmailDoc({ type: "doc", attrs: { someOtherThing: "whatever" }, content: [] }),
+    ).toEqual({ ok: true });
+  });
+});
+
 // ── Hostile input ────────────────────────────────────────────────────────
 
 describe("validateTiptapEmailDoc: hostile input", () => {

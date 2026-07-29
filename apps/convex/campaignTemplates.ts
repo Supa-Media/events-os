@@ -72,9 +72,10 @@ import {
   requireCampaignsAccess,
 } from "./lib/campaignsAccess";
 import { isTemplateRow } from "./lib/campaignKind";
-import { applyThemeToDoc, docHasTheme, resolveThemeChoice } from "./campaigns";
-import { resolveScopeTheme } from "./emailThemes";
-import { validateEmailDocument } from "@events-os/shared";
+import { applyThemeToDoc, docHasTheme } from "./campaigns";
+import { resolveScopeTheme, throwThemesRetired } from "./emailThemes";
+import { emailDocFormatOf, validateEmailDocument, validateTiptapEmailDoc } from "@events-os/shared";
+import type { EmailDocFormat } from "@events-os/shared";
 import {
   assertValidTemplateDoc,
   seedBuiltInTemplates,
@@ -101,10 +102,20 @@ async function loadTemplate(ctx: MutationCtx, templateId: Id<"campaigns">): Prom
   return row;
 }
 
-/** Run a document through the shared write gate, raising this surface's
- *  `INVALID_DOC` (the same code `campaigns.ts` uses, so a client can handle
- *  one shape). */
-function assertValidDoc(doc: unknown) {
+/** Run a document through the write gate its `docFormat` names, raising this
+ *  surface's `INVALID_DOC` (the same code `campaigns.ts` uses, so a client
+ *  can handle one shape) — the templates-side twin of
+ *  `campaigns.ts#validateDocForFormat`. Pure dispatch only, no theme
+ *  stamping — see that function's own doc for why theme-stamping is each
+ *  CREATE-time call site's own concern rather than folded in here. */
+function assertValidDoc(docFormat: EmailDocFormat, doc: unknown) {
+  if (docFormat === "tiptap") {
+    const validated = validateTiptapEmailDoc(doc);
+    if (!validated.ok) {
+      throw new ConvexError({ code: "INVALID_DOC", message: validated.error });
+    }
+    return doc;
+  }
   const validated = validateEmailDocument(doc);
   if (!validated.ok) {
     throw new ConvexError({ code: "INVALID_DOC", message: validated.error });
@@ -115,14 +126,18 @@ function assertValidDoc(doc: unknown) {
 /**
  * THE duplication core — "start from template" and "save as template" are
  * the same operation (copy a document into a fresh row) run in opposite
- * directions; see this module's doc. Stamps the scope's default theme onto a
- * themeless source doc BEFORE validating (exactly like `campaigns.createCampaign`
- * does for a hand-built document), so the copy's look never depends on which
- * direction it came from. `subject` is always caller-supplied rather than
- * defaulted from `source.subject`: an email-kind target needs a real subject
- * the caller (or the UI) has already required, and a template-kind target
- * deliberately never carries one (`SaveAsTemplateAction`'s own promise: "not
- * its segment or subject").
+ * directions; see this module's doc. Copies the SOURCE row's `docFormat`
+ * (`schema/campaigns.ts`'s doc: set once at create time — a duplicate is a
+ * fresh row, so it re-derives its own format the same way, from what it was
+ * built FROM) — for a blocks-format source, stamps the scope's default theme
+ * onto a themeless source doc BEFORE validating (exactly like
+ * `campaigns.createCampaign` does for a hand-built document), so the copy's
+ * look never depends on which direction it came from; a tiptap-format source
+ * is never theme-stamped (tiptap docs carry no theme at all). `subject` is
+ * always caller-supplied rather than defaulted from `source.subject`: an
+ * email-kind target needs a real subject the caller (or the UI) has already
+ * required, and a template-kind target deliberately never carries one
+ * (`SaveAsTemplateAction`'s own promise: "not its segment or subject").
  */
 async function duplicateCampaignRow(
   ctx: MutationCtx,
@@ -137,10 +152,12 @@ async function duplicateCampaignRow(
     description?: string; // template only
   },
 ): Promise<Id<"campaigns">> {
-  const seeded = docHasTheme(source.doc)
-    ? source.doc
-    : applyThemeToDoc(source.doc, await resolveScopeTheme(ctx, opts.scope));
-  const doc = assertValidDoc(seeded);
+  const format = emailDocFormatOf(source);
+  const seeded =
+    format === "blocks" && !docHasTheme(source.doc)
+      ? applyThemeToDoc(source.doc, await resolveScopeTheme(ctx, opts.scope))
+      : source.doc;
+  const doc = assertValidDoc(format, seeded);
 
   const now = Date.now();
   const shared = {
@@ -149,6 +166,9 @@ async function duplicateCampaignRow(
     subject: opts.subject,
     previewText: source.previewText,
     doc,
+    // Absent-means-"blocks" — only stamp the column when it's actually
+    // "tiptap", matching `createCampaign`/`createTemplate`'s own rule.
+    docFormat: format === "tiptap" ? ("tiptap" as const) : undefined,
     status: "draft" as const,
     createdBy: opts.createdBy,
     createdAt: now,
@@ -233,9 +253,13 @@ export const createTemplate = mutation({
     name: v.string(),
     description: v.optional(v.string()),
     doc: v.optional(v.any()),
+    // Set ONCE, here, and IMMUTABLE thereafter — see `schema/campaigns.ts`'s
+    // `docFormat` doc. Absent (or `"blocks"`) behaves exactly as it always
+    // has; `"tiptap"` is the maily editor's document shape.
+    docFormat: v.optional(v.union(v.literal("blocks"), v.literal("tiptap"))),
   },
   returns: v.id("campaigns"),
-  handler: async (ctx, { scope, name, description, doc }) => {
+  handler: async (ctx, { scope, name, description, doc, docFormat }) => {
     await requireCampaignDesign(ctx);
     const userId = (await requireUserId(ctx)) as Id<"users">;
 
@@ -244,11 +268,15 @@ export const createTemplate = mutation({
       throw new ConvexError({ code: "EMPTY", message: "Name the template first." });
     }
 
-    const starting = doc ?? { blocks: [] };
-    const themed = docHasTheme(starting)
-      ? starting
-      : applyThemeToDoc(starting, await resolveScopeTheme(ctx, scope));
-    const validated = assertValidDoc(themed);
+    const format: EmailDocFormat = docFormat === "tiptap" ? "tiptap" : "blocks";
+    const starting = doc ?? (format === "tiptap" ? { type: "doc", content: [] } : { blocks: [] });
+    // Theme-stamp BLOCKS only — see `duplicateCampaignRow`'s identical rule;
+    // a tiptap document is never theme-stamped.
+    const themed =
+      format === "blocks" && !docHasTheme(starting)
+        ? applyThemeToDoc(starting, await resolveScopeTheme(ctx, scope))
+        : starting;
+    const validated = assertValidDoc(format, themed);
 
     const now = Date.now();
     return await ctx.db.insert("campaigns", {
@@ -257,6 +285,7 @@ export const createTemplate = mutation({
       subject: "",
       description: description?.trim() || undefined,
       doc: validated,
+      docFormat: format === "tiptap" ? "tiptap" : undefined,
       kind: "template",
       status: "draft",
       createdBy: userId,
@@ -364,7 +393,7 @@ export const updateTemplate = mutation({
   returns: v.null(),
   handler: async (ctx, { templateId, name, description, doc }) => {
     await requireCampaignDesign(ctx);
-    await loadTemplate(ctx, templateId);
+    const existing = await loadTemplate(ctx, templateId);
 
     const patch: Record<string, unknown> = { updatedAt: Date.now() };
     if (name !== undefined) {
@@ -375,22 +404,20 @@ export const updateTemplate = mutation({
       patch.name = trimmed;
     }
     if (description !== undefined) patch.description = description?.trim() || undefined;
-    if (doc !== undefined) patch.doc = assertValidDoc(doc);
+    // `docFormat` is IMMUTABLE — never accepted as an argument here. Validate
+    // against whatever format THIS row was created with, exactly like
+    // `campaigns.ts#updateCampaignDoc`.
+    if (doc !== undefined) patch.doc = assertValidDoc(emailDocFormatOf(existing), doc);
     await ctx.db.patch(templateId, patch);
     return null;
   },
 });
 
 /**
- * Restyle a template — the template twin of `campaigns.setCampaignTheme`, and
- * the reason a template's theme ROUND-TRIPS instead of quietly reverting.
- *
- * A template has no theme of its own beyond what's in `doc.theme`, so
- * restyling one is a document edit: resolve the choice (`resolveThemeChoice`,
- * shared with the campaign side so the two can never accept different things),
- * stamp it, revalidate, patch. There's no `assertEditable` twin here — a
- * template is never "in flight"; that guard exists on the campaign side
- * because a reviewer approved a particular-looking email.
+ * Themes freeze (2026-07-29) — retired, for EVERY row regardless of format.
+ * See `emailThemes.ts#throwThemesRetired`'s doc: a tiptap template carries no
+ * theme at all, and a blocks template keeps whatever snapshot it was created
+ * with.
  */
 export const setTemplateTheme = mutation({
   args: {
@@ -399,13 +426,14 @@ export const setTemplateTheme = mutation({
     presetName: v.optional(v.string()),
   },
   returns: v.null(),
-  handler: async (ctx, { templateId, themeId, presetName }) => {
+  // Explicit return type — a bare `return throwThemesRetired()` (which
+  // returns `never`) would otherwise make TypeScript infer this handler's
+  // return type as `Promise<never>` instead of widening to the declared
+  // `returns` validator's type, poisoning downstream callers' inferred types
+  // (see `emailThemes.ts#createTheme`'s identical note).
+  handler: async (ctx, { templateId, themeId, presetName }): Promise<null> => {
     await requireCampaignDesign(ctx);
-    const template = await loadTemplate(ctx, templateId);
-    const theme = await resolveThemeChoice(ctx, template.scope, { themeId, presetName });
-    const doc = assertValidDoc(applyThemeToDoc(template.doc, theme));
-    await ctx.db.patch(templateId, { doc, updatedAt: Date.now() });
-    return null;
+    return throwThemesRetired();
   },
 });
 

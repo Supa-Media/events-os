@@ -274,6 +274,19 @@ export const DEFAULT_COLUMN_PADDING_LEFT = 0;
 export const DEFAULT_INLINE_IMAGE_HEIGHT = 20;
 export const DEFAULT_INLINE_IMAGE_WIDTH = 20;
 
+// WS4 addition (fidelity gap 1 fix, 2026-07-29): an unfilled `pwBleedImage`
+// slot's placeholder band — see that method's doc. Deliberately theme-agnostic
+// hardcoded neutrals, not a `ThemeOptions` field: `DEFAULT_RENDERER_THEME`
+// (`theme.ts`) carries no "muted surface" token to borrow (that table only
+// ever styled real content), and this repo's standing decision is that page-
+// level brand colour lives IN THE DOCUMENT (`doc.attrs.pwCanvasColor` — see
+// `renderEmail.ts`'s `renderEmailTiptap`), not a theme table — so this stays
+// a fixed, always-legible grey rather than growing a second colour knob.
+export const PW_BLEED_IMAGE_PLACEHOLDER_HEIGHT = 96;
+export const PW_BLEED_IMAGE_PLACEHOLDER_BG = '#F3F4F6';
+export const PW_BLEED_IMAGE_PLACEHOLDER_FG = '#6B7280';
+export const PW_BLEED_IMAGE_PLACEHOLDER_LABEL = 'Artwork slot';
+
 export const LINK_PROTOCOL_REGEX = /https?:\/\//;
 
 export const DEFAULT_META_TAGS: MetaDescriptors = [
@@ -1143,6 +1156,13 @@ export class Maily {
    * doc's recon: "paragraph size is one global value per document" —
    * PW's testimonial-at-20px-in-a-16px-body case). Unset falls back to the
    * theme value, i.e. identical to a stock `paragraph`.
+   *
+   * Asymmetric with `pwHeading`, which grew a per-node `color` attr in the
+   * same pass: `pwParagraph` never did, so a per-run colour still has to go
+   * through the `textStyle` mark's `color` instead of an attr here (see
+   * `tiptapNewsletterTemplate.ts`'s `styledText` helper, which exists
+   * entirely because of this gap) — accepted for now, not a bug to silently
+   * work around.
    */
   private pwParagraph(node: JSONContent, options?: NodeOptions): React.JSX.Element {
     const { attrs } = node;
@@ -1486,6 +1506,18 @@ export class Maily {
       options
     );
 
+    // DEVIATION FROM UPSTREAM (WS4, fidelity gap 3 fix, 2026-07-29): upstream
+    // is `alt || title || 'Logo'`, which treats an authored `alt: ""` (the
+    // legal "decorative, on purpose" value the write gate accepts — see
+    // `tiptapEmail.ts`'s module doc) identically to a genuinely ABSENT alt,
+    // overriding it with the literal word "Logo". Only a truly missing attr
+    // (not a string at all) may fall back now; an authored empty string
+    // survives as `alt=""`, matching the blocks renderer's
+    // `cardImageHtml`/`renderFooterBlock` (`emailRender.ts`) which write
+    // `alt="${content.imageAlt ?? ""}"` the same way.
+    const hasAuthoredAlt = typeof alt === 'string';
+    const logoAlt = hasAuthoredAlt ? alt : title || 'Logo';
+
     return (
       <Row
         style={{
@@ -1495,7 +1527,7 @@ export class Maily {
       >
         <Column align={alignment}>
           <Img
-            alt={alt || title || 'Logo'}
+            alt={logoAlt}
             src={src}
             style={{
               width: logoSizes[size as AllowedLogoSizes] || size,
@@ -1541,9 +1573,22 @@ export class Maily {
     const imageWidth = width === 'auto' ? 'auto' : Number(width);
     const widthStyle = imageWidth === 'auto' ? 'auto' : `${imageWidth}px`;
 
+    // DEVIATION FROM UPSTREAM (WS4, fidelity gap 3 fix, 2026-07-29): upstream
+    // is `alt || title || 'Image'`, which treats an authored `alt: ""` (the
+    // write gate's legal "decorative, on purpose" value — see
+    // `tiptapEmail.ts`'s module doc) identically to a genuinely ABSENT alt,
+    // overriding it with the literal word "Image" — a real accessibility
+    // regression versus the blocks renderer's `cardImageHtml`
+    // (`emailRender.ts`), which writes `alt="${content.imageAlt ?? ""}"` and
+    // lets an authored empty string survive. Every card photo in
+    // `PUBLIC_WORSHIP_NEWSLETTER_TIPTAP` ships `alt: ""` on purpose; only a
+    // truly missing attr (not a string at all) may fall back here now.
+    const hasAuthoredAlt = typeof alt === 'string';
+    const imageAlt = hasAuthoredAlt ? alt : title || 'Image';
+
     const mainImage = (
       <Img
-        alt={alt || title || 'Image'}
+        alt={imageAlt}
         src={src}
         style={{
           width: widthStyle, // Use the calculated width
@@ -2208,6 +2253,26 @@ export class Maily {
    * `src`/`href` are re-checked here (`isAllowedImageUrl`/`isAllowedLinkUrl`,
    * `@events-os/shared`) as defense-in-depth on top of the write gate
    * (`validateTiptapEmailDoc`) — see this file's import comment for why.
+   *
+   * DEVIATION FROM UPSTREAM (WS4, fidelity gap 1 fix, 2026-07-29): this node
+   * doesn't exist upstream at all (see the "provenance" comment atop this
+   * file), so there's no prior behavior to preserve — but the FIRST version
+   * of this method, written for WS1, returned an empty fragment for an
+   * empty/invalid `src`, and WS4's fidelity gate (`newsletter.fidelity.
+   * test.ts`) caught it: `PUBLIC_WORSHIP_NEWSLETTER_TIPTAP` ships every
+   * artwork slot with `src: ""` (mirroring the blocks format's convention),
+   * and four of its eleven sections are `pwBleedImage` banners that carry
+   * their section heading AS the artwork — a template sent before artwork
+   * import silently lost those four sections' entire structure, with no
+   * `<img>`, no alt text, no trace. The blocks format's equivalent
+   * (`emailRender.ts#renderBleedImage`) never had this problem: an unfilled
+   * slot there draws a dashed "add artwork" band carrying the block's `alt`.
+   * Below mirrors that INTENT — a visible band that HOLDS THE GEOMETRY and
+   * carries whatever words the node's `alt` has — without inventing a new
+   * theme knob for it (see `PW_BLEED_IMAGE_PLACEHOLDER_*`'s own comment for
+   * why those are fixed neutrals, not a `ThemeOptions` field). Zero external
+   * requests (no `<img>` at all, so no broken-image icon either), and the
+   * same Outlook-safe `<table>` shape as the filled path below.
    */
   private pwBleedImage(node: JSONContent, options?: NodeOptions): React.JSX.Element {
     const { attrs } = node;
@@ -2221,17 +2286,66 @@ export class Maily {
     src = isSrcVariable ? this.variableUrlValue(src, options) : src;
     href = href ? this.linkValues.get(href) || href : href;
 
-    if (typeof src !== 'string' || !isAllowedImageUrl(src)) {
-      return <></>;
-    }
-    const safeHref = typeof href === 'string' && isAllowedLinkUrl(href) ? href : undefined;
-
     const { shouldRemoveBottomMargin } = this.getMarginOverrideConditions(
       node,
       options
     );
     const containerMaxWidth = this.config.theme?.container?.maxWidth;
     const maxWidth = typeof containerMaxWidth === 'string' ? containerMaxWidth : '600px';
+
+    const tableStyle: CSSProperties = {
+      width: '100%',
+      maxWidth,
+      marginLeft: 'auto',
+      marginRight: 'auto',
+      marginTop: 0,
+      marginBottom: shouldRemoveBottomMargin ? 0 : 32,
+    };
+
+    if (typeof src !== 'string' || !isAllowedImageUrl(src)) {
+      const label =
+        typeof alt === 'string' && alt.trim().length > 0
+          ? alt
+          : PW_BLEED_IMAGE_PLACEHOLDER_LABEL;
+
+      return (
+        <table
+          align="center"
+          width="100%"
+          border={0}
+          cellPadding="0"
+          cellSpacing="0"
+          role="presentation"
+          style={tableStyle}
+        >
+          <tbody>
+            <tr style={{ width: '100%' }}>
+              <td
+                align="center"
+                valign="middle"
+                style={{
+                  padding: 0,
+                  height: `${PW_BLEED_IMAGE_PLACEHOLDER_HEIGHT}px`,
+                  background: PW_BLEED_IMAGE_PLACEHOLDER_BG,
+                  textAlign: 'center',
+                  fontFamily:
+                    this.config.theme?.font?.fontFamily ||
+                    'Inter,-apple-system,sans-serif',
+                  fontSize: '13px',
+                  fontWeight: 600,
+                  letterSpacing: '0.08em',
+                  textTransform: 'uppercase',
+                  color: PW_BLEED_IMAGE_PLACEHOLDER_FG,
+                }}
+              >
+                {label}
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      );
+    }
+    const safeHref = typeof href === 'string' && isAllowedLinkUrl(href) ? href : undefined;
 
     const image = (
       <Img
@@ -2256,14 +2370,7 @@ export class Maily {
         cellPadding="0"
         cellSpacing="0"
         role="presentation"
-        style={{
-          width: '100%',
-          maxWidth,
-          marginLeft: 'auto',
-          marginRight: 'auto',
-          marginTop: 0,
-          marginBottom: shouldRemoveBottomMargin ? 0 : 32,
-        }}
+        style={tableStyle}
       >
         <tbody>
           <tr style={{ width: '100%' }}>

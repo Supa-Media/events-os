@@ -117,14 +117,8 @@ export function CampaignsListView() {
                 audienceId: audienceId as Id<"audiences">,
                 // "New documents are maily-format from now on"
                 // (docs/plans/maily-editor-overhaul.md, "New template flow").
-                // TODO(WS2b): `createCampaign` still validates this against
-                // the OLD blocks shape (`validateEmailDocument`) and has no
-                // `docFormat` argument to accept yet — this call will 400
-                // with `INVALID_DOC` until the backend lane lands
-                // format-aware validation dispatch. Written correctly
-                // against the target contract regardless (see
-                // `mailyDoc.ts`'s own TODO(WS2b)).
                 doc: newTiptapDocSeed(),
+                docFormat: "tiptap",
               })
             : createFromTemplate({
                 templateId: templateId as Id<"campaigns">,
@@ -259,8 +253,8 @@ function DesignerDeskCard() {
     <Card style={styles.creator}>
       <Text className="text-sm text-muted">
         The emails themselves are written by whoever holds compose power. Yours
-        is what they&apos;re built from — the themes, the saved templates and
-        the image library.
+        is what they&apos;re built from — the saved templates and the image
+        library.
       </Text>
       <View style={styles.designerActions}>
         <Button
@@ -268,12 +262,6 @@ function DesignerDeskCard() {
           icon="bookmark"
           variant="secondary"
           onPress={() => router.push("/campaigns/templates" as never)}
-        />
-        <Button
-          title="Themes"
-          icon="droplet"
-          variant="secondary"
-          onPress={() => router.push("/campaigns/themes" as never)}
         />
       </View>
     </Card>

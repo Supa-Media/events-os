@@ -26,19 +26,20 @@ import { Text, View } from "react-native";
 import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import type { EmailDocument } from "@events-os/shared";
+import { findPollNodes } from "@events-os/shared";
 import { Card, SectionHeader } from "../ui";
 
 /** Statuses where a send has begun — the point at which votes can exist. */
 const SENT_STATUSES = new Set(["sending", "sent", "failed"]);
 
-/** True when `doc` carries at least one poll block. Read defensively: `doc` is
- *  `v.any()` on the wire and a campaign written by a newer client could carry
- *  a block shape this build doesn't know. */
+/** True when `doc` carries at least one poll, EITHER format — the same
+ *  shared, format-dual walk the backend now uses
+ *  (`campaignPolls.ts#pollBlocksOf`), replacing this component's own
+ *  blocks-only `kind === "poll"` sniff so the two can never disagree about
+ *  what a poll is again (`@events-os/shared`'s `findPollNodes`, which is
+ *  total and reads defensively — `doc` is `v.any()` on the wire). */
 function hasPollBlock(doc: unknown): boolean {
-  if (typeof doc !== "object" || doc === null) return false;
-  const blocks = (doc as Partial<EmailDocument>).blocks;
-  return Array.isArray(blocks) && blocks.some((b) => b?.kind === "poll");
+  return findPollNodes(doc).length > 0;
 }
 
 export function CampaignPollResults({

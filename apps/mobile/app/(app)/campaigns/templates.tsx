@@ -3,7 +3,7 @@
  * describe, remove). Body lives in
  * `components/campaign/CampaignTemplatesView.tsx` (see that file for why).
  *
- * Gated the same way `campaigns/themes.tsx` gates its own screen: check
+ * Gated the same way every other Emails-desk screen does: check
  * `audiences.myCampaignsAccess` BEFORE rendering the body, so a
  * non-privileged caller who deep-links here never fires the gated
  * `campaignTemplates.listTemplates` query — it throws `FORBIDDEN`

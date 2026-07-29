@@ -29,6 +29,9 @@ importers:
       '@convex-dev/auth':
         specifier: ^0.0.90
         version: 0.0.90(@auth/core@0.37.4)(convex@1.41.0(react@19.1.0))(react@19.1.0)
+      '@events-os/email-render':
+        specifier: workspace:*
+        version: link:../../packages/email-render
       '@events-os/shared':
         specifier: workspace:*
         version: link:../../packages/shared

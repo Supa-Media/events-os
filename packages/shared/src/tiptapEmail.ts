@@ -42,6 +42,18 @@
  *     vote tally at count time (`apps/convex/campaignPolls.ts`), which is a
  *     worse failure than a loud rejection at save time. Same reasoning
  *     `emailBlocks.ts`'s poll block validation already uses.
+ *   - `doc.attrs.pwCanvasColor` (WS4, fidelity gap 2 fix): the page-canvas
+ *     colour behind the 600px container. Themes-the-system are dead (a
+ *     founder decision — see `renderEmailTiptap`'s doc, `email-render/src/
+ *     renderEmail.ts`) so this colour lives IN THE DOCUMENT, not a theme
+ *     table, which means it is now authored data that reaches a real CSS
+ *     `background` — the same class of write-gate concern as an href/src,
+ *     just for a colour instead of a URL. A non-hex string here wouldn't
+ *     throw at render (`renderEmailTiptap` treats an invalid value as
+ *     "absent", see that function's doc) but WOULD silently paint nothing
+ *     while the author believed they'd set a page colour, so it's rejected
+ *     loudly here instead — same "fail at save time, not send time"
+ *     reasoning as every other check in this file.
  *
  * ── URL scheme allowlist (SECURITY) ─────────────────────────────────────────
  * PORTED from `emailBlocks.ts`'s `isAllowedLinkUrl`/`isAllowedImageUrl` (see
@@ -57,6 +69,7 @@
  */
 
 import { MAX_POLL_OPTIONS, MIN_POLL_OPTIONS } from "./emailBlocks";
+import { isHexColor } from "./emailTheme";
 
 // ── Node/mark whitelists ─────────────────────────────────────────────────
 //
@@ -352,6 +365,25 @@ function validateNode(node: unknown, path: string, depth: number, budget: NodeBu
 export type ValidateTiptapEmailDocResult = { ok: true } | { ok: false; error: string };
 
 /**
+ * Doc-level `attrs` — NOT a node, so `validateNode`'s per-node walk never
+ * touches this; it is checked once, directly on the top-level `doc` object.
+ * The only doc-level attr the write gate knows about today is
+ * `pwCanvasColor` (see this file's module doc, the `doc.attrs.pwCanvasColor`
+ * bullet) — `undefined`/absent is fine (white canvas, `renderEmailTiptap`'s
+ * documented default); present-but-not-a-valid-hex-string is rejected
+ * outright rather than silently ignored, so a typo'd colour fails loud at
+ * save time instead of quietly not painting anything at send time.
+ */
+function validateDocAttrs(attrs: Record<string, unknown>): string | null {
+  if (attrs.pwCanvasColor !== undefined) {
+    if (typeof attrs.pwCanvasColor !== "string" || !isHexColor(attrs.pwCanvasColor)) {
+      return '"attrs.pwCanvasColor" must be a hex colour like #f0f1f5';
+    }
+  }
+  return null;
+}
+
+/**
  * Validate an unknown value as a tiptap `JSONContent` email document — the
  * WRITE gate for `docFormat: "tiptap"` campaigns (composer save / approval
  * submit; wiring is a later lane's job, see `docs/plans/maily-editor-
@@ -364,6 +396,12 @@ export function validateTiptapEmailDoc(doc: unknown): ValidateTiptapEmailDocResu
   if (!isPlainObject(doc)) return { ok: false, error: "document must be an object" };
   if (doc.type !== "doc") return { ok: false, error: '"type" must be "doc"' };
   if (!Array.isArray(doc.content)) return { ok: false, error: '"content" must be an array' };
+
+  if (doc.attrs !== undefined) {
+    if (!isPlainObject(doc.attrs)) return { ok: false, error: '"attrs" must be an object' };
+    const attrsErr = validateDocAttrs(doc.attrs);
+    if (attrsErr) return { ok: false, error: attrsErr };
+  }
 
   const budget: NodeBudget = { nodes: 0 };
   for (let i = 0; i < doc.content.length; i++) {

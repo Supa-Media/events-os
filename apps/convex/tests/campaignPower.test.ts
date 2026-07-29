@@ -391,12 +391,16 @@ describe("campaigns.design — the desk's bottom rung", () => {
     });
   });
 
-  test("a design-only holder owns the shared design system: themes, templates, images", async () => {
+  test("a design-only holder owns the shared design system: templates, images — themes are frozen for everyone", async () => {
     const s = await designerSetup();
 
-    // Themes — create, then edit.
-    const themeId = await s.as.mutation(api.emailThemes.createTheme, themeArgs());
-    await s.as.mutation(api.emailThemes.updateTheme, { themeId, accent: "#891d1a" });
+    // Themes are RETIRED (2026-07-29) — even the design-only holder who used
+    // to own this surface gets THEMES_RETIRED, not FORBIDDEN: the access gate
+    // still runs first (this caller genuinely holds `campaigns.design`), but
+    // the write itself is gone for everyone. See `emailThemes.ts#throwThemesRetired`.
+    await expect(
+      s.as.mutation(api.emailThemes.createTheme, themeArgs()),
+    ).rejects.toMatchObject({ data: { code: "THEMES_RETIRED" } });
 
     // Templates — write and archive one.
     const templateId = await run(s.t, (ctx) =>
@@ -467,14 +471,19 @@ describe("campaigns.design — the desk's bottom rung", () => {
         blocks: [{ id: "b1", kind: "heading", text: "This month", level: 1 }],
       },
     });
-    await s.as.mutation(api.campaignTemplates.setTemplateTheme, {
-      templateId,
-      presetName: "Public Worship",
-    });
+    // Restyling is retired (2026-07-29) — even for the design-only holder who
+    // used to own this. See `emailThemes.ts#throwThemesRetired`.
+    await expect(
+      s.as.mutation(api.campaignTemplates.setTemplateTheme, {
+        templateId,
+        presetName: "Public Worship",
+      }),
+    ).rejects.toMatchObject({ data: { code: "THEMES_RETIRED" } });
 
     const saved = await s.as.query(api.campaignTemplates.getTemplate, { templateId });
     expect(saved.doc.blocks).toHaveLength(1);
-    expect(saved.doc.theme?.name).toBe("Public Worship");
+    // The theme is untouched — it never changed since creation.
+    expect(saved.doc.theme?.name).toBe(fresh.doc.theme?.name);
 
     // And the write gate is the campaign's own — a template that saves but
     // could never be sent is a trap.
@@ -699,10 +708,13 @@ describe("campaigns.design — the desk's bottom rung", () => {
       templateId,
       doc: { blocks: [{ id: "b1", kind: "heading", text: "Hello", level: 1 }] },
     });
-    await s.as.mutation(api.campaignTemplates.setTemplateTheme, {
-      templateId,
-      presetName: "Public Worship",
-    });
+    // Restyling is retired (2026-07-29) — see `emailThemes.ts#throwThemesRetired`.
+    await expect(
+      s.as.mutation(api.campaignTemplates.setTemplateTheme, {
+        templateId,
+        presetName: "Public Worship",
+      }),
+    ).rejects.toMatchObject({ data: { code: "THEMES_RETIRED" } });
     await s.as.mutation(api.campaignTemplates.archiveTemplate, { templateId });
     const archived = await run(s.t, (ctx) => ctx.db.get(templateId));
     expect(archived?.archived).toBe(true);

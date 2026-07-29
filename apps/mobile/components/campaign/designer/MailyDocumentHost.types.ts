@@ -34,8 +34,8 @@ export type MailyMetaFieldsProps = {
 export type MailyDocumentHostProps = {
   /** Needed for the server-rendered preview action
    *  (`api.emailPreview.renderCampaignPreview({ campaignId })` — see
-   *  `lib/emailPreview.ts`'s TODO(WS2b)) and nothing else; the host never
-   *  reads/writes the row directly. */
+   *  `lib/emailPreview.ts`) and nothing else; the host never reads/writes
+   *  the row directly. */
   campaignId: Id<"campaigns">;
   /** The stored tiptap document. `undefined` while `campaign`/`template` is
    *  still loading — mirrors `BlocksDocumentComposer`'s `doc` prop. */
@@ -45,12 +45,10 @@ export type MailyDocumentHostProps = {
   editable: boolean;
   /** Why it's locked, in the caller's own words. Only shown when `!editable`. */
   lockedNotice?: string;
-  /** Persist the document with `docFormat: "tiptap"` via the existing
-   *  doc-save path. MUST reject on failure (mirrors `BlocksDocumentComposer`'s
-   *  `onSave`). TODO(WS2b): the underlying mutation
-   *  (`campaigns.updateCampaignDoc` / `campaignTemplates.updateTemplate`)
-   *  doesn't accept a tiptap-shaped `doc` yet — see this prop's caller in
-   *  `DocumentComposer.tsx` for the exact gate. */
+  /** Persist the document via the existing doc-save path
+   *  (`campaigns.updateCampaignDoc` / `campaignTemplates.updateTemplate`,
+   *  which dispatch on the row's own `docFormat` — WS2b). MUST reject on
+   *  failure (mirrors `BlocksDocumentComposer`'s `onSave`). */
   onSave: (doc: JSONContent) => Promise<unknown>;
   /** Surfaces failures (uploads) — the screen owns the toast/Alert. */
   run: ActionRunner["run"];
