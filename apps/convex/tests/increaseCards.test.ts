@@ -601,7 +601,7 @@ describe("Increase card ingestion — transaction.created webhook", () => {
 
 // ── ops backfill ─────────────────────────────────────────────────────────────
 
-describe("backfillIncreaseCardTransactions", () => {
+describe("backfillIncreaseTransactions", () => {
   test("pages a full history for the chapter's account and dedups", async () => {
     const t = newT();
     const s = await setupChapter(t);
