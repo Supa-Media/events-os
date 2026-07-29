@@ -57,6 +57,7 @@ import {
   ToastView,
 } from "../../../components/ui";
 import { useActionRunner } from "../../../lib/useActionToast";
+import { confirmAction } from "../../../components/campaign/helpers";
 import { DocumentComposer } from "../../../components/campaign/designer/DocumentComposer";
 import { useDesignerImageUploader } from "../../../components/campaign/designer/useImageUploader";
 
@@ -93,7 +94,33 @@ function TemplateDesignBody({
 
   const template = useQuery(api.campaignTemplates.getTemplate, { templateId });
   const updateTemplate = useMutation(api.campaignTemplates.updateTemplate);
+  const resetBuiltInTemplate = useMutation(api.campaignTemplates.resetBuiltInTemplate);
   const { run, toast, dismiss } = useActionRunner();
+
+  // The runtime escape hatch for "I just typed test content into the
+  // built-in newsletter and autosave already wrote it" — the deploy-time
+  // reseed (`campaignTemplates.ts#resetBuiltInTemplate`'s own doc) restores a
+  // drifted built-in too, but only the next time something ELSE re-invokes
+  // the seeder, which could be hours away. Only shown for a built-in row —
+  // there is no "shipped default" to reset an authored template back to.
+  function handleReset() {
+    if (!template) return;
+    confirmAction({
+      title: "Reset to the shipped default?",
+      message: `This throws away every change made to “${template.name}” since it was seeded and restores the version that ships with the app.`,
+      confirmLabel: "Reset",
+      destructive: true,
+      onConfirm: () => {
+        // No separate success toast needed: `getTemplate` is a live query, so
+        // the composer's own content flips back to the shipped default the
+        // instant this mutation commits — the same reactive feedback every
+        // other autosave in this screen already relies on.
+        void run(() => resetBuiltInTemplate({ templateId }), {
+          errorTitle: "Couldn't reset the template",
+        });
+      },
+    });
+  }
 
   const saveDoc = useCallback(
     (doc: EmailDocument) => updateTemplate({ templateId, doc }),
@@ -120,18 +147,23 @@ function TemplateDesignBody({
           <Badge label="Template" tone="neutral" />
           {template.isBuiltIn ? <Badge label="Built-in" tone="neutral" /> : null}
         </View>
-        {/* `back()` with a `replace` deep-link fallback — the composer is
-            always opened FROM the library, and pushing a second copy of the
-            library would leave "back" walking through duplicates. Matches
-            `campaign/[id]/design.tsx`. */}
-        <Button
-          title="Done"
-          variant="secondary"
-          onPress={() => {
-            if (router.canGoBack()) router.back();
-            else router.replace("/campaigns/templates" as never);
-          }}
-        />
+        <View className="flex-row flex-wrap items-center gap-2">
+          {template.isBuiltIn && canDesign ? (
+            <Button title="Reset to default" variant="secondary" onPress={handleReset} />
+          ) : null}
+          {/* `back()` with a `replace` deep-link fallback — the composer is
+              always opened FROM the library, and pushing a second copy of the
+              library would leave "back" walking through duplicates. Matches
+              `campaign/[id]/design.tsx`. */}
+          <Button
+            title="Done"
+            variant="secondary"
+            onPress={() => {
+              if (router.canGoBack()) router.back();
+              else router.replace("/campaigns/templates" as never);
+            }}
+          />
+        </View>
       </View>
       <Text className="mb-3 text-xs text-muted">
         Edits save as you type and change this template only — an email copies
