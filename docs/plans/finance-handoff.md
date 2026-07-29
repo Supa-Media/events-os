@@ -69,7 +69,7 @@ queue below + whatever the owner asks next. Read fully before touching finance c
 
 ## Open queue
 **Blocked on owner** (nag politely): (1) new prod INCREASE_API_KEY → 1Password → targeted
-sync → then run `increase:backfillChapterAccounts` (creates central acct, adopts NY);
+sync → then run `increaseProvision:backfillChapterAccounts` (creates central acct, adopts NY);
 (2) RTD + digital-wallet-tokenization enablement request to Increase
 (program_3lxxmr4tc9wazoonyi7y); (3) Visa-templated card art → then the #160 ops sequence;
 (4) OpenRouter free-model data-retention decision (PII-minimized already, model id is a

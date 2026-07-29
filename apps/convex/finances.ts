@@ -1020,8 +1020,10 @@ async function loadPeriodTxns(
  * vice-versa). A null id, or any non-Increase source (manual / reimbursement /
  * repayment / stripe_fc), is environment-NEUTRAL and always kept.
  *
- * NOTE: no code inserts `increase_*` transactions yet, so this is a LATENT-leak
- * guard — a no-op today, in place before the Increase sync phase lands.
+ * `increase_*` rows are written by `increaseLedger.ts` (card charges as
+ * `increase_card`, all other account activity as `increase_ach`), each
+ * stamped with its Increase transaction id in `externalId` — the prefix this
+ * gate reads.
  *
  * Exported for `transfers.ts#interScopeBalances` (WP-4.5), which applies this
  * same gate to the underlying card/ACH spend it cross-attributes.
@@ -7534,8 +7536,8 @@ export const listTransactions = query({
     const chapterId = await readChapterId(ctx);
     if (!chapterId) return emptyPage;
     await requireFinanceRole(ctx, chapterId, "viewer");
-    // Defensively drop cross-environment increase_* txns (latent-leak guard —
-    // no code writes them yet). A null-id / non-Increase txn is env-neutral.
+    // Drop cross-environment increase_* txns (a `sandbox_` id while in
+    // production, or vice versa). A null-id / non-Increase txn is env-neutral.
     const sandboxMode = await readSandbox(ctx);
     const result = await ctx.db
       .query("transactions")

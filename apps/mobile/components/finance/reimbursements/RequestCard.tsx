@@ -17,7 +17,7 @@
  * "Approve lines…" opens an inline per-line checkbox selector that submits
  * `approve({ approvedLineIds })` (partial approval); "Approve & pay" submits
  * `approve({})` (all lines) — the parent (`index.tsx`'s `handleApprove`)
- * follows either with `api.increase.payReimbursement` to auto-pay. Both
+ * follows either with `api.increasePayouts.payReimbursement` to auto-pay. Both
  * surface the server-side separation-of-duties error via the parent's action
  * runner.
  */
@@ -43,8 +43,8 @@ import {
   type ReimbursementLine,
 } from "./helpers";
 
-/** A payout summary as returned by `api.increase.listPayouts` (optional hint). */
-type Payout = FunctionReturnType<typeof api.increase.listPayouts>[number];
+/** A payout summary as returned by `api.increasePayouts.listPayouts` (optional hint). */
+type Payout = FunctionReturnType<typeof api.increasePayouts.listPayouts>[number];
 
 /** `get`'s per-line shape, extended locally with `transactionDate` — a field
  *  the backend contract adds (every line now carries the date it was

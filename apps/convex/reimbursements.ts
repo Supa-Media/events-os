@@ -876,7 +876,7 @@ async function createExternalAccountRaw(
     funding?: ExternalAccountFunding;
   },
 ): Promise<{ externalAccountId: string; last4: string } | null> {
-  return await ctx.runAction(internal.increase.createExternalAccount, {
+  return await ctx.runAction(internal.increaseExternalAccounts.createExternalAccount, {
     routingNumber: args.routingNumber,
     accountNumber: args.accountNumber,
     accountHolderName: (args.accountHolderName.trim() || "Reimbursement payee").slice(
@@ -1656,7 +1656,7 @@ export const list = query({
  * chapter opts OUT by explicitly setting it `false`. Read by the manager
  * queue (`index.tsx`'s `handleApprove`) to decide whether to follow a
  * successful `approve`/`approve({approvedLineIds})` with
- * `api.increase.payReimbursement`; the payout call itself stays fully gated
+ * `api.increasePayouts.payReimbursement`; the payout call itself stays fully gated
  * (manager role + disbursement SoD) regardless of this flag.
  */
 export const autoPayEnabled = query({

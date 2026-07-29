@@ -829,7 +829,7 @@ export const issueCard = action({
     // Increase nests this under `digital_wallet` (grounded against the Cards
     // resource's create body), not at the top level.
     const cardArtProfileId: string | null = await ctx.runQuery(
-      internal.increase.getCardArtProfileId,
+      internal.increaseCardArt.getCardArtProfileId,
       { sandbox: isSandboxObjectId(prep.increaseAccountId) },
     );
 
@@ -3125,7 +3125,7 @@ export const linkRepaymentBankAccount = action({
       { repaymentId: args.repaymentId },
     );
 
-    const created = await ctx.runAction(internal.increase.createExternalAccount, {
+    const created = await ctx.runAction(internal.increaseExternalAccounts.createExternalAccount, {
       routingNumber,
       accountNumber,
       accountHolderName: (args.accountHolderName?.trim() || prep.payerName).slice(

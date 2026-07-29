@@ -719,7 +719,12 @@ export const personalRepayments = defineTable({
 })
   .index("by_chapter", ["chapterId"])
   .index("by_person", ["payerPersonId"])
-  .index("by_transaction", ["transactionId"]);
+  .index("by_transaction", ["transactionId"])
+  // Match an ingested Increase account entry (its `ach_transfer_intention.
+  // transfer_id`) back to the repayment whose ACH debit it settles, so
+  // `increaseLedger.applyIncreaseAccountTransaction` can skip it — the
+  // offsetting credit already posts as `source:"repayment"` at settle.
+  .index("by_increase_ref", ["increaseRef"]);
 
 // ── Payouts (ACH from the chapter's Increase account) ────────────────────────
 /** An ACH payout originating from the chapter's Increase account. Idempotency-

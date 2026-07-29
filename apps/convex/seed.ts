@@ -813,7 +813,7 @@ export const ensureChapters = internalMutation({
     // chapter-creation flow ships, it should schedule the same action.
     await ctx.scheduler.runAfter(
       0,
-      internal.increase.provisionAccountForScope,
+      internal.increaseProvision.provisionAccountForScope,
       { scope: chapterId },
     );
 

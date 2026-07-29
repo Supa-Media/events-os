@@ -722,7 +722,7 @@ describe("central-loop e2e: a real ingestion path chains through to the dashboar
         updatedAt: when,
       }),
     );
-    const ingest = await t.mutation(internal.increase.applyIncreaseCardTransaction, {
+    const ingest = await t.mutation(internal.increaseLedger.applyIncreaseCardTransaction, {
       externalId: "transaction_central_e2e",
       accountId: "account_central_e2e",
       flow: "outflow",
