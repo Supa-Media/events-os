@@ -2033,3 +2033,4 @@ export * from "./newsletterAssets";
 
 // ── @mention markup for plain-text notes fields ───────────────────────────────
 export * from "./mentions";
+export * from "./emailDocFormat";
