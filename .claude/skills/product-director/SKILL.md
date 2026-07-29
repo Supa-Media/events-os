@@ -287,6 +287,43 @@ Before finishing a run of this skill, you MUST:
 
 ## Learnings Log (newest first)
 
+### 2026-07-29 — Run 12 (5 editor UX fixes + the "janky" chrome that wasn't)
+- **"Browser-verified" is only as good as the SURFACE you actually rendered —
+  and a harness styles some surfaces but not others.** I browser-verified 5
+  editor fixes against the esbuild harness and sent the founder screenshots;
+  she called the result "really janky." She was reading UNSTYLED chrome. The
+  maily DOCUMENT renders via maily's own vendored CSS (which the harness
+  bundles), so it looked right — but the surrounding APP chrome (font control,
+  image row, meta fields) styles via NativeWind `className`, which a plain
+  esbuild bundle never processes, so it collapsed to stacked plain text. I
+  proved the fixes FUNCTION and mistook that for proving they LOOK right — the
+  exact Run 9 miss ("verified the wrong thing") in a new disguise. Before
+  presenting any harness screenshot as "how it looks," know which parts of the
+  UI that harness actually styles, and never let styleless chrome read as
+  representative.
+- **The fix that makes a RN-Web harness faithful:** `jsxImportSource:
+  "nativewind"` in the esbuild config (the real mechanism the app's own
+  `babel.config.js` uses — `react-native-web`'s `View`/`Text` otherwise attach
+  a baseline atomic style class that CLOBBERS any author `className`, so a
+  compiled stylesheet alone is silently dropped) + compile the app's real
+  `tailwind.config` so custom tokens (`bg-accent`, `text-faint`, …) resolve to
+  real values. Then confirm styling took via `getComputedStyle`, never by
+  assuming the CSS "should" apply. Once faithful, most of the "jank" evaporated
+  — but it still surfaced two real issues (an over-wide 3-label font pill; a
+  dead read-only row), so the faithful render both exonerated AND improved.
+- **New founder directive, quoted: "merge, always merge."** Said after I held
+  PR #468 green for her visual nod. Standing rule now: don't gate a merge on
+  approval — merge on green and iterate after (merge-then-iterate is her
+  model). Still SEND the proof; just don't block on it.
+- **Merged-PR branch-restart flow, executed cleanly (first time it came up
+  live):** the designated branch's PR squash-merged, so its remote tip was
+  stale pre-squash history. Restart branch from `origin/main`, then
+  force-with-lease over the stale remote — but FIRST prove the remote carried
+  no unmerged work via a CONTENT diff (`git diff origin/main origin/branch`),
+  not `git cherry` (squash-merges always show every source commit as `+`, a
+  false "unmerged" signal). Direction of the diff (deletions vs insertions)
+  told me main was strictly ahead.
+
 ### 2026-07-29 — Run 11 (maily.to overhaul: editor replaced, themes retired, templates merged)
 - **Whole-system-replacement asks: recon, don't relitigate.** "I kind of hate
   the system we have right now… use maily.to instead" after two rounds of
