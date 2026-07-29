@@ -52,7 +52,7 @@ import type { ThemeChoice } from "../../../components/campaign/designer/Campaign
 
 export default function CampaignTemplateDesignScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
-  const templateId = id as Id<"campaignTemplates">;
+  const templateId = id as Id<"campaigns">;
   const access = useQuery(api.audiences.myCampaignsAccess, {});
 
   if (access === undefined) return <Screen loading />;
@@ -76,7 +76,7 @@ function TemplateDesignBody({
   templateId,
   canDesign,
 }: {
-  templateId: Id<"campaignTemplates">;
+  templateId: Id<"campaigns">;
   canDesign: boolean;
 }) {
   const router = useRouter();

@@ -390,3 +390,66 @@ describe("re-send does not enable ballot stuffing", () => {
     expect(results[0].totalVotes).toBe(1);
   });
 });
+
+// ── Template-kind rows (the templates merge's kind boundary, 2026-07-29) ────
+
+/**
+ * A template-kind row can never legitimately reach `campaignRecipients` —
+ * nothing on the send path ever materializes one for it (`campaigns.ts`'s
+ * `submitForApproval`/`send`/`materializeRecipients` all refuse a
+ * template-kind row structurally before that could happen — see
+ * `lib/campaignKind.ts`'s doc). These tests forge the row BY HAND to prove
+ * the `isTemplateRow` check inside `resolvePollContext` itself is what stops
+ * a vote, not merely "no such token exists."
+ */
+describe("template-kind rows never resolve a poll (defense in depth)", () => {
+  async function seedTemplateWithForgedRecipient(s: ChapterSetup): Promise<PollFixture> {
+    return run(s.t, async (ctx) => {
+      const campaignId = await ctx.db.insert("campaigns", {
+        scope: "central",
+        name: "Newsletter shell",
+        subject: "",
+        doc: pollDoc(),
+        kind: "template",
+        status: "draft",
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      const token = `poll-token-${tokenSeq++}`;
+      const recipientId = await ctx.db.insert("campaignRecipients", {
+        campaignId,
+        email: "forged@example.com",
+        status: "queued",
+        unsubscribeToken: token,
+      });
+      return { campaignId, tokens: [token], recipientIds: [recipientId] };
+    });
+  }
+
+  test("GET /poll/ 404s for a template-kind row even with a real recipient row", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const { campaignId, tokens } = await seedTemplateWithForgedRecipient(s);
+    const res = await t.fetch(pollPath(campaignId, tokens[0]), { method: "GET" });
+    expect(res.status).toBe(404);
+  });
+
+  test("POST /poll/ 404s and records no vote for a template-kind row", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const { campaignId, tokens } = await seedTemplateWithForgedRecipient(s);
+    const res = await t.fetch(pollPath(campaignId, tokens[0]), { method: "POST" });
+    expect(res.status).toBe(404);
+    expect(await allVotes(t)).toHaveLength(0);
+  });
+
+  test("getPollResults refuses a template-kind row like a missing campaign", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const { campaignId } = await seedTemplateWithForgedRecipient(s);
+    await expect(
+      s.as.query(api.campaignPolls.getPollResults, { campaignId }),
+    ).rejects.toMatchObject({ data: { code: "NOT_FOUND" } });
+  });
+});

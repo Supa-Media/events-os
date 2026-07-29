@@ -117,7 +117,7 @@ export function CampaignsListView() {
                 doc: { blocks: [] },
               })
             : createFromTemplate({
-                templateId: templateId as Id<"campaignTemplates">,
+                templateId: templateId as Id<"campaigns">,
                 name: trimmedSubject,
                 subject: trimmedSubject,
                 audienceId: audienceId as Id<"audiences">,

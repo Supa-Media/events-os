@@ -1,7 +1,15 @@
 /**
- * Campaign templates — saved starting documents for the composer
- * (`schema/campaigns.ts#campaignTemplates`). CENTRAL-only
- * (`lib/campaignsAccess.ts`).
+ * Campaign templates — saved starting documents for the composer. Since the
+ * templates merge (2026-07-29, founder decision — see `schema/campaigns.ts`'s
+ * `kind` doc and `docs/plans/maily-editor-overhaul.md`'s §Data model), a
+ * template is a `kind: "template"` row in the `campaigns` table, NOT a row
+ * in the (now-frozen) `campaignTemplates` table this module is named after —
+ * the module keeps its name and public function signatures so every existing
+ * caller (mobile, tests) keeps working, but every function below reads and
+ * writes `campaigns` rows. `lib/campaignKind.ts#isTemplateRow` is the ONE
+ * predicate that classifies a row; every function here uses it (via
+ * `loadTemplate`) rather than re-deriving "is this a template" itself.
+ * CENTRAL-only (`lib/campaignsAccess.ts`).
  *
  * ── Who can do what here ───────────────────────────────────────────────────
  * Templates are SHARED — archiving the built-in newsletter takes it away from
@@ -13,6 +21,17 @@
  * A CAMPAIGN, so it requires `campaigns.compose` (`requireCampaignCompose`),
  * which a design-only Graphic Designer deliberately does NOT hold.
  *
+ * ── The row-kind boundary (Run-10 escalation class, designed in this time) ──
+ * Before the merge, the TABLE a row lived in was doing this work for free: a
+ * `campaignTemplates` row simply couldn't be reached by anything in
+ * `campaigns.ts`, and vice versa. Now both kinds share one table, so every
+ * function below that loads a row BY ID re-asserts its kind explicitly
+ * (`loadTemplate` → `requireTemplateKindRow`) before doing anything with it —
+ * a design-only holder who somehow got hold of an EMAIL's id (e.g. by reusing
+ * a `campaignId` argument shape) must be refused here exactly as if the row
+ * had never existed, the same as `campaigns.ts`'s own functions refuse a
+ * template-kind row (`requireEmailKindRow`, that module's own doc).
+ *
  * A template is just an `EmailDocument` with a name. THREE doors make one:
  * `createTemplate` builds one from scratch (the design-only door — see its
  * doc), `createTemplateFromCampaign` snapshots a campaign back the other way
@@ -22,10 +41,12 @@
  * `updateTemplate({ templateId, doc })` exactly as the campaign composer
  * autosaves through `campaigns.updateCampaignDoc`.
  * `createCampaignFromTemplate` goes the other way, copying a template into a
- * fresh draft campaign. Both directions COPY; a campaign
- * created from a template has no live link back to it, so editing the template
- * afterwards can never alter a draft someone is mid-way through, let alone
- * something already approved or sent.
+ * fresh draft campaign. Both directions are the SAME duplication core
+ * (`duplicateCampaignRow`, below) run in opposite directions — "start from
+ * template" and "save as template" are one operation, not two — and both
+ * COPY; a campaign created from a template has no live link back to it, so
+ * editing the template afterwards can never alter a draft someone is
+ * mid-way through, let alone something already approved or sent.
  *
  * `ensureBuiltInTemplates` idempotently seeds the built-ins that ship in code
  * (`@events-os/shared`'s `BUILT_IN_CAMPAIGN_TEMPLATES`, today just
@@ -50,6 +71,7 @@ import {
   requireCampaignDesign,
   requireCampaignsAccess,
 } from "./lib/campaignsAccess";
+import { isTemplateRow } from "./lib/campaignKind";
 import { applyThemeToDoc, docHasTheme, resolveThemeChoice } from "./campaigns";
 import { resolveScopeTheme } from "./emailThemes";
 import { validateEmailDocument } from "@events-os/shared";
@@ -64,14 +86,16 @@ export { seedBuiltInTemplates };
 
 const scopeValidator = v.union(v.id("chapters"), v.literal("central"));
 
-/** Load a template row or throw `NOT_FOUND` — shared so every mutation gates
- *  identically. */
-async function loadTemplate(
-  ctx: MutationCtx,
-  templateId: Id<"campaignTemplates">,
-): Promise<Doc<"campaignTemplates">> {
+/** Load a template-kind `campaigns` row or throw `NOT_FOUND` — shared so
+ *  every mutation gates identically. A row that exists but is EMAIL-kind is
+ *  treated exactly like a missing row (`NOT_FOUND`, not the louder
+ *  `IS_TEMPLATE`/`requireTemplateKindRow` throw) — from this module's callers'
+ *  point of view a wrong-kind id simply doesn't resolve, the same as it
+ *  wouldn't have before the merge when the two kinds lived in different
+ *  tables. */
+async function loadTemplate(ctx: MutationCtx, templateId: Id<"campaigns">): Promise<Doc<"campaigns">> {
   const row = await ctx.db.get(templateId);
-  if (!row) {
+  if (!row || !isTemplateRow(row)) {
     throw new ConvexError({ code: "NOT_FOUND", message: "Template not found." });
   }
   return row;
@@ -88,16 +112,76 @@ function assertValidDoc(doc: unknown) {
   return validated.doc;
 }
 
+/**
+ * THE duplication core — "start from template" and "save as template" are
+ * the same operation (copy a document into a fresh row) run in opposite
+ * directions; see this module's doc. Stamps the scope's default theme onto a
+ * themeless source doc BEFORE validating (exactly like `campaigns.createCampaign`
+ * does for a hand-built document), so the copy's look never depends on which
+ * direction it came from. `subject` is always caller-supplied rather than
+ * defaulted from `source.subject`: an email-kind target needs a real subject
+ * the caller (or the UI) has already required, and a template-kind target
+ * deliberately never carries one (`SaveAsTemplateAction`'s own promise: "not
+ * its segment or subject").
+ */
+async function duplicateCampaignRow(
+  ctx: MutationCtx,
+  source: Doc<"campaigns">,
+  opts: {
+    kind: "email" | "template";
+    scope: Id<"chapters"> | "central";
+    name: string;
+    subject: string;
+    createdBy: Id<"users">;
+    audienceId?: Id<"audiences">; // required (by the caller) when kind === "email"
+    description?: string; // template only
+  },
+): Promise<Id<"campaigns">> {
+  const seeded = docHasTheme(source.doc)
+    ? source.doc
+    : applyThemeToDoc(source.doc, await resolveScopeTheme(ctx, opts.scope));
+  const doc = assertValidDoc(seeded);
+
+  const now = Date.now();
+  const shared = {
+    scope: opts.scope,
+    name: opts.name,
+    subject: opts.subject,
+    previewText: source.previewText,
+    doc,
+    status: "draft" as const,
+    createdBy: opts.createdBy,
+    createdAt: now,
+    updatedAt: now,
+  };
+
+  if (opts.kind === "email") {
+    return await ctx.db.insert("campaigns", {
+      ...shared,
+      kind: "email",
+      audienceId: opts.audienceId as Id<"audiences">,
+    });
+  }
+  return await ctx.db.insert("campaigns", {
+    ...shared,
+    kind: "template",
+    description: opts.description,
+  });
+}
+
 export const listTemplates = query({
   args: { scope: v.optional(scopeValidator) },
   handler: async (ctx, { scope }) => {
     await requireCampaignsAccess(ctx);
     const rows = scope
       ? await ctx.db
-          .query("campaignTemplates")
-          .withIndex("by_scope", (q) => q.eq("scope", scope))
+          .query("campaigns")
+          .withIndex("by_scope_kind", (q) => q.eq("scope", scope).eq("kind", "template"))
           .take(TEMPLATE_SCAN_LIMIT)
-      : await ctx.db.query("campaignTemplates").take(TEMPLATE_SCAN_LIMIT);
+      : await ctx.db
+          .query("campaigns")
+          .withIndex("by_kind", (q) => q.eq("kind", "template"))
+          .take(TEMPLATE_SCAN_LIMIT);
     return rows.filter((t) => t.archived !== true);
   },
 });
@@ -110,14 +194,15 @@ export const listTemplates = query({
  * starting a campaign from it. The editor screen is what checks `canDesign`
  * before offering to write, and every WRITE below re-checks it server-side.
  * Throws `NOT_FOUND` rather than returning null, mirroring
- * `campaigns.getCampaign`.
+ * `campaigns.getCampaign` — including for an id that resolves to a real,
+ * EMAIL-kind row (see `loadTemplate`'s doc).
  */
 export const getTemplate = query({
-  args: { templateId: v.id("campaignTemplates") },
+  args: { templateId: v.id("campaigns") },
   handler: async (ctx, { templateId }) => {
     await requireCampaignsAccess(ctx);
     const row = await ctx.db.get(templateId);
-    if (!row) {
+    if (!row || !isTemplateRow(row)) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Template not found." });
     }
     return row;
@@ -139,8 +224,8 @@ export const getTemplate = query({
  * write gate a campaign's document does (`assertValidTemplateDoc`) — a
  * template that saves but can never be sent is a trap — and picks up the
  * scope's default theme when it brought none, exactly like
- * `campaigns.createCampaign`, so a template's look never depends on which door
- * it came in through.
+ * `campaigns.createCampaign`, so a template's look never depends on which
+ * door it came in through.
  */
 export const createTemplate = mutation({
   args: {
@@ -149,7 +234,7 @@ export const createTemplate = mutation({
     description: v.optional(v.string()),
     doc: v.optional(v.any()),
   },
-  returns: v.id("campaignTemplates"),
+  returns: v.id("campaigns"),
   handler: async (ctx, { scope, name, description, doc }) => {
     await requireCampaignDesign(ctx);
     const userId = (await requireUserId(ctx)) as Id<"users">;
@@ -166,11 +251,14 @@ export const createTemplate = mutation({
     const validated = assertValidDoc(themed);
 
     const now = Date.now();
-    return await ctx.db.insert("campaignTemplates", {
+    return await ctx.db.insert("campaigns", {
       scope,
       name: trimmedName,
+      subject: "",
       description: description?.trim() || undefined,
       doc: validated,
+      kind: "template",
+      status: "draft",
       createdBy: userId,
       createdAt: now,
       updatedAt: now,
@@ -180,36 +268,37 @@ export const createTemplate = mutation({
 
 /** Snapshot a campaign's current document into a new template. Takes the
  *  campaign's `scope` too, so a template is saved in the same place the
- *  campaign that produced it lives. */
+ *  campaign that produced it lives. The source must be an EMAIL-kind row —
+ *  "snapshot a template into a template" isn't a real request, and treating a
+ *  template-kind `campaignId` as `NOT_FOUND` here matches `loadTemplate`'s own
+ *  wrong-kind-is-missing convention (the flip side of the same boundary). */
 export const createTemplateFromCampaign = mutation({
   args: {
     campaignId: v.id("campaigns"),
     name: v.string(),
     description: v.optional(v.string()),
   },
-  returns: v.id("campaignTemplates"),
+  returns: v.id("campaigns"),
   handler: async (ctx, { campaignId, name, description }) => {
     await requireCampaignDesign(ctx);
     const userId = (await requireUserId(ctx)) as Id<"users">;
     const campaign = await ctx.db.get(campaignId);
-    if (!campaign) {
+    if (!campaign || isTemplateRow(campaign)) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
     const trimmedName = name.trim();
     if (!trimmedName) {
       throw new ConvexError({ code: "EMPTY", message: "Name the template first." });
     }
-    const doc = assertValidDoc(campaign.doc);
 
-    const now = Date.now();
-    return await ctx.db.insert("campaignTemplates", {
+    return await duplicateCampaignRow(ctx, campaign, {
+      kind: "template",
       scope: campaign.scope,
       name: trimmedName,
-      description: description?.trim() || undefined,
-      doc,
+      // Templates never carry a subject — see `duplicateCampaignRow`'s doc.
+      subject: "",
       createdBy: userId,
-      createdAt: now,
-      updatedAt: now,
+      description: description?.trim() || undefined,
     });
   },
 });
@@ -218,15 +307,15 @@ export const createTemplateFromCampaign = mutation({
  * Start a new DRAFT campaign from a template.
  *
  * The template's document is copied verbatim, except that a template with no
- * theme of its own is stamped with the scope's current default
- * (`applyThemeToDoc` + `resolveScopeTheme`) — identical to what
- * `campaigns.createCampaign` does for a hand-built document, so a campaign's
- * look never depends on which door it came in through. A template that DOES
- * carry a theme keeps it: that theme is part of what was saved.
+ * theme of its own is stamped with the scope's current default — identical to
+ * what `campaigns.createCampaign` does for a hand-built document, via the
+ * SAME duplication core `createTemplateFromCampaign` uses in the other
+ * direction (`duplicateCampaignRow`). A template that DOES carry a theme
+ * keeps it: that theme is part of what was saved.
  */
 export const createCampaignFromTemplate = mutation({
   args: {
-    templateId: v.id("campaignTemplates"),
+    templateId: v.id("campaigns"),
     name: v.string(),
     subject: v.string(),
     audienceId: v.id("audiences"),
@@ -252,29 +341,20 @@ export const createCampaignFromTemplate = mutation({
       throw new ConvexError({ code: "NOT_FOUND", message: "Audience not found." });
     }
 
-    const seeded = docHasTheme(template.doc)
-      ? template.doc
-      : applyThemeToDoc(template.doc, await resolveScopeTheme(ctx, template.scope));
-    const doc = assertValidDoc(seeded);
-
-    const now = Date.now();
-    return await ctx.db.insert("campaigns", {
+    return await duplicateCampaignRow(ctx, template, {
+      kind: "email",
       scope: template.scope,
       name: trimmedName,
       subject: trimmedSubject,
-      audienceId,
-      doc,
-      status: "draft",
       createdBy: userId,
-      createdAt: now,
-      updatedAt: now,
+      audienceId,
     });
   },
 });
 
 export const updateTemplate = mutation({
   args: {
-    templateId: v.id("campaignTemplates"),
+    templateId: v.id("campaigns"),
     name: v.optional(v.string()),
     // `null` clears the description; `undefined` leaves it untouched — the
     // `previewText` null-sentinel convention from `campaigns.ts`.
@@ -314,7 +394,7 @@ export const updateTemplate = mutation({
  */
 export const setTemplateTheme = mutation({
   args: {
-    templateId: v.id("campaignTemplates"),
+    templateId: v.id("campaigns"),
     themeId: v.optional(v.id("emailThemes")),
     presetName: v.optional(v.string()),
   },
@@ -333,7 +413,7 @@ export const setTemplateTheme = mutation({
  *  deliberately does NOT resurrect it (see that mutation's doc), so an org that
  *  doesn't want the newsletter template can actually get rid of it. */
 export const archiveTemplate = mutation({
-  args: { templateId: v.id("campaignTemplates") },
+  args: { templateId: v.id("campaigns") },
   returns: v.null(),
   handler: async (ctx, { templateId }) => {
     await requireCampaignDesign(ctx);
@@ -366,7 +446,7 @@ export const archiveTemplate = mutation({
  */
 export const ensureBuiltInTemplates = internalMutation({
   args: { scope: scopeValidator, createdBy: v.id("users") },
-  returns: v.array(v.id("campaignTemplates")),
+  returns: v.array(v.id("campaigns")),
   handler: async (ctx, { scope, createdBy }) =>
     seedBuiltInTemplates(ctx, scope, createdBy),
 });

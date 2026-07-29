@@ -176,7 +176,13 @@ async function pendingApprovalAudienceIds(ctx: MutationCtx): Promise<Set<Id<"aud
       .query("campaigns")
       .withIndex("by_status", (q) => q.eq("status", status))
       .take(PENDING_CAMPAIGNS_CAP);
-    for (const c of rows) ids.add(c.audienceId);
+    // `audienceId` is optional on the schema only to accommodate
+    // template-kind rows (`schema/campaigns.ts`'s `kind` doc) — a
+    // template-kind row can never actually reach "pending_approval"/"approved"
+    // (`campaigns.ts`'s send-path functions refuse one structurally), so this
+    // guard is unreachable in practice; it's here so `.add` never has to
+    // accept `undefined`.
+    for (const c of rows) if (c.audienceId) ids.add(c.audienceId);
   }
   return ids;
 }

@@ -333,6 +333,7 @@ const REGISTRY_NAMES = [
   "0051_backfill_people_persona",
   "0053_add_campaign_design_defaults",
   "0054_seed_org_mailing_address",
+  "0055_merge_campaign_templates_into_campaigns",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

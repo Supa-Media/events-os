@@ -139,6 +139,7 @@ import { resolveScopeTheme } from "./emailThemes";
 // From lib/, not campaignTemplates.ts — that module imports applyThemeToDoc
 // from here, so importing the seeder back from it would close a cycle.
 import { seedBuiltInTemplates } from "./lib/builtInTemplates";
+import { isTemplateRow, requireEmailKindRow } from "./lib/campaignKind";
 import { CAMPAIGN_STATUSES } from "./schema/campaigns";
 // Reused rather than re-implemented — same SOD_VIOLATION error code, pure
 // (no ctx) so it's trivially testable either way. See its own doc in
@@ -151,17 +152,25 @@ const scopeValidator = v.union(v.id("chapters"), v.literal("central"));
 
 // ── CRUD ──────────────────────────────────────────────────────────────────
 
+/** EMAIL-kind rows only — a template-kind row must never surface on the
+ *  emails list (the kind-blindness sweep this PR's templates merge requires;
+ *  see `lib/campaignKind.ts`'s doc). `by_scope`/the unscoped scan are the same
+ *  bounded reads as before; the JS `.filter()` afterward is the SAME
+ *  after-`.take()` shape `campaignTemplates.listTemplates` already used for
+ *  `archived` — plain array filtering, not the forbidden Convex query
+ *  `.filter()`. */
 export const listCampaigns = query({
   args: { scope: v.optional(scopeValidator) },
   handler: async (ctx, { scope }) => {
     await requireCampaignsAccess(ctx);
-    return scope
+    const rows = scope
       ? await ctx.db
           .query("campaigns")
           .withIndex("by_scope", (q) => q.eq("scope", scope))
           .order("desc")
           .take(200)
       : await ctx.db.query("campaigns").order("desc").take(200);
+    return rows.filter((c) => !isTemplateRow(c));
   },
 });
 
@@ -170,7 +179,10 @@ export const getCampaign = query({
   handler: async (ctx, { campaignId }) => {
     await requireCampaignsAccess(ctx);
     const campaign = await ctx.db.get(campaignId);
-    if (!campaign) {
+    // A template-kind row is treated as NOT_FOUND here — this endpoint is for
+    // emails; `campaignTemplates.getTemplate` is its template-kind twin. See
+    // `lib/campaignKind.ts`'s doc on the row-kind boundary.
+    if (!campaign || isTemplateRow(campaign)) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
     return campaign;
@@ -365,6 +377,7 @@ export const createCampaign = mutation({
       previewText: previewText?.trim() || undefined,
       audienceId,
       doc: validated.doc,
+      kind: "email",
       status: "draft",
       fromName: sender.fromName,
       fromEmail: sender.fromEmail,
@@ -412,6 +425,7 @@ export const updateCampaignMeta = mutation({
     if (!existing) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
+    requireEmailKindRow(existing);
     assertEditable(existing);
 
     const patch: Record<string, unknown> = { updatedAt: Date.now() };
@@ -462,6 +476,7 @@ export const updateCampaignDoc = mutation({
     if (!existing) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
+    requireEmailKindRow(existing);
     assertEditable(existing);
     const validated = validateEmailDocument(doc);
     if (!validated.ok) {
@@ -548,6 +563,7 @@ export const setCampaignTheme = mutation({
     if (!campaign) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
+    requireEmailKindRow(campaign);
     assertEditable(campaign);
 
     const theme = await resolveThemeChoice(ctx, campaign.scope, { themeId, presetName });
@@ -638,11 +654,28 @@ function normalizePersonIdList(ids: Id<"people">[] | undefined): string[] {
   return [...(ids ?? [])].map(String).sort();
 }
 
+/** `campaign.audienceId`, asserted present — the field is `v.optional` on the
+ *  schema ONLY to accommodate template-kind rows (`schema/campaigns.ts`'s
+ *  `kind` doc); every EMAIL-kind row carries one (`createCampaign` requires
+ *  it as an argument). Every caller here has already asserted email-kind via
+ *  `requireEmailKindRow`, so a missing `audienceId` at this point is a
+ *  genuine data-integrity problem, not a template slipping through — this
+ *  throws rather than silently proceeding against `undefined`. */
+function requireAudienceId(campaign: Doc<"campaigns">): Id<"audiences"> {
+  if (!campaign.audienceId) {
+    throw new ConvexError({
+      code: "NO_AUDIENCE",
+      message: "This email has no audience on file.",
+    });
+  }
+  return campaign.audienceId;
+}
+
 async function computeCampaignSnapshotHash(
   ctx: QueryCtx | MutationCtx,
   campaign: Doc<"campaigns">,
 ): Promise<string> {
-  const audience = await ctx.db.get(campaign.audienceId);
+  const audience = await ctx.db.get(requireAudienceId(campaign));
   const payload: Record<string, unknown> = {
     doc: campaign.doc,
     subject: campaign.subject,
@@ -804,6 +837,7 @@ async function loadCampaignForReviewerDecision(
   if (!campaign) {
     throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
   }
+  requireEmailKindRow(campaign);
   await assertCallerIsChosenReviewer(ctx, campaign);
   return campaign;
 }
@@ -821,6 +855,7 @@ export const submitForApproval = mutation({
     if (!campaign) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
+    requireEmailKindRow(campaign);
     // `"failed"` is included so a hash mismatch caught at send-time (an
     // audience edit made after approval) has a way back INTO review without
     // needing content to be edited first — content itself is locked outside
@@ -844,7 +879,7 @@ export const submitForApproval = mutation({
     // ConvexError, not `recordSendFailure`) since nothing is in flight yet;
     // unlike `send`, a submit that can't proceed shouldn't silently flip the
     // campaign to a recorded failure.
-    const audience = await ctx.db.get(campaign.audienceId);
+    const audience = await ctx.db.get(requireAudienceId(campaign));
     if (!audience) {
       throw new ConvexError({ code: "NOT_FOUND", message: "The target audience no longer exists." });
     }
@@ -927,7 +962,7 @@ export const submitForApproval = mutation({
       updatedAt: now,
     });
 
-    const recipientCount = await liveAudienceCount(ctx, campaign.audienceId);
+    const recipientCount = await liveAudienceCount(ctx, requireAudienceId(campaign));
     await logCampaignDecision(ctx, campaignId, "submitted", submittedByPersonId, {
       purpose: trimmedPurpose,
       recipientCount,
@@ -955,6 +990,7 @@ export const cancelApprovalRequest = mutation({
     if (!campaign) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
+    requireEmailKindRow(campaign);
     assertCampaignTransition(campaign.status, ["pending_approval"], "cancel the approval request on");
     await ctx.db.patch(campaignId, {
       status: "draft",
@@ -986,7 +1022,7 @@ export const approveCampaign = mutation({
       });
     }
 
-    const recipientCount = await liveAudienceCount(ctx, campaign.audienceId);
+    const recipientCount = await liveAudienceCount(ctx, requireAudienceId(campaign));
     const trimmedNote = note?.trim() || undefined;
     await ctx.db.patch(campaignId, {
       status: "approved",
@@ -1083,6 +1119,7 @@ export const revertToDraft = mutation({
     if (!campaign) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
+    requireEmailKindRow(campaign);
     assertCampaignTransition(campaign.status, ["denied"], "move back to draft");
     await ctx.db.patch(campaignId, {
       status: "draft",
@@ -1144,6 +1181,7 @@ export const getCampaignApproval = query({
     if (!campaign) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
+    requireEmailKindRow(campaign);
     const ownIds = await resolveCampaignCallerPersonIds(ctx);
     const canDecide =
       campaign.status === "pending_approval" &&
@@ -1194,6 +1232,14 @@ export const listPendingApprovals = query({
       .withIndex("by_status", (q) => q.eq("status", "pending_approval"))
       .take(200);
     return pending
+      // Structurally impossible today (a template-kind row never reaches
+      // `pending_approval` — every path that sets it goes through
+      // `submitForApproval`, which refuses a template-kind row first), but
+      // this is a LIST surface, exactly the "a reviewer dropdown that
+      // suddenly includes templates" class of bug the kind-blindness sweep
+      // exists to catch — kept explicit rather than relying on that
+      // invariant holding forever.
+      .filter((c) => !isTemplateRow(c))
       .filter((c) => c.reviewerPersonId != null && ownIds.has(c.reviewerPersonId))
       .map((c) => ({ _id: c._id, name: c.name, purpose: c.purpose }));
   },
@@ -1241,6 +1287,7 @@ export const sendTest = action({
     if (!campaign) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
+    requireEmailKindRow(campaign);
     const validated = validateEmailDocument(campaign.doc);
     if (!validated.ok) {
       throw new ConvexError({ code: "INVALID_DOC", message: validated.error });
@@ -1315,6 +1362,7 @@ export const send = mutation({
     if (!campaign) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
+    requireEmailKindRow(campaign);
     // Two-party approval gate: `draft → sending` is no longer possible — a
     // campaign must clear `submitForApproval` → `approveCampaign` first. A
     // `"failed"` retry keeps its approval (a transport failure isn't a
@@ -1327,7 +1375,7 @@ export const send = mutation({
       });
     }
 
-    const audience = await ctx.db.get(campaign.audienceId);
+    const audience = await ctx.db.get(requireAudienceId(campaign));
     if (!audience) {
       await recordSendFailure(ctx, campaignId, "The target audience no longer exists.");
       return null;
@@ -1517,6 +1565,12 @@ export const materializeRecipients = internalAction({
       campaignId,
     });
     if (!campaign) return null;
+    // Structural refusal (Run-10 escalation class): only reachable via `send`
+    // (already gated) or the stuck-send sweep (status-gated to "sending",
+    // which a template-kind row can never reach) — a template arriving here
+    // is a bug, not a recorded per-campaign failure, so this THROWS rather
+    // than following `recordSendFailure`'s "never throw" convention.
+    requireEmailKindRow(campaign);
 
     // Clear any leftover rows from a prior attempt (a retry-from-"failed"
     // send) before re-resolving — otherwise a retry would pile duplicate
@@ -1539,7 +1593,7 @@ export const materializeRecipients = internalAction({
     }
 
     const resolution = await ctx.runQuery(internal.audiences.resolveAudienceForSend, {
-      audienceId: campaign.audienceId,
+      audienceId: requireAudienceId(campaign),
     });
     if (!resolution || resolution.recipients.length === 0) {
       await ctx.runMutation(internal.campaigns.finishCampaignSend, {
@@ -1825,6 +1879,13 @@ export const deliverCampaignBatch = internalAction({
   handler: async (ctx: ActionCtx, { campaignId }) => {
     const batch = await ctx.runQuery(internal.campaigns.getQueuedBatch, { campaignId });
     if (!batch) return null;
+    // Structural refusal — checked BEFORE the empty-rows short-circuit below,
+    // which a template-kind row would always hit (it never has materialized
+    // `campaignRecipients`) and which would otherwise silently flip its
+    // `status` via `finishCampaignSend`. See `materializeRecipients`'s
+    // identical guard for why this throws instead of recording a
+    // per-recipient failure.
+    requireEmailKindRow(batch.campaign);
     if (batch.rows.length === 0) {
       await ctx.runMutation(internal.campaigns.finishCampaignSend, { campaignId });
       return null;

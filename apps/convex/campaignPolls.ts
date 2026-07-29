@@ -35,6 +35,7 @@ import { internalMutation, internalQuery, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { requireCampaignsAccess } from "./lib/campaignsAccess";
+import { isTemplateRow } from "./lib/campaignKind";
 import { AUDIENCE_RESOLVE_LIMIT } from "./lib/audienceResolve";
 
 /**
@@ -139,6 +140,10 @@ async function resolvePollContext(
 
   const campaign = await ctx.db.get(args.campaignId);
   if (!campaign) return null;
+  // Structurally impossible (a template-kind row never has materialized
+  // `campaignRecipients`, so no token could ever resolve to one — see
+  // `lib/campaignKind.ts`'s doc), kept explicit per the send-path sweep.
+  if (isTemplateRow(campaign)) return null;
 
   const block = pollBlocksOf(campaign.doc).find((b) => b.id === args.blockId);
   if (!block) return null;
@@ -271,7 +276,7 @@ export const getPollTally = internalQuery({
   returns: v.union(tallyValidator, v.null()),
   handler: async (ctx, { campaignId, blockId }) => {
     const campaign = await ctx.db.get(campaignId);
-    if (!campaign) return null;
+    if (!campaign || isTemplateRow(campaign)) return null;
     const block = pollBlocksOf(campaign.doc).find((b) => b.id === blockId);
     if (!block) return null;
     return await tallyBlock(ctx, campaignId, block);
@@ -337,7 +342,7 @@ export const getPollResults = query({
   handler: async (ctx, { campaignId }) => {
     await requireCampaignsAccess(ctx);
     const campaign = await ctx.db.get(campaignId);
-    if (!campaign) {
+    if (!campaign || isTemplateRow(campaign)) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
     const blocks = pollBlocksOf(campaign.doc).slice(0, POLL_BLOCKS_PER_CAMPAIGN);

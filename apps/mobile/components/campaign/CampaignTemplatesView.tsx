@@ -102,7 +102,7 @@ export function CampaignTemplatesView() {
   const { run, toast, dismiss } = useActionRunner();
   const { width } = useWindowDimensions();
   const split = width >= SPLIT_BREAKPOINT;
-  const [editingId, setEditingId] = useState<Id<"campaignTemplates"> | null>(null);
+  const [editingId, setEditingId] = useState<Id<"campaigns"> | null>(null);
 
   if (templates === undefined) return <Screen loading />;
 

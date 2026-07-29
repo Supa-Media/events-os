@@ -410,10 +410,13 @@ describe("createCampaignFromTemplate and themes", () => {
     // A template row written directly, with a themeless document — the shape a
     // pre-theming template (or an import) would have.
     const templateId = await run(s.t, (ctx) =>
-      ctx.db.insert("campaignTemplates", {
+      ctx.db.insert("campaigns", {
         scope: "central",
         name: "Bare",
+        subject: "",
         doc: { blocks: [{ id: "b1", kind: "divider" }] },
+        kind: "template",
+        status: "draft",
         createdBy: s.userId,
         createdAt: Date.now(),
         updatedAt: Date.now(),
@@ -464,8 +467,8 @@ describe("ensureBuiltInTemplates", () => {
 
     const rows = await run(s.t, (ctx) =>
       ctx.db
-        .query("campaignTemplates")
-        .withIndex("by_scope", (q) => q.eq("scope", "central"))
+        .query("campaigns")
+        .withIndex("by_scope_kind", (q) => q.eq("scope", "central").eq("kind", "template"))
         .collect(),
     );
     expect(rows).toHaveLength(BUILT_IN_CAMPAIGN_TEMPLATES.length);
@@ -690,7 +693,7 @@ describe("seedBuiltInTemplates — artwork from the image library", () => {
     }
   }
 
-  async function seed(s: ChapterSetup): Promise<Id<"campaignTemplates">> {
+  async function seed(s: ChapterSetup): Promise<Id<"campaigns">> {
     const [id] = await s.t.mutation(internal.campaignTemplates.ensureBuiltInTemplates, {
       scope: "central",
       createdBy: s.userId,
@@ -813,8 +816,8 @@ describe("seedBuiltInTemplates — artwork from the image library", () => {
     await seed(s);
     const row = await run(s.t, (ctx) =>
       ctx.db
-        .query("campaignTemplates")
-        .withIndex("by_scope", (q) => q.eq("scope", "central" as const))
+        .query("campaigns")
+        .withIndex("by_scope_kind", (q) => q.eq("scope", "central" as const).eq("kind", "template"))
         .collect(),
     ).then((rows) => rows.find((r) => r.isBuiltIn));
     const hero = row!.doc.blocks.find(

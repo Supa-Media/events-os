@@ -153,7 +153,7 @@ type ImportResult = {
   alreadyOnFile: number;
   failed: number;
   needsAltText: string[];
-  reseededTemplates: Id<"campaignTemplates">[];
+  reseededTemplates: Id<"campaigns">[];
   results: AssetResult[];
 };
 
@@ -170,7 +170,7 @@ const importResultValidator = v.object({
   /** Built-in template rows re-seeded after a committing run, so the caller
    *  can see that the artwork actually reached the template rather than
    *  taking it on faith. Always empty on a dry run. */
-  reseededTemplates: v.array(v.id("campaignTemplates")),
+  reseededTemplates: v.array(v.id("campaigns")),
   results: v.array(assetResultValidator),
 });
 
@@ -326,7 +326,7 @@ async function runNewsletterImport(
   //
   // Idempotent and cheap (it patches only if the document actually changed),
   // and skipped entirely on a dry run because it WRITES.
-  const reseededTemplates: Id<"campaignTemplates">[] = isDryRun
+  const reseededTemplates: Id<"campaigns">[] = isDryRun
     ? []
     : await ctx.runMutation(internal.campaignTemplates.ensureBuiltInTemplates, {
         scope,

@@ -3,6 +3,10 @@
  * (`@events-os/shared`'s `BUILT_IN_CAMPAIGN_TEMPLATES` — today the Public
  * Worship monthly newsletter).
  *
+ * Since the templates merge (2026-07-29 — `schema/campaigns.ts`'s `kind` doc),
+ * a "built-in template" is a `kind: "template"` row in the `campaigns` table,
+ * not a row in the (now-frozen) `campaignTemplates` table.
+ *
  * ── Why this lives in `lib/` rather than in `campaignTemplates.ts` ──────────
  * Three callers need it and two of them would otherwise form an import cycle:
  *  - `migrations/0049_seed_builtin_campaign_templates.ts` (the deploy path),
@@ -128,10 +132,15 @@ export async function seedBuiltInTemplates(
   ctx: MutationCtx,
   scope: Id<"chapters"> | "central",
   createdBy: Id<"users">,
-): Promise<Id<"campaignTemplates">[]> {
+): Promise<Id<"campaigns">[]> {
+  // `campaigns` rows carrying `kind: "template"` — the templates merge
+  // (2026-07-29) retargeted this from the (now-frozen) `campaignTemplates`
+  // table onto `by_scope_kind`, an EXACT index for this read (every
+  // template-kind row stamps `kind` explicitly — see `schema/campaigns.ts`'s
+  // doc on `kind`).
   const existing = await ctx.db
-    .query("campaignTemplates")
-    .withIndex("by_scope", (q) => q.eq("scope", scope))
+    .query("campaigns")
+    .withIndex("by_scope_kind", (q) => q.eq("scope", scope).eq("kind", "template"))
     .take(TEMPLATE_SCAN_LIMIT);
 
   // Read the image library ONCE, before the loop and before the diff below:
@@ -141,7 +150,7 @@ export async function seedBuiltInTemplates(
   const artwork = await resolveArtwork(ctx, scope);
 
   const now = Date.now();
-  const ids: Id<"campaignTemplates">[] = [];
+  const ids: Id<"campaigns">[] = [];
   for (const template of BUILT_IN_CAMPAIGN_TEMPLATES) {
     // Place whatever artwork is on file. With an empty library this is a
     // no-op returning the shipped document byte-for-byte, so a deployment that
@@ -166,11 +175,16 @@ export async function seedBuiltInTemplates(
       continue;
     }
     ids.push(
-      await ctx.db.insert("campaignTemplates", {
+      await ctx.db.insert("campaigns", {
         scope,
         name: template.name,
         description: template.description,
         doc,
+        kind: "template",
+        // Every campaigns row needs a status; a template-kind row never
+        // transitions out of it — see `schema/campaigns.ts`'s `kind` doc.
+        status: "draft",
+        subject: "",
         isBuiltIn: true,
         createdBy,
         createdAt: now,

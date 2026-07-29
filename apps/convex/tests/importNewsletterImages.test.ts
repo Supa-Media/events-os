@@ -207,7 +207,12 @@ describe("importNewsletterImages — a rotting CDN", () => {
  */
 describe("importNewsletterImages — it fills the built-in template", () => {
   async function builtInTemplate(t: ReturnType<typeof newT>) {
-    const rows = await run(t, (ctx) => ctx.db.query("campaignTemplates").collect());
+    const rows = await run(t, (ctx) =>
+      ctx.db
+        .query("campaigns")
+        .withIndex("by_kind", (q) => q.eq("kind", "template"))
+        .collect(),
+    );
     return rows.find((r) => r.isBuiltIn === true);
   }
 
@@ -346,7 +351,12 @@ describe("ensureNewsletterImagesImported — the cron", () => {
   }
 
   async function builtInTemplate(t: ReturnType<typeof newT>) {
-    const rows = await run(t, (ctx) => ctx.db.query("campaignTemplates").collect());
+    const rows = await run(t, (ctx) =>
+      ctx.db
+        .query("campaigns")
+        .withIndex("by_kind", (q) => q.eq("kind", "template"))
+        .collect(),
+    );
     return rows.find((r) => r.isBuiltIn === true);
   }
 
