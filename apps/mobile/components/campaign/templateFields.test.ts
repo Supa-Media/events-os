@@ -109,7 +109,9 @@ describe("templateBlockSummary", () => {
   });
 
   test("stops naming kinds once the line would spill", () => {
-    expect(templateBlockSummary(doc, 5)).toBe("5 blocks · Heading, Text, Image, Button");
+    expect(templateBlockSummary(doc, undefined, 5)).toBe(
+      "5 blocks · Heading, Text, Image, Button",
+    );
   });
 
   test("a single block reads in the singular", () => {
@@ -126,6 +128,75 @@ describe("templateBlockSummary", () => {
     expect(templateBlockSummary({ blocks: "nope" })).toBe("Empty template");
     expect(templateBlockCount({ blocks: [{}, {}] })).toBe(2);
     expect(templateBlockSummary({ blocks: [{}, {}] })).toBe("2 blocks");
+  });
+});
+
+describe("templateBlockSummary/templateBlockCount — tiptap format (the crash regression)", () => {
+  // The exact shape that used to crash: a `docFormat: "tiptap"` row whose
+  // `doc` has no `.blocks` array at all. Reading `doc.blocks.length` threw
+  // `Cannot read properties of undefined (reading 'length')`; before that,
+  // `templateBlockCount`'s defensive `?.blocks` read silently returned 0,
+  // which made `templateBlockSummary` report "Empty template" for a
+  // non-empty document — the built-in "Monthly newsletter" template after
+  // migration 0056 flips it to tiptap.
+  const tiptapDoc = {
+    type: "doc",
+    content: [
+      { type: "heading", attrs: { level: 2 }, content: [{ type: "text", text: "Hi" }] },
+      { type: "paragraph", content: [{ type: "text", text: "Body copy." }] },
+      { type: "button", attrs: { url: "https://example.com" } },
+      { type: "pwPoll", attrs: {} },
+    ],
+  };
+
+  test("never crashes and never says 'Empty template' for a non-empty tiptap doc", () => {
+    expect(() => templateBlockCount(tiptapDoc, "tiptap")).not.toThrow();
+    expect(() => templateBlockSummary(tiptapDoc, "tiptap")).not.toThrow();
+    expect(templateBlockSummary(tiptapDoc, "tiptap")).not.toBe("Empty template");
+  });
+
+  test("counts top-level content nodes as blocks", () => {
+    expect(templateBlockCount(tiptapDoc, "tiptap")).toBe(4);
+  });
+
+  test("names the distinct top-level node types", () => {
+    expect(templateBlockSummary(tiptapDoc, "tiptap")).toBe(
+      "4 blocks · Heading, Paragraph, Button and 1 more",
+    );
+  });
+
+  test("a genuinely empty tiptap doc (bare `{ type: 'doc' }`) reads as empty", () => {
+    expect(templateBlockCount({ type: "doc" }, "tiptap")).toBe(0);
+    expect(templateBlockSummary({ type: "doc" }, "tiptap")).toBe("Empty template");
+  });
+
+  test("the starter doc (heading + empty paragraph) is real content, not 'Empty template'", () => {
+    const starter = {
+      type: "doc",
+      content: [
+        { type: "heading", attrs: { level: 2 }, content: [{ type: "text", text: "Heading" }] },
+        { type: "paragraph", content: [] },
+      ],
+    };
+    expect(templateBlockSummary(starter, "tiptap")).not.toBe("Empty template");
+  });
+
+  test("a doc with only whitespace-text paragraphs still reads as empty", () => {
+    const whitespaceOnly = {
+      type: "doc",
+      content: [{ type: "paragraph", content: [{ type: "text", text: "   " }] }],
+    };
+    expect(templateBlockSummary(whitespaceOnly, "tiptap")).toBe("Empty template");
+  });
+
+  test("undefined/malformed docFormat still means blocks-format (unaffected)", () => {
+    expect(templateBlockSummary({ blocks: [{ id: "a", kind: "heading" }] })).toBe("1 block · Heading");
+    expect(templateBlockSummary({ blocks: [{ id: "a", kind: "heading" }] }, null)).toBe(
+      "1 block · Heading",
+    );
+    expect(templateBlockSummary({ blocks: [{ id: "a", kind: "heading" }] }, "blocks")).toBe(
+      "1 block · Heading",
+    );
   });
 });
 

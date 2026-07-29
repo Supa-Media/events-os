@@ -3286,3 +3286,137 @@ describe("two-party approval — notification emails", () => {
   });
 });
 
+// ── Templates merge — send-path structural refusals (2026-07-29) ────────────
+//
+// Since the templates merge (`schema/campaigns.ts`'s `kind` doc,
+// `lib/campaignKind.ts`), a template-kind row lives in the SAME table as a
+// real email. Every send-path function must refuse one structurally — this
+// is the enumerated sweep from the merge's design brief: `submitForApproval`,
+// `send`, `sendTest`, `deliverCampaignBatch`, `materializeRecipients`. (Poll
+// voting is covered in `campaignPolls.test.ts`.)
+
+describe("templates merge — send-path functions refuse a template-kind row", () => {
+  /** A template-kind row, seeded via the real `campaignTemplates.createTemplate`
+   *  door (not a raw `ctx.db.insert`) — exercises the actual production shape. */
+  async function seedTemplateRow(s: ChapterSetup, name = "Refusal shell"): Promise<Id<"campaigns">> {
+    return s.as.mutation(api.campaignTemplates.createTemplate, {
+      scope: "central",
+      name,
+      doc: heroDoc(),
+    });
+  }
+
+  test("sweepStuckSends skips a template row that somehow acquired a live status", async () => {
+    // No public mutation can put a template into "sending" (proven by the
+    // adversarial probes) — this pins the belt-and-suspenders guard so a
+    // FUTURE bug that lets one through can't also get delivery scheduled
+    // against it. Planted via raw insert precisely because the front door
+    // is closed.
+    const t = newT();
+    const s = await asSuperuser(t);
+    const templateId = await seedTemplateRow(s);
+    await run(s.t, (ctx) =>
+      ctx.db.patch(templateId, { status: "sending", updatedAt: 1 }),
+    );
+    const rescheduled = await run(s.t, (ctx) =>
+      // Same body the cron invokes.
+      ctx.runMutation(internal.campaigns.sweepStuckSends, {}),
+    );
+    expect(rescheduled).toBe(0);
+    const row = await run(s.t, (ctx) => ctx.db.get(templateId));
+    expect(row?.status).toBe("sending"); // untouched, not "repaired" either
+  });
+
+  test("an inbound reply to a guessed template plus-address never bumps the template", async () => {
+    // The plus-address resolver is attacker-influenced input (anyone can
+    // mail campaign+<id>@domain). The reply row itself is kept — unmatched
+    // replies deliberately survive — but the campaign-side counter is gated
+    // on row kind.
+    const t = newT();
+    const s = await asSuperuser(t);
+    const templateId = await seedTemplateRow(s);
+    await run(s.t, (ctx) =>
+      ctx.runMutation(internal.campaigns.recordInboundReply, {
+        campaignId: templateId,
+        fromEmail: "curious@example.com",
+        textBody: "hello?",
+      }),
+    );
+    const row = await run(s.t, (ctx) => ctx.db.get(templateId));
+    expect(row?.replyCount ?? 0).toBe(0);
+    const replies = await run(s.t, (ctx) =>
+      ctx.db.query("emailReplies").take(10),
+    );
+    expect(replies).toHaveLength(1); // the reply record itself survives
+  });
+
+  test("submitForApproval refuses a template-kind row", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    await configureResend(s);
+    const templateId = await seedTemplateRow(s);
+    await seedSelfPerson(s);
+    const reviewer = await seedReviewer(s);
+    expect(
+      await errorCode(
+        s.as.mutation(api.campaigns.submitForApproval, {
+          campaignId: templateId,
+          purpose: "Sending the update",
+          reviewerPersonId: reviewer.personId,
+        }),
+      ),
+    ).toBe("IS_TEMPLATE");
+  });
+
+  test("send refuses a template-kind row", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const templateId = await seedTemplateRow(s);
+    expect(
+      await errorCode(s.as.mutation(api.campaigns.send, { campaignId: templateId })),
+    ).toBe("IS_TEMPLATE");
+  });
+
+  test("sendTest refuses a template-kind row", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const templateId = await seedTemplateRow(s);
+    expect(
+      await errorCode(
+        s.as.action(api.campaigns.sendTest, {
+          campaignId: templateId,
+          to: "someone@example.com",
+        }),
+      ),
+    ).toBe("IS_TEMPLATE");
+  });
+
+  test("materializeRecipients refuses a template-kind row (a should-never-happen guard, exercised directly)", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const templateId = await seedTemplateRow(s);
+    expect(
+      await errorCode(
+        t.action(internal.campaigns.materializeRecipients, { campaignId: templateId }),
+      ),
+    ).toBe("IS_TEMPLATE");
+  });
+
+  test("deliverCampaignBatch refuses a template-kind row WITHOUT silently finalizing it", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const templateId = await seedTemplateRow(s);
+    // The bug this guard fixes: a template-kind row never has materialized
+    // `campaignRecipients`, so the empty-rows short-circuit would otherwise
+    // run first and silently flip its `status` via `finishCampaignSend`
+    // before any kind check ever ran.
+    expect(
+      await errorCode(
+        t.action(internal.campaigns.deliverCampaignBatch, { campaignId: templateId }),
+      ),
+    ).toBe("IS_TEMPLATE");
+    const row = await run(s.t, (ctx) => ctx.db.get(templateId));
+    expect(row?.status).toBe("draft");
+  });
+});
+

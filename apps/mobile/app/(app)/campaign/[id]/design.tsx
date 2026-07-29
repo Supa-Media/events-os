@@ -1,30 +1,40 @@
 /**
- * CAMPAIGN DESIGNER — the block-based email editor for a CAMPAIGN.
+ * CAMPAIGN DESIGNER — the email editor for a CAMPAIGN, blocks OR tiptap.
  *
  * The editing surface itself is
- * `components/campaign/designer/DocumentComposer.tsx` (history, autosave,
- * palette, block stack, live preview, merge tags, theme picker) — shared with
- * the template editor (`app/(app)/campaign-template/[id].tsx`) so a designer
- * meets exactly one composer wherever she is. What stays HERE is what is
- * genuinely the campaign's: the access gate, the record header with "Save as
- * template", and what saving/restyling MEAN
- * (`campaigns.updateCampaignDoc` / `campaigns.setCampaignTheme`).
+ * `components/campaign/designer/DocumentComposer.tsx` — the FORMAT SWITCH
+ * (docs/plans/maily-editor-overhaul.md, WS3) between the block canvas
+ * (history, autosave, palette, block stack, live preview, merge tags) and the
+ * maily host (meta fields inline, the real editor on web, read-only + meta
+ * on native) — shared with the template editor
+ * (`app/(app)/campaign-template/[id].tsx`) so a designer meets exactly one
+ * composer wherever she is. What stays HERE is what is genuinely the
+ * campaign's: the access gate, the record header with "Save as template",
+ * and what saving MEANS (`campaigns.updateCampaignDoc` /
+ * `campaigns.updateCampaignMeta`).
  *
  * Read-only once the campaign leaves `draft`/`changes_requested`
  * (`updateCampaignDoc` throws `NOT_EDITABLE` server-side past that point —
  * see `campaigns.ts#assertEditable`), or for a caller without compose power
- * (see `editable` below). "Read-only" means it: the block cards render with
- * `readOnly`, which makes every field static and removes every add/remove/
- * upload control, instead of the no-op handlers that used to let a reviewer
- * type into a locked campaign and lose the words on reload.
+ * (see `editable` below). "Read-only" means it: the block cards (or the
+ * maily host) render with no editing affordance, instead of the no-op
+ * handlers that used to let a reviewer type into a locked campaign and lose
+ * the words on reload.
+ *
+ * `docFormat` is a real, optional schema column (`emailDocFormatOf(campaign)`
+ * resolves it — WS2b); themes are RETIRED (2026-07-29, "Themes freeze" —
+ * `docs/plans/maily-editor-overhaul.md`) — `campaigns.setCampaignTheme`
+ * throws `THEMES_RETIRED` for every row now, so there is no restyle
+ * affordance here at all, for either format.
  */
 import { useCallback } from "react";
 import { Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
-import { useConvex, useMutation, useQuery } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import type { EmailDocument, EmailTheme } from "@events-os/shared";
+import type { JSONContent } from "@tiptap/core";
+import { emailDocFormatOf, type EmailDocument } from "@events-os/shared";
 import {
   Screen,
   FULL_WIDTH,
@@ -35,7 +45,8 @@ import {
 } from "../../../../components/ui";
 import { useActionRunner } from "../../../../lib/useActionToast";
 import { DocumentComposer } from "../../../../components/campaign/designer/DocumentComposer";
-import type { ThemeChoice } from "../../../../components/campaign/designer/CampaignThemePicker";
+import { useDesignerImageUploader } from "../../../../components/campaign/designer/useImageUploader";
+import { fromLineText } from "../../../../components/campaign/designer/mailyMetaText";
 import { SaveAsTemplateAction } from "../../../../components/campaign/SaveAsTemplateAction";
 
 /**
@@ -79,20 +90,18 @@ function CampaignDesignBody({
 
   const campaign = useQuery(api.campaigns.getCampaign, { campaignId });
   const updateDoc = useMutation(api.campaigns.updateCampaignDoc);
-  const setTheme = useMutation(api.campaigns.setCampaignTheme);
-  // `storage.getUrl` / `getCampaign` are queries, not mutations — resolved on
-  // demand via the imperative Convex client (`app/(app)/doc/[id].tsx`'s
-  // precedent), not `useQuery` (which subscribes reactively, not what a
-  // one-off read after a write needs).
-  const convex = useConvex();
+  const updateMeta = useMutation(api.campaigns.updateCampaignMeta);
+  // Only meaningful for the tiptap host's read-only "From" line — same query
+  // `CampaignMetaCard.tsx` reads for its own From hint text.
+  const senderDefaults = useQuery(api.campaigns.getSenderDefaults, {});
   const { run, toast, dismiss } = useActionRunner();
 
   // Editable in `draft` OR `changes_requested` (a reviewer sent it back —
   // `campaigns.ts#assertEditable` enforces the same pair server-side) AND
-  // only for a caller who can compose: `updateCampaignDoc` /
-  // `setCampaignTheme` both require `campaigns.compose`, so without this a
-  // design-only holder typed into a live-looking composer whose every
-  // autosave came back "Not saved — … requires email compose power."
+  // only for a caller who can compose: `updateCampaignDoc` requires
+  // `campaigns.compose`, so without this a design-only holder typed into a
+  // live-looking composer whose every autosave came back "Not saved — …
+  // requires email compose power."
   const editable =
     canCompose && (campaign?.status === "draft" || campaign?.status === "changes_requested");
 
@@ -101,27 +110,12 @@ function CampaignDesignBody({
     [updateDoc, campaignId],
   );
 
-  /**
-   * Restyle the campaign (`campaigns.setCampaignTheme`).
-   *
-   * The mutation applies the theme SERVER-side to the document as stored, so
-   * the theme that actually landed is read back (rather than trusting a
-   * locally-guessed one, which would drop the normalisation the server
-   * applied) and handed to the composer, which folds it into its local
-   * history — see `DocumentComposer`'s `onApplyTheme` for why that fold is
-   * required.
-   */
-  const applyTheme = useCallback(
-    async (choice: ThemeChoice): Promise<EmailTheme | null> => {
-      const result = await run(() => setTheme({ campaignId, ...choice }), {
-        errorTitle: "Couldn't apply that theme",
-      });
-      if (result === undefined) return null;
-      const fresh = await convex.query(api.campaigns.getCampaign, { campaignId });
-      return (fresh?.doc as EmailDocument | undefined)?.theme ?? null;
-    },
-    [run, setTheme, campaignId, convex],
+  const saveTiptapDoc = useCallback(
+    (doc: JSONContent) => updateDoc({ campaignId, doc }),
+    [updateDoc, campaignId],
   );
+
+  const uploadImage = useDesignerImageUploader(editable);
 
   if (campaign === undefined) return <Screen loading />;
 
@@ -153,14 +147,44 @@ function CampaignDesignBody({
           />
         </View>
       </View>
-      <DocumentComposer
-        doc={campaign.doc as EmailDocument}
-        editable={editable}
-        lockedNotice={lockNote(campaign.status, canCompose)}
-        onSave={saveDoc}
-        onApplyTheme={applyTheme}
-        run={run}
-      />
+      {emailDocFormatOf(campaign) === "tiptap" ? (
+        <DocumentComposer
+          docFormat="tiptap"
+          campaignId={campaignId}
+          doc={campaign.doc as JSONContent}
+          editable={editable}
+          lockedNotice={lockNote(campaign.status, canCompose)}
+          onSave={saveTiptapDoc}
+          run={run}
+          uploadImage={uploadImage}
+          meta={{
+            subject: campaign.subject ?? "",
+            previewText: campaign.previewText ?? "",
+            fromLine: fromLineText({
+              fromName: campaign.fromName,
+              fromEmail: campaign.fromEmail,
+              orgFromAddress: senderDefaults?.orgFromAddress,
+            }),
+            onSaveSubject: (subject) =>
+              run(() => updateMeta({ campaignId, subject }), {
+                errorTitle: "Couldn't save the subject line",
+              }),
+            onSavePreviewText: (previewText) =>
+              run(() => updateMeta({ campaignId, previewText }), {
+                errorTitle: "Couldn't save the preview text",
+              }),
+          }}
+        />
+      ) : (
+        <DocumentComposer
+          docFormat="blocks"
+          doc={campaign.doc as EmailDocument}
+          editable={editable}
+          lockedNotice={lockNote(campaign.status, canCompose)}
+          onSave={saveDoc}
+          run={run}
+        />
+      )}
     </Screen>
   );
 }
@@ -182,7 +206,7 @@ function lockNote(status: string | undefined, canCompose: boolean): string {
   if (status === "draft" || status === "changes_requested") {
     return canCompose
       ? "The design is locked."
-      : "Read-only — editing an email takes compose power. Themes, templates and the image library are yours to change.";
+      : "Read-only — editing an email takes compose power. Templates and the image library are yours to change.";
   }
   return "This email has been sent (or is on its way) — the design is locked.";
 }

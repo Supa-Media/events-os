@@ -57,7 +57,8 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { FunctionReturnType } from "convex/server";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { renderCampaignEmail, type EmailDocument } from "@events-os/shared";
+import type { JSONContent } from "@tiptap/core";
+import { emailDocFormatOf, renderCampaignEmail, type EmailDocument } from "@events-os/shared";
 import {
   Badge,
   Button,
@@ -80,6 +81,8 @@ import {
   templateBlockSummary,
   templateDetailsPatch,
 } from "./templateFields";
+import { isTiptapDocEmpty, newTiptapDocSeed } from "./designer/mailyDoc";
+import { useServerEmailPreview } from "./useServerEmailPreview";
 
 type TemplateRow = FunctionReturnType<typeof api.campaignTemplates.listTemplates>[number];
 
@@ -102,7 +105,7 @@ export function CampaignTemplatesView() {
   const { run, toast, dismiss } = useActionRunner();
   const { width } = useWindowDimensions();
   const split = width >= SPLIT_BREAKPOINT;
-  const [editingId, setEditingId] = useState<Id<"campaignTemplates"> | null>(null);
+  const [editingId, setEditingId] = useState<Id<"campaigns"> | null>(null);
 
   if (templates === undefined) return <Screen loading />;
 
@@ -193,9 +196,18 @@ function NewTemplateAction({
     const { ok: _ok, ...rest } = args;
     setSaving(true);
     try {
-      const templateId = await run(() => createTemplate({ scope: SCOPE, ...rest }), {
-        errorTitle: "Couldn't create the template",
-      });
+      // "New documents are maily-format from now on"
+      // (docs/plans/maily-editor-overhaul.md, "New template flow").
+      const templateId = await run(
+        () =>
+          createTemplate({
+            scope: SCOPE,
+            ...rest,
+            doc: newTiptapDocSeed(),
+            docFormat: "tiptap",
+          }),
+        { errorTitle: "Couldn't create the template" },
+      );
       // `run` resolves undefined when it swallowed a failure — only navigate
       // when a real id came back.
       if (templateId === undefined) return;
@@ -300,7 +312,7 @@ function TemplateCard({
       <View className={split ? "flex-row gap-4" : "gap-3"}>
         <View style={split ? { width: 260 } : undefined}>
           <ErrorBoundary inline>
-            <TemplatePreview doc={row.doc} height={split ? 280 : 240} />
+            <TemplatePreview row={row} height={split ? 280 : 240} />
           </ErrorBoundary>
         </View>
 
@@ -320,7 +332,7 @@ function TemplateCard({
           )}
 
           <Text className="mt-1 text-xs text-faint">
-            {templateBlockSummary(row.doc)} · Updated {formatDate(row.updatedAt)}
+            {templateBlockSummary(row.doc, row.docFormat)} · Updated {formatDate(row.updatedAt)}
           </Text>
 
           {/* Every action here — rename, describe, restyle, remove — is a
@@ -360,21 +372,64 @@ function TemplateCard({
 
 /**
  * The stored document rendered exactly as it will send. `doc` is `v.any()` on
- * the row (validated at the write gate by `validateEmailDocument`, not by
- * Convex), so the cast matches what `campaign/[id]/design.tsx` does with
- * `campaign.doc`; anything genuinely malformed throws into this component's
- * inline ErrorBoundary rather than blanking the library.
+ * the row (validated at the write gate by `validateEmailDocument`/
+ * `validateTiptapEmailDoc`, not by Convex), so a genuinely malformed value
+ * throws into this component's inline `ErrorBoundary` rather than blanking
+ * the library.
+ *
+ * Format-aware, same split as `CampaignStatusCard.tsx#ReviewEmailPreview`: a
+ * `"blocks"`-format row keeps the original client-side `renderCampaignEmail`
+ * call unchanged (`doc.blocks` is always an array there). A `"tiptap"`-format
+ * row — every built-in template as of migration 0056 — has no `.blocks`, so
+ * calling `renderCampaignEmail` on it unconditionally threw and put every
+ * thumbnail into the ErrorBoundary's error state. It renders instead through
+ * `useServerEmailPreview`, the same `api.emailPreview.renderCampaignPreview`
+ * action the composer's own read-only host uses — a template row is a
+ * `kind: "template"` row in the same `campaigns` table, and that action is
+ * explicitly documented to work on both kinds.
  */
-function TemplatePreview({ doc, height }: { doc: unknown; height: number }) {
-  const html = useMemo(
+function TemplatePreview({ row, height }: { row: TemplateRow; height: number }) {
+  const isTiptap = emailDocFormatOf(row) === "tiptap";
+  const empty = isTiptap && isTiptapDocEmpty(row.doc as JSONContent | null | undefined);
+  const serverPreview = useServerEmailPreview(row._id, isTiptap);
+  const blocksHtml = useMemo(
     () =>
-      renderCampaignEmail(doc as EmailDocument, {
-        recipient: PREVIEW_RECIPIENT,
-        unsubscribeUrl: "#",
-      }),
-    [doc],
+      isTiptap
+        ? null
+        : renderCampaignEmail(row.doc as EmailDocument, {
+            recipient: PREVIEW_RECIPIENT,
+            unsubscribeUrl: "#",
+          }),
+    [row.doc, isTiptap],
   );
-  return <EmailHtmlPreview html={html} height={height} />;
+
+  if (!isTiptap) {
+    return <EmailHtmlPreview html={blocksHtml as string} height={height} />;
+  }
+  if (empty) {
+    return (
+      <View style={{ height }} className="items-center justify-center">
+        <Text className="text-sm text-muted">This template has no content yet.</Text>
+      </View>
+    );
+  }
+  if (serverPreview.status === "ready") {
+    return <EmailHtmlPreview html={serverPreview.html} height={height} />;
+  }
+  if (serverPreview.status === "loading") {
+    return (
+      <View style={{ height }} className="items-center justify-center">
+        <Text className="text-sm text-faint">Loading preview…</Text>
+      </View>
+    );
+  }
+  return (
+    <View style={{ height }} className="items-center justify-center">
+      <Text className="text-sm text-warn">
+        Couldn&apos;t load the preview — open &ldquo;Edit design&rdquo; to see it directly.
+      </Text>
+    </View>
+  );
 }
 
 /**

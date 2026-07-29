@@ -15,6 +15,10 @@ on:
     paths:
       - "apps/convex/**"
       - "packages/shared/**"
+      # The vendored email renderer is a production dependency of the deployed
+      # Convex bundle (campaigns.ts / emailPreview.ts import renderEmailTiptap)
+      # — a render-only fix must trigger a backend deploy or it sits unshipped.
+      - "packages/email-render/**"
       - "convex.json"
   # Allow a manual run from the Actions tab (e.g. first deploy / re-deploy).
   workflow_dispatch:

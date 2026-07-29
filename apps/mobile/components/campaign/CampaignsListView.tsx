@@ -53,6 +53,7 @@ import type { Id } from "@events-os/convex/_generated/dataModel";
 import { Card, Button, Badge, SectionHeader, TextField, Select, EmptyState, ToastView } from "../ui";
 import { colors, spacing } from "../../lib/theme";
 import { useActionRunner } from "../../lib/useActionToast";
+import { newTiptapDocSeed } from "./designer/mailyDoc";
 import { formatDateTime } from "../../lib/format";
 import { campaignStatusLabel, campaignStatusTone, pluralCount, pluralReply } from "./helpers";
 
@@ -114,10 +115,13 @@ export function CampaignsListView() {
                 name: trimmedSubject,
                 subject: trimmedSubject,
                 audienceId: audienceId as Id<"audiences">,
-                doc: { blocks: [] },
+                // "New documents are maily-format from now on"
+                // (docs/plans/maily-editor-overhaul.md, "New template flow").
+                doc: newTiptapDocSeed(),
+                docFormat: "tiptap",
               })
             : createFromTemplate({
-                templateId: templateId as Id<"campaignTemplates">,
+                templateId: templateId as Id<"campaigns">,
                 name: trimmedSubject,
                 subject: trimmedSubject,
                 audienceId: audienceId as Id<"audiences">,
@@ -249,8 +253,8 @@ function DesignerDeskCard() {
     <Card style={styles.creator}>
       <Text className="text-sm text-muted">
         The emails themselves are written by whoever holds compose power. Yours
-        is what they&apos;re built from — the themes, the saved templates and
-        the image library.
+        is what they&apos;re built from — the saved templates and the image
+        library.
       </Text>
       <View style={styles.designerActions}>
         <Button
@@ -258,12 +262,6 @@ function DesignerDeskCard() {
           icon="bookmark"
           variant="secondary"
           onPress={() => router.push("/campaigns/templates" as never)}
-        />
-        <Button
-          title="Themes"
-          icon="droplet"
-          variant="secondary"
-          onPress={() => router.push("/campaigns/themes" as never)}
         />
       </View>
     </Card>

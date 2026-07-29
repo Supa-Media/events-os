@@ -4,8 +4,10 @@ import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import {
   BUILT_IN_CAMPAIGN_TEMPLATES,
   NEWSLETTER_ASSETS,
-  NEWSLETTER_TEMPLATE_SLOTS,
-  validateEmailDocument,
+  TIPTAP_NEWSLETTER_ARTWORK_SLOTS,
+  validateTiptapEmailDoc,
+  type NewsletterTiptapDoc,
+  type NewsletterTiptapNode,
 } from "@events-os/shared";
 
 /**
@@ -207,27 +209,34 @@ describe("importNewsletterImages — a rotting CDN", () => {
  */
 describe("importNewsletterImages — it fills the built-in template", () => {
   async function builtInTemplate(t: ReturnType<typeof newT>) {
-    const rows = await run(t, (ctx) => ctx.db.query("campaignTemplates").collect());
+    const rows = await run(t, (ctx) =>
+      ctx.db
+        .query("campaigns")
+        .withIndex("by_kind", (q) => q.eq("kind", "template"))
+        .collect(),
+    );
     return rows.find((r) => r.isBuiltIn === true);
   }
 
-  /** Every mapped slot's current URL, keyed by the asset it expects. */
-  function slotUrls(doc: { blocks: Record<string, unknown>[] }) {
-    return new Map(
-      NEWSLETTER_TEMPLATE_SLOTS.map((slot) => {
-        const block = doc.blocks.find((b) => b.id === slot.blockId);
-        return [
-          slot.sourceKey,
-          block?.kind === "bleed_image"
-            ? block.url
-            : block?.kind === "card"
-              ? block.imageUrl
-              : block?.kind === "footer"
-                ? block.logoUrl
-                : undefined,
-        ] as const;
-      }),
+  /** Every mapped slot's current URL, keyed by the asset it expects — the
+   *  tiptap twin of the blocks-format helper this replaced (see
+   *  `tests/campaignTemplates.test.ts`'s identical `slotUrls`). An unfilled
+   *  slot's node ships `src: ""` (never absent), unlike the blocks format's
+   *  `undefined` for the same case. */
+  function slotUrls(doc: NewsletterTiptapDoc) {
+    const sourceKeyByPwSlot = new Map(
+      TIPTAP_NEWSLETTER_ARTWORK_SLOTS.map((slot) => [slot.pwSlot, slot.sourceKey]),
     );
+    const urls = new Map<string, unknown>();
+    for (const slot of TIPTAP_NEWSLETTER_ARTWORK_SLOTS) urls.set(slot.sourceKey, "");
+    function walk(node: NewsletterTiptapNode): void {
+      const pwSlot = typeof node.attrs?.pwSlot === "string" ? node.attrs.pwSlot : undefined;
+      const sourceKey = pwSlot ? sourceKeyByPwSlot.get(pwSlot) : undefined;
+      if (sourceKey) urls.set(sourceKey, node.attrs?.src);
+      for (const child of node.content ?? []) walk(child);
+    }
+    for (const node of doc.content) walk(node);
+    return urls;
   }
 
   test("a committing run re-seeds the template and every slot ends up filled", async () => {
@@ -242,7 +251,9 @@ describe("importNewsletterImages — it fills the built-in template", () => {
       createdBy: s.userId,
     });
     const before = await builtInTemplate(t);
-    expect([...slotUrls(before!.doc).values()].every((u) => u === undefined)).toBe(true);
+    expect([...slotUrls(before!.doc as NewsletterTiptapDoc).values()].every((u) => u === "")).toBe(
+      true,
+    );
 
     const result = await t.action(IMPORT.importNewsletterImages, {
       scope: "central",
@@ -253,11 +264,12 @@ describe("importNewsletterImages — it fills the built-in template", () => {
     expect(result.reseededTemplates[0]).toBe(before!._id);
 
     const after = await run(t, (ctx) => ctx.db.get(before!._id));
-    for (const [sourceKey, url] of slotUrls(after!.doc)) {
+    for (const [sourceKey, url] of slotUrls(after!.doc as NewsletterTiptapDoc)) {
       expect(url, sourceKey).toBeTypeOf("string");
       expect(String(url).length, sourceKey).toBeGreaterThan(0);
     }
-    expect(validateEmailDocument(after!.doc).ok).toBe(true);
+    expect(validateTiptapEmailDoc(after!.doc).ok).toBe(true);
+    expect(after!.docFormat).toBe("tiptap");
   });
 
   test("it seeds the template even when one never existed", async () => {
@@ -273,9 +285,11 @@ describe("importNewsletterImages — it fills the built-in template", () => {
 
     expect(result.reseededTemplates).toHaveLength(BUILT_IN_CAMPAIGN_TEMPLATES.length);
     const template = await builtInTemplate(t);
-    expect([...slotUrls(template!.doc).values()].every((u) => typeof u === "string")).toBe(
-      true,
-    );
+    expect(
+      [...slotUrls(template!.doc as NewsletterTiptapDoc).values()].every(
+        (u) => typeof u === "string" && u.length > 0,
+      ),
+    ).toBe(true);
   });
 
   test("a DRY RUN re-seeds nothing — it writes nothing at all", async () => {
@@ -307,9 +321,12 @@ describe("importNewsletterImages — it fills the built-in template", () => {
     expect(result.failed).toBe(NEWSLETTER_ASSETS.length);
 
     const template = await builtInTemplate(t);
-    // Empty, not blanked-with-empty-strings, and still a valid document.
-    expect([...slotUrls(template!.doc).values()].every((u) => u === undefined)).toBe(true);
-    expect(validateEmailDocument(template!.doc).ok).toBe(true);
+    // Empty, not undefined and not blanked with some other sentinel, and
+    // still a valid document.
+    expect(
+      [...slotUrls(template!.doc as NewsletterTiptapDoc).values()].every((u) => u === ""),
+    ).toBe(true);
+    expect(validateTiptapEmailDoc(template!.doc).ok).toBe(true);
   });
 });
 
@@ -346,7 +363,12 @@ describe("ensureNewsletterImagesImported — the cron", () => {
   }
 
   async function builtInTemplate(t: ReturnType<typeof newT>) {
-    const rows = await run(t, (ctx) => ctx.db.query("campaignTemplates").collect());
+    const rows = await run(t, (ctx) =>
+      ctx.db
+        .query("campaigns")
+        .withIndex("by_kind", (q) => q.eq("kind", "template"))
+        .collect(),
+    );
     return rows.find((r) => r.isBuiltIn === true);
   }
 
@@ -372,21 +394,24 @@ describe("ensureNewsletterImagesImported — the cron", () => {
 
     const template = await builtInTemplate(t);
     expect(template).toBeDefined();
-    for (const slot of NEWSLETTER_TEMPLATE_SLOTS) {
-      const block = (template!.doc as { blocks: Record<string, unknown>[] }).blocks.find(
-        (b) => b.id === slot.blockId,
-      );
-      const url =
-        block?.kind === "bleed_image"
-          ? block.url
-          : block?.kind === "card"
-            ? block.imageUrl
-            : block?.kind === "footer"
-              ? block.logoUrl
-              : undefined;
-      expect(url, slot.blockId).toBeTypeOf("string");
+    const sourceKeyByPwSlot = new Map(
+      TIPTAP_NEWSLETTER_ARTWORK_SLOTS.map((slot) => [slot.pwSlot, slot.sourceKey]),
+    );
+    const found = new Set<string>();
+    function walk(node: NewsletterTiptapNode): void {
+      const pwSlot = typeof node.attrs?.pwSlot === "string" ? node.attrs.pwSlot : undefined;
+      const sourceKey = pwSlot ? sourceKeyByPwSlot.get(pwSlot) : undefined;
+      if (sourceKey) {
+        expect(node.attrs?.src, sourceKey).toBeTypeOf("string");
+        expect(String(node.attrs?.src).length, sourceKey).toBeGreaterThan(0);
+        found.add(sourceKey);
+      }
+      for (const child of node.content ?? []) walk(child);
     }
-    expect(validateEmailDocument(template!.doc).ok).toBe(true);
+    for (const node of (template!.doc as NewsletterTiptapDoc).content) walk(node);
+    expect(found.size).toBe(TIPTAP_NEWSLETTER_ARTWORK_SLOTS.length);
+    expect(validateTiptapEmailDoc(template!.doc).ok).toBe(true);
+    expect(template!.docFormat).toBe("tiptap");
   });
 
   test("self-disables once complete: a second run fetches NOTHING and writes nothing", async () => {

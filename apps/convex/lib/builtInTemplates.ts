@@ -1,7 +1,13 @@
 /**
- * Seeding for the built-in campaign templates that ship in code
- * (`@events-os/shared`'s `BUILT_IN_CAMPAIGN_TEMPLATES` — today the Public
- * Worship monthly newsletter).
+ * Seeding for the built-in campaign templates that ship in code — today the
+ * Public Worship monthly newsletter, as of this change shipped as the
+ * TIPTAP document (`@events-os/shared`'s `PUBLIC_WORSHIP_NEWSLETTER_TIPTAP`,
+ * the WS4 "acceptance artefact" — see that module's doc), no longer the
+ * legacy blocks-format `PUBLIC_WORSHIP_NEWSLETTER_TEMPLATE`.
+ *
+ * Since the templates merge (2026-07-29 — `schema/campaigns.ts`'s `kind` doc),
+ * a "built-in template" is a `kind: "template"` row in the `campaigns` table,
+ * not a row in the (now-frozen) `campaignTemplates` table.
  *
  * ── Why this lives in `lib/` rather than in `campaignTemplates.ts` ──────────
  * Three callers need it and two of them would otherwise form an import cycle:
@@ -15,27 +21,50 @@
  * `MutationCtx` and needs a plain helper.
  *
  * Idempotent by construction: keyed on `isBuiltIn && name` per scope, patches
- * in place ONLY when the shipped content actually differs (so an unchanged
- * deploy doesn't churn `updatedAt`), and deliberately leaves an archived row
- * archived — a template someone deleted must not resurrect itself on the next
- * deploy.
+ * in place ONLY when the shipped content (OR its `docFormat`) actually
+ * differs (so an unchanged deploy doesn't churn `updatedAt`), and deliberately
+ * leaves an archived row archived — a template someone deleted must not
+ * resurrect itself on the next deploy.
+ *
+ * ── The blocks → tiptap flip is an UPDATE, not a new row ────────────────────
+ * `BUILT_IN_TEMPLATE_SEEDS` below is keyed by `name`, same as before — the
+ * "Monthly newsletter" built-in row is patched IN PLACE from the legacy
+ * blocks document to the tiptap one. That is deliberately correct, not a
+ * shortcut: templates carry no approval snapshot (they never enter the
+ * approval state machine — `schema/campaigns.ts`'s `kind` doc), and any EMAIL
+ * already created from the old template is a separate `campaigns` row,
+ * unaffected by what the template row now contains. `docFormat` flips from
+ * absent (blocks) to `"tiptap"` in the same patch as `doc` — see the
+ * `formatChanged` branch in `seedBuiltInTemplates` below for how the
+ * canonical-JSON no-churn diff was extended to trigger that flip exactly
+ * once and never re-trigger once it has happened.
  *
  * ── Artwork ────────────────────────────────────────────────────────────────
  * The shipped templates carry EMPTY image slots (a hardcoded CDN URL would
  * rot). This is where they get filled: one bounded read of `emailImages` for
- * the scope, keyed by `sourceKey`, handed to `fillTemplateArtwork`. That
- * happens BEFORE the content diff, so an import that lands after the template
- * was seeded still reaches it — the ordering hazard that made the images and
- * the template ship as two halves of a feature that never met.
+ * the scope, keyed by `sourceKey`, handed to `fillTemplateArtwork` (blocks) or
+ * `fillTiptapArtwork` (tiptap) — both key off the SAME `sourceKey` library, so
+ * the eleven imported newsletter assets land in tiptap's `pwSlot`-tagged nodes
+ * exactly as they did in the blocks format's block ids. That happens BEFORE
+ * the content diff, so an import that lands after the template was seeded
+ * still reaches it — the ordering hazard that made the images and the
+ * template ship as two halves of a feature that never met.
  */
 
 import { ConvexError } from "convex/values";
 import type { MutationCtx } from "../_generated/server";
 import type { Id } from "../_generated/dataModel";
 import {
-  BUILT_IN_CAMPAIGN_TEMPLATES,
+  PUBLIC_WORSHIP_NEWSLETTER_TEMPLATE,
+  PUBLIC_WORSHIP_NEWSLETTER_TIPTAP,
+  emailDocFormatOf,
   fillTemplateArtwork,
+  fillTiptapArtwork,
   validateEmailDocument,
+  validateTiptapEmailDoc,
+  type EmailDocFormat,
+  type EmailDocument,
+  type NewsletterTiptapDoc,
   type ResolvedArtwork,
 } from "@events-os/shared";
 
@@ -84,16 +113,71 @@ async function resolveArtwork(
   return byKey;
 }
 
-/** Run a document through the shared write gate, raising this surface's
- *  `INVALID_DOC` (the same code `campaigns.ts` uses, so a client handles one
- *  shape). A template is a document that will eventually be SENT, so it goes
- *  through the same gate a campaign's own `doc` does. */
-export function assertValidTemplateDoc(doc: unknown) {
+/**
+ * Run a document through the write gate ITS OWN `docFormat` names, raising
+ * this surface's `INVALID_DOC` (the same code `campaigns.ts`/
+ * `campaignTemplates.ts` use, so a client handles one shape). A template is a
+ * document that will eventually be SENT, so it goes through the same gate a
+ * campaign's own `doc` does — the tiptap analogue of `validateEmailDocument`
+ * is `validateTiptapEmailDoc` (`tiptapEmail.ts`), dispatched on here exactly
+ * like `campaigns.ts#validateDocForFormat` / `campaignTemplates.ts`'s own
+ * (private) `assertValidDoc` do for every other write path.
+ */
+export function assertValidTemplateDoc(docFormat: EmailDocFormat, doc: unknown) {
+  if (docFormat === "tiptap") {
+    const validated = validateTiptapEmailDoc(doc);
+    if (!validated.ok) {
+      throw new ConvexError({ code: "INVALID_DOC", message: validated.error });
+    }
+    return doc;
+  }
   const validated = validateEmailDocument(doc);
   if (!validated.ok) {
     throw new ConvexError({ code: "INVALID_DOC", message: validated.error });
   }
   return validated.doc;
+}
+
+/**
+ * One shipped built-in, tagged with the format its `doc` is written in. Today
+ * a single entry — the Public Worship monthly newsletter, shipped as the
+ * TIPTAP document (`PUBLIC_WORSHIP_NEWSLETTER_TIPTAP`, the WS4 acceptance
+ * artefact) — but keeping `docFormat` per-entry (rather than assuming every
+ * built-in is tiptap) means a future built-in can still ship blocks-format
+ * without this module changing shape again.
+ *
+ * `name`/`description` are pulled from the legacy blocks `CampaignTemplate`
+ * (`PUBLIC_WORSHIP_NEWSLETTER_TEMPLATE`) rather than re-typed here: the two
+ * formats describe the SAME newsletter to a human picking a starting point,
+ * so the copy stays one source, not two that can drift apart.
+ */
+type BuiltInTemplateSeed = {
+  name: string;
+  description: string;
+  docFormat: EmailDocFormat;
+  doc: EmailDocument | NewsletterTiptapDoc;
+};
+
+const BUILT_IN_TEMPLATE_SEEDS: readonly BuiltInTemplateSeed[] = [
+  {
+    name: PUBLIC_WORSHIP_NEWSLETTER_TEMPLATE.name,
+    description: PUBLIC_WORSHIP_NEWSLETTER_TEMPLATE.description,
+    docFormat: "tiptap",
+    doc: PUBLIC_WORSHIP_NEWSLETTER_TIPTAP,
+  },
+];
+
+/** Place whatever artwork is on file into a seed's empty slots, dispatched on
+ *  its `docFormat` — `fillTemplateArtwork` (blocks) and `fillTiptapArtwork`
+ *  (tiptap) both key off the SAME `sourceKey` library (see this module's
+ *  header), so one `resolveArtwork` read serves either format. */
+function fillArtwork(
+  seed: BuiltInTemplateSeed,
+  artwork: ReadonlyMap<string, ResolvedArtwork>,
+): unknown {
+  return seed.docFormat === "tiptap"
+    ? fillTiptapArtwork(seed.doc as NewsletterTiptapDoc, artwork)
+    : fillTemplateArtwork(seed.doc as EmailDocument, artwork);
 }
 
 /**
@@ -128,10 +212,15 @@ export async function seedBuiltInTemplates(
   ctx: MutationCtx,
   scope: Id<"chapters"> | "central",
   createdBy: Id<"users">,
-): Promise<Id<"campaignTemplates">[]> {
+): Promise<Id<"campaigns">[]> {
+  // `campaigns` rows carrying `kind: "template"` — the templates merge
+  // (2026-07-29) retargeted this from the (now-frozen) `campaignTemplates`
+  // table onto `by_scope_kind`, an EXACT index for this read (every
+  // template-kind row stamps `kind` explicitly — see `schema/campaigns.ts`'s
+  // doc on `kind`).
   const existing = await ctx.db
-    .query("campaignTemplates")
-    .withIndex("by_scope", (q) => q.eq("scope", scope))
+    .query("campaigns")
+    .withIndex("by_scope_kind", (q) => q.eq("scope", scope).eq("kind", "template"))
     .take(TEMPLATE_SCAN_LIMIT);
 
   // Read the image library ONCE, before the loop and before the diff below:
@@ -141,13 +230,13 @@ export async function seedBuiltInTemplates(
   const artwork = await resolveArtwork(ctx, scope);
 
   const now = Date.now();
-  const ids: Id<"campaignTemplates">[] = [];
-  for (const template of BUILT_IN_CAMPAIGN_TEMPLATES) {
+  const ids: Id<"campaigns">[] = [];
+  for (const seed of BUILT_IN_TEMPLATE_SEEDS) {
     // Place whatever artwork is on file. With an empty library this is a
     // no-op returning the shipped document byte-for-byte, so a deployment that
     // hasn't run the import doesn't churn `updatedAt` on every deploy.
-    const doc = assertValidTemplateDoc(fillTemplateArtwork(template.doc, artwork));
-    const match = existing.find((t) => t.isBuiltIn === true && t.name === template.name);
+    const doc = assertValidTemplateDoc(seed.docFormat, fillArtwork(seed, artwork));
+    const match = existing.find((t) => t.isBuiltIn === true && t.name === seed.name);
     if (match) {
       ids.push(match._id);
       // Deliberately deleted — stay deleted. Note the consequence: an archived
@@ -156,21 +245,40 @@ export async function seedBuiltInTemplates(
       // someone deleted would be worse — but it does mean "I deleted it and
       // the images never showed up" is expected, not a bug.
       if (match.archived === true) continue;
-      const sameDoc = canonicalJson(match.doc) === canonicalJson(doc);
-      if (sameDoc && match.description === template.description) continue;
+      // The format flip (blocks → tiptap) is itself a content change the
+      // canonical-JSON diff below must catch even in the (structurally
+      // impossible in practice, but not asserted) case that a blocks doc and
+      // a tiptap doc happened to canonicalize identically. Checked here,
+      // explicitly, rather than trusted to the JSON diff alone — this is what
+      // makes the flip fire EXACTLY ONCE: the row's `docFormat` becomes
+      // `"tiptap"` on the first patch, so `formatChanged` is false on every
+      // re-seed after that and the ordinary no-churn diff takes back over.
+      const formatChanged = emailDocFormatOf(match) !== seed.docFormat;
+      const sameDoc = !formatChanged && canonicalJson(match.doc) === canonicalJson(doc);
+      if (sameDoc && match.description === seed.description) continue;
       await ctx.db.patch(match._id, {
         doc,
-        description: template.description,
+        // Absent-means-"blocks" — only stamp the column when it's actually
+        // "tiptap", matching every other write path's rule (`createCampaign`,
+        // `createTemplate`, `duplicateCampaignRow`).
+        docFormat: seed.docFormat === "tiptap" ? "tiptap" : undefined,
+        description: seed.description,
         updatedAt: now,
       });
       continue;
     }
     ids.push(
-      await ctx.db.insert("campaignTemplates", {
+      await ctx.db.insert("campaigns", {
         scope,
-        name: template.name,
-        description: template.description,
+        name: seed.name,
+        description: seed.description,
         doc,
+        docFormat: seed.docFormat === "tiptap" ? "tiptap" : undefined,
+        kind: "template",
+        // Every campaigns row needs a status; a template-kind row never
+        // transitions out of it — see `schema/campaigns.ts`'s `kind` doc.
+        status: "draft",
+        subject: "",
         isBuiltIn: true,
         createdBy,
         createdAt: now,

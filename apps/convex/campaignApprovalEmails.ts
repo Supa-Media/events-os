@@ -46,12 +46,17 @@ import {
 } from "./lib/resend";
 import {
   DEFAULT_EMAIL_THEME,
+  emailDocFormatOf,
   normalizeEmailTheme,
   renderCampaignEmail,
   renderCampaignText,
   validateEmailDocument,
+  validateTiptapEmailDoc,
 } from "@events-os/shared";
-import type { EmailTheme } from "@events-os/shared";
+import type { EmailDocument, EmailTheme } from "@events-os/shared";
+import { renderEmailTiptap } from "@events-os/email-render";
+import type { JSONContent } from "@tiptap/core";
+import { tiptapMergeVariables } from "./lib/tiptapCampaignRender";
 import { sendEmail, emailShell } from "./ticketingEmails";
 import {
   EMAIL_CLS,
@@ -169,17 +174,29 @@ export const sendApprovalTestPair = internalAction({
         campaignId,
       });
       if (!campaign) return null;
-      const validated = validateEmailDocument(campaign.doc);
-      if (!validated.ok) return null; // submitForApproval already validated this — defensive no-op only
-      // Captured into its own binding (not read off `validated.doc` inside
-      // the nested `render` closure below) — TS's control-flow narrowing on
-      // `validated.ok` doesn't propagate into a function DECLARED after the
-      // guard, only INTO code that reads `validated` directly at this level.
-      const doc = validated.doc;
-      // The exact theme `renderCampaignEmail` will paint this document with,
-      // resolved once so the appended review block matches it rather than
-      // defaulting to Public Worship's maroon on a seasonally-themed campaign.
-      const docTheme = doc.theme ? normalizeEmailTheme(doc.theme) : DEFAULT_EMAIL_THEME;
+      const docFormat = emailDocFormatOf(campaign);
+      // submitForApproval already validated this — defensive no-op only.
+      if (docFormat === "tiptap") {
+        if (!validateTiptapEmailDoc(campaign.doc).ok) return null;
+      } else if (!validateEmailDocument(campaign.doc).ok) {
+        return null;
+      }
+      // The exact theme `renderCampaignEmail` will paint a BLOCKS document
+      // with, resolved once so the appended review block matches it rather
+      // than defaulting to Public Worship's maroon on a seasonally-themed
+      // campaign. A tiptap document carries no theme at all (themes freeze —
+      // see `emailThemes.ts`'s module doc), so its review block always uses
+      // the default.
+      const doc = campaign.doc;
+      // Captured into its own binding for the same reason `doc` is (see
+      // above) — read directly off `campaign` inside the nested `render`
+      // closure below, TS's null-check narrowing on `campaign` doesn't
+      // propagate into a function DECLARED after the guard.
+      const previewText = campaign.previewText;
+      const docTheme =
+        docFormat === "blocks" && doc && typeof doc === "object" && (doc as { theme?: unknown }).theme
+          ? normalizeEmailTheme((doc as { theme?: unknown }).theme)
+          : DEFAULT_EMAIL_THEME;
 
       const settings = await resolveResendSettings(ctx);
       if (!settings) return null; // no RESEND_API_KEY configured — dev/CI degrade
@@ -200,12 +217,27 @@ export const sendApprovalTestPair = internalAction({
       // public guest-facing site).
       const reviewUrl = appUrl(`/campaign/${campaignId}`);
 
-      function render(to: string, name: string | null, appendReview: boolean) {
+      async function render(to: string, name: string | null, appendReview: boolean) {
         const unsubscribeUrl = `${siteUrl()}/unsubscribe/test`;
         const recipient = { name, email: to };
-        const renderOpts = { recipient, unsubscribeUrl, orgAddress: mailSettings.orgMailingAddress };
-        let html = renderCampaignEmail(doc, renderOpts);
-        let text = renderCampaignText(doc, renderOpts);
+        let html: string;
+        let text: string;
+        if (docFormat === "tiptap") {
+          // No `campaignRecipients` row/token for a test-pair copy, so no
+          // poll vote URLs — same graceful degradation as `sendTest`.
+          const rendered = await renderEmailTiptap(doc as JSONContent, {
+            variables: tiptapMergeVariables(recipient),
+            unsubscribeUrl,
+            orgAddress: mailSettings.orgMailingAddress ?? "",
+            preview: previewText,
+          });
+          html = rendered.html;
+          text = rendered.text;
+        } else {
+          const renderOpts = { recipient, unsubscribeUrl, orgAddress: mailSettings.orgMailingAddress };
+          html = renderCampaignEmail(doc as EmailDocument, renderOpts);
+          text = renderCampaignText(doc as EmailDocument, renderOpts);
+        }
         if (appendReview) {
           const block = reviewBlock(reviewUrl, docTheme);
           // INSIDE the document, right before `</body>` — never after
@@ -219,7 +251,7 @@ export const sendApprovalTestPair = internalAction({
       }
 
       if (contacts.submitter) {
-        const { html, text } = render(contacts.submitter.email, contacts.submitter.name, false);
+        const { html, text } = await render(contacts.submitter.email, contacts.submitter.name, false);
         await sendResendEmail(settings, {
           to: contacts.submitter.email,
           subject: `[Test] ${campaign.subject}`,
@@ -229,7 +261,7 @@ export const sendApprovalTestPair = internalAction({
         });
       }
       if (contacts.reviewer) {
-        const { html, text } = render(contacts.reviewer.email, contacts.reviewer.name, true);
+        const { html, text } = await render(contacts.reviewer.email, contacts.reviewer.name, true);
         await sendResendEmail(settings, {
           to: contacts.reviewer.email,
           subject: `[For Approval] ${campaign.subject}`,

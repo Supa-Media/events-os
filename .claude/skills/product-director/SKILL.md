@@ -287,6 +287,60 @@ Before finishing a run of this skill, you MUST:
 
 ## Learnings Log (newest first)
 
+### 2026-07-29 — Run 11 (maily.to overhaul: editor replaced, themes retired, templates merged)
+- **Whole-system-replacement asks: recon, don't relitigate.** "I kind of hate
+  the system we have right now… use maily.to instead" after two rounds of
+  editor feedback is a verdict, not a question. The run shape that worked:
+  4 recon lanes (library facts from CLONED SOURCE, not docs — the docs 403'd
+  and would have been thinner anyway; integration blast radius; artefact
+  reproducibility IN THE NEW SYSTEM; meta survey) → synthesis → staged
+  parallel workstreams with a contract file written first. The
+  reproducibility lane generalizes Run 9's diff-table rule: when replacing a
+  system, diff the NEW system's expressiveness against the old system's
+  ARTEFACTS (her newsletter), not its feature list.
+- **Vendoring a closed dependency is also an audit.** maily's render had no
+  extension API, so we vendored it (MIT) — and found THREE upstream bugs in
+  the process: two module-level singletons mutated in place (would have
+  cross-contaminated per-recipient sends invisibly) and a heading-level crash.
+  When the plan already requires owning a file, budget the copy-in as a review
+  pass, not a paste.
+- **Contract-file-first paid exactly as Run 8 predicted.** `emailDocFormat.ts`
+  written by the orchestrator before dispatching the two lanes that shared it:
+  zero API-shape rework, vs Run 8's full UI rewrite from a described shape.
+- **The orchestrator's own integration review between build lanes and
+  adversarial review found the two whole-feature gaps no lane could see**:
+  nothing SEEDED the new template (each lane's brief ended at its surface),
+  and the Academy taught a deleted product. Per-lane briefs cannot catch
+  absences that live between lanes — schedule an explicit "walk the feature
+  end to end as a user" pass before review, every large run.
+- **"A changed seeder body does not re-run a ledgered migration" — second
+  occurrence of the class.** The fix is always a NEW registered migration;
+  cron/opportunistic backstops are not deploy-time guarantees (the artwork
+  cron self-disables; the opportunistic path waits for a human). Prove which
+  mechanism fires, don't assume.
+- **git stash in a shared worktree: third incident (WS2b), despite warnings.**
+  Promote from war story to brief boilerplate: every implementation brief now
+  says NEVER stash/checkout/reset in the shared checkout, and the orchestrator
+  verifies surviving-lane files by marker grep after any disclosed mishap.
+- **Model economics after an orchestrator model switch**: subagents inherit
+  the parent model unless overridden — when the orchestrator moves to fable,
+  EVERY Agent call needs an explicit model. The founder audited this
+  mid-run; earlier same-night lanes had silently inherited opus.
+- **Founder decisions, quoted, now standing product facts:** *"the concept of
+  themes is pretty dumb… no need as long as we have templates"* (themes
+  retired; brand consistency = start from a template); *"templates should
+  literally just be saved emails… like google docs templates… I don't think
+  it should be a separate table"* (one table, kind discriminator, gates
+  re-anchored on row kind BY DESIGN this time); *"it's okay to only allow
+  email editing in the browser"* (web-only editing is the design, not a
+  compromise); the maily screenshot = the editing-anatomy spec.
+- **Convex+react-email bundling**: `@react-email/render@2.x` ships a `convex`
+  export condition and renders in the isolate incl. juice's inliner under the
+  edge-runtime harness; the residual risk is import-time `require("fs")` in
+  juice under Convex's REAL esbuild — only the first deploy proves it. A new
+  workspace package's tests also don't run in the framework's reusable CI;
+  the local-job pattern (`router-and-landing`) is the fix shape.
+
 ### 2026-07-28 — Run 10 (campaign flow UX + terminology + compliance → PR #462)
 - **The headline: a capability rung is not a feature. `myCampaignsAccess`
   returned `{canView, canApprove}` and nothing else, so when I added the
@@ -603,56 +657,6 @@ Before finishing a run of this skill, you MUST:
   recon) — a real pre-existing Academy gap, but a separate, larger
   authoring task from this bug-fix PR.
 
-### 2026-07-24 — Run 4 (receipt archive + duplicate flow + txn search)
-- Founder feedback run: 3 recon lanes (duplicate-flow trace, search/linking
-  trace, meta survey) → one sonnet implementation agent with recon-anchored
-  brief → first-try-green (3120 tests). The duplicate-warning bug had a
-  crisp root cause recon nailed before implementation: computeSoftDuplicates
-  grouped amount+date collisions but only excluded `duplicateDismissed`
-  rows — resolved duplicates kept flagging their primary. Recon also found
-  the linking layer was ALREADY many-to-many (pinned test existed) — the
-  "can't attach second receipt" complaint was one `continue` line in a
-  search query. Trace before designing; the fix is often smaller than the
-  feedback implies.
-- Two-program .d.ts visibility class: apps/mobile's typecheck compiles
-  ../convex files reached via generated api types but loads only .d.ts
-  files its OWN tsconfig names — an ambient declaration satisfying
-  `npx convex typecheck` broke root `pnpm typecheck` (mobile task). CI
-  missed it because the mobile job was path-skipped on convex-only PRs.
-  Fix: name the declaration in apps/mobile tsconfig include. A triple-slash
-  reference in the importing .ts did NOT fix it. Root `pnpm typecheck` is
-  part of the local gate for a reason — run it from the repo ROOT (from
-  /home/user it fails with NO_IMPORTER_MANIFEST).
-- Stop-hook nuance: unverified-commit warnings on GitHub's own squash
-  commits (noreply@github.com, branch reset onto main) are false positives —
-  never rebase main's history; only reset-author YOUR unpushed commits.
-
-### 2026-07-24 — Run 3 (backend scanned-PDF receipt OCR)
-- Run shape: founder pointed at PR history ("scanned PDFs don't work, must be
-  a backend way") → 4 parallel recon lanes (pipeline trace, PR archaeology,
-  ONLINE library research, meta survey) → orchestrator spike → one sonnet
-  implementation agent → verify → ship. PR archaeology earned its lane: the
-  "impossible" server-side render was a REVERTED first commit inside #406
-  (@napi-rs/canvas, native `.node` addon vs esbuild) with a dangling
-  `externalPackages` entry still in convex.json — the constraint was "no
-  native addons," not "no server rendering."
-- SPIKE BEFORE DELEGATING when a library choice gates the design: 15 min of
-  empirical checks (plain Node + vitest edge-runtime) settled @hyzyla/pdfium
-  (MIT, WASM) with a two-tier init — default Node build in prod (fs-loads
-  its wasm; needs `externalPackages`), `browser/base64` embedded-wasm build
-  under vitest's @edge-runtime/vm (which emscripten detects as "browser").
-  The brief then contained proven code, and the agent shipped first-try-green.
-- `npx convex typecheck` must run from the REPO ROOT (root convex.json sets
-  `functions: apps/convex`); from inside apps/convex it dies with
-  `ENOENT scandir 'convex/'` — don't misread that as a code failure when
-  spot-verifying an agent's claim.
-- Stop-hook "commit and push" pressure while a subagent has in-flight edits:
-  commit YOUR files only via explicit pathspec (`git commit -- <paths>`),
-  never `git add`-all — and refuse to commit the agent's half-done tree.
-- apps/mobile tests run under JEST, not vitest — brief the right command.
-- Monitor `persistent: true` still timed out at ~30 min in this harness —
-  expect to re-arm the ticker on the timeout notification.
-
 ### 2026-07-24 — Run 3 addendum (prod hotfix: wasm loading)
 - "Local + CI green" was NOT prod green: the founder's screenshot proved
   scanned PDFs still dead-ended. Prod probing via the Run Convex Function
@@ -683,32 +687,3 @@ Before finishing a run of this skill, you MUST:
   300×144pt PDFs; prod scans are 1179×2556pt. Cap OUTPUT DIMENSIONS (2000px
   longest side), never use a fixed scale on user-supplied page sizes — and
   test with production-shaped inputs, not toy fixtures.
-
-### 2026-07-24 — Email-targeting assessment run (pre-#424) (combinations/exclusions, clunky UI)
-- Assessment-only run (founder: "analyze and tell me the plan"). 3 recon
-  lanes (UI sonnet, backend sonnet, meta haiku); synthesis stayed here; no
-  implementation dispatched unbidden. Monitor ticker armed/stopped cleanly.
-- When lanes conflict, the deeper lane wins only after spot-verification:
-  meta lane claimed legacy guests audiences mis-resolve pending 0037;
-  backend lane proved legacy guests still resolve correctly (raw-email rsvp
-  scan, audienceResolve.ts:142-172) — the REAL hole is new attendance
-  filters silently under-matching (personAttendsMatch reads rsvps.by_person,
-  historical rows unlinked until manual 0037 runs in prod). Verified in code
-  before asserting.
-- New failure class named: SILENT AUDIENCE SHRINK — resolver paths that drop
-  people with no preview counter (unlinked historical RSVPs, verifiedEmailOnly
-  checking any-verified-address while resolveSendAddress may pick an
-  unverified one, central scope + chapterId filter dropping the
-  central-donor fallback, legacy `people` opt-out drops uncounted). Preview
-  must count every exclusion class or founders read low counts as "broken."
-- Founder symptom → schema gap was near-literal: "can't do combinations and
-  exclusions of properties" = flat AND-only filter object + person-id-only
-  excludes. Plan: additive `excludeFilters` (NOT) ships before OR-of-groups
-  (shape change; must update approval snapshot hash in lockstep — #399
-  drift lesson).
-- Spec'd-but-unwired control class again: `chapterId` is in the UI's
-  GROUP_FIELDS list yet no control renders it — grep GROUP_FIELDS-style
-  registries against actually-rendered controls.
-- UI clunkiness had an in-repo precedent fix: BlastComposerCard's 400ms
-  debounce vs AudiencesView's none — cite sibling patterns in briefs so
-  agents copy the house solution.

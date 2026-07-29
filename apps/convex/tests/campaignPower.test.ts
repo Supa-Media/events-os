@@ -391,19 +391,26 @@ describe("campaigns.design — the desk's bottom rung", () => {
     });
   });
 
-  test("a design-only holder owns the shared design system: themes, templates, images", async () => {
+  test("a design-only holder owns the shared design system: templates, images — themes are frozen for everyone", async () => {
     const s = await designerSetup();
 
-    // Themes — create, then edit.
-    const themeId = await s.as.mutation(api.emailThemes.createTheme, themeArgs());
-    await s.as.mutation(api.emailThemes.updateTheme, { themeId, accent: "#891d1a" });
+    // Themes are RETIRED (2026-07-29) — even the design-only holder who used
+    // to own this surface gets THEMES_RETIRED, not FORBIDDEN: the access gate
+    // still runs first (this caller genuinely holds `campaigns.design`), but
+    // the write itself is gone for everyone. See `emailThemes.ts#throwThemesRetired`.
+    await expect(
+      s.as.mutation(api.emailThemes.createTheme, themeArgs()),
+    ).rejects.toMatchObject({ data: { code: "THEMES_RETIRED" } });
 
     // Templates — write and archive one.
     const templateId = await run(s.t, (ctx) =>
-      ctx.db.insert("campaignTemplates", {
+      ctx.db.insert("campaigns", {
         scope: "central",
         name: "Monthly newsletter",
+        subject: "",
         doc: { blocks: [{ id: "b1", kind: "heading", text: "Hello" }] },
+        kind: "template",
+        status: "draft",
         createdBy: s.userId,
         createdAt: Date.now(),
         updatedAt: Date.now(),
@@ -464,14 +471,19 @@ describe("campaigns.design — the desk's bottom rung", () => {
         blocks: [{ id: "b1", kind: "heading", text: "This month", level: 1 }],
       },
     });
-    await s.as.mutation(api.campaignTemplates.setTemplateTheme, {
-      templateId,
-      presetName: "Public Worship",
-    });
+    // Restyling is retired (2026-07-29) — even for the design-only holder who
+    // used to own this. See `emailThemes.ts#throwThemesRetired`.
+    await expect(
+      s.as.mutation(api.campaignTemplates.setTemplateTheme, {
+        templateId,
+        presetName: "Public Worship",
+      }),
+    ).rejects.toMatchObject({ data: { code: "THEMES_RETIRED" } });
 
     const saved = await s.as.query(api.campaignTemplates.getTemplate, { templateId });
     expect(saved.doc.blocks).toHaveLength(1);
-    expect(saved.doc.theme?.name).toBe("Public Worship");
+    // The theme is untouched — it never changed since creation.
+    expect(saved.doc.theme?.name).toBe(fresh.doc.theme?.name);
 
     // And the write gate is the campaign's own — a template that saves but
     // could never be sent is a trap.
@@ -497,10 +509,13 @@ describe("campaigns.design — the desk's bottom rung", () => {
       }),
     );
     const templateId = await run(s.t, (ctx) =>
-      ctx.db.insert("campaignTemplates", {
+      ctx.db.insert("campaigns", {
         scope: "central",
         name: "Monthly newsletter",
+        subject: "",
         doc: { blocks: [{ id: "b1", kind: "heading", text: "Hello" }] },
+        kind: "template",
+        status: "draft",
         createdBy: s.userId,
         createdAt: Date.now(),
         updatedAt: Date.now(),
@@ -667,6 +682,102 @@ describe("campaigns.design — the desk's bottom rung", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0].name).toBe("Everyone");
     expect(rows[0].archived).toBeUndefined();
+  });
+
+  /**
+   * The KIND boundary the templates merge introduces (Run-10 escalation
+   * class, designed in from the start — see `lib/campaignKind.ts`'s doc).
+   * Before the merge, the TABLE a design-only holder could reach was doing
+   * the enforcement: `campaignTemplates` rows lived nowhere `campaigns.ts`
+   * could see, and vice versa. Now both kinds share one table, so this same
+   * design-only seat must round-trip a TEMPLATE-kind row end to end (create,
+   * edit its document, restyle, archive) while being refused EVERY
+   * email-kind write it might reach for instead — proving the split moved
+   * from "which table" to "which kind" without opening a gap.
+   */
+  test("a design-only graphic_designer seat round-trips template rows and is refused every email-kind write", async () => {
+    const s = await designerSetup();
+
+    // ROUND-TRIP: create → edit the document → restyle → archive, all as the
+    // design-only holder, all against a TEMPLATE-kind row.
+    const templateId = await s.as.mutation(api.campaignTemplates.createTemplate, {
+      scope: "central",
+      name: "Round trip",
+    });
+    await s.as.mutation(api.campaignTemplates.updateTemplate, {
+      templateId,
+      doc: { blocks: [{ id: "b1", kind: "heading", text: "Hello", level: 1 }] },
+    });
+    // Restyling is retired (2026-07-29) — see `emailThemes.ts#throwThemesRetired`.
+    await expect(
+      s.as.mutation(api.campaignTemplates.setTemplateTheme, {
+        templateId,
+        presetName: "Public Worship",
+      }),
+    ).rejects.toMatchObject({ data: { code: "THEMES_RETIRED" } });
+    await s.as.mutation(api.campaignTemplates.archiveTemplate, { templateId });
+    const archived = await run(s.t, (ctx) => ctx.db.get(templateId));
+    expect(archived?.archived).toBe(true);
+    expect(archived?.kind).toBe("template");
+
+    // REFUSED: the SAME seat may not write an EMAIL-kind row anywhere in
+    // `campaigns.ts` — a seeded email row it never touched proves the
+    // refusal is compose power, matched here against the compose gate.
+    const audienceId = await run(s.t, (ctx) =>
+      ctx.db.insert("audiences", {
+        scope: "central",
+        name: "Everyone",
+        source: "people",
+        filters: {},
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const emailId = await run(s.t, (ctx) =>
+      ctx.db.insert("campaigns", {
+        scope: "central",
+        name: "October newsletter",
+        subject: "What's on",
+        audienceId,
+        kind: "email",
+        status: "draft",
+        doc: { blocks: [{ id: "b1", kind: "heading", text: "Hello" }] },
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    await expect(
+      s.as.mutation(api.campaigns.updateCampaignDoc, {
+        campaignId: emailId,
+        doc: { blocks: [{ id: "b1", kind: "heading", text: "Changed" }] },
+      }),
+    ).rejects.toThrow(/compose power/i);
+    await expect(
+      s.as.mutation(api.campaigns.updateCampaignMeta, { campaignId: emailId, name: "Renamed" }),
+    ).rejects.toThrow(/compose power/i);
+    await expect(
+      s.as.mutation(api.campaigns.setCampaignTheme, {
+        campaignId: emailId,
+        presetName: "Public Worship",
+      }),
+    ).rejects.toThrow(/compose power/i);
+
+    // And the KIND boundary itself, independent of capability: the
+    // TEMPLATE-specific door refuses to touch the email row even though this
+    // caller genuinely holds `campaigns.design` (the power `updateTemplate`/
+    // `archiveTemplate` require) — the wrong-kind id resolves as NOT_FOUND,
+    // matching the two-table shape this merge replaced.
+    await expect(
+      s.as.mutation(api.campaignTemplates.updateTemplate, {
+        templateId: emailId,
+        name: "Hijacked",
+      }),
+    ).rejects.toMatchObject({ data: { code: "NOT_FOUND" } });
+    await expect(
+      s.as.mutation(api.campaignTemplates.archiveTemplate, { templateId: emailId }),
+    ).rejects.toMatchObject({ data: { code: "NOT_FOUND" } });
   });
 
   test("a legacy central-ED TITLE with no seat READS the desk but can't write the design system", async () => {

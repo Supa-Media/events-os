@@ -2033,3 +2033,10 @@ export * from "./newsletterAssets";
 
 // ── @mention markup for plain-text notes fields ───────────────────────────────
 export * from "./mentions";
+export * from "./emailDocFormat";
+
+// ── Tiptap email doc validator + node/mark whitelist + poll-walk helper ──────
+export * from "./tiptapEmail";
+
+// ── The monthly newsletter, rebuilt as Tiptap JSON (WS4 acceptance artefact) ─
+export * from "./tiptapNewsletterTemplate";

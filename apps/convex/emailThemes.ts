@@ -58,6 +58,34 @@ import {
 
 const scopeValidator = v.union(v.id("chapters"), v.literal("central"));
 
+/**
+ * ── Themes freeze (founder decision, 2026-07-29 — `docs/plans/maily-editor-
+ * overhaul.md`'s "Themes freeze") ────────────────────────────────────────────
+ * "The concept of themes is pretty dumb… no need as long as we have
+ * templates." Every WRITE to the shared theme system is retired: every
+ * mutation below (`createTheme`/`updateTheme`/`setDefaultTheme`/
+ * `archiveTheme`/`duplicateTheme`) throws this, unconditionally, before doing
+ * anything else. `listThemes` (a READ) is deliberately left alone — legacy
+ * blocks-format campaigns still carry a baked theme snapshot in `doc.theme`
+ * and the renderer still needs `resolveScopeTheme`/`normalizeEmailTheme` to
+ * paint them, so the ROWS themselves must keep existing and reading; only
+ * making or changing one is gone.
+ *
+ * `campaigns.ts#setCampaignTheme` and `campaignTemplates.ts#setTemplateTheme`
+ * — "restyle this document" — throw the SAME code for the SAME reason, for
+ * EVERY row regardless of format: a tiptap document carries no theme key at
+ * all (there is nothing to restyle), and a blocks document keeps whatever
+ * snapshot it was created with (restyling an existing campaign/template is
+ * retired along with the picker that used to do it).
+ */
+export function throwThemesRetired(): never {
+  throw new ConvexError({
+    code: "THEMES_RETIRED",
+    message:
+      "Themes are retired — start from a template instead, or edit the document's own styling directly.",
+  });
+}
+
 /** Bound on a single scope's saved themes. A design system with more than a
  *  couple of dozen themes isn't a design system; 200 is the same
  *  never-scan-unbounded discipline `listCampaigns`/`listAudiences` use, sized
@@ -328,26 +356,16 @@ export const createTheme = mutation({
     dark: v.optional(darkOverrideValidator),
   },
   returns: v.id("emailThemes"),
-  handler: async (ctx, args) => {
+  // Explicit return type — without it, a bare `return throwThemesRetired()`
+  // (which returns `never`) makes TypeScript infer this handler's (and so
+  // this MUTATION's) return type as `Promise<never>` rather than widening to
+  // the declared `returns` validator's type, which then poisons every
+  // downstream caller's inferred type (e.g. a test's
+  // `const themeId = await t.mutation(api.emailThemes.createTheme, …)`)
+  // instead of yielding `Id<"emailThemes">`.
+  handler: async (ctx, args): Promise<Id<"emailThemes">> => {
     await requireCampaignDesign(ctx);
-    const userId = (await requireUserId(ctx)) as Id<"users">;
-    const { scope, dark, ...tokens } = args;
-    const theme = assertValidTheme({ ...tokens, ...(dark ? { dark } : {}) });
-
-    const now = Date.now();
-    return await ctx.db.insert("emailThemes", {
-      scope,
-      ...themeColumns(theme),
-      // The caller's OWN override, not the normalized one: `normalizeEmailTheme`
-      // fills a missing `dark` from `DEFAULT_EMAIL_THEME`, which is right at
-      // READ time (something must render) but would be a lie in the table —
-      // stamping Public Worship's maroon dark mode onto a Winter theme nobody
-      // asked to have one.
-      dark,
-      createdBy: userId,
-      createdAt: now,
-      updatedAt: now,
-    });
+    return throwThemesRetired();
   },
 });
 
@@ -387,40 +405,10 @@ export const updateTheme = mutation({
     dark: v.optional(v.union(darkOverrideValidator, v.null())),
   },
   returns: v.null(),
-  handler: async (ctx, { themeId, dark, ...fields }) => {
+  // Explicit return type — see `createTheme`'s identical note.
+  handler: async (ctx, { themeId, dark, ...fields }): Promise<null> => {
     await requireCampaignDesign(ctx);
-    const existing = await loadTheme(ctx, themeId);
-
-    // The merge BASE is the normalized row, not the raw one. A row written
-    // before `cream`/`contrast`/`hairline`/the tracking values existed has
-    // those columns absent (see `schema/campaigns.ts`), and merging a raw
-    // `undefined` under the strict validator would fail the designer's edit
-    // with an error about a token she never saw a field for. Normalizing
-    // first fills exactly those gaps from `DEFAULT_EMAIL_THEME`, so her one
-    // colour change saves and the row comes out complete.
-    const base = normalizeEmailTheme(existing);
-
-    const merged: Record<string, unknown> = {
-      name: fields.name ?? base.name,
-      radius: fields.radius ?? base.radius,
-      wordmark: fields.wordmark ?? base.wordmark,
-      headingFont: fields.headingFont ?? base.headingFont,
-      bodyFont: fields.bodyFont ?? base.bodyFont,
-    };
-    for (const key of COLOR_KEYS) merged[key] = fields[key] ?? base[key];
-    for (const key of TRACKING_KEYS) merged[key] = fields[key] ?? base[key];
-    const nextDark = dark === undefined ? existing.dark : (dark ?? undefined);
-    if (nextDark) merged.dark = nextDark;
-    const theme = assertValidTheme(merged);
-
-    await ctx.db.patch(themeId, {
-      ...themeColumns(theme),
-      // Explicit `undefined` CLEARS an optional field via `ctx.db.patch` —
-      // the `dark: null` sentinel's actual effect.
-      dark: nextDark,
-      updatedAt: Date.now(),
-    });
-    return null;
+    return throwThemesRetired();
   },
 });
 
@@ -433,27 +421,10 @@ export const updateTheme = mutation({
 export const setDefaultTheme = mutation({
   args: { themeId: v.id("emailThemes") },
   returns: v.null(),
-  handler: async (ctx, { themeId }) => {
+  // Explicit return type — see `createTheme`'s identical note.
+  handler: async (ctx, { themeId }): Promise<null> => {
     await requireCampaignDesign(ctx);
-    const row = await loadTheme(ctx, themeId);
-    if (row.archived === true) {
-      throw new ConvexError({
-        code: "ARCHIVED",
-        message: "Restore this theme before making it the default.",
-      });
-    }
-    const siblings = await ctx.db
-      .query("emailThemes")
-      .withIndex("by_scope", (q) => q.eq("scope", row.scope))
-      .take(THEME_SCAN_LIMIT);
-    const now = Date.now();
-    for (const sibling of siblings) {
-      if (sibling._id === themeId) continue;
-      if (sibling.isDefault !== true) continue;
-      await ctx.db.patch(sibling._id, { isDefault: false, updatedAt: now });
-    }
-    await ctx.db.patch(themeId, { isDefault: true, updatedAt: now });
-    return null;
+    return throwThemesRetired();
   },
 });
 
@@ -465,17 +436,10 @@ export const setDefaultTheme = mutation({
 export const archiveTheme = mutation({
   args: { themeId: v.id("emailThemes") },
   returns: v.null(),
-  handler: async (ctx, { themeId }) => {
+  // Explicit return type — see `createTheme`'s identical note.
+  handler: async (ctx, { themeId }): Promise<null> => {
     await requireCampaignDesign(ctx);
-    const row = await loadTheme(ctx, themeId);
-    if (row.isDefault === true) {
-      throw new ConvexError({
-        code: "IS_DEFAULT",
-        message: "Make another theme the default before archiving this one.",
-      });
-    }
-    await ctx.db.patch(themeId, { archived: true, updatedAt: Date.now() });
-    return null;
+    return throwThemesRetired();
   },
 });
 
@@ -496,38 +460,9 @@ export const duplicateTheme = mutation({
     name: v.optional(v.string()),
   },
   returns: v.id("emailThemes"),
-  handler: async (ctx, { scope, sourceThemeId, presetName, name }) => {
+  // Explicit return type — see `createTheme`'s identical note.
+  handler: async (ctx, { scope, sourceThemeId, presetName, name }): Promise<Id<"emailThemes">> => {
     await requireCampaignDesign(ctx);
-    const userId = (await requireUserId(ctx)) as Id<"users">;
-
-    if ((sourceThemeId === undefined) === (presetName === undefined)) {
-      throw new ConvexError({
-        code: "INVALID_ARGUMENT",
-        message: "Duplicate exactly one of a saved theme or a built-in preset.",
-      });
-    }
-
-    let source: EmailTheme;
-    if (sourceThemeId !== undefined) {
-      source = normalizeEmailTheme(await loadTheme(ctx, sourceThemeId));
-    } else {
-      const preset = emailThemePreset(presetName as string);
-      if (!preset) {
-        throw new ConvexError({ code: "NOT_FOUND", message: "No such preset theme." });
-      }
-      source = preset;
-    }
-
-    const copyName = name?.trim() || `${source.name} copy`;
-    const theme = assertValidTheme({ ...source, name: copyName });
-    const now = Date.now();
-    return await ctx.db.insert("emailThemes", {
-      scope,
-      ...themeColumns(theme),
-      dark: theme.dark as DarkOverride | undefined,
-      createdBy: userId,
-      createdAt: now,
-      updatedAt: now,
-    });
+    return throwThemesRetired();
   },
 });

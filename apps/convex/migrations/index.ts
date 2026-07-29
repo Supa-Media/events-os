@@ -73,6 +73,8 @@ import { seedBuiltInCampaignTemplates } from "./0049_seed_builtin_campaign_templ
 import { backfillPeoplePersona } from "./0051_backfill_people_persona";
 import { addCampaignDesignDefaults } from "./0053_add_campaign_design_defaults";
 import { seedOrgMailingAddress } from "./0054_seed_org_mailing_address";
+import { mergeCampaignTemplatesIntoCampaigns } from "./0055_merge_campaign_templates_into_campaigns";
+import { upgradeBuiltInNewsletterTiptap } from "./0056_upgrade_builtin_newsletter_tiptap";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -278,4 +280,22 @@ export const MIGRATIONS: Migration[] = [
   // every newsletter and event announcement until a superuser set the field
   // by hand. Never overwrites an address a human already entered. See 0054.
   seedOrgMailingAddress,
+  // Templates merge (founder decision, 2026-07-29) — copy every
+  // `campaignTemplates` row into `campaigns` as a `kind: "template"` row, so
+  // "start from a template" and every design-rung write retarget onto ONE
+  // table (see `schema/campaigns.ts`'s `kind` doc). The source table is left
+  // untouched — writes to it are frozen elsewhere in this same PR
+  // (`campaignTemplates.ts`), and it's dropped in a LATER PR once the
+  // rollback window has passed. Idempotent, keyed on `mergedFromTemplateId`
+  // provenance. See 0055.
+  mergeCampaignTemplatesIntoCampaigns,
+  // Built-in newsletter → tiptap (WS4 acceptance artefact) — 0049 already ran
+  // and is ledgered, so it will never re-fire now that
+  // `seedBuiltInTemplates`'s body ships the tiptap doc instead of the legacy
+  // blocks one. This registered entry is the deploy-time guarantee that an
+  // EXISTING deployment's built-in "Monthly newsletter" row actually flips,
+  // rather than relying on the next `createCampaign` call or an artwork-cron
+  // re-seed that self-disables once the import is already complete. See
+  // 0056.
+  upgradeBuiltInNewsletterTiptap,
 ];

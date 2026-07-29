@@ -341,19 +341,79 @@ export const CAMPAIGN_STATUSES = [
   "denied",
 ] as const;
 
-/** A composed email + its send lifecycle. `doc` is an `EmailDocument`
- *  (`@events-os/shared`'s block model) — validated with `validateEmailDocument`
- *  at every write, so a malformed document never lands in the table. Stored
- *  as `v.any()` because Convex validators can't express a discriminated block
- *  union whose shape lives in a package this schema doesn't otherwise depend
- *  on; the app-level write path is the enforcement point. */
+/**
+ * `"email"` (or absent — every row written before this field existed) is a
+ * real composed send with the full lifecycle below. `"template"` is a saved
+ * starting DOCUMENT — literally a saved email, per the founder's decision
+ * (2026-07-29: "templates should literally just be saved emails that we can
+ * edit in the future, like google docs templates, so in the backend I don't
+ * think it should be a separate table") — folded into this table rather than
+ * kept in the separate `campaignTemplates` table. See
+ * `docs/plans/maily-editor-overhaul.md`'s §Data model and `lib/campaignKind.ts`
+ * for the ONE predicate (`isTemplateRow`) every reader/writer classifies a row
+ * with; nothing else string-compares `kind` directly.
+ *
+ * A template-kind row does NOT participate in the status machine below (it is
+ * never submitted, approved, or sent — see `lib/campaignKind.ts`'s structural
+ * refusals in every send-path function), does not require an audience
+ * (`audienceId` is optional for exactly this reason), and never carries an
+ * approval field. Its `status` is stamped `"draft"` at creation and never
+ * changes again — a harmless sentinel, not a claim that the row is "a draft
+ * email"; nothing in the status machine ever reads it for a template row,
+ * since every function that reads `status` for real is gated to reject
+ * template-kind rows first.
+ */
+export const CAMPAIGN_KINDS = ["email", "template"] as const;
+
+/** A composed email + its send lifecycle, OR (since the templates merge,
+ *  2026-07-29) a saved template — see `kind`'s doc immediately above for the
+ *  full split. `doc` is an `EmailDocument` (`@events-os/shared`'s block
+ *  model) — validated with `validateEmailDocument` at every write, so a
+ *  malformed document never lands in the table. Stored as `v.any()` because
+ *  Convex validators can't express a discriminated block union whose shape
+ *  lives in a package this schema doesn't otherwise depend on; the app-level
+ *  write path is the enforcement point. */
 export const campaigns = defineTable({
   scope: campaignsScope,
   name: v.string(),
   subject: v.string(),
   previewText: v.optional(v.string()),
-  audienceId: v.id("audiences"),
+  // Optional ONLY because a template-kind row has no audience — every
+  // email-kind write path (`campaigns.ts#createCampaign` etc.) still demands
+  // one via its own argument validator; this field's optionality is not a
+  // relaxation of that requirement.
+  audienceId: v.optional(v.id("audiences")),
   doc: v.any(),
+  /** Which document shape `doc` is (`@events-os/shared`'s `emailDocFormat.ts`
+   *  — that file is the ONE contract for this field, read it before touching
+   *  this comment). Absent = `"blocks"` (every row written before
+   *  2026-07-29). Set ONCE, at CREATE time (`createCampaign`/`createTemplate`;
+   *  duplication copies the source row's format), and IMMUTABLE thereafter —
+   *  `updateCampaignDoc`/`updateTemplate` dispatch validation on whatever
+   *  format the row was created with and never accept a `docFormat` argument
+   *  of their own, so there is no path that changes it after the fact
+   *  (changing it would be a hash-visible content-shape change with no UI
+   *  meaning, and would let a doc silently escape the validator it was
+   *  written against). */
+  docFormat: v.optional(v.union(v.literal("blocks"), v.literal("tiptap"))),
+  /** Absent = `"email"` (every pre-merge row). See the doc above `CAMPAIGN_KINDS`. */
+  kind: v.optional(v.union(v.literal("email"), v.literal("template"))),
+  // ── Template-kind fields (mirror the retired `campaignTemplates` table's
+  // own columns — see migration 0055) — unused/unset on an email-kind row. ──
+  /** Template-only: the designer's own note on when to reach for it. */
+  description: v.optional(v.string()),
+  /** Template-only: seeded from code (`lib/builtInTemplates.ts`) rather than
+   *  authored by hand — provenance, not a lock; see that module's doc. */
+  isBuiltIn: v.optional(v.boolean()),
+  /** Template-only soft-delete. An email-kind row never sets this — a
+   *  sent/failed/denied email lives at its terminal `status` forever instead. */
+  archived: v.optional(v.boolean()),
+  /** Set ONLY by migration 0055 on a row it created FROM a `campaignTemplates`
+   *  row — the provenance field that migration's idempotence keys on (a
+   *  second run skips any `campaignTemplates` row already represented here).
+   *  Never set by any live write path; a template authored after the merge
+   *  has no `campaignTemplates` row to point at. */
+  mergedFromTemplateId: v.optional(v.id("campaignTemplates")),
   status: v.union(...CAMPAIGN_STATUSES.map((s) => v.literal(s))),
   // Per-campaign sender ("from a person") — both optional; when `fromEmail`
   // is unset, sends fall back to the org's configured Resend from address.
@@ -411,7 +471,27 @@ export const campaigns = defineTable({
   approvedRecipientCount: v.optional(v.number()),
 })
   .index("by_scope", ["scope"])
-  .index("by_status", ["status"]);
+  .index("by_status", ["status"])
+  // The templates-merge access pattern: `campaignTemplates.ts`'s functions
+  // (renamed to keep the module path, now writing THIS table) list every
+  // template-kind row for a scope without scanning past every email in it.
+  // `kind` is always stamped explicitly ("template") on every template-kind
+  // row (never left to the "absent = email" default — see `kind`'s doc), so
+  // this index is exact for that read, unlike a scan that would need to
+  // reason about the absent-means-email legacy case.
+  .index("by_scope_kind", ["scope", "kind"])
+  // The scope-agnostic twin — `listTemplates({ scope: undefined })`'s "every
+  // template across every scope" case, which `by_scope_kind` can't serve
+  // (its first field is `scope`, so a kind-only query can't use it as a
+  // prefix). Rare in practice (campaigns is CENTRAL-only today, so almost
+  // every caller passes `scope: "central"`), but real callers exist
+  // (`listTemplates`'s own optional-scope contract), and the alternative is
+  // an unbounded scan across every campaign ever sent.
+  .index("by_kind", ["kind"])
+  // Migration 0055's idempotence key — an indexed point lookup for "has this
+  // `campaignTemplates` row already been copied over?" instead of a table
+  // scan per row being migrated.
+  .index("by_merged_from_template", ["mergedFromTemplateId"]);
 
 export const CAMPAIGN_RECIPIENT_STATUSES = [
   "queued",
@@ -616,16 +696,23 @@ export const emailThemes = defineTable({
   archived: v.optional(v.boolean()),
 }).index("by_scope", ["scope"]);
 
-/** A saved starting point for a new campaign — a whole `EmailDocument` under
- *  `doc` (same `v.any()` + `validateEmailDocument` split `campaigns.doc` uses,
- *  for the same reason: Convex validators can't express the block union).
+/**
+ * FROZEN (2026-07-29 templates merge — see `campaigns.kind`'s doc above and
+ * `docs/plans/maily-editor-overhaul.md`'s §Data model). Every template row
+ * that existed at merge time was copied into `campaigns` as a `kind:
+ * "template"` row by migration `0055_merge_campaign_templates_into_campaigns`
+ * (`mergedFromTemplateId` on the copy points back here). `campaignTemplates.ts`
+ * (the module) now reads and writes THOSE `campaigns` rows exclusively —
+ * nothing in this app writes to this table anymore. It is kept, unwritten,
+ * for one release as a rollback safety net; a LATER PR drops it once that
+ * window has passed. Do NOT add a new writer.
  *
- *  `isBuiltIn` marks a row seeded from code (`campaignTemplates.ts`'s
- *  `ensureBuiltInTemplates`, which idempotently upserts
- *  `PUBLIC_WORSHIP_NEWSLETTER_TEMPLATE` keyed by NAME per scope — the
- *  `lib/seed/templates.ts#ensureTrainingTemplate` precedent). A built-in row
- *  is still an ordinary editable row afterwards; the flag is provenance, not
- *  a lock. */
+ * (Original doc, still accurate for what a row here MEANT while this table was
+ * live:) a saved starting point for a new campaign — a whole `EmailDocument`
+ * under `doc` (same `v.any()` + `validateEmailDocument` split `campaigns.doc`
+ * uses, for the same reason: Convex validators can't express the block
+ * union). `isBuiltIn` marked a row seeded from code — provenance, not a lock.
+ */
 export const campaignTemplates = defineTable({
   scope: campaignsScope,
   name: v.string(),

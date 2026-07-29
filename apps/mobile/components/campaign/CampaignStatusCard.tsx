@@ -38,7 +38,7 @@ import { useAction, useMutation, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { renderCampaignEmail, type EmailDocument } from "@events-os/shared";
+import { emailDocFormatOf, renderCampaignEmail, type EmailDocument } from "@events-os/shared";
 import { Badge, Button, Card, Field, Icon, ProgressBar, Select, TextField } from "../ui";
 import EmailHtmlPreview from "../email/EmailHtmlPreview";
 import { colors } from "../../lib/theme";
@@ -52,6 +52,8 @@ import {
   pluralPeople,
   pluralReply,
 } from "./helpers";
+import { hasEmailContent } from "./emailDocContent";
+import { useServerEmailPreview } from "./useServerEmailPreview";
 import type { ActionRunner } from "../../lib/useActionToast";
 
 type Campaign = NonNullable<FunctionReturnType<typeof api.campaigns.getCampaign>>;
@@ -244,7 +246,7 @@ function RequestApprovalRow({
   const submit = useMutation(api.campaigns.submitForApproval);
   const [showModal, setShowModal] = useState(false);
   const hasAudience = campaign.audienceId != null;
-  const hasContent = campaign.doc.blocks.length > 0;
+  const hasContent = hasEmailContent(campaign);
   const hasSubject = (campaign.subject ?? "").trim().length > 0;
   const canSubmit = hasAudience && hasContent && hasSubject;
 
@@ -438,21 +440,33 @@ const REVIEW_RECIPIENT = { name: "Ada Lovelace", email: "ada@example.com" };
  * artifact under review was the only thing missing, so "Approve" meant
  * approving a description.
  *
- * Rendered exactly as `design.tsx` renders its live preview — same
- * `renderCampaignEmail`, same sample recipient — because a reviewer and a
- * designer disagreeing about what the email looks like is the failure this is
- * here to prevent. The full-height composer (read-only for a submitted
- * campaign) is one tap away for anything this pane is too small for.
+ * Format-aware (`emailDocFormat.ts`'s contract): a `"blocks"`-format doc
+ * keeps the original client-side `renderCampaignEmail` path, rendered exactly
+ * as `design.tsx`'s legacy composer renders its live preview — zero behavior
+ * change. A `"tiptap"`-format doc has no `.blocks` to read at all (the
+ * mobile bundle deliberately doesn't ship the tiptap renderer — see
+ * `useServerEmailPreview.ts`'s doc), so it renders via the SAME server action
+ * `MailyDocumentHost` uses — this is a compliance surface: a reviewer must
+ * see what actually sends (footer/postal address included), not a client
+ * approximation. Either way, a reviewer and a designer disagreeing about what
+ * the email looks like is the failure this is here to prevent, and the
+ * full-height composer (read-only for a submitted campaign) is one tap away
+ * for anything this pane is too small for.
  */
 function ReviewEmailPreview({ campaign }: { campaign: Campaign }) {
   const router = useRouter();
-  const html = useMemo(
+  const isTiptap = emailDocFormatOf(campaign) === "tiptap";
+  const empty = !hasEmailContent(campaign);
+  const serverPreview = useServerEmailPreview(campaign._id, isTiptap);
+  const blocksHtml = useMemo(
     () =>
-      renderCampaignEmail(campaign.doc as EmailDocument, {
-        recipient: REVIEW_RECIPIENT,
-        unsubscribeUrl: "#",
-      }),
-    [campaign.doc],
+      isTiptap
+        ? null
+        : renderCampaignEmail(campaign.doc as EmailDocument, {
+            recipient: REVIEW_RECIPIENT,
+            unsubscribeUrl: "#",
+          }),
+    [campaign.doc, isTiptap],
   );
 
   return (
@@ -479,12 +493,21 @@ function ReviewEmailPreview({ campaign }: { campaign: Campaign }) {
           ? formatSenderDisplay(campaign.fromName, campaign.fromEmail)
           : "the org's default sender"}
       </Text>
-      {campaign.doc.blocks.length === 0 ? (
+      {empty ? (
         <Text className="text-sm text-warn">
           This email has no design yet — there is nothing to approve.
         </Text>
+      ) : !isTiptap ? (
+        <EmailHtmlPreview html={blocksHtml as string} height={420} />
+      ) : serverPreview.status === "ready" ? (
+        <EmailHtmlPreview html={serverPreview.html} height={420} />
+      ) : serverPreview.status === "loading" ? (
+        <Text className="text-sm text-faint">Loading preview…</Text>
       ) : (
-        <EmailHtmlPreview html={html} height={420} />
+        <Text className="text-sm text-warn">
+          Couldn&apos;t load the preview — use &ldquo;Open full size&rdquo; to review the
+          design directly.
+        </Text>
       )}
     </View>
   );
@@ -746,7 +769,7 @@ function DraftSendRow({
   const senderDefaults = useQuery(api.campaigns.getSenderDefaults, {});
   const [sending, setSending] = useState(false);
   const hasAudience = campaign.audienceId != null;
-  const hasContent = campaign.doc.blocks.length > 0;
+  const hasContent = hasEmailContent(campaign);
   const hasSubject = (campaign.subject ?? "").trim().length > 0;
   const canSend = hasAudience && hasContent && hasSubject && preview !== undefined;
 

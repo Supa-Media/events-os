@@ -127,18 +127,23 @@ import {
 import { escapeHtml } from "./lib/html";
 import { newGuestToken } from "./ticketing";
 import {
-  emailThemePreset,
-  normalizeEmailTheme,
+  emailDocFormatOf,
   renderCampaignEmail,
   renderCampaignText,
   validateEmailDocument,
+  validateTiptapEmailDoc,
+  type EmailDocFormat,
   type EmailDocument,
   type EmailTheme,
 } from "@events-os/shared";
-import { resolveScopeTheme } from "./emailThemes";
+import { renderEmailTiptap } from "@events-os/email-render";
+import type { JSONContent } from "@tiptap/core";
+import { tiptapVariablesFor } from "./lib/tiptapCampaignRender";
+import { resolveScopeTheme, throwThemesRetired } from "./emailThemes";
 // From lib/, not campaignTemplates.ts — that module imports applyThemeToDoc
 // from here, so importing the seeder back from it would close a cycle.
 import { seedBuiltInTemplates } from "./lib/builtInTemplates";
+import { isTemplateRow, requireEmailKindRow } from "./lib/campaignKind";
 import { CAMPAIGN_STATUSES } from "./schema/campaigns";
 // Reused rather than re-implemented — same SOD_VIOLATION error code, pure
 // (no ctx) so it's trivially testable either way. See its own doc in
@@ -151,17 +156,25 @@ const scopeValidator = v.union(v.id("chapters"), v.literal("central"));
 
 // ── CRUD ──────────────────────────────────────────────────────────────────
 
+/** EMAIL-kind rows only — a template-kind row must never surface on the
+ *  emails list (the kind-blindness sweep this PR's templates merge requires;
+ *  see `lib/campaignKind.ts`'s doc). `by_scope`/the unscoped scan are the same
+ *  bounded reads as before; the JS `.filter()` afterward is the SAME
+ *  after-`.take()` shape `campaignTemplates.listTemplates` already used for
+ *  `archived` — plain array filtering, not the forbidden Convex query
+ *  `.filter()`. */
 export const listCampaigns = query({
   args: { scope: v.optional(scopeValidator) },
   handler: async (ctx, { scope }) => {
     await requireCampaignsAccess(ctx);
-    return scope
+    const rows = scope
       ? await ctx.db
           .query("campaigns")
           .withIndex("by_scope", (q) => q.eq("scope", scope))
           .order("desc")
           .take(200)
       : await ctx.db.query("campaigns").order("desc").take(200);
+    return rows.filter((c) => !isTemplateRow(c));
   },
 });
 
@@ -170,7 +183,10 @@ export const getCampaign = query({
   handler: async (ctx, { campaignId }) => {
     await requireCampaignsAccess(ctx);
     const campaign = await ctx.db.get(campaignId);
-    if (!campaign) {
+    // A template-kind row is treated as NOT_FOUND here — this endpoint is for
+    // emails; `campaignTemplates.getTemplate` is its template-kind twin. See
+    // `lib/campaignKind.ts`'s doc on the row-kind boundary.
+    if (!campaign || isTemplateRow(campaign)) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
     return campaign;
@@ -304,6 +320,49 @@ export function applyThemeToDoc(doc: unknown, theme: EmailTheme): EmailDocument 
   return { ...(doc as EmailDocument), theme };
 }
 
+/** The tiptap twin of the blocks format's `validated.doc.blocks.length === 0`
+ *  "write the email first" check — a coarse, ROOT-LEVEL-ONLY empty check
+ *  (unlike mobile's `mailyDoc.ts#isTiptapDocEmpty`, which recurses to catch
+ *  an all-whitespace document too), since this only has to catch the
+ *  degenerate "never wrote anything" case at the send-blocking gate, not
+ *  drive empty-state copy in a composer. Written defensively (`doc` is
+ *  `v.any()` at the boundary) — anything not shaped like a tiptap doc counts
+ *  as empty rather than throwing. */
+function tiptapDocContentIsEmpty(doc: unknown): boolean {
+  if (typeof doc !== "object" || doc === null) return true;
+  const content = (doc as { content?: unknown }).content;
+  return !Array.isArray(content) || content.length === 0;
+}
+
+/**
+ * Validate `doc` against the write gate its `docFormat` names, dispatching
+ * exactly like `emailDocFormatOf`'s resolver reads it back — the ONE place
+ * "which validator does this document go through" is decided, so a call site
+ * can never validate against one format and store a document shaped like the
+ * other. Pure dispatch ONLY — no theme stamping (a blocks-format document's
+ * `theme` key is whatever it already was; an EDIT must never silently
+ * restamp it). Create-time theme stamping is each format's own concern at its
+ * own call site — see `createCampaign`'s and `campaignTemplates.ts#
+ * duplicateCampaignRow`'s own theme-stamping, which apply ONLY to blocks
+ * documents: a `"tiptap"` document is never theme-stamped at all — tiptap
+ * docs carry no theme, full stop (see the themes-freeze note on
+ * `emailThemes.ts`'s module doc).
+ */
+function validateDocForFormat(docFormat: EmailDocFormat, doc: unknown): unknown {
+  if (docFormat === "tiptap") {
+    const validated = validateTiptapEmailDoc(doc);
+    if (!validated.ok) {
+      throw new ConvexError({ code: "INVALID_DOC", message: validated.error });
+    }
+    return doc;
+  }
+  const validated = validateEmailDocument(doc);
+  if (!validated.ok) {
+    throw new ConvexError({ code: "INVALID_DOC", message: validated.error });
+  }
+  return validated.doc;
+}
+
 export const createCampaign = mutation({
   args: {
     scope: scopeValidator,
@@ -312,12 +371,16 @@ export const createCampaign = mutation({
     previewText: v.optional(v.string()),
     audienceId: v.id("audiences"),
     doc: v.any(),
+    // Set ONCE, here, and IMMUTABLE thereafter — see `schema/campaigns.ts`'s
+    // `docFormat` doc. Absent (or `"blocks"`) behaves exactly as it always
+    // has; `"tiptap"` is the maily editor's document shape.
+    docFormat: v.optional(v.union(v.literal("blocks"), v.literal("tiptap"))),
     fromName: v.optional(v.string()),
     fromEmail: v.optional(v.string()),
   },
   handler: async (
     ctx,
-    { scope, name, subject, previewText, audienceId, doc, fromName, fromEmail },
+    { scope, name, subject, previewText, audienceId, doc, docFormat, fromName, fromEmail },
   ) => {
     await requireCampaignCompose(ctx);
     const userId = (await requireUserId(ctx)) as Id<"users">;
@@ -334,17 +397,18 @@ export const createCampaign = mutation({
     if (!audience) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Audience not found." });
     }
+    const format: EmailDocFormat = docFormat === "tiptap" ? "tiptap" : "blocks";
     // Stamp the scope's current default theme BEFORE validating, so the theme
-    // the document actually stores is the one the validator saw. Only when the
-    // incoming document brought none — a composer that already picked a theme
-    // (or a template that carries one) is never overridden.
-    const themed = docHasTheme(doc)
-      ? doc
-      : applyThemeToDoc(doc, await resolveScopeTheme(ctx, scope));
-    const validated = validateEmailDocument(themed);
-    if (!validated.ok) {
-      throw new ConvexError({ code: "INVALID_DOC", message: validated.error });
-    }
+    // the document actually stores is the one the validator saw — BLOCKS
+    // format only (only when the incoming doc brought none of its own: a
+    // composer that already picked a theme, or a template that carries one,
+    // is never overridden). A tiptap document is never theme-stamped — tiptap
+    // docs carry no theme at all.
+    const themedDoc =
+      format === "blocks" && !docHasTheme(doc)
+        ? applyThemeToDoc(doc, await resolveScopeTheme(ctx, scope))
+        : doc;
+    const validatedDoc = validateDocForFormat(format, themedDoc);
     const sender = await validateSenderFields(ctx, fromName, fromEmail);
 
     // Make sure the built-in templates exist. Migration 0049 is the fast path
@@ -364,7 +428,12 @@ export const createCampaign = mutation({
       subject: trimmedSubject,
       previewText: previewText?.trim() || undefined,
       audienceId,
-      doc: validated.doc,
+      doc: validatedDoc,
+      // Absent-means-"blocks" (the contract's own default) — only stamp the
+      // column when it's actually "tiptap", so a blocks-format row hashes and
+      // reads byte-identically to one created before this field existed.
+      docFormat: format === "tiptap" ? "tiptap" : undefined,
+      kind: "email",
       status: "draft",
       fromName: sender.fromName,
       fromEmail: sender.fromEmail,
@@ -412,6 +481,7 @@ export const updateCampaignMeta = mutation({
     if (!existing) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
+    requireEmailKindRow(existing);
     assertEditable(existing);
 
     const patch: Record<string, unknown> = { updatedAt: Date.now() };
@@ -454,6 +524,12 @@ export const updateCampaignMeta = mutation({
   },
 });
 
+/** `docFormat` is IMMUTABLE (`schema/campaigns.ts`'s doc) — this never accepts
+ *  one as an argument. Instead it reads the row's OWN format
+ *  (`emailDocFormatOf`) and validates `doc` against whatever gate that row
+ *  was created with, so a tiptap-format row is always re-validated as tiptap
+ *  and a blocks-format row always as blocks, no matter what shape `doc`
+ *  happens to be this time. */
 export const updateCampaignDoc = mutation({
   args: { campaignId: v.id("campaigns"), doc: v.any() },
   handler: async (ctx, { campaignId, doc }) => {
@@ -462,63 +538,13 @@ export const updateCampaignDoc = mutation({
     if (!existing) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
+    requireEmailKindRow(existing);
     assertEditable(existing);
-    const validated = validateEmailDocument(doc);
-    if (!validated.ok) {
-      throw new ConvexError({ code: "INVALID_DOC", message: validated.error });
-    }
-    await ctx.db.patch(campaignId, { doc: validated.doc, updatedAt: Date.now() });
+    const validatedDoc = validateDocForFormat(emailDocFormatOf(existing), doc);
+    await ctx.db.patch(campaignId, { doc: validatedDoc, updatedAt: Date.now() });
     return null;
   },
 });
-
-/**
- * Resolve a theme CHOICE — exactly one of a saved `themeId` or a built-in
- * `presetName` — into the `EmailTheme` to stamp onto a document.
- *
- * Exported (a plain helper, not a Convex function) because `setCampaignTheme`
- * and `campaignTemplates.ts#setTemplateTheme` restyle the two kinds of
- * document a designer owns, and a second copy of "exactly one of the two, a
- * saved row must match the scope, presets are global" is exactly how the two
- * surfaces would drift into accepting different things. Import direction is
- * the established one: `campaignTemplates.ts` already reads
- * `applyThemeToDoc`/`docHasTheme` from here.
- *
- * `scope` is the OWNING row's scope (the campaign's, the template's) — a
- * saved theme belongs to one scope and may not be borrowed across; presets
- * carry no scope and are always available.
- */
-export async function resolveThemeChoice(
-  ctx: QueryCtx,
-  scope: Id<"chapters"> | "central",
-  choice: { themeId?: Id<"emailThemes">; presetName?: string },
-): Promise<EmailTheme> {
-  const { themeId, presetName } = choice;
-  if ((themeId === undefined) === (presetName === undefined)) {
-    throw new ConvexError({
-      code: "INVALID_ARGUMENT",
-      message: "Pick exactly one of a saved theme or a built-in preset.",
-    });
-  }
-  if (themeId !== undefined) {
-    const row = await ctx.db.get(themeId);
-    if (!row || row.archived === true) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Theme not found." });
-    }
-    if (row.scope !== scope) {
-      throw new ConvexError({
-        code: "SCOPE_MISMATCH",
-        message: "That theme belongs to a different scope.",
-      });
-    }
-    return normalizeEmailTheme(row);
-  }
-  const preset = emailThemePreset(presetName as string);
-  if (!preset) {
-    throw new ConvexError({ code: "NOT_FOUND", message: "No such preset theme." });
-  }
-  return preset;
-}
 
 /**
  * Restyle a campaign: resolve a saved theme (`themeId`) or a built-in preset
@@ -542,22 +568,14 @@ export const setCampaignTheme = mutation({
     presetName: v.optional(v.string()),
   },
   returns: v.null(),
-  handler: async (ctx, { campaignId, themeId, presetName }) => {
+  // Explicit return type — see `emailThemes.ts#createTheme`'s identical note
+  // on why a bare `return throwThemesRetired()` without one poisons
+  // downstream callers' inferred types.
+  handler: async (ctx, { campaignId, themeId, presetName }): Promise<null> => {
     await requireCampaignCompose(ctx);
-    const campaign = await ctx.db.get(campaignId);
-    if (!campaign) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
-    }
-    assertEditable(campaign);
-
-    const theme = await resolveThemeChoice(ctx, campaign.scope, { themeId, presetName });
-
-    const validated = validateEmailDocument(applyThemeToDoc(campaign.doc, theme));
-    if (!validated.ok) {
-      throw new ConvexError({ code: "INVALID_DOC", message: validated.error });
-    }
-    await ctx.db.patch(campaignId, { doc: validated.doc, updatedAt: Date.now() });
-    return null;
+    // Themes freeze (2026-07-29) — retired for EVERY row, regardless of
+    // format or status. See `emailThemes.ts#throwThemesRetired`'s doc.
+    return throwThemesRetired();
   },
 });
 
@@ -638,11 +656,28 @@ function normalizePersonIdList(ids: Id<"people">[] | undefined): string[] {
   return [...(ids ?? [])].map(String).sort();
 }
 
+/** `campaign.audienceId`, asserted present — the field is `v.optional` on the
+ *  schema ONLY to accommodate template-kind rows (`schema/campaigns.ts`'s
+ *  `kind` doc); every EMAIL-kind row carries one (`createCampaign` requires
+ *  it as an argument). Every caller here has already asserted email-kind via
+ *  `requireEmailKindRow`, so a missing `audienceId` at this point is a
+ *  genuine data-integrity problem, not a template slipping through — this
+ *  throws rather than silently proceeding against `undefined`. */
+function requireAudienceId(campaign: Doc<"campaigns">): Id<"audiences"> {
+  if (!campaign.audienceId) {
+    throw new ConvexError({
+      code: "NO_AUDIENCE",
+      message: "This email has no audience on file.",
+    });
+  }
+  return campaign.audienceId;
+}
+
 async function computeCampaignSnapshotHash(
   ctx: QueryCtx | MutationCtx,
   campaign: Doc<"campaigns">,
 ): Promise<string> {
-  const audience = await ctx.db.get(campaign.audienceId);
+  const audience = await ctx.db.get(requireAudienceId(campaign));
   const payload: Record<string, unknown> = {
     doc: campaign.doc,
     subject: campaign.subject,
@@ -804,6 +839,7 @@ async function loadCampaignForReviewerDecision(
   if (!campaign) {
     throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
   }
+  requireEmailKindRow(campaign);
   await assertCallerIsChosenReviewer(ctx, campaign);
   return campaign;
 }
@@ -821,6 +857,7 @@ export const submitForApproval = mutation({
     if (!campaign) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
+    requireEmailKindRow(campaign);
     // `"failed"` is included so a hash mismatch caught at send-time (an
     // audience edit made after approval) has a way back INTO review without
     // needing content to be edited first — content itself is locked outside
@@ -844,16 +881,27 @@ export const submitForApproval = mutation({
     // ConvexError, not `recordSendFailure`) since nothing is in flight yet;
     // unlike `send`, a submit that can't proceed shouldn't silently flip the
     // campaign to a recorded failure.
-    const audience = await ctx.db.get(campaign.audienceId);
+    const audience = await ctx.db.get(requireAudienceId(campaign));
     if (!audience) {
       throw new ConvexError({ code: "NOT_FOUND", message: "The target audience no longer exists." });
     }
-    const validated = validateEmailDocument(campaign.doc);
-    if (!validated.ok) {
-      throw new ConvexError({ code: "INVALID_DOC", message: `Invalid email content: ${validated.error}` });
-    }
-    if (validated.doc.blocks.length === 0) {
-      throw new ConvexError({ code: "EMPTY", message: "Write the email first." });
+    const submitDocFormat = emailDocFormatOf(campaign);
+    if (submitDocFormat === "tiptap") {
+      const validated = validateTiptapEmailDoc(campaign.doc);
+      if (!validated.ok) {
+        throw new ConvexError({ code: "INVALID_DOC", message: `Invalid email content: ${validated.error}` });
+      }
+      if (tiptapDocContentIsEmpty(campaign.doc)) {
+        throw new ConvexError({ code: "EMPTY", message: "Write the email first." });
+      }
+    } else {
+      const validated = validateEmailDocument(campaign.doc);
+      if (!validated.ok) {
+        throw new ConvexError({ code: "INVALID_DOC", message: `Invalid email content: ${validated.error}` });
+      }
+      if (validated.doc.blocks.length === 0) {
+        throw new ConvexError({ code: "EMPTY", message: "Write the email first." });
+      }
     }
     const settings = await ctx.db.query("integrationSettings").first();
     const resendReady = !!settings?.resendApiKey || !!process.env.RESEND_API_KEY;
@@ -927,7 +975,7 @@ export const submitForApproval = mutation({
       updatedAt: now,
     });
 
-    const recipientCount = await liveAudienceCount(ctx, campaign.audienceId);
+    const recipientCount = await liveAudienceCount(ctx, requireAudienceId(campaign));
     await logCampaignDecision(ctx, campaignId, "submitted", submittedByPersonId, {
       purpose: trimmedPurpose,
       recipientCount,
@@ -955,6 +1003,7 @@ export const cancelApprovalRequest = mutation({
     if (!campaign) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
+    requireEmailKindRow(campaign);
     assertCampaignTransition(campaign.status, ["pending_approval"], "cancel the approval request on");
     await ctx.db.patch(campaignId, {
       status: "draft",
@@ -986,7 +1035,7 @@ export const approveCampaign = mutation({
       });
     }
 
-    const recipientCount = await liveAudienceCount(ctx, campaign.audienceId);
+    const recipientCount = await liveAudienceCount(ctx, requireAudienceId(campaign));
     const trimmedNote = note?.trim() || undefined;
     await ctx.db.patch(campaignId, {
       status: "approved",
@@ -1083,6 +1132,7 @@ export const revertToDraft = mutation({
     if (!campaign) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
+    requireEmailKindRow(campaign);
     assertCampaignTransition(campaign.status, ["denied"], "move back to draft");
     await ctx.db.patch(campaignId, {
       status: "draft",
@@ -1144,6 +1194,7 @@ export const getCampaignApproval = query({
     if (!campaign) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
+    requireEmailKindRow(campaign);
     const ownIds = await resolveCampaignCallerPersonIds(ctx);
     const canDecide =
       campaign.status === "pending_approval" &&
@@ -1194,6 +1245,14 @@ export const listPendingApprovals = query({
       .withIndex("by_status", (q) => q.eq("status", "pending_approval"))
       .take(200);
     return pending
+      // Structurally impossible today (a template-kind row never reaches
+      // `pending_approval` — every path that sets it goes through
+      // `submitForApproval`, which refuses a template-kind row first), but
+      // this is a LIST surface, exactly the "a reviewer dropdown that
+      // suddenly includes templates" class of bug the kind-blindness sweep
+      // exists to catch — kept explicit rather than relying on that
+      // invariant holding forever.
+      .filter((c) => !isTemplateRow(c))
       .filter((c) => c.reviewerPersonId != null && ownIds.has(c.reviewerPersonId))
       .map((c) => ({ _id: c._id, name: c.name, purpose: c.purpose }));
   },
@@ -1241,9 +1300,20 @@ export const sendTest = action({
     if (!campaign) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
-    const validated = validateEmailDocument(campaign.doc);
-    if (!validated.ok) {
-      throw new ConvexError({ code: "INVALID_DOC", message: validated.error });
+    requireEmailKindRow(campaign);
+    const docFormat = emailDocFormatOf(campaign);
+    let blocksDoc: EmailDocument | undefined;
+    if (docFormat === "tiptap") {
+      const validated = validateTiptapEmailDoc(campaign.doc);
+      if (!validated.ok) {
+        throw new ConvexError({ code: "INVALID_DOC", message: validated.error });
+      }
+    } else {
+      const validated = validateEmailDocument(campaign.doc);
+      if (!validated.ok) {
+        throw new ConvexError({ code: "INVALID_DOC", message: validated.error });
+      }
+      blocksDoc = validated.doc;
     }
 
     const settings = await resolveResendSettings(ctx);
@@ -1263,18 +1333,37 @@ export const sendTest = action({
     // A dummy (non-functional) unsubscribe URL — a test send never
     // materializes a real `campaignRecipients` row/token.
     const unsubscribeUrl = `${siteUrl()}/unsubscribe/test`;
-    const renderOpts = { recipient, unsubscribeUrl, orgAddress: mailSettings.orgMailingAddress };
     // The per-campaign sender, when set — same override the real send uses,
     // so a test send previews the actual From line too.
     const fromOverride = campaign.fromEmail
       ? formatFromAddress(campaign.fromName, campaign.fromEmail)
       : undefined;
 
+    let html: string;
+    let text: string;
+    if (docFormat === "tiptap") {
+      // No `campaignRecipients` row/token for a test send, so no poll vote
+      // URLs — `pwPoll` renders its options as inert pills, matching the
+      // blocks renderer's own no-token graceful degradation.
+      const rendered = await renderEmailTiptap(campaign.doc as JSONContent, {
+        variables: tiptapVariablesFor(campaign.doc, recipient),
+        unsubscribeUrl,
+        orgAddress: mailSettings.orgMailingAddress ?? "",
+        preview: campaign.previewText,
+      });
+      html = rendered.html;
+      text = rendered.text;
+    } else {
+      const renderOpts = { recipient, unsubscribeUrl, orgAddress: mailSettings.orgMailingAddress };
+      html = renderCampaignEmail(blocksDoc as EmailDocument, renderOpts);
+      text = renderCampaignText(blocksDoc as EmailDocument, renderOpts);
+    }
+
     const sendResult = await sendResendEmail(settings, {
       to,
       subject: `[Test] ${campaign.subject}`,
-      html: renderCampaignEmail(validated.doc, renderOpts),
-      text: renderCampaignText(validated.doc, renderOpts),
+      html,
+      text,
       from: fromOverride,
     });
     if (!sendResult.ok) {
@@ -1315,6 +1404,7 @@ export const send = mutation({
     if (!campaign) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
+    requireEmailKindRow(campaign);
     // Two-party approval gate: `draft → sending` is no longer possible — a
     // campaign must clear `submitForApproval` → `approveCampaign` first. A
     // `"failed"` retry keeps its approval (a transport failure isn't a
@@ -1327,7 +1417,7 @@ export const send = mutation({
       });
     }
 
-    const audience = await ctx.db.get(campaign.audienceId);
+    const audience = await ctx.db.get(requireAudienceId(campaign));
     if (!audience) {
       await recordSendFailure(ctx, campaignId, "The target audience no longer exists.");
       return null;
@@ -1348,14 +1438,27 @@ export const send = mutation({
       return null;
     }
 
-    const validated = validateEmailDocument(campaign.doc);
-    if (!validated.ok) {
-      await recordSendFailure(ctx, campaignId, `Invalid email content: ${validated.error}`);
-      return null;
-    }
-    if (validated.doc.blocks.length === 0) {
-      await recordSendFailure(ctx, campaignId, "Write the email first.");
-      return null;
+    const docFormat = emailDocFormatOf(campaign);
+    if (docFormat === "tiptap") {
+      const validated = validateTiptapEmailDoc(campaign.doc);
+      if (!validated.ok) {
+        await recordSendFailure(ctx, campaignId, `Invalid email content: ${validated.error}`);
+        return null;
+      }
+      if (tiptapDocContentIsEmpty(campaign.doc)) {
+        await recordSendFailure(ctx, campaignId, "Write the email first.");
+        return null;
+      }
+    } else {
+      const validated = validateEmailDocument(campaign.doc);
+      if (!validated.ok) {
+        await recordSendFailure(ctx, campaignId, `Invalid email content: ${validated.error}`);
+        return null;
+      }
+      if (validated.doc.blocks.length === 0) {
+        await recordSendFailure(ctx, campaignId, "Write the email first.");
+        return null;
+      }
     }
     const settings = await ctx.db.query("integrationSettings").first();
     const resendReady = !!settings?.resendApiKey || !!process.env.RESEND_API_KEY;
@@ -1517,6 +1620,12 @@ export const materializeRecipients = internalAction({
       campaignId,
     });
     if (!campaign) return null;
+    // Structural refusal (Run-10 escalation class): only reachable via `send`
+    // (already gated) or the stuck-send sweep (status-gated to "sending",
+    // which a template-kind row can never reach) — a template arriving here
+    // is a bug, not a recorded per-campaign failure, so this THROWS rather
+    // than following `recordSendFailure`'s "never throw" convention.
+    requireEmailKindRow(campaign);
 
     // Clear any leftover rows from a prior attempt (a retry-from-"failed"
     // send) before re-resolving — otherwise a retry would pile duplicate
@@ -1539,7 +1648,7 @@ export const materializeRecipients = internalAction({
     }
 
     const resolution = await ctx.runQuery(internal.audiences.resolveAudienceForSend, {
-      audienceId: campaign.audienceId,
+      audienceId: requireAudienceId(campaign),
     });
     if (!resolution || resolution.recipients.length === 0) {
       await ctx.runMutation(internal.campaigns.finishCampaignSend, {
@@ -1791,6 +1900,13 @@ export const sweepStuckSends = internalMutation({
     let rescheduled = 0;
     for (const campaign of candidates) {
       if (campaign.updatedAt >= cutoff) continue; // still actively progressing
+      // Belt-and-suspenders from adversarial review: a template row can never
+      // legitimately reach "sending" through any public mutation (proven by
+      // probe), so this only fires if a FUTURE bug lets one acquire a live
+      // status — in which case rescheduling delivery against it would be the
+      // second bug. Skip rather than throw: the sweep must keep draining the
+      // rest of the backlog.
+      if (isTemplateRow(campaign)) continue;
       rescheduled++;
       if (campaign.recipientCount === undefined) {
         await ctx.scheduler.runAfter(0, internal.campaigns.materializeRecipients, {
@@ -1825,13 +1941,37 @@ export const deliverCampaignBatch = internalAction({
   handler: async (ctx: ActionCtx, { campaignId }) => {
     const batch = await ctx.runQuery(internal.campaigns.getQueuedBatch, { campaignId });
     if (!batch) return null;
+    // Structural refusal — checked BEFORE the empty-rows short-circuit below,
+    // which a template-kind row would always hit (it never has materialized
+    // `campaignRecipients`) and which would otherwise silently flip its
+    // `status` via `finishCampaignSend`. See `materializeRecipients`'s
+    // identical guard for why this throws instead of recording a
+    // per-recipient failure.
+    requireEmailKindRow(batch.campaign);
     if (batch.rows.length === 0) {
       await ctx.runMutation(internal.campaigns.finishCampaignSend, { campaignId });
       return null;
     }
 
     const { campaign, rows } = batch;
-    const validated = validateEmailDocument(campaign.doc);
+    const docFormat = emailDocFormatOf(campaign);
+    // One doc validity check up front, format-dispatched — mirrors `send`'s
+    // own dispatch (`schema/campaigns.ts`'s `docFormat` doc: set once at
+    // create time, so every read of this row uses the SAME validator every
+    // other function that touches it does). Keeps the VALIDATED blocks doc
+    // (not the raw `campaign.doc`) for rendering, matching every other
+    // blocks-format call site's "validate once, render the validated result"
+    // shape; a tiptap doc has no such normalization step (`doc` is used
+    // as-is once `.ok`).
+    const docValidity: { ok: true; blocksDoc?: EmailDocument } | { ok: false; error: string } =
+      docFormat === "tiptap"
+        ? validateTiptapEmailDoc(campaign.doc)
+        : (() => {
+            const result = validateEmailDocument(campaign.doc);
+            return result.ok
+              ? { ok: true as const, blocksDoc: result.doc }
+              : { ok: false as const, error: result.error };
+          })();
     const resendSettings = await resolveResendSettings(ctx);
     const suppressedNow = new Set(
       await ctx.runQuery(internal.emailSuppressions.listSuppressedEmails, {}),
@@ -1901,11 +2041,11 @@ export const deliverCampaignBatch = internalAction({
         results.push({ recipientId: row._id, outcome: "suppressed" });
         continue;
       }
-      if (!validated.ok) {
+      if (!docValidity.ok) {
         results.push({
           recipientId: row._id,
           outcome: "failed",
-          error: `Invalid email content: ${validated.error}`,
+          error: `Invalid email content: ${docValidity.error}`,
         });
         continue;
       }
@@ -1920,30 +2060,47 @@ export const deliverCampaignBatch = internalAction({
 
       const unsubscribeUrl = `${siteUrl()}/unsubscribe/${row.unsubscribeToken}`;
       const recipient = { name: row.name ?? null, email: row.email };
-      const renderOpts = {
-        recipient,
-        unsubscribeUrl,
-        // Non-empty by construction — the refusal above already returned.
-        orgAddress,
-        // Poll option links are PER-RECIPIENT: the same random token that
-        // backs this row's unsubscribe link identifies the voter, so one
-        // person's vote can be found and MOVED when they change their mind
-        // (`campaignPolls.ts#recordPollVote`). Only the real send builds
-        // these — `sendTest` and the approval preview have no
-        // `campaignRecipients` row and therefore no token, so they leave
-        // `pollVoteUrl` unset and the renderer draws inert pills instead of
-        // links to a URL that would 404.
-        pollVoteUrl: (blockId: string, optionId: string) =>
-          `${siteUrl()}/poll/${campaign._id}/${row.unsubscribeToken}/${encodeURIComponent(blockId)}/${encodeURIComponent(optionId)}`,
-      };
+      // Poll option links are PER-RECIPIENT: the same random token that backs
+      // this row's unsubscribe link identifies the voter, so one person's
+      // vote can be found and MOVED when they change their mind
+      // (`campaignPolls.ts#recordPollVote`). Only the real send builds
+      // these — `sendTest` and the approval preview have no
+      // `campaignRecipients` row and therefore no token, so they leave the
+      // vote-url builder unset and the renderer draws inert pills instead of
+      // links to a URL that would 404 (both formats' renderers share this
+      // exact contract — see `tiptapCampaignRender.ts#tiptapPollVariables`'s
+      // doc for the tiptap side).
+      const pollVoteUrl = (blockId: string, optionId: string) =>
+        `${siteUrl()}/poll/${campaign._id}/${row.unsubscribeToken}/${encodeURIComponent(blockId)}/${encodeURIComponent(optionId)}`;
+
+      let html: string;
+      let text: string;
+      if (docFormat === "tiptap") {
+        const rendered = await renderEmailTiptap(campaign.doc as JSONContent, {
+          variables: tiptapVariablesFor(campaign.doc, recipient, pollVoteUrl),
+          unsubscribeUrl,
+          // Non-empty by construction — the refusal above already returned.
+          orgAddress,
+          preview: campaign.previewText,
+        });
+        html = rendered.html;
+        text = rendered.text;
+      } else {
+        const renderOpts = { recipient, unsubscribeUrl, orgAddress, pollVoteUrl };
+        // `docValidity.ok` was already checked above (the `continue` a few
+        // lines up), so `blocksDoc` is set here — it's only ever absent on
+        // the `!ok` branch we already skipped past.
+        html = renderCampaignEmail(docValidity.blocksDoc as EmailDocument, renderOpts);
+        text = renderCampaignText(docValidity.blocksDoc as EmailDocument, renderOpts);
+      }
 
       toSend.push({
         recipientId: row._id,
         email: {
           to: row.email,
           subject: campaign.subject,
-          html: renderCampaignEmail(validated.doc, renderOpts),
-          text: renderCampaignText(validated.doc, renderOpts),
+          html,
+          text,
           from: fromOverride,
           replyTo,
           headers: {
@@ -2152,7 +2309,12 @@ export const recordInboundReply = internalMutation({
     });
     if (campaignId) {
       const campaign = await ctx.db.get(campaignId);
-      if (campaign) {
+      // Kind guard (adversarial review): the plus-address resolver is
+      // attacker-influenced input — an inbound mail to a guessed template id
+      // must not accrue reply counts against a template. The reply row above
+      // is still kept (unmatched replies deliberately survive, per this
+      // mutation's doc); only the campaign-side counter is gated.
+      if (campaign && !isTemplateRow(campaign)) {
         await ctx.db.patch(campaignId, { replyCount: (campaign.replyCount ?? 0) + 1 });
       }
     }

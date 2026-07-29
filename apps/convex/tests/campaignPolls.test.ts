@@ -3,7 +3,7 @@ import { ConvexError } from "convex/values";
 import { api, internal } from "../_generated/api";
 import { newT, run, setupChapter, type ChapterSetup, type TestConvex } from "./setup.helpers";
 import type { Id } from "../_generated/dataModel";
-import { WINTER_THEME } from "@events-os/shared";
+import { DEFAULT_EMAIL_THEME, WINTER_THEME } from "@events-os/shared";
 
 /**
  * Campaign polls (`campaignPolls.ts` + the `/poll/` routes in `http.ts` +
@@ -388,5 +388,245 @@ describe("re-send does not enable ballot stuffing", () => {
 
     const results = await s.as.query(api.campaignPolls.getPollResults, { campaignId });
     expect(results[0].totalVotes).toBe(1);
+  });
+});
+
+// ── Template-kind rows (the templates merge's kind boundary, 2026-07-29) ────
+
+/**
+ * A template-kind row can never legitimately reach `campaignRecipients` —
+ * nothing on the send path ever materializes one for it (`campaigns.ts`'s
+ * `submitForApproval`/`send`/`materializeRecipients` all refuse a
+ * template-kind row structurally before that could happen — see
+ * `lib/campaignKind.ts`'s doc). These tests forge the row BY HAND to prove
+ * the `isTemplateRow` check inside `resolvePollContext` itself is what stops
+ * a vote, not merely "no such token exists."
+ */
+describe("template-kind rows never resolve a poll (defense in depth)", () => {
+  async function seedTemplateWithForgedRecipient(s: ChapterSetup): Promise<PollFixture> {
+    return run(s.t, async (ctx) => {
+      const campaignId = await ctx.db.insert("campaigns", {
+        scope: "central",
+        name: "Newsletter shell",
+        subject: "",
+        doc: pollDoc(),
+        kind: "template",
+        status: "draft",
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      const token = `poll-token-${tokenSeq++}`;
+      const recipientId = await ctx.db.insert("campaignRecipients", {
+        campaignId,
+        email: "forged@example.com",
+        status: "queued",
+        unsubscribeToken: token,
+      });
+      return { campaignId, tokens: [token], recipientIds: [recipientId] };
+    });
+  }
+
+  test("GET /poll/ 404s for a template-kind row even with a real recipient row", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const { campaignId, tokens } = await seedTemplateWithForgedRecipient(s);
+    const res = await t.fetch(pollPath(campaignId, tokens[0]), { method: "GET" });
+    expect(res.status).toBe(404);
+  });
+
+  test("POST /poll/ 404s and records no vote for a template-kind row", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const { campaignId, tokens } = await seedTemplateWithForgedRecipient(s);
+    const res = await t.fetch(pollPath(campaignId, tokens[0]), { method: "POST" });
+    expect(res.status).toBe(404);
+    expect(await allVotes(t)).toHaveLength(0);
+  });
+
+  test("getPollResults refuses a template-kind row like a missing campaign", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const { campaignId } = await seedTemplateWithForgedRecipient(s);
+    await expect(
+      s.as.query(api.campaignPolls.getPollResults, { campaignId }),
+    ).rejects.toMatchObject({ data: { code: "NOT_FOUND" } });
+  });
+});
+
+// ── WS2b: the SAME contract, for a tiptap-format campaign's pwPoll node ─────
+//
+// `pollBlocksOf` (above) is now a thin wrapper over the shared, format-dual
+// `findPollNodes` (`@events-os/shared`'s `tiptapEmail.ts`) — this proves the
+// backend half of that claim end to end, through the REAL `/poll/` HTTP
+// route, exactly like the blocks-format tests above. Mobile's
+// `CampaignPollResults.tsx` uses the same shared helper (see that file), so
+// there is only one "what counts as a poll" implementation left to test.
+
+const TIPTAP_POLL_ID = "poll_tiptap1";
+
+/** A tiptap doc with a heading (so the walker has to find the poll rather
+ *  than assume it's the first node) and a two-option `pwPoll` node, nested
+ *  one level inside a `section` — proving the walk isn't top-level-only the
+ *  way the legacy blocks walk was. */
+function tiptapPollDoc(theme?: unknown) {
+  return {
+    type: "doc",
+    // A tiptap document carries no `theme` key at all (themes freeze) — this
+    // param exists only so a caller CAN forge one onto a hand-built row, to
+    // prove `normalizeEmailTheme`'s fallback is what actually decides what
+    // renders, not "whatever key happens to be present here".
+    ...(theme ? { theme } : {}),
+    content: [
+      {
+        type: "heading",
+        attrs: { level: 1 },
+        content: [{ type: "text", text: "Help us pick" }],
+      },
+      {
+        type: "section",
+        content: [
+          {
+            type: "pwPoll",
+            attrs: {
+              id: TIPTAP_POLL_ID,
+              question: "Which night works best?",
+              options: [
+                { id: "opt_sun", label: "Sunday" },
+                { id: "opt_wed", label: "Wednesday" },
+              ],
+            },
+          },
+        ],
+      },
+    ],
+  };
+}
+
+async function seedTiptapPollCampaign(
+  s: ChapterSetup,
+  opts: { recipients?: number } = {},
+): Promise<PollFixture> {
+  const count = opts.recipients ?? 1;
+  return run(s.t, async (ctx) => {
+    const audienceId = await ctx.db.insert("audiences", {
+      scope: "central",
+      name: "Everyone",
+      source: "people",
+      filters: {},
+      createdBy: s.userId,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    const campaignId = await ctx.db.insert("campaigns", {
+      scope: "central",
+      name: "October newsletter (tiptap)",
+      subject: "Which night?",
+      audienceId,
+      doc: tiptapPollDoc(),
+      docFormat: "tiptap",
+      status: "sent",
+      createdBy: s.userId,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    const tokens: string[] = [];
+    const recipientIds: Id<"campaignRecipients">[] = [];
+    for (let i = 0; i < count; i++) {
+      const token = `poll-token-${tokenSeq++}`;
+      tokens.push(token);
+      recipientIds.push(
+        await ctx.db.insert("campaignRecipients", {
+          campaignId,
+          email: `tiptapreader${i}@example.com`,
+          name: `Tiptap Reader ${i}`,
+          status: "sent",
+          unsubscribeToken: token,
+        }),
+      );
+    }
+    return { campaignId, tokens, recipientIds };
+  });
+}
+
+describe("a tiptap-format campaign's pwPoll node — the same contract, end to end", () => {
+  test("GET renders the confirm page (default theme — tiptap docs carry none) and records nothing", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const { campaignId, tokens } = await seedTiptapPollCampaign(s);
+
+    const res = await t.fetch(
+      pollPath(campaignId, tokens[0], TIPTAP_POLL_ID, "opt_sun"),
+      { method: "GET" },
+    );
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("Which night works best?");
+    expect(body).toContain("Sunday");
+    expect(await allVotes(t)).toHaveLength(0);
+  });
+
+  test("guest pages fall back to DEFAULT_EMAIL_THEME when the tiptap doc carries no theme key", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const { campaignId, tokens } = await seedTiptapPollCampaign(s);
+    const res = await t.fetch(
+      pollPath(campaignId, tokens[0], TIPTAP_POLL_ID, "opt_sun"),
+      { method: "GET" },
+    );
+    const body = await res.text();
+    expect(body).toContain(DEFAULT_EMAIL_THEME.accent);
+    expect(body).toContain(DEFAULT_EMAIL_THEME.canvas);
+  });
+
+  test("POST records the vote and shows the running tally — a distinct recipient's own vote lands on their own row", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const { campaignId, tokens } = await seedTiptapPollCampaign(s, { recipients: 2 });
+
+    const res = await t.fetch(
+      pollPath(campaignId, tokens[0], TIPTAP_POLL_ID, "opt_sun"),
+      { method: "POST" },
+    );
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("Sunday");
+    expect(body).toContain("1 answer");
+
+    await t.fetch(pollPath(campaignId, tokens[1], TIPTAP_POLL_ID, "opt_wed"), { method: "POST" });
+
+    const votes = await allVotes(t);
+    expect(votes).toHaveLength(2);
+    const results = await s.as.query(api.campaignPolls.getPollResults, { campaignId });
+    expect(results).toHaveLength(1);
+    expect(results[0].blockId).toBe(TIPTAP_POLL_ID);
+    expect(results[0].totalVotes).toBe(2);
+    expect(results[0].options.find((o) => o.optionId === "opt_sun")?.count).toBe(1);
+    expect(results[0].options.find((o) => o.optionId === "opt_wed")?.count).toBe(1);
+  });
+
+  test("re-voting UPDATES the existing row — never a second vote — same as the blocks format", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const { campaignId, tokens } = await seedTiptapPollCampaign(s);
+
+    await t.fetch(pollPath(campaignId, tokens[0], TIPTAP_POLL_ID, "opt_sun"), { method: "POST" });
+    await t.fetch(pollPath(campaignId, tokens[0], TIPTAP_POLL_ID, "opt_wed"), { method: "POST" });
+
+    const votes = await allVotes(t);
+    expect(votes).toHaveLength(1);
+    expect(votes[0].optionId).toBe("opt_wed");
+  });
+
+  test("a forged option id 404s and writes no tally row — nested-in-a-section pwPoll is still found and validated", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const { campaignId, tokens } = await seedTiptapPollCampaign(s);
+    const res = await t.fetch(
+      pollPath(campaignId, tokens[0], TIPTAP_POLL_ID, "opt_write_in"),
+      { method: "POST" },
+    );
+    expect(res.status).toBe(404);
+    expect(await allVotes(t)).toHaveLength(0);
   });
 });
