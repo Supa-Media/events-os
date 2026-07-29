@@ -305,7 +305,7 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "You build the email on the design itself",
-        text: "The composer is a CANVAS, not a form. The email is drawn in front of you at full width, block by block, already looking like the thing that lands in someone's inbox. You click a block ON THE DESIGN to select it; a toolbar appears for that block and nothing else; headings and body copy are typed IN PLACE, in the spot they'll actually sit. Reorder a block or delete it from the block itself, not from a field somewhere off to the side. Next to the canvas sits the PREVIEW, the same email rendered the way a mail app will render it. On a wide screen you keep both in view: the canvas is where you edit, the preview is the honest answer about what a person opening this in Gmail will see.",
+        text: "The composer is a CANVAS, not a form. The email is drawn in front of you at full width, block by block, already looking like the thing that lands in someone's inbox. You click a block ON THE DESIGN to select it; a toolbar appears for that block and nothing else; headings and body copy are typed IN PLACE, in the spot they'll actually sit. Reorder a block or delete it from the block itself, not from a field somewhere off to the side: the selected block's toolbar carries a grip you can drag to move it up or down the email, and arrows beside it if you'd rather step one place at a time. Next to the canvas sits the PREVIEW, the same email rendered the way a mail app will render it. On a wide screen you keep both in view: the canvas is where you edit, the preview is the honest answer about what a person opening this in Gmail will see.",
       },
       {
         kind: "rule",

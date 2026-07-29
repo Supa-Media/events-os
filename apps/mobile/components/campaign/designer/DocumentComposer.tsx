@@ -69,6 +69,7 @@ import {
   pushHistory,
   redoHistory,
   removeBlock,
+  reorderBlocks,
   undoHistory,
   updateBlock,
   type History,
@@ -315,13 +316,15 @@ export function DocumentComposer({
   /**
    * Move a block one place up or down.
    *
-   * The up/down arrows are the reorder control on every surface — the block's
-   * own toolbar and the inspector's header. They exist because dragging a
+   * The up/down arrows are on every surface — the block's own toolbar, the
+   * inspector's header, and the keyboard. They exist because dragging a
    * fifteen-block newsletter on a phone was a long-press-and-scroll fight, and
-   * nothing about a canvas changes that. `moveBlock` returns the same doc
-   * reference at either end of the stack, and `pushHistory` is skipped on a
-   * no-op, so a bumped-into-the-ceiling tap costs neither a history step nor a
-   * save.
+   * nothing about a canvas changes that; the drag handle beside them
+   * (`handleReorder`) is the second way, not the replacement.
+   *
+   * `moveBlock` returns the same doc reference at either end of the stack, and
+   * `pushHistory` is skipped on a no-op, so a bumped-into-the-ceiling tap
+   * costs neither a history step nor a save.
    */
   const handleMove = useCallback(
     (blockId: string, delta: -1 | 1) => {
@@ -330,6 +333,31 @@ export function DocumentComposer({
       if (next === history.present) return;
       applyDoc(next);
       setSelectedId(blockId);
+    },
+    [history, applyDoc],
+  );
+
+  /**
+   * A drag has dropped: take the whole new order.
+   *
+   * Deliberately the SAME path every other edit takes — one `pushHistory`, so
+   * Cmd+Z puts the block back, and one debounced autosave, because the canvas
+   * only tells us about the drop and never about the frames in between. The
+   * selection is by id, so the block you dragged stays the selected one
+   * wherever it lands.
+   */
+  const handleReorder = useCallback(
+    (orderedIds: string[]) => {
+      if (!history) return;
+      const next = reorderBlocks(history.present, orderedIds);
+      // `reorderBlocks` always returns a fresh object; an order that didn't
+      // actually change must not cost a history step or a save.
+      const unchanged = next.blocks.every(
+        (b, i) => b.id === history.present.blocks[i]?.id,
+      );
+      if (unchanged) return;
+      applyDoc(next);
+      setEditing(null);
     },
     [history, applyDoc],
   );
@@ -561,6 +589,7 @@ export function DocumentComposer({
             onDuplicate={handleDuplicate}
             onDelete={confirmDelete}
             onMove={handleMove}
+            onReorder={handleReorder}
             warningsByBlockId={editable ? warnings.byBlockId : {}}
           />
         </View>

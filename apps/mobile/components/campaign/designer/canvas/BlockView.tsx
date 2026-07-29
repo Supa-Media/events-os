@@ -24,6 +24,11 @@ import { Platform, Text, View } from "react-native";
 import type { EmailBlock, EmailCardContent, EmailTheme } from "@events-os/shared";
 import { CanvasEditableText, CanvasImage, CanvasMarkdown } from "./CanvasText";
 import {
+  CANVAS_PLACEHOLDERS as P,
+  emptySlotDraw,
+  pollOptionPlaceholder,
+} from "./placeholders";
+import {
   BLEED_PLACEHOLDER_LABEL_SIZE,
   BUTTON_MARGIN_BOTTOM,
   CARD_BODY_MARGIN_BOTTOM,
@@ -33,6 +38,7 @@ import {
   COLUMNS_GUTTER,
   COLUMNS_MARGIN_BOTTOM,
   EYEBROW_MARGIN_BOTTOM,
+  FOOTER_LINK_SEPARATOR,
   FOOTER_LOGO,
   POLL_MARGIN_BOTTOM,
   QUOTE_ATTRIBUTION_PREFIX,
@@ -88,6 +94,12 @@ export type BlockViewProps = {
    * slots as faint placeholders you can click and fill (affordance). Showing
    * them always would put lines on the canvas that are not in the email; never
    * showing them would leave no way to add one without a form.
+   *
+   * It drives the REQUIRED slots too — a card's heading and body, an unfilled
+   * image — through `emptySlotDraw` (`placeholders.ts`), which is what makes
+   * the promise above true rather than aspirational: prompts only on the
+   * selected block, a wordless mark on the others, and on a LOCKED canvas
+   * nothing at all.
    */
   selected: boolean;
   /** Which of THIS block's fields is being edited in place, if any. */
@@ -107,7 +119,7 @@ export function BlockView(props: BlockViewProps) {
           {...props}
           field="text"
           value={block.text}
-          placeholder="Heading"
+          placeholder={P.heading}
           label="heading"
           style={headingStyle(t, block.level === 2 ? 2 : 1, IS_WEB)}
           onChangeText={(text) => props.onChange({ text })}
@@ -121,7 +133,7 @@ export function BlockView(props: BlockViewProps) {
           {...props}
           field="markdown"
           value={block.markdown}
-          placeholder="Write your message… **bold**, *italic*, [links](https://…), - lists"
+          placeholder={P.bodyMarkdown}
           label="body text"
           style={style}
           multiline
@@ -146,7 +158,7 @@ export function BlockView(props: BlockViewProps) {
             {...props}
             field="text"
             value={block.text}
-            placeholder="THIS MONTH"
+            placeholder={P.eyebrow}
             label="eyebrow"
             style={eyebrowStyle(t, IS_WEB)}
             onChangeText={(text) => props.onChange({ text })}
@@ -154,7 +166,14 @@ export function BlockView(props: BlockViewProps) {
         </View>
       );
 
-    case "image":
+    case "image": {
+      // An unfilled `image` block sends as an `<img>` with an empty src —
+      // nothing, and certainly not the word "Choose". So the tile is the
+      // AUTHOR's affordance and obeys `emptySlotDraw`: named on the selected
+      // block, a wordless tile on the others, and absent from a locked canvas.
+      // (Unlike a card's side-by-side slot or a bleed banner, both of which
+      // the renderer really does emit — see `placeholders.ts`.)
+      const draw = emptySlotDraw(props.editable, props.selected);
       return (
         <View style={imageStyle(t, block.width)}>
           {block.url ? (
@@ -163,16 +182,17 @@ export function BlockView(props: BlockViewProps) {
               accessibilityLabel={block.alt || "Image"}
               style={{ borderRadius: t.radius }}
             />
-          ) : (
+          ) : draw === "nothing" ? null : (
             <Placeholder
               theme={t}
-              label="Choose an image"
+              label={draw === "placeholder" ? P.image : ""}
               size={CARD_PLACEHOLDER_LABEL_SIZE}
               variant="card"
             />
           )}
         </View>
       );
+    }
 
     case "bleed_image":
       return block.url ? (
@@ -204,7 +224,7 @@ export function BlockView(props: BlockViewProps) {
               {...props}
               field="label"
               value={block.label}
-              placeholder="Click here"
+              placeholder={P.buttonLabel}
               label="button label"
               style={buttonLabelStyle(t, variant, IS_WEB)}
               onChangeText={(label) => props.onChange({ label })}
@@ -230,7 +250,7 @@ export function BlockView(props: BlockViewProps) {
             {...props}
             field="text"
             value={block.text}
-            placeholder="The line worth pulling out"
+            placeholder={P.quote}
             label="quote"
             multiline
             style={quoteTextStyle(t, IS_WEB)}
@@ -246,7 +266,7 @@ export function BlockView(props: BlockViewProps) {
               // edits the bare name. A placeholder carrying the dash invited
               // typing a second one, and the email shipped "— — Ada".
               staticPrefix={QUOTE_ATTRIBUTION_PREFIX}
-              placeholder="Who said it"
+              placeholder={P.quoteAttribution}
               label="attribution"
               style={quoteAttributionStyle(t, IS_WEB)}
               onChangeText={(attribution) => props.onChange({ attribution })}
@@ -262,7 +282,7 @@ export function BlockView(props: BlockViewProps) {
             {...props}
             field="question"
             value={block.question}
-            placeholder="What should we do next?"
+            placeholder={P.pollQuestion}
             label="poll question"
             style={pollQuestionStyle(t, IS_WEB)}
             onChangeText={(question) => props.onChange({ question })}
@@ -273,7 +293,7 @@ export function BlockView(props: BlockViewProps) {
                 {...props}
                 field={`option-${index}`}
                 value={option.label}
-                placeholder={`Option ${index + 1}`}
+                placeholder={pollOptionPlaceholder(index)}
                 label={`option ${index + 1}`}
                 style={pollOptionLabelStyle(t, IS_WEB)}
                 onChangeText={(label) =>
@@ -349,15 +369,31 @@ export function BlockView(props: BlockViewProps) {
               {...props}
               field="navLine"
               value={block.navLine ?? ""}
-              placeholder="Sundays · 10am · The Old Fire Station"
+              placeholder={P.footerNavLine}
               label="nav line"
               style={footerNavStyle(t, IS_WEB)}
               onChangeText={(navLine) => props.onChange({ navLine: navLine || undefined })}
             />
           ) : null}
+          {/* Each link is an ANCHOR in the send — `t.link`, underlined —
+              separated by a muted `" | "` with one space each side
+              (`renderFooterBlock`). The canvas drew one muted, un-underlined
+              string joined by two spaces each side, which made a row of real
+              links look like a caption. The separator is a pinned constant for
+              the same reason the quote's em dash is. */}
           {block.links?.length ? (
             <Text style={footerLinksStyle(t, IS_WEB)}>
-              {block.links.map((l) => l.label || "—").join("  |  ")}
+              {block.links.map((l, index) => (
+                <Text key={index}>
+                  {index > 0 ? FOOTER_LINK_SEPARATOR : ""}
+                  <Text style={linkTextStyle(t)}>
+                    {/* An unlabelled link sends as an empty anchor — invisible.
+                        The dash is an author's handle on it, so it goes when
+                        the canvas is locked. */}
+                    {l.label || (props.editable ? "—" : "")}
+                  </Text>
+                </Text>
+              ))}
             </Text>
           ) : null}
           {/* The unsubscribe line is renderer furniture — `emailRender.ts`
@@ -405,10 +441,15 @@ function CardView({
   const field = (name: string) => `${fieldPrefix}${name}`;
   const shared = {
     editable,
+    selected,
     editingField,
     onStartEditing,
     onStopEditing,
   };
+  /** What the heading and body slots draw when they're empty. The card's own
+   *  layout has to know, because the renderer emits no margin for a body it
+   *  doesn't emit — so neither may the canvas. */
+  const emptyDraw = emptySlotDraw(editable, selected);
 
   const imagePart =
     content.imageUrl || beside ? (
@@ -421,7 +462,9 @@ function CardView({
           />
         ) : (
           // An empty slot keeps its geometry rather than collapsing — the same
-          // reason `cardImageHtml` returns a tile instead of "".
+          // reason `cardImageHtml` returns a tile instead of "". This tile,
+          // label and all, is in the SEND, so it is drawn on a locked canvas
+          // too; it is not a placeholder in the `placeholders.ts` sense.
           <Placeholder theme={t} label="Image" size={CARD_PLACEHOLDER_LABEL_SIZE} variant="card" />
         )}
       </View>
@@ -434,7 +477,7 @@ function CardView({
           {...shared}
           field={field("eyebrow")}
           value={content.eyebrow ?? ""}
-          placeholder="Small line above the heading"
+          placeholder={P.cardEyebrow}
           label="card eyebrow"
           style={{ ...cardEyebrowStyle(t, fg, IS_WEB), textAlign: align }}
           onChangeText={(eyebrow) => onChangeContent({ eyebrow })}
@@ -444,31 +487,33 @@ function CardView({
         {...shared}
         field={field("heading")}
         value={content.heading ?? ""}
-        placeholder="Card heading"
+        placeholder={P.cardHeading}
         label="card heading"
         style={{ ...cardHeadingStyle(t, spec, fg, IS_WEB), textAlign: align }}
         onChangeText={(heading) => onChangeContent({ heading })}
       />
-      <View style={{ marginBottom: CARD_BODY_MARGIN_BOTTOM }}>
-        <EditableField
-          {...shared}
-          field={field("body")}
-          value={content.body ?? ""}
-          placeholder="Supports **bold**, *italic*, [links](https://…) and - lists"
-          label="card body"
-          multiline
-          style={{ ...cardBodyStyle(t, content.variant, fg, IS_WEB), textAlign: align }}
-          onChangeText={(body) => onChangeContent({ body })}
-          renderStatic={() => (
-            <CanvasMarkdown
-              markdown={content.body ?? ""}
-              style={cardBodyStyle(t, content.variant, fg, IS_WEB)}
-              linkStyle={linkTextStyle(t)}
-              align={align}
-            />
-          )}
-        />
-      </View>
+      {content.body?.trim() || emptyDraw !== "nothing" ? (
+        <View style={{ marginBottom: CARD_BODY_MARGIN_BOTTOM }}>
+          <EditableField
+            {...shared}
+            field={field("body")}
+            value={content.body ?? ""}
+            placeholder={P.cardBody}
+            label="card body"
+            multiline
+            style={{ ...cardBodyStyle(t, content.variant, fg, IS_WEB), textAlign: align }}
+            onChangeText={(body) => onChangeContent({ body })}
+            renderStatic={() => (
+              <CanvasMarkdown
+                markdown={content.body ?? ""}
+                style={cardBodyStyle(t, content.variant, fg, IS_WEB)}
+                linkStyle={linkTextStyle(t)}
+                align={align}
+              />
+            )}
+          />
+        </View>
+      ) : null}
       {content.attribution !== undefined ||
       content.variant === "testimonial" ||
       (editable && selected) ? (
@@ -476,7 +521,7 @@ function CardView({
           {...shared}
           field={field("attribution")}
           value={content.attribution ?? ""}
-          placeholder="Who said it"
+          placeholder={P.cardAttribution}
           label="card attribution"
           style={{ ...cardAttributionStyle(t, fg, IS_WEB), textAlign: align }}
           onChangeText={(attribution) => onChangeContent({ attribution })}
@@ -498,7 +543,7 @@ function CardView({
               {...shared}
               field={field("ctaLabel")}
               value={content.ctaLabel ?? ""}
-              placeholder="Read more"
+              placeholder={P.cardCtaLabel}
               label="card button label"
               style={buttonLabelStyle(t, content.ctaStyle ?? spec.cta, IS_WEB)}
               onChangeText={(ctaLabel) => onChangeContent({ ctaLabel })}
@@ -570,6 +615,7 @@ function EditableField({
   label,
   style,
   editable,
+  selected,
   editingField,
   onStartEditing,
   onStopEditing,
@@ -584,6 +630,7 @@ function EditableField({
   label: string;
   style: Parameters<typeof CanvasEditableText>[0]["style"];
   editable: boolean;
+  selected: boolean;
   editingField: string | null;
   onStartEditing: (field: string) => void;
   onStopEditing: () => void;
@@ -598,6 +645,7 @@ function EditableField({
       placeholder={placeholder}
       style={style}
       editable={editable}
+      selected={selected}
       editing={editingField === field}
       onStartEditing={() => onStartEditing(field)}
       onStopEditing={onStopEditing}

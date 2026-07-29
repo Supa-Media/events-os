@@ -22,12 +22,23 @@
  * This surface is a faithful second renderer, not the arbiter. The sandboxed
  * `EmailHtmlPreview` stays beside it as "what Gmail will actually show" — see
  * `docs/plans/email-editor-canvas.md` §2 for why that is the honest split.
+ *
+ * ── Reordering: drag AND arrows ────────────────────────────────────────────
+ * Blocks are wrapped in `components/grid/SortableRows` — the same drag stack
+ * the grid uses, which works on web and native and starts only from a handle
+ * it hands out, so clicking anywhere else on a block still selects and edits
+ * it. The handle lives on the SELECTED block's toolbar (see `BlockToolbar`).
+ * The up/down arrows stay: drag is an addition to them, never a replacement.
+ * The list is told the document's `scale`, without which every drop lands
+ * short of the finger on a phone — see `sortableRowMath.ts`.
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
+import { GestureDetector, type GestureType } from "react-native-gesture-handler";
 import type { EmailBlock, EmailDocument, EmailTheme } from "@events-os/shared";
 import { Icon } from "../../../ui";
 import { colors } from "../../../../lib/theme";
+import { SortableRows } from "../../../grid/SortableRows";
 import { BlockView } from "./BlockView";
 import {
   CANVAS_WIDTH,
@@ -75,6 +86,10 @@ export type EmailCanvasProps = {
   onDuplicate: (blockId: string) => void;
   onDelete: (blockId: string) => void;
   onMove: (blockId: string, delta: -1 | 1) => void;
+  /** A drag has dropped: the document's blocks in their new order. Fires ONCE
+   *  per drop (never per frame), so it lands as a single history step and a
+   *  single autosave. */
+  onReorder: (orderedIds: string[]) => void;
   /** Per-block warnings, from `documentWarnings` — the canvas only ever shows
    *  the COUNT (see `blockWarnings.ts` for why). */
   warningsByBlockId: Record<string, BlockWarning[]>;
@@ -93,13 +108,46 @@ export function EmailCanvas({
   onDuplicate,
   onDelete,
   onMove,
+  onReorder,
   warningsByBlockId,
 }: EmailCanvasProps) {
   const scale = canvasScale(availableWidth - CANVAS_PADDING * 2);
+  const blockIds = useMemo(() => doc.blocks.map((b) => b.id), [doc.blocks]);
   // The document's natural height, measured once laid out — the scaled
   // wrapper needs it, because a transform doesn't change the space a view
   // takes up and the page would otherwise be 600-wide and full-height.
   const [naturalHeight, setNaturalHeight] = useState<number | null>(null);
+
+  /** One block, drawn identically whether or not it came through the drag
+   *  list — the ONLY difference is the handle it is (or isn't) given. */
+  const renderBlock = (block: EmailBlock, index: number, drag?: GestureType) => (
+    <CanvasBlock
+      key={block.id}
+      block={block}
+      theme={theme}
+      editable={editable}
+      scale={scale}
+      selected={selectedId === block.id}
+      warnings={warningsByBlockId[block.id] ?? []}
+      editingField={editing && editing.blockId === block.id ? editing.field : null}
+      onSelect={() => {
+        onSelect(block.id);
+        if (editing && editing.blockId !== block.id) onEditingChange(null);
+      }}
+      onStartEditing={(field) => {
+        onSelect(block.id);
+        onEditingChange({ blockId: block.id, field });
+      }}
+      onStopEditing={() => onEditingChange(null)}
+      onChange={(patch) => onChange(block.id, patch)}
+      onDuplicate={() => onDuplicate(block.id)}
+      onDelete={() => onDelete(block.id)}
+      onMove={(delta) => onMove(block.id, delta)}
+      canMoveUp={index > 0}
+      canMoveDown={index < doc.blocks.length - 1}
+      dragGesture={drag}
+    />
+  );
 
   return (
     <Pressable
@@ -145,35 +193,25 @@ export function EmailCanvas({
             </View>
           ) : null}
 
-          {doc.blocks.map((block, index) => (
-            <CanvasBlock
-              key={block.id}
-              block={block}
-              theme={theme}
-              editable={editable}
+          {/* Drag-to-reorder exists only on an editable canvas: a locked
+              document doesn't mount the gesture stack at all, rather than
+              mounting one whose handle never appears. */}
+          {editable ? (
+            <SortableRows
+              ids={blockIds}
+              // The document is drawn at `scale`; the gesture is not. Without
+              // this the drop lands rows short of the finger — proved in
+              // `canvasDrag.test.ts`.
               scale={scale}
-              selected={selectedId === block.id}
-              warnings={warningsByBlockId[block.id] ?? []}
-              editingField={
-                editing && editing.blockId === block.id ? editing.field : null
-              }
-              onSelect={() => {
-                onSelect(block.id);
-                if (editing && editing.blockId !== block.id) onEditingChange(null);
+              onReorder={onReorder}
+              renderRow={({ id, index, drag }) => {
+                const block = doc.blocks[index]?.id === id ? doc.blocks[index] : null;
+                return block ? renderBlock(block, index, drag) : null;
               }}
-              onStartEditing={(field) => {
-                onSelect(block.id);
-                onEditingChange({ blockId: block.id, field });
-              }}
-              onStopEditing={() => onEditingChange(null)}
-              onChange={(patch) => onChange(block.id, patch)}
-              onDuplicate={() => onDuplicate(block.id)}
-              onDelete={() => onDelete(block.id)}
-              onMove={(delta) => onMove(block.id, delta)}
-              canMoveUp={index > 0}
-              canMoveDown={index < doc.blocks.length - 1}
             />
-          ))}
+          ) : (
+            doc.blocks.map((block, index) => renderBlock(block, index))
+          )}
 
           {/* The unsubscribe row every send carries when the document has no
               `footer` block of its own (`renderCampaignEmail`'s
@@ -217,6 +255,7 @@ function CanvasBlock({
   onMove,
   canMoveUp,
   canMoveDown,
+  dragGesture,
 }: {
   block: EmailBlock;
   theme: EmailTheme;
@@ -234,6 +273,9 @@ function CanvasBlock({
   onMove: (delta: -1 | 1) => void;
   canMoveUp: boolean;
   canMoveDown: boolean;
+  /** This block's drag gesture, from `SortableRows`. Absent on a locked
+   *  canvas, which mounts no drag list at all. */
+  dragGesture?: GestureType;
 }) {
   const severity = worstSeverity(warnings);
   const inverse = 1 / scale;
@@ -311,6 +353,7 @@ function CanvasBlock({
             onMove={onMove}
             canMoveUp={canMoveUp}
             canMoveDown={canMoveDown}
+            dragGesture={dragGesture}
           />
         </View>
       ) : null}
@@ -366,12 +409,26 @@ function WarningBadge({
 }
 
 /**
- * The selected block's contextual toolbar.
+ * The selected block's contextual toolbar — and the one place a drag starts.
  *
  * The up/down arrows are KEPT from the form-card designer, deliberately: they
  * exist because dragging a fifteen-block newsletter on a phone was "a
- * long-press-and-scroll fight". Anything drag adds later is an addition to
- * these, never a replacement.
+ * long-press-and-scroll fight". Drag is an ADDITION to them, never a
+ * replacement — moving the last of fifteen blocks to the top is one drag or
+ * fourteen taps, and both are now available.
+ *
+ * The GRIP lives here rather than on the block itself, for three reasons:
+ *
+ *  1. It cannot fight in-place editing. Every other pixel of a block is text
+ *     you click to type into; a press-and-hold anywhere on the block would
+ *     have to decide between "start dragging" and "put the caret here", and
+ *     the loser of that fight is always the one you wanted.
+ *  2. The toolbar counter-scales by `1/scale`, so the handle is a real tap
+ *     target on a phone where the document is drawn at ~0.6 — a grip in the
+ *     document's own coordinate space would be a 9px one.
+ *  3. It appears exactly when the block is selected and editable, which is
+ *     the only state in which reordering is meaningful. On a locked canvas
+ *     the toolbar isn't rendered and no drag list is mounted at all.
  */
 function BlockToolbar({
   onDuplicate,
@@ -379,12 +436,14 @@ function BlockToolbar({
   onMove,
   canMoveUp,
   canMoveDown,
+  dragGesture,
 }: {
   onDuplicate: () => void;
   onDelete: () => void;
   onMove: (delta: -1 | 1) => void;
   canMoveUp: boolean;
   canMoveDown: boolean;
+  dragGesture?: GestureType;
 }) {
   return (
     <View
@@ -400,6 +459,20 @@ function BlockToolbar({
         borderColor: colors.borderStrong,
       }}
     >
+      {dragGesture ? (
+        <GestureDetector gesture={dragGesture}>
+          <View
+            accessible
+            accessibilityRole="button"
+            accessibilityLabel="Drag to reorder this block"
+            accessibilityHint="Or use the up and down arrows beside this handle"
+            hitSlop={6}
+            className="cursor-grab rounded p-1.5 active:bg-sunken web:hover:bg-sunken"
+          >
+            <Icon name="move" size={15} color={colors.muted} />
+          </View>
+        </GestureDetector>
+      ) : null}
       <ToolbarButton
         icon="chevron-up"
         label="Move block up"

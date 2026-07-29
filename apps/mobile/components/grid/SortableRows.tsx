@@ -14,6 +14,10 @@
  * Variable row heights are supported: we measure each row's height onLayout and
  * drive displacement from cumulative offsets, so rows with tall (wrapped) cells
  * reorder correctly.
+ *
+ * The drop arithmetic — and the SCALE the list may be drawn at — lives in
+ * `sortableRowMath.ts`, which is pure and therefore testable; see its header
+ * for why a gesture and a layout are not measured in the same unit.
  */
 import { useCallback, useMemo } from "react";
 import { View, type LayoutChangeEvent } from "react-native";
@@ -29,6 +33,12 @@ import Animated, {
   withTiming,
   type SharedValue,
 } from "react-native-reanimated";
+import {
+  DEFAULT_ROW_HEIGHT,
+  contentTranslationY,
+  dropOrder,
+  safeScale,
+} from "./sortableRowMath";
 
 /** Props passed to each row's render function. */
 export interface SortableRowRenderArgs {
@@ -58,44 +68,18 @@ export interface SortableRowsProps {
    * before measurement; rows are still measured for accuracy.
    */
   rowHeight?: number;
-}
-
-/** Default row-height seed used until a row reports its real height. */
-const DEFAULT_ROW_HEIGHT = 44;
-
-/**
- * Compute the index a dragged row should land at, given its top edge after the
- * drag translation, using measured cumulative offsets.
- *
- * Runs on the JS thread (called via runOnJS) so it can read the heights array.
- */
-function resolveTargetIndex(
-  from: number,
-  translationY: number,
-  heights: number[],
-): number {
-  const count = heights.length;
-  // Cumulative top offset of each row in the *original* layout.
-  const tops: number[] = [];
-  let acc = 0;
-  for (let i = 0; i < count; i++) {
-    tops.push(acc);
-    acc += heights[i] || DEFAULT_ROW_HEIGHT;
-  }
-  // Center of the dragged row after translation.
-  const draggedCenter =
-    tops[from] + (heights[from] || DEFAULT_ROW_HEIGHT) / 2 + translationY;
-
-  let target = from;
-  for (let i = 0; i < count; i++) {
-    const center = tops[i] + (heights[i] || DEFAULT_ROW_HEIGHT) / 2;
-    if (draggedCenter < center) {
-      target = i;
-      break;
-    }
-    target = i;
-  }
-  return Math.max(0, Math.min(count - 1, target));
+  /**
+   * The scale the PARENT draws this list at (a `transform: [{ scale }]` above
+   * it), default 1.
+   *
+   * A transform doesn't change layout, so measured row heights stay in the
+   * list's own px while the pan gesture reports screen px. Telling the list
+   * its scale is what keeps the dragged row under the finger and the drop
+   * index on the row you let go over — see `sortableRowMath.ts`. The email
+   * canvas draws its 600px document at ~0.6 on a phone; every other caller
+   * leaves this alone.
+   */
+  scale?: number;
 }
 
 export function SortableRows({
@@ -103,6 +87,7 @@ export function SortableRows({
   renderRow,
   onReorder,
   rowHeight = DEFAULT_ROW_HEIGHT,
+  scale,
 }: SortableRowsProps) {
   // Measured per-row heights, keyed by id, on the JS thread. A shared value
   // mirror lets worklets read offsets without bridging.
@@ -120,18 +105,19 @@ export function SortableRows({
     [heightsRef, rowHeight],
   );
 
+  /** `screenTranslation` is the gesture's own, in screen px — converted here
+   *  into the units the measured heights are in. */
   const commitReorder = useCallback(
-    (id: string, translation: number) => {
-      const from = ids.indexOf(id);
-      if (from < 0) return;
-      const heights = heightsArrayFor(ids);
-      const to = resolveTargetIndex(from, translation, heights);
-      if (to === from) return;
-      const next = ids.slice();
-      next.splice(to, 0, next.splice(from, 1)[0]);
-      onReorder(next);
+    (id: string, screenTranslation: number) => {
+      const next = dropOrder(
+        ids,
+        id,
+        contentTranslationY(screenTranslation, scale),
+        heightsArrayFor(ids),
+      );
+      if (next) onReorder(next);
     },
-    [ids, heightsArrayFor, onReorder],
+    [ids, heightsArrayFor, onReorder, scale],
   );
 
   return (
@@ -143,6 +129,7 @@ export function SortableRows({
           index={index}
           activeId={activeId}
           translateY={translateY}
+          scale={safeScale(scale)}
           onMeasure={(h) => {
             heightsRef.current[id] = h;
           }}
@@ -159,6 +146,8 @@ interface SortableRowProps {
   index: number;
   activeId: SharedValue<string | null>;
   translateY: SharedValue<number>;
+  /** Already sanitized by `safeScale` — never 0, negative or NaN. */
+  scale: number;
   onMeasure: (height: number) => void;
   onDrop: (id: string, translation: number) => void;
   renderRow: (args: SortableRowRenderArgs) => React.ReactNode;
@@ -169,6 +158,7 @@ function SortableRow({
   index,
   activeId,
   translateY,
+  scale,
   onMeasure,
   onDrop,
   renderRow,
@@ -187,8 +177,14 @@ function SortableRow({
           isActive.value = true;
           translateY.value = 0;
         })
+        // The gesture reports SCREEN px; this row is displaced inside a parent
+        // that may scale it, so the translation it is given has to be divided
+        // by that scale for the row to stay under the finger. (The worklet
+        // twin of `contentTranslationY` — a plain module function can't be
+        // called from a worklet. The drop itself goes through the real one,
+        // in `commitReorder`.)
         .onUpdate((e) => {
-          translateY.value = e.translationY;
+          translateY.value = e.translationY / scale;
         })
         .onEnd((e) => {
           runOnJS(onDrop)(id, e.translationY);
@@ -198,7 +194,7 @@ function SortableRow({
           isActive.value = false;
           translateY.value = withTiming(0, { duration: 120 });
         }),
-    [id, activeId, isActive, translateY, onDrop],
+    [id, activeId, isActive, translateY, scale, onDrop],
   );
 
   const animatedStyle = useAnimatedStyle(() => {

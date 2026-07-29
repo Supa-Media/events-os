@@ -20,6 +20,7 @@ import {
   BUTTON_DEFAULT_ALIGN,
   CANVAS_WIDTH,
   FALLBACK_FOOTER_PADDING,
+  FOOTER_LINK_SEPARATOR,
   QUOTE_ATTRIBUTION_PREFIX,
   blockGutter,
   bodyParagraphSpacing,
@@ -33,7 +34,9 @@ import {
   cardHeadingStyle,
   cardSpecFor,
   fallbackFooterTextStyle,
+  footerLinksStyle,
   headingStyle,
+  linkTextStyle,
   spacerHeight,
   trackingPx,
   transformOrigin,
@@ -330,6 +333,30 @@ describe("canvas geometry agrees with the rendered email", () => {
   test("a document WITH a footer block gets no fallback row", () => {
     const out = html([{ id: "f", kind: "footer", navLine: "Public Worship" }]);
     expect(out).not.toContain("Sent with love by Public Worship");
+  });
+
+  test("footer links send as underlined link-coloured anchors joined by ' | '", () => {
+    const out = html([
+      {
+        id: "f",
+        kind: "footer",
+        links: [
+          { label: "Instagram", url: "https://ig.test" },
+          { label: "Give", url: "https://g.test" },
+        ],
+      },
+    ]);
+    // The anchors: the theme's LINK colour, underlined — not the muted body
+    // colour the canvas used to paint the whole row in.
+    expect(out).toContain(`style="color:${t.link};text-decoration:underline">Instagram</a>`);
+    const link = linkTextStyle(t);
+    expect(link.color).toBe(t.link);
+    expect(link.textDecorationLine).toBe("underline");
+    // The separator, pinned: one space each side, and muted like the row.
+    expect(out).toContain(
+      `<span style="color:${t.muted}">${FOOTER_LINK_SEPARATOR}</span>`,
+    );
+    expect(footerLinksStyle(t, true).color).toBe(t.muted);
   });
 });
 

@@ -606,6 +606,19 @@ export function footerLinksStyle(t: EmailTheme, isWeb: boolean): TextStyle {
   };
 }
 
+/**
+ * What the RENDERER puts between two footer links: a muted `" | "`, ONE space
+ * each side (`renderFooterBlock` joins its anchors with
+ * `<span style="color:…"> | </span>`).
+ *
+ * A string rather than a number, so — like `QUOTE_ATTRIBUTION_PREFIX` — it
+ * can't live in `EMAIL_GEOMETRY`, and `canvasStyles.test.ts` pins it against
+ * the real rendered HTML instead. The canvas used two spaces each side and
+ * drew the labels muted and un-underlined, which turned a row of links into
+ * what looked like a caption; the links themselves take `linkTextStyle`.
+ */
+export const FOOTER_LINK_SEPARATOR = " | ";
+
 export function footerLegalStyle(t: EmailTheme, isWeb: boolean): TextStyle {
   return {
     fontFamily: canvasFontFamily(t.bodyFont, isWeb),

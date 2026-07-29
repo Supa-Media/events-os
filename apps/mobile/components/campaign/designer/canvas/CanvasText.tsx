@@ -30,6 +30,7 @@ import {
   type MarkdownSubsetBlock,
 } from "@events-os/shared";
 import { BODY_LIST_INDENT, bodyParagraphSpacing } from "./canvasStyles";
+import { emptySlotDraw } from "./placeholders";
 
 /** One inline run and its children, as nested `<Text>` — RN inherits type
  *  styles down a `<Text>` tree the same way HTML does. */
@@ -123,16 +124,21 @@ export function CanvasMarkdown({
  * the input is the whole point — the words must not move, resize or change
  * colour when you start typing, or the canvas stops being a preview.
  *
- * An EMPTY value renders its placeholder in the same type at half opacity
- * rather than collapsing to nothing: a heading you can't see is a heading you
- * can't click, and "the block vanished" is how the form-card version's empty
- * states were discovered in the first place.
+ * An EMPTY value draws whatever `emptySlotDraw` says it may (see
+ * `placeholders.ts`): the prompt when this block is the selected one, a
+ * wordless outline when it isn't, and nothing at all on a locked canvas —
+ * where the prompt would be help text sitting exactly where the approver
+ * expects the newsletter's own copy. The outline is what keeps "the block
+ * vanished" from coming back: an empty block stays visible and clickable for
+ * the author without putting a single word on the page that the email
+ * doesn't have.
  */
 export function CanvasEditableText({
   value,
   placeholder,
   style,
   editable,
+  selected,
   editing,
   onStartEditing,
   onStopEditing,
@@ -156,6 +162,9 @@ export function CanvasEditableText({
   placeholder: string;
   style: TextStyle;
   editable: boolean;
+  /** Whether the BLOCK this slot belongs to is the selected one — the other
+   *  half of `emptySlotDraw`'s decision. */
+  selected: boolean;
   editing: boolean;
   onStartEditing: () => void;
   onStopEditing: () => void;
@@ -195,15 +204,6 @@ export function CanvasEditableText({
   }
 
   const empty = value.trim().length === 0;
-  const body = empty ? (
-    <Text style={[style, { opacity: 0.45 }]}>{placeholder}</Text>
-  ) : renderStatic ? (
-    <>{renderStatic()}</>
-  ) : (
-    <Text style={style}>{staticPrefix ? `${staticPrefix}${value}` : value}</Text>
-  );
-
-  if (!editable) return <>{body}</>;
 
   // The canvas page deselects on press and RN Web's press handling BUBBLES,
   // so every one of these has to stop the click reaching it — otherwise
@@ -213,6 +213,27 @@ export function CanvasEditableText({
     e?.stopPropagation?.();
     onStartEditing();
   };
+
+  if (empty) {
+    const draw = emptySlotDraw(editable, selected);
+    // A locked canvas is a picture of the email, and the email has nothing
+    // here. Note this also drops the slot's own margin, exactly as the
+    // renderer's `if (content.body)` does.
+    if (draw === "nothing") return null;
+    if (draw === "outline") {
+      return <EmptySlot style={style} label={accessibilityLabel} onPress={start} />;
+    }
+  }
+
+  const body = empty ? (
+    <Text style={[style, { opacity: 0.45 }]}>{placeholder}</Text>
+  ) : renderStatic ? (
+    <>{renderStatic()}</>
+  ) : (
+    <Text style={style}>{staticPrefix ? `${staticPrefix}${value}` : value}</Text>
+  );
+
+  if (!editable) return <>{body}</>;
 
   // `renderStatic` means block-level content (a markdown body renders lists as
   // Views), and a View nested inside a `<Text>` lays out badly on native — so
@@ -239,6 +260,64 @@ export function CanvasEditableText({
     >
       {body}
     </Text>
+  );
+}
+
+/** The outline state's proportions. EDITOR chrome, not email geometry — so
+ *  these are the only numbers in this file, and nothing reads them but the
+ *  mark below. A short bar rather than a full-width rule: a full-width one
+ *  reads as a divider, which IS a block the email can contain. */
+const EMPTY_SLOT_BAR = { widthPct: 32, height: 2, opacity: 0.22 } as const;
+/** Line-height fallback for a style that sets none, so the mark still occupies
+ *  a clickable row. */
+const EMPTY_SLOT_FALLBACK_LINE = 16;
+
+/**
+ * An empty slot on an EDITABLE canvas whose block isn't selected: a small
+ * neutral bar in the slot's own colour, occupying one line of its own type.
+ *
+ * It says "something goes here" without saying what — the prompt is one click
+ * away, on the selected block. It takes the slot's colour from the style it
+ * would have drawn, so it stays visible on a maroon hero card and a cream one
+ * alike, and it follows the slot's alignment so a centred card's marks sit
+ * under its centred heading.
+ */
+function EmptySlot({
+  style,
+  label,
+  onPress,
+}: {
+  style: TextStyle;
+  label: string;
+  onPress: (e?: { stopPropagation?: () => void }) => void;
+}) {
+  const line =
+    typeof style.lineHeight === "number"
+      ? style.lineHeight
+      : typeof style.fontSize === "number"
+        ? style.fontSize
+        : EMPTY_SLOT_FALLBACK_LINE;
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`Add ${label}`}
+      style={{
+        height: line,
+        justifyContent: "center",
+        alignItems: style.textAlign === "center" ? "center" : "flex-start",
+      }}
+    >
+      <View
+        style={{
+          width: `${EMPTY_SLOT_BAR.widthPct}%`,
+          height: EMPTY_SLOT_BAR.height,
+          borderRadius: 999,
+          opacity: EMPTY_SLOT_BAR.opacity,
+          backgroundColor: style.color,
+        }}
+      />
+    </Pressable>
   );
 }
 
