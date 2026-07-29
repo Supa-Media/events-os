@@ -416,50 +416,41 @@ export function MailyDocumentHost({
 
       <View className={split ? "flex-row" : undefined}>
         <View className={split ? "flex-1" : undefined}>
+          {/* Chrome-polish pass: ONE quiet control bar, not two stacked rows.
+           *  The prior layout gave the Font control its own row (a 3-button
+           *  segmented pill showing every label at once — "Sans (Inter) |
+           *  Serif (Georgia) | Mono (Courier New)" — sized wider than
+           *  anything else in the chrome) directly above a SECOND row for
+           *  Insert-image/library, and rendered that second row even in
+           *  read-only mode (empty but for its own `mb-3`, pure dead space —
+           *  `SaveIndicator` returns `null` when `!editable`). Both are fixed
+           *  by gating the whole bar on `editable` and folding the Font
+           *  control into it as a compact `<select>` (`FontStackSelect`
+           *  below) instead of a pill — see that component's own doc. */}
           {editable ? (
-            <View className="mb-3 flex-row items-center gap-2">
-              <Text className="text-xs font-bold uppercase tracking-wider text-faint">
-                Font
-              </Text>
-              <View className="flex-row overflow-hidden rounded-md border border-border-strong">
-                {PW_FONT_STACK_IDS.map((id) => (
-                  <Text
-                    key={id}
-                    accessibilityRole="button"
-                    accessibilityState={{ selected: fontStackId === id }}
-                    onPress={() => changeFontStack(id)}
-                    className={`px-2 py-1 text-2xs font-semibold ${
-                      fontStackId === id ? "bg-accent text-white" : "bg-raised text-muted"
-                    }`}
-                  >
-                    {PW_FONT_STACKS[id].label}
-                  </Text>
-                ))}
+            <View className="mb-3 flex-row flex-wrap items-center justify-between gap-2">
+              <View className="flex-row flex-wrap items-center gap-2">
+                <FontStackSelect value={fontStackId} onChange={changeFontStack} />
+                {uploadImage ? (
+                  <>
+                    <ImageUploadButton
+                      uploadImage={uploadImage}
+                      onUploaded={(uploaded, suggestedLabel) => {
+                        insertImage(uploaded.url, suggestedLabel);
+                        register(uploaded.storageId, suggestedLabel);
+                      }}
+                      run={run}
+                      label="Insert image…"
+                    />
+                    <ImageLibraryPicker
+                      onPick={(image) => insertImage(image.url, image.alt)}
+                    />
+                  </>
+                ) : null}
               </View>
+              <SaveIndicator editable={editable} saveState={saveState} error={saveError} />
             </View>
           ) : null}
-
-          <View className="mb-3 flex-row items-center justify-between gap-2">
-            {editable && uploadImage ? (
-              <View className="flex-row flex-wrap items-center gap-2">
-                <ImageUploadButton
-                  uploadImage={uploadImage}
-                  onUploaded={(uploaded, suggestedLabel) => {
-                    insertImage(uploaded.url, suggestedLabel);
-                    register(uploaded.storageId, suggestedLabel);
-                  }}
-                  run={run}
-                  label="Insert image…"
-                />
-                <ImageLibraryPicker
-                  onPick={(image) => insertImage(image.url, image.alt)}
-                />
-              </View>
-            ) : (
-              <View />
-            )}
-            <SaveIndicator editable={editable} saveState={saveState} error={saveError} />
-          </View>
 
           {/* A plain `<div>`, not RN's `View` — same "web-only file needs a
            *  real DOM ref/style" precedent as `MarkdownEditor.web.tsx`'s own
@@ -598,6 +589,55 @@ function SaveIndicator({
     );
   }
   return null;
+}
+
+/**
+ * Document-level Font picker (founder bug #5), "Google-Docs-style" per this
+ * file's own module doc — a COMPACT dropdown, not the 3-button segmented
+ * pill this replaced. That pill showed all three full labels ("Sans (Inter)
+ * | Serif (Georgia) | Mono (Courier New)") side by side at once — the widest
+ * single control in the chrome, and heavier than the document it sits above
+ * has any business competing with (maily's own aesthetic: the document is
+ * the surface, controls stay quiet — see maily's OWN bubble-menu `<select
+ * appearance:none>`s, `mailyOverrides.css`'s doc). A native `<select>` shows
+ * only the CURRENT choice until opened, in that same spirit — literally
+ * maily's own control shape — without reaching for an internal, unexported
+ * maily component (`@maily-to/core` only exports `Editor`) or a cross-
+ * platform popover (`ui/FilterSelect.tsx`'s `Pressable`+`Popover` pattern)
+ * that would pull `@expo/vector-icons`' font-based glyphs into a document
+ * chrome control that has no native counterpart to share code with anyway —
+ * this file is already `.web.tsx`-only.
+ *
+ * A plain DOM element, so — like the editor container `<div>` above —
+ * `className` is a normal HTML attribute here: no `cssInterop` registration
+ * needed the way `View`/`Text` need one (see `build.mjs`'s doc on why those
+ * two specifically require `jsxImportSource: "nativewind"` to keep a passed
+ * `className` from being overwritten).
+ */
+function FontStackSelect({
+  value,
+  onChange,
+}: {
+  value: PwFontStackId;
+  onChange: (id: PwFontStackId) => void;
+}) {
+  return (
+    <select
+      aria-label="Font"
+      value={value}
+      onChange={(e) => {
+        const next = e.target.value;
+        if (isPwFontStackId(next)) onChange(next);
+      }}
+      className="h-[30px] rounded-md border border-border-strong bg-raised px-2 text-xs font-medium text-muted hover:bg-sunken"
+    >
+      {PW_FONT_STACK_IDS.map((id) => (
+        <option key={id} value={id}>
+          {PW_FONT_STACKS[id].label}
+        </option>
+      ))}
+    </select>
+  );
 }
 
 export default MailyDocumentHost;
