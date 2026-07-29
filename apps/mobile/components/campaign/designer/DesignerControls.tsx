@@ -1,13 +1,13 @@
 /**
  * The small shared controls the campaign block editors are built from.
  *
- * These lived inside `BlockCard.tsx` while `image` was the only block that
- * needed them. The `card`/`columns` blocks reuse BOTH (`CardContentEditor`
- * needs the same upload affordance and the same segmented toggle), and a
+ * These lived inside the block editor while `image` was the only block that
+ * needed them. `CardContentEditor` and `canvas/BlockFields.tsx` reuse BOTH
+ * (they need the same upload affordance and the same segmented toggle), and a
  * component can't be shared out of the file that also owns the editor switch
- * without an import cycle — so they moved here, unchanged in behavior. This
- * is the "extract on second use" rule the UI kit itself follows: a control
- * earns its own module the moment a second caller needs it, not before.
+ * without an import cycle — so they live here. This is the "extract on second
+ * use" rule the UI kit itself follows: a control earns its own module the
+ * moment a second caller needs it, not before.
  */
 import {
   createContext,
@@ -37,8 +37,9 @@ import type { ActionRunner } from "../../../lib/useActionToast";
  *
  * Threading a `readOnly` prop through every editor and every field would work
  * exactly as long as nobody forgets one, and one forgotten field is the whole
- * bug back. So it's CONTEXT: `BlockCard` provides it once, and the controls
- * below opt in by construction. The two rules the designer's editors follow:
+ * bug back. So it's CONTEXT: `DocumentComposer` provides it once, around the
+ * whole surface, and the controls below opt in by construction. The two rules
+ * the designer's editors follow:
  *
  *   - use the wrappers exported here (`TextField`, `Select`) instead of the
  *     UI kit's own, so a locked field renders as static text rather than an
@@ -47,7 +48,9 @@ import type { ActionRunner } from "../../../lib/useActionToast";
  */
 const ReadOnlyContext = createContext(false);
 
-/** Marks everything beneath as locked. `BlockCard` is the only caller. */
+/** Marks everything beneath as locked. `DocumentComposer` is the only
+ *  caller — it wraps the canvas AND the inspector, so nothing below can
+ *  render an editing affordance on a locked document. */
 export function ReadOnlyProvider({
   value,
   children,

@@ -39,11 +39,26 @@ import type {
   EmailBlock,
   EmailButtonVariant,
   EmailCardContent,
-  EmailCardVariant,
   EmailDocument,
   EmailPollOption,
 } from "./emailBlocks";
 import { isAllowedImageUrl, isAllowedLinkUrl } from "./emailBlocks";
+// The SHAPE of every block — container width, gutters, type scale, paddings,
+// and the per-variant card treatments — lives in `emailGeometry.ts`, which the
+// designer's canvas renderer reads too. Two copies of these numbers would
+// drift the moment either surface was tuned; see that file's header.
+import {
+  EMAIL_CARD_SPECS,
+  EMAIL_CARD_IMAGE_GAP_PCT,
+  EMAIL_GEOMETRY as G,
+  EMAIL_SPACER_HEIGHTS,
+  clampEmailImageWidthPct,
+  emailCardFill,
+  emailCardTextColor,
+  type EmailCardSpec,
+} from "./emailGeometry";
+import type { MarkdownInlineNode } from "./emailMarkdown";
+import { parseInlineMarkdown, parseMarkdownSubset } from "./emailMarkdown";
 import type { EmailTheme, EmailThemeTokens } from "./emailTheme";
 import { DEFAULT_EMAIL_THEME, normalizeEmailTheme, resolveDarkTheme } from "./emailTheme";
 import { firstNameOf } from "./names";
@@ -212,31 +227,28 @@ function substituteMergeTagsPlain(text: string, recipient: CampaignRecipient): s
 
 // ── Markdown subset (text blocks) ────────────────────────────────────────
 // **bold**, *italic*, [text](url), blank-line-separated paragraphs, "- "
-// list lines. Operates on text that's already HTML-escaped, so it only ever
-// wraps existing (safe) text in tags — it never needs to escape anything
-// itself.
+// list lines. The PARSE lives in `emailMarkdown.ts` (shared with the
+// designer's canvas renderer, so the two can't disagree about what is bold);
+// this file only walks the resulting tree into HTML.
+//
+// It walks text that's already HTML-escaped, so it only ever wraps existing
+// (safe) text in tags — it never needs to escape anything itself.
 
-// One level of parenthesis-nesting inside a link URL — `[^()\s]` handles the
-// ordinary case, `\([^()]*\)` lets a single balanced `(...)` pass through
-// (e.g. a Wikipedia-style `https://en.wikipedia.org/wiki/Foo_(bar)`), which
-// a plain `[^)]+` truncates at the URL's own first `)`.
-const LINK_RE = /\[([^\]]+)\]\(((?:[^()\s]|\([^()]*\))+)\)/g;
-
-function inlineMarkdown(escapedText: string, t: EmailTheme): string {
-  let html = escapedText;
-  html = html.replace(
-    LINK_RE,
-    (_m, label: string, url: string) =>
-      `<a class="${CLS.link}" href="${safeEmailHref(url)}" style="color:${t.link};text-decoration:underline">${label}</a>`,
-  );
-  // Bold runs BEFORE italic, and non-greedily across ANY character (not just
-  // non-`*` ones) — a greedy/`[^*]+`-style bold match can't span an embedded
-  // single-`*` italic run (`**bold *italic* text**`: the content between the
-  // outer `**` pair contains `*` characters a `[^*]+` class excludes), so it
-  // simply fails to match and the whole thing falls through unrendered.
-  html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
-  html = html.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-  return html;
+function inlineMarkdownHtml(nodes: MarkdownInlineNode[], t: EmailTheme): string {
+  return nodes
+    .map((node) => {
+      switch (node.kind) {
+        case "text":
+          return node.text;
+        case "strong":
+          return `<strong>${inlineMarkdownHtml(node.children, t)}</strong>`;
+        case "em":
+          return `<em>${inlineMarkdownHtml(node.children, t)}</em>`;
+        case "link":
+          return `<a class="${CLS.link}" href="${safeEmailHref(node.href)}" style="color:${t.link};text-decoration:underline">${inlineMarkdownHtml(node.children, t)}</a>`;
+      }
+    })
+    .join("");
 }
 
 // ── Class names ───────────────────────────────────────────────────────────
@@ -275,11 +287,11 @@ const CLS = {
 } as const;
 
 function textStyle(t: EmailTheme): string {
-  return `margin:0 0 12px;font-family:${t.bodyFont};font-size:16px;line-height:1.35;letter-spacing:${t.bodyTracking};color:${t.muted}`;
+  return `margin:0 0 ${G.body.marginBottom}px;font-family:${t.bodyFont};font-size:${G.body.size}px;line-height:${G.body.line};letter-spacing:${t.bodyTracking};color:${t.muted}`;
 }
 
 function listStyle(t: EmailTheme): string {
-  return `margin:0 0 12px;padding-left:20px;font-family:${t.bodyFont};font-size:16px;line-height:1.35;letter-spacing:${t.bodyTracking};color:${t.muted}`;
+  return `margin:0 0 ${G.body.marginBottom}px;padding-left:${G.body.listIndent}px;font-family:${t.bodyFont};font-size:${G.body.size}px;line-height:${G.body.line};letter-spacing:${t.bodyTracking};color:${t.muted}`;
 }
 
 function markdownSubsetToHtml(
@@ -287,43 +299,18 @@ function markdownSubsetToHtml(
   t: EmailTheme,
   color?: string,
 ): string {
-  const out: string[] = [];
-  let paraLines: string[] = [];
-  let listItems: string[] = [];
-
-  const flushPara = () => {
-    if (paraLines.length === 0) return;
-    const style = color ? `${textStyle(t)};color:${color}` : textStyle(t);
-    out.push(
-      `<p class="${CLS.text}" style="${style}">${inlineMarkdown(paraLines.join(" "), t)}</p>`,
-    );
-    paraLines = [];
-  };
-  const flushList = () => {
-    if (listItems.length === 0) return;
-    const items = listItems.map((i) => `<li>${inlineMarkdown(i, t)}</li>`).join("");
-    out.push(`<ul class="${CLS.text}" style="${listStyle(t)}">${items}</ul>`);
-    listItems = [];
-  };
-
-  for (const rawLine of escapedMarkdown.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (line === "") {
-      flushPara();
-      flushList();
-      continue;
-    }
-    if (line.startsWith("- ")) {
-      flushPara();
-      listItems.push(line.slice(2));
-      continue;
-    }
-    flushList();
-    paraLines.push(line);
-  }
-  flushPara();
-  flushList();
-  return out.join("");
+  const paraStyle = color ? `${textStyle(t)};color:${color}` : textStyle(t);
+  return parseMarkdownSubset(escapedMarkdown)
+    .map((block) => {
+      if (block.kind === "paragraph") {
+        return `<p class="${CLS.text}" style="${paraStyle}">${inlineMarkdownHtml(block.content, t)}</p>`;
+      }
+      const items = block.items
+        .map((item) => `<li>${inlineMarkdownHtml(item, t)}</li>`)
+        .join("");
+      return `<ul class="${CLS.text}" style="${listStyle(t)}">${items}</ul>`;
+    })
+    .join("");
 }
 
 // ── Block → HTML ──────────────────────────────────────────────────────────
@@ -334,14 +321,14 @@ function renderHeadingBlock(
   t: EmailTheme,
 ): string {
   const level = block.level ?? 1;
-  const size = level === 2 ? 20 : 28;
+  const size = level === 2 ? G.heading.level2Size : G.heading.level1Size;
   const cls = level === 2 ? CLS.heading : `${CLS.heading} ${CLS.h1}`;
   const text = substituteMergeTagsHtml(esc(block.text), recipient);
   // `letter-spacing` is NOT optional here. Card headings get
   // `headingTracking`, so a standalone heading block without it renders
   // visibly looser than every card around it in the same email — the kind of
   // inconsistency that reads as sloppiness rather than as a bug.
-  return `<h${level} class="${cls}" style="margin:0 0 12px;font-size:${size}px;line-height:1.2;letter-spacing:${t.headingTracking};color:${t.ink};font-family:${t.headingFont};font-weight:700">${text}</h${level}>`;
+  return `<h${level} class="${cls}" style="margin:0 0 ${G.heading.marginBottom}px;font-size:${size}px;line-height:${G.heading.line};letter-spacing:${t.headingTracking};color:${t.ink};font-family:${t.headingFont};font-weight:700">${text}</h${level}>`;
 }
 
 function renderTextBlock(
@@ -357,83 +344,19 @@ function renderImageBlock(
   block: Extract<EmailBlock, { kind: "image" }>,
   t: EmailTheme,
 ): string {
-  const width = block.width === "half" ? "50%" : "100%";
-  const img = `<img src="${esc(safeImageSrc(block.url))}" alt="${esc(block.alt)}" style="display:block;width:${width};max-width:100%;border:0;border-radius:${t.radius}px;margin:0 0 16px" />`;
+  const width = block.width === "half" ? `${G.image.halfPct}%` : "100%";
+  const img = `<img src="${esc(safeImageSrc(block.url))}" alt="${esc(block.alt)}" style="display:block;width:${width};max-width:100%;border:0;border-radius:${t.radius}px;margin:0 0 ${G.image.marginBottom}px" />`;
   if (!block.href) return img;
   return `<a href="${esc(safeEmailHref(block.href))}" style="display:block;text-decoration:none">${img}</a>`;
 }
 
-/**
- * Per-variant geometry, read off the real newsletter rather than invented.
- * The theme supplies every COLOUR; this table supplies the SHAPE — fill role,
- * padding, type scale, alignment and CTA treatment — which is what actually
- * distinguishes the four cards from each other.
- */
-type CardSpec = {
-  fill: "accent" | "cream" | "surface" | "contrast" | "none";
-  bordered: boolean;
-  padY: number;
-  padX: number;
-  headingSize: number;
-  headingLine: number;
-  bodyColor: "ink" | "accentInk" | "contrastInk";
-  align: "left" | "center";
-  cta: EmailButtonVariant;
-  ctaAlign: "left" | "center";
-  ctaMaxWidth: number | null;
-};
-
-const CARD_SPECS: Record<EmailCardVariant, CardSpec> = {
-  // Big maroon opener: image over a tight 38px headline, centred, near-black
-  // pill. line-height 0.9 rather than the source's 0.6 — 0.6 clips descenders
-  // on any headline that wraps, which the source avoids only by hand-breaking
-  // every line, and a template can't rely on the author doing that.
-  hero: {
-    fill: "accent", bordered: false, padY: 42, padX: 20,
-    headingSize: 38, headingLine: 0.9, bodyColor: "accentInk",
-    align: "center", cta: "filled", ctaAlign: "center", ctaMaxWidth: 242,
-  },
-  feature: {
-    fill: "cream", bordered: false, padY: 26, padX: 26,
-    headingSize: 27, headingLine: 1, bodyColor: "ink",
-    align: "left", cta: "filled", ctaAlign: "left", ctaMaxWidth: 190,
-  },
-  outlined: {
-    fill: "surface", bordered: true, padY: 26, padX: 26,
-    headingSize: 21, headingLine: 1.06, bodyColor: "ink",
-    align: "left", cta: "outline", ctaAlign: "left", ctaMaxWidth: 140,
-  },
-  testimonial: {
-    fill: "contrast", bordered: false, padY: 28, padX: 28,
-    headingSize: 21, headingLine: 1.06, bodyColor: "contrastInk",
-    align: "center", cta: "filled", ctaAlign: "center", ctaMaxWidth: null,
-  },
-  // The pre-variant behaviour, kept so a document written before variants
-  // existed renders exactly as it did.
-  plain: {
-    fill: "none", bordered: false, padY: 0, padX: 0,
-    headingSize: 20, headingLine: 1.3, bodyColor: "ink",
-    align: "left", cta: "filled", ctaAlign: "left", ctaMaxWidth: null,
-  },
-};
-
-function cardFill(spec: CardSpec, t: EmailTheme): string | null {
-  switch (spec.fill) {
-    case "accent": return t.accent;
-    case "cream": return t.cream;
-    case "surface": return t.surface;
-    case "contrast": return t.contrast;
-    default: return null;
-  }
-}
-
-function cardTextColor(spec: CardSpec, t: EmailTheme): string {
-  return spec.bodyColor === "accentInk"
-    ? t.accentInk
-    : spec.bodyColor === "contrastInk"
-      ? t.contrastInk
-      : t.ink;
-}
+// Per-variant card geometry. Aliased rather than re-declared so every
+// reference below reads as it always did while there is only ONE table (see
+// the import block, and `emailGeometry.ts`'s header for why).
+type CardSpec = EmailCardSpec;
+const CARD_SPECS = EMAIL_CARD_SPECS;
+const cardFill = emailCardFill;
+const cardTextColor = emailCardTextColor;
 
 function renderButtonHtml(
   label: string,
@@ -447,9 +370,12 @@ function renderButtonHtml(
   // CTA look identical.
   const bg = variant === "outline" ? "transparent" : t.contrast;
   const fg = variant === "outline" ? t.ink : t.contrastInk;
-  const border = variant === "outline" ? `1px solid ${t.border}` : "1px solid transparent";
+  const border =
+    variant === "outline"
+      ? `${G.button.borderWidth}px solid ${t.border}`
+      : `${G.button.borderWidth}px solid transparent`;
   const width = maxWidth ? `max-width:${maxWidth}px;width:100%;` : "";
-  return `<a class="${CLS.button}" href="${esc(safeEmailHref(url))}" style="display:inline-block;box-sizing:border-box;${width}background:${bg};color:${fg};border:${border};text-decoration:none;font-family:${t.bodyFont};font-weight:700;font-size:15px;letter-spacing:${t.bodyTracking};padding:11px 22px;border-radius:999px;text-align:center">${label}</a>`;
+  return `<a class="${CLS.button}" href="${esc(safeEmailHref(url))}" style="display:inline-block;box-sizing:border-box;${width}background:${bg};color:${fg};border:${border};text-decoration:none;font-family:${t.bodyFont};font-weight:700;font-size:${G.button.size}px;letter-spacing:${t.bodyTracking};padding:${G.button.padY}px ${G.button.padX}px;border-radius:${G.button.radius}px;text-align:center">${label}</a>`;
 }
 
 function renderButtonBlock(
@@ -459,7 +385,7 @@ function renderButtonBlock(
 ): string {
   const label = substituteMergeTagsHtml(esc(block.label), recipient);
   const align = safeAlign(block.align, "center");
-  return `<div style="text-align:${align};margin:0 0 16px">${renderButtonHtml(label, block.url, t, block.variant ?? "filled")}</div>`;
+  return `<div style="text-align:${align};margin:0 0 ${G.button.marginBottom}px">${renderButtonHtml(label, block.url, t, block.variant ?? "filled")}</div>`;
 }
 
 /**
@@ -471,11 +397,11 @@ function renderButtonBlock(
  * a stack of text, which is how the layout stopped being visible at all.
  */
 function cardImageHtml(content: EmailCardContent, t: EmailTheme): string {
-  const radius = Math.max(0, t.radius - 8);
+  const radius = Math.max(0, t.radius - G.card.imageRadiusInset);
   if (!content.imageUrl) {
     const sideways = content.imageSide === "left" || content.imageSide === "right";
     if (!sideways) return "";
-    return `<div style="background:${t.cream};border:1px dashed ${t.hairline};border-radius:${radius}px;padding:34px 10px;text-align:center;font-family:${t.bodyFont};font-size:11px;letter-spacing:0.08em;text-transform:uppercase;color:${t.muted}">Image</div>`;
+    return `<div style="background:${t.cream};border:1px dashed ${t.hairline};border-radius:${radius}px;padding:${G.card.placeholder.padY}px ${G.card.placeholder.padX}px;text-align:center;font-family:${t.bodyFont};font-size:${G.card.placeholder.size}px;letter-spacing:${G.tracking.placeholder};text-transform:uppercase;color:${t.muted}">Image</div>`;
   }
   return `<img src="${esc(safeImageSrc(content.imageUrl))}" alt="${esc(content.imageAlt ?? "")}" style="display:block;width:100%;max-width:100%;border:0;border-radius:${radius}px" />`;
 }
@@ -496,30 +422,31 @@ function cardTextHtml(
 
   if (content.eyebrow) {
     parts.push(
-      `<div class="${CLS.eyebrow}" style="margin:0 0 8px;font-family:${t.bodyFont};font-weight:700;letter-spacing:0.1em;font-size:12px;text-transform:uppercase;color:${fg};text-align:${align}">${substituteMergeTagsHtml(esc(content.eyebrow), recipient)}</div>`,
+      `<div class="${CLS.eyebrow}" style="margin:0 0 ${G.card.eyebrowMarginBottom}px;font-family:${t.bodyFont};font-weight:700;letter-spacing:${G.tracking.eyebrow};font-size:${G.card.eyebrowSize}px;text-transform:uppercase;color:${fg};text-align:${align}">${substituteMergeTagsHtml(esc(content.eyebrow), recipient)}</div>`,
     );
   }
   if (content.heading) {
     parts.push(
-      `<h3 class="${CLS.heading}" style="margin:0 0 12px;font-family:${t.headingFont};font-size:${spec.headingSize}px;line-height:${spec.headingLine};letter-spacing:${t.headingTracking};font-weight:700;color:${fg};text-align:${align}">${substituteMergeTagsHtml(esc(content.heading), recipient)}</h3>`,
+      `<h3 class="${CLS.heading}" style="margin:0 0 ${G.card.headingMarginBottom}px;font-family:${t.headingFont};font-size:${spec.headingSize}px;line-height:${spec.headingLine};letter-spacing:${t.headingTracking};font-weight:700;color:${fg};text-align:${align}">${substituteMergeTagsHtml(esc(content.heading), recipient)}</h3>`,
     );
   }
   if (content.body) {
     const italic = content.variant === "testimonial" ? "font-style:italic;" : "";
-    const size = content.variant === "testimonial" ? 20 : 16;
+    const size =
+      content.variant === "testimonial" ? G.card.testimonialBodySize : G.card.bodySize;
     parts.push(
-      `<div class="${CLS.text}" style="margin:0 0 14px;font-family:${t.bodyFont};font-size:${size}px;line-height:1.35;letter-spacing:${t.bodyTracking};${italic}color:${fg};text-align:${align}">${markdownSubsetToHtml(substituteMergeTagsHtml(esc(content.body), recipient), t, fg)}</div>`,
+      `<div class="${CLS.text}" style="margin:0 0 ${G.card.bodyMarginBottom}px;font-family:${t.bodyFont};font-size:${size}px;line-height:${G.card.bodyLine};letter-spacing:${t.bodyTracking};${italic}color:${fg};text-align:${align}">${markdownSubsetToHtml(substituteMergeTagsHtml(esc(content.body), recipient), t, fg)}</div>`,
     );
   }
   if (content.attribution) {
     parts.push(
-      `<div class="${CLS.quoteAttr}" style="margin:0 0 14px;font-family:${t.bodyFont};font-size:13px;font-weight:700;letter-spacing:${t.bodyTracking};color:${fg};text-align:${align}">${substituteMergeTagsHtml(esc(content.attribution), recipient)}</div>`,
+      `<div class="${CLS.quoteAttr}" style="margin:0 0 ${G.card.attributionMarginBottom}px;font-family:${t.bodyFont};font-size:${G.card.attributionSize}px;font-weight:700;letter-spacing:${t.bodyTracking};color:${fg};text-align:${align}">${substituteMergeTagsHtml(esc(content.attribution), recipient)}</div>`,
     );
   }
   if (content.ctaLabel && content.ctaUrl) {
     const label = substituteMergeTagsHtml(esc(content.ctaLabel), recipient);
     parts.push(
-      `<div style="text-align:${spec.ctaAlign};margin:2px 0 0">${renderButtonHtml(label, content.ctaUrl, t, content.ctaStyle ?? spec.cta, spec.ctaMaxWidth)}</div>`,
+      `<div style="text-align:${spec.ctaAlign};margin:${G.card.ctaMarginTop}px 0 0">${renderButtonHtml(label, content.ctaUrl, t, content.ctaStyle ?? spec.cta, spec.ctaMaxWidth)}</div>`,
     );
   }
   return parts.join("");
@@ -544,14 +471,15 @@ function renderCardInner(
   const side = content.imageSide ?? "top";
 
   if (!image || side === "top") {
-    return `${image ? `<div style="margin:0 0 16px">${image}</div>` : ""}${text}`;
+    return `${image ? `<div style="margin:0 0 ${G.card.imageMarginBottom}px">${image}</div>` : ""}${text}`;
   }
 
-  const imgPct = Math.min(80, Math.max(20, content.imageWidthPct ?? 45));
+  const imgPct = clampEmailImageWidthPct(content.imageWidthPct);
   const textPct = 100 - imgPct;
   const imgCell = `<td class="${CLS.col}" width="${imgPct}%" valign="top" style="width:${imgPct}%;vertical-align:top;padding:0">${image}</td>`;
-  const gap = `<td class="${CLS.colGap}" width="4%" style="width:4%;font-size:0">&nbsp;</td>`;
-  const textCell = `<td class="${CLS.col}" width="${textPct - 4}%" valign="top" style="width:${textPct - 4}%;vertical-align:top;padding:0">${text}</td>`;
+  const gapPct = EMAIL_CARD_IMAGE_GAP_PCT;
+  const gap = `<td class="${CLS.colGap}" width="${gapPct}%" style="width:${gapPct}%;font-size:0">&nbsp;</td>`;
+  const textCell = `<td class="${CLS.col}" width="${textPct - gapPct}%" valign="top" style="width:${textPct - gapPct}%;vertical-align:top;padding:0">${text}</td>`;
   const cells = side === "left" ? `${imgCell}${gap}${textCell}` : `${textCell}${gap}${imgCell}`;
   return `<table class="${CLS.colWrap}" role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border-collapse:collapse"><tr>${cells}</tr></table>`;
 }
@@ -567,7 +495,7 @@ function renderCardBlock(
   const inner = renderCardInner(block, spec, t, recipient);
 
   if (variant === "plain") {
-    return `<div class="${CLS.cardPlain}" style="margin:0 0 20px">${inner}</div>`;
+    return `<div class="${CLS.cardPlain}" style="margin:0 0 ${G.card.plainMarginBottom}px">${inner}</div>`;
   }
   const bg = fill ? `background:${fill};` : "";
   const border = spec.bordered ? `border:1px solid ${t.border};` : "";
@@ -579,7 +507,7 @@ function renderCardBlock(
         : variant === "testimonial"
           ? CLS.cardTestimonial
           : CLS.cardOutlined;
-  return `<div class="${cls}" style="${bg}${border}border-radius:${t.radius}px;padding:${spec.padY}px ${spec.padX}px;margin:0 0 16px">${inner}</div>`;
+  return `<div class="${cls}" style="${bg}${border}border-radius:${t.radius}px;padding:${spec.padY}px ${spec.padX}px;margin:0 0 ${G.card.marginBottom}px">${inner}</div>`;
 }
 
 /**
@@ -606,11 +534,11 @@ function renderColumnsBlock(
       const pad = spec.padY ? `padding:${spec.padY}px ${spec.padX}px;` : "";
       const radius = fill || spec.bordered ? `border-radius:${t.radius}px;` : "";
       const last = i === block.columns.length - 1;
-      const gutter = last ? "0" : "0 14px 0 0";
+      const gutter = last ? "0" : `0 ${G.columns.gutter}px 0 0`;
       return `<td class="${CLS.col}" width="${pct}%" valign="top" style="width:${pct}%;padding:${gutter};vertical-align:top"><div style="${bg}${border}${radius}${pad}">${renderCardInner(col, spec, t, recipient)}</div></td>`;
     })
     .join("");
-  return `<table class="${CLS.colWrap}" role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border-collapse:collapse;margin:0 0 16px"><tr>${cells}</tr></table>`;
+  return `<table class="${CLS.colWrap}" role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="width:100%;border-collapse:collapse;margin:0 0 ${G.columns.marginBottom}px"><tr>${cells}</tr></table>`;
 }
 
 /** Edge-to-edge image — the masthead and the section banners. Rendered with
@@ -626,16 +554,16 @@ function renderBleedImage(
   // pointing at a guessed path is how you ship broken images to real inboxes.
   if (!block.url) {
     const label = block.alt || "Add artwork from the image library";
-    return `<div style="background:${t.cream};border:1px dashed ${t.hairline};border-radius:${Math.max(0, t.radius - 12)}px;padding:22px 16px;text-align:center;font-family:${t.bodyFont};font-size:12px;letter-spacing:0.08em;text-transform:uppercase;color:${t.muted}">${esc(label)}</div>`;
+    return `<div style="background:${t.cream};border:1px dashed ${t.hairline};border-radius:${Math.max(0, t.radius - G.bleedImage.radiusInset)}px;padding:${G.bleedImage.placeholderPadY}px ${G.bleedImage.placeholderPadX}px;text-align:center;font-family:${t.bodyFont};font-size:${G.bleedImage.placeholderSize}px;letter-spacing:${G.tracking.placeholder};text-transform:uppercase;color:${t.muted}">${esc(label)}</div>`;
   }
-  const img = `<img src="${esc(safeImageSrc(block.url))}" alt="${esc(block.alt)}" width="600" style="display:block;width:100%;max-width:100%;border:0" />`;
+  const img = `<img src="${esc(safeImageSrc(block.url))}" alt="${esc(block.alt)}" width="${G.container.width}" style="display:block;width:100%;max-width:100%;border:0" />`;
   return block.href
     ? `<a href="${esc(safeEmailHref(block.href))}" style="display:block;text-decoration:none">${img}</a>`
     : img;
 }
 
 function renderHairline(t: EmailTheme): string {
-  return `<div class="${CLS.rule}" style="height:1px;line-height:1px;font-size:0;background:${t.hairline};border-radius:999px;margin:8px 0 16px">&nbsp;</div>`;
+  return `<div class="${CLS.rule}" style="height:${G.hairline.height}px;line-height:${G.hairline.height}px;font-size:0;background:${t.hairline};border-radius:999px;margin:${G.hairline.marginTop}px 0 ${G.hairline.marginBottom}px">&nbsp;</div>`;
 }
 
 /** The sign-off card: logo, nav line, links, and the required legal row. */
@@ -647,12 +575,12 @@ function renderFooterBlock(
   const parts: string[] = [];
   if (block.logoUrl) {
     parts.push(
-      `<div style="text-align:center;margin:0 0 14px"><img src="${esc(safeImageSrc(block.logoUrl))}" alt="${esc(block.logoAlt ?? "")}" style="display:inline-block;max-width:210px;width:100%;border:0" /></div>`,
+      `<div style="text-align:center;margin:0 0 ${G.footer.logoMarginBottom}px"><img src="${esc(safeImageSrc(block.logoUrl))}" alt="${esc(block.logoAlt ?? "")}" style="display:inline-block;max-width:${G.footer.logoMaxWidth}px;width:100%;border:0" /></div>`,
     );
   }
   if (block.navLine) {
     parts.push(
-      `<div style="text-align:center;margin:0 0 12px;font-family:${t.bodyFont};font-size:17px;font-weight:700;letter-spacing:${t.bodyTracking};color:${t.ink}">${esc(block.navLine)}</div>`,
+      `<div style="text-align:center;margin:0 0 ${G.footer.navMarginBottom}px;font-family:${t.bodyFont};font-size:${G.footer.navSize}px;font-weight:700;letter-spacing:${t.bodyTracking};color:${t.ink}">${esc(block.navLine)}</div>`,
     );
   }
   if (block.links?.length) {
@@ -663,24 +591,22 @@ function renderFooterBlock(
       )
       .join(`<span style="color:${t.muted}"> | </span>`);
     parts.push(
-      `<div style="text-align:center;margin:0 0 12px;font-family:${t.bodyFont};font-size:13px;color:${t.muted}">${links}</div>`,
+      `<div style="text-align:center;margin:0 0 ${G.footer.linksMarginBottom}px;font-family:${t.bodyFont};font-size:${G.footer.linksSize}px;color:${t.muted}">${links}</div>`,
     );
   }
   const address = opts.orgAddress ? `<div>${esc(opts.orgAddress)}</div>` : "";
   parts.push(
-    `<div class="${CLS.foot}" style="text-align:center;font-family:${t.bodyFont};font-size:12px;line-height:1.6;color:${t.muted}">${address}<div><a href="${esc(safeUnsubscribeHref(opts.unsubscribeUrl))}" style="color:${t.muted};text-decoration:underline">Unsubscribe</a> from all Public Worship emails.</div></div>`,
+    `<div class="${CLS.foot}" style="text-align:center;font-family:${t.bodyFont};font-size:${G.footer.legalSize}px;line-height:${G.footer.legalLine};color:${t.muted}">${address}<div><a href="${esc(safeUnsubscribeHref(opts.unsubscribeUrl))}" style="color:${t.muted};text-decoration:underline">Unsubscribe</a> from all Public Worship emails.</div></div>`,
   );
-  return `<div class="${CLS.cardFeature}" style="background:${t.cream};border-radius:${t.radius}px;padding:26px 24px;margin:0 0 8px">${parts.join("")}</div>`;
+  return `<div class="${CLS.cardFeature}" style="background:${t.cream};border-radius:${t.radius}px;padding:${G.footer.padY}px ${G.footer.padX}px;margin:0 0 ${G.footer.marginBottom}px">${parts.join("")}</div>`;
 }
 
 function renderDividerBlock(t: EmailTheme): string {
-  return `<hr class="${CLS.rule}" style="border:none;border-top:1px solid ${t.border};margin:20px 0" />`;
+  return `<hr class="${CLS.rule}" style="border:none;border-top:${G.divider.borderWidth}px solid ${t.border};margin:${G.divider.marginY}px 0" />`;
 }
 
-const SPACER_HEIGHTS: Record<"sm" | "md" | "lg", number> = { sm: 12, md: 24, lg: 40 };
-
 function renderSpacerBlock(block: Extract<EmailBlock, { kind: "spacer" }>): string {
-  const h = SPACER_HEIGHTS[block.size] ?? SPACER_HEIGHTS.md;
+  const h = EMAIL_SPACER_HEIGHTS[block.size] ?? EMAIL_SPACER_HEIGHTS.md;
   return `<div style="height:${h}px;line-height:${h}px">&nbsp;</div>`;
 }
 
@@ -693,7 +619,7 @@ function renderEyebrowBlock(
   // The glyph is separated by a real non-breaking space rather than padding —
   // Outlook drops inline padding on inline elements.
   const icon = block.icon ? `${esc(block.icon)}&nbsp;&nbsp;` : "";
-  return `<div class="${CLS.eyebrow}" style="margin:0 0 10px;font-family:${t.bodyFont};font-weight:700;letter-spacing:0.1em;font-size:12px;text-transform:uppercase;color:${t.accent}">${icon}${text}</div>`;
+  return `<div class="${CLS.eyebrow}" style="margin:0 0 ${G.eyebrow.marginBottom}px;font-family:${t.bodyFont};font-weight:700;letter-spacing:${G.tracking.eyebrow};font-size:${G.eyebrow.size}px;text-transform:uppercase;color:${t.accent}">${icon}${text}</div>`;
 }
 
 function renderQuoteBlock(
@@ -703,9 +629,9 @@ function renderQuoteBlock(
 ): string {
   const text = substituteMergeTagsHtml(esc(block.text), recipient);
   const attribution = block.attribution
-    ? `<div class="${CLS.quoteAttr}" style="margin:10px 0 0;font-family:${t.bodyFont};font-size:13px;font-weight:600;letter-spacing:0.04em;color:${t.muted}">— ${substituteMergeTagsHtml(esc(block.attribution), recipient)}</div>`
+    ? `<div class="${CLS.quoteAttr}" style="margin:${G.quote.attributionMarginTop}px 0 0;font-family:${t.bodyFont};font-size:${G.quote.attributionSize}px;font-weight:600;letter-spacing:${G.tracking.quoteAttribution};color:${t.muted}">— ${substituteMergeTagsHtml(esc(block.attribution), recipient)}</div>`
     : "";
-  return `<blockquote class="${CLS.quote}" style="margin:0 0 20px;padding:4px 0 4px 18px;border-left:3px solid ${t.accent}"><div class="${CLS.quoteText}" style="margin:0;font-family:${t.headingFont};font-size:20px;line-height:1.35;letter-spacing:${t.bodyTracking};font-style:italic;color:${t.ink}">${text}</div>${attribution}</blockquote>`;
+  return `<blockquote class="${CLS.quote}" style="margin:0 0 ${G.quote.marginBottom}px;padding:${G.quote.padY}px 0 ${G.quote.padY}px ${G.quote.padLeft}px;border-left:${G.quote.barWidth}px solid ${t.accent}"><div class="${CLS.quoteText}" style="margin:0;font-family:${t.headingFont};font-size:${G.quote.textSize}px;line-height:${G.quote.textLine};letter-spacing:${t.bodyTracking};font-style:italic;color:${t.ink}">${text}</div>${attribution}</blockquote>`;
 }
 
 /**
@@ -734,7 +660,7 @@ function renderPollBlock(
       // input where they silently wouldn't work — so a raw `{{firstName}}`
       // would have shipped to real inboxes.
       const label = substituteMergeTagsHtml(esc(opt.label), recipient);
-      const style = `display:block;margin:0 0 8px;padding:11px 16px;border:1px solid ${t.border};border-radius:999px;font-family:${t.bodyFont};font-size:14px;font-weight:600;color:${t.ink};text-decoration:none;text-align:center`;
+      const style = `display:block;margin:0 0 ${G.poll.optionMarginBottom}px;padding:${G.poll.optionPadY}px ${G.poll.optionPadX}px;border:${G.poll.optionBorderWidth}px solid ${t.border};border-radius:${G.poll.optionRadius}px;font-family:${t.bodyFont};font-size:${G.poll.optionSize}px;font-weight:600;color:${t.ink};text-decoration:none;text-align:center`;
       if (!opts.pollVoteUrl) {
         return `<span class="${CLS.pollOpt}" style="${style}">${label}</span>`;
       }
@@ -742,7 +668,7 @@ function renderPollBlock(
       return `<a class="${CLS.pollOpt}" href="${href}" style="${style}">${label}</a>`;
     })
     .join("");
-  return `<div style="margin:0 0 20px"><div class="${CLS.heading}" style="margin:0 0 12px;font-family:${t.headingFont};font-size:18px;font-weight:700;line-height:1.35;color:${t.ink}">${question}</div>${optionHtml}</div>`;
+  return `<div style="margin:0 0 ${G.poll.marginBottom}px"><div class="${CLS.heading}" style="margin:0 0 ${G.poll.questionMarginBottom}px;font-family:${t.headingFont};font-size:${G.poll.questionSize}px;font-weight:700;line-height:${G.poll.questionLine};color:${t.ink}">${question}</div>${optionHtml}</div>`;
 }
 
 /** Render one block to HTML. Unknown `kind` values render nothing — forward
@@ -902,10 +828,10 @@ ${darkRules(d).map(([sel, decls]) => `[data-ogsc] ${sel} { ${decls} }`).join("\n
  * read as a mistake rather than a design.
  */
 function blockPadding(block: EmailBlock): string {
-  if (block.kind !== "bleed_image") return "0 24px";
+  if (block.kind !== "bleed_image") return `0 ${G.container.gutterX}px`;
   // An unfilled slot keeps the normal inset so the dashed band reads as a
   // placeholder inside the layout rather than a full-width grey stripe.
-  return block.inset || !block.url ? "0 24px" : "0";
+  return block.inset || !block.url ? `0 ${G.container.gutterX}px` : "0";
 }
 
 /**
@@ -937,7 +863,7 @@ export function renderCampaignEmail(
     ? `<div style="display:none;max-height:0;overflow:hidden;opacity:0;mso-hide:all">${esc(opts.subjectPreview)}</div>`
     : "";
   const wordmark = t.wordmark
-    ? `<tr><td class="${CLS.mark}" style="padding:18px 24px 6px;text-align:center;font-family:${t.bodyFont};font-weight:700;letter-spacing:0.12em;font-size:12px;color:${t.accent}">${esc(t.wordmark)}</td></tr>`
+    ? `<tr><td class="${CLS.mark}" style="padding:${G.wordmark.padTop}px ${G.wordmark.padX}px ${G.wordmark.padBottom}px;text-align:center;font-family:${t.bodyFont};font-weight:700;letter-spacing:${G.tracking.wordmark};font-size:${G.wordmark.size}px;color:${t.accent}">${esc(t.wordmark)}</td></tr>`
     : "";
 
   // The unsubscribe link is REQUIRED on every send. A document carrying a
@@ -947,7 +873,7 @@ export function renderCampaignEmail(
   const address = opts.orgAddress ? `<div>${esc(opts.orgAddress)}</div>` : "";
   const fallbackFooter = hasFooter
     ? ""
-    : `<tr><td class="${CLS.foot}" style="padding:8px 24px 24px;text-align:center;font-family:${t.bodyFont};font-size:12px;line-height:1.6;color:${t.muted}">${address}<div>Sent with love by Public Worship · Chapter OS</div><div style="padding-top:6px"><a href="${esc(safeUnsubscribeHref(opts.unsubscribeUrl))}" style="color:${t.muted};text-decoration:underline">Unsubscribe from all Public Worship emails</a></div></td></tr>`;
+    : `<tr><td class="${CLS.foot}" style="padding:${G.fallbackFooter.padTop}px ${G.fallbackFooter.padX}px ${G.fallbackFooter.padBottom}px;text-align:center;font-family:${t.bodyFont};font-size:${G.fallbackFooter.size}px;line-height:${G.fallbackFooter.line};color:${t.muted}">${address}<div>Sent with love by Public Worship · Chapter OS</div><div style="padding-top:6px"><a href="${esc(safeUnsubscribeHref(opts.unsubscribeUrl))}" style="color:${t.muted};text-decoration:underline">Unsubscribe from all Public Worship emails</a></div></td></tr>`;
 
   return `<!doctype html>
 <html lang="en">
@@ -962,7 +888,7 @@ export function renderCampaignEmail(
 <body style="margin:0;padding:0;background:${t.canvas}">
 ${preview}<table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" class="${CLS.wrap}" style="width:100%;border-collapse:collapse;background:${t.canvas};padding:0">
   <tr><td align="center" style="padding:0">
-    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="600" class="${CLS.card}" style="width:600px;max-width:600px;border-collapse:collapse;background:${t.surface};font-family:${t.bodyFont};color:${t.ink}">
+    <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="${G.container.width}" class="${CLS.card}" style="width:${G.container.width}px;max-width:${G.container.width}px;border-collapse:collapse;background:${t.surface};font-family:${t.bodyFont};color:${t.ink}">
       ${wordmark}
       ${rows}
       ${fallbackFooter}
@@ -975,21 +901,73 @@ ${preview}<table role="presentation" cellpadding="0" cellspacing="0" border="0" 
 
 // ── Block → plaintext ────────────────────────────────────────────────────
 
-function stripMarkdownSubset(markdown: string): string {
-  return markdown
-    .split(/\r?\n/)
-    .map((line) => {
-      const trimmed = line.trim();
-      return trimmed.startsWith("- ") ? `• ${trimmed.slice(2)}` : trimmed;
+/** One inline tree, flattened to plaintext: marks disappear, and a link keeps
+ *  its address alongside the label because a plaintext part has nowhere else
+ *  to put it. */
+function inlineMarkdownText(nodes: MarkdownInlineNode[]): string {
+  return nodes
+    .map((node) => {
+      if (node.kind === "text") return node.text;
+      const inner = inlineMarkdownText(node.children);
+      return node.kind === "link" ? `${inner} (${node.href})` : inner;
     })
-    .join("\n")
-    // Same link/bold fixes as `inlineMarkdown`'s `LINK_RE` / bold pass —
-    // parenthesis-nesting and non-greedy bold, so plaintext strips the exact
-    // same markdown the HTML render understands (a Wikipedia-style URL or a
-    // `**bold *italic* text**` run shouldn't come out mangled here either).
-    .replace(LINK_RE, "$1 ($2)")
-    .replace(/\*\*(.+?)\*\*/g, "$1")
-    .replace(/\*([^*]+)\*/g, "$1");
+    .join("");
+}
+
+/**
+ * Strip the markdown subset for the plaintext part.
+ *
+ * Line structure is preserved (a `- ` line becomes a bullet) rather than
+ * reflowed into paragraphs the way `parseMarkdownSubset` does for the visual
+ * renderers — a plaintext email has no other way to show shape.
+ *
+ * What is NOT preserved is line-by-line parsing. The two alternatives of one
+ * email have to agree about what is markup, so the unit of parsing here is
+ * the same BLOCK `parseMarkdownSubset` gives the HTML side — one paragraph,
+ * or one run of `- ` lines — with its lines still separated by newlines
+ * instead of joined by spaces.
+ *
+ * Both halves of that matter. Parsing one line at a time left the raw
+ * `[the full\nstory](https://…)` sitting in the text/plain part of an email
+ * whose text/html rendered it as a link. Parsing the whole body at once
+ * instead makes the opposite mistake: a stray `**` would reach across the
+ * blank line between two paragraphs, which the HTML side would never do.
+ */
+function stripMarkdownSubset(markdown: string): string {
+  const out: string[] = [];
+  let block: string[] = [];
+  let blockIsList = false;
+
+  const flush = () => {
+    if (block.length === 0) return;
+    // A list's ITEMS are parsed one at a time and a paragraph's lines all
+    // together — mirroring `parseMarkdownSubset` exactly, so markup can reach
+    // across a soft wrap in both parts of the email and across a list-item
+    // boundary in neither.
+    out.push(
+      blockIsList
+        ? block.map((item) => inlineMarkdownText(parseInlineMarkdown(item))).join("\n")
+        : inlineMarkdownText(parseInlineMarkdown(block.join("\n"))),
+    );
+    block = [];
+  };
+
+  for (const rawLine of markdown.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line === "") {
+      flush();
+      out.push("");
+      continue;
+    }
+    const isList = line.startsWith("- ");
+    // A list starting or ending closes the block before it, exactly as it
+    // does for the visual renderers.
+    if (isList !== blockIsList) flush();
+    blockIsList = isList;
+    block.push(isList ? `• ${line.slice(2)}` : line);
+  }
+  flush();
+  return out.join("\n");
 }
 
 /** Plaintext for one card's parts — shared by `card` and `columns` for the

@@ -6,6 +6,14 @@
 module.exports = {
   testEnvironment: "node",
   testMatch: ["**/__tests__/**/*.test.js", "**/*.test.ts"],
+  // `node_modules` is untransformed by default, and react-native ships
+  // untranspiled ESM + Flow. Transforming it lets a colocated test import a
+  // single RN internal to check a value against RN's OWN implementation
+  // instead of a transcription of it — which is how the designer canvas's
+  // native `transformOrigin` tuples are pinned (`canvas/canvasStyles.test.ts`).
+  // Jest here is a node environment: this makes RN's pure helpers importable,
+  // NOT the component runtime.
+  transformIgnorePatterns: ["node_modules/(?!(react-native)/)"],
   moduleNameMapper: {
     // babel-preset-expo injects `import "expo/virtual/env"` into any app module
     // reading an EXPO_PUBLIC_* var; the real module is untransformed ESM, so map
