@@ -101,9 +101,10 @@ template, recognisable to her.** We have failed this test once; it is the test.
 
 ## Platform
 
-Editing is **web** (contenteditable). Native: read-only preview + meta
-editing in v1; a WebView-hosted editor with a **bundled** asset (not the
-markdown editor's CDN-load gap) is the follow-up stage if wanted.
+**Founder decision (2026-07-29): "it's okay to only allow email editing in
+the browser and not on mobile."** Editing is web, permanently — not as a v1
+compromise. Native gets read-only preview + meta editing and a pointer to the
+web app. The WebView-hosted-editor follow-up stage is dead; do not build it.
 
 ## Workstreams
 
