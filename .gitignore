@@ -46,3 +46,4 @@ Thumbs.db
 # ...and shared repo skills, which agents self-improve across runs
 !.claude/skills/
 .agents/
+__adv__/
