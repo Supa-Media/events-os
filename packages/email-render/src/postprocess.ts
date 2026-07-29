@@ -45,3 +45,20 @@ export function overrideColorSchemeMeta(html: string): string {
     "$1light dark$2",
   );
 }
+
+/**
+ * WS1 addition (compliance/dark shell, `renderEmail.ts`): insert `insert`
+ * immediately BEFORE the FIRST `</head>` in `html` — the dark-mode `<style>`
+ * block's landing spot, alongside the meta-tag override above. `indexOf`
+ * (not `lastIndexOf`, unlike `injectBeforeBodyClose`): a document has
+ * exactly one `<head>`, and nothing legitimate in maily's own `<head>`
+ * output (fonts, meta tags, its own `<style>`) contains the literal string
+ * `</head>`, so the first occurrence IS the real one — using `lastIndexOf`
+ * here would only matter if something upstream of it could inject a fake
+ * `</head>` substring, which nothing in this pipeline does.
+ */
+export function injectBeforeHeadClose(html: string, insert: string): string {
+  const idx = html.indexOf("</head>");
+  if (idx === -1) return html + insert;
+  return html.slice(0, idx) + insert + html.slice(idx);
+}

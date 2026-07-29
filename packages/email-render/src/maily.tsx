@@ -60,6 +60,23 @@
  * `import type React from 'react'` below) — `@types/react@19` dropped the
  * global ambient `JSX` namespace upstream's source relies on; see
  * `meta.tsx`'s matching deviation note.
+ *
+ * WS1 (Public Worship node pack, 2026-07-29) additions on top of the above:
+ *   - A THIRD upstream bug, found while building `pwHeading` alongside the
+ *     stock `heading()` method: see the "DEVIATION FROM UPSTREAM" comment at
+ *     `heading()` below — an out-of-range `level` attr made a lookup
+ *     destructure `undefined` and throw.
+ *   - Four new render methods (`pwHeading`, `pwParagraph`, `pwBleedImage`,
+ *     `pwPoll`) and two extended existing ones (`textStyle` mark gains
+ *     `letterSpacing`; `button` gains `maxWidth`) — the gaps recon found
+ *     stock maily has no way to express (see the plan doc's "The Public
+ *     Worship node pack"). `nodeTypes.ts`'s `MAILY_DISPATCHED_NODE_TYPES`
+ *     is the authoritative list of every dispatchable type, kept in
+ *     lockstep with `@events-os/shared`'s `EMAIL_TIPTAP_NODE_TYPES` by
+ *     `nodeTypes.drift.test.ts`.
+ *   - `markup()` was restructured (see `renderSegmentedBody`'s doc) so a
+ *     `pwBleedImage` node can render truly edge-to-edge without a negative-
+ *     margin CSS trick — everything else renders byte-identical to before.
  */
 import { Fragment, type CSSProperties } from 'react';
 import type React from 'react';
@@ -93,6 +110,14 @@ import {
 // union structurally.
 import { render as reactEmailRenderAsync } from '@react-email/render';
 import type { JSONContent } from '@tiptap/core';
+// WS1 addition (not upstream): defense-in-depth URL sanitization for the
+// PW node pack's `pwBleedImage`, the same "checked at write-gate AND at
+// render" pattern `emailRender.ts`'s `safeEmailHref`/`safeImageSrc` already
+// use for the legacy block renderer — `validateTiptapEmailDoc`
+// (`@events-os/shared`) is the write gate; this is the render-time half,
+// covering any doc written before that gate existed or by a path that
+// bypassed it.
+import { isAllowedImageUrl, isAllowedLinkUrl } from '@events-os/shared';
 import { deepMerge, generateKey } from './utils';
 import type { MetaDescriptors } from './meta';
 import { meta } from './meta';
@@ -130,6 +155,13 @@ const antialiased: CSSProperties = {
 
 const allowedHeadings = ['h1', 'h2', 'h3'] as const;
 type AllowedHeadings = (typeof allowedHeadings)[number];
+
+// WS1 addition: the numeric levels `headings` below actually has an entry
+// for, used to clamp `heading()`/`pwHeading()`'s `attrs.level` before it
+// becomes a lookup key — see the "DEVIATION FROM UPSTREAM" note on
+// `heading()`.
+type AllowedHeadingLevel = 1 | 2 | 3;
+const HEADING_LEVEL_KEYS: ReadonlySet<number> = new Set([1, 2, 3]);
 
 const headings: Record<AllowedHeadings, CSSProperties> = {
   h1: {
@@ -556,7 +588,16 @@ export class Maily {
    */
   children() {
     const nodes = this.content.content || [];
-    const jsxNodes = nodes.map((node, index) => {
+    return this.renderTopLevelRun(nodes);
+  }
+
+  // WS1 addition: factored out of the old `children()` body so `markup()`
+  // can call it per-SEGMENT (see `renderSegmentedBody` below) while
+  // `children()` itself keeps its exact original behavior — one flat run
+  // over every top-level node — for the "render in a custom component"
+  // callers its own doc describes.
+  private renderTopLevelRun(nodes: JSONContent[]) {
+    return nodes.map((node, index) => {
       const nodeOptions: NodeOptions = {
         prev: nodes[index - 1],
         next: nodes[index + 1],
@@ -570,8 +611,76 @@ export class Maily {
 
       return <Fragment key={generateKey()}>{component}</Fragment>;
     });
+  }
 
-    return jsxNodes;
+  /**
+   * WS1 addition: top-level nodes, split into SEGMENTS before `markup()`
+   * places them — consecutive ordinary nodes share one themed `<Container>`
+   * (upstream's only behavior), and each `pwBleedImage` node stands ALONE as
+   * its own full-width `<table>` row rendered as a SIBLING of that
+   * Container rather than a child of it.
+   *
+   * WHY (plan doc: "bleed image … emit the image OUTSIDE the padded
+   * container … table row with full-width cell, not CSS tricks"):
+   * `theme.container`'s horizontal padding (`DEFAULT_RENDERER_THEME.container
+   * .paddingLeft/Right`) is a CSS style applied to the single shared
+   * `<table>` react-email's `Container` renders (see
+   * `@react-email/container`'s `container.tsx` — the padding lands on the
+   * `<table>` tag itself, not on a per-child `<td>`), so nothing nested
+   * INSIDE that one Container can locally opt out of it without a negative
+   * margin cancelling the ancestor's own padding — exactly the CSS trick
+   * the plan doc rules out (and one Outlook's Word engine tolerates poorly
+   * regardless). Pulling the bleed node OUT of the Container instead gives
+   * it a genuine `<table width="100%">` row with a zero-padding `<td>` — no
+   * margin trick anywhere — at the cost of possibly more than one Container
+   * per document instead of exactly one (invisible in the rendered output:
+   * every Container shares the identical theme style, so a document with NO
+   * `pwBleedImage` node produces byte-identical markup to before this
+   * change — one segment, one Container, same props).
+   */
+  private renderSegmentedBody(): React.JSX.Element[] {
+    const nodes = this.content.content || [];
+    const containerStyles = this.config.theme?.container;
+
+    type Segment = { bleed: boolean; nodes: JSONContent[] };
+    const segments: Segment[] = [];
+    for (const node of nodes) {
+      const isBleed = node.type === 'pwBleedImage';
+      const last = segments[segments.length - 1];
+      if (!isBleed && last && !last.bleed) {
+        last.nodes.push(node);
+      } else {
+        segments.push({ bleed: isBleed, nodes: [node] });
+      }
+    }
+
+    return segments.map((seg) => {
+      const rendered = this.renderTopLevelRun(seg.nodes);
+      if (seg.bleed) {
+        return <Fragment key={generateKey()}>{rendered}</Fragment>;
+      }
+      return (
+        <Container
+          key={generateKey()}
+          // `pw-container` is a WS1 addition (not upstream): maily's own
+          // Container carries no class/id hook at all, so the compliance
+          // shell's dark-mode `<style>` block (`renderEmail.ts`) has nothing
+          // stable to target for the container's own background without
+          // this. Purely additive — an unstyled class name changes nothing
+          // about the light rendering.
+          className="pw-container"
+          style={{
+            width: '100%',
+            marginLeft: 'auto',
+            marginRight: 'auto',
+            borderStyle: 'solid',
+            ...containerStyles,
+          }}
+        >
+          {rendered}
+        </Container>
+      );
+    });
   }
 
   /**
@@ -579,12 +688,9 @@ export class Maily {
    * and return the raw React Tree.
    */
   markup() {
-    const jsxNodes = this.children();
-
     const { preview } = this.config;
     const tags = meta(this.meta);
     const htmlProps = this.htmlProps;
-    const containerStyles = this.config.theme?.container;
     const fontOptions: FontProps = {
       ...(this.config.theme?.font || DEFAULT_FONT),
       fontStyle: 'normal',
@@ -597,6 +703,7 @@ export class Maily {
     };
 
     const preheader = preview ? this.preheader.render(preview) : null;
+    const body = this.renderSegmentedBody();
 
     const markup = (
       <Html {...htmlProps}>
@@ -612,17 +719,7 @@ export class Maily {
         </Head>
         <Body style={bodyStyles}>
           {preheader ? <Preview>{preheader}</Preview> : null}
-          <Container
-            style={{
-              width: '100%',
-              marginLeft: 'auto',
-              marginRight: 'auto',
-              borderStyle: 'solid',
-              ...containerStyles,
-            }}
-          >
-            {jsxNodes}
-          </Container>
+          {body}
           {this.openTrackingPixel ? (
             <Img
               alt=""
@@ -833,12 +930,18 @@ export class Maily {
 
   private textStyle(mark: MarkType, text: React.JSX.Element): React.JSX.Element {
     const { attrs } = mark;
-    const { color = this.config.theme?.colors?.paragraph } = attrs || {};
+    const { color = this.config.theme?.colors?.paragraph, letterSpacing } = attrs || {};
 
     return (
       <span
         style={{
           color,
+          // WS1 addition (not upstream): maily has NO tracking concept
+          // anywhere (see the plan doc's recon) — `letterSpacing` is only
+          // ever applied when the mark actually carries a string value, so
+          // every existing document (never setting it) renders identically
+          // to before.
+          ...(typeof letterSpacing === 'string' && letterSpacing ? { letterSpacing } : {}),
         }}
       >
         {text}
@@ -909,7 +1012,23 @@ export class Maily {
   private heading(node: JSONContent, options?: NodeOptions): React.JSX.Element {
     const { attrs } = node;
 
-    const level = `h${Number(attrs?.level) || 1}`;
+    // DEVIATION FROM UPSTREAM (WS1, 2026-07-29): upstream's `level` here is
+    // `\`h${Number(attrs?.level) || 1}\`` with no bound on the result —
+    // `attrs.level = 4` (or any number outside 1-3, including negatives and
+    // non-integers) produces `"h4"`, and `headings['h4']` below is
+    // `undefined`. Destructuring `{ fontSize, lineHeight, fontWeight }` from
+    // `undefined` THROWS, uncaught, inside a per-recipient send loop — the
+    // third upstream bug found while vendoring (see the two "DEVIATION FROM
+    // UPSTREAM" notes on `config`/`meta` above for the first two). Clamped
+    // to the three levels this class actually has a size for; the write
+    // gate (`validateTiptapEmailDoc`'s `headingLevelIsSafe`, mirroring this
+    // exact coercion) rejects an out-of-range level before it ever reaches
+    // here, but this clamp is what makes that correspondence TRUE rather
+    // than merely intended.
+    const rawLevel = Number(attrs?.level) || 1;
+    const level = HEADING_LEVEL_KEYS.has(rawLevel as AllowedHeadingLevel)
+      ? (`h${rawLevel}` as AllowedHeadings)
+      : 'h1';
     const textDirection = attrs?.textDirection || 'ltr';
     const isRtl = textDirection === 'rtl';
     const defaultAlignment = isRtl ? 'right' : 'left';
@@ -918,8 +1037,7 @@ export class Maily {
       node,
       options
     );
-    const { fontSize, lineHeight, fontWeight } =
-      headings[level as AllowedHeadings];
+    const { fontSize, lineHeight, fontWeight } = headings[level];
 
     const show = this.shouldShow(node, options);
     if (!show) {
@@ -928,7 +1046,6 @@ export class Maily {
 
     return (
       <Heading
-        // @ts-expect-error - `this` is not assignable to type 'never'
         as={level}
         style={{
           ...(alignment !== 'left' ? { textAlign: alignment } : {}),
@@ -947,6 +1064,131 @@ export class Maily {
           parent: node,
         })}
       </Heading>
+    );
+  }
+
+  /**
+   * `pwHeading` — the Public Worship node pack's free-form heading (see the
+   * plan doc's recon: stock `heading` is hardcoded to three size/weight
+   * triples, "the typographic finish is not" expressible in stock nodes).
+   * `fontSize`/`lineHeight`/`letterSpacing`/`color` are free; any left unset
+   * falls back to the SAME `headings[level]` triple `heading()` uses, so an
+   * un-customized `pwHeading` renders identically to a stock heading of that
+   * level. `level` gets the identical throw-guard as `heading()` above —
+   * same bug, same fix, because this shares that lookup table.
+   */
+  private pwHeading(node: JSONContent, options?: NodeOptions): React.JSX.Element {
+    const { attrs } = node;
+
+    const rawLevel = Number(attrs?.level) || 2;
+    const level = HEADING_LEVEL_KEYS.has(rawLevel as AllowedHeadingLevel)
+      ? (`h${rawLevel}` as AllowedHeadings)
+      : 'h2';
+    const defaults = headings[level];
+
+    const textDirection = attrs?.textDirection || 'ltr';
+    const isRtl = textDirection === 'rtl';
+    const defaultAlignment = isRtl ? 'right' : 'left';
+    const alignment = attrs?.textAlign || defaultAlignment;
+    const { shouldRemoveBottomMargin } = this.getMarginOverrideConditions(
+      node,
+      options
+    );
+
+    const show = this.shouldShow(node, options);
+    if (!show) {
+      return <></>;
+    }
+
+    const fontSize =
+      typeof attrs?.fontSize === 'number' ? `${attrs.fontSize}px` : defaults.fontSize;
+    const lineHeight =
+      attrs?.lineHeight === undefined || attrs?.lineHeight === null
+        ? defaults.lineHeight
+        : typeof attrs.lineHeight === 'number'
+          ? `${attrs.lineHeight}px`
+          : String(attrs.lineHeight);
+    const letterSpacing =
+      typeof attrs?.letterSpacing === 'string' ? attrs.letterSpacing : undefined;
+    const color =
+      typeof attrs?.color === 'string' ? attrs.color : this.config.theme?.colors?.heading;
+
+    return (
+      <Heading
+        as={level}
+        style={{
+          ...(alignment !== 'left' ? { textAlign: alignment } : {}),
+          ...(isRtl ? { direction: textDirection } : {}),
+          color,
+          fontSize,
+          lineHeight,
+          ...(letterSpacing ? { letterSpacing } : {}),
+          fontWeight: defaults.fontWeight,
+        }}
+        mb={shouldRemoveBottomMargin ? 0 : 12}
+        mt={0}
+        mx={0}
+      >
+        {this.getMappedContent(node, {
+          ...options,
+          parent: node,
+        })}
+      </Heading>
+    );
+  }
+
+  /**
+   * `pwParagraph` — a paragraph with its OWN `fontSize`/`lineHeight`,
+   * overriding the document-global `theme.fontSize.paragraph` (see the plan
+   * doc's recon: "paragraph size is one global value per document" —
+   * PW's testimonial-at-20px-in-a-16px-body case). Unset falls back to the
+   * theme value, i.e. identical to a stock `paragraph`.
+   */
+  private pwParagraph(node: JSONContent, options?: NodeOptions): React.JSX.Element {
+    const { attrs } = node;
+    const alignment = attrs?.textAlign || 'left';
+    const textDirection = attrs?.textDirection || 'ltr';
+    const { isParentListItem, shouldRemoveBottomMargin } =
+      this.getMarginOverrideConditions(node, options);
+
+    const show = this.shouldShow(node, options);
+    if (!show) {
+      return <></>;
+    }
+
+    const marginBottom = isParentListItem || shouldRemoveBottomMargin ? 0 : 20;
+    const fontSize =
+      typeof attrs?.fontSize === 'number'
+        ? `${attrs.fontSize}px`
+        : this.config.theme?.fontSize?.paragraph?.size;
+    const lineHeight =
+      attrs?.lineHeight === undefined || attrs?.lineHeight === null
+        ? this.config.theme?.fontSize?.paragraph?.lineHeight
+        : typeof attrs.lineHeight === 'number'
+          ? `${attrs.lineHeight}px`
+          : String(attrs.lineHeight);
+
+    return (
+      <Text
+        style={{
+          ...(alignment !== 'left' ? { textAlign: alignment } : {}),
+          ...(textDirection !== 'ltr' ? { direction: textDirection } : {}),
+          ...antialiased,
+          fontSize,
+          lineHeight,
+          color: this.config.theme?.colors?.paragraph,
+          margin: `0 0 ${marginBottom}px 0`,
+        }}
+      >
+        {node.content ? (
+          this.getMappedContent(node, {
+            ...options,
+            parent: node,
+          })
+        ) : (
+          <>&nbsp;</>
+        )}
+      </Text>
     );
   }
 
@@ -1109,6 +1351,11 @@ export class Maily {
       paddingRight: _paddingRight,
       paddingBottom: _paddingBottom,
       paddingLeft: _paddingLeft,
+      // WS1 addition (not upstream): stock maily buttons cannot be width-
+      // capped (see the plan doc's recon) — a long label stretches the
+      // button edge-to-edge inside its `Container`. `maxWidth` (px) is
+      // OPTIONAL; unset renders byte-identical to before.
+      maxWidth: _maxWidth,
     } = attrs || {};
 
     const buttonColor = _buttonColor || buttonTheme?.backgroundColor;
@@ -1148,6 +1395,19 @@ export class Maily {
     paddingTop += 2;
     paddingBottom += 2;
 
+    // A positive, finite pixel cap: a button with `maxWidth` set fills up to
+    // that width and no further (`width: 100%` + `maxWidth`, the same "cap
+    // an inline-block" technique used elsewhere in this file's marks/cards),
+    // instead of stretching to the Container's full width. Unset (or a bad
+    // value) is exactly today's behavior.
+    const maxWidthNum = Number(_maxWidth);
+    const maxWidth =
+      typeof _maxWidth === 'number' || typeof _maxWidth === 'string'
+        ? Number.isFinite(maxWidthNum) && maxWidthNum > 0
+          ? maxWidthNum
+          : undefined
+        : undefined;
+
     return (
       <Container
         style={{
@@ -1170,6 +1430,8 @@ export class Maily {
             fontWeight: 500,
             borderRadius: radius,
             padding: `${paddingTop}px ${paddingRight}px ${paddingBottom}px ${paddingLeft}px`,
+            boxSizing: 'border-box',
+            ...(maxWidth ? { maxWidth: `${maxWidth}px`, width: '100%' } : {}),
           }}
         >
           {text}
@@ -1924,6 +2186,196 @@ export class Maily {
       >
         {image}
       </a>
+    );
+  }
+
+  // ── WS1: The Public Worship node pack (continued) ─────────────────────────
+  // `pwHeading`/`pwParagraph` (free typography) and the `textStyle`/`button`
+  // extensions (letter-spacing, max-width) live inline next to the stock
+  // methods they parallel, above. The two entirely-new SHAPES — an
+  // edge-to-edge image and a poll — are grouped here instead.
+
+  /**
+   * `pwBleedImage` — an edge-to-edge image with NO container gutter (see the
+   * plan doc's recon: stock maily has no such node; every stock `image` sits
+   * inside the theme's container padding). Placed as its own top-level
+   * SEGMENT by `renderSegmentedBody` (see that method's doc for why) so it
+   * renders OUTSIDE the theme-padded `<Container>` instead of fighting it
+   * with a negative margin — its own `<table>` therefore supplies zero
+   * padding itself (`<td style={{ padding: 0 }}>`), capped at the theme's
+   * own container `maxWidth` so it lines up with every other row's width.
+   *
+   * `src`/`href` are re-checked here (`isAllowedImageUrl`/`isAllowedLinkUrl`,
+   * `@events-os/shared`) as defense-in-depth on top of the write gate
+   * (`validateTiptapEmailDoc`) — see this file's import comment for why.
+   */
+  private pwBleedImage(node: JSONContent, options?: NodeOptions): React.JSX.Element {
+    const { attrs } = node;
+    let { src, isSrcVariable, alt, href } = attrs || {};
+
+    const shouldShow = this.shouldShow(node, options);
+    if (!shouldShow) {
+      return <></>;
+    }
+
+    src = isSrcVariable ? this.variableUrlValue(src, options) : src;
+    href = href ? this.linkValues.get(href) || href : href;
+
+    if (typeof src !== 'string' || !isAllowedImageUrl(src)) {
+      return <></>;
+    }
+    const safeHref = typeof href === 'string' && isAllowedLinkUrl(href) ? href : undefined;
+
+    const { shouldRemoveBottomMargin } = this.getMarginOverrideConditions(
+      node,
+      options
+    );
+    const containerMaxWidth = this.config.theme?.container?.maxWidth;
+    const maxWidth = typeof containerMaxWidth === 'string' ? containerMaxWidth : '600px';
+
+    const image = (
+      <Img
+        alt={alt || ''}
+        src={src}
+        style={{
+          width: '100%',
+          maxWidth: '100%',
+          height: 'auto',
+          display: 'block',
+          border: 'none',
+          outline: 'none',
+        }}
+      />
+    );
+
+    return (
+      <table
+        align="center"
+        width="100%"
+        border={0}
+        cellPadding="0"
+        cellSpacing="0"
+        role="presentation"
+        style={{
+          width: '100%',
+          maxWidth,
+          marginLeft: 'auto',
+          marginRight: 'auto',
+          marginTop: 0,
+          marginBottom: shouldRemoveBottomMargin ? 0 : 32,
+        }}
+      >
+        <tbody>
+          <tr style={{ width: '100%' }}>
+            <td style={{ padding: 0 }}>
+              {safeHref ? (
+                <a
+                  href={safeHref}
+                  rel="noopener noreferrer"
+                  style={{ display: 'block', textDecoration: 'none' }}
+                  target="_blank"
+                >
+                  {image}
+                </a>
+              ) : (
+                image
+              )}
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    );
+  }
+
+  /**
+   * `pwPoll` — question + option rows, each option a link/pill (see the plan
+   * doc's recon: stock maily has no poll concept). The hrefs are per-
+   * RECIPIENT vote URLs resolved through the SAME variable machinery every
+   * other node in this class uses (`setVariableValues` before `.render()`),
+   * keyed `pw_poll_<nodeId>_<optionId>_url` — mirroring
+   * `packages/shared/src/emailRender.ts`'s `RenderEmailOptions.pollVoteUrl`
+   * semantics exactly: the link lands on a CONFIRM page, never records a
+   * vote on GET (Apple Mail Privacy Protection and corporate link scanners
+   * fetch every href in a message before a human ever sees it — that GET/
+   * POST split is the send loop's job, not this renderer's; this method only
+   * emits whatever URL it's given). With no matching variable set for an
+   * option (composer preview, `sendTest` — no recipient token to key a vote
+   * to), that option renders as an inert, unclickable pill instead of a link
+   * to a URL that would 404 — the same graceful-degradation the old
+   * renderer's `renderPollBlock` uses.
+   */
+  private pwPoll(node: JSONContent, options?: NodeOptions): React.JSX.Element {
+    const { attrs } = node;
+    const pollId = typeof attrs?.id === 'string' ? attrs.id : '';
+    const question = typeof attrs?.question === 'string' ? attrs.question : '';
+    const pollOptions: { id?: unknown; label?: unknown }[] = Array.isArray(attrs?.options)
+      ? attrs.options
+      : [];
+
+    const shouldShow = this.shouldShow(node, options);
+    if (!shouldShow) {
+      return <></>;
+    }
+
+    const { shouldRemoveBottomMargin } = this.getMarginOverrideConditions(
+      node,
+      options
+    );
+    const headingColor = this.config.theme?.colors?.heading;
+
+    const optionRows = pollOptions
+      .map((opt) => {
+        if (typeof opt?.id !== 'string' || typeof opt?.label !== 'string') {
+          return null;
+        }
+        const variableName = `pw_poll_${pollId}_${opt.id}_url`;
+        const hasRealUrl = this.shouldReplaceVariableValues && this.variableValues.has(variableName);
+        const optionStyle: CSSProperties = {
+          display: 'block',
+          padding: '12px 16px',
+          border: '1px solid #E5E7EB',
+          borderRadius: '8px',
+          fontWeight: 600,
+          fontSize: '14px',
+          color: headingColor,
+          textAlign: 'center',
+          textDecoration: 'none',
+        };
+
+        return (
+          <Row key={generateKey()} style={{ marginBottom: '8px' }}>
+            <Column>
+              {hasRealUrl ? (
+                <Link href={this.getVariableValue(variableName, undefined, options)} style={optionStyle}>
+                  {opt.label}
+                </Link>
+              ) : (
+                <span style={optionStyle}>{opt.label}</span>
+              )}
+            </Column>
+          </Row>
+        );
+      })
+      .filter((el): el is React.JSX.Element => el !== null);
+
+    return (
+      <Container
+        style={{
+          marginBottom: shouldRemoveBottomMargin ? '0px' : '20px',
+        }}
+      >
+        <Text
+          style={{
+            fontWeight: 700,
+            fontSize: '16px',
+            color: headingColor,
+            margin: '0 0 12px 0',
+          }}
+        >
+          {question}
+        </Text>
+        {optionRows}
+      </Container>
     );
   }
 }

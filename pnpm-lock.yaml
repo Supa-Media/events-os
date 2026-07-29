@@ -305,6 +305,9 @@ importers:
 
   packages/email-render:
     dependencies:
+      '@events-os/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@react-email/components':
         specifier: ^0.5.1
         version: 0.5.7(react-dom@19.1.0(react@19.1.0))(react@19.1.0)

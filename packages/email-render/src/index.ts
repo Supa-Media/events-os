@@ -31,3 +31,8 @@
 export * from "./maily";
 export * from "./render";
 export type { JSONContent } from "@tiptap/core";
+
+// WS1 addition (not upstream): the compliance shell — the one entry point
+// the backend calls to render a `docFormat: "tiptap"` campaign doc. See
+// `renderEmail.ts`'s module doc.
+export * from "./renderEmail";

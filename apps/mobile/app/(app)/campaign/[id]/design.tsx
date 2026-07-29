@@ -1,22 +1,30 @@
 /**
- * CAMPAIGN DESIGNER — the block-based email editor for a CAMPAIGN.
+ * CAMPAIGN DESIGNER — the email editor for a CAMPAIGN, blocks OR tiptap.
  *
  * The editing surface itself is
- * `components/campaign/designer/DocumentComposer.tsx` (history, autosave,
- * palette, block stack, live preview, merge tags, theme picker) — shared with
- * the template editor (`app/(app)/campaign-template/[id].tsx`) so a designer
- * meets exactly one composer wherever she is. What stays HERE is what is
- * genuinely the campaign's: the access gate, the record header with "Save as
- * template", and what saving/restyling MEAN
- * (`campaigns.updateCampaignDoc` / `campaigns.setCampaignTheme`).
+ * `components/campaign/designer/DocumentComposer.tsx` — the FORMAT SWITCH
+ * (docs/plans/maily-editor-overhaul.md, WS3) between the block canvas
+ * (history, autosave, palette, block stack, live preview, merge tags, theme
+ * picker) and the maily host (meta fields inline, the real editor on web,
+ * read-only + meta on native) — shared with the template editor
+ * (`app/(app)/campaign-template/[id].tsx`) so a designer meets exactly one
+ * composer wherever she is. What stays HERE is what is genuinely the
+ * campaign's: the access gate, the record header with "Save as template",
+ * and what saving/restyling MEAN (`campaigns.updateCampaignDoc` /
+ * `campaigns.setCampaignTheme` / `campaigns.updateCampaignMeta`).
  *
  * Read-only once the campaign leaves `draft`/`changes_requested`
  * (`updateCampaignDoc` throws `NOT_EDITABLE` server-side past that point —
  * see `campaigns.ts#assertEditable`), or for a caller without compose power
- * (see `editable` below). "Read-only" means it: the block cards render with
- * `readOnly`, which makes every field static and removes every add/remove/
- * upload control, instead of the no-op handlers that used to let a reviewer
- * type into a locked campaign and lose the words on reload.
+ * (see `editable` below). "Read-only" means it: the block cards (or the
+ * maily host) render with no editing affordance, instead of the no-op
+ * handlers that used to let a reviewer type into a locked campaign and lose
+ * the words on reload.
+ *
+ * TODO(WS2b): `docFormat` is computed via `emailDocFormatOf(campaign)`, but
+ * `campaigns.docFormat` isn't a schema column yet — every campaign here
+ * resolves `"blocks"` in production until that lands. See
+ * `composerFormat.ts`'s own doc.
  */
 import { useCallback } from "react";
 import { Text, View } from "react-native";
@@ -24,7 +32,8 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useConvex, useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import type { EmailDocument, EmailTheme } from "@events-os/shared";
+import type { JSONContent } from "@tiptap/core";
+import { emailDocFormatOf, type EmailDocument, type EmailTheme } from "@events-os/shared";
 import {
   Screen,
   FULL_WIDTH,
@@ -36,6 +45,8 @@ import {
 import { useActionRunner } from "../../../../lib/useActionToast";
 import { DocumentComposer } from "../../../../components/campaign/designer/DocumentComposer";
 import type { ThemeChoice } from "../../../../components/campaign/designer/CampaignThemePicker";
+import { useDesignerImageUploader } from "../../../../components/campaign/designer/useImageUploader";
+import { fromLineText } from "../../../../components/campaign/designer/mailyMetaText";
 import { SaveAsTemplateAction } from "../../../../components/campaign/SaveAsTemplateAction";
 
 /**
@@ -80,6 +91,10 @@ function CampaignDesignBody({
   const campaign = useQuery(api.campaigns.getCampaign, { campaignId });
   const updateDoc = useMutation(api.campaigns.updateCampaignDoc);
   const setTheme = useMutation(api.campaigns.setCampaignTheme);
+  const updateMeta = useMutation(api.campaigns.updateCampaignMeta);
+  // Only meaningful for the tiptap host's read-only "From" line — same query
+  // `CampaignMetaCard.tsx` reads for its own From hint text.
+  const senderDefaults = useQuery(api.campaigns.getSenderDefaults, {});
   // `storage.getUrl` / `getCampaign` are queries, not mutations — resolved on
   // demand via the imperative Convex client (`app/(app)/doc/[id].tsx`'s
   // precedent), not `useQuery` (which subscribes reactively, not what a
@@ -100,6 +115,19 @@ function CampaignDesignBody({
     (doc: EmailDocument) => updateDoc({ campaignId, doc }),
     [updateDoc, campaignId],
   );
+
+  // TODO(WS2b): `updateCampaignDoc` still validates the OLD blocks format —
+  // this call is written CORRECTLY against the target contract (save a
+  // tiptap JSON doc through the SAME mutation `saveDoc` above uses) and will
+  // reject with `INVALID_DOC` until the backend lane dispatches by
+  // `docFormat`. See `MailyDocumentHost.web.tsx`'s own TODO(WS2b) for the
+  // autosave code this feeds.
+  const saveTiptapDoc = useCallback(
+    (doc: JSONContent) => updateDoc({ campaignId, doc }),
+    [updateDoc, campaignId],
+  );
+
+  const uploadImage = useDesignerImageUploader(editable);
 
   /**
    * Restyle the campaign (`campaigns.setCampaignTheme`).
@@ -153,14 +181,49 @@ function CampaignDesignBody({
           />
         </View>
       </View>
-      <DocumentComposer
-        doc={campaign.doc as EmailDocument}
-        editable={editable}
-        lockedNotice={lockNote(campaign.status, canCompose)}
-        onSave={saveDoc}
-        onApplyTheme={applyTheme}
-        run={run}
-      />
+      {/* TODO(WS2b): `campaign` has no `docFormat` field yet (not a schema
+          column) — the cast is a "weak type" workaround (TS2559: the row and
+          `{docFormat?}` share zero properties today) that resolves to
+          `"blocks"` for every real row until the column lands. */}
+      {emailDocFormatOf(campaign as unknown as { docFormat?: string | null }) === "tiptap" ? (
+        <DocumentComposer
+          docFormat="tiptap"
+          campaignId={campaignId}
+          doc={campaign.doc as JSONContent}
+          editable={editable}
+          lockedNotice={lockNote(campaign.status, canCompose)}
+          onSave={saveTiptapDoc}
+          run={run}
+          uploadImage={uploadImage}
+          meta={{
+            subject: campaign.subject ?? "",
+            previewText: campaign.previewText ?? "",
+            fromLine: fromLineText({
+              fromName: campaign.fromName,
+              fromEmail: campaign.fromEmail,
+              orgFromAddress: senderDefaults?.orgFromAddress,
+            }),
+            onSaveSubject: (subject) =>
+              run(() => updateMeta({ campaignId, subject }), {
+                errorTitle: "Couldn't save the subject line",
+              }),
+            onSavePreviewText: (previewText) =>
+              run(() => updateMeta({ campaignId, previewText }), {
+                errorTitle: "Couldn't save the preview text",
+              }),
+          }}
+        />
+      ) : (
+        <DocumentComposer
+          docFormat="blocks"
+          doc={campaign.doc as EmailDocument}
+          editable={editable}
+          lockedNotice={lockNote(campaign.status, canCompose)}
+          onSave={saveDoc}
+          onApplyTheme={applyTheme}
+          run={run}
+        />
+      )}
     </Screen>
   );
 }

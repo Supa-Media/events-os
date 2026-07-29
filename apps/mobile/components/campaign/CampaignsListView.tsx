@@ -53,6 +53,7 @@ import type { Id } from "@events-os/convex/_generated/dataModel";
 import { Card, Button, Badge, SectionHeader, TextField, Select, EmptyState, ToastView } from "../ui";
 import { colors, spacing } from "../../lib/theme";
 import { useActionRunner } from "../../lib/useActionToast";
+import { newTiptapDocSeed } from "./designer/mailyDoc";
 import { formatDateTime } from "../../lib/format";
 import { campaignStatusLabel, campaignStatusTone, pluralCount, pluralReply } from "./helpers";
 
@@ -114,7 +115,16 @@ export function CampaignsListView() {
                 name: trimmedSubject,
                 subject: trimmedSubject,
                 audienceId: audienceId as Id<"audiences">,
-                doc: { blocks: [] },
+                // "New documents are maily-format from now on"
+                // (docs/plans/maily-editor-overhaul.md, "New template flow").
+                // TODO(WS2b): `createCampaign` still validates this against
+                // the OLD blocks shape (`validateEmailDocument`) and has no
+                // `docFormat` argument to accept yet — this call will 400
+                // with `INVALID_DOC` until the backend lane lands
+                // format-aware validation dispatch. Written correctly
+                // against the target contract regardless (see
+                // `mailyDoc.ts`'s own TODO(WS2b)).
+                doc: newTiptapDocSeed(),
               })
             : createFromTemplate({
                 templateId: templateId as Id<"campaigns">,

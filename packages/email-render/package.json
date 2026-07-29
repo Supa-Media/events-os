@@ -10,6 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@events-os/shared": "workspace:*",
     "@react-email/components": "^0.5.1",
     "@react-email/render": "^2.1.0",
     "csstype": "^3.1.3",
