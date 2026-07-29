@@ -187,7 +187,7 @@ describe("on-ingest AI-coding suggestions", () => {
         const s = await setupChapter(t);
         await seedIncreaseAccount(s, "account_x");
 
-        const result = await t.mutation(internal.increase.applyIncreaseCardTransaction, {
+        const result = await t.mutation(internal.increaseLedger.applyIncreaseCardTransaction, {
           externalId: "txn_1",
           accountId: "account_x",
           flow: "outflow",
@@ -238,7 +238,7 @@ describe("on-ingest AI-coding suggestions", () => {
 
         const txnIds: Id<"transactions">[] = [];
         for (let i = 0; i < 5; i++) {
-          await t.mutation(internal.increase.applyIncreaseCardTransaction, {
+          await t.mutation(internal.increaseLedger.applyIncreaseCardTransaction, {
             externalId: `txn_burst_${i}`,
             accountId: "account_x",
             flow: "outflow",
@@ -277,7 +277,7 @@ describe("on-ingest AI-coding suggestions", () => {
         const s = await setupChapter(t);
         await seedIncreaseAccount(s, "account_central", "central");
 
-        await t.mutation(internal.increase.applyIncreaseCardTransaction, {
+        await t.mutation(internal.increaseLedger.applyIncreaseCardTransaction, {
           externalId: "txn_central",
           accountId: "account_central",
           flow: "outflow",
@@ -312,7 +312,7 @@ describe("on-ingest AI-coding suggestions", () => {
         const s = await setupChapter(t);
         await seedIncreaseAccount(s, "account_x");
 
-        await t.mutation(internal.increase.applyIncreaseCardTransaction, {
+        await t.mutation(internal.increaseLedger.applyIncreaseCardTransaction, {
           externalId: "txn_nokey",
           accountId: "account_x",
           flow: "outflow",
@@ -542,7 +542,7 @@ describe("on-ingest AI-coding suggestions", () => {
         const s = await setupChapter(t);
         await seedIncreaseAccount(s, "account_x");
 
-        const result = await t.mutation(internal.increase.applyIncreaseCardTransaction, {
+        const result = await t.mutation(internal.increaseLedger.applyIncreaseCardTransaction, {
           externalId: "txn_committed_first",
           accountId: "account_x",
           flow: "outflow",
@@ -636,7 +636,7 @@ describe("on-ingest AI-coding suggestions", () => {
         const s = await setupChapter(t);
         await seedIncreaseAccount(s, "account_x");
 
-        await t.mutation(internal.increase.applyIncreaseCardTransaction, {
+        await t.mutation(internal.increaseLedger.applyIncreaseCardTransaction, {
           externalId: "txn_e2e",
           accountId: "account_x",
           flow: "outflow",

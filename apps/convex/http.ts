@@ -1286,7 +1286,7 @@ http.route({
         // A malformed/oversized payload should never turn into a Resend
         // retry storm (Resend retries non-2xx webhook responses) — log and
         // still 200, mirroring the other providers' swallow-and-log paths
-        // (e.g. `ingestIncreaseCardTransaction`).
+        // (e.g. `increaseLedger.ingestIncreaseTransaction`).
         console.error("[resend] failed to record inbound reply", err);
       }
     }

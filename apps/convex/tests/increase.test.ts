@@ -195,7 +195,7 @@ describe("payReimbursement", () => {
       payeePersonId: payee,
     });
     await expect(
-      s.as.action(api.increase.payReimbursement, { reimbursementId }),
+      s.as.action(api.increasePayouts.payReimbursement, { reimbursementId }),
     ).rejects.toBeInstanceOf(ConvexError);
   });
 
@@ -211,14 +211,14 @@ describe("payReimbursement", () => {
     });
 
     // No INCREASE_API_KEY in the test env → degrades to a manual/pending payout.
-    const first = await s.as.action(api.increase.payReimbursement, {
+    const first = await s.as.action(api.increasePayouts.payReimbursement, {
       reimbursementId,
     });
     expect(first.provider).toBe("manual");
     expect(first.status).toBe("pending");
     expect(first.amountCents).toBe(1800); // approvedCents wins over totalCents
 
-    const second = await s.as.action(api.increase.payReimbursement, {
+    const second = await s.as.action(api.increasePayouts.payReimbursement, {
       reimbursementId,
     });
     expect(second.id).toBe(first.id);
@@ -272,7 +272,7 @@ describe("payReimbursement (real ACH once a destination is linked)", () => {
       throw new Error(`unexpected fetch: ${path}`);
     }) as unknown as typeof fetch;
 
-    const payout = await s.as.action(api.increase.payReimbursement, {
+    const payout = await s.as.action(api.increasePayouts.payReimbursement, {
       reimbursementId,
     });
     expect(payout.provider).toBe("increase");
@@ -290,7 +290,7 @@ describe("payReimbursement (real ACH once a destination is linked)", () => {
     expect(req?.status).toBe("paying");
 
     // The webhook reporting `submitted` (Increase's terminal success) settles it.
-    await s.t.mutation(internal.increase.onIncreaseWebhookEvent, {
+    await s.t.mutation(internal.increasePayouts.onIncreaseWebhookEvent, {
       eventType: "ach_transfer.updated",
       transferId: "ach_transfer_new_1",
       status: "submitted",
@@ -318,7 +318,7 @@ describe("payReimbursement (real ACH once a destination is linked)", () => {
       throw new Error("fetch must not be called with no linked destination");
     }) as unknown as typeof fetch;
 
-    const payout = await s.as.action(api.increase.payReimbursement, {
+    const payout = await s.as.action(api.increasePayouts.payReimbursement, {
       reimbursementId,
     });
     expect(payout.provider).toBe("manual");
@@ -371,13 +371,13 @@ describe("payReimbursement (real ACH once a destination is linked)", () => {
     }) as unknown as typeof fetch;
 
     // First pay → processing; webhook submitted → paid; webhook returned → bounce.
-    await s.as.action(api.increase.payReimbursement, { reimbursementId });
-    await s.t.mutation(internal.increase.onIncreaseWebhookEvent, {
+    await s.as.action(api.increasePayouts.payReimbursement, { reimbursementId });
+    await s.t.mutation(internal.increasePayouts.onIncreaseWebhookEvent, {
       eventType: "ach_transfer.updated",
       transferId: "ach_bounce_replay",
       status: "submitted",
     });
-    await s.t.mutation(internal.increase.onIncreaseWebhookEvent, {
+    await s.t.mutation(internal.increasePayouts.onIncreaseWebhookEvent, {
       eventType: "ach_transfer.returned",
       transferId: "ach_bounce_replay",
       status: "returned",
@@ -387,7 +387,7 @@ describe("payReimbursement (real ACH once a destination is linked)", () => {
 
     // Re-pay → the idempotency key replays the dead transfer → clean failure.
     await expect(
-      s.as.action(api.increase.payReimbursement, { reimbursementId }),
+      s.as.action(api.increasePayouts.payReimbursement, { reimbursementId }),
     ).rejects.toBeInstanceOf(ConvexError);
 
     // NOT wedged: the reimbursement is still `approved` (never stuck in `paying`),
@@ -401,7 +401,7 @@ describe("payReimbursement (real ACH once a destination is linked)", () => {
     expect(replayFail?.status).toBe("failed");
 
     // The manager can still pay it by hand → settles cleanly.
-    const settled = await s.as.mutation(api.increase.markPaidManually, {
+    const settled = await s.as.mutation(api.increasePayouts.markPaidManually, {
       reimbursementId,
     });
     expect(settled.status).toBe("paid");
@@ -450,7 +450,7 @@ describe("payReimbursement (real ACH once a destination is linked)", () => {
       throw new Error("fetch must not be called when the account's own env key is unset");
     }) as unknown as typeof fetch;
 
-    const payout = await s.as.action(api.increase.payReimbursement, {
+    const payout = await s.as.action(api.increasePayouts.payReimbursement, {
       reimbursementId,
     });
     expect(payout.provider).toBe("manual");
@@ -462,7 +462,7 @@ describe("payReimbursement (real ACH once a destination is linked)", () => {
 //
 // The manager screen no longer treats "Approve & pay" as approve-only: after
 // `api.reimbursements.approve` succeeds, it immediately calls
-// `api.increase.payReimbursement` (client-driven composition — see
+// `api.increasePayouts.payReimbursement` (client-driven composition — see
 // `apps/mobile/app/(app)/finances/reimbursements/index.tsx`'s `handleApprove`).
 // `beginPayout`/`payReimbursement`'s state machine is already exercised above
 // against DIRECTLY-SEEDED `approved` rows; these tests exercise the EXACT
@@ -500,7 +500,7 @@ describe("approve → payReimbursement (the auto-pay wiring the manager UI drive
     // No INCREASE_API_KEY / no linked destination in the test env → degrades
     // to a manual payout — the request stays `approved` (never a fake "paid"),
     // ready for `markPaidManually` or a "Pay by ACH" retry.
-    const first = await s.as.action(api.increase.payReimbursement, {
+    const first = await s.as.action(api.increasePayouts.payReimbursement, {
       reimbursementId,
     });
     expect(first.provider).toBe("manual");
@@ -510,7 +510,7 @@ describe("approve → payReimbursement (the auto-pay wiring the manager UI drive
 
     // A retry (the UI's "Pay by ACH" fallback button) is idempotent — no
     // second payout row, never double-pays.
-    const second = await s.as.action(api.increase.payReimbursement, {
+    const second = await s.as.action(api.increasePayouts.payReimbursement, {
       reimbursementId,
     });
     expect(second.id).toBe(first.id);
@@ -550,7 +550,7 @@ describe("approve → payReimbursement (the auto-pay wiring the manager UI drive
       throw new Error(`unexpected fetch: ${path}`);
     }) as unknown as typeof fetch;
 
-    const payout = await s.as.action(api.increase.payReimbursement, {
+    const payout = await s.as.action(api.increasePayouts.payReimbursement, {
       reimbursementId,
     });
     expect(payout.provider).toBe("increase");
@@ -575,7 +575,7 @@ describe("markPaidManually", () => {
       approvedCents: 1800,
     });
 
-    const payout = await s.as.mutation(api.increase.markPaidManually, {
+    const payout = await s.as.mutation(api.increasePayouts.markPaidManually, {
       reimbursementId,
     });
     expect(payout.provider).toBe("manual");
@@ -606,7 +606,7 @@ describe("markPaidManually", () => {
     expect(audit.some((a) => a.action === "pay")).toBe(true);
 
     // Idempotent: a re-call posts no second transaction.
-    const again = await s.as.mutation(api.increase.markPaidManually, {
+    const again = await s.as.mutation(api.increasePayouts.markPaidManually, {
       reimbursementId,
     });
     expect(again.id).toBe(payout.id);
@@ -624,10 +624,10 @@ describe("markPaidManually", () => {
       payeePersonId: payee,
       approvedCents: 1800,
     });
-    const pending = await s.as.action(api.increase.payReimbursement, {
+    const pending = await s.as.action(api.increasePayouts.payReimbursement, {
       reimbursementId,
     });
-    const paid = await s.as.mutation(api.increase.markPaidManually, {
+    const paid = await s.as.mutation(api.increasePayouts.markPaidManually, {
       reimbursementId,
     });
     // Same payout row is completed, not duplicated.
@@ -653,10 +653,10 @@ describe("disbursement guards", () => {
       approvedCents: 0,
     });
     await expect(
-      s.as.mutation(api.increase.markPaidManually, { reimbursementId }),
+      s.as.mutation(api.increasePayouts.markPaidManually, { reimbursementId }),
     ).rejects.toBeInstanceOf(ConvexError);
     await expect(
-      s.as.action(api.increase.payReimbursement, { reimbursementId }),
+      s.as.action(api.increasePayouts.payReimbursement, { reimbursementId }),
     ).rejects.toBeInstanceOf(ConvexError);
     // No payout + no transfer was minted.
     expect((await payoutsFor(s, reimbursementId)).length).toBe(0);
@@ -674,10 +674,10 @@ describe("disbursement guards", () => {
       approvedCents: 1800,
     });
     await expect(
-      s.as.mutation(api.increase.markPaidManually, { reimbursementId }),
+      s.as.mutation(api.increasePayouts.markPaidManually, { reimbursementId }),
     ).rejects.toBeInstanceOf(ConvexError);
     await expect(
-      s.as.action(api.increase.payReimbursement, { reimbursementId }),
+      s.as.action(api.increasePayouts.payReimbursement, { reimbursementId }),
     ).rejects.toBeInstanceOf(ConvexError);
     expect((await payoutsFor(s, reimbursementId)).length).toBe(0);
   });
@@ -692,7 +692,7 @@ describe("disbursement guards", () => {
       payeePersonId: payee,
       approvedCents: 1800,
     });
-    const payout = await s.as.mutation(api.increase.markPaidManually, {
+    const payout = await s.as.mutation(api.increasePayouts.markPaidManually, {
       reimbursementId,
     });
     expect(payout.status).toBe("paid");
@@ -724,7 +724,7 @@ describe("disbursement guards", () => {
       }),
     );
     await expect(
-      s.as.mutation(api.increase.markPaidManually, { reimbursementId }),
+      s.as.mutation(api.increasePayouts.markPaidManually, { reimbursementId }),
     ).rejects.toBeInstanceOf(ConvexError);
     // The in-flight payout wasn't clobbered + no transfer was posted.
     const payouts = await payoutsFor(s, reimbursementId);
@@ -779,7 +779,7 @@ describe("onIncreaseWebhookEvent", () => {
 
     // Real Increase: an ACH credit is irrevocably sent at `status:"submitted"`
     // (there is NO later "settled" event), carried on an `ach_transfer.updated`.
-    await s.t.mutation(internal.increase.onIncreaseWebhookEvent, {
+    await s.t.mutation(internal.increasePayouts.onIncreaseWebhookEvent, {
       eventType: "ach_transfer.updated",
       transferId: "ach_paid_1",
       status: "submitted",
@@ -803,7 +803,7 @@ describe("onIncreaseWebhookEvent", () => {
       "ach_fail_1",
     );
 
-    await s.t.mutation(internal.increase.onIncreaseWebhookEvent, {
+    await s.t.mutation(internal.increasePayouts.onIncreaseWebhookEvent, {
       eventType: "ach_transfer.updated",
       transferId: "ach_fail_1",
       status: "rejected",
@@ -825,7 +825,7 @@ describe("onIncreaseWebhookEvent", () => {
       "ach_ret_1",
     );
 
-    await s.t.mutation(internal.increase.onIncreaseWebhookEvent, {
+    await s.t.mutation(internal.increasePayouts.onIncreaseWebhookEvent, {
       eventType: "ach_transfer.returned",
       transferId: "ach_ret_1",
       status: "returned",
@@ -843,7 +843,7 @@ describe("onIncreaseWebhookEvent", () => {
     const s = await setupChapter(t);
     await seedProcessingPayout(s, "ach_known");
     await expect(
-      s.t.mutation(internal.increase.onIncreaseWebhookEvent, {
+      s.t.mutation(internal.increasePayouts.onIncreaseWebhookEvent, {
         eventType: "ach_transfer.updated",
         transferId: "ach_does_not_exist",
         status: "submitted",
@@ -859,13 +859,13 @@ describe("onIncreaseWebhookEvent", () => {
       "ach_race",
     );
     // Settle it (submitted = Increase's terminal success for an ACH credit).
-    await s.t.mutation(internal.increase.onIncreaseWebhookEvent, {
+    await s.t.mutation(internal.increasePayouts.onIncreaseWebhookEvent, {
       eventType: "ach_transfer.updated",
       transferId: "ach_race",
       status: "submitted",
     });
     // A late failure event (a real `rejected` status) must be ignored.
-    await s.t.mutation(internal.increase.onIncreaseWebhookEvent, {
+    await s.t.mutation(internal.increasePayouts.onIncreaseWebhookEvent, {
       eventType: "ach_transfer.updated",
       transferId: "ach_race",
       status: "rejected",
@@ -886,7 +886,7 @@ describe("onIncreaseWebhookEvent", () => {
       "ach_bounce",
     );
     // Settle it first (submitted = Increase's terminal success for a credit).
-    await s.t.mutation(internal.increase.onIncreaseWebhookEvent, {
+    await s.t.mutation(internal.increasePayouts.onIncreaseWebhookEvent, {
       eventType: "ach_transfer.updated",
       transferId: "ach_bounce",
       status: "submitted",
@@ -897,7 +897,7 @@ describe("onIncreaseWebhookEvent", () => {
     expect(paidReq?.paidAt).toBeTruthy();
 
     // DAYS later, Increase reports the credit bounced.
-    await s.t.mutation(internal.increase.onIncreaseWebhookEvent, {
+    await s.t.mutation(internal.increasePayouts.onIncreaseWebhookEvent, {
       eventType: "ach_transfer.returned",
       transferId: "ach_bounce",
       status: "returned",
@@ -924,12 +924,12 @@ describe("onIncreaseWebhookEvent", () => {
       s,
       "ach_bounce_dup",
     );
-    await s.t.mutation(internal.increase.onIncreaseWebhookEvent, {
+    await s.t.mutation(internal.increasePayouts.onIncreaseWebhookEvent, {
       eventType: "ach_transfer.updated",
       transferId: "ach_bounce_dup",
       status: "submitted",
     });
-    await s.t.mutation(internal.increase.onIncreaseWebhookEvent, {
+    await s.t.mutation(internal.increasePayouts.onIncreaseWebhookEvent, {
       eventType: "ach_transfer.returned",
       transferId: "ach_bounce_dup",
       status: "returned",
@@ -941,7 +941,7 @@ describe("onIncreaseWebhookEvent", () => {
     );
 
     // Redelivered `returned` for the SAME (already-returned) payout.
-    await s.t.mutation(internal.increase.onIncreaseWebhookEvent, {
+    await s.t.mutation(internal.increasePayouts.onIncreaseWebhookEvent, {
       eventType: "ach_transfer.returned",
       transferId: "ach_bounce_dup",
       status: "returned",
@@ -996,7 +996,7 @@ describe("provisionChapterAccount", () => {
     }) as unknown as typeof fetch;
 
     const account = await s.as.action(
-      internal.increase.provisionChapterAccount,
+      internal.increaseProvision.provisionChapterAccount,
       {},
     );
     expect(account.onboardingStatus).toBe("pending");
@@ -1071,7 +1071,7 @@ describe("provisionChapterAccount", () => {
     const calls = mockIncreaseFetch([{ id: "program_auto" }]);
 
     const account = await s.as.action(
-      internal.increase.provisionChapterAccount,
+      internal.increaseProvision.provisionChapterAccount,
       {},
     );
 
@@ -1122,7 +1122,7 @@ describe("provisionChapterAccount", () => {
     ]);
 
     const account = await s.as.action(
-      internal.increase.provisionChapterAccount,
+      internal.increaseProvision.provisionChapterAccount,
       {},
     );
     expect(account.onboardingStatus).toBe("pending");
@@ -1150,7 +1150,7 @@ describe("provisionChapterAccount", () => {
     const calls = mockIncreaseFetch([{ id: "program_should_not_be_used" }]);
 
     const account = await s.as.action(
-      internal.increase.provisionChapterAccount,
+      internal.increaseProvision.provisionChapterAccount,
       {},
     );
     expect(account.onboardingStatus).toBe("active");
@@ -1188,7 +1188,7 @@ describe("provisionChapterAccount", () => {
     );
 
     const account = await s.as.action(
-      internal.increase.provisionChapterAccount,
+      internal.increaseProvision.provisionChapterAccount,
       {},
     );
 
@@ -1238,7 +1238,7 @@ describe("provisionChapterAccount", () => {
     );
 
     const account = await s.as.action(
-      internal.increase.provisionChapterAccount,
+      internal.increaseProvision.provisionChapterAccount,
       {},
     );
 
@@ -1287,7 +1287,7 @@ describe("provisionChapterAccount", () => {
       throw new Error(`unexpected fetch: ${method} ${path}`);
     }) as unknown as typeof fetch;
 
-    const account = await s.as.action(internal.increase.provisionChapterAccount, {});
+    const account = await s.as.action(internal.increaseProvision.provisionChapterAccount, {});
     expect(account.onboardingStatus).toBe("active");
     expect(account.increaseAccountId).toBe("account_new");
 
@@ -1320,7 +1320,7 @@ describe("provisionChapterAccount", () => {
       }),
     );
     await expect(
-      s.as.action(internal.increase.provisionChapterAccount, {}),
+      s.as.action(internal.increaseProvision.provisionChapterAccount, {}),
     ).rejects.toBeInstanceOf(ConvexError);
   });
 });
@@ -1392,7 +1392,7 @@ describe("linkIncreaseAccount", () => {
       name: "New York",
     });
 
-    const account = await s.as.action(internal.increase.linkIncreaseAccount, {
+    const account = await s.as.action(internal.increaseProvision.linkIncreaseAccount, {
       increaseAccountId: "account_ny",
     });
 
@@ -1426,7 +1426,7 @@ describe("linkIncreaseAccount", () => {
     process.env.INCREASE_ENTITY_ID = ENTITY_ID;
     mockLinkFetch(200, { id: "account_ny", entity_id: ENTITY_ID });
 
-    const account = await s.as.action(internal.increase.linkIncreaseAccount, {
+    const account = await s.as.action(internal.increaseProvision.linkIncreaseAccount, {
       increaseAccountId: "account_ny",
     });
     expect(account!.increaseAccountId).toBe("account_ny");
@@ -1446,7 +1446,7 @@ describe("linkIncreaseAccount", () => {
     mockLinkFetch(404);
 
     await expect(
-      s.as.action(internal.increase.linkIncreaseAccount, {
+      s.as.action(internal.increaseProvision.linkIncreaseAccount, {
         increaseAccountId: "account_missing",
       }),
     ).rejects.toBeInstanceOf(ConvexError);
@@ -1465,7 +1465,7 @@ describe("linkIncreaseAccount", () => {
     mockLinkFetch(200, { id: "account_foreign", entity_id: "entity_other" });
 
     await expect(
-      s.as.action(internal.increase.linkIncreaseAccount, {
+      s.as.action(internal.increaseProvision.linkIncreaseAccount, {
         increaseAccountId: "account_foreign",
       }),
     ).rejects.toBeInstanceOf(ConvexError);
@@ -1490,7 +1490,7 @@ describe("linkIncreaseAccount", () => {
 
     let caught: unknown;
     try {
-      await s.as.action(internal.increase.linkIncreaseAccount, {
+      await s.as.action(internal.increaseProvision.linkIncreaseAccount, {
         increaseAccountId: "account_ny",
       });
     } catch (err) {
@@ -1523,7 +1523,7 @@ describe("linkIncreaseAccount", () => {
       throw new Error("fetch must not be called when the API key is unset");
     }) as unknown as typeof fetch;
 
-    const account = await s.as.action(internal.increase.linkIncreaseAccount, {
+    const account = await s.as.action(internal.increaseProvision.linkIncreaseAccount, {
       increaseAccountId: "account_ny",
     });
     expect(account).toBeNull();
@@ -1550,7 +1550,7 @@ describe("linkIncreaseAccount", () => {
     }) as unknown as typeof fetch;
 
     await expect(
-      s.as.action(internal.increase.linkIncreaseAccount, {
+      s.as.action(internal.increaseProvision.linkIncreaseAccount, {
         increaseAccountId: "account_ny",
       }),
     ).rejects.toBeInstanceOf(ConvexError);
@@ -1569,9 +1569,9 @@ describe("listPayouts", () => {
       status: "approved",
       payeePersonId: payee,
     });
-    await s.as.mutation(api.increase.markPaidManually, { reimbursementId });
+    await s.as.mutation(api.increasePayouts.markPaidManually, { reimbursementId });
 
-    const rows = await s.as.query(api.increase.listPayouts, {});
+    const rows = await s.as.query(api.increasePayouts.listPayouts, {});
     expect(rows.length).toBe(1);
     expect(rows[0].reimbursementId).toBe(reimbursementId);
     expect(rows[0].provider).toBe("manual");
@@ -1589,7 +1589,7 @@ describe("getChapterAccount", () => {
     await seedManager(s);
 
     // Unprovisioned → null.
-    expect(await s.as.query(api.increase.getChapterAccount, {})).toBeNull();
+    expect(await s.as.query(api.increaseAccounts.getChapterAccount, {})).toBeNull();
 
     // Insert a PRODUCTION Increase account row for the chapter (default mode is
     // production, so the production account is the one that shows).
@@ -1606,7 +1606,7 @@ describe("getChapterAccount", () => {
       }),
     );
 
-    const account = await s.as.query(api.increase.getChapterAccount, {});
+    const account = await s.as.query(api.increaseAccounts.getChapterAccount, {});
     expect(account).not.toBeNull();
     expect(account!.id).toBe(accountId);
     expect(account!.chapterId).toBe(s.chapterId);
@@ -1645,12 +1645,12 @@ describe("getChapterAccount", () => {
 
     // Production mode → the production account only.
     await setSandboxMode(s, false);
-    const prod = await s.as.query(api.increase.getChapterAccount, {});
+    const prod = await s.as.query(api.increaseAccounts.getChapterAccount, {});
     expect(prod!.increaseAccountId).toBe("account_prod_x");
 
     // Sandbox mode → the sandbox account only.
     await setSandboxMode(s, true);
-    const sb = await s.as.query(api.increase.getChapterAccount, {});
+    const sb = await s.as.query(api.increaseAccounts.getChapterAccount, {});
     expect(sb!.increaseAccountId).toBe("sandbox_account_x");
   });
 
@@ -1671,7 +1671,7 @@ describe("getChapterAccount", () => {
       }),
     );
     // The sandbox account is hidden in production → UI shows "provision".
-    expect(await s.as.query(api.increase.getChapterAccount, {})).toBeNull();
+    expect(await s.as.query(api.increaseAccounts.getChapterAccount, {})).toBeNull();
   });
 
   test("a caller without a finance role is rejected (viewer-gated)", async () => {
@@ -1679,7 +1679,7 @@ describe("getChapterAccount", () => {
     const s = await setupChapter(t);
     // The caller has NO financeRoles row → below viewer.
     await expect(
-      s.as.query(api.increase.getChapterAccount, {}),
+      s.as.query(api.increaseAccounts.getChapterAccount, {}),
     ).rejects.toBeInstanceOf(ConvexError);
   });
 });
@@ -1732,10 +1732,10 @@ describe("removeChapterAccount", () => {
       sandbox: true,
     });
 
-    await s.as.mutation(api.increase.removeChapterAccount, {});
+    await s.as.mutation(api.increaseAccounts.removeChapterAccount, {});
     expect((await accountRows(s)).length).toBe(0);
     // After removal the chapter reads as unprovisioned again.
-    expect(await s.as.query(api.increase.getChapterAccount, {})).toBeNull();
+    expect(await s.as.query(api.increaseAccounts.getChapterAccount, {})).toBeNull();
   });
 
   test("cascade: deletes the sandbox account's cards + authorizations + sandbox payouts, keeps a manual payout + a degraded card", async () => {
@@ -1816,7 +1816,7 @@ describe("removeChapterAccount", () => {
       }),
     );
 
-    await s.as.mutation(api.increase.removeChapterAccount, {});
+    await s.as.mutation(api.increaseAccounts.removeChapterAccount, {});
 
     // Account gone.
     expect((await accountRows(s)).length).toBe(0);
@@ -1853,7 +1853,7 @@ describe("removeChapterAccount", () => {
     await seedManager(s);
     await seedIncreaseAccount(s, { onboardingStatus: "pending" });
 
-    await s.as.mutation(api.increase.removeChapterAccount, {});
+    await s.as.mutation(api.increaseAccounts.removeChapterAccount, {});
     expect((await accountRows(s)).length).toBe(0);
   });
 
@@ -1868,7 +1868,7 @@ describe("removeChapterAccount", () => {
     });
 
     await expect(
-      s.as.mutation(api.increase.removeChapterAccount, {}),
+      s.as.mutation(api.increaseAccounts.removeChapterAccount, {}),
     ).rejects.toBeInstanceOf(ConvexError);
     // The production row is left intact.
     expect((await accountRows(s)).length).toBe(1);
@@ -1880,7 +1880,7 @@ describe("removeChapterAccount", () => {
     await seedManager(s);
 
     await expect(
-      s.as.mutation(api.increase.removeChapterAccount, {}),
+      s.as.mutation(api.increaseAccounts.removeChapterAccount, {}),
     ).resolves.toBeNull();
     expect((await accountRows(s)).length).toBe(0);
   });
@@ -1905,7 +1905,7 @@ describe("removeChapterAccount", () => {
     });
 
     await expect(
-      s.as.mutation(api.increase.removeChapterAccount, {}),
+      s.as.mutation(api.increaseAccounts.removeChapterAccount, {}),
     ).rejects.toBeInstanceOf(ConvexError);
     expect((await accountRows(s)).length).toBe(1);
   });
@@ -2185,7 +2185,7 @@ describe("provisionChapterAccount sandbox mode", () => {
     );
 
     const account = await s.as.action(
-      internal.increase.provisionChapterAccount,
+      internal.increaseProvision.provisionChapterAccount,
       {},
     );
     expect(account.onboardingStatus).toBe("active");
@@ -2232,7 +2232,7 @@ describe("provisionChapterAccount sandbox mode", () => {
     );
 
     const account = await s.as.action(
-      internal.increase.provisionChapterAccount,
+      internal.increaseProvision.provisionChapterAccount,
       {},
     );
     expect(account.onboardingStatus).toBe("active");
@@ -2263,7 +2263,7 @@ describe("provisionChapterAccount sandbox mode", () => {
     const calls = mockProvisionFetch([{ id: "prod_program" }], "account_1");
 
     const account = await s.as.action(
-      internal.increase.provisionChapterAccount,
+      internal.increaseProvision.provisionChapterAccount,
       {},
     );
     expect(account.onboardingStatus).toBe("active");
@@ -2298,7 +2298,7 @@ describe("provisionChapterAccount sandbox mode", () => {
     }) as unknown as typeof fetch;
 
     const account = await s.as.action(
-      internal.increase.provisionChapterAccount,
+      internal.increaseProvision.provisionChapterAccount,
       {},
     );
     expect(account.onboardingStatus).toBe("pending");
@@ -2333,7 +2333,7 @@ describe("provisionChapterAccount sandbox mode", () => {
       throw new Error("fetch must not be called on the degrade path");
     }) as unknown as typeof fetch;
 
-    const result = await s.as.action(internal.increase.provisionChapterAccount, {});
+    const result = await s.as.action(internal.increaseProvision.provisionChapterAccount, {});
     expect(result.onboardingStatus).toBe("pending");
     expect(result.increaseAccountId).toBeNull();
 
@@ -2396,7 +2396,7 @@ describe("runBackfillIncreaseAccountEnv", () => {
     );
 
     const first = await t.mutation(
-      internal.increase.runBackfillIncreaseAccountEnv,
+      internal.increaseAccounts.runBackfillIncreaseAccountEnv,
       {},
     );
     expect(first.scanned).toBe(3);
@@ -2410,7 +2410,7 @@ describe("runBackfillIncreaseAccountEnv", () => {
 
     // Idempotent: a second run stamps nothing (fields already the source of truth).
     const second = await t.mutation(
-      internal.increase.runBackfillIncreaseAccountEnv,
+      internal.increaseAccounts.runBackfillIncreaseAccountEnv,
       {},
     );
     expect(second.scanned).toBe(3);
@@ -2437,7 +2437,7 @@ describe("runBackfillIncreaseAccountEnv", () => {
     );
 
     const res = await t.mutation(
-      internal.increase.runBackfillIncreaseAccountEnv,
+      internal.increaseAccounts.runBackfillIncreaseAccountEnv,
       {},
     );
     expect(res.updated).toBe(0);

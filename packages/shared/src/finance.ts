@@ -159,7 +159,10 @@ export function effectiveBudgetApprovalStatus(
 // engagement amounts) is never summed with this (anti-double-count).
 export const TRANSACTION_SOURCES = [
   "increase_card", // a charge on an Increase-issued member card
-  "increase_ach", // an ACH in/out on the chapter's Increase account
+  "increase_ach", // a non-card entry on the chapter's (or central's) Increase
+  // account — ACH in/out, wires, check deposits, fees, interest. Synced by
+  // `increaseLedger.ts` (webhook + daily backfill) so every account entry
+  // reaches Reconcile; card charges use `increase_card` instead.
   "stripe_fc", // synced from a legacy external account via Stripe FC
   "relay_csv", // imported from a Relay monthly-statement CSV (full history)
   "manual", // hand-entered

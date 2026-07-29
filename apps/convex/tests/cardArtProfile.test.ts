@@ -216,7 +216,7 @@ describe("uploadCardArtAssets", () => {
       throw new Error("fetch must not be called when the key is unset");
     }) as unknown as typeof fetch;
 
-    const result = await t.action(internal.increase.uploadCardArtAssets, {
+    const result = await t.action(internal.increaseCardArt.uploadCardArtAssets, {
       cardArtBase64: FAKE_PNG_BASE64,
       iconBase64: FAKE_PNG_BASE64,
     });
@@ -237,7 +237,7 @@ describe("uploadCardArtAssets", () => {
       return { status: 200, json: { id: `file_${n}` } };
     });
 
-    const result = await t.action(internal.increase.uploadCardArtAssets, {
+    const result = await t.action(internal.increaseCardArt.uploadCardArtAssets, {
       cardArtBase64: FAKE_PNG_BASE64,
       iconBase64: FAKE_PNG_BASE64,
     });
@@ -274,7 +274,7 @@ describe("uploadCardArtAssets", () => {
 
     const calls = mockRecordingFetch(() => ({ status: 200, json: { id: "file_1" } }));
 
-    await t.action(internal.increase.uploadCardArtAssets, {
+    await t.action(internal.increaseCardArt.uploadCardArtAssets, {
       cardArtBase64: base64AllBytes,
       iconBase64: FAKE_PNG_BASE64,
     });
@@ -338,7 +338,7 @@ describe("uploadCardArtAssets", () => {
     }) as unknown as typeof fetch;
 
     await expect(
-      t.action(internal.increase.uploadCardArtAssets, {
+      t.action(internal.increaseCardArt.uploadCardArtAssets, {
         cardArtBase64: `data:image/png;base64,${FAKE_PNG_BASE64}`,
         iconBase64: FAKE_PNG_BASE64,
       }),
@@ -357,7 +357,7 @@ describe("uploadCardArtAssets", () => {
       return { status: 200, json: { id: `sandbox_file_${n}` } };
     });
 
-    const result = await t.action(internal.increase.uploadCardArtAssets, {
+    const result = await t.action(internal.increaseCardArt.uploadCardArtAssets, {
       cardArtBase64: FAKE_PNG_BASE64,
       iconBase64: FAKE_PNG_BASE64,
     });
@@ -395,7 +395,7 @@ describe("uploadCardArtAssets", () => {
       return { status: 200, json: { id: `file_new_${n}` } };
     });
 
-    await t.action(internal.increase.uploadCardArtAssets, {
+    await t.action(internal.increaseCardArt.uploadCardArtAssets, {
       cardArtBase64: FAKE_PNG_BASE64,
       iconBase64: FAKE_PNG_BASE64,
     });
@@ -434,7 +434,7 @@ describe("createDigitalCardProfile", () => {
       throw new Error("fetch must not be called when the key is unset");
     }) as unknown as typeof fetch;
 
-    const profileId = await t.action(internal.increase.createDigitalCardProfile, {});
+    const profileId = await t.action(internal.increaseCardArt.createDigitalCardProfile, {});
     expect(profileId).toBeNull();
   });
 
@@ -446,7 +446,7 @@ describe("createDigitalCardProfile", () => {
       throw new Error("fetch must not be called with no uploaded file ids");
     }) as unknown as typeof fetch;
 
-    const profileId = await t.action(internal.increase.createDigitalCardProfile, {});
+    const profileId = await t.action(internal.increaseCardArt.createDigitalCardProfile, {});
     expect(profileId).toBeNull();
   });
 
@@ -466,7 +466,7 @@ describe("createDigitalCardProfile", () => {
       json: { id: "digital_card_profile_123", status: "pending" },
     }));
 
-    const profileId = await t.action(internal.increase.createDigitalCardProfile, {});
+    const profileId = await t.action(internal.increaseCardArt.createDigitalCardProfile, {});
     expect(profileId).toBe("digital_card_profile_123");
     expect(calls.length).toBe(1);
     expect(calls[0].method).toBe("POST");
@@ -494,7 +494,7 @@ describe("finishCreateDigitalCardProfile", () => {
     const t = newT();
     // No financeSettings row at all — the defensive branch this test covers.
     await expect(
-      t.mutation(internal.increase.finishCreateDigitalCardProfile, {
+      t.mutation(internal.increaseCardArt.finishCreateDigitalCardProfile, {
         sandbox: false,
         profileId: "digital_card_profile_orphan",
       }),
@@ -511,7 +511,7 @@ describe("finishCreateDigitalCardProfile", () => {
     );
 
     await expect(
-      t.mutation(internal.increase.finishCreateDigitalCardProfile, {
+      t.mutation(internal.increaseCardArt.finishCreateDigitalCardProfile, {
         sandbox: false,
         profileId: "digital_card_profile_orphan",
       }),
@@ -559,7 +559,7 @@ describe("refreshCardArtProfileStatus", () => {
       throw new Error("fetch must not be called when the key is unset");
     }) as unknown as typeof fetch;
 
-    const result = await t.action(internal.increase.refreshCardArtProfileStatus, {});
+    const result = await t.action(internal.increaseCardArt.refreshCardArtProfileStatus, {});
     expect(result).toBeNull();
   });
 
@@ -572,7 +572,7 @@ describe("refreshCardArtProfileStatus", () => {
       throw new Error("fetch must not be called with no minted profile");
     }) as unknown as typeof fetch;
 
-    const result = await t.action(internal.increase.refreshCardArtProfileStatus, {});
+    const result = await t.action(internal.increaseCardArt.refreshCardArtProfileStatus, {});
     expect(result).toBeNull();
   });
 
@@ -586,7 +586,7 @@ describe("refreshCardArtProfileStatus", () => {
       json: { id: "digital_card_profile_123", status: "active" },
     }));
 
-    const result = await t.action(internal.increase.refreshCardArtProfileStatus, {});
+    const result = await t.action(internal.increaseCardArt.refreshCardArtProfileStatus, {});
     expect(result).toEqual({ profileId: "digital_card_profile_123", status: "active" });
     expect(calls.length).toBe(1);
     expect(calls[0].method).toBe("GET");
@@ -610,7 +610,7 @@ describe("refreshCardArtProfileStatus", () => {
       json: { id: "digital_card_profile_123", status: "rejected" },
     }));
 
-    const result = await t.action(internal.increase.refreshCardArtProfileStatus, {});
+    const result = await t.action(internal.increaseCardArt.refreshCardArtProfileStatus, {});
     expect(result?.status).toBe("rejected");
 
     const settings = await run(t, (ctx) => ctx.db.query("financeSettings").first());
@@ -627,7 +627,7 @@ describe("refreshCardArtProfileStatus", () => {
       json: { id: "digital_card_profile_123" /* no status field at all */ },
     }));
 
-    const result = await t.action(internal.increase.refreshCardArtProfileStatus, {});
+    const result = await t.action(internal.increaseCardArt.refreshCardArtProfileStatus, {});
     expect(result?.status).toBe("pending");
   });
 
@@ -653,7 +653,7 @@ describe("refreshCardArtProfileStatus", () => {
       json: { id: "sandbox_digital_card_profile", status: "active" },
     }));
 
-    const result = await t.action(internal.increase.refreshCardArtProfileStatus, {});
+    const result = await t.action(internal.increaseCardArt.refreshCardArtProfileStatus, {});
     expect(result).toEqual({ profileId: "sandbox_digital_card_profile", status: "active" });
     expect(new URL(calls[0].url).host).toBe("sandbox.increase.com");
     expect(calls[0].auth).toBe("Bearer sandbox_key");
@@ -667,7 +667,7 @@ describe("refreshCardArtProfileStatus", () => {
 describe("getCardArtProfileId (status gating)", () => {
   test("returns null when no profile has been minted", async () => {
     const t = newT();
-    const result = await t.query(internal.increase.getCardArtProfileId, { sandbox: false });
+    const result = await t.query(internal.increaseCardArt.getCardArtProfileId, { sandbox: false });
     expect(result).toBeNull();
   });
 
@@ -680,7 +680,7 @@ describe("getCardArtProfileId (status gating)", () => {
         cardArt: { fileId: "f", iconFileId: "i", profileId: "digital_card_profile_1", profileStatus: "pending" },
       }),
     );
-    const result = await t.query(internal.increase.getCardArtProfileId, { sandbox: false });
+    const result = await t.query(internal.increaseCardArt.getCardArtProfileId, { sandbox: false });
     expect(result).toBeNull();
   });
 
@@ -693,7 +693,7 @@ describe("getCardArtProfileId (status gating)", () => {
         cardArt: { fileId: "f", iconFileId: "i", profileId: "digital_card_profile_1", profileStatus: "rejected" },
       }),
     );
-    const result = await t.query(internal.increase.getCardArtProfileId, { sandbox: false });
+    const result = await t.query(internal.increaseCardArt.getCardArtProfileId, { sandbox: false });
     expect(result).toBeNull();
   });
 
@@ -706,7 +706,7 @@ describe("getCardArtProfileId (status gating)", () => {
         cardArt: { fileId: "f", iconFileId: "i", profileId: "digital_card_profile_1", profileStatus: "active" },
       }),
     );
-    const result = await t.query(internal.increase.getCardArtProfileId, { sandbox: false });
+    const result = await t.query(internal.increaseCardArt.getCardArtProfileId, { sandbox: false });
     expect(result).toBe("digital_card_profile_1");
   });
 });
@@ -781,7 +781,7 @@ describe("backfillCardProfiles", () => {
 
     const calls = mockRecordingFetch(() => ({ status: 200, json: { id: "card_active" } }));
 
-    const result = await t.action(internal.increase.backfillCardProfiles, {});
+    const result = await t.action(internal.increaseCardArt.backfillCardProfiles, {});
     expect(result.eligible).toBe(1); // only the one eligible card
     expect(result.patched).toBe(1);
     expect(result.skipped).toBe(0);
@@ -823,7 +823,7 @@ describe("backfillCardProfiles", () => {
     await seedCard(t, chapterId, holder, { increaseCardId: "sandbox_card_1" });
 
     const calls = mockRecordingFetch(() => ({ status: 200, json: {} }));
-    const result = await t.action(internal.increase.backfillCardProfiles, {});
+    const result = await t.action(internal.increaseCardArt.backfillCardProfiles, {});
     expect(result.patched).toBe(2);
 
     const prodCall = calls.find((c) => c.url.includes("/cards/card_prod"));
@@ -856,7 +856,7 @@ describe("backfillCardProfiles", () => {
       throw new Error("fetch must not be called with no profile configured");
     }) as unknown as typeof fetch;
 
-    const result = await t.action(internal.increase.backfillCardProfiles, {});
+    const result = await t.action(internal.increaseCardArt.backfillCardProfiles, {});
     expect(result.eligible).toBe(1);
     expect(result.patched).toBe(0);
     expect(result.skipped).toBe(1);
@@ -888,7 +888,7 @@ describe("backfillCardProfiles", () => {
       throw new Error("fetch must not be called for a pending (unreviewed) profile");
     }) as unknown as typeof fetch;
 
-    const result = await t.action(internal.increase.backfillCardProfiles, {});
+    const result = await t.action(internal.increaseCardArt.backfillCardProfiles, {});
     expect(result.eligible).toBe(1);
     expect(result.patched).toBe(0);
     expect(result.skipped).toBe(1);
@@ -918,7 +918,7 @@ describe("backfillCardProfiles", () => {
       throw new Error("fetch must not be called for a rejected profile");
     }) as unknown as typeof fetch;
 
-    const result = await t.action(internal.increase.backfillCardProfiles, {});
+    const result = await t.action(internal.increaseCardArt.backfillCardProfiles, {});
     expect(result.patched).toBe(0);
     expect(result.skipped).toBe(1);
   });
@@ -944,10 +944,10 @@ describe("backfillCardProfiles", () => {
     await seedCard(t, chapterId, holder, { increaseCardId: "card_active" });
     mockRecordingFetch(() => ({ status: 200, json: {} }));
 
-    const first = await t.action(internal.increase.backfillCardProfiles, {});
+    const first = await t.action(internal.increaseCardArt.backfillCardProfiles, {});
     expect(first.patched).toBe(1);
 
-    const second = await t.action(internal.increase.backfillCardProfiles, {});
+    const second = await t.action(internal.increaseCardArt.backfillCardProfiles, {});
     expect(second.patched).toBe(1);
     expect(second.skipped).toBe(0);
   });

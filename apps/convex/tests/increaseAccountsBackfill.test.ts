@@ -105,7 +105,7 @@ describe("backfillChapterAccounts", () => {
     delete process.env.INCREASE_PROGRAM_ID;
     mockIncreaseFetch();
 
-    const result = await t.action(internal.increase.backfillChapterAccounts, {});
+    const result = await t.action(internal.increaseProvision.backfillChapterAccounts, {});
 
     expect(result.skipped).toEqual([]);
     expect(result.provisioned.length).toBe(3); // central + 2 chapters
@@ -146,7 +146,7 @@ describe("backfillChapterAccounts", () => {
     delete process.env.INCREASE_PROGRAM_ID;
     mockIncreaseFetch();
 
-    const result = await t.action(internal.increase.backfillChapterAccounts, {});
+    const result = await t.action(internal.increaseProvision.backfillChapterAccounts, {});
 
     expect(result.skipped).toEqual(["central"]);
     expect(result.provisioned.map((p) => p.scope)).toEqual([String(chapterA)]);
@@ -166,10 +166,10 @@ describe("backfillChapterAccounts", () => {
     delete process.env.INCREASE_PROGRAM_ID;
     mockIncreaseFetch();
 
-    const first = await t.action(internal.increase.backfillChapterAccounts, {});
+    const first = await t.action(internal.increaseProvision.backfillChapterAccounts, {});
     expect(first.provisioned.length).toBe(2); // central + the one chapter
 
-    const second = await t.action(internal.increase.backfillChapterAccounts, {});
+    const second = await t.action(internal.increaseProvision.backfillChapterAccounts, {});
     expect(second.provisioned).toEqual([]);
     expect(second.skipped.length).toBe(2);
 
@@ -188,7 +188,7 @@ describe("backfillChapterAccounts", () => {
       throw new Error("fetch must not be called when the env is unset");
     }) as unknown as typeof fetch;
 
-    const result = await t.action(internal.increase.backfillChapterAccounts, {});
+    const result = await t.action(internal.increaseProvision.backfillChapterAccounts, {});
 
     expect(result.skipped).toEqual([]);
     expect(result.provisioned.every((p) => p.status === "pending")).toBe(true);
@@ -267,7 +267,7 @@ describe("provisionAccountForScope — central adoption is exact-match only", ()
     // Launch Fund's home; exact-match-only central provisioning must not.
     const calls = mockIncreaseFetch([{ id: "account_org", name: "Public Worship" }]);
 
-    const account = await t.action(internal.increase.provisionAccountForScope, {
+    const account = await t.action(internal.increaseProvision.provisionAccountForScope, {
       scope: "central",
     });
 
@@ -292,7 +292,7 @@ describe("provisionAccountForScope — central adoption is exact-match only", ()
       { id: "account_central_exact", name: "Public Worship — Central" },
     ]);
 
-    const account = await t.action(internal.increase.provisionAccountForScope, {
+    const account = await t.action(internal.increaseProvision.provisionAccountForScope, {
       scope: "central",
     });
 

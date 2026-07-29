@@ -75,6 +75,7 @@ import { addCampaignDesignDefaults } from "./0053_add_campaign_design_defaults";
 import { seedOrgMailingAddress } from "./0054_seed_org_mailing_address";
 import { mergeCampaignTemplatesIntoCampaigns } from "./0055_merge_campaign_templates_into_campaigns";
 import { upgradeBuiltInNewsletterTiptap } from "./0056_upgrade_builtin_newsletter_tiptap";
+import { backfillIncreaseAccountActivity } from "./0057_backfill_increase_transactions";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -298,4 +299,9 @@ export const MIGRATIONS: Migration[] = [
   // re-seed that self-disables once the import is already complete. See
   // 0056.
   upgradeBuiltInNewsletterTiptap,
+  // First full-ledger Increase pull: non-card account activity (inbound ACH,
+  // wires, fees, interest) is now ingested as `increase_ach`; the settled
+  // history predating that only exists at Increase, so schedule ONE backfill
+  // sweep (the daily cron then backstops). See 0057.
+  backfillIncreaseAccountActivity,
 ];

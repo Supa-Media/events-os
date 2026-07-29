@@ -24,7 +24,7 @@
  * (`aiCoding.ts`'s `codeTransaction`), all funneling through
  * `runSuggestionSweep` or `loadForSuggestion` below:
  *  - on-ingest (PRIMARY) — `queueSuggestionOnIngest`, called from
- *    `increase.applyIncreaseCardTransaction` and
+ *    `increaseLedger.applyIncreaseCardTransaction` / `applyIncreaseAccountTransaction` and
  *    `finances.createManualTransaction` right after a new transaction is
  *    inserted. It does ONLY a try/catch-wrapped `ctx.scheduler.runAfter` —
  *    the actual eligibility + debounce-mutex work runs in the SEPARATE
@@ -881,8 +881,9 @@ export const sweepUnsuggestedTransactions = internalMutation({
 
 /**
  * ON-INGEST HOOK — call from a transaction-creating mutation (the Increase
- * webhook apply path, `increase.applyIncreaseCardTransaction`; the manual-add
- * path, `finances.createManualTransaction`) right after the insert, passing
+ * webhook apply paths, `increaseLedger.applyIncreaseCardTransaction` and
+ * `applyIncreaseAccountTransaction`; the manual-add path,
+ * `finances.createManualTransaction`) right after the insert, passing
  * the new transaction's id.
  *
  * STRUCTURAL SAFETY (review finding, PR #265 — "nothing about suggestions may

@@ -625,7 +625,7 @@ export const setTerritoryStage = mutation({
       // Provision banking (mirrors `ensureChapters`' scheduled provisioning).
       await ctx.scheduler.runAfter(
         0,
-        internal.increase.provisionAccountForScope,
+        internal.increaseProvision.provisionAccountForScope,
         { scope: territory.chapterId },
       );
       // Seed the chapter's default roles + templates (mirrors `ensureChapters`).

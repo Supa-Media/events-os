@@ -196,7 +196,7 @@ describe("a paid reimbursement registers as spend", () => {
       categoryId,
     });
 
-    await s.as.mutation(api.increase.markPaidManually, { reimbursementId });
+    await s.as.mutation(api.increasePayouts.markPaidManually, { reimbursementId });
     await postPayoutOn(s, reimbursementId, tsOnDay(2026, 7, 22));
 
     // The ledger row itself: an expense, not a transfer.
@@ -249,7 +249,7 @@ describe("a paid reimbursement registers as spend", () => {
     );
     await run(s.t, (ctx) => ctx.db.patch(reimbursementId, { status: "paying", payoutId }));
 
-    await s.t.mutation(internal.increase.onIncreaseWebhookEvent, {
+    await s.t.mutation(internal.increasePayouts.onIncreaseWebhookEvent, {
       eventType: "ach_transfer.updated",
       transferId: "ach_bounce_1",
       status: "submitted",
@@ -260,7 +260,7 @@ describe("a paid reimbursement registers as spend", () => {
 
     // Days later the credit bounces — the money never left, so neither does
     // the expense.
-    await s.t.mutation(internal.increase.onIncreaseWebhookEvent, {
+    await s.t.mutation(internal.increasePayouts.onIncreaseWebhookEvent, {
       eventType: "ach_transfer.returned",
       transferId: "ach_bounce_1",
       status: "returned",

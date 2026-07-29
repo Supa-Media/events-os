@@ -97,7 +97,7 @@ function notify(title: string, message: string) {
   else Alert.alert(title, message);
 }
 
-/** After a successful `api.increase.payReimbursement` call, tell the manager
+/** After a successful `api.increasePayouts.payReimbursement` call, tell the manager
  *  plainly whether the ACH transfer actually started or the request degraded
  *  to the manual fallback (no linked destination / no active Increase account
  *  / Increase env not wired) — never a fake "paid". Shared by the auto-pay
@@ -315,7 +315,7 @@ function ManagerReimbursementsScreen() {
 
   // Payouts (viewer read) — used only to show a payout provider/status hint on
   // requests that have already been paid or are paying. Keyed by reimbursement.
-  const payouts = useQuery(api.increase.listPayouts, {});
+  const payouts = useQuery(api.increasePayouts.listPayouts, {});
 
   // Whether "Approve & pay" should auto-initiate the ACH payout right after
   // approving (`approvalPolicy.autoPayOnApproval`, defaults ON — see
@@ -327,7 +327,7 @@ function ManagerReimbursementsScreen() {
   const payoutByReimbursement = useMemo(() => {
     const map = new Map<
       Id<"reimbursementRequests">,
-      FunctionReturnType<typeof api.increase.listPayouts>[number]
+      FunctionReturnType<typeof api.increasePayouts.listPayouts>[number]
     >();
     // `listPayouts` is newest-first, so the first seen per reimbursement wins.
     for (const p of payouts ?? []) {
@@ -339,8 +339,8 @@ function ManagerReimbursementsScreen() {
   const approve = useMutation(api.reimbursements.approve);
   const preApprove = useMutation(api.reimbursements.preApprove);
   const reject = useMutation(api.reimbursements.reject);
-  const markPaid = useMutation(api.increase.markPaidManually);
-  const payReimbursement = useAction(api.increase.payReimbursement);
+  const markPaid = useMutation(api.increasePayouts.markPaidManually);
+  const payReimbursement = useAction(api.increasePayouts.payReimbursement);
   const { run, toast, dismiss } = useActionRunner();
 
   // Header "N open · $X" — non-terminal requests in the current view.
@@ -355,7 +355,7 @@ function ManagerReimbursementsScreen() {
   // Approve (full "Approve & pay" or a partial "Approve lines…" selection),
   // then — unless the chapter has opted out via
   // `approvalPolicy.autoPayOnApproval:false` — immediately follow with
-  // `api.increase.payReimbursement` to auto-initiate the ACH payout. The
+  // `api.increasePayouts.payReimbursement` to auto-initiate the ACH payout. The
   // approve step already committed independently by the time we get here:
   // if the payout call fails (Increase down, no env key, no linked
   // destination) it degrades to a `manual`/`pending` payout server-side and

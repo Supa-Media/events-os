@@ -945,7 +945,7 @@ describe("removeChapterAccount — sandbox transfer-leg cascade", () => {
       postedAt: APRIL_2026,
     });
 
-    await s.as.mutation(api.increase.removeChapterAccount, {});
+    await s.as.mutation(api.increaseAccounts.removeChapterAccount, {});
 
     const sandboxLegs = await legsFor(s, "transfer-sandbox-test");
     expect(sandboxLegs.find((l) => l.chapterId === s.chapterId)).toBeUndefined();

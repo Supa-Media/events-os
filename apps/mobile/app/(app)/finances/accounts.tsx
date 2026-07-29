@@ -7,7 +7,7 @@
  *     AUTOMATIC: provisioning is a backend sweep (`increase.
  *     backfillChapterAccounts` for existing chapters, scheduled at creation for
  *     new ones) — this screen is now a quiet, READ-ONLY status list
- *     (`api.increase.listAccountsStatus`), not a control panel. There's
+ *     (`api.increaseAccounts.listAccountsStatus`), not a control panel. There's
  *     nothing to link, retry, or remove here anymore; those stay ops-only
  *     escape hatches (`provisionChapterAccount` / `linkIncreaseAccount`,
  *     workflow-callable, never exposed in the UI).
@@ -94,7 +94,7 @@ export default function AccountsScreen() {
 }
 
 function AccountsBody() {
-  const accountsStatus = useQuery(api.increase.listAccountsStatus, {});
+  const accountsStatus = useQuery(api.increaseAccounts.listAccountsStatus, {});
   const accounts = useQuery(api.stripeFinance.listAccounts, {});
   const financeSettings = useQuery(api.financeSettings.getFinanceSettings);
   // Central/superuser only — regular chapters get Increase accounts + cards

@@ -15,9 +15,11 @@ import type { Id } from "../_generated/dataModel";
  *  - a card whose `card_id` matches no local card still records the txn with a
  *    null card/person (never throws),
  *  - a transaction for an account we don't own is skipped,
- *  - a transaction resolving to a CENTRAL-owned account is skipped defensively
- *    (central never issues member cards — WP-1.2),
- *  - a non-card transaction (e.g. an inbound ACH) is skipped,
+ *  - a transaction resolving to a CENTRAL-owned account posts central-owned
+ *    with null card/person/fund (WP-1.2 / WP-2.1),
+ *  - a non-card transaction (e.g. an inbound ACH) is ingested via the ACCOUNT
+ *    lane as `increase_ach` (guards + edge cases live in
+ *    increaseAccountActivity.test.ts),
  *  - a $0 settlement is skipped without error,
  *  - a card belonging to a DIFFERENT chapter never leaks its person/attribution
  *    onto a txn resolved to another chapter (cross-chapter isolation),
@@ -272,7 +274,7 @@ describe("Increase card ingestion — transaction.created webhook", () => {
       }),
     );
 
-    await t.mutation(internal.increase.applyIncreaseCardTransaction, {
+    await t.mutation(internal.increaseLedger.applyIncreaseCardTransaction, {
       externalId: "transaction_fund_default",
       accountId: "account_x",
       flow: "outflow",
@@ -424,7 +426,7 @@ describe("Increase card ingestion — transaction.created webhook", () => {
       }),
     );
 
-    const result = await t.mutation(internal.increase.applyIncreaseCardTransaction, {
+    const result = await t.mutation(internal.increaseLedger.applyIncreaseCardTransaction, {
       externalId: "transaction_central",
       accountId: "account_central",
       flow: "outflow",
@@ -452,7 +454,7 @@ describe("Increase card ingestion — transaction.created webhook", () => {
     expect(rows[0].status).toBe("unreviewed");
   });
 
-  test("a non-card transaction (inbound ACH) is skipped", async () => {
+  test("a non-card transaction (inbound ACH) is ingested as increase_ach", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await seedIncreaseAccount(s, "account_x");
@@ -466,7 +468,13 @@ describe("Increase card ingestion — transaction.created webhook", () => {
         created_at: "2026-07-15T12:00:00Z",
         currency: "USD",
         description: "ACH CREDIT",
-        source: { category: "inbound_ach_transfer", inbound_ach_transfer: { amount: 5000 } },
+        source: {
+          category: "inbound_ach_transfer",
+          inbound_ach_transfer: {
+            amount: 5000,
+            originator_company_name: "RELAY",
+          },
+        },
         type: "transaction",
       },
     });
@@ -476,7 +484,19 @@ describe("Increase card ingestion — transaction.created webhook", () => {
       associatedObjectId: "transaction_6",
     });
 
-    expect((await increaseTxns(s)).length).toBe(0);
+    // The inbound transfer lands in the ledger (the fix for the invisible
+    // Relay → Increase leg): source `increase_ach`, inflow, unreviewed — a
+    // bookkeeper can now select it + the outflow leg and mark the transfer.
+    const rows = await increaseTxns(s);
+    expect(rows.length).toBe(1);
+    expect(rows[0].source).toBe("increase_ach");
+    expect(rows[0].flow).toBe("inflow");
+    expect(rows[0].amountCents).toBe(5000);
+    expect(rows[0].externalId).toBe("transaction_6");
+    expect(rows[0].merchantName).toBe("RELAY");
+    expect(rows[0].description).toBe("ACH CREDIT");
+    expect(rows[0].status).toBe("unreviewed");
+    expect(rows[0].pending).toBe(false);
   });
 
   test("a $0 settlement is skipped without error", async () => {
@@ -581,7 +601,7 @@ describe("Increase card ingestion — transaction.created webhook", () => {
 
 // ── ops backfill ─────────────────────────────────────────────────────────────
 
-describe("backfillIncreaseCardTransactions", () => {
+describe("backfillIncreaseTransactions", () => {
   test("pages a full history for the chapter's account and dedups", async () => {
     const t = newT();
     const s = await setupChapter(t);
@@ -636,28 +656,34 @@ describe("backfillIncreaseCardTransactions", () => {
     }) as unknown as typeof fetch;
 
     const result = await t.action(
-      internal.increase.backfillIncreaseCardTransactions,
+      internal.increaseLedger.backfillIncreaseTransactions,
       {},
     );
-    expect(result.inserted).toBe(2); // the two card charges, not the ACH row
+    expect(result.inserted).toBe(3); // two card charges + the ACH row
 
     const txns = await increaseTxns(s);
-    expect(txns.length).toBe(2);
-    expect(txns.every((tx) => tx.source === "increase_card")).toBe(true);
-    expect(txns.every((tx) => tx.cardId === cardId)).toBe(true);
+    expect(txns.length).toBe(3);
+    const cardRows = txns.filter((tx) => tx.source === "increase_card");
+    expect(cardRows.length).toBe(2);
+    expect(cardRows.every((tx) => tx.cardId === cardId)).toBe(true);
+    const achRows = txns.filter((tx) => tx.source === "increase_ach");
+    expect(achRows.length).toBe(1);
+    expect(achRows[0].flow).toBe("inflow");
+    expect(achRows[0].amountCents).toBe(200);
+    expect(achRows[0].cardId).toBeUndefined();
 
     // Re-running dedups (no new rows).
     const again = await t.action(
-      internal.increase.backfillIncreaseCardTransactions,
+      internal.increaseLedger.backfillIncreaseTransactions,
       {},
     );
     expect(again.inserted).toBe(0);
-    expect((await increaseTxns(s)).length).toBe(2);
+    expect((await increaseTxns(s)).length).toBe(3);
   });
 });
 
 describe("listProvisionedIncreaseAccounts", () => {
-  test("excludes the CENTRAL account (no cards there — avoids a pointless prod API sweep)", async () => {
+  test("includes the CENTRAL account (its non-card activity belongs in the central Reconcile)", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await seedIncreaseAccount(s, "account_chapter");
@@ -674,8 +700,11 @@ describe("listProvisionedIncreaseAccounts", () => {
       }),
     );
 
-    const rows = await t.query(internal.increase.listProvisionedIncreaseAccounts, {});
+    const rows = await t.query(internal.increaseLedger.listProvisionedIncreaseAccounts, {});
 
-    expect(rows.map((r) => r.increaseAccountId)).toEqual(["account_chapter"]);
+    expect(rows.map((r) => r.increaseAccountId).sort()).toEqual([
+      "account_central",
+      "account_chapter",
+    ]);
   });
 });
