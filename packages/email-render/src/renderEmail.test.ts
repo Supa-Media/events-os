@@ -350,3 +350,84 @@ describe("renderEmailTiptap: doc.attrs.pwCanvasColor → the page canvas colour"
     expect(withoutCanvasBody).toContain("background-color:#ffffff");
   });
 });
+
+// Founder bug #5: `doc.attrs.pwFontFamily` — the document-level font control.
+// Same "document, not a theme table" shape as `pwCanvasColor` right above;
+// see `emailFont.ts` (`@events-os/shared`) for the curated stack table and
+// `renderEmail.ts`'s module doc for the `maily.setTheme({ font })` wiring.
+describe("renderEmailTiptap: doc.attrs.pwFontFamily → the document font", () => {
+  test("a doc with no attrs at all renders the default Inter font — unchanged behavior", async () => {
+    const { html } = await renderEmailTiptap(baseDoc, {
+      variables: {},
+      unsubscribeUrl: "https://example.com/u/1",
+      orgAddress: "Addr",
+    });
+    expect(html).toMatch(/@font-face\s*\{[^}]*font-family:\s*'Inter'/);
+    expect(html).toContain("font-family: 'Inter', sans-serif");
+  });
+
+  test("attrs.pwFontFamily: 'serif' swaps the document-wide font to Georgia", async () => {
+    const doc: JSONContent = { ...baseDoc, attrs: { pwFontFamily: "serif" } };
+    const { html } = await renderEmailTiptap(doc, {
+      variables: {},
+      unsubscribeUrl: "https://example.com/u/1",
+      orgAddress: "Addr",
+    });
+    expect(html).toMatch(/@font-face\s*\{[^}]*font-family:\s*'Georgia'/);
+    expect(html).toContain("font-family: 'Georgia', serif");
+    expect(html).not.toContain("font-family: 'Inter'");
+  });
+
+  test("attrs.pwFontFamily: 'mono' swaps to Courier New", async () => {
+    const doc: JSONContent = { ...baseDoc, attrs: { pwFontFamily: "mono" } };
+    const { html } = await renderEmailTiptap(doc, {
+      variables: {},
+      unsubscribeUrl: "https://example.com/u/1",
+      orgAddress: "Addr",
+    });
+    expect(html).toContain("font-family: 'Courier New', monospace");
+  });
+
+  test("an unknown font id is ignored — falls back to the default Inter, not a broken declaration", async () => {
+    const doc: JSONContent = { ...baseDoc, attrs: { pwFontFamily: "Comic Sans MS" } };
+    const { html } = await renderEmailTiptap(doc, {
+      variables: {},
+      unsubscribeUrl: "https://example.com/u/1",
+      orgAddress: "Addr",
+    });
+    expect(html).toContain("font-family: 'Inter', sans-serif");
+  });
+
+  test("a non-string attrs.pwFontFamily is ignored, not thrown", async () => {
+    const doc: JSONContent = { ...baseDoc, attrs: { pwFontFamily: 123 } };
+    await expect(
+      renderEmailTiptap(doc, { variables: {}, unsubscribeUrl: "https://example.com/u/1", orgAddress: "Addr" }),
+    ).resolves.toBeTruthy();
+  });
+
+  test("pwCanvasColor and pwFontFamily compose — both apply from the same doc", async () => {
+    const doc: JSONContent = { ...baseDoc, attrs: { pwCanvasColor: "#f0f1f5", pwFontFamily: "serif" } };
+    const { html } = await renderEmailTiptap(doc, {
+      variables: {},
+      unsubscribeUrl: "https://example.com/u/1",
+      orgAddress: "Addr",
+    });
+    const bodyMatch = html.match(/<body[^>]*style="([^"]*)"/i);
+    expect(bodyMatch?.[1]).toContain("background-color:#f0f1f5");
+    expect(html).toContain("font-family: 'Georgia', serif");
+  });
+
+  test("a font set on one call does not leak into a call with none (no setTheme() singleton bleed)", async () => {
+    const withFont = await renderEmailTiptap(
+      { ...baseDoc, attrs: { pwFontFamily: "mono" } },
+      { variables: {}, unsubscribeUrl: "https://example.com/u/1", orgAddress: "Addr" },
+    );
+    const withoutFont = await renderEmailTiptap(baseDoc, {
+      variables: {},
+      unsubscribeUrl: "https://example.com/u/1",
+      orgAddress: "Addr",
+    });
+    expect(withFont.html).toContain("font-family: 'Courier New', monospace");
+    expect(withoutFont.html).toContain("font-family: 'Inter', sans-serif");
+  });
+});

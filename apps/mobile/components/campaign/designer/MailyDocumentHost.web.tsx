@@ -80,6 +80,10 @@
  * read-only idiom introduced.
  */
 import "@maily-to/core/dist/index.css";
+// Founder bug #4 (bubble-menu labels overlapping, e.g. a button's Border
+// Radius/Style dropdowns) — see this file's own doc, no new import needed
+// there.
+import "./mailyOverrides.css";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Text, View, useWindowDimensions } from "react-native";
@@ -92,6 +96,11 @@ import { fetchCampaignPreview } from "../../../lib/emailPreview";
 import EmailHtmlPreview from "../../email/EmailHtmlPreview";
 import { ImageUploadButton, ReadOnlyProvider } from "./DesignerControls";
 import { ImageLibraryPicker, useImageLibraryRegistration } from "./ImageLibraryPicker";
+// Explicit `.web` suffix (not a bare specifier): `MailyImagePickerModal` has
+// no native counterpart at all (no bridge file to fall back to) — a bare
+// import resolves fine under Metro's platform-extension lookup but not under
+// plain `tsc`/Node resolution, which doesn't know that convention.
+import { MailyImagePickerModal } from "./MailyImagePickerModal.web";
 import { MailyMetaFields } from "./MailyMetaFields";
 import {
   MAILY_AUTOSAVE_DEBOUNCE_MS,
@@ -100,6 +109,17 @@ import {
 } from "./mailyAutosave";
 import { isTiptapDocEmpty } from "./mailyDoc";
 import { PW_NODE_PACK_EXTENSIONS } from "./pwNodePack";
+import { PwDocAttrsExtension } from "./pwDocAttrs";
+import { findImagePlaceholderWrapper, resolveImageNodePos } from "./pwImagePlaceholderIntercept";
+import { forceIframeColorScheme } from "./previewColorScheme";
+import {
+  PW_FONT_STACK_IDS,
+  PW_FONT_STACKS,
+  DEFAULT_PW_FONT_STACK_ID,
+  isPwFontStackId,
+  pwFontFamilyCss,
+  type PwFontStackId,
+} from "@events-os/shared";
 import type { MailyDocumentHostProps } from "./MailyDocumentHost.types";
 
 /** Below this width the preview stacks under the editor — matches
@@ -135,6 +155,30 @@ export function MailyDocumentHost({
   const pendingDocRef = useRef<JSONContent | null>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const previewDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The DOM node the editor mounts into — RN Web forwards `View`'s `ref` to
+  // its underlying `<div>`, which is what the image-placeholder capture
+  // listener below needs (see `pwImagePlaceholderIntercept.ts`'s module doc).
+  const editorContainerRef = useRef<HTMLDivElement | null>(null);
+  // Which image/logo placeholder node a click just intercepted — `null` means
+  // the picker modal is closed. Set by the capture-phase listener, cleared by
+  // the modal's own close/pick/upload paths.
+  const [imagePickerTarget, setImagePickerTarget] = useState<{
+    pos: number;
+    nodeType: string;
+  } | null>(null);
+  // Preview pane's Light/Dark VIEW toggle (founder bug #3) — defaults to
+  // light regardless of the designer's own OS/browser preference; see
+  // `previewColorScheme.ts`'s module doc for why this can't be a CSS-only
+  // fix. Purely a view control: the real send keeps rendering both.
+  const [previewScheme, setPreviewScheme] = useState<"light" | "dark">("light");
+  // Document-level Font control (founder bug #5 — Google-Docs-style, lives
+  // on the DOCUMENT since themes-the-system are dead, not a picker over a
+  // theme table). Initialized from the doc's own attr once; from then on
+  // the editor's live doc attrs are authoritative (see `changeFontStack`).
+  const [fontStackId, setFontStackId] = useState<PwFontStackId>(() => {
+    const attr = (doc?.attrs as { pwFontFamily?: unknown } | undefined)?.pwFontFamily;
+    return isPwFontStackId(attr) ? attr : DEFAULT_PW_FONT_STACK_ID;
+  });
 
   // Refs for values a stable callback still needs the LATEST of — the same
   // discipline `BlocksDocumentComposer` uses (`onSaveRef`, `historyRef`) so a
@@ -186,6 +230,35 @@ export function MailyDocumentHost({
   // doc's surprise #2) — flip it imperatively instead.
   useEffect(() => {
     editorRef.current?.setEditable(editable);
+  }, [editable]);
+
+  // Founder bug #2: maily's own "Click or Drop image here" placeholder is a
+  // raw `<input type="file">` with no click handler to intercept at the React
+  // level — only a capture-phase DOM listener runs early enough to cancel its
+  // native file dialog (see `pwImagePlaceholderIntercept.ts`'s module doc).
+  // Read-only never wires this: nothing renders an editable placeholder then.
+  useEffect(() => {
+    if (!editable) return;
+    const container = editorContainerRef.current;
+    if (!container) return;
+    function handleClickCapture(e: MouseEvent) {
+      const wrapper = findImagePlaceholderWrapper(e.target);
+      if (!wrapper) return;
+      const editor = editorRef.current;
+      if (!editor) return;
+      const pos = resolveImageNodePos(editor.view, editor.state.doc, wrapper);
+      if (pos == null) return;
+      // Cancel the input's native file-picker dialog — must happen
+      // synchronously, in this capture-phase listener, before the input's
+      // own default action runs (see the module doc's "why this works").
+      e.preventDefault();
+      e.stopPropagation();
+      const nodeType = editor.state.doc.nodeAt(pos)?.type.name;
+      if (!nodeType) return;
+      setImagePickerTarget({ pos, nodeType });
+    }
+    container.addEventListener("click", handleClickCapture, true);
+    return () => container.removeEventListener("click", handleClickCapture, true);
   }, [editable]);
 
   useEffect(
@@ -265,7 +338,12 @@ export function MailyDocumentHost({
     // `pwNodePack.ts`'s module doc describes: an unrecognized node type makes
     // Tiptap's own JSON parser discard the WHOLE document, silently, back to
     // empty — "opened the built-in template and it was blank."
-    const base = [...PW_NODE_PACK_EXTENSIONS];
+    // `PwDocAttrsExtension` is likewise unconditional — `pwCanvasColor` (and
+    // now `pwFontFamily`, founder bug #5) need to survive a round-trip on
+    // EVERY document, not just ones a designer happens to touch the Font
+    // control on (see that file's own module doc on the silent-drop bug this
+    // closes).
+    const base = [...PW_NODE_PACK_EXTENSIONS, PwDocAttrsExtension];
     if (!uploadImage) return base;
     return [
       ...base,
@@ -284,6 +362,37 @@ export function MailyDocumentHost({
 
   function insertImage(url: string, alt: string) {
     editorRef.current?.chain().focus().setImage({ src: url, alt }).run();
+  }
+
+  /** Change the document's font stack (founder bug #5). `setDocAttribute` is
+   *  ProseMirror's own transform-level API for a root `doc` attr — the usual
+   *  `updateAttributes(name, attrs)` command can't reach it (it walks
+   *  `nodesBetween` over the current SELECTION, which by construction never
+   *  visits the root doc node itself). Dispatching straight through
+   *  `editor.view` still fires the SAME `onUpdate` this file's autosave
+   *  already listens for (Tiptap wraps `EditorView`'s own `dispatchTransaction`,
+   *  which `view.dispatch` always goes through) — no separate save path
+   *  needed here. */
+  function changeFontStack(id: PwFontStackId) {
+    const editor = editorRef.current;
+    if (!editor) return;
+    editor.view.dispatch(editor.state.tr.setDocAttribute("pwFontFamily", id));
+    setFontStackId(id);
+  }
+
+  /** Fill a SPECIFIC image/logo placeholder node — the node the intercepted
+   *  click identified (`imagePickerTarget`), never "whatever's selected" —
+   *  `setNodeSelection(pos)` first pins the selection to exactly that node so
+   *  `updateAttributes` can't land on a different one (see
+   *  `pwImagePlaceholderIntercept.ts`'s doc on why the position is resolved
+   *  up front instead of trusted to still be selected later). */
+  function fillImagePlaceholder(target: { pos: number; nodeType: string }, url: string, alt: string) {
+    editorRef.current
+      ?.chain()
+      .focus()
+      .setNodeSelection(target.pos)
+      .updateAttributes(target.nodeType, { src: url, alt })
+      .run();
   }
 
   if (doc === undefined) return null;
@@ -307,6 +416,29 @@ export function MailyDocumentHost({
 
       <View className={split ? "flex-row" : undefined}>
         <View className={split ? "flex-1" : undefined}>
+          {editable ? (
+            <View className="mb-3 flex-row items-center gap-2">
+              <Text className="text-xs font-bold uppercase tracking-wider text-faint">
+                Font
+              </Text>
+              <View className="flex-row overflow-hidden rounded-md border border-border-strong">
+                {PW_FONT_STACK_IDS.map((id) => (
+                  <Text
+                    key={id}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: fontStackId === id }}
+                    onPress={() => changeFontStack(id)}
+                    className={`px-2 py-1 text-2xs font-semibold ${
+                      fontStackId === id ? "bg-accent text-white" : "bg-raised text-muted"
+                    }`}
+                  >
+                    {PW_FONT_STACKS[id].label}
+                  </Text>
+                ))}
+              </View>
+            </View>
+          ) : null}
+
           <View className="mb-3 flex-row items-center justify-between gap-2">
             {editable && uploadImage ? (
               <View className="flex-row flex-wrap items-center gap-2">
@@ -329,9 +461,42 @@ export function MailyDocumentHost({
             <SaveIndicator editable={editable} saveState={saveState} error={saveError} />
           </View>
 
-          <View
-            className="overflow-hidden rounded-lg border border-border bg-raised"
-            style={{ minHeight: 320 }}
+          {/* A plain `<div>`, not RN's `View` — same "web-only file needs a
+           *  real DOM ref/style" precedent as `MarkdownEditor.web.tsx`'s own
+           *  `hostRef` container. Two things a `View` can't give this node:
+           *  a `ref` that's actually an `HTMLDivElement` (what the
+           *  image-placeholder capture listener needs, `editorContainerRef`)
+           *  and a `fontFamily` style (RN's `ViewStyle` only allows that on
+           *  `Text`, not `View` — `View`'s types reject it even though RNW
+           *  would render it fine). `className` still works identically:
+           *  NativeWind's JSX transform intercepts at the pragma level, not
+           *  per-component, so a plain intrinsic element gets the same
+           *  interop a `View` would. */}
+          <div
+            // `overflow-hidden` used to clip maily's own hover chrome — the
+            // block drag handle + `+` insert button, which float in a LEFT
+            // GUTTER outside the prose content column (rendered via a
+            // tippy.js popper positioned ~46px left of the block, confirmed
+            // in `__adv__/harness/`: with no rail, that popper lands at a
+            // NEGATIVE x relative to this container and gets clipped clean
+            // off — "hover a block, the +/drag handle are missing"). Two
+            // changes fix it: `overflow-visible` so the popper is never
+            // clipped regardless of where it lands, and `pl-10` (40px) so
+            // the prose column starts far enough right that the gutter has
+            // real room INSIDE the visible card instead of hanging off its
+            // left edge. Losing `overflow-hidden` costs nothing visible today
+            // — nothing in ordinary (non-hover) content touches the
+            // container's rounded corners.
+            className="overflow-visible rounded-lg border border-border bg-raised pl-10"
+            // The Font control's other half — the editor's OWN display, not
+            // just the send-side renderer (founder bug #5's explicit "both"
+            // requirement). `fontFamily` cascades from here down through
+            // maily's prose content by ordinary CSS inheritance; maily's own
+            // `mly:prose` class doesn't set a competing `font-family` on the
+            // content root, so this reaches every node without touching
+            // `pwNodePack.ts`'s per-node styles.
+            style={{ minHeight: 320, fontFamily: pwFontFamilyCss(fontStackId), position: "relative" }}
+            ref={editorContainerRef}
           >
             <Editor
               contentJson={doc}
@@ -340,19 +505,55 @@ export function MailyDocumentHost({
               onCreate={handleCreate}
               onUpdate={handleUpdate}
             />
-          </View>
+            {imagePickerTarget ? (
+              <MailyImagePickerModal
+                onClose={() => setImagePickerTarget(null)}
+                onPick={(image) => fillImagePlaceholder(imagePickerTarget, image.url, image.alt)}
+                uploadImage={uploadImage}
+                run={run}
+                onUploaded={(uploaded, suggestedLabel) => {
+                  fillImagePlaceholder(imagePickerTarget, uploaded.url, suggestedLabel);
+                  register(uploaded.storageId, suggestedLabel);
+                }}
+              />
+            ) : null}
+          </div>
         </View>
 
         <View className={split ? "ml-4 w-[380px]" : "mt-6"}>
-          <Text className="mb-2 text-xs font-bold uppercase tracking-wider text-faint">
-            Preview
-          </Text>
+          <View className="mb-2 flex-row items-center justify-between">
+            <Text className="text-xs font-bold uppercase tracking-wider text-faint">
+              Preview
+            </Text>
+            {/* Founder bug #3: this pane used to inherit the designer's own
+             *  OS/browser dark-mode preference (the iframe has no way to
+             *  resolve `prefers-color-scheme` any other way) — always defaults
+             *  to light now, with dark still one tap away, since real
+             *  recipients DO see dark mode (`previewColorScheme.ts`). */}
+            <View className="flex-row overflow-hidden rounded-md border border-border-strong">
+              {(["light", "dark"] as const).map((option) => (
+                <Text
+                  key={option}
+                  accessibilityRole="button"
+                  onPress={() => setPreviewScheme(option)}
+                  className={`px-2 py-1 text-2xs font-semibold ${
+                    previewScheme === option ? "bg-accent text-white" : "bg-raised text-muted"
+                  }`}
+                >
+                  {option === "light" ? "Light" : "Dark"}
+                </Text>
+              ))}
+            </View>
+          </View>
           {isTiptapDocEmpty(doc) ? (
             <View className="items-center rounded-lg border border-dashed border-border bg-raised px-6 py-14">
               <Text className="text-sm text-muted">Nothing here yet — start typing.</Text>
             </View>
           ) : previewState === "ready" && previewHtml ? (
-            <EmailHtmlPreview html={previewHtml} height={split ? 560 : 420} />
+            <EmailHtmlPreview
+              html={forceIframeColorScheme(previewHtml, previewScheme)}
+              height={split ? 560 : 420}
+            />
           ) : previewState === "loading" ? (
             <View className="items-center rounded-lg border border-border bg-raised px-6 py-14">
               <Text className="text-sm text-faint">Loading preview…</Text>
