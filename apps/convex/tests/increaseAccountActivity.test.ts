@@ -456,6 +456,84 @@ describe("Increase account-activity ingestion", () => {
     expect((await chapterTxns(s)).length).toBe(0);
   });
 
+  test("the card and account lanes can never double-ingest one transaction", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedIncreaseAccount(s, "account_x");
+
+    // Lane exclusivity is structural: each extractor rejects the other's
+    // categories, so one fetched object can only ever enter one lane...
+    const cardObject = {
+      id: "transaction_dup",
+      account_id: "account_x",
+      amount: -900,
+      created_at: "2026-07-17T12:00:00Z",
+      currency: "USD",
+      description: "PURCHASE",
+      source: { category: "card_settlement", card_settlement: {} },
+    };
+    expect(extractAccountActivity(cardObject)).toBeNull();
+    expect(extractCardCharge(inboundAchTxn({ id: "x", accountId: "account_x", amount: 1 }))).toBeNull();
+
+    // ...and even a hypothetical mis-route is stopped by the shared
+    // `by_external_id` dedup: once EITHER lane has posted an externalId, the
+    // OTHER lane's apply refuses to insert a second row for it.
+    const first = await s.t.mutation(
+      internal.increaseLedger.applyIncreaseCardTransaction,
+      {
+        externalId: "transaction_dup",
+        accountId: "account_x",
+        flow: "outflow",
+        amountCents: 900,
+        postedAt: Date.now(),
+      },
+    );
+    expect(first.inserted).toBe(true);
+
+    const crossLane = await s.t.mutation(
+      internal.increaseLedger.applyIncreaseAccountTransaction,
+      {
+        externalId: "transaction_dup",
+        accountId: "account_x",
+        flow: "outflow",
+        amountCents: 900,
+        postedAt: Date.now(),
+        category: "card_settlement",
+      },
+    );
+    expect(crossLane.inserted).toBe(false);
+
+    const rows = await chapterTxns(s);
+    expect(rows.length).toBe(1);
+    expect(rows[0].source).toBe("increase_card");
+
+    // Mirror image: an account row posted first blocks the card lane too.
+    const achFirst = await s.t.mutation(
+      internal.increaseLedger.applyIncreaseAccountTransaction,
+      {
+        externalId: "transaction_dup_2",
+        accountId: "account_x",
+        flow: "inflow",
+        amountCents: 5000,
+        postedAt: Date.now(),
+        category: "inbound_ach_transfer",
+      },
+    );
+    expect(achFirst.inserted).toBe(true);
+    const cardSecond = await s.t.mutation(
+      internal.increaseLedger.applyIncreaseCardTransaction,
+      {
+        externalId: "transaction_dup_2",
+        accountId: "account_x",
+        flow: "inflow",
+        amountCents: 5000,
+        postedAt: Date.now(),
+      },
+    );
+    expect(cardSecond.inserted).toBe(false);
+    expect((await chapterTxns(s)).length).toBe(2);
+  });
+
   test("an account we don't hold is skipped", async () => {
     const t = newT();
     const s = await setupChapter(t);
