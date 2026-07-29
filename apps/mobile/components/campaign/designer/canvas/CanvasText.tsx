@@ -14,23 +14,48 @@
  *    will send, until you click it, and then a `TextInput` wearing exactly the
  *    same type styles in exactly the same place.
  */
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   Image,
+  Platform,
   Pressable,
   Text,
   TextInput,
   View,
+  type ColorValue,
+  type LayoutChangeEvent,
+  type NativeSyntheticEvent,
+  type TextInputContentSizeChangeEventData,
   type ImageStyle,
   type TextStyle,
+  type ViewStyle,
 } from "react-native";
 import {
   parseMarkdownSubset,
   type MarkdownInlineNode,
   type MarkdownSubsetBlock,
 } from "@events-os/shared";
-import { BODY_LIST_INDENT, bodyParagraphSpacing } from "./canvasStyles";
-import { emptySlotDraw } from "./placeholders";
+import {
+  BODY_LIST_INDENT,
+  BODY_PARAGRAPH_SPACING,
+  bodyParagraphSpacing,
+} from "./canvasStyles";
+import {
+  editingBoxGeometry,
+  slotLineHeight,
+  splitTextBox,
+} from "./canvasEditBox";
+import {
+  emptySlotDraw,
+  promptStyle,
+  slotPrompt,
+  type CanvasSlot,
+} from "./placeholders";
+
+/** A web `<textarea>` does not grow with its content; React Native's multiline
+ *  input does. `canvasEditBox.ts#editingBoxGeometry` is what does something
+ *  about it — this is the only place that has to know which platform we're on. */
+const IS_WEB = Platform.OS === "web";
 
 /** One inline run and its children, as nested `<Text>` — RN inherits type
  *  styles down a `<Text>` tree the same way HTML does. */
@@ -120,13 +145,28 @@ export function CanvasMarkdown({
  * A run of text that edits WHERE IT SITS.
  *
  * Three states, one geometry: read-only text, clickable text, and a focused
- * `TextInput` carrying the identical style object. Using the same `style` for
- * the input is the whole point — the words must not move, resize or change
- * colour when you start typing, or the canvas stops being a preview.
+ * `TextInput` carrying the identical type styles. Same type in the same place
+ * is the whole point — the words must not move, resize or change colour when
+ * you start typing, or the canvas stops being a preview.
+ *
+ * ── The box, not just the type ─────────────────────────────────────────────
+ * Same type was never enough. The static render of a body is SEVERAL text runs
+ * with paragraph gaps; the editing render is ONE input holding raw markdown,
+ * and a `<textarea>` on web takes its own default height. A three-paragraph
+ * hero body collapsed to two lines the moment it was clicked and the whole
+ * document jumped up the page.
+ *
+ * So the static render is MEASURED (`onLayout`) and the input is floored at
+ * the height it found — see `canvasEditBox.ts`, which owns that arithmetic and
+ * is unit-tested on it. The box then grows with what the author types and
+ * never shrinks below the words that were on screen when the caret landed.
+ * The slot's own margins are hoisted onto whichever view is outermost in each
+ * state (`splitTextBox`), so all three states are the same shape.
  *
  * An EMPTY value draws whatever `emptySlotDraw` says it may (see
- * `placeholders.ts`): the prompt when this block is the selected one, a
- * wordless outline when it isn't, and nothing at all on a locked canvas —
+ * `placeholders.ts`): a quiet hint for an OPTIONAL slot and the prompt in the
+ * slot's own type for a required one, both only when this block is selected; a
+ * wordless outline when it isn't; and nothing at all on a locked canvas —
  * where the prompt would be help text sitting exactly where the approver
  * expects the newsletter's own copy. The outline is what keeps "the block
  * vanished" from coming back: an empty block stays visible and clickable for
@@ -135,7 +175,8 @@ export function CanvasMarkdown({
  */
 export function CanvasEditableText({
   value,
-  placeholder,
+  slot,
+  pollIndex,
   style,
   editable,
   selected,
@@ -159,7 +200,11 @@ export function CanvasEditableText({
   staticPrefix,
 }: {
   value: string;
-  placeholder: string;
+  /** Which slot this is. Carries both the prompt and whether the slot is one
+   *  the email is complete without — see `placeholders.ts`. */
+  slot: CanvasSlot;
+  /** A poll option's number, for the one slot whose prompt isn't fixed. */
+  pollIndex?: number;
   style: TextStyle;
   editable: boolean;
   /** Whether the BLOCK this slot belongs to is the selected one — the other
@@ -174,32 +219,87 @@ export function CanvasEditableText({
   renderStatic?: () => React.ReactNode;
   staticPrefix?: string;
 }) {
+  /** The height the STATIC render last occupied. Kept across the swap to the
+   *  input — that is the entire trick, and it survives because this component
+   *  stays mounted through it. */
+  const [staticHeight, setStaticHeight] = useState<number | null>(null);
+  /** What the input says its content needs (web only — see `IS_WEB`). */
+  const [contentHeight, setContentHeight] = useState<number | null>(null);
+
+  // A new editing session starts from the static box again, whether it ended
+  // by blurring or by the selection moving to another block.
+  useEffect(() => {
+    if (!editing) setContentHeight(null);
+  }, [editing]);
+
+  const placeholder = slotPrompt(slot, pollIndex);
+  const line = slotLineHeight(style.lineHeight, style.fontSize);
+  const { box, type } = splitTextBox(style);
+
+  // Both stable: RN Web re-subscribes a `ResizeObserver` (and re-attaches the
+  // input's ref, which re-measures it) whenever one of these changes identity,
+  // and these fire on every keystroke.
+  const measure = useCallback((e: LayoutChangeEvent) => {
+    const height = e.nativeEvent.layout.height;
+    setStaticHeight((prev) =>
+      prev !== null && Math.abs(prev - height) < 0.5 ? prev : height,
+    );
+  }, []);
+  const measureContent = useCallback(
+    (e: NativeSyntheticEvent<TextInputContentSizeChangeEventData>) =>
+      setContentHeight(e.nativeEvent.contentSize.height),
+    [],
+  );
+
   if (editable && editing) {
+    const geometry = editingBoxGeometry({
+      value,
+      multiline,
+      lineHeight: line,
+      // Only a slot drawn through `CanvasMarkdown` has paragraph gaps under
+      // its blocks; a quote is one run however many lines it wraps to.
+      paragraphSpacing: renderStatic ? BODY_PARAGRAPH_SPACING : 0,
+      measured: staticHeight,
+      contentHeight,
+      selfSizing: !IS_WEB,
+    });
     return (
-      <TextInput
-        value={value}
-        onChangeText={onChangeText}
-        onBlur={onStopEditing}
-        multiline={multiline}
-        autoFocus
-        accessibilityLabel={accessibilityLabel}
-        placeholder={placeholder}
-        // `padding: 0` and no border: the input must occupy exactly the box
-        // the text occupied. RN gives a TextInput its own padding on Android
-        // and a focus ring on web, both of which would nudge the layout.
-        style={[
-          style,
-          {
-            padding: 0,
-            margin: 0,
-            borderWidth: 0,
-            // `outlineWidth` is web-only; harmless on native (unknown style
-            // keys are ignored) and it removes the browser's focus ring, which
-            // would otherwise sit around a heading mid-email.
-            outlineWidth: 0,
-          } as TextStyle,
-        ]}
-      />
+      // The wrapper holds the box the static render occupied. It carries the
+      // slot's margins too, so entering and leaving edit mode cannot change
+      // the space the block takes up.
+      <View style={[box, { minHeight: geometry.wrapperMinHeight }]}>
+        <TextInput
+          value={value}
+          onChangeText={onChangeText}
+          onBlur={onStopEditing}
+          onContentSizeChange={measureContent}
+          multiline={multiline}
+          autoFocus
+          accessibilityLabel={accessibilityLabel}
+          placeholder={placeholder}
+          // `padding: 0` and no border: the input must occupy exactly the box
+          // the text occupied. RN gives a TextInput its own padding on Android
+          // and a focus ring on web, both of which would nudge the layout.
+          style={[
+            type,
+            {
+              padding: 0,
+              margin: 0,
+              borderWidth: 0,
+              // Android centres a multiline input's text in a box taller than
+              // its content; the words have to start where the static ones
+              // did. Ignored elsewhere.
+              textAlignVertical: "top",
+              minHeight: geometry.inputMinHeight,
+              height: geometry.inputHeight,
+              // `outlineWidth` is web-only; harmless on native (unknown style
+              // keys are ignored) and it removes the browser's focus ring, which
+              // would otherwise sit around a heading mid-email.
+              outlineWidth: 0,
+            } as TextStyle,
+          ]}
+        />
+      </View>
     );
   }
 
@@ -214,26 +314,37 @@ export function CanvasEditableText({
     onStartEditing();
   };
 
-  if (empty) {
-    const draw = emptySlotDraw(editable, selected);
-    // A locked canvas is a picture of the email, and the email has nothing
-    // here. Note this also drops the slot's own margin, exactly as the
-    // renderer's `if (content.body)` does.
-    if (draw === "nothing") return null;
-    if (draw === "outline") {
-      return <EmptySlot style={style} label={accessibilityLabel} onPress={start} />;
-    }
+  const draw = empty ? emptySlotDraw(editable, selected, slot) : null;
+  // A locked canvas is a picture of the email, and the email has nothing
+  // here. Note this also drops the slot's own margin, exactly as the
+  // renderer's `if (content.body)` does.
+  if (draw === "nothing") return null;
+  if (draw === "outline") {
+    return (
+      <EmptySlot
+        line={line}
+        box={box}
+        color={type.color}
+        centered={type.textAlign === "center"}
+        label={accessibilityLabel}
+        onPress={start}
+        onLayout={measure}
+      />
+    );
   }
 
-  const body = empty ? (
-    <Text style={[style, { opacity: 0.45 }]}>{placeholder}</Text>
-  ) : renderStatic ? (
-    <>{renderStatic()}</>
-  ) : (
-    <Text style={style}>{staticPrefix ? `${staticPrefix}${value}` : value}</Text>
-  );
+  const body =
+    draw !== null ? (
+      <Text style={[type, promptStyle(draw, { fontSize: type.fontSize, lineHeight: line })]}>
+        {placeholder}
+      </Text>
+    ) : renderStatic ? (
+      <>{renderStatic()}</>
+    ) : (
+      <Text style={type}>{staticPrefix ? `${staticPrefix}${value}` : value}</Text>
+    );
 
-  if (!editable) return <>{body}</>;
+  if (!editable) return <View style={box}>{body}</View>;
 
   // `renderStatic` means block-level content (a markdown body renders lists as
   // Views), and a View nested inside a `<Text>` lays out badly on native — so
@@ -243,6 +354,8 @@ export function CanvasEditableText({
     return (
       <Pressable
         onPress={start}
+        onLayout={measure}
+        style={box}
         accessibilityRole="button"
         accessibilityLabel={`Edit ${accessibilityLabel}`}
       >
@@ -254,6 +367,8 @@ export function CanvasEditableText({
   return (
     <Text
       onPress={start}
+      onLayout={measure}
+      style={box}
       accessibilityRole="button"
       accessibilityLabel={`Edit ${accessibilityLabel}`}
       suppressHighlighting
@@ -265,12 +380,11 @@ export function CanvasEditableText({
 
 /** The outline state's proportions. EDITOR chrome, not email geometry — so
  *  these are the only numbers in this file, and nothing reads them but the
- *  mark below. A short bar rather than a full-width rule: a full-width one
- *  reads as a divider, which IS a block the email can contain. */
+ *  mark below (its sibling, how loudly a prompt is drawn, lives with the rule
+ *  in `placeholders.ts#PROMPT_VOICE`). A short bar rather than a full-width
+ *  rule: a full-width one reads as a divider, which IS a block the email can
+ *  contain. */
 const EMPTY_SLOT_BAR = { widthPct: 32, height: 2, opacity: 0.22 } as const;
-/** Line-height fallback for a style that sets none, so the mark still occupies
- *  a clickable row. */
-const EMPTY_SLOT_FALLBACK_LINE = 16;
 
 /**
  * An empty slot on an EDITABLE canvas whose block isn't selected: a small
@@ -280,33 +394,41 @@ const EMPTY_SLOT_FALLBACK_LINE = 16;
  * away, on the selected block. It takes the slot's colour from the style it
  * would have drawn, so it stays visible on a maroon hero card and a cream one
  * alike, and it follows the slot's alignment so a centred card's marks sit
- * under its centred heading.
+ * under its centred heading. One line of type is also exactly what a hint
+ * occupies (`promptStyle` keeps the slot's line box), so selecting the block
+ * swaps the mark for its words without moving anything.
  */
 function EmptySlot({
-  style,
+  line,
+  box,
+  color,
+  centered,
   label,
   onPress,
+  onLayout,
 }: {
-  style: TextStyle;
+  line: number;
+  box: ViewStyle;
+  color: ColorValue | undefined;
+  centered: boolean;
   label: string;
   onPress: (e?: { stopPropagation?: () => void }) => void;
+  onLayout: (e: LayoutChangeEvent) => void;
 }) {
-  const line =
-    typeof style.lineHeight === "number"
-      ? style.lineHeight
-      : typeof style.fontSize === "number"
-        ? style.fontSize
-        : EMPTY_SLOT_FALLBACK_LINE;
   return (
     <Pressable
       onPress={onPress}
+      onLayout={onLayout}
       accessibilityRole="button"
       accessibilityLabel={`Add ${label}`}
-      style={{
-        height: line,
-        justifyContent: "center",
-        alignItems: style.textAlign === "center" ? "center" : "flex-start",
-      }}
+      style={[
+        box,
+        {
+          height: line,
+          justifyContent: "center",
+          alignItems: centered ? "center" : "flex-start",
+        },
+      ]}
     >
       <View
         style={{
@@ -314,7 +436,7 @@ function EmptySlot({
           height: EMPTY_SLOT_BAR.height,
           borderRadius: 999,
           opacity: EMPTY_SLOT_BAR.opacity,
-          backgroundColor: style.color,
+          backgroundColor: color,
         }}
       />
     </Pressable>
