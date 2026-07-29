@@ -518,6 +518,43 @@ describe("ensureBuiltInTemplates", () => {
     );
   });
 
+  test("resetBuiltInTemplate restores a founder's clobbered built-in on demand", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const [templateId] = await t.mutation(
+      internal.campaignTemplates.ensureBuiltInTemplates,
+      { scope: "central", createdBy: s.userId },
+    );
+    // The exact failure mode this button exists for: someone typed test
+    // content straight into the built-in and autosave wrote it.
+    await s.as.mutation(api.campaignTemplates.updateTemplate, {
+      templateId,
+      doc: { type: "doc", content: [{ type: "horizontalRule" }] },
+    });
+    const clobbered = await run(s.t, (ctx) => ctx.db.get(templateId));
+    expect((clobbered?.doc as NewsletterTiptapDoc).content.length).toBe(1);
+
+    await s.as.mutation(api.campaignTemplates.resetBuiltInTemplate, { templateId });
+
+    const restored = await run(s.t, (ctx) => ctx.db.get(templateId));
+    expect((restored?.doc as NewsletterTiptapDoc).content.length).toBe(
+      PUBLIC_WORSHIP_NEWSLETTER_TIPTAP.content.length,
+    );
+    expect(restored?.docFormat).toBe("tiptap");
+  });
+
+  test("resetBuiltInTemplate refuses a template nobody shipped — nothing to reset it to", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const templateId = await s.as.mutation(api.campaignTemplates.createTemplate, {
+      scope: "central",
+      name: "Volunteer welcome",
+    });
+    await expect(
+      s.as.mutation(api.campaignTemplates.resetBuiltInTemplate, { templateId }),
+    ).rejects.toThrow(/NOT_BUILT_IN|shipped default/);
+  });
+
   test("leaves an archived built-in archived — a deletion sticks", async () => {
     const t = newT();
     const s = await asSuperuser(t);

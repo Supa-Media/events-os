@@ -99,6 +99,7 @@ import {
   shouldResaveAfterCompletion,
 } from "./mailyAutosave";
 import { isTiptapDocEmpty } from "./mailyDoc";
+import { PW_NODE_PACK_EXTENSIONS } from "./pwNodePack";
 import type { MailyDocumentHostProps } from "./MailyDocumentHost.types";
 
 /** Below this width the preview stacks under the editor — matches
@@ -257,8 +258,17 @@ export function MailyDocumentHost({
   );
 
   const extensions = useMemo(() => {
-    if (!uploadImage) return [];
+    // The Public Worship node pack (`pwHeading`/`pwParagraph`/`pwBleedImage`/
+    // `pwPoll`) is ALWAYS registered, not conditional on `uploadImage` — every
+    // built-in and every real newsletter is built from these node types
+    // (`tiptapNewsletterTemplate.ts`), and omitting them is exactly the bug
+    // `pwNodePack.ts`'s module doc describes: an unrecognized node type makes
+    // Tiptap's own JSON parser discard the WHOLE document, silently, back to
+    // empty — "opened the built-in template and it was blank."
+    const base = [...PW_NODE_PACK_EXTENSIONS];
+    if (!uploadImage) return base;
     return [
+      ...base,
       ImageUploadExtension.configure({
         onImageUpload: async (file: Blob): Promise<string> => {
           const upload = uploadImageRef.current;

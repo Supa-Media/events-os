@@ -452,6 +452,52 @@ export const archiveTemplate = mutation({
 });
 
 /**
+ * Reset ONE built-in template back to its shipped content, on demand — the
+ * runtime escape hatch for "I (the founder) typed test content straight into
+ * the built-in newsletter and autosave already wrote it."
+ *
+ * ── Why this needs to exist alongside the deploy-time reseed ────────────────
+ * `seedBuiltInTemplates` already restores a drifted built-in row (see
+ * `campaignTemplates.test.ts#"refreshes a drifted built-in row in place"`),
+ * but the paths that RE-INVOKE it after go-live are all indirect: migration
+ * 0056 (`0056_upgrade_builtin_newsletter_tiptap.ts`) is ledgered and runs
+ * ONCE, ever — it does not re-fire on every deploy, only on the deploy that
+ * first shipped it — and the hourly `ensureNewsletterImagesImported` cron
+ * self-disables its own reseed call the moment the artwork import is
+ * `already_complete` (see that migration's own doc), which is true for any
+ * mature deployment. The one reliable backstop left is `campaigns
+ * .createCampaign`'s opportunistic reseed — real, but it only fires the next
+ * time SOMEONE ELSE creates a campaign, which could be hours away. A founder
+ * who just clobbered the newsletter wants it back NOW, not "eventually,
+ * when someone else happens to compose an email" — hence a direct button.
+ *
+ * Deliberately thin: re-runs the SAME idempotent seeder every other path
+ * uses (`seedBuiltInTemplates`), scoped to the row's own `scope`, rather than
+ * inventing a second "restore just this one row" code path that could drift
+ * from the real seed logic (artwork re-fill, format stamping, description).
+ * Refuses a non-built-in row (`NOT_BUILT_IN`) — resetting a template someone
+ * actually authored to a DIFFERENT template's shipped content isn't "reset,"
+ * it's overwrite, and there's nothing to reset it TO.
+ */
+export const resetBuiltInTemplate = mutation({
+  args: { templateId: v.id("campaigns") },
+  returns: v.null(),
+  handler: async (ctx, { templateId }) => {
+    await requireCampaignDesign(ctx);
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    const row = await loadTemplate(ctx, templateId);
+    if (row.isBuiltIn !== true) {
+      throw new ConvexError({
+        code: "NOT_BUILT_IN",
+        message: "Only a built-in template can be reset to its shipped default.",
+      });
+    }
+    await seedBuiltInTemplates(ctx, row.scope, userId);
+    return null;
+  },
+});
+
+/**
  * Seed (or refresh) the code-shipped templates for one scope. Idempotent —
  * safe to run on every deploy, from a migration, or on demand.
  *
