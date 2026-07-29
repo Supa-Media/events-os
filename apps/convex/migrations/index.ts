@@ -74,6 +74,7 @@ import { backfillPeoplePersona } from "./0051_backfill_people_persona";
 import { addCampaignDesignDefaults } from "./0053_add_campaign_design_defaults";
 import { seedOrgMailingAddress } from "./0054_seed_org_mailing_address";
 import { mergeCampaignTemplatesIntoCampaigns } from "./0055_merge_campaign_templates_into_campaigns";
+import { upgradeBuiltInNewsletterTiptap } from "./0056_upgrade_builtin_newsletter_tiptap";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -288,4 +289,13 @@ export const MIGRATIONS: Migration[] = [
   // rollback window has passed. Idempotent, keyed on `mergedFromTemplateId`
   // provenance. See 0055.
   mergeCampaignTemplatesIntoCampaigns,
+  // Built-in newsletter → tiptap (WS4 acceptance artefact) — 0049 already ran
+  // and is ledgered, so it will never re-fire now that
+  // `seedBuiltInTemplates`'s body ships the tiptap doc instead of the legacy
+  // blocks one. This registered entry is the deploy-time guarantee that an
+  // EXISTING deployment's built-in "Monthly newsletter" row actually flips,
+  // rather than relying on the next `createCampaign` call or an artwork-cron
+  // re-seed that self-disables once the import is already complete. See
+  // 0056.
+  upgradeBuiltInNewsletterTiptap,
 ];

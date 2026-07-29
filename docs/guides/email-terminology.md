@@ -22,8 +22,8 @@ try to read our own docs against an industry article.
 | ~~contact~~ → **Subscriber** | Subscriber / Profile | A person *in their email capacity*. "Contact" stays for the CRM sense; a subscriber is the emailable projection of one, and only a subscriber has a consent state. |
 | ~~Campaign~~ → **Email** | Marketing Email (HubSpot) / Broadcast (Resend) | **One email, sent once, to a chosen segment.** See below for why this stopped being called a Campaign. |
 | *(reserved)* **Campaign** | Campaign / Flow / Journey | A SERIES of emails. Not built. The word is deliberately kept free for it. |
-| **Template** | Template | A saved, reusable document. The starting point an Email is created from. |
-| **Theme** | Brand / Design tokens | The colours, fonts, radius and tracking a document renders with. Owned by the designer, changeable whenever she wants. |
+| **Template** | Template | A saved Email, kept as a starting point. Not a separate concept or table — "start from template" duplicates the saved Email into a fresh draft; "save as template" duplicates a draft back into a saved copy. Same row shape, same editor, either direction. |
+| ~~Theme~~ → *(retired)* | — | Retired 2026-07-29, founder decision: *"the concept of themes is pretty dumb… no need as long as we have templates."* There is no shared brand file a document inherits from; styling lives per-element, in the document, the way a saved Email carries its own look. Brand consistency now comes from starting the next send from a template instead of a blank page — see below. |
 | **Block** | Block / Content block | One row of the document (heading, card, banner, footer…). |
 | **Recipient** | Recipient | One person's copy of one Email, with its own unsubscribe token and delivery state. |
 | **Merge tag** | Merge tag | `{{firstName}}` — Mailchimp's exact term. |
@@ -31,6 +31,24 @@ try to read our own docs against an industry article.
 | ~~blast~~ → **Event announcement** | Announcement | The one-off send attached to an event. "Blast" is an internal joke word that had leaked into UI copy, and it describes the compliance posture we are trying not to have. |
 | ~~Deny~~ → **Reject** | Reject | The approver's negative decision. "Deny" reads like a permissions error. |
 | ~~"Send as"~~ → **From** | From name / From address | It is the `From:` header. Say so. |
+
+## Styling: per-element, not a shared theme
+
+The editor is [maily.to](https://maily.to)'s: the document is the surface,
+selecting text raises a floating toolbar, and a `+`/drag gutter inserts and
+reorders blocks. Since Themes were retired (see the table above), colour,
+size, and the rest of a block's look are set right there, on that block, the
+same way a Google Doc's formatting lives on the text you selected — not
+inherited from anything shared.
+
+That means the tool no longer stops an Email from drifting off-brand; a
+Template does the job a Theme used to. Public Worship's brand stays
+consistent because people **start from a template instead of a blank
+page** — the built-in newsletter, or one someone saved — and a template is
+nothing but a saved Email with the styling already right. Fix the look once,
+in the templates people actually start from, and it rides along on every
+copy made afterward. Building every send from scratch is still possible; it
+just means the send is only as on-brand as whoever built it that day.
 
 ## The one modelling decision worth stating plainly
 

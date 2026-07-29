@@ -334,6 +334,7 @@ const REGISTRY_NAMES = [
   "0053_add_campaign_design_defaults",
   "0054_seed_org_mailing_address",
   "0055_merge_campaign_templates_into_campaigns",
+  "0056_upgrade_builtin_newsletter_tiptap",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

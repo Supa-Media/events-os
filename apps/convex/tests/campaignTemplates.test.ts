@@ -7,12 +7,16 @@ import {
   BUILT_IN_CAMPAIGN_TEMPLATES,
   DEFAULT_EMAIL_THEME,
   NEWSLETTER_ASSETS,
-  NEWSLETTER_TEMPLATE_SLOTS,
   PUBLIC_WORSHIP_NEWSLETTER_TEMPLATE,
+  PUBLIC_WORSHIP_NEWSLETTER_TIPTAP,
   PUBLIC_WORSHIP_THEME,
-  validateEmailDocument,
+  TIPTAP_NEWSLETTER_ARTWORK_SLOTS,
+  validateTiptapEmailDoc,
+  type NewsletterTiptapDoc,
+  type NewsletterTiptapNode,
 } from "@events-os/shared";
 import { runSeedBuiltInCampaignTemplates } from "../migrations/0049_seed_builtin_campaign_templates";
+import { runUpgradeBuiltInNewsletterTiptap } from "../migrations/0056_upgrade_builtin_newsletter_tiptap";
 
 /**
  * Campaign templates (`campaignTemplates.ts`):
@@ -65,6 +69,21 @@ async function seedCampaign(
     doc,
   });
   return { campaignId, audienceId };
+}
+
+/** Depth-first walk of a tiptap doc's node tree, visiting every node
+ *  (including the top-level ones) exactly once — the test-side twin of
+ *  `tiptapNewsletterTemplate.ts#fillNode`'s own recursion, used here to
+ *  inspect rather than mutate. */
+function walkTiptapNodes(
+  doc: NewsletterTiptapDoc,
+  visit: (node: NewsletterTiptapNode) => void,
+): void {
+  function walk(node: NewsletterTiptapNode): void {
+    visit(node);
+    for (const child of node.content ?? []) walk(child);
+  }
+  for (const node of doc.content) walk(node);
 }
 
 // ── Access ────────────────────────────────────────────────────────────────
@@ -397,7 +416,12 @@ describe("createCampaignFromTemplate and themes", () => {
     expect(campaign?.doc.theme?.name).toBe(DEFAULT_EMAIL_THEME.name);
   });
 
-  test("a template that carries its own theme keeps it", async () => {
+  test("the tiptap built-in copies verbatim — a tiptap document is never theme-stamped", async () => {
+    // The built-in "Monthly newsletter" ships as the tiptap document
+    // (`PUBLIC_WORSHIP_NEWSLETTER_TIPTAP`) since the WS4 seeding-path upgrade.
+    // Unlike a blocks-format template, a tiptap doc carries no `theme` at all
+    // — its own doc-level `attrs.pwCanvasColor` is the analogous "did this
+    // survive the copy untouched" signal.
     const t = newT();
     const s = await asSuperuser(t);
     const audienceId = await seedAudience(s);
@@ -410,8 +434,9 @@ describe("createCampaignFromTemplate and themes", () => {
       { templateId: builtInId, name: "From newsletter", subject: "Hi", audienceId },
     );
     const campaign = await run(s.t, (ctx) => ctx.db.get(campaignId));
-    expect(campaign?.doc.theme?.name).toBe(
-      PUBLIC_WORSHIP_NEWSLETTER_TEMPLATE.doc.theme?.name,
+    expect(campaign?.docFormat).toBe("tiptap");
+    expect((campaign?.doc as NewsletterTiptapDoc).attrs?.pwCanvasColor).toBe(
+      PUBLIC_WORSHIP_NEWSLETTER_TIPTAP.attrs?.pwCanvasColor,
     );
   });
 });
@@ -443,12 +468,15 @@ describe("ensureBuiltInTemplates", () => {
       (r) => r.name === PUBLIC_WORSHIP_NEWSLETTER_TEMPLATE.name,
     );
     expect(newsletter?.isBuiltIn).toBe(true);
-    expect(newsletter?.doc.blocks.length).toBe(
-      PUBLIC_WORSHIP_NEWSLETTER_TEMPLATE.doc.blocks.length,
+    // The built-in ships as the tiptap document since the WS4 seeding-path
+    // upgrade — see `lib/builtInTemplates.ts`'s module doc.
+    expect(newsletter?.docFormat).toBe("tiptap");
+    expect((newsletter?.doc as NewsletterTiptapDoc).content.length).toBe(
+      PUBLIC_WORSHIP_NEWSLETTER_TIPTAP.content.length,
     );
     // The shipped template is itself a valid document — worth asserting here
     // since it lands in the table and eventually in an inbox.
-    expect(newsletter?.doc.theme).toBeDefined();
+    expect(validateTiptapEmailDoc(newsletter?.doc).ok).toBe(true);
   });
 
   test("an unchanged re-seed does not touch the row", async () => {
@@ -478,15 +506,15 @@ describe("ensureBuiltInTemplates", () => {
       { scope: "central", createdBy: s.userId },
     );
     await run(s.t, (ctx) =>
-      ctx.db.patch(templateId, { doc: { blocks: [{ id: "stale", kind: "divider" }] } }),
+      ctx.db.patch(templateId, { doc: { type: "doc", content: [{ type: "horizontalRule" }] } }),
     );
     await t.mutation(internal.campaignTemplates.ensureBuiltInTemplates, {
       scope: "central",
       createdBy: s.userId,
     });
     const row = await run(s.t, (ctx) => ctx.db.get(templateId));
-    expect(row?.doc.blocks.length).toBe(
-      PUBLIC_WORSHIP_NEWSLETTER_TEMPLATE.doc.blocks.length,
+    expect((row?.doc as NewsletterTiptapDoc).content.length).toBe(
+      PUBLIC_WORSHIP_NEWSLETTER_TIPTAP.content.length,
     );
   });
 
@@ -550,35 +578,32 @@ describe("0049_seed_builtin_campaign_templates", () => {
     );
     expect(newsletter).toBeDefined();
     expect(newsletter?.isBuiltIn).toBe(true);
-    // The seeded document is the real newsletter, not an empty shell.
-    const validated = validateEmailDocument(newsletter?.doc);
+    // The seeded document is the real newsletter, TIPTAP-format since the
+    // WS4 seeding-path upgrade — no longer the legacy blocks document.
+    expect(newsletter?.docFormat).toBe("tiptap");
+    const validated = validateTiptapEmailDoc(newsletter?.doc);
     expect(validated.ok).toBe(true);
     if (validated.ok) {
-      // The vocabulary the newsletter is ACTUALLY built from. It used to be
-      // asserted as eyebrow/columns/quote — the generic stand-ins from before
-      // the layout was rebuilt against the real design. The banners now carry
-      // the section headings as artwork, and the sections are card variants.
-      const kinds = new Set(validated.doc.blocks.map((b) => b.kind));
-      expect(kinds.has("bleed_image")).toBe(true);
-      expect(kinds.has("card")).toBe(true);
-      expect(kinds.has("footer")).toBe(true);
+      const nodeTypes = new Set<string>();
+      const srcs: unknown[] = [];
+      walkTiptapNodes(newsletter?.doc as NewsletterTiptapDoc, (node) => {
+        nodeTypes.add(node.type);
+        if (node.type === "image" || node.type === "pwBleedImage") {
+          srcs.push(node.attrs?.src);
+        }
+      });
+      // The vocabulary the newsletter is ACTUALLY built from — the tiptap
+      // twin of the blocks vocabulary this test used to assert
+      // (bleed_image/card/footer → pwBleedImage/section/footer).
+      expect(nodeTypes.has("pwBleedImage")).toBe(true);
+      expect(nodeTypes.has("section")).toBe(true);
+      expect(nodeTypes.has("footer")).toBe(true);
+      expect(nodeTypes.has("pwHeading")).toBe(true);
+      expect(nodeTypes.has("button")).toBe(true);
 
-      const variants = new Set(
-        validated.doc.blocks
-          .filter((b): b is Extract<typeof b, { kind: "card" }> => b.kind === "card")
-          .map((b) => b.variant),
-      );
-      for (const v of ["hero", "feature", "outlined", "testimonial"] as const) {
-        expect(variants.has(v)).toBe(true);
-      }
-      expect(validated.doc.theme?.accent).toBe(PUBLIC_WORSHIP_THEME.accent);
-
-      // No block may name an image URL this deployment doesn't own — the
+      // No node may name an image URL this deployment doesn't own — the
       // template ships EMPTY slots the image library fills.
-      const urls = validated.doc.blocks.flatMap((b) =>
-        b.kind === "bleed_image" ? [b.url] : b.kind === "card" ? [b.imageUrl] : [],
-      );
-      expect(urls.every((u) => !u)).toBe(true);
+      expect(srcs.every((u) => !u)).toBe(true);
     }
   });
 
@@ -612,6 +637,130 @@ describe("0049_seed_builtin_campaign_templates", () => {
     const result = await run(t, (ctx) => runSeedBuiltInCampaignTemplates(ctx));
     expect(result.seeded).toBe(0);
     expect(result.skipped).toBe("no users");
+  });
+});
+
+/**
+ * The seeding path's blocks → tiptap upgrade (WS4 acceptance artefact). A
+ * production deployment's built-in "Monthly newsletter" row was written by
+ * the OLD `seedBuiltInTemplates` body — a blocks-format doc, `docFormat`
+ * absent — before this release. These pin what happens the first time the
+ * NEW body (this same change) sees that row: an in-place upgrade, exactly
+ * once, never a duplicate row, and never applied to a row a human archived.
+ */
+describe("built-in newsletter: blocks → tiptap upgrade", () => {
+  /** What a pre-upgrade deployment's built-in row looks like — written
+   *  directly, standing in for what the OLD seeder body would have left
+   *  behind (or what migration 0049 wrote before this release). */
+  async function seedLegacyBlocksBuiltIn(
+    s: ChapterSetup,
+    opts: { archived?: boolean } = {},
+  ): Promise<Id<"campaigns">> {
+    const now = Date.now();
+    return run(s.t, (ctx) =>
+      ctx.db.insert("campaigns", {
+        scope: "central",
+        name: PUBLIC_WORSHIP_NEWSLETTER_TEMPLATE.name,
+        description: PUBLIC_WORSHIP_NEWSLETTER_TEMPLATE.description,
+        doc: PUBLIC_WORSHIP_NEWSLETTER_TEMPLATE.doc,
+        // Absent — every row the old seeder ever wrote.
+        docFormat: undefined,
+        kind: "template",
+        status: "draft",
+        subject: "",
+        isBuiltIn: true,
+        archived: opts.archived,
+        createdBy: s.userId,
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+  }
+
+  test("upgrades an existing blocks-format built-in row to tiptap IN PLACE, exactly once", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const legacyId = await seedLegacyBlocksBuiltIn(s);
+    const before = await run(s.t, (ctx) => ctx.db.get(legacyId));
+
+    await run(s.t, (ctx) => runSeedBuiltInCampaignTemplates(ctx));
+
+    const upgraded = await run(s.t, (ctx) => ctx.db.get(legacyId));
+    // Patched IN PLACE — same row id, not a new one alongside it.
+    expect(upgraded?._id).toBe(legacyId);
+    expect(upgraded?.docFormat).toBe("tiptap");
+    expect((upgraded?.doc as NewsletterTiptapDoc).content.length).toBe(
+      PUBLIC_WORSHIP_NEWSLETTER_TIPTAP.content.length,
+    );
+    expect(upgraded?.updatedAt).not.toBe(before?.updatedAt);
+
+    const rows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("campaigns")
+        .withIndex("by_scope_kind", (q) => q.eq("scope", "central").eq("kind", "template"))
+        .collect(),
+    );
+    expect(rows).toHaveLength(BUILT_IN_CAMPAIGN_TEMPLATES.length); // no duplicate
+
+    // "Exactly once": a sentinel makes a second patch unambiguous — the flip
+    // already happened, so the ordinary no-churn diff takes back over.
+    await run(s.t, (ctx) => ctx.db.patch(legacyId, { updatedAt: 1 }));
+    await run(s.t, (ctx) => runSeedBuiltInCampaignTemplates(ctx));
+    expect((await run(s.t, (ctx) => ctx.db.get(legacyId)))?.updatedAt).toBe(1);
+  });
+
+  test("an archived blocks-format built-in stays archived and is never upgraded", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const legacyId = await seedLegacyBlocksBuiltIn(s, { archived: true });
+    const before = await run(s.t, (ctx) => ctx.db.get(legacyId));
+
+    await run(s.t, (ctx) => runSeedBuiltInCampaignTemplates(ctx));
+
+    const row = await run(s.t, (ctx) => ctx.db.get(legacyId));
+    expect(row?.archived).toBe(true);
+    // Untouched, not just "still archived" — an archived row is never
+    // patched again at all, so it keeps its legacy blocks doc forever.
+    expect(row?.docFormat).toBeUndefined();
+    expect(row?.updatedAt).toBe(before?.updatedAt);
+    expect((row?.doc as { blocks?: unknown[] }).blocks).toBeDefined();
+  });
+});
+
+/**
+ * The DEPLOY-TIME wiring for the upgrade above — same relationship 0049's own
+ * "the migration is what makes it exist in PRODUCTION" tests have to
+ * `ensureBuiltInTemplates`. Shares its body with `runSeedBuiltInCampaignTemplates`
+ * (see that migration's doc for why a NEW registered migration was needed at
+ * all, given 0049 already ran and is ledgered), so this just proves the
+ * wiring, not the upgrade mechanics themselves (pinned above).
+ */
+describe("0056_upgrade_builtin_newsletter_tiptap", () => {
+  test("upgrades an existing blocks-format built-in the same way 0049's seeder does", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const now = Date.now();
+    const legacyId = await run(s.t, (ctx) =>
+      ctx.db.insert("campaigns", {
+        scope: "central",
+        name: PUBLIC_WORSHIP_NEWSLETTER_TEMPLATE.name,
+        description: PUBLIC_WORSHIP_NEWSLETTER_TEMPLATE.description,
+        doc: PUBLIC_WORSHIP_NEWSLETTER_TEMPLATE.doc,
+        kind: "template",
+        status: "draft",
+        subject: "",
+        isBuiltIn: true,
+        createdBy: s.userId,
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+
+    const result = await run(s.t, (ctx) => runUpgradeBuiltInNewsletterTiptap(ctx));
+    expect(result.seeded).toBe(BUILT_IN_CAMPAIGN_TEMPLATES.length);
+
+    const row = await run(s.t, (ctx) => ctx.db.get(legacyId));
+    expect(row?.docFormat).toBe("tiptap");
   });
 });
 
@@ -668,23 +817,22 @@ describe("seedBuiltInTemplates — artwork from the image library", () => {
     return id;
   }
 
-  function slotUrls(doc: { blocks: { id: string; kind: string }[] }) {
+  /** The tiptap twin of the blocks-format helper this replaced: walks the
+   *  doc's node tree for every `pwSlot`-tagged node and reads its `src`. An
+   *  unfilled slot's node ships `src: ""` (never absent — see
+   *  `tiptapNewsletterTemplate.ts`'s `cardImage`/`bleedBanner`), unlike the
+   *  blocks format's `undefined` for the same case. */
+  function slotUrls(doc: NewsletterTiptapDoc) {
+    const sourceKeyByPwSlot = new Map(
+      TIPTAP_NEWSLETTER_ARTWORK_SLOTS.map((slot) => [slot.pwSlot, slot.sourceKey]),
+    );
     const urls = new Map<string, unknown>();
-    for (const slot of NEWSLETTER_TEMPLATE_SLOTS) {
-      const block = doc.blocks.find((b) => b.id === slot.blockId) as
-        | Record<string, unknown>
-        | undefined;
-      urls.set(
-        slot.sourceKey,
-        block?.kind === "bleed_image"
-          ? block.url
-          : block?.kind === "card"
-            ? block.imageUrl
-            : block?.kind === "footer"
-              ? block.logoUrl
-              : undefined,
-      );
-    }
+    for (const slot of TIPTAP_NEWSLETTER_ARTWORK_SLOTS) urls.set(slot.sourceKey, "");
+    walkTiptapNodes(doc, (node) => {
+      const pwSlot = typeof node.attrs?.pwSlot === "string" ? node.attrs.pwSlot : undefined;
+      const sourceKey = pwSlot ? sourceKeyByPwSlot.get(pwSlot) : undefined;
+      if (sourceKey) urls.set(sourceKey, node.attrs?.src);
+    });
     return urls;
   }
 
@@ -695,7 +843,7 @@ describe("seedBuiltInTemplates — artwork from the image library", () => {
 
     const templateId = await seed(s);
     const row = await run(s.t, (ctx) => ctx.db.get(templateId));
-    for (const [sourceKey, url] of slotUrls(row!.doc)) {
+    for (const [sourceKey, url] of slotUrls(row!.doc as NewsletterTiptapDoc)) {
       expect(url, sourceKey).toBe(`https://files.example.com/${sourceKey}.png`);
     }
   });
@@ -706,8 +854,10 @@ describe("seedBuiltInTemplates — artwork from the image library", () => {
 
     const templateId = await seed(s);
     const first = await run(s.t, (ctx) => ctx.db.get(templateId));
-    for (const [sourceKey, url] of slotUrls(first!.doc)) {
-      expect(url, sourceKey).toBeUndefined();
+    for (const [sourceKey, url] of slotUrls(first!.doc as NewsletterTiptapDoc)) {
+      // Empty, not absent — every artwork node ships `src: ""` in the
+      // shipped tiptap document (unlike the blocks format's undefined).
+      expect(url, sourceKey).toBe("");
     }
 
     // A sentinel makes "was it patched?" unambiguous rather than depending on
@@ -724,8 +874,9 @@ describe("seedBuiltInTemplates — artwork from the image library", () => {
     // 1. The template is seeded first, with an empty library — the real
     //    sequence, since 0049 runs on deploy and the import is run by hand.
     const templateId = await seed(s);
-    expect([...slotUrls((await run(s.t, (ctx) => ctx.db.get(templateId)))!.doc).values()]
-      .every((u) => u === undefined)).toBe(true);
+    expect([
+      ...slotUrls((await run(s.t, (ctx) => ctx.db.get(templateId)))!.doc as NewsletterTiptapDoc).values(),
+    ].every((u) => u === "")).toBe(true);
 
     // 2. The artwork arrives.
     await importArtwork(s);
@@ -733,10 +884,10 @@ describe("seedBuiltInTemplates — artwork from the image library", () => {
     // 3. The next seed must notice. This is what was broken.
     await seed(s);
     const row = await run(s.t, (ctx) => ctx.db.get(templateId));
-    for (const [sourceKey, url] of slotUrls(row!.doc)) {
+    for (const [sourceKey, url] of slotUrls(row!.doc as NewsletterTiptapDoc)) {
       expect(url, sourceKey).toBe(`https://files.example.com/${sourceKey}.png`);
     }
-    expect(validateEmailDocument(row!.doc).ok).toBe(true);
+    expect(validateTiptapEmailDoc(row!.doc).ok).toBe(true);
   });
 
   test("a re-seed once the artwork is in place is a no-op", async () => {
@@ -756,11 +907,12 @@ describe("seedBuiltInTemplates — artwork from the image library", () => {
     await importArtwork(s, { only: ["masthead", "footer-logo"] });
     const templateId = await seed(s);
 
-    const urls = slotUrls((await run(s.t, (ctx) => ctx.db.get(templateId)))!.doc);
+    const urls = slotUrls((await run(s.t, (ctx) => ctx.db.get(templateId)))!.doc as NewsletterTiptapDoc);
     expect(urls.get("masthead")).toBe("https://files.example.com/masthead.png");
     expect(urls.get("footer-logo")).toBe("https://files.example.com/footer-logo.png");
-    expect(urls.get("hero-photo")).toBeUndefined();
-    expect(urls.get("banner-support")).toBeUndefined();
+    // Empty, not absent — see `slotUrls`'s own doc.
+    expect(urls.get("hero-photo")).toBe("");
+    expect(urls.get("banner-support")).toBe("");
   });
 
   test("alt text comes off the library row, so a human's edit reaches the template", async () => {
@@ -787,10 +939,11 @@ describe("seedBuiltInTemplates — artwork from the image library", () => {
         .withIndex("by_scope_kind", (q) => q.eq("scope", "central" as const).eq("kind", "template"))
         .collect(),
     ).then((rows) => rows.find((r) => r.isBuiltIn));
-    const hero = row!.doc.blocks.find(
-      (b: { id: string }) => b.id === "blk_nl-hero",
-    ) as { imageAlt?: string };
-    expect(hero.imageAlt).toBe("The team on the steps after the June night");
+    let heroAlt: unknown;
+    walkTiptapNodes(row!.doc as NewsletterTiptapDoc, (node) => {
+      if (node.attrs?.pwSlot === "nl-hero") heroAlt = node.attrs?.alt;
+    });
+    expect(heroAlt).toBe("The team on the steps after the June night");
   });
 
   test("an archived built-in stays archived AND unfilled", async () => {
@@ -806,8 +959,8 @@ describe("seedBuiltInTemplates — artwork from the image library", () => {
     expect(row?.archived).toBe(true);
     // Deliberate: a row someone deleted is never patched again, so it never
     // receives the artwork either.
-    for (const [sourceKey, url] of slotUrls(row!.doc)) {
-      expect(url, sourceKey).toBeUndefined();
+    for (const [sourceKey, url] of slotUrls(row!.doc as NewsletterTiptapDoc)) {
+      expect(url, sourceKey).toBe("");
     }
   });
 
