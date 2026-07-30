@@ -816,7 +816,12 @@ export function MailyDocumentHost({
               <div style={{ width: PREVIEW_WIDTHS[previewWidthId].width ?? "100%" }}>
                 <EmailHtmlPreview
                   html={forceIframeColorScheme(previewHtml, previewScheme)}
-                  height={split ? 560 : 420}
+                  // Preview-only: fit the whole email (founder bug,
+                  // 2026-07-30 — "weird that we can't see the whole thing").
+                  // SPLIT view keeps a fixed pane on purpose: it sits beside
+                  // the editor, and a document-height pane would stretch the
+                  // editor column to thousands of px alongside it.
+                  height={split ? 560 : "auto"}
                 />
               </div>
             </div>
