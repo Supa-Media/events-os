@@ -287,6 +287,59 @@ Before finishing a run of this skill, you MUST:
 
 ## Learnings Log (newest first)
 
+### 2026-07-30 — Run 13 (editor fixes v2 + paste-HTML-from-Canva; a dead agent, and a security review that earned it)
+- **A dead background agent produces NEITHER a completion notification NOR
+  progress — and "no notification" is indistinguishable from "still working"
+  unless you actively check.** The paste-HTML agent died ~10 min in (terminal
+  API error, 0 files written) and I waited ~3 HOURS on a completion
+  notification that was never coming, treating the Monitor ticker as a mere
+  heartbeat. The founder caught it, twice ("check on the agent", "check every
+  5 minutes"). Standing rule now: on EVERY poll tick with a live agent,
+  actively check its transcript's last-activity timestamp AND git progress
+  (commits/WIP) — a transcript idle >~10 min = dead, relaunch. And every
+  implementation brief now says COMMIT INCREMENTALLY (per layer) so a death
+  costs minutes, not the whole run (this run's relaunch did, and it worked).
+  Liveness-check mechanic that works without reading the (context-blowing)
+  transcript: `tail -c 2500 <agent>.output | tr ',' '\n' | grep -oE
+  '"timestamp":"[^"]*"' | tail -1`.
+- **For an untrusted-input→production path, run TWO adversarial review agents
+  (security-bypass + backend-correctness) BEFORE merge — and "always merge"
+  does not exempt it.** Paste HTML sends arbitrary user HTML to the whole
+  audience. A green 3600-test suite passed; the two reviewers, RUNNING the
+  real code in real Chromium / convex-test, still found five real holes:
+  `<meta http-equiv=refresh>` open-redirect live in the SENT mail (the in-app
+  preview's `sandbox=""` blocks it, a recipient's webmail does not — verify the
+  SEND surface, not just the preview), `@import` defeated by a CSS unicode
+  escape (`@\69mport`), protocol-relative `url(//host)` bypassing re-hosting,
+  no SSRF guard on the image fetch (an internal endpoint answering
+  `content-type: image/*` → its body copied to PUBLIC storage), and a
+  write-time backstop far weaker than the real sanitizer (a direct
+  `updateCampaignDoc` could smuggle a credential-harvesting `<form>`). Prompt
+  each reviewer with the specific sink classes and make them prove by
+  executing, not reading.
+- **`npx convex typecheck` is a distinct CI gate `tsc`/`vitest` don't cover —
+  the backend twin of the Metro-bundler gap.** The SSRF fix added
+  `node:net`/`node:dns` imports to a `lib/` helper without `"use node"`; the
+  agent's `tsc --noEmit` + vitest were green, but CI's `npx convex typecheck`
+  (which runs Convex's esbuild ISOLATE bundle) failed to resolve the node
+  builtins. Fix: `"use node"` on any Convex module using node builtins (it may
+  then only be imported by other `"use node"` files). Run `npx convex
+  typecheck` from the REPO ROOT (where `convex.json`'s `functions: "apps/convex"`
+  resolves) for CI parity before pushing Convex node code.
+- **A "belt-and-suspenders" backstop must actually match the belt, and say so
+  truthfully.** The write-time regex backstop was documented "no path can land
+  unsanitized content" but blacklisted 9 patterns while the real sanitizer
+  removed far more — a false doc claim the review falsified. With two layers
+  (real sanitizer + coarse backstop), factor the shared hazard logic into ONE
+  module both import so they can't drift, and write NEGATIVE tests proving the
+  backstop rejects what it claims.
+- **"Drop, don't leak" is the right default for an un-verifiable external
+  resource.** On a failed image re-host, leaving the original external URL is
+  both a tracking/exfil vector and a violation of "hosted reliably" — replace
+  with an inert placeholder so the send makes zero third-party calls. Surface
+  it as a product decision, but default to the safe reading of the founder's
+  intent.
+
 ### 2026-07-29 — Run 12 (5 editor UX fixes + the "janky" chrome that wasn't)
 - **"Browser-verified" is only as good as the SURFACE you actually rendered —
   and a harness styles some surfaces but not others.** I browser-verified 5
