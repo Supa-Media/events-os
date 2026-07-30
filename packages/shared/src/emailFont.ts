@@ -1,7 +1,8 @@
 /**
- * PW FONT STACKS — founder bug #5 ("no way to change fonts"). Themes-the-
- * system are dead (a founder decision — see `renderEmail.ts`'s module doc),
- * so this is NOT a theme picker: it's a single document-level attr,
+ * PW FONT STACKS — founder bug #5 ("no way to change fonts") and bug #6
+ * ("you need to install more fonts like helvetica"). Themes-the-system are
+ * dead (a founder decision — see `renderEmail.ts`'s module doc), so this is
+ * NOT a theme picker: it's a single document-level attr,
  * `doc.attrs.pwFontFamily`, that travels with the document exactly like
  * `pwCanvasColor` already does (same write-gate shape in `tiptapEmail.ts`,
  * same `Maily.setTheme()` wiring in `renderEmail.ts`).
@@ -17,27 +18,65 @@
  * server- and client-side, from a single curated table neither the doc nor
  * the write gate can override.
  *
- * ── The three stacks (product default, 2026-07-29) ──────────────────────────
- * All three are chosen to render reliably across mail clients
+ * ── The stacks (product default 2026-07-29; extended 2026-07-30) ───────────
+ * Every stack is chosen to render reliably across mail clients
  * (caniemail.com's `@font-face` support matrix is spotty — Outlook desktop
  * never loads a web font at all, and silently falls back to `fallback
  * FontFamily`, which is why every stack below is genuinely wearable on its
- * own, not just as a web-font's shadow):
+ * own, not just as a web-font's shadow). Bug #6's asks are all EMAIL-SAFE
+ * SYSTEM fonts — no `webFont` at all, so none of them depend on a client
+ * loading anything (the exact property that makes `serif`/`mono` below
+ * already-reliable, extended to the rest of the set):
  *   - `sans` (default): `Inter`, the SAME family+web-font the app already
  *     shipped as `DEFAULT_FONT` (`theme.ts`) — picking it changes nothing for
  *     a document that never touches this attr, matching `pwCanvasColor`'s own
  *     "absent renders exactly today's default" contract.
  *   - `serif`: `Georgia` — a genuine system font on both Windows and macOS
- *     (no `webFont` needed, so it never depends on a client loading anything)
  *     with real editorial/brand-serif character, the "brand serif" option.
  *   - `mono`: `Courier New` — likewise a real system font on both major
  *     platforms (unlike e.g. `SFMono-Regular`, which isn't installed on
  *     Windows at all and would silently fall back there), for the rare
  *     newsletter section that wants a typewriter/code feel.
+ *   - `helvetica`: `Helvetica` falling back to `Arial` — the single most-
+ *     requested "just give me a plain, neutral sans" system font; genuinely
+ *     installed as `Helvetica` on macOS/iOS and resolves to the visually-
+ *     near-identical `Arial` everywhere else (Windows has no real
+ *     Helvetica), which is exactly why `Arial` is the fallback rather than a
+ *     generic `sans-serif`.
+ *   - `timesNewRoman`: `Times New Roman` falling back to `serif` — the
+ *     classic formal/traditional serif, distinct in character from
+ *     `Georgia`'s warmer editorial serif; a real system font on both major
+ *     platforms.
+ *   - `verdana`: `Verdana` falling back to `sans-serif` — wide, highly
+ *     legible at small sizes (designed for screens), a genuine system font
+ *     on both major platforms.
+ *   - `trebuchet`: `Trebuchet MS` falling back to `sans-serif` — a
+ *     humanist sans with more character than Arial/Helvetica, a real system
+ *     font on both major platforms.
+ *   - `tahoma`: `Tahoma` falling back to `sans-serif` — tighter letter-
+ *     spacing than Verdana, a common Windows-native UI font; also installed
+ *     on macOS.
  */
-export type PwFontStackId = "sans" | "serif" | "mono";
+export type PwFontStackId =
+  | "sans"
+  | "serif"
+  | "mono"
+  | "helvetica"
+  | "timesNewRoman"
+  | "verdana"
+  | "trebuchet"
+  | "tahoma";
 
-export const PW_FONT_STACK_IDS: readonly PwFontStackId[] = ["sans", "serif", "mono"];
+export const PW_FONT_STACK_IDS: readonly PwFontStackId[] = [
+  "sans",
+  "serif",
+  "mono",
+  "helvetica",
+  "timesNewRoman",
+  "verdana",
+  "trebuchet",
+  "tahoma",
+];
 
 export function isPwFontStackId(value: unknown): value is PwFontStackId {
   return typeof value === "string" && (PW_FONT_STACK_IDS as readonly string[]).includes(value);
@@ -93,6 +132,31 @@ export const PW_FONT_STACKS: Record<PwFontStackId, PwFontStack> = {
     label: "Mono (Courier New)",
     fontFamily: "Courier New",
     fallbackFontFamily: "monospace",
+  },
+  helvetica: {
+    label: "Helvetica",
+    fontFamily: "Helvetica",
+    fallbackFontFamily: "Arial",
+  },
+  timesNewRoman: {
+    label: "Times New Roman",
+    fontFamily: "Times New Roman",
+    fallbackFontFamily: "serif",
+  },
+  verdana: {
+    label: "Verdana",
+    fontFamily: "Verdana",
+    fallbackFontFamily: "sans-serif",
+  },
+  trebuchet: {
+    label: "Trebuchet MS",
+    fontFamily: "Trebuchet MS",
+    fallbackFontFamily: "sans-serif",
+  },
+  tahoma: {
+    label: "Tahoma",
+    fontFamily: "Tahoma",
+    fallbackFontFamily: "sans-serif",
   },
 };
 
