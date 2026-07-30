@@ -131,6 +131,7 @@ import {
   emailHtmlDocContentIsEmpty,
   renderCampaignEmail,
   renderCampaignText,
+  tiptapDocContentIsEmpty,
   validateEmailDocument,
   validateEmailHtmlDocument,
   validateTiptapEmailDoc,
@@ -323,19 +324,13 @@ export function applyThemeToDoc(doc: unknown, theme: EmailTheme): EmailDocument 
   return { ...(doc as EmailDocument), theme };
 }
 
-/** The tiptap twin of the blocks format's `validated.doc.blocks.length === 0`
- *  "write the email first" check — a coarse, ROOT-LEVEL-ONLY empty check
- *  (unlike mobile's `mailyDoc.ts#isTiptapDocEmpty`, which recurses to catch
- *  an all-whitespace document too), since this only has to catch the
- *  degenerate "never wrote anything" case at the send-blocking gate, not
- *  drive empty-state copy in a composer. Written defensively (`doc` is
- *  `v.any()` at the boundary) — anything not shaped like a tiptap doc counts
- *  as empty rather than throwing. */
-function tiptapDocContentIsEmpty(doc: unknown): boolean {
-  if (typeof doc !== "object" || doc === null) return true;
-  const content = (doc as { content?: unknown }).content;
-  return !Array.isArray(content) || content.length === 0;
-}
+// `tiptapDocContentIsEmpty` (the tiptap twin of the blocks format's
+// `validated.doc.blocks.length === 0` "write the email first" check) now
+// lives in `@events-os/shared`'s `emailDocFormat.ts` — moved there (not
+// duplicated) so `setDocFormat`'s in-editor switch affordance
+// (`apps/mobile/app/(app)/campaign/[id]/design.tsx`) can share the EXACT
+// SAME "is this empty" definition this file's own submit/switch gates use,
+// imported above.
 
 /** The blocks-format twin of the same root-level-only emptiness check —
  *  `submitForApproval`/`send`'s own inline `validated.doc.blocks.length === 0`

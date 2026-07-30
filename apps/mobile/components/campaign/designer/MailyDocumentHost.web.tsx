@@ -105,6 +105,7 @@ import { Icon, type IconName } from "../../ui";
 // plain `tsc`/Node resolution, which doesn't know that convention.
 import { MailyImagePickerModal } from "./MailyImagePickerModal.web";
 import { MailyMetaFields } from "./MailyMetaFields";
+import { ComposerFormatSwitchLink } from "./ComposerFormatSwitchLink";
 import {
   MAILY_AUTOSAVE_DEBOUNCE_MS,
   decideAutosave,
@@ -167,6 +168,7 @@ export function MailyDocumentHost({
   run,
   uploadImage,
   meta,
+  formatSwitch,
 }: MailyDocumentHostProps) {
   const convex = useConvex();
   const { width } = useWindowDimensions();
@@ -641,6 +643,8 @@ export function MailyDocumentHost({
       {!editable && lockedNotice ? (
         <Text className="mb-3 text-xs text-muted">{lockedNotice}</Text>
       ) : null}
+
+      {editable && formatSwitch ? <ComposerFormatSwitchLink formatSwitch={formatSwitch} /> : null}
 
       <View className={split ? "flex-row" : undefined}>
         <View className={split ? "flex-1" : undefined}>

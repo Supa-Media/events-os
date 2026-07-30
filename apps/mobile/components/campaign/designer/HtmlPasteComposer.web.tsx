@@ -37,6 +37,7 @@ import { Button, TextField } from "../../ui";
 import EmailHtmlPreview from "../../email/EmailHtmlPreview";
 import { fetchCampaignPreview } from "../../../lib/emailPreview";
 import { MailyMetaFields } from "./MailyMetaFields";
+import { ComposerFormatSwitchLink } from "./ComposerFormatSwitchLink";
 import { forceIframeColorScheme } from "./previewColorScheme";
 import {
   DEFAULT_PREVIEW_WIDTH_ID,
@@ -61,6 +62,7 @@ export function HtmlPasteComposer({
   onSave,
   run,
   meta,
+  formatSwitch,
 }: HtmlPasteComposerProps) {
   const convex = useConvex();
   const importPastedHtml = useAction(api.emailHtmlImport.importPastedHtml);
@@ -154,6 +156,7 @@ export function HtmlPasteComposer({
             gets re-hosted here so it never breaks, and the markup is sanitized before
             it&apos;s stored.
           </Text>
+          {formatSwitch ? <ComposerFormatSwitchLink formatSwitch={formatSwitch} /> : null}
           <TextField
             placeholder="<html>…</html>"
             value={draft}

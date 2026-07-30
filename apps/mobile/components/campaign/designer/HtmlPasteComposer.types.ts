@@ -7,7 +7,7 @@
  */
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import type { ActionRunner } from "../../../lib/useActionToast";
-import type { MailyMetaFieldsProps } from "./MailyDocumentHost.types";
+import type { ComposerFormatSwitch, MailyMetaFieldsProps } from "./MailyDocumentHost.types";
 
 /** The stored `docFormat: "html"` document shape — mirrors
  *  `@events-os/shared`'s `EmailHtmlDocument`, kept as a local structural
@@ -36,4 +36,8 @@ export type HtmlPasteComposerProps = {
   run: ActionRunner["run"];
   /** Present only for a campaign (see `MailyMetaFieldsProps`'s own doc). */
   meta?: MailyMetaFieldsProps;
+  /** Present only when the screen has decided this row is eligible to
+   *  switch format — see `ComposerFormatSwitch`'s own doc
+   *  (`MailyDocumentHost.types.ts`). */
+  formatSwitch?: ComposerFormatSwitch;
 };
