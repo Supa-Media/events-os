@@ -74,17 +74,16 @@ function CampaignDetailBody({ campaignId }: { campaignId: Id<"campaigns"> }) {
   // calls out: an early return ahead of a hook call flips hook order between
   // renders and React throws.
   const selectedAudience = audiences?.find((a) => a._id === campaign?.audienceId) ?? null;
-  const preview = useQuery(
-    api.audiences.previewAudience,
-    selectedAudience
-      ? {
-          scope: selectedAudience.scope,
-          source: selectedAudience.source,
-          filters: selectedAudience.filters,
-          excludeFilters: selectedAudience.excludeFilters,
-        }
-      : "skip",
-  );
+  // BY ID, never a hand-assembled field list. This call site used to spread
+  // `{ scope, source, filters, excludeFilters }` off the row — complete when
+  // written, then silently wrong once hand-picks and targeting-v2 shipped, so
+  // a 4-person hand-picked segment reported "Reaches 440 people" right above
+  // "Request approval". See `audiences.ts#previewAudienceById`.
+  const preview =
+    useQuery(
+      api.audiences.previewAudienceById,
+      selectedAudience ? { audienceId: selectedAudience._id } : "skip",
+    ) ?? undefined;
 
   if (campaign === undefined || audiences === undefined) return <Screen loading />;
 

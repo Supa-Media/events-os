@@ -1275,3 +1275,128 @@ describe("person_filters — excludeFilters.verifiedEmailOnly is a no-op (verifi
     expect(preview.excludedByFilters).toBe(1);
   });
 });
+
+// ── previewAudienceById ──────────────────────────────────────────────────
+
+/**
+ * The founder's "why does it say reaching 440 people, when the segment I
+ * selected is only four people?" (2026-07-30). The campaign record page
+ * hand-assembled `previewAudience` args off the audience row —
+ * `{ scope, source, filters, excludeFilters }` — a list that was complete when
+ * written and then silently wrong once hand-picks (Phase 3) and targeting-v2
+ * shipped. Nothing updated the call site, so a segment whose membership is
+ * defined by EITHER of those dimensions previewed as its bare
+ * source-plus-filters instead: a 4-person segment read "Reaches 440 people"
+ * directly above "Request approval", and that was the number the reviewer saw
+ * too. (The SEND was always correct — it resolves the stored row via
+ * `resolveAudienceForSend` — so this was a lie in the UI, not a mis-send.)
+ *
+ * `previewAudienceById` resolves the STORED ROW, so no call site can drop a
+ * targeting dimension again.
+ */
+describe("previewAudienceById — resolves the saved row, not a caller's field list", () => {
+  test("a targeting-v2 segment counts its groups, not the whole roster", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+
+    // Four donors — the segment. Twenty non-donors — everyone the broken
+    // call site used to count instead.
+    for (let i = 0; i < 4; i++) {
+      const personId = await seedPerson(s, {
+        name: `Donor ${i}`,
+        email: `donor${i}@example.com`,
+      });
+      await seedDonorForPerson(s, personId, { email: `donor${i}@example.com`, status: "active" });
+    }
+    for (let i = 0; i < 20; i++) {
+      await seedPerson(s, { name: `Other ${i}`, email: `other${i}@example.com` });
+    }
+
+    const audienceId = await s.as.mutation(api.audiences.createAudience, {
+      scope: "central",
+      name: "Marketing Team",
+      source: "person_filters",
+      filters: {},
+      targeting: {
+        groups: [{ conditions: [{ field: "donor_status", op: "is", status: "any" }] }],
+        excludeGroups: [],
+      },
+    });
+
+    const byId = await s.as.query(api.audiences.previewAudienceById, { audienceId });
+    expect(byId?.count).toBe(4);
+
+    // The exact shape the campaign page used to send: every stored field
+    // EXCEPT `targeting` and the hand-picks. It counts the whole roster —
+    // the bug, pinned.
+    const audience = await s.as.query(api.audiences.getAudience, { audienceId });
+    const handAssembled = await s.as.query(api.audiences.previewAudience, {
+      scope: audience.scope,
+      source: audience.source,
+      filters: audience.filters,
+      excludeFilters: audience.excludeFilters,
+    });
+    expect(handAssembled.count).toBe(24);
+    expect(handAssembled.count).not.toBe(byId?.count);
+  });
+
+  test("hand-picked EXCLUDES are honored too — the other dropped dimension", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const dropped = await seedPerson(s, { name: "Dropped", email: "dropped@example.com" });
+    await seedPerson(s, { name: "Kept", email: "kept@example.com" });
+
+    const audienceId = await s.as.mutation(api.audiences.createAudience, {
+      scope: "central",
+      name: "Everyone but one",
+      source: "person_filters",
+      filters: {},
+      excludePersonIds: [dropped],
+    });
+
+    const byId = await s.as.query(api.audiences.previewAudienceById, { audienceId });
+    expect(byId?.count).toBe(1);
+    expect(byId?.sample.map((r) => r.email)).toEqual(["kept@example.com"]);
+  });
+
+  test("agrees with previewAudience when every field IS passed", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const a = await seedPerson(s, { name: "A", email: "a@example.com" });
+    await seedPerson(s, { name: "B", email: "b@example.com" });
+
+    const audienceId = await s.as.mutation(api.audiences.createAudience, {
+      scope: "central",
+      name: "All but A",
+      source: "person_filters",
+      filters: {},
+      excludePersonIds: [a],
+    });
+    const audience = await s.as.query(api.audiences.getAudience, { audienceId });
+
+    const byId = await s.as.query(api.audiences.previewAudienceById, { audienceId });
+    const full = await s.as.query(api.audiences.previewAudience, {
+      scope: audience.scope,
+      source: audience.source,
+      filters: audience.filters,
+      excludeFilters: audience.excludeFilters,
+      targeting: audience.targeting,
+      includePersonIds: audience.includePersonIds,
+      excludePersonIds: audience.excludePersonIds,
+    });
+    expect(byId).toEqual(full);
+  });
+
+  test("returns null for an audience that no longer exists", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const audienceId = await s.as.mutation(api.audiences.createAudience, {
+      scope: "central",
+      name: "Doomed",
+      source: "person_filters",
+      filters: {},
+    });
+    await run(s.t, (ctx) => ctx.db.delete(audienceId));
+    expect(await s.as.query(api.audiences.previewAudienceById, { audienceId })).toBeNull();
+  });
+});

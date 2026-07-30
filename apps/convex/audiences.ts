@@ -16,8 +16,8 @@
  * already-approved campaign (which then refuses to send). A design-only
  * holder who cannot create a campaign must not be able to re-aim one.
  */
-import { internalQuery, mutation, query } from "./_generated/server";
-import { ConvexError, v } from "convex/values";
+import { internalQuery, mutation, query, type QueryCtx } from "./_generated/server";
+import { ConvexError, v, type Infer } from "convex/values";
 import { Doc, Id } from "./_generated/dataModel";
 import { requireUserId } from "./lib/context";
 import {
@@ -289,32 +289,11 @@ export const archiveAudience = mutation({
   },
 });
 
-/**
- * Composer preview: resolves a (possibly unsaved draft) audience shape to a
- * bounded sample. `count` is the number of recipients that WOULD be sent to,
- * capped at `AUDIENCE_RESOLVE_LIMIT` — a preview against an audience larger
- * than the cap reports the cap, not the true size (documented, not silent:
- * the composer should show "5,000+" rather than a bare number in that case).
- */
-export const previewAudience = query({
-  args: {
-    scope: scopeValidator,
-    source: sourceValidator,
-    filters: audienceFiltersValidator,
-    // Property-level exclusions ("everyone matching filters, EXCEPT anyone
-    // matching excludeFilters") — a live composer draft's exclude block, so
-    // the preview reflects it before the audience is even saved. Same shape
-    // as `filters`, `person_filters` only — see `schema/campaigns.ts#audiences`.
-    excludeFilters: v.optional(audienceFiltersValidator),
-    // Targeting v2 — a live builder draft's groups, previewed before saving
-    // (validated structurally first, same as create/update).
-    targeting: v.optional(audienceTargetingValidator),
-    // Phase 3 — a live composer draft's hand-picks, so the preview reflects
-    // includes/excludes before the audience is even saved.
-    includePersonIds: v.optional(v.array(v.id("people"))),
-    excludePersonIds: v.optional(v.array(v.id("people"))),
-  },
-  returns: v.object({
+/** The shape BOTH audience previews return — `previewAudience` (a live,
+ *  possibly-unsaved builder draft) and `previewAudienceById` (a saved row).
+ *  Shared verbatim so the two can never drift into reporting different
+ *  fields for the same underlying resolution. */
+const audiencePreviewValidator = v.object({
     count: v.number(),
     // `groups` — targeting-v2 drafts only: which include-group indexes this
     // sample row matched (empty for hand-pick-only members and legacy rows).
@@ -358,14 +337,95 @@ export const previewAudience = query({
     // `count`; the UI labels that.
     perGroupCounts: v.array(v.number()),
     perExcludeGroupCounts: v.array(v.number()),
-  }),
+  });
+
+export const previewAudience = query({
+  args: {
+    scope: scopeValidator,
+    source: sourceValidator,
+    filters: audienceFiltersValidator,
+    // Property-level exclusions ("everyone matching filters, EXCEPT anyone
+    // matching excludeFilters") — a live composer draft's exclude block, so
+    // the preview reflects it before the audience is even saved. Same shape
+    // as `filters`, `person_filters` only — see `schema/campaigns.ts#audiences`.
+    excludeFilters: v.optional(audienceFiltersValidator),
+    // Targeting v2 — a live builder draft's groups, previewed before saving
+    // (validated structurally first, same as create/update).
+    targeting: v.optional(audienceTargetingValidator),
+    // Phase 3 — a live composer draft's hand-picks, so the preview reflects
+    // includes/excludes before the audience is even saved.
+    includePersonIds: v.optional(v.array(v.id("people"))),
+    excludePersonIds: v.optional(v.array(v.id("people"))),
+  },
+  returns: audiencePreviewValidator,
   handler: async (
     ctx,
     { scope, source, filters, excludeFilters, targeting, includePersonIds, excludePersonIds },
   ) => {
     await requireCampaignsAccess(ctx);
     if (targeting) validateTargeting(targeting);
-    // `includeDiagnostics: true` — this is the ONLY caller that should pay
+    return await buildAudiencePreview(ctx, {
+      scope,
+      source,
+      filters,
+      excludeFilters,
+      targeting,
+      includePersonIds,
+      excludePersonIds,
+    });
+  },
+});
+
+/**
+ * Preview a SAVED audience by id — the same numbers `previewAudience`
+ * produces, resolved from the stored row itself.
+ *
+ * ── Why this exists (founder bug, 2026-07-30) ──────────────────────────────
+ * The campaign record page hand-assembled `previewAudience` args off the
+ * audience row: `{ scope, source, filters, excludeFilters }`. That list was
+ * complete when it was written, and then two more targeting dimensions
+ * shipped — hand-picks (`includePersonIds`/`excludePersonIds`, Phase 3) and
+ * `targeting` (v2) — and nothing updated the call site. A segment defined
+ * ENTIRELY by hand-picks therefore previewed as its bare source with no
+ * criteria at all: a 4-person "Marketing Team" segment read "Reaches 440
+ * people" on the very screen you decide to send from. (The SEND was always
+ * correct — it resolves the stored row via `resolveAudienceForSend` — so this
+ * was a lie in the UI, not a mis-send. It still sat directly above "Request
+ * approval", and it was also the number the reviewer saw.)
+ *
+ * Taking the id instead of a field list is what makes that class of bug
+ * impossible here: a future targeting dimension lands in the stored row and
+ * flows through automatically, with no call site left to forget it. The
+ * draft-shaped `previewAudience` above stays exactly as it is — the audience
+ * BUILDER genuinely needs to preview a shape that isn't saved yet.
+ *
+ * `null` when the audience no longer exists (deleted out from under a
+ * campaign that still references it) — the caller renders "Segment deleted"
+ * rather than a stale count.
+ */
+export const previewAudienceById = query({
+  args: { audienceId: v.id("audiences") },
+  returns: v.union(audiencePreviewValidator, v.null()),
+  handler: async (ctx, { audienceId }) => {
+    await requireCampaignsAccess(ctx);
+    const audience = await ctx.db.get(audienceId);
+    if (!audience) return null;
+    // The whole row goes to the resolver — the same thing
+    // `resolveAudienceForSend` and `campaigns.ts#liveAudienceCount` do, and
+    // the entire point of this query.
+    return await buildAudiencePreview(ctx, audience);
+  },
+});
+
+/** The shared body of both previews above. Split out so the by-id variant
+ *  can't drift from the draft variant in what it counts or reports. */
+async function buildAudiencePreview(
+  ctx: QueryCtx,
+  definition: Parameters<typeof resolveAudienceRecipients>[1],
+): Promise<Infer<typeof audiencePreviewValidator>> {
+  {
+    const { targeting } = definition;
+    // `includeDiagnostics: true` — these are the ONLY callers that should pay
     // for the extra data-trust transparency scans (`unlinkedGuests`/
     // `centralDonorsExcludedByChapterFilter`); the send path
     // (`resolveAudienceForSend` below) and `campaigns.ts#liveAudienceCount`
@@ -373,7 +433,7 @@ export const previewAudience = query({
     // `lib/audienceResolve.ts#resolveAudienceRecipients`'s doc.
     const resolution = await resolveAudienceRecipients(
       ctx,
-      { scope, source, filters, excludeFilters, targeting, includePersonIds, excludePersonIds },
+      definition,
       AUDIENCE_RESOLVE_LIMIT,
       true,
     );
@@ -398,8 +458,8 @@ export const previewAudience = query({
       perGroupCounts: resolution.perGroupCounts,
       perExcludeGroupCounts: resolution.perExcludeGroupCounts,
     };
-  },
-});
+  }
+}
 
 /**
  * Hand-pick search (Phase 3): name/email PREFIX match across BOTH roster and
