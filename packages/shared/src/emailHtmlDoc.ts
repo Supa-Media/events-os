@@ -83,9 +83,11 @@ export function validateEmailHtmlDocument(doc: unknown): ValidateEmailHtmlDocume
   if (typeof html !== "string") {
     return { ok: false, error: "A pasted-HTML email must carry an `html` string." };
   }
-  if (html.trim().length === 0) {
-    return { ok: false, error: "Paste the HTML first." };
-  }
+  // Blank/whitespace-only `html` is a legal WRITE (a fresh row starts empty,
+  // exactly like `EmailDocument`'s `{ blocks: [] }` and tiptap's
+  // `{ type: "doc", content: [] }` — see `createCampaign`'s "New documents
+  // start empty" precedent) — only `emailHtmlDocContentIsEmpty` (checked at
+  // SUBMIT/SEND, `campaigns.ts`) blocks sending nothing.
   if (html.length > MAX_HTML_DOC_CHARS) {
     return {
       ok: false,
@@ -104,10 +106,11 @@ export function validateEmailHtmlDocument(doc: unknown): ValidateEmailHtmlDocume
 
 /** Coarse, root-level-only "did the author paste anything at all" check —
  *  the `"html"` twin of `campaigns.ts#tiptapDocContentIsEmpty` /
- *  `EmailDocument.blocks.length === 0`. `validateEmailHtmlDocument` already
- *  rejects a blank/whitespace-only `html` string, so in practice this only
- *  ever fires on a doc that failed validation entirely and is being probed
- *  defensively anyway. */
+ *  `EmailDocument.blocks.length === 0`. `validateEmailHtmlDocument` allows a
+ *  blank/whitespace-only `html` string through as a legal WRITE (a fresh row
+ *  starts empty) — THIS is the check that blocks sending/submitting nothing,
+ *  called at `submitForApproval`/`send` (`campaigns.ts`), never at create/
+ *  autosave time. */
 export function emailHtmlDocContentIsEmpty(doc: unknown): boolean {
   if (typeof doc !== "object" || doc === null) return true;
   const html = (doc as { html?: unknown }).html;

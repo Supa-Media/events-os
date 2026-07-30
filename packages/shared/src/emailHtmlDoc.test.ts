@@ -51,10 +51,9 @@ describe("validateEmailHtmlDocument", () => {
     expect(validateEmailHtmlDocument({ html: 42 }).ok).toBe(false);
   });
 
-  test("rejects blank/whitespace-only html", () => {
+  test("accepts blank/whitespace-only html — a fresh row starts empty (mirrors blocks'/tiptap's empty-doc-at-create precedent); only submit/send blocks nothing", () => {
     const result = validateEmailHtmlDocument({ html: "   \n  " });
-    expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toMatch(/paste the html/i);
+    expect(result).toEqual({ ok: true, doc: { html: "   \n  " } });
   });
 
   test("rejects oversized html", () => {

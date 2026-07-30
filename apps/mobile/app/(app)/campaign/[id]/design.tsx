@@ -35,6 +35,7 @@ import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import type { JSONContent } from "@tiptap/core";
 import { emailDocFormatOf, type EmailDocument } from "@events-os/shared";
+import type { HtmlPasteDoc } from "../../../../components/campaign/designer/HtmlPasteComposer.types";
 import {
   Screen,
   FULL_WIDTH,
@@ -115,6 +116,11 @@ function CampaignDesignBody({
     [updateDoc, campaignId],
   );
 
+  const saveHtmlDoc = useCallback(
+    (doc: HtmlPasteDoc) => updateDoc({ campaignId, doc }),
+    [updateDoc, campaignId],
+  );
+
   const uploadImage = useDesignerImageUploader(editable);
 
   if (campaign === undefined) return <Screen loading />;
@@ -157,6 +163,33 @@ function CampaignDesignBody({
           onSave={saveTiptapDoc}
           run={run}
           uploadImage={uploadImage}
+          meta={{
+            subject: campaign.subject ?? "",
+            previewText: campaign.previewText ?? "",
+            fromLine: fromLineText({
+              fromName: campaign.fromName,
+              fromEmail: campaign.fromEmail,
+              orgFromAddress: senderDefaults?.orgFromAddress,
+            }),
+            onSaveSubject: (subject) =>
+              run(() => updateMeta({ campaignId, subject }), {
+                errorTitle: "Couldn't save the subject line",
+              }),
+            onSavePreviewText: (previewText) =>
+              run(() => updateMeta({ campaignId, previewText }), {
+                errorTitle: "Couldn't save the preview text",
+              }),
+          }}
+        />
+      ) : emailDocFormatOf(campaign) === "html" ? (
+        <DocumentComposer
+          docFormat="html"
+          campaignId={campaignId}
+          doc={campaign.doc as HtmlPasteDoc}
+          editable={editable}
+          lockedNotice={lockNote(campaign.status, canCompose)}
+          onSave={saveHtmlDoc}
+          run={run}
           meta={{
             subject: campaign.subject ?? "",
             previewText: campaign.previewText ?? "",

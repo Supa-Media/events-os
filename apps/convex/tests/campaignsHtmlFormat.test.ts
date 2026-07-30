@@ -204,20 +204,20 @@ describe("html-format campaigns — write gate", () => {
     expect((row?.doc as { html: string }).html).toBe(SAFE_HTML);
   });
 
-  test("rejects an empty paste (write it first)", async () => {
+  test("accepts an empty paste at CREATE time — a fresh row starts empty, same as blocks/tiptap; submit is where empty is blocked (see the send-pipeline describe below)", async () => {
     const t = newT();
     const s = await asSuperuser(t);
     const audienceId = await seedAudience(s);
-    await expect(
-      s.as.mutation(api.campaigns.createCampaign, {
-        scope: "central",
-        name: "Blank",
-        subject: "Hello!",
-        audienceId,
-        doc: { html: "   " },
-        docFormat: "html",
-      }),
-    ).rejects.toMatchObject({ data: { code: "INVALID_DOC" } });
+    const campaignId = await s.as.mutation(api.campaigns.createCampaign, {
+      scope: "central",
+      name: "Blank",
+      subject: "Hello!",
+      audienceId,
+      doc: { html: "" },
+      docFormat: "html",
+    });
+    const row = await run(s.t, (ctx) => ctx.db.get(campaignId));
+    expect(row?.docFormat).toBe("html");
   });
 });
 
@@ -381,7 +381,7 @@ describe("html send pipeline", () => {
         purpose: "x",
         reviewerPersonId: reviewer.personId,
       }),
-    ).rejects.toMatchObject({ data: { code: "INVALID_DOC" } });
+    ).rejects.toMatchObject({ data: { code: "EMPTY" } });
   });
 
   test("the postal-address gate blocks an html send at BOTH layers — deliverCampaignBatch halts it before Resend is ever called", async () => {
