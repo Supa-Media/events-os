@@ -321,15 +321,15 @@ cadence:
 |---|---|---|---|
 | T-33…T-14 | Main announcement | General public | IG post + stories |
 | T-30 | Worship leader lineup ask / confirmations | Worshippers | Direct |
-| T-14 | Flyer request to marketing | Internal | Slack |
-| T-12 | Schedule run-of-show meeting | Leaders | Slack |
+| T-14 | Flyer request to marketing | Internal | Google Chat |
+| T-12 | Schedule run-of-show meeting | Leaders | Google Chat |
 | T-11 | Call for volunteers | General public | IG stories |
-| T-10 | Run-of-show + expectations reminder | Leaders | Slack |
+| T-10 | Run-of-show + expectations reminder | Leaders | Google Chat |
 | T-8 | Create volunteer group chat + meeting msg | Volunteers | iMessage/group |
 | T-7 | Countdown post; volunteer role reminder; guest message | Public / volunteers / attendees | IG, group, Partiful |
-| T-5 | Meeting recap to all participants | Leaders | Slack |
+| T-5 | Meeting recap to all participants | Leaders | Google Chat |
 | T-3 | Volunteer role reminder; guest reminder | Volunteers / attendees | Group / Partiful |
-| T-1 | Final countdown; be-on-time reminder; call-time reminder | Public / leaders / volunteers | IG, Slack, group |
+| T-1 | Final countdown; be-on-time reminder; call-time reminder | Public / leaders / volunteers | IG, Google Chat, group |
 | T-0 | Location pin + how to find us; D-day reminder; thank-yous | Attendees / team / volunteers | Stories, group |
 | T+3 | Feedback request | Attendees + volunteers | Partiful + group |
 

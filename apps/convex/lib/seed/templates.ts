@@ -196,7 +196,7 @@ const JOIN_EVENT_SPEC: TrainingTemplateSpec = {
     ],
     comms: [
       // Scenery.
-      { title: "Flyer request to marketing", offsetDays: -16, role: "comms_lead", status: "sent", fields: { channel: ["team_slack"], audience: ["leaders"] } },
+      { title: "Flyer request to marketing", offsetDays: -16, role: "comms_lead", status: "sent", fields: { channel: ["google_chat"], audience: ["leaders"] } },
       { title: "Countdown post", offsetDays: -7, role: "comms_lead", status: "drafted", fields: { channel: ["ig_stories"], audience: ["general_public"] } },
       { title: "Recap post", offsetDays: 3, role: "comms_lead", status: "not_started", fields: { channel: ["ig_post"], audience: ["general_public"] } },
       // Quests — real comms rows the learner walks to Sent.
@@ -595,7 +595,7 @@ const COMMS_LEAD_SPEC: TrainingTemplateSpec = {
     ],
     comms: [
       // Scenery.
-      { title: "Flyer request to marketing", offsetDays: -19, role: "comms_lead", status: "sent", fields: { channel: ["team_slack"], audience: ["leaders"] } },
+      { title: "Flyer request to marketing", offsetDays: -19, role: "comms_lead", status: "sent", fields: { channel: ["google_chat"], audience: ["leaders"] } },
       { title: "Recap post", offsetDays: 3, role: "comms_lead", status: "not_started", fields: { channel: ["ig_post"], audience: ["general_public"] } },
       // Quests — rows the learner walks to Sent.
       {
@@ -1166,10 +1166,10 @@ export async function buildChapterRolesAndTemplates(
   ], edenRoleByKey);
 
   await addTemplateItems(ctx, edenId, "comms", [
-    { title: "Reach out to marketing for flyer", offsetDays: -14, role: "comms_lead", fields: { channel: ["team_slack"], audience: ["leaders"], notes: "Hey [marketing], we're hosting Eden on [date] — can you create a flyer?" } },
-    { title: "Ensure intro thread created", offsetDays: -13, role: "comms_lead", fields: { channel: ["team_slack"], audience: ["leaders"] } },
+    { title: "Reach out to marketing for flyer", offsetDays: -14, role: "comms_lead", fields: { channel: ["google_chat"], audience: ["leaders"], notes: "Hey [marketing], we're hosting Eden on [date] — can you create a flyer?" } },
+    { title: "Ensure intro thread created", offsetDays: -13, role: "comms_lead", fields: { channel: ["google_chat"], audience: ["leaders"] } },
     { title: "Announce event on socials", offsetDays: -7, role: "comms_lead", fields: { channel: ["ig_post", "ig_stories"], audience: ["general_public"] } },
-    { title: "Send a reminder to be on time", offsetDays: -3, role: "comms_lead", fields: { channel: ["imessage_group", "team_slack"], audience: ["leaders", "musicians"] } },
+    { title: "Send a reminder to be on time", offsetDays: -3, role: "comms_lead", fields: { channel: ["imessage_group", "google_chat"], audience: ["leaders", "musicians"] } },
     { title: "Location + how to find us (day-of)", offsetDays: 0, role: "comms_lead", fields: { channel: ["ig_stories", "imessage_group"], audience: ["attendees", "general_public"] } },
     { title: "Post recap content", offsetDays: 3, role: "comms_lead", fields: { channel: ["ig_post"], audience: ["general_public"], notes: "Marketing decides exact timing — record what landed." } },
   ], edenRoleByKey);
@@ -1273,10 +1273,10 @@ export async function buildChapterRolesAndTemplates(
   ], wwsRoleByKey);
 
   await addTemplateItems(ctx, wwsId, "comms", [
-    { title: "Reach out to marketing for flyer", offsetDays: -14, role: "comms_lead", fields: { channel: ["team_slack"], audience: ["leaders"] } },
-    { title: "Ensure intro thread created for WWS", offsetDays: -13, role: "comms_lead", fields: { channel: ["team_slack"], audience: ["leaders"], notes: "New thread: \"WWS [date] @Owner1, @Owner2\"" } },
+    { title: "Reach out to marketing for flyer", offsetDays: -14, role: "comms_lead", fields: { channel: ["google_chat"], audience: ["leaders"] } },
+    { title: "Ensure intro thread created for WWS", offsetDays: -13, role: "comms_lead", fields: { channel: ["google_chat"], audience: ["leaders"], notes: "New thread: \"WWS [date] @Owner1, @Owner2\"" } },
     { title: "Announce event on socials", offsetDays: -7, role: "comms_lead", fields: { channel: ["ig_post", "ig_stories"], audience: ["general_public"] } },
-    { title: "Reminder to be on time for leaders + musicians", offsetDays: -3, role: "comms_lead", fields: { channel: ["imessage_group", "team_slack"], audience: ["leaders", "musicians"], notes: "Friendly reminder WWS is at [location] [time] — show up ready to help set up." } },
+    { title: "Reminder to be on time for leaders + musicians", offsetDays: -3, role: "comms_lead", fields: { channel: ["imessage_group", "google_chat"], audience: ["leaders", "musicians"], notes: "Friendly reminder WWS is at [location] [time] — show up ready to help set up." } },
     { title: "Day-before reminder with call time", offsetDays: -1, role: "comms_lead", fields: { channel: ["imessage_group"], audience: ["musicians"] } },
     { title: "Location + how to find us (day-of)", offsetDays: 0, role: "comms_lead", fields: { channel: ["ig_stories", "imessage_group"], audience: ["attendees", "general_public"], notes: "Pin the exact meet spot, what to look for, start time." } },
     { title: "Post a clip from the day", offsetDays: 3, role: "comms_lead", fields: { channel: ["ig_post"], audience: ["general_public"] } },

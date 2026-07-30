@@ -82,7 +82,6 @@ export function defaultCalendarView(module: string): "table" | "calendar" {
  * native SVG). Unknown channels fall back to "send".
  */
 const CHANNEL_ICON: Record<string, IconName> = {
-  team_slack: "slack",
   google_chat: "message-circle",
   imessage_group: "message-square",
   ig_post: "instagram",

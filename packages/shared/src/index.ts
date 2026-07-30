@@ -615,7 +615,6 @@ export function deriveSupplyStatus(input: SupplyStatusInput): DerivedSupplyStatu
 }
 
 export const COMMS_CHANNEL_OPTIONS: SelectOption[] = [
-  { value: "team_slack", label: "Team Slack", color: "red" },
   { value: "google_chat", label: "Google Chat", color: "green" },
   { value: "imessage_group", label: "iMessage group", color: "blue" },
   { value: "ig_post", label: "IG Post", color: "purple" },
