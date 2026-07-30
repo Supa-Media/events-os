@@ -7,11 +7,19 @@ import { View } from "react-native";
 import { WebView } from "react-native-webview";
 import type { EmailHtmlPreviewProps } from "./EmailHtmlPreview";
 
+/** What `height="auto"` means here: the web variant measures the document and
+ *  grows to fit it, which needs script access to the frame. This WebView runs
+ *  with `javaScriptEnabled={false}` on purpose (see below), so native gives a
+ *  tall pane that scrolls internally rather than re-enabling script execution
+ *  inside untrusted author HTML for a layout nicety. */
+const NATIVE_AUTO_HEIGHT = 720;
+
 export function EmailHtmlPreview({ html, height = 560 }: EmailHtmlPreviewProps) {
+  const boxHeight = height === "auto" ? NATIVE_AUTO_HEIGHT : height;
   return (
     <View
       className="overflow-hidden rounded-lg border border-border bg-raised"
-      style={{ height }}
+      style={{ height: boxHeight }}
     >
       <WebView
         originWhitelist={["*"]}

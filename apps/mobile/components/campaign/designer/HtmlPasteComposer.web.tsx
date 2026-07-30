@@ -258,7 +258,10 @@ export function HtmlPasteComposer({
               <div style={{ width: PREVIEW_WIDTHS[previewWidthId].width ?? "100%" }}>
                 <EmailHtmlPreview
                   html={forceIframeColorScheme(preview.html, previewScheme)}
-                  height={520}
+                  // The whole email, not a 520px window onto it — a pasted
+                  // newsletter is routinely 3,000px+ tall and the designer
+                  // needs to see all of it (founder bug, 2026-07-30).
+                  height="auto"
                 />
               </div>
             </div>

@@ -99,10 +99,12 @@ import { action } from "./_generated/server";
 import { internal } from "./_generated/api";
 import {
   findImageUrls,
+  preserveFailedImageAspect,
   resolveImageFetchUrl,
   rewriteImageUrls,
   sanitizeEmailHtml,
 } from "./lib/emailHtmlSanitize";
+import { sniffImageMime } from "./lib/imageSniff";
 import { assertSafeImageUrl } from "./lib/ssrfGuard";
 
 /** Abuse backstop on the RAW paste size, before any processing — generous
@@ -133,7 +135,13 @@ const GENERIC_FAILURE_REASON = "Couldn't fetch this image.";
  *  carries a live third-party reference for an image this import couldn't
  *  verify. Renders as a blank/invisible pixel rather than a broken-image
  *  icon, and (unlike an EMPTY `src=""`) never triggers the "empty src
- *  re-requests the current document" browser quirk. */
+ *  re-requests the current document" browser quirk.
+ *
+ *  Its 1:1 intrinsic ratio is why `preserveFailedImageAspect` has to run
+ *  after the rewrite: a Canva `<img width="600" height="62"
+ *  style="width:600px;height:auto">` swapped to this placeholder resolves
+ *  `height:auto` against 1:1 and becomes a 600×600 blank block, wrecking the
+ *  whole document's spacing. */
 const INERT_IMAGE_PLACEHOLDER =
   "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
 
@@ -155,6 +163,14 @@ async function fetchImageBlob(
   try {
     const res = await fetch(fetchUrl, {
       signal: controller.signal,
+      // An honest, identifiable UA and an image `accept` — plenty of CDNs
+      // 403 or challenge a request that sends NO user-agent at all, which is
+      // what a bare server-side `fetch` looks like. (Canva's own CDN doesn't
+      // care either way, verified 2026-07-30; this is for the next one.)
+      headers: {
+        accept: "image/*,*/*;q=0.8",
+        "user-agent": "ChapterOS-EmailImport/1.0 (+https://publicworship.life)",
+      },
       // Never auto-follow a redirect — a redirect target is a DIFFERENT URL
       // this action never SSRF-checked. Treating any redirect as a plain
       // failure (below) is simpler and safer than re-validating a chain of
@@ -167,18 +183,45 @@ async function fetchImageBlob(
     if (!res.ok) {
       return { ok: false, reason: `HTTP ${res.status}` };
     }
-    const contentType = res.headers.get("content-type") ?? "";
-    if (!contentType.toLowerCase().startsWith("image/")) {
-      return { ok: false, reason: `not an image (content-type: ${contentType || "unknown"})` };
+    // Refuse an oversized body BEFORE buffering it, when the server was
+    // honest enough to declare one. The post-read check below is still the
+    // real enforcement (a `content-length` can be absent or lie).
+    const declaredLength = Number(res.headers.get("content-length"));
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_IMAGE_BYTES) {
+      return {
+        ok: false,
+        reason: `content-length ${declaredLength} exceeds the ${MAX_IMAGE_BYTES}-byte cap`,
+      };
     }
-    const blob = await res.blob();
-    if (blob.size === 0) {
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (bytes.byteLength === 0) {
       return { ok: false, reason: "empty response body" };
     }
-    if (blob.size > MAX_IMAGE_BYTES) {
-      return { ok: false, reason: `${blob.size} bytes exceeds the ${MAX_IMAGE_BYTES}-byte cap` };
+    if (bytes.byteLength > MAX_IMAGE_BYTES) {
+      return {
+        ok: false,
+        reason: `${bytes.byteLength} bytes exceeds the ${MAX_IMAGE_BYTES}-byte cap`,
+      };
     }
-    return { ok: true, blob };
+    // The BYTES decide whether this is an image, not the `content-type`
+    // header — Canva's own CDN serves a real PNG with NO content-type at
+    // all, which the previous header-only check rejected outright (the
+    // founder's "the images aren't loading"). See `imageSniff.ts` for why
+    // this is stricter, not looser, than the header check it replaced.
+    const sniffed = sniffImageMime(bytes);
+    if (!sniffed) {
+      const contentType = res.headers.get("content-type") || "absent";
+      return {
+        ok: false,
+        reason: `not a supported image (content-type: ${contentType}; bytes matched no known format)`,
+      };
+    }
+    // Re-type the blob from what the bytes ARE: `ctx.storage.store` records
+    // the blob's own type and Convex serves the re-hosted URL with it, so a
+    // blob typed `""` (what a content-type-less response produces) would be
+    // served back as a download rather than an inline image — the image
+    // would still not render, just from our domain instead of Canva's.
+    return { ok: true, blob: new Blob([bytes], { type: sniffed }) };
   } catch (err) {
     const reason =
       err instanceof Error && err.name === "AbortError"
@@ -249,9 +292,10 @@ export const importPastedHtml = action({
       urlMap.set(originalRef, rehostedUrl);
     }
 
-    // ── 3. Rewrite, then sanitize for real ─────────────────────────────────
+    // ── 3. Rewrite, keep the failed images' layout boxes, then sanitize ────
     const rewritten = rewriteImageUrls(bounded, urlMap);
-    const sanitized = sanitizeEmailHtml(rewritten);
+    const boxed = preserveFailedImageAspect(rewritten, INERT_IMAGE_PLACEHOLDER);
+    const sanitized = sanitizeEmailHtml(boxed);
 
     return {
       html: sanitized,

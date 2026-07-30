@@ -155,3 +155,58 @@ describe("renderEmailHtml: passes through the pasted content byte-for-byte (no r
     expect(html).toContain(distinctiveMarkup);
   });
 });
+
+/**
+ * The founder's "the spacing is off" (2026-07-30), second half. The real
+ * sanitizer must strip `<meta http-equiv>` (an open-redirect vector) — but
+ * that is the ONLY place a Canva export declares its encoding, and
+ * `sanitize-html` drops the doctype too. Without both restored here, the
+ * rendered email loses standards mode and, anywhere the transport doesn't
+ * supply `charset=utf-8`, renders `’` as `â€™` and every `&nbsp;` spacer as a
+ * visible `Â`.
+ */
+describe("renderEmailHtml: document basics the sanitizer necessarily removed", () => {
+  /** What a Canva export looks like AFTER `sanitizeEmailHtml`: `<html>` root
+   *  kept, doctype gone, and the charset stranded inside a `content` value
+   *  whose `http-equiv` was stripped. */
+  const SANITIZED_CANVA =
+    '<html><head><meta name="viewport" content="width=device-width, initial-scale=1.0">' +
+    '<meta content="text/html; charset=UTF-8"></head>' +
+    "<body><table><tr><td>Manhattan’s busiest landmark</td></tr></table></body></html>";
+
+  const OPTS = { unsubscribeUrl: "https://example.com/unsubscribe/t", orgAddress: "1 Main St" };
+
+  test("adds a standards-mode doctype to a document that kept its <html> root", async () => {
+    const { html } = await renderEmailHtml(SANITIZED_CANVA, OPTS);
+    expect(html.toLowerCase().startsWith("<!doctype html>")).toBe(true);
+  });
+
+  test("declares utf-8 — a stranded charset= inside a content VALUE is not a declaration", async () => {
+    const { html } = await renderEmailHtml(SANITIZED_CANVA, OPTS);
+    expect(html).toContain('<meta charset="utf-8">');
+    // Early enough to be honored at all (a <meta charset> past 1024 bytes is ignored).
+    expect(html.indexOf('<meta charset="utf-8">')).toBeLessThan(1024);
+  });
+
+  test("does not double-declare when the paste already has a real <meta charset>", async () => {
+    const { html } = await renderEmailHtml(
+      '<html><head><meta charset="utf-8"></head><body><p>Hi</p></body></html>',
+      OPTS,
+    );
+    expect(html.match(/<meta charset=/gi)).toHaveLength(1);
+  });
+
+  test("respects a legacy http-equiv content-type pair, if one somehow survives", async () => {
+    const { html } = await renderEmailHtml(
+      '<html><head><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"></head><body><p>Hi</p></body></html>',
+      OPTS,
+    );
+    expect(html).not.toContain('<meta charset="utf-8">');
+  });
+
+  test("a bare fragment still gets exactly one doctype and one charset", async () => {
+    const { html } = await renderEmailHtml(FRAGMENT, OPTS);
+    expect(html.toLowerCase().match(/<!doctype/g)).toHaveLength(1);
+    expect(html.match(/charset=/gi)).toHaveLength(1);
+  });
+});

@@ -29,6 +29,10 @@
  *  2. The action fetches each into Convex storage (ctx-dependent, not here).
  *  3. `rewriteImageUrls` — plain string substitution of every ORIGINAL URL
  *     that was successfully re-hosted, on the raw HTML.
+ *  3b. `preserveFailedImageAspect` — an image that could NOT be re-hosted is
+ *     now pointing at a 1×1 placeholder, whose square intrinsic ratio would
+ *     inflate every `height:auto` image into a giant blank block; stamp the
+ *     declared `width`/`height` back on as an `aspect-ratio`.
  *  4. `sanitizeEmailHtml` — the real sanitizer pass, LAST, so whatever
  *     ended up in the HTML after rewriting is what actually gets judged
  *     safe or stripped — nothing rewritten in step 3 bypasses this.
@@ -122,6 +126,81 @@ export function rewriteImageUrls(html: string, urlMap: ReadonlyMap<string, strin
     rewritten = rewritten.split(original).join(replacement);
   }
   return rewritten;
+}
+
+// ── Keeping a failed image's layout box ─────────────────────────────────────
+
+/** Matches a whole `<img …>` tag (self-closing or not). */
+const IMG_TAG_RE = /<img\b[^>]*>/gi;
+/** A numeric `width`/`height` ATTRIBUTE (`width="600"`), which is what every
+ *  design-tool export emits alongside its inline styles. Percentages and
+ *  other non-integer values don't describe a ratio, so they don't match.
+ *  Anchored on preceding WHITESPACE, not `\b`: inside a tag, attributes are
+ *  whitespace-separated, and a `\b` would also match the tail of
+ *  `data-width="…"` (and of `max-width` in any attribute value that happened
+ *  to use `=`). */
+const NUMERIC_DIM_ATTR = (name: "width" | "height") =>
+  new RegExp(`\\s${name}\\s*=\\s*(?:"(\\d+)"|'(\\d+)'|(\\d+))`, "i");
+const STYLE_ATTR_IN_TAG_RE = /\sstyle\s*=\s*("([^"]*)"|'([^']*)')/i;
+
+function numericAttr(tag: string, name: "width" | "height"): number | null {
+  const match = tag.match(NUMERIC_DIM_ATTR(name));
+  if (!match) return null;
+  const value = Number(match[1] ?? match[2] ?? match[3]);
+  return Number.isFinite(value) && value > 0 ? value : null;
+}
+
+/**
+ * Stamp `aspect-ratio: W / H` (from the image's OWN `width`/`height`
+ * attributes) onto every `<img>` whose `src` is `placeholderSrc` — the inert
+ * 1×1 GIF `emailHtmlImport.ts` rewrites an unfetchable image to.
+ *
+ * ── Why (2026-07-30 founder bug: "the spacing is off") ─────────────────────
+ * A design-tool export sizes images with an inline
+ * `style="width:600px;height:auto;max-width:100%"` and a matching
+ * `width="600" height="62"` attribute pair. Swap the `src` for a 1×1 GIF and
+ * `height:auto` resolves against the PLACEHOLDER's 1:1 intrinsic ratio, so a
+ * 600×62 masthead becomes a 600×600 white square and a 540×329 hero becomes
+ * 540×540. Eleven of those roughly DOUBLED the document height and pushed
+ * every section off its designed rhythm — the reported "spacing" bug was
+ * never spacing markup at all, it was failed images inflating.
+ *
+ * `aspect-ratio` makes `height:auto` resolve against the ratio the design
+ * actually declared, so a missing image leaves a correctly-sized gap instead
+ * of a square. Clients too old to support `aspect-ratio` (Outlook's Word
+ * engine) fall back to the `height` ATTRIBUTE, which says the same thing.
+ *
+ * Skipped when the tag has no usable numeric `width`/`height` pair, or
+ * already declares its own `aspect-ratio` (never fight an explicit author
+ * declaration). Pure string work on the raw html — must run BEFORE
+ * `sanitizeEmailHtml`, whose output re-quotes attributes.
+ */
+export function preserveFailedImageAspect(html: string, placeholderSrc: string): string {
+  if (!placeholderSrc || !html.includes(placeholderSrc)) return html;
+  return html.replace(IMG_TAG_RE, (tag) => {
+    if (!tag.includes(placeholderSrc)) return tag;
+    const width = numericAttr(tag, "width");
+    const height = numericAttr(tag, "height");
+    if (width === null || height === null) return tag;
+
+    const declaration = `aspect-ratio:${width}/${height}`;
+    const styleMatch = tag.match(STYLE_ATTR_IN_TAG_RE);
+    if (!styleMatch) {
+      // No style attribute at all — the sizing came from the attributes
+      // alone, which already imply the right box. Nothing to correct.
+      return tag;
+    }
+    const existing = styleMatch[2] ?? styleMatch[3] ?? "";
+    if (/\baspect-ratio\s*:/i.test(existing)) return tag;
+    // Keep the author's own quote character, and use a replacer FUNCTION so
+    // a `$` anywhere in the existing CSS is never read as a substitution.
+    const quote = styleMatch[1].startsWith("'") ? "'" : '"';
+    const separator = existing.trim() === "" || existing.trim().endsWith(";") ? "" : ";";
+    return tag.replace(
+      STYLE_ATTR_IN_TAG_RE,
+      () => ` style=${quote}${existing}${separator}${declaration}${quote}`,
+    );
+  });
 }
 
 // ── The real sanitizer ───────────────────────────────────────────────────────

@@ -54,10 +54,25 @@ beforeEach(() => {
   mockDns();
 });
 
-function fakeImageResponse(bytes = 2048, contentType = "image/png") {
-  return new Response(new Uint8Array(bytes), {
+/** A real PNG signature followed by filler — the import decides "is this an
+ *  image?" from the BYTES now (`lib/imageSniff.ts`), so a response body has to
+ *  actually start like an image to be accepted. A zero-filled buffer (what
+ *  this helper used to return) is correctly refused. */
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+
+function pngBytes(size: number): Uint8Array<ArrayBuffer> {
+  const bytes = new Uint8Array(new ArrayBuffer(Math.max(size, PNG_SIGNATURE.length)));
+  bytes.set(PNG_SIGNATURE, 0);
+  return bytes;
+}
+
+/** `contentType: null` models a CDN that sends NO content-type header at all
+ *  — which is exactly what Canva's own `*.canva-cdn.email` does, and what
+ *  used to make every real Canva import fail. */
+function fakeImageResponse(bytes = 2048, contentType: string | null = "image/png") {
+  return new Response(pngBytes(bytes), {
     status: 200,
-    headers: { "content-type": contentType },
+    headers: contentType === null ? {} : { "content-type": contentType },
   });
 }
 
@@ -194,6 +209,86 @@ describe("importPastedHtml — graceful failure handling (generic reason to the 
     expect(result.failures).toEqual([
       { url: "https://cdn.example.com/actually-a-page.png", reason: "Couldn't fetch this image." },
     ]);
+  });
+
+  // ── The founder's "the images aren't loading", 2026-07-30 ────────────────
+  // Canva serves an emailed design's assets from `*.canva-cdn.email` behind
+  // Cloudflare with NO `content-type` header. The old header-only check made
+  // EVERY image in a real Canva export fail.
+  test("re-hosts an image served with NO content-type header (the real Canva CDN shape)", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    globalThis.fetch = (async () => fakeImageResponse(2048, null)) as unknown as typeof fetch;
+
+    const result = await s.as.action(api.emailHtmlImport.importPastedHtml, {
+      html: '<img src="https://abc.canva-cdn.email/hero.png" width="600" height="62">',
+    });
+
+    expect(result.failures).toEqual([]);
+    expect(result.imagesRehosted).toBe(1);
+    expect(result.html).not.toContain("canva-cdn.email");
+    expect(result.html).not.toContain(INERT_PLACEHOLDER);
+  });
+
+  test("a content-type-less image is STORED as the type its bytes actually are", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    globalThis.fetch = (async () => fakeImageResponse(2048, null)) as unknown as typeof fetch;
+
+    await s.as.action(api.emailHtmlImport.importPastedHtml, {
+      html: '<img src="https://abc.canva-cdn.email/hero.png">',
+    });
+
+    // A blob stored with type `""` (what a header-less response produces if
+    // you pass it straight through) is served back as a download, so the
+    // image STILL wouldn't render — just from our domain instead of Canva's.
+    // Asserted on the stored BLOB's own type: `convex-test`'s in-memory
+    // `_storage` metadata only models `size`/`sha256`, but it does hand back
+    // the very Blob the action stored, which is what real Convex reads the
+    // served `Content-Type` from.
+    const storedType = await t.run(async (ctx) => {
+      const [metadata] = await ctx.db.system.query("_storage").collect();
+      const blob = await ctx.storage.get(metadata._id);
+      return blob?.type;
+    });
+    expect(storedType).toBe("image/png");
+  });
+
+  test("bytes that aren't an image are refused even when the header claims image/png", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    globalThis.fetch = (async () =>
+      new Response("<html><script>alert(1)</script></html>", {
+        status: 200,
+        headers: { "content-type": "image/png" },
+      })) as unknown as typeof fetch;
+
+    const result = await s.as.action(api.emailHtmlImport.importPastedHtml, {
+      html: '<img src="https://cdn.example.com/lies.png">',
+    });
+
+    expect(result.failures).toEqual([
+      { url: "https://cdn.example.com/lies.png", reason: "Couldn't fetch this image." },
+    ]);
+    expect(result.html).toContain(INERT_PLACEHOLDER);
+  });
+
+  // ── The founder's "the spacing is off", 2026-07-30 ───────────────────────
+  test("a failed image keeps its declared box instead of inflating to a square", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    globalThis.fetch = (async () => new Response("nope", { status: 404 })) as unknown as typeof fetch;
+
+    const result = await s.as.action(api.emailHtmlImport.importPastedHtml, {
+      html:
+        '<img src="https://dead.example.com/masthead.png" width="600" height="62" ' +
+        'style="display:block;width:600px;height:auto;max-width:100%">',
+    });
+
+    expect(result.html).toContain(INERT_PLACEHOLDER);
+    // Without this, `height:auto` resolves against the 1×1 placeholder's own
+    // 1:1 ratio and a 600×62 masthead renders as a 600×600 blank block.
+    expect(result.html).toMatch(/aspect-ratio:\s*600\s*\/\s*62/);
   });
 
   test("an image over the size cap is skipped and reported generically", async () => {

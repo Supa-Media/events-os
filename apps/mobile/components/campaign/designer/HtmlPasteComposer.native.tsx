@@ -77,7 +77,7 @@ export function HtmlPasteComposer({
       {doc === undefined ? null : !hasContent ? (
         <Text className="text-sm text-muted">Nothing pasted yet.</Text>
       ) : preview.status === "ready" ? (
-        <EmailHtmlPreview html={preview.html} height={520} />
+        <EmailHtmlPreview html={preview.html} height="auto" />
       ) : preview.status === "loading" ? (
         <Text className="text-sm text-faint">Loading preview…</Text>
       ) : (

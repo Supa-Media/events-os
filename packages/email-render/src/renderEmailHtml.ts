@@ -17,6 +17,11 @@
  * pasted-HTML email in the same inbox can't tell they came from two
  * different renderers:
  *
+ *   0. Re-establish the document basics the sanitizer necessarily removed —
+ *      a standards-mode doctype and a `<meta charset="utf-8">`
+ *      (`ensureDoctype`/`ensureCharsetMeta`; `sanitize-html` discards the
+ *      doctype, and the `<meta http-equiv>` it strips for security is the
+ *      only place a Canva export declares its encoding).
  *   1. Inject the compliance footer (unsubscribe link + postal address)
  *      before `</body>`.
  *   2. Override any `color-scheme`/`supported-color-schemes` meta tags the
@@ -40,7 +45,13 @@
  * ALREADY has an `<html>` root is passed through untouched — this never
  * double-wraps.
  */
-import { injectBeforeBodyClose, injectBeforeHeadClose, overrideColorSchemeMeta } from "./postprocess";
+import {
+  ensureCharsetMeta,
+  ensureDoctype,
+  injectBeforeBodyClose,
+  injectBeforeHeadClose,
+  overrideColorSchemeMeta,
+} from "./postprocess";
 import { complianceFooterHtml, complianceFooterText, darkModeStyle, esc } from "./complianceShell";
 import type { RenderedEmail } from "./renderEmail";
 
@@ -115,7 +126,11 @@ export async function renderEmailHtml(
   html: string,
   opts: RenderEmailHtmlOptions,
 ): Promise<RenderedEmail> {
-  const shell = ensureDocumentShell(html, opts.preview);
+  // A paste that already had its own `<html>` root keeps it — but the real
+  // sanitizer upstream drops the doctype and (with `http-equiv`) the only
+  // charset declaration a design tool emits, so both are re-established here
+  // regardless of which branch produced the document. See `postprocess.ts`.
+  const shell = ensureCharsetMeta(ensureDoctype(ensureDocumentShell(html, opts.preview)));
 
   const withFooter = injectBeforeBodyClose(shell, complianceFooterHtml(opts));
   const withMeta = overrideColorSchemeMeta(withFooter);
