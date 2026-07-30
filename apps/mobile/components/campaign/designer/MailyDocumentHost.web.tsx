@@ -86,17 +86,19 @@ import "@maily-to/core/dist/index.css";
 import "./mailyOverrides.css";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Text, View, useWindowDimensions } from "react-native";
+import { Pressable, Text, View, useWindowDimensions } from "react-native";
 import { useConvex } from "convex/react";
 import { Editor } from "@maily-to/core";
 import { ImageUploadExtension } from "@maily-to/core/extensions";
 import { isNodeSelection } from "@tiptap/core";
 import type { Editor as TiptapEditor, JSONContent } from "@tiptap/core";
+import { colors } from "../../../lib/theme";
 import { errorMessage } from "../../../lib/errors";
 import { fetchCampaignPreview } from "../../../lib/emailPreview";
 import EmailHtmlPreview from "../../email/EmailHtmlPreview";
 import { ImageUploadButton, ReadOnlyProvider } from "./DesignerControls";
 import { ImageLibraryPicker, useImageLibraryRegistration } from "./ImageLibraryPicker";
+import { Icon, type IconName } from "../../ui";
 // Explicit `.web` suffix (not a bare specifier): `MailyImagePickerModal` has
 // no native counterpart at all (no bridge file to fall back to) — a bare
 // import resolves fine under Metro's platform-extension lookup but not under
@@ -119,6 +121,13 @@ import {
 } from "./pwImagePlaceholderIntercept";
 import { isNodeDeleteKeydown } from "./pwSelectedNodeDelete";
 import { clampPopperLeft } from "./pwPopperClamp";
+import {
+  BUTTON_ALIGNMENTS,
+  buttonAlignmentUpdate,
+  resolveSelectedButtonAlignment,
+  type ButtonAlignment,
+  type SelectedNodeLike,
+} from "./pwButtonAlignment";
 import { forceIframeColorScheme } from "./previewColorScheme";
 import {
   PREVIEW_WIDTHS,
@@ -205,6 +214,22 @@ export function MailyDocumentHost({
     const attr = (doc?.attrs as { pwFontFamily?: unknown } | undefined)?.pwFontFamily;
     return isPwFontStackId(attr) ? attr : DEFAULT_PW_FONT_STACK_ID;
   });
+  // Founder bug #5, round two: OUR OWN button-alignment control (see
+  // `pwButtonAlignment.ts`'s module doc for why this exists instead of
+  // relying on maily's own nested-Popover `AlignmentSwitch`). `null` means
+  // "no button node is currently selected" — the control below doesn't
+  // render at all then, only appearing when there's actually something for
+  // it to act on. Kept in sync by a `transaction` listener registered in
+  // `handleCreate` (every selection AND doc change goes through a
+  // transaction, so this one hook covers both "designer clicked a different
+  // button" and "the selected button's alignment changed").
+  const [selectedButtonAlignment, setSelectedButtonAlignment] = useState<ButtonAlignment | null>(null);
+  // The selected button's OWN ProseMirror position — NOT derived from
+  // `editor.state.selection` at click time (see the module doc: that's
+  // exactly the timing sensitivity that made maily's own control
+  // unreliable). Captured when selection last changed; re-verified fresh
+  // against the CURRENT doc in `setSelectedButtonAlignment` before writing.
+  const selectedButtonPosRef = useRef<number | null>(null);
 
   // Refs for values a stable callback still needs the LATEST of — the same
   // discipline `BlocksDocumentComposer` uses (`onSaveRef`, `historyRef`) so a
@@ -471,9 +496,60 @@ export function MailyDocumentHost({
     debounceRef.current = setTimeout(() => runSave(next, nextString), decision.delayMs);
   }, [runSave]);
 
-  const handleCreate = useCallback((editor: TiptapEditor) => {
-    editorRef.current = editor;
+  /** Reads the editor's CURRENT selection and updates
+   *  `selectedButtonAlignment`/`selectedButtonPosRef` accordingly — stable
+   *  (refs only) so it can be registered on the editor's own `transaction`
+   *  event exactly once, in `handleCreate` (see that callback's own doc on
+   *  why direct `editor.on(...)` registration, not a `useEffect`, is the
+   *  right place: the editor instance itself is only ever created once —
+   *  the module doc's surprise #2). */
+  const syncSelectedButtonAlignment = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const selection = editor.state.selection;
+    const resolved = isNodeSelection(selection)
+      ? resolveSelectedButtonAlignment(selection as unknown as SelectedNodeLike)
+      : null;
+    selectedButtonPosRef.current = resolved?.pos ?? null;
+    setSelectedButtonAlignment(resolved?.alignment ?? null);
   }, []);
+
+  /** Writes a NEW alignment onto whichever button `selectedButtonPosRef`
+   *  currently points at — see `pwButtonAlignment.ts`'s module doc for why
+   *  this is a direct, position-based `tr.setNodeMarkup` rather than
+   *  `editor.commands.updateAttributes(name, attrs)` (which walks the
+   *  CURRENT selection instead of a captured position). `buttonAlignmentUpdate`
+   *  re-verifies the position still resolves to a button and merges the
+   *  CURRENT (not stale-closure) attrs, failing closed (no-op) otherwise. */
+  const changeSelectedButtonAlignment = useCallback((alignment: ButtonAlignment) => {
+    const editor = editorRef.current;
+    const pos = selectedButtonPosRef.current;
+    if (!editor || pos == null) return;
+    const update = buttonAlignmentUpdate(editor.state.doc, pos, alignment);
+    if (!update) return;
+    editor
+      .chain()
+      .focus()
+      .command(({ tr }) => {
+        tr.setNodeMarkup(pos, undefined, update.attrs);
+        return true;
+      })
+      .run();
+  }, []);
+
+  const handleCreate = useCallback(
+    (editor: TiptapEditor) => {
+      editorRef.current = editor;
+      // Every selection change AND every doc change dispatches a
+      // `transaction` — one hook covers both "designer clicked a different
+      // button" and "the selected button's alignment (or anything else)
+      // changed underneath it" (e.g. our OWN `changeSelectedButtonAlignment`
+      // above, which is exactly how the control's `isActive`-style
+      // highlighting below stays correct after a click).
+      editor.on("transaction", syncSelectedButtonAlignment);
+    },
+    [syncSelectedButtonAlignment],
+  );
   const handleUpdate = useCallback(
     (editor: TiptapEditor) => {
       editorRef.current = editor;
@@ -583,6 +659,18 @@ export function MailyDocumentHost({
             <View className="mb-3 flex-row flex-wrap items-center justify-between gap-2">
               <View className="flex-row flex-wrap items-center gap-2">
                 <FontStackSelect value={fontStackId} onChange={changeFontStack} />
+                {/* Founder bug #5, round two — OUR OWN reliable replacement
+                 *  for maily's flaky nested-Popover `AlignmentSwitch` (see
+                 *  `pwButtonAlignment.ts`'s module doc). Only rendered while
+                 *  a button node is actually selected — same "nothing to act
+                 *  on, don't show a control" discipline `ImageUploadButton`/
+                 *  `ImageLibraryPicker` already follow for `!uploadImage`. */}
+                {selectedButtonAlignment ? (
+                  <ButtonAlignmentControl
+                    value={selectedButtonAlignment}
+                    onChange={changeSelectedButtonAlignment}
+                  />
+                ) : null}
                 {uploadImage ? (
                   <>
                     <ImageUploadButton
@@ -820,6 +908,64 @@ function FontStackSelect({
         </option>
       ))}
     </select>
+  );
+}
+
+const BUTTON_ALIGNMENT_ICON: Record<ButtonAlignment, IconName> = {
+  left: "align-left",
+  center: "align-center",
+  right: "align-right",
+};
+const BUTTON_ALIGNMENT_LABEL: Record<ButtonAlignment, string> = {
+  left: "Align button left",
+  center: "Align button center",
+  right: "Align button right",
+};
+
+/**
+ * Founder bug #5, round two — Left/Center/Right for the CURRENTLY SELECTED
+ * button (see `pwButtonAlignment.ts`'s module doc for why this exists at
+ * all: maily's own nested-Popover `AlignmentSwitch` didn't reliably persist
+ * a click in this environment). A compact icon-only segmented pill — same
+ * visual language as the Light/Dark and Mobile/Tablet/Desktop pills in the
+ * preview pane below, sized down to icons (not full words) since this one
+ * lives in the ALREADY-fairly-full main toolbar and only appears
+ * conditionally, not permanently claiming space.
+ */
+function ButtonAlignmentControl({
+  value,
+  onChange,
+}: {
+  value: ButtonAlignment;
+  onChange: (alignment: ButtonAlignment) => void;
+}) {
+  return (
+    <View
+      className="flex-row overflow-hidden rounded-md border border-border-strong"
+      accessibilityRole="radiogroup"
+    >
+      {BUTTON_ALIGNMENTS.map((alignment) => {
+        const active = value === alignment;
+        return (
+          <Pressable
+            key={alignment}
+            onPress={() => onChange(alignment)}
+            accessibilityRole="radio"
+            accessibilityState={{ selected: active }}
+            accessibilityLabel={BUTTON_ALIGNMENT_LABEL[alignment]}
+            className={`h-[30px] w-[30px] items-center justify-center ${
+              active ? "bg-accent" : "bg-raised hover:bg-sunken"
+            }`}
+          >
+            <Icon
+              name={BUTTON_ALIGNMENT_ICON[alignment]}
+              size={14}
+              color={active ? "#FFFFFF" : colors.muted}
+            />
+          </Pressable>
+        );
+      })}
+    </View>
   );
 }
 
