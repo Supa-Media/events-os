@@ -131,6 +131,7 @@ import {
   emailHtmlDocContentIsEmpty,
   renderCampaignEmail,
   renderCampaignText,
+  tiptapDocContentIsEmpty,
   validateEmailDocument,
   validateEmailHtmlDocument,
   validateTiptapEmailDoc,
@@ -323,18 +324,52 @@ export function applyThemeToDoc(doc: unknown, theme: EmailTheme): EmailDocument 
   return { ...(doc as EmailDocument), theme };
 }
 
-/** The tiptap twin of the blocks format's `validated.doc.blocks.length === 0`
- *  "write the email first" check — a coarse, ROOT-LEVEL-ONLY empty check
- *  (unlike mobile's `mailyDoc.ts#isTiptapDocEmpty`, which recurses to catch
- *  an all-whitespace document too), since this only has to catch the
- *  degenerate "never wrote anything" case at the send-blocking gate, not
- *  drive empty-state copy in a composer. Written defensively (`doc` is
- *  `v.any()` at the boundary) — anything not shaped like a tiptap doc counts
- *  as empty rather than throwing. */
-function tiptapDocContentIsEmpty(doc: unknown): boolean {
-  if (typeof doc !== "object" || doc === null) return true;
-  const content = (doc as { content?: unknown }).content;
-  return !Array.isArray(content) || content.length === 0;
+// `tiptapDocContentIsEmpty` (the tiptap twin of the blocks format's
+// `validated.doc.blocks.length === 0` "write the email first" check) now
+// lives in `@events-os/shared`'s `emailDocFormat.ts` — moved there (not
+// duplicated) so `setDocFormat`'s in-editor switch affordance
+// (`apps/mobile/app/(app)/campaign/[id]/design.tsx`) can share the EXACT
+// SAME "is this empty" definition this file's own submit/switch gates use,
+// imported above.
+
+/** The blocks-format twin of the same root-level-only emptiness check —
+ *  `submitForApproval`/`send`'s own inline `validated.doc.blocks.length === 0`
+ *  test, factored out so `setDocFormat` (below) can dispatch across all
+ *  three formats with one helper per format instead of re-deriving this one
+ *  inline a second time. A doc that fails `validateEmailDocument` outright
+ *  counts as empty too — same "written defensively" posture as its tiptap/
+ *  html siblings. */
+function blocksDocContentIsEmpty(doc: unknown): boolean {
+  const validated = validateEmailDocument(doc);
+  return !validated.ok || validated.doc.blocks.length === 0;
+}
+
+/** Dispatch "is this row's CURRENT doc empty" across whichever format it was
+ *  actually written in — the one thing `setDocFormat` needs from the three
+ *  per-format checks (`tiptapDocContentIsEmpty`/`emailHtmlDocContentIsEmpty`/
+ *  `blocksDocContentIsEmpty`) that already gate SUBMIT for their own format. */
+function currentDocIsEmpty(format: EmailDocFormat, doc: unknown): boolean {
+  if (format === "tiptap") return tiptapDocContentIsEmpty(doc);
+  if (format === "html") return emailHtmlDocContentIsEmpty(doc);
+  return blocksDocContentIsEmpty(doc);
+}
+
+/** Mirrors mobile's `components/campaign/designer/mailyDoc.ts#newTiptapDocSeed`
+ *  byte-for-byte — the SAME "sensible starter" (one heading to rename, one
+ *  empty paragraph to click into) a brand-new tiptap-format email gets at
+ *  `createCampaign` time, reused here so `setDocFormat` (below) lands a
+ *  switch-to-editor on the same starting point as "create a new one," not a
+ *  blank canvas with no hint the `+`/slash-command gutter is there. A fresh
+ *  object every call — two switches must never end up sharing (and mutating)
+ *  the same in-memory node array. */
+function newTiptapDocSeed(): JSONContent {
+  return {
+    type: "doc",
+    content: [
+      { type: "heading", attrs: { level: 2 }, content: [{ type: "text", text: "Heading" }] },
+      { type: "paragraph", content: [] },
+    ],
+  };
 }
 
 /**
@@ -560,6 +595,108 @@ export const updateCampaignDoc = mutation({
     assertEditable(existing);
     const validatedDoc = validateDocForFormat(emailDocFormatOf(existing), doc);
     await ctx.db.patch(campaignId, { doc: validatedDoc, updatedAt: Date.now() });
+    return null;
+  },
+});
+
+/**
+ * The ONE sanctioned exception to `docFormat`'s immutability
+ * (`schema/campaigns.ts`'s `docFormat` doc, `updateCampaignDoc`'s own doc
+ * above) — the founder's primary fix for "Paste HTML is unreachable" (PR 2,
+ * 2026-07-30): from INSIDE the editor, switch the email being worked on
+ * between the maily editor (`"tiptap"`) and Paste HTML (`"html"`) instead of
+ * only being able to pick a format at creation.
+ *
+ * Immutability exists to protect an APPROVAL SNAPSHOT
+ * (`approvedSnapshotHash`) — a reviewer signed off on a document shaped one
+ * way, and letting its shape change out from under that signature would make
+ * the snapshot a lie. An email that has never been submitted/approved/sent
+ * has no snapshot to protect, so switching one is safe. "Never submitted" is
+ * NOT the same test as "status is draft" — `cancelApprovalRequest` and
+ * `revertToDraft` both return a row to `status: "draft"` from
+ * `pending_approval`/`denied`, and both deliberately CLEAR the row's own
+ * `submittedAt`/`approvedAt` fields on the way there (a legitimate
+ * withdrawal/reuse, not a lie about those fields) — so those fields can't be
+ * this mutation's "ever submitted" test; a row that cancelled or was denied
+ * would read as pristine by them alone even though it plainly isn't. The
+ * durable answer is `campaignApprovalLog` (`schema/campaigns.ts`'s own doc:
+ * APPEND-ONLY, never touched by a cancel or revert) — its mere existence for
+ * this `campaignId` means the row left draft for review at least once, no
+ * matter what its mutable fields say now.
+ *
+ * The OTHER half of "safe" is content: switching formats resets `doc` to the
+ * new format's OWN empty shape (`newTiptapDocSeed()`'s twin above / `{ html:
+ * "" }`), so this must never fire on a doc that has anything in it — the
+ * switch would silently discard real work. `currentDocIsEmpty` dispatches on
+ * the row's CURRENT format (`emailDocFormatOf`) so a blocks-format draft
+ * (the legacy default, still reachable in principle) is covered by the same
+ * gate as tiptap/html, even though today's UI (`DocumentComposer.tsx`'s two
+ * web hosts) only ever offers the tiptap<->html direction.
+ */
+export const setDocFormat = mutation({
+  args: {
+    campaignId: v.id("campaigns"),
+    docFormat: v.union(v.literal("tiptap"), v.literal("html")),
+  },
+  returns: v.null(),
+  handler: async (ctx, { campaignId, docFormat }) => {
+    await requireCampaignCompose(ctx);
+    const existing = await ctx.db.get(campaignId);
+    if (!existing) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
+    }
+    requireEmailKindRow(existing);
+
+    if (existing.status !== "draft") {
+      throw new ConvexError({
+        code: "NOT_EDITABLE",
+        message: "Only a draft email can switch format.",
+      });
+    }
+    // Belt-and-suspenders against `status === "draft"` alone — NOT the row's
+    // own `submittedAt`/`approvedAt` fields, which `cancelApprovalRequest`/
+    // `revertToDraft` both deliberately CLEAR on their way back to `draft`
+    // (a legitimate withdrawal/reuse, not a lie) — so a row that's been
+    // cancelled or reverted would read as "never submitted" by those fields
+    // alone even though it plainly has been. `campaignApprovalLog` is the
+    // one thing in this table that's genuinely APPEND-ONLY (its own schema
+    // doc) — a row logged there by `submitForApproval`/`approveCampaign`/
+    // `requestCampaignChanges`/`denyCampaign` outlives every later cancel or
+    // revert, so its mere existence is the durable "has this ever left
+    // draft for review" answer no mutable field can give.
+    const priorDecision = await ctx.db
+      .query("campaignApprovalLog")
+      .withIndex("by_campaign", (q) => q.eq("campaignId", campaignId))
+      .first();
+    if (priorDecision) {
+      throw new ConvexError({
+        code: "NOT_EDITABLE",
+        message:
+          "This email has already been submitted for approval before — its format can't change now.",
+      });
+    }
+
+    const currentFormat = emailDocFormatOf(existing);
+    if (currentFormat === docFormat) {
+      throw new ConvexError({
+        code: "SAME_FORMAT",
+        message: `This email is already ${docFormat === "html" ? "Paste HTML" : "editor"} format.`,
+      });
+    }
+    if (!currentDocIsEmpty(currentFormat, existing.doc)) {
+      throw new ConvexError({
+        code: "NOT_EMPTY",
+        message: "This email already has content — clear it first to switch its format.",
+      });
+    }
+
+    const nextDoc: unknown = docFormat === "html" ? { html: "" } : newTiptapDocSeed();
+    const validatedDoc = validateDocForFormat(docFormat, nextDoc);
+    await ctx.db.patch(campaignId, {
+      doc: validatedDoc,
+      docFormat,
+      updatedAt: Date.now(),
+    });
     return null;
   },
 });

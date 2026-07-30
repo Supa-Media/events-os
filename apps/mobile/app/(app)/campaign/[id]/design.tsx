@@ -27,15 +27,21 @@
  * throws `THEMES_RETIRED` for every row now, so there is no restyle
  * affordance here at all, for either format.
  */
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import { Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import type { JSONContent } from "@tiptap/core";
-import { emailDocFormatOf, type EmailDocument } from "@events-os/shared";
+import {
+  emailDocFormatOf,
+  emailHtmlDocContentIsEmpty,
+  tiptapDocContentIsEmpty,
+  type EmailDocument,
+} from "@events-os/shared";
 import type { HtmlPasteDoc } from "../../../../components/campaign/designer/HtmlPasteComposer.types";
+import type { ComposerFormatSwitch } from "../../../../components/campaign/designer/MailyDocumentHost.types";
 import {
   Screen,
   FULL_WIDTH,
@@ -92,6 +98,7 @@ function CampaignDesignBody({
   const campaign = useQuery(api.campaigns.getCampaign, { campaignId });
   const updateDoc = useMutation(api.campaigns.updateCampaignDoc);
   const updateMeta = useMutation(api.campaigns.updateCampaignMeta);
+  const setDocFormat = useMutation(api.campaigns.setDocFormat);
   // Only meaningful for the tiptap host's read-only "From" line — same query
   // `CampaignMetaCard.tsx` reads for its own From hint text.
   const senderDefaults = useQuery(api.campaigns.getSenderDefaults, {});
@@ -105,6 +112,45 @@ function CampaignDesignBody({
   // requires email compose power."
   const editable =
     canCompose && (campaign?.status === "draft" || campaign?.status === "changes_requested");
+
+  // Eligible to switch format AT ALL — STRICTER than `editable` above:
+  // `campaigns.setDocFormat` only ever allows `status === "draft"`, not
+  // `changes_requested` (see that mutation's own doc — a row a reviewer sent
+  // back for changes carries real approval history, and that history is
+  // exactly what the format switch is never allowed to route around).
+  const canSwitchFormat = canCompose && campaign?.status === "draft";
+  const [switchingFormat, setSwitchingFormat] = useState(false);
+
+  /** Build the `formatSwitch` prop for one composer host — `undefined` when
+   *  this row isn't eligible at all (hides the affordance completely, same
+   *  as `editable` gating everything else here); otherwise present but
+   *  DISABLED (with an explanation) when the current doc has real content,
+   *  since `setDocFormat` would reject that anyway — see
+   *  `ComposerFormatSwitch`'s own doc on why disabled-with-a-reason beats a
+   *  button that silently vanishes once a designer starts typing. */
+  const buildFormatSwitch = useCallback(
+    (target: "tiptap" | "html", label: string, currentDocIsEmpty: boolean): ComposerFormatSwitch | undefined => {
+      if (!canSwitchFormat) return undefined;
+      return {
+        label,
+        switching: switchingFormat,
+        disabledReason: currentDocIsEmpty
+          ? undefined
+          : "This email already has content — clear it first to switch format.",
+        onSwitch: async () => {
+          setSwitchingFormat(true);
+          try {
+            return await run(() => setDocFormat({ campaignId, docFormat: target }), {
+              errorTitle: "Couldn't switch format",
+            });
+          } finally {
+            setSwitchingFormat(false);
+          }
+        },
+      };
+    },
+    [canSwitchFormat, switchingFormat, run, setDocFormat, campaignId],
+  );
 
   const saveDoc = useCallback(
     (doc: EmailDocument) => updateDoc({ campaignId, doc }),
@@ -163,6 +209,11 @@ function CampaignDesignBody({
           onSave={saveTiptapDoc}
           run={run}
           uploadImage={uploadImage}
+          formatSwitch={buildFormatSwitch(
+            "html",
+            "Paste HTML instead",
+            tiptapDocContentIsEmpty(campaign.doc),
+          )}
           meta={{
             subject: campaign.subject ?? "",
             previewText: campaign.previewText ?? "",
@@ -190,6 +241,11 @@ function CampaignDesignBody({
           lockedNotice={lockNote(campaign.status, canCompose)}
           onSave={saveHtmlDoc}
           run={run}
+          formatSwitch={buildFormatSwitch(
+            "tiptap",
+            "Use the editor instead",
+            emailHtmlDocContentIsEmpty(campaign.doc as HtmlPasteDoc),
+          )}
           meta={{
             subject: campaign.subject ?? "",
             previewText: campaign.previewText ?? "",

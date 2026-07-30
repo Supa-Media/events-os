@@ -52,3 +52,28 @@ export function emailDocFormatOf(row: {
   if (row.docFormat === "html") return "html";
   return "blocks";
 }
+
+/**
+ * Coarse, ROOT-LEVEL-ONLY "is there anything here at all" check for a tiptap
+ * document — `apps/convex/campaigns.ts`'s own `submitForApproval`/`send` gate
+ * (the "write the email first" check), moved here so `setDocFormat`'s
+ * in-editor switch affordance (mobile's `campaign/[id]/design.tsx`) can share
+ * the EXACT SAME definition of "empty" the mutation itself enforces, instead
+ * of a client-side approximation that could show an affordance the mutation
+ * then rejects.
+ *
+ * Deliberately NOT the same test as mobile's own
+ * `components/campaign/designer/mailyDoc.ts#isTiptapDocEmpty`, which recurses
+ * into every node to catch an all-whitespace document too and treats the
+ * starter seed's placeholder heading as real content — that one drives
+ * empty-state COPY in the composer's preview pane. This one only has to catch
+ * the degenerate "content array is missing or has nothing in it" case, and
+ * needs to match byte-for-byte what the write-time gate actually checks.
+ * Written defensively — `doc` is `v.any()` at the Convex boundary — so
+ * anything not shaped like a tiptap doc counts as empty rather than throwing.
+ */
+export function tiptapDocContentIsEmpty(doc: unknown): boolean {
+  if (typeof doc !== "object" || doc === null) return true;
+  const content = (doc as { content?: unknown }).content;
+  return !Array.isArray(content) || content.length === 0;
+}
