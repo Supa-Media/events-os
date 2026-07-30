@@ -27,6 +27,12 @@ export type TransferLegPreview = {
   postedAt: number;
   amountCents: number;
   flow: "outflow" | "inflow" | "transfer";
+  /** `finances.markAsTransfer` marked this row (as opposed to a transfer the
+   *  app RECORDED — a recorded central↔chapter movement, a repayment credit,
+   *  a reimbursement). Both read `flow:"transfer"` and neither is a plain
+   *  inflow, but only the marked one can be un-marked and re-paired, so the
+   *  warning below has to tell them apart. */
+  isMarkedTransfer: boolean;
   label: string;
 };
 
@@ -47,17 +53,33 @@ export function MarkTransferModal({
   const [note, setNote] = useState("");
   const [a, b] = legs;
   // Surfaced as a warning, not a block — the server is the real gate
-  // (`AMOUNT_MISMATCH` / `NOT_A_PAIR`). Showing it here just turns a rejected
-  // write into an obvious mis-pick the bookkeeper can fix before submitting.
+  // (`AMOUNT_MISMATCH` / `NOT_A_PAIR` / `ALREADY_TRANSFER` / …). Showing it
+  // here just turns a rejected write into an obvious mis-pick the bookkeeper
+  // can fix before submitting.
+  //
+  // ALREADY-A-TRANSFER FIRST, and that order is the bug fix: a row carrying
+  // `flow:"transfer"` is neither an outflow nor an inflow, so it used to fail
+  // the out/in test and get reported as "these two move the same way" — a
+  // diagnosis that sent the founder looking for a direction problem on a pair
+  // whose directions were fine. Name the row and say what to do with it.
+  const alreadyTransfer = legs.find((l) => l.flow === "transfer") ?? null;
   const amountsMatch = a.amountCents === b.amountCents;
   const oppositeFlows =
     (a.flow === "outflow" && b.flow === "inflow") ||
     (a.flow === "inflow" && b.flow === "outflow");
-  const problem = !oppositeFlows
-    ? "A transfer is one row leaving an account and one arriving. These two move the same way."
-    : !amountsMatch
-      ? "These two amounts don't match. Check you've picked both sides of the same movement."
-      : null;
+  const problem = alreadyTransfer
+    ? alreadyTransfer.isMarkedTransfer
+      ? `${alreadyTransfer.label} is already marked as a transfer. Un-mark it first (the ✕ next to its Transfer badge) — unless its other leg is gone, in which case marking again re-pairs it.`
+      : `${alreadyTransfer.label} is already a transfer the app recorded, so it can't be marked. Undo it from the Transfers tool if it's wrong.`
+    : !oppositeFlows
+      ? "A transfer is one row leaving an account and one arriving. These two move the same way."
+      : !amountsMatch
+        ? "These two amounts don't match. Check you've picked both sides of the same movement."
+        : null;
+  // A RECORDED transfer is a certain refusal, so don't offer the button at
+  // all. Everything else stays submittable — the warnings above are advisory
+  // and the server has the last word (a marked ORPHAN really does re-pair).
+  const blocked = alreadyTransfer != null && !alreadyTransfer.isMarkedTransfer;
 
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onCancel}>
@@ -97,14 +119,26 @@ export function MarkTransferModal({
                     </Text>
                     <Text className="text-[11px] text-faint">
                       {shortDate(leg.postedAt)}
+                      {/* Say it on the row itself, not just in the warning —
+                          this is the state the grid's Transfer badge shows,
+                          and the reason the pair can't be marked. */}
+                      {leg.flow === "transfer"
+                        ? leg.isMarkedTransfer
+                          ? " · already marked as a transfer"
+                          : " · already a recorded transfer"
+                        : ""}
                     </Text>
                   </View>
                   <Text
                     className={`text-xs font-semibold ${
-                      leg.flow === "outflow" ? "text-ink" : "text-success"
+                      leg.flow === "outflow"
+                        ? "text-ink"
+                        : leg.flow === "inflow"
+                          ? "text-success"
+                          : "text-muted"
                     }`}
                   >
-                    {leg.flow === "outflow" ? "−" : "+"}
+                    {leg.flow === "outflow" ? "−" : leg.flow === "inflow" ? "+" : ""}
                     {formatCents(leg.amountCents)}
                   </Text>
                 </View>
@@ -132,6 +166,7 @@ export function MarkTransferModal({
               title="Mark as transfer"
               onPress={() => onConfirm(note.trim() || null)}
               loading={submitting}
+              disabled={blocked}
             />
           </View>
         </Pressable>

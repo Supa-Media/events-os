@@ -386,6 +386,10 @@ function ReconcileGrid() {
         postedAt: r.postedAt,
         amountCents: r.amountCents,
         flow: r.flow,
+        // Carried so the preview can tell an already-marked leg (un-markable,
+        // re-pairable) from one the app recorded (neither) — both read
+        // `flow:"transfer"` and neither is markable as-is.
+        isMarkedTransfer: r.isMarkedTransfer,
         label: r.merchantName ?? r.description ?? "Transaction",
       }));
       return [a, b];

@@ -621,6 +621,11 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "rule",
+        title: "A row belongs to ONE transfer",
+        text: "Once a row is marked, it's spoken for: it carries a Transfer badge and the app won't let you pull it into a second pair. If you picked the wrong other side, un-mark it first — the ✕ next to the badge, from either leg, which releases BOTH rows back to how the bank reported them — then mark the right two. Rows the app recorded itself (a chapter↔central movement, a repayment credit) also read as transfers, and those are undone where they were made, not here.",
+      },
+      {
+        kind: "rule",
         title: "Don't reach for Excluded",
         text: "Excluded is for a row that should never count at all — a duplicate, a bank error. Using it on a transfer hides the row instead of explaining it, only ever fixes one of the two legs, and drops it out of the receipt chase. Using it on a payout deletes real income. Both now have a marking that keeps the row honest and visible.",
       },
