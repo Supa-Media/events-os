@@ -1,3 +1,11 @@
+"use node";
+// ^ Uses Node built-ins (`node:net` `isIP`, `node:dns/promises` `lookup`) that
+// don't exist in Convex's default V8 isolate runtime, so this module must be
+// bundled for the Node runtime. It's imported ONLY by `emailHtmlImport.ts`
+// (itself a `"use node"` action), so this doesn't pull anything else into Node.
+// `npx convex typecheck` (which CI runs, but plain `tsc`/`vitest` do NOT) is the
+// check that enforces this — run it locally before pushing Convex node code.
+
 /**
  * SSRF guard for `emailHtmlImport.ts`'s image re-hosting fetch — adversarial
  * review finding (2026-07-30): "No SSRF guard on the image fetch." Without
