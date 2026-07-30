@@ -36,3 +36,7 @@ export type { JSONContent } from "@tiptap/core";
 // the backend calls to render a `docFormat: "tiptap"` campaign doc. See
 // `renderEmail.ts`'s module doc.
 export * from "./renderEmail";
+
+// PR 2 (2026-07-30, "Paste HTML"): the `docFormat: "html"` twin — same
+// compliance shell, reused via `complianceShell.ts` rather than duplicated.
+export * from "./renderEmailHtml";

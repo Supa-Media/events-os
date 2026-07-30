@@ -128,15 +128,18 @@ import { escapeHtml } from "./lib/html";
 import { newGuestToken } from "./ticketing";
 import {
   emailDocFormatOf,
+  emailHtmlDocContentIsEmpty,
   renderCampaignEmail,
   renderCampaignText,
   validateEmailDocument,
+  validateEmailHtmlDocument,
   validateTiptapEmailDoc,
   type EmailDocFormat,
   type EmailDocument,
+  type EmailHtmlDocument,
   type EmailTheme,
 } from "@events-os/shared";
-import { renderEmailTiptap } from "@events-os/email-render";
+import { renderEmailHtml, renderEmailTiptap } from "@events-os/email-render";
 import type { JSONContent } from "@tiptap/core";
 import { tiptapVariablesFor } from "./lib/tiptapCampaignRender";
 import { resolveScopeTheme, throwThemesRetired } from "./emailThemes";
@@ -356,6 +359,17 @@ function validateDocForFormat(docFormat: EmailDocFormat, doc: unknown): unknown 
     }
     return doc;
   }
+  if (docFormat === "html") {
+    // Real sanitization already happened once, upstream, in
+    // `emailHtmlImport.ts`'s "use node" action — this is the coarse
+    // regex-based BACKSTOP `emailHtmlDoc.ts`'s module doc describes, run at
+    // every write regardless of how the doc got here.
+    const validated = validateEmailHtmlDocument(doc);
+    if (!validated.ok) {
+      throw new ConvexError({ code: "INVALID_DOC", message: validated.error });
+    }
+    return validated.doc;
+  }
   const validated = validateEmailDocument(doc);
   if (!validated.ok) {
     throw new ConvexError({ code: "INVALID_DOC", message: validated.error });
@@ -373,8 +387,11 @@ export const createCampaign = mutation({
     doc: v.any(),
     // Set ONCE, here, and IMMUTABLE thereafter — see `schema/campaigns.ts`'s
     // `docFormat` doc. Absent (or `"blocks"`) behaves exactly as it always
-    // has; `"tiptap"` is the maily editor's document shape.
-    docFormat: v.optional(v.union(v.literal("blocks"), v.literal("tiptap"))),
+    // has; `"tiptap"` is the maily editor's document shape, `"html"` is
+    // "Paste HTML" (PR 2 of the founder's editor feedback, 2026-07-30).
+    docFormat: v.optional(
+      v.union(v.literal("blocks"), v.literal("tiptap"), v.literal("html")),
+    ),
     fromName: v.optional(v.string()),
     fromEmail: v.optional(v.string()),
   },
@@ -397,7 +414,8 @@ export const createCampaign = mutation({
     if (!audience) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Audience not found." });
     }
-    const format: EmailDocFormat = docFormat === "tiptap" ? "tiptap" : "blocks";
+    const format: EmailDocFormat =
+      docFormat === "tiptap" ? "tiptap" : docFormat === "html" ? "html" : "blocks";
     // Stamp the scope's current default theme BEFORE validating, so the theme
     // the document actually stores is the one the validator saw — BLOCKS
     // format only (only when the incoming doc brought none of its own: a
@@ -430,9 +448,9 @@ export const createCampaign = mutation({
       audienceId,
       doc: validatedDoc,
       // Absent-means-"blocks" (the contract's own default) — only stamp the
-      // column when it's actually "tiptap", so a blocks-format row hashes and
-      // reads byte-identically to one created before this field existed.
-      docFormat: format === "tiptap" ? "tiptap" : undefined,
+      // column for "tiptap"/"html", so a blocks-format row hashes and reads
+      // byte-identically to one created before this field existed.
+      docFormat: format === "blocks" ? undefined : format,
       kind: "email",
       status: "draft",
       fromName: sender.fromName,
@@ -894,6 +912,14 @@ export const submitForApproval = mutation({
       if (tiptapDocContentIsEmpty(campaign.doc)) {
         throw new ConvexError({ code: "EMPTY", message: "Write the email first." });
       }
+    } else if (submitDocFormat === "html") {
+      const validated = validateEmailHtmlDocument(campaign.doc);
+      if (!validated.ok) {
+        throw new ConvexError({ code: "INVALID_DOC", message: `Invalid email content: ${validated.error}` });
+      }
+      if (emailHtmlDocContentIsEmpty(campaign.doc)) {
+        throw new ConvexError({ code: "EMPTY", message: "Paste the HTML first." });
+      }
     } else {
       const validated = validateEmailDocument(campaign.doc);
       if (!validated.ok) {
@@ -1308,6 +1334,11 @@ export const sendTest = action({
       if (!validated.ok) {
         throw new ConvexError({ code: "INVALID_DOC", message: validated.error });
       }
+    } else if (docFormat === "html") {
+      const validated = validateEmailHtmlDocument(campaign.doc);
+      if (!validated.ok) {
+        throw new ConvexError({ code: "INVALID_DOC", message: validated.error });
+      }
     } else {
       const validated = validateEmailDocument(campaign.doc);
       if (!validated.ok) {
@@ -1347,6 +1378,16 @@ export const sendTest = action({
       // blocks renderer's own no-token graceful degradation.
       const rendered = await renderEmailTiptap(campaign.doc as JSONContent, {
         variables: tiptapVariablesFor(campaign.doc, recipient),
+        unsubscribeUrl,
+        orgAddress: mailSettings.orgMailingAddress ?? "",
+        preview: campaign.previewText,
+      });
+      html = rendered.html;
+      text = rendered.text;
+    } else if (docFormat === "html") {
+      // "Paste HTML" carries no merge tags — the doc is the sanitized,
+      // image-re-hosted HTML verbatim.
+      const rendered = await renderEmailHtml((campaign.doc as EmailHtmlDocument).html, {
         unsubscribeUrl,
         orgAddress: mailSettings.orgMailingAddress ?? "",
         preview: campaign.previewText,
@@ -1447,6 +1488,16 @@ export const send = mutation({
       }
       if (tiptapDocContentIsEmpty(campaign.doc)) {
         await recordSendFailure(ctx, campaignId, "Write the email first.");
+        return null;
+      }
+    } else if (docFormat === "html") {
+      const validated = validateEmailHtmlDocument(campaign.doc);
+      if (!validated.ok) {
+        await recordSendFailure(ctx, campaignId, `Invalid email content: ${validated.error}`);
+        return null;
+      }
+      if (emailHtmlDocContentIsEmpty(campaign.doc)) {
+        await recordSendFailure(ctx, campaignId, "Paste the HTML first.");
         return null;
       }
     } else {
@@ -1966,12 +2017,14 @@ export const deliverCampaignBatch = internalAction({
     const docValidity: { ok: true; blocksDoc?: EmailDocument } | { ok: false; error: string } =
       docFormat === "tiptap"
         ? validateTiptapEmailDoc(campaign.doc)
-        : (() => {
-            const result = validateEmailDocument(campaign.doc);
-            return result.ok
-              ? { ok: true as const, blocksDoc: result.doc }
-              : { ok: false as const, error: result.error };
-          })();
+        : docFormat === "html"
+          ? validateEmailHtmlDocument(campaign.doc)
+          : (() => {
+              const result = validateEmailDocument(campaign.doc);
+              return result.ok
+                ? { ok: true as const, blocksDoc: result.doc }
+                : { ok: false as const, error: result.error };
+            })();
     const resendSettings = await resolveResendSettings(ctx);
     const suppressedNow = new Set(
       await ctx.runQuery(internal.emailSuppressions.listSuppressedEmails, {}),
@@ -2080,6 +2133,16 @@ export const deliverCampaignBatch = internalAction({
           variables: tiptapVariablesFor(campaign.doc, recipient, pollVoteUrl),
           unsubscribeUrl,
           // Non-empty by construction — the refusal above already returned.
+          orgAddress,
+          preview: campaign.previewText,
+        });
+        html = rendered.html;
+        text = rendered.text;
+      } else if (docFormat === "html") {
+        // "Paste HTML" carries no merge tags/poll links — the doc is the
+        // sanitized, image-re-hosted HTML verbatim, same for every recipient.
+        const rendered = await renderEmailHtml((campaign.doc as EmailHtmlDocument).html, {
+          unsubscribeUrl,
           orgAddress,
           preview: campaign.previewText,
         });

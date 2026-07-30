@@ -74,7 +74,12 @@ import {
 import { isTemplateRow } from "./lib/campaignKind";
 import { applyThemeToDoc, docHasTheme } from "./campaigns";
 import { resolveScopeTheme, throwThemesRetired } from "./emailThemes";
-import { emailDocFormatOf, validateEmailDocument, validateTiptapEmailDoc } from "@events-os/shared";
+import {
+  emailDocFormatOf,
+  validateEmailDocument,
+  validateEmailHtmlDocument,
+  validateTiptapEmailDoc,
+} from "@events-os/shared";
 import type { EmailDocFormat } from "@events-os/shared";
 import {
   assertValidTemplateDoc,
@@ -115,6 +120,13 @@ function assertValidDoc(docFormat: EmailDocFormat, doc: unknown) {
       throw new ConvexError({ code: "INVALID_DOC", message: validated.error });
     }
     return doc;
+  }
+  if (docFormat === "html") {
+    const validated = validateEmailHtmlDocument(doc);
+    if (!validated.ok) {
+      throw new ConvexError({ code: "INVALID_DOC", message: validated.error });
+    }
+    return validated.doc;
   }
   const validated = validateEmailDocument(doc);
   if (!validated.ok) {
@@ -166,9 +178,9 @@ async function duplicateCampaignRow(
     subject: opts.subject,
     previewText: source.previewText,
     doc,
-    // Absent-means-"blocks" — only stamp the column when it's actually
-    // "tiptap", matching `createCampaign`/`createTemplate`'s own rule.
-    docFormat: format === "tiptap" ? ("tiptap" as const) : undefined,
+    // Absent-means-"blocks" — only stamp the column for "tiptap"/"html",
+    // matching `createCampaign`/`createTemplate`'s own rule.
+    docFormat: format === "blocks" ? undefined : format,
     status: "draft" as const,
     createdBy: opts.createdBy,
     createdAt: now,

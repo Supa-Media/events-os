@@ -12,6 +12,18 @@
  * conversion: converting a pending/approved doc would change its approval
  * snapshot hash and burn its approval.
  *
+ * `"html"` (2026-07-30, PR 2 of the founder's editor feedback — "an option
+ * to forgo the email editor entirely and just use a html paste from things
+ * like canva to send the email") is the third leg: `doc` is
+ * `{ html: string }`, the doc that made it through the "Paste HTML" import
+ * action (`apps/convex/emailHtmlImport.ts`) — sanitized for XSS and with
+ * every external image re-hosted into Convex storage. See
+ * `emailHtmlDoc.ts`'s module doc for the doc shape's own contract and
+ * `packages/email-render/src/renderEmailHtml.ts` for how it renders. Like
+ * `"tiptap"`, an `"html"`-format row is NOT block-editable — re-pasting
+ * (the same import action, called again) is the only way to change it, and
+ * `docFormat` stays IMMUTABLE per row once created.
+ *
  * ── Preview contract (WS3 depends on WS1 providing this) ───────────────────
  * The mobile bundle deliberately does NOT ship packages/email-render (Metro
  * weight; see the WS0 spike report). Tiptap-format previews are rendered
@@ -29,12 +41,14 @@
  */
 
 /** Values of `campaigns.docFormat`. Absent on the row = "blocks". */
-export const EMAIL_DOC_FORMATS = ["blocks", "tiptap"] as const;
+export const EMAIL_DOC_FORMATS = ["blocks", "tiptap", "html"] as const;
 export type EmailDocFormat = (typeof EMAIL_DOC_FORMATS)[number];
 
 /** Total resolver — the ONE way to read a row's format. */
 export function emailDocFormatOf(row: {
   docFormat?: string | null;
 }): EmailDocFormat {
-  return row.docFormat === "tiptap" ? "tiptap" : "blocks";
+  if (row.docFormat === "tiptap") return "tiptap";
+  if (row.docFormat === "html") return "html";
+  return "blocks";
 }

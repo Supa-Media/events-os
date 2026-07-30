@@ -2039,5 +2039,8 @@ export * from "./emailDocFormat";
 // ── Tiptap email doc validator + node/mark whitelist + poll-walk helper ──────
 export * from "./tiptapEmail";
 
+// ── "Paste HTML" doc validator (docFormat: "html", PR 2 editor feedback) ─────
+export * from "./emailHtmlDoc";
+
 // ── The monthly newsletter, rebuilt as Tiptap JSON (WS4 acceptance artefact) ─
 export * from "./tiptapNewsletterTemplate";
