@@ -50,7 +50,7 @@ import { useQuery, useMutation } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { Card, Button, Badge, SectionHeader, TextField, Select, EmptyState, ToastView } from "../ui";
+import { Card, Button, Badge, SectionHeader, TextField, Select, Field, EmptyState, ToastView } from "../ui";
 import { colors, spacing } from "../../lib/theme";
 import { useActionRunner } from "../../lib/useActionToast";
 import { newTiptapDocSeed } from "./designer/mailyDoc";
@@ -190,13 +190,45 @@ export function CampaignsListView() {
         </Card>
       ) : (
         <Card style={styles.creator}>
-          <Select
-            label="Start from"
-            value={templateId}
-            options={templateOptions(templates)}
-            onChange={setTemplateId}
-            hint="A template copies its blocks and theme into the new draft. Editing the template later never touches an email already made from it."
-          />
+          <Field
+            label="Format"
+            hint={
+              mode === "paste"
+                ? "Starts blank — you'll paste the HTML on the next screen."
+                : "The maily editor's block canvas — themes, images, buttons, the works."
+            }
+          >
+            <View style={styles.formatToggle}>
+              {(
+                [
+                  { value: "editor" as const, label: "Design in editor" },
+                  { value: "paste" as const, label: "Paste HTML" },
+                ]
+              ).map((option) => {
+                const active = mode === option.value;
+                return (
+                  <Text
+                    key={option.value}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active }}
+                    onPress={() => setMode(option.value)}
+                    style={[styles.formatToggleOption, active && styles.formatToggleOptionActive]}
+                  >
+                    {option.label}
+                  </Text>
+                );
+              })}
+            </View>
+          </Field>
+          {mode === "paste" ? null : (
+            <Select
+              label="Start from"
+              value={templateId}
+              options={templateOptions(templates)}
+              onChange={setTemplateId}
+              hint="A template copies its blocks and theme into the new draft. Editing the template later never touches an email already made from it."
+            />
+          )}
           <TextField
             label="Subject line"
             placeholder="What shows in the inbox"
@@ -383,4 +415,28 @@ const styles = StyleSheet.create({
   name: { fontSize: 16, fontWeight: "700", color: colors.text, flex: 1 },
   desc: { fontSize: 13, color: colors.muted, marginTop: spacing.xs },
   meta: { fontSize: 13, color: colors.muted, marginTop: spacing.sm },
+  // The creator's "Design in editor" / "Paste HTML" toggle — same segmented-
+  // pill visual language as the designer's own preview Light/Dark and
+  // Mobile/Tablet/Desktop pills (`MailyDocumentHost.web.tsx`), just sized up
+  // since this is a first-class DECISION here, not a secondary view control.
+  formatToggle: {
+    flexDirection: "row",
+    alignSelf: "flex-start",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: colors.borderStrong,
+    overflow: "hidden",
+  },
+  formatToggleOption: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs + 2,
+    fontSize: 13,
+    fontWeight: "600",
+    color: colors.muted,
+    backgroundColor: colors.raised,
+  },
+  formatToggleOptionActive: {
+    backgroundColor: colors.accent,
+    color: colors.accentText,
+  },
 });
