@@ -1,5 +1,5 @@
 import { describe, expect, test } from "@jest/globals";
-import { hasEmailContent } from "./emailDocContent";
+import { emptyDocHint, hasEmailContent } from "./emailDocContent";
 
 describe("hasEmailContent — the format-aware replacement for `doc.blocks.length > 0`", () => {
   describe("blocks format (docFormat absent or 'blocks')", () => {
@@ -61,6 +61,49 @@ describe("hasEmailContent — the format-aware replacement for `doc.blocks.lengt
           docFormat: "tiptap",
         }),
       ).toBe(true);
+    });
+  });
+
+  // ── The founder's "I have HTML content, but it's saying I have no blocks"
+  // (2026-07-30). A `docFormat: "html"` row's doc is `{ html }` with no
+  // `.blocks`, so it fell through to the blocks branch and reported EMPTY —
+  // "The design is empty — add at least one block", Request approval
+  // disabled, no way forward, on a campaign carrying a whole imported
+  // newsletter. The BACKEND gate (`campaigns.ts#currentDocIsEmpty`) always
+  // dispatched "html" correctly; only the client refused.
+  describe("html format — pasted HTML is content", () => {
+    const pasted = { html: '<table><tr><td>Welcome to our newsletter</td></tr></table>' };
+
+    test("a pasted-HTML doc has content", () => {
+      expect(hasEmailContent({ doc: pasted, docFormat: "html" })).toBe(true);
+    });
+
+    test("does not throw on a doc with no .blocks property", () => {
+      expect(() => hasEmailContent({ doc: pasted, docFormat: "html" })).not.toThrow();
+    });
+
+    test("an empty/whitespace-only paste still counts as empty", () => {
+      expect(hasEmailContent({ doc: { html: "" }, docFormat: "html" })).toBe(false);
+      expect(hasEmailContent({ doc: { html: "   \n  " }, docFormat: "html" })).toBe(false);
+    });
+
+    test("a malformed html doc degrades to 'no content' instead of throwing", () => {
+      expect(hasEmailContent({ doc: {}, docFormat: "html" })).toBe(false);
+      expect(hasEmailContent({ doc: null, docFormat: "html" })).toBe(false);
+      expect(hasEmailContent({ doc: { html: 42 }, docFormat: "html" })).toBe(false);
+    });
+  });
+
+  describe("emptyDocHint — advice in the format's own vocabulary", () => {
+    test("never tells a pasted-HTML author to add a block", () => {
+      const hint = emptyDocHint({ doc: { html: "" }, docFormat: "html" });
+      expect(hint).not.toContain("block");
+      expect(hint).toContain("paste");
+    });
+
+    test("blocks and tiptap keep their own wording", () => {
+      expect(emptyDocHint({ doc: { blocks: [] } })).toContain("block");
+      expect(emptyDocHint({ doc: {}, docFormat: "tiptap" })).not.toContain("block");
     });
   });
 });

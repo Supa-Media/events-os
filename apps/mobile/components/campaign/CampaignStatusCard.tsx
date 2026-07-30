@@ -52,7 +52,7 @@ import {
   pluralPeople,
   pluralReply,
 } from "./helpers";
-import { hasEmailContent } from "./emailDocContent";
+import { emptyDocHint, hasEmailContent } from "./emailDocContent";
 import { useServerEmailPreview } from "./useServerEmailPreview";
 import type { ActionRunner } from "../../lib/useActionToast";
 
@@ -259,7 +259,7 @@ function RequestApprovalRow({
         <Text className="text-xs text-warn">Add a subject line before requesting approval.</Text>
       ) : null}
       {!hasContent ? (
-        <Text className="text-xs text-warn">The design is empty — add at least one block.</Text>
+        <Text className="text-xs text-warn">{emptyDocHint(campaign)}</Text>
       ) : null}
       <View className="flex-row justify-end">
         <Button
@@ -813,7 +813,7 @@ function DraftSendRow({
         <Text className="text-xs text-warn">Add a subject line before sending.</Text>
       ) : null}
       {!hasContent ? (
-        <Text className="text-xs text-warn">The design is empty — add at least one block.</Text>
+        <Text className="text-xs text-warn">{emptyDocHint(campaign)}</Text>
       ) : null}
       <View className="flex-row justify-end">
         <Button
