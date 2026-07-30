@@ -10,6 +10,7 @@ import {
   findPollNodes,
   validateTiptapEmailDoc,
 } from "./tiptapEmail";
+import { PW_FONT_STACK_IDS } from "./emailFont";
 
 // ── Happy paths ──────────────────────────────────────────────────────────
 
@@ -206,7 +207,10 @@ describe("validateTiptapEmailDoc: doc.attrs.pwFontFamily", () => {
     expect(validateTiptapEmailDoc({ type: "doc", attrs: {}, content: [] })).toEqual({ ok: true });
   });
 
-  test.each(["sans", "serif", "mono"])("accepts the known stack id %s", (id) => {
+  // Founder bug #6 extended this to eight stacks — walk `PW_FONT_STACK_IDS`
+  // itself (not a hand-copied literal list) so a future stack addition can't
+  // silently go untested here the way a copied array would.
+  test.each(PW_FONT_STACK_IDS)("accepts the known stack id %s", (id) => {
     expect(validateTiptapEmailDoc({ type: "doc", attrs: { pwFontFamily: id }, content: [] })).toEqual({
       ok: true,
     });

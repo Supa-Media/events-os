@@ -86,16 +86,19 @@ import "@maily-to/core/dist/index.css";
 import "./mailyOverrides.css";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Text, View, useWindowDimensions } from "react-native";
+import { Pressable, Text, View, useWindowDimensions } from "react-native";
 import { useConvex } from "convex/react";
 import { Editor } from "@maily-to/core";
 import { ImageUploadExtension } from "@maily-to/core/extensions";
+import { isNodeSelection } from "@tiptap/core";
 import type { Editor as TiptapEditor, JSONContent } from "@tiptap/core";
+import { colors } from "../../../lib/theme";
 import { errorMessage } from "../../../lib/errors";
 import { fetchCampaignPreview } from "../../../lib/emailPreview";
 import EmailHtmlPreview from "../../email/EmailHtmlPreview";
 import { ImageUploadButton, ReadOnlyProvider } from "./DesignerControls";
 import { ImageLibraryPicker, useImageLibraryRegistration } from "./ImageLibraryPicker";
+import { Icon, type IconName } from "../../ui";
 // Explicit `.web` suffix (not a bare specifier): `MailyImagePickerModal` has
 // no native counterpart at all (no bridge file to fall back to) — a bare
 // import resolves fine under Metro's platform-extension lookup but not under
@@ -110,8 +113,28 @@ import {
 import { isTiptapDocEmpty } from "./mailyDoc";
 import { PW_NODE_PACK_EXTENSIONS } from "./pwNodePack";
 import { PwDocAttrsExtension } from "./pwDocAttrs";
-import { findImagePlaceholderWrapper, resolveImageNodePos } from "./pwImagePlaceholderIntercept";
+import {
+  FILLED_IMAGE_NODE_TYPES,
+  findFilledImageClickTarget,
+  findImagePlaceholderWrapper,
+  resolveImageNodePos,
+} from "./pwImagePlaceholderIntercept";
+import { isNodeDeleteKeydown } from "./pwSelectedNodeDelete";
+import { clampPopperLeft } from "./pwPopperClamp";
+import {
+  BUTTON_ALIGNMENTS,
+  buttonAlignmentUpdate,
+  resolveSelectedButtonAlignment,
+  type ButtonAlignment,
+  type SelectedNodeLike,
+} from "./pwButtonAlignment";
 import { forceIframeColorScheme } from "./previewColorScheme";
+import {
+  PREVIEW_WIDTHS,
+  PREVIEW_WIDTH_IDS,
+  DEFAULT_PREVIEW_WIDTH_ID,
+  type PreviewWidthId,
+} from "./previewWidth";
 import {
   PW_FONT_STACK_IDS,
   PW_FONT_STACKS,
@@ -166,11 +189,23 @@ export function MailyDocumentHost({
     pos: number;
     nodeType: string;
   } | null>(null);
+  // Mirrors `imagePickerTarget` for the delete-keymap capture listener below
+  // (a stable callback, same ref discipline as `editableRef`/`onSaveRef`) —
+  // Delete/Backspace must never hijack a keystroke meant for the picker
+  // modal's own Close/Upload controls while it's open.
+  const imagePickerTargetRef = useRef(imagePickerTarget);
+  imagePickerTargetRef.current = imagePickerTarget;
   // Preview pane's Light/Dark VIEW toggle (founder bug #3) — defaults to
   // light regardless of the designer's own OS/browser preference; see
   // `previewColorScheme.ts`'s module doc for why this can't be a CSS-only
   // fix. Purely a view control: the real send keeps rendering both.
   const [previewScheme, setPreviewScheme] = useState<"light" | "dark">("light");
+  // Preview pane's Mobile/Tablet/Desktop WIDTH toggle (founder bug #7) — a
+  // SECOND, independent view control alongside `previewScheme`; see
+  // `previewWidth.ts`'s module doc. Composes freely with light/dark (each
+  // toggle only ever touches its own half of the preview: colour scheme
+  // rewrites the HTML string, width constrains the iframe's own box).
+  const [previewWidthId, setPreviewWidthId] = useState<PreviewWidthId>(DEFAULT_PREVIEW_WIDTH_ID);
   // Document-level Font control (founder bug #5 — Google-Docs-style, lives
   // on the DOCUMENT since themes-the-system are dead, not a picker over a
   // theme table). Initialized from the doc's own attr once; from then on
@@ -179,6 +214,22 @@ export function MailyDocumentHost({
     const attr = (doc?.attrs as { pwFontFamily?: unknown } | undefined)?.pwFontFamily;
     return isPwFontStackId(attr) ? attr : DEFAULT_PW_FONT_STACK_ID;
   });
+  // Founder bug #5, round two: OUR OWN button-alignment control (see
+  // `pwButtonAlignment.ts`'s module doc for why this exists instead of
+  // relying on maily's own nested-Popover `AlignmentSwitch`). `null` means
+  // "no button node is currently selected" — the control below doesn't
+  // render at all then, only appearing when there's actually something for
+  // it to act on. Kept in sync by a `transaction` listener registered in
+  // `handleCreate` (every selection AND doc change goes through a
+  // transaction, so this one hook covers both "designer clicked a different
+  // button" and "the selected button's alignment changed").
+  const [selectedButtonAlignment, setSelectedButtonAlignment] = useState<ButtonAlignment | null>(null);
+  // The selected button's OWN ProseMirror position — NOT derived from
+  // `editor.state.selection` at click time (see the module doc: that's
+  // exactly the timing sensitivity that made maily's own control
+  // unreliable). Captured when selection last changed; re-verified fresh
+  // against the CURRENT doc in `setSelectedButtonAlignment` before writing.
+  const selectedButtonPosRef = useRef<number | null>(null);
 
   // Refs for values a stable callback still needs the LATEST of — the same
   // discipline `BlocksDocumentComposer` uses (`onSaveRef`, `historyRef`) so a
@@ -232,33 +283,159 @@ export function MailyDocumentHost({
     editorRef.current?.setEditable(editable);
   }, [editable]);
 
-  // Founder bug #2: maily's own "Click or Drop image here" placeholder is a
-  // raw `<input type="file">` with no click handler to intercept at the React
-  // level — only a capture-phase DOM listener runs early enough to cancel its
-  // native file dialog (see `pwImagePlaceholderIntercept.ts`'s module doc).
-  // Read-only never wires this: nothing renders an editable placeholder then.
+  // Founder bug #2 (both halves): maily's own "Click or Drop image here"
+  // placeholder is a raw `<input type="file">` with no click handler to
+  // intercept at the React level — only a capture-phase DOM listener runs
+  // early enough to cancel its native file dialog (see
+  // `pwImagePlaceholderIntercept.ts`'s module doc). The SAME listener also
+  // catches a click on an ALREADY-FILLED image (maily's `image`/`logo`, or
+  // our own `pwBleedImage`) and routes it to the SAME picker to REPLACE that
+  // node's `src`/`alt` in place — stock maily has no "replace" affordance at
+  // all once an image has a `src`, so this is the only place that click ever
+  // gets handled. Read-only never wires this: nothing renders an editable
+  // placeholder OR an editable filled image then.
   useEffect(() => {
     if (!editable) return;
     const container = editorContainerRef.current;
     if (!container) return;
     function handleClickCapture(e: MouseEvent) {
-      const wrapper = findImagePlaceholderWrapper(e.target);
-      if (!wrapper) return;
       const editor = editorRef.current;
       if (!editor) return;
-      const pos = resolveImageNodePos(editor.view, editor.state.doc, wrapper);
-      if (pos == null) return;
-      // Cancel the input's native file-picker dialog — must happen
-      // synchronously, in this capture-phase listener, before the input's
-      // own default action runs (see the module doc's "why this works").
-      e.preventDefault();
-      e.stopPropagation();
-      const nodeType = editor.state.doc.nodeAt(pos)?.type.name;
-      if (!nodeType) return;
-      setImagePickerTarget({ pos, nodeType });
+
+      const placeholderWrapper = findImagePlaceholderWrapper(e.target);
+      if (placeholderWrapper) {
+        const pos = resolveImageNodePos(editor.view, editor.state.doc, placeholderWrapper);
+        if (pos == null) return;
+        // Cancel the input's native file-picker dialog — must happen
+        // synchronously, in this capture-phase listener, before the input's
+        // own default action runs (see the module doc's "why this works").
+        e.preventDefault();
+        e.stopPropagation();
+        const nodeType = editor.state.doc.nodeAt(pos)?.type.name;
+        if (!nodeType) return;
+        setImagePickerTarget({ pos, nodeType });
+        return;
+      }
+
+      const filledWrapper = findFilledImageClickTarget(e.target);
+      if (filledWrapper) {
+        const pos = resolveImageNodePos(editor.view, editor.state.doc, filledWrapper, FILLED_IMAGE_NODE_TYPES);
+        if (pos == null) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const nodeType = editor.state.doc.nodeAt(pos)?.type.name;
+        if (!nodeType) return;
+        // Select the node too, not just open the picker — the SAME "click
+        // selects" behavior every other node in the editor already has
+        // (buttons, sections, …). Matters for founder bug #1: closing the
+        // picker without picking a replacement (Escape/click-away) should
+        // leave the image genuinely selected, so Delete/Backspace still
+        // removes it — not just "opened a modal that did nothing."
+        editor.commands.setNodeSelection(pos);
+        setImagePickerTarget({ pos, nodeType });
+      }
     }
     container.addEventListener("click", handleClickCapture, true);
     return () => container.removeEventListener("click", handleClickCapture, true);
+  }, [editable]);
+
+  // Founder bug #1: Delete/Backspace should remove the currently selected
+  // block/atom node (a button, an image, a `pwBleedImage`/`pwPoll`, a
+  // section, …) — see `pwSelectedNodeDelete.ts`'s module doc for exactly why
+  // this doesn't already work via `@tiptap/core`'s own keymap.
+  //
+  // Listens on `document`, not `editorContainerRef` — a capture-phase
+  // listener only ever sees events whose target is INSIDE the listening
+  // element's own subtree (capture walks document → … → target); for a
+  // NON-focusable node-view element (a plain `<img>`, our `pwBleedImage`/
+  // `pwPoll`'s bare `renderHTML` markup, or after this file's OWN image-
+  // click handler above calls `preventDefault`/`stopPropagation` and closes
+  // a modal), the browser's focus can land on `document.body` ITSELF —
+  // outside our container entirely — so a container-scoped listener never
+  // fires (confirmed in the harness: `.ProseMirror-selectednode` genuinely
+  // present, `document.activeElement === document.body`, Delete did
+  // nothing). `container.contains(activeElement) || activeElement ===
+  // document.body` below is the safety gate that keeps this document-level
+  // listener from ever hijacking a keystroke meant for a DIFFERENT, genuinely
+  // focused control elsewhere on the page (the Subject/Preview-text meta
+  // inputs above this editor, in particular) — those keep real DOM focus on
+  // their own `<input>`, which is neither inside our container nor `body`.
+  useEffect(() => {
+    if (!editable) return;
+    const container = editorContainerRef.current;
+    if (!container) return;
+    function handleKeyDownCapture(e: KeyboardEvent) {
+      // Never hijack a keystroke while the image picker modal is open — its
+      // own Close/Upload buttons and the library grid are plain interactive
+      // controls, not a place Delete/Backspace should reach past into the
+      // document (see `imagePickerTargetRef` below).
+      if (imagePickerTargetRef.current) return;
+      if (!isNodeDeleteKeydown(e.key, e.target as { tagName?: string; isContentEditable?: boolean } | null)) {
+        return;
+      }
+      const active = document.activeElement;
+      if (!container!.contains(active) && active !== document.body) return;
+      const editor = editorRef.current;
+      if (!editor) return;
+      if (!isNodeSelection(editor.state.selection)) return;
+      e.preventDefault();
+      e.stopPropagation();
+      editor.chain().focus().deleteSelection().run();
+    }
+    document.addEventListener("keydown", handleKeyDownCapture, true);
+    return () => document.removeEventListener("keydown", handleKeyDownCapture, true);
+  }, [editable]);
+
+  // Founder bug #4: maily's own button bubble-menu toolbar (`ButtonView`,
+  // `@maily-to/core`) is a non-portaled Radix Popover positioned via
+  // `@radix-ui/react-popper`'s `strategy: "fixed"` — for a button near the
+  // left edge of its column, Radix's own collision-avoidance has nowhere to
+  // put the ~620px-wide toolbar but flush against the browser's left edge,
+  // visually disconnected from the button and, on a narrow enough window,
+  // genuinely clipped (see `pwPopperClamp.ts`'s module doc). This observer
+  // re-clamps Radix's own positioning wrapper back on-screen every time Radix
+  // (re)computes it — scoped to the editor's own container, since these
+  // popovers are never portaled (they render exactly where the React tree
+  // puts them, nested under `editorContainerRef`).
+  useEffect(() => {
+    if (!editable) return;
+    const container = editorContainerRef.current;
+    if (!container || typeof MutationObserver === "undefined") return;
+
+    function clampWrapper(wrapper: HTMLElement) {
+      const currentTransform = wrapper.style.transform;
+      if (!currentTransform) return;
+      const width = wrapper.getBoundingClientRect().width;
+      if (width <= 0) return;
+      const corrected = clampPopperLeft(currentTransform, window.innerWidth, width);
+      if (corrected) wrapper.style.transform = corrected;
+    }
+
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        if (mutation.type === "attributes") {
+          const target = mutation.target as HTMLElement;
+          if (target.hasAttribute?.("data-radix-popper-content-wrapper")) clampWrapper(target);
+          continue;
+        }
+        for (const node of Array.from(mutation.addedNodes)) {
+          if (!(node instanceof HTMLElement)) continue;
+          if (node.hasAttribute("data-radix-popper-content-wrapper")) {
+            clampWrapper(node);
+          }
+          node
+            .querySelectorAll?.("[data-radix-popper-content-wrapper]")
+            .forEach((el) => clampWrapper(el as HTMLElement));
+        }
+      }
+    });
+    observer.observe(container, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["style"],
+    });
+    return () => observer.disconnect();
   }, [editable]);
 
   useEffect(
@@ -319,9 +496,60 @@ export function MailyDocumentHost({
     debounceRef.current = setTimeout(() => runSave(next, nextString), decision.delayMs);
   }, [runSave]);
 
-  const handleCreate = useCallback((editor: TiptapEditor) => {
-    editorRef.current = editor;
+  /** Reads the editor's CURRENT selection and updates
+   *  `selectedButtonAlignment`/`selectedButtonPosRef` accordingly — stable
+   *  (refs only) so it can be registered on the editor's own `transaction`
+   *  event exactly once, in `handleCreate` (see that callback's own doc on
+   *  why direct `editor.on(...)` registration, not a `useEffect`, is the
+   *  right place: the editor instance itself is only ever created once —
+   *  the module doc's surprise #2). */
+  const syncSelectedButtonAlignment = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const selection = editor.state.selection;
+    const resolved = isNodeSelection(selection)
+      ? resolveSelectedButtonAlignment(selection as unknown as SelectedNodeLike)
+      : null;
+    selectedButtonPosRef.current = resolved?.pos ?? null;
+    setSelectedButtonAlignment(resolved?.alignment ?? null);
   }, []);
+
+  /** Writes a NEW alignment onto whichever button `selectedButtonPosRef`
+   *  currently points at — see `pwButtonAlignment.ts`'s module doc for why
+   *  this is a direct, position-based `tr.setNodeMarkup` rather than
+   *  `editor.commands.updateAttributes(name, attrs)` (which walks the
+   *  CURRENT selection instead of a captured position). `buttonAlignmentUpdate`
+   *  re-verifies the position still resolves to a button and merges the
+   *  CURRENT (not stale-closure) attrs, failing closed (no-op) otherwise. */
+  const changeSelectedButtonAlignment = useCallback((alignment: ButtonAlignment) => {
+    const editor = editorRef.current;
+    const pos = selectedButtonPosRef.current;
+    if (!editor || pos == null) return;
+    const update = buttonAlignmentUpdate(editor.state.doc, pos, alignment);
+    if (!update) return;
+    editor
+      .chain()
+      .focus()
+      .command(({ tr }) => {
+        tr.setNodeMarkup(pos, undefined, update.attrs);
+        return true;
+      })
+      .run();
+  }, []);
+
+  const handleCreate = useCallback(
+    (editor: TiptapEditor) => {
+      editorRef.current = editor;
+      // Every selection change AND every doc change dispatches a
+      // `transaction` — one hook covers both "designer clicked a different
+      // button" and "the selected button's alignment (or anything else)
+      // changed underneath it" (e.g. our OWN `changeSelectedButtonAlignment`
+      // above, which is exactly how the control's `isActive`-style
+      // highlighting below stays correct after a click).
+      editor.on("transaction", syncSelectedButtonAlignment);
+    },
+    [syncSelectedButtonAlignment],
+  );
   const handleUpdate = useCallback(
     (editor: TiptapEditor) => {
       editorRef.current = editor;
@@ -431,6 +659,18 @@ export function MailyDocumentHost({
             <View className="mb-3 flex-row flex-wrap items-center justify-between gap-2">
               <View className="flex-row flex-wrap items-center gap-2">
                 <FontStackSelect value={fontStackId} onChange={changeFontStack} />
+                {/* Founder bug #5, round two — OUR OWN reliable replacement
+                 *  for maily's flaky nested-Popover `AlignmentSwitch` (see
+                 *  `pwButtonAlignment.ts`'s module doc). Only rendered while
+                 *  a button node is actually selected — same "nothing to act
+                 *  on, don't show a control" discipline `ImageUploadButton`/
+                 *  `ImageLibraryPicker` already follow for `!uploadImage`. */}
+                {selectedButtonAlignment ? (
+                  <ButtonAlignmentControl
+                    value={selectedButtonAlignment}
+                    onChange={changeSelectedButtonAlignment}
+                  />
+                ) : null}
                 {uploadImage ? (
                   <>
                     <ImageUploadButton
@@ -512,28 +752,49 @@ export function MailyDocumentHost({
         </View>
 
         <View className={split ? "ml-4 w-[380px]" : "mt-6"}>
-          <View className="mb-2 flex-row items-center justify-between">
+          <View className="mb-2 flex-row flex-wrap items-center justify-between gap-2">
             <Text className="text-xs font-bold uppercase tracking-wider text-faint">
               Preview
             </Text>
-            {/* Founder bug #3: this pane used to inherit the designer's own
-             *  OS/browser dark-mode preference (the iframe has no way to
-             *  resolve `prefers-color-scheme` any other way) — always defaults
-             *  to light now, with dark still one tap away, since real
-             *  recipients DO see dark mode (`previewColorScheme.ts`). */}
-            <View className="flex-row overflow-hidden rounded-md border border-border-strong">
-              {(["light", "dark"] as const).map((option) => (
-                <Text
-                  key={option}
-                  accessibilityRole="button"
-                  onPress={() => setPreviewScheme(option)}
-                  className={`px-2 py-1 text-2xs font-semibold ${
-                    previewScheme === option ? "bg-accent text-white" : "bg-raised text-muted"
-                  }`}
-                >
-                  {option === "light" ? "Light" : "Dark"}
-                </Text>
-              ))}
+            <View className="flex-row flex-wrap items-center gap-2">
+              {/* Founder bug #7: a SECOND, independent toggle from Light/Dark
+               *  below — constrains the iframe's own rendered width so a
+               *  designer can see how the email reflows at a phone/tablet
+               *  viewport, not just full desktop-webmail width. Composes
+               *  freely with Light/Dark (`previewWidth.ts`'s module doc). */}
+              <View className="flex-row overflow-hidden rounded-md border border-border-strong">
+                {PREVIEW_WIDTH_IDS.map((option) => (
+                  <Text
+                    key={option}
+                    accessibilityRole="button"
+                    onPress={() => setPreviewWidthId(option)}
+                    className={`px-2 py-1 text-2xs font-semibold ${
+                      previewWidthId === option ? "bg-accent text-white" : "bg-raised text-muted"
+                    }`}
+                  >
+                    {PREVIEW_WIDTHS[option].label}
+                  </Text>
+                ))}
+              </View>
+              {/* Founder bug #3: this pane used to inherit the designer's own
+               *  OS/browser dark-mode preference (the iframe has no way to
+               *  resolve `prefers-color-scheme` any other way) — always defaults
+               *  to light now, with dark still one tap away, since real
+               *  recipients DO see dark mode (`previewColorScheme.ts`). */}
+              <View className="flex-row overflow-hidden rounded-md border border-border-strong">
+                {(["light", "dark"] as const).map((option) => (
+                  <Text
+                    key={option}
+                    accessibilityRole="button"
+                    onPress={() => setPreviewScheme(option)}
+                    className={`px-2 py-1 text-2xs font-semibold ${
+                      previewScheme === option ? "bg-accent text-white" : "bg-raised text-muted"
+                    }`}
+                  >
+                    {option === "light" ? "Light" : "Dark"}
+                  </Text>
+                ))}
+              </View>
             </View>
           </View>
           {isTiptapDocEmpty(doc) ? (
@@ -541,10 +802,20 @@ export function MailyDocumentHost({
               <Text className="text-sm text-muted">Nothing here yet — start typing.</Text>
             </View>
           ) : previewState === "ready" && previewHtml ? (
-            <EmailHtmlPreview
-              html={forceIframeColorScheme(previewHtml, previewScheme)}
-              height={split ? 560 : 420}
-            />
+            // `overflow-x-auto` — the iframe below is set to the SELECTED
+            // width (founder bug #7), which for Tablet (768px) routinely
+            // exceeds this pane's own `w-[380px]`; a horizontal scroller
+            // keeps the wider preview fully reachable instead of clipping it
+            // (the built-in web browser convention for "content wider than
+            // its viewport", not a bug this pane needs to hide).
+            <div style={{ overflowX: "auto" }}>
+              <div style={{ width: PREVIEW_WIDTHS[previewWidthId].width ?? "100%" }}>
+                <EmailHtmlPreview
+                  html={forceIframeColorScheme(previewHtml, previewScheme)}
+                  height={split ? 560 : 420}
+                />
+              </div>
+            </div>
           ) : previewState === "loading" ? (
             <View className="items-center rounded-lg border border-border bg-raised px-6 py-14">
               <Text className="text-sm text-faint">Loading preview…</Text>
@@ -637,6 +908,64 @@ function FontStackSelect({
         </option>
       ))}
     </select>
+  );
+}
+
+const BUTTON_ALIGNMENT_ICON: Record<ButtonAlignment, IconName> = {
+  left: "align-left",
+  center: "align-center",
+  right: "align-right",
+};
+const BUTTON_ALIGNMENT_LABEL: Record<ButtonAlignment, string> = {
+  left: "Align button left",
+  center: "Align button center",
+  right: "Align button right",
+};
+
+/**
+ * Founder bug #5, round two — Left/Center/Right for the CURRENTLY SELECTED
+ * button (see `pwButtonAlignment.ts`'s module doc for why this exists at
+ * all: maily's own nested-Popover `AlignmentSwitch` didn't reliably persist
+ * a click in this environment). A compact icon-only segmented pill — same
+ * visual language as the Light/Dark and Mobile/Tablet/Desktop pills in the
+ * preview pane below, sized down to icons (not full words) since this one
+ * lives in the ALREADY-fairly-full main toolbar and only appears
+ * conditionally, not permanently claiming space.
+ */
+function ButtonAlignmentControl({
+  value,
+  onChange,
+}: {
+  value: ButtonAlignment;
+  onChange: (alignment: ButtonAlignment) => void;
+}) {
+  return (
+    <View
+      className="flex-row overflow-hidden rounded-md border border-border-strong"
+      accessibilityRole="radiogroup"
+    >
+      {BUTTON_ALIGNMENTS.map((alignment) => {
+        const active = value === alignment;
+        return (
+          <Pressable
+            key={alignment}
+            onPress={() => onChange(alignment)}
+            accessibilityRole="radio"
+            accessibilityState={{ selected: active }}
+            accessibilityLabel={BUTTON_ALIGNMENT_LABEL[alignment]}
+            className={`h-[30px] w-[30px] items-center justify-center ${
+              active ? "bg-accent" : "bg-raised hover:bg-sunken"
+            }`}
+          >
+            <Icon
+              name={BUTTON_ALIGNMENT_ICON[alignment]}
+              size={14}
+              color={active ? "#FFFFFF" : colors.muted}
+            />
+          </Pressable>
+        );
+      })}
+    </View>
   );
 }
 

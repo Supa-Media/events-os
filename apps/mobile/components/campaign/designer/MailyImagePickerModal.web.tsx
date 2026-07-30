@@ -19,7 +19,30 @@
  * "fixed"` isn't in RN's `ViewStyle` type at all (react-native-web renders it
  * fine at runtime, but `View`'s TYPES reject it) — a real DOM element needs
  * no such workaround.
+ *
+ * ── founder bug #3: "renders at the top" instead of near the clicked image ──
+ * `position: fixed` computes relative to the VIEWPORT only when NO ancestor
+ * establishes a CSS containing block of its own (a `transform`/`filter`/
+ * `perspective`/`will-change: transform` ancestor does). `react-native-web`'s
+ * `ScrollView` (what `components/ui/Screen.tsx` wraps every page in, via
+ * `KeyboardAwareScrollView`) sets exactly that: `transform: translateZ(0)`
+ * on its scrolling element, for GPU-layer compositing
+ * (`react-native-web/dist/exports/ScrollView/index.js`'s `commonStyle`).
+ * Confirmed in the harness (`__adv__/harness/entry-v2.tsx`, which wraps the
+ * SAME real `MailyDocumentHost` in a real `ScrollView` to reproduce this):
+ * once nested inside that ancestor, `inset: 0` no longer covers the true
+ * browser viewport — it covers the SCROLLVIEW's own (unscrolled) box, which
+ * sits at the top of the page, so the overlay renders pinned near the TOP
+ * regardless of how far the designer scrolled to reach a low image.
+ *
+ * The fix is the standard escape for this class of bug: render the overlay
+ * through `createPortal` into `document.body`, which is (barring something
+ * even the framework doesn't do) never itself inside a transformed ancestor —
+ * `position: fixed` there is unconditionally viewport-relative, independent
+ * of where in the React tree this component happens to be mounted, and of
+ * any ancestor's scroll position.
  */
+import { createPortal } from "react-dom";
 import { Pressable, Text, View } from "react-native";
 import { ImageUploadButton, type UploadedImage, type UploadImage } from "./DesignerControls";
 import { ImageLibraryPicker } from "./ImageLibraryPicker";
@@ -41,7 +64,14 @@ export function MailyImagePickerModal({
    *  shared image library exactly like every other upload path does. */
   onUploaded: (uploaded: UploadedImage, suggestedLabel: string) => void;
 }) {
-  return (
+  // `document.body`, not the component's own React-tree parent — see the
+  // module doc's founder-bug-#3 section: this is the ONLY way `position:
+  // fixed` below is guaranteed viewport-relative regardless of any ancestor
+  // (a `ScrollView`, in production) establishing its own CSS containing
+  // block. `document` only exists once mounted in a real browser, which is
+  // exactly when this component ever renders (`.web.tsx`, always inside a
+  // DOM — no SSR path calls this).
+  return createPortal(
     <div
       role="presentation"
       style={{
@@ -64,7 +94,7 @@ export function MailyImagePickerModal({
       <div
         aria-label="Close"
         onClick={onClose}
-        style={{ position: "fixed", inset: 0, cursor: "default" }}
+        style={{ position: "fixed", inset: 0, cursor: "default", zIndex: 0 }}
       />
       <View
         className="rounded-lg border border-border bg-raised p-4"
@@ -73,6 +103,16 @@ export function MailyImagePickerModal({
         // at build time in the real Metro app (this is redundant there); it's
         // load-bearing only for a plain-esbuild consumer that never runs the
         // NativeWind babel transform — this repo's `__adv__/harness/`.
+        //
+        // `zIndex: 1` — EXPLICIT and higher than the backdrop's (`0`), not
+        // just "later in the JSX". Both this panel and the backdrop above are
+        // `position`ed (the backdrop `fixed`; RNW's own `View` base style
+        // gives this panel `position: relative` by default), and — measured
+        // directly via `document.elementFromPoint` in the harness — DOM order
+        // alone was NOT reliably deciding paint order between them once
+        // portaled to `document.body` (a click on "Choose from library…"
+        // was landing on the backdrop instead, silently closing the modal).
+        // An explicit `zIndex` removes the ambiguity outright.
         style={{
           width: 360,
           maxWidth: "90%",
@@ -81,6 +121,7 @@ export function MailyImagePickerModal({
           borderWidth: 1,
           borderColor: "#EFE0DC",
           padding: 16,
+          zIndex: 1,
         }}
       >
         <View
@@ -119,7 +160,8 @@ export function MailyImagePickerModal({
           />
         ) : null}
       </View>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

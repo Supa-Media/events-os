@@ -35,6 +35,14 @@ describe("pwFontFamilyCss", () => {
     expect(pwFontFamilyCss("serif")).toBe("Georgia, serif");
     expect(pwFontFamilyCss("mono")).toBe("Courier New, monospace");
   });
+
+  test("returns each of founder bug #6's new stacks' family + fallback", () => {
+    expect(pwFontFamilyCss("helvetica")).toBe("Helvetica, Arial");
+    expect(pwFontFamilyCss("timesNewRoman")).toBe("Times New Roman, serif");
+    expect(pwFontFamilyCss("verdana")).toBe("Verdana, sans-serif");
+    expect(pwFontFamilyCss("trebuchet")).toBe("Trebuchet MS, sans-serif");
+    expect(pwFontFamilyCss("tahoma")).toBe("Tahoma, sans-serif");
+  });
 });
 
 describe("PW_FONT_STACKS", () => {
@@ -43,6 +51,24 @@ describe("PW_FONT_STACKS", () => {
       expect(PW_FONT_STACKS[id].label.length).toBeGreaterThan(0);
       expect(PW_FONT_STACKS[id].fontFamily.length).toBeGreaterThan(0);
       expect(PW_FONT_STACKS[id].fallbackFontFamily.length).toBeGreaterThan(0);
+    }
+  });
+
+  test("founder bug #6: at least Helvetica/Arial, Times New Roman, Georgia, Verdana, Trebuchet MS, Tahoma, Courier are all present", () => {
+    const families = PW_FONT_STACK_IDS.map((id) => PW_FONT_STACKS[id].fontFamily);
+    expect(families).toContain("Helvetica");
+    expect(families).toContain("Times New Roman");
+    expect(families).toContain("Georgia");
+    expect(families).toContain("Verdana");
+    expect(families).toContain("Trebuchet MS");
+    expect(families).toContain("Tahoma");
+    expect(families).toContain("Courier New");
+  });
+
+  test("every stack besides sans is a real system font — no webFont dependency (email-safe)", () => {
+    for (const id of PW_FONT_STACK_IDS) {
+      if (id === "sans") continue;
+      expect(PW_FONT_STACKS[id].webFont).toBeUndefined();
     }
   });
 });

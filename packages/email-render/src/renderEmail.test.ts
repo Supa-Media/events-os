@@ -388,6 +388,42 @@ describe("renderEmailTiptap: doc.attrs.pwFontFamily → the document font", () =
     expect(html).toContain("font-family: 'Courier New', monospace");
   });
 
+  test("founder bug #6: attrs.pwFontFamily: 'helvetica' swaps to Helvetica/Arial", async () => {
+    const doc: JSONContent = { ...baseDoc, attrs: { pwFontFamily: "helvetica" } };
+    const { html } = await renderEmailTiptap(doc, {
+      variables: {},
+      unsubscribeUrl: "https://example.com/u/1",
+      orgAddress: "Addr",
+    });
+    expect(html).toContain("font-family: 'Helvetica', Arial");
+  });
+
+  test("founder bug #6: attrs.pwFontFamily: 'timesNewRoman' swaps to Times New Roman", async () => {
+    const doc: JSONContent = { ...baseDoc, attrs: { pwFontFamily: "timesNewRoman" } };
+    const { html } = await renderEmailTiptap(doc, {
+      variables: {},
+      unsubscribeUrl: "https://example.com/u/1",
+      orgAddress: "Addr",
+    });
+    expect(html).toContain("font-family: 'Times New Roman', serif");
+  });
+
+  test("founder bug #6: attrs.pwFontFamily: 'verdana'/'trebuchet'/'tahoma' all swap correctly", async () => {
+    for (const [id, expected] of [
+      ["verdana", "font-family: 'Verdana', sans-serif"],
+      ["trebuchet", "font-family: 'Trebuchet MS', sans-serif"],
+      ["tahoma", "font-family: 'Tahoma', sans-serif"],
+    ] as const) {
+      const doc: JSONContent = { ...baseDoc, attrs: { pwFontFamily: id } };
+      const { html } = await renderEmailTiptap(doc, {
+        variables: {},
+        unsubscribeUrl: "https://example.com/u/1",
+        orgAddress: "Addr",
+      });
+      expect(html).toContain(expected);
+    }
+  });
+
   test("an unknown font id is ignored — falls back to the default Inter, not a broken declaration", async () => {
     const doc: JSONContent = { ...baseDoc, attrs: { pwFontFamily: "Comic Sans MS" } };
     const { html } = await renderEmailTiptap(doc, {
