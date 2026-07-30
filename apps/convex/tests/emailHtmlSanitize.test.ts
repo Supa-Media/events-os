@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   findImageUrls,
   MAX_IMAGE_URLS,
+  preserveFailedImageAspect,
   resolveImageFetchUrl,
   rewriteImageUrls,
   sanitizeEmailHtml,
@@ -340,5 +341,79 @@ describe("sanitizeEmailHtml — legitimate email markup survives", () => {
     const out = sanitizeEmailHtml(html);
     expect(out).toContain('charset="utf-8"');
     expect(out).toContain("width=device-width");
+  });
+});
+
+// ── preserveFailedImageAspect ────────────────────────────────────────────────
+
+/**
+ * The founder's "the spacing is off" (2026-07-30). An unfetchable image is
+ * rewritten to a 1×1 transparent GIF; a design-tool export sizes its images
+ * with `style="width:600px;height:auto"`, so `height:auto` resolves against
+ * the placeholder's 1:1 ratio and every missing image becomes a giant blank
+ * square — eleven of them roughly doubled the real newsletter's height.
+ */
+describe("preserveFailedImageAspect", () => {
+  const PH = "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
+
+  test("stamps the declared ratio onto a placeholder image", () => {
+    const out = preserveFailedImageAspect(
+      `<img src="${PH}" width="600" height="62" style="display:block;width:600px;height:auto">`,
+      PH,
+    );
+    expect(out).toContain("aspect-ratio:600/62");
+    expect(out).toContain("display:block;width:600px;height:auto;aspect-ratio:600/62");
+  });
+
+  test("leaves real (re-hosted) images completely alone", () => {
+    const html = '<img src="https://storage.example.com/abc" width="600" height="62" style="width:600px;height:auto">';
+    expect(preserveFailedImageAspect(html, PH)).toBe(html);
+  });
+
+  test("no-ops when the html has no placeholder at all", () => {
+    const html = '<p>Hello</p><img src="https://cdn.example.com/x.png" width="10" height="10" style="width:10px">';
+    expect(preserveFailedImageAspect(html, PH)).toBe(html);
+  });
+
+  test("skips an image with no usable width/height pair — nothing to derive a ratio from", () => {
+    const html = `<img src="${PH}" style="width:100%;height:auto">`;
+    expect(preserveFailedImageAspect(html, PH)).toBe(html);
+    const percentage = `<img src="${PH}" width="100%" height="auto" style="width:100%;height:auto">`;
+    expect(preserveFailedImageAspect(percentage, PH)).toBe(percentage);
+  });
+
+  test("never fights an explicit author aspect-ratio", () => {
+    const html = `<img src="${PH}" width="600" height="62" style="aspect-ratio:2/1;width:600px">`;
+    expect(preserveFailedImageAspect(html, PH)).toBe(html);
+  });
+
+  test("keeps the author's quote style and survives a `$` in the existing CSS", () => {
+    const out = preserveFailedImageAspect(
+      `<img src='${PH}' width='4' height='2' style='font-family:"A$B";width:4px'>`,
+      PH,
+    );
+    expect(out).toContain(`style='font-family:"A$B";width:4px;aspect-ratio:4/2'`);
+  });
+
+  test("handles several images independently, and a trailing semicolon", () => {
+    const out = preserveFailedImageAspect(
+      `<img src="${PH}" width="600" height="62" style="width:600px;">` +
+        `<img src="https://ok.example.com/a.png" width="1" height="1" style="width:1px">` +
+        `<img src="${PH}" width="540" height="329" style="width:540px">`,
+      PH,
+    );
+    expect(out).toContain('style="width:600px;aspect-ratio:600/62"');
+    expect(out).toContain('style="width:1px"');
+    expect(out).toContain('style="width:540px;aspect-ratio:540/329"');
+  });
+
+  test("the stamped declaration survives the real sanitizer", () => {
+    const out = sanitizeEmailHtml(
+      preserveFailedImageAspect(
+        `<img src="${PH}" width="600" height="62" style="width:600px;height:auto">`,
+        PH,
+      ),
+    );
+    expect(out).toContain("aspect-ratio:600/62");
   });
 });
