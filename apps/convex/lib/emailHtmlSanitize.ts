@@ -10,8 +10,11 @@
  * ── Two sanitization layers — see `@events-os/shared`'s `emailHtmlDoc.ts`
  * module doc for the full picture. This file is the REAL one: a real parser
  * (`sanitize-html`, built on `htmlparser2`) that strips `<script>`, event
- * handlers, `javascript:`/non-image `data:` URLs, `<iframe>`/`<object>`/
- * `<embed>` — while KEEPING the tables + inline styles emails depend on.
+ * handlers, `javascript:`/non-image `data:` URLs (both in tag attributes AND
+ * — via `neutralizeCssHazards` below — inside CSS `url(...)`),
+ * `<iframe>`/`<object>`/`<embed>`/`<form>`/`<link>`/`<base>`, and a
+ * `<meta http-equiv>` (an open-redirect vector no mail client sandboxes) —
+ * while KEEPING the tables + inline styles emails depend on.
  * `@events-os/shared`'s `findHtmlDocHazard` is the separate, coarse regex
  * backstop that runs at every WRITE regardless of how the doc got there;
  * this is the one place that actually EARNS pasted HTML's presence in a
@@ -31,6 +34,7 @@
  *     safe or stripped — nothing rewritten in step 3 bypasses this.
  */
 import sanitizeHtml from "sanitize-html";
+import { decodeCssObfuscation, hasCssHazard } from "@events-os/shared";
 
 // ── Image discovery ─────────────────────────────────────────────────────────
 
@@ -47,16 +51,36 @@ const CSS_URL_RE = /url\(\s*(?:"([^"]+)"|'([^']+)'|([^'")\s]+))\s*\)/gi;
  *  newsletter (a Canva export rarely carries more than a handful). */
 export const MAX_IMAGE_URLS = 40;
 
+/** A bare `//host/path` protocol-relative reference — a real browser (and a
+ *  real mail client) resolves this against whatever scheme the surrounding
+ *  document loaded over, i.e. it's just as "external" as an explicit
+ *  `https://host/path`. Adversarial-review finding (2026-07-30, HIGH):
+ *  `findImageUrls` used to only match `https?://`, so `url(//host/track.gif)`
+ *  was neither re-hosted NOR blocked — silently shipped as a live
+ *  third-party reference. Requires at least one non-slash character after
+ *  `//` (a real host), so a bare `//` (or `///path`, which browsers treat as
+ *  an empty-host edge case, never a real reference) doesn't false-positive. */
+const PROTOCOL_RELATIVE_RE = /^\/\/[^/]/;
+
+/** True iff `url` is an ABSOLUTE external reference this import pipeline
+ *  must account for — either `http(s)://…` or bare protocol-relative
+ *  `//host/…`. `data:`/`cid:`/relative-path references are excluded: a
+ *  `data:` URL is already self-contained (nothing to re-host), and a bare
+ *  relative path has no base to resolve against a Canva/CDN export never
+ *  provides one anyway. */
+function isExternalImageRef(url: string): boolean {
+  return /^https?:\/\//i.test(url) || PROTOCOL_RELATIVE_RE.test(url);
+}
+
 /**
- * Every DISTINCT `http(s)://` image URL referenced in `html` — `<img src>`,
- * CSS `url(...)` (inline `style=` or a `<style>` block), and legacy
+ * Every DISTINCT external image URL referenced in `html` — `<img src>`, CSS
+ * `url(...)` (inline `style=` or a `<style>` block), and legacy
  * `background=` attributes — in FIRST-SEEN order, capped at
- * `MAX_IMAGE_URLS`. `data:`/`cid:`/relative references are deliberately
- * excluded: a `data:` URL is already self-contained (nothing to re-host),
- * and a bare relative path has no base to resolve against a Canva/CDN
- * export never provides one anyway — re-hosting only ever matters for
- * absolute external URLs, which is exactly the "Canva URLs expire/block
- * hotlinking" problem this exists to solve.
+ * `MAX_IMAGE_URLS`. Returned EXACTLY as written in the source (an
+ * `https://…` URL as `https://…`, a protocol-relative `//host/…` reference
+ * as `//host/…`) — `rewriteImageUrls` string-matches against the literal
+ * source text, so the caller (`emailHtmlImport.ts`) is the one that resolves
+ * a protocol-relative reference to an absolute URL for the actual FETCH.
  */
 export function findImageUrls(html: string): string[] {
   const found = new Set<string>();
@@ -65,11 +89,21 @@ export function findImageUrls(html: string): string[] {
     let match: RegExpExecArray | null;
     while ((match = re.exec(html))) {
       const url = (match[1] ?? match[2] ?? match[3] ?? "").trim();
-      if (/^https?:\/\//i.test(url)) found.add(url);
+      if (isExternalImageRef(url)) found.add(url);
       if (found.size >= MAX_IMAGE_URLS) return Array.from(found);
     }
   }
   return Array.from(found);
+}
+
+/** Resolve a URL `findImageUrls` returned to something `fetch()` can
+ *  actually be given — a protocol-relative reference resolves to `https:`
+ *  (never `http:`, regardless of what the surrounding document might imply
+ *  — this app never wants to fetch plaintext over the open internet for a
+ *  server-side import). An already-absolute `http(s)://` URL passes
+ *  through unchanged. */
+export function resolveImageFetchUrl(url: string): string {
+  return PROTOCOL_RELATIVE_RE.test(url) ? `https:${url}` : url;
 }
 
 /**
@@ -92,27 +126,51 @@ export function rewriteImageUrls(html: string, urlMap: ReadonlyMap<string, strin
 
 // ── The real sanitizer ───────────────────────────────────────────────────────
 
-/** Coarse, belt-and-suspenders pre-pass over KNOWN legacy CSS attack
- *  patterns `sanitize-html` doesn't parse CSS deeply enough to catch on its
- *  own (it treats a `style` attribute's VALUE as an opaque string when
- *  `parseStyleAttributes` is off — deliberately off here, see this file's
- *  "why not `parseStyleAttributes`" note below): old-IE `expression()` and
- *  `-moz-binding`/`behavior:url(...)` "CSS as code execution" tricks, plus
- *  `@import` (which could pull in an attacker stylesheet) and `javascript:`
- *  inside a CSS `url(...)`. Runs on the WHOLE string, before the real
- *  sanitizer, so a hit here never survives into the parsed tree at all. */
-const CSS_HAZARD_PATTERNS: RegExp[] = [
-  /expression\s*\(/gi,
-  /-moz-binding\s*:/gi,
-  /behavior\s*:/gi,
-  /@import/gi,
-];
+/** Matches a `<style>…</style>` block (content in group 1). Non-greedy so a
+ *  document with multiple `<style>` blocks is handled one at a time, not as
+ *  one giant match spanning all of them. */
+const STYLE_TAG_RE = /<style\b[^>]*>([\s\S]*?)<\/style\s*>/gi;
+/** Matches a `style="…"`/`style='…'` attribute (quoted value in group 1,
+ *  INCLUDING its quotes) — deliberately simple (no escaped-quote handling):
+ *  a `style` attribute value is CSS, which has no quote-escaping convention
+ *  of its own, so a real one never contains an unescaped matching quote
+ *  mid-value. */
+const STYLE_ATTR_RE = /\sstyle\s*=\s*("[^"]*"|'[^']*')/gi;
 
-function stripCssHazards(html: string): string {
-  let result = html;
-  for (const re of CSS_HAZARD_PATTERNS) {
-    result = result.replace(re, "");
-  }
+/**
+ * Neutralize CSS-level hazards (`@import`, `expression(`, `-moz-binding:`,
+ * `behavior:`, `url(javascript:…)`/`url(vbscript:…)`, `url()` pointing at a
+ * non-image `data:` or a protocol-relative host) `sanitize-html` doesn't
+ * parse CSS deeply enough to catch on its own (it treats a `style`
+ * attribute's VALUE — and a `<style>` block's text content — as an opaque
+ * string when `parseStyleAttributes` is off; see this file's "why not
+ * `parseStyleAttributes`" note below for why that's deliberate).
+ *
+ * Adversarial-review finding (2026-07-30): the PRIOR version of this pass
+ * ran plain-text `@import`/`expression(`/etc. regexes directly against the
+ * whole html string — which (a) never caught `url(javascript:…)` at all
+ * (the doc comment CLAIMED it did; it didn't) and (b) was defeated by any
+ * CSS escape/comment obfuscation (`@\69mport` decodes to `@import` in any
+ * real CSS parser, but never matched a plain `/@import/`).
+ *
+ * Fixed shape: isolate each `<style>` block and each `style="…"` attribute
+ * value, DE-OBFUSCATE it (`decodeCssObfuscation` — strips comments, decodes
+ * CSS backslash escapes; shared with `emailHtmlDoc.ts`'s write-time
+ * backstop so the two can't drift again), and if THAT decoded text matches
+ * any hazard (`hasCssHazard`), drop the WHOLE block/attribute — never a
+ * surgical in-place edit of decoded text back onto the original string
+ * (which has no reliable position mapping once escapes have been decoded
+ * away). A false positive here just means one style region gets dropped
+ * instead of kept — the safe failure direction for a security pass.
+ */
+function neutralizeCssHazards(html: string): string {
+  let result = html.replace(STYLE_TAG_RE, (full, content: string) => {
+    return hasCssHazard(decodeCssObfuscation(content)) ? "" : full;
+  });
+  result = result.replace(STYLE_ATTR_RE, (full, quoted: string) => {
+    const raw = quoted.slice(1, -1); // strip the surrounding quote chars
+    return hasCssHazard(decodeCssObfuscation(raw)) ? "" : full;
+  });
   return result;
 }
 
@@ -197,7 +255,16 @@ const ALLOWED_ATTRIBUTES: sanitizeHtml.IOptions["allowedAttributes"] = {
   ],
   a: ["href", "target", "rel", "name"],
   img: ["src", "alt", "width", "height", "style", "border"],
-  meta: ["name", "content", "charset", "http-equiv"],
+  // NOT `http-equiv` — adversarial-review finding (2026-07-30, CRITICAL):
+  // `<meta http-equiv="refresh" content="0;url=https://evil/phish">` is a
+  // live, mail-client-rendered open redirect (no sandboxing the way the
+  // composer's own preview iframe has). Nothing this doc format needs
+  // legitimately uses `http-equiv` — `charset`/the compliance shell's
+  // `color-scheme` meta pair both go through `content`/`name`/`charset`
+  // only — so the attribute is dropped outright rather than allow-listed
+  // down to just `refresh` (a narrower allowlist a future edit could widen
+  // back without re-deriving why `refresh` specifically was excluded).
+  meta: ["name", "content", "charset"],
 };
 
 /**
@@ -210,7 +277,7 @@ const ALLOWED_ATTRIBUTES: sanitizeHtml.IOptions["allowedAttributes"] = {
  * when `parseStyleAttributes: true`, restricting individual CSS
  * properties/values. Left OFF here on purpose — CLAUDE.md's "keep deps
  * minimal, prefer libs known to bundle in Convex node actions" — the
- * coarse `stripCssHazards` pre-pass above plus the tag/attribute allowlist
+ * `neutralizeCssHazards` pre-pass above plus the tag/attribute allowlist
  * (`<script>`/`on*`/`javascript:`/non-image `data:` all excluded
  * elsewhere) already cover the shapes that matter for email HTML; a deep
  * CSS AST walk is more machinery than this surface needs and doesn't
@@ -226,7 +293,7 @@ const ALLOWED_ATTRIBUTES: sanitizeHtml.IOptions["allowedAttributes"] = {
  * `allowedSchemes`).
  */
 export function sanitizeEmailHtml(html: string): string {
-  const precleaned = stripCssHazards(html);
+  const precleaned = neutralizeCssHazards(html);
   return sanitizeHtml(precleaned, {
     allowedTags: ALLOWED_TAGS,
     allowedAttributes: ALLOWED_ATTRIBUTES,
@@ -236,13 +303,20 @@ export function sanitizeEmailHtml(html: string): string {
     // `style`/`head`/`meta`/`title` are flagged "vulnerable" by
     // sanitize-html's own defaults (arbitrary CSS/meta content) — we WANT
     // them (see `ALLOWED_TAGS`'s doc) and cover the actual risk ourselves
-    // (`stripCssHazards`, the tag/attribute allowlist, the exfil concern
-    // being solved by image re-hosting one layer up).
+    // (`neutralizeCssHazards`, the tag/attribute allowlist, the exfil
+    // concern being solved by image re-hosting one layer up).
     allowVulnerableTags: true,
     exclusiveFilter: (frame) => {
       if (frame.tag === "img") {
         const src = frame.attribs.src ?? "";
         return /^data:/i.test(src) && !/^data:image\//i.test(src);
+      }
+      // Belt-and-suspenders on top of `ALLOWED_ATTRIBUTES.meta` already
+      // excluding `http-equiv` entirely — if that allowlist is ever widened
+      // back for a legitimate reason (e.g. `content-type`), a `refresh`
+      // value specifically stays blocked here regardless.
+      if (frame.tag === "meta") {
+        return typeof frame.attribs["http-equiv"] === "string";
       }
       return false;
     },

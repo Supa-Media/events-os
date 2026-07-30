@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   findImageUrls,
   MAX_IMAGE_URLS,
+  resolveImageFetchUrl,
   rewriteImageUrls,
   sanitizeEmailHtml,
 } from "../lib/emailHtmlSanitize";
@@ -72,6 +73,48 @@ describe("findImageUrls", () => {
       "https://cdn.example.com/one.png",
       "https://cdn.example.com/two.png",
     ]);
+  });
+
+  // Adversarial-review finding (2026-07-30, HIGH): protocol-relative image
+  // refs used to be neither re-hosted nor blocked — silently shipped as a
+  // live third-party reference. `findImageUrls` must now capture them.
+  describe("protocol-relative URLs (adversarial-review finding, HIGH)", () => {
+    test("captures a protocol-relative CSS url() reference", () => {
+      const html = '<div style="background:url(//tracker.example.com/pixel.gif)">x</div>';
+      expect(findImageUrls(html)).toEqual(["//tracker.example.com/pixel.gif"]);
+    });
+
+    test("captures a protocol-relative <img src>", () => {
+      expect(findImageUrls('<img src="//tracker.example.com/pixel.gif">')).toEqual([
+        "//tracker.example.com/pixel.gif",
+      ]);
+    });
+
+    test("captures a protocol-relative legacy background= attribute", () => {
+      expect(findImageUrls('<table background="//tracker.example.com/bg.gif"><tr><td>x</td></tr></table>')).toEqual([
+        "//tracker.example.com/bg.gif",
+      ]);
+    });
+
+    test("a bare // with no host is not treated as a reference", () => {
+      expect(findImageUrls('<img src="//">')).toEqual([]);
+    });
+  });
+});
+
+describe("resolveImageFetchUrl", () => {
+  test("resolves a protocol-relative reference to https:", () => {
+    expect(resolveImageFetchUrl("//tracker.example.com/pixel.gif")).toBe(
+      "https://tracker.example.com/pixel.gif",
+    );
+  });
+
+  test("leaves an already-absolute https URL unchanged", () => {
+    expect(resolveImageFetchUrl("https://cdn.example.com/a.png")).toBe("https://cdn.example.com/a.png");
+  });
+
+  test("leaves an already-absolute http URL unchanged (the SSRF/scheme guard is the import action's job, not this resolver's)", () => {
+    expect(resolveImageFetchUrl("http://cdn.example.com/a.png")).toBe("http://cdn.example.com/a.png");
   });
 });
 
@@ -184,6 +227,71 @@ describe("sanitizeEmailHtml — hostile input is neutralized", () => {
   test("strips @import from a <style> block", () => {
     const out = sanitizeEmailHtml('<style>@import url(https://evil.example/steal.css);</style>');
     expect(out).not.toContain("@import");
+  });
+
+  // ── Adversarial-review findings, 2026-07-30 — each proven live before the
+  // fix, regression-tested with the EXACT reported payload. ──────────────────
+
+  test("[finding #1, CRITICAL] strips <meta http-equiv=\"refresh\"> — an open-redirect a mail client renders live", () => {
+    const out = sanitizeEmailHtml(
+      '<html><head><meta http-equiv="refresh" content="0;url=https://evil/phish"></head><body>hi</body></html>',
+    );
+    // `http-equiv` is what gives a `<meta>` its live/executable meaning
+    // (browsers and mail clients ignore a bare `content` with no
+    // `http-equiv`/`name` pairing — it's inert data, same as any other
+    // unrecognized attribute) — stripping it is what neutralizes the
+    // redirect. The leftover `content="0;url=…"` string sitting on an
+    // otherwise-meaningless attribute is not itself live/dangerous.
+    expect(out).not.toContain("http-equiv");
+    expect(out).not.toMatch(/http-equiv\s*=\s*["']?refresh/i);
+  });
+
+  test("[finding #1] strips http-equiv on <meta> generally, not just refresh", () => {
+    const out = sanitizeEmailHtml('<meta http-equiv="content-type" content="text/html; charset=evil">');
+    expect(out).not.toContain("http-equiv");
+  });
+
+  test("[finding #2, exact payload] neutralizes javascript: inside a CSS url() in a style attribute", () => {
+    const out = sanitizeEmailHtml('<div style="background:url(javascript:alert(1))">x</div>');
+    expect(out).not.toContain("javascript:");
+    expect(out).not.toContain("alert(1)");
+  });
+
+  test("[finding #2] neutralizes vbscript: inside a CSS url()", () => {
+    const out = sanitizeEmailHtml('<div style="background:url(vbscript:msgbox(1))">x</div>');
+    expect(out.toLowerCase()).not.toContain("vbscript:");
+  });
+
+  test("[finding #2] neutralizes javascript: inside a CSS url() in a <style> block", () => {
+    const out = sanitizeEmailHtml('<style>.x{background:url(javascript:alert(1))}</style>');
+    expect(out).not.toContain("javascript:");
+  });
+
+  test("[finding #4, exact payload] catches @import obfuscated behind a CSS hex escape (@\\69mport === @import)", () => {
+    const out = sanitizeEmailHtml("<style>@\\69 mport url(https://evil/x.css)</style>");
+    expect(out).not.toContain("evil/x.css");
+    // The whole hazardous style block is dropped, not surgically edited —
+    // no residual "mport" text or escape fragment left behind either.
+    expect(out).not.toMatch(/import/i);
+  });
+
+  test("[finding #4] catches @import hidden behind a CSS comment splitting the keyword", () => {
+    const out = sanitizeEmailHtml("<style>@im/**/port url(https://evil/x.css)</style>");
+    expect(out).not.toContain("evil/x.css");
+  });
+
+  test("[finding #4] catches expression() obfuscated behind a CSS escape", () => {
+    const out = sanitizeEmailHtml('<div style="width:expr\\65ssion(alert(1))">x</div>');
+    expect(out).not.toContain("alert(1)");
+  });
+
+  test("a legitimate style block/attribute with none of the above survives untouched", () => {
+    const html =
+      '<style>.hero{color:#891D1A;font-weight:bold}</style>' +
+      '<div style="padding:16px;background:#fff">Hello</div>';
+    const out = sanitizeEmailHtml(html);
+    expect(out).toContain(".hero{color:#891D1A;font-weight:bold}");
+    expect(out).toContain('style="padding:16px;background:#fff"');
   });
 });
 

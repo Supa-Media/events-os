@@ -15,44 +15,78 @@
  *
  *   1. FIND every external image reference in the RAW html
  *      (`findImageUrls` — `<img src>`, CSS `url(...)` in `style=`/
- *      `<style>`, legacy `background=`).
- *   2. RE-HOST each one: fetch it, store the blob in Convex storage (the
- *      same `ctx.storage.store` → `ctx.storage.getUrl` two-step
- *      `emailImages.ts`/`migrations/0052_import_newsletter_images.ts` use
- *      for exactly this "found a URL, want a URL we control" shape), and
- *      rewrite every occurrence of the original URL to the re-hosted one
- *      (`rewriteImageUrls`). THIS is what makes hosting reliable — a Canva
- *      export's own CDN URLs expire/block hotlinking; a Convex storage URL
- *      doesn't.
+ *      `<style>`, legacy `background=`, INCLUDING protocol-relative
+ *      `//host/…` references).
+ *   2. RE-HOST each one: SSRF-check it (`ssrfGuard.ts`), fetch it (no
+ *      auto-follow on redirects — see `fetchImageBlob`), store the blob in
+ *      Convex storage (the same `ctx.storage.store` → `ctx.storage.getUrl`
+ *      two-step `emailImages.ts`/`migrations/0052_import_newsletter_images.ts`
+ *      use for exactly this "found a URL, want a URL we control" shape),
+ *      and rewrite every occurrence of the ORIGINAL reference to either the
+ *      re-hosted URL (success) or an inert local placeholder (failure — see
+ *      "Failure handling" below) — `rewriteImageUrls`. THIS is what makes
+ *      hosting reliable — a Canva export's own CDN URLs expire/block
+ *      hotlinking; a Convex storage URL doesn't, and a failed one never
+ *      ships as a live third-party reference either.
  *   3. SANITIZE the (now-rewritten) html for real (`sanitizeEmailHtml` — a
  *      real parser, `sanitize-html`, not a regex pass) — strips
  *      `<script>`, event handlers, `javascript:`/non-image `data:` URLs,
- *      `<iframe>`/`<object>`/`<embed>`, while keeping the tables/inline
- *      styles a real newsletter paste depends on.
+ *      `<iframe>`/`<object>`/`<embed>`/`<form>`/`<link>`/`<base>`, a
+ *      `<meta http-equiv>`, and CSS-level hazards, while keeping the
+ *      tables/inline styles a real newsletter paste depends on.
  *
  * ── Failure handling (the founder's other hard requirement) ────────────────
- * A single image that 404s, times out, isn't actually an image, or exceeds
- * the size cap is SKIPPED — recorded in the returned `failures` array and
- * logged (`console.warn`) — never a thrown error that aborts the whole
- * import. The email a designer is trying to send should not be blocked
- * because one decorative image on a CDN went stale; it should ship with
- * that one image broken and a clear list of what to go fix. Bounded to
- * `MAX_IMAGE_URLS` distinct images and `MAX_IMAGE_BYTES` per image — both
- * abuse backstops, not realistic ceilings for a real newsletter paste.
+ * A single image that 404s, times out, isn't actually an image, exceeds the
+ * size cap, redirects, or fails the SSRF check is SKIPPED — recorded in the
+ * returned `failures` array and logged in FULL DETAIL server-side
+ * (`console.warn`) — never a thrown error that aborts the whole import. The
+ * email a designer is trying to send should not be blocked because one
+ * decorative image on a CDN went stale; it should ship with that one image
+ * dropped and a clear list of what to go fix.
+ *
+ * TWO things changed here in the adversarial-review pass (2026-07-30):
+ *   - A failed image's ORIGINAL external reference no longer survives into
+ *     the returned html (finding #7) — it's rewritten to a fully inert,
+ *     local `data:` placeholder (a 1×1 transparent GIF), so the SENT email
+ *     makes ZERO third-party calls for an image this import couldn't
+ *     verify, not just "the ones that worked are re-hosted." The founder's
+ *     "make sure the images are hosted reliably" reads as drop-not-leak;
+ *     flagged as a product decision in this PR's report regardless.
+ *   - Every failure reason returned to the CALLER is now the SAME generic
+ *     string (finding #6's closing note) — a per-cause message (404 vs.
+ *     "blocked: private IP" vs. timeout) would let a compose-power holder
+ *     use this import action as a blind SSRF/internal-network oracle,
+ *     probing which internal hosts/ports exist by the shape of the failure
+ *     they get back. The SPECIFIC reason is still logged server-side
+ *     (`console.warn`) for whoever needs to actually debug an import.
+ *
+ * Bounded to `MAX_IMAGE_URLS` (`emailHtmlSanitize.ts`) distinct images and
+ * `MAX_IMAGE_BYTES` per image — both abuse backstops, not realistic
+ * ceilings for a real newsletter paste.
+ *
+ * ── SSRF guard (`ssrfGuard.ts`) ─────────────────────────────────────────────
+ * Every resolved fetch URL (after `resolveImageFetchUrl` turns a
+ * protocol-relative reference into `https:…`) is checked against
+ * loopback/private/link-local/reserved IP ranges — both as a literal and via
+ * DNS resolution — BEFORE this action ever calls `fetch`. See that file's
+ * own doc for the documented DNS-rebinding residual risk. Redirects are
+ * refused outright (`redirect: "manual"`, any 3xx treated as a failure)
+ * rather than followed and re-checked — the simplest way to guarantee the
+ * SSRF guard's verdict on the URL a designer pasted is the URL this action
+ * actually fetches.
  *
  * ── Why "use node" ───────────────────────────────────────────────────────
  * `sanitizeEmailHtml` needs a real HTML parser (`sanitize-html`, built on
  * `htmlparser2`) — heavier than the default V8-isolate runtime's guidelines
  * call for, and the task brief calls for the Node runtime explicitly so
- * `fetch` + a real parser/sanitizer can both run here. `fetch()` itself
- * works in either runtime, but the sanitizer decides the file's runtime.
- * FLAGGED FIRST-DEPLOY RISK (see this repo's own precedent with `juice`):
- * `sanitize-html`'s dependency tree (`htmlparser2`, `postcss`, `deepmerge`,
- * `parse-srcset`, …) is pure JS with no native bindings and no `fs`/`net`
- * usage, which is the profile of dependency that bundles cleanly in a
- * Convex node action — but this has only been verified by `vitest`
- * (plain Node), never a REAL `convex deploy`. Watch the first deploy after
- * this ships.
+ * `fetch` + a real parser/sanitizer (and, now, `node:net`/`node:dns` for the
+ * SSRF guard) can all run here. FLAGGED FIRST-DEPLOY RISK (see this repo's
+ * own precedent with `juice`): `sanitize-html`'s dependency tree
+ * (`htmlparser2`, `postcss`, `deepmerge`, `parse-srcset`, …) is pure JS with
+ * no native bindings and no `fs`/`net` usage of its OWN, which is the
+ * profile of dependency that bundles cleanly in a Convex node action — but
+ * this has only been verified by `vitest` (plain Node), never a REAL
+ * `convex deploy`. Watch the first deploy after this ships.
  *
  * Auth-gated exactly like composing an email — reuses
  * `campaigns.ts#assertAccessForAction` (`requireCampaignCompose`) rather
@@ -65,9 +99,11 @@ import { action } from "./_generated/server";
 import { internal } from "./_generated/api";
 import {
   findImageUrls,
+  resolveImageFetchUrl,
   rewriteImageUrls,
   sanitizeEmailHtml,
 } from "./lib/emailHtmlSanitize";
+import { assertSafeImageUrl } from "./lib/ssrfGuard";
 
 /** Abuse backstop on the RAW paste size, before any processing — generous
  *  (a Canva export with inline styles can run large), bounded so a
@@ -80,20 +116,54 @@ const MAX_RAW_HTML_CHARS = 2_000_000;
  *  bounds both the fetch and the Convex storage write. */
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 
-/** How long one image fetch gets before it's treated as a failure — a
- *  paste with several slow/dead CDN links must still finish in reasonable
- *  time, not hang the whole import on the last one. */
+/** How long one image fetch (DNS + connect + full body) gets before it's
+ *  treated as a failure — a paste with several slow/dead CDN links must
+ *  still finish in reasonable time, not hang the whole import on the last
+ *  one. */
 const IMAGE_FETCH_TIMEOUT_MS = 8_000;
+
+/** The SAME generic message for every fetch failure, regardless of cause —
+ *  see this file's module doc, "Failure handling", for why a per-cause
+ *  message is an SSRF/internal-network oracle. The REAL reason is always
+ *  logged server-side via `console.warn` right where it's discovered. */
+const GENERIC_FAILURE_REASON = "Couldn't fetch this image.";
+
+/** A fully self-contained, zero-network 1×1 transparent GIF — what a failed
+ *  image reference is rewritten to (finding #7) so the returned html never
+ *  carries a live third-party reference for an image this import couldn't
+ *  verify. Renders as a blank/invisible pixel rather than a broken-image
+ *  icon, and (unlike an EMPTY `src=""`) never triggers the "empty src
+ *  re-requests the current document" browser quirk. */
+const INERT_IMAGE_PLACEHOLDER =
+  "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
 
 export type ImageImportFailure = { url: string; reason: string };
 
 async function fetchImageBlob(
-  url: string,
+  originalRef: string,
 ): Promise<{ ok: true; blob: Blob } | { ok: false; reason: string }> {
+  const fetchUrl = resolveImageFetchUrl(originalRef);
+
+  const safety = await assertSafeImageUrl(fetchUrl);
+  if (!safety.ok) {
+    console.warn(`[emailHtmlImport] blocked by SSRF guard (${safety.reason}): ${originalRef}`);
+    return { ok: false, reason: safety.reason };
+  }
+
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), IMAGE_FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(url, { signal: controller.signal });
+    const res = await fetch(fetchUrl, {
+      signal: controller.signal,
+      // Never auto-follow a redirect — a redirect target is a DIFFERENT URL
+      // this action never SSRF-checked. Treating any redirect as a plain
+      // failure (below) is simpler and safer than re-validating a chain of
+      // hops. See this file's module doc, "SSRF guard".
+      redirect: "manual",
+    });
+    if (res.type === "opaqueredirect" || (res.status >= 300 && res.status < 400)) {
+      return { ok: false, reason: `redirected (HTTP ${res.status || "3xx"})` };
+    }
     if (!res.ok) {
       return { ok: false, reason: `HTTP ${res.status}` };
     }
@@ -146,31 +216,37 @@ export const importPastedHtml = action({
     }
     const bounded = html.length > MAX_RAW_HTML_CHARS ? html.slice(0, MAX_RAW_HTML_CHARS) : html;
 
-    // ── 1. Find every external image reference ────────────────────────────
+    // ── 1. Find every external image reference (absolute + protocol-relative) ──
     const imageUrls = findImageUrls(bounded);
 
-    // ── 2. Re-host each one — never let one failure abort the rest ────────
+    // ── 2. Re-host each one — never let one failure abort the rest. EVERY
+    // found reference gets a urlMap entry: the re-hosted URL on success, the
+    // inert local placeholder on failure — so step 3's rewrite leaves NO
+    // original external reference behind either way (finding #7). ──────────
     const urlMap = new Map<string, string>();
     const failures: ImageImportFailure[] = [];
-    for (const url of imageUrls) {
-      const fetched = await fetchImageBlob(url);
+    for (const originalRef of imageUrls) {
+      const fetched = await fetchImageBlob(originalRef);
       if (!fetched.ok) {
-        console.warn(`[emailHtmlImport] dropped image (${fetched.reason}): ${url}`);
-        failures.push({ url, reason: fetched.reason });
+        console.warn(`[emailHtmlImport] dropped image (${fetched.reason}): ${originalRef}`);
+        failures.push({ url: originalRef, reason: GENERIC_FAILURE_REASON });
+        urlMap.set(originalRef, INERT_IMAGE_PLACEHOLDER);
         continue;
       }
       const storageId = await ctx.storage.store(fetched.blob);
       const rehostedUrl = await ctx.storage.getUrl(storageId);
       if (!rehostedUrl) {
         // Stored but storage won't serve it — don't leave an orphaned blob
-        // OR a broken re-hosted reference behind (mirrors
-        // `migrations/0052_import_newsletter_images.ts`'s identical guard).
+        // behind (mirrors `migrations/0052_import_newsletter_images.ts`'s
+        // identical guard), and don't leave the original live reference in
+        // the output either.
         await ctx.storage.delete(storageId);
-        console.warn(`[emailHtmlImport] stored but storage.getUrl returned null: ${url}`);
-        failures.push({ url, reason: "stored but couldn't resolve a servable URL" });
+        console.warn(`[emailHtmlImport] stored but storage.getUrl returned null: ${originalRef}`);
+        failures.push({ url: originalRef, reason: GENERIC_FAILURE_REASON });
+        urlMap.set(originalRef, INERT_IMAGE_PLACEHOLDER);
         continue;
       }
-      urlMap.set(url, rehostedUrl);
+      urlMap.set(originalRef, rehostedUrl);
     }
 
     // ── 3. Rewrite, then sanitize for real ─────────────────────────────────
@@ -180,7 +256,7 @@ export const importPastedHtml = action({
     return {
       html: sanitized,
       imagesFound: imageUrls.length,
-      imagesRehosted: urlMap.size,
+      imagesRehosted: imageUrls.length - failures.length,
       failures,
     };
   },

@@ -1,14 +1,24 @@
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { lookup as dnsLookup } from "node:dns/promises";
 import { api } from "../_generated/api";
-import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
+import { newT, setupChapter, type ChapterSetup } from "./setup.helpers";
 
 /**
  * `emailHtmlImport.importPastedHtml` — the "use node" action that fetches +
- * re-hosts every external image in a pasted HTML paste (mocked `fetch`
- * below, real `ctx.storage`) and sanitizes the result. See
+ * re-hosts every external image in a pasted HTML paste (mocked `fetch` +
+ * mocked DNS below, real `ctx.storage`) and sanitizes the result. See
  * `emailHtmlSanitize.test.ts` for the pure sanitizer's own adversarial
- * coverage — this file is about the ACTION's own concerns: auth-gating,
- * the fetch → storage → rewrite pipeline, and graceful per-image failure.
+ * coverage — this file is about the ACTION's own concerns: auth-gating, the
+ * fetch → storage → rewrite pipeline, graceful per-image failure, and (this
+ * pass, 2026-07-30) the SSRF guard + "never ship a live third-party
+ * reference for a failed image" behavior.
+ *
+ * `node:dns/promises#lookup` is mocked (not real network) so every test is
+ * deterministic and offline — a real `assertSafeImageUrl` (`ssrfGuard.ts`)
+ * does a REAL DNS lookup, which this sandbox has no route for anyway.
+ * Defaults to resolving every hostname to a public, non-blocked test-net
+ * address (`203.0.113.x`, RFC 5737 TEST-NET-3) unless a test overrides it —
+ * see `mockDns`.
  */
 
 const SUPERUSER_EMAIL = "seyi@publicworship.life";
@@ -22,12 +32,37 @@ afterEach(() => {
   globalThis.fetch = realFetch;
 });
 
+vi.mock("node:dns/promises", () => ({
+  lookup: vi.fn(),
+}));
+
+/** Point every hostname NOT explicitly listed in `overrides` at a safe
+ *  public test-net address; a hostname in `overrides` resolves to whatever
+ *  address that entry says (used by the SSRF tests below to prove a
+ *  hostname that RESOLVES into a blocked range is refused, not just an
+ *  IP-literal one). */
+function mockDns(overrides: Record<string, string> = {}) {
+  (dnsLookup as unknown as ReturnType<typeof vi.fn>).mockImplementation(
+    async (hostname: string) => {
+      const address = overrides[hostname] ?? "203.0.113.10";
+      return [{ address, family: address.includes(":") ? 6 : 4 }];
+    },
+  );
+}
+
+beforeEach(() => {
+  mockDns();
+});
+
 function fakeImageResponse(bytes = 2048, contentType = "image/png") {
   return new Response(new Uint8Array(bytes), {
     status: 200,
     headers: { "content-type": contentType },
   });
 }
+
+const INERT_PLACEHOLDER =
+  "data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==";
 
 describe("importPastedHtml — auth", () => {
   test("throws FORBIDDEN for a caller without compose power", async () => {
@@ -99,10 +134,31 @@ describe("importPastedHtml — image re-hosting", () => {
     expect(result.imagesFound).toBe(0);
     expect(result.html).toContain("data:image/png;base64,iVBORw0KGgo=");
   });
+
+  // Adversarial-review finding #3 (HIGH): protocol-relative image refs used
+  // to be neither re-hosted nor blocked.
+  test("re-hosts a protocol-relative <img src> (resolved to https: for the fetch)", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    const fetchedUrls: string[] = [];
+    globalThis.fetch = (async (url: unknown) => {
+      fetchedUrls.push(String(url));
+      return fakeImageResponse();
+    }) as unknown as typeof fetch;
+
+    const result = await s.as.action(api.emailHtmlImport.importPastedHtml, {
+      html: '<img src="//tracker.example.com/pixel.gif">',
+    });
+
+    expect(result.imagesFound).toBe(1);
+    expect(result.imagesRehosted).toBe(1);
+    expect(result.html).not.toContain("tracker.example.com");
+    expect(fetchedUrls).toEqual(["https://tracker.example.com/pixel.gif"]);
+  });
 });
 
-describe("importPastedHtml — graceful failure handling", () => {
-  test("a 404 on one image is skipped and reported, without failing the whole import", async () => {
+describe("importPastedHtml — graceful failure handling (generic reason to the caller, real reason logged)", () => {
+  test("a 404 on one image is skipped and reported (generic reason), without failing the whole import", async () => {
     const t = newT();
     const s = await asSuperuser(t);
     globalThis.fetch = (async () =>
@@ -115,13 +171,15 @@ describe("importPastedHtml — graceful failure handling", () => {
     expect(result.imagesFound).toBe(1);
     expect(result.imagesRehosted).toBe(0);
     expect(result.failures).toHaveLength(1);
-    expect(result.failures[0]).toMatchObject({ url: "https://dead-cdn.example.com/gone.png" });
-    expect(result.failures[0].reason).toMatch(/404/);
+    expect(result.failures[0]).toEqual({
+      url: "https://dead-cdn.example.com/gone.png",
+      reason: "Couldn't fetch this image.",
+    });
     // The rest of the document is intact.
     expect(result.html).toContain("Hello");
   });
 
-  test("a non-image content-type is skipped and reported", async () => {
+  test("a non-image content-type is skipped and reported generically", async () => {
     const t = newT();
     const s = await asSuperuser(t);
     globalThis.fetch = (async () =>
@@ -133,11 +191,12 @@ describe("importPastedHtml — graceful failure handling", () => {
     const result = await s.as.action(api.emailHtmlImport.importPastedHtml, {
       html: '<img src="https://cdn.example.com/actually-a-page.png">',
     });
-    expect(result.failures).toHaveLength(1);
-    expect(result.failures[0].reason).toMatch(/not an image/);
+    expect(result.failures).toEqual([
+      { url: "https://cdn.example.com/actually-a-page.png", reason: "Couldn't fetch this image." },
+    ]);
   });
 
-  test("an image over the size cap is skipped and reported", async () => {
+  test("an image over the size cap is skipped and reported generically", async () => {
     const t = newT();
     const s = await asSuperuser(t);
     globalThis.fetch = (async () => fakeImageResponse(9 * 1024 * 1024)) as unknown as typeof fetch;
@@ -145,8 +204,9 @@ describe("importPastedHtml — graceful failure handling", () => {
     const result = await s.as.action(api.emailHtmlImport.importPastedHtml, {
       html: '<img src="https://cdn.example.com/huge.png">',
     });
-    expect(result.failures).toHaveLength(1);
-    expect(result.failures[0].reason).toMatch(/exceeds/);
+    expect(result.failures).toEqual([
+      { url: "https://cdn.example.com/huge.png", reason: "Couldn't fetch this image." },
+    ]);
   });
 
   test("one failing image among several still re-hosts the rest — a partial failure never aborts the import", async () => {
@@ -169,12 +229,15 @@ describe("importPastedHtml — graceful failure handling", () => {
     expect(result.failures[0].url).toContain("dead.png");
     // The good one really did get rewritten.
     expect(result.html).not.toContain("cdn.example.com/good.png");
-    // The dead one is left as its original URL (nothing to rewrite it to) —
-    // reported as a failure rather than silently dropped from the markup.
-    expect(result.html).toContain("cdn.example.com/dead.png");
+    // [finding #7] The DEAD one is no longer left as its original (live,
+    // third-party) URL — it's rewritten to the inert local placeholder, so
+    // the sent email makes zero calls to a host this import couldn't
+    // verify. Still reported in `failures`, just never shipped as a live ref.
+    expect(result.html).not.toContain("cdn.example.com/dead.png");
+    expect(result.html).toContain(INERT_PLACEHOLDER);
   });
 
-  test("a network error (thrown fetch) is caught and reported, not thrown to the caller", async () => {
+  test("a network error (thrown fetch) is caught and reported generically, not thrown to the caller", async () => {
     const t = newT();
     const s = await asSuperuser(t);
     globalThis.fetch = (async () => {
@@ -184,8 +247,180 @@ describe("importPastedHtml — graceful failure handling", () => {
     const result = await s.as.action(api.emailHtmlImport.importPastedHtml, {
       html: '<img src="https://cdn.example.com/flaky.png">',
     });
+    expect(result.failures).toEqual([
+      { url: "https://cdn.example.com/flaky.png", reason: "Couldn't fetch this image." },
+    ]);
+  });
+
+  test("[finding #7] a failed image's original URL never survives into the returned html", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    globalThis.fetch = (async () => new Response("nope", { status: 500 })) as unknown as typeof fetch;
+
+    const result = await s.as.action(api.emailHtmlImport.importPastedHtml, {
+      html: '<img src="https://dead.example.com/x.png" alt="x">',
+    });
+    expect(result.html).not.toContain("dead.example.com");
+    expect(result.html).toContain(INERT_PLACEHOLDER);
+  });
+
+  test("a redirect response is treated as a failure, not followed", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    let requestedUrls: string[] = [];
+    globalThis.fetch = (async (url: unknown, init: any) => {
+      requestedUrls.push(String(url));
+      expect(init?.redirect).toBe("manual");
+      return new Response(null, { status: 302, headers: { location: "https://elsewhere.example/x" } });
+    }) as unknown as typeof fetch;
+
+    const result = await s.as.action(api.emailHtmlImport.importPastedHtml, {
+      html: '<img src="https://redirector.example.com/x.png">',
+    });
+    // Never followed to the redirect target.
+    expect(requestedUrls).toEqual(["https://redirector.example.com/x.png"]);
     expect(result.failures).toHaveLength(1);
-    expect(result.failures[0].reason).toMatch(/ECONNRESET/);
+    expect(result.html).not.toContain("redirector.example.com");
+    expect(result.html).not.toContain("elsewhere.example");
+  });
+});
+
+describe("importPastedHtml — SSRF guard (adversarial-review finding #6)", () => {
+  test("blocks an IP-literal loopback URL (127.0.0.1) without calling fetch", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      return fakeImageResponse();
+    }) as unknown as typeof fetch;
+
+    const result = await s.as.action(api.emailHtmlImport.importPastedHtml, {
+      html: '<img src="http://127.0.0.1/secret.png">',
+    });
+    expect(fetchCalled).toBe(false);
+    expect(result.failures).toEqual([
+      { url: "http://127.0.0.1/secret.png", reason: "Couldn't fetch this image." },
+    ]);
+    expect(result.html).toContain(INERT_PLACEHOLDER);
+  });
+
+  test.each([
+    ["10.1.2.3", "private 10/8"],
+    ["172.16.5.5", "private 172.16/12"],
+    ["192.168.1.1", "private 192.168/16"],
+    ["169.254.169.254", "link-local / cloud metadata"],
+    ["0.0.0.0", "unspecified"],
+  ])("blocks IP-literal %s (%s)", async (ip) => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      return fakeImageResponse();
+    }) as unknown as typeof fetch;
+
+    const result = await s.as.action(api.emailHtmlImport.importPastedHtml, {
+      html: `<img src="http://${ip}/x.png">`,
+    });
+    expect(fetchCalled).toBe(false);
+    expect(result.failures).toHaveLength(1);
+  });
+
+  test("blocks an IPv6 loopback literal (::1)", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      return fakeImageResponse();
+    }) as unknown as typeof fetch;
+
+    const result = await s.as.action(api.emailHtmlImport.importPastedHtml, {
+      html: '<img src="http://[::1]/x.png">',
+    });
+    expect(fetchCalled).toBe(false);
+    expect(result.failures).toHaveLength(1);
+  });
+
+  test("blocks a HOSTNAME that DNS-resolves to a private IP (the plain literal-IP-only bypass)", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    mockDns({ "internal.corp.example": "10.0.0.5" });
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      return fakeImageResponse();
+    }) as unknown as typeof fetch;
+
+    const result = await s.as.action(api.emailHtmlImport.importPastedHtml, {
+      html: '<img src="http://internal.corp.example/secret.png">',
+    });
+    expect(fetchCalled).toBe(false);
+    expect(result.failures).toHaveLength(1);
+    expect(result.failures[0].reason).toBe("Couldn't fetch this image.");
+  });
+
+  test("blocks an IPv4-mapped IPv6 literal (::ffff:127.0.0.1) — a known bare-v4-check bypass", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      return fakeImageResponse();
+    }) as unknown as typeof fetch;
+
+    const result = await s.as.action(api.emailHtmlImport.importPastedHtml, {
+      html: '<img src="http://[::ffff:127.0.0.1]/x.png">',
+    });
+    expect(fetchCalled).toBe(false);
+    expect(result.failures).toHaveLength(1);
+  });
+
+  test("allows a hostname that resolves to a public IP", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    mockDns({ "cdn.example.com": "203.0.113.55" });
+    globalThis.fetch = (async () => fakeImageResponse()) as unknown as typeof fetch;
+
+    const result = await s.as.action(api.emailHtmlImport.importPastedHtml, {
+      html: '<img src="http://cdn.example.com/ok.png">',
+    });
+    expect(result.imagesRehosted).toBe(1);
+    expect(result.failures).toHaveLength(0);
+  });
+
+  test("blocks a hostname DNS refuses to resolve at all (fail closed)", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    (dnsLookup as unknown as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      throw new Error("NXDOMAIN");
+    });
+    let fetchCalled = false;
+    globalThis.fetch = (async () => {
+      fetchCalled = true;
+      return fakeImageResponse();
+    }) as unknown as typeof fetch;
+
+    const result = await s.as.action(api.emailHtmlImport.importPastedHtml, {
+      html: '<img src="http://nowhere.example.invalid/x.png">',
+    });
+    expect(fetchCalled).toBe(false);
+    expect(result.failures).toHaveLength(1);
+  });
+
+  test("SSRF-blocked and ordinary-404 failures are INDISTINGUISHABLE to the caller (kills the oracle)", async () => {
+    const t = newT();
+    const s = await asSuperuser(t);
+    globalThis.fetch = (async () => new Response("nope", { status: 404 })) as unknown as typeof fetch;
+
+    const blockedResult = await s.as.action(api.emailHtmlImport.importPastedHtml, {
+      html: '<img src="http://127.0.0.1/internal-probe">',
+    });
+    const notFoundResult = await s.as.action(api.emailHtmlImport.importPastedHtml, {
+      html: '<img src="https://cdn.example.com/genuinely-missing.png">',
+    });
+    expect(blockedResult.failures[0].reason).toBe(notFoundResult.failures[0].reason);
   });
 });
 
