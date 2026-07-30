@@ -51,10 +51,11 @@ import {
   renderCampaignEmail,
   renderCampaignText,
   validateEmailDocument,
+  validateEmailHtmlDocument,
   validateTiptapEmailDoc,
 } from "@events-os/shared";
-import type { EmailDocument, EmailTheme } from "@events-os/shared";
-import { renderEmailTiptap } from "@events-os/email-render";
+import type { EmailDocument, EmailHtmlDocument, EmailTheme } from "@events-os/shared";
+import { renderEmailHtml, renderEmailTiptap } from "@events-os/email-render";
 import type { JSONContent } from "@tiptap/core";
 import { tiptapMergeVariables } from "./lib/tiptapCampaignRender";
 import { sendEmail, emailShell } from "./ticketingEmails";
@@ -178,6 +179,8 @@ export const sendApprovalTestPair = internalAction({
       // submitForApproval already validated this — defensive no-op only.
       if (docFormat === "tiptap") {
         if (!validateTiptapEmailDoc(campaign.doc).ok) return null;
+      } else if (docFormat === "html") {
+        if (!validateEmailHtmlDocument(campaign.doc).ok) return null;
       } else if (!validateEmailDocument(campaign.doc).ok) {
         return null;
       }
@@ -227,6 +230,17 @@ export const sendApprovalTestPair = internalAction({
           // poll vote URLs — same graceful degradation as `sendTest`.
           const rendered = await renderEmailTiptap(doc as JSONContent, {
             variables: tiptapMergeVariables(recipient),
+            unsubscribeUrl,
+            orgAddress: mailSettings.orgMailingAddress ?? "",
+            preview: previewText,
+          });
+          html = rendered.html;
+          text = rendered.text;
+        } else if (docFormat === "html") {
+          // "Paste HTML" carries no merge tags/variables to substitute — the
+          // doc is the sanitized, image-re-hosted HTML verbatim (see
+          // `emailHtmlDoc.ts`'s module doc).
+          const rendered = await renderEmailHtml((doc as EmailHtmlDocument).html, {
             unsubscribeUrl,
             orgAddress: mailSettings.orgMailingAddress ?? "",
             preview: previewText,

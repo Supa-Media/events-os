@@ -8,6 +8,10 @@ describe("composerHostForFormat", () => {
   it("routes blocks to the existing canvas", () => {
     expect(composerHostForFormat("blocks")).toBe("blocks");
   });
+
+  it("routes html to the Paste HTML host", () => {
+    expect(composerHostForFormat("html")).toBe("html");
+  });
 });
 
 describe("composerHostForRow", () => {
@@ -27,5 +31,9 @@ describe("composerHostForRow", () => {
   it("routes an explicit blocks row (and any unknown string) to the canvas", () => {
     expect(composerHostForRow({ docFormat: "blocks" })).toBe("blocks");
     expect(composerHostForRow({ docFormat: "something-else" })).toBe("blocks");
+  });
+
+  it("routes an explicit html row to the Paste HTML host", () => {
+    expect(composerHostForRow({ docFormat: "html" })).toBe("html");
   });
 });

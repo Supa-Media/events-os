@@ -67,17 +67,10 @@
  * default.
  */
 import type { JSONContent } from "@tiptap/core";
-import {
-  DEFAULT_EMAIL_THEME,
-  isHexColor,
-  isPwFontStackId,
-  PW_FONT_STACKS,
-  resolveDarkTheme,
-  safeUnsubscribeHref,
-  type PwFontStackId,
-} from "@events-os/shared";
+import { isHexColor, isPwFontStackId, PW_FONT_STACKS, type PwFontStackId } from "@events-os/shared";
 import { Maily } from "./maily";
 import { injectBeforeBodyClose, injectBeforeHeadClose, overrideColorSchemeMeta } from "./postprocess";
+import { complianceFooterHtml, complianceFooterText, darkModeStyle } from "./complianceShell";
 
 export type RenderEmailTiptapOptions = {
   /** Merge-tag values (`setVariableValues` — recipient name, per-recipient
@@ -101,75 +94,13 @@ export type RenderEmailTiptapOptions = {
 
 export type RenderedEmail = { html: string; text: string };
 
-/** HTML-escape untrusted strings for element content/attributes — same
- *  five-entity table used throughout this codebase (see
- *  `packages/shared/src/emailRender.ts`'s `esc()` / `apps/convex/lib/html.ts`'s
- *  `escapeHtml()`). Only needed for the footer's OWN raw-string-built markup
- *  below; the doc's own variable substitution is handled by React's normal
- *  text-child escaping inside `Maily` itself (JSX text content is always
- *  entity-encoded — see `renderEmailTiptap`'s doc). */
-function esc(s: string): string {
-  return s
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
-const FOOTER_ID = "pw-compliance-footer";
-const SIGNOFF = "Sent with love by Public Worship · Chapter OS";
-
-function complianceFooterHtml(opts: RenderEmailTiptapOptions): string {
-  const address = opts.orgAddress ? `<div>${esc(opts.orgAddress)}</div>` : "";
-  const href = esc(safeUnsubscribeHref(opts.unsubscribeUrl));
-  return `<div id="${FOOTER_ID}" style="text-align:center;font-family:Inter,Arial,sans-serif;font-size:11px;line-height:1.6;color:#64748B;padding:16px 24px 24px">${address}<div>${SIGNOFF}</div><div style="padding-top:6px"><a href="${href}" style="color:#64748B;text-decoration:underline">Unsubscribe</a> from all Public Worship emails.</div></div>`;
-}
-
-function complianceFooterText(opts: RenderEmailTiptapOptions): string {
-  const lines: string[] = [];
-  if (opts.orgAddress) lines.push(opts.orgAddress);
-  lines.push(SIGNOFF);
-  lines.push(`Unsubscribe from all Public Worship emails: ${opts.unsubscribeUrl}`);
-  return lines.join("\n");
-}
-
-/**
- * The dark-mode `<style>` block. Maily's emitted structure carries almost NO
- * classes or ids of its own (`Container`/`Body`/`Section`/etc. all render as
- * bare `<table>`s with only inline styles — verified against the actual
- * output in this file's tests, not assumed) — the one exception is
- * `pw-container`, a class WS1 added to `maily.tsx`'s own themed `<Container>`
- * specifically so this shell would have something stable to target (see that
- * file's comment at the `className` prop). Given that, the CONSERVATIVE,
- * "won't break something we can't see" scope this covers is exactly the
- * plan doc's stated minimum: body background/text color, and the themed
- * container's own background — not per-node dark treatment (headings,
- * buttons, links, cards) the way the OLD renderer's `darkRules`
- * (`packages/shared/src/emailRender.ts`) can, because that renderer's every
- * element carries a `pw-*` class for exactly this purpose and maily's stock
- * nodes do not. Extending per-node dark coverage to the node pack (or
- * further) is a real, separate design decision for a later pass, not
- * something to bolt on silently here.
- *
- * Same dual-emission structure as the old renderer's `darkRules`/`styleBlock`
- * (`packages/shared/src/emailRender.ts`): once under `@media (prefers-color-
- * scheme: dark)` for clients that honor the media query, once prefixed
- * `[data-ogsc]` for Outlook.com and Android clients that rewrite the
- * document and key off that attribute instead — generated from ONE rule
- * list so the two can't drift the way `emailRender.ts`'s own header
- * describes them once having drifted.
- */
-function darkModeStyle(): string {
-  const dark = resolveDarkTheme(DEFAULT_EMAIL_THEME);
-  const rules: [string, string][] = [
-    ["body", `background:${dark.canvas} !important; color:${dark.ink} !important;`],
-    [".pw-container", `background:${dark.surface} !important;`],
-  ];
-  const media = rules.map(([sel, decls]) => `${sel} { ${decls} }`).join("\n");
-  const ogsc = rules.map(([sel, decls]) => `[data-ogsc] ${sel} { ${decls} }`).join("\n");
-  return `<style id="pw-dark-mode">\n@media (prefers-color-scheme: dark) {\n${media}\n}\n${ogsc}\n</style>`;
-}
+// `esc`/`complianceFooterHtml`/`complianceFooterText`/`darkModeStyle` used to
+// live here as private helpers; extracted to `complianceShell.ts` (PR 2,
+// "Paste HTML", 2026-07-30) so `renderEmailHtml.ts` reuses the EXACT same
+// footer markup/copy and dark-mode rules rather than a second
+// implementation that could drift — see that file's module doc for the full
+// reasoning. Their doc comments (why this footer copy, why this dark-mode
+// scope) now live there too.
 
 /**
  * Read `doc.attrs.pwCanvasColor` off a tiptap doc, re-validated as defense-

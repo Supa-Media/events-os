@@ -394,8 +394,11 @@ export const campaigns = defineTable({
    *  of their own, so there is no path that changes it after the fact
    *  (changing it would be a hash-visible content-shape change with no UI
    *  meaning, and would let a doc silently escape the validator it was
-   *  written against). */
-  docFormat: v.optional(v.union(v.literal("blocks"), v.literal("tiptap"))),
+   *  written against). `"html"` (2026-07-30, "Paste HTML") is the third leg —
+   *  see `@events-os/shared`'s `emailHtmlDoc.ts`. */
+  docFormat: v.optional(
+    v.union(v.literal("blocks"), v.literal("tiptap"), v.literal("html")),
+  ),
   /** Absent = `"email"` (every pre-merge row). See the doc above `CAMPAIGN_KINDS`. */
   kind: v.optional(v.union(v.literal("email"), v.literal("template"))),
   // ── Template-kind fields (mirror the retired `campaignTemplates` table's

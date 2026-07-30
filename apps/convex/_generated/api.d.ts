@@ -44,6 +44,7 @@ import type * as dashboardDrill from "../dashboardDrill.js";
 import type * as dataHygiene from "../dataHygiene.js";
 import type * as docs from "../docs.js";
 import type * as donorIdentityBackfill from "../donorIdentityBackfill.js";
+import type * as emailHtmlImport from "../emailHtmlImport.js";
 import type * as emailImages from "../emailImages.js";
 import type * as emailPreview from "../emailPreview.js";
 import type * as emailSuppressions from "../emailSuppressions.js";
@@ -314,6 +315,7 @@ declare const fullApi: ApiFromModules<{
   dataHygiene: typeof dataHygiene;
   docs: typeof docs;
   donorIdentityBackfill: typeof donorIdentityBackfill;
+  emailHtmlImport: typeof emailHtmlImport;
   emailImages: typeof emailImages;
   emailPreview: typeof emailPreview;
   emailSuppressions: typeof emailSuppressions;

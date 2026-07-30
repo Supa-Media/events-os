@@ -18,11 +18,13 @@
     "convex": "^1.31.3",
     "convex-helpers": "^0.1.120",
     "fast-png": "^8.0.0",
+    "sanitize-html": "^2.17.6",
     "unpdf": "^1.6.2"
   },
   "devDependencies": {
     "@edge-runtime/vm": "^5.0.0",
     "@types/node": "^22.0.0",
+    "@types/sanitize-html": "^2.16.1",
     "convex-test": "^0.0.53",
     "typescript": "~5.9.2",
     "vite": "^8.0.16",

@@ -60,6 +60,19 @@ import { campaignStatusLabel, campaignStatusTone, pluralCount, pluralReply } fro
 /** Sentinel for "don't start from a template" — not a real template id. */
 const BLANK_TEMPLATE = "blank" as const;
 
+/**
+ * "Design in editor" vs "Paste HTML" (PR 2 of the founder's editor
+ * feedback, verbatim: "there should be an option to forgo the email editor
+ * entirely and just use a html paste from things like canva to send the
+ * email", 2026-07-30) — the creator's FIRST decision, same footing as
+ * "Start from". Picking "Paste HTML" skips the template picker (a
+ * pasted-HTML doc starts from nothing — see `HtmlPasteComposer.web.tsx`'s
+ * own textarea) and creates a `docFormat: "html"` row instead of
+ * `"tiptap"`; the actual paste happens on the design screen right after,
+ * same as every other format opens straight into its composer.
+ */
+type CreateMode = "editor" | "paste";
+
 /** A single campaign row from `api.campaigns.listCampaigns`. */
 type Campaign = FunctionReturnType<typeof api.campaigns.listCampaigns>[number];
 /** A single SEGMENT row from `api.audiences.listAudiences` — used both to
@@ -82,6 +95,7 @@ export function CampaignsListView() {
   const [audienceId, setAudienceId] = useState<string | null>(null);
   const [templateId, setTemplateId] = useState<string>(BLANK_TEMPLATE);
   const [creating, setCreating] = useState(false);
+  const [mode, setMode] = useState<CreateMode>("editor");
 
   if (campaigns === undefined || audiences === undefined || access === undefined) {
     return (
@@ -109,29 +123,42 @@ export function CampaignsListView() {
       const trimmedSubject = subject.trim();
       const id = await run(
         () =>
-          templateId === BLANK_TEMPLATE
+          mode === "paste"
             ? create({
                 scope: "central",
                 name: trimmedSubject,
                 subject: trimmedSubject,
                 audienceId: audienceId as Id<"audiences">,
-                // "New documents are maily-format from now on"
-                // (docs/plans/maily-editor-overhaul.md, "New template flow").
-                doc: newTiptapDocSeed(),
-                docFormat: "tiptap",
+                // Starts empty — the paste itself happens on the design
+                // screen, right after, via `HtmlPasteComposer`'s textarea +
+                // import action.
+                doc: { html: "" },
+                docFormat: "html",
               })
-            : createFromTemplate({
-                templateId: templateId as Id<"campaigns">,
-                name: trimmedSubject,
-                subject: trimmedSubject,
-                audienceId: audienceId as Id<"audiences">,
-              }),
+            : templateId === BLANK_TEMPLATE
+              ? create({
+                  scope: "central",
+                  name: trimmedSubject,
+                  subject: trimmedSubject,
+                  audienceId: audienceId as Id<"audiences">,
+                  // "New documents are maily-format from now on"
+                  // (docs/plans/maily-editor-overhaul.md, "New template flow").
+                  doc: newTiptapDocSeed(),
+                  docFormat: "tiptap",
+                })
+              : createFromTemplate({
+                  templateId: templateId as Id<"campaigns">,
+                  name: trimmedSubject,
+                  subject: trimmedSubject,
+                  audienceId: audienceId as Id<"audiences">,
+                }),
         { errorTitle: "Couldn't create email" },
       );
       if (id) {
         setSubject("");
         setAudienceId(null);
         setTemplateId(BLANK_TEMPLATE);
+        setMode("editor");
         router.push(`/campaign/${id}` as never);
       }
     } finally {

@@ -6,10 +6,13 @@
  *
  * The mobile bundle deliberately does NOT ship `packages/email-render`
  * (Metro weight — see the WS0 spike report), so a tiptap-format document's
- * preview has to be rendered server-side. Blocks-format docs keep their
- * existing CLIENT-side preview (`BlocksDocumentComposer.tsx`'s
- * `renderCampaignEmail` call) — this action throws `WRONG_FORMAT` for them
- * rather than half-supporting both.
+ * preview has to be rendered server-side. `"html"`-format docs (PR 2,
+ * "Paste HTML", 2026-07-30) go through the exact same door — the "Paste
+ * HTML" composer has no client-side renderer of its own either, and reuses
+ * this action's preview pane. Blocks-format docs keep their existing
+ * CLIENT-side preview (`BlocksDocumentComposer.tsx`'s `renderCampaignEmail`
+ * call) — this action throws `WRONG_FORMAT` for them rather than
+ * half-supporting all three.
  *
  * Gated `requireCampaignsAccess`, NOT `requireCampaignCompose` — a preview is
  * a READ (anyone who can see the desk can preview a document on it, same as
@@ -29,8 +32,8 @@ import { ConvexError, v } from "convex/values";
 import { action, internalQuery } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { requireCampaignsAccess } from "./lib/campaignsAccess";
-import { emailDocFormatOf } from "@events-os/shared";
-import { renderEmailTiptap } from "@events-os/email-render";
+import { emailDocFormatOf, type EmailHtmlDocument } from "@events-os/shared";
+import { renderEmailHtml, renderEmailTiptap } from "@events-os/email-render";
 import type { JSONContent } from "@tiptap/core";
 import { siteUrl } from "./lib/siteUrl";
 import { tiptapMergeVariables } from "./lib/tiptapCampaignRender";
@@ -85,7 +88,8 @@ export const renderCampaignPreview = action({
     if (!campaign) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Email not found." });
     }
-    if (emailDocFormatOf(campaign) !== "tiptap") {
+    const docFormat = emailDocFormatOf(campaign);
+    if (docFormat !== "tiptap" && docFormat !== "html") {
       throw new ConvexError({
         code: "WRONG_FORMAT",
         message: "This document uses the block editor — preview it in the composer instead.",
@@ -104,6 +108,14 @@ export const renderCampaignPreview = action({
     // degradation — the renderer draws inert pills instead of links to a URL
     // that would 404).
     const unsubscribeUrl = `${siteUrl()}/unsubscribe/test`;
+
+    if (docFormat === "html") {
+      return await renderEmailHtml((campaign.doc as EmailHtmlDocument).html, {
+        unsubscribeUrl,
+        orgAddress,
+        preview: campaign.previewText,
+      });
+    }
 
     return await renderEmailTiptap(campaign.doc as JSONContent, {
       variables: tiptapMergeVariables(PREVIEW_RECIPIENT),
