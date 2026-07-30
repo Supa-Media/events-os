@@ -134,9 +134,13 @@ export function rewriteImageUrls(html: string, urlMap: ReadonlyMap<string, strin
 const IMG_TAG_RE = /<img\b[^>]*>/gi;
 /** A numeric `width`/`height` ATTRIBUTE (`width="600"`), which is what every
  *  design-tool export emits alongside its inline styles. Percentages and
- *  other non-integer values don't describe a ratio, so they don't match. */
+ *  other non-integer values don't describe a ratio, so they don't match.
+ *  Anchored on preceding WHITESPACE, not `\b`: inside a tag, attributes are
+ *  whitespace-separated, and a `\b` would also match the tail of
+ *  `data-width="…"` (and of `max-width` in any attribute value that happened
+ *  to use `=`). */
 const NUMERIC_DIM_ATTR = (name: "width" | "height") =>
-  new RegExp(`\\b${name}\\s*=\\s*(?:"(\\d+)"|'(\\d+)'|(\\d+))`, "i");
+  new RegExp(`\\s${name}\\s*=\\s*(?:"(\\d+)"|'(\\d+)'|(\\d+))`, "i");
 const STYLE_ATTR_IN_TAG_RE = /\sstyle\s*=\s*("([^"]*)"|'([^']*)')/i;
 
 function numericAttr(tag: string, name: "width" | "height"): number | null {

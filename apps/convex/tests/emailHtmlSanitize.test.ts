@@ -382,6 +382,14 @@ describe("preserveFailedImageAspect", () => {
     expect(preserveFailedImageAspect(percentage, PH)).toBe(percentage);
   });
 
+  test("reads the real width/height, not a `data-width` that merely ends in one", () => {
+    const out = preserveFailedImageAspect(
+      `<img src="${PH}" data-width="9" data-height="9" width="600" height="62" style="max-width:100%;width:600px">`,
+      PH,
+    );
+    expect(out).toContain("aspect-ratio:600/62");
+  });
+
   test("never fights an explicit author aspect-ratio", () => {
     const html = `<img src="${PH}" width="600" height="62" style="aspect-ratio:2/1;width:600px">`;
     expect(preserveFailedImageAspect(html, PH)).toBe(html);

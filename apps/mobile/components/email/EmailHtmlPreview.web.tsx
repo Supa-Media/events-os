@@ -41,6 +41,15 @@ const AUTO_HEIGHT_PLACEHOLDER = 560;
  *  taller than this, and an unbounded height from a pathological document
  *  shouldn't be able to lock up the page's layout. */
 const AUTO_HEIGHT_CAP = 40_000;
+/** Sub-pixel/1px churn isn't worth a re-layout, and ignoring it is what stops
+ *  the box and the document from nudging each other forever. */
+const HEIGHT_EPSILON = 4;
+/** Hard stop on how many times ONE document may resize the box. A document
+ *  whose own height depends on the viewport (`body { height: 100% }`, say) is
+ *  circular by construction: the box grows, which grows the frame, which
+ *  grows the document. The epsilon above doesn't stop a slow ratchet — this
+ *  does, leaving the preview at whatever height it had reached. */
+const MAX_AUTO_HEIGHT_UPDATES = 40;
 
 function measureDocumentHeight(frame: HTMLIFrameElement): number | null {
   let doc: Document | null | undefined;
@@ -68,20 +77,33 @@ export function EmailHtmlPreview({ html, height = 560 }: EmailHtmlPreviewProps) 
    *  replaced on every load, run on unmount. */
   const cleanupRef = useRef<(() => void) | null>(null);
   const [measured, setMeasured] = useState<number | null>(null);
+  /** How many times the CURRENT document has moved the box — see
+   *  `MAX_AUTO_HEIGHT_UPDATES`. */
+  const updateCountRef = useRef(0);
 
   // A new document invalidates the old measurement — otherwise the box keeps
   // the previous email's height until the new one happens to load.
   useEffect(() => {
-    if (auto) setMeasured(null);
+    if (auto) {
+      setMeasured(null);
+      updateCountRef.current = 0;
+    }
   }, [auto, html]);
 
   const remeasure = useCallback(() => {
     const frame = frameRef.current;
     if (!frame) return;
+    if (updateCountRef.current >= MAX_AUTO_HEIGHT_UPDATES) return;
     const next = measureDocumentHeight(frame);
+    if (next === null) return;
     // `+2` absorbs sub-pixel rounding that would otherwise leave the iframe
     // one scrollable pixel short of its own content.
-    if (next !== null) setMeasured(next + 2);
+    const target = next + 2;
+    setMeasured((current) => {
+      if (current !== null && Math.abs(current - target) < HEIGHT_EPSILON) return current;
+      updateCountRef.current += 1;
+      return target;
+    });
   }, []);
 
   const handleLoad = useCallback(() => {
