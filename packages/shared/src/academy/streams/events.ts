@@ -820,7 +820,7 @@ export const EVENTS_SECTIONS: Omit<AcademySection, "order">[] = [
           ["**Comm**", "What is this message? (\"Announcement\", \"T-1 call-time reminder\")"],
           ["**Status**", "Not started → Drafted → Scheduled → **Sent** (the only terminal state)"],
           ["**Timing / Date**", "When does it go out? An offset (T-7) that derives the real date"],
-          ["**Channel**", "Where does it post — IG, the iMessage group, email, Slack?"],
+          ["**Channel**", "Where does it post — IG, the iMessage group, email, Google Chat?"],
           ["**Audience**", "Who is it for — leaders, volunteers, attendees, the public?"],
           ["**Owner**", "Who sends it. Blank = the Comms Lead, the tab's owner"],
           ["**Notes / copy**", "The actual message text lives HERE — not in someone's drafts folder"],

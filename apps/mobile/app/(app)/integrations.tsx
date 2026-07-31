@@ -13,6 +13,7 @@ import { colors } from "../../lib/theme";
 import { errorMessage } from "../../lib/errors";
 import { formatDate } from "../../lib/format";
 import { TwilioUsageSummary } from "../../components/integrations/TwilioUsageSummary";
+import { GoogleChatChannelsCard } from "../../components/integrations/GoogleChatChannelsCard";
 
 /**
  * Integrations admin (Attendance E) — super-admins only. Lets a superuser set
@@ -178,6 +179,7 @@ export default function IntegrationsScreen() {
       <AiEngineCard aiEngine={aiEngine} loading={status === undefined} />
       <TwilioCard twilio={twilio} loading={status === undefined} />
       <TwilioUsageSummary />
+      <GoogleChatChannelsCard superuser={!!me?.isSuperuser} />
       <ResendCard resend={resend} loading={status === undefined} />
       <PostalAddressCard campaigns={campaigns} loading={status === undefined} />
       <ResendInboundCard

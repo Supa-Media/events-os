@@ -116,6 +116,7 @@ export function ModuleCalendar({
         copyLabel={config.copyLabel}
         copyPlaceholder={config.copyPlaceholder}
         initialCopy={readCopy(item, config.copyField)}
+        canSendGoogleChat={config.module === "comms"}
         onSetStatus={(status) => cal.setStatus(item, status)}
         onSetOffset={(offset) => cal.reschedule(item, offset)}
         onPickOnCalendar={() => cal.startMove(item)}

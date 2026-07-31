@@ -82,11 +82,15 @@ export function CopyEditor({
   placeholder,
   initial,
   onSave,
+  headerExtra,
 }: {
   label: string;
   placeholder: string;
   initial: string;
   onSave: (copy: string) => void;
+  /** Rendered in the header row, after the Copy button — e.g. the comms
+   *  Send-to-Google-Chat affordance. */
+  headerExtra?: React.ReactNode;
 }) {
   const [value, setValue] = useState(initial);
   const [focused, setFocused] = useState(false);
@@ -108,6 +112,7 @@ export function CopyEditor({
           </Text>
         </View>
         {value.trim() ? <CopyButton text={value} label /> : null}
+        {headerExtra}
       </View>
       {mentionData ? (
         <View
