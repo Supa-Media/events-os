@@ -337,6 +337,22 @@ export const failJob = internalMutation({
 
 // ── The action ───────────────────────────────────────────────────────────────
 
+/**
+ * Cap a freshly-read page so a dataset's cumulative row count never exceeds
+ * `max` (`EXPORT_MAX_ROWS` by default) — the truncation rule from the spec:
+ * a job that hits it finishes `ready` with `truncated: true` on that file,
+ * and every surface showing it MUST say so. Pure and exported so it's unit
+ * testable without a live builder (`tests/dataExports.test.ts`).
+ */
+export function capRowsAtMax<T>(
+  rowsWritten: number,
+  rows: T[],
+  max: number = EXPORT_MAX_ROWS,
+): { rows: T[]; truncated: boolean } {
+  if (rowsWritten + rows.length < max) return { rows, truncated: false };
+  return { rows: rows.slice(0, Math.max(0, max - rowsWritten)), truncated: true };
+}
+
 /** Serialize one page of rows against the fixed column list, in the job's
  *  chosen format. See the module doc for why JSON is NDJSON, not one array. */
 function serializePage(
@@ -466,11 +482,9 @@ export const runExportJob = internalAction({
           numItems,
         });
 
-        let rows = result.rows;
-        if (rowsWritten + rows.length >= EXPORT_MAX_ROWS) {
-          rows = rows.slice(0, Math.max(0, EXPORT_MAX_ROWS - rowsWritten));
-          truncated = true;
-        }
+        const capped = capRowsAtMax(rowsWritten, result.rows);
+        const rows = capped.rows;
+        if (capped.truncated) truncated = true;
 
         const body = serializePage(job.format, columns, rows);
         if (body.length > 0) buffer += (buffer.length > 0 ? glue : "") + body;
