@@ -57,8 +57,31 @@ email → receipts@publicworship.life  (Google Group; relays to its member,
            4. findReceiptMatches: exact-cent, ±14 days, sender's chapter
            5. exactly one → attach + (reconcile if already categorized) + unlock card
               0 or >1 or unreadable → needs_review / no_match
-           6. reply to the sender with the outcome
+           6. queue the outcome into the sender's reply digest (debounced)
 ```
+
+## One reply per sender, not one per receipt
+
+The courtesy reply is **debounced**. The first receipt from an address opens a
+batch (`receiptReplyBatches`) and schedules its flush `REPLY_DEBOUNCE_MS`
+(10 minutes) later; every receipt from that address in the meantime joins the
+same batch, and the flush sends exactly **one** digest covering all of them.
+
+- Someone forwarding a stack of receipts in one sitting gets one email, and a
+  backfill replaying months of receipts can't blast a burst of them.
+- The window is fixed from the **first** receipt, never extended by later ones,
+  so a steady trickle can't postpone a reply indefinitely — a sender always
+  hears back within 10 minutes of their first receipt.
+- The flush **claims** the batch (stamps `sentAt`) in the same transaction it
+  reads the items, so a double-fired schedule can never send the same digest
+  twice. A send failure loses that digest rather than risking a duplicate —
+  the reply is best-effort by contract, and every receipt's terminal status was
+  written long before the flush ran.
+- A **single** receipt reads exactly as it always did; only a multi-receipt
+  batch gets the summary-plus-list voice. Past 50 items a batch counts the rest
+  into `overflowCount` and says "+N more" rather than dropping them.
+- The loop guard applies before a batch is opened: nothing is ever queued for
+  the receipts inbox or the group fronting it.
 
 **Money safety:** the model never categorizes or moves money — it only reads a
 total off a receipt. The single money-adjacent write (`applyReceiptAttachment`)
