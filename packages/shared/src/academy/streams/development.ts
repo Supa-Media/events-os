@@ -28,6 +28,16 @@
  * this stream teaches that one floor, not a church-specific tier that doesn't
  * exist in the schema.
  *
+ * The data-export feature (`packages/shared/src/dataExport.ts`,
+ * `apps/convex/dataExports.ts`, `apps/mobile/app/(app)/exports.tsx`) is
+ * general-purpose — it exports People, Events, Work, and Finance datasets
+ * too, not just giving ones — but the founder grant (2026-07-31) that turns
+ * on the `data.export` capability lands the same six seats this stream
+ * already teaches (`SEAT_CAPABILITIES` in `packages/shared/src/seats.ts`), and
+ * it's the direct inverse of the canonical import this stream also teaches,
+ * so `dev-data-export` lives here (in `donor-stewardship`, right after
+ * `dev-import-and-backfill`) rather than as a new stream of its own.
+ *
  * Owned exclusively by this file for content authoring — do not add
  * Development sections or courses anywhere else. See `../index` for how this
  * assembles into the full curriculum/catalog.
@@ -551,6 +561,139 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 1,
         explanation:
           "A row needs an email OR a phone to create a roster person — names collide constantly and a nameless row could never be safely deduped or contacted later. Clean up known duplicates (People → Duplicates, or the donor duplicates tool) before re-running an import, so it matches the one real record instead of spawning another.",
+      },
+    ],
+  },
+
+  // ── 88.6 · Donor stewardship: the data export ────────────────────────────
+  {
+    slug: "dev-data-export",
+    title: "The data export: one flat file per dataset",
+    subtitle: "Taking data out of the building — its own power, and its own honesty rules",
+    minutes: 4,
+    blocks: [
+      {
+        kind: "p",
+        text: "The canonical import brings history IN, one paste at a time. The Export screen is its mirror image: it takes data OUT — any dataset the app knows about, not just giving. Pick a scope, tick the datasets you want (People, Events, Tasks, Donors, Gifts, Transactions, and more), then download the finished spreadsheets once they're ready.",
+      },
+      {
+        kind: "bullets",
+        items: [
+          "**Dataset** — one FILE. Ticking three datasets requests three independent spreadsheets, never a zip and never a bundle of files that join back together on a shared id. That was a deliberate founder call: a wide, self-contained file per dataset, not a relational export.",
+          "**Section** — an optional GROUP OF COLUMNS inside one dataset's file. Today only People has them (contact details, every known email, services & seats, event participation, giving summary, form answers, Academy progress, consent & admin) — so the one People file can be as light or as wide as you need without multiplying datasets.",
+          "**People, widened** — the People export isn't a dump of the roster table. It's a JOIN across everything the app knows about a person: every email on file, their services and seats, the events they RSVP'd to or worked, their giving summary, and one column per form question they've ever answered.",
+        ],
+      },
+      {
+        kind: "rule",
+        title: "\"data.export\" is its own power — separate from viewing the desk",
+        text: "Being allowed to READ a grid on screen and being allowed to walk the WHOLE table out of the building are different risks, so exporting is gated by its own capability, `data.export`, not implied by any desk access. Out of the box it's a founder grant to six seats: the Executive Director, Development Director, Marketing Director, and Expansion Director (the four central directors), the Financial Manager, and the Chapter Director for their own chapter. Holding `giving.view` or a finance role does NOT by itself let you export — and holding `data.export` doesn't automatically show you every column either, which is the next rule.",
+      },
+      {
+        kind: "table",
+        headers: ["What you hold", "What an export gives you"],
+        rows: [
+          [
+            "`data.export` + `giving.view` at the scope",
+            "Every column you ticked, including giving/finance sections",
+          ],
+          [
+            "`data.export`, but no `giving.view`/finance role",
+            "The SAME file, with those columns silently dropped — and the job records exactly which ones, and why",
+          ],
+          [
+            "`giving.view` or a finance role, but no `data.export`",
+            "Can't start an export at all — seeing the grid and exporting the whole table are different powers",
+          ],
+        ],
+      },
+      {
+        kind: "rule",
+        title: "Export never widens reach",
+        text: "A Marketing Director holds `data.export` but no `giving.view`. They tick People and its giving-summary column group. The file they get is the People roster with NO dollar figures in it — not an error, not a blocked request. The job that produced it records `giving_summary` as an omitted section, and the download screen SAYS SO in plain words: which columns were left out, and why. A file that quietly ships narrower than what was ticked, with no explanation, is treated as seriously as one that's silently short a row.",
+      },
+      {
+        kind: "rule",
+        title: "The densest personal data the product emits — so it expires",
+        text: "A finished export is every name, email, phone, giving history, and free-text form answer for a chapter, flattened into one file, on someone's laptop. Download links only stay live for 7 days before a sweep purges the underlying files — deliberately short, so a stale link forwarded in an old chat thread or email stops working on its own. A file that hits the 250,000-row ceiling finishes anyway, marked `truncated: true` — every surface showing that file MUST say it was cut short; a silently incomplete spreadsheet is worse than a failed export. Purging the FILES never deletes the JOB ROW: who requested what, when, and how many rows, stays on the record forever as the audit trail — an export is exactly the kind of extraction that needs to be traceable after the fact.",
+      },
+      {
+        kind: "tip",
+        text: "**In the app:** the Export screen groups datasets the way this lesson does (People, Events, Giving, Finance, Work), greys out anything your reach can't cover with the reason right there, and — for People — offers its column sections as toggles, defaulted sensibly. Each past export is listed below the picker: ready ones show a Download button per file with its row count; a truncated or narrowed file says so up front; a failed job shows the real error; an expired job explains the files were purged and offers a one-tap re-run.",
+      },
+      {
+        kind: "rule",
+        title: "Check consent and suppression BEFORE you mail an exported list",
+        text: "The People export's \"Consent & admin\" section carries marketing opt-out, email-suppression status, and consent source/date for exactly this reason — export it before any bulk send. Inside the app, Campaigns enforces suppression and opt-outs automatically; a raw CSV that leaves the app does NOT carry that enforcement with it. If you take an exported list somewhere else — a mail-merge tool, a spreadsheet blast, a third-party platform — YOU are the suppression check from that point on. Skipping the admin columns to save a step is how someone who unsubscribed gets emailed anyway.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "A Chapter Director (holds `data.export` for their own chapter, but not `finance.viewer`) exports Transactions for their chapter. What happens?",
+        answer:
+          "Nothing exports — Transactions requires a finance role at the scope, and `data.export` never substitutes for that. The dataset itself is greyed out in the picker with the reason shown; if it were requested anyway (e.g. an old prefilled link), the server would refuse that dataset the same way `requireExportDataset` refuses any call missing the underlying reach.",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "What does selecting three datasets in the Export screen produce?",
+        options: [
+          "One zip file containing three CSVs",
+          "Three independent, self-contained spreadsheets — one wide flat file per dataset, never a joined bundle",
+          "One combined spreadsheet with three tabs",
+          "A single file that links out to three others",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The founder's explicit call: no zip, no relational bundle — each dataset is its own complete file.",
+      },
+      {
+        prompt: "Who can start an export, out of the box?",
+        options: [
+          "Anyone with `giving.view` or a finance role",
+          "The four central directors (Executive, Development, Marketing, Expansion), the Financial Manager, and the Chapter Director for their own chapter — a separate `data.export` power, not implied by desk access",
+          "Only a superuser",
+          "Every signed-in team member",
+        ],
+        answerIndex: 1,
+        explanation:
+          "`data.export` is its own capability precisely because viewing a grid and walking the whole table out of the building are different risks.",
+      },
+      {
+        prompt: "A holder of `data.export` but NOT `giving.view` ticks People with the giving-summary section included. What lands in the file?",
+        options: [
+          "The request is rejected outright",
+          "The full file, giving columns included — `data.export` overrides section-level gates",
+          "The People file with the giving-summary columns dropped, recorded on the job as an omitted section — not an error",
+          "A blank file",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Export never widens reach: a section the caller can't already see is silently narrower, but that narrowing is always recorded and surfaced, never invisible.",
+      },
+      {
+        prompt: "Why do export download links stop working after 7 days, and what survives after that?",
+        options: [
+          "Nothing survives — the whole job disappears",
+          "The files are purged (the densest personal data the app emits shouldn't sit behind a stale link forever), but the job ROW stays forever as the audit trail of who extracted what",
+          "The files stay forever; only the download button is hidden",
+          "Links expire after 30 days, not 7",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Short-lived files, permanent audit row: the sweep deletes bytes, never the record of the extraction itself.",
+      },
+      {
+        prompt: "Before mailing a list you just exported from People, what must you do?",
+        options: [
+          "Nothing — Campaigns' suppression rules travel with the file automatically",
+          "Check the Consent & admin columns (opt-out, suppression status) yourself — outside the app, YOU are the suppression check, since a raw CSV doesn't enforce it for you",
+          "Re-import the file back into the app first",
+          "Only check consent if the list is over 1,000 rows",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Campaigns enforces suppression automatically INSIDE the app; a file that leaves the app carries no such enforcement, which is exactly why the admin section exists and is called out before any bulk send.",
       },
     ],
   },
@@ -1383,12 +1526,14 @@ export const DEVELOPMENT_COURSES: Course[] = [
     audience: "role",
     description:
       "Running real relationships through the CRM: owners, notes, the " +
-      "top-donor workflow, and getting giving history — old and new — " +
-      "onto the record via CSV import and manual backfill.",
+      "top-donor workflow, getting giving history — old and new — onto " +
+      "the record via CSV import and manual backfill, and (the inverse " +
+      "flow) taking data back out through the export screen honestly.",
     icon: "users",
     moduleSlugs: [
       "dev-relationship-workflow",
       "dev-import-and-backfill",
+      "dev-data-export",
       "dev-gifts-ledger-and-audit",
     ],
   },

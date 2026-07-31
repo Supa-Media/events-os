@@ -198,6 +198,17 @@
  * `finance-reconcile-grid` itself is content-only (two filter-table rows for
  * the new pills, and its `try_status` caption no longer teaches "Excluded" as
  * the answer for a transfer — quiz length UNCHANGED at 5). Total: 104 sections.
+ *
+ * The data-export feature (`packages/shared/src/dataExport.ts` — ONE WIDE
+ * FLAT FILE PER DATASET, founder decision 2026-07-31, and its own
+ * `data.export` seat capability) APPENDS one Development section,
+ * `dev-data-export` (4 min, 5-quiz), into the `donor-stewardship` course
+ * right after `dev-import-and-backfill` — the inverse flow of that lesson's
+ * canonical import, teaching who holds the export power, that export never
+ * widens reach, why finished files expire in 7 days while the job row stays
+ * forever as the audit trail, and to check consent/suppression columns
+ * before mailing an exported list. Total: 105 sections. That course now
+ * carries four modules; nothing else moved.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -299,6 +310,7 @@ const EXPECTED_SECTION_SLUGS: string[] = [
   "dev-donor-crm-basics",
   "dev-relationship-workflow",
   "dev-import-and-backfill",
+  "dev-data-export",
   "dev-gifts-ledger-and-audit",
   "dev-backer-floor-and-ladder",
   "dev-backer-lifecycle",
@@ -1081,6 +1093,14 @@ const EXPECTED_SECTIONS: {
     capstoneKind: null,
   },
   {
+    slug: "dev-data-export",
+    title: "The data export: one flat file per dataset",
+    minutes: 4,
+    quizLength: 5,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
     slug: "dev-gifts-ledger-and-audit",
     title: "The gifts ledger: see it, fix it, trace it",
     minutes: 4,
@@ -1342,6 +1362,7 @@ const EXPECTED_COURSES: {
     moduleSlugs: [
       "dev-relationship-workflow",
       "dev-import-and-backfill",
+      "dev-data-export",
       "dev-gifts-ledger-and-audit",
     ],
   },
