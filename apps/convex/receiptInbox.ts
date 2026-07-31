@@ -1439,8 +1439,20 @@ export type ReceiptSource =
     }
   | {
       kind: "body";
-      text: string;
-      isHtml: boolean;
+      /**
+       * The message's HTML part, when it has one — what a human SEES. A
+       * merchant receipt is designed HTML (the Uber Eats/Givebutter layout the
+       * sender got), and storing its plain-text alternative instead turns a
+       * branded receipt into an unreadable wall of run-together text in the
+       * review UI. See `storeBodyReceipt`.
+       */
+      html?: string | null;
+      /**
+       * The plain-text alternative, when it has one — what the PARSER reads.
+       * Line structure survives here, which the zero-LLM total/merchant
+       * heuristics depend on (`parseReceiptFromText` only strips tags).
+       */
+      text?: string | null;
       filename: string;
       envelope?: ForwardedEnvelope;
     };
@@ -1503,16 +1515,17 @@ export function collectForwardedReceiptSources(
 
   // No file anywhere in this branch — the forwarded message's own body IS the
   // receipt (a plain-text/HTML merchant confirmation), stored as a document
-  // exactly like the top-level body path does.
+  // exactly like the top-level body path does. BOTH parts are carried: the
+  // HTML is what gets stored and shown, the text is what gets parsed (see
+  // `storeBodyReceipt`).
   const plain = (message.text ?? "").trim();
   const html = (message.html ?? "").trim();
-  const body = plain || html;
-  if (!body) return [];
+  if (!plain && !html) return [];
   return [
     {
       kind: "body",
-      text: body,
-      isHtml: plain === "" && html !== "",
+      html: html || null,
+      text: plain || null,
       filename: forwardedBodyLabel(message.subject),
       envelope,
     },
@@ -2031,16 +2044,40 @@ interface ExtractedReceipt {
 async function storeBodyReceipt(
   ctx: ActionCtx,
   args: {
-    text: string;
-    isHtml: boolean;
+    html?: string | null;
+    text?: string | null;
     filename: string;
     envelope?: ForwardedEnvelope;
   },
 ): Promise<ExtractedReceipt> {
+  // TWO DIFFERENT JOBS, two different sources.
+  //
+  // STORED (what a human opens in the review queue): the HTML part whenever
+  // the message has one. A merchant receipt IS designed HTML — the layout the
+  // sender saw — and storing the plain-text alternative instead turns it into
+  // an unreadable wall of run-together text, which is exactly what a
+  // bookkeeper was seeing for forwarded receipts.
+  //
+  // PARSED (what the zero-LLM heuristics read): the plain-text alternative
+  // whenever there is one. Its line structure is what `parseReceiptFromText`'s
+  // total/merchant line rules depend on; HTML only works there because tags
+  // get stripped, which also destroys the lines.
+  const html = args.html?.trim() ? args.html : null;
+  const text = args.text?.trim() ? args.text : null;
+  const document = html ?? text ?? "";
+  const parseSource = text ?? document;
+
+  // CHARSET IS NOT OPTIONAL. These bodies are UTF-8 (curly apostrophes,
+  // narrow no-break spaces in times, bullet runs in masked card numbers), and
+  // a stored blob served as bare `text/html`/`text/plain` gets decoded by the
+  // viewer's fallback encoding — rendering "New Lin’s" as "New Linâ€™s" and
+  // "9:35 PM" as "9:35â€¯PM". Declaring it here is what stops the mojibake.
   const storageId = await ctx.storage.store(
-    new Blob([args.text], { type: args.isHtml ? "text/html" : "text/plain" }),
+    new Blob([document], {
+      type: html ? "text/html;charset=utf-8" : "text/plain;charset=utf-8",
+    }),
   );
-  const parsed = parseReceiptFromText(args.text);
+  const parsed = parseReceiptFromText(parseSource);
   return {
     storageId,
     sourceKind: "body",
@@ -2164,8 +2201,8 @@ async function runPipeline(
         // path below.
         extracted.push(
           await storeBodyReceipt(ctx, {
+            html: source.html,
             text: source.text,
-            isHtml: source.isHtml,
             filename: source.filename,
             envelope: source.envelope,
           }),
@@ -2200,19 +2237,28 @@ async function runPipeline(
     // as a file too: an email receipt saved as a document IS the receipt, so a
     // unique match can auto-attach it exactly like a photo. HTML is stored as
     // text/html so the review UI renders it.
-    const text = received?.body ?? row.subject ?? "";
-    if (text.trim()) {
+    // The HTML is what gets stored and shown; the text is what gets parsed.
+    // The subject is the last-resort stand-in when the fetch gave us neither.
+    const html = received?.html ?? null;
+    const text = received?.text ?? (html ? null : (row.subject ?? null));
+    if (html?.trim() || text?.trim()) {
       extracted.push(
         await storeBodyReceipt(ctx, {
+          html,
           text,
-          isHtml: /<[a-z][\s\S]*>/i.test(text),
           filename: "email body",
           // An INLINE forward (the ordinary "Forward" — the merchant's mail
           // pasted into the body) carries the merchant's own envelope in its
           // banner. Recovering it is the difference between a merchant of
           // "Uber Receipts" and one read off whatever chrome the forwarded
           // marketing email happened to lead with.
-          envelope: parseInlineForwardEnvelope(text) ?? undefined,
+          // Read the banner off whichever part we have — the parser flattens
+          // HTML itself, so either works; the text part is tried first because
+          // its line structure makes the pseudo-headers cleanest.
+          envelope:
+            parseInlineForwardEnvelope(text ?? "") ??
+            parseInlineForwardEnvelope(html ?? "") ??
+            undefined,
         }),
       );
     }
@@ -2337,8 +2383,10 @@ async function runPipeline(
 
 /** The parts of Resend's received-email record this pipeline reads. */
 interface ReceivedEmail {
-  /** Fullest body text available — plain text preferred, else the HTML. */
-  body: string | null;
+  /** The HTML part — what a human SEES (stored as the receipt document). */
+  html: string | null;
+  /** The plain-text alternative — what the zero-LLM parser READS. */
+  text: string | null;
   /** The message's raw headers, flattened one-per-name by Resend. Used to
    *  recover the true sender behind a mailing-list relay (`resolveListSender`). */
   headers: Record<string, string> | null;
@@ -2355,13 +2403,20 @@ async function fetchReceivedEmail(emailId: string): Promise<ReceivedEmail | null
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) return null;
   try {
-    const res = await fetch(`https://api.resend.com/emails/receiving/${emailId}`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
+    // `html_format=data_uri` inlines the message's own embedded images as
+    // data URIs instead of leaving `cid:` references pointing at MIME parts
+    // we don't serve — without it a stored merchant receipt renders with
+    // every logo and illustration broken. (It's Resend's default, but the
+    // rendering depends on it, so it's declared rather than assumed.)
+    const res = await fetch(
+      `https://api.resend.com/emails/receiving/${emailId}?html_format=data_uri`,
+      { headers: { Authorization: `Bearer ${apiKey}` } },
+    );
     if (!res.ok) return null;
     const json: any = await res.json();
     return {
-      body: json?.text ?? json?.html ?? null,
+      html: typeof json?.html === "string" ? json.html : null,
+      text: typeof json?.text === "string" ? json.text : null,
       headers:
         json?.headers && typeof json.headers === "object" ? json.headers : null,
     };

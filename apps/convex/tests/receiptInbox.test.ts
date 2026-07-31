@@ -1041,6 +1041,7 @@ describe("collectForwardedReceiptSources", () => {
     from: string;
     subject: string;
     text?: string;
+    html?: string;
     parts?: { contentType: string; filename: string; body: string }[];
   }): string {
     const lines = [
@@ -1053,6 +1054,9 @@ describe("collectForwardedReceiptSources", () => {
       "",
       opts.text ?? "",
     ];
+    if (opts.html) {
+      lines.push("--B", 'Content-Type: text/html; charset="UTF-8"', "", opts.html);
+    }
     for (const part of opts.parts ?? []) {
       lines.push(
         "--B",
@@ -1103,7 +1107,29 @@ describe("collectForwardedReceiptSources", () => {
     expect(sources[0].kind).toBe("body");
     expect(sources[0].filename).toBe("Your receipt (forwarded email)");
     if (sources[0].kind === "body") {
-      expect(parseReceiptFromText(sources[0].text).amountCents).toBe(4210);
+      expect(parseReceiptFromText(sources[0].text ?? "").amountCents).toBe(4210);
+      // A text-only message has no HTML part to prefer for display.
+      expect(sources[0].html).toBeNull();
+    }
+  });
+
+  // The stored document must be the HTML the sender actually saw — storing
+  // the plain-text alternative is what turned forwarded merchant receipts
+  // into an unreadable wall of run-together text in the review queue.
+  test("a message with BOTH parts carries the html for display and the text for parsing", () => {
+    const parsed = parseEmlMessage(
+      buildEml({
+        from: "Uber Receipts <noreply@uber.com>",
+        subject: "Your order",
+        text: "Total: $42.10\r\n",
+        html: "<div><h1>Uber Eats</h1><p>Total $42.10</p></div>",
+      }),
+    );
+    const sources = collectForwardedReceiptSources(parsed);
+    expect(sources).toHaveLength(1);
+    if (sources[0].kind === "body") {
+      expect(sources[0].html).toContain("<h1>Uber Eats</h1>");
+      expect(sources[0].text).toContain("Total: $42.10");
     }
   });
 
@@ -1975,6 +2001,85 @@ describe("processInboundReceipt", () => {
         "charisma@example.com",
         "jane@example.com",
       ]);
+    });
+  });
+
+  // ── What the bookkeeper actually opens ─────────────────────────────────────
+  // The reported symptom: a forwarded merchant receipt showed up as an
+  // unreadable wall of run-together text with mojibake ("New Linâ€™s",
+  // "9:35â€¯PM"), even though the same message renders fine in the mailing
+  // list. Two causes, both here: we stored the plain-text ALTERNATIVE instead
+  // of the HTML the sender saw, and we stored it with no charset so a UTF-8
+  // body got decoded as latin-1.
+  describe("the stored body document", () => {
+    const realFetch = globalThis.fetch;
+    const realKey = process.env.RESEND_API_KEY;
+    afterEach(() => {
+      globalThis.fetch = realFetch;
+      if (realKey === undefined) delete process.env.RESEND_API_KEY;
+      else process.env.RESEND_API_KEY = realKey;
+    });
+
+    /** A received email carrying BOTH parts, as a real merchant receipt does. */
+    function mockBothParts(html: string | null, text: string | null): void {
+      process.env.RESEND_API_KEY = "test-key";
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/attachments")) {
+          return { ok: true, json: async () => ({ data: [] }) };
+        }
+        if (url.includes("/emails/receiving/")) {
+          return { ok: true, json: async () => ({ html, text, headers: null }) };
+        }
+        return { ok: false, status: 500, text: async () => "no" };
+      }) as unknown as typeof fetch;
+    }
+
+    async function processOne(t: ReturnType<typeof newT>, emailId: string) {
+      const { receiptId } = await t.mutation(
+        internal.receiptInbox.recordInboundReceipt,
+        { envelope: { emailId, fromEmail: "jane@example.com", subject: "Fwd: receipt" } },
+      );
+      await t.action(internal.receiptInbox.processInboundReceipt, { receiptId });
+      const receipts = await run(t, (ctx) => ctx.db.query("receipts").take(5));
+      // Read the blob INSIDE the callback — a Blob isn't a Convex value and
+      // can't be returned across the `run` boundary.
+      const file = await run(t, async (ctx) => {
+        const blob = await ctx.storage.get(receipts[0].storageId!);
+        return blob ? { type: blob.type, text: await blob.text() } : null;
+      });
+      return { receipt: receipts[0], contentType: file?.type, stored: file?.text };
+    }
+
+    test("stores the HTML the sender saw, tagged UTF-8 — not the text alternative", async () => {
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedPerson(s, { email: "jane@example.com" });
+      mockBothParts(
+        "<div><h1>Uber Eats</h1><p>Here's your receipt for New Lin’s kitchen.</p><p>Total $298.52</p></div>",
+        "Uber Eats\nHere's your receipt for New Lin’s kitchen.\nTotal $298.52",
+      );
+
+      const { contentType, stored, receipt } = await processOne(t, "email_doc_html");
+
+      // Declared charset is what stops "New Lin’s" rendering as "New Linâ€™s".
+      expect(contentType).toBe("text/html;charset=utf-8");
+      expect(stored).toContain("<h1>Uber Eats</h1>");
+      // The total still parses — the TEXT part fed the heuristics.
+      expect(receipt.ocrAmountCents).toBe(29852);
+    });
+
+    test("falls back to the text part when the message has no HTML", async () => {
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedPerson(s, { email: "jane@example.com" });
+      mockBothParts(null, "Blue Bottle Coffee\nTotal: $42.10");
+
+      const { contentType, stored, receipt } = await processOne(t, "email_doc_text");
+
+      expect(contentType).toBe("text/plain;charset=utf-8");
+      expect(stored).toContain("Blue Bottle Coffee");
+      expect(receipt.ocrAmountCents).toBe(4210);
     });
   });
 });
