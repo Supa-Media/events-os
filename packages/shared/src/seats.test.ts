@@ -191,6 +191,7 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
       "campaigns.approve",
       "campaigns.compose",
       "campaigns.design",
+      "data.export",
     ],
     // 2026-07-19: added giving.view + nav.giving (owner decision — FM gets
     // central-lens donor READ as an assignable power default). 2026-07-24:
@@ -209,8 +210,17 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
       "campaigns.approve",
       "campaigns.compose",
       "campaigns.design",
+      "data.export",
     ],
-    development_director: ["giving.manage", "giving.view", "nav.giving"],
+    // 2026-07-31: + data.export on the six seats the founder granted bulk
+    // extraction to (ED, FM, Development Director, Expansion Director,
+    // Marketing Director, Chapter Director). See seats.ts's `data.export` doc.
+    development_director: [
+      "giving.manage",
+      "giving.view",
+      "nav.giving",
+      "data.export",
+    ],
     partnership_associate: ["giving.view", "nav.giving"],
     fundraising_associate: ["giving.view", "nav.giving"],
     music_director: [],
@@ -222,7 +232,12 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
     // requirement, verbatim: "ED approved by Marketing Director" — named as
     // a valid second party for two-party campaign approval). 2026-07-28:
     // + campaigns.design (implied by approve; the MD owns the brand).
-    marketing_director: ["campaigns.approve", "campaigns.compose", "campaigns.design"],
+    marketing_director: [
+      "campaigns.approve",
+      "campaigns.compose",
+      "campaigns.design",
+      "data.export",
+    ],
     // 2026-07-28: campaigns.design ONLY — the two seats that actually build
     // the newsletter own themes/templates/the image library, but a mass send
     // stays a two-party decision above them. The ED can promote either seat
@@ -233,7 +248,7 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
     // 2026-07-19: added giving.view + nav.giving (owner decision — Expansion
     // Director stewards the launch pipeline giving funds; central-lens READ as
     // an assignable power default).
-    expansion_director: ["giving.view", "nav.giving"],
+    expansion_director: ["giving.view", "nav.giving", "data.export"],
     chapter_directors: [],
     recruiting_associate: [],
     training_associate: [],
@@ -246,6 +261,7 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
       "nav.finances",
       "giving.view",
       "nav.giving",
+      "data.export",
     ],
     treasurer: [
       "finance.manager",

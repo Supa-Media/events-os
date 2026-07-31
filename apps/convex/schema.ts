@@ -134,6 +134,7 @@ import {
 import { serviceOptions } from "./schema/services";
 import { formSubmissions, formDefinitions } from "./schema/forms";
 import { identityDecisions } from "./schema/identity";
+import { exportJobs } from "./schema/dataExports";
 
 /**
  * Database schema for Chapter OS.
@@ -502,6 +503,13 @@ const schema = defineSchema({
   // identity.ts (queries/mutations) + migrations/0050_link_rsvp_identifiers.ts
   // (the automated auto-link half).
   identityDecisions,
+
+  // Data Export — one row per "give me this database as a spreadsheet"
+  // request. Doubles as the extraction AUDIT TRAIL: expiry purges the stored
+  // files but NEVER the row, so "who took what, when" outlives the bytes. See
+  // schema/dataExports.ts's module doc + lib/dataExportAccess.ts (the
+  // `data.export` gate) + dataExports.ts (job lifecycle + paginated runner).
+  exportJobs,
 });
 
 export default schema;

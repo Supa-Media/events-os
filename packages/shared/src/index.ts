@@ -2045,3 +2045,9 @@ export * from "./emailHtmlCss";
 
 // ── The monthly newsletter, rebuilt as Tiptap JSON (WS4 acceptance artefact) ─
 export * from "./tiptapNewsletterTemplate";
+
+// ── CSV serialization (formula-injection-safe), shared by every export ───────
+export * from "./csv";
+
+// ── Data export: dataset registry, job vocabulary, cell formatters ───────────
+export * from "./dataExport";

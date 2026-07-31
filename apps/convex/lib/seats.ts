@@ -345,3 +345,40 @@ export async function getSeatDerivedGivingCapabilities(
   }
   return result;
 }
+
+// ── Data export seat-derived capability ──────────────────────────────────────
+
+/**
+ * The scopes at which the person holds `data.export`.
+ *
+ * A SET rather than the per-scope record the two functions above return,
+ * because export is a single ungraded power — there is no view/manage/nav
+ * ladder to express. Keys are the same `scopeKey` strings those use (the
+ * literal `"central"`, or a chapter id).
+ *
+ * Same shape/bounds as its siblings: one indexed `by_person` query capped at
+ * `PERSON_SEAT_ASSIGNMENT_LIMIT`, one `ctx.db.get` per assignment, a
+ * stale/missing def contributes nothing. Consumed by
+ * `lib/dataExportAccess.ts`, which layers the per-dataset giving/finance
+ * requirements on top — this function answers only "may they export at all,
+ * and where", never "may they see giving".
+ */
+export async function getSeatDerivedExportScopes(
+  ctx: QueryCtx,
+  personId: Id<"people">,
+): Promise<Set<string>> {
+  const assignments = await ctx.db
+    .query("seatAssignments")
+    .withIndex("by_person", (q) => q.eq("personId", personId))
+    .take(PERSON_SEAT_ASSIGNMENT_LIMIT);
+
+  const scopes = new Set<string>();
+  for (const assignment of assignments) {
+    const def = await ctx.db.get(assignment.seatDefId);
+    if (!def) continue; // stale assignment on a deleted def — nothing to derive
+    if (def.capabilities.includes("data.export")) {
+      scopes.add(String(assignment.scope));
+    }
+  }
+  return scopes;
+}
