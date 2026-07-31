@@ -113,12 +113,28 @@ const PARTICIPATION_COLUMNS: CsvColumn[] = [
   { key: "volunteer_role", label: "Volunteer role" },
 ];
 
-/** Caps on the bounded per-row joins below — generous relative to real usage
- *  (a guest realistically holds one or two orders; a person a handful of
- *  engagements across events) while keeping every read indexed and bounded. */
-const ORDERS_PER_RSVP_CAP = 10;
-const TICKETS_PER_ORDER_CAP = 25;
-const ENGAGEMENTS_PER_PERSON_CAP = 25;
+/**
+ * Caps on the bounded per-row joins below — generous relative to real usage
+ * (a guest realistically holds one or two orders; a person a handful of
+ * engagements) while keeping every read indexed and bounded.
+ *
+ * This is the same "wide row" shape `ExportBuilder.pageSize` exists for (see
+ * its doc in `./types.ts`): each rsvp row can trigger up to
+ * `ORDERS_PER_RSVP_CAP + ORDERS_PER_RSVP_CAP * TICKETS_PER_ORDER_CAP +
+ * ENGAGEMENTS_PER_PERSON_CAP` extra reads in the worst case (every order at
+ * its ticket cap, every person at their engagement cap) — cheap in the
+ * common case (usually one order, a handful of tickets, one engagement) but
+ * enough per row, at the shared default page size, to approach Convex's
+ * per-transaction read ceiling on a pathological page. `pageSize` below caps
+ * rows-per-call so even the worst case stays well under that ceiling.
+ */
+const ORDERS_PER_RSVP_CAP = 5;
+const TICKETS_PER_ORDER_CAP = 20;
+const ENGAGEMENTS_PER_PERSON_CAP = 20;
+/** `(ORDERS_PER_RSVP_CAP + ORDERS_PER_RSVP_CAP * TICKETS_PER_ORDER_CAP +
+ *  ENGAGEMENTS_PER_PERSON_CAP) * PARTICIPATION_PAGE_SIZE` = 120 * 100 =
+ *  12,000 reads, worst case — safely under the ~16k transaction cap. */
+const PARTICIPATION_PAGE_SIZE = 100;
 
 /** Ticket-derived attendance for one rsvp: walks `orderId -> ticketOrders`
  *  (via `by_rsvp`, bounded) then `orderId -> tickets` (via `by_order`,
@@ -181,6 +197,7 @@ async function volunteerRoleFor(
 
 const eventParticipationBuilder: ExportBuilder = {
   datasetId: "event_participation",
+  pageSize: PARTICIPATION_PAGE_SIZE,
   async columns(): Promise<CsvColumn[]> {
     return PARTICIPATION_COLUMNS;
   },

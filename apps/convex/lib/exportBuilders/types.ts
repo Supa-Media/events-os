@@ -74,6 +74,24 @@ export interface ExportPage {
 
 export interface ExportBuilder {
   datasetId: ExportDatasetId;
+
+  /**
+   * Rows READ per `page()` call, overriding `EXPORT_PAGE_SIZE`.
+   *
+   * The default suits a FLAT dataset, where one row of output costs about one
+   * document read. It is badly wrong for a WIDE one. The people builder joins
+   * six tables per person — emails, seats, RSVPs (and each RSVP's ticket
+   * orders and their tickets), engagements, form submissions, academy rows —
+   * so a single exported person can cost dozens of reads, and a typical
+   * chapter at the default page size lands in the tens of thousands per
+   * transaction. Convex caps a transaction at ~16k document reads, so that
+   * page throws — on real data only. Seeded tests with a handful of rows sail
+   * through it, which is exactly why this is a declared property of the
+   * builder rather than something the runner could infer.
+   *
+   * Set it to roughly `16000 / (worst-case reads per row)` with room to spare.
+   */
+  pageSize?: number;
   /**
    * The file's columns for this run. Called ONCE before the first page — see
    * the module doc for why it must not vary per page.

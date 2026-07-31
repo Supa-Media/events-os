@@ -22,15 +22,13 @@
  * loses the overflow from the numbered slots — the joined column still has
  * all of them, `PERSON_EMAILS_LIMIT` capping the underlying read.
  *
- * `giving_summary`'s donor lookup: `donors` has NO index on `personId` (see
- * `schema/givingPlatform.ts`) — there is no way to bound "find this person's
- * donor row" per PERSON row with an index. This mirrors the exact same gap
- * `givingPlatform.ts#giverMarks` already lives with: read the chapter's
- * donors ONCE per `page()` call (bounded, indexed by `by_scope`) into an
- * in-memory `personId -> donor` map, then look each row up in memory. A
- * chapter with more than `DONORS_PER_CHAPTER_LIMIT` donors silently loses
- * giving columns for the excess — the same accepted tradeoff `giverMarks`
- * ships with today, not a new one introduced here.
+ * `giving_summary`'s donor lookup is a single indexed read per row via
+ * `donors.by_person`, an index added with this feature. The first cut copied
+ * `givingPlatform.ts#giverMarks`'s workaround for the missing index — scan the
+ * chapter's donors once per page into an in-memory map — which both re-read up
+ * to a thousand rows on every page and carried a SILENT CAP: a chapter past
+ * the scan limit lost giving columns for the overflow with nothing in the file
+ * saying so. Indexing the column was cheaper than living with either.
  *
  * `participation`'s "attended" column is named `events_checked_in_count` and
  * documented as ticketed-only on purpose (see that section's doc below) —
@@ -85,10 +83,6 @@ const COURSE_COMPLETIONS_PER_PERSON_LIMIT = 50;
 const FORM_SUBMISSIONS_PER_PERSON_LIMIT = 100;
 const FORM_DEFINITIONS_PER_CHAPTER_LIMIT = 200;
 const PLEDGES_PER_DONOR_LIMIT = 10;
-/** See module doc — the one join that can't be bounded per PERSON row
- *  because `donors` has no `personId` index. Same cap class as
- *  `givingPlatform.ts#DONOR_LIST_LIMIT`. */
-const DONORS_PER_CHAPTER_LIMIT = 1000;
 /** Bounded per-address suppression check — capped by how many distinct
  *  addresses a single person can have (`PERSON_EMAILS_LIMIT` + 2). */
 const EMAIL_SUPPRESSION_LOOKUP_CAP = PERSON_EMAILS_LIMIT + 2;
@@ -282,22 +276,29 @@ function givingSummaryColumnDefs(): CsvColumn[] {
   ];
 }
 
-/** See module doc — the one bounded whole-scope read this builder needs,
- *  because `donors` has no `personId` index to look up per row. Call ONCE
- *  per `page()`, never per row. */
-async function buildDonorMap(
+/**
+ * The donor row linked to ONE person, via `donors.by_person`.
+ *
+ * This used to be a per-page bounded scan of the whole chapter's donors
+ * (mirroring `givingPlatform.ts#giverMarks`), because `donors` had no
+ * `personId` index. That carried a silent cap — a chapter past the scan limit
+ * lost giving columns for the overflow with nothing in the file to say so —
+ * and re-read up to a thousand donor rows on EVERY page. `donors.by_person`
+ * (added with this feature) makes it a single indexed lookup per exported row,
+ * which removes the cap and the repeated scan together.
+ *
+ * `.take(1)` rather than `.unique()`: a person having two donor rows in one
+ * scope is a data-hygiene problem, not a reason to fail someone's export.
+ */
+async function donorForPerson(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
-): Promise<Map<Id<"people">, Doc<"donors">>> {
-  const donors = await ctx.db
+  personId: Id<"people">,
+): Promise<Doc<"donors"> | undefined> {
+  const rows = await ctx.db
     .query("donors")
-    .withIndex("by_scope", (q) => q.eq("scope", chapterId))
-    .take(DONORS_PER_CHAPTER_LIMIT);
-  const map = new Map<Id<"people">, Doc<"donors">>();
-  for (const d of donors) {
-    if (d.personId) map.set(d.personId, d);
-  }
-  return map;
+    .withIndex("by_person", (q) => q.eq("personId", personId))
+    .take(1);
+  return rows[0];
 }
 
 async function pledgeStatusForDonor(ctx: QueryCtx, donorId: Id<"donors">): Promise<string> {
@@ -547,7 +548,6 @@ async function page(
 
   const sections = bctx.sections;
   const wantsGiving = sections.has("giving_summary");
-  const donorMap = wantsGiving ? await buildDonorMap(ctx, chapterId) : null;
   const wantsForms = sections.has("form_answers");
   const forms = wantsForms ? await loadFormDefs(ctx, chapterId) : [];
   // Both `all_emails` and `admin` (suppression check) need the ledger — load
@@ -583,7 +583,10 @@ async function page(
       Object.assign(row, await participationCells(ctx, person));
     }
     if (sections.has("giving_summary")) {
-      Object.assign(row, await givingSummaryCells(ctx, donorMap?.get(person._id)));
+      Object.assign(
+        row,
+        await givingSummaryCells(ctx, await donorForPerson(ctx, person._id)),
+      );
     }
     if (sections.has("form_answers")) {
       Object.assign(row, await formAnswerCells(ctx, person._id, forms));
@@ -608,6 +611,27 @@ async function page(
 export const peopleBuilders: ExportBuilder[] = [
   {
     datasetId: "people",
+    /**
+     * DELIBERATELY FAR BELOW `EXPORT_PAGE_SIZE` (500) — see `types.ts`'s
+     * `pageSize` doc.
+     *
+     * This builder's cost is per-PERSON, not per-row-read. A single person can
+     * cost roughly: 25 emails + 20 seats + 150 RSVPs (each up to 5 ticket
+     * orders, each up to 20 tickets) + 300 engagements + 100 form submissions
+     * + 150 academy rows + 27 suppression lookups + 1 donor + 10 pledges. A
+     * merely ACTIVE person — 20 RSVPs with a ticket each — costs ~80 reads;
+     * the caps allow far more.
+     *
+     * Convex aborts a transaction at ~16k document reads. At 500 people/page
+     * that ceiling is passed by an ordinary chapter, and passed enormously by
+     * one with heavy ticketing — but ONLY on real data. Tests seeded with a
+     * few people never approach it, so no suite would have caught this.
+     *
+     * 25 keeps the typical page near ~2k reads and the pathological page
+     * inside the limit. Pages are cheap (one scheduled query each); a blown
+     * transaction fails the whole export.
+     */
+    pageSize: 25,
     columns,
     page,
   },
