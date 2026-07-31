@@ -791,8 +791,17 @@ http.route({
     if (!valid) return new Response("Invalid signature", { status: 400 });
 
     // Resend inbound: { type:"email.received", data:{ email_id, from, to[],
-    // cc[], subject, ... } }. Attachments/body are fetched later via the
-    // Resend API (the webhook carries metadata only).
+    // cc[], received_for[], subject, ... } }. Attachments/body are fetched
+    // later via the Resend API (the webhook carries metadata only).
+    //
+    // `received_for` is the ENVELOPE recipient (RCPT TO), which is NOT the
+    // same as the `to` header whenever the mail was relayed — exactly the
+    // Google Group shape we run on: a human mails the group
+    // (`receipts@publicworship.life`, which stays in `to`) and Google relays
+    // the post to the group member that is our Resend inbound address
+    // (`receipts@reply.publicworship.life`, which appears ONLY in
+    // `received_for`). Route on all three or every group-forwarded receipt is
+    // ack'd and dropped.
     let event: {
       type?: string;
       data?: {
@@ -800,6 +809,7 @@ http.route({
         from?: string;
         to?: string[] | string;
         cc?: string[] | string;
+        received_for?: string[] | string;
         subject?: string;
       };
     };
@@ -813,23 +823,20 @@ http.route({
     if (event.type !== "email.received" || !event.data?.email_id || !event.data.from) {
       return new Response("ok", { status: 200 });
     }
-    // Only mail addressed (To or Cc) to the RECEIPTS inbox is a receipt — the
-    // inbound domain will carry other addresses for other purposes, so
-    // everything else is ack'd WITHOUT recording (see `isReceiptInboxAddress`).
-    const toList = Array.isArray(event.data.to)
-      ? event.data.to
-      : event.data.to
-        ? [event.data.to]
-        : [];
-    const ccList = Array.isArray(event.data.cc)
-      ? event.data.cc
-      : event.data.cc
-        ? [event.data.cc]
-        : [];
-    if (!isReceiptInboxAddress([...toList, ...ccList])) {
+    // Only mail addressed to the RECEIPTS inbox is a receipt — the inbound
+    // domain will carry other addresses for other purposes, so everything else
+    // is ack'd WITHOUT recording (see `isReceiptInboxAddress`).
+    const asList = (v: string[] | string | undefined): string[] =>
+      Array.isArray(v) ? v : v ? [v] : [];
+    const toList = asList(event.data.to);
+    const ccList = asList(event.data.cc);
+    const receivedForList = asList(event.data.received_for);
+    if (!isReceiptInboxAddress([...toList, ...ccList, ...receivedForList])) {
       return new Response("ok", { status: 200 });
     }
-    const to = toList[0];
+    // What the sender actually addressed (the group, on relayed mail), falling
+    // back to the envelope recipient when there's no usable `to` header.
+    const to = toList[0] ?? receivedForList[0];
 
     const { isNew, receiptId } = await ctx.runMutation(
       internal.receiptInbox.recordInboundReceipt,

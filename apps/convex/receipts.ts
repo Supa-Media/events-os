@@ -968,6 +968,10 @@ const inboundQueueRow = v.object({
   _id: v.id("inboundReceipts"),
   status: inboundStatusValidator,
   fromEmail: v.string(),
+  // The real poster, when a mailing list rewrote `From:` (the Google Group
+  // relay — see `receiptInbox.ts#resolveListSender`). `null` on mail sent
+  // straight to the inbox. The queue should show this in place of the list.
+  originalSenderEmail: v.union(v.string(), v.null()),
   subject: v.union(v.string(), v.null()),
   receivedAt: v.number(),
   senderClass: v.union(receiptSenderClassValidator, v.null()),
@@ -1090,6 +1094,7 @@ export const listInboundQueue = query({
         _id: r._id,
         status: r.status,
         fromEmail: r.fromEmail,
+        originalSenderEmail: r.originalSenderEmail ?? null,
         subject: r.subject ?? null,
         receivedAt: r.receivedAt,
         senderClass: r.senderClass ?? null,

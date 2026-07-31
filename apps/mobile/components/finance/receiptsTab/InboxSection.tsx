@@ -86,7 +86,7 @@ export function InboxSection({
         <EmptyState
           icon="inbox"
           title="Nothing here"
-          message="Receipts emailed to receipts@reply.publicworship.life land here for review."
+          message="Receipts emailed to receipts@publicworship.life land here for review."
         />
       ) : (
         <View className="gap-2">
@@ -118,8 +118,12 @@ function InboxRow({
       <View className="flex-row flex-wrap items-center gap-2">
         <Badge label={inboundStatusLabel(row.status)} tone={inboundStatusTone(row.status)} />
         <Badge label={senderClassLabel(row.senderClass)} tone={senderClassTone(row.senderClass)} />
+        {/* The PERSON who sent it. On mail relayed by the receipts Google
+            Group, `fromEmail` can be the list itself (Google rewrites `From:`
+            for DMARC-strict senders), so the recovered poster wins here — the
+            verbatim envelope is still on the row and in the dismiss prompt. */}
         <Text className="flex-1 text-sm font-semibold text-ink" numberOfLines={1}>
-          {row.fromEmail}
+          {row.originalSenderEmail ?? row.fromEmail}
         </Text>
         <Text className="text-2xs text-faint">{formatDateTime(row.receivedAt)}</Text>
       </View>

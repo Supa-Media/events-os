@@ -1,22 +1,51 @@
 # Receipt email ingest — inbound OCR → reconcile pipeline
 
 Backfilling a large pile of receipts by hand is slow. This pipeline lets a
-receipt be **emailed** to `receipts@reply.publicworship.life`; the backend OCRs it,
+receipt be **emailed** to `receipts@publicworship.life`; the backend OCRs it,
 matches it to an already-synced card transaction that's missing a receipt, and
 attaches it automatically when the match is unambiguous. Everything ambiguous
 lands in a bookkeeper review queue.
 
+## Two addresses, one inbox
+
+- **`receipts@publicworship.life`** — the **Google Group** humans know and use.
+- **`receipts@reply.publicworship.life`** — the Resend inbound address, a
+  **member** of that group. Mail sent straight here works too.
+
+Google relays every post to the group on to its member, so both routes land on
+the same webhook. Two things fall out of the relay, and the pipeline handles
+both explicitly:
+
+1. **The relayed post still names the GROUP in `To:`.** Our member address only
+   appears on the SMTP envelope, which Resend surfaces as `received_for`. The
+   route matches on To + Cc + `received_for`, and both addresses are in the
+   inbox allow-list — matching on the member address alone silently dropped
+   every group-forwarded receipt.
+2. **Google rewrites `From:`** to the list (`"Jane D. via receipts"
+   <receipts@publicworship.life>`) whenever the poster's domain publishes a
+   strict DMARC policy. The real poster is stamped into `X-Original-Sender`, so
+   `resolveListSender` reads it back before classifying — otherwise a team
+   member's receipt resolves to no roster row and can never auto-attach. The
+   header is only honored on mail that actually arrived via a list (`List-Id` /
+   `List-Post` / `Mailing-list` present).
+
+A courtesy reply is never sent to either address (`isReceiptInboxSelf`) — that
+would fan a robot ack out to every group member and be relayed straight back in
+as a fresh receipt.
+
 ## Flow
 
 ```
-email → receipts@reply.publicworship.life
+email → receipts@publicworship.life  (Google Group; relays to its member,
+                                      receipts@reply.publicworship.life)
       → Resend inbound (email.received webhook, Svix-signed)
-      → POST /resend/inbound            (http.ts — verify + address-filter +
-                                         dedup + schedule; mail to any OTHER
-                                         address on the domain is ack'd and
-                                         skipped)
+      → POST /resend/inbound            (http.ts — verify + address-filter on
+                                         To + Cc + received_for + dedup +
+                                         schedule; mail to any OTHER address
+                                         on the domain is ack'd and skipped)
       → recordInboundReceipt            (dedup on Resend's email_id)
       → processInboundReceipt (action)  (receiptInbox.ts)
+           0. recover the poster behind a list relay (X-Original-Sender)
            1. resolve sender → people row (auth gate; unknown → ignored)
            2. get content: image/PDF attachment (Resend Attachments API)
               — a forwarded-as-attachment .eml is OPENED first and replaced
@@ -42,6 +71,11 @@ Two shapes both work:
 
 - **Forward inline** (the ordinary "Forward") — the merchant's text comes
   through in the body, and any receipt image/PDF rides along as an attachment.
+  The forward banner Gmail/Apple Mail/Outlook paste above the quoted message
+  is parsed for the ORIGINAL envelope (`parseInlineForwardEnvelope`), so the
+  merchant reads as "Uber Receipts", not as whatever line the forwarded
+  marketing email happened to lead with (or the forwarder's own "paying it
+  back" note).
 - **Forward as attachment** (Gmail/Apple Mail/Outlook) — the original message
   arrives wrapped as a `message/rfc822` (`.eml`) attachment, with an empty
   outer body. `lib/emlMessage.ts` (a small, dependency-free MIME parser) opens
@@ -91,7 +125,7 @@ Copy the webhook's **signing secret** (`whsec_…`).
 | `RESEND_API_KEY` | Already set (outbound). Also used to fetch inbound attachments + reply. |
 | `OPENROUTER_API_KEY` | Already set (AI coding). Used for image OCR only. |
 | `RECEIPT_OCR_MODEL` | *Optional.* Override the OCR model. Defaults to a cheap vision model (`google/gemini-2.0-flash-001`). Point it at any OpenRouter vision model — free/cheap for a big backfill, stronger if scans read poorly. |
-| `RECEIPT_INBOUND_ADDRESSES` | *Optional.* Comma-separated allow-list of inbound addresses treated as the receipts inbox. Defaults to `receipts@reply.publicworship.life`. Mail to any other address on the domain is acknowledged but not processed. |
+| `RECEIPT_INBOUND_ADDRESSES` | *Optional.* Comma-separated allow-list of addresses treated as the receipts inbox, matched against To + Cc + `received_for`. Defaults to `receipts@reply.publicworship.life,receipts@publicworship.life` (the inbound address and the Google Group fronting it). Mail to any other address on the domain is acknowledged but not processed. **Overriding this replaces the default entirely — include the group address, or group-relayed receipts stop being ingested.** |
 
 The webhook signing secret can instead be set IN-APP at profile >
 integrations (superuser-only, "Receipt inbox (Resend)" section) rather than
@@ -115,10 +149,50 @@ follow-up — today a bookkeeper can drive them directly.)
 
 ## Who can email receipts
 
-Only addresses that resolve to a `people` roster row (matched against `email`
-or `pwEmail`, case-insensitive). The endpoint is public and Svix-signed;
-roster membership is the auth gate. Unknown senders are recorded as `ignored`
-and never OCR'd.
+Anyone can send; the endpoint is public and Svix-signed. Sender identity is an
+AUTOMATION axis, not a gate: only a sender that resolves to a `people` roster
+row (matched against `email` or `pwEmail`, case-insensitive — after list-relay
+recovery, see above) may trigger an **auto-attach**. Everything else is still
+OCR'd and stored, but routed to the bookkeeper review queue and never replied
+to.
+
+## Recovering receipts sent before the relay was handled
+
+`apps/convex/receiptInboxBackfill.ts` is the catch-up, for two distinct losses.
+Both passes are internal (ops-dispatch only — no UI, no cron), **dry-run by
+default**, and idempotent. Run the dry run first and read the counts.
+
+| Pass | Fixes | Dry run | Execute |
+| --- | --- | --- | --- |
+| `backfillMissedReceiptEmails` | Group-relayed mail the address filter dropped before it recognized the group. These have **no row at all** — they exist only on Resend's side. | `{}` | `{ execute: true }` |
+| `reattributeRelayedReceipts` | Rows that WERE recorded but attributed to the list instead of the poster (Google's DMARC `From:` rewrite), so they never drew a person or chapter. | `{}` | `{ execute: true }` |
+
+Both take `limit` (default 100, max 500); the first also takes `sinceMs` to
+bound how far back it looks.
+
+- Pass 1 lists Resend's received mail, keeps what was addressed to a receipts
+  inbox address, skips anything already recorded (the same `emailId` dedup that
+  guards the webhook), and schedules the ordinary pipeline — so a recovered
+  receipt gets the same OCR, matching, and auto-attach bar it would have had.
+- Pass 2 is **metadata only** and never attaches a receipt to a charge: a
+  months-old match is a human's call, and those rows are already sitting in the
+  review queue for one.
+- Pass 1 matches on the list response's `to`/`cc`. Resend's `received_for` is
+  not dependable on the *list* endpoint (only on a single retrieve), so a
+  message that named neither receipts address in its headers — a pure BCC or
+  alias delivery — won't be picked up. Nothing observed so far has that shape:
+  a group relay always names the group in `To:`.
+- Retention: Resend stores received email server-side, but its retention window
+  isn't documented publicly. If a very old receipt doesn't come back, it's
+  likely aged out of Resend, and re-forwarding it is the fix.
+
+### DNS caveat for the group route
+
+Google Groups accepts a post before it relays, so mail to
+`receipts@publicworship.life` bounces at Google, not at us, if the group's
+posting permissions reject the sender. If a team member reports "I sent it and
+nothing happened," check the group's **Who can post** setting first — a
+rejected post never reaches Resend and so leaves no inbound row at all.
 
 ## SMS/MMS ingest (Twilio) — the same pipeline, texted instead of emailed
 

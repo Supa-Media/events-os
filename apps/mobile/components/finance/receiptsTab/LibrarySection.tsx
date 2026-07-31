@@ -131,7 +131,7 @@ export function LibrarySection({
         <EmptyState
           icon="image"
           title="No receipts yet"
-          message="Upload one above, or ask the team to email receipts to receipts@reply.publicworship.life."
+          message="Upload one above, or ask the team to email receipts to receipts@publicworship.life."
         />
       ) : (
         <GridContainer width={tableWidth}>
