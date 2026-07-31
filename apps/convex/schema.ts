@@ -117,6 +117,7 @@ import {
 import { academyProgress, courseCompletions } from "./schema/academy";
 import { schemaMigrations } from "./schema/migrations";
 import { integrationSettings } from "./schema/integrationSettings";
+import { googleChatChannels } from "./schema/googleChatChannels";
 import { smsOptOuts } from "./schema/smsOptOuts";
 import { smsUsageEvents } from "./schema/smsUsage";
 import {
@@ -444,6 +445,11 @@ const schema = defineSchema({
   // Givebutter API key). See schema/integrationSettings.ts +
   // integrationSettings.ts.
   integrationSettings,
+
+  // Google Chat channels — deployment-wide named-space list (name + write-only
+  // webhook URL) behind the Comms Schedule's in-app "Send" button. See
+  // schema/googleChatChannels.ts + googleChatChannels.ts + commsSend.ts.
+  googleChatChannels,
 
   // SMS opt-outs (Attendance F) — deployment-wide STOP/START ledger, a
   // defense-in-depth mirror of Twilio's own Advanced Opt-Out. See

@@ -113,7 +113,7 @@ async function verifyCategory(
 }
 
 /** Merge a `fields` patch into existing fields (so single-cell edits don't wipe). */
-function mergeFields(
+export function mergeFields(
   existing: Record<string, any> | undefined,
   patch: Record<string, any> | undefined,
 ): Record<string, any> | undefined {
