@@ -57,8 +57,31 @@ email → receipts@publicworship.life  (Google Group; relays to its member,
            4. findReceiptMatches: exact-cent, ±14 days, sender's chapter
            5. exactly one → attach + (reconcile if already categorized) + unlock card
               0 or >1 or unreadable → needs_review / no_match
-           6. reply to the sender with the outcome
+           6. queue the outcome into the sender's reply digest (debounced)
 ```
+
+## One reply per sender, not one per receipt
+
+The courtesy reply is **debounced**. The first receipt from an address opens a
+batch (`receiptReplyBatches`) and schedules its flush `REPLY_DEBOUNCE_MS`
+(10 minutes) later; every receipt from that address in the meantime joins the
+same batch, and the flush sends exactly **one** digest covering all of them.
+
+- Someone forwarding a stack of receipts in one sitting gets one email, and a
+  backfill replaying months of receipts can't blast a burst of them.
+- The window is fixed from the **first** receipt, never extended by later ones,
+  so a steady trickle can't postpone a reply indefinitely — a sender always
+  hears back within 10 minutes of their first receipt.
+- The flush **claims** the batch (stamps `sentAt`) in the same transaction it
+  reads the items, so a double-fired schedule can never send the same digest
+  twice. A send failure loses that digest rather than risking a duplicate —
+  the reply is best-effort by contract, and every receipt's terminal status was
+  written long before the flush ran.
+- A **single** receipt reads exactly as it always did; only a multi-receipt
+  batch gets the summary-plus-list voice. Past 50 items a batch counts the rest
+  into `overflowCount` and says "+N more" rather than dropping them.
+- The loop guard applies before a batch is opened: nothing is ever queued for
+  the receipts inbox or the group fronting it.
 
 **Money safety:** the model never categorizes or moves money — it only reads a
 total off a receipt. The single money-adjacent write (`applyReceiptAttachment`)
@@ -166,6 +189,7 @@ default**, and idempotent. Run the dry run first and read the counts.
 | --- | --- | --- | --- |
 | `backfillMissedReceiptEmails` | Group-relayed mail the address filter dropped before it recognized the group. These have **no row at all** — they exist only on Resend's side. | `{}` | `{ execute: true }` |
 | `reattributeRelayedReceipts` | Rows that WERE recorded but attributed to the list instead of the poster (Google's DMARC `From:` rewrite), so they never drew a person or chapter. | `{}` | `{ execute: true }` |
+| `restoreEmailBodyDocuments` | Receipts whose stored document was written from the message's plain-text alternative with no charset — the wall of run-together text with mojibake. Re-fetches each message and rebuilds the document through `buildBodyDocument`. | `{}` | `{ execute: true }` |
 
 Both take `limit` (default 100, max 500); the first also takes `sinceMs` to
 bound how far back it looks.
@@ -177,6 +201,13 @@ bound how far back it looks.
 - Pass 2 is **metadata only** and never attaches a receipt to a charge: a
   months-old match is a human's call, and those rows are already sitting in the
   review queue for one.
+- Pass 3 swaps the **file and nothing else** — no re-OCR, no re-matching, and
+  every receipt↔transaction link stays as a human left it. It repoints the
+  denormalized `transactions.receiptStorageId` cache in the same transaction as
+  the swap (otherwise a reconciled charge would point at a deleted blob), and
+  only deletes the old file once that has committed. A message Resend no longer
+  holds is left exactly as it is rather than replaced with nothing. Its
+  idempotency marker is the stored blob's own charset.
 - Pass 1 matches on the list response's `to`/`cc`. Resend's `received_for` is
   not dependable on the *list* endpoint (only on a single retrieve), so a
   message that named neither receipts address in its headers — a pure BCC or

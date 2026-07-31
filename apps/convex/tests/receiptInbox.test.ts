@@ -13,6 +13,7 @@ import {
   headerValue,
   parseInlineForwardEnvelope,
   extractMerchantGuess,
+  composeReplyDigest,
   extractEmailAddress,
   deriveMerchantFromEmail,
   extractMidLineMerchant,
@@ -1040,6 +1041,7 @@ describe("collectForwardedReceiptSources", () => {
     from: string;
     subject: string;
     text?: string;
+    html?: string;
     parts?: { contentType: string; filename: string; body: string }[];
   }): string {
     const lines = [
@@ -1052,6 +1054,9 @@ describe("collectForwardedReceiptSources", () => {
       "",
       opts.text ?? "",
     ];
+    if (opts.html) {
+      lines.push("--B", 'Content-Type: text/html; charset="UTF-8"', "", opts.html);
+    }
     for (const part of opts.parts ?? []) {
       lines.push(
         "--B",
@@ -1102,7 +1107,29 @@ describe("collectForwardedReceiptSources", () => {
     expect(sources[0].kind).toBe("body");
     expect(sources[0].filename).toBe("Your receipt (forwarded email)");
     if (sources[0].kind === "body") {
-      expect(parseReceiptFromText(sources[0].text).amountCents).toBe(4210);
+      expect(parseReceiptFromText(sources[0].text ?? "").amountCents).toBe(4210);
+      // A text-only message has no HTML part to prefer for display.
+      expect(sources[0].html).toBeNull();
+    }
+  });
+
+  // The stored document must be the HTML the sender actually saw — storing
+  // the plain-text alternative is what turned forwarded merchant receipts
+  // into an unreadable wall of run-together text in the review queue.
+  test("a message with BOTH parts carries the html for display and the text for parsing", () => {
+    const parsed = parseEmlMessage(
+      buildEml({
+        from: "Uber Receipts <noreply@uber.com>",
+        subject: "Your order",
+        text: "Total: $42.10\r\n",
+        html: "<div><h1>Uber Eats</h1><p>Total $42.10</p></div>",
+      }),
+    );
+    const sources = collectForwardedReceiptSources(parsed);
+    expect(sources).toHaveLength(1);
+    if (sources[0].kind === "body") {
+      expect(sources[0].html).toContain("<h1>Uber Eats</h1>");
+      expect(sources[0].text).toContain("Total: $42.10");
     }
   });
 
@@ -1837,7 +1864,20 @@ describe("processInboundReceipt", () => {
       // and is nothing like the forwarder's/list's own domain.
       expect(receipts[0].ocrMerchant).toBe("Uber Receipts");
 
-      // The courtesy reply goes to the PERSON, never back to the group.
+      // The courtesy reply is DEBOUNCED — nothing is sent inline; a batch is
+      // opened for the PERSON, never for the group.
+      expect(replies).toHaveLength(0);
+      const batches = await run(t, (ctx) =>
+        ctx.db.query("receiptReplyBatches").take(5),
+      );
+      expect(batches).toHaveLength(1);
+      expect(batches[0].recipientEmail).toBe("charisma@example.com");
+      expect(batches[0].items).toHaveLength(1);
+
+      // Flushing it sends exactly one email, to the person.
+      await t.action(internal.receiptInbox.flushReplyBatch, {
+        batchId: batches[0]._id,
+      });
       expect(replies).toHaveLength(1);
       expect(replies[0]).toContain("charisma@example.com");
       expect(replies[0]).not.toContain("receipts@publicworship.life");
@@ -1865,7 +1905,244 @@ describe("processInboundReceipt", () => {
       await t.action(internal.receiptInbox.processInboundReceipt, { receiptId });
 
       expect(replies).toHaveLength(0);
+      // Not even a batch — the loop guard rejects our own address up front.
+      const batches = await run(t, (ctx) =>
+        ctx.db.query("receiptReplyBatches").take(5),
+      );
+      expect(batches).toHaveLength(0);
     });
+
+    // ── The debounce, end to end ────────────────────────────────────────────
+    // A person forwarding a stack of receipts (and a BACKFILL replaying months
+    // of them) must earn ONE email, not one per receipt.
+    test("several receipts from one sender collapse into a single digest", async () => {
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedPerson(s, { email: "charisma@example.com" });
+
+      const replies = mockRelayedEmail(FORWARDED_BODY, {
+        "List-Id": "<receipts.publicworship.life>",
+        "X-Original-Sender": "charisma@example.com",
+      });
+
+      for (let i = 0; i < 3; i++) {
+        const { receiptId } = await t.mutation(
+          internal.receiptInbox.recordInboundReceipt,
+          {
+            envelope: {
+              emailId: `email_batch_${i}`,
+              fromEmail: '"Charisma S. via receipts" <receipts@publicworship.life>',
+              subject: "Fwd: receipt",
+            },
+          },
+        );
+        await t.action(internal.receiptInbox.processInboundReceipt, { receiptId });
+      }
+
+      // One OPEN batch holding all three — not three batches, not three emails.
+      const batches = await run(t, (ctx) =>
+        ctx.db.query("receiptReplyBatches").take(5),
+      );
+      expect(batches).toHaveLength(1);
+      expect(batches[0].items).toHaveLength(3);
+      expect(replies).toHaveLength(0);
+
+      await t.action(internal.receiptInbox.flushReplyBatch, {
+        batchId: batches[0]._id,
+      });
+      expect(replies).toHaveLength(1);
+      expect(replies[0]).toContain("3 receipts");
+
+      // Claimed — a double-fired schedule can't send it again.
+      await t.action(internal.receiptInbox.flushReplyBatch, {
+        batchId: batches[0]._id,
+      });
+      expect(replies).toHaveLength(1);
+
+      // A receipt arriving AFTER the flush opens a fresh window rather than
+      // joining the closed one.
+      const { receiptId } = await t.mutation(
+        internal.receiptInbox.recordInboundReceipt,
+        {
+          envelope: {
+            emailId: "email_batch_after",
+            fromEmail: '"Charisma S. via receipts" <receipts@publicworship.life>',
+            subject: "Fwd: receipt",
+          },
+        },
+      );
+      await t.action(internal.receiptInbox.processInboundReceipt, { receiptId });
+      const after = await run(t, (ctx) =>
+        ctx.db.query("receiptReplyBatches").take(5),
+      );
+      expect(after).toHaveLength(2);
+    });
+
+    test("two different senders get their own batches", async () => {
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedPerson(s, { email: "charisma@example.com" });
+      await seedPerson(s, { email: "jane@example.com" });
+      mockRelayedEmail(FORWARDED_BODY, {});
+
+      for (const from of ["charisma@example.com", "jane@example.com"]) {
+        const { receiptId } = await t.mutation(
+          internal.receiptInbox.recordInboundReceipt,
+          { envelope: { emailId: `email_two_${from}`, fromEmail: from, subject: "receipt" } },
+        );
+        await t.action(internal.receiptInbox.processInboundReceipt, { receiptId });
+      }
+
+      const batches = await run(t, (ctx) =>
+        ctx.db.query("receiptReplyBatches").take(5),
+      );
+      expect(batches).toHaveLength(2);
+      expect(batches.map((b) => b.recipientEmail).sort()).toEqual([
+        "charisma@example.com",
+        "jane@example.com",
+      ]);
+    });
+  });
+
+  // ── What the bookkeeper actually opens ─────────────────────────────────────
+  // The reported symptom: a forwarded merchant receipt showed up as an
+  // unreadable wall of run-together text with mojibake ("New Linâ€™s",
+  // "9:35â€¯PM"), even though the same message renders fine in the mailing
+  // list. Two causes, both here: we stored the plain-text ALTERNATIVE instead
+  // of the HTML the sender saw, and we stored it with no charset so a UTF-8
+  // body got decoded as latin-1.
+  describe("the stored body document", () => {
+    const realFetch = globalThis.fetch;
+    const realKey = process.env.RESEND_API_KEY;
+    afterEach(() => {
+      globalThis.fetch = realFetch;
+      if (realKey === undefined) delete process.env.RESEND_API_KEY;
+      else process.env.RESEND_API_KEY = realKey;
+    });
+
+    /** A received email carrying BOTH parts, as a real merchant receipt does. */
+    function mockBothParts(html: string | null, text: string | null): void {
+      process.env.RESEND_API_KEY = "test-key";
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        const url = String(input);
+        if (url.includes("/attachments")) {
+          return { ok: true, json: async () => ({ data: [] }) };
+        }
+        if (url.includes("/emails/receiving/")) {
+          return { ok: true, json: async () => ({ html, text, headers: null }) };
+        }
+        return { ok: false, status: 500, text: async () => "no" };
+      }) as unknown as typeof fetch;
+    }
+
+    async function processOne(t: ReturnType<typeof newT>, emailId: string) {
+      const { receiptId } = await t.mutation(
+        internal.receiptInbox.recordInboundReceipt,
+        { envelope: { emailId, fromEmail: "jane@example.com", subject: "Fwd: receipt" } },
+      );
+      await t.action(internal.receiptInbox.processInboundReceipt, { receiptId });
+      const receipts = await run(t, (ctx) => ctx.db.query("receipts").take(5));
+      // Read the blob INSIDE the callback — a Blob isn't a Convex value and
+      // can't be returned across the `run` boundary.
+      const file = await run(t, async (ctx) => {
+        // `ctx.storage.get` returning a Blob is a convex-test affordance not
+        // on the generated `StorageWriter` type (same cast `storeBlob` uses).
+        const blob = await (
+          ctx.storage as unknown as {
+            get: (id: Id<"_storage">) => Promise<Blob | null>;
+          }
+        ).get(receipts[0].storageId!);
+        return blob ? { type: blob.type, text: await blob.text() } : null;
+      });
+      return { receipt: receipts[0], contentType: file?.type, stored: file?.text };
+    }
+
+    test("stores the HTML the sender saw, tagged UTF-8 — not the text alternative", async () => {
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedPerson(s, { email: "jane@example.com" });
+      mockBothParts(
+        "<div><h1>Uber Eats</h1><p>Here's your receipt for New Lin’s kitchen.</p><p>Total $298.52</p></div>",
+        "Uber Eats\nHere's your receipt for New Lin’s kitchen.\nTotal $298.52",
+      );
+
+      const { contentType, stored, receipt } = await processOne(t, "email_doc_html");
+
+      // Declared charset is what stops "New Lin’s" rendering as "New Linâ€™s".
+      expect(contentType).toBe("text/html;charset=utf-8");
+      expect(stored).toContain("<h1>Uber Eats</h1>");
+      // The total still parses — the TEXT part fed the heuristics.
+      expect(receipt.ocrAmountCents).toBe(29852);
+    });
+
+    test("falls back to the text part when the message has no HTML", async () => {
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedPerson(s, { email: "jane@example.com" });
+      mockBothParts(null, "Blue Bottle Coffee\nTotal: $42.10");
+
+      const { contentType, stored, receipt } = await processOne(t, "email_doc_text");
+
+      expect(contentType).toBe("text/plain;charset=utf-8");
+      expect(stored).toContain("Blue Bottle Coffee");
+      expect(receipt.ocrAmountCents).toBe(4210);
+    });
+  });
+});
+
+// ── composeReplyDigest (what the sender actually reads) ──────────────────────
+describe("composeReplyDigest", () => {
+  test("a single receipt reads exactly as it always did (no 'digest' voice)", () => {
+    const one = composeReplyDigest([
+      { outcome: "matched", amountCents: 29852, merchant: "Uber Receipts" },
+    ]);
+    expect(one.subject).toBe("Receipt matched ✓");
+    expect(one.html).toContain("$298.52 from Uber Receipts");
+    expect(one.html).not.toContain("<ul");
+
+    expect(composeReplyDigest([{ outcome: "no_match", amountCents: 1636 }]).subject).toBe(
+      "Receipt received — no matching charge yet",
+    );
+    expect(composeReplyDigest([{ outcome: "needs_review" }]).subject).toBe(
+      "Receipt received — needs a quick look",
+    );
+  });
+
+  test("an all-matched batch says so once, and lists each receipt", () => {
+    const digest = composeReplyDigest([
+      { outcome: "matched", amountCents: 1000, merchant: "Costco" },
+      { outcome: "matched", amountCents: 2000, merchant: "Uber" },
+    ]);
+    expect(digest.subject).toBe("2 receipts matched ✓");
+    expect(digest.html).toContain("all 2 receipts");
+    expect(digest.html).toContain("$10.00 from Costco");
+    expect(digest.html).toContain("$20.00 from Uber");
+  });
+
+  test("a mixed batch counts each outcome and promises nothing is lost", () => {
+    const digest = composeReplyDigest([
+      { outcome: "matched", amountCents: 1000 },
+      { outcome: "no_match", amountCents: 2000 },
+      { outcome: "needs_review", amountCents: 3000 },
+    ]);
+    expect(digest.subject).toBe("3 receipts received");
+    expect(digest.html).toContain("1 attached to charges");
+    expect(digest.html).toContain("1 with no matching charge yet");
+    expect(digest.html).toContain("1 needing a bookkeeper's eye");
+    expect(digest.html).toContain("nothing is lost");
+  });
+
+  test("overflow past the item cap is reported, never silently dropped", () => {
+    const digest = composeReplyDigest(
+      [
+        { outcome: "matched", amountCents: 1000 },
+        { outcome: "matched", amountCents: 2000 },
+      ],
+      7,
+    );
+    // The total counts the overflow, and it can't claim "all matched".
+    expect(digest.subject).toBe("9 receipts received");
+    expect(digest.html).toContain("+7 more");
   });
 });
 

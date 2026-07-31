@@ -102,6 +102,29 @@ export function isPdfReceipt(filename: string | null | undefined): boolean {
   return /\.pdf$/i.test(filename ?? "");
 }
 
+/**
+ * True iff a receipt's stored file is an EMAIL BODY (or any other text
+ * document) rather than a photo/scan — an emailed merchant receipt whose HTML
+ * *is* the receipt.
+ *
+ * The viewer has to know: RN `<Image>` can't decode `text/html` any more than
+ * it can decode `application/pdf`, so a document handed to it renders nothing
+ * and degrades to a generic "missing file" icon. These get the same document
+ * frame PDFs already use (web iframe / native open-externally), which is what
+ * makes a forwarded Uber Eats or Givebutter receipt actually look like itself.
+ *
+ * Keyed on the STORED CONTENT TYPE, not the filename: the backend labels these
+ * `text/html;charset=utf-8` / `text/plain;charset=utf-8`, while their
+ * filenames are prose ("email body", "Your receipt (forwarded email)") that no
+ * extension rule could catch.
+ */
+export function isDocumentReceipt(
+  contentType: string | null | undefined,
+): boolean {
+  const ct = (contentType ?? "").toLowerCase();
+  return ct.startsWith("text/html") || ct.startsWith("text/plain");
+}
+
 // ── Sender-class badge (team=success, roster=info, internal=accent, external=warn) ──
 export function senderClassTone(cls: ReceiptSenderClass | null): BadgeTone {
   switch (cls) {

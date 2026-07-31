@@ -6,12 +6,15 @@ import type { Id } from "../_generated/dataModel";
 /**
  * Receipt-inbox RECOVERY (`receiptInboxBackfill.ts`) — the catch-up for mail
  * that was emailed to the `receipts@publicworship.life` Google Group before the
- * relay was handled. Both passes are DRY-RUN BY DEFAULT and idempotent, which
- * is exactly what these tests pin down:
+ * relay was handled. All three passes are DRY-RUN BY DEFAULT and idempotent,
+ * which is exactly what these tests pin down:
  *  - pass 1 lists Resend's received mail, keeps only receipt-inbox mail, skips
  *    what we already hold, and (dry run) writes nothing,
  *  - pass 2 re-attributes an already-recorded row from the list to the person
- *    named in `X-Original-Sender`, without touching money.
+ *    named in `X-Original-Sender`, without touching money,
+ *  - pass 3 re-stores a body document written before the HTML/charset rule,
+ *    repointing the denormalized `transactions.receiptStorageId` cache with it
+ *    and leaving every amount, merchant, and link alone.
  */
 
 const realFetch = globalThis.fetch;
@@ -254,5 +257,164 @@ describe("reattributeRelayedReceipts", () => {
     expect(res.unchanged).toBe(1);
     const row = await run(t, (ctx) => ctx.db.get(receiptId));
     expect(row?.originalSenderEmail).toBeUndefined();
+  });
+});
+
+// ── Pass 3: repairing documents stored before the HTML/charset rule ──────────
+describe("restoreEmailBodyDocuments", () => {
+  /** Seed a receipt whose stored document is the OLD shape: the message's
+   *  plain-text alternative, stored with no charset — exactly what rendered as
+   *  a wall of run-together text with mojibake. */
+  async function seedLegacyBodyReceipt(
+    t: ReturnType<typeof newT>,
+    s: ChapterSetup,
+  ): Promise<{ receiptId: Id<"receipts">; oldStorageId: Id<"_storage"> }> {
+    const { receiptId: inboundId } = await t.mutation(
+      internal.receiptInbox.recordInboundReceipt,
+      { envelope: { emailId: "email_legacy_doc", fromEmail: "jane@example.com", subject: "receipt" } },
+    );
+    return await run(t, async (ctx) => {
+      const oldStorageId = await (
+        ctx.storage as unknown as { store: (b: Blob) => Promise<Id<"_storage">> }
+      ).store(new Blob(["Uber Eats\nTotal $298.52"], { type: "text/plain" }));
+      const receiptId = await ctx.db.insert("receipts", {
+        chapterId: s.chapterId,
+        storageId: oldStorageId,
+        source: "email",
+        inboundReceiptId: inboundId,
+        filename: "email body",
+        amountCents: 29852,
+        merchant: "Uber Receipts",
+        linkCount: 0,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      } as never);
+      return { receiptId, oldStorageId };
+    });
+  }
+
+  function mockMessage(html: string | null, text: string | null): void {
+    process.env.RESEND_API_KEY = "test-key";
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      if (String(input).includes("/emails/receiving/")) {
+        return { ok: true, json: async () => ({ html, text, headers: null }) };
+      }
+      return { ok: false, status: 500, text: async () => "no" };
+    }) as unknown as typeof fetch;
+  }
+
+  test("dry run reports the repair without writing it", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { receiptId, oldStorageId } = await seedLegacyBodyReceipt(t, s);
+    mockMessage("<div><h1>Uber Eats</h1><p>Total $298.52</p></div>", "Total $298.52");
+
+    const res = await t.action(
+      internal.receiptInboxBackfill.restoreEmailBodyDocuments,
+      {},
+    );
+    expect(res.executed).toBe(false);
+    expect(res.restored).toBe(1);
+
+    const receipt = await run(t, (ctx) => ctx.db.get(receiptId));
+    expect(receipt?.storageId).toBe(oldStorageId);
+  });
+
+  test("execute re-stores the HTML with a charset, and a re-run is a no-op", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { receiptId, oldStorageId } = await seedLegacyBodyReceipt(t, s);
+    mockMessage("<div><h1>Uber Eats</h1><p>Total $298.52</p></div>", "Total $298.52");
+
+    const res = await t.action(
+      internal.receiptInboxBackfill.restoreEmailBodyDocuments,
+      { execute: true },
+    );
+    expect(res.restored).toBe(1);
+
+    const receipt = await run(t, (ctx) => ctx.db.get(receiptId));
+    expect(receipt?.storageId).not.toBe(oldStorageId);
+    const file = await run(t, async (ctx) => {
+      const blob = await (
+        ctx.storage as unknown as { get: (id: Id<"_storage">) => Promise<Blob | null> }
+      ).get(receipt!.storageId);
+      return blob ? { type: blob.type, text: await blob.text() } : null;
+    });
+    expect(file?.type).toBe("text/html;charset=utf-8");
+    expect(file?.text).toContain("<h1>Uber Eats</h1>");
+
+    // The money-side fields are untouched — this swaps the FILE and nothing else.
+    expect(receipt?.amountCents).toBe(29852);
+    expect(receipt?.merchant).toBe("Uber Receipts");
+
+    // The charset is the idempotency marker: a second sweep finds nothing.
+    const again = await t.action(
+      internal.receiptInboxBackfill.restoreEmailBodyDocuments,
+      { execute: true },
+    );
+    expect(again.scanned).toBe(0);
+    expect(again.restored).toBe(0);
+  });
+
+  test("repoints a linked transaction's denormalized receiptStorageId", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { receiptId, oldStorageId } = await seedLegacyBodyReceipt(t, s);
+    // A charge already showing this receipt — its cached pointer must follow
+    // the swap, or the reconcile grid would show a deleted file.
+    const txnId = await run(t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        amountCents: 29852,
+        postedAt: Date.now(),
+        status: "reconciled",
+        flow: "outflow",
+        source: "manual",
+        receiptStorageId: oldStorageId,
+        createdAt: Date.now(),
+      } as never),
+    );
+    await run(t, (ctx) =>
+      ctx.db.insert("receiptLinks", {
+        receiptId,
+        transactionId: txnId,
+        chapterId: s.chapterId,
+        source: "manual",
+        createdAt: Date.now(),
+      } as never),
+    );
+    mockMessage("<div>Uber Eats</div>", "Total $298.52");
+
+    const res = await t.action(
+      internal.receiptInboxBackfill.restoreEmailBodyDocuments,
+      { execute: true },
+    );
+    expect(res.repointedTransactions).toBe(1);
+
+    const receipt = await run(t, (ctx) => ctx.db.get(receiptId));
+    const txn = await run(t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.receiptStorageId).toBe(receipt?.storageId);
+    expect(txn?.receiptStorageId).not.toBe(oldStorageId);
+  });
+
+  test("a message Resend no longer has leaves the existing document alone", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { receiptId, oldStorageId } = await seedLegacyBodyReceipt(t, s);
+    process.env.RESEND_API_KEY = "test-key";
+    globalThis.fetch = (async () => ({
+      ok: false,
+      status: 404,
+      text: async () => "gone",
+    })) as unknown as typeof fetch;
+
+    const res = await t.action(
+      internal.receiptInboxBackfill.restoreEmailBodyDocuments,
+      { execute: true },
+    );
+    expect(res.restored).toBe(0);
+    expect(res.skipped).toBe(1);
+    const receipt = await run(t, (ctx) => ctx.db.get(receiptId));
+    expect(receipt?.storageId).toBe(oldStorageId);
   });
 });

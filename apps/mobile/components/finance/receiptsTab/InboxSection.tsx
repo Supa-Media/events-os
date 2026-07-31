@@ -24,6 +24,7 @@ import {
   inboundStatusTone,
   senderClassLabel,
   senderClassTone,
+  isDocumentReceipt,
   INBOX_STATUS_FILTERS,
   type InboundQueueRow,
   type InboxStatusFilter,
@@ -148,8 +149,17 @@ function InboxRow({
               className="w-24 items-start active:opacity-70"
             >
               <View className="h-16 w-24 overflow-hidden rounded-md border border-border bg-sunken">
-                {r.url ? (
+                {/* An emailed receipt's `text/html` body is a DOCUMENT — RN
+                    `<Image>` can't decode it and would render a blank tile, so
+                    it gets a legible "this is an email" affordance instead
+                    (see `isDocumentReceipt`). */}
+                {r.url && !isDocumentReceipt(r.contentType) ? (
                   <Image source={{ uri: r.url }} style={{ width: "100%", height: "100%" }} resizeMode="cover" />
+                ) : r.url ? (
+                  <View className="flex-1 items-center justify-center gap-0.5">
+                    <Icon name="mail" size={14} color={colors.faint} />
+                    <Text className="text-2xs font-bold text-faint">EMAIL</Text>
+                  </View>
                 ) : (
                   <View className="flex-1 items-center justify-center">
                     <Icon name="file-text" size={16} color={colors.faint} />

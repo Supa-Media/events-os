@@ -75,6 +75,7 @@ import {
   receiptNudgeAttempts,
   financeSettings,
   inboundReceipts,
+  receiptReplyBatches,
   receipts,
   receiptLinks,
   receiptSweepState,
@@ -303,6 +304,9 @@ const schema = defineSchema({
   financeSettings,
   // Inbound email → OCR → reconcile pipeline (receipt backfill). See receiptInbox.ts.
   inboundReceipts,
+  // Debounce batches for the courtesy reply an emailed receipt earns its
+  // sender — one digest per address per window, not one email per receipt.
+  receiptReplyBatches,
   // First-class receipt DOCUMENTS + their many-to-many links to transactions.
   // `receipts` is the source of truth a receipt is; `transactions.receiptStorageId`
   // stays a denormalized cache. Written only through lib/receiptLinks.ts.

@@ -177,6 +177,12 @@ function toTxnRef(tr: Doc<"transactions">) {
 const receiptSummary = v.object({
   _id: v.id("receipts"),
   url: v.union(v.string(), v.null()),
+  // The STORED FILE's content type, straight off `_storage`. The viewer needs
+  // it to decide how to render: an image gets `<Image>`, a PDF or an EMAIL
+  // BODY (`text/html`, `text/plain`) needs a document frame instead — handing
+  // either to `<Image>` renders nothing at all. `null` for a legacy row whose
+  // storage metadata is gone.
+  contentType: v.union(v.string(), v.null()),
   source: receiptSourceValidator,
   senderClass: v.union(receiptSenderClassValidator, v.null()),
   // The original attachment filename (or a synthetic "email body"/"text
@@ -285,6 +291,8 @@ async function toReceiptSummary(ctx: QueryCtx, r: Doc<"receipts">, cache?: Prove
   return {
     _id: r._id,
     url: await ctx.storage.getUrl(r.storageId),
+    contentType:
+      (await ctx.db.system.get("_storage", r.storageId))?.contentType ?? null,
     source: r.source,
     senderClass: r.senderClass ?? null,
     filename: r.filename ?? null,
@@ -957,6 +965,8 @@ export const listForTransaction = query({
 const inboundReceiptSummary = v.object({
   _id: v.id("receipts"),
   url: v.union(v.string(), v.null()),
+  // See `receiptSummary.contentType` — the viewer branches on this.
+  contentType: v.union(v.string(), v.null()),
   amountCents: v.union(v.number(), v.null()),
   receiptDate: v.union(v.number(), v.null()),
   merchant: v.union(v.string(), v.null()),
@@ -1075,6 +1085,8 @@ export const listInboundQueue = query({
         receipts.push({
           _id: rd._id,
           url: await ctx.storage.getUrl(rd.storageId),
+          contentType:
+            (await ctx.db.system.get("_storage", rd.storageId))?.contentType ?? null,
           amountCents: rd.amountCents ?? null,
           receiptDate: rd.receiptDate ?? null,
           merchant: rd.merchant ?? null,

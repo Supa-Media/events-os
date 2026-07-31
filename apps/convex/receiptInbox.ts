@@ -1439,8 +1439,20 @@ export type ReceiptSource =
     }
   | {
       kind: "body";
-      text: string;
-      isHtml: boolean;
+      /**
+       * The message's HTML part, when it has one — what a human SEES. A
+       * merchant receipt is designed HTML (the Uber Eats/Givebutter layout the
+       * sender got), and storing its plain-text alternative instead turns a
+       * branded receipt into an unreadable wall of run-together text in the
+       * review UI. See `storeBodyReceipt`.
+       */
+      html?: string | null;
+      /**
+       * The plain-text alternative, when it has one — what the PARSER reads.
+       * Line structure survives here, which the zero-LLM total/merchant
+       * heuristics depend on (`parseReceiptFromText` only strips tags).
+       */
+      text?: string | null;
       filename: string;
       envelope?: ForwardedEnvelope;
     };
@@ -1503,16 +1515,17 @@ export function collectForwardedReceiptSources(
 
   // No file anywhere in this branch — the forwarded message's own body IS the
   // receipt (a plain-text/HTML merchant confirmation), stored as a document
-  // exactly like the top-level body path does.
+  // exactly like the top-level body path does. BOTH parts are carried: the
+  // HTML is what gets stored and shown, the text is what gets parsed (see
+  // `storeBodyReceipt`).
   const plain = (message.text ?? "").trim();
   const html = (message.html ?? "").trim();
-  const body = plain || html;
-  if (!body) return [];
+  if (!plain && !html) return [];
   return [
     {
       kind: "body",
-      text: body,
-      isHtml: plain === "" && html !== "",
+      html: html || null,
+      text: plain || null,
       filename: forwardedBodyLabel(message.subject),
       envelope,
     },
@@ -2028,19 +2041,63 @@ interface ExtractedReceipt {
  * review UI renders it. Shared by the top-level body path and the
  * forwarded-message body path so the two can't drift apart.
  */
+/** The stored-document content types a body receipt can have. Both carry an
+ *  EXPLICIT charset — see `buildBodyDocument`. */
+export const HTML_DOCUMENT_TYPE = "text/html;charset=utf-8";
+export const TEXT_DOCUMENT_TYPE = "text/plain;charset=utf-8";
+
+/**
+ * Decide what an email body gets STORED as and what gets PARSED out of it —
+ * the ONE definition of that rule, shared by the live pipeline
+ * (`storeBodyReceipt`) and the repair pass that re-stores documents written
+ * before this rule existed (`receiptInboxBackfill.ts`).
+ *
+ * STORED (what a human opens): the HTML part whenever the message has one. A
+ * merchant receipt IS designed HTML — the layout the sender saw — and storing
+ * the plain-text alternative instead turns it into an unreadable wall of
+ * run-together text.
+ *
+ * PARSED (what the zero-LLM heuristics read): the plain-text alternative
+ * whenever there is one. Its line structure is what `parseReceiptFromText`'s
+ * total/merchant rules depend on; HTML only works there because tags get
+ * stripped, which also destroys the lines.
+ *
+ * CHARSET IS NOT OPTIONAL. These bodies are UTF-8 (curly apostrophes, narrow
+ * no-break spaces in times, bullet runs in masked card numbers), and a blob
+ * served as bare `text/html`/`text/plain` gets decoded with the viewer's
+ * fallback encoding — rendering "New Lin’s" as "New Linâ€™s" and "9:35 PM" as
+ * "9:35â€¯PM". Declaring it here is what stops the mojibake.
+ */
+export function buildBodyDocument(args: {
+  html?: string | null;
+  text?: string | null;
+}): { content: string; contentType: string; parseSource: string } {
+  const html = args.html?.trim() ? args.html : null;
+  const text = args.text?.trim() ? args.text : null;
+  const content = html ?? text ?? "";
+  return {
+    content,
+    contentType: html ? HTML_DOCUMENT_TYPE : TEXT_DOCUMENT_TYPE,
+    parseSource: text ?? content,
+  };
+}
+
 async function storeBodyReceipt(
   ctx: ActionCtx,
   args: {
-    text: string;
-    isHtml: boolean;
+    html?: string | null;
+    text?: string | null;
     filename: string;
     envelope?: ForwardedEnvelope;
   },
 ): Promise<ExtractedReceipt> {
+  // What to store vs. what to parse is `buildBodyDocument`'s call — shared
+  // with the repair pass so both can never drift.
+  const doc = buildBodyDocument(args);
   const storageId = await ctx.storage.store(
-    new Blob([args.text], { type: args.isHtml ? "text/html" : "text/plain" }),
+    new Blob([doc.content], { type: doc.contentType }),
   );
-  const parsed = parseReceiptFromText(args.text);
+  const parsed = parseReceiptFromText(doc.parseSource);
   return {
     storageId,
     sourceKind: "body",
@@ -2164,8 +2221,8 @@ async function runPipeline(
         // path below.
         extracted.push(
           await storeBodyReceipt(ctx, {
+            html: source.html,
             text: source.text,
-            isHtml: source.isHtml,
             filename: source.filename,
             envelope: source.envelope,
           }),
@@ -2200,19 +2257,28 @@ async function runPipeline(
     // as a file too: an email receipt saved as a document IS the receipt, so a
     // unique match can auto-attach it exactly like a photo. HTML is stored as
     // text/html so the review UI renders it.
-    const text = received?.body ?? row.subject ?? "";
-    if (text.trim()) {
+    // The HTML is what gets stored and shown; the text is what gets parsed.
+    // The subject is the last-resort stand-in when the fetch gave us neither.
+    const html = received?.html ?? null;
+    const text = received?.text ?? (html ? null : (row.subject ?? null));
+    if (html?.trim() || text?.trim()) {
       extracted.push(
         await storeBodyReceipt(ctx, {
+          html,
           text,
-          isHtml: /<[a-z][\s\S]*>/i.test(text),
           filename: "email body",
           // An INLINE forward (the ordinary "Forward" — the merchant's mail
           // pasted into the body) carries the merchant's own envelope in its
           // banner. Recovering it is the difference between a merchant of
           // "Uber Receipts" and one read off whatever chrome the forwarded
           // marketing email happened to lead with.
-          envelope: parseInlineForwardEnvelope(text) ?? undefined,
+          // Read the banner off whichever part we have — the parser flattens
+          // HTML itself, so either works; the text part is tried first because
+          // its line structure makes the pseudo-headers cleanest.
+          envelope:
+            parseInlineForwardEnvelope(text ?? "") ??
+            parseInlineForwardEnvelope(html ?? "") ??
+            undefined,
         }),
       );
     }
@@ -2311,7 +2377,11 @@ async function runPipeline(
   );
 
   // 6. Courtesy reply — ONLY to trusted (team/roster) senders. We never
-  //    confirm-or-deny anything to a stranger (a spoofable From:).
+  //    confirm-or-deny anything to a stranger (a spoofable From:). The reply
+  //    is DEBOUNCED rather than sent here: this receipt joins the sender's
+  //    open batch and one digest covers all of them (`enqueueReplyItem`), so
+  //    forwarding a stack of receipts — or a backfill replaying months of
+  //    them — earns one email, not one per receipt.
   if (isTrusted) {
     const outcome =
       result.status === "matched"
@@ -2319,9 +2389,13 @@ async function runPipeline(
         : result.status === "no_match"
           ? "no_match"
           : "needs_review";
-    await replyToSender(ctx, senderEmail, outcome, {
-      amountCents: result.amountCents,
-      merchant: result.matchedMerchant ?? undefined,
+    await ctx.runMutation(internal.receiptInbox.enqueueReplyItem, {
+      recipientEmail: senderEmail,
+      item: {
+        outcome,
+        amountCents: result.amountCents ?? undefined,
+        merchant: result.matchedMerchant ?? undefined,
+      },
     });
   }
   return null;
@@ -2329,8 +2403,10 @@ async function runPipeline(
 
 /** The parts of Resend's received-email record this pipeline reads. */
 interface ReceivedEmail {
-  /** Fullest body text available — plain text preferred, else the HTML. */
-  body: string | null;
+  /** The HTML part — what a human SEES (stored as the receipt document). */
+  html: string | null;
+  /** The plain-text alternative — what the zero-LLM parser READS. */
+  text: string | null;
   /** The message's raw headers, flattened one-per-name by Resend. Used to
    *  recover the true sender behind a mailing-list relay (`resolveListSender`). */
   headers: Record<string, string> | null;
@@ -2343,17 +2419,24 @@ interface ReceivedEmail {
  * every caller degrades (the body path falls back to the subject; sender
  * recovery falls back to the envelope `From:`).
  */
-async function fetchReceivedEmail(emailId: string): Promise<ReceivedEmail | null> {
+export async function fetchReceivedEmail(emailId: string): Promise<ReceivedEmail | null> {
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) return null;
   try {
-    const res = await fetch(`https://api.resend.com/emails/receiving/${emailId}`, {
-      headers: { Authorization: `Bearer ${apiKey}` },
-    });
+    // `html_format=data_uri` inlines the message's own embedded images as
+    // data URIs instead of leaving `cid:` references pointing at MIME parts
+    // we don't serve — without it a stored merchant receipt renders with
+    // every logo and illustration broken. (It's Resend's default, but the
+    // rendering depends on it, so it's declared rather than assumed.)
+    const res = await fetch(
+      `https://api.resend.com/emails/receiving/${emailId}?html_format=data_uri`,
+      { headers: { Authorization: `Bearer ${apiKey}` } },
+    );
     if (!res.ok) return null;
     const json: any = await res.json();
     return {
-      body: json?.text ?? json?.html ?? null,
+      html: typeof json?.html === "string" ? json.html : null,
+      text: typeof json?.text === "string" ? json.text : null,
       headers:
         json?.headers && typeof json.headers === "object" ? json.headers : null,
     };
@@ -2418,51 +2501,230 @@ export function resolveListSender(
   };
 }
 
+// ── Courtesy reply: debounced into ONE digest per sender ─────────────────────
 /**
- * Best-effort confirmation/needs-help reply to the sender (degrades to a no-op
- * without `RESEND_API_KEY`, same as every other outbound in this repo). Kept
- * plain-text-simple; the point is a human ack, not a designed email. Only ever
- * called for team/roster senders (never a stranger).
- *
- * LOOP GUARD: never replies to the receipts inbox or the Google Group fronting
- * it (`isReceiptInboxSelf`). A reply there would fan a robot ack out to every
- * group member AND be relayed straight back to us as a fresh inbound receipt.
+ * How long a sender's reply batch stays open. Someone forwarding a stack of
+ * receipts in one sitting — and a BACKFILL sweep replaying months of them —
+ * should get ONE email, not one per receipt. The window is fixed from the
+ * FIRST receipt (never extended by later ones), so a steady trickle can't
+ * postpone the reply indefinitely: a sender always hears back within this long
+ * of their first receipt. See `receiptReplyBatches` in `schema/finances.ts`.
  */
-async function replyToSender(
-  ctx: Pick<ActionCtx, "runQuery">,
-  to: string,
-  outcome: "matched" | "no_match" | "needs_review",
-  info: { amountCents: number | null; merchant?: string },
-): Promise<void> {
-  if (isReceiptInboxSelf(to)) {
-    console.log(`[receiptInbox] suppressing reply to our own inbox/list (${to}).`);
-    return;
-  }
-  const amt = info.amountCents != null ? fmtUsd(info.amountCents) : "your receipt";
-  let subject: string;
-  let line: string;
-  if (outcome === "matched") {
-    subject = "Receipt matched ✓";
-    line = `We matched ${amt}${info.merchant ? ` from ${info.merchant}` : ""} to a card charge and attached your receipt. Nothing else to do.`;
-  } else if (outcome === "no_match") {
-    subject = "Receipt received — no matching charge yet";
-    line = `Thanks — we read ${amt}, but couldn't find a card charge for it yet. We've filed it for a bookkeeper to place. If the charge posts later, they'll attach it.`;
-  } else {
-    subject = "Receipt received — needs a quick look";
-    line = `Thanks — we've received your receipt${info.amountCents != null ? ` for ${amt}` : ""} and filed it for a bookkeeper to attach to the right charge.`;
-  }
-  try {
-    await sendEmail(ctx, {
-      to,
-      subject,
-      html: `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:15px;line-height:1.6;color:#2b2320"><p>${line}</p><p style="color:#8a7d78;font-size:13px">— Public Worship finance</p></div>`,
+export const REPLY_DEBOUNCE_MS = 10 * 60 * 1000;
+/** Per-batch item cap — a digest listing hundreds of receipts helps nobody.
+ *  Anything past it is COUNTED into `overflowCount` and reported as "+N more",
+ *  never silently dropped. */
+const MAX_BATCH_ITEMS = 50;
+
+const replyItemValidator = v.object({
+  outcome: v.union(
+    v.literal("matched"),
+    v.literal("no_match"),
+    v.literal("needs_review"),
+  ),
+  amountCents: v.optional(v.number()),
+  merchant: v.optional(v.string()),
+});
+type ReplyItem = {
+  outcome: "matched" | "no_match" | "needs_review";
+  amountCents?: number;
+  merchant?: string;
+};
+
+/**
+ * Add one receipt outcome to its sender's open reply batch, opening one (and
+ * scheduling its flush) if there isn't one. This is what the pipeline calls
+ * instead of sending mail directly.
+ *
+ * LOOP GUARD: never enqueues for the receipts inbox or the Google Group
+ * fronting it (`isReceiptInboxSelf`). A reply there would fan a robot ack out
+ * to every group member AND be relayed straight back to us as a fresh inbound
+ * receipt.
+ *
+ * Concurrent arrivals are safe: Convex's OCC serializes writes, so two
+ * receipts landing at once can't both open a batch — the loser retries, reads
+ * the winner's open batch, and joins it.
+ */
+export const enqueueReplyItem = internalMutation({
+  args: { recipientEmail: v.string(), item: replyItemValidator },
+  returns: v.union(v.id("receiptReplyBatches"), v.null()),
+  handler: async (ctx, { recipientEmail, item }) => {
+    if (isReceiptInboxSelf(recipientEmail)) {
+      console.log(
+        `[receiptInbox] suppressing reply to our own inbox/list (${recipientEmail}).`,
+      );
+      return null;
+    }
+    const to = extractEmailAddress(recipientEmail);
+    if (!to) return null;
+
+    const open = await ctx.db
+      .query("receiptReplyBatches")
+      .withIndex("by_recipient_and_sent", (q) =>
+        q.eq("recipientEmail", to).eq("sentAt", undefined),
+      )
+      .first();
+    if (open) {
+      if (open.items.length >= MAX_BATCH_ITEMS) {
+        await ctx.db.patch(open._id, {
+          overflowCount: (open.overflowCount ?? 0) + 1,
+        });
+      } else {
+        await ctx.db.patch(open._id, { items: [...open.items, item] });
+      }
+      return open._id;
+    }
+
+    const batchId = await ctx.db.insert("receiptReplyBatches", {
+      recipientEmail: to,
+      items: [item],
+      windowStartedAt: Date.now(),
     });
-  } catch (err) {
-    // Best-effort by contract: `sendEmail` can still throw on a NETWORK error
-    // (its own catch only covers non-2xx). A failed courtesy reply must never
-    // fail the pipeline — the terminal status is already written by now.
-    console.log(`[receiptInbox] reply to sender failed: ${String(err)}`);
+    await ctx.scheduler.runAfter(
+      REPLY_DEBOUNCE_MS,
+      internal.receiptInbox.flushReplyBatch,
+      { batchId },
+    );
+    return batchId;
+  },
+});
+
+/**
+ * CLAIM a batch: stamp `sentAt` and hand back its contents in the SAME
+ * transaction. Claiming before sending (rather than after) is deliberate — a
+ * double-fired schedule must never send the same digest twice, and the reply
+ * is best-effort by contract, so losing one to a send failure is the better
+ * trade than mailing someone the same digest again.
+ */
+export const claimReplyBatch = internalMutation({
+  args: { batchId: v.id("receiptReplyBatches") },
+  returns: v.union(
+    v.object({
+      recipientEmail: v.string(),
+      items: v.array(replyItemValidator),
+      overflowCount: v.number(),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, { batchId }) => {
+    const batch = await ctx.db.get(batchId);
+    if (!batch || batch.sentAt != null || batch.items.length === 0) return null;
+    await ctx.db.patch(batchId, { sentAt: Date.now() });
+    return {
+      recipientEmail: batch.recipientEmail,
+      items: batch.items,
+      overflowCount: batch.overflowCount ?? 0,
+    };
+  },
+});
+
+/** Fire the digest for one batch. Scheduled `REPLY_DEBOUNCE_MS` after the
+ *  batch opened; a no-op if the batch is gone or already claimed. */
+export const flushReplyBatch = internalAction({
+  args: { batchId: v.id("receiptReplyBatches") },
+  returns: v.null(),
+  handler: async (ctx, { batchId }) => {
+    const claimed = await ctx.runMutation(internal.receiptInbox.claimReplyBatch, {
+      batchId,
+    });
+    if (!claimed) return null;
+    const { subject, html } = composeReplyDigest(
+      claimed.items,
+      claimed.overflowCount,
+    );
+    try {
+      await sendEmail(ctx, { to: claimed.recipientEmail, subject, html });
+    } catch (err) {
+      // Best-effort by contract: `sendEmail` can still throw on a NETWORK
+      // error (its own catch only covers non-2xx). A failed courtesy reply
+      // must never surface as a pipeline failure — every receipt's terminal
+      // status was written long before this ran.
+      console.log(`[receiptInbox] reply digest failed: ${String(err)}`);
+    }
+    return null;
+  },
+});
+
+/** One line describing a single receipt's outcome, for a multi-receipt digest. */
+function digestLine(item: ReplyItem): string {
+  const amt = item.amountCents != null ? fmtUsd(item.amountCents) : "Receipt";
+  const from = item.merchant ? ` from ${item.merchant}` : "";
+  const tail =
+    item.outcome === "matched"
+      ? "attached to a card charge"
+      : item.outcome === "no_match"
+        ? "no matching charge yet — filed for a bookkeeper"
+        : "needs a bookkeeper's eye";
+  return `${amt}${from} — ${tail}`;
+}
+
+/**
+ * Compose the digest for one batch. A SINGLE receipt reads exactly as it
+ * always did (this is the common case and shouldn't have become a "digest");
+ * several read as a summary line plus one line per receipt. Pure + exported
+ * for direct unit testing.
+ */
+export function composeReplyDigest(
+  items: ReplyItem[],
+  overflowCount = 0,
+): { subject: string; html: string } {
+  const wrap = (body: string) =>
+    `<div style="font-family:-apple-system,'Segoe UI',Roboto,sans-serif;font-size:15px;line-height:1.6;color:#2b2320">${body}<p style="color:#8a7d78;font-size:13px">— Public Worship finance</p></div>`;
+
+  if (items.length === 1) {
+    const only = items[0];
+    const amt = only.amountCents != null ? fmtUsd(only.amountCents) : "your receipt";
+    if (only.outcome === "matched") {
+      return {
+        subject: "Receipt matched ✓",
+        html: wrap(
+          `<p>We matched ${amt}${only.merchant ? ` from ${only.merchant}` : ""} to a card charge and attached your receipt. Nothing else to do.</p>`,
+        ),
+      };
+    }
+    if (only.outcome === "no_match") {
+      return {
+        subject: "Receipt received — no matching charge yet",
+        html: wrap(
+          `<p>Thanks — we read ${amt}, but couldn't find a card charge for it yet. We've filed it for a bookkeeper to place. If the charge posts later, they'll attach it.</p>`,
+        ),
+      };
+    }
+    return {
+      subject: "Receipt received — needs a quick look",
+      html: wrap(
+        `<p>Thanks — we've received your receipt${only.amountCents != null ? ` for ${amt}` : ""} and filed it for a bookkeeper to attach to the right charge.</p>`,
+      ),
+    };
   }
+
+  const total = items.length + overflowCount;
+  const matched = items.filter((i) => i.outcome === "matched").length;
+  const needsReview = items.filter((i) => i.outcome === "needs_review").length;
+  const noMatch = items.filter((i) => i.outcome === "no_match").length;
+  const allMatched = matched === items.length && overflowCount === 0;
+
+  const parts: string[] = [];
+  if (matched) parts.push(`${matched} attached to charges`);
+  if (noMatch) parts.push(`${noMatch} with no matching charge yet`);
+  if (needsReview) parts.push(`${needsReview} needing a bookkeeper's eye`);
+
+  const lead = allMatched
+    ? `We matched all ${total} receipts you sent to card charges and attached them. Nothing else to do.`
+    : `We processed ${total} receipt${total === 1 ? "" : "s"} you sent: ${parts.join(", ")}. Anything unmatched is filed for a bookkeeper — nothing is lost.`;
+  const list = items.map((i) => `<li>${digestLine(i)}</li>`).join("");
+  const more = overflowCount
+    ? `<p style="color:#8a7d78;font-size:13px">+${overflowCount} more not listed individually.</p>`
+    : "";
+
+  return {
+    subject: allMatched
+      ? `${total} receipts matched ✓`
+      : `${total} receipts received`,
+    html: wrap(
+      `<p>${lead}</p><ul style="padding-left:18px;margin:8px 0">${list}</ul>${more}`,
+    ),
+  };
 }
 
 // ── Review-queue surface (in-app, bookkeeper+) ───────────────────────────────

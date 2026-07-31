@@ -1244,6 +1244,53 @@ export const inboundReceipts = defineTable({
   // Scope the review queue to one chapter once the sender is resolved.
   .index("by_chapter", ["chapterId"]);
 
+/**
+ * DEBOUNCE BATCH for the courtesy reply an emailed receipt earns its sender
+ * (`receiptInbox.ts`'s `enqueueReplyItem` / `flushReplyBatch`).
+ *
+ * Without it, a person who forwards eight receipts in one sitting gets eight
+ * near-identical robot emails, and a BACKFILL sweep of months-old receipts
+ * would blast a whole burst of them at once. Instead, the first receipt from a
+ * given address OPENS a batch and schedules its flush `REPLY_DEBOUNCE_MS`
+ * later; every receipt from that same address in the meantime joins the same
+ * batch, and the flush sends exactly ONE digest covering all of them.
+ *
+ * Keyed on the RECIPIENT ADDRESS (normalized), not on a person: the digest is
+ * an email, and the address is where it goes — someone sending from two
+ * addresses is two conversations and gets two digests.
+ *
+ * The window is fixed from the FIRST item rather than extended by each new
+ * one, so a steady trickle can never postpone a reply indefinitely — the
+ * sender always hears back within `REPLY_DEBOUNCE_MS` of their first receipt.
+ * A batch is OPEN while `sentAt` is unset; the flush claims it by stamping
+ * `sentAt` in the same transaction it reads the items, so a double-fired
+ * schedule can never send the same digest twice.
+ */
+export const receiptReplyBatches = defineTable({
+  // Normalized address the digest goes to — the batch key.
+  recipientEmail: v.string(),
+  // Every receipt outcome accumulated in this window, in arrival order.
+  items: v.array(
+    v.object({
+      outcome: v.union(
+        v.literal("matched"),
+        v.literal("no_match"),
+        v.literal("needs_review"),
+      ),
+      amountCents: v.optional(v.number()),
+      merchant: v.optional(v.string()),
+    }),
+  ),
+  windowStartedAt: v.number(),
+  // Set the moment the flush claims the batch. Unset = still open.
+  sentAt: v.optional(v.number()),
+  // Receipts that arrived past the per-batch item cap — counted, never
+  // silently dropped (the digest says "+N more").
+  overflowCount: v.optional(v.number()),
+})
+  // The open-batch lookup: "is there an unflushed batch for this address?"
+  .index("by_recipient_and_sent", ["recipientEmail", "sentAt"]);
+
 // ── Receipts (first-class documents, many-to-many with transactions) ─────────
 /** A first-class receipt DOCUMENT — the source of truth a receipt is, decoupled
  *  from any single transaction. A receipt links to MANY transactions (a split

@@ -51,6 +51,7 @@ import { formatDate } from "../../../lib/format";
 import {
   formatCents,
   isPdfReceipt,
+  isDocumentReceipt,
   senderClassLabel,
   senderClassTone,
   LIBRARY_FILTERS,
@@ -98,9 +99,12 @@ export function LibrarySection({
   );
   const { wrapperRef, onWrapperLayout, hoverProps, layer } = useHoverImagePreview();
   // The full-size viewer a thumbnail press opens (the native + click path).
-  const [lightbox, setLightbox] = useState<{ uri: string; caption?: string; isPdf?: boolean } | null>(
-    null,
-  );
+  const [lightbox, setLightbox] = useState<{
+    uri: string;
+    caption?: string;
+    isPdf?: boolean;
+    isDocument?: boolean;
+  } | null>(null);
 
   const tableWidth = (Object.values(widths) as number[]).reduce((sum, w) => sum + w, 0);
 
@@ -174,6 +178,7 @@ export function LibrarySection({
           uri={lightbox.uri}
           caption={lightbox.caption}
           isPdf={lightbox.isPdf}
+          isDocument={lightbox.isDocument}
           visible
           onClose={() => setLightbox(null)}
         />
@@ -196,7 +201,12 @@ function ReceiptGridRow({
   widths: Record<ColKey, number>;
   isLast: boolean;
   hoverProps: (uri: string | null | undefined) => object;
-  onOpenLightbox: (v: { uri: string; caption?: string; isPdf?: boolean }) => void;
+  onOpenLightbox: (v: {
+    uri: string;
+    caption?: string;
+    isPdf?: boolean;
+    isDocument?: boolean;
+  }) => void;
   onPress: () => void;
   onJumpToOriginal?: () => void;
   original?: ReceiptRow;
@@ -205,17 +215,21 @@ function ReceiptGridRow({
   // (see `helpers.ts#isPdfReceipt`'s doc; ONE definition shared with
   // `ReceiptDetailModal`).
   const isPdf = isPdfReceipt(receipt.filename);
+  // An emailed receipt's `text/html` body is a DOCUMENT, not a photo —
+  // `<Image>` can't decode it, so it takes the same framed treatment a PDF
+  // does (see `isDocumentReceipt`).
+  const isDoc = !isPdf && isDocumentReceipt(receipt.contentType);
   // A genuinely broken image URL (bad file, expired signed URL, ...) used to
   // just render nothing — now it degrades to the same icon treatment as "no
   // file" rather than silently blanking (mirrors `ReceiptDetailModal`'s
   // `imgFailed` state).
   const [imgFailed, setImgFailed] = useState(false);
-  const showImage = !!receipt.url && !isPdf && !imgFailed;
+  const showImage = !!receipt.url && !isPdf && !isDoc && !imgFailed;
   // PDFs have no rendered preview to float (there's no persisted preview
   // image — see the PR's doc) — `null` uri makes `hoverProps` return no
   // handlers at all, so the hook's existing "nothing to show" path applies
   // instead of floating a blank white card.
-  const hoverUri = isPdf ? null : receipt.url;
+  const hoverUri = isPdf || isDoc ? null : receipt.url;
 
   return (
     <GridRow
@@ -235,11 +249,18 @@ function ReceiptGridRow({
           {...hoverProps(hoverUri)}
           onPress={() => {
             if (receipt.url) {
-              onOpenLightbox({ uri: receipt.url, caption: receipt.filename ?? undefined, isPdf });
+              onOpenLightbox({
+                uri: receipt.url,
+                caption: receipt.filename ?? undefined,
+                isPdf,
+                isDocument: isDoc,
+              });
             }
           }}
           disabled={!receipt.url}
-          accessibilityLabel={isPdf ? "View receipt PDF" : "View receipt image"}
+          accessibilityLabel={
+            isPdf ? "View receipt PDF" : isDoc ? "View emailed receipt" : "View receipt image"
+          }
           className="p-1.5"
           style={{ height: ROW_HEIGHT }}
         >
@@ -257,13 +278,15 @@ function ReceiptGridRow({
                 resizeMode="cover"
                 onError={() => setImgFailed(true)}
               />
-            ) : receipt.url && isPdf ? (
+            ) : receipt.url && (isPdf || isDoc) ? (
               // Legible "this is a PDF, not a missing file" affordance — a
               // bare file-text icon reads identically to "no file at all",
               // which these two states must not.
               <View className="flex-1 items-center justify-center gap-0.5">
                 <Icon name="file-text" size={16} color={colors.faint} />
-                <Text className="text-2xs font-bold text-faint">PDF</Text>
+                <Text className="text-2xs font-bold text-faint">
+                  {isPdf ? "PDF" : "EMAIL"}
+                </Text>
               </View>
             ) : (
               <View className="flex-1 items-center justify-center">
