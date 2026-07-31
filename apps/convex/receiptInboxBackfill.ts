@@ -2,10 +2,10 @@
  * Receipt-inbox RECOVERY — the catch-up pass for receipts that were emailed
  * before the Google-Group relay was handled correctly.
  *
- * Two distinct losses happened, so there are two passes. Both are internal,
- * ops-dispatch only (no UI, no cron, nothing on the public API), and both are
+ * Three distinct losses happened, so there are three passes. All are internal,
+ * ops-dispatch only (no UI, no cron, nothing on the public API), and all are
  * DRY-RUN BY DEFAULT: without `execute: true` they write NOTHING and return
- * exactly the counts a real run would produce. Both are idempotent — a second
+ * exactly the counts a real run would produce. All are idempotent — a second
  * execute run is a no-op.
  *
  *  1. `backfillMissedReceiptEmails` — DROPPED MAIL. Anything sent to the
@@ -26,7 +26,17 @@
  *     recovers the poster (`resolveListSender`), and re-patches sender /
  *     chapter / class onto the row and the `receipts` it produced.
  *
- * MONEY SAFETY: pass 2 NEVER auto-attaches. Re-attribution is bookkeeping
+ *  3. `restoreEmailBodyDocuments` — UNREADABLE DOCUMENTS. Receipts that landed
+ *     fine but whose stored document was written from the message's
+ *     plain-text ALTERNATIVE with no charset declared, so a bookkeeper opened
+ *     a wall of run-together text full of mojibake instead of the merchant's
+ *     receipt. This pass re-fetches each message and rebuilds its document
+ *     through the same `buildBodyDocument` the live pipeline now uses. It
+ *     swaps the FILE and nothing else — no re-OCR, no re-matching, and every
+ *     receipt↔transaction link stays exactly as a human left it.
+ *
+ * MONEY SAFETY: pass 2 NEVER auto-attaches, and pass 3 never touches a link,
+ * an amount, or a status. Re-attribution is bookkeeping
  * metadata; deciding that a months-old receipt matches a particular charge is a
  * human's call, and the review queue is where they make it. Pass 1 runs the
  * normal pipeline, which carries the normal auto-attach policy (a trusted
@@ -43,6 +53,8 @@ import {
   isReceiptInboxSelf,
   resolveListSender,
   extractEmailAddress,
+  fetchReceivedEmail,
+  buildBodyDocument,
 } from "./receiptInbox";
 
 /** How many received emails one backfill run will look at. Bounded: this is an
@@ -57,6 +69,8 @@ const PIPELINE_STAGGER_MS = 500;
 /** Bound on how many `receipts` rows one inbound email is expected to have
  *  produced — comfortably above `MAX_RECEIPT_SOURCES`. */
 const MAX_RECEIPTS_PER_ROW = 50;
+/** Bound on how many transactions one receipt's document swap will repoint. */
+const MAX_LINKS_PER_RECEIPT = 50;
 
 /**
  * One received email as the LIST endpoint reports it (metadata only).
@@ -102,6 +116,20 @@ interface ReattributeReport {
   reattributed: number;
   unchanged: number;
   samples: string[];
+}
+interface RestoreReport {
+  executed: boolean;
+  scanned: number;
+  restored: number;
+  skipped: number;
+  repointedTransactions: number;
+  samples: string[];
+}
+interface BodyDocumentCandidate {
+  receiptId: Id<"receipts">;
+  storageId: Id<"_storage">;
+  emailId: string;
+  filename: string | null;
 }
 interface ReattributionCandidate {
   _id: Id<"inboundReceipts">;
@@ -431,6 +459,207 @@ export const reattributeRelayedReceipts = internalAction({
       unchanged,
       samples,
     };
+  },
+});
+
+// ── Pass 3: body documents stored before the HTML/charset rule existed ───────
+/**
+ * Receipts whose STORED DOCUMENT predates `buildBodyDocument` — written from
+ * the message's plain-text alternative, with no charset declared. Those are
+ * the ones that render as a wall of run-together text with mojibake.
+ *
+ * This query only narrows to EMAIL-SOURCED receipts whose message we can
+ * still ask Resend for; the "is this document actually the old shape?"
+ * decision belongs to the action, which reads the stored blob's own type
+ * (`needsRepair`). Doing it there rather than off `_storage` metadata keeps
+ * one source of truth for the answer — the bytes as stored.
+ */
+export const listBodyDocumentCandidates = internalQuery({
+  args: { limit: v.number() },
+  returns: v.array(
+    v.object({
+      receiptId: v.id("receipts"),
+      storageId: v.id("_storage"),
+      emailId: v.string(),
+      filename: v.union(v.string(), v.null()),
+    }),
+  ),
+  handler: async (ctx, { limit }) => {
+    const rows = await ctx.db.query("receipts").order("desc").take(limit);
+    const out = [];
+    for (const r of rows) {
+      if (r.source !== "email" || r.inboundReceiptId == null) continue;
+      const inbound = await ctx.db.get(r.inboundReceiptId);
+      if (!inbound?.emailId) continue;
+      out.push({
+        receiptId: r._id,
+        storageId: r.storageId,
+        emailId: inbound.emailId,
+        filename: r.filename ?? null,
+      });
+    }
+    return out;
+  },
+});
+
+/**
+ * Point a receipt at a freshly-stored document and keep every pointer to the
+ * old one honest.
+ *
+ * `transactions.receiptStorageId` is a DENORMALIZED CACHE of
+ * `receipts.storageId` (see `lib/receiptLinks.ts`) — swapping the file without
+ * repointing it would leave a reconciled charge showing a deleted blob, which
+ * is strictly worse than the mojibake this pass exists to fix. Every linked
+ * transaction still pointing at the old file is repointed in the SAME
+ * transaction as the swap.
+ *
+ * `fileSha256` is re-read from the new blob so the cross-source duplicate
+ * guard keeps describing the bytes that are actually stored.
+ *
+ * Returns the OLD storage id so the caller can delete it only after the swap
+ * has committed — never before.
+ */
+export const swapReceiptDocument = internalMutation({
+  args: { receiptId: v.id("receipts"), newStorageId: v.id("_storage") },
+  returns: v.union(
+    v.object({
+      oldStorageId: v.id("_storage"),
+      repointedTransactions: v.number(),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, { receiptId, newStorageId }) => {
+    const receipt = await ctx.db.get(receiptId);
+    if (!receipt) return null;
+    const oldStorageId = receipt.storageId;
+    if (oldStorageId === newStorageId) return null;
+
+    const meta = await ctx.db.system.get("_storage", newStorageId);
+    await ctx.db.patch(receiptId, {
+      storageId: newStorageId,
+      ...(meta?.sha256 ? { fileSha256: meta.sha256 } : {}),
+      updatedAt: Date.now(),
+    });
+
+    const links = await ctx.db
+      .query("receiptLinks")
+      .withIndex("by_receipt", (q) => q.eq("receiptId", receiptId))
+      .take(MAX_LINKS_PER_RECEIPT);
+    let repointedTransactions = 0;
+    for (const link of links) {
+      const txn = await ctx.db.get(link.transactionId);
+      if (txn && txn.receiptStorageId === oldStorageId) {
+        await ctx.db.patch(link.transactionId, { receiptStorageId: newStorageId });
+        repointedTransactions++;
+      }
+    }
+    return { oldStorageId, repointedTransactions };
+  },
+});
+
+/** True iff a stored document predates the HTML/charset rule: a `text/*` blob
+ *  with no declared charset. An attachment receipt (image, PDF) is stored
+ *  verbatim and was never affected; a repaired document always carries
+ *  `charset=`, which is what makes a re-run a no-op. */
+function needsRepair(contentType: string): boolean {
+  const ct = contentType.toLowerCase();
+  return ct.startsWith("text/") && !ct.includes("charset=");
+}
+
+const restoreResult = v.object({
+  executed: v.boolean(),
+  scanned: v.number(),
+  /** Documents re-stored from the message's HTML (or its text, with a charset). */
+  restored: v.number(),
+  /** Candidates left alone — the message is no longer fetchable from Resend,
+   *  or it carried no body at all. */
+  skipped: v.number(),
+  repointedTransactions: v.number(),
+  samples: v.array(v.string()),
+});
+
+/**
+ * Re-store the body documents written before the HTML/charset rule, so
+ * receipts that ALREADY landed render like the receipts they are instead of a
+ * wall of text. Dry-run by default; idempotent (see
+ * `listBodyDocumentCandidates`).
+ *
+ * Re-fetches each message from Resend and rebuilds its document through the
+ * SAME `buildBodyDocument` the live pipeline uses. Deliberately does NOT
+ * re-run OCR, matching, or linking: the amount, merchant, and every
+ * receipt↔transaction link stay exactly as a human left them. This swaps the
+ * FILE and nothing else.
+ */
+export const restoreEmailBodyDocuments = internalAction({
+  args: {
+    limit: v.optional(v.number()),
+    execute: v.optional(v.boolean()),
+  },
+  returns: restoreResult,
+  handler: async (ctx, args): Promise<RestoreReport> => {
+    const executed = args.execute === true;
+    const limit = Math.min(args.limit ?? DEFAULT_SCAN_LIMIT, MAX_SCAN_LIMIT);
+    const candidates: BodyDocumentCandidate[] = await ctx.runQuery(
+      internal.receiptInboxBackfill.listBodyDocumentCandidates,
+      { limit },
+    );
+
+    let scanned = 0;
+    let restored = 0;
+    let skipped = 0;
+    let repointedTransactions = 0;
+    const samples: string[] = [];
+
+    for (const c of candidates) {
+      // The stored blob's OWN type is the decision — and its charset is the
+      // idempotency marker, so a second run skips everything the first fixed.
+      const currentType = await ctx.storage
+        .get(c.storageId)
+        .then((b) => b?.type ?? "")
+        .catch(() => "");
+      if (!needsRepair(currentType)) continue;
+      scanned++;
+
+      const received = await fetchReceivedEmail(c.emailId);
+      const doc = received
+        ? buildBodyDocument({ html: received.html, text: received.text })
+        : null;
+      if (!doc || !doc.content.trim()) {
+        // The message is gone from Resend (or carried no body) — leave the
+        // existing document exactly as it is rather than replacing it with
+        // nothing.
+        skipped++;
+        continue;
+      }
+      restored++;
+      if (samples.length < 20) {
+        samples.push(
+          `${c.filename ?? "(no filename)"}: ${currentType || "(unknown)"} → ${doc.contentType}`,
+        );
+      }
+      if (!executed) continue;
+
+      const newStorageId = await ctx.storage.store(
+        new Blob([doc.content], { type: doc.contentType }),
+      );
+      const swap = await ctx.runMutation(
+        internal.receiptInboxBackfill.swapReceiptDocument,
+        { receiptId: c.receiptId, newStorageId },
+      );
+      if (!swap) {
+        // The receipt vanished mid-run — drop the blob we just wrote rather
+        // than orphaning it.
+        await ctx.storage.delete(newStorageId);
+        restored--;
+        skipped++;
+        continue;
+      }
+      repointedTransactions += swap.repointedTransactions;
+      // Only now that the swap has committed is the old file safe to drop.
+      await ctx.storage.delete(swap.oldStorageId);
+    }
+
+    return { executed, scanned, restored, skipped, repointedTransactions, samples };
   },
 });
 

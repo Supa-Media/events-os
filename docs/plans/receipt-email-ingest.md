@@ -189,6 +189,7 @@ default**, and idempotent. Run the dry run first and read the counts.
 | --- | --- | --- | --- |
 | `backfillMissedReceiptEmails` | Group-relayed mail the address filter dropped before it recognized the group. These have **no row at all** — they exist only on Resend's side. | `{}` | `{ execute: true }` |
 | `reattributeRelayedReceipts` | Rows that WERE recorded but attributed to the list instead of the poster (Google's DMARC `From:` rewrite), so they never drew a person or chapter. | `{}` | `{ execute: true }` |
+| `restoreEmailBodyDocuments` | Receipts whose stored document was written from the message's plain-text alternative with no charset — the wall of run-together text with mojibake. Re-fetches each message and rebuilds the document through `buildBodyDocument`. | `{}` | `{ execute: true }` |
 
 Both take `limit` (default 100, max 500); the first also takes `sinceMs` to
 bound how far back it looks.
@@ -200,6 +201,13 @@ bound how far back it looks.
 - Pass 2 is **metadata only** and never attaches a receipt to a charge: a
   months-old match is a human's call, and those rows are already sitting in the
   review queue for one.
+- Pass 3 swaps the **file and nothing else** — no re-OCR, no re-matching, and
+  every receipt↔transaction link stays as a human left it. It repoints the
+  denormalized `transactions.receiptStorageId` cache in the same transaction as
+  the swap (otherwise a reconciled charge would point at a deleted blob), and
+  only deletes the old file once that has committed. A message Resend no longer
+  holds is left exactly as it is rather than replaced with nothing. Its
+  idempotency marker is the stored blob's own charset.
 - Pass 1 matches on the list response's `to`/`cc`. Resend's `received_for` is
   not dependable on the *list* endpoint (only on a single retrieve), so a
   message that named neither receipts address in its headers — a pure BCC or

@@ -2041,6 +2041,47 @@ interface ExtractedReceipt {
  * review UI renders it. Shared by the top-level body path and the
  * forwarded-message body path so the two can't drift apart.
  */
+/** The stored-document content types a body receipt can have. Both carry an
+ *  EXPLICIT charset — see `buildBodyDocument`. */
+export const HTML_DOCUMENT_TYPE = "text/html;charset=utf-8";
+export const TEXT_DOCUMENT_TYPE = "text/plain;charset=utf-8";
+
+/**
+ * Decide what an email body gets STORED as and what gets PARSED out of it —
+ * the ONE definition of that rule, shared by the live pipeline
+ * (`storeBodyReceipt`) and the repair pass that re-stores documents written
+ * before this rule existed (`receiptInboxBackfill.ts`).
+ *
+ * STORED (what a human opens): the HTML part whenever the message has one. A
+ * merchant receipt IS designed HTML — the layout the sender saw — and storing
+ * the plain-text alternative instead turns it into an unreadable wall of
+ * run-together text.
+ *
+ * PARSED (what the zero-LLM heuristics read): the plain-text alternative
+ * whenever there is one. Its line structure is what `parseReceiptFromText`'s
+ * total/merchant rules depend on; HTML only works there because tags get
+ * stripped, which also destroys the lines.
+ *
+ * CHARSET IS NOT OPTIONAL. These bodies are UTF-8 (curly apostrophes, narrow
+ * no-break spaces in times, bullet runs in masked card numbers), and a blob
+ * served as bare `text/html`/`text/plain` gets decoded with the viewer's
+ * fallback encoding — rendering "New Lin’s" as "New Linâ€™s" and "9:35 PM" as
+ * "9:35â€¯PM". Declaring it here is what stops the mojibake.
+ */
+export function buildBodyDocument(args: {
+  html?: string | null;
+  text?: string | null;
+}): { content: string; contentType: string; parseSource: string } {
+  const html = args.html?.trim() ? args.html : null;
+  const text = args.text?.trim() ? args.text : null;
+  const content = html ?? text ?? "";
+  return {
+    content,
+    contentType: html ? HTML_DOCUMENT_TYPE : TEXT_DOCUMENT_TYPE,
+    parseSource: text ?? content,
+  };
+}
+
 async function storeBodyReceipt(
   ctx: ActionCtx,
   args: {
@@ -2050,34 +2091,13 @@ async function storeBodyReceipt(
     envelope?: ForwardedEnvelope;
   },
 ): Promise<ExtractedReceipt> {
-  // TWO DIFFERENT JOBS, two different sources.
-  //
-  // STORED (what a human opens in the review queue): the HTML part whenever
-  // the message has one. A merchant receipt IS designed HTML — the layout the
-  // sender saw — and storing the plain-text alternative instead turns it into
-  // an unreadable wall of run-together text, which is exactly what a
-  // bookkeeper was seeing for forwarded receipts.
-  //
-  // PARSED (what the zero-LLM heuristics read): the plain-text alternative
-  // whenever there is one. Its line structure is what `parseReceiptFromText`'s
-  // total/merchant line rules depend on; HTML only works there because tags
-  // get stripped, which also destroys the lines.
-  const html = args.html?.trim() ? args.html : null;
-  const text = args.text?.trim() ? args.text : null;
-  const document = html ?? text ?? "";
-  const parseSource = text ?? document;
-
-  // CHARSET IS NOT OPTIONAL. These bodies are UTF-8 (curly apostrophes,
-  // narrow no-break spaces in times, bullet runs in masked card numbers), and
-  // a stored blob served as bare `text/html`/`text/plain` gets decoded by the
-  // viewer's fallback encoding — rendering "New Lin’s" as "New Linâ€™s" and
-  // "9:35 PM" as "9:35â€¯PM". Declaring it here is what stops the mojibake.
+  // What to store vs. what to parse is `buildBodyDocument`'s call — shared
+  // with the repair pass so both can never drift.
+  const doc = buildBodyDocument(args);
   const storageId = await ctx.storage.store(
-    new Blob([document], {
-      type: html ? "text/html;charset=utf-8" : "text/plain;charset=utf-8",
-    }),
+    new Blob([doc.content], { type: doc.contentType }),
   );
-  const parsed = parseReceiptFromText(parseSource);
+  const parsed = parseReceiptFromText(doc.parseSource);
   return {
     storageId,
     sourceKind: "body",
@@ -2399,7 +2419,7 @@ interface ReceivedEmail {
  * every caller degrades (the body path falls back to the subject; sender
  * recovery falls back to the envelope `From:`).
  */
-async function fetchReceivedEmail(emailId: string): Promise<ReceivedEmail | null> {
+export async function fetchReceivedEmail(emailId: string): Promise<ReceivedEmail | null> {
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) return null;
   try {
