@@ -84,7 +84,7 @@ function ReceiptsBody() {
             <Text className="font-display text-2xl text-ink">Receipts</Text>
           </View>
           <Text className="mb-4 text-sm text-muted">
-            Every receipt the chapter has — emailed to receipts@reply.publicworship.life
+            Every receipt the chapter has — emailed to receipts@publicworship.life
             or uploaded here — in one library. Review the inbox, match a receipt to a
             charge, or backfill a batch below.
           </Text>

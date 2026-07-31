@@ -8,6 +8,11 @@ import type { ActionCtx } from "../_generated/server";
 import {
   parseReceiptFromText,
   isReceiptInboxAddress,
+  isReceiptInboxSelf,
+  resolveListSender,
+  headerValue,
+  parseInlineForwardEnvelope,
+  extractMerchantGuess,
   extractEmailAddress,
   deriveMerchantFromEmail,
   extractMidLineMerchant,
@@ -258,6 +263,162 @@ describe("deriveMerchantFromEmail", () => {
         "Re: Fwd: Your receipt from Givebutter, Inc. #2383-5178",
       ),
     ).toBe("Givebutter, Inc.");
+  });
+
+  // ── BUG FIX (the group-forward shape): a HUMAN's display name is not a
+  // merchant. A team member forwarding a receipt from their gmail, or the
+  // Google Group's own DMARC-rewritten `From:`, would otherwise become the
+  // "merchant" on the receipt. Merchantless domains skip the display-name AND
+  // domain-label tiers alike. ────────────────────────────────────────────────
+  test("a person's display name on a free mail host is not a merchant", () => {
+    expect(deriveMerchantFromEmail('"Charisma S." <charisma@gmail.com>')).toBeNull();
+  });
+
+  test("our own domain (and the list on it) carries no merchant identity", () => {
+    expect(
+      deriveMerchantFromEmail('"Charisma S. via receipts" <receipts@publicworship.life>'),
+    ).toBeNull();
+    expect(deriveMerchantFromEmail("receipts@reply.publicworship.life")).toBeNull();
+  });
+
+  test("a merchantless sender still yields a merchant off the subject", () => {
+    expect(
+      deriveMerchantFromEmail(
+        '"Charisma S. via receipts" <receipts@publicworship.life>',
+        "Fwd: Your receipt from Blue Bottle Coffee",
+      ),
+    ).toBe("Blue Bottle Coffee");
+  });
+});
+
+// ── resolveListSender (the Google-Group relay: who actually posted?) ─────────
+describe("resolveListSender", () => {
+  const LIST_HEADERS = {
+    "List-Id": "<receipts.publicworship.life>",
+    "X-Original-Sender": "charisma@example.com",
+  };
+
+  test("recovers the poster from X-Original-Sender on list mail", () => {
+    // Google rewrote `From:` for a DMARC-strict poster — without recovery this
+    // classifies as the LIST, never as the person, so it can never auto-attach.
+    expect(
+      resolveListSender('"Charisma S. via receipts" <receipts@publicworship.life>', LIST_HEADERS),
+    ).toEqual({
+      fromEmail: "charisma@example.com",
+      relayedVia: "<receipts.publicworship.life>",
+    });
+  });
+
+  test("X-Original-Sender is IGNORED without a list header (direct mail)", () => {
+    expect(
+      resolveListSender("stranger@example.com", {
+        "X-Original-Sender": "cfo@publicworship.life",
+      }),
+    ).toEqual({ fromEmail: "stranger@example.com", relayedVia: null });
+  });
+
+  test("list mail with no X-Original-Sender keeps the envelope From", () => {
+    expect(
+      resolveListSender("charisma@example.com", {
+        "list-post": "<mailto:receipts@publicworship.life>",
+      }),
+    ).toEqual({
+      fromEmail: "charisma@example.com",
+      relayedVia: "<mailto:receipts@publicworship.life>",
+    });
+  });
+
+  test("no headers at all (no API key, a failed fetch) is a clean no-op", () => {
+    expect(resolveListSender("charisma@example.com", null)).toEqual({
+      fromEmail: "charisma@example.com",
+      relayedVia: null,
+    });
+  });
+});
+
+describe("headerValue", () => {
+  test("looks headers up case-insensitively, skipping blanks", () => {
+    const h = { "X-Original-Sender": "a@b.com", "List-Id": "   " };
+    expect(headerValue(h, "x-original-sender")).toBe("a@b.com");
+    expect(headerValue(h, "LIST-ID")).toBeNull();
+    expect(headerValue(h, "missing")).toBeNull();
+    expect(headerValue(null, "list-id")).toBeNull();
+  });
+});
+
+// ── parseInlineForwardEnvelope (the ordinary "Forward") ──────────────────────
+// The screenshot shape: a team member forwards the merchant's email INLINE, so
+// the only real merchant signal is the forward banner Gmail pasted in.
+describe("parseInlineForwardEnvelope", () => {
+  test("reads From/Subject off a Gmail plain-text forward banner", () => {
+    const body = [
+      "Paying it back",
+      "",
+      "Best,",
+      "Charisma Stevens",
+      "",
+      "---------- Forwarded message ---------",
+      "From: Uber Receipts <noreply@uber.com>",
+      "Date: Thu, Jul 30, 2026 at 9:35 PM",
+      "Subject: [Personal] Your Thursday evening order with Uber Eats",
+      "To: <charisma@example.com>",
+      "",
+      "Total $298.52",
+    ].join("\n");
+    expect(parseInlineForwardEnvelope(body)).toEqual({
+      fromEmail: "Uber Receipts <noreply@uber.com>",
+      subject: "[Personal] Your Thursday evening order with Uber Eats",
+    });
+  });
+
+  test("reads an HTML forward banner whose headers collapse onto one line", () => {
+    // `<br>`-separated in the source, so the pseudo-headers only stay apart
+    // because each stops at the next header NAME, not at a newline.
+    const html =
+      "<div>Paying it back<br><br>---------- Forwarded message ---------<br>" +
+      'From: <b>Uber Receipts</b> &lt;<a href="mailto:noreply@uber.com">noreply@uber.com</a>&gt;<br>' +
+      "Date: Thu, Jul 30, 2026 at 9:35PM<br>" +
+      "Subject: Your Thursday evening order with Uber Eats<br>" +
+      "To: &lt;charisma@example.com&gt;</div>";
+    const env = parseInlineForwardEnvelope(html);
+    expect(env?.fromEmail).toContain("noreply@uber.com");
+    expect(env?.subject).toBe("Your Thursday evening order with Uber Eats");
+  });
+
+  test("Apple Mail's and Outlook's banners are recognized too", () => {
+    expect(
+      parseInlineForwardEnvelope(
+        "Begin forwarded message:\nFrom: Blue Bottle <hi@bluebottle.example>\nSubject: Receipt",
+      )?.fromEmail,
+    ).toBe("Blue Bottle <hi@bluebottle.example>");
+    expect(
+      parseInlineForwardEnvelope(
+        "-----Original Message-----\nFrom: Blue Bottle <hi@bluebottle.example>\nSent: Monday\nSubject: Receipt",
+      )?.subject,
+    ).toBe("Receipt");
+  });
+
+  test("a body with no forward banner yields null (never a guess)", () => {
+    expect(parseInlineForwardEnvelope("Total: $42.10\nThanks for your order.")).toBeNull();
+    // A banner with nothing usable under it is null too.
+    expect(parseInlineForwardEnvelope("---------- Forwarded message ---------")).toBeNull();
+  });
+});
+
+// ── extractMerchantGuess (which tier a merchant came from) ───────────────────
+describe("extractMerchantGuess", () => {
+  test("a business-entity suffix is STRONG; a bare plausible line is WEAK", () => {
+    expect(extractMerchantGuess(["Givebutter, Inc.", "Total: $75.00"])).toEqual({
+      name: "Givebutter, Inc.",
+      strong: true,
+    });
+    // Exactly the trap a forwarded marketing receipt sets: the first
+    // plausible-looking line is chrome, not a merchant.
+    expect(extractMerchantGuess(["Payments", "Total: $75.00"])).toEqual({
+      name: "Payments",
+      strong: false,
+    });
+    expect(extractMerchantGuess(["Total: $75.00"])).toBeNull();
   });
 });
 
@@ -709,6 +870,34 @@ describe("isReceiptInboxAddress", () => {
     expect(
       isReceiptInboxAddress(['"PW Receipts" <receipts@reply.publicworship.life>']),
     ).toBe(true);
+  });
+
+  // ── BUG FIX: humans mail the GOOGLE GROUP (`receipts@publicworship.life`),
+  // which relays to our Resend inbound address because it's a member. The
+  // relayed post still names the GROUP in `To:` — the member address only
+  // appears on the envelope (`received_for`, unioned in by `http.ts`) — so a
+  // filter that knew only the member address dropped every group forward.
+  test("accepts the Google Group address the relay keeps in `To:`", () => {
+    expect(isReceiptInboxAddress(["receipts@publicworship.life"])).toBe(true);
+    expect(
+      isReceiptInboxAddress(['"receipts" <Receipts@PublicWorship.life>']),
+    ).toBe(true);
+    // Still not a blanket domain accept — another group is not the receipts one.
+    expect(isReceiptInboxAddress(["announce@publicworship.life"])).toBe(false);
+  });
+});
+
+// ── isReceiptInboxSelf (the reply loop guard) ────────────────────────────────
+describe("isReceiptInboxSelf", () => {
+  test("recognizes both our inbound address and the group fronting it", () => {
+    expect(isReceiptInboxSelf("receipts@reply.publicworship.life")).toBe(true);
+    expect(isReceiptInboxSelf('"PW receipts" <receipts@publicworship.life>')).toBe(true);
+  });
+
+  test("an ordinary sender is not us", () => {
+    expect(isReceiptInboxSelf("charisma@example.com")).toBe(false);
+    expect(isReceiptInboxSelf(null)).toBe(false);
+    expect(isReceiptInboxSelf(undefined)).toBe(false);
   });
 
   test("honors the RECEIPT_INBOUND_ADDRESSES override (comma-separated)", () => {
@@ -1552,6 +1741,130 @@ describe("processInboundReceipt", () => {
       const receipts = await run(t, (ctx) => ctx.db.query("receipts").take(5));
       expect(receipts).toHaveLength(1);
       expect(receipts[0].filename).toBe("Google Workspace invoice.eml");
+    });
+  });
+
+  // ── Google Group relay, end to end ─────────────────────────────────────────
+  // The reported shape: a team member forwards a merchant receipt INLINE to
+  // `receipts@publicworship.life` (the group humans know), Google relays it to
+  // our Resend inbound address because that address is a member, and rewrites
+  // `From:` to the list on the way. Everything the pipeline needs about the
+  // poster is then in `X-Original-Sender`, and everything it needs about the
+  // merchant is in the forward banner.
+  describe("a Google-Group-relayed inline forward", () => {
+    const realFetch = globalThis.fetch;
+    const realKey = process.env.RESEND_API_KEY;
+    afterEach(() => {
+      globalThis.fetch = realFetch;
+      if (realKey === undefined) delete process.env.RESEND_API_KEY;
+      else process.env.RESEND_API_KEY = realKey;
+    });
+
+    /** No attachments (an inline forward has none), and a received-email
+     *  record carrying the group's relay headers + the forwarded body. */
+    function mockRelayedEmail(body: string, headers: Record<string, string>): string[] {
+      const replies: string[] = [];
+      process.env.RESEND_API_KEY = "test-key";
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/attachments")) {
+          return { ok: true, json: async () => ({ data: [] }) };
+        }
+        if (url.includes("/emails/receiving/")) {
+          return { ok: true, json: async () => ({ text: body, headers }) };
+        }
+        // The courtesy reply — record who it was addressed to.
+        if (url.includes("/emails")) {
+          replies.push(String((init?.body as string) ?? ""));
+          return { ok: true, json: async () => ({ id: "sent_1" }) };
+        }
+        return { ok: false, status: 500, text: async () => "no" };
+      }) as unknown as typeof fetch;
+      return replies;
+    }
+
+    const FORWARDED_BODY = [
+      "Paying it back",
+      "",
+      "Best,",
+      "Charisma Stevens",
+      "",
+      "---------- Forwarded message ---------",
+      "From: Uber Receipts <noreply@uber.com>",
+      "Date: Thu, Jul 30, 2026 at 9:35 PM",
+      "Subject: [Personal] Your Thursday evening order with Uber Eats",
+      "To: <charisma@example.com>",
+      "",
+      "Payments",
+      "Total $298.52",
+    ].join("\n");
+
+    test("attributes to the POSTER (not the list) and auto-attaches", async () => {
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedPerson(s, { email: "charisma@example.com" });
+      const txn = await seedTxn(s, { amountCents: 29852, status: "categorized" });
+
+      const replies = mockRelayedEmail(FORWARDED_BODY, {
+        "List-Id": "<receipts.publicworship.life>",
+        "X-Original-Sender": "charisma@example.com",
+      });
+
+      const { receiptId } = await t.mutation(internal.receiptInbox.recordInboundReceipt, {
+        envelope: {
+          emailId: "email_group_relay_1",
+          // Google's DMARC rewrite — the list, not the person.
+          fromEmail: '"Charisma S. via receipts" <receipts@publicworship.life>',
+          toEmail: "receipts@publicworship.life",
+          subject: "Fwd: [Personal] Your Thursday evening order with Uber Eats",
+        },
+      });
+      await t.action(internal.receiptInbox.processInboundReceipt, { receiptId });
+
+      const row = await run(t, (ctx) => ctx.db.get(receiptId));
+      // Recovered to the roster member → trusted → the unique match attaches.
+      expect(row?.senderClass).toBe("roster");
+      // Both truths kept: the verbatim envelope AND who actually posted.
+      expect(row?.fromEmail).toContain("receipts@publicworship.life");
+      expect(row?.originalSenderEmail).toBe("charisma@example.com");
+      expect(row?.status).toBe("matched");
+      expect(row?.matchedTransactionId).toBe(txn);
+
+      const receipts = await run(t, (ctx) => ctx.db.query("receipts").take(5));
+      expect(receipts).toHaveLength(1);
+      expect(receipts[0].ocrAmountCents).toBe(29852);
+      // The forward banner's merchant beats the body's weak "Payments" guess —
+      // and is nothing like the forwarder's/list's own domain.
+      expect(receipts[0].ocrMerchant).toBe("Uber Receipts");
+
+      // The courtesy reply goes to the PERSON, never back to the group.
+      expect(replies).toHaveLength(1);
+      expect(replies[0]).toContain("charisma@example.com");
+      expect(replies[0]).not.toContain("receipts@publicworship.life");
+    });
+
+    test("no reply is ever sent to the group itself (loop guard)", async () => {
+      const t = newT();
+      const s = await setupChapter(t);
+      // Pathological: the list address itself sits on the roster, so it would
+      // otherwise classify as trusted and get a reply — which the group would
+      // fan out to every member AND relay straight back to us.
+      await seedPerson(s, { email: "receipts@publicworship.life" });
+
+      const replies = mockRelayedEmail(FORWARDED_BODY, {
+        "List-Id": "<receipts.publicworship.life>",
+      });
+
+      const { receiptId } = await t.mutation(internal.receiptInbox.recordInboundReceipt, {
+        envelope: {
+          emailId: "email_group_relay_2",
+          fromEmail: "receipts@publicworship.life",
+          subject: "Fwd: receipt",
+        },
+      });
+      await t.action(internal.receiptInbox.processInboundReceipt, { receiptId });
+
+      expect(replies).toHaveLength(0);
     });
   });
 });

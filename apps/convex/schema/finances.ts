@@ -1157,6 +1157,14 @@ export const inboundReceipts = defineTable({
   toEmail: v.optional(v.string()),
   subject: v.optional(v.string()),
   receivedAt: v.number(),
+  // Set ONLY when the message reached us via a MAILING LIST that rewrote its
+  // `From:` — the `receipts@publicworship.life` Google Group does this for
+  // posters on DMARC-strict domains, so `fromEmail` above is the LIST and the
+  // real poster is recovered from `X-Original-Sender`
+  // (`receiptInbox.ts#resolveListSender`). Both are kept: `fromEmail` stays
+  // the verbatim envelope (audit), and this is who the pipeline classified,
+  // matched, and replied to. Absent on mail sent straight to the inbox.
+  originalSenderEmail: v.optional(v.string()),
 
   // ── SMS/MMS channel (Twilio) ────────────────────────────────────────────────
   // Absent = `email` (the original, still-default channel — see `receiptInbox.ts`).

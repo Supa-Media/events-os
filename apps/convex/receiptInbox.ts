@@ -3,13 +3,21 @@
  *
  * FLOW (see `http.ts` `/resend/inbound` for the entry point):
  *   1. Resend delivers a signed `email.received` webhook when a message lands
- *      at `reply.publicworship.life`. The HTTP route verifies the Svix/Standard
+ *      at `reply.publicworship.life` — either sent straight there, or RELAYED
+ *      by the `receipts@publicworship.life` Google Group, which our inbound
+ *      address is a member of (the shape humans actually use). The route
+ *      matches on To + Cc + `received_for` because a relayed post names the
+ *      GROUP in `To:` and only names us on the envelope. The HTTP route
+ *      verifies the Svix/Standard
  *      Webhooks signature, then calls `recordInboundReceipt` — which DEDUPES on
  *      the provider's `emailId` (the same first-sight guard `webhookEvents`
  *      gives the Stripe/Increase handlers) and inserts a `pending` row.
  *   2. The route schedules `processInboundReceipt` (an action) and returns 200
  *      fast — the webhook must ack quickly; all the slow work is async.
  *   3. `processInboundReceipt`:
+ *        a0. RECOVERS the true sender behind a list relay (`resolveListSender`)
+ *           — the Google Group rewrites `From:` for DMARC-strict posters, so
+ *           the poster is read back off `X-Original-Sender` before classifying.
  *        a. CLASSIFIES the sender (`classifySender`). The endpoint is public and
  *           the gate is OPEN (owner decision, 2026-07-23): EVERY email is
  *           processed end-to-end regardless of sender. The classification —
@@ -71,7 +79,7 @@ import {
 } from "./lib/aiEngine";
 import { ROLLUP_SCAN_LIMIT, txnMatchesMode, isSpend } from "./finances";
 import { readSandbox } from "./financeSettings";
-import { normalizeEmail, isAllowedEmail } from "./lib/access";
+import { normalizeEmail, isAllowedEmail, ALLOWED_EMAIL_DOMAIN } from "./lib/access";
 import { getChapterIdOrNull } from "./lib/context";
 import { getFinanceRole, requireFinanceRole } from "./lib/finance";
 import {
@@ -213,6 +221,27 @@ const GENERIC_EMAIL_DOMAINS = new Set([
   "aol.com", "protonmail.com", "me.com", "live.com",
 ]);
 
+/**
+ * True iff an address's domain carries NO merchant identity — neither its
+ * domain label NOR its display name is worth reading as a business name:
+ *  - a free mail host (`GENERIC_EMAIL_DOMAINS`) — the display name there is a
+ *    HUMAN's name ("Charisma S."), which is exactly what a forwarded receipt
+ *    puts in the outer envelope, and
+ *  - our OWN domain, including the inbound/list subdomains
+ *    (`publicworship.life`, `reply.publicworship.life`) — a receipt is never
+ *    "from" us, and a Google-Group-relayed post whose `From:` the list
+ *    rewrote ("Charisma S. via receipts <receipts@publicworship.life>") would
+ *    otherwise derive "Publicworship" (or the list's own display name) as the
+ *    merchant.
+ */
+function isMerchantlessDomain(domain: string): boolean {
+  return (
+    GENERIC_EMAIL_DOMAINS.has(domain) ||
+    domain === ALLOWED_EMAIL_DOMAIN ||
+    domain.endsWith(`.${ALLOWED_EMAIL_DOMAIN}`)
+  );
+}
+
 /** Strips repeated leading "Fwd:"/"Fw:"/"Re:" reply/forward prefixes off a
  *  subject line ("Fwd: Your receipt from X" → "Your receipt from X",
  *  "Re: Fwd: ..." → "..."). A FORWARDED receipt is the common shape for this
@@ -234,14 +263,16 @@ function stripReplyForwardPrefixes(subject: string): string {
 
 /**
  * Best-effort MERCHANT FALLBACK derived from the email envelope itself — used
- * only when extraction (body parse or vision OCR) found no merchant (see
- * `runPipeline`'s "when extraction yields no merchant" step). Tries, in
- * order:
+ * when extraction (body parse or vision OCR) found no merchant, or only a
+ * weak line-shape guess (see `runPipeline`'s merchant-fallback step). Tries,
+ * in order:
  *   1. A real RFC-5322 DISPLAY NAME ("Givebutter" <receipts@givebutter.com>"
  *      → "Givebutter") — the highest-confidence signal, a sender chose it.
+ *      SKIPPED for a merchantless domain (`isMerchantlessDomain`), where the
+ *      display name is a person's or a mailing list's, never a business's.
  *   2. The sending domain's second-level label, title-cased
- *      ("noreply@doordash.com" → "Doordash") — skipped for a generic mail
- *      host (`GENERIC_EMAIL_DOMAINS`), which carries no merchant identity.
+ *      ("noreply@doordash.com" → "Doordash") — likewise skipped for a
+ *      merchantless domain.
  *   3. A "receipt from X" / "X receipt" fragment off the SUBJECT line — a
  *      leading "Fwd:"/"Re:" prefix (the common shape when a human forwards
  *      the original receipt email in) is stripped first
@@ -255,22 +286,26 @@ export function deriveMerchantFromEmail(
   fromEmail: string,
   subject?: string | null,
 ): string | null {
-  const displayMatch = fromEmail.match(/^\s*"?([^"<]{2,60}?)"?\s*<[^>]+>\s*$/);
-  if (displayMatch) {
-    const name = displayMatch[1].trim();
-    if (name && !name.includes("@")) return name.slice(0, 200);
-  }
-
   const addr = extractEmailAddress(fromEmail);
   const domain = addr?.split("@")[1];
-  if (domain && !GENERIC_EMAIL_DOMAINS.has(domain)) {
-    const label = domain.split(".").slice(0, -1).join(" ") || domain;
-    const cleaned = label.replace(/[-_]/g, " ").trim();
-    if (cleaned.length >= 2 && cleaned.length <= 40) {
-      return cleaned
-        .split(/\s+/)
-        .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-        .join(" ");
+  const merchantless = domain != null && isMerchantlessDomain(domain);
+
+  if (!merchantless) {
+    const displayMatch = fromEmail.match(/^\s*"?([^"<]{2,60}?)"?\s*<[^>]+>\s*$/);
+    if (displayMatch) {
+      const name = displayMatch[1].trim();
+      if (name && !name.includes("@")) return name.slice(0, 200);
+    }
+
+    if (domain) {
+      const label = domain.split(".").slice(0, -1).join(" ") || domain;
+      const cleaned = label.replace(/[-_]/g, " ").trim();
+      if (cleaned.length >= 2 && cleaned.length <= 40) {
+        return cleaned
+          .split(/\s+/)
+          .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+          .join(" ");
+      }
     }
   }
 
@@ -293,26 +328,61 @@ export function deriveMerchantFromEmail(
 }
 
 /**
- * True iff ANY recipient of the inbound email is a dedicated receipt-inbox
- * address. The inbound domain (`reply.publicworship.life`) will carry other
- * addresses for other purposes, so the webhook must NOT treat every email to
- * the domain as a receipt — only mail addressed (To or Cc) to the receipts
- * inbox. Config, not code: `RECEIPT_INBOUND_ADDRESSES` is a comma-separated
- * allow-list, defaulting to `receipts@reply.publicworship.life`.
+ * The addresses that mean "this is a receipt".
+ *
+ * TWO of them, because there are two ways to reach the inbox:
+ *  - `receipts@reply.publicworship.life` — the Resend inbound address itself
+ *    (mail sent straight here), and
+ *  - `receipts@publicworship.life` — the GOOGLE GROUP humans actually know.
+ *    The Resend address is a MEMBER of that group, so Google relays every post
+ *    to us. A relayed post keeps the GROUP address in its `To:` header (the
+ *    member address appears only on the SMTP envelope — Resend surfaces that
+ *    separately as `received_for`, which `http.ts` now unions in), so the
+ *    filter has to recognize the group address too or every group-forwarded
+ *    receipt is ack'd and silently dropped.
  */
-export function isReceiptInboxAddress(
-  recipients: readonly (string | null | undefined)[],
-): boolean {
-  const allowed = new Set(
-    (process.env.RECEIPT_INBOUND_ADDRESSES ?? "receipts@reply.publicworship.life")
+const DEFAULT_RECEIPT_INBOUND_ADDRESSES =
+  "receipts@reply.publicworship.life,receipts@publicworship.life";
+
+/** The configured receipt-inbox addresses, normalized. Config, not code:
+ *  `RECEIPT_INBOUND_ADDRESSES` is a comma-separated allow-list overriding
+ *  `DEFAULT_RECEIPT_INBOUND_ADDRESSES`. */
+function receiptInboxAddresses(): Set<string> {
+  return new Set(
+    (process.env.RECEIPT_INBOUND_ADDRESSES ?? DEFAULT_RECEIPT_INBOUND_ADDRESSES)
       .split(",")
       .map((a) => normalizeEmail(a))
       .filter((a): a is string => a != null),
   );
+}
+
+/**
+ * True iff ANY recipient of the inbound email is a dedicated receipt-inbox
+ * address. The inbound domain (`reply.publicworship.life`) will carry other
+ * addresses for other purposes, so the webhook must NOT treat every email to
+ * the domain as a receipt — only mail addressed to the receipts inbox. The
+ * caller passes To + Cc + `received_for` (the envelope recipient — the ONLY
+ * place the member address shows up on group-relayed mail).
+ */
+export function isReceiptInboxAddress(
+  recipients: readonly (string | null | undefined)[],
+): boolean {
+  const allowed = receiptInboxAddresses();
   return recipients.some((r) => {
     const addr = extractEmailAddress(r);
     return addr != null && allowed.has(addr);
   });
+}
+
+/**
+ * True iff `raw` IS one of our own receipt-inbox addresses. The LOOP GUARD:
+ * a courtesy reply must never be sent to the inbox (or to the Google Group
+ * fronting it, which would fan a robot reply out to every member and land
+ * straight back here as a new inbound receipt).
+ */
+export function isReceiptInboxSelf(raw: string | null | undefined): boolean {
+  const addr = extractEmailAddress(raw);
+  return addr != null && receiptInboxAddresses().has(addr);
 }
 
 // ── Sender resolution + classification ───────────────────────────────────────
@@ -810,6 +880,7 @@ export const updateInboundReceipt = internalMutation({
       personId: v.optional(v.id("people")),
       chapterId: v.optional(v.id("chapters")),
       senderClass: v.optional(senderClassValidator),
+      originalSenderEmail: v.optional(v.string()),
       receiptStorageId: v.optional(v.id("_storage")),
       sourceKind: v.optional(v.union(v.literal("attachment"), v.literal("body"))),
       ocrAmountCents: v.optional(v.number()),
@@ -926,19 +997,41 @@ export function extractMidLineMerchant(line: string): string | null {
  * unit testing.
  */
 export function extractMerchantFromLines(lines: string[]): string | null {
+  return extractMerchantGuess(lines)?.name ?? null;
+}
+
+/** A merchant read off receipt text, WITH how much the reader trusts it.
+ *  `strong` marks tiers 1–2 (anchored on a real business-entity suffix);
+ *  a tier-3 guess is `strong: false` — see `extractMerchantGuess`. */
+export interface MerchantGuess {
+  name: string;
+  strong: boolean;
+}
+
+/**
+ * `extractMerchantFromLines` plus a CONFIDENCE flag, because the three tiers
+ * are not equally trustworthy and one caller needs to know which it got.
+ * Tiers 1–2 anchor on a real business-entity suffix ("Givebutter, Inc.") —
+ * `strong`. Tier 3 is "the first plausible-looking line near the top", which
+ * on a forwarded MARKETING receipt lands on whatever chrome happens to sit
+ * there ("Payments", "Tip") — `strong: false`, so `runPipeline`'s merchant
+ * fallback may override it with the forwarded message's own envelope
+ * ("Uber Receipts"), a far better signal than a line-shape guess.
+ */
+export function extractMerchantGuess(lines: string[]): MerchantGuess | null {
   const nonEmpty = lines.map((l) => l.trim()).filter(Boolean).slice(0, 15);
   for (const line of nonEmpty) {
     const mid = extractMidLineMerchant(line);
-    if (mid) return mid;
+    if (mid) return { name: mid, strong: true };
   }
   for (const line of nonEmpty) {
     if (MERCHANT_SUFFIX_RE.test(line) && looksLikeMerchantLine(line)) {
-      return line.replace(/\s+/g, " ").trim().slice(0, 200);
+      return { name: line.replace(/\s+/g, " ").trim().slice(0, 200), strong: true };
     }
   }
   for (const line of nonEmpty) {
     if (looksLikeMerchantLine(line)) {
-      return line.replace(/\s+/g, " ").trim().slice(0, 200);
+      return { name: line.replace(/\s+/g, " ").trim().slice(0, 200), strong: false };
     }
   }
   return null;
@@ -962,6 +1055,10 @@ export function parseReceiptFromText(body: string): {
   amountCents: number | null;
   date: number | null;
   merchant: string | null;
+  /** Whether `merchant` came from a business-entity-anchored tier (see
+   *  `extractMerchantGuess`). `false` for a weak line-shape guess — the
+   *  merchant fallback may replace it with a forwarded envelope's. */
+  merchantStrong: boolean;
 } {
   const text = body
     .replace(/<[^>]+>/g, " ") // strip any HTML tags
@@ -1013,7 +1110,89 @@ export function parseReceiptFromText(body: string): {
     }
   }
 
-  return { amountCents, date, merchant: extractMerchantFromLines(lines) };
+  const merchant = extractMerchantGuess(lines);
+  return {
+    amountCents,
+    date,
+    merchant: merchant?.name ?? null,
+    merchantStrong: merchant?.strong ?? false,
+  };
+}
+
+// ── Inline-forward envelope (the ordinary "Forward") ─────────────────────────
+/** The banner mail clients insert above an INLINE forward — Gmail's
+ *  "---------- Forwarded message ---------", Apple Mail's "Begin forwarded
+ *  message:", Outlook's "-----Original Message-----". (A "forward as
+ *  attachment" arrives as a `.eml` instead and is parsed properly by
+ *  `lib/emlMessage.ts`; this is the other, far more common shape.) */
+const INLINE_FORWARD_MARKER_RE =
+  /(?:-{2,}\s*)?\b(?:begin\s+)?(?:forwarded\s+message|original\s+message)\b(?:\s*-{2,})?/i;
+
+/** The pseudo-header names a forward banner carries — used as each other's
+ *  stop boundary, since an HTML forward block collapses to ONE line where
+ *  "From: X Date: Y Subject: Z" run together with no newline between them. */
+const FORWARD_HEADER_NAMES = "From|Sent|Date|To|Cc|Bcc|Subject|Reply-To";
+
+/** Flatten HTML to text PRESERVING line structure — `<br>`/block-close tags
+ *  become newlines rather than the spaces `parseReceiptFromText`'s cruder
+ *  strip yields, so a forward banner's pseudo-headers stay parseable.
+ *
+ *  Strips only REAL tags (`<name ...>` / `</name>`), never anything merely
+ *  angle-bracketed: a plain-text banner's own `From: Uber Receipts
+ *  <noreply@uber.com>` must survive, and `<[^>]+>` would eat the address —
+ *  taking the merchant's identity with it. */
+function flattenHtmlToText(raw: string): string {
+  return raw
+    .replace(/<\s*br\s*\/?\s*>/gi, "\n")
+    .replace(/<\s*\/\s*(?:div|p|tr|table|li|h[1-6])\s*>/gi, "\n")
+    .replace(/<\/?[a-z][a-z0-9]*(?:\s[^>]*)?\/?>/gi, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'");
+}
+
+/** Pull one pseudo-header value out of a forward banner, stopping at the next
+ *  header name or a line break (whichever comes first). */
+function captureForwardHeader(block: string, name: string): string | null {
+  const re = new RegExp(
+    `\\b${name}:[ \\t]*([^\\n]{1,300}?)(?=\\s*(?:${FORWARD_HEADER_NAMES}):|\\s*$)`,
+    "im",
+  );
+  const m = block.match(re);
+  const value = m?.[1]?.replace(/\s+/g, " ").trim();
+  return value ? value : null;
+}
+
+/**
+ * The ORIGINAL message's envelope, recovered from an inline forward's banner.
+ *
+ * Why it matters: on an inline forward the merchant's mail is pasted into the
+ * body, so the pipeline's only envelope is the FORWARDER's — a team member's
+ * gmail, or (via the Google Group) the list itself. Neither says anything
+ * about the merchant, while the banner directly quotes the one that does
+ * ("From: Uber Receipts <noreply@uber.com>"). This gives the body path the
+ * same `ForwardedEnvelope` the `.eml` path already gets from a real parse.
+ *
+ * Returns `null` when there's no forward banner or nothing usable in it —
+ * never a guess. Exported for direct unit testing.
+ */
+export function parseInlineForwardEnvelope(raw: string): ForwardedEnvelope | null {
+  const text = flattenHtmlToText(raw);
+  const marker = text.match(INLINE_FORWARD_MARKER_RE);
+  if (!marker || marker.index == null) return null;
+  // The banner's headers sit immediately after it; bound the window so a long
+  // quoted body can't drag an unrelated "Subject:" in.
+  const block = text.slice(marker.index + marker[0].length, marker.index + 1200);
+  const fromEmail = captureForwardHeader(block, "From");
+  const subject = captureForwardHeader(block, "Subject");
+  if (!fromEmail && !subject) return null;
+  return {
+    fromEmail: fromEmail ?? undefined,
+    subject: subject ?? undefined,
+  };
 }
 
 /** Provenance marker stored in `ocrModel` for a receipt whose fields came
@@ -1829,6 +2008,12 @@ interface ExtractedReceipt {
   ocrModel?: string;
   ocrError?: string;
   candidateTransactionIds: Id<"transactions">[];
+  /** In-pipeline only (never persisted): the merchant above is a WEAK
+   *  line-shape guess off body text (`extractMerchantGuess`'s tier 3), so a
+   *  forwarded message's own envelope should win over it. Unset for a
+   *  merchant read off the receipt itself (vision OCR, a PDF text layer, or a
+   *  business-entity-anchored body line) — those are never overridden. */
+  ocrMerchantWeak?: boolean;
   /** Set only when this receipt came out of a FORWARDED message — the inner
    *  merchant envelope the merchant fallback must prefer over the forwarder's
    *  (see `ForwardedEnvelope`). */
@@ -1863,6 +2048,8 @@ async function storeBodyReceipt(
     ocrAmountCents: parsed.amountCents ?? undefined,
     ocrDate: parsed.date ?? undefined,
     ocrMerchant: parsed.merchant ?? undefined,
+    ocrMerchantWeak:
+      parsed.merchant != null && !parsed.merchantStrong ? true : undefined,
     ocrConfidence: parsed.amountCents != null ? 0.5 : 0,
     ocrError:
       parsed.amountCents == null
@@ -1920,11 +2107,34 @@ async function runPipeline(
   receiptId: Id<"inboundReceipts">,
   row: Doc<"inboundReceipts">,
 ): Promise<null> {
-  // 1. Classify the sender. The gate is OPEN: every email is processed. The
-  //    class only decides whether an auto-attach is permitted (team/roster) or
-  //    the receipt must route to review (internal/external).
+  // 0. Fetch the received message ONCE — its headers drive sender recovery
+  //    (below) and its body is the receipt when there's no usable attachment.
+  //    Best-effort: `null` without `RESEND_API_KEY`, and every use degrades.
+  const received = await fetchReceivedEmail(row.emailId);
+
+  // 1. Resolve + classify the sender. On GOOGLE-GROUP-relayed mail the
+  //    envelope `From:` may be the list rather than the poster, so recover the
+  //    real one from `X-Original-Sender` first (`resolveListSender`). The gate
+  //    is OPEN: every email is processed. The class only decides whether an
+  //    auto-attach is permitted (team/roster) or the receipt must route to
+  //    review (internal/external).
+  const { fromEmail: senderEmail, relayedVia } = resolveListSender(
+    row.fromEmail,
+    received?.headers,
+  );
+  if (relayedVia && senderEmail !== row.fromEmail) {
+    console.log(
+      `[receiptInbox] ${receiptId}: relayed via ${relayedVia.slice(0, 80)} — classifying as ${senderEmail}`,
+    );
+    // Record it so the review queue names the PERSON, not the list, while
+    // `fromEmail` keeps the verbatim envelope for audit.
+    await ctx.runMutation(internal.receiptInbox.updateInboundReceipt, {
+      receiptId,
+      patch: { originalSenderEmail: senderEmail },
+    });
+  }
   const sender = await ctx.runQuery(internal.receiptInbox.classifySender, {
-    email: row.fromEmail,
+    email: senderEmail,
   });
   const isTrusted = receiptSenderCanAutoAttach(sender.senderClass);
 
@@ -1990,14 +2200,19 @@ async function runPipeline(
     // as a file too: an email receipt saved as a document IS the receipt, so a
     // unique match can auto-attach it exactly like a photo. HTML is stored as
     // text/html so the review UI renders it.
-    const full = await fetchReceivedEmailBody(row.emailId);
-    const text = full ?? row.subject ?? "";
+    const text = received?.body ?? row.subject ?? "";
     if (text.trim()) {
       extracted.push(
         await storeBodyReceipt(ctx, {
           text,
           isHtml: /<[a-z][\s\S]*>/i.test(text),
           filename: "email body",
+          // An INLINE forward (the ordinary "Forward" — the merchant's mail
+          // pasted into the body) carries the merchant's own envelope in its
+          // banner. Recovering it is the difference between a merchant of
+          // "Uber Receipts" and one read off whatever chrome the forwarded
+          // marketing email happened to lead with.
+          envelope: parseInlineForwardEnvelope(text) ?? undefined,
         }),
       );
     }
@@ -2030,14 +2245,21 @@ async function runPipeline(
   //     came out of a FORWARDED message uses THAT message's envelope first —
   //     the merchant's own ("Google Payments"), not the forwarder's (which
   //     would derive the team member's mail host, a flatly wrong merchant).
-  //     NEVER overwrites a real extracted merchant — only fills a gap.
+  //
+  //     PRECEDENCE: a forwarded envelope also BEATS a WEAK body-text guess
+  //     (`merchantStrong: false` — "the first plausible-looking line", which
+  //     on a forwarded marketing receipt lands on chrome like "Payments" or
+  //     the forwarder's own "Paying it back" note). It never overrides a
+  //     STRONG one (a real "<Name>, Inc." read straight off the receipt), and
+  //     the outer envelope — the forwarder's — still only ever fills a gap.
   for (const ex of extracted) {
-    if (!ex.ocrMerchant) {
-      const fallback =
-        (ex.envelope?.fromEmail
-          ? deriveMerchantFromEmail(ex.envelope.fromEmail, ex.envelope.subject)
-          : null) ?? deriveMerchantFromEmail(row.fromEmail, row.subject);
-      if (fallback) ex.ocrMerchant = fallback;
+    const forwarded = ex.envelope?.fromEmail
+      ? deriveMerchantFromEmail(ex.envelope.fromEmail, ex.envelope.subject)
+      : null;
+    if (forwarded && (!ex.ocrMerchant || ex.ocrMerchantWeak)) {
+      ex.ocrMerchant = forwarded;
+    } else if (!ex.ocrMerchant) {
+      ex.ocrMerchant = deriveMerchantFromEmail(row.fromEmail, row.subject) ?? undefined;
     }
   }
 
@@ -2097,7 +2319,7 @@ async function runPipeline(
         : result.status === "no_match"
           ? "no_match"
           : "needs_review";
-    await replyToSender(ctx, row.fromEmail, outcome, {
+    await replyToSender(ctx, senderEmail, outcome, {
       amountCents: result.amountCents,
       merchant: result.matchedMerchant ?? undefined,
     });
@@ -2105,13 +2327,23 @@ async function runPipeline(
   return null;
 }
 
+/** The parts of Resend's received-email record this pipeline reads. */
+interface ReceivedEmail {
+  /** Fullest body text available — plain text preferred, else the HTML. */
+  body: string | null;
+  /** The message's raw headers, flattened one-per-name by Resend. Used to
+   *  recover the true sender behind a mailing-list relay (`resolveListSender`). */
+  headers: Record<string, string> | null;
+}
+
 /**
- * Fetch the full received email's BODY text via the Resend API
- * (`GET /emails/receiving/{emailId}`). The webhook already carries text/html
- * but the body-parse path wants the fullest text available; falls back to null
- * (the caller then uses the subject). Best-effort.
+ * Fetch the full received email via the Resend API
+ * (`GET /emails/receiving/{emailId}`) — the webhook itself carries metadata
+ * only. Best-effort: returns `null` without an API key or on any failure, and
+ * every caller degrades (the body path falls back to the subject; sender
+ * recovery falls back to the envelope `From:`).
  */
-async function fetchReceivedEmailBody(emailId: string): Promise<string | null> {
+async function fetchReceivedEmail(emailId: string): Promise<ReceivedEmail | null> {
   const apiKey = process.env.RESEND_API_KEY;
   if (!apiKey) return null;
   try {
@@ -2120,10 +2352,70 @@ async function fetchReceivedEmailBody(emailId: string): Promise<string | null> {
     });
     if (!res.ok) return null;
     const json: any = await res.json();
-    return json?.text ?? json?.html ?? null;
+    return {
+      body: json?.text ?? json?.html ?? null,
+      headers:
+        json?.headers && typeof json.headers === "object" ? json.headers : null,
+    };
   } catch {
     return null;
   }
+}
+
+/** Case-insensitive lookup over Resend's flat header map. */
+export function headerValue(
+  headers: Record<string, string> | null | undefined,
+  name: string,
+): string | null {
+  if (!headers) return null;
+  const wanted = name.toLowerCase();
+  for (const [k, v] of Object.entries(headers)) {
+    if (k.toLowerCase() === wanted && typeof v === "string" && v.trim()) {
+      return v.trim();
+    }
+  }
+  return null;
+}
+
+/**
+ * Recover the address that actually POSTED a mailing-list-relayed message.
+ *
+ * The shape we run on: humans mail the Google Group
+ * `receipts@publicworship.life`, and our Resend inbound address is a member of
+ * it, so every post reaches us relayed. Google usually preserves the poster's
+ * `From:` — but REWRITES it ("Charisma S. via receipts
+ * <receipts@publicworship.life>") whenever the poster's domain publishes a
+ * strict DMARC policy. A rewritten `From:` resolves to no roster person, so
+ * the receipt would classify `internal`, never auto-attach, and (worse) a
+ * courtesy reply would go to the LIST and fan out to every member. Google
+ * always stamps the real poster into `X-Original-Sender`, so we read it back.
+ *
+ * ONLY honored on a message that actually arrived via a list (`List-Id` /
+ * `List-Post` / `Mailing-list` present) — a header on a message sent straight
+ * to the inbox is ignored. This is the same (spoofable) AUTOMATION axis
+ * `classifySender` already documents, not a permission: recovering the sender
+ * decides whether an auto-attach may be attempted, never whether it's allowed.
+ *
+ * Returns the address to classify + reply to, and the list it came through
+ * (`null` when this wasn't list mail). Exported for direct unit testing.
+ */
+export function resolveListSender(
+  fromEmail: string,
+  headers: Record<string, string> | null | undefined,
+): { fromEmail: string; relayedVia: string | null } {
+  const listId =
+    headerValue(headers, "list-id") ??
+    headerValue(headers, "list-post") ??
+    headerValue(headers, "mailing-list");
+  if (!listId) return { fromEmail, relayedVia: null };
+  const original =
+    headerValue(headers, "x-original-sender") ??
+    headerValue(headers, "x-original-from");
+  const originalAddr = extractEmailAddress(original);
+  return {
+    fromEmail: originalAddr ?? fromEmail,
+    relayedVia: listId,
+  };
 }
 
 /**
@@ -2131,6 +2423,10 @@ async function fetchReceivedEmailBody(emailId: string): Promise<string | null> {
  * without `RESEND_API_KEY`, same as every other outbound in this repo). Kept
  * plain-text-simple; the point is a human ack, not a designed email. Only ever
  * called for team/roster senders (never a stranger).
+ *
+ * LOOP GUARD: never replies to the receipts inbox or the Google Group fronting
+ * it (`isReceiptInboxSelf`). A reply there would fan a robot ack out to every
+ * group member AND be relayed straight back to us as a fresh inbound receipt.
  */
 async function replyToSender(
   ctx: Pick<ActionCtx, "runQuery">,
@@ -2138,6 +2434,10 @@ async function replyToSender(
   outcome: "matched" | "no_match" | "needs_review",
   info: { amountCents: number | null; merchant?: string },
 ): Promise<void> {
+  if (isReceiptInboxSelf(to)) {
+    console.log(`[receiptInbox] suppressing reply to our own inbox/list (${to}).`);
+    return;
+  }
   const amt = info.amountCents != null ? fmtUsd(info.amountCents) : "your receipt";
   let subject: string;
   let line: string;
@@ -2170,6 +2470,9 @@ const reviewRow = v.object({
   _id: v.id("inboundReceipts"),
   status: statusValidator,
   fromEmail: v.string(),
+  /** The real poster, when a mailing list rewrote `From:` — what the queue
+   *  should show instead of the list. See the schema field's doc. */
+  originalSenderEmail: v.optional(v.string()),
   subject: v.optional(v.string()),
   receivedAt: v.number(),
   senderClass: v.optional(senderClassValidator),
@@ -2220,6 +2523,7 @@ export const listInboundReceipts = query({
         _id: r._id,
         status: r.status,
         fromEmail: r.fromEmail,
+        originalSenderEmail: r.originalSenderEmail,
         subject: r.subject,
         receivedAt: r.receivedAt,
         senderClass: r.senderClass,
