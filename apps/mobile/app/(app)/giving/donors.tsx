@@ -223,6 +223,10 @@ function DonorsBody({
   canManage: boolean;
 }) {
   const router = useRouter();
+  // Full-database export entry point (separate from the client-side "export
+  // this view" button below): its own power (`data.export`), so the button
+  // stays hidden — not just disabled — for a caller who doesn't hold it.
+  const exportAccess = useQuery(api.dataExports.myExportAccess);
   const [status, setStatus] = useState("all");
   const [kind, setKind] = useState("all");
   const [source, setSource] = useState("all");
@@ -419,6 +423,19 @@ function DonorsBody({
               variant="secondary"
               onPress={() => void exportDonors()}
             />
+            {exportAccess?.canExport === true ? (
+              <Pressable
+                onPress={() =>
+                  router.push(`/exports?scope=${lensScope}&dataset=donors` as never)
+                }
+                hitSlop={6}
+                accessibilityLabel="Full data export"
+                className="flex-row items-center gap-1 rounded-md border border-border px-2 py-1 active:bg-sunken web:hover:bg-sunken"
+              >
+                <Icon name="database" size={13} color={colors.muted} />
+                <Text className="text-xs font-semibold text-muted">Full export</Text>
+              </Pressable>
+            ) : null}
             {canManage && !isAllScopes ? (
               <Pressable
                 onPress={() => setDupOpen(true)}

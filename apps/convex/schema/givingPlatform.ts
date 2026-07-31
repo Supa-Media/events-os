@@ -228,7 +228,16 @@ export const donors = defineTable({
   .index("by_scope_and_phone", ["scope", "phone"])
   // Cross-chapter identity layer: every scope row that belongs to one underlying
   // person, for the identity's aggregate recompute + the drill-in per-book list.
-  .index("by_identity", ["identityId"]);
+  .index("by_identity", ["identityId"])
+  // The roster link, indexed. Added 2026-07-31 for the people export, whose
+  // giving columns need "the donor row for THIS person" once per exported row.
+  // Without it the only options were a per-page bounded scan of the whole
+  // chapter's donors (what `givingPlatform.ts#giverMarks` does — and which
+  // silently drops giving data for donors past its cap) or an unbounded
+  // `.collect()`. `personId` is optional, so rows without a link simply sort
+  // together at the head of the index and are never visited by an equality
+  // lookup on a real id.
+  .index("by_person", ["personId"]);
 
 /**
  * A cross-chapter donor IDENTITY (donor-identity, 2026-07) — the ONE underlying

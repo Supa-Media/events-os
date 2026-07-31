@@ -124,6 +124,11 @@ on green).
 - **opus**: only genuinely complex reasoning — e.g. AI-quality evaluation
   design, gnarly cross-system migrations. Prefer sonnet when in doubt.
 - Launch independent agents in one message and run them in the background.
+- **In a SHARED checkout, always `git commit -- <paths>`, never a bare
+  `git commit`.** `git add <paths>` does not isolate you: the index is shared,
+  so a bare commit writes whatever a sibling agent happened to stage. Put this
+  in every implementation brief, and check `git diff --cached --name-only`
+  before committing.
 - **Before dispatching review agents, give them ONE ignored path for scratch
   probes and add it to `.git/info/exclude` first.** Reviewers prove findings
   by running code, so they write throwaway tests; crash-safety `git add -A`
@@ -251,6 +256,22 @@ on green).
   tool-result file with python and parse `name|conclusion|head_sha` instead
   of reading raw.
 - Read `apps/convex/_generated/ai/guidelines.md` before writing Convex code.
+- Adding a SEAT CAPABILITY is a six-step change, and steps 4-6 are the ones
+  that get missed: (1) string in `SEAT_CAPABILITIES`; (2) on the seats;
+  (3) `EXPECTED_CAPABILITIES_BY_SEAT` (seats.test.ts); (4) a MIGRATION —
+  capabilities are read from the `seatDefs` TABLE, so code alone is dead on
+  every already-seeded deployment (copy `0053_add_campaign_design_defaults.ts`);
+  (5) sweep `toEqual` capability fixtures REPO-WIDE (`campaignPower`,
+  `givingPower`, `0025_*` all pin arrays, not just the seats spec); (6) prove
+  the Academy lesson is REACHABLE from the granting seats' `ROLE_PATHS` by
+  resolving them in a script — authoring it into a plausible-looking course
+  reached one of six holders.
+- Any "export/report over existing data" feature needs its OWN paginated read
+  path: every list query here is capped for its grid (donors 500, gifts 250,
+  reconcile 5000), so building on them silently truncates. Size pages by
+  COST PER ROW, not row count — a wide row with six per-row joins blows
+  Convex's ~16k-read transaction limit at a 500-row page on real data while a
+  three-row seeded test passes.
 - Pinned-spec sweep: growing an enum or capability breaks tests that pin
   shared constants — `EXPECTED_CAPABILITIES_BY_SEAT` (packages/shared/src/
   seats.test.ts) on seat changes, `REGISTRY_NAMES` (apps/convex/tests/
@@ -286,6 +307,78 @@ Before finishing a run of this skill, you MUST:
    run's PR.
 
 ## Learnings Log (newest first)
+
+### 2026-07-31 — Run 14 (data export: people/giving/tasks → one wide CSV per dataset)
+- **The ONE question I asked reversed my own recommendation, and asking cost
+  two minutes.** I proposed a relational bundle of joined CSVs (recommended)
+  vs. one wide spreadsheet; the founder picked the wide spreadsheet ONLY. That
+  deleted a hand-rolled ZIP writer, a manifest, and a join README from the
+  plan before anyone wrote them. Generalize: when the ask contains a vague
+  gesture ("link it to other CSVs… I don't know something something"), that
+  vagueness is the SIGNAL TO ASK, not licence to pick. Put the consequence in
+  each option (§3's rule) and put a concrete `preview` on it — the founder
+  chose off the preview.
+- **`git add <paths>` does NOT isolate you in a shared checkout; `git commit`
+  writes the whole INDEX.** My commit swept in a sibling agent's staged file
+  (identical content, nothing lost, but pure luck). Standing rule now: agents
+  and orchestrator alike use **`git commit -- <paths>`**, and check
+  `git diff --cached --name-only` before committing. This belongs in every
+  implementation brief.
+- **A subagent calling a failure "pre-existing" is a claim to VERIFY, not
+  accept — in both directions.** WS1 reported five failing tests as
+  pre-existing; all five were ours (pinned capability fixtures — the §"pinned-
+  spec sweep" invariant firing exactly as documented). WS4 reported a mobile
+  typecheck error as pre-existing; that one was TRUE, proved by typechecking a
+  pristine `origin/main` worktree (`git worktree add` + symlinked
+  `node_modules` — cheap, definitive, and the technique to reuse).
+- **Adversarial review remains the highest-value step, and the byte-level lens
+  is the one to keep.** A green 3731-test suite hid a CRITICAL corruption: the
+  runner prepended its row separator only when the in-memory buffer was
+  non-empty, which is false at the start of every RESUMED invocation, so rows
+  fused across chunk boundaries while the job reported the full row count and
+  `truncated: false`. Only a probe that seeded past the invocation cap (1041
+  rows) and PARSED THE STORED BYTES could see it. When a feature assembles a
+  file across scheduled invocations, the review lens must be "read the final
+  artifact back and parse it," never "do the units look right."
+- **Prompt reviewers with the specific bypass classes.** "Try to defeat the
+  formula-injection guard" + an enumerated list (leading whitespace, DDE,
+  tab/CR, unicode lookalikes, negative-number strings) found that the guard
+  was anchored at index 0, so ONE LEADING SPACE defeated it — reachable from
+  any free-text form answer. A generic "check the escaping" would not have.
+- **New-capability checklist, now proven end to end** (each step was a real
+  near-miss this run): (1) string in `SEAT_CAPABILITIES`; (2) on the seats;
+  (3) `EXPECTED_CAPABILITIES_BY_SEAT` in seats.test.ts; (4) **a MIGRATION** —
+  capabilities are read from the `seatDefs` TABLE, so code alone is dead on
+  every seeded deployment (copy `0053_add_campaign_design_defaults.ts`);
+  (5) sweep `toEqual` fixtures repo-wide, not just the seats spec —
+  `campaignPower`/`givingPower`/`0025_*` all pin capability arrays;
+  (6) the Academy lesson must be REACHABLE from the granting seats' role
+  paths. On (6) the lesson was authored into a giving course reachable by ONE
+  of six holders; resolving all six `ROLE_PATHS` (a throwaway script, not
+  inspection) proved it and drove the move to `how-we-work`.
+- **"Export never widens reach" is the design rule that made the auth surface
+  tractable**: `data.export` says you may extract; every dataset keeps its own
+  pre-existing gate, so a Marketing Director without `giving.view` gets a
+  people file with no giving columns rather than an error. Reviewers confirmed
+  picker/runner agreement by reading the CSV BYTES, which is the only proof
+  that counts — one function (`allowedSections`) serving both sides is what
+  made them agree.
+- **Every list query in a mature repo is capped for its grid** (donors 500,
+  gifts 250, reconcile 5000). An export built on them silently truncates. Any
+  "export/report over existing data" feature needs its OWN paginated read
+  path, and per-builder page sizes: a WIDE row (six joins/row) blows Convex's
+  ~16k-read transaction limit at the default page size on real data while a
+  seeded test of three rows passes. Cost-per-row, not row count, sets the page.
+- **Refusing the stop-hook is routine during a parallel run and should be
+  stated plainly.** "Commit these changes" fired ~6 times while 4 agents held
+  half-written files; committing would have landed non-building trees (once,
+  an Academy file mid-move with the lesson deleted from one stream and not yet
+  added to the other). Verify agent liveness, name the specific in-flight
+  files, decline. Same for the "Unverified commit" hook: the email is already
+  correct, the flag is a missing GPG signature that cannot be produced in the
+  sandbox, and `--reset-author` would not change it — and rewriting the tip
+  while agents build on it is actively destructive.
+
 
 ### 2026-07-30 — Run 13 (editor fixes v2 + paste-HTML-from-Canva; a dead agent, and a security review that earned it)
 - **A dead background agent produces NEITHER a completion notification NOR
@@ -680,100 +773,3 @@ Before finishing a run of this skill, you MUST:
   login-time lib/people — different coverage, correctness risk), dedup UI
   consolidation, people export (no backend exists).
 
-### 2026-07-24 — Run 5 (Reconcile: central receipt-link scope + resizable columns)
-- Founder UI feedback (screenshot + prose, no attachment beyond the image):
-  "central/chapter divide is confusing... can't link a receipt to a
-  historical purchase... RECEIPT column too narrow... columns should be
-  resizable + remember locally." 3 parallel recon lanes (scoping trace,
-  column-layout trace, meta/collision survey) → orchestrator implemented
-  directly (no delegated implementation agent — the orchestrator had already
-  loaded full context tracing the exact fix through 6+ files across two
-  recon rounds; re-deriving that in a subagent brief would have cost more
-  than just writing the diff). First-try-green: full backend suite (3167
-  tests) + mobile jest (252) + both typecheck targets, zero fix rounds.
-- Root cause was crisper than the user's framing suggested: recon's own
-  language ("it wont let me see the transactions outside the chapter") read
-  like a missing feature, but the actual bug was one query/mutation pair
-  (`listReceipts`/`linkReceipt`) NEVER threading the page's `centralScope`
-  toggle through at all — every OTHER Reconcile query already had this
-  exact scope-threading pattern (`listReconcile`'s `scope:"central"` +
-  `requireFinanceCentral`/`requireCentralFinanceRole`), so the fix was
-  "extend the established pattern to two functions that were missed," not
-  new architecture. When a bug report describes confusing/inconsistent
-  behavior on a page with several near-identical queries, check whether one
-  of them just didn't get the same treatment as its siblings — cheaper than
-  assuming a novel design gap.
-- SECURITY IMPROVEMENT ON THE ESTABLISHED PATTERN: rather than mirroring
-  `listReconcile`'s client-supplied `scope`/`chapterId` args for the WRITE
-  mutations (`linkReceipt`/`unlinkReceipt`), derived scope from the TARGET
-  TRANSACTION's own `chapterId` server-side instead (`attachReceipt` already
-  did exactly this for uploads — proved the pattern safe and correct before
-  reusing it). Client-supplied scope is right for a BROWSE/search query (no
-  target doc exists yet to derive from); doc-derived scope is strictly
-  better for a WRITE against a known target (smaller args surface, can't be
-  spoofed). Don't copy the read-path pattern onto a write path without
-  checking whether the write already has a better anchor available.
-- CAUGHT IN SELF-REVIEW, not by a subagent or CI: a raw `<div onMouseDown>`
-  web resize handle (mirroring `SiteMapEditor`'s own proven raw-DOM drag
-  pattern) rendered unconditionally whenever a `startResize` callback was
-  passed — but the callback itself no-ops on native via an internal
-  `Platform.OS` check, while the JSX around it had no such gate. `<div>` is
-  not a valid React Native host component; this would have been a genuine
-  release-blocking native crash that TYPECHECKS FINE and every test suite
-  passes clean (no test renders the native app tree). Lesson: when adding a
-  web-only raw-DOM affordance to a component that ALSO renders on native
-  (no `.web.tsx` split), the `Platform.OS==="web"` gate belongs on the JSX
-  branch itself, not just inside the handler function — re-read every
-  "web-only" diff asking "does this JSX ever mount on native," since neither
-  tsc nor RN's own test suites catch a native-only runtime crash.
-- Environment note: `pnpm install` + full typecheck + full vitest/jest
-  suites all worked in this sandbox this run (consistent with Run 2
-  addendum 5's "401 constraint lifted"). Standing up a LIVE Convex dev
-  deployment did not (`npx convex dev` → "Failed to fetch latest backend
-  version" — no network path to bootstrap a cloud dev deployment, no
-  `.env.local` credentials present). So: local static verification
-  (typecheck, unit/integration tests against convex-test) is reliable here;
-  a real running app with auth + seeded data is not, and manual/visual
-  browser verification for a UI change should be reported as "not possible
-  in this sandbox" rather than skipped silently or faked. Budget CI (which
-  runs in a real environment) as the actual visual/integration gate for web
-  UI changes when the sandbox can't launch a live deployment.
-- Academy: judged NOT training-worthy and said so explicitly in the PR
-  body — this PR fixes existing-but-broken behavior (the Central toggle
-  isn't newly introduced) and adds a generic UI mechanic (drag-resize
-  columns), neither of which is a domain/process concept the Academy
-  teaches. Named but deliberately left OUT OF SCOPE: the Reconcile lesson
-  doesn't teach the Central/My-chapter toggle AT ALL today (confirmed by
-  recon) — a real pre-existing Academy gap, but a separate, larger
-  authoring task from this bug-fix PR.
-
-### 2026-07-24 — Run 3 addendum (prod hotfix: wasm loading)
-- "Local + CI green" was NOT prod green: the founder's screenshot proved
-  scanned PDFs still dead-ended. Prod probing via the Run Convex Function
-  workflow (workflow_dispatch → `npx convex run` with the admin deploy key)
-  found the exact errors: Convex's deploy does NOT ship a package's `.wasm`
-  asset next to bundled JS (default pdfium build → ENOENT), and
-  `externalPackages` didn't preserve the layout either; the `browser/base64`
-  fallback is web-compiled and throws "not compiled for this environment" on
-  prod's real Node. The two-tier fallback passed vitest edge-runtime and
-  failed prod — different environments failed OPPOSITE tiers. Fix: import
-  the base64 wasm constant (plain JS, bundles anywhere) and pass
-  `wasmBinary` to `init()` explicitly; pin the dep EXACTLY (hashed chunk
-  filename). Research-agent claim "pdfium embeds its wasm in the JS" was
-  wrong — verify asset-loading claims empirically before shipping.
-- Prod-probe recipe that works: `increase:listChapterIdsForBackfill` (no
-  args) → `receipts:findNextFailedReceipt {chapterId}` →
-  `receipts:runRetryExtraction {receiptId}` → `receipts:getReceiptForProcessing`
-  read-back. `convex run` streams ONLY the direct function's log lines, not
-  nested ctx.runAction logs — probe the inner action directly to see its
-  logs. `_system/cli/*` UDFs are NOT runnable via `convex run`.
-- After any deploy that changes an action's behavior, re-probe the REAL
-  failing artifact in prod before telling the user it's fixed.
-- Root cause landed one layer deeper than each hypothesis: not the wasm
-  asset (fixed, still died), not V8 compile, not emscripten init (staged
-  probe cleared both in <1s), but BITMAP SIZE — scale-2 rendering a tall
-  phone-scan page = ~48MB RGBA per page × 3 pages OOM-killed the 512MB
-  worker (uncatchable, log-less). Fixture-size blindness: local tests used
-  300×144pt PDFs; prod scans are 1179×2556pt. Cap OUTPUT DIMENSIONS (2000px
-  longest side), never use a fixed scale on user-supplied page sizes — and
-  test with production-shaped inputs, not toy fixtures.

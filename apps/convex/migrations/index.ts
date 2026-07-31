@@ -76,6 +76,7 @@ import { seedOrgMailingAddress } from "./0054_seed_org_mailing_address";
 import { mergeCampaignTemplatesIntoCampaigns } from "./0055_merge_campaign_templates_into_campaigns";
 import { upgradeBuiltInNewsletterTiptap } from "./0056_upgrade_builtin_newsletter_tiptap";
 import { backfillIncreaseAccountActivity } from "./0057_backfill_increase_transactions";
+import { addDataExportDefaults } from "./0058_add_data_export_defaults";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -304,4 +305,11 @@ export const MIGRATIONS: Migration[] = [
   // history predating that only exists at Increase, so schedule ONE backfill
   // sweep (the daily cron then backstops). See 0057.
   backfillIncreaseAccountActivity,
+  // Data Export as an assignable per-role power (founder grant, 2026-07-31) —
+  // add data.export to executive_director/financial_manager/
+  // development_director/expansion_director/marketing_director/
+  // chapter_director's live seatDefs rows so already-seeded orgs pick up the
+  // same default export access the template now grants a brand-new org
+  // automatically. Additive-only (see 0058's doc). Idempotent. See 0058.
+  addDataExportDefaults,
 ];

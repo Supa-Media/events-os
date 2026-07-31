@@ -336,6 +336,7 @@ const REGISTRY_NAMES = [
   "0055_merge_campaign_templates_into_campaigns",
   "0056_upgrade_builtin_newsletter_tiptap",
   "0057_backfill_increase_transactions",
+  "0058_add_data_export_defaults",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

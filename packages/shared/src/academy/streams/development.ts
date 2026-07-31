@@ -28,6 +28,19 @@
  * this stream teaches that one floor, not a church-specific tier that doesn't
  * exist in the schema.
  *
+ * The data-export feature (`packages/shared/src/dataExport.ts`,
+ * `apps/convex/dataExports.ts`, `apps/mobile/app/(app)/exports.tsx`) is
+ * general-purpose — it exports People, Events, Work, and Finance datasets
+ * too, not just giving ones. The founder grant (2026-07-31) that turns on
+ * the `data.export` capability lands SIX seats (`SEAT_CAPABILITIES` in
+ * `packages/shared/src/seats.ts`), but only one of those six —
+ * `development_director` — has a role path that ever reaches this stream, so
+ * its lesson does NOT live here. It lives as `foundations-data-export` in
+ * `streams/foundations.ts`'s "how-we-work" course instead: the one course
+ * every one of the six role paths (`packages/shared/src/academyPaths.ts`)
+ * actually shares, alongside `welcome-to-public-worship` and
+ * `finances-for-everyone`.
+ *
  * Owned exclusively by this file for content authoring — do not add
  * Development sections or courses anywhere else. See `../index` for how this
  * assembles into the full curriculum/catalog.
@@ -1383,8 +1396,9 @@ export const DEVELOPMENT_COURSES: Course[] = [
     audience: "role",
     description:
       "Running real relationships through the CRM: owners, notes, the " +
-      "top-donor workflow, and getting giving history — old and new — " +
-      "onto the record via CSV import and manual backfill.",
+      "top-donor workflow, getting giving history — old and new — onto " +
+      "the record via CSV import and manual backfill, and the gifts " +
+      "ledger's own edit/audit/merge trail.",
     icon: "users",
     moduleSlugs: [
       "dev-relationship-workflow",

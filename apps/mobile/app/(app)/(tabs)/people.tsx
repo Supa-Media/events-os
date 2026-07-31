@@ -276,6 +276,10 @@ export default function PeopleScreen() {
   const router = useRouter();
   // Admin-only duplicate review + merge (Attendance C).
   const [dupOpen, setDupOpen] = useState(false);
+  // Full-database export entry point — its own power (`data.export`), so the
+  // button below stays hidden — not just disabled — for a caller who doesn't
+  // hold it (never just a "this view" export like the giving grids' button).
+  const exportAccess = useQuery(api.dataExports.myExportAccess);
 
   // The deep-linked person may not be on the currently loaded page (or on
   // ANY loaded page — pagination no longer holds the whole roster). Falls
@@ -458,6 +462,21 @@ export default function PeopleScreen() {
             <Icon name="user-check" size={13} color={colors.muted} />
             <Text className="text-xs font-semibold text-muted">Identify</Text>
           </Pressable>
+          {exportAccess?.canExport === true ? (
+            <Pressable
+              onPress={() =>
+                router.push(
+                  (chapterId ? `/exports?scope=${chapterId}&dataset=people` : "/exports?dataset=people") as never,
+                )
+              }
+              hitSlop={6}
+              accessibilityLabel="Full data export"
+              className="flex-row items-center gap-1 rounded-md border border-border px-2 py-1 active:bg-sunken web:hover:bg-sunken"
+            >
+              <Icon name="database" size={13} color={colors.muted} />
+              <Text className="text-xs font-semibold text-muted">Export</Text>
+            </Pressable>
+          ) : null}
         </View>
       </View>
 

@@ -191,12 +191,17 @@ describe("curriculum content", () => {
     // required, none capstones).
     // + 1 (finance-transfers-and-payouts, slotted into the treasurer course
     // after finance-reconcile-grid — required, not a capstone).
-    expect(ACADEMY_SECTION_COUNT).toBe(104);
+    // + 1 (foundations-data-export, slotted into the how-we-work course after
+    // foundations-where-things-live — required, not a capstone. It lives in
+    // FOUNDATIONS rather than the development stream on purpose: `data.export`
+    // is held by six seats across finance/development/marketing/chapter, and
+    // how-we-work is the only substantive course on all six role paths.)
+    expect(ACADEMY_SECTION_COUNT).toBe(105);
     expect(ACADEMY_SECTIONS.map((s) => s.order)).toEqual(
-      Array.from({ length: 104 }, (_v, i) => i + 1),
+      Array.from({ length: 105 }, (_v, i) => i + 1),
     );
     // The optional bonus is excluded from the trained denominator.
-    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(103);
+    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(104);
     expect(ACADEMY_CAPSTONE_SECTIONS).toHaveLength(6);
     // The suite leans on this order — pin it.
     expect(CAPSTONE_JOIN.capstone!.kind).toBe("join_event");

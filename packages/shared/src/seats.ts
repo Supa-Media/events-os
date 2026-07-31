@@ -114,6 +114,16 @@ export const SEAT_CAPABILITIES = [
   "campaigns.compose",
   "campaigns.approve",
   "campaigns.design",
+  /** Bulk data extraction — running an export of a database to a spreadsheet
+   *  (`apps/convex/lib/dataExportAccess.ts`). Deliberately its own power
+   *  rather than an implication of any desk capability: being allowed to READ
+   *  a grid on screen and being allowed to walk the whole table out of the
+   *  building are different risks, and the second is the one that shows up in
+   *  a breach. It never WIDENS reach — a holder still only exports datasets
+   *  they could already see, so `data.export` + no `giving.view` yields a
+   *  people file with no giving columns. Founder grant (2026-07-31): the four
+   *  central directors + the FM + the Chapter Director (their own chapter). */
+  "data.export",
 ] as const;
 export type SeatCapability = (typeof SEAT_CAPABILITIES)[number];
 
@@ -208,6 +218,7 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       "campaigns.approve",
       "campaigns.compose",
       "campaigns.design",
+      "data.export",
     ],
     legacyTitle: "executive_director",
   },
@@ -243,6 +254,7 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       "campaigns.approve",
       "campaigns.compose",
       "campaigns.design",
+      "data.export",
     ],
     legacyTitle: "finance_manager",
   },
@@ -259,7 +271,10 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     ],
     // F-6 P1 (giving PRD §6): the seat finally gets its powers — full donor
     // CRM read + write + config, plus the nav surface.
-    capabilities: ["giving.manage", "giving.view", "nav.giving"],
+    // 2026-07-31: + data.export (founder grant) — the seat that runs the
+    // funding pipeline is the one that needs donor/gift lists out of the app
+    // for board reporting and mail-merge.
+    capabilities: ["giving.manage", "giving.view", "nav.giving", "data.export"],
   },
   partnership_associate: {
     id: "partnership_associate",
@@ -347,7 +362,17 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     // default (compose implied by approve, design implied by compose —
     // `campaigns.design` added 2026-07-28; the MD owns the brand, so the
     // design system is squarely their desk).
-    capabilities: ["campaigns.approve", "campaigns.compose", "campaigns.design"],
+    // 2026-07-31: + data.export (founder grant, verbatim "Marketing director
+    // as well") — the MD builds audiences, so they need the roster out as a
+    // spreadsheet. Note they hold NO `giving.view`, so their people export
+    // comes back without giving columns rather than failing (see
+    // `lib/dataExportAccess.ts`).
+    capabilities: [
+      "campaigns.approve",
+      "campaigns.compose",
+      "campaigns.design",
+      "data.export",
+    ],
   },
   social_media_manager: {
     id: "social_media_manager",
@@ -413,7 +438,9 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     // the chapter/launch pipeline that giving funds, so they get central-lens
     // READ (`giving.view` + `nav.giving`), never `giving.manage`. Toggleable
     // by the ED at runtime.
-    capabilities: ["giving.view", "nav.giving"],
+    // 2026-07-31: + data.export (founder grant) — chapter launches run on
+    // roster/pipeline lists pulled out per territory.
+    capabilities: ["giving.view", "nav.giving", "data.export"],
   },
   chapter_directors: {
     id: "chapter_directors",
@@ -473,6 +500,7 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       "nav.finances",
       "giving.view",
       "nav.giving",
+      "data.export",
     ],
     legacyTitle: "president",
   },

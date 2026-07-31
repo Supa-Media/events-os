@@ -32,6 +32,7 @@
  * separable on purpose.
  */
 import { useMemo, useState } from "react";
+import { useRouter } from "expo-router";
 import {
   ActivityIndicator,
   Image,
@@ -218,7 +219,12 @@ function GiftsBody({
   isCentral: boolean;
   canManage: boolean;
 }) {
+  const router = useRouter();
   const scopeOpts = useQuery(api.givingPlatform.givingScopeOptions, {});
+  // Full-database export entry point (separate from the client-side "export
+  // this view" button below): its own power (`data.export`), so the button
+  // stays hidden — not just disabled — for a caller who doesn't hold it.
+  const exportAccess = useQuery(api.dataExports.myExportAccess);
   const [scopeSel, setScopeSel] = useState<string>(lensScope);
   const [search, setSearch] = useState("");
   const [openGiftId, setOpenGiftId] = useState<Id<"gifts"> | null>(null);
@@ -317,13 +323,28 @@ function GiftsBody({
           ) : (
             <GridCountLabel label="Gifts" count={data.gifts.length} />
           )}
-          <Button
-            title="Export"
-            icon="download"
-            size="sm"
-            variant="secondary"
-            onPress={() => void exportGifts()}
-          />
+          <View className="flex-row items-center gap-2">
+            <Button
+              title="Export"
+              icon="download"
+              size="sm"
+              variant="secondary"
+              onPress={() => void exportGifts()}
+            />
+            {exportAccess?.canExport === true ? (
+              <Pressable
+                onPress={() =>
+                  router.push(`/exports?scope=${lensScope}&dataset=gifts` as never)
+                }
+                hitSlop={6}
+                accessibilityLabel="Full data export"
+                className="flex-row items-center gap-1 rounded-md border border-border px-2 py-1 active:bg-sunken web:hover:bg-sunken"
+              >
+                <Icon name="database" size={13} color={colors.muted} />
+                <Text className="text-xs font-semibold text-muted">Full export</Text>
+              </Pressable>
+            ) : null}
+          </View>
         </View>
         <View className="mb-3 flex-row flex-wrap items-center gap-2">
           {isCentral ? (

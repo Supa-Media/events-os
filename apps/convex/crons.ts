@@ -186,4 +186,18 @@ crons.interval(
   {},
 );
 
+// Daily 06:00 UTC: Data Export sweep — purge storage blobs for `ready` jobs
+// past their `expiresAt` (files.storageId cleared, status -> "expired"; the
+// job ROW is never deleted — it's the extraction audit trail, see
+// `schema/dataExports.ts`'s module doc) AND fail any `running` job that's
+// gone quiet for 2+ hours (the runner action died without throwing, so
+// nothing else would ever move it out of "running" — see
+// `lib/exportRunner.ts`'s module doc). Bounded per run, safe to re-run.
+crons.cron(
+  "data export expiry + stuck-job sweep",
+  "0 6 * * *",
+  internal.lib.exportRunner.sweepExpiredExports,
+  {},
+);
+
 export default crons;

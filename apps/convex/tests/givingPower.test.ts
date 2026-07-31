@@ -141,6 +141,10 @@ describe("setSeatGivingPower — capability transitions", () => {
     "campaigns.approve",
     "campaigns.compose",
     "campaigns.design",
+    // 2026-07-31: `data.export` is a NON-giving cap on this seat, so the
+    // giving-power rewrite must leave it alone — that is exactly what this
+    // fixture asserts.
+    "data.export",
   ];
 
   test("manage → view → none rewrites only giving caps, never finance caps", async () => {

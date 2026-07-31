@@ -198,6 +198,33 @@
  * `finance-reconcile-grid` itself is content-only (two filter-table rows for
  * the new pills, and its `try_status` caption no longer teaches "Excluded" as
  * the answer for a transfer — quiz length UNCHANGED at 5). Total: 104 sections.
+ *
+ * The data-export feature (`packages/shared/src/dataExport.ts` — ONE WIDE
+ * FLAT FILE PER DATASET, founder decision 2026-07-31, and its own
+ * `data.export` seat capability) originally APPENDED one Development
+ * section, `dev-data-export` (4 min, 5-quiz), into the `donor-stewardship`
+ * course right after `dev-import-and-backfill`. Total: 105 sections.
+ *
+ * That placement was then corrected: `data.export` is granted to SIX seats
+ * (executive_director, financial_manager, development_director,
+ * expansion_director, marketing_director, chapter_director —
+ * `packages/shared/src/seats.ts`), but `donor-stewardship` appears on only
+ * ONE of those six role paths (`development_director`,
+ * `packages/shared/src/academyPaths.ts`). The lesson MOVED — slug renamed
+ * `dev-data-export` → `foundations-data-export`, content moved from
+ * `streams/development.ts` into `streams/foundations.ts` — into the
+ * `how-we-work` course, right after `foundations-where-things-live`, since
+ * `how-we-work` is the one course all six of those role paths actually
+ * share (alongside `welcome-to-public-worship` and
+ * `finances-for-everyone`). Reframed for a whole-team audience rather than
+ * the development desk: what the power is and that it's normal not to hold
+ * it, that export never widens reach, why finished files expire in 7 days
+ * while the job row stays forever as the audit trail, and to check
+ * consent/suppression columns before mailing an exported list. `donor-
+ * stewardship` drops back to three modules; `how-we-work` gains a sixth.
+ * `dev-data-export`'s vacated slot leaves `donor-stewardship`'s remaining
+ * three sections untouched and unmoved. Total: still 105 sections (moved,
+ * not added or removed).
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -211,6 +238,7 @@ const EXPECTED_SECTION_SLUGS: string[] = [
   "foundations-communication",
   "foundations-showing-up",
   "foundations-where-things-live",
+  "foundations-data-export",
   "foundations-spending",
   "foundations-owning-your-yes",
   "what-is-events-os",
@@ -372,6 +400,14 @@ const EXPECTED_SECTIONS: {
     slug: "foundations-where-things-live",
     title: "Where things live",
     minutes: 3,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "foundations-data-export",
+    title: "Taking data out of the app",
+    minutes: 4,
     quizLength: 4,
     optional: false,
     capstoneKind: null,
@@ -1168,7 +1204,7 @@ const EXPECTED_COURSES: {
   {
     slug: "how-we-work",
     themeKey: "foundations",
-    moduleSlugs: ["foundations-communication", "foundations-showing-up", "foundations-where-things-live", "foundations-spending", "foundations-owning-your-yes"],
+    moduleSlugs: ["foundations-communication", "foundations-showing-up", "foundations-where-things-live", "foundations-data-export", "foundations-spending", "foundations-owning-your-yes"],
   },
   {
     slug: "chapter-os-fundamentals",

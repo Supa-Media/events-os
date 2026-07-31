@@ -48,6 +48,8 @@
  *   academyProgress.personId .... idx by_chapter_and_person
  *   courseCompletions.personId .. idx by_chapter_and_person
  *   rsvps.personId ............... idx by_person
+ *   formSubmissions.personId .... idx by_person
+ *   personAudit.personId ........ idx by_person
  *   aiUsageEvents.cardholderPersonId ..... scan by_chapter_and_time (+central)
  *   songs.createdBy ............. scan by_chapter
  *   docs.createdBy .............. scan by_chapter
@@ -428,6 +430,15 @@ async function repointPersonRefs(
   // reference, or merging two duplicate people orphans the duplicate's rsvp
   // history (attendance stops showing on the survivor's person page).
   await repointDrain(ctx, counts, "rsvps", "personId", surv, "by_person", (q) => q.eq("personId", dup));
+  // Bug fix (data-export feature, 2026-07-31): these two were missing from
+  // the inventory above, so a merge silently orphaned the duplicate's form
+  // submissions and audit trail — pointing at a person row that no longer
+  // exists, invisible everywhere including the export this file's sibling
+  // feature builds. Pre-existing orphans from PAST merges are NOT
+  // recoverable (the duplicate's id is gone); this only fixes it going
+  // forward.
+  await repointDrain(ctx, counts, "formSubmissions", "personId", surv, "by_person", (q) => q.eq("personId", dup));
+  await repointDrain(ctx, counts, "personAudit", "personId", surv, "by_person", (q) => q.eq("personId", dup));
   // Self-referential manager tree — never make the survivor its own manager.
   await repointDrain(ctx, counts, "people", "managerId", surv, "by_manager", (q) => q.eq("managerId", dup), surv);
 
