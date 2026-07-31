@@ -2045,7 +2045,13 @@ describe("processInboundReceipt", () => {
       // Read the blob INSIDE the callback — a Blob isn't a Convex value and
       // can't be returned across the `run` boundary.
       const file = await run(t, async (ctx) => {
-        const blob = await ctx.storage.get(receipts[0].storageId!);
+        // `ctx.storage.get` returning a Blob is a convex-test affordance not
+        // on the generated `StorageWriter` type (same cast `storeBlob` uses).
+        const blob = await (
+          ctx.storage as unknown as {
+            get: (id: Id<"_storage">) => Promise<Blob | null>;
+          }
+        ).get(receipts[0].storageId!);
         return blob ? { type: blob.type, text: await blob.text() } : null;
       });
       return { receipt: receipts[0], contentType: file?.type, stored: file?.text };

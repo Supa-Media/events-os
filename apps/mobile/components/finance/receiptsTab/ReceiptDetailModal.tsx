@@ -47,6 +47,7 @@ import type { ActionRunner } from "../../../lib/useActionToast";
 import {
   formatCents,
   isPdfReceipt,
+  isDocumentReceipt,
   parseDollarsToCents,
   senderClassLabel,
   senderClassTone,
@@ -148,6 +149,13 @@ export function ReceiptDetailModal({
   // (fix 5: inline PDF preview). Shared with `LibrarySection`/`ImageLightbox`
   // via `helpers.ts#isPdfReceipt` — ONE definition, not re-inlined here.
   const isPdf = isPdfReceipt(receipt?.filename);
+  // An emailed receipt's `text/html` body is a DOCUMENT, not a photo. RN
+  // `<Image>` can't decode it, so it takes the same inline-iframe (web) /
+  // open-externally (native) treatment a PDF does — that's what makes a
+  // forwarded merchant receipt render as the branded receipt it is instead of
+  // a blank tile or a wall of text (see `isDocumentReceipt`).
+  const isDoc = !isPdf && isDocumentReceipt(receipt?.contentType);
+  const framed = isPdf || isDoc;
 
   async function save() {
     if (amountInvalid) return;
@@ -317,31 +325,33 @@ export function ReceiptDetailModal({
               </Text>
             ) : (
               <>
-                {/* File preview: a PDF (inferred from the filename — no
-                    content-type from the backend) gets an INLINE preview on
-                    web; native has no RN PDF renderer, so it keeps the "Open
-                    file" fallback. A non-PDF renders as an image, falling
-                    back to "Open file" if it fails to decode. */}
+                {/* File preview: a PDF (by filename) or an EMAIL BODY (by
+                    stored content type) gets an INLINE preview on web; native
+                    has neither an RN PDF nor an HTML renderer here, so both
+                    keep the "Open file" fallback. Anything else renders as an
+                    image, falling back to "Open file" if it fails to decode. */}
                 <View
                   className={`mb-4 w-full items-center justify-center overflow-hidden rounded-lg border border-border bg-sunken ${
-                    isPdf && Platform.OS === "web" ? "h-96" : "h-48"
+                    framed && Platform.OS === "web" ? "h-96" : "h-48"
                   }`}
                 >
-                  {receipt.url && isPdf && Platform.OS === "web" ? (
+                  {receipt.url && framed && Platform.OS === "web" ? (
                     // RN-web renders this iframe directly in the DOM (same
                     // pattern as `crew/BriefingView.tsx`'s video embed).
                     <iframe
                       src={receipt.url}
-                      title={receipt.filename ?? "Receipt PDF"}
+                      title={receipt.filename ?? (isPdf ? "Receipt PDF" : "Emailed receipt")}
                       style={{ width: "100%", height: "100%", border: "0" }}
                     />
-                  ) : receipt.url && isPdf ? (
+                  ) : receipt.url && framed ? (
                     <Pressable
                       onPress={() => receipt.url && Linking.openURL(receipt.url)}
                       className="items-center gap-2 px-6 py-4"
                     >
                       <Icon name="file-text" size={24} color={colors.faint} />
-                      <Text className="text-sm font-semibold text-accent">Open PDF</Text>
+                      <Text className="text-sm font-semibold text-accent">
+                        {isPdf ? "Open PDF" : "Open receipt"}
+                      </Text>
                     </Pressable>
                   ) : receipt.url && !imgFailed ? (
                     // Tap the thumbnail to open it in the fullscreen spotlight
@@ -813,7 +823,7 @@ export function ReceiptDetailModal({
         </Pressable>
       </Pressable>
     </Modal>
-    {receipt?.url && !isPdf ? (
+    {receipt?.url && !framed ? (
       <ImageLightbox
         uri={receipt.url}
         visible={lightboxOpen}

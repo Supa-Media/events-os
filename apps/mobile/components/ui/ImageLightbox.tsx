@@ -6,8 +6,9 @@
  * it bigger" affordance receipt previews were missing, not a full pan/zoom
  * viewer.
  *
- * PDFs (`isPdf`): a raw file URL handed to RN `<Image>` silently renders
- * nothing — `<Image>` can't decode `application/pdf`. This mirrors
+ * DOCUMENTS (`isPdf`, `isDocument`): a raw file URL handed to RN `<Image>`
+ * silently renders nothing — `<Image>` can't decode `application/pdf`, nor the
+ * `text/html` body of an emailed receipt. Both take the same branch. This mirrors
  * `ReceiptDetailModal`'s own file-preview branch: web gets an inline
  * `<iframe>`; native (no RN PDF renderer) gets an "Open PDF"
  * `Pressable`/`Linking.openURL` fallback. The `Platform.OS === "web"` check
@@ -29,6 +30,7 @@ export function ImageLightbox({
   onClose,
   caption,
   isPdf = false,
+  isDocument = false,
 }: {
   uri: string;
   visible: boolean;
@@ -37,13 +39,22 @@ export function ImageLightbox({
   caption?: string;
   /** Render the PDF web-iframe/native-"Open PDF" branch instead of `<Image>`. */
   isPdf?: boolean;
+  /**
+   * Same framed treatment for a NON-PDF document — an emailed receipt whose
+   * `text/html` body is the receipt. `<Image>` can't decode it either, so it
+   * needs the iframe/open-externally branch rather than a blank image.
+   */
+  isDocument?: boolean;
 }) {
   if (!visible) return null;
+  // Either kind of document takes the framed branch; only the wording differs.
+  const framed = isPdf || isDocument;
+  const noun = isPdf ? "PDF" : "receipt";
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onClose}>
       <Pressable
         onPress={onClose}
-        accessibilityLabel={isPdf ? "Close PDF" : "Close image"}
+        accessibilityLabel={framed ? `Close ${noun}` : "Close image"}
         className="flex-1 items-center justify-center bg-ink/95 p-4"
       >
         <View className="absolute inset-x-0 top-0 flex-row items-center justify-between px-4 pb-3 pt-5">
@@ -68,24 +79,26 @@ export function ImageLightbox({
             does), so a user can rest a pointer on the receipt without
             dismissing. */}
         <Pressable onPress={() => {}} className="h-full w-full max-w-4xl">
-          {isPdf && Platform.OS === "web" ? (
+          {framed && Platform.OS === "web" ? (
             // RN-web renders this iframe directly in the DOM (same pattern as
             // `ReceiptDetailModal`'s inline PDF preview / `crew/BriefingView.tsx`'s
             // video embed). Gated on `Platform.OS === "web"` in the JSX itself —
             // see the file doc for why that must not be a runtime-only check.
             <iframe
               src={uri}
-              title={caption ?? "Receipt PDF"}
+              title={caption ?? `Receipt ${noun}`}
               style={{ width: "100%", height: "100%", border: "0" }}
             />
-          ) : isPdf ? (
+          ) : framed ? (
             <View className="h-full w-full items-center justify-center">
               <Pressable
                 onPress={() => void Linking.openURL(uri)}
                 className="items-center gap-2 px-6 py-4 active:opacity-70"
               >
                 <Icon name="file-text" size={28} color={colors.raised} />
-                <Text className="text-sm font-semibold text-raised">Open PDF</Text>
+                <Text className="text-sm font-semibold text-raised">
+                  Open {noun}
+                </Text>
               </Pressable>
             </View>
           ) : (
