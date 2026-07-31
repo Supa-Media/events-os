@@ -320,16 +320,42 @@ export const finalizeJob = internalMutation({
   },
 });
 
+/**
+ * End a job as `failed`, and CLEAN UP after it.
+ *
+ * A multi-invocation export flushes partial chunk blobs as it goes. Those are
+ * referenced only from `progress.chunkStorageIds`, so clearing `progress`
+ * without deleting them — or failing the job and leaving `progress` behind —
+ * orphans every one of them permanently: the expiry sweep only ever looks at
+ * `files[].storageId` on `ready` jobs, so nothing else would ever collect
+ * them. Each mid-flight failure on a large export leaked at least one blob
+ * forever (found by adversarial review, confirmed still present in storage
+ * after both the failure AND a full sweep).
+ *
+ * Deletion is best-effort per id: a blob already gone must not stop the job
+ * being marked failed, or a transient storage error would wedge it in
+ * `running` — the very state this function exists to prevent.
+ */
 export const failJob = internalMutation({
   args: { jobId: v.id("exportJobs"), error: v.string() },
   returns: v.null(),
   handler: async (ctx, { jobId, error }) => {
     const job = await ctx.db.get(jobId);
     if (!job || job.status === "ready" || job.status === "expired") return null;
+
+    for (const storageId of job.progress?.chunkStorageIds ?? []) {
+      try {
+        await ctx.storage.delete(storageId);
+      } catch {
+        // Already collected, or storage hiccup — never block the failure.
+      }
+    }
+
     await ctx.db.patch(jobId, {
       status: "failed",
       error,
       completedAt: Date.now(),
+      progress: undefined,
     });
     return null;
   },
@@ -484,10 +510,31 @@ export const runExportJob = internalAction({
 
         const capped = capRowsAtMax(rowsWritten, result.rows);
         const rows = capped.rows;
-        if (capped.truncated) truncated = true;
+        // `capRowsAtMax` flags the cap being REACHED, which is not the same as
+        // the file being CUT. A dataset whose true row count lands exactly on
+        // `EXPORT_MAX_ROWS` on its genuinely-final page reaches the cap having
+        // dropped nothing — reporting that as truncated is a false alarm, and
+        // "truncated when the export was complete" is its own defect: it tells
+        // an operator to distrust a file that is in fact whole.
+        const droppedRows = result.rows.length - rows.length;
+        if (droppedRows > 0 || (capped.truncated && !result.isDone)) {
+          truncated = true;
+        }
 
         const body = serializePage(job.format, columns, rows);
-        if (body.length > 0) buffer += (buffer.length > 0 ? glue : "") + body;
+        // The separator must account for everything written to this dataset SO
+        // FAR — including bytes already flushed to a previous chunk in an
+        // EARLIER INVOCATION, where `buffer` restarts empty. Keying it on
+        // `buffer.length` alone meant a resumed invocation prepended no glue,
+        // and the chunks are concatenated as raw bytes, so the last row of one
+        // chunk fused onto the first row of the next into a single malformed
+        // line. The job still reported the full `rowCount` and
+        // `truncated: false` — a corrupt file that looked complete, which is
+        // the exact failure this whole feature is built to avoid. Found by
+        // adversarial review at 1041 rows: two names vanished into one 4-field
+        // row.
+        const somethingWritten = buffer.length > 0 || chunkStorageIds.length > 0;
+        if (body.length > 0) buffer += (somethingWritten ? glue : "") + body;
         rowsWritten += rows.length;
         cursor = result.cursor;
         datasetDone = truncated || result.isDone;
@@ -630,11 +677,22 @@ export const sweepExpiredExports = internalMutation({
     for (const job of runningJobs) {
       const lastActivity = job.startedAt ?? job.createdAt;
       if (now - lastActivity < STUCK_JOB_TIMEOUT_MS) continue;
+      // Same chunk cleanup `failJob` does — a job abandoned mid-walk is the
+      // MOST likely one to be holding flushed chunks, so skipping it here
+      // would leak exactly the blobs this branch exists to reclaim.
+      for (const storageId of job.progress?.chunkStorageIds ?? []) {
+        try {
+          await ctx.storage.delete(storageId);
+        } catch {
+          // Already collected — never block the sweep.
+        }
+      }
       await ctx.db.patch(job._id, {
         status: "failed",
         error:
           "Export timed out — the job stopped making progress. Please request a new export.",
         completedAt: now,
+        progress: undefined,
       });
       failedStuck++;
     }

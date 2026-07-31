@@ -219,6 +219,57 @@ describe("peopleBuilders — filters and exclusions", () => {
   });
 });
 
+describe("peopleBuilders — giving_summary scope isolation (review regression)", () => {
+  // REGRESSION (adversarial review, 2026-07-31). `donors` is partitioned by
+  // `scope`, but `donors.by_person` is keyed on `personId` alone — so an
+  // indexed lookup can return a donor row belonging to a DIFFERENT book. The
+  // builder took the first row it got, and a seeded mismatch put another
+  // chapter's $55,555 lifetime figure onto this chapter's export row.
+  //
+  // Today's write paths won't create that mismatch, so this is defense in
+  // depth — but "export never widens reach" has to be enforced where the read
+  // happens, not inherited from an invariant maintained three modules away.
+  test("a donor row from another scope never contributes to this scope's row", async () => {
+    const t = newT();
+    const chapterA = await setupChapter(t, {
+      email: "a@publicworship.life",
+      chapterName: "Chapter A",
+    });
+    const otherChapterId = await run(t, (ctx) =>
+      ctx.db.insert("chapters", { name: "Chapter B", slug: "chapter-b" } as never),
+    );
+
+    const personId = await seedPerson(chapterA, { name: "Jordan Smith" });
+
+    // A donor row linked to this person but scoped to ANOTHER chapter.
+    await run(t, (ctx) =>
+      ctx.db.insert("donors", {
+        scope: otherChapterId,
+        kind: "individual",
+        name: "Jordan Smith",
+        status: "active",
+        personId,
+        lifetimeCents: 5_555_500,
+        giftCount: 9,
+        createdAt: Date.now(),
+      } as never),
+    );
+
+    const ctxA = bctx(chapterA.chapterId, ["giving_summary"]);
+    const rows = await run(t, async (ctx) => {
+      const result = await peopleBuilder.page(ctx as never, ctxA, null, 50);
+      return result.rows;
+    });
+
+    const row = rows.find((r) => r.person_id === personId);
+    expect(row).toBeDefined();
+    // The other book's money must not appear.
+    expect(JSON.stringify(row)).not.toContain("55555");
+    expect(row?.giving_lifetime_dollars).toBe("");
+    expect(row?.giving_gift_count).toBe("");
+  });
+});
+
 describe("formSubmissionsBuilders", () => {
   test("one row per submission, columns keyed by form + question, anonymous (person-less) rows included", async () => {
     const s = await setupChapter(newT());

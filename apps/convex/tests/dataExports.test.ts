@@ -32,6 +32,29 @@ async function seatSetup(opts: { email?: string } = {}) {
   return { t, chapter: await setupChapter(t, opts) };
 }
 
+/** A SECOND user inside an EXISTING chapter — `setupChapter` always mints a
+ *  fresh chapter, but the co-holder regression below needs two people whose
+ *  export reach lands on the very same scope. */
+async function joinExistingChapter(
+  t: ReturnType<typeof newT>,
+  chapterId: Id<"chapters">,
+  email: string,
+): Promise<{ as: ReturnType<ReturnType<typeof newT>["withIdentity"]>; userId: Id<"users">; chapterId: Id<"chapters">; email: string; t: ReturnType<typeof newT> }> {
+  const userId = await run(t, async (ctx) => {
+    const id = await ctx.db.insert("users", { email });
+    await ctx.db.insert("userChapters", {
+      userId: id,
+      chapterId,
+      role: "admin",
+      isActive: true,
+      joinedAt: Date.now(),
+    });
+    return id;
+  });
+  const as = t.withIdentity({ subject: `${userId}|session`, issuer: "test" });
+  return { as, userId, chapterId, email, t };
+}
+
 async function defBySlug(t: ReturnType<typeof newT>, slug: string): Promise<Doc<"seatDefs">> {
   const def = await run(t, (ctx) =>
     ctx.db.query("seatDefs").withIndex("by_slug", (q) => q.eq("slug", slug)).unique(),
@@ -188,6 +211,95 @@ describe("getExportJob — scope isolation", () => {
     await expect(
       s.as.query(api.dataExports.listExportJobs, { scope: s.chapterId }),
     ).rejects.toMatchObject({ data: { code: "FORBIDDEN" } });
+  });
+
+  // Regression (adversarial review, 2026-07-31). `listExportJobs` used to
+  // check only `requireExport(scope)` while `getExportJob` additionally
+  // required requester-or-central. That divergence made the LIST a way around
+  // the DETAIL gate: a second export holder at the same chapter could read a
+  // colleague's job — who they are, what they pulled, how many rows — and the
+  // row carried a raw `storageId`, which `storage.getUrl` (gated on nothing
+  // but "signed in") turns into the file itself.
+  test("listExportJobs hides another user's job at the same scope", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const owner = await setupChapter(t, {
+      email: "owner@publicworship.life",
+      chapterName: "Chapter A",
+    });
+    const colleague = await joinExistingChapter(
+      t,
+      owner.chapterId,
+      "colleague@publicworship.life",
+    );
+
+    const ownerPerson = await seedSelfPerson(t, owner, "Owner");
+    await grantSeat(t, "chapter_director", owner.chapterId, ownerPerson);
+    const colleaguePerson = await seedSelfPerson(t, colleague, "Colleague");
+    await grantSeat(t, "chapter_director", owner.chapterId, colleaguePerson);
+
+    const { jobId } = await owner.as.mutation(api.dataExports.requestExport, {
+      scope: owner.chapterId,
+      datasetIds: ["people"],
+      sectionIds: [],
+      format: "csv",
+      filters: {},
+    });
+
+    // The owner sees their own job.
+    const mine = await owner.as.query(api.dataExports.listExportJobs, {
+      scope: owner.chapterId,
+    });
+    expect(mine.map((j) => j._id)).toContain(jobId);
+
+    // The colleague holds export reach at this very scope, and still must not
+    // see someone else's extraction.
+    const theirs = await colleague.as.query(api.dataExports.listExportJobs, {
+      scope: owner.chapterId,
+    });
+    expect(theirs.map((j) => j._id)).not.toContain(jobId);
+  });
+
+  // Regression (same review): no client-facing shape may carry a raw storage
+  // id. `storage.getUrl` does no chapter/scope/capability check at all, so an
+  // id on the wire is equivalent to the file for ANY signed-in user.
+  test("no client-facing job shape leaks a storageId", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const s = await setupChapter(t, {
+      email: "director@publicworship.life",
+      chapterName: "Chapter A",
+    });
+    const person = await seedSelfPerson(t, s, "Director");
+    await grantSeat(t, "chapter_director", s.chapterId, person);
+
+    const { jobId } = await s.as.mutation(api.dataExports.requestExport, {
+      scope: s.chapterId,
+      datasetIds: ["people"],
+      sectionIds: [],
+      format: "csv",
+      filters: {},
+    });
+    vi.useFakeTimers();
+    try {
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const detail = await s.as.query(api.dataExports.getExportJob, { jobId });
+    const listed = await s.as.query(api.dataExports.listExportJobs, {
+      scope: s.chapterId,
+    });
+
+    // Deep scan: the id must not appear anywhere in either payload, including
+    // inside `progress.chunkStorageIds`.
+    const serialized = JSON.stringify({ detail, listed });
+    expect(serialized).not.toContain("storageId");
+    expect(serialized).not.toContain("chunkStorageIds");
+    for (const file of detail.files) {
+      expect(Object.keys(file)).not.toContain("storageId");
+    }
   });
 });
 

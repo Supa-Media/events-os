@@ -95,8 +95,40 @@ const fileValidator = v.object({
   truncated: v.boolean(),
 });
 
+/**
+ * A file as the CLIENT sees it — deliberately WITHOUT `storageId`.
+ *
+ * `storage.ts#getUrl` is gated on nothing but "are you signed in": it does no
+ * chapter, scope or `data.export` check, because it predates anything as
+ * sensitive as a bulk-PII export being stored. So a raw export `storageId` in
+ * a client payload is equivalent to the file itself for ANY signed-in user,
+ * which would route straight around this module's careful "a job id is never a
+ * bearer token" rule one layer below it.
+ *
+ * The client never needs one — it downloads via the resolved `url` that
+ * `getExportJob` mints after `requireJobAccess`. So the id simply never
+ * crosses the wire. (Narrowing `storage.getUrl` itself is the deeper fix, but
+ * it has many unrelated callers; withholding the id closes this feature's
+ * exposure without that blast radius.)
+ */
+const clientFileValidator = v.object({
+  datasetId: v.string(),
+  fileName: v.string(),
+  rowCount: v.number(),
+  byteSize: v.number(),
+  truncated: v.boolean(),
+});
+
+/** Runner state the client legitimately renders (a progress count) — WITHOUT
+ *  the resume cursor or `chunkStorageIds`, which are internal and, again,
+ *  storage ids. */
+const clientProgressValidator = v.object({
+  datasetIndex: v.number(),
+  rowsWritten: v.number(),
+});
+
 /** The full job row, exactly mirroring `schema/dataExports.ts` (system fields
- *  included) — the shape `listExportJobs` returns as-is. */
+ *  included). Internal only — see the client shapes above. */
 const exportJobValidator = v.object({
   _id: v.id("exportJobs"),
   _creationTime: v.number(),
@@ -123,7 +155,36 @@ const exportJobValidator = v.object({
   lastDownloadedAt: v.optional(v.number()),
 });
 
-/** Same shape as `exportJobValidator`, but each file carries a resolved
+/** What `listExportJobs` returns: the job row with every storage id stripped
+ *  (see `clientFileValidator`) and no download urls — the list is a history
+ *  view; minting a url is `getExportJob`'s job, behind `requireJobAccess`. */
+const listedJobValidator = v.object({
+  _id: v.id("exportJobs"),
+  _creationTime: v.number(),
+  scope: scopeValidator,
+  scopeLabel: v.string(),
+  requestedByUserId: v.id("users"),
+  requestedByPersonId: v.optional(v.id("people")),
+  requestedByLabel: v.string(),
+  datasetIds: v.array(v.string()),
+  sectionIds: v.array(v.string()),
+  omittedSectionIds: v.array(v.string()),
+  format: formatValidator,
+  filters: filtersValidator,
+  status: statusValidator,
+  error: v.optional(v.string()),
+  files: v.array(clientFileValidator),
+  progress: v.optional(clientProgressValidator),
+  totalRows: v.number(),
+  createdAt: v.number(),
+  startedAt: v.optional(v.number()),
+  completedAt: v.optional(v.number()),
+  expiresAt: v.optional(v.number()),
+  downloadCount: v.number(),
+  lastDownloadedAt: v.optional(v.number()),
+});
+
+/** Same shape as `listedJobValidator`, but each file carries a resolved
  *  download `url` — the one enrichment `getExportJob` adds over the raw row. */
 const exportJobWithUrlsValidator = v.object({
   _id: v.id("exportJobs"),
@@ -144,14 +205,13 @@ const exportJobWithUrlsValidator = v.object({
     v.object({
       datasetId: v.string(),
       fileName: v.string(),
-      storageId: v.optional(v.id("_storage")),
       rowCount: v.number(),
       byteSize: v.number(),
       truncated: v.boolean(),
       url: v.union(v.string(), v.null()),
     }),
   ),
-  progress: v.optional(progressValidator),
+  progress: v.optional(clientProgressValidator),
   totalRows: v.number(),
   createdAt: v.number(),
   startedAt: v.optional(v.number()),
@@ -369,16 +429,63 @@ async function requireJobAccess(
   });
 }
 
+/** Strip every storage id and internal runner field from a job row. The ONLY
+ *  shape that may reach a client — see `clientFileValidator`'s doc. */
+function toClientJob(job: Doc<"exportJobs">) {
+  return {
+    ...job,
+    files: job.files.map((f) => ({
+      datasetId: f.datasetId,
+      fileName: f.fileName,
+      rowCount: f.rowCount,
+      byteSize: f.byteSize,
+      truncated: f.truncated,
+    })),
+    progress: job.progress
+      ? {
+          datasetIndex: job.progress.datasetIndex,
+          rowsWritten: job.progress.rowsWritten,
+        }
+      : undefined,
+  };
+}
+
+/**
+ * A scope's export history.
+ *
+ * Applies the SAME per-job rule `getExportJob` does, not just `requireExport`
+ * on the scope. Holding `data.export` at a chapter says you may RUN exports
+ * there; it does not say you may read a colleague's — their job row carries
+ * who they are, what they pulled and how many rows came back. Scope reach and
+ * per-job reach are different questions, and answering only the first here
+ * while `getExportJob` answered both was a real divergence: it made the list
+ * a way around the detail gate.
+ *
+ * Reachable today wherever two people hold export reach at one scope — e.g.
+ * the moment a chapter's `maxHolders` is raised to seat a co-director, or
+ * `data.export` is added to any other chapter seat. Both are ordinary
+ * org-chart edits, no code change required.
+ *
+ * Central holders (and superusers) see everything at the scope, matching
+ * `requireJobAccess`.
+ */
 export const listExportJobs = query({
   args: { scope: scopeValidator },
-  returns: v.array(exportJobValidator),
+  returns: v.array(listedJobValidator),
   handler: async (ctx, { scope }) => {
-    await requireExport(ctx, scope);
-    return await ctx.db
+    const access = await requireExport(ctx, scope);
+    const seesEveryJob = access.isSuperuser || access.centralExport;
+    const userId = seesEveryJob ? null : await requireUserId(ctx);
+
+    const jobs = await ctx.db
       .query("exportJobs")
       .withIndex("by_scope_and_created", (q) => q.eq("scope", scope))
       .order("desc")
       .take(JOB_LIST_LIMIT);
+
+    return jobs
+      .filter((job) => seesEveryJob || job.requestedByUserId === userId)
+      .map(toClientJob);
   },
 });
 
@@ -392,14 +499,20 @@ export const getExportJob = query({
     }
     await requireJobAccess(ctx, job);
 
+    // The url is minted here, AFTER `requireJobAccess` — and the storageId
+    // itself never leaves the server (see `clientFileValidator`).
     const files = await Promise.all(
       job.files.map(async (file) => ({
-        ...file,
+        datasetId: file.datasetId,
+        fileName: file.fileName,
+        rowCount: file.rowCount,
+        byteSize: file.byteSize,
+        truncated: file.truncated,
         url: file.storageId ? await ctx.storage.getUrl(file.storageId) : null,
       })),
     );
 
-    return { ...job, files };
+    return { ...toClientJob(job), files };
   },
 });
 

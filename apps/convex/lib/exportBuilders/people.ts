@@ -83,6 +83,11 @@ const COURSE_COMPLETIONS_PER_PERSON_LIMIT = 50;
 const FORM_SUBMISSIONS_PER_PERSON_LIMIT = 100;
 const FORM_DEFINITIONS_PER_CHAPTER_LIMIT = 200;
 const PLEDGES_PER_DONOR_LIMIT = 10;
+/** A person should have at most one donor row per scope, but `donors` is
+ *  partitioned by scope while `personId` is not — so the `by_person` index can
+ *  legitimately return one row per book. Read a few and pick the one matching
+ *  the scope being exported (see `donorForPerson`). */
+const DONOR_ROWS_PER_PERSON_LIMIT = 8;
 /** Bounded per-address suppression check — capped by how many distinct
  *  addresses a single person can have (`PERSON_EMAILS_LIMIT` + 2). */
 const EMAIL_SUPPRESSION_LOOKUP_CAP = PERSON_EMAILS_LIMIT + 2;
@@ -293,12 +298,22 @@ function givingSummaryColumnDefs(): CsvColumn[] {
 async function donorForPerson(
   ctx: QueryCtx,
   personId: Id<"people">,
+  scope: Id<"chapters"> | "central",
 ): Promise<Doc<"donors"> | undefined> {
   const rows = await ctx.db
     .query("donors")
     .withIndex("by_person", (q) => q.eq("personId", personId))
-    .take(1);
-  return rows[0];
+    .take(DONOR_ROWS_PER_PERSON_LIMIT);
+  // Scope-match, don't assume. `donors` is partitioned by `scope` while
+  // `personId` is not, so the index alone can hand back a donor row belonging
+  // to a DIFFERENT chapter (or to central) and its lifetime total would land
+  // on this chapter's export. Today's write paths (`linkDonorToPerson`,
+  // `mergeDonors`, `mergePeopleCore`) all refuse to create that mismatch, so
+  // this is defense in depth rather than a live hole — but "export never
+  // widens reach" should be enforced here, not inherited from an invariant
+  // maintained three modules away. A seeded mismatch put another chapter's
+  // $55,555 on a row during review; this is what stops it.
+  return rows.find((d) => d.scope === scope);
 }
 
 async function pledgeStatusForDonor(ctx: QueryCtx, donorId: Id<"donors">): Promise<string> {
@@ -585,7 +600,10 @@ async function page(
     if (sections.has("giving_summary")) {
       Object.assign(
         row,
-        await givingSummaryCells(ctx, await donorForPerson(ctx, person._id)),
+        await givingSummaryCells(
+          ctx,
+          await donorForPerson(ctx, person._id, bctx.scope),
+        ),
       );
     }
     if (sections.has("form_answers")) {
