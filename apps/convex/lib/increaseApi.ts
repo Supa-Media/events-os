@@ -159,8 +159,56 @@ export async function increaseGet(
   return (await res.json()) as Record<string, unknown>;
 }
 
+/**
+ * Build a card's `digital_wallet` object — the thing that decides whether the
+ * card can be added to Apple/Google Pay AT ALL.
+ *
+ * Increase gates wallet tokenization on ONE of two things being true (grounded
+ * against `CardCreateParams.DigitalWallet` in the `increase` SDK: "To add a
+ * card to a digital wallet, you may supply an email or phone number.
+ * Alternatively, you can subscribe to and action a Real Time Decision with the
+ * category `digital_wallet_token_requested` or
+ * `digital_wallet_authentication_requested`"):
+ *   (a) the card carries a `digital_wallet.email` / `.phone` contact, so
+ *       Increase itself sends the verification one-time passcode, OR
+ *   (b) a `Real-time decision` webhook subscription exists and we action those
+ *       two RTD categories ourselves (`cards.ts`'s
+ *       `handleIncreaseDigitalWalletTokenRequested` /
+ *       `...AuthenticationRequested`).
+ * We satisfy (a) UNCONDITIONALLY — the RTD handlers for (b) are written and
+ * deployed, but they only ever fire once the webhook subscription is created
+ * in the Increase dashboard, and until then a card with no contact on it
+ * CANNOT be added to a wallet at all. Path (a) needs no dashboard step, so it
+ * is what actually makes "Add to Apple Wallet" work; (b) then supersedes it
+ * for free (Increase prefers the RTD when a subscription exists), which is why
+ * both are safe to have on at once.
+ *
+ * EMAIL ONLY, never `phone` — the same constraint the RTD handlers document:
+ * this deployment has no SMS provider, so offering a phone would let the wallet
+ * pick an SMS one-time passcode we could never deliver. Every cardholder is
+ * guaranteed an `@publicworship.life` address (`isCardEligible` gates
+ * issuance), so the email is always available.
+ *
+ * `digitalCardProfileId` (WP-C.2 card art) is folded into the SAME object
+ * because Increase takes `digital_wallet` as a whole: writing it with only one
+ * of the two keys is what would drop the other. Every writer — `issueCard` and
+ * the `backfillCardWallets` ops sweep — goes through here so the pair always
+ * travels together.
+ */
+export function buildDigitalWallet(
+  cardholderEmail: string,
+  digitalCardProfileId: string | null,
+): { email: string; digital_card_profile_id?: string } {
+  return {
+    email: cardholderEmail,
+    ...(digitalCardProfileId
+      ? { digital_card_profile_id: digitalCardProfileId }
+      : {}),
+  };
+}
+
 /** PATCH JSON to the Increase API (e.g. `PATCH /cards/{id}` to attach a
- *  Digital Card Profile — WP-C.2's `backfillCardProfiles`). Throws ConvexError
+ *  Digital Card Profile — WP-C.2's `backfillCardWallets`). Throws ConvexError
  *  on a non-2xx (the caller logs + degrades). */
 export async function increasePatch(
   key: string,

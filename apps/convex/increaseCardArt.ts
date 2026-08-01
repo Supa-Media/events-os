@@ -14,14 +14,19 @@
  *                                stores whatever review status Increase (and/
  *                                or the card network) currently reports. Run
  *                                this repeatedly until it logs "active".
- *   4. `backfillCardProfiles` — PATCH /cards/{id} on every existing
- *                                non-canceled card to attach the profile;
- *                                new cards get it automatically at issuance
+ *   4. `backfillCardWallets` — PATCH /cards/{id} on every existing
+ *                                non-canceled card to write its whole
+ *                                `digital_wallet` object (the cardholder's
+ *                                wallet-verification email + this profile);
+ *                                new cards get the same at issuance
  *                                (`cards.ts`'s `issueCard`, via
- *                                `getCardArtProfileId`). Both this step and
- *                                issuance only ever attach a profile whose
- *                                stored status is "active" — a pending or
- *                                rejected profile attaches to nothing.
+ *                                `getCardArtProfileId` + `buildDigitalWallet`).
+ *                                Both this step and issuance only ever attach a
+ *                                profile whose stored status is "active" — a
+ *                                pending or rejected profile attaches to
+ *                                nothing, but the email is still written (it is
+ *                                what enables add-to-wallet at all, and does
+ *                                not depend on card art existing).
  * All four are MODE-AWARE and DEGRADE (log + return, never throw) when the
  * relevant environment's Increase key isn't configured — same discipline as
  * `increaseProvision.ts`'s `runProvisionFlow`.
@@ -41,6 +46,7 @@ import {
   increaseGet,
   increasePost,
   increasePatch,
+  buildDigitalWallet,
 } from "./lib/increaseApi";
 import { increasePostFile } from "./lib/increaseFiles";
 
@@ -306,7 +312,7 @@ export const getCardArtFileIds = internalQuery({
 /**
  * The current mode's Digital Card Profile id, if one has been minted AND
  * Increase has reviewed it as `"active"` — read by `cards.ts`'s `issueCard`
- * (mode from the account it's issuing on) and `backfillCardProfiles` below
+ * (mode from the account it's issuing on) and `backfillCardWallets` below
  * (mode from each existing card's own id prefix). Null both when no profile
  * exists yet for that mode AND when one exists but is still `"pending"`/was
  * `"rejected"` — issuance/backfill then omit `digital_wallet` entirely rather
@@ -393,7 +399,7 @@ export const finishRefreshCardArtProfileStatus = internalMutation({
 
 /**
  * Ops step (WP-C.2, run repeatedly between `createDigitalCardProfile` and
- * `backfillCardProfiles`): poll Increase's review status for the current
+ * `backfillCardWallets`): poll Increase's review status for the current
  * mode's minted Digital Card Profile — `GET /digital_card_profiles/{id}` —
  * and store whatever status it currently reports. A profile starts
  * `"pending"`; Increase (and/or the card network) eventually resolves it to
@@ -469,44 +475,70 @@ export const refreshCardArtProfileStatus = internalAction({
   },
 });
 
-/** Every card (any chapter) eligible for the Digital Card Profile backfill: a
- *  real Increase card (`increaseCardId` set — a "legacy" Relay card has none
- *  and no vendor object to PATCH) that isn't canceled (a canceled card will
- *  never authorize again; attaching art to it is pointless). */
+/** Every card (any chapter) eligible for the `digital_wallet` backfill: a real
+ *  Increase card (`increaseCardId` set — a "legacy" Relay card has none and no
+ *  vendor object to PATCH) that isn't canceled (a canceled card will never
+ *  authorize again; attaching art or a wallet contact to it is pointless).
+ *  Carries the cardholder's `pwEmail` for `buildDigitalWallet` — null only for
+ *  a card whose `people` row vanished, or one issued before `isCardEligible`
+ *  made the address mandatory. */
 export const listCardsForArtBackfill = internalQuery({
   args: {},
   returns: v.array(
-    v.object({ cardId: v.id("cards"), increaseCardId: v.string() }),
+    v.object({
+      cardId: v.id("cards"),
+      increaseCardId: v.string(),
+      cardholderEmail: v.union(v.string(), v.null()),
+    }),
   ),
   handler: async (ctx) => {
     const rows = await ctx.db.query("cards").collect();
-    return rows
-      .filter((c) => c.status !== "canceled" && !!c.increaseCardId)
-      .map((c) => ({ cardId: c._id, increaseCardId: c.increaseCardId! }));
+    const eligible = rows.filter(
+      (c) => c.status !== "canceled" && !!c.increaseCardId,
+    );
+    return await Promise.all(
+      eligible.map(async (c) => {
+        const person = await ctx.db.get(c.cardholderPersonId);
+        return {
+          cardId: c._id,
+          increaseCardId: c.increaseCardId!,
+          cardholderEmail: person?.pwEmail ?? null,
+        };
+      }),
+    );
   },
 });
 
 /**
- * Ops backfill (WP-C.2): attach the Digital Card Profile to every existing
- * non-canceled card (new cards get it at issuance instead — see
- * `cards.ts`'s `issueCard`). `PATCH /cards/{id}` with `digital_wallet:
- * {digital_card_profile_id}`, grounded against the Increase Cards resource's
- * update endpoint (confirmed digital_wallet IS patchable, not create-only).
+ * Ops backfill: write the full `digital_wallet` object — the cardholder's
+ * wallet-verification email plus the Digital Card Profile (WP-C.2 card art),
+ * whichever of the two is available — onto every existing non-canceled card.
+ * New cards get the same object at issuance (`cards.ts`'s `issueCard`); this
+ * is the sweep for cards minted before that. `PATCH /cards/{id}`, grounded
+ * against the Increase Cards resource's update endpoint (confirmed
+ * `digital_wallet` IS patchable, not create-only).
+ *
+ * BOTH KEYS ALWAYS TRAVEL TOGETHER (`buildDigitalWallet`) — Increase takes
+ * `digital_wallet` as a whole object, so a sweep that wrote only the profile
+ * id would drop the email that makes "Add to Apple Wallet" work, and vice
+ * versa. That is also why this no longer skips a card whose environment has no
+ * minted profile: the email alone is worth writing, and it is the common case
+ * until the card-art pipeline has been run.
  *
  * Each card is routed to ITS OWN environment by its `increaseCardId` prefix
  * (`increaseEnvForObjectId`) and reads THAT environment's profile id — a
- * sandbox card never gets the production profile id or vice versa. A card
- * whose environment has no minted profile yet, or no configured key, is
- * SKIPPED (not an error) — re-running the backfill after `uploadCardArtAssets`
- * + `createDigitalCardProfile` for that environment picks it up. Idempotent:
- * PATCHing the same `digital_card_profile_id` twice is a no-op on Increase's
- * side, so a re-run is always safe.
+ * sandbox card never gets the production profile id or vice versa. A card with
+ * NEITHER an email nor a profile for its environment, or with no configured
+ * key, is SKIPPED (not an error) — re-running after `uploadCardArtAssets` +
+ * `createDigitalCardProfile` picks up the profile later. Idempotent: PATCHing
+ * the same object twice is a no-op on Increase's side, so a re-run is always
+ * safe.
  *
  * CLI/CI-runnable:
- *   npx convex run increaseCardArt:backfillCardProfiles
- *   gh workflow run run-convex-function.yml -f function=increaseCardArt:backfillCardProfiles
+ *   npx convex run increaseCardArt:backfillCardWallets
+ *   gh workflow run run-convex-function.yml -f function=increaseCardArt:backfillCardWallets
  */
-export const backfillCardProfiles = internalAction({
+export const backfillCardWallets = internalAction({
   args: {},
   returns: v.object({
     eligible: v.number(),
@@ -537,26 +569,29 @@ export const backfillCardProfiles = internalAction({
         );
       }
       const profileId = profileIdByMode.get(sandbox) ?? null;
-      if (!profileId) {
+      if (!profileId && !c.cardholderEmail) {
+        // Nothing to write — no wallet contact AND no art for this env.
         skipped += 1;
         continue;
       }
       const { key, base } = increaseEnvForObjectId(c.increaseCardId);
       if (!key) {
         console.warn(
-          `[increase] backfillCardProfiles: skipped card ${c.increaseCardId} — no Increase key for its environment`,
+          `[increase] backfillCardWallets: skipped card ${c.increaseCardId} — no Increase key for its environment`,
         );
         skipped += 1;
         continue;
       }
       try {
         await increasePatch(key, base, `/cards/${c.increaseCardId}`, {
-          digital_wallet: { digital_card_profile_id: profileId },
+          digital_wallet: c.cardholderEmail
+            ? buildDigitalWallet(c.cardholderEmail, profileId)
+            : { digital_card_profile_id: profileId! },
         });
         patched += 1;
       } catch (err) {
         console.error(
-          `[increase] backfillCardProfiles: PATCH failed for card ${c.increaseCardId}:`,
+          `[increase] backfillCardWallets: PATCH failed for card ${c.increaseCardId}:`,
           err,
         );
         skipped += 1;
