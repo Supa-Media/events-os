@@ -20,10 +20,10 @@ import type { Id } from "../_generated/dataModel";
  *    stores whatever status Increase reports, defensively normalizing any
  *    unrecognized value to `"pending"`; degrades without a key OR without a
  *    minted profile,
- *  - `getCardArtProfileId` (read by `issueCard` + `backfillCardProfiles`)
+ *  - `getCardArtProfileId` (read by `issueCard` + `backfillCardWallets`)
  *    ONLY surfaces the profile id once its stored status is `"active"` — a
  *    `"pending"` or `"rejected"` profile attaches to nothing,
- *  - `backfillCardProfiles` PATCHes every non-canceled, Increase-backed,
+ *  - `backfillCardWallets` PATCHes every non-canceled, Increase-backed,
  *    ACTIVE-profile card with ITS OWN environment's profile id, skips
  *    canceled + legacy (no `increaseCardId`) cards, cards whose environment
  *    has no ACTIVE profile yet, and is idempotent (a second run patches the
@@ -711,7 +711,7 @@ describe("getCardArtProfileId (status gating)", () => {
   });
 });
 
-describe("backfillCardProfiles", () => {
+describe("backfillCardWallets", () => {
   const originalFetch = globalThis.fetch;
   let originalEnv: ReturnType<typeof saveEnv>;
 
@@ -726,13 +726,19 @@ describe("backfillCardProfiles", () => {
     );
   }
 
-  async function makeCardholder(t: TestConvex, chapterId: Id<"chapters">): Promise<Id<"people">> {
+  async function makeCardholder(
+    t: TestConvex,
+    chapterId: Id<"chapters">,
+    opts: { pwEmail?: string | null } = {},
+  ): Promise<Id<"people">> {
+    const pwEmail =
+      opts.pwEmail === undefined ? "holder@publicworship.life" : opts.pwEmail;
     return run(t, (ctx) =>
       ctx.db.insert("people", {
         chapterId,
         name: "Holder",
         isTeamMember: true,
-        pwEmail: "holder@publicworship.life",
+        ...(pwEmail ? { pwEmail } : {}),
         createdAt: Date.now(),
       }),
     );
@@ -781,7 +787,7 @@ describe("backfillCardProfiles", () => {
 
     const calls = mockRecordingFetch(() => ({ status: 200, json: { id: "card_active" } }));
 
-    const result = await t.action(internal.increaseCardArt.backfillCardProfiles, {});
+    const result = await t.action(internal.increaseCardArt.backfillCardWallets, {});
     expect(result.eligible).toBe(1); // only the one eligible card
     expect(result.patched).toBe(1);
     expect(result.skipped).toBe(0);
@@ -790,7 +796,10 @@ describe("backfillCardProfiles", () => {
     expect(calls[0].method).toBe("PATCH");
     expect(calls[0].url).toBe("https://api.increase.com/cards/card_active");
     expect(calls[0].jsonBody).toEqual({
-      digital_wallet: { digital_card_profile_id: "digital_card_profile_prod" },
+      digital_wallet: {
+        email: "holder@publicworship.life",
+        digital_card_profile_id: "digital_card_profile_prod",
+      },
     });
   });
 
@@ -823,7 +832,7 @@ describe("backfillCardProfiles", () => {
     await seedCard(t, chapterId, holder, { increaseCardId: "sandbox_card_1" });
 
     const calls = mockRecordingFetch(() => ({ status: 200, json: {} }));
-    const result = await t.action(internal.increaseCardArt.backfillCardProfiles, {});
+    const result = await t.action(internal.increaseCardArt.backfillCardWallets, {});
     expect(result.patched).toBe(2);
 
     const prodCall = calls.find((c) => c.url.includes("/cards/card_prod"));
@@ -831,7 +840,10 @@ describe("backfillCardProfiles", () => {
     expect(new URL(prodCall!.url).host).toBe("api.increase.com");
     expect(prodCall!.auth).toBe("Bearer prod_key");
     expect(prodCall!.jsonBody).toEqual({
-      digital_wallet: { digital_card_profile_id: "digital_card_profile_prod" },
+      digital_wallet: {
+        email: "holder@publicworship.life",
+        digital_card_profile_id: "digital_card_profile_prod",
+      },
     });
 
     const sandboxCall = calls.find((c) => c.url.includes("/cards/sandbox_card_1"));
@@ -839,67 +851,82 @@ describe("backfillCardProfiles", () => {
     expect(new URL(sandboxCall!.url).host).toBe("sandbox.increase.com");
     expect(sandboxCall!.auth).toBe("Bearer sandbox_key");
     expect(sandboxCall!.jsonBody).toEqual({
-      digital_wallet: { digital_card_profile_id: "sandbox_digital_card_profile" },
+      digital_wallet: {
+        email: "holder@publicworship.life",
+        digital_card_profile_id: "sandbox_digital_card_profile",
+      },
     });
   });
 
-  test("skips (never calls fetch for) a card whose environment has no minted profile yet", async () => {
+  // The card-art profile is the OPTIONAL half of `digital_wallet`; the
+  // cardholder email is the half that actually unlocks add-to-wallet. So a card
+  // whose environment has no USABLE profile (none minted / pending / rejected)
+  // is still patched — with the email alone, and NO `digital_card_profile_id`
+  // key (attaching an unreviewed or rejected profile is what must never happen).
+  test.each([
+    ["no profile minted for the environment", undefined],
+    ["a profile still pending review", "pending" as const],
+    ["a profile that was rejected", "rejected" as const],
+  ])("patches email-only, never a profile id, with %s", async (_label, profileStatus) => {
     originalEnv = saveEnv();
     const t = newT();
     process.env.INCREASE_API_KEY = "prod_key";
     const chapterId = await makeChapter(t);
     const holder = await makeCardholder(t, chapterId);
-    // No financeSettings row at all — no profile configured for any mode.
-    await seedCard(t, chapterId, holder, { increaseCardId: "card_no_profile" });
+    if (profileStatus) {
+      await run(t, (ctx) =>
+        ctx.db.insert("financeSettings", {
+          sandboxMode: false,
+          updatedAt: Date.now(),
+          cardArt: {
+            fileId: "f",
+            iconFileId: "i",
+            profileId: "digital_card_profile_prod",
+            profileStatus,
+          },
+        }),
+      );
+    } // else: no financeSettings row at all — nothing configured for any mode.
+    await seedCard(t, chapterId, holder, { increaseCardId: "card_no_art" });
+
+    const calls = mockRecordingFetch(() => ({ status: 200, json: {} }));
+
+    const result = await t.action(internal.increaseCardArt.backfillCardWallets, {});
+    expect(result.eligible).toBe(1);
+    expect(result.patched).toBe(1);
+    expect(result.skipped).toBe(0);
+
+    expect(calls.length).toBe(1);
+    expect(calls[0].jsonBody).toEqual({
+      digital_wallet: { email: "holder@publicworship.life" },
+    });
+  });
+
+  test("skips (never calls fetch for) a card with NEITHER a wallet email nor a usable profile", async () => {
+    originalEnv = saveEnv();
+    const t = newT();
+    process.env.INCREASE_API_KEY = "prod_key";
+    const chapterId = await makeChapter(t);
+    // A pre-`isCardEligible` holder with no @publicworship.life address.
+    const holder = await makeCardholder(t, chapterId, { pwEmail: null });
+    await seedCard(t, chapterId, holder, { increaseCardId: "card_nothing" });
 
     globalThis.fetch = (() => {
-      throw new Error("fetch must not be called with no profile configured");
+      throw new Error("fetch must not be called with nothing to write");
     }) as unknown as typeof fetch;
 
-    const result = await t.action(internal.increaseCardArt.backfillCardProfiles, {});
+    const result = await t.action(internal.increaseCardArt.backfillCardWallets, {});
     expect(result.eligible).toBe(1);
     expect(result.patched).toBe(0);
     expect(result.skipped).toBe(1);
   });
 
-  test("skips (never calls fetch for) a card whose environment's profile is still pending review", async () => {
+  test("writes the profile id alone for an emailless holder once art IS active", async () => {
     originalEnv = saveEnv();
     const t = newT();
     process.env.INCREASE_API_KEY = "prod_key";
     const chapterId = await makeChapter(t);
-    const holder = await makeCardholder(t, chapterId);
-    await run(t, (ctx) =>
-      ctx.db.insert("financeSettings", {
-        sandboxMode: false,
-        updatedAt: Date.now(),
-        // Minted but not yet reviewed — getCardArtProfileId must NOT surface
-        // this id, so backfill must SKIP rather than attach it.
-        cardArt: {
-          fileId: "f",
-          iconFileId: "i",
-          profileId: "digital_card_profile_prod",
-          profileStatus: "pending",
-        },
-      }),
-    );
-    await seedCard(t, chapterId, holder, { increaseCardId: "card_pending" });
-
-    globalThis.fetch = (() => {
-      throw new Error("fetch must not be called for a pending (unreviewed) profile");
-    }) as unknown as typeof fetch;
-
-    const result = await t.action(internal.increaseCardArt.backfillCardProfiles, {});
-    expect(result.eligible).toBe(1);
-    expect(result.patched).toBe(0);
-    expect(result.skipped).toBe(1);
-  });
-
-  test("skips (never calls fetch for) a card whose environment's profile was rejected", async () => {
-    originalEnv = saveEnv();
-    const t = newT();
-    process.env.INCREASE_API_KEY = "prod_key";
-    const chapterId = await makeChapter(t);
-    const holder = await makeCardholder(t, chapterId);
+    const holder = await makeCardholder(t, chapterId, { pwEmail: null });
     await run(t, (ctx) =>
       ctx.db.insert("financeSettings", {
         sandboxMode: false,
@@ -908,19 +935,19 @@ describe("backfillCardProfiles", () => {
           fileId: "f",
           iconFileId: "i",
           profileId: "digital_card_profile_prod",
-          profileStatus: "rejected",
+          profileStatus: "active",
         },
       }),
     );
-    await seedCard(t, chapterId, holder, { increaseCardId: "card_rejected" });
+    await seedCard(t, chapterId, holder, { increaseCardId: "card_art_only" });
 
-    globalThis.fetch = (() => {
-      throw new Error("fetch must not be called for a rejected profile");
-    }) as unknown as typeof fetch;
+    const calls = mockRecordingFetch(() => ({ status: 200, json: {} }));
 
-    const result = await t.action(internal.increaseCardArt.backfillCardProfiles, {});
-    expect(result.patched).toBe(0);
-    expect(result.skipped).toBe(1);
+    const result = await t.action(internal.increaseCardArt.backfillCardWallets, {});
+    expect(result.patched).toBe(1);
+    expect(calls[0].jsonBody).toEqual({
+      digital_wallet: { digital_card_profile_id: "digital_card_profile_prod" },
+    });
   });
 
   test("is idempotent — a second run patches the same eligible cards again with no error", async () => {
@@ -944,10 +971,10 @@ describe("backfillCardProfiles", () => {
     await seedCard(t, chapterId, holder, { increaseCardId: "card_active" });
     mockRecordingFetch(() => ({ status: 200, json: {} }));
 
-    const first = await t.action(internal.increaseCardArt.backfillCardProfiles, {});
+    const first = await t.action(internal.increaseCardArt.backfillCardWallets, {});
     expect(first.patched).toBe(1);
 
-    const second = await t.action(internal.increaseCardArt.backfillCardProfiles, {});
+    const second = await t.action(internal.increaseCardArt.backfillCardWallets, {});
     expect(second.patched).toBe(1);
     expect(second.skipped).toBe(0);
   });

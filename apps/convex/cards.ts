@@ -131,6 +131,7 @@ import {
   assertRoutingNumber,
   assertAccountNumber,
 } from "./increase";
+import { buildDigitalWallet } from "./lib/increaseApi";
 import { sendEmail, sendEmailReporting, emailShell } from "./ticketingEmails";
 import {
   emailButtonRow,
@@ -337,6 +338,10 @@ type IssueCardResult =
       cardId: Id<"cards">;
       increaseAccountId: string | null;
       description: string;
+      // The cardholder's `@publicworship.life` address, for the new card's
+      // `digital_wallet.email` (see `issueCard`). Always present: issuance
+      // already rejects a holder without one (`isCardEligible`).
+      cardholderEmail: string;
     };
 
 type BeginRepaymentResult =
@@ -634,6 +639,7 @@ export const beginIssueCard = internalMutation({
       cardId: v.id("cards"),
       increaseAccountId: v.union(v.string(), v.null()),
       description: v.string(),
+      cardholderEmail: v.string(),
     }),
   ),
   handler: async (ctx, args): Promise<IssueCardResult> => {
@@ -737,6 +743,7 @@ export const beginIssueCard = internalMutation({
           cardId: activeSame._id,
           increaseAccountId,
           description: holder!.name,
+          cardholderEmail: holder!.pwEmail!,
         };
       }
       return { kind: "existing", card: await buildCardSummary(ctx, activeSame) };
@@ -762,6 +769,7 @@ export const beginIssueCard = internalMutation({
       cardId,
       increaseAccountId,
       description: holder!.name,
+      cardholderEmail: holder!.pwEmail!,
     };
   },
 });
@@ -837,9 +845,10 @@ export const issueCard = action({
       const card = await increasePost(key, base, "/cards", {
         account_id: prep.increaseAccountId,
         description: prep.description,
-        ...(cardArtProfileId
-          ? { digital_wallet: { digital_card_profile_id: cardArtProfileId } }
-          : {}),
+        digital_wallet: buildDigitalWallet(
+          prep.cardholderEmail,
+          cardArtProfileId,
+        ),
       });
       return await ctx.runMutation(internal.cards.finishIssueCard, {
         cardId: prep.cardId,

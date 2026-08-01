@@ -3424,11 +3424,12 @@ describe("issueCard × Digital Card Profile attach (WP-C.2)", () => {
     );
     expect(post).toBeTruthy();
     expect(post!.body?.digital_wallet).toEqual({
+      email: "person@publicworship.life",
       digital_card_profile_id: "digital_card_profile_prod",
     });
   });
 
-  test("omits digital_wallet entirely when the configured profile is still pending review", async () => {
+  test("still sends digital_wallet.email — never a profile id — when the configured profile is still pending review", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await seedManager(s);
@@ -3459,10 +3460,12 @@ describe("issueCard × Digital Card Profile attach (WP-C.2)", () => {
       (c) => c.method === "POST" && c.url.includes("/cards"),
     );
     expect(post).toBeTruthy();
-    expect(post!.body).not.toHaveProperty("digital_wallet");
+    expect(post!.body?.digital_wallet).toEqual({
+      email: "person@publicworship.life",
+    });
   });
 
-  test("omits digital_wallet entirely when no profile is configured", async () => {
+  test("still sends digital_wallet.email when no profile is configured at all", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await seedManager(s);
@@ -3481,7 +3484,59 @@ describe("issueCard × Digital Card Profile attach (WP-C.2)", () => {
       (c) => c.method === "POST" && c.url.includes("/cards"),
     );
     expect(post).toBeTruthy();
-    expect(post!.body).not.toHaveProperty("digital_wallet");
+    // The email alone is what makes "Add to Apple Wallet" work — a card issued
+    // before the card-art pipeline has ever run must still be wallet-addable.
+    expect(post!.body?.digital_wallet).toEqual({
+      email: "person@publicworship.life",
+    });
+  });
+
+  test("carries the cardholder's own address, not a shared or hard-coded one", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const holder = await seedPerson(s, {
+      name: "Holder",
+      pwEmail: "specific.holder@publicworship.life",
+    });
+    await seedIncreaseAccount(s, "acct_1");
+    process.env.INCREASE_API_KEY = "prod_key";
+    const calls = mockRecordingFetchWithBody({ id: "card_1", last4: "1111" });
+
+    await s.as.action(api.cards.issueCard, {
+      cardholderPersonId: holder,
+      type: "virtual",
+    });
+
+    const post = calls.find(
+      (c) => c.method === "POST" && c.url.includes("/cards"),
+    );
+    expect(post!.body?.digital_wallet).toEqual({
+      email: "specific.holder@publicworship.life",
+    });
+  });
+
+  test("never sends digital_wallet.phone — this deployment cannot deliver an SMS passcode", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const holder = await seedPerson(s, { name: "Holder" });
+    await run(s.t, (ctx) =>
+      ctx.db.patch(holder, { phone: "+15555550123" }),
+    );
+    await seedIncreaseAccount(s, "acct_1");
+    process.env.INCREASE_API_KEY = "prod_key";
+    const calls = mockRecordingFetchWithBody({ id: "card_1", last4: "1111" });
+
+    await s.as.action(api.cards.issueCard, {
+      cardholderPersonId: holder,
+      type: "virtual",
+    });
+
+    const post = calls.find(
+      (c) => c.method === "POST" && c.url.includes("/cards"),
+    );
+    expect(post!.body?.digital_wallet).not.toHaveProperty("phone");
   });
 
   test("a sandbox account gets the SANDBOX profile id, never the production one", async () => {
@@ -3524,6 +3579,7 @@ describe("issueCard × Digital Card Profile attach (WP-C.2)", () => {
     );
     expect(post).toBeTruthy();
     expect(post!.body?.digital_wallet).toEqual({
+      email: "person@publicworship.life",
       digital_card_profile_id: "sandbox_digital_card_profile",
     });
   });
