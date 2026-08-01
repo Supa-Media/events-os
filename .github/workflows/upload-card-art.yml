@@ -1,0 +1,130 @@
+# Upload Card Art — push the versioned Digital Wallet assets in
+# `assets/card-art/` to Increase and mint/refresh the Digital Card Profile
+# (WP-C.2). Maintainer-only (workflow_dispatch + the `production` environment
+# gate), same deploy key + scoped install as deploy-convex.yml.
+#
+# WHY THIS EXISTS rather than `run-convex-function.yml`:
+# `increaseCardArt:uploadCardArtAssets` takes the PNGs as base64 STRING args,
+# and the card art base64 is ~34 KB. A `workflow_dispatch` input is capped at
+# 65,535 characters, so pasting it by hand is both close to the ceiling and
+# unrepeatable — and the art WILL need re-uploading whenever the network review
+# bounces it or the design changes. Keeping the PNGs in the repo makes the art
+# reviewable in a diff, versioned with everything else, and re-runnable as one
+# click; this workflow just base64s them at run time and passes them through.
+#
+# The assets are the ONLY source of truth for what is on the cards:
+#   assets/card-art/card-art.png    1536x969  digital_wallet_artwork
+#   assets/card-art/card-icon.png    100x100  digital_wallet_app_icon
+#
+# Steps are opt-in so a re-upload does not silently mint a second profile:
+#   upload          — POST /files, store the file ids            (always)
+#   create_profile  — POST /digital_card_profiles from those ids (opt-in)
+#   refresh_status  — GET the profile, store the review status   (opt-in)
+# Attaching an ACTIVE profile to existing cards is a separate, already-existing
+# step: `run-convex-function.yml` -f function=increaseCardArt:backfillCardWallets
+name: Upload Card Art
+
+on:
+  workflow_dispatch:
+    inputs:
+      create_profile:
+        description: "Also create a NEW Digital Card Profile from the uploaded files"
+        type: boolean
+        required: false
+        default: false
+      refresh_status:
+        description: "Also poll the profile's review status once"
+        type: boolean
+        required: false
+        default: false
+
+concurrency:
+  # Shares run-convex-function's group: both drive `npx convex run` against
+  # production, and neither should overlap a Convex deploy.
+  group: run-convex-function
+  cancel-in-progress: false
+
+jobs:
+  upload:
+    name: Upload card art to Increase (production)
+    runs-on: ubuntu-latest
+    environment: production
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install backend dependencies
+        run: pnpm install --filter @events-os/convex... --frozen-lockfile
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # Fail loudly on a wrong-sized asset BEFORE anything reaches Increase —
+      # a mis-sized image would upload fine and only surface as a rejected
+      # profile days later at network review.
+      - name: Verify asset dimensions
+        run: |
+          set -euo pipefail
+          node -e '
+            const {execSync} = require("child_process");
+            const fs = require("fs");
+            const expect = {
+              "assets/card-art/card-art.png": [1536, 969],
+              "assets/card-art/card-icon.png": [100, 100],
+            };
+            let bad = false;
+            for (const [file, [w, h]] of Object.entries(expect)) {
+              const b = fs.readFileSync(file);
+              // PNG IHDR: width/height are big-endian uint32 at bytes 16 and 20.
+              if (b.toString("ascii", 1, 4) !== "PNG") {
+                console.error(`${file}: not a PNG`); bad = true; continue;
+              }
+              const aw = b.readUInt32BE(16), ah = b.readUInt32BE(20);
+              const ok = aw === w && ah === h;
+              console.log(`${file}: ${aw}x${ah} (expected ${w}x${h}) ${ok ? "OK" : "MISMATCH"}`);
+              if (!ok) bad = true;
+            }
+            if (bad) process.exit(1);
+          '
+
+      - name: Upload assets to Increase
+        run: |
+          set -euo pipefail
+          ART=$(base64 -w0 assets/card-art/card-art.png)
+          ICON=$(base64 -w0 assets/card-art/card-icon.png)
+          ARGS=$(node -e '
+            const [art, icon] = process.argv.slice(1);
+            process.stdout.write(JSON.stringify({cardArtBase64: art, iconBase64: icon}));
+          ' "$ART" "$ICON")
+          npx convex run increaseCardArt:uploadCardArtAssets "$ARGS"
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
+
+      - name: Create Digital Card Profile
+        if: ${{ inputs.create_profile }}
+        run: npx convex run increaseCardArt:createDigitalCardProfile '{}'
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
+
+      - name: Refresh profile review status
+        if: ${{ inputs.refresh_status }}
+        run: npx convex run increaseCardArt:refreshCardArtProfileStatus '{}'
+        env:
+          CONVEX_DEPLOY_KEY: ${{ secrets.CONVEX_DEPLOY_KEY }}
+
+      - name: Summary
+        if: always()
+        run: |
+          {
+            echo "## Upload Card Art"
+            echo ""
+            echo "- **Assets:** \`assets/card-art/card-art.png\`, \`assets/card-art/card-icon.png\`"
+            echo "- **Created profile:** \`${{ inputs.create_profile }}\`"
+            echo "- **Refreshed status:** \`${{ inputs.refresh_status }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
