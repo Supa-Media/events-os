@@ -75,18 +75,23 @@ export function TitleEditor({
 /**
  * The always-present copy/details box. Shows the body when set and a prompt when
  * empty; commits on blur so a stray tap never loses an edit. Seeded once from the
- * item — our own save keeps it in sync, which is all this fast path needs.
+ * item — our own save keeps it in sync, which is all this fast path needs. The
+ * one-tap Copy pill floats in the box's top-right corner, code-block style.
  */
 export function CopyEditor({
   label,
   placeholder,
   initial,
   onSave,
+  headerExtra,
 }: {
   label: string;
   placeholder: string;
   initial: string;
   onSave: (copy: string) => void;
+  /** Rendered at the right end of the header row — e.g. the comms
+   *  Send-to-Google-Chat affordance. */
+  headerExtra?: React.ReactNode;
 }) {
   const [value, setValue] = useState(initial);
   const [focused, setFocused] = useState(false);
@@ -107,47 +112,58 @@ export function CopyEditor({
             {label}
           </Text>
         </View>
-        {value.trim() ? <CopyButton text={value} label /> : null}
+        {headerExtra}
       </View>
-      {mentionData ? (
-        <View
-          className={`rounded-md border bg-sunken px-2.5 py-2 ${
-            focused ? "border-accent" : "border-border"
-          }`}
-          style={{ minHeight: 44 }}
-        >
-          <MentionInlineText
+      <View className="relative">
+        {value.trim() ? (
+          <View
+            className="absolute right-1.5 top-1.5"
+            style={{ zIndex: 10 }}
+          >
+            <CopyButton text={value} label />
+          </View>
+        ) : null}
+        {mentionData ? (
+          <View
+            // pr-16 keeps the first line of text clear of the floating Copy pill.
+            className={`rounded-md border bg-sunken px-2.5 py-2 ${value.trim() ? "pr-16" : ""} ${
+              focused ? "border-accent" : "border-border"
+            }`}
+            style={{ minHeight: 44 }}
+          >
+            <MentionInlineText
+              value={value}
+              onCommit={(t) => {
+                setValue(t);
+                const next = String(t).trim();
+                if (next !== initial.trim()) onSave(next);
+              }}
+              placeholder={placeholder}
+              multiline
+              people={mentionData.people}
+              seatHoldings={mentionData.seatHoldings}
+              seatOptions={mentionData.seatOptions}
+              inputClassName="text-xs text-ink"
+              onFocusChange={setFocused}
+            />
+          </View>
+        ) : (
+          <TextInput
             value={value}
-            onCommit={(t) => {
-              setValue(t);
-              const next = String(t).trim();
-              if (next !== initial.trim()) onSave(next);
-            }}
+            onChangeText={setValue}
+            onFocus={() => setFocused(true)}
+            onBlur={commit}
             placeholder={placeholder}
+            placeholderTextColor={colors.faint}
             multiline
-            people={mentionData.people}
-            seatHoldings={mentionData.seatHoldings}
-            seatOptions={mentionData.seatOptions}
-            inputClassName="text-xs text-ink"
-            onFocusChange={setFocused}
+            textAlignVertical="top"
+            className={`rounded-md border bg-sunken px-2.5 py-2 text-xs text-ink ${value.trim() ? "pr-16" : ""} ${
+              focused ? "border-accent" : "border-border"
+            }`}
+            style={{ minHeight: 44 }}
           />
-        </View>
-      ) : (
-        <TextInput
-          value={value}
-          onChangeText={setValue}
-          onFocus={() => setFocused(true)}
-          onBlur={commit}
-          placeholder={placeholder}
-          placeholderTextColor={colors.faint}
-          multiline
-          textAlignVertical="top"
-          className={`rounded-md border bg-sunken px-2.5 py-2 text-xs text-ink ${
-            focused ? "border-accent" : "border-border"
-          }`}
-          style={{ minHeight: 44 }}
-        />
-      )}
+        )}
+      </View>
     </View>
   );
 }

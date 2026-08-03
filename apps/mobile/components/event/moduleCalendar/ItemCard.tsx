@@ -33,6 +33,7 @@ import {
   StatusRow,
   BadgeEditor,
 } from "./ItemCardStatus";
+import { SendToGoogleChatButton } from "./SendToGoogleChatButton";
 
 export function ItemCard({
   item,
@@ -47,6 +48,7 @@ export function ItemCard({
   copyLabel,
   copyPlaceholder,
   initialCopy,
+  canSendGoogleChat,
   onSetStatus,
   onSetOffset,
   onPickOnCalendar,
@@ -68,6 +70,8 @@ export function ItemCard({
   copyLabel: string;
   copyPlaceholder: string;
   initialCopy: string;
+  /** Comms-module only — shows the Send-to-Google-Chat button next to Copy. */
+  canSendGoogleChat?: boolean;
   onSetStatus: (status: string | null) => void;
   /** Reschedule to a signed day offset; null unschedules. */
   onSetOffset: (offsetDays: number | null) => void;
@@ -149,6 +153,11 @@ export function ItemCard({
         placeholder={copyPlaceholder}
         initial={initialCopy}
         onSave={onSaveCopy}
+        headerExtra={
+          canSendGoogleChat ? (
+            <SendToGoogleChatButton item={item} message={initialCopy} />
+          ) : null
+        }
       />
 
       {/* Status picker — the same option rows the table's status cell shows. */}
