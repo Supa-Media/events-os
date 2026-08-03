@@ -30,6 +30,9 @@ export function SendToGoogleChatButton({
   const [open, setOpen] = useState(false);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Whether the "*title* — event" heading goes out with the copy. Resets to on
+  // per popover open so an earlier opt-out never silently sticks around.
+  const [includeTitle, setIncludeTitle] = useState(true);
 
   const channels = useQuery(api.googleChatChannels.listGoogleChatChannels, {});
   const send = useMutation(api.commsSend.sendCommsToGoogleChat);
@@ -46,7 +49,7 @@ export function SendToGoogleChatButton({
     setError(null);
     setSending(true);
     try {
-      await send({ itemId: item._id, channelId, message });
+      await send({ itemId: item._id, channelId, message, includeTitle });
     } catch (e) {
       setError(errorMessage(e, "Couldn't send to Google Chat."));
     } finally {
@@ -60,6 +63,7 @@ export function SendToGoogleChatButton({
         ref={ref}
         onPress={() => {
           setError(null);
+          setIncludeTitle(true);
           measureAnchor(ref.current, (a) => {
             setAnchor(a);
             setOpen(true);
@@ -101,16 +105,34 @@ export function SendToGoogleChatButton({
               Profile → Integrations.
             </Text>
           ) : (
-            channels.map((c) => (
+            <>
               <Pressable
-                key={c._id}
-                onPress={() => void handlePick(c._id)}
+                onPress={() => setIncludeTitle((on) => !on)}
+                accessibilityRole="checkbox"
+                accessibilityState={{ checked: includeTitle }}
                 className="flex-row items-center gap-2 px-3 py-2 active:bg-sunken web:hover:bg-sunken"
               >
-                <Icon name="message-circle" size={13} color={colors.muted} />
-                <Text className="text-sm text-ink">{c.name}</Text>
+                <Icon
+                  name={includeTitle ? "check-square" : "square"}
+                  size={13}
+                  color={includeTitle ? colors.accent : colors.muted}
+                />
+                <Text className="text-xs text-ink">
+                  Include title as heading
+                </Text>
               </Pressable>
-            ))
+              <View className="mx-3 my-0.5 h-px bg-border" />
+              {channels.map((c) => (
+                <Pressable
+                  key={c._id}
+                  onPress={() => void handlePick(c._id)}
+                  className="flex-row items-center gap-2 px-3 py-2 active:bg-sunken web:hover:bg-sunken"
+                >
+                  <Icon name="message-circle" size={13} color={colors.muted} />
+                  <Text className="text-sm text-ink">{c.name}</Text>
+                </Pressable>
+              ))}
+            </>
           )}
         </View>
       </Popover>

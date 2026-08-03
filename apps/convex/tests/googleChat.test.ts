@@ -27,6 +27,28 @@ describe("buildGoogleChatMessage", () => {
       }),
     ).toBe("Eden\n\nHey team, be on time.");
   });
+
+  test("includeTitle: false sends the copy verbatim — no heading line at all", () => {
+    expect(
+      buildGoogleChatMessage({
+        eventName: "Eden",
+        itemTitle: "T-3 reminder",
+        copy: "Hey team, be on time.",
+        includeTitle: false,
+      }),
+    ).toBe("Hey team, be on time.");
+  });
+
+  test("includeTitle: true matches the default behavior", () => {
+    expect(
+      buildGoogleChatMessage({
+        eventName: "Eden",
+        itemTitle: "T-3 reminder",
+        copy: "Hey team, be on time.",
+        includeTitle: true,
+      }),
+    ).toBe("*T-3 reminder* — Eden\n\nHey team, be on time.");
+  });
 });
 
 describe("postGoogleChatMessage", () => {

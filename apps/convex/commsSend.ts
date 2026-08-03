@@ -34,9 +34,11 @@ export const sendCommsToGoogleChat = mutation({
     itemId: v.id("eventItems"),
     channelId: v.id("googleChatChannels"),
     message: v.string(),
+    // Omitted → true; false sends the copy without the "*title* — event" heading.
+    includeTitle: v.optional(v.boolean()),
   },
   returns: v.null(),
-  handler: async (ctx, { itemId, channelId, message }) => {
+  handler: async (ctx, { itemId, channelId, message, includeTitle }) => {
     const item = await ctx.db.get(itemId);
     if (!item) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Item not found." });
@@ -69,6 +71,7 @@ export const sendCommsToGoogleChat = mutation({
       eventName: event.name,
       itemTitle: item.title,
       message: trimmed,
+      includeTitle: includeTitle !== false,
     });
     return null;
   },
@@ -83,8 +86,12 @@ export const deliverCommsSend = internalAction({
     eventName: v.string(),
     itemTitle: v.string(),
     message: v.string(),
+    includeTitle: v.optional(v.boolean()),
   },
-  handler: async (ctx, { itemId, channelId, channelName, eventName, itemTitle, message }) => {
+  handler: async (
+    ctx,
+    { itemId, channelId, channelName, eventName, itemTitle, message, includeTitle },
+  ) => {
     const webhookUrl = await ctx.runQuery(
       internal.googleChatChannels.readGoogleChatWebhookUrl,
       { channelId },
@@ -101,7 +108,12 @@ export const deliverCommsSend = internalAction({
     }
 
     try {
-      const text = buildGoogleChatMessage({ eventName, itemTitle, copy: message });
+      const text = buildGoogleChatMessage({
+        eventName,
+        itemTitle,
+        copy: message,
+        includeTitle: includeTitle !== false,
+      });
       await postGoogleChatMessage(webhookUrl, text);
       await ctx.runMutation(internal.commsSend.finishCommsSend, {
         itemId,

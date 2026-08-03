@@ -13,17 +13,22 @@
  * Format one Comms Schedule row's saved copy for Google Chat: a bold
  * "*{item title}* — {event name}" heading (Google Chat's basic markdown),
  * blank line, then the copy verbatim. An untitled row (`itemTitle: ""`) drops
- * the heading down to just the event name — no dangling "* — ".
+ * the heading down to just the event name — no dangling "* — ". With
+ * `includeTitle: false` (the sender unchecked "Include title" in the send
+ * popover) the whole heading line goes away and the copy is sent verbatim.
  */
 export function buildGoogleChatMessage({
   eventName,
   itemTitle,
   copy,
+  includeTitle = true,
 }: {
   eventName: string;
   itemTitle: string;
   copy: string;
+  includeTitle?: boolean;
 }): string {
+  if (!includeTitle) return copy;
   const heading = itemTitle ? `*${itemTitle}* — ${eventName}` : eventName;
   return `${heading}\n\n${copy}`;
 }

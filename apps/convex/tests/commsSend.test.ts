@@ -210,6 +210,50 @@ describe("sendCommsToGoogleChat delivery", () => {
     }
   });
 
+  test("includeTitle: false posts the copy verbatim; default keeps the heading", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      const eventId = await seedEvent(s);
+      const itemId = await seedItem(s, eventId, {
+        module: "comms",
+        title: "T-3 reminder",
+        notes: "Hey team, be on time.",
+        status: "draft",
+      });
+      const channelId = await seedChannel(s, { name: "Leaders" });
+
+      const bodies: string[] = [];
+      globalThis.fetch = (async (_url: string, init: RequestInit) => {
+        bodies.push(JSON.parse(String(init.body)).text);
+        return { ok: true };
+      }) as unknown as typeof fetch;
+
+      await s.as.mutation(api.commsSend.sendCommsToGoogleChat, {
+        itemId,
+        channelId,
+        message: "Hey team, be on time.",
+        includeTitle: false,
+      });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      await s.as.mutation(api.commsSend.sendCommsToGoogleChat, {
+        itemId,
+        channelId,
+        message: "Hey team, be on time.",
+      });
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      expect(bodies).toEqual([
+        "Hey team, be on time.",
+        "*T-3 reminder* — Eden\n\nHey team, be on time.",
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test("failure path: status untouched, records a failed outcome without the webhook URL", async () => {
     vi.useFakeTimers();
     try {
