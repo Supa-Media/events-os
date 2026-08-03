@@ -609,10 +609,11 @@ function ReconcileRow({
               color={row.note ? colors.accent : colors.faint}
             />
           </Pressable>
-          {/* Marking badges. Both carry an un-mark affordance for a mis-pick,
-              bookkeeper+ only (`isManager` here is the grid's existing
-              write-rank flag) — the server gates it again regardless. A
-              transfer un-marks BOTH legs; a payout has none to pair with. */}
+          {/* Marking badges. The two MARKED states carry an un-mark affordance
+              for a mis-pick, bookkeeper+ only (`isManager` here is the grid's
+              existing write-rank flag) — the server gates it again regardless.
+              A transfer un-marks BOTH legs; a payout has none to pair with. A
+              recorded (app-created) transfer badges but never un-marks. */}
           {row.isMarkedTransfer ? (
             <View className="flex-row items-center gap-1.5">
               <Badge label="Transfer" tone="neutral" />
@@ -628,6 +629,14 @@ function ReconcileRow({
                 </Pressable>
               ) : null}
             </View>
+          ) : row.flow === "transfer" ? (
+            // A transfer the app RECORDED (a central↔chapter movement, a
+            // repayment credit, a reimbursement) — same "out of spend" state,
+            // no un-mark (undoing it is the Transfers tool's business). It
+            // still needs to LOOK like a transfer: unbadged, it read as an
+            // ordinary row, which is how a bookkeeper ends up selecting it as
+            // the leg of a movement it can never be part of.
+            <Badge label="Transfer" tone="neutral" />
           ) : row.payoutProcessor ? (
             <View className="flex-row items-center gap-1.5">
               <Badge

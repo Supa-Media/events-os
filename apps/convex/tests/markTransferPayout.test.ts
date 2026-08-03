@@ -230,6 +230,114 @@ describe("finances.markAsTransfer", () => {
     ).rejects.toThrow(/processor payout/i);
   });
 
+  test("refuses a row already marked WITH ANOTHER row, and says how to fix it", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setupBookkeeper(s);
+    const out = await seedTxn(s, { amountCents: 100_000, flow: "outflow" });
+    const inn = await seedTxn(s, {
+      amountCents: 100_000,
+      flow: "inflow",
+      merchantName: "PUBLIC WORSHIP",
+    });
+    const otherOut = await seedTxn(s, { amountCents: 100_000, flow: "outflow" });
+    await s.as.mutation(api.finances.markAsTransfer, {
+      transactionId: out,
+      counterpartTransactionId: inn,
+    });
+
+    // A live pair is a genuine mis-pick: the message names the row and points
+    // at the un-mark, instead of the old "one of those rows is already part of
+    // a transfer" that left the founder hunting.
+    await expect(
+      s.as.mutation(api.finances.markAsTransfer, {
+        transactionId: otherOut,
+        counterpartTransactionId: inn,
+      }),
+    ).rejects.toThrow(/PUBLIC WORSHIP is already marked as a transfer/i);
+    expect((await txn(s, otherOut))!.flow).toBe("outflow");
+  });
+
+  test("re-selecting a pair that's already marked says so", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setupBookkeeper(s);
+    const out = await seedTxn(s, { amountCents: 100_000, flow: "outflow" });
+    const inn = await seedTxn(s, { amountCents: 100_000, flow: "inflow" });
+    await s.as.mutation(api.finances.markAsTransfer, {
+      transactionId: out,
+      counterpartTransactionId: inn,
+    });
+
+    await expect(
+      s.as.mutation(api.finances.markAsTransfer, {
+        transactionId: out,
+        counterpartTransactionId: inn,
+      }),
+    ).rejects.toThrow(/already marked as one transfer/i);
+  });
+
+  test("RE-PAIRS an orphaned marked leg instead of dead-ending on it", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setupBookkeeper(s);
+    const out = await seedTxn(s, { amountCents: 100_000, flow: "outflow" });
+    const inn = await seedTxn(s, { amountCents: 100_000, flow: "inflow" });
+    await s.as.mutation(api.finances.markAsTransfer, {
+      transactionId: out,
+      counterpartTransactionId: inn,
+    });
+    // The partner disappears after the fact (a purged sandbox row, a scope
+    // reassignment, a half-written group) — the founder-reported stuck state:
+    // one row reads as marked, the other doesn't, and nothing can repair it.
+    await run(s.t, (ctx) => ctx.db.delete(out));
+
+    const replacement = await seedTxn(s, { amountCents: 100_000, flow: "outflow" });
+    await s.as.mutation(api.finances.markAsTransfer, {
+      transactionId: replacement,
+      counterpartTransactionId: inn,
+    });
+
+    const innDoc = await txn(s, inn);
+    const replDoc = await txn(s, replacement);
+    expect(innDoc!.flow).toBe("transfer");
+    expect(replDoc!.flow).toBe("transfer");
+    // The orphan keeps the direction the BANK gave it — a re-pair must never
+    // overwrite `preMarkFlow` with the `"transfer"` the row currently reads,
+    // or un-marking would dump an inflow back into spend as an outflow.
+    expect(innDoc!.preMarkFlow).toBe("inflow");
+    expect(replDoc!.preMarkFlow).toBe("outflow");
+    expect(innDoc!.transferGroupId).toBe(replDoc!.transferGroupId);
+
+    // And the round trip still works from the re-paired leg.
+    await s.as.mutation(api.finances.unmarkTransfer, { transactionId: inn });
+    expect((await txn(s, inn))!.flow).toBe("inflow");
+    expect((await txn(s, replacement))!.flow).toBe("outflow");
+  });
+
+  test("refuses a transfer leg the app RECORDED, naming it", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setupBookkeeper(s);
+    const inn = await seedTxn(s, { amountCents: 500, flow: "inflow" });
+    // `source:"transfer"` + no `preMarkFlow` — a `transfers.recordTransfer`
+    // leg. Marking it would book the same movement twice.
+    const recorded = await seedTxn(s, {
+      amountCents: 500,
+      flow: "transfer",
+      source: "transfer",
+      merchantName: "Central grant",
+    });
+
+    await expect(
+      s.as.mutation(api.finances.markAsTransfer, {
+        transactionId: inn,
+        counterpartTransactionId: recorded,
+      }),
+    ).rejects.toThrow(/Central grant is already a transfer the app recorded/i);
+    expect((await txn(s, inn))!.flow).toBe("inflow");
+  });
+
   test("a viewer can't mark", async () => {
     const t = newT();
     const s = await setupChapter(t);

@@ -8759,6 +8759,38 @@ export const attachReceipt = mutation({
  *  `setTransactionStatus`'s exclude. */
 const MARK_MIN_ROLE = "bookkeeper" as const;
 
+/** How a row reads to a human in a refusal message ("PUBLIC WORSHIP | Transfer
+ *  is already…"). Merchant → description → a neutral fallback, the same
+ *  precedence the Reconcile grid renders. */
+function markLabel(tr: Doc<"transactions">): string {
+  return tr.merchantName?.trim() || tr.description?.trim() || "That row";
+}
+
+/**
+ * The OTHER rows sharing a leg's `transferGroupId` — i.e. whether this marked
+ * leg still has a live partner, or is an ORPHAN.
+ *
+ * An orphan is a pair that lost a side after it was marked: the partner was
+ * deleted (an account disconnect purges its sandbox rows), reassigned to
+ * another scope, or never written. Nothing surfaces that state — the survivor
+ * just sits there reading `flow:"transfer"`, out of spend, paired with
+ * nothing, and (before this) refusing to be marked again. It's why
+ * `markAsTransfer` treats "already a transfer" as two different answers.
+ */
+async function transferGroupPartners(
+  ctx: QueryCtx,
+  tr: Doc<"transactions">,
+): Promise<Doc<"transactions">[]> {
+  if (!tr.transferGroupId) return [];
+  const group = await ctx.db
+    .query("transactions")
+    .withIndex("by_transfer_group", (q) =>
+      q.eq("transferGroupId", tr.transferGroupId),
+    )
+    .collect();
+  return group.filter((g) => g._id !== tr._id);
+}
+
 /**
  * Mark TWO already-ingested rows as the two legs of one internal transfer.
  *
@@ -8785,6 +8817,12 @@ const MARK_MIN_ROLE = "bookkeeper" as const;
  * It already stops counting the moment `flow` changes (`isSpend` is false), so
  * clearing it would destroy a bookkeeper's earlier work to no numerical effect
  * — and marking has to be reversible.
+ *
+ * RE-PAIRING: a marked leg whose partner is gone (an ORPHAN — see
+ * `transferGroupPartners`) may be marked again against a new counterpart,
+ * because refusing it leaves a half pair no screen shows and no mutation can
+ * repair. Every other "already a transfer" row is still refused, with a
+ * message that names the row and the way out (see the per-leg gate below).
  */
 export const markAsTransfer = mutation({
   args: {
@@ -8816,12 +8854,6 @@ export const markAsTransfer = mutation({
       });
     }
     for (const leg of [a.txn, b.txn]) {
-      if (leg.flow === "transfer") {
-        throw new ConvexError({
-          code: "ALREADY_TRANSFER",
-          message: "One of those rows is already part of a transfer.",
-        });
-      }
       if (leg.payoutProcessor != null) {
         throw new ConvexError({
           code: "ALREADY_PAYOUT",
@@ -8837,10 +8869,68 @@ export const markAsTransfer = mutation({
         });
       }
     }
+    // "Already a transfer" is TWO different answers, and collapsing them into
+    // one refusal is what dead-ended the founder (bug report: "it won't let me
+    // re-mark it because the other row was already marked", on a pair where
+    // only one side read as marked):
+    //
+    //  - a leg the app RECORDED (`transfers.recordTransfer`, a repayment
+    //    credit, a reimbursement, a historical skim/launch-grant/settlement)
+    //    is not a reclassified bank row at all. It has no ingest flow to
+    //    restore and marking it would book the same movement twice — still
+    //    refused, but now it SAYS which row and why, instead of leaving a
+    //    bookkeeper hunting for an un-mark affordance that was never there.
+    //  - a MARKED leg that still has its partner is a genuine mis-pick: the
+    //    fix is to un-mark that pair first (both legs come back together), so
+    //    the message names the row and points at the un-mark.
+    //  - a MARKED leg whose partner is GONE (`transferGroupPartners` empty) is
+    //    the stuck state itself — a half pair nothing can see and nothing
+    //    could repair. It RE-PAIRS here instead of refusing: its ingest
+    //    direction is still in `preMarkFlow`, so it can take the same
+    //    one-out/one-in test as an unmarked row and simply join the new group.
+    const resolved: {
+      leg: { txn: Doc<"transactions">; actorPersonId: Id<"people"> | null };
+      /** The direction this row actually moves money — `preMarkFlow` for a leg
+       *  already carrying `flow:"transfer"`. Drives BOTH the pair test below
+       *  and the `preMarkFlow` written back, so a re-pair never overwrites the
+       *  bank's own statement of direction with `"transfer"`. */
+      flow: "outflow" | "inflow";
+    }[] = [];
+    for (const [leg, other] of [
+      [a, b],
+      [b, a],
+    ] as const) {
+      if (leg.txn.flow !== "transfer") {
+        resolved.push({ leg, flow: leg.txn.flow });
+        continue;
+      }
+      if (!isMarkedTransfer(leg.txn)) {
+        throw new ConvexError({
+          code: "RECORDED_TRANSFER",
+          message: `${markLabel(leg.txn)} is already a transfer the app recorded, not a bank row waiting to be classified — it can't be marked. Undo it from the Transfers tool if it's wrong.`,
+        });
+      }
+      const partners = await transferGroupPartners(ctx, leg.txn);
+      if (partners.some((p) => p._id === other.txn._id)) {
+        throw new ConvexError({
+          code: "ALREADY_PAIRED",
+          message: "Those two rows are already marked as one transfer.",
+        });
+      }
+      if (partners.length > 0) {
+        throw new ConvexError({
+          code: "ALREADY_TRANSFER",
+          message: `${markLabel(leg.txn)} is already marked as a transfer with another row. Un-mark that pair first (the ✕ next to its Transfer badge), then mark these two.`,
+        });
+      }
+      resolved.push({ leg, flow: leg.txn.preMarkFlow ?? "outflow" });
+    }
+    const [ra, rb] = resolved;
+
     // One leg out, one leg in. This is what makes `preMarkFlow` recoverable
     // and is a real guard: two outflows are never one movement.
-    const outLeg = a.txn.flow === "outflow" ? a : b.txn.flow === "outflow" ? b : null;
-    const inLeg = a.txn.flow === "inflow" ? a : b.txn.flow === "inflow" ? b : null;
+    const outLeg = ra.flow === "outflow" ? ra : rb.flow === "outflow" ? rb : null;
+    const inLeg = ra.flow === "inflow" ? ra : rb.flow === "inflow" ? rb : null;
     if (!outLeg || !inLeg) {
       throw new ConvexError({
         code: "NOT_A_PAIR",
@@ -8865,7 +8955,7 @@ export const markAsTransfer = mutation({
     // Reuse the created-pair linkage so a reader that already understands
     // `transferGroupId` sees a marked pair as one movement too. Keyed on the
     // OUTFLOW leg's timestamp so the id reads as "when the money left".
-    const groupId = `marked-${a.txn.chapterId}-${outLeg.txn.postedAt}-${crypto.randomUUID().slice(0, 8)}`;
+    const groupId = `marked-${a.txn.chapterId}-${outLeg.leg.txn.postedAt}-${crypto.randomUUID().slice(0, 8)}`;
     const trimmedNote = args.note?.trim() || null;
     if (trimmedNote && trimmedNote.length > MAX_NOTE_LENGTH) {
       throw new ConvexError({
@@ -8874,10 +8964,13 @@ export const markAsTransfer = mutation({
       });
     }
 
-    for (const leg of [outLeg, inLeg]) {
+    for (const { leg, flow } of [outLeg, inLeg]) {
       await ctx.db.patch(leg.txn._id, {
         flow: "transfer",
-        preMarkFlow: leg.txn.flow as "outflow" | "inflow",
+        // `flow` (the ingest direction), NOT `leg.txn.flow` — those differ on
+        // an orphan being re-paired, where the row already reads "transfer"
+        // and its real direction lives here.
+        preMarkFlow: flow,
         transferGroupId: groupId,
         // Only fill a note that isn't already saying something.
         ...(trimmedNote && !leg.txn.note ? { note: trimmedNote } : {}),
