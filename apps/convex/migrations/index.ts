@@ -77,6 +77,7 @@ import { mergeCampaignTemplatesIntoCampaigns } from "./0055_merge_campaign_templ
 import { upgradeBuiltInNewsletterTiptap } from "./0056_upgrade_builtin_newsletter_tiptap";
 import { backfillIncreaseAccountActivity } from "./0057_backfill_increase_transactions";
 import { addDataExportDefaults } from "./0058_add_data_export_defaults";
+import { splitLegacyIncreaseCards } from "./0059_split_legacy_increase_cards";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -312,4 +313,14 @@ export const MIGRATIONS: Migration[] = [
   // same default export access the template now grants a brand-new org
   // automatically. Additive-only (see 0058's doc). Idempotent. See 0058.
   addDataExportDefaults,
+  // Cards-vs-Relay fusion repair — `issueCard`'s source-blind dedup used to
+  // patch a freshly-minted Increase card's vendor id + last-4 onto the
+  // holder's linked legacy (Relay) row, so the new card never appeared in the
+  // app and the Relay attribution last-4 was overwritten. Splits every fused
+  // row back into an increase-source card (keeps the vendor identity and
+  // everything hanging off the row id) + a fresh legacy row carrying the
+  // Relay last-4 recovered from its own attributed bank-feed transactions,
+  // which are re-pointed onto it. Idempotent (repaired rows stop matching).
+  // See 0059.
+  splitLegacyIncreaseCards,
 ];

@@ -719,6 +719,16 @@ export const beginIssueCard = internalMutation({
     // (`matchesMode`) — so the holder is left seeing no card at all and issuance
     // silently "fails". A null-id degraded card is env-neutral (`matchesMode` →
     // true), so it still dedups AND still reaches the vendor-retry branch below.
+    //
+    // INCREASE-SOURCE ONLY: a legacy (Relay) card (`source:"legacy"`, linked by
+    // `legacyCards.linkRelayCard`) must NEVER match here. It also has no
+    // `increaseCardId`, so before this filter it satisfied the vendor-retry
+    // branch below, which then minted a real Increase card and patched the
+    // vendor id + Increase last4 ONTO THE RELAY ROW — the new card never
+    // appeared in the app (the UI treats a `source:"legacy"` row as
+    // Relay-only), and the row's Relay last-4 (the transaction-attribution
+    // key) was overwritten. Legacy and Increase cards are meant to coexist as
+    // separate rows mid-migration; migration 0059 splits rows this bug fused.
     const existing = await ctx.db
       .query("cards")
       .withIndex("by_cardholder", (q) =>
@@ -729,6 +739,7 @@ export const beginIssueCard = internalMutation({
       (c) =>
         c.chapterId === chapterId &&
         c.status === "active" &&
+        (c.source ?? "increase") === "increase" &&
         matchesMode(c.increaseCardId ?? null, sandboxMode),
     );
     if (activeSame) {
@@ -1520,6 +1531,9 @@ export const requestCard = mutation({
     // IN THE CURRENT Increase environment blocks a new request. A leftover
     // off-mode (e.g. sandbox) card must not strand a `@publicworship.life`
     // staffer on "You already have a card" once the deployment flips to prod.
+    // Increase-source only, same as `beginIssueCard`'s dedup: a legacy (Relay)
+    // card is exactly what a member mid-migration is requesting a REAL card to
+    // replace — it must not read as "already has a card".
     const sandboxMode = await readSandbox(ctx);
     const existingCards = await ctx.db
       .query("cards")
@@ -1530,6 +1544,7 @@ export const requestCard = mutation({
         (c) =>
           c.chapterId === chapterId &&
           c.status !== "canceled" &&
+          (c.source ?? "increase") === "increase" &&
           matchesMode(c.increaseCardId ?? null, sandboxMode),
       )
     ) {

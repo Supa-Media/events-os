@@ -14,6 +14,7 @@ import { internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { newT, run, setupChapter } from "./setup.helpers";
 import { runRepointDerivedSeatDuties } from "../migrations/0024_repoint_derived_seat_duties";
+import { runSplitLegacyIncreaseCards } from "../migrations/0059_split_legacy_increase_cards";
 
 const LEGACY_OPTIONS = [
   { value: "pull_from_storage", label: "Pull from storage", color: "blue" },
@@ -337,6 +338,7 @@ const REGISTRY_NAMES = [
   "0056_upgrade_builtin_newsletter_tiptap",
   "0057_backfill_increase_transactions",
   "0058_add_data_export_defaults",
+  "0059_split_legacy_increase_cards",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",
@@ -617,5 +619,201 @@ describe("repointDerivedSeatDuties", () => {
     await setupChapter(t);
     const res = await run(t, (ctx) => runRepointDerivedSeatDuties(ctx));
     expect(res).toEqual({ repointed: 0, deduped: 0 });
+  });
+});
+
+// ── 0059_split_legacy_increase_cards ─────────────────────────────────────────
+
+describe("splitLegacyIncreaseCards", () => {
+  /** Seed the fused shape the old `issueCard` dedup bug produced: a Relay
+   *  (`source:"legacy"`) row now carrying a real Increase card id + the
+   *  Increase last-4 (the Relay last-4 it was linked by is gone — it only
+   *  survives on the attributed bank-feed transactions). */
+  async function seedFusedCard(
+    t: ReturnType<typeof newT>,
+    chapterId: Id<"chapters">,
+    opts: { relayTxnLast4s?: string[]; createdAt?: number } = {},
+  ) {
+    return await run(t, async (ctx) => {
+      const createdAt = opts.createdAt ?? Date.now() - 1000;
+      const holderId = await ctx.db.insert("people", {
+        chapterId,
+        name: "Zay Powell",
+        isTeamMember: true,
+        pwEmail: "zay@publicworship.life",
+        createdAt,
+      });
+      const fusedId = await ctx.db.insert("cards", {
+        chapterId,
+        cardholderPersonId: holderId,
+        type: "physical",
+        source: "legacy",
+        increaseCardId: "card_zay123",
+        last4: "0082", // the INCREASE last-4 the bug overwrote the Relay one with
+        status: "active",
+        createdAt,
+      });
+      const relayTxnIds: Id<"transactions">[] = [];
+      for (const [i, last4] of (opts.relayTxnLast4s ?? []).entries()) {
+        relayTxnIds.push(
+          await ctx.db.insert("transactions", {
+            chapterId,
+            source: i % 2 === 0 ? "stripe_fc" : "relay_csv",
+            flow: "outflow",
+            amountCents: 1000 + i,
+            postedAt: createdAt - i,
+            cardLast4: last4,
+            cardId: fusedId,
+            personId: holderId,
+            status: "unreviewed",
+            createdAt,
+          }),
+        );
+      }
+      // An Increase card charge on the same row — must STAY on it.
+      const increaseTxnId = await ctx.db.insert("transactions", {
+        chapterId,
+        source: "increase_card",
+        flow: "outflow",
+        amountCents: 25803,
+        postedAt: createdAt,
+        cardId: fusedId,
+        personId: holderId,
+        status: "unreviewed",
+        createdAt,
+      });
+      return { holderId, fusedId, relayTxnIds, increaseTxnId, createdAt };
+    });
+  }
+
+  test("splits a fused row: increase identity stays, Relay linkage re-materializes", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const seed = await seedFusedCard(t, s.chapterId, {
+      relayTxnLast4s: ["1467", "1467", "1467"],
+    });
+
+    const res = await run(t, (ctx) => runSplitLegacyIncreaseCards(ctx));
+    expect(res).toEqual({
+      repaired: 1,
+      relayRowsCreated: 1,
+      txnsRepointed: 3,
+      relayLast4Unrecovered: 0,
+    });
+
+    const { fused, holderCards, relayTxns, increaseTxn } = await run(
+      t,
+      async (ctx) => ({
+        fused: await ctx.db.get(seed.fusedId),
+        holderCards: await ctx.db
+          .query("cards")
+          .withIndex("by_cardholder", (q) =>
+            q.eq("cardholderPersonId", seed.holderId),
+          )
+          .collect(),
+        relayTxns: await Promise.all(seed.relayTxnIds.map((id) => ctx.db.get(id))),
+        increaseTxn: await ctx.db.get(seed.increaseTxnId),
+      }),
+    );
+
+    // The fused row is now an honest Increase card — vendor id + Increase
+    // last-4 intact, so webhook routing and its charges are undisturbed.
+    expect(fused!.source).toBe("increase");
+    expect(fused!.increaseCardId).toBe("card_zay123");
+    expect(fused!.last4).toBe("0082");
+
+    // A fresh legacy row carries the recovered Relay last-4 (no vendor id),
+    // keeping the original linkage's createdAt.
+    const legacy = holderCards.find((c) => c._id !== seed.fusedId)!;
+    expect(legacy.source).toBe("legacy");
+    expect(legacy.last4).toBe("1467");
+    expect(legacy.increaseCardId).toBeUndefined();
+    expect(legacy.createdAt).toBe(seed.createdAt);
+
+    // Bank-feed txns follow the Relay row; the Increase charge stays put.
+    for (const txn of relayTxns) expect(txn!.cardId).toBe(legacy._id);
+    expect(increaseTxn!.cardId).toBe(seed.fusedId);
+  });
+
+  test("no bank-feed txns → source flips, no legacy row invented", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const seed = await seedFusedCard(t, s.chapterId);
+
+    const res = await run(t, (ctx) => runSplitLegacyIncreaseCards(ctx));
+    expect(res).toEqual({
+      repaired: 1,
+      relayRowsCreated: 0,
+      txnsRepointed: 0,
+      relayLast4Unrecovered: 1,
+    });
+
+    const holderCards = await run(t, (ctx) =>
+      ctx.db
+        .query("cards")
+        .withIndex("by_cardholder", (q) =>
+          q.eq("cardholderPersonId", seed.holderId),
+        )
+        .collect(),
+    );
+    expect(holderCards).toHaveLength(1);
+    expect(holderCards[0].source).toBe("increase");
+  });
+
+  test("idempotent, and healthy rows are untouched", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedFusedCard(t, s.chapterId, { relayTxnLast4s: ["1467"] });
+    // A healthy pure-legacy row and a healthy increase row — never matched.
+    const { pureLegacyId, pureIncreaseId } = await run(t, async (ctx) => {
+      const holderId = await ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Seyi Olujide",
+        isTeamMember: true,
+        pwEmail: "seyi@publicworship.life",
+        createdAt: Date.now(),
+      });
+      return {
+        pureLegacyId: await ctx.db.insert("cards", {
+          chapterId: s.chapterId,
+          cardholderPersonId: holderId,
+          type: "physical",
+          source: "legacy",
+          last4: "9999",
+          status: "active",
+          createdAt: Date.now(),
+        }),
+        pureIncreaseId: await ctx.db.insert("cards", {
+          chapterId: s.chapterId,
+          cardholderPersonId: holderId,
+          type: "virtual",
+          source: "increase",
+          increaseCardId: "card_seyi456",
+          last4: "1467",
+          status: "active",
+          createdAt: Date.now(),
+        }),
+      };
+    });
+
+    const first = await run(t, (ctx) => runSplitLegacyIncreaseCards(ctx));
+    expect(first.repaired).toBe(1);
+
+    const second = await run(t, (ctx) => runSplitLegacyIncreaseCards(ctx));
+    expect(second).toEqual({
+      repaired: 0,
+      relayRowsCreated: 0,
+      txnsRepointed: 0,
+      relayLast4Unrecovered: 0,
+    });
+
+    const { pureLegacy, pureIncrease } = await run(t, async (ctx) => ({
+      pureLegacy: await ctx.db.get(pureLegacyId),
+      pureIncrease: await ctx.db.get(pureIncreaseId),
+    }));
+    expect(pureLegacy!.source).toBe("legacy");
+    expect(pureLegacy!.last4).toBe("9999");
+    expect(pureIncrease!.source).toBe("increase");
+    expect(pureIncrease!.last4).toBe("1467");
   });
 });

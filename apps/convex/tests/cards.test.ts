@@ -1941,6 +1941,55 @@ describe("issueCard", () => {
     void manager;
   });
 
+  test("a linked legacy (Relay) card never dedups issuance — a NEW increase row is minted, the Relay row untouched", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const holder = await seedPerson(s, { name: "Holder" });
+    // What `legacyCards.linkRelayCard` creates: legacy source, Relay last-4,
+    // no increaseCardId. Before the source filter this row matched the dedup
+    // AND the vendor-retry branch, which fused the new Increase card onto it.
+    const legacyId = await run(s.t, (ctx) =>
+      ctx.db.insert("cards", {
+        chapterId: s.chapterId,
+        cardholderPersonId: holder,
+        type: "physical",
+        source: "legacy",
+        last4: "1467",
+        status: "active",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const card = await s.as.action(api.cards.issueCard, {
+      cardholderPersonId: holder,
+      type: "virtual",
+    });
+    expect(card.id).not.toBe(legacyId);
+    expect(card.source).toBe("increase");
+
+    // The Relay row keeps its identity — source, last-4, and no vendor id.
+    const legacy = await run(s.t, (ctx) => ctx.db.get(legacyId));
+    expect(legacy!.source).toBe("legacy");
+    expect(legacy!.last4).toBe("1467");
+    expect(legacy!.increaseCardId).toBeUndefined();
+
+    // Both rows coexist (mid-migration), and re-issuing dedups on the
+    // increase-source row only.
+    const again = await s.as.action(api.cards.issueCard, {
+      cardholderPersonId: holder,
+      type: "virtual",
+    });
+    expect(again.id).toBe(card.id);
+    const rows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("cards")
+        .withIndex("by_cardholder", (q) => q.eq("cardholderPersonId", holder))
+        .collect(),
+    );
+    expect(rows.length).toBe(2);
+  });
+
   test("hides a leftover sandbox account in production → degrades like no account", async () => {
     const t = newT();
     const s = await setupChapter(t);
@@ -2833,6 +2882,29 @@ describe("requestCard / myCardRequest / listCardRequests / decideCardRequest", (
     await expect(
       s.as.mutation(api.cards.requestCard, {}),
     ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("a legacy (Relay) card does NOT block requesting a real card", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const me = await seedPerson(s, { name: "Me", userId: s.userId });
+    // A linked Relay card is exactly what mid-migration members hold while
+    // requesting their real Increase card — it must not read as "already has
+    // a card" (same increase-source-only rule as `beginIssueCard`'s dedup).
+    await run(s.t, (ctx) =>
+      ctx.db.insert("cards", {
+        chapterId: s.chapterId,
+        cardholderPersonId: me,
+        type: "physical",
+        source: "legacy",
+        last4: "1467",
+        status: "active",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const req = await s.as.mutation(api.cards.requestCard, {});
+    expect(req.status).toBe("requested");
   });
 
   test("myCardRequest returns the caller's own pending request; null once approved", async () => {
