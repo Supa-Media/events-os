@@ -748,10 +748,23 @@ export const beginIssueCard = internalMutation({
       // the Increase card creation on the SAME row instead of returning it
       // vendorless forever (it could never authorize otherwise).
       if (!activeSame.increaseCardId && hasKey && increaseAccountId) {
+        // The retry IS this issuance completing, so the reused row must record
+        // the manager's CURRENT choices — type, cap, validity — exactly as a
+        // fresh insert would (an omitted cap/window clears the old one; the
+        // form was filled out anew). Dropping them silently is how a reused
+        // row kept a stale `type` forever (the "Physical" mislabel migration
+        // 0060 repairs).
+        await ctx.db.patch(activeSame._id, {
+          type: args.type,
+          monthlyCapCents: args.monthlyCapCents,
+          validFrom: args.validFrom,
+          validUntil: args.validUntil,
+        });
+        const fresh = (await ctx.db.get(activeSame._id))!;
         return {
           kind: "created",
-          card: await buildCardSummary(ctx, activeSame),
-          cardId: activeSame._id,
+          card: await buildCardSummary(ctx, fresh),
+          cardId: fresh._id,
           increaseAccountId,
           description: holder!.name,
           cardholderEmail: holder!.pwEmail!,

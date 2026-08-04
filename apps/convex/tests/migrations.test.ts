@@ -15,6 +15,7 @@ import type { Id } from "../_generated/dataModel";
 import { newT, run, setupChapter } from "./setup.helpers";
 import { runRepointDerivedSeatDuties } from "../migrations/0024_repoint_derived_seat_duties";
 import { runSplitLegacyIncreaseCards } from "../migrations/0059_split_legacy_increase_cards";
+import { runFixRepairedCardTypes } from "../migrations/0060_fix_repaired_card_types";
 
 const LEGACY_OPTIONS = [
   { value: "pull_from_storage", label: "Pull from storage", color: "blue" },
@@ -339,6 +340,7 @@ const REGISTRY_NAMES = [
   "0057_backfill_increase_transactions",
   "0058_add_data_export_defaults",
   "0059_split_legacy_increase_cards",
+  "0060_fix_repaired_card_types",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",
@@ -815,5 +817,173 @@ describe("splitLegacyIncreaseCards", () => {
     expect(pureLegacy!.last4).toBe("9999");
     expect(pureIncrease!.source).toBe("increase");
     expect(pureIncrease!.last4).toBe("1467");
+  });
+});
+
+// ── 0060_fix_repaired_card_types ─────────────────────────────────────────────
+
+describe("fixRepairedCardTypes", () => {
+  async function seedHolder(t: ReturnType<typeof newT>, chapterId: Id<"chapters">, name: string) {
+    return await run(t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId,
+        name,
+        isTeamMember: true,
+        pwEmail: `${name.toLowerCase().replace(/\s/g, ".")}@publicworship.life`,
+        createdAt: Date.now(),
+      }),
+    );
+  }
+
+  test("relabels exactly the 0059-fingerprinted pair; deliberate physical + independent legacy untouched", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const createdAt = Date.now() - 5000;
+
+    const { repairedId, deliberateId, coexistId } = await run(t, async (ctx) => {
+      // The 0059 shape: increase row still typed physical + the split-out
+      // legacy sibling sharing the IDENTICAL createdAt.
+      const zay = await ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Zay Powell",
+        isTeamMember: true,
+        pwEmail: "zay@publicworship.life",
+        createdAt,
+      });
+      const repairedId = await ctx.db.insert("cards", {
+        chapterId: s.chapterId,
+        cardholderPersonId: zay,
+        type: "physical",
+        source: "increase",
+        increaseCardId: "card_zay123",
+        last4: "0082",
+        status: "active",
+        createdAt,
+      });
+      await ctx.db.insert("cards", {
+        chapterId: s.chapterId,
+        cardholderPersonId: zay,
+        type: "physical",
+        source: "legacy",
+        last4: "1467",
+        status: "active",
+        createdAt, // identical — the 0059 fingerprint
+      });
+
+      // A DELIBERATE physical-type Increase card (no legacy sibling at all).
+      const kei = await ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Keianna McCormick",
+        isTeamMember: true,
+        pwEmail: "keianna@publicworship.life",
+        createdAt,
+      });
+      const deliberateId = await ctx.db.insert("cards", {
+        chapterId: s.chapterId,
+        cardholderPersonId: kei,
+        type: "physical",
+        source: "increase",
+        increaseCardId: "card_kei456",
+        last4: "5909",
+        status: "active",
+        createdAt,
+      });
+
+      // A holder with BOTH a physical Increase card and an independently
+      // linked Relay card — different createdAt, so NOT the 0059 pair.
+      const seyi = await ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Seyi Olujide",
+        isTeamMember: true,
+        pwEmail: "seyi@publicworship.life",
+        createdAt,
+      });
+      const coexistId = await ctx.db.insert("cards", {
+        chapterId: s.chapterId,
+        cardholderPersonId: seyi,
+        type: "physical",
+        source: "increase",
+        increaseCardId: "card_seyi789",
+        last4: "1467",
+        status: "active",
+        createdAt,
+      });
+      await ctx.db.insert("cards", {
+        chapterId: s.chapterId,
+        cardholderPersonId: seyi,
+        type: "physical",
+        source: "legacy",
+        last4: "3333",
+        status: "active",
+        createdAt: createdAt + 1, // one ms off — an independent Relay link
+      });
+
+      return { repairedId, deliberateId, coexistId };
+    });
+
+    const res = await run(t, (ctx) => runFixRepairedCardTypes(ctx));
+    expect(res).toEqual({ relabeled: 1, physicalVendorRowsKept: 2 });
+
+    const { repaired, deliberate, coexist } = await run(t, async (ctx) => ({
+      repaired: await ctx.db.get(repairedId),
+      deliberate: await ctx.db.get(deliberateId),
+      coexist: await ctx.db.get(coexistId),
+    }));
+    expect(repaired!.type).toBe("virtual");
+    expect(repaired!.increaseCardId).toBe("card_zay123"); // identity untouched
+    expect(deliberate!.type).toBe("physical");
+    expect(coexist!.type).toBe("physical");
+  });
+
+  test("idempotent; virtual + legacy rows never touched", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const createdAt = Date.now() - 5000;
+    const holder = await seedHolder(t, s.chapterId, "Holder One");
+    const { fusedId, legacyId, virtualId } = await run(t, async (ctx) => ({
+      fusedId: await ctx.db.insert("cards", {
+        chapterId: s.chapterId,
+        cardholderPersonId: holder,
+        type: "physical",
+        source: "increase",
+        increaseCardId: "card_h1",
+        status: "active",
+        createdAt,
+      }),
+      legacyId: await ctx.db.insert("cards", {
+        chapterId: s.chapterId,
+        cardholderPersonId: holder,
+        type: "physical",
+        source: "legacy",
+        last4: "4242",
+        status: "active",
+        createdAt,
+      }),
+      virtualId: await ctx.db.insert("cards", {
+        chapterId: s.chapterId,
+        cardholderPersonId: holder,
+        type: "virtual",
+        source: "increase",
+        increaseCardId: "card_h2",
+        status: "active",
+        createdAt: createdAt + 100,
+      }),
+    }));
+
+    const first = await run(t, (ctx) => runFixRepairedCardTypes(ctx));
+    expect(first.relabeled).toBe(1);
+
+    const second = await run(t, (ctx) => runFixRepairedCardTypes(ctx));
+    expect(second).toEqual({ relabeled: 0, physicalVendorRowsKept: 0 });
+
+    const { fused, legacy, virtual } = await run(t, async (ctx) => ({
+      fused: await ctx.db.get(fusedId),
+      legacy: await ctx.db.get(legacyId),
+      virtual: await ctx.db.get(virtualId),
+    }));
+    expect(fused!.type).toBe("virtual");
+    // The Relay row stays an honest physical card.
+    expect(legacy!.type).toBe("physical");
+    expect(virtual!.type).toBe("virtual");
   });
 });

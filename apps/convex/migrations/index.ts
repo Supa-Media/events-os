@@ -78,6 +78,7 @@ import { upgradeBuiltInNewsletterTiptap } from "./0056_upgrade_builtin_newslette
 import { backfillIncreaseAccountActivity } from "./0057_backfill_increase_transactions";
 import { addDataExportDefaults } from "./0058_add_data_export_defaults";
 import { splitLegacyIncreaseCards } from "./0059_split_legacy_increase_cards";
+import { fixRepairedCardTypes } from "./0060_fix_repaired_card_types";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -323,4 +324,12 @@ export const MIGRATIONS: Migration[] = [
   // which are re-pointed onto it. Idempotent (repaired rows stop matching).
   // See 0059.
   splitLegacyIncreaseCards,
+  // 0059 follow-up — rows it repaired kept the `type:"physical"` stamped by
+  // their original Relay link (the buggy reuse dropped the type the manager
+  // picked, and the repair deliberately preserved the row). Relabels exactly
+  // the 0059-fingerprinted pairs (vendor-linked physical row + sibling legacy
+  // row with the identical createdAt) to `"virtual"`; deliberately-physical
+  // cards are untouched. The dropped-args hole itself is plugged in
+  // `beginIssueCard`'s vendor-retry branch. Idempotent. See 0060.
+  fixRepairedCardTypes,
 ];

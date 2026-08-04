@@ -1990,6 +1990,56 @@ describe("issueCard", () => {
     expect(rows.length).toBe(2);
   });
 
+  test("vendor retry on a degraded row records the CURRENT issuance's type + controls", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const holder = await seedPerson(s, { name: "Holder" });
+    // A degraded row from an earlier vendorless issuance — recorded physical
+    // with a cap the manager has since changed their mind about.
+    const cardId = await run(s.t, (ctx) =>
+      ctx.db.insert("cards", {
+        chapterId: s.chapterId,
+        cardholderPersonId: holder,
+        type: "physical",
+        source: "increase",
+        status: "active",
+        monthlyCapCents: 10000,
+        createdAt: Date.now(),
+      }),
+    );
+    // The vendor is now reachable: an active production account + an API key.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("increaseAccounts", {
+        chapterId: s.chapterId,
+        sandbox: false,
+        onboardingStatus: "active",
+        increaseEntityId: "entity_test",
+        increaseAccountId: "acct_live_1",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const originalKey = process.env.INCREASE_API_KEY;
+    process.env.INCREASE_API_KEY = "test_key";
+    try {
+      // The prep mutation alone (no network): it must take the retry branch
+      // AND stamp the row with THIS issuance's choices, not the stale ones.
+      const prep = await s.as.mutation(internal.cards.beginIssueCard, {
+        cardholderPersonId: holder,
+        type: "virtual",
+        monthlyCapCents: 25000,
+      });
+      expect(prep.kind).toBe("created");
+      const row = await run(s.t, (ctx) => ctx.db.get(cardId));
+      expect(row!.type).toBe("virtual");
+      expect(row!.monthlyCapCents).toBe(25000);
+    } finally {
+      if (originalKey === undefined) delete process.env.INCREASE_API_KEY;
+      else process.env.INCREASE_API_KEY = originalKey;
+    }
+  });
+
   test("hides a leftover sandbox account in production → degrades like no account", async () => {
     const t = newT();
     const s = await setupChapter(t);
