@@ -19,6 +19,7 @@
 import type { MutationCtx } from "../_generated/server";
 import type { Id } from "../_generated/dataModel";
 import { unlockCardIfReceiptsResolved } from "../cards";
+import { supersedeApprovedExceptionOnReceipt } from "./receiptExceptions";
 import type {
   ReceiptSource,
   ReceiptLinkSource,
@@ -178,6 +179,11 @@ export async function linkReceiptToTransaction(
     if (txn.cardId) {
       await unlockCardIfReceiptsResolved(ctx, txn.cardId);
     }
+    // The document turned up after an exception was approved for it. A receipt
+    // OUTRANKS an exception (`documentationState`), so retire the exception
+    // rather than leaving the row reading "Documented exception" when it now
+    // has the document itself. No-op when there's no approved exception.
+    await supersedeApprovedExceptionOnReceipt(ctx, args.transactionId);
   }
 
   return { linked: true, reconciled };

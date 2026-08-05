@@ -28,6 +28,8 @@ import {
   RECEIPT_SOURCES,
   RECEIPT_LINK_SOURCES,
   RECEIPT_SENDER_CLASSES,
+  RECEIPT_EXCEPTION_REASONS,
+  RECEIPT_EXCEPTION_STATUSES,
   LEGACY_ACCOUNT_STATUSES,
   FINANCE_ROLES,
   FINANCE_ROLE_SCOPES,
@@ -479,6 +481,22 @@ export const transactions = defineTable({
 
   // A single attached receipt (line-level receipts live on reimbursement lines).
   receiptStorageId: v.optional(v.id("_storage")),
+
+  // The APPROVED receipt exception standing in for a receipt on this row —
+  // the documentation of record when no receipt can be produced (see the
+  // `receiptExceptions` table below and `docs/plans/receipt-exceptions.md`).
+  //
+  // DENORMALIZED POINTER, single-writer: set ONLY while an exception is
+  // `approved`, cleared the moment it's withdrawn/superseded, and written by
+  // exactly ONE module (`lib/receiptExceptions.ts`). The field name says
+  // `approved` precisely so no reader has to go re-check the row's status to
+  // learn what the pointer means — the same discipline `repaymentId` uses,
+  // and the reason the pure predicates (`needsDocumentation`,
+  // `cards.ts#isMissingReceiptCharge`) can consult it without a db read. A
+  // PENDING exception is deliberately NOT reflected here: it isn't
+  // documentation yet, and a row shouldn't leave the chase because someone
+  // asked to be let off. Pending rows are found via `by_transaction`.
+  approvedReceiptExceptionId: v.optional(v.id("receiptExceptions")),
 
   // Receipt-reminder timeline (day-1 flag → day-3 escalate, tracked by
   // `cards.advanceReceiptReminders`). `undefined` = no reminder sent yet.
@@ -1513,6 +1531,69 @@ export const receiptLinks = defineTable({
   .index("by_receipt", ["receiptId"])
   .index("by_transaction", ["transactionId"]);
 
+// ── Receipt exceptions (documented "there is no receipt") ────────────────────
+/** The documentation of record for a transaction that can never carry a
+ *  receipt. NOT a "missing receipt" marker — a SUBSTITUTE DOCUMENT: a named
+ *  person attesting what the spend was for and why no receipt exists, decided
+ *  on by someone else. See `docs/plans/receipt-exceptions.md` for the full
+ *  design and `RECEIPT_EXCEPTION_REASONS` (`@events-os/shared`) for why
+ *  "missing" and "unattainable" are one reason axis rather than two states.
+ *
+ *  WHY A TABLE AND NOT A TRANSACTION STATUS: documentation state is orthogonal
+ *  to review state — a row can be `reconciled` AND receipt-less. Same call the
+ *  personal-expense lifecycle made (see `PERSONAL_EXPENSE_STATES`' doc comment
+ *  on why a 5th `TRANSACTION_STATUS` was rejected).
+ *
+ *  APPEND-MOSTLY: a row's `status` moves `pending` → `approved`/`rejected`/
+ *  `withdrawn` exactly once and its attestation fields are never rewritten. A
+ *  rejected attestation is re-filed as a NEW row, so "what did they claim, and
+ *  who decided" stays recoverable rather than being edited into agreement.
+ *  `transactions.approvedReceiptExceptionId` points back at the at-most-one
+ *  row that is currently `approved`; `lib/receiptExceptions.ts` is the ONLY
+ *  writer of either side, which is what keeps them in lock-step. */
+export const receiptExceptions = defineTable({
+  transactionId: v.id("transactions"),
+  // Denormalized from the transaction (a real chapter or "central") so the
+  // exception queue can be scoped without loading every transaction — same
+  // pattern as `receiptLinks.chapterId`.
+  chapterId: v.union(v.id("chapters"), v.literal("central")),
+  // Denormalized at attest time so a period's exception TOTAL is readable
+  // without re-reading every transaction. Never rewritten — if a transaction's
+  // amount is corrected the exception is re-filed, not patched.
+  amountCents: v.number(),
+  reason: v.union(...RECEIPT_EXCEPTION_REASONS.map((r) => v.literal(r))),
+  // THE SUBSTITUTE FOR THE DOCUMENT: what this spend was for, in the filer's
+  // words. Required and length-floored (`MIN_EXCEPTION_NOTE_LENGTH`) — a
+  // blank note turns the whole feature back into "no receipt, shrug", which
+  // is the thing this exists to prevent.
+  note: v.string(),
+  // Optional supporting artifact when a receipt proper is unavailable but
+  // SOMETHING exists: a statement line, a confirmation email, a calendar
+  // invite, a photo of the item. Not a receipt — deliberately never written to
+  // `transactions.receiptStorageId` or the `receipts` library, because it must
+  // never be counted as one or auto-matched to another charge.
+  substituteStorageId: v.optional(v.id("_storage")),
+  status: v.union(...RECEIPT_EXCEPTION_STATUSES.map((s) => v.literal(s))),
+  // Who put their name on it, and when.
+  attestedByPersonId: v.optional(v.id("people")),
+  attestedByUserId: v.id("users"),
+  attestedAt: v.number(),
+  // The decision. Set together, exactly once, when `status` leaves `pending`.
+  // `decidedByPersonId` is what the separation-of-duties check compares
+  // against `attestedByPersonId` (see `exceptionNeedsSecondApprover`).
+  decidedByPersonId: v.optional(v.id("people")),
+  decidedByUserId: v.optional(v.id("users")),
+  decidedAt: v.optional(v.number()),
+  // An approver's reason, required on a rejection (the filer needs to know
+  // what would make it approvable) and optional on an approval.
+  decisionNote: v.optional(v.string()),
+})
+  // "Every exception on this transaction" — the detail panel's history, and
+  // the pending-duplicate check `attestReceiptException` runs before filing.
+  .index("by_transaction", ["transactionId"])
+  // The approval queue: pending exceptions for one scope, oldest first.
+  .index("by_chapter_and_status", ["chapterId", "status"]);
+
 // ── Public reimbursement submit rate limit (deployment-wide) ─────────────────
 /** A single timestamped hit against the anonymous `submitPublicReimbursement`
  *  rate limiter. NOT chapter-scoped — the same abuse (a bot hammering the
@@ -1632,4 +1713,11 @@ export const financeSettings = defineTable({
   // (issuance unaffected), so cards keep working until central finance points
   // this at Kansi's card-prerequisite course.
   cardPrerequisiteCourseSlug: v.optional(v.string()),
+  // Org-wide receipt-exception policy: at or above this amount, an exception
+  // must be approved by someone OTHER than the person who attested it.
+  // `undefined` falls back to `DEFAULT_EXCEPTION_APPROVAL_THRESHOLD_CENTS`
+  // ($75, the IRS accountable-plan substantiation line) — a fallback, not
+  // "off": there is no way to switch separation of duties off entirely, which
+  // is the point. Enforced in `receiptExceptions.approveReceiptException`.
+  receiptExceptionApprovalThresholdCents: v.optional(v.number()),
 });

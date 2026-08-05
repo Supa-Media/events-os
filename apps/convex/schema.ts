@@ -78,6 +78,7 @@ import {
   receiptReplyBatches,
   receipts,
   receiptLinks,
+  receiptExceptions,
   receiptSweepState,
 } from "./schema/finances";
 import {
@@ -313,6 +314,12 @@ const schema = defineSchema({
   // stays a denormalized cache. Written only through lib/receiptLinks.ts.
   receipts,
   receiptLinks,
+  // The documentation of record when no receipt can be produced — an attested,
+  // approved substitute, NOT a "missing" marker. Written only through
+  // lib/receiptExceptions.ts, which also owns the denormalized
+  // `transactions.approvedReceiptExceptionId` pointer. See
+  // `docs/plans/receipt-exceptions.md`.
+  receiptExceptions,
   // Per-chapter "is a failed-extraction retry sweep running" marker — see
   // `schema/finances.ts`'s doc + `receipts.ts#retryFailedExtractions`.
   receiptSweepState,
