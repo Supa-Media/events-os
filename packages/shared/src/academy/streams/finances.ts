@@ -499,8 +499,8 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           ["Spend", "Every dollar that counts as actual spend — the exact rows behind the dashboard's \"Spent\" figure, so tapping it always lands here"],
           ["Needs budget", "Categorized but not linked to a budget yet"],
           ["Missing receipt", "No receipt uploaded"],
-          ["Uncategorized", "No category assigned at all"],
-          ["Ready", "Receipt + category + budget all present"],
+          ["To review", "Still sitting at Unreviewed — nobody has touched it yet. This is the number the dashboard's \"To review\" tile shows, and tapping that tile lands you right here"],
+          ["Reconciled", "Already cleared and closed — the opposite of the \"N to clear\" count in the header"],
           ["Personal (unpaid)", "Flagged personal, not yet repaid — the worklist for chasing down what people owe back"],
           ["Transfers", "Money you marked as moving between your own accounts"],
           ["Payouts", "Deposits you marked as a processor settling donations to you"],
@@ -555,11 +555,16 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "Unattributed is a first-class, visible bucket with a one-tap path into the exact filtered Reconcile view — it's designed to be noticed, not hidden.",
       },
       {
-        prompt: "Which Reconcile filter shows charges with no category assigned at all?",
-        options: ["Needs budget", "Missing receipt", "Uncategorized", "Ready"],
-        answerIndex: 2,
+        prompt: "The dashboard says \"To review 80\". You tap it. Where do you land, and what should you see?",
+        options: [
+          "The Needs budget filter — 80 charges missing a budget link",
+          "The To review filter, showing exactly those 80 charges still sitting at Unreviewed",
+          "The All filter, where you scroll to find them",
+          "The Reconciled filter — they've already been cleared",
+        ],
+        answerIndex: 1,
         explanation:
-          "Uncategorized is earlier in the pipeline than Needs budget — a charge needs a category before it can be linked to a budget.",
+          "Every number on the dashboard opens the exact rows behind it. \"To review\" counts charges still at the Unreviewed status, so it lands on the To review filter — same word, same rows, same count. If a figure you tap ever doesn't appear on the screen it opens, that's a bug worth reporting.",
       },
       {
         prompt: "You select 20 charges at once in Reconcile. What can you do?",
@@ -1137,7 +1142,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     slug: "finance-cross-chapter-audit",
     title: "Auditing every chapter",
     subtitle: "The central rollup, drill-down, and the trust you're building",
-    minutes: 3,
+    minutes: 4,
     blocks: [
       {
         kind: "p",
@@ -1155,6 +1160,11 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "rule",
         title: "Trust, not permission",
         text: "You're not a gate a chapter's spending waits behind — you're the person who can look at any chapter's numbers at any time and vouch for them. The north-star metric for this whole system is exactly that: you trust every chapter's numbers without having to ask anyone.",
+      },
+      {
+        kind: "rule",
+        title: "Separate books, one queue when you hold both hats",
+        text: "Central and every chapter keep SEPARATE books. They're separate operating entities — same legal entity, same 501(c)(3), but their money is never pooled on paper. Reconcile's books selector is where you choose: **All books** (everything at once, each row labelled with the book it belongs to), **Central** (the org's own charges), or a named chapter. Today one person is both the central Financial Manager and New York's Treasurer, so All books is the default at the central desk — one pass instead of two. Editing follows the books, not the view: you can always work Central's rows and your own chapter's; another chapter's rows show up read-only, with a lock instead of a checkbox, because its Treasurer owns them.",
       },
       {
         kind: "reveal",
@@ -1188,6 +1198,19 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 1,
         explanation:
           "Drill-down re-checks your central reach and then shows the chapter's real dashboard — the FM's audit tool IS the chapter's own view.",
+      },
+      {
+        prompt:
+          "In Reconcile's All books view you open a charge belonging to a chapter you're not the Treasurer of. What can you do with it?",
+        options: [
+          "Edit it like any other row — central reach means central can code anything",
+          "Read it, but not edit it — the row shows a lock instead of a checkbox",
+          "Nothing at all; other chapters' rows are hidden from you",
+          "Delete it, but not re-code it",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Books stay separate even in the merged view. You can SEE every book — that's the whole audit posture — but coding a chapter's charge belongs to that chapter's Treasurer. Central's own rows and your own chapter's rows stay fully editable.",
       },
       {
         prompt: "What's the FM's actual relationship to a chapter's spending?",

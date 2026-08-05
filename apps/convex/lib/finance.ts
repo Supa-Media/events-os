@@ -352,6 +352,53 @@ export async function requireFinanceCentral(
 }
 
 /**
+ * ALL-BOOKS RECONCILE — may the caller work ONE merged reconcile queue spanning
+ * every book (central + every chapter), instead of one book at a time?
+ *
+ * Central and each chapter are separate OPERATING entities under one legal
+ * entity, so merging them on screen is a workflow convenience, not a compliance
+ * question. It's still a power, though — so it gets a named resolver here
+ * rather than an inline `access.isCentral` at the call site (CLAUDE.md's "gate
+ * it behind a power, even when it's open today").
+ *
+ * TODAY the answer is "anyone with central finance reach" — the same test
+ * `requireFinanceCentral` applies. When the org actually splits its operating
+ * entities and a central FM should stop seeing a chapter's charges in their own
+ * queue by default, this graduates to a `finance.reconcile.allBooks` string in
+ * `SEAT_CAPABILITIES`: add it, list it on the seats that should carry it, and
+ * change THIS body. No call site moves.
+ *
+ * READS ONLY. Writing a row still goes through `finances.ts#requireReconcileTxn`,
+ * which is unchanged and strictly narrower: central-owned rows need central
+ * reach, chapter-owned rows must be the caller's OWN chapter. A caller can
+ * therefore READ a foreign chapter's row in the merged queue and not be able to
+ * edit it — `listReconcile` marks exactly those rows `canEdit: false` so the
+ * grid can render them read-only instead of inviting a rejected write.
+ */
+export async function hasAllBooksReconcile(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<boolean> {
+  const access = await getFinanceRole(ctx, chapterId);
+  return access.isCentral;
+}
+
+/** The `require` half of `hasAllBooksReconcile` — every call site uses this. */
+export async function requireAllBooksReconcile(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<FinanceAccess> {
+  const access = await getFinanceRole(ctx, chapterId);
+  if (!access.isCentral) {
+    throw new ConvexError({
+      code: "FORBIDDEN",
+      message: "Reconciling all books needs central (org-wide) finance access.",
+    });
+  }
+  return access;
+}
+
+/**
  * Assert the caller has central reach AND at least the `min` graded role — the
  * gate for a central-scoped MONEY WRITE (WP-4.1's skim). `requireFinanceCentral`
  * alone lets a central *viewer* through (it only checks org reach); recording a

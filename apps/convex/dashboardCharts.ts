@@ -484,13 +484,19 @@ export const chapterHealth = query({
       );
 
       // Same "to review" definition as `dashboardChapter`'s tile / the
-      // `dashboardCentral` `toReviewOrg` per-chapter component.
-      const unreviewed = await ctx.db
-        .query("transactions")
-        .withIndex("by_chapter_and_status", (q) =>
-          q.eq("chapterId", chapter._id).eq("status", "unreviewed"),
-        )
-        .take(ROLLUP_SCAN_LIMIT);
+      // `dashboardCentral` `toReviewOrg` per-chapter component — INCLUDING the
+      // `txnMatchesMode` environment filter those apply, so this fleet row's
+      // count can't disagree with the tile or with the Reconcile grid it
+      // routes into (see `finances.ts#dashboardChapter`'s SANDBOX PARITY
+      // comment for the founder report this came from).
+      const unreviewed = (
+        await ctx.db
+          .query("transactions")
+          .withIndex("by_chapter_and_status", (q) =>
+            q.eq("chapterId", chapter._id).eq("status", "unreviewed"),
+          )
+          .take(ROLLUP_SCAN_LIMIT)
+      ).filter((tr) => txnMatchesMode(tr, sandboxMode));
 
       // Same index/status literal as `dashboardDrill.pendingBudgetApprovals`'s
       // per-chapter component and `dashboardCentral`'s own seed — see the
@@ -607,12 +613,16 @@ export const chapterHealth = query({
       }
     }
 
-    const centralUnreviewed = await ctx.db
-      .query("transactions")
-      .withIndex("by_chapter_and_status", (q) =>
-        q.eq("chapterId", CENTRAL).eq("status", "unreviewed"),
-      )
-      .take(ROLLUP_SCAN_LIMIT);
+    // `txnMatchesMode` for the same reason the per-chapter scan above applies
+    // it — one population behind every "to review" number in the app.
+    const centralUnreviewed = (
+      await ctx.db
+        .query("transactions")
+        .withIndex("by_chapter_and_status", (q) =>
+          q.eq("chapterId", CENTRAL).eq("status", "unreviewed"),
+        )
+        .take(ROLLUP_SCAN_LIMIT)
+    ).filter((tr) => txnMatchesMode(tr, sandboxMode));
     const centralPendingBudgets = await ctx.db
       .query("budgets")
       .withIndex("by_chapter_and_approval_status", (q) =>

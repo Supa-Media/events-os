@@ -32,7 +32,7 @@
  * the FinanceBoundary-wrapped inner component so a role throw degrades to a
  * friendly empty state instead of the root error boundary.
  */
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, TextInput, Pressable } from "react-native";
 import { useQuery, useMutation } from "convex/react";
 import { useLocalSearchParams, useRouter } from "expo-router";
@@ -60,6 +60,7 @@ import {
 import {
   FILTERS,
   filterReconcileRows,
+  parseFilterParam,
   type FilterKey,
 } from "../../../components/finance/reconcile/helpers";
 import { BulkBar } from "../../../components/finance/reconcile/BulkBar";
@@ -69,7 +70,7 @@ import {
   type TransferLegPreview,
 } from "../../../components/finance/modals/MarkTransferModal";
 import { MarkPayoutModal } from "../../../components/finance/modals/MarkPayoutModal";
-import type { PayoutProcessor } from "@events-os/shared";
+import { CENTRAL, type PayoutProcessor } from "@events-os/shared";
 
 function NoFinanceAccess() {
   return (
@@ -105,16 +106,33 @@ export default function ReconcileScreen() {
   );
 }
 
-const FILTER_KEYS = new Set<FilterKey>([
-  "all",
-  "spend",
-  "needs_budget",
-  "missing_receipt",
-  "uncategorized",
-  "ready",
-  "transfers",
-  "payouts",
-]);
+/**
+ * Which BOOKS this grid is reading. Central and each chapter keep separate
+ * books (separate operating entities under one legal entity — see
+ * `finances.ts#reconcileBook`), and until now this screen could only ever show
+ * one at a time while the header's `ScopeBadge` said something else: a caller
+ * sitting at the Central desk got a badge reading "Central — all chapters" over
+ * a grid silently pinned to "My chapter". Two scope controls, neither aware of
+ * the other.
+ *
+ * Now: `"all"` is the merged queue (every book at once — the dual-hat default),
+ * `"central"` and `"chapter"` narrow to one. The initial value FOLLOWS THE DESK
+ * (`ChapterContext`) instead of always starting at "chapter", so the badge and
+ * the grid can't disagree on arrival.
+ */
+type BookScope = "all" | "central" | "chapter";
+
+/** Selector order: broadest first, so "All books" reads as the default it is. */
+const BOOK_SCOPES: BookScope[] = ["all", "central", "chapter"];
+
+/** The chapter pill says the chapter's real name ("New York"), never a generic
+ *  "My chapter" — see the selector's own comment for why. Falls back to the
+ *  generic wording only if the chapter's name hasn't resolved yet. */
+function bookScopeLabel(scope: BookScope, ownChapterName: string | null): string {
+  if (scope === "all") return "All books";
+  if (scope === "central") return "Central";
+  return ownChapterName ?? "My chapter";
+}
 
 /** `Jul 2026` / `YTD through Jul 2026` — the period-scope pill's label. */
 function periodLabel(year: number, month: number, mode: "month" | "ytd"): string {
@@ -136,15 +154,22 @@ function ReconcileGrid() {
   const params = useLocalSearchParams<{
     filter?: string;
     scope?: string;
+    // A SPECIFIC chapter's book, by id — how the central dashboard's per-book
+    // "to review" chips open one chapter's queue without first switching the
+    // whole app's desk into peek. Previously the only way to read another
+    // chapter's queue here was to already be peeking (`ChapterContext`), so a
+    // deep link couldn't express it at all. Server-gated identically either
+    // way (`listReconcile`'s `chapterId` re-checks central reach).
+    chapterId?: string;
     year?: string;
     month?: string;
     period?: string;
   }>();
   const router = useRouter();
-  const initialFilter: FilterKey =
-    params.filter && FILTER_KEYS.has(params.filter as FilterKey)
-      ? (params.filter as FilterKey)
-      : "needs_budget";
+  // `parseFilterParam` also maps the pre-rename spellings (`uncategorized` →
+  // `to_review`, `ready` → `reconciled`) so an old link still lands on the
+  // pill it meant. Unknown/absent → the long-standing `needs_budget` default.
+  const initialFilter: FilterKey = parseFilterParam(params.filter) ?? "needs_budget";
 
   const [filter, setFilter] = useState<FilterKey>(initialFilter);
   const [query, setQuery] = useState("");
@@ -163,17 +188,59 @@ function ReconcileGrid() {
   // drops back to the ordinary, unscoped Reconcile view.
   const clearPeriodScope = () => router.replace("/finances/reconcile" as never);
 
-  // WP-2.1: central-seat holders can switch this grid to reconcile CENTRAL-owned
-  // txns. `mySeats` resolves their real seats; a central seat unlocks the toggle.
+  // WP-2.1: central-seat holders can switch which BOOKS this grid reads.
+  // `mySeats` resolves their real seats; a central seat unlocks the selector
+  // (and, with it, the merged all-books queue).
   const seats = useQuery(api.financeRoles.mySeats, {}) ?? [];
   const hasCentralSeat = seats.some((s) => s.scope === "central");
-  const [scope, setScope] = useState<"chapter" | "central">(
-    params.scope === "central" ? "central" : "chapter",
-  );
-  // A non-central caller passing `?scope=central` harmlessly falls back to
-  // chapter scope here, same as the toggle already does — no new authz
-  // surface (the server still gates `scope:"central"` on central reach).
+  const { context, chapterSeats } = useChapterContext();
+  // The desk the shell says the caller is at, mapped to the book this grid
+  // should open on. A central-desk caller lands on the MERGED queue: that desk's
+  // badge promises "Central — all chapters", and a merged queue is the only
+  // reading of it that's true. A chapter desk (or a peek) opens on that
+  // chapter's book alone. `?scope=` in the URL still wins when present — a
+  // shared link is explicit about which books it meant.
+  const deskScope: BookScope =
+    context?.kind === "seat" && context.scope === "central" ? "all" : "chapter";
+  const paramScope: BookScope | null =
+    params.scope === "central"
+      ? "central"
+      : params.scope === "all"
+        ? "all"
+        : params.scope === "chapter"
+          ? "chapter"
+          : null;
+  const [scope, setScope] = useState<BookScope>(paramScope ?? deskScope);
+  // `context` is `null` on the first render (ChapterContext resolves its
+  // queries async), so the initial state above can only ever see the
+  // "chapter" fallback — applying the desk default has to happen in an effect,
+  // once the desk is actually known. This ALSO keeps the grid following later
+  // desk switches: flipping the shell's context pill from Central to a chapter
+  // while sitting on this screen moves the books with it, which is the whole
+  // point of the fix (the header badge and the grid used to be able to say
+  // different things indefinitely). A `?scope=` in the URL wins on arrival —
+  // a shared link is explicit — but only for that first resolve; after it,
+  // the desk drives, exactly like `finances/index.tsx`'s own scope sync.
+  const lastDeskRef = useRef<BookScope | null>(null);
+  useEffect(() => {
+    if (!context) return; // desk not resolved yet
+    if (lastDeskRef.current === deskScope) return;
+    const isFirstResolve = lastDeskRef.current === null;
+    lastDeskRef.current = deskScope;
+    if (isFirstResolve && paramScope) return;
+    setScope(deskScope);
+    setSelected(new Set());
+  }, [context, deskScope, paramScope]);
+  // A non-central caller passing `?scope=central`/`?scope=all` harmlessly falls
+  // back to their own chapter's book here, same as the selector already does —
+  // no new authz surface (the server still gates both on central reach, via
+  // `requireFinanceCentral` and `requireAllBooksReconcile` respectively).
   const centralScope = scope === "central" && hasCentralSeat;
+  const allBooksScope = scope === "all" && hasCentralSeat;
+  // The caller's own chapter desk's display name, for the chapter pill's
+  // label. `chapterSeats` is the same list `ScopeBadge` reads, so the pill and
+  // the header badge always name the chapter identically.
+  const ownChapterName = chapterSeats[0]?.chapterName ?? null;
   // R1b: "Mark personal" (cards.flagPersonalCharge's manager path) is a
   // manager-only action — a bookkeeper has full Reconcile access but not this.
   // A caller has at most one chapter seat (their home chapter, MVP — see
@@ -192,14 +259,23 @@ function ReconcileGrid() {
   // (`categorizeTransaction`/`setStatus`/etc.) are NOT peek-aware —
   // `requireReconcileTxn` still scopes every write to the caller's own home
   // chapter, so it safely rejects (`NOT_FOUND`, never silently misattributes)
-  // an attempt to edit a peeked chapter's row. The bulk bar below is hidden
-  // in that state to avoid a confusing failed-write toast; single-row inline
-  // edits in `ReconcileList` aren't (that file is unmodified here) — a
-  // deliberate, minimal read-only affordance rather than a full write-through
-  // peek mode, which is its own product decision.
-  const { context } = useChapterContext();
+  // an attempt to edit a peeked chapter's row.
+  //
+  // That rejection is no longer how the user finds out. Every row now carries
+  // `book.canEdit`, resolved SERVER-side from the same rule
+  // (`finances.ts#reconcileBook`), and `ReconcileList` renders a non-editable
+  // row read-only — a lock in place of its checkbox, no reachable inline
+  // control. This replaces both of the old half-measures: the bulk bar's
+  // blanket hide while peeking (it can stay up now, acting only on rows that
+  // are genuinely writable) and the single-row edits that were simply left to
+  // fail with a toast. Applies identically to a peeked chapter's rows and to a
+  // foreign chapter's rows inside the merged all-books queue.
   const peekedChapterId = context?.kind === "peek" ? context.chapterId : undefined;
-  const viewingPeekedChapter = peekedChapterId != null && !centralScope;
+  // Which chapter's book to read when the scope isn't central/all: an explicit
+  // `?chapterId=` (a dashboard chip's deep link) wins over the ambient peek
+  // desk, and both fall through to the caller's own chapter server-side.
+  const targetChapterId =
+    (params.chapterId as Id<"chapters"> | undefined) ?? peekedChapterId;
 
   // no-dead-numbers: the optional period narrowing (see the module doc
   // above) — spread in on top of the scope args below, never overriding
@@ -209,21 +285,25 @@ function ReconcileGrid() {
     : {};
   const reconcile = useQuery(
     api.finances.listReconcile,
-    centralScope
-      ? { filter, scope: "central" as const, ...periodArgs }
-      : peekedChapterId
-        ? { filter, chapterId: peekedChapterId, ...periodArgs }
-        : { filter, ...periodArgs },
+    allBooksScope
+      ? { filter, scope: "all" as const, ...periodArgs }
+      : centralScope
+        ? { filter, scope: "central" as const, ...periodArgs }
+        : targetChapterId
+          ? { filter, chapterId: targetChapterId, ...periodArgs }
+          : { filter, ...periodArgs },
   );
   // The Chase-receipts destination, carrying this grid's CURRENT scope as
   // route params — mirrors the args object above (minus `filter`, which
   // `receipt-chase.tsx` has no use for) so `receiptChase` resolves the exact
   // same bucket `listReconcile` just counted for the missing_receipt pill.
-  const chaseHref = centralScope
-    ? "/finances/receipt-chase?scope=central"
-    : peekedChapterId
-      ? `/finances/receipt-chase?chapterId=${peekedChapterId}`
-      : "/finances/receipt-chase";
+  const chaseHref = allBooksScope
+    ? "/finances/receipt-chase?scope=all"
+    : centralScope
+      ? "/finances/receipt-chase?scope=central"
+      : targetChapterId
+        ? `/finances/receipt-chase?chapterId=${targetChapterId}`
+        : "/finances/receipt-chase";
   // All chapter categories (no fund filter — coding is category + For only).
   const categories = useQuery(api.finances.listCategories, {}) ?? [];
   // The "For" picker's option groups (WP-U) — events/projects + recurring
@@ -264,21 +344,31 @@ function ReconcileGrid() {
     [categories],
   );
 
+  // The "For" options a CENTRAL-book row accepts: Recurring · Central budgets
+  // only. A central-owned charge can't attribute to an event, a project, or a
+  // chapter budget — the backend rejects it — so this list is genuinely
+  // different from the chapter one. Computed unconditionally (not just in
+  // central scope) because the merged all-books queue needs BOTH lists at
+  // once: a central row and a chapter row can sit adjacent, each needing its
+  // own options.
+  const centralForItems = useMemo<PickerItem[]>(() => {
+    if (!forOptions) return [{ value: "", label: "None" }];
+    const central = forOptions.recurring.filter((r) => r.level === "central");
+    return [
+      { value: "", label: "None" },
+      ...central.map((r) => ({ value: r.budgetId, label: r.label })),
+    ];
+  }, [forOptions]);
+
   // "For" picker items (WP-U) — grouped Events / Projects / Recurring. In
   // central scope (WP-2.1) only Recurring · Central budgets are offered — a
   // central-owned txn can't attribute to an event/project or a chapter budget
   // (the backend rejects it; those are chapter-only).
   const forItems = useMemo<PickerItem[]>(() => {
     if (!forOptions) return [{ value: "", label: "None" }];
-    if (centralScope) {
-      const central = forOptions.recurring.filter((r) => r.level === "central");
-      return [
-        { value: "", label: "None" },
-        ...central.map((r) => ({ value: r.budgetId, label: r.label })),
-      ];
-    }
+    if (centralScope) return centralForItems;
     return buildForPickerItems(forOptions);
-  }, [forOptions, centralScope]);
+  }, [forOptions, centralScope, centralForItems]);
 
   // Reassign targets — "Central" + every active chapter (WP-2.2). Only built for
   // central-seat holders; `undefined` hides the "Reassign to" action entirely.
@@ -296,9 +386,21 @@ function ReconcileGrid() {
     () => new Set<string>(displayed.map((r) => r.id)),
     [displayed],
   );
+  // In view AND writable. `book.canEdit` is server-resolved (it mirrors
+  // `requireReconcileTxn` — see `finances.ts#reconcileBook`), and
+  // `ReconcileList` gives a non-writable row a lock instead of a checkbox, so
+  // this filter is belt-and-braces: it guarantees no bulk mutation is ever
+  // fired at a row the server would reject, however the selection got there
+  // (a scope switch mid-selection, a stale id). This replaces the old
+  // `viewingPeekedChapter` blanket hide of the bulk bar — the bar can now stay
+  // available for the rows a peeking caller CAN write, instead of vanishing.
   const selectedInView = useMemo(
-    () => [...selected].filter((id) => visibleIds.has(id)),
-    [selected, visibleIds],
+    () =>
+      [...selected].filter((id) => {
+        if (!visibleIds.has(id)) return false;
+        return displayed.find((r) => r.id === id)?.book.canEdit === true;
+      }),
+    [selected, visibleIds, displayed],
   );
 
   function toggle(id: string) {
@@ -311,11 +413,16 @@ function ReconcileGrid() {
   }
   function toggleAll() {
     setSelected((prev) => {
+      // Only rows this caller can actually write (`book.canEdit`, server-
+      // resolved) — selecting a foreign chapter's row in the merged queue
+      // would only ever produce a rejected bulk write. Mirrors `ReconcileList`,
+      // which gives those rows a lock instead of a checkbox.
+      const selectable = displayed.filter((r) => r.book.canEdit);
       const allSelected =
-        displayed.length > 0 && displayed.every((r) => prev.has(r.id));
+        selectable.length > 0 && selectable.every((r) => prev.has(r.id));
       const next = new Set(prev);
-      if (allSelected) displayed.forEach((r) => next.delete(r.id));
-      else displayed.forEach((r) => next.add(r.id));
+      if (allSelected) selectable.forEach((r) => next.delete(r.id));
+      else selectable.forEach((r) => next.add(r.id));
       return next;
     });
   }
@@ -323,9 +430,32 @@ function ReconcileGrid() {
 
   const loading = reconcile === undefined;
   // "N to clear" — everything not yet reconciled (the actionable backlog).
-  const toClear = counts ? counts.all - counts.ready : 0;
+  // Reads as the exact complement of the "Reconciled" pill now that that pill
+  // is named after what it counts (it was "Ready", which read as the backlog
+  // itself — the same number under two opposite-sounding names).
+  const toClear = counts ? counts.all - counts.reconciled : 0;
 
   const bulkIds = selectedInView as Id<"transactions">[];
+
+  // Which books the current selection spans. Coding (Set category / Set for)
+  // is book-specific — a central charge takes neither a category nor a chapter
+  // budget — so a selection mixing books has no single valid option list, and
+  // offering one would guarantee a partial failure. Book-agnostic actions
+  // (Mark reconciled, Reassign, the transfer/payout markings) are unaffected
+  // and stay available.
+  const selectedRows = useMemo(
+    () =>
+      selectedInView
+        .map((id) => displayed.find((r) => r.id === id))
+        .filter((r): r is NonNullable<typeof r> => r != null),
+    [selectedInView, displayed],
+  );
+  const selectionHasCentral = selectedRows.some((r) => r.book.id === CENTRAL);
+  const selectionHasChapter = selectedRows.some((r) => r.book.id !== CENTRAL);
+  const selectionSpansBooks = selectionHasCentral && selectionHasChapter;
+  // Category never applies to a central row; "For" needs the matching list.
+  const bulkHideCategory = centralScope || selectionHasCentral;
+  const bulkForItems = selectionHasCentral ? centralForItems : forItems;
 
   async function bulkSetCategory(categoryId: string | null) {
     await run(
@@ -491,23 +621,29 @@ function ReconcileGrid() {
             </View>
           ) : null}
 
-          {/* Scope toggle — central-seat holders switch between reconciling
-              their chapter's money and CENTRAL-owned money (WP-2.1). */}
+          {/* Books selector — central-seat holders choose which books they're
+              clearing: all of them at once (the default at the Central desk),
+              central's own, or their chapter's. The chapter option is labelled
+              with the chapter's REAL NAME, not "My chapter": the header badge
+              names it ("New York — chapter finances"), the org chart names it,
+              and a generic "My chapter" here was the one place the split went
+              anonymous — precisely where a dual-hatted treasurer needs to know
+              whose money she's about to edit. */}
           {hasCentralSeat ? (
-            <View className="mb-3 flex-row items-center gap-2">
-              {(["chapter", "central"] as const).map((s) => (
+            <View className="mb-3 flex-row flex-wrap items-center gap-2">
+              {BOOK_SCOPES.map((s) => (
                 <Pill
                   key={s}
-                  label={s === "chapter" ? "My chapter" : "Central"}
+                  label={bookScopeLabel(s, ownChapterName)}
                   selected={scope === s}
                   onPress={() => {
                     setScope(s);
                     clearSelection();
-                    // Keep the URL in sync with the toggle (scope must be
+                    // Keep the URL in sync with the selector (scope must be
                     // unmistakable + deep-linkable/shareable/refresh-safe —
                     // previously only the INITIAL `?scope=` was read; flipping
-                    // the toggle left the URL stale, a screenshot or refresh
-                    // could silently land back on "My chapter").
+                    // it left the URL stale, so a screenshot or refresh could
+                    // silently land back on a different book).
                     router.setParams({ scope: s });
                   }}
                 />
@@ -515,8 +651,9 @@ function ReconcileGrid() {
             </View>
           ) : null}
           <Text className="mb-4 text-sm text-muted">
-            Code each charge to a category and what it was for, confirm the
-            receipt, and mark it reconciled. Edit any cell inline.
+            {allBooksScope
+              ? "Every book at once — central and each chapter. Each row shows which book it belongs to. Code each charge to a category and what it was for, confirm the receipt, and mark it reconciled."
+              : "Code each charge to a category and what it was for, confirm the receipt, and mark it reconciled. Edit any cell inline."}
           </Text>
 
           {/* Search — narrows the active pill's rows (merchant, cardholder,
@@ -585,20 +722,22 @@ function ReconcileGrid() {
           </View>
         </Narrow>
 
-        {/* Bulk action bar (multi-select) — hidden while viewing a peeked
-            chapter's queue (see the `viewingPeekedChapter` doc comment
-            above): the bulk mutations would safely reject every row anyway,
-            so surfacing the bar here would just invite a failed-write toast. */}
-        {selectedInView.length > 0 && !viewingPeekedChapter ? (
+        {/* Bulk action bar (multi-select). `selectedInView` is already
+            restricted to rows the caller can WRITE (see its doc comment), so
+            the bar appearing at all now means every row under it is
+            actionable — no more blanket hide while peeking, and no more
+            failed-write toasts from a foreign chapter's rows. */}
+        {selectedInView.length > 0 ? (
           <BulkBar
             count={selectedInView.length}
             categoryItems={categoryItems}
-            forItems={forItems}
+            forItems={bulkForItems}
             onSetCategory={bulkSetCategory}
             onSetFor={bulkSetFor}
             onMarkReconciled={bulkMarkReconciled}
             onClear={clearSelection}
-            hideCategory={centralScope}
+            hideCategory={bulkHideCategory}
+            spansBooks={selectionSpansBooks}
             reassignItems={reassignItems}
             onReassign={hasCentralSeat ? bulkReassign : undefined}
             onMarkTransfer={() => setTransferPromptOpen(true)}
@@ -650,6 +789,8 @@ function ReconcileGrid() {
             onToggle={toggle}
             onToggleAll={toggleAll}
             centralScope={centralScope}
+            showBook={allBooksScope}
+            centralForItems={centralForItems}
             isManager={isManager}
             viewerPersonId={reconcile?.viewerPersonId ?? null}
           />

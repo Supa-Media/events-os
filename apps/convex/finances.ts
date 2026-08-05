@@ -100,6 +100,7 @@ import {
   requireFinanceRole,
   requireFinanceManager,
   requireFinanceCentral,
+  requireAllBooksReconcile,
   requireCentralFinanceRoleOrEdSeat,
   requireCentralEdOrFm,
   resolveCallerPersonId,
@@ -312,6 +313,26 @@ const reconcileAiSuggestion = v.object({
   rationale: v.union(v.string(), v.null()),
 });
 
+// ── Books (the central/chapter split, made visible) ──────────────────────────
+// Central and each chapter keep SEPARATE BOOKS. They're separate OPERATING
+// entities under one legal entity, so merging them into one queue is a workflow
+// choice, not a compliance one — but which book a charge belongs to is never
+// ambiguous, and a merged queue that didn't say so per row would just relocate
+// the confusion it set out to fix.
+//
+// `canEdit` mirrors `requireReconcileTxn`'s write rule EXACTLY: central-owned
+// rows need central reach, chapter-owned rows must be the caller's OWN chapter.
+// So in the merged queue a central holder can READ a foreign chapter's rows
+// without being able to edit them — the grid renders exactly those read-only
+// rather than offering an inline edit the server would reject. Today, with one
+// chapter and a dual-hatted treasurer, every row comes back `canEdit: true`;
+// the flag exists so the day a second chapter lands is a no-op here.
+const reconcileBook = v.object({
+  id: v.union(v.id("chapters"), v.literal(CENTRAL)),
+  name: v.string(),
+  canEdit: v.boolean(),
+});
+
 // One reconcile-grid row: the txn summary (which already carries `budgetId` —
 // the "For" picker's current value) plus the resolved cardholder and any
 // pending AI proposal. No separate project/event link field (WP-U).
@@ -319,6 +340,11 @@ const reconcileRow = v.object({
   ...txnSummaryFields,
   cardholder: v.union(cardholderRef, v.null()),
   aiSuggestion: v.union(reconcileAiSuggestion, v.null()),
+  // Which book this charge belongs to (see `reconcileBook`). Always populated,
+  // in every scope — a single-book queue still labels its rows, so a screenshot
+  // of the grid is unambiguous on its own (the same reasoning behind
+  // `ScopeBadge` in the finance layout).
+  book: reconcileBook,
   // The linked personal repayment's LIVE status (`personalRepayments` via
   // `repaymentId`) — `null` for an unflagged charge (or a flagged one whose
   // repayment row vanished). Lets the grid's Personal badge distinguish
@@ -338,13 +364,29 @@ const reconcileRow = v.object({
 // `@events-os/shared`) — a row qualifies iff `isPersonal === true` AND its
 // repayment isn't `"paid"` (a `"failed"` attempt still counts — the debt is
 // still outstanding).
+//
+// NAMING (founder report — "it says review 80 but 80 is nowhere in Reconcile"):
+// two of these keys used to lie about their own predicate, which is how a
+// dashboard number could point at a grid that never showed it.
+//   - `to_review` was `uncategorized`, but its predicate is and always was
+//     `status === "unreviewed"` — nothing to do with whether a CATEGORY is
+//     set. That word already means something else in this codebase
+//     (`dashboardCharts.budgetTransactions`' `"uncategorized"` sentinel =
+//     "no `categoryId`", the honest use), so the same term named two
+//     different things one file apart. It's now spelled the same as the
+//     dashboards' own "To review" tile — the tile and the pill it drills into
+//     finally share one word for one predicate.
+//   - `reconciled` was `ready`, which reads as "ready TO reconcile" — the
+//     actionable backlog. It's the opposite: rows already CLEARED
+//     (`status === "reconciled"`), the complement of the header's "N to
+//     clear" (`all - reconciled`).
 const reconcileFilterValidator = v.union(
   v.literal("all"),
   v.literal("spend"),
   v.literal("needs_budget"),
   v.literal("missing_receipt"),
-  v.literal("uncategorized"),
-  v.literal("ready"),
+  v.literal("to_review"),
+  v.literal("reconciled"),
   v.literal("personal_unpaid"),
   v.literal("transfers"),
   v.literal("payouts"),
@@ -356,8 +398,8 @@ const reconcileCounts = v.object({
   spend: v.number(),
   needs_budget: v.number(),
   missing_receipt: v.number(),
-  uncategorized: v.number(),
-  ready: v.number(),
+  to_review: v.number(),
+  reconciled: v.number(),
   personal_unpaid: v.number(),
   transfers: v.number(),
   payouts: v.number(),
@@ -391,6 +433,19 @@ const centralTile = v.object({
   label: v.string(),
   value: v.string(),
   meta: v.string(),
+});
+
+// One book's share of the org "to review" backlog (see `toReviewByBook` in
+// `dashboardCentral`). The org total on its own is a DEAD NUMBER — Reconcile
+// works one book at a time, or all books merged, so a bare "84" has no single
+// destination and (before this) linked somewhere that never showed it. The
+// breakdown gives every part of the total a place to go: each entry opens that
+// book's queue filtered to `to_review`, and the headline opens the merged
+// all-books queue on the same filter.
+const toReviewBookCount = v.object({
+  id: v.union(v.id("chapters"), v.literal(CENTRAL)),
+  name: v.string(),
+  count: v.number(),
 });
 
 // An org-level (central) budget rolled up org-wide: its allocation + its actual
@@ -2801,12 +2856,24 @@ export const dashboardChapter = query({
       });
     }
 
-    const unreviewed = await ctx.db
-      .query("transactions")
-      .withIndex("by_chapter_and_status", (q) =>
-        q.eq("chapterId", chapterId).eq("status", "unreviewed"),
-      )
-      .take(ROLLUP_SCAN_LIMIT);
+    // SANDBOX PARITY (founder report — "it says review 80, but 80 is nowhere
+    // in Reconcile"): this count and the grid it links into MUST apply the
+    // same environment filter, or the tile promises rows Reconcile won't show.
+    // `listReconcile` filters every row through `txnMatchesMode`; this scan
+    // didn't, so a deployment holding both sandbox and production rows made
+    // the tile over-count by exactly the off-mode rows. Same fix applied to
+    // the three sibling scans (`dashboardCentral`'s two, `chapterHealth`'s
+    // two) so every "to review" number in the app counts one population.
+    // (`status === "unreviewed"` already excludes `excluded`, the grid's other
+    // exclusion, so `txnMatchesMode` is the whole gap.)
+    const unreviewed = (
+      await ctx.db
+        .query("transactions")
+        .withIndex("by_chapter_and_status", (q) =>
+          q.eq("chapterId", chapterId).eq("status", "unreviewed"),
+        )
+        .take(ROLLUP_SCAN_LIMIT)
+    ).filter((tr) => txnMatchesMode(tr, sandboxMode));
 
     // Tiles: period spend, a headline project + monthly bucket, and to-review.
     const tiles: (typeof chapterTile.type)[] = [
@@ -3043,6 +3110,11 @@ export const dashboardCentral = query({
   },
   returns: v.object({
     tiles: v.array(centralTile),
+    // The "To review · org" tile's total, split per book (Central first, then
+    // every active chapter) — see `toReviewBookCount`. `Σ count` equals the
+    // tile's own value by construction: both are accumulated from the same
+    // per-book scans in the same pass.
+    toReviewByBook: v.array(toReviewBookCount),
     tagRollups: v.array(tagRollupRow),
     chapterRollup: v.array(chapterRollupRow),
     centralBudgets: v.array(centralBudgetCard),
@@ -3096,6 +3168,7 @@ export const dashboardCentral = query({
     };
     const empty = {
       tiles: [] as never[],
+      toReviewByBook: [] as never[],
       tagRollups: [] as never[],
       chapterRollup: [] as never[],
       centralBudgets: [] as never[],
@@ -3137,6 +3210,9 @@ export const dashboardCentral = query({
     let orgUnattributedCents = 0;
     let activeChapters = 0;
     let toReviewOrg = 0;
+    // The org "to review" total, kept per book so the tile can route (see the
+    // push sites below). Central is unshifted to the front after the loop.
+    const toReviewByBook: (typeof toReviewBookCount.type)[] = [];
     // WP-3.2 (I2, review): budgets sitting "submitted" right now — MUST match
     // the chapter attention queue's own definition exactly (`chapterAttentionQueue`
     // above), or a submission this FM/ED aggregate can't see becomes invisible
@@ -3275,14 +3351,28 @@ export const dashboardCentral = query({
         tagAgg.set(key, agg);
       }
 
-      // Unreviewed count for the org "to review" tile.
-      const unreviewed = await ctx.db
-        .query("transactions")
-        .withIndex("by_chapter_and_status", (q) =>
-          q.eq("chapterId", chapter._id).eq("status", "unreviewed"),
-        )
-        .take(ROLLUP_SCAN_LIMIT);
+      // Unreviewed count for the org "to review" tile. `txnMatchesMode` for
+      // the same reason `dashboardChapter`'s own scan applies it — see that
+      // one's SANDBOX PARITY comment.
+      const unreviewed = (
+        await ctx.db
+          .query("transactions")
+          .withIndex("by_chapter_and_status", (q) =>
+            q.eq("chapterId", chapter._id).eq("status", "unreviewed"),
+          )
+          .take(ROLLUP_SCAN_LIMIT)
+      ).filter((tr) => txnMatchesMode(tr, sandboxMode));
       toReviewOrg += unreviewed.length;
+      // ...and the same number kept PER BOOK, so the org tile can break itself
+      // down instead of showing one total with nowhere to click. An org-wide
+      // "84" has no single destination — Reconcile works a book at a time (or
+      // all books merged) — so the dashboard hands the client both halves and
+      // lets each one route to the rows behind it.
+      toReviewByBook.push({
+        id: chapter._id,
+        name: chapter.name,
+        count: unreviewed.length,
+      });
 
       const barPct = barPctOf(chapterOwnSpendCents, budgetCents);
       chapterRollup.push({
@@ -3491,13 +3581,24 @@ export const dashboardCentral = query({
     );
     // Central-owned unreviewed txns count toward the org "to review" tile too —
     // they are reconcilable at the central desk (see `listReconcile`).
-    const centralUnreviewed = await ctx.db
-      .query("transactions")
-      .withIndex("by_chapter_and_status", (q) =>
-        q.eq("chapterId", CENTRAL).eq("status", "unreviewed"),
-      )
-      .take(ROLLUP_SCAN_LIMIT);
+    // `txnMatchesMode` for the same reason the sibling scans apply it — see
+    // `dashboardChapter`'s SANDBOX PARITY comment.
+    const centralUnreviewed = (
+      await ctx.db
+        .query("transactions")
+        .withIndex("by_chapter_and_status", (q) =>
+          q.eq("chapterId", CENTRAL).eq("status", "unreviewed"),
+        )
+        .take(ROLLUP_SCAN_LIMIT)
+    ).filter((tr) => txnMatchesMode(tr, sandboxMode));
     toReviewOrg += centralUnreviewed.length;
+    // Central leads the breakdown (it's the org's own book, and it matches the
+    // "Chapters at a glance" fleet table's own Central-first row order).
+    toReviewByBook.unshift({
+      id: CENTRAL,
+      name: "Central",
+      count: centralUnreviewed.length,
+    });
 
     // "Central" row (WP-0.3 + WP-2.1): the spend that BELONGS to central. Two
     // disjoint parts, summed with no double-count:
@@ -3683,6 +3784,7 @@ export const dashboardCentral = query({
 
     return {
       tiles,
+      toReviewByBook,
       tagRollups,
       chapterRollup,
       centralBudgets,
@@ -7605,7 +7707,18 @@ export const listReconcile = query({
     // caller's chapter — the central desk's Reconcile. Requires central reach
     // (mirrors `dashboardChapter`'s optional-chapterId central drill-down).
     // Absent → the caller's own chapter, exactly as before.
-    scope: v.optional(v.literal("central")),
+    //
+    // `scope:"all"` (the founder's dual-hat case) reconciles EVERY book at once
+    // — central plus every active chapter — in one merged queue. This is the
+    // only scope whose row set spans books, and it exists because one person is
+    // currently both the central Financial Manager and New York's treasurer:
+    // making her clear the same backlog twice, once per desk, is the actual
+    // complaint behind "the UI needs to be cleaned up". Gated on
+    // `requireAllBooksReconcile` (see `lib/finance.ts`) — a named power, not an
+    // inline `isCentral`, so restricting it post-split is a one-file change.
+    // Every row still carries its own `book`, and rows the caller can't write
+    // come back `canEdit: false` rather than being hidden.
+    scope: v.optional(v.union(v.literal("central"), v.literal("all"))),
     // Central drill-down: view a DIFFERENT real chapter's reconcile queue —
     // independent of `scope:"central"` (that's the CENTRAL-owned-txns
     // bucket; this is "central viewer picks one specific chapter"). Mirrors
@@ -7638,21 +7751,27 @@ export const listReconcile = query({
       spend: 0,
       needs_budget: 0,
       missing_receipt: 0,
-      uncategorized: 0,
-      ready: 0,
+      to_review: 0,
+      reconciled: 0,
       personal_unpaid: 0,
       transfers: 0,
       payouts: 0,
     };
     const homeChapterId = await readChapterId(ctx);
     if (!homeChapterId) return { rows: [], counts: zero, viewerPersonId: null };
-    // Resolve the reconcile scope: central (org-wide reach), a DIFFERENT
-    // chapter via central drill-down, or the caller's own chapter (viewer).
-    // Central-owned txns key on the `"central"` sentinel.
-    let scope: FinanceScope;
-    if (args.scope === "central") {
+    // Resolve the BOOKS this queue reads. One book in every scope except
+    // `"all"`, which merges central + every active chapter (see the `scope`
+    // arg's doc). Central-owned txns key on the `"central"` sentinel; a
+    // transaction's own `chapterId` IS its book id, so nothing extra has to be
+    // threaded through the load below to know where a row came from.
+    let books: FinanceScope[];
+    if (args.scope === "all") {
+      await requireAllBooksReconcile(ctx, homeChapterId);
+      const chapters = await listActiveChapters(ctx, ROLLUP_SCAN_LIMIT);
+      books = [CENTRAL, ...chapters.map((c) => c._id)];
+    } else if (args.scope === "central") {
       await requireFinanceCentral(ctx, homeChapterId);
-      scope = CENTRAL;
+      books = [CENTRAL];
     } else if (args.chapterId != null && args.chapterId !== homeChapterId) {
       // The central check resolves the caller's finance capability through
       // their OWN chapter, never the target — a central grant is scope-wide
@@ -7660,44 +7779,79 @@ export const listReconcile = query({
       // `getFinanceRole` only finds a roster row in the chapter passed in
       // (mirrors `dashboardChapter`'s identical drill-down gate comment).
       await requireFinanceCentral(ctx, homeChapterId);
-      scope = args.chapterId;
+      books = [args.chapterId];
     } else {
       await requireFinanceRole(ctx, homeChapterId, "viewer");
-      scope = args.chapterId ?? homeChapterId;
+      books = [args.chapterId ?? homeChapterId];
     }
 
-    const sandboxMode = await readSandbox(ctx);
-    let all: Doc<"transactions">[];
-    if (args.year != null) {
-      // Period-scoped (no-dead-numbers): the SAME year/month/ytd window a
-      // dashboard tile summed, via the dashboards' own period helpers — see
-      // the module doc above. No `month` (or an explicit `period:"ytd"`)
-      // reads the WHOLE year (dp.month = 12, ytd = true), not just January.
-      const ytd = args.period === "ytd" || args.month == null;
-      const dp: DashPeriod = { year: args.year, month: args.month ?? 12, ytd };
-      const yearTxns = await loadPeriodTxns(
-        ctx,
-        scope,
-        args.year,
-        sandboxMode,
-        !ytd ? args.month : undefined,
-      );
-      all = yearTxns
-        .filter((tr) => inDashRange(tr.postedAt, dp))
-        .filter((tr) => tr.status !== "excluded")
-        .sort((a, b) => b.postedAt - a.postedAt);
-    } else {
-      all = (
-        await ctx.db
-          .query("transactions")
-          .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", scope))
-          .order("desc")
-          .take(ROLLUP_SCAN_LIMIT)
-      )
-        .filter((tr) => txnMatchesMode(tr, sandboxMode))
-        // An intentionally-excluded charge is never part of the reconcile inbox.
-        .filter((tr) => tr.status !== "excluded");
+    // Display name + writability per book, resolved once (not per row).
+    // `canEdit` is about BOOK SCOPE only — it mirrors `requireReconcileTxn`'s
+    // chapter rule (central-owned needs central reach, which every branch
+    // reaching CENTRAL above already asserted; chapter-owned must be the
+    // caller's OWN chapter). The graded rank that gate ALSO checks is uniform
+    // across rows, so it isn't a per-row distinction and isn't modelled here.
+    const bookMeta = new Map<string, { name: string; canEdit: boolean }>();
+    for (const b of books) {
+      if (b === CENTRAL) {
+        bookMeta.set(CENTRAL, { name: "Central", canEdit: true });
+      } else {
+        const chapter = await ctx.db.get(b);
+        bookMeta.set(b, {
+          name: chapter?.name ?? "Chapter",
+          canEdit: b === homeChapterId,
+        });
+      }
     }
+    const bookOf = (tr: Doc<"transactions">): typeof reconcileBook.type => {
+      const meta = bookMeta.get(tr.chapterId) ?? { name: "Chapter", canEdit: false };
+      return { id: tr.chapterId, name: meta.name, canEdit: meta.canEdit };
+    };
+
+    const sandboxMode = await readSandbox(ctx);
+    // Load each book's slice with the SAME per-book logic as before, then
+    // concatenate and re-sort — a merged queue is still newest-first overall,
+    // not book-by-book. Single-book scopes take the identical path they always
+    // did (one iteration), so nothing about them changes.
+    const perBook: Doc<"transactions">[][] = [];
+    for (const book of books) {
+      if (args.year != null) {
+        // Period-scoped (no-dead-numbers): the SAME year/month/ytd window a
+        // dashboard tile summed, via the dashboards' own period helpers — see
+        // the module doc above. No `month` (or an explicit `period:"ytd"`)
+        // reads the WHOLE year (dp.month = 12, ytd = true), not just January.
+        const ytd = args.period === "ytd" || args.month == null;
+        const dp: DashPeriod = { year: args.year, month: args.month ?? 12, ytd };
+        const yearTxns = await loadPeriodTxns(
+          ctx,
+          book,
+          args.year,
+          sandboxMode,
+          !ytd ? args.month : undefined,
+        );
+        perBook.push(
+          yearTxns
+            .filter((tr) => inDashRange(tr.postedAt, dp))
+            .filter((tr) => tr.status !== "excluded"),
+        );
+      } else {
+        perBook.push(
+          (
+            await ctx.db
+              .query("transactions")
+              .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", book))
+              .order("desc")
+              .take(ROLLUP_SCAN_LIMIT)
+          )
+            .filter((tr) => txnMatchesMode(tr, sandboxMode))
+            // An intentionally-excluded charge is never part of the reconcile inbox.
+            .filter((tr) => tr.status !== "excluded"),
+        );
+      }
+    }
+    const all: Doc<"transactions">[] = perBook
+      .flat()
+      .sort((a, b) => b.postedAt - a.postedAt);
 
     // The linked personal repayment's live status, resolved EAGERLY (before
     // the counts loop) for just the `isPersonal` subset of `all` — bounded by
@@ -7728,8 +7882,8 @@ export const listReconcile = query({
       if (isSpend(tr)) counts.spend += 1;
       if (needsBudget(tr)) counts.needs_budget += 1;
       if (needsDocumentation(tr)) counts.missing_receipt += 1;
-      if (tr.status === "unreviewed") counts.uncategorized += 1;
-      if (tr.status === "reconciled") counts.ready += 1;
+      if (tr.status === "unreviewed") counts.to_review += 1;
+      if (tr.status === "reconciled") counts.reconciled += 1;
       if (isPersonalUnpaid(tr)) counts.personal_unpaid += 1;
       if (isMarkedTransfer(tr)) counts.transfers += 1;
       if (isProcessorPayout(tr)) counts.payouts += 1;
@@ -7740,8 +7894,8 @@ export const listReconcile = query({
       spend: (tr) => isSpend(tr),
       needs_budget: (tr) => needsBudget(tr),
       missing_receipt: (tr) => needsDocumentation(tr),
-      uncategorized: (tr) => tr.status === "unreviewed",
-      ready: (tr) => tr.status === "reconciled",
+      to_review: (tr) => tr.status === "unreviewed",
+      reconciled: (tr) => tr.status === "reconciled",
       personal_unpaid: (tr) => isPersonalUnpaid(tr),
       transfers: (tr) => isMarkedTransfer(tr),
       payouts: (tr) => isProcessorPayout(tr),
@@ -7800,6 +7954,7 @@ export const listReconcile = query({
         ...toTxnSummary(tr),
         cardholder: await resolveCardholder(tr),
         aiSuggestion: await resolveAiSuggestion(tr),
+        book: bookOf(tr),
         repaymentStatus: await resolveRepaymentStatus(tr),
       });
     }
@@ -7884,7 +8039,7 @@ export const receiptChase = query({
     // Same meaning as `listReconcile`'s `scope`/`chapterId` — see that
     // query's arg comments for the full authz story. Absent → the caller's
     // own chapter, exactly as before this pair of args existed.
-    scope: v.optional(v.literal("central")),
+    scope: v.optional(v.union(v.literal("central"), v.literal("all"))),
     chapterId: v.optional(v.id("chapters")),
   },
   returns: v.object({
@@ -7895,29 +8050,45 @@ export const receiptChase = query({
   handler: async (ctx, args) => {
     const homeChapterId = await readChapterId(ctx);
     if (!homeChapterId) return { groups: [], totalCents: 0, count: 0 };
-    // Resolve the chase scope exactly like `listReconcile` — central,
-    // central drill-down into a different chapter, or the caller's own
-    // chapter. Keep this branch byte-for-byte in sync with `listReconcile`'s.
-    let scope: FinanceScope;
-    if (args.scope === "central") {
+    // Resolve the chase BOOKS exactly like `listReconcile` — all books merged,
+    // central, a central drill-down into a different chapter, or the caller's
+    // own chapter. Keep this branch in sync with `listReconcile`'s: the
+    // "Chase receipts" button is reached FROM that grid's `missing_receipt`
+    // pill, so a scope this query didn't understand would open a list that
+    // disagreed with the count that sent the caller here.
+    //
+    // Grouping by cardholder makes the merged scope read naturally: one person
+    // can hold both a central and a chapter card, and "who still owes me a
+    // receipt" is a question about the person, not the book.
+    let books: FinanceScope[];
+    if (args.scope === "all") {
+      await requireAllBooksReconcile(ctx, homeChapterId);
+      const chapters = await listActiveChapters(ctx, ROLLUP_SCAN_LIMIT);
+      books = [CENTRAL, ...chapters.map((c) => c._id)];
+    } else if (args.scope === "central") {
       await requireFinanceCentral(ctx, homeChapterId);
-      scope = CENTRAL;
+      books = [CENTRAL];
     } else if (args.chapterId != null && args.chapterId !== homeChapterId) {
       await requireFinanceCentral(ctx, homeChapterId);
-      scope = args.chapterId;
+      books = [args.chapterId];
     } else {
       await requireFinanceRole(ctx, homeChapterId, "viewer");
-      scope = args.chapterId ?? homeChapterId;
+      books = [args.chapterId ?? homeChapterId];
     }
 
     const sandboxMode = await readSandbox(ctx);
-    const owing = (
-      await ctx.db
-        .query("transactions")
-        .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", scope))
-        .order("desc")
-        .take(ROLLUP_SCAN_LIMIT)
-    )
+    const perBook: Doc<"transactions">[][] = [];
+    for (const book of books) {
+      perBook.push(
+        await ctx.db
+          .query("transactions")
+          .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", book))
+          .order("desc")
+          .take(ROLLUP_SCAN_LIMIT),
+      );
+    }
+    const owing = perBook
+      .flat()
       .filter((tr) => txnMatchesMode(tr, sandboxMode))
       .filter(needsDocumentation);
 

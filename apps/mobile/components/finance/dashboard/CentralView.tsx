@@ -253,9 +253,16 @@ export function CentralView({
             value={spentTile.value}
             meta={spentTile.meta}
             monthly={monthly}
+            // no-dead-numbers: this tile sums spend across EVERY book (each
+            // chapter's plus central's own — see `dashboardCentral`'s
+            // `totalMonthSpendCents`), so it drills into the merged all-books
+            // queue. It used to open `scope=central`, i.e. central-owned rows
+            // ONLY — a strict subset that could never add up to the figure
+            // that was tapped. Same failure class as the "To review" tile
+            // below, same fix: link to the books the number was summed over.
             onPress={() =>
               router.navigate(
-                `/finances/reconcile?scope=central&filter=spend&year=${year}&month=${month}&period=${period}` as never,
+                `/finances/reconcile?scope=all&filter=spend&year=${year}&month=${month}&period=${period}` as never,
               )
             }
           />
@@ -272,12 +279,7 @@ export function CentralView({
           return <Tile key={i} label={t.label} value={t.value} meta={t.meta} onPress={onPress} />;
         })}
         {reviewTile ? (
-          <ReviewLinkTile
-            tile={reviewTile}
-            onPress={() =>
-              router.navigate("/finances/reconcile?scope=central&filter=needs_budget" as never)
-            }
-          />
+          <ReviewSplitTile tile={reviewTile} byBook={data.toReviewByBook} router={router} />
         ) : null}
         <CityLaunchFundTile fund={data.cityLaunchFund} />
       </TileRow>
@@ -624,24 +626,95 @@ function SpentTile({
   );
 }
 
-/** The "To review N" tile, styled as a link ("To review N ›") into central
- *  Reconcile — mirrors `ChapterView`'s own `ReviewLinkTile`. */
-function ReviewLinkTile({ tile, onPress }: { tile: CentralTile; onPress: () => void }) {
+/**
+ * The org "To review N" tile — a headline total that SPLITS INTO ITS BOOKS.
+ *
+ * This tile was the founder's headline complaint ("it'll say to review 84, but
+ * when you click it, 84 is nowhere to be found"). The number is an org-wide sum
+ * — every chapter's unreviewed charges plus central's own — while Reconcile
+ * works a book at a time. The old link went to `scope=central&filter=needs_budget`:
+ * wrong books AND wrong predicate, so the figure that was tapped could not
+ * appear on the screen it opened. There was no destination that showed it,
+ * because no such screen existed.
+ *
+ * Rather than pick a nearest-wrong destination, the tile now shows the split it
+ * always was. The headline opens the MERGED all-books queue (the one view whose
+ * row set actually sums to it), and each book gets its own chip that opens that
+ * book alone. Central leads, matching the fleet table's row order below.
+ * `Σ chips === headline` by construction — `dashboardCentral` accumulates both
+ * from the same per-book scans in one pass.
+ *
+ * This is also where the coming central/chapter split becomes visible instead
+ * of implied: "Central 4 · New York 80" reads as two sets of books that happen
+ * to share a treasurer today, which is exactly what they are.
+ */
+function ReviewSplitTile({
+  tile,
+  byBook,
+  router,
+}: {
+  tile: CentralTile;
+  byBook: CentralDash["toReviewByBook"];
+  router: Router;
+}) {
+  // A book with nothing to review is not a worklist — dropping it keeps the
+  // chip row honest about where the work actually is (and keeps it short as
+  // chapters are added). If every book is clear the headline reads 0 anyway.
+  const withWork = byBook.filter((b) => b.count > 0);
+  const openBook = (bookId: string) =>
+    router.navigate(
+      (bookId === CENTRAL
+        ? "/finances/reconcile?scope=central&filter=to_review"
+        : `/finances/reconcile?scope=chapter&chapterId=${bookId}&filter=to_review`) as never,
+    );
+
   return (
-    <Pressable
-      onPress={onPress}
-      accessibilityRole="button"
-      className="min-w-[150px] flex-1 gap-1.5 rounded-lg border border-border bg-raised p-4 shadow-card web:hover:border-accent"
-    >
-      <View className="flex-row items-center justify-between gap-2">
-        <Text className="text-2xs font-bold uppercase tracking-wider text-muted">{tile.label}</Text>
-        <Icon name="chevron-right" size={12} color={colors.accent} />
-      </View>
-      <Text className="font-display text-2xl text-accent" style={{ fontVariant: ["tabular-nums"] }}>
-        {tile.value}
-      </Text>
-      {tile.meta ? <Text className="text-xs text-muted">{tile.meta}</Text> : null}
-    </Pressable>
+    <View className="min-w-[150px] flex-1 gap-1.5 rounded-lg border border-border bg-raised p-4 shadow-card">
+      <Pressable
+        onPress={() => router.navigate("/finances/reconcile?scope=all&filter=to_review" as never)}
+        accessibilityRole="button"
+        accessibilityLabel={`${tile.label}: ${tile.value} — open all books`}
+        className="gap-1.5"
+      >
+        <View className="flex-row items-center justify-between gap-2">
+          <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+            {tile.label}
+          </Text>
+          <Icon name="chevron-right" size={12} color={colors.accent} />
+        </View>
+        <Text
+          className="font-display text-2xl text-accent"
+          style={{ fontVariant: ["tabular-nums"] }}
+        >
+          {tile.value}
+        </Text>
+        {tile.meta ? <Text className="text-xs text-muted">{tile.meta}</Text> : null}
+      </Pressable>
+
+      {withWork.length > 0 ? (
+        <View className="mt-1 flex-row flex-wrap items-center gap-1.5">
+          {withWork.map((b) => (
+            <Pressable
+              key={b.id}
+              onPress={() => openBook(b.id)}
+              accessibilityRole="button"
+              accessibilityLabel={`${b.name}: ${b.count} to review`}
+              className="flex-row items-center gap-1 rounded-pill bg-sunken px-2 py-0.5 active:opacity-70 web:hover:opacity-90"
+            >
+              <Text className="text-2xs font-medium text-muted" numberOfLines={1}>
+                {b.name}
+              </Text>
+              <Text
+                className="text-2xs font-bold text-ink"
+                style={{ fontVariant: ["tabular-nums"] }}
+              >
+                {b.count}
+              </Text>
+            </Pressable>
+          ))}
+        </View>
+      ) : null}
+    </View>
   );
 }
 
