@@ -24,6 +24,7 @@ export function BulkBar({
   onReassign,
   onMarkTransfer,
   onMarkPayout,
+  onNoDocumentation,
 }: {
   count: number;
   categoryItems: PickerItem[];
@@ -55,6 +56,12 @@ export function BulkBar({
   // now opens `MoveBookModal` rather than committing on the tap.
   reassignItems?: PickerItem[];
   onReassign?: (target: string | null) => void;
+  // "No documentation" across the whole selection (owner ask, 2026-08-05:
+  // "there's a lot of subway transactions I'm just going to have to mark as
+  // not receiptable"). Lives on the BAR rather than only per-row because the
+  // realistic backlog is dozens-to-hundreds of small fares, and a per-row-only
+  // path means the honest option loses to the dishonest one on effort alone.
+  onNoDocumentation?: () => void;
   // Marking (founder ask): reclassify already-ingested bank rows. "Mark as
   // transfer" lives HERE rather than on a row because a transfer is a PAIR —
   // it needs two rows selected, which is exactly what this bar has and a row
@@ -121,6 +128,15 @@ export function BulkBar({
             size="sm"
             icon="download"
             onPress={onMarkPayout}
+          />
+        ) : null}
+        {onNoDocumentation ? (
+          <Button
+            title="No documentation"
+            variant="secondary"
+            size="sm"
+            icon="edit-3"
+            onPress={onNoDocumentation}
           />
         ) : null}
       </View>

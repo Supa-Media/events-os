@@ -91,6 +91,7 @@ import {
 import { queueSuggestionOnIngest } from "./aiCodingData";
 import { createReceipt, linkReceiptToTransaction } from "./lib/receiptLinks";
 import { logFinanceAudit } from "./lib/financeAuditLog";
+import { pendingExceptionForTransaction } from "./lib/receiptExceptions";
 import {
   getChapterIdOrNull,
   requireChapterId,
@@ -118,6 +119,7 @@ import {
   RECONCILE_FILTER_KEYS,
   countsTowardFacet,
   matchesReconcileFilters,
+  RECEIPT_EXCEPTION_REASON_LABELS,
   type ReconcileFilterKey,
 } from "@events-os/shared";
 import {
@@ -253,7 +255,7 @@ const txnSummaryFields = {
   // badge + warning strip — never a hard block.
   needsBudget: v.boolean(),
   // True iff a receipt is attached (`receiptStorageId != null`) — the truthful
-  // signal behind the reconcile "Missing receipt" filter + Receipt column.
+  // signal behind the reconcile chase filter + Documentation column.
   hasReceipt: v.boolean(),
   // The personal-charge flag (`cards.flagPersonalCharge` / `flagPersonal`) —
   // an accidental personal charge, excluded from every SPEND total until
@@ -345,6 +347,26 @@ const reconcileBook = v.object({
 // pending AI proposal. No separate project/event link field (WP-U).
 const reconcileRow = v.object({
   ...txnSummaryFields,
+  // What actually backs this row up, resolved server-side so the grid's
+  // Documentation cell can render the whole story without a per-row query.
+  // `state` mirrors `documentationState` (`@events-os/shared`): a receipt
+  // outranks an approved exception, which outranks nothing.
+  // `pendingReason` is set when an exception has been FILED but not yet
+  // decided — deliberately NOT part of `state`, because asking to be let off
+  // isn't being let off, and the cell has to be able to say "awaiting
+  // approval" without claiming the row is documented.
+  documentation: v.object({
+    state: v.union(
+      v.literal("receipt"),
+      v.literal("exception"),
+      v.literal("undocumented"),
+    ),
+    /** Human label of the APPROVED exception's reason, when `state` is
+     *  `"exception"` — what the cell shows in place of "Attached". */
+    reasonLabel: v.union(v.string(), v.null()),
+    /** Human label of a PENDING exception's reason, if one is open. */
+    pendingReason: v.union(v.string(), v.null()),
+  }),
   cardholder: v.union(cardholderRef, v.null()),
   aiSuggestion: v.union(reconcileAiSuggestion, v.null()),
   // Which book PAID for this charge — custody, i.e. whose card/account the
@@ -8282,10 +8304,41 @@ export const listReconcile = query({
       return { id: ownerId, name };
     };
 
+    // What backs each RETURNED row up. Bounded by the page, not by `all`: an
+    // approved exception is one direct `get` off the denormalized pointer, and
+    // the `by_transaction` scan for a PENDING one only runs on rows that have
+    // neither a receipt nor an approved exception (the undocumented tail).
+    const resolveDocumentation = async (
+      tr: Doc<"transactions">,
+    ): Promise<(typeof reconcileRow.type)["documentation"]> => {
+      if (tr.receiptStorageId != null) {
+        return { state: "receipt", reasonLabel: null, pendingReason: null };
+      }
+      if (tr.approvedReceiptExceptionId != null) {
+        const ex = await ctx.db.get(tr.approvedReceiptExceptionId);
+        return {
+          state: "exception",
+          reasonLabel: ex
+            ? RECEIPT_EXCEPTION_REASON_LABELS[ex.reason]
+            : null,
+          pendingReason: null,
+        };
+      }
+      const open = await pendingExceptionForTransaction(ctx, tr._id);
+      return {
+        state: "undocumented",
+        reasonLabel: null,
+        pendingReason: open
+          ? RECEIPT_EXCEPTION_REASON_LABELS[open.reason]
+          : null,
+      };
+    };
+
     const rows: (typeof reconcileRow.type)[] = [];
     for (const tr of selected) {
       rows.push({
         ...toTxnSummary(tr),
+        documentation: await resolveDocumentation(tr),
         cardholder: await resolveCardholder(tr),
         aiSuggestion: await resolveAiSuggestion(tr),
         book: bookOf(tr),

@@ -101,7 +101,13 @@ export const RECONCILE_FILTER_LABELS: Record<ReconcileFilterKey, string> = {
   payouts: "Payouts",
   to_review: "To review",
   needs_budget: "Needs budget",
-  missing_receipt: "Missing receipt",
+  // "Needs documentation", not "Missing receipt": a row with an approved
+  // exception is documented, and calling it "missing a receipt" would be
+  // literally true and practically wrong — it reads as an outstanding task
+  // when the org has already acknowledged it and moved on. Naming the goal
+  // (documentation) rather than one way of reaching it (a receipt) is what
+  // keeps the backlog honest AND small (owner ask, 2026-08-05).
+  missing_receipt: "Needs documentation",
   undocumented: "Undocumented",
   personal_unpaid: "Personal (unpaid)",
   reconciled: "Reconciled",

@@ -62,6 +62,9 @@ import {
   filterReconcileRows,
 } from "../../../components/finance/reconcile/helpers";
 import { BulkBar } from "../../../components/finance/reconcile/BulkBar";
+import { BulkNoDocumentationModal } from "../../../components/finance/modals/BulkNoDocumentationModal";
+import type { ReceiptExceptionReason } from "@events-os/shared";
+import type { ActionToast } from "../../../lib/useActionToast";
 import { buildForPickerItems } from "../../../components/finance/reconcile/forPicker";
 import {
   MarkTransferModal,
@@ -213,6 +216,14 @@ function ReconcileGrid() {
   const [query, setQuery] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [noDocOpen, setNoDocOpen] = useState(false);
+  const [noDocBusy, setNoDocBusy] = useState(false);
+  // Result summary for the bulk acknowledge. `useActionRunner`'s own toast is
+  // error-only, and this one has to report a SUCCESS with counts — how many
+  // were filed, how many still need a second approver, how many were skipped.
+  // Silence would be the wrong answer here: the caller just wrote a record
+  // against every row they had selected.
+  const [noDocSummary, setNoDocSummary] = useState<ActionToast | null>(null);
 
   const parsedYear = params.year ? Number(params.year) : undefined;
   const periodYear = parsedYear != null && !Number.isNaN(parsedYear) ? parsedYear : undefined;
@@ -389,6 +400,7 @@ function ReconcileGrid() {
 
   const bulkCategorize = useMutation(api.finances.bulkCategorize);
   const setStatus = useMutation(api.finances.setTransactionStatus);
+  const attestBulk = useMutation(api.receiptExceptions.attestBulk);
   const reassignTransactions = useMutation(api.finances.reassignTransactions);
   const markAsTransfer = useMutation(api.finances.markAsTransfer);
   const markAsPayout = useMutation(api.finances.markAsPayout);
@@ -414,7 +426,7 @@ function ReconcileGrid() {
 
   // One option list per GROUP (see `RECONCILE_FILTER_GROUPS` in shared) — the
   // grouping is the whole point: OR within a control widens, AND across the two
-  // controls narrows, so "Kind: Spend" + "State: Missing receipt" reads as
+  // controls narrows, so "Kind: Spend" + "State: Needs documentation" reads as
   // "the spend that's missing receipts". Counts come straight from the server's
   // facet counts, so every number shown is one the current selection could
   // actually produce.
@@ -726,6 +738,48 @@ function ReconcileGrid() {
     }
   }
 
+  // Acknowledge a whole selection as having no receipts. One attestation per
+  // row server-side (`receiptExceptions.attestBulk`), auto-approved for the
+  // rows under the org threshold when the caller is a Finance manager — so the
+  // realistic case (a pile of transit fares) doesn't just move the work into
+  // an approval queue. Rows that can't take one (already receipted, already
+  // pending) are skipped and reported rather than failing the batch.
+  async function confirmNoDocumentation(args: {
+    reason: ReceiptExceptionReason;
+    note: string;
+  }) {
+    setNoDocBusy(true);
+    try {
+      const res = await run(
+        () =>
+          attestBulk({
+            transactionIds: bulkIds,
+            reason: args.reason,
+            note: args.note,
+          }),
+        { errorTitle: "Couldn't acknowledge" },
+      );
+      if (res) {
+        const parts: string[] = [];
+        if (res.approved > 0) parts.push(`${res.approved} acknowledged`);
+        if (res.pendingApproval > 0) {
+          parts.push(`${res.pendingApproval} awaiting a second approver`);
+        }
+        if (res.skipped > 0) {
+          parts.push(`${res.skipped} skipped (already documented)`);
+        }
+        setNoDocSummary({
+          title: "No documentation recorded",
+          message: parts.join(" · ") || "Nothing to record.",
+        });
+      }
+      setNoDocOpen(false);
+      clearSelection();
+    } finally {
+      setNoDocBusy(false);
+    }
+  }
+
   async function bulkMarkReconciled() {
     await run(
       // No bulk-status mutation: a loop over the idempotent per-row setter is fine.
@@ -880,7 +934,7 @@ function ReconcileGrid() {
               />
             ))}
             <InfoTooltip
-              text="Spend: every dollar that counts as actual spend. Needs budget: categorized but no budget linked. Missing receipt: no receipt uploaded. To review: still Unreviewed — nobody has touched it. Reconciled: already cleared. Personal (unpaid): flagged personal, not yet repaid."
+              text="Spend: every dollar that counts as actual spend. Needs budget: categorized but no budget linked. Needs documentation: no receipt and no acknowledged reason there isn't one. Undocumented: the same, but counting rows already marked Reconciled too — the backlog to clear before publishing. To review: still Unreviewed — nobody has touched it. Reconciled: already cleared. Personal (unpaid): flagged personal, not yet repaid."
               size={14}
             />
           </View>
@@ -906,6 +960,16 @@ function ReconcileGrid() {
             onReassign={hasCentralSeat ? setMoveBookTarget : undefined}
             onMarkTransfer={() => setTransferPromptOpen(true)}
             onMarkPayout={() => setPayoutPromptOpen(true)}
+            onNoDocumentation={() => setNoDocOpen(true)}
+          />
+        ) : null}
+
+        {noDocOpen ? (
+          <BulkNoDocumentationModal
+            count={selectedInView.length}
+            submitting={noDocBusy}
+            onCancel={() => setNoDocOpen(false)}
+            onConfirm={(args) => void confirmNoDocumentation(args)}
           />
         ) : null}
 
@@ -972,6 +1036,10 @@ function ReconcileGrid() {
         )}
       </Screen>
       <ToastView toast={toast} onDismiss={dismiss} />
+      <ToastView
+        toast={noDocSummary}
+        onDismiss={() => setNoDocSummary(null)}
+      />
     </>
   );
 }

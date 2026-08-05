@@ -634,7 +634,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           ["All", "Every charge, unfiltered"],
           ["Spend", "Every dollar that counts as actual spend — the exact rows behind the dashboard's \"Spent\" figure, so tapping it always lands here"],
           ["Needs budget", "Categorized but not linked to a budget yet"],
-          ["Missing receipt", "No receipt uploaded"],
+          ["Needs documentation", "No receipt, and no acknowledged reason there isn't one"],
           ["To review", "Still sitting at Unreviewed — nobody has touched it yet. This is the number the dashboard's \"To review\" tile shows, and tapping that tile lands you right here"],
           ["Reconciled", "Already cleared and closed — the opposite of the \"N to clear\" count in the header"],
           ["Personal (unpaid)", "Flagged personal, not yet repaid — the worklist for chasing down what people owe back"],
@@ -768,7 +768,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "Marked still means documented",
-        text: "Marking a row is not a way to make it go away. A marked transfer and a marked payout both still appear under Missing receipt until you attach something — a bank statement for the transfer, a settlement report for the payout. Every marking is logged with who did it and what changed, so a reclassification is always traceable, and any marking can be undone.",
+        text: "Marking a row is not a way to make it go away. A marked transfer and a marked payout both still appear under Needs documentation until you attach something — a bank statement for the transfer, a settlement report for the payout. Every marking is logged with who did it and what changed, so a reclassification is always traceable, and any marking can be undone.",
       },
       {
         kind: "rule",
@@ -844,7 +844,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt: "You mark a transfer. What happens to its receipt obligation?",
         options: [
           "It disappears — marked rows aren't chased",
-          "It stays: both legs still show under Missing receipt until you attach a statement",
+          "It stays: both legs still show under Needs documentation until you attach a statement",
           "Only the outgoing leg still needs one",
           "It becomes optional after 30 days",
         ],
@@ -885,7 +885,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "p",
-        text: "Two filters, and the difference matters. **Missing receipt** is this chase — it stops counting a row the moment someone reconciles it, because there's nobody left to nudge. **Undocumented** ignores status entirely: every row with neither a receipt nor an approved receipt exception, *including* ones already marked Reconciled. That second one is the publishing backlog, it's deliberately harder to please, and it's the number that has to reach zero before a period goes public. (Approving the exceptions themselves is its own lesson.)",
+        text: "Two filters, and the difference matters. **Needs documentation** is this chase — it stops counting a row the moment someone reconciles it, because there's nobody left to nudge. **Undocumented** ignores status entirely: every row with neither a receipt nor an approved receipt exception, *including* ones already marked Reconciled. That second one is the publishing backlog, it's deliberately harder to please, and it's the number that has to reach zero before a period goes public. (Approving the exceptions themselves is its own lesson.)",
       },
       {
         kind: "reveal",
@@ -934,7 +934,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         prompt:
-          "Reconcile shows Missing receipt: 0 but Undocumented: 14. What does that mean?",
+          "Reconcile shows Needs documentation: 0 but Undocumented: 14. What does that mean?",
         options: [
           "A display bug — the two pills should agree",
           "14 rows have neither a receipt nor an approved exception, and someone reconciled them anyway — the chase stopped, the gap didn't",
@@ -943,7 +943,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "Missing receipt stops counting a row the moment it's reconciled — someone made a call. Undocumented ignores status entirely, which is why it's the number that has to reach zero before a period gets published: a public ledger can't tell a quietly-closed row from a documented one.",
+          "Needs documentation stops counting a row the moment it's reconciled — someone made a call. Undocumented ignores status entirely, which is why it's the number that has to reach zero before a period gets published: a public ledger can't tell a quietly-closed row from a documented one.",
       },
       {
         prompt:
