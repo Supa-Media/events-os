@@ -454,7 +454,11 @@ function ManagerReimbursementsScreen() {
           </Text>
 
           {/* "Personal charges outstanding" (D4) — same aggregate as the
-              manager Cards view's "Personal to repay" tile. */}
+              manager Cards view's "Personal to repay" tile, and now a real
+              drill-in: the tile used to name a count with nowhere to go
+              ("5 on the Cards tab" — where another dead tile said the same
+              thing), so /finances/personal-charges is where the rows and the
+              "Mark repaid" confirmation actually live. */}
           <View className="mb-4 flex-row flex-wrap gap-3">
             <CardTile
               label="Personal charges outstanding"
@@ -471,8 +475,9 @@ function ManagerReimbursementsScreen() {
               meta={
                 personalToRepay === undefined
                   ? "flagged card charges"
-                  : `${personalToRepay.count} on the Cards tab`
+                  : `${personalToRepay.count} flagged — view and settle`
               }
+              onPress={() => router.push("/finances/personal-charges")}
             />
           </View>
 
