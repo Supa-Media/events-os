@@ -43,8 +43,16 @@ export function BulkBar({
   // book-agnostic action (Mark reconciled, Reassign, transfer/payout marking)
   // stays exactly where it was.
   spansBooks?: boolean;
-  // WP-2.2: central-seat holders can reassign the selection across the central
-  // boundary (→ Central or a chapter). Absent for chapter-only reconcilers.
+  // WP-2.2: central-seat holders can move the selection to another BOOK (→
+  // Central or a chapter). Absent for chapter-only reconcilers.
+  //
+  // Labelled "Fix who paid", not "Reassign to". This rewrites custody — which
+  // account the money left — and since cross-book attribution shipped there is
+  // a second control ("For") that also makes a charge belong to another book,
+  // by budget, without touching custody. That one is the everyday case; this
+  // one is a data correction. A neutral label let them be confused, and
+  // confusing them silently breaks a book's bank reconciliation. `onReassign`
+  // now opens `MoveBookModal` rather than committing on the tap.
   reassignItems?: PickerItem[];
   onReassign?: (target: string | null) => void;
   // Marking (founder ask): reclassify already-ingested bank rows. "Mark as
@@ -91,7 +99,7 @@ export function BulkBar({
         />
         {reassignItems && onReassign ? (
           <BulkPicker
-            label="Reassign to"
+            label="Fix who paid"
             items={reassignItems}
             onPick={onReassign}
           />
