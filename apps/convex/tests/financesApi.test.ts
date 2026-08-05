@@ -567,12 +567,12 @@ describe("listReconcile (server-side filters + counts + projections)", () => {
     expect(missingReceipt.rows.map((r) => r.id)).toEqual([t1]);
 
     const toReview = await s.as.query(api.finances.listReconcile, {
-      filter: "to_review",
+      filters: ["to_review"],
     });
     expect(toReview.rows.map((r) => r.id).sort()).toEqual([t1, t4].sort());
 
     const reconciledOnly = await s.as.query(api.finances.listReconcile, {
-      filter: "reconciled",
+      filters: ["reconciled"],
     });
     expect(reconciledOnly.rows.map((r) => r.id)).toEqual([t2]);
 

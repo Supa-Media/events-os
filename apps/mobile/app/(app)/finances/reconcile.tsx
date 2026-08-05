@@ -59,11 +59,7 @@ import {
   type PickerItem,
 } from "../../../components/finance/reconcile/ReconcileList";
 import {
-  FILTERS,
-  FILTER_GROUPS,
   filterReconcileRows,
-  parseFilterParam,
-  type FilterKey,
 } from "../../../components/finance/reconcile/helpers";
 import { BulkBar } from "../../../components/finance/reconcile/BulkBar";
 import { buildForPickerItems } from "../../../components/finance/reconcile/forPicker";
@@ -73,7 +69,15 @@ import {
 } from "../../../components/finance/modals/MarkTransferModal";
 import { MarkPayoutModal } from "../../../components/finance/modals/MarkPayoutModal";
 import { MoveBookModal } from "../../../components/finance/modals/MoveBookModal";
-import { CENTRAL, type PayoutProcessor } from "@events-os/shared";
+import {
+  CENTRAL,
+  RECONCILE_FILTER_GROUPS,
+  RECONCILE_FILTER_LABELS,
+  parseReconcileFilters,
+  serializeReconcileFilters,
+  type PayoutProcessor,
+  type ReconcileFilterKey,
+} from "@events-os/shared";
 
 function NoFinanceAccess() {
   return (
@@ -156,6 +160,7 @@ function ReconcileGrid() {
   // this tab) → the original all-time bounded-recent behavior, unchanged.
   const params = useLocalSearchParams<{
     filter?: string;
+    filters?: string;
     scope?: string;
     // A SPECIFIC chapter's book, by id — how the central dashboard's per-book
     // "to review" chips open one chapter's queue without first switching the
@@ -169,12 +174,42 @@ function ReconcileGrid() {
     period?: string;
   }>();
   const router = useRouter();
-  // `parseFilterParam` also maps the pre-rename spellings (`uncategorized` →
-  // `to_review`, `ready` → `reconciled`) so an old link still lands on the
-  // pill it meant. Unknown/absent → the long-standing `needs_budget` default.
-  const initialFilter: FilterKey = parseFilterParam(params.filter) ?? "needs_budget";
+  // The filter SELECTION — a set, not a bucket. `?filters=a,b` is the current
+  // form; `?filter=a` (singular) is still honoured for dashboard drill-throughs
+  // and older shared links, including the pre-rename `uncategorized`/`ready`
+  // spellings. Nothing recognised → the long-standing `needs_budget` default,
+  // which is still the most useful landing view.
+  const initialFilters: ReconcileFilterKey[] = (() => {
+    const fromSet = parseReconcileFilters(params.filters);
+    if (fromSet.length > 0) return fromSet;
+    const fromLegacy = parseReconcileFilters(params.filter);
+    if (fromLegacy.length > 0) return fromLegacy;
+    // An explicit `?filter=all` means "no constraint" — respect it rather than
+    // overriding with the default.
+    return params.filter === "all" || params.filters === "" ? [] : ["needs_budget"];
+  })();
 
-  const [filter, setFilter] = useState<FilterKey>(initialFilter);
+  const [filters, setFilters] = useState<ReconcileFilterKey[]>(initialFilters);
+  // Every change writes `?filters=` back, the same "URL = state" rule the books
+  // selector follows — a filtered view is shareable and survives a refresh, and
+  // a screenshot of one can be reproduced. `null` clears the param rather than
+  // leaving `?filters=` empty in the bar.
+  function applyFilters(next: ReconcileFilterKey[]) {
+    setFilters(next);
+    router.setParams({ filters: serializeReconcileFilters(next) ?? "" });
+    clearSelectionRef.current?.();
+  }
+  function toggleFilter(key: ReconcileFilterKey) {
+    applyFilters(
+      filters.includes(key) ? filters.filter((k) => k !== key) : [...filters, key],
+    );
+  }
+  function clearGroup(keys: readonly ReconcileFilterKey[]) {
+    applyFilters(filters.filter((k) => !keys.includes(k)));
+  }
+  // `clearSelection` is defined further down (it needs `setSelected`); a ref
+  // keeps these handlers above it without a forward-reference.
+  const clearSelectionRef = useRef<(() => void) | null>(null);
   const [query, setQuery] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -311,12 +346,12 @@ function ReconcileGrid() {
   const reconcile = useQuery(
     api.finances.listReconcile,
     allBooksScope
-      ? { filter, scope: "all" as const, ...periodArgs }
+      ? { filters, scope: "all" as const, ...periodArgs }
       : centralScope
-        ? { filter, scope: "central" as const, ...periodArgs }
+        ? { filters, scope: "central" as const, ...periodArgs }
         : targetChapterId
-          ? { filter, chapterId: targetChapterId, ...periodArgs }
-          : { filter, ...periodArgs },
+          ? { filters, chapterId: targetChapterId, ...periodArgs }
+          : { filters, ...periodArgs },
   );
   // R1b: "Mark personal" (cards.flagPersonalCharge's manager path) is a
   // manager-only action — a bookkeeper has full Reconcile access but not this.
@@ -377,21 +412,22 @@ function ReconcileGrid() {
   );
   const searching = query.trim().length > 0;
 
-  // The filter dropdown's options: every filter, with its live count, under
-  // the group headings from `FILTER_GROUPS`. Built here rather than in the
-  // component so the counts stay bound to the live query result.
-  const filterOptions = useMemo(
+  // One option list per GROUP (see `RECONCILE_FILTER_GROUPS` in shared) — the
+  // grouping is the whole point: OR within a control widens, AND across the two
+  // controls narrows, so "Kind: Spend" + "State: Missing receipt" reads as
+  // "the spend that's missing receipts". Counts come straight from the server's
+  // facet counts, so every number shown is one the current selection could
+  // actually produce.
+  const filterOptionsByGroup = useMemo(
     () =>
-      FILTER_GROUPS.flatMap((group) => [
-        ...(group.title
-          ? [{ value: `__${group.title}`, label: group.title, header: true }]
-          : []),
-        ...group.keys.map((key) => ({
+      RECONCILE_FILTER_GROUPS.map((group) => ({
+        group,
+        options: group.keys.map((key) => ({
           value: key,
-          label: FILTERS.find((f) => f.key === key)?.label ?? key,
+          label: RECONCILE_FILTER_LABELS[key],
           count: counts ? counts[key] : undefined,
         })),
-      ]),
+      })),
     [counts],
   );
 
@@ -508,13 +544,19 @@ function ReconcileGrid() {
     });
   }
   const clearSelection = () => setSelected(new Set());
+  // Changing the filter set changes which rows are on screen, so a selection
+  // made under the old set would silently act on rows the treasurer can no
+  // longer see. Cleared via a ref because the filter handlers are declared
+  // above this (they run on tap, long after both exist).
+  clearSelectionRef.current = clearSelection;
 
   const loading = reconcile === undefined;
-  // "N to clear" — everything not yet reconciled (the actionable backlog).
-  // Reads as the exact complement of the "Reconciled" pill now that that pill
-  // is named after what it counts (it was "Ready", which read as the backlog
-  // itself — the same number under two opposite-sounding names).
-  const toClear = counts ? counts.all - counts.reconciled : 0;
+  // "N to clear" — everything in scope not yet reconciled. Server-computed
+  // (`toClearCount`) rather than `counts.all - counts.reconciled`, because
+  // `counts` are FACET counts now: they move with the active selection, so
+  // that subtraction would mix two populations and make the backlog headline
+  // drift every time a filter changed.
+  const toClear = reconcile?.toClearCount ?? 0;
 
   const bulkIds = selectedInView as Id<"transactions">[];
 
@@ -825,13 +867,18 @@ function ReconcileGrid() {
                 </Pressable>
               ) : null}
             </View>
-            <FilterSelect
-              label="Show"
-              value={filter}
-              options={filterOptions}
-              onChange={(v) => setFilter(v as FilterKey)}
-              minWidth={240}
-            />
+            {filterOptionsByGroup.map(({ group, options }) => (
+              <FilterSelect
+                key={group.id}
+                label={group.title}
+                values={filters.filter((k) => group.keys.includes(k))}
+                options={options}
+                onToggle={(v) => toggleFilter(v as ReconcileFilterKey)}
+                onClear={() => clearGroup(group.keys)}
+                anyLabel={group.anyLabel}
+                minWidth={240}
+              />
+            ))}
             <InfoTooltip
               text="Spend: every dollar that counts as actual spend. Needs budget: categorized but no budget linked. Missing receipt: no receipt uploaded. To review: still Unreviewed — nobody has touched it. Reconciled: already cleared. Personal (unpaid): flagged personal, not yet repaid."
               size={14}
