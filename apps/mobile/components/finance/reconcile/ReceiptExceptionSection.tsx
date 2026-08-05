@@ -21,12 +21,12 @@
  * offering to file another would be offering a no-op.
  */
 import { useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { Image, Pressable, Text, View } from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import { formatCents, type ReceiptExceptionReason } from "@events-os/shared";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { Badge, Button, Icon, TextField, type BadgeTone } from "../../ui";
+import { Badge, Button, Icon, ImageLightbox, TextField, type BadgeTone } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { ReceiptExceptionModal } from "../modals/ReceiptExceptionModal";
 
@@ -75,6 +75,9 @@ export function ReceiptExceptionSection({
   const [rejectingId, setRejectingId] =
     useState<Id<"receiptExceptions"> | null>(null);
   const [rejectNote, setRejectNote] = useState("");
+  // The evidence file currently open full-size. `ImageLightbox` shows ONE uri,
+  // so this holds the url rather than a list + index.
+  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
 
   // `listForTransaction` throws FORBIDDEN for a caller who may not even file
   // here; `useQuery` surfaces that as undefined, same as "still loading". Both
@@ -159,12 +162,32 @@ export function ReceiptExceptionSection({
                 “{row.decisionNote}”
               </Text>
             ) : null}
-            {row.hasSubstitute ? (
-              <View className="mt-1 flex-row items-center gap-1.5">
-                <Icon name="paperclip" size={11} color={colors.muted} />
-                <Text className="text-2xs text-muted">
-                  Supporting document attached (not a receipt)
-                </Text>
+            {row.evidenceUrls.length > 0 ? (
+              <View className="mt-2">
+                <View className="mb-1 flex-row items-center gap-1.5">
+                  <Icon name="paperclip" size={11} color={colors.muted} />
+                  <Text className="text-2xs text-muted">
+                    Proof of purchase ({row.evidenceUrls.length}) — evidence,
+                    not a receipt
+                  </Text>
+                </View>
+                <View className="flex-row flex-wrap gap-2">
+                  {row.evidenceUrls.map((url, i) => (
+                    <Pressable
+                      key={url}
+                      onPress={() => setLightboxUrl(url)}
+                      accessibilityRole="imagebutton"
+                      accessibilityLabel={`Evidence ${i + 1}`}
+                      className="active:opacity-70"
+                    >
+                      <Image
+                        source={{ uri: url }}
+                        className="h-14 w-14 rounded-md border border-border"
+                        resizeMode="cover"
+                      />
+                    </Pressable>
+                  ))}
+                </View>
               </View>
             ) : null}
 
@@ -261,12 +284,35 @@ export function ReceiptExceptionSection({
           amountCents={amountCents}
           submitting={submitting}
           onCancel={() => setFiling(false)}
-          onConfirm={({ reason, note }: { reason: ReceiptExceptionReason; note: string }) =>
+          onConfirm={({
+            reason,
+            note,
+            evidenceStorageIds,
+          }: {
+            reason: ReceiptExceptionReason;
+            note: string;
+            evidenceStorageIds: Id<"_storage">[];
+          }) =>
             void run(async () => {
-              await attest({ transactionId, reason, note });
+              await attest({
+                transactionId,
+                reason,
+                note,
+                ...(evidenceStorageIds.length ? { evidenceStorageIds } : {}),
+              });
               setFiling(false);
             })
           }
+        />
+      ) : null}
+
+      {lightboxUrl ? (
+        <ImageLightbox
+          uri={lightboxUrl}
+          visible
+          caption="Evidence of purchase — not a receipt"
+          isPdf={lightboxUrl.toLowerCase().includes(".pdf")}
+          onClose={() => setLightboxUrl(null)}
         />
       ) : null}
 

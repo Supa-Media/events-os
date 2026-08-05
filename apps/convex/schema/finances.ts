@@ -1567,12 +1567,22 @@ export const receiptExceptions = defineTable({
   // blank note turns the whole feature back into "no receipt, shrug", which
   // is the thing this exists to prevent.
   note: v.string(),
-  // Optional supporting artifact when a receipt proper is unavailable but
-  // SOMETHING exists: a statement line, a confirmation email, a calendar
-  // invite, a photo of the item. Not a receipt — deliberately never written to
-  // `transactions.receiptStorageId` or the `receipts` library, because it must
-  // never be counted as one or auto-matched to another charge.
-  substituteStorageId: v.optional(v.id("_storage")),
+  // EVIDENCE OF THE PURCHASE — the photos and documents standing in for the
+  // receipt. Owner framing (2026-08-05): "we bought flowers for an event, we
+  // didn't get the receipt but have pictures of the flowers at the event."
+  // That's the strongest artifact an exception can carry, and it's routinely
+  // several photos, not one — hence a list.
+  //
+  // Also holds the paper-ish substitutes: a bank statement line, a
+  // confirmation email, a calendar invite.
+  //
+  // NOT receipts. Deliberately never written to
+  // `transactions.receiptStorageId` and never inserted into the `receipts`
+  // library: evidence must never be counted as a receipt, feed the
+  // documentation denorm cache, or be auto-matched to another charge. A photo
+  // of flowers proves the flowers existed — it doesn't prove what was paid,
+  // which is exactly the difference a published ledger should keep visible.
+  evidenceStorageIds: v.optional(v.array(v.id("_storage"))),
   status: v.union(...RECEIPT_EXCEPTION_STATUSES.map((s) => v.literal(s))),
   // Who put their name on it, and when.
   attestedByPersonId: v.optional(v.id("people")),

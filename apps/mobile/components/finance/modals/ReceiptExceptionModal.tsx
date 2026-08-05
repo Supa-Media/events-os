@@ -15,17 +15,20 @@
  * the Treasurer".
  */
 import { useState } from "react";
-import { Modal, Pressable, ScrollView, Text, View } from "react-native";
-import { useQuery } from "convex/react";
+import { Image, Modal, Platform, Pressable, ScrollView, Text, View } from "react-native";
+import * as ImagePicker from "expo-image-picker";
+import { useMutation, useQuery } from "convex/react";
 import {
   RECEIPT_EXCEPTION_REASONS,
   RECEIPT_EXCEPTION_REASON_LABELS,
   RECEIPT_EXCEPTION_REASON_HINTS,
   MIN_EXCEPTION_NOTE_LENGTH,
+  MAX_EXCEPTION_EVIDENCE,
   exceptionNeedsSecondApprover,
   type ReceiptExceptionReason,
 } from "@events-os/shared";
 import { api } from "@events-os/convex/_generated/api";
+import type { Id } from "@events-os/convex/_generated/dataModel";
 import { Button, Icon, TextField } from "../../ui";
 import { colors } from "../../../lib/theme";
 
@@ -37,12 +40,25 @@ export function ReceiptExceptionModal({
 }: {
   /** The transaction's amount — drives the "needs a second approver" hint. */
   amountCents: number;
-  onConfirm: (args: { reason: ReceiptExceptionReason; note: string }) => void;
+  onConfirm: (args: {
+    reason: ReceiptExceptionReason;
+    note: string;
+    evidenceStorageIds: Id<"_storage">[];
+  }) => void;
   onCancel: () => void;
   submitting?: boolean;
 }) {
   const [reason, setReason] = useState<ReceiptExceptionReason | null>(null);
   const [note, setNote] = useState("");
+  // Evidence is uploaded to storage as it's picked (so the confirm handler
+  // stays a plain mutation call), holding onto a local preview uri for the
+  // thumbnail — the signed url doesn't exist until the row is read back.
+  const [evidence, setEvidence] = useState<
+    { storageId: Id<"_storage">; previewUri: string }[]
+  >([]);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
   const threshold = useQuery(api.receiptExceptions.approvalThreshold, {});
   const trimmed = note.trim();
   const noteOk = trimmed.length >= MIN_EXCEPTION_NOTE_LENGTH;
@@ -52,6 +68,64 @@ export function ReceiptExceptionModal({
     threshold != null
       ? exceptionNeedsSecondApprover(amountCents, threshold.cents)
       : null;
+
+  async function uploadBlob(blob: Blob, contentType: string, previewUri: string) {
+    setUploading(true);
+    setUploadError(null);
+    try {
+      const uploadUrl = await generateUploadUrl();
+      const res = await fetch(uploadUrl, {
+        method: "POST",
+        headers: { "Content-Type": contentType },
+        body: blob,
+      });
+      const { storageId } = await res.json();
+      setEvidence((prev) =>
+        prev.length >= MAX_EXCEPTION_EVIDENCE
+          ? prev
+          : [...prev, { storageId: storageId as Id<"_storage">, previewUri }],
+      );
+    } catch {
+      // A failed upload must not silently look attached — the whole point of
+      // evidence is that it's really there when someone reads the ledger.
+      setUploadError("That file didn't upload. Try again.");
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  // Same pick → blob → upload dance as `ReceiptCell`: a web file input (which
+  // also takes PDFs, for a statement page) or the native image picker.
+  function pickEvidence() {
+    if (Platform.OS === "web") {
+      if (typeof document === "undefined") return;
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = "image/*,application/pdf";
+      input.onchange = () => {
+        const file = input.files?.[0];
+        if (!file) return;
+        void uploadBlob(
+          file,
+          file.type || "application/octet-stream",
+          URL.createObjectURL(file),
+        );
+      };
+      input.click();
+      return;
+    }
+    void (async () => {
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        quality: 0.9,
+      });
+      if (result.canceled || !result.assets?.length) return;
+      const asset = result.assets[0];
+      const resp = await fetch(asset.uri);
+      const blob = await resp.blob();
+      await uploadBlob(blob, asset.mimeType || blob.type || "image/jpeg", asset.uri);
+    })();
+  }
 
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onCancel}>
@@ -127,6 +201,67 @@ export function ReceiptExceptionModal({
                 </Text>
               ) : null}
 
+              {/* EVIDENCE. Optional, but asked for prominently and framed with
+                  the case that actually comes up — you can't produce the
+                  receipt but you can absolutely produce photos of what you
+                  bought. An exception carrying proof is a far stronger public
+                  artifact than one carrying only an assertion. */}
+              <View className="mt-4 mb-2 flex-row items-center justify-between">
+                <Text className="text-2xs font-semibold uppercase tracking-wide text-muted">
+                  Proof it happened{" "}
+                  <Text className="font-normal normal-case tracking-normal">
+                    (optional, but do it)
+                  </Text>
+                </Text>
+                {evidence.length < MAX_EXCEPTION_EVIDENCE ? (
+                  <Pressable
+                    onPress={pickEvidence}
+                    accessibilityRole="button"
+                    disabled={uploading}
+                    className="active:opacity-70"
+                  >
+                    <Text className="text-xs font-medium text-accent">
+                      {uploading ? "Uploading…" : "Add photo"}
+                    </Text>
+                  </Pressable>
+                ) : null}
+              </View>
+              <Text className="mb-2 text-2xs text-muted">
+                Bought flowers and never got a receipt? Photos of them at the
+                event are proof. So is a bank statement line, an order
+                confirmation email, or a picture of what you bought.
+              </Text>
+              {evidence.length > 0 ? (
+                <View className="flex-row flex-wrap gap-2">
+                  {evidence.map((item) => (
+                    <View key={item.storageId} className="relative">
+                      <Image
+                        source={{ uri: item.previewUri }}
+                        className="h-16 w-16 rounded-md border border-border"
+                        resizeMode="cover"
+                        accessibilityLabel="Attached evidence"
+                      />
+                      <Pressable
+                        onPress={() =>
+                          setEvidence((prev) =>
+                            prev.filter((e) => e.storageId !== item.storageId),
+                          )
+                        }
+                        hitSlop={6}
+                        accessibilityRole="button"
+                        accessibilityLabel="Remove this file"
+                        className="absolute -right-1.5 -top-1.5 rounded-full bg-ink p-0.5"
+                      >
+                        <Icon name="x" size={11} color={colors.raised} />
+                      </Pressable>
+                    </View>
+                  ))}
+                </View>
+              ) : null}
+              {uploadError ? (
+                <Text className="mt-1 text-2xs text-danger">{uploadError}</Text>
+              ) : null}
+
               {needsSecond != null ? (
                 <View className="mt-4 flex-row items-start gap-2 rounded-md border border-border bg-sunken px-3 py-2">
                   <Icon name="info" size={13} color={colors.muted} />
@@ -145,9 +280,15 @@ export function ReceiptExceptionModal({
             <Button
               title="File exception"
               onPress={() => {
-                if (reason && noteOk) onConfirm({ reason, note: trimmed });
+                if (reason && noteOk) {
+                  onConfirm({
+                    reason,
+                    note: trimmed,
+                    evidenceStorageIds: evidence.map((e) => e.storageId),
+                  });
+                }
               }}
-              disabled={!reason || !noteOk}
+              disabled={!reason || !noteOk || uploading}
               loading={submitting}
             />
           </View>

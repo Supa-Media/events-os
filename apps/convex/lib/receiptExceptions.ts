@@ -19,6 +19,7 @@ import { ConvexError } from "convex/values";
 import {
   MIN_EXCEPTION_NOTE_LENGTH,
   MAX_EXCEPTION_NOTE_LENGTH,
+  MAX_EXCEPTION_EVIDENCE,
   type ReceiptExceptionReason,
 } from "@events-os/shared";
 import type { FinanceScope } from "./finance";
@@ -84,7 +85,7 @@ export async function attestException(
     scope: FinanceScope;
     reason: ReceiptExceptionReason;
     note: string;
-    substituteStorageId?: Id<"_storage">;
+    evidenceStorageIds?: Id<"_storage">[];
     attestedByPersonId: Id<"people"> | null;
     attestedByUserId: Id<"users">;
   },
@@ -94,6 +95,12 @@ export async function attestException(
       code: "HAS_RECEIPT",
       message:
         "This transaction already has a receipt attached — no exception is needed.",
+    });
+  }
+  if ((args.evidenceStorageIds?.length ?? 0) > MAX_EXCEPTION_EVIDENCE) {
+    throw new ConvexError({
+      code: "TOO_MUCH_EVIDENCE",
+      message: `Attach at most ${MAX_EXCEPTION_EVIDENCE} files of evidence.`,
     });
   }
   const open = await pendingExceptionForTransaction(ctx, args.txn._id);
@@ -110,8 +117,8 @@ export async function attestException(
     amountCents: args.txn.amountCents,
     reason: args.reason,
     note: normalizeExceptionNote(args.note),
-    ...(args.substituteStorageId
-      ? { substituteStorageId: args.substituteStorageId }
+    ...(args.evidenceStorageIds?.length
+      ? { evidenceStorageIds: args.evidenceStorageIds }
       : {}),
     status: "pending",
     ...(args.attestedByPersonId

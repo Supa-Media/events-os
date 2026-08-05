@@ -67,8 +67,10 @@ const exceptionRow = v.object({
   reasonLabel: v.string(),
   note: v.string(),
   status: statusValidator,
-  hasSubstitute: v.boolean(),
-  substituteUrl: v.union(v.string(), v.null()),
+  // Evidence of the purchase — photos of what was bought, a statement line, a
+  // confirmation email. Resolved to signed urls for display; a file whose url
+  // can't be resolved is dropped rather than rendered as a broken thumbnail.
+  evidenceUrls: v.array(v.string()),
   attestedByName: v.union(v.string(), v.null()),
   attestedAt: v.number(),
   decidedByName: v.union(v.string(), v.null()),
@@ -76,8 +78,8 @@ const exceptionRow = v.object({
   decisionNote: v.union(v.string(), v.null()),
 });
 
-/** Project one row for display, resolving the two person names + the
- *  substitute's signed url. */
+/** Project one row for display, resolving the two person names + signed urls
+ *  for every evidence file. */
 async function projectException(
   ctx: QueryCtx,
   row: Doc<"receiptExceptions">,
@@ -95,10 +97,11 @@ async function projectException(
     reasonLabel: RECEIPT_EXCEPTION_REASON_LABELS[row.reason],
     note: row.note,
     status: row.status,
-    hasSubstitute: row.substituteStorageId != null,
-    substituteUrl: row.substituteStorageId
-      ? await ctx.storage.getUrl(row.substituteStorageId)
-      : null,
+    evidenceUrls: (
+      await Promise.all(
+        (row.evidenceStorageIds ?? []).map((id) => ctx.storage.getUrl(id)),
+      )
+    ).filter((url): url is string => url != null),
     attestedByName: await name(row.attestedByPersonId),
     attestedAt: row.attestedAt,
     decidedByName: await name(row.decidedByPersonId),
@@ -132,18 +135,19 @@ export const listForTransaction = query({
  * length-floored (`lib/receiptExceptions.ts#normalizeExceptionNote`) — it is
  * the substitute for the document, so a blank one defeats the feature.
  *
- * `substituteStorageId` is the optional supporting artifact (a statement line,
- * a confirmation email, a photo of the item). It is deliberately NOT written
- * to `transactions.receiptStorageId` or the shared receipts library: it isn't
- * a receipt, and must never be counted as one or auto-matched to another
- * charge.
+ * `evidenceStorageIds` is the optional proof of the purchase — photos of what
+ * was bought (the owner's case: flowers at the event, no receipt), a bank
+ * statement line, a confirmation email. Deliberately NOT written to
+ * `transactions.receiptStorageId` and never inserted into the receipts
+ * library: evidence isn't a receipt and must never be counted as one or
+ * auto-matched to another charge.
  */
 export const attest = mutation({
   args: {
     transactionId: v.id("transactions"),
     reason: reasonValidator,
     note: v.string(),
-    substituteStorageId: v.optional(v.id("_storage")),
+    evidenceStorageIds: v.optional(v.array(v.id("_storage"))),
   },
   returns: v.id("receiptExceptions"),
   handler: async (ctx, args) => {
@@ -157,8 +161,8 @@ export const attest = mutation({
       scope,
       reason: args.reason,
       note: args.note,
-      ...(args.substituteStorageId
-        ? { substituteStorageId: args.substituteStorageId }
+      ...(args.evidenceStorageIds?.length
+        ? { evidenceStorageIds: args.evidenceStorageIds }
         : {}),
       attestedByPersonId: actorPersonId,
       attestedByUserId: userId,

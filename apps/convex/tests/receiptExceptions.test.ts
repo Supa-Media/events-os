@@ -4,6 +4,7 @@ import { ConvexError } from "convex/values";
 import { newT, run, setupChapter, storeBlob, type ChapterSetup } from "./setup.helpers";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
+import { MAX_EXCEPTION_EVIDENCE } from "@events-os/shared";
 
 /**
  * Receipt exceptions — the documentation of record when no receipt can be
@@ -177,6 +178,77 @@ describe("attesting", () => {
         note: GOOD_NOTE,
       }),
     ).rejects.toBeInstanceOf(ConvexError);
+  });
+});
+
+describe("evidence — proof of the purchase", () => {
+  // Owner framing: "we bought flowers for an event, we didn't get the receipt
+  // but have pictures of the flowers at the event." Several photos, not one.
+  test("a filed exception carries its evidence files, and the read path resolves urls", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const txnId = await seedTxn(s, { amountCents: 400 });
+    const photos = [await storeBlob(s.t), await storeBlob(s.t), await storeBlob(s.t)];
+
+    const exceptionId = await s.as.mutation(api.receiptExceptions.attest, {
+      transactionId: txnId,
+      reason: "no_receipt_issued",
+      note: "Flowers for the Aug 2 outdoor service — photos are from the event",
+      evidenceStorageIds: photos,
+    });
+
+    expect((await run(s.t, (ctx) => ctx.db.get(exceptionId)))?.evidenceStorageIds).toEqual(
+      photos,
+    );
+    const [row] = await s.as.query(api.receiptExceptions.listForTransaction, {
+      transactionId: txnId,
+    });
+    expect(row.evidenceUrls).toHaveLength(3);
+  });
+
+  test("evidence is NEVER counted as a receipt — the row still owes documentation", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const txnId = await seedTxn(s, { amountCents: 400 });
+    await s.as.mutation(api.receiptExceptions.attest, {
+      transactionId: txnId,
+      reason: "no_receipt_issued",
+      note: "Flowers for the Aug 2 outdoor service — photos are from the event",
+      evidenceStorageIds: [await storeBlob(s.t)],
+    });
+
+    // Photos prove the flowers existed; they don't prove what was paid, and
+    // they must never touch the documentation denorm cache.
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.receiptStorageId).toBeUndefined();
+    // Still pending, so still chased and still undocumented.
+    const counts = (await s.as.query(api.finances.listReconcile, { filter: "all" })).counts;
+    expect(counts.missing_receipt).toBe(1);
+    expect(counts.undocumented).toBe(1);
+    // And nothing was written to the shared receipts library.
+    expect((await run(s.t, (ctx) => ctx.db.query("receipts").collect())).length).toBe(0);
+  });
+
+  test("evidence is capped", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const txnId = await seedTxn(s, { amountCents: 400 });
+    const tooMany = [];
+    for (let i = 0; i < MAX_EXCEPTION_EVIDENCE + 1; i++) {
+      tooMany.push(await storeBlob(s.t));
+    }
+
+    await expect(
+      s.as.mutation(api.receiptExceptions.attest, {
+        transactionId: txnId,
+        reason: "lost",
+        note: "Flowers for the Aug 2 outdoor service — photos are from the event",
+        evidenceStorageIds: tooMany,
+      }),
+    ).rejects.toMatchObject({ data: { code: "TOO_MUCH_EVIDENCE" } });
   });
 });
 

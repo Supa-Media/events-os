@@ -43,11 +43,25 @@ field. `RECEIPT_EXCEPTION_REASONS` (`packages/shared/src/finance.ts`):
 ### Attestation, not a checkbox
 
 Every exception carries a **note** (what the spend was for — the substitute for
-the document), **who attested**, and **who approved**. Optionally a
-`substituteStorageId`: a bank statement line, a confirmation email, a calendar
-invite, a photo of the item. You often can't get a receipt but you can get
-*something*, and an exception with a substitute attached is a far stronger
-public artifact than a blank.
+the document), **who attested**, and **who approved**.
+
+It can also carry **evidence**: `evidenceStorageIds`, a list. Owner framing
+(2026-08-05): *"we bought flowers for an event, we didn't get the receipt but
+have pictures of the flowers at the event."* That is the strongest artifact an
+exception can hold, and it's routinely several photos — hence a list, not a
+single file. Bank statement lines, order-confirmation emails and calendar
+invites live here too.
+
+Evidence is deliberately **not** a receipt: never written to
+`transactions.receiptStorageId`, never inserted into the `receipts` library,
+never auto-matched to another charge. A photo of flowers proves the flowers
+existed; it doesn't prove what was paid. Keeping that distinction visible is
+the honest thing for a published ledger to do — and collapsing evidence into
+"receipt" would also corrupt the documentation denorm cache the pure
+predicates read.
+
+The practical effect is that an exception is rarely a bare assertion. You
+usually can't get the receipt, but you can almost always get *something*.
 
 ### Not a transaction status
 
