@@ -115,6 +115,12 @@ import { viewerPerson, callerHasEventEditRights } from "./lib/org";
 import { holdsApprovalSeatAt } from "./lib/seats";
 import { listActiveChapters } from "./lib/chapters";
 import {
+  RECONCILE_FILTER_KEYS,
+  countsTowardFacet,
+  matchesReconcileFilters,
+  type ReconcileFilterKey,
+} from "@events-os/shared";
+import {
   ensureDefaultFunds,
   insertDefaultExpenseCategories,
 } from "./lib/seed/finance";
@@ -7904,7 +7910,15 @@ export const listTransactions = query({
  */
 export const listReconcile = query({
   args: {
+    // LEGACY single filter — one mutually-exclusive bucket. Superseded by
+    // `filters` (a set), kept because dashboard drill-throughs and shared
+    // links carry it. Ignored when `filters` is present.
     filter: v.optional(reconcileFilterValidator),
+    // The real input: a SET of filters, OR'd within a group and AND'd across
+    // groups (`@events-os/shared#matchesReconcileFilters`). Empty/absent means
+    // no constraint. A charge is routinely unreviewed AND missing a receipt
+    // AND unbudgeted at once, which one bucket could never express.
+    filters: v.optional(v.array(reconcileFilterValidator)),
     // WP-2.1: `scope:"central"` reconciles CENTRAL-owned txns instead of the
     // caller's chapter — the central desk's Reconcile. Requires central reach
     // (mirrors `dashboardChapter`'s optional-chapterId central drill-down).
@@ -7938,6 +7952,10 @@ export const listReconcile = query({
   returns: v.object({
     rows: v.array(reconcileRow),
     counts: reconcileCounts,
+    // Rows in scope still awaiting a treasurer — the header's backlog figure.
+    // Separate from `counts` because those are facet counts now (see the
+    // handler); this one deliberately ignores the active selection.
+    toClearCount: v.number(),
     // The caller's OWN roster person id (home-chapter scoped, `null` for a
     // superuser with no roster row) — founder feedback review: lets the grid
     // widen "Mark personal" to a cardholder viewing their OWN charge, not
@@ -7959,7 +7977,18 @@ export const listReconcile = query({
     viewerIsManager: v.boolean(),
   }),
   handler: async (ctx, args) => {
-    const filter = args.filter ?? "all";
+    // The selection, as a SET. `filters` is the real input; the singular
+    // `filter` is kept so pre-existing deep links (and the dashboards' own
+    // drill-throughs) keep working — it's just a one-element set, and `"all"`
+    // means "no constraint", which is the empty set.
+    const activeFilters: ReconcileFilterKey[] =
+      args.filters && args.filters.length > 0
+        ? args.filters.filter(
+            (f): f is ReconcileFilterKey => f !== "all",
+          )
+        : args.filter && args.filter !== "all"
+          ? [args.filter as ReconcileFilterKey]
+          : [];
     const zero = {
       all: 0,
       spend: 0,
@@ -7973,7 +8002,13 @@ export const listReconcile = query({
     };
     const homeChapterId = await readChapterId(ctx);
     if (!homeChapterId)
-      return { rows: [], counts: zero, viewerPersonId: null, viewerIsManager: false };
+      return {
+        rows: [],
+        counts: zero,
+        toClearCount: 0,
+        viewerPersonId: null,
+        viewerIsManager: false,
+      };
     // Resolve the BOOKS this queue reads. One book in every scope except
     // `"all"`, which merges central + every active chapter (see the `scope`
     // arg's doc). Central-owned txns key on the `"central"` sentinel; a
@@ -8091,31 +8126,48 @@ export const listReconcile = query({
     const isPersonalUnpaid = (tr: Doc<"transactions">) =>
       tr.isPersonal === true && repaymentStatusByTxnId.get(tr._id) !== "paid";
 
-    // Per-filter counts in the same pass (spend/receipt/status predicates).
-    const counts = { ...zero, all: all.length };
-    for (const tr of all) {
-      if (isSpend(tr)) counts.spend += 1;
-      if (needsBudget(tr)) counts.needs_budget += 1;
-      if (needsDocumentation(tr)) counts.missing_receipt += 1;
-      if (tr.status === "unreviewed") counts.to_review += 1;
-      if (tr.status === "reconciled") counts.reconciled += 1;
-      if (isPersonalUnpaid(tr)) counts.personal_unpaid += 1;
-      if (isMarkedTransfer(tr)) counts.transfers += 1;
-      if (isProcessorPayout(tr)) counts.payouts += 1;
-    }
+    // Each row's predicate results, computed ONCE and reused for both the
+    // narrowing and the counts (`@events-os/shared`'s pure set logic takes
+    // these flags rather than a transaction, so the semantics are testable
+    // without a database — see `reconcileFilters.test.ts`).
+    const flagsFor = (tr: Doc<"transactions">): Record<ReconcileFilterKey, boolean> => ({
+      spend: isSpend(tr),
+      transfers: isMarkedTransfer(tr),
+      payouts: isProcessorPayout(tr),
+      to_review: tr.status === "unreviewed",
+      needs_budget: needsBudget(tr),
+      missing_receipt: needsDocumentation(tr),
+      personal_unpaid: isPersonalUnpaid(tr),
+      reconciled: tr.status === "reconciled",
+    });
 
-    const predicates: Record<string, (tr: Doc<"transactions">) => boolean> = {
-      all: () => true,
-      spend: (tr) => isSpend(tr),
-      needs_budget: (tr) => needsBudget(tr),
-      missing_receipt: (tr) => needsDocumentation(tr),
-      to_review: (tr) => tr.status === "unreviewed",
-      reconciled: (tr) => tr.status === "reconciled",
-      personal_unpaid: (tr) => isPersonalUnpaid(tr),
-      transfers: (tr) => isMarkedTransfer(tr),
-      payouts: (tr) => isProcessorPayout(tr),
-    };
-    const selected = all.filter(predicates[filter]);
+    // FACET COUNTS, not global ones. With one mutually-exclusive filter, a
+    // count could safely be "rows matching this predicate". With a SET of
+    // filters it can't: pick "Spend", and a global "Missing receipt 153"
+    // sitting beside it promises 153 rows that selecting it would never
+    // produce — the same dead number this whole area was fixing, reintroduced
+    // by multi-select. `countsTowardFacet` honours every OTHER group's
+    // selections and ignores the key's own group, so the numbers inside one
+    // dropdown stay comparable while still reflecting what's narrowed
+    // elsewhere. With nothing selected these equal the old global counts
+    // exactly.
+    const counts = { ...zero, all: all.length };
+    const selected: Doc<"transactions">[] = [];
+    // The header's "N to clear" — everything in SCOPE that isn't reconciled.
+    // It can't be derived from `counts` anymore: `counts.all` is the scope
+    // total while `counts.reconciled` is now a FACET count that moves with the
+    // selection, so `all - reconciled` would mix two different populations and
+    // drift as filters change. The backlog headline has to be stable, so it's
+    // counted here directly, ignoring the selection entirely.
+    let toClearCount = 0;
+    for (const tr of all) {
+      const flags = flagsFor(tr);
+      if (!flags.reconciled) toClearCount += 1;
+      if (matchesReconcileFilters(flags, activeFilters)) selected.push(tr);
+      for (const key of RECONCILE_FILTER_KEYS) {
+        if (countsTowardFacet(flags, activeFilters, key)) counts[key] += 1;
+      }
+    }
 
     // Resolve the cardholder only for the rows we actually return (bounded
     // `storage.getUrl` calls), caching people / cards / image urls across rows
@@ -8212,6 +8264,7 @@ export const listReconcile = query({
     return {
       rows,
       counts,
+      toClearCount,
       viewerPersonId: viewer?._id ?? null,
       viewerIsManager: access.isManager,
     };

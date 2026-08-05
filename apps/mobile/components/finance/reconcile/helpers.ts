@@ -24,74 +24,17 @@ export { formatCents };
 export type TxnRow =
   FunctionReturnType<typeof api.finances.listReconcile>["rows"][number];
 
-// ── Server-side filter pills ─────────────────────────────────────────────────
-/** Matches the backend `listReconcile` filter arg. */
-export type FilterKey =
-  | "all"
-  | "spend"
-  | "needs_budget"
-  | "missing_receipt"
-  | "to_review"
-  | "reconciled"
-  | "personal_unpaid"
-  | "transfers"
-  | "payouts";
-
-/** Per-filter counts returned by `listReconcile` (drives each pill's badge). */
-export type FilterCounts = FunctionReturnType<
-  typeof api.finances.listReconcile
->["counts"];
-
-export const FILTERS: { key: FilterKey; label: string }[] = [
-  { key: "all", label: "All" },
-  // no-dead-numbers: the dashboards' "Spent" KPI tile drills in here
-  // (`?filter=spend`) — shown as a real pill (not just a hidden deep-link
-  // target) so a treasurer landing on it can see which filter they're in
-  // and switch away cleanly.
-  { key: "spend", label: "Spend" },
-  { key: "needs_budget", label: "Needs budget" },
-  { key: "missing_receipt", label: "Missing receipt" },
-  // The dashboards' "To review N" tile drills in HERE — same words, same
-  // predicate (`status === "unreviewed"`). This pill was labelled
-  // "Uncategorized", which described a different thing entirely, and the tile
-  // linked to `needs_budget` instead; between them the tile's number appeared
-  // nowhere on the screen it opened (the founder report). See
-  // `finances.ts#reconcileFilterValidator`'s NAMING note.
-  { key: "to_review", label: "To review" },
-  // Rows already CLEARED — the complement of the header's "N to clear", not
-  // (as "Ready" read) the backlog waiting to be worked.
-  { key: "reconciled", label: "Reconciled" },
-  // Founder ask: an unpaid personal expense is exactly the worklist a
-  // treasurer needs — surfaced as its own pill rather than buried in "All".
-  { key: "personal_unpaid", label: "Personal (unpaid)" },
-  // The worklists for the two marking flows. Without these there's no way to
-  // review what's been marked — a marked transfer leaves "Needs budget" and a
-  // marked payout was never in any pill, so both would otherwise be visible
-  // only by scrolling "All".
-  { key: "transfers", label: "Transfers" },
-  { key: "payouts", label: "Payouts" },
-];
-
-/**
- * Deep links written before the `uncategorized`→`to_review` /
- * `ready`→`reconciled` rename (see `finances.ts#reconcileFilterValidator`'s
- * NAMING note). A stale bookmark, a pasted URL, or a back-navigation into an
- * old history entry still lands on the pill it meant instead of silently
- * falling back to the default filter — which is the exact failure mode this
- * whole change set exists to remove.
- */
-const LEGACY_FILTER_ALIASES: Record<string, FilterKey> = {
-  uncategorized: "to_review",
-  ready: "reconciled",
-};
-
-/** Resolve a `?filter=` param to a real `FilterKey`, or `null` if unknown. */
-export function parseFilterParam(raw: string | undefined): FilterKey | null {
-  if (!raw) return null;
-  const aliased = LEGACY_FILTER_ALIASES[raw];
-  if (aliased) return aliased;
-  return FILTERS.some((f) => f.key === raw) ? (raw as FilterKey) : null;
-}
+// ── Filters ──────────────────────────────────────────────────────────────────
+// The filter keys, their grouping, the OR-within/AND-across set semantics, the
+// labels, and the URL round-trip ALL live in `@events-os/shared`
+// (`reconcileFilters.ts`) now — because `finances.listReconcile` has to apply
+// exactly the same rules server-side. A local copy of any of it would be a
+// second source of truth for "which rows does this selection mean", and the
+// counts and the rows would eventually disagree.
+//
+// What used to live here (`FILTERS`, `FILTER_GROUPS`, `parseFilterParam`,
+// `FilterKey`, `FilterCounts`) is deleted rather than re-exported: nothing but
+// its own test still referenced it once the grid moved to the shared module.
 
 // ── Status select options (the inline Status▾ cell + bulk "mark reconciled") ──
 export const STATUS_OPTIONS: SelectOption<TransactionStatus>[] = [
