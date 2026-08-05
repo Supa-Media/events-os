@@ -239,6 +239,11 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         text: "Nobody has to ask permission to fix it: the moment you upload the missing receipt, the auto-lock lifts on its own. The rule exists so the Treasurer's monthly close is never blocked on a receipt nobody remembers.",
       },
       {
+        kind: "rule",
+        title: "When a receipt genuinely doesn't exist: file an exception",
+        text: "Some spending never produces a receipt — a cash tip, a parking meter, a donation box. For those, open the charge and **file a receipt exception**: pick why there's no receipt, then write what the money was for. That note is what gets published in place of the document, under your name, so write it the way you'd want a backer to read it.\n\nTwo things this is NOT. It is not a way out of losing your receipt — \"lost\" is one of the reasons, and someone else decides whether it stands. And it is not self-serve: a Finance manager has to approve it, and above $75 that approver can't be you. Until it's approved, the charge is still missing its receipt and the clock keeps running.",
+      },
+      {
         kind: "try_status",
         title: "A charge waiting on a receipt",
         options: [
@@ -276,6 +281,19 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "The unlock is self-service and instant: uploading the missing receipt clears the auto-lock the moment it lands, at any stage.",
       },
       {
+        prompt:
+          "You tipped a sound engineer $40 in cash. No receipt exists and never will. What's the right move?",
+        options: [
+          "Mark the charge Reconciled and move on",
+          "File a receipt exception — pick the reason, say what it was for, and let a manager approve it",
+          "Nothing; small cash amounts are exempt",
+          "Ask the venue to write you a receipt for it later",
+        ],
+        answerIndex: 1,
+        explanation:
+          "An exception is the documented substitute for a receipt, not a shrug: your reason plus your note gets published under your name once a Finance manager approves it. Marking it Reconciled with nothing attached is the exact thing the app now refuses — a published ledger can't tell that row from a documented one.",
+      },
+      {
         prompt: "Why does the app lock the card instead of just sending more reminders forever?",
         options: [
           "To punish cardholders",
@@ -286,18 +304,6 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 1,
         explanation:
           "The lock protects the close, not the cardholder's behavior for its own sake — an open loop at month-end is exactly what the Treasurer course teaches you to avoid.",
-      },
-      {
-        prompt: "Where do you see and manage your own card's charges?",
-        options: [
-          "My Transactions",
-          "The central dashboard",
-          "The Reconcile grid",
-          "You can't see your own charges",
-        ],
-        answerIndex: 0,
-        explanation:
-          "My Transactions is your mini-reconcile — attach receipts, add a category and a short note on who and why, and flag charges on your own transactions, all without needing a finance seat. What you add pre-fills the finance team's review.",
       },
       {
         prompt:
@@ -748,6 +754,15 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         text: "For that handful, you don't have to text them yourself anymore. Chase Receipts has a **Send reminder** button on each cardholder's group (and a **Remind all** for the whole list) — one click re-sends the same reminder email the automated timeline sends, plus a text if they have a phone on file. It's capped at once per cardholder per day, so mashing the button can't spam anyone; a nudge already sent today just reads \"Nudged today\" instead of firing again.",
       },
       {
+        kind: "rule",
+        title: "Approving an exception is a decision, not a formality",
+        text: "Some charges will never produce a receipt. The cardholder files a **receipt exception** — a reason plus a note saying what the money was for — and you decide. Approve it and that note becomes the transaction's documentation of record, published under their name; it also stops the auto-lock and the no-receipt clock on that charge.\n\nSo read the note before you approve. \"Lost it\" on a $600 charge is not the same as \"cash tip, no receipt is ever issued\", and above $75 you can't approve an exception you filed yourself. Rejecting is fine — say what would make it approvable, and the charge goes back to owing a receipt.",
+      },
+      {
+        kind: "p",
+        text: "Reconcile has a pill for the other half of this: **Undocumented** — every row with neither a receipt nor an approved exception, *including* ones already marked Reconciled. That's the number to drive to zero before a period gets published, and it's deliberately harder to please than **Missing receipt**, which stops counting a row the moment someone reconciles it.",
+      },
+      {
         kind: "reveal",
         prompt:
           "A cardholder's card auto-locked three days ago for a missing receipt. They just uploaded it. What do you, the Treasurer, need to do?",
@@ -791,6 +806,19 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 1,
         explanation:
           "The reminder timeline handles the routine cases; Chase Receipts is where you spend your actual attention.",
+      },
+      {
+        prompt:
+          "Reconcile shows Missing receipt: 0 but Undocumented: 14. What does that mean?",
+        options: [
+          "A display bug — the two pills should agree",
+          "14 rows have neither a receipt nor an approved exception, and someone reconciled them anyway — the chase stopped, the gap didn't",
+          "14 receipts are still being processed by the email pipeline",
+          "14 cardholders are over their limit",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Missing receipt stops counting a row the moment it's reconciled — someone made a call. Undocumented ignores status entirely, which is why it's the number that has to reach zero before a period gets published: a public ledger can't tell a quietly-closed row from a documented one.",
       },
       {
         prompt:

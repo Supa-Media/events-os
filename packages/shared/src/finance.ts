@@ -221,6 +221,9 @@ export const FINANCE_AUDIT_ACTIONS = [
   "recode", // categorizeTransaction / bulkCategorize / setTransactionCategory
   "receipt_attach", // attachReceipt / receipts.linkReceipt
   "receipt_detach", // receipts.unlinkReceipt
+  "receipt_exception_attest", // receiptExceptions.attest / attestBulk
+  "receipt_exception_decide", // receiptExceptions.approve / reject
+  "receipt_exception_withdraw", // receiptExceptions.withdraw
   "personal_flag", // cards.flagPersonalCharge / cards.unflagPersonalCharge
   "transfer_mark", // finances.markAsTransfer / unmarkTransfer (BOTH legs logged)
   "payout_mark", // finances.markAsPayout / unmarkPayout
@@ -236,6 +239,9 @@ export const FINANCE_AUDIT_ACTION_LABELS: Record<FinanceAuditAction, string> = {
   recode: "Recoded",
   receipt_attach: "Receipt attached",
   receipt_detach: "Receipt detached",
+  receipt_exception_attest: "Receipt exception filed",
+  receipt_exception_decide: "Receipt exception decided",
+  receipt_exception_withdraw: "Receipt exception withdrawn",
   personal_flag: "Personal flag changed",
   transfer_mark: "Internal transfer marking changed",
   payout_mark: "Processor payout marking changed",
@@ -318,6 +324,156 @@ export function receiptSenderCanAutoAttach(
   senderClass: ReceiptSenderClass,
 ): boolean {
   return senderClass === "team" || senderClass === "roster";
+}
+
+// ── Receipt exceptions (documented "there is no receipt") ────────────────────
+// The documentation of record when no receipt can be produced. Publishing the
+// ledger is what forces this to exist: today the only way to close a
+// receipt-less row is `reconciled`/`excluded`, and a published ledger can't
+// tell a properly-documented transaction from one somebody quietly closed.
+//
+// An exception is NOT an absence — it's a SUBSTITUTE DOCUMENT: a named person
+// stating on the record what the spend was for and why no receipt exists,
+// approved by someone else. See `docs/plans/receipt-exceptions.md`.
+//
+// "Missing" and "unattainable" are deliberately NOT two states — they're two
+// values of this one reason axis, so the ledger can say WHY rather than just
+// "no".
+export const RECEIPT_EXCEPTION_REASONS = [
+  "no_receipt_issued", // there never was one — cash tip, meter, donation box
+  "lost", // we had it; it's gone
+  "predates_policy", // before the org ran cards + receipts this way
+  "vendor_unreachable", // asked the vendor; they can't reproduce it
+  "bank_record_only", // the statement line is the only evidence that exists
+] as const;
+export type ReceiptExceptionReason = (typeof RECEIPT_EXCEPTION_REASONS)[number];
+
+export const RECEIPT_EXCEPTION_REASON_LABELS: Record<
+  ReceiptExceptionReason,
+  string
+> = {
+  no_receipt_issued: "No receipt was issued",
+  lost: "Receipt lost",
+  predates_policy: "Predates the receipt policy",
+  vendor_unreachable: "Vendor can't reproduce it",
+  bank_record_only: "Bank record only",
+};
+
+/** The one-line "when do I pick this" hint the attest form shows under each
+ *  reason — the difference between an honest exception and a shrug is whether
+ *  the filer picked the reason that's actually true. */
+export const RECEIPT_EXCEPTION_REASON_HINTS: Record<
+  ReceiptExceptionReason,
+  string
+> = {
+  no_receipt_issued:
+    "A cash tip, a parking meter, a donation box — nothing was ever printed or emailed.",
+  lost: "A receipt existed and can't be found now.",
+  predates_policy:
+    "The charge is from before we ran cards and receipts this way.",
+  vendor_unreachable:
+    "You asked the vendor for a copy and they can't produce one.",
+  bank_record_only:
+    "The bank/statement line is the only record that exists anywhere.",
+};
+
+// An exception's own lifecycle. `pending` is the only OPEN state; the other
+// three are terminal for that row (re-filing means a NEW row, so a rejected
+// attestation is never silently edited into an approved one).
+export const RECEIPT_EXCEPTION_STATUSES = [
+  "pending", // attested, awaiting a decision
+  "approved", // stands as this transaction's documentation
+  "rejected", // an approver said no — the row still owes a receipt
+  "withdrawn", // the filer pulled it (usually because the receipt turned up)
+] as const;
+export type ReceiptExceptionStatus =
+  (typeof RECEIPT_EXCEPTION_STATUSES)[number];
+
+export const RECEIPT_EXCEPTION_STATUS_LABELS: Record<
+  ReceiptExceptionStatus,
+  string
+> = {
+  pending: "Awaiting approval",
+  approved: "Approved",
+  rejected: "Rejected",
+  withdrawn: "Withdrawn",
+};
+
+/** The attestation note is the SUBSTITUTE for the document — "what was this
+ *  for" is the entire public value of an exception, so a blank or one-word
+ *  note is refused. Shared by the server mutation and the form's validation so
+ *  the two can't drift. */
+export const MIN_EXCEPTION_NOTE_LENGTH = 12;
+/** Same cap + rationale as `MAX_NOTE_LENGTH` — an attestation is a short
+ *  justification, not a document. */
+export const MAX_EXCEPTION_NOTE_LENGTH = 2000;
+
+/** Cap on evidence files per exception (owner decision, 2026-08-05). Enough
+ *  for the normal shape — a few photos of what was bought, plus a statement
+ *  line or a confirmation email — and low enough that filing stays a decision
+ *  about the best proof rather than an upload of everything on the camera
+ *  roll. Shared by the server guard and the picker, so the two can't drift. */
+export const MAX_EXCEPTION_EVIDENCE = 5;
+
+/** Default second-approver threshold: the IRS accountable-plan substantiation
+ *  line ($75). At or above it an exception needs a DIFFERENT person to
+ *  approve; below it a bookkeeper+ may approve their own attestation — the
+ *  small-dollar long tail is where a two-name ceremony buys nothing. Stored
+ *  as `financeSettings.receiptExceptionApprovalThresholdCents` so the org can
+ *  move it; this is only the fallback when it's unset. */
+export const DEFAULT_EXCEPTION_APPROVAL_THRESHOLD_CENTS = 7_500;
+
+/** True iff an exception of this size needs an approver who is NOT the person
+ *  who attested it. Separation of duties is what keeps the forward
+ *  no-receipt-is-personal policy from being self-served into irrelevance —
+ *  see `docs/plans/receipt-exceptions.md`. */
+export function exceptionNeedsSecondApprover(
+  amountCents: number,
+  thresholdCents: number = DEFAULT_EXCEPTION_APPROVAL_THRESHOLD_CENTS,
+): boolean {
+  return Math.abs(amountCents) >= thresholdCents;
+}
+
+// ── Documentation state (derived — the PUBLISHED truth) ──────────────────────
+// What backs this transaction up, deliberately independent of `status`. This
+// is the predicate the public ledger renders, and the reason it has THREE
+// values rather than two: an approved exception is a signed statement by a
+// named person, not a hole. A ledger claiming zero exceptions across years of
+// history reads as less credible, not more.
+//
+// Distinct from `needsDocumentation` (`apps/convex/finances.ts`), which is the
+// CHASE WORKLIST and legitimately stops chasing a `reconciled` row. This one
+// never consults status, so a legacy row closed document-less still reads
+// `undocumented` — which is exactly the backlog that has to reach zero before
+// a period is publishable.
+export const DOCUMENTATION_STATES = [
+  "receipt", // a receipt document is attached
+  "exception", // an approved, attested exception stands in for one
+  "undocumented", // neither
+] as const;
+export type DocumentationState = (typeof DOCUMENTATION_STATES)[number];
+
+export const DOCUMENTATION_STATE_LABELS: Record<DocumentationState, string> = {
+  receipt: "Receipt attached",
+  exception: "Documented exception",
+  undocumented: "Undocumented",
+};
+
+/**
+ * Derive a transaction's documentation state. A receipt outranks an exception:
+ * if the document turned up after an exception was approved, the receipt is
+ * the better answer and the row should read as receipted.
+ *
+ * Takes primitives rather than a `Doc<"transactions">` so it stays usable from
+ * the shared package (same shape as `personalExpenseState` above).
+ */
+export function documentationState(
+  hasReceipt: boolean,
+  hasApprovedException: boolean,
+): DocumentationState {
+  if (hasReceipt) return "receipt";
+  if (hasApprovedException) return "exception";
+  return "undocumented";
 }
 
 // ── Receipt extraction progress ──────────────────────────────────────────────

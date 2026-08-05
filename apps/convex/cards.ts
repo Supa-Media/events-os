@@ -3734,7 +3734,20 @@ export function isMissingReceiptCharge(
     tr.status !== "excluded" &&
     tr.status !== "reconciled" &&
     tr.isPersonal !== true &&
-    !tr.receiptStorageId
+    !tr.receiptStorageId &&
+    // THE ESCAPE VALVE (receipt-exceptions PR). An approved exception stops
+    // BOTH clocks this predicate drives: the day-7 card auto-lock and the
+    // no-receipt→personal-charge auto-convert. Without it, turning on
+    // `noReceiptAutoConvertDays` would make the first cash tip at a venue
+    // somebody's personal debt — punishing a cardholder for a vendor's
+    // behavior rather than their own, which is not the policy anyone wants.
+    //
+    // It can't be self-served: approving an exception is manager-gated, and at
+    // or above the org threshold the approver must be a different person than
+    // the filer (`receiptExceptions.approve`). A PENDING exception
+    // deliberately does not stop either clock — see
+    // `docs/plans/receipt-exceptions.md`.
+    tr.approvedReceiptExceptionId == null
   );
 }
 

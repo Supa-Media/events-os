@@ -418,6 +418,7 @@ const reconcileFilterValidator = v.union(
   v.literal("missing_receipt"),
   v.literal("to_review"),
   v.literal("reconciled"),
+  v.literal("undocumented"),
   v.literal("personal_unpaid"),
   v.literal("transfers"),
   v.literal("payouts"),
@@ -431,6 +432,7 @@ const reconcileCounts = v.object({
   missing_receipt: v.number(),
   to_review: v.number(),
   reconciled: v.number(),
+  undocumented: v.number(),
   personal_unpaid: v.number(),
   transfers: v.number(),
   payouts: v.number(),
@@ -1172,7 +1174,36 @@ export function isProcessorPayout(tr: Doc<"transactions">): boolean {
  */
 export function needsDocumentation(tr: Doc<"transactions">): boolean {
   if (tr.receiptStorageId != null) return false;
+  // An APPROVED receipt exception is documentation — an attested, second-party
+  // -approved statement of what this was for and why no receipt exists. It
+  // closes the chase exactly like a receipt does (a pending one deliberately
+  // does NOT: asking to be let off isn't being let off). See
+  // `docs/plans/receipt-exceptions.md`.
+  if (tr.approvedReceiptExceptionId != null) return false;
   if (tr.status === "reconciled" || tr.status === "excluded") return false;
+  return isSpend(tr) || isMarkedTransfer(tr) || isProcessorPayout(tr);
+}
+
+/**
+ * True iff a transaction has NOTHING backing it up — no receipt and no
+ * approved exception — regardless of its status. The honest counterpart to
+ * `needsDocumentation`, which stops chasing a `reconciled` row.
+ *
+ * This is the PUBLISHING predicate and the historical-cleanup worklist: a row
+ * a treasurer closed document-less years ago is invisible to the chase and
+ * loudly visible here, which is the whole point. Scoped to rows that OWE
+ * documentation in the first place (`isSpend` / marked transfer / marked
+ * payout, never `excluded`), so an ordinary donation inflow doesn't read as an
+ * undocumented gap.
+ *
+ * Mirrors `documentationState(...) === "undocumented"` (`@events-os/shared`)
+ * for the subset of rows that owe anything — that function is the one the
+ * public ledger renders per row; this one is how the backlog is counted.
+ */
+export function isUndocumented(tr: Doc<"transactions">): boolean {
+  if (tr.status === "excluded") return false;
+  if (tr.receiptStorageId != null) return false;
+  if (tr.approvedReceiptExceptionId != null) return false;
   return isSpend(tr) || isMarkedTransfer(tr) || isProcessorPayout(tr);
 }
 
@@ -7886,11 +7917,18 @@ export const listTransactions = query({
  *     marked row must not vanish from the chase just because it stopped being
  *     spend; see that predicate's doc comment). A treasurer who closed a row
  *     document-less made a call, so it drops out of the chase-worthy count
- *     (the row stays visible under `all`/`ready`, just not counted here).
+ *     (the row stays visible under `reconciled`, just not counted here).
  *     `receiptChase` calls the SAME function (same scope resolution too), so
- *     this pill and the Chase list it opens into cannot disagree.
- *   - `uncategorized`  status `unreviewed`
- *   - `ready`          status `reconciled`
+ *     this pill and the Chase list it opens into cannot disagree. An APPROVED
+ *     receipt exception closes the chase exactly like a receipt does.
+ *   - `undocumented`   a row that owes documentation and has NEITHER a receipt
+ *     NOR an approved exception — `isUndocumented`, which unlike the pill
+ *     above ignores `status` entirely. This is the PUBLISHING backlog: a row a
+ *     treasurer closed document-less is invisible to the chase and loudly
+ *     visible here, and this count is what has to reach zero before a period
+ *     can honestly be published. See `docs/plans/receipt-exceptions.md`.
+ *   - `to_review`      status `unreviewed`
+ *   - `reconciled`     status `reconciled`
  *   - `transfers`      an internal bank transfer marked via `markAsTransfer`
  *   - `payouts`        a processor settlement deposit marked via `markAsPayout`
  *
@@ -7996,6 +8034,7 @@ export const listReconcile = query({
       missing_receipt: 0,
       to_review: 0,
       reconciled: 0,
+      undocumented: 0,
       personal_unpaid: 0,
       transfers: 0,
       payouts: 0,
@@ -8139,6 +8178,10 @@ export const listReconcile = query({
       missing_receipt: needsDocumentation(tr),
       personal_unpaid: isPersonalUnpaid(tr),
       reconciled: tr.status === "reconciled",
+      // The PUBLISHING backlog. Unlike `missing_receipt` this ignores status
+      // entirely, so a row a treasurer closed document-less still counts —
+      // see `isUndocumented` + `docs/plans/receipt-exceptions.md`.
+      undocumented: isUndocumented(tr),
     });
 
     // FACET COUNTS, not global ones. With one mutually-exclusive filter, a
@@ -9097,6 +9140,25 @@ export const setTransactionStatus = mutation({
       throw new ConvexError({
         code: "REASON_REQUIRED",
         message: "Excluding a transaction requires a reason.",
+      });
+    }
+    // RECONCILED MEANS DOCUMENTED (receipt-exceptions PR). Closing a row that
+    // owes documentation with neither a receipt nor an approved exception used
+    // to be the ONLY way to make a receipt-less charge go quiet — and it went
+    // quiet everywhere, including in a published ledger, which can't tell that
+    // row from a properly documented one. Now it's refused, and the honest
+    // alternative (file an exception saying WHY there's no receipt) is one
+    // click away in the same panel.
+    //
+    // Read paths are untouched: this is a guard on the WRITE, so the legacy
+    // backlog of already-reconciled undocumented rows stays valid and stays
+    // visible in the `undocumented` pill rather than being retroactively
+    // invalidated.
+    if (args.status === "reconciled" && isUndocumented(txn)) {
+      throw new ConvexError({
+        code: "RECEIPT_REQUIRED",
+        message:
+          "Attach a receipt before reconciling — or, if no receipt exists, file a receipt exception saying why.",
       });
     }
     // A human just acted on this transaction's status manually — clear any

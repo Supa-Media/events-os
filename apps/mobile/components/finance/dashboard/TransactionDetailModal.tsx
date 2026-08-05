@@ -87,6 +87,7 @@ import { useChapterContext } from "../../../lib/ChapterContext";
 import { SignedMoney, txnStatusTone } from "./parts";
 import { STATUS_OPTIONS, shortDate } from "../reconcile/helpers";
 import { ReceiptCell } from "../reconcile/ReconcileList";
+import { ReceiptExceptionSection } from "../reconcile/ReceiptExceptionSection";
 import { ReceiptViewerModal } from "../receipts/ReceiptViewerModal";
 import { ExcludeReasonModal } from "../modals/ExcludeReasonModal";
 import type { DrilldownTxn } from "./TransactionList";
@@ -536,6 +537,18 @@ function TransactionDetailBody({
           />
         )}
       </View>
+
+      {/* Receipt exception — the documentation of record when no receipt can
+          be produced. Renders nothing once a receipt is attached (a receipt
+          outranks an exception) or for a caller who may not even file one.
+          See `docs/plans/receipt-exceptions.md`. */}
+      <ReceiptExceptionSection
+        transactionId={txn.id}
+        amountCents={txn.amountCents}
+        hasReceipt={hasReceipt}
+        readOnly={readOnly}
+        onError={alertError}
+      />
 
       {/* Personal charge — READ-ONLY (see the module doc comment for why
           editing it doesn't live here): only shown when the source query

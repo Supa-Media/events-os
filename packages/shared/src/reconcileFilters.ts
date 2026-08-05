@@ -19,8 +19,17 @@
  *   KIND  — what sort of row is this? Spend, an internal transfer, a processor
  *           payout. Roughly exclusive per row, but selectable together to widen.
  *   STATE — where is it in the pipeline? Needs review, needs a budget, needs a
- *           receipt, owed back personally, or already cleared. A row can be in
- *           several of these at once.
+ *           receipt, undocumented, owed back personally, or already cleared. A
+ *           row can be in several of these at once.
+ *
+ * `missing_receipt` and `undocumented` look like duplicates and aren't. The
+ * first is the CHASE worklist and stops counting a row once it's reconciled —
+ * someone made a call, there's nobody left to nudge. The second ignores status
+ * entirely: it's every row with neither a receipt nor an approved receipt
+ * exception, including ones already closed. That's the PUBLISHING backlog, and
+ * it's deliberately the harder number to please, because a public ledger can't
+ * tell a quietly-closed row from a documented one. See
+ * `docs/plans/receipt-exceptions.md`.
  *
  * ## Set semantics: OR within a group, AND across groups
  *
@@ -48,6 +57,7 @@ export const RECONCILE_FILTER_KEYS = [
   "to_review",
   "needs_budget",
   "missing_receipt",
+  "undocumented",
   "personal_unpaid",
   "reconciled",
 ] as const;
@@ -77,6 +87,7 @@ export const RECONCILE_FILTER_GROUPS: readonly {
       "to_review",
       "needs_budget",
       "missing_receipt",
+      "undocumented",
       "personal_unpaid",
       "reconciled",
     ],
@@ -91,6 +102,7 @@ export const RECONCILE_FILTER_LABELS: Record<ReconcileFilterKey, string> = {
   to_review: "To review",
   needs_budget: "Needs budget",
   missing_receipt: "Missing receipt",
+  undocumented: "Undocumented",
   personal_unpaid: "Personal (unpaid)",
   reconciled: "Reconciled",
 };
