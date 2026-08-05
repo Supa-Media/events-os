@@ -248,6 +248,74 @@ describe("the audit trail — a correction is not a quiet edit", () => {
   });
 });
 
+describe("correcting the amount invalidates an approved exception", () => {
+  // THE BYPASS THIS CLOSES: an exception snapshots the amount it was filed
+  // against, and separation of duties is evaluated against that snapshot. So a
+  // manager could file a $5 exception, self-approve it legitimately (under the
+  // threshold, where SOD doesn't apply), then correct the row to $5,000 —
+  // leaving a large charge documented by a self-approved attestation that
+  // should have needed a second person.
+  test("the approved exception is retired and the row owes documentation again", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const txnId = await seedTxn(s, { amountCents: 500 });
+
+    const exceptionId = await s.as.mutation(api.receiptExceptions.attest, {
+      transactionId: txnId,
+      reason: "no_receipt_issued",
+      note: "Cash tip at the venue, no receipt is ever issued",
+    });
+    await s.as.mutation(api.receiptExceptions.approve, { exceptionId });
+    expect(
+      (await run(s.t, (ctx) => ctx.db.get(txnId)))?.approvedReceiptExceptionId,
+    ).toBeTruthy();
+
+    await s.as.mutation(api.finances.correctTransaction, {
+      transactionId: txnId,
+      amountCents: 500_000,
+      reason: "Wrong by three orders of magnitude in the import",
+    });
+
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.amountCents).toBe(500_000);
+    // The attestation no longer describes this row, so it stops documenting it.
+    expect(txn?.approvedReceiptExceptionId).toBeUndefined();
+    expect((await run(s.t, (ctx) => ctx.db.get(exceptionId)))?.status).toBe(
+      "withdrawn",
+    );
+    // And it's back in both worklists until someone re-files at the true
+    // amount — which will now cross the threshold and need a second approver.
+    const counts = (await s.as.query(api.finances.listReconcile, { filter: "all" })).counts;
+    expect(counts.missing_receipt).toBe(1);
+    expect(counts.undocumented).toBe(1);
+  });
+
+  test("a correction that leaves the amount alone keeps the exception", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const txnId = await seedTxn(s, { amountCents: 500 });
+
+    const exceptionId = await s.as.mutation(api.receiptExceptions.attest, {
+      transactionId: txnId,
+      reason: "no_receipt_issued",
+      note: "Cash tip at the venue, no receipt is ever issued",
+    });
+    await s.as.mutation(api.receiptExceptions.approve, { exceptionId });
+
+    await s.as.mutation(api.finances.correctTransaction, {
+      transactionId: txnId,
+      merchantName: "The Sound Engineer",
+      reason: "Merchant was blank in the import",
+    });
+
+    expect(
+      (await run(s.t, (ctx) => ctx.db.get(txnId)))?.approvedReceiptExceptionId,
+    ).toBe(exceptionId);
+  });
+});
+
 describe("reconstructed-history labelling", () => {
   test("a genesis row is labelled by its externalId prefix — no migration needed", async () => {
     const t = newT();

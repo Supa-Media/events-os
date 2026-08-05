@@ -91,7 +91,10 @@ import {
 import { queueSuggestionOnIngest } from "./aiCodingData";
 import { createReceipt, linkReceiptToTransaction } from "./lib/receiptLinks";
 import { logFinanceAudit } from "./lib/financeAuditLog";
-import { pendingExceptionForTransaction } from "./lib/receiptExceptions";
+import {
+  pendingExceptionForTransaction,
+  retireApprovedExceptionOnAmountChange,
+} from "./lib/receiptExceptions";
 import { requireCorrectTransaction, isTransactionCorrectable } from "./lib/financeEditAccess";
 import {
   getChapterIdOrNull,
@@ -9822,6 +9825,31 @@ export const correctTransaction = mutation({
     if (entries.length === 0) return null;
 
     await ctx.db.patch(args.transactionId, patch);
+    // An approved exception snapshots the amount it was filed against, and the
+    // separation-of-duties threshold is checked against that snapshot — so a
+    // changed amount must invalidate it, or a self-approved $5 attestation
+    // could be stretched over a $5,000 charge. See
+    // `retireApprovedExceptionOnAmountChange` for the full reasoning.
+    if (patch.amountCents !== undefined) {
+      const retired = await retireApprovedExceptionOnAmountChange(
+        ctx,
+        args.transactionId,
+      );
+      if (retired) {
+        await logFinanceAudit(ctx, {
+          chapterId: scope,
+          subjectType: "transaction",
+          subjectId: args.transactionId,
+          action: "receipt_exception_withdraw",
+          actorPersonId,
+          field: "receiptException",
+          before: "Approved",
+          after: "Withdrawn — amount corrected, re-file at the true amount",
+          reason,
+          amountCents: patch.amountCents as number,
+        });
+      }
+    }
     // ONE audit row per field, so a two-field correction reads as two facts
     // rather than one blob — matching how `logRecodeAudit` already splits
     // category and budget.
