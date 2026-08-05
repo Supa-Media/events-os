@@ -383,21 +383,42 @@ function ReconcileGrid() {
     [categories],
   );
 
-  // The "For" options a CENTRAL-book row accepts: Recurring · Central budgets
-  // only. A central-owned charge can't attribute to an event, a project, or a
-  // chapter budget — the backend rejects it — so this list is genuinely
-  // different from the chapter one. Computed unconditionally (not just in
-  // central scope) because the merged all-books queue needs BOTH lists at
-  // once: a central row and a chapter row can sit adjacent, each needing its
-  // own options.
+  // The "For" options a CENTRAL-book row accepts. Central's OWN budgets lead,
+  // then — CROSS-BOOK — the chapter's own events/projects/budgets, because a
+  // central card genuinely does buy things for a chapter's programme (the
+  // founder's case: a Public Worship card paying for something local). The
+  // backend admits exactly this via `requireBudgetForCentralTxn`; custody stays
+  // central while the budget decides whose programme it counts against, and
+  // `transfers.interScopeBalances` books the difference as a receivable.
+  //
+  // Computed unconditionally (not just in central scope) because the merged
+  // all-books queue needs BOTH lists at once: a central row and a chapter row
+  // can sit adjacent, each needing its own options.
   const centralForItems = useMemo<PickerItem[]>(() => {
     if (!forOptions) return [{ value: "", label: "None" }];
     const central = forOptions.recurring.filter((r) => r.level === "central");
+    const chapterItems = buildForPickerItems({
+      ...forOptions,
+      // Central's own recurring budgets are listed above under their own
+      // heading; don't repeat them inside the chapter grouping.
+      recurring: forOptions.recurring.filter((r) => r.level === "chapter"),
+    }).filter((i) => i.value !== "");
     return [
       { value: "", label: "None" },
+      { value: "__central__", label: "Central", header: true },
       ...central.map((r) => ({ value: r.budgetId, label: r.label })),
+      ...(chapterItems.length > 0
+        ? [
+            {
+              value: "__crossbook__",
+              label: `${viewedChapterName ?? "Chapter"} · central is fronting this`,
+              header: true,
+            },
+            ...chapterItems,
+          ]
+        : []),
     ];
-  }, [forOptions]);
+  }, [forOptions, viewedChapterName]);
 
   // "For" picker items (WP-U) — grouped Events / Projects / Recurring. In
   // central scope (WP-2.1) only Recurring · Central budgets are offered — a
