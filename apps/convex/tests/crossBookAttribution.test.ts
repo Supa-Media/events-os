@@ -471,8 +471,9 @@ describe("the receiving chapter's category", () => {
     // instead of an unfixable "Uncategorized" lump.
     const dash = await s.as.query(api.finances.dashboardChapter, {});
     const card = dash.recurringBudgets.find((b) => b.id === budgetId);
-    expect(card?.categories.find((c) => c.name === "Venue")?.spentCents).toBe(50_000);
-    expect(card?.categories.some((c) => c.name === "Uncategorized")).toBe(false);
+    const cats = card?.categories ?? [];
+    expect(cats.find((c) => c.name === "Venue")?.spentCents).toBe(50_000);
+    expect(cats.some((c) => c.name === "Uncategorized")).toBe(false);
   });
 
   test("a category WITHOUT a chapter budget is refused — there is no book to categorize in", async () => {
