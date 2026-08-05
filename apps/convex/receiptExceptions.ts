@@ -16,8 +16,8 @@
  * trail. See `docs/plans/receipt-exceptions.md`.
  */
 import { mutation, query } from "./_generated/server";
-import type { QueryCtx } from "./_generated/server";
-import { v, ConvexError } from "convex/values";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
+import { v, ConvexError, type Infer } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
   RECEIPT_EXCEPTION_REASONS,
@@ -29,7 +29,7 @@ import {
   type ReceiptExceptionReason,
 } from "@events-os/shared";
 import { requireUserId, getChapterIdOrNull } from "./lib/context";
-import { assertSeparationOfDuties } from "./lib/finance";
+import { assertSeparationOfDuties, type FinanceScope } from "./lib/finance";
 import { logFinanceAudit } from "./lib/financeAuditLog";
 import {
   requireAttestReceiptException,
@@ -79,9 +79,9 @@ const exceptionRow = v.object({
 /** Project one row for display, resolving the two person names + the
  *  substitute's signed url. */
 async function projectException(
-  ctx: any,
+  ctx: QueryCtx,
   row: Doc<"receiptExceptions">,
-): Promise<any> {
+): Promise<Infer<typeof exceptionRow>> {
   const name = async (personId?: Id<"people">) => {
     if (!personId) return null;
     const person = await ctx.db.get(personId);
@@ -248,11 +248,11 @@ export const attestBulk = mutation({
 /** Load a pending exception + authorize a decision on it. Shared by
  *  approve/reject so the two can't drift on scope or rank. */
 async function loadForDecision(
-  ctx: any,
+  ctx: MutationCtx,
   exceptionId: Id<"receiptExceptions">,
 ): Promise<{
   exception: Doc<"receiptExceptions">;
-  scope: string;
+  scope: FinanceScope;
   actorPersonId: Id<"people"> | null;
 }> {
   const exception = (await ctx.db.get(
@@ -316,7 +316,7 @@ export const approve = mutation({
       decidedByUserId: userId,
     });
     await logFinanceAudit(ctx, {
-      chapterId: scope as Id<"chapters"> | "central",
+      chapterId: scope,
       subjectType: "transaction",
       subjectId: exception.transactionId,
       action: "receipt_exception_decide",
@@ -355,7 +355,7 @@ export const reject = mutation({
       decidedByUserId: userId,
     });
     await logFinanceAudit(ctx, {
-      chapterId: scope as Id<"chapters"> | "central",
+      chapterId: scope,
       subjectType: "transaction",
       subjectId: exception.transactionId,
       action: "receipt_exception_decide",
