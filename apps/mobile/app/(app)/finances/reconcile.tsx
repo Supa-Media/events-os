@@ -33,7 +33,7 @@
  * friendly empty state instead of the root error boundary.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { View, Text, TextInput, Pressable } from "react-native";
+import { View, Text, TextInput, Pressable, ScrollView } from "react-native";
 import { useQuery, useMutation } from "convex/react";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { api } from "@events-os/convex/_generated/api";
@@ -656,14 +656,29 @@ function ReconcileGrid() {
     <>
       <Screen maxWidth={FULL_WIDTH}>
         <Narrow>
-          {/* Header — title + "N to clear" (or the searched result count). */}
-          <View className="mb-1 flex-row items-baseline gap-2">
-            <Text className="font-display text-2xl text-ink">Reconcile</Text>
-            <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-              {searching
-                ? `${displayed.length} of ${rows.length}`
-                : `${toClear} to clear`}
-            </Text>
+          {/* Header — title + "N to clear" (or the searched result count), with
+              "Chase receipts" as the page-level action on the right. That
+              button used to sit at the end of the filter row, where it wrapped
+              onto a line of its own on a phone; a page action belongs in the
+              page header, and moving it there costs nothing and buys a row. */}
+          <View className="mb-1 flex-row items-center justify-between gap-2">
+            <View className="flex-row items-baseline gap-2">
+              <Text className="font-display text-2xl text-ink">Reconcile</Text>
+              <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+                {searching
+                  ? `${displayed.length} of ${rows.length}`
+                  : `${toClear} to clear`}
+              </Text>
+            </View>
+            {counts && counts.missing_receipt > 0 ? (
+              <Button
+                title="Chase receipts"
+                variant="ghost"
+                size="sm"
+                icon="bell"
+                onPress={() => router.navigate(chaseHref as never)}
+              />
+            ) : null}
           </View>
 
           {/* no-dead-numbers: the period-scope banner — only present when a
@@ -712,8 +727,8 @@ function ReconcileGrid() {
           ) : null}
           <Text className="mb-4 text-sm text-muted">
             {allBooksScope
-              ? "Every book at once — central and each chapter. Each row shows which book it belongs to. Code each charge to a category and what it was for, confirm the receipt, and mark it reconciled."
-              : "Code each charge to a category and what it was for, confirm the receipt, and mark it reconciled. Edit any cell inline."}
+              ? "Every book at once — the Book column says which. Code each charge, confirm the receipt, mark it reconciled."
+              : "Code each charge, confirm the receipt, mark it reconciled. Edit any cell inline."}
           </Text>
 
           {/* Search — narrows the active pill's rows (merchant, cardholder,
@@ -749,37 +764,48 @@ function ReconcileGrid() {
             ) : null}
           </View>
 
-          {/* Server-side filter pills, each with its live count — plus the
-              jump to the by-cardholder Chase receipts list (who still owes a
-              receipt, biggest first) whenever any receipt is outstanding.
-              `chaseHref` carries the grid's CURRENT scope (central / peeked
-              chapter / the caller's own chapter) through as route params —
-              `receiptChase` takes the same `scope`/`chapterId` args as
-              `listReconcile`, so the list this button opens always reads the
-              SAME bucket the pill's count just came from. */}
-          <View className="mb-4 flex-row flex-wrap items-center gap-2">
+          {/* Server-side filter pills, each with its live count.
+
+              ONE HORIZONTALLY-SCROLLING ROW (founder: "redesign these chips to
+              be more compact"). Nine filters with counts don't fit a phone's
+              width: wrapped, they cost three rows, and with the description and
+              search above them the first transaction started below the fold.
+              Shrinking the chips alone only recovered one of those rows — the
+              labels are the width, not the padding — so they scroll instead,
+              the same pattern the finance sub-nav directly above already uses
+              (`finances/_layout.tsx`). Every count stays truthful and reachable;
+              none of them is hidden behind a "More" affordance, which is the
+              usual alternative and the one that makes a number disappear.
+
+              The compact `size="sm"` still applies: it fits ~4 chips per screen
+              instead of ~3, so less scrolling to reach the ones on the right.
+
+              "Chase receipts" moved up to the page header (see above) — it's an
+              action, not a filter, and it was wrapping onto its own line here.
+              `chaseHref` still carries the grid's CURRENT scope through as
+              route params, so the list it opens reads the SAME bucket the
+              missing_receipt count came from. */}
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ gap: 8, alignItems: "center", paddingRight: 16 }}
+            className="mb-4 grow-0"
+          >
             {FILTERS.map((f) => (
               <Pill
                 key={f.key}
-                label={counts ? `${f.label}  ${counts[f.key]}` : f.label}
+                label={f.label}
+                size="sm"
+                count={counts ? counts[f.key] : undefined}
                 selected={filter === f.key}
                 onPress={() => setFilter(f.key)}
               />
             ))}
             <InfoTooltip
-              text="Needs budget: categorized but no budget linked. Missing receipt: no receipt uploaded. Uncategorized: no category assigned. Ready: receipt + category + budget all present. Personal (unpaid): flagged personal, not yet repaid."
+              text="Spend: every dollar that counts as actual spend. Needs budget: categorized but no budget linked. Missing receipt: no receipt uploaded. To review: still Unreviewed — nobody has touched it. Reconciled: already cleared. Personal (unpaid): flagged personal, not yet repaid."
               size={14}
             />
-            {counts && counts.missing_receipt > 0 ? (
-              <Button
-                title="Chase receipts"
-                variant="ghost"
-                size="sm"
-                icon="bell"
-                onPress={() => router.navigate(chaseHref as never)}
-              />
-            ) : null}
-          </View>
+          </ScrollView>
         </Narrow>
 
         {/* Bulk action bar (multi-select). `selectedInView` is already
@@ -850,6 +876,7 @@ function ReconcileGrid() {
             onToggleAll={toggleAll}
             centralScope={centralScope}
             showBook={allBooksScope || viewingForeignChapter}
+            ownChapterId={ownChapterId}
             centralForItems={centralForItems}
             isManager={isManager}
             viewerPersonId={reconcile?.viewerPersonId ?? null}

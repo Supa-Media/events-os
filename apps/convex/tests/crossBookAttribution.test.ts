@@ -414,3 +414,163 @@ describe("Reconcile shows both facts", () => {
     expect(row?.chargedTo?.id).toBe(row?.book.id);
   });
 });
+
+describe("the receiving chapter's category", () => {
+  /**
+   * Why this is allowed at all: a cross-book charge lands on a CHAPTER's budget
+   * card, and `spendBreakdownFor` buckets a category-less row into an explicit
+   * "Uncategorized" bar. The totals still add up — but that bar was
+   * unfixable-by-anyone: the central FM was refused outright, and the receiving
+   * chapter's treasurer can't write the row because it lives in central's book.
+   */
+  async function setup() {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asDualHatManager(s);
+    const budgetId = await makeChapterBudget(s, 200_000);
+    // Inserted directly rather than via `createCategory` (which requires a
+    // fundId) — this suite is about the category's CHAPTER, not fund plumbing.
+    const fundId = await run(s.t, (ctx) =>
+      ctx.db.insert("funds", {
+        chapterId: s.chapterId,
+        name: "General Fund",
+        restriction: "unrestricted",
+        sortOrder: 0,
+        createdAt: Date.now(),
+      }),
+    );
+    const categoryId = await run(s.t, (ctx) =>
+      ctx.db.insert("budgetCategories", {
+        chapterId: s.chapterId,
+        fundId,
+        name: "Venue",
+        kind: "category",
+        createdAt: Date.now(),
+      }),
+    );
+    return { s, budgetId, categoryId, fundId };
+  }
+
+  test("a cross-book charge takes the receiving chapter's category", async () => {
+    const { s, budgetId, categoryId } = await setup();
+    const txnId = await centralCharge(s, 50_000);
+
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: txnId,
+      budgetId,
+      categoryId,
+    });
+
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.categoryId).toBe(categoryId);
+    // Custody still untouched — the category says which of NEW YORK's buckets
+    // absorbed it, not who paid.
+    expect(txn?.chapterId).toBe(CENTRAL);
+
+    // ...and it now shows under a real category on New York's budget card
+    // instead of an unfixable "Uncategorized" lump.
+    const dash = await s.as.query(api.finances.dashboardChapter, {});
+    const card = dash.recurringBudgets.find((b) => b.id === budgetId);
+    const cats = card?.categories ?? [];
+    expect(cats.find((c) => c.name === "Venue")?.spentCents).toBe(50_000);
+    expect(cats.some((c) => c.name === "Uncategorized")).toBe(false);
+  });
+
+  test("a category WITHOUT a chapter budget is refused — there is no book to categorize in", async () => {
+    const { s, categoryId } = await setup();
+    const txnId = await centralCharge(s, 50_000);
+    await expect(
+      s.as.mutation(api.finances.categorizeTransaction, {
+        transactionId: txnId,
+        categoryId,
+      }),
+    ).rejects.toThrow(ConvexError);
+  });
+
+  test("a category on a charge attributed to a CENTRAL budget is refused", async () => {
+    const { s, categoryId } = await setup();
+    const centralBudgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 100_000,
+      type: "recurring",
+      cadence: "monthly",
+      year: 2026,
+      central: true,
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.patch(centralBudgetId, { approvalStatus: "approved" }),
+    );
+    const txnId = await centralCharge(s, 10_000);
+    await expect(
+      s.as.mutation(api.finances.categorizeTransaction, {
+        transactionId: txnId,
+        budgetId: centralBudgetId,
+        categoryId,
+      }),
+    ).rejects.toThrow(ConvexError);
+  });
+
+  test("fund and team stay refused on a cross-book charge", async () => {
+    const { s, budgetId, fundId } = await setup();
+    const txnId = await centralCharge(s, 10_000);
+    // A fund encodes DONOR RESTRICTION — whose restricted money paid. Central's
+    // card doesn't draw on New York's restricted fund, so attaching one would
+    // assert something false about the source of the cash.
+    await expect(
+      s.as.mutation(api.finances.categorizeTransaction, {
+        transactionId: txnId,
+        budgetId,
+        fundId,
+      }),
+    ).rejects.toThrow(ConvexError);
+  });
+
+  test("re-pointing at a central budget clears the stranded chapter category", async () => {
+    const { s, budgetId, categoryId } = await setup();
+    const centralBudgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 100_000,
+      type: "recurring",
+      cadence: "monthly",
+      year: 2026,
+      central: true,
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.patch(centralBudgetId, { approvalStatus: "approved" }),
+    );
+
+    const txnId = await centralCharge(s, 50_000);
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: txnId,
+      budgetId,
+      categoryId,
+    });
+    expect((await run(s.t, (ctx) => ctx.db.get(txnId)))?.categoryId).toBe(categoryId);
+
+    // Correcting a miscode must not strand New York's category on a row that
+    // is once again purely central's.
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: txnId,
+      budgetId: centralBudgetId,
+    });
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.categoryId).toBeUndefined();
+    expect(txn?.budgetId).toBe(centralBudgetId);
+  });
+
+  test("clearing the budget entirely also clears the category", async () => {
+    const { s, budgetId, categoryId } = await setup();
+    const txnId = await centralCharge(s, 50_000);
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: txnId,
+      budgetId,
+      categoryId,
+    });
+
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: txnId,
+      budgetId: null,
+    });
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.categoryId).toBeUndefined();
+    expect(txn?.budgetId).toBeUndefined();
+  });
+});
