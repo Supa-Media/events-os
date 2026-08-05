@@ -307,6 +307,65 @@ describe("listPersonalRepayments", () => {
   });
 });
 
+// ── listReconcile.viewerIsManager — who the GRID may offer "Mark personal" to
+// (founder feedback: rows that plainly have a cardholder still showed no flag)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("listReconcile — viewerIsManager", () => {
+  test("a CENTRAL-scope manager grant reads as a manager, even with no chapter seat", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedPerson(s, { name: "Central FM", userId: s.userId });
+    // A central grant, exactly as `grantFinanceRole`/the specialized-roles
+    // bridge writes one — manager everywhere server-side, but it produces NO
+    // `scope:"chapter"` seat, which is what the grid used to look for. The
+    // regression this pins: the grid hid every manager-only row action from an
+    // Executive Director / Financial Manager sitting at Central.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeRoles", {
+        chapterId: "central" as unknown as Id<"chapters">,
+        personId,
+        role: "manager",
+        scope: "central",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const res = await s.as.query(api.finances.listReconcile, {});
+    expect(res.viewerIsManager).toBe(true);
+    expect(res.viewerPersonId).toBe(personId);
+
+    // And the permission it advertises is real — the same caller can actually
+    // flag someone else's charge.
+    const holder = await seedPerson(s, { name: "Card Holder" });
+    const txnId = await seedManualTxn(s, { personId: holder });
+    const rep = await s.as.mutation(api.cards.flagPersonalCharge, {
+      transactionId: txnId,
+    });
+    expect(rep.payerPersonId).toBe(holder);
+  });
+
+  test("a chapter-scope manager still reads as a manager", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+
+    const res = await s.as.query(api.finances.listReconcile, {});
+    expect(res.viewerIsManager).toBe(true);
+  });
+
+  test("a bookkeeper does NOT — full Reconcile access, but not this action", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedPerson(s, { name: "Books", userId: s.userId });
+    await grantRole(s, personId, "bookkeeper");
+
+    const res = await s.as.query(api.finances.listReconcile, {});
+    expect(res.viewerIsManager).toBe(false);
+    expect(res.viewerPersonId).toBe(personId);
+  });
+});
+
 // ── unflagPersonalCharge ──────────────────────────────────────────────────────
 
 describe("unflagPersonalCharge", () => {
