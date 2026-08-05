@@ -63,9 +63,15 @@ import {
   candidateValidator,
   extractReceiptFields,
   resolveOcrModel,
+  resolveFallbackOcrModel,
   deriveMerchantFromEmail,
   type OcrRoutingResult,
 } from "./receiptInbox";
+import {
+  AUTO_RETRY_FALLBACK_ATTEMPT,
+  AUTO_RETRY_MAX_ATTEMPTS,
+  scheduleAutoRetryExtraction,
+} from "./lib/receiptRetry";
 import { isSpend, txnMatchesMode } from "./finances";
 import { readSandbox } from "./financeSettings";
 import { logFinanceAudit } from "./lib/financeAuditLog";
@@ -1809,6 +1815,14 @@ async function runUploadPipeline(
     ocrError: result.ocrError,
     candidateTransactionIds,
   });
+
+  // The engine failed on TRANSPORT (5xx/429/timeout) — the receipt is fine,
+  // the read simply never happened. Repair it in the background instead of
+  // leaving a red card for a human to notice and tap Retry on
+  // (`lib/receiptRetry.ts`). The error above stays visible meanwhile.
+  if (result.ocrError && result.ocrRetryable) {
+    await scheduleAutoRetryExtraction(ctx, receiptId, 1, result.ocrRetryAfterSeconds);
+  }
 }
 
 // ── retryExtraction (bookkeeper-triggered reprocessing) ──────────────────────
@@ -1942,6 +1956,102 @@ export const runRetryExtraction = internalAction({
       } catch (patchErr) {
         console.error(`[receipts] could not note retry error on ${args.receiptId}: ${String(patchErr)}`);
       }
+    }
+    return null;
+  },
+});
+
+/**
+ * AUTOMATIC re-extraction after a TRANSPORT failure — scheduled by whichever
+ * pipeline first read this receipt (email/upload) and by itself for each
+ * further attempt. See `lib/receiptRetry.ts` for the schedule and why this
+ * exists; the short version is that an engine 500 is a blip, not a verdict,
+ * and the initial run used to record it like one.
+ *
+ * Three rules keep it from ever fighting a human:
+ *  - It STOPS the moment `ocrError` is clear — a manual Retry, the bulk
+ *    sweep, or a bookkeeper typing the total in wins, and a slow automatic
+ *    read never lands on top of that.
+ *  - It only ever re-reads what is ALREADY a failure; `applyRetryExtraction`
+ *    fills canonical fields per-field and only where still empty.
+ *  - A retryable failure mid-chain leaves the visible `ocrError` UNTOUCHED
+ *    (the sweep's rule) — the card keeps saying what actually went wrong
+ *    rather than flickering between engine messages.
+ *
+ * It repairs the READ, never the ATTACH: like every other retry path this
+ * commits through `applyRetryExtraction`, which refreshes the candidate
+ * shortlist and NEVER links. Auto-attach stays the ingest pipelines' single
+ * responsibility (money safety) — so a receipt whose first read was lost to a
+ * 500 comes back with its total and a one-tap suggested match, not a silent
+ * background link.
+ *
+ * Errors are swallowed: this is background repair, and a thrown scheduled
+ * action would just retry the whole thing outside our own backoff.
+ */
+export const autoRetryExtraction = internalAction({
+  args: { receiptId: v.id("receipts"), attempt: v.number() },
+  returns: v.null(),
+  handler: async (ctx, { receiptId, attempt }) => {
+    try {
+      const receipt = (await ctx.runQuery(internal.receipts.getReceiptForProcessing, {
+        receiptId,
+      })) as Doc<"receipts"> | null;
+      // Gone, or already resolved by someone else — nothing left to repair.
+      if (!receipt || !receipt.ocrError) return null;
+
+      const config = await ctx.runQuery(
+        internal.integrationSettings.readAiEngineConfig,
+        {},
+      );
+      const primary = resolveOcrModel(config);
+      // The last attempt asks a DIFFERENT vision model — see
+      // `AUTO_RETRY_FALLBACK_ATTEMPT`. No distinct fallback configured (or it
+      // resolves to the same id) → keep asking the primary.
+      const model =
+        attempt >= AUTO_RETRY_FALLBACK_ATTEMPT
+          ? (resolveFallbackOcrModel(config, primary) ?? primary)
+          : primary;
+
+      const computed = await computeRetryExtraction(ctx, receipt, model);
+      if (computed.missingFile) {
+        await ctx.runMutation(internal.receipts.applyRetryExtraction, {
+          receiptId,
+          candidateTransactionIds: receipt.candidateTransactionIds ?? [],
+          ocrError: "The stored file could not be found — it may have been deleted.",
+        });
+        return null;
+      }
+
+      const { result, candidateTransactionIds } = computed;
+      if (result.ocrError && result.ocrRetryable && attempt < AUTO_RETRY_MAX_ATTEMPTS) {
+        console.log(
+          `[receipts] auto-retry ${attempt}/${AUTO_RETRY_MAX_ATTEMPTS} for ${receiptId} still transient (${result.ocrError.slice(0, 120)}) — backing off.`,
+        );
+        await scheduleAutoRetryExtraction(
+          ctx,
+          receiptId,
+          attempt + 1,
+          result.ocrRetryAfterSeconds,
+        );
+        return null;
+      }
+
+      // A read (success), a permanent failure, or the last attempt's verdict
+      // — all of them belong on the receipt now.
+      await ctx.runMutation(internal.receipts.applyRetryExtraction, {
+        receiptId,
+        ocrAmountCents: result.ocrAmountCents,
+        ocrDate: result.ocrDate,
+        ocrMerchant: result.ocrMerchant,
+        ocrConfidence: result.ocrConfidence,
+        ocrModel: result.ocrModel,
+        ocrError: result.ocrError,
+        candidateTransactionIds,
+      });
+    } catch (err) {
+      console.error(
+        `[receipts] autoRetryExtraction attempt ${attempt} errored for ${receiptId}: ${String(err)}`,
+      );
     }
     return null;
   },
