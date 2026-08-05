@@ -1024,6 +1024,58 @@ async function loadCrossBookTxnsForChapterBudgets(
   return out;
 }
 
+/**
+ * Resolve + authorize a CATEGORY on a central-owned transaction.
+ *
+ * Central has no categories of its own — `budgetCategories` is chapter-scoped —
+ * so for most central rows the answer is still "no category". But a CROSS-BOOK
+ * charge (central's card, a chapter's budget) is economically that chapter's
+ * spend, and it lands on that chapter's budget card. Refusing a category there
+ * produced a hole nobody could close:
+ *
+ *  - the central FM was refused outright by `categorizeTransaction`;
+ *  - the receiving chapter's treasurer can't write the row at all, because it
+ *    lives in CENTRAL's book and `requireReconcileTxn` scopes writes to the
+ *    caller's own chapter.
+ *
+ * So the spend sat permanently in the "Uncategorized" bar of a budget belonging
+ * to a chapter with no way to fix it. That's not a post-split hypothetical: the
+ * refusal keys off the transaction's BOOK, not the person, so it bit even a
+ * treasurer holding both seats.
+ *
+ * The category must belong to the BUDGET's chapter — not the caller's. Those
+ * are the same chapter today (one chapter, dual-hatted treasurer) and will not
+ * be after the split, so binding it to the budget is the rule that survives.
+ * Deliberately narrower than `verifyTxnRefs`, which validates refs against the
+ * TRANSACTION's own scope — exactly the assumption cross-book breaks.
+ */
+async function requireCategoryForCentralTxn(
+  ctx: MutationCtx,
+  categoryId: Id<"budgetCategories">,
+  budgetId: Id<"budgets"> | null,
+): Promise<void> {
+  const unsupported = (message: string) =>
+    new ConvexError({ code: "UNSUPPORTED", message });
+  if (!budgetId) {
+    throw unsupported(
+      "Attribute this charge to a chapter's budget first — a central charge only takes a category when a chapter is absorbing it.",
+    );
+  }
+  const budget = await ctx.db.get(budgetId);
+  if (!budget || budget.chapterId === CENTRAL) {
+    throw unsupported(
+      "A charge on a central budget has no category — categories belong to chapters.",
+    );
+  }
+  const category = await ctx.db.get(categoryId);
+  if (!category || category.chapterId !== budget.chapterId) {
+    throw new ConvexError({
+      code: "NOT_FOUND",
+      message: "Category not found in the chapter this charge is attributed to.",
+    });
+  }
+}
+
 async function requireBudgetForCentralTxn(
   ctx: MutationCtx,
   homeChapterId: Id<"chapters">,
@@ -4351,37 +4403,6 @@ export const projectActuals = query({
     await requireFinanceRole(ctx, chapterId, "viewer");
     await requireInCallerChapter(ctx, chapterId, "projects", args.projectId, "Project");
     return actualsForRef(ctx, chapterId, "project", args.projectId);
-  },
-});
-
-/** Actual spend attached to a single finance team. */
-export const teamActuals = query({
-  args: { teamId: v.id("financeTeams") },
-  returns: v.object({
-    totalCents: v.number(),
-    transactions: v.array(txnSummary),
-  }),
-  handler: async (ctx, args) => {
-    const chapterId = await readChapterId(ctx);
-    if (!chapterId) return { totalCents: 0, transactions: [] };
-    await requireFinanceRole(ctx, chapterId, "viewer");
-    // Chapter or central team.
-    await requireInCallerChapter(ctx, chapterId, "financeTeams", args.teamId, "Team", {
-      allowCentral: true,
-    });
-    // No dedicated team index on transactions — scan the chapter (bounded) and
-    // filter by team.
-    const rows = await ctx.db
-      .query("transactions")
-      .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", chapterId))
-      .order("desc")
-      .take(ROLLUP_SCAN_LIMIT);
-    const forTeam = rows.filter((tr) => tr.teamId === args.teamId);
-    const totalCents = forTeam.reduce(
-      (s, tr) => (isSpend(tr) ? s + tr.amountCents : s),
-      0,
-    );
-    return { totalCents, transactions: forTeam.map(toTxnSummary) };
   },
 });
 
@@ -8793,20 +8814,36 @@ export const categorizeTransaction = mutation({
       "bookkeeper",
     );
     if (scope === CENTRAL) {
-      // Central txns carry no chapter-scoped links. Note this stays true even
-      // for a CROSS-BOOK charge (central card → chapter budget): the BUDGET is
-      // the whole attribution, and funds/categories/teams are chapter-scoped
-      // rows a central txn has no relationship to. Whether a cross-book charge
-      // should additionally take the receiving chapter's CATEGORY (so that
-      // chapter's own category rollup sees it) is a real question, deliberately
-      // deferred to the owner rather than assumed here — budget-only is the
-      // smaller, reversible first step.
-      if (args.fundId || args.categoryId || args.teamId) {
+      // FUND stays refused, and not for symmetry's sake. A fund encodes DONOR
+      // RESTRICTION — whose restricted money paid for this. A central card
+      // doesn't draw on a chapter's restricted fund; the cash left central's
+      // account. Attaching one would assert something false about where the
+      // money came from, which is a worse error than the missing category this
+      // branch used to force. (Funds are dormant anyway — one General Fund per
+      // chapter, backend-only since WP-1.4.)
+      //
+      // TEAM stays refused because it's a dead dimension, not because a central
+      // txn couldn't have one — see `transactions.teamId`'s schema comment.
+      if (args.fundId || args.teamId) {
         throw new ConvexError({
           code: "UNSUPPORTED",
           message:
-            "A central transaction can only be attributed to a budget, not chapter-scoped links.",
+            "A central transaction can't carry a fund or team — those are chapter-scoped.",
         });
+      }
+      // CATEGORY is now allowed, but ONLY on a cross-book charge, and only from
+      // the receiving chapter's own categories. See
+      // `requireCategoryForCentralTxn` for why this had to change: without it,
+      // a chapter's budget card showed cross-book spend in an "Uncategorized"
+      // bar that literally nobody could fix — not the central FM (refused here)
+      // and not the chapter's treasurer (the row lives in central's book, so
+      // `requireReconcileTxn` denies them the write).
+      if (args.categoryId) {
+        await requireCategoryForCentralTxn(
+          ctx,
+          args.categoryId,
+          args.budgetId !== undefined ? args.budgetId : txn.budgetId ?? null,
+        );
       }
     } else {
       await verifyTxnRefs(ctx, scope, {
@@ -8846,6 +8883,22 @@ export const categorizeTransaction = mutation({
     if (scope !== CENTRAL && args.fundId === undefined && txn.fundId == null) {
       const def = await defaultFundId(ctx, scope);
       if (def) patch.fundId = def;
+    }
+    // INVARIANT: a central-book row may carry a category ONLY while it's
+    // charged to that category's chapter budget (see
+    // `requireCategoryForCentralTxn`). Re-pointing it at a central budget — or
+    // clearing the budget entirely — must therefore drop the category with it,
+    // or a correction leaves behind a chapter category on a row that is once
+    // again purely central's. Assigned `undefined` (Convex's "remove this
+    // optional field" in a patch) — the same value `cleanPatch` translates a
+    // caller's explicit `null` into; a literal `null` would fail validation,
+    // since `transactions.categoryId` is `v.optional(v.id(...))`, not nullable.
+    if (scope === CENTRAL && args.categoryId == null) {
+      const nextBudgetId =
+        args.budgetId !== undefined ? args.budgetId : txn.budgetId ?? null;
+      const nextBudget = nextBudgetId ? await ctx.db.get(nextBudgetId) : null;
+      const stillCrossBook = nextBudget != null && nextBudget.chapterId !== CENTRAL;
+      if (!stillCrossBook && txn.categoryId != null) patch.categoryId = undefined;
     }
     // Advance an unreviewed transaction to categorized once coded. For a chapter
     // txn "coded" = fund/category; a central txn is coded by its central budget

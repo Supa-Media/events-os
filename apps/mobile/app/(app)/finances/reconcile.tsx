@@ -850,6 +850,7 @@ function ReconcileGrid() {
             onToggleAll={toggleAll}
             centralScope={centralScope}
             showBook={allBooksScope || viewingForeignChapter}
+            ownChapterId={ownChapterId}
             centralForItems={centralForItems}
             isManager={isManager}
             viewerPersonId={reconcile?.viewerPersonId ?? null}

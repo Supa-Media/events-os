@@ -346,6 +346,22 @@ export const transactions = defineTable({
   projectId: v.optional(v.id("projects")),
   eventId: v.optional(v.id("events")),
   eventItemId: v.optional(v.id("eventItems")),
+  // RETIRED DIMENSION (2026-08-05). This is a cost-center field — code a charge
+  // to a department — and it has never been written by anything: no screen sets
+  // it, and the one query that read it (`finances.teamActuals`, now deleted)
+  // filtered on it and so could only ever return zero, with no callers.
+  //
+  // The column stays because legacy rows may hold a value and dropping an
+  // optional field that live documents carry would break their validation; it
+  // is NOT a supported input. `categorizeTransaction` and
+  // `createManualTransaction` reject it explicitly rather than silently
+  // accepting a value nothing reads.
+  //
+  // If a real cost-center dimension is ever wanted, this is the field to
+  // revive — but note the app already classifies spend three other ways
+  // (budget = what for, `budgetCategories` = what kind, `budgetTags` =
+  // cross-cutting rollups), so the first question is whether a fourth earns
+  // its place on every row of the reconcile queue.
   teamId: v.optional(v.id("financeTeams")),
   personId: v.optional(v.id("people")),
   engagementId: v.optional(v.id("engagements")),

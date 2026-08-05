@@ -173,6 +173,7 @@ export function ReconcileList({
   onToggleAll,
   centralScope = false,
   showBook = false,
+  ownChapterId = null,
   centralForItems,
   isManager = false,
   viewerPersonId = null,
@@ -191,6 +192,12 @@ export function ReconcileList({
   selected: Set<string>;
   onToggle: (id: string) => void;
   onToggleAll: () => void;
+  /** The caller's OWN chapter, or null. Decides whether a CROSS-BOOK row's
+   *  Category cell is editable: the categories this grid loads are the
+   *  caller's chapter's, so a charge absorbed by a different chapter can't be
+   *  categorized from here (the server enforces the same rule against the
+   *  BUDGET's chapter — see `requireCategoryForCentralTxn`). */
+  ownChapterId?: Id<"chapters"> | null;
   /** Render the Book column — true when "whose money is this?" stops being
    *  answerable from the page chrome alone: the merged all-books queue (rows
    *  from different books sit next to each other), or a view into a chapter
@@ -224,13 +231,22 @@ export function ReconcileList({
     RECONCILE_COLUMNS_STORAGE_KEY,
     DEFAULT_COLS,
   );
+  // The Category column is chapter-only, so single-central scope normally drops
+  // it — but a CROSS-BOOK row in that scope is absorbed by a chapter's budget
+  // and DOES take that chapter's category, so hiding the column there would put
+  // the one control that spend needs on a screen it isn't on. Data-driven: the
+  // column appears in central scope exactly when there's something in it.
+  const anyCrossBook = rows.some(
+    (r) => r.chargedTo != null && r.chargedTo.id !== r.book.id,
+  );
+  const showCategory = !centralScope || anyCrossBook;
   const tableWidth = (Object.values(widths) as number[]).reduce((sum, w) => sum + w, 0);
   // Drop the width of any column this scope doesn't render so the grid doesn't
-  // leave dead space: the chapter-only Category column in central scope, and
-  // the Book column outside the merged all-books queue.
+  // leave dead space: Category when it isn't shown, and the Book column outside
+  // the merged all-books queue.
   const width =
     tableWidth -
-    (centralScope ? widths.category : 0) -
+    (showCategory ? 0 : widths.category) -
     (showBook ? 0 : widths.book);
 
   return (
@@ -268,7 +284,7 @@ export function ReconcileList({
               width={widths.cardholder}
               onResizeStart={startResize("cardholder")}
             />
-            {!centralScope ? (
+            {showCategory ? (
               <GridHeaderCell
                 label="Category"
                 width={widths.category}
@@ -306,6 +322,8 @@ export function ReconcileList({
               isLast={i === rows.length - 1}
               centralScope={centralScope}
               showBook={showBook}
+              showCategory={showCategory}
+              ownChapterId={ownChapterId}
               centralForItems={centralForItems}
               isManager={isManager}
               viewerPersonId={viewerPersonId}
@@ -327,6 +345,8 @@ function ReconcileRow({
   isLast,
   centralScope,
   showBook,
+  showCategory,
+  ownChapterId,
   centralForItems,
   isManager,
   viewerPersonId,
@@ -340,6 +360,8 @@ function ReconcileRow({
   isLast: boolean;
   centralScope: boolean;
   showBook: boolean;
+  showCategory: boolean;
+  ownChapterId: Id<"chapters"> | null;
   centralForItems?: PickerItem[];
   isManager: boolean;
   viewerPersonId: Id<"people"> | null;
@@ -368,20 +390,33 @@ function ReconcileRow({
   const readOnly = !row.book.canEdit;
   // Is THIS row central-owned? In a single-book scope the answer is uniform
   // (`centralScope` covers it), but the merged all-books queue interleaves
-  // central and chapter rows — and they don't accept the same coding. A
-  // central charge has no category at all (categories are chapter-scoped) and
-  // can only attribute to a CENTRAL budget, both enforced server-side. So the
-  // Category cell renders inert on a central row, and the "For" picker offers
-  // that row's own valid options — rather than offering chapter options the
-  // backend would reject, which is the same "affordance that can't work" this
-  // whole change set is about removing.
+  // central and chapter rows — and they don't accept the same coding. So the
+  // "For" picker offers that row's own valid options rather than offering
+  // options the backend would reject, which is the same "affordance that can't
+  // work" this whole change set is about removing.
   const isCentralRow = row.book.id === CENTRAL;
   // One book paid, a different book's budget absorbed it — see the For cell's
   // CROSS-BOOK FLAG comment. `chargedTo` is null while the row is unattributed,
   // which is most of the review queue, so this is false for those by
   // construction rather than by a separate check.
   const isCrossBook = row.chargedTo != null && row.chargedTo.id !== row.book.id;
-  const hideCategory = centralScope || isCentralRow;
+  // CATEGORY on a central-book row: normally none (categories are
+  // chapter-scoped), EXCEPT on a cross-book charge absorbed by the caller's own
+  // chapter — that spend lands on their budget card, and if it isn't
+  // categorized here it can never be, since the row lives in central's book and
+  // the chapter's treasurer can't write it (`requireCategoryForCentralTxn`).
+  // Scoped to the caller's OWN chapter because `categoryItems` is their
+  // chapter's list; a charge absorbed by some OTHER chapter would need that
+  // chapter's categories, which this screen doesn't load.
+  const canCategorizeCrossBook =
+    isCentralRow &&
+    isCrossBook &&
+    ownChapterId != null &&
+    row.chargedTo?.id === ownChapterId;
+  // Only CENTRAL rows are ever inert here, exactly as before — a chapter row
+  // (including a read-only peeked one, whose whole body is already
+  // non-interactive) still renders its real category rather than a bare dash.
+  const hideCategory = centralScope || (isCentralRow && !canCategorizeCrossBook);
   const rowForItems = isCentralRow && centralForItems ? centralForItems : forItems;
 
   // Fire-and-surface: run a cell mutation, alerting the server's reason on error.
@@ -604,7 +639,7 @@ function ReconcileRow({
           individual central row renders an inert dash in it (see
           `hideCategory`) so the grid stays aligned without offering a picker
           that can't commit. */}
-      {!centralScope ? (
+      {showCategory ? (
         hideCategory ? (
           <Cell width={widths.category}>
             <Text className="flex-1 px-2 py-1.5 text-sm text-faint">—</Text>
