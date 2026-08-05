@@ -246,14 +246,6 @@ function ReconcileGrid() {
   // `requireFinanceCentral` and `requireAllBooksReconcile` respectively).
   const centralScope = scope === "central" && hasCentralSeat;
   const allBooksScope = scope === "all" && hasCentralSeat;
-  // R1b: "Mark personal" (cards.flagPersonalCharge's manager path) is a
-  // manager-only action — a bookkeeper has full Reconcile access but not this.
-  // A caller has at most one chapter seat (their home chapter, MVP — see
-  // `requireChapterId`), so this is unambiguous. `ReconcileList` ALSO widens
-  // the same button to a cardholder's OWN row (founder feedback review) via
-  // `reconcile.viewerPersonId` below — that's the other half of
-  // `flagPersonalCharge`'s server-side OR-gate, unrelated to this flag.
-  const isManager = seats.some((s) => s.scope === "chapter" && s.role === "manager");
 
   // WP-dashboard-drill Phase 2: a central caller PEEKING into a chapter that
   // isn't their own home chapter — `listReconcile`'s `chapterId` arg (added
@@ -323,6 +315,23 @@ function ReconcileGrid() {
           ? { filter, chapterId: targetChapterId, ...periodArgs }
           : { filter, ...periodArgs },
   );
+  // R1b: "Mark personal" (cards.flagPersonalCharge's manager path) is a
+  // manager-only action — a bookkeeper has full Reconcile access but not this.
+  // `ReconcileList` ALSO widens the same button to a cardholder's OWN row
+  // (founder feedback review) via `reconcile.viewerPersonId` below — that's the
+  // other half of `flagPersonalCharge`'s server-side OR-gate.
+  //
+  // Comes from the SERVER (`listReconcile.viewerIsManager` — the very
+  // `getFinanceRole(...).isManager` the mutations gate on), not re-derived here
+  // from `mySeats`. The old local test required a `scope:"chapter"` manager
+  // seat, which a CENTRAL-scope manager (Executive Director / Financial
+  // Manager / superuser) doesn't have: they're manager-everywhere server-side
+  // but hold no chapter seat, so this grid hid "Mark personal" and both
+  // un-mark affordances from them on every row except their own charges —
+  // exactly the "some things it won't let me, the flag just doesn't exist"
+  // report. One authority, no drift.
+  const isManager = reconcile?.viewerIsManager ?? false;
+
   // The Chase-receipts destination, carrying this grid's CURRENT scope as
   // route params — mirrors the args object above (minus `filter`, which
   // `receipt-chase.tsx` has no use for) so `receiptChase` resolves the exact

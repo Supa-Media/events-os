@@ -513,6 +513,16 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "rule",
+        title: "A charge with no cardholder can still be personal",
+        text: "Most rows already know who spent the money — it's their card. A bank/ACH entry, an imported statement row nobody's card is linked to, or a hand-entered charge doesn't, so the flag asks you WHO OWES IT first and records that person as the payer. Only a manager can name someone: saying a teammate owes the chapter money isn't a coding decision, it's a bill.",
+      },
+      {
+        kind: "rule",
+        title: "Collecting it back — and what settling actually does",
+        text: "The Reconcile pill is the worklist; the collecting happens on Cards → \"Personal to repay\" (the same total shows on Reimbursements), which opens the list of who owes what. The person pays from their own card or bank on their Cards tab, and a MANAGER confirms the money arrived with \"Mark repaid\" — deliberately not self-serve, so nobody can flag their own charge and then zero it out. Settling deletes nothing: the original charge keeps its receipt and coding, an offsetting credit posts against it, and the pair nets to zero in category and budget spend. The row reads \"Repaid\" from then on.",
+      },
+      {
+        kind: "rule",
         title: "Unattributed is loud on purpose",
         text: "A charge with no explicit budget link doesn't get absorbed into whichever budget looks closest — it shows up as Unattributed on the dashboard, in plain sight, with a one-tap path back into this exact filtered view. Loud and wrong beats quiet and wrong.",
       },
@@ -819,7 +829,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         items: [
           "**Reconcile at Ready:** every charge has a receipt, a category, and a budget link — the Ready filter's count climbs toward all of them.",
           "**Reimbursement queue triaged:** nothing sitting unreviewed that's actually yours to act on — the submission email is a nudge, not a substitute for actually clearing the queue.",
-          "**Personal (unpaid) filter checked:** a personal flag doesn't block Ready (it's a separate flag, not a status), so it's easy to close a month while real debts sit uncollected — check the Personal (unpaid) pill directly and nudge anyone who still owes.",
+          "**Personal (unpaid) filter checked:** a personal flag doesn't block Ready (it's a separate flag, not a status), so it's easy to close a month while real debts sit uncollected — check the Personal (unpaid) pill directly and nudge anyone who still owes. When someone's paid you back, confirm it on Cards → \"Personal to repay\" with \"Mark repaid\", or the debt stays open on the books no matter what landed in the account.",
           "**Report up:** the central Financial Manager should be able to open your chapter's numbers and trust them without a conversation — that trust IS the north-star metric this whole system is built around.",
         ],
       },
@@ -870,6 +880,19 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 1,
         explanation:
           "The FM trusting every chapter's numbers without asking is the system's stated north-star metric, right alongside the 30-minute close.",
+      },
+      {
+        prompt:
+          "A cardholder pays back a personal charge and you confirm it with \"Mark repaid\". What happens to the original charge?",
+        options: [
+          "It's deleted from the ledger — the debt is settled, so the row goes away",
+          "It stays on the ledger with its receipt and coding, and an offsetting credit posts against it so the two net to zero",
+          "It moves to the Excluded filter",
+          "Nothing changes until next month's bank import",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Nothing is ever deleted. Settling posts one offsetting credit against the charge — the pair nets to zero in category and budget spend, the row reads \"Repaid\", and the money's whole story stays on the books. Until you confirm it, the debt stays open no matter what landed in the account.",
       },
     ],
   },

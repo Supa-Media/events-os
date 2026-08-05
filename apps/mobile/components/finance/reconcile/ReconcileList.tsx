@@ -58,6 +58,17 @@
  * exactly, so this button's visibility never promises an action the backend
  * would then reject with `PAYEE_REQUIRED`.
  *
+ * NO-PAYEE ROWS (founder feedback: "in reconcile I can't mark everything as
+ * personal, some things it won't let me, the flag just doesn't exist"): a
+ * bank/ACH entry, a Relay CSV row whose last-4 was never linked to a person,
+ * or a hand-entered transaction resolves NOBODY — so the button used to be
+ * absent with no explanation, and the row simply couldn't be flagged. A
+ * MANAGER now gets the flag on those rows too; tapping it asks who owes it
+ * (`PersonPicker`) before the usual confirm, and `flagPersonalCharge`'s
+ * `payerPersonId` arg records that person as the charge's payer. Non-managers
+ * still don't see it — naming someone else's debt is a manager's call, and
+ * the server enforces the same split.
+ *
  * OWN-CHARGE FLAG (founder feedback review): `cards.flagPersonalCharge`
  * already allows the PAYER, not just a manager, to flag their own charge
  * server-side — but this grid used to only ever offer the button to
@@ -82,6 +93,7 @@ import {
   Button,
   Icon,
   OptionTag,
+  PersonPicker,
   Popover,
   SelectCell,
   GridHeaderCell,
@@ -389,6 +401,16 @@ function ReconcileRow({
     "mark" | "unmark" | null
   >(null);
   const [personalPromptBusy, setPersonalPromptBusy] = useState(false);
+  // No-payee rows only (see the file header): who the manager said owes this
+  // charge. The picker runs BEFORE the confirm prompt — two sequential modals
+  // rather than a picker nested inside the confirm — and `namedPayee` is what
+  // the confirm then names back to them and what `flagPersonalCharge`
+  // attributes the charge to. Cleared whenever either step is dismissed.
+  const [payeePickerOpen, setPayeePickerOpen] = useState(false);
+  const [namedPayee, setNamedPayee] = useState<{
+    id: Id<"people">;
+    name: string;
+  } | null>(null);
   // Accept feels TERMINAL: the moment a suggestion is accepted we show a brief
   // "Accepted" state in the Suggested cell instead of letting an
   // still-`isSuggestible` row (accepted the category but still needs a budget)
@@ -439,16 +461,33 @@ function ReconcileRow({
       // re-renders this row with `isPersonal`/`repaymentStatus` set the
       // moment either mutation commits.
       if (personalPromptMode === "mark") {
-        await flagPersonalCharge({ transactionId: id });
+        // `payerPersonId` only travels for a row that resolves no payee of its
+        // own — the server ignores it otherwise (it will never re-attribute a
+        // real cardholder's charge to someone else).
+        await flagPersonalCharge({
+          transactionId: id,
+          ...(namedPayee ? { payerPersonId: namedPayee.id } : {}),
+        });
       } else if (personalPromptMode === "unmark") {
         await unflagPersonalCharge({ transactionId: id });
       }
       setPersonalPromptMode(null);
+      setNamedPayee(null);
     } catch (err) {
       alertError(err);
     } finally {
       setPersonalPromptBusy(false);
     }
+  }
+
+  /** Tapping the flag: a row with a resolvable payee goes straight to the
+   *  confirm; one without asks a manager who owes it first. */
+  function startMarkPersonal() {
+    if (row.cardholder == null) {
+      setPayeePickerOpen(true);
+      return;
+    }
+    setPersonalPromptMode("mark");
   }
 
   // The "For" picker's value is just `budgetId` (WP-U: one home per dollar) —
@@ -775,26 +814,61 @@ function ReconcileRow({
                 </>
               )}
             </View>
-          ) : (isManager || isOwnCharge) && row.cardholder != null ? (
+          ) : /* A resolvable payee → manager or the payer themselves. No payee
+                at all → a manager only, who names who owes it (see the file
+                header's NO-PAYEE ROWS note). */
+          row.cardholder != null ? (
+            (isManager || isOwnCharge) && (
+              <Pressable
+                onPress={startMarkPersonal}
+                hitSlop={6}
+                accessibilityRole="button"
+                accessibilityLabel="Mark personal"
+                className="rounded p-1 active:opacity-70 web:hover:opacity-90"
+              >
+                <Icon name="flag" size={15} color={colors.muted} />
+              </Pressable>
+            )
+          ) : isManager ? (
             <Pressable
-              onPress={() => setPersonalPromptMode("mark")}
+              onPress={startMarkPersonal}
               hitSlop={6}
               accessibilityRole="button"
-              accessibilityLabel="Mark personal"
+              accessibilityLabel="Mark personal — pick who owes it"
               className="rounded p-1 active:opacity-70 web:hover:opacity-90"
             >
-              <Icon name="flag" size={15} color={colors.muted} />
+              <Icon name="flag" size={15} color={colors.faint} />
             </Pressable>
           ) : null}
         </View>
       </Cell>
       </View>
 
+      {/* Step 1 for a no-payee row: who owes this? Mounted only while asking,
+          so the roster query it runs costs nothing on an ordinary grid. */}
+      {payeePickerOpen ? (
+        <PersonPicker
+          visible
+          title="Who owes this charge?"
+          subtitle="This transaction isn't on anyone's card, so pick the person who made it — they'll be recorded as the payer and asked to pay it back."
+          onPick={(personId, person) => {
+            setNamedPayee({ id: personId as Id<"people">, name: person.name });
+            setPayeePickerOpen(false);
+            setPersonalPromptMode("mark");
+          }}
+          onClose={() => setPayeePickerOpen(false)}
+        />
+      ) : null}
+
       {personalPromptMode ? (
         <MarkPersonalModal
           mode={personalPromptMode}
+          namedPayeeName={namedPayee?.name ?? null}
           submitting={personalPromptBusy}
-          onCancel={() => setPersonalPromptMode(null)}
+          onCancel={() => {
+            setPersonalPromptMode(null);
+            setNamedPayee(null);
+          }}
           onConfirm={() => void confirmPersonalPrompt()}
         />
       ) : null}

@@ -9,6 +9,12 @@
  * No free-text reason field (unlike Exclude) — there's nothing for a human to
  * explain here; the confirm step exists purely to prevent an accidental
  * send, not to collect a justification.
+ *
+ * `namedPayeeName` covers the charge that resolves NO payee of its own (a
+ * bank/ACH entry, an unlinked Relay CSV row, a hand-entered transaction): the
+ * caller has already asked a manager who owes it, and this step names that
+ * person back to them before the flag — attributing someone else's debt is
+ * exactly the mis-tap the confirm exists to catch.
  */
 import { Modal, Pressable, Text, View } from "react-native";
 import { Button, Icon } from "../../ui";
@@ -16,6 +22,7 @@ import { colors } from "../../../lib/theme";
 
 export function MarkPersonalModal({
   mode,
+  namedPayeeName,
   onConfirm,
   onCancel,
   submitting,
@@ -24,6 +31,9 @@ export function MarkPersonalModal({
    *  "unmark" undoes a mis-flag (no email, no confirmation copy needed beyond
    *  "are you sure"). */
   mode: "mark" | "unmark";
+  /** Set only when the manager had to pick who owes it (the charge has no
+   *  cardholder and no attributed person). Names them in the confirm copy. */
+  namedPayeeName?: string | null;
   onConfirm: () => void;
   onCancel: () => void;
   submitting?: boolean;
@@ -48,7 +58,14 @@ export function MarkPersonalModal({
             </Pressable>
           </View>
 
-          <View className="px-5 py-4">
+          <View className="gap-2 px-5 py-4">
+            {isMark && namedPayeeName ? (
+              <Text className="text-sm text-ink">
+                This charge isn't on anyone's card, so{" "}
+                <Text className="font-semibold">{namedPayeeName}</Text> will be
+                recorded as the person who made it and owes it back.
+              </Text>
+            ) : null}
             <Text className="text-xs text-muted">
               {isMark
                 ? "This drops the charge out of budget/category spend and emails the cardholder a link to pay it back — from your card, our bank, or another provider. This can be undone before it's repaid."

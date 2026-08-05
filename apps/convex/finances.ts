@@ -7743,6 +7743,18 @@ export const listReconcile = query({
     // server-side; the UI just didn't offer it here). Resolved ONCE per
     // query rather than per row since it never varies row to row.
     viewerPersonId: v.union(v.id("people"), v.null()),
+    // Whether the caller counts as a finance MANAGER — the grid's manager-only
+    // row actions ("Mark personal" on someone else's charge, un-mark
+    // transfer/payout). Resolved SERVER-side through the same
+    // `getFinanceRole(...).isManager` the mutations themselves gate on, rather
+    // than re-derived client-side from `financeRoles.mySeats`. That derivation
+    // (`seats.some(s => s.scope === "chapter" && s.role === "manager")`) missed
+    // an entire class of real managers: a CENTRAL-scope grant (an Executive
+    // Director / Financial Manager, or a superuser) is manager-everywhere
+    // server-side — `getFinanceRole` folds in every `scope === "central"` grant
+    // — but produces no `scope:"chapter"` seat, so the UI silently hid the flag
+    // from them on every row but their own. One authority, no drift.
+    viewerIsManager: v.boolean(),
   }),
   handler: async (ctx, args) => {
     const filter = args.filter ?? "all";
@@ -7758,7 +7770,8 @@ export const listReconcile = query({
       payouts: 0,
     };
     const homeChapterId = await readChapterId(ctx);
-    if (!homeChapterId) return { rows: [], counts: zero, viewerPersonId: null };
+    if (!homeChapterId)
+      return { rows: [], counts: zero, viewerPersonId: null, viewerIsManager: false };
     // Resolve the BOOKS this queue reads. One book in every scope except
     // `"all"`, which merges central + every active chapter (see the `scope`
     // arg's doc). Central-owned txns key on the `"central"` sentinel; a
@@ -7964,7 +7977,17 @@ export const listReconcile = query({
     // "is this MY charge," which is unaffected by which chapter's queue is
     // currently on screen. `null` for a superuser with no roster row at all.
     const viewer = await viewerPerson(ctx, homeChapterId);
-    return { rows, counts, viewerPersonId: viewer?._id ?? null };
+    // Same home-chapter resolution, and deliberately the same call the write
+    // mutations make (`cards.flagPersonalCharge` / `finances.unmarkTransfer`
+    // both gate on `getFinanceRole(ctx, requireChapterId(ctx))`), so the button
+    // the grid offers and the permission the server enforces can never disagree.
+    const access = await getFinanceRole(ctx, homeChapterId);
+    return {
+      rows,
+      counts,
+      viewerPersonId: viewer?._id ?? null,
+      viewerIsManager: access.isManager,
+    };
   },
 });
 
