@@ -25,7 +25,11 @@ type Props = {
    *  unset, so every other caller's header is unchanged. */
   subtitle?: string;
   selectedId?: PersonId | null;
-  onPick: (personId: PersonId) => void;
+  /** The picked person's id, plus the roster row itself — a caller that has to
+   *  NAME the person back to the user (a confirm step: "bill Sarah $18.40?")
+   *  otherwise has to re-fetch the whole roster just to turn an id into a
+   *  name. Every existing caller ignores the second argument. */
+  onPick: (personId: PersonId, person: { _id: string; name: string }) => void;
   onClear?: () => void;
   onClose: () => void;
   /**
@@ -177,7 +181,7 @@ export function PersonPicker({
                   key={p._id}
                   label={p.name}
                   selected={p._id === selectedId}
-                  onPress={() => onPick(p._id)}
+                  onPress={() => onPick(p._id, p)}
                 />
               ))
             )}

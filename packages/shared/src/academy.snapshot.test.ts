@@ -225,6 +225,19 @@
  * `dev-data-export`'s vacated slot leaves `donor-stewardship`'s remaining
  * three sections untouched and unmoved. Total: still 105 sections (moved,
  * not added or removed).
+ *
+ * Collecting personal charges (founder feedback: the "Personal charges
+ * outstanding" tile named a number with no way to see the rows or settle
+ * one, and Reconcile hid the flag entirely on charges that resolve no
+ * payer). `finance-reconcile-grid` is content-only again — two rules, one on
+ * a manager NAMING who owes an unattributed charge and one on where the
+ * collecting happens and what settling does to the ledger — because its quiz
+ * is still at the 5-question cap. The quiz question that pairs with it
+ * ("Mark repaid" posts an offsetting credit; nothing is deleted) went to
+ * `finance-monthly-close` instead, which had room and already carries the
+ * "check the Personal (unpaid) pill" close step: quiz length 3→4 (bumped
+ * below), minutes and placement unchanged. No slugs, sections, or courses
+ * moved; total stays 105 sections.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -848,7 +861,7 @@ const EXPECTED_SECTIONS: {
     slug: "finance-monthly-close",
     title: "The monthly close",
     minutes: 3,
-    quizLength: 3,
+    quizLength: 4,
     optional: false,
     capstoneKind: null,
   },
