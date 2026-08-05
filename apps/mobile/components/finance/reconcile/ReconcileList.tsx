@@ -122,10 +122,12 @@ export type PickerItem = { value: string; label: string; header?: boolean; reaso
 // column but `check` wider/narrower, and remembers the result per-browser.
 const DEFAULT_COLS = {
   check: 40,
-  // Which BOOK the charge belongs to (Central / a chapter). Only rendered in
-  // the merged all-books queue — a single-book grid already says so in the
-  // books selector and the header's `ScopeBadge`, so a column repeating it on
-  // every row would be noise. See `finances.ts#reconcileBook`.
+  // Which BOOK the charge belongs to (Central / a chapter). Rendered when the
+  // page chrome alone can't answer it: the merged all-books queue, and a view
+  // into a chapter that isn't the caller's own desk. In an ordinary
+  // single-book view the books selector and the header's `ScopeBadge` already
+  // say so, and a column repeating it on every row would be noise. See
+  // `finances.ts#reconcileBook`.
   book: 108,
   merchant: 210,
   date: 118, // fits "Mar 15, 2026" — year added for multi-year history
@@ -177,9 +179,11 @@ export function ReconcileList({
   selected: Set<string>;
   onToggle: (id: string) => void;
   onToggleAll: () => void;
-  /** Render the Book column — true only in the merged all-books queue, where
-   *  rows from different books sit next to each other and "whose money is
-   *  this?" stops being answerable from the page chrome alone. */
+  /** Render the Book column — true when "whose money is this?" stops being
+   *  answerable from the page chrome alone: the merged all-books queue (rows
+   *  from different books sit next to each other), or a view into a chapter
+   *  that isn't the caller's own desk (the chrome names their desk, not the
+   *  book on screen). */
   showBook?: boolean;
   // WP-2.1: reconciling CENTRAL-owned txns. Central money carries no
   // chapter-scoped links (funds/categories/projects/events are chapter-only), so

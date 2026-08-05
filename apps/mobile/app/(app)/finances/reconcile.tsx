@@ -193,7 +193,16 @@ function ReconcileGrid() {
   // (and, with it, the merged all-books queue).
   const seats = useQuery(api.financeRoles.mySeats, {}) ?? [];
   const hasCentralSeat = seats.some((s) => s.scope === "central");
-  const { context, chapterSeats } = useChapterContext();
+  const { context, chapterSeats, peekChapters } = useChapterContext();
+  // Every chapter this caller can name: their own desks, plus (central-seat
+  // holders only) every peekable chapter — the same two lists the shell's
+  // context pill is built from, so this can't name a chapter the shell won't.
+  const chapterNameById = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const s of chapterSeats) m.set(s.chapterId, s.chapterName);
+    for (const p of peekChapters) m.set(p.chapterId, p.name);
+    return m;
+  }, [chapterSeats, peekChapters]);
   // The desk the shell says the caller is at, mapped to the book this grid
   // should open on. A central-desk caller lands on the MERGED queue: that desk's
   // badge promises "Central — all chapters", and a merged queue is the only
@@ -237,10 +246,6 @@ function ReconcileGrid() {
   // `requireFinanceCentral` and `requireAllBooksReconcile` respectively).
   const centralScope = scope === "central" && hasCentralSeat;
   const allBooksScope = scope === "all" && hasCentralSeat;
-  // The caller's own chapter desk's display name, for the chapter pill's
-  // label. `chapterSeats` is the same list `ScopeBadge` reads, so the pill and
-  // the header badge always name the chapter identically.
-  const ownChapterName = chapterSeats[0]?.chapterName ?? null;
   // R1b: "Mark personal" (cards.flagPersonalCharge's manager path) is a
   // manager-only action — a bookkeeper has full Reconcile access but not this.
   // A caller has at most one chapter seat (their home chapter, MVP — see
@@ -274,8 +279,33 @@ function ReconcileGrid() {
   // Which chapter's book to read when the scope isn't central/all: an explicit
   // `?chapterId=` (a dashboard chip's deep link) wins over the ambient peek
   // desk, and both fall through to the caller's own chapter server-side.
-  const targetChapterId =
-    (params.chapterId as Id<"chapters"> | undefined) ?? peekedChapterId;
+  //
+  // `?chapterId=` is honored ONLY when it names a chapter this caller can
+  // actually reach. A typo, a stale bookmark, or an id they've lost access to
+  // falls back to the ambient desk instead of reaching the server as a
+  // malformed `v.id("chapters")` argument — that's an argument-validation
+  // throw, which `FinanceBoundary` (a ConvexError boundary) wouldn't catch.
+  // Keeps this screen's standing promise that unknown params degrade to the
+  // defaults and never throw.
+  const paramChapterId =
+    params.chapterId && chapterNameById.has(params.chapterId)
+      ? (params.chapterId as Id<"chapters">)
+      : undefined;
+  const targetChapterId = paramChapterId ?? peekedChapterId;
+  // Viewing a chapter that ISN'T the caller's own desk — via a deep-linked
+  // chip or an active peek. The page chrome (the `ScopeBadge`, the books
+  // selector) is built around the caller's OWN desk, so without naming the
+  // viewed chapter explicitly this is the one state where the grid could
+  // still show one book while the chrome named another — the exact confusion
+  // this change set exists to remove, just relocated. So: the Book column
+  // turns on, and the chapter pill takes the viewed chapter's name.
+  const ownChapterId = chapterSeats[0]?.chapterId ?? null;
+  const viewingForeignChapter =
+    targetChapterId != null && targetChapterId !== ownChapterId;
+  const viewedChapterName =
+    (targetChapterId ? chapterNameById.get(targetChapterId) : null) ??
+    chapterSeats[0]?.chapterName ??
+    null;
 
   // no-dead-numbers: the optional period narrowing (see the module doc
   // above) — spread in on top of the scope args below, never overriding
@@ -634,7 +664,7 @@ function ReconcileGrid() {
               {BOOK_SCOPES.map((s) => (
                 <Pill
                   key={s}
-                  label={bookScopeLabel(s, ownChapterName)}
+                  label={bookScopeLabel(s, viewedChapterName)}
                   selected={scope === s}
                   onPress={() => {
                     setScope(s);
@@ -789,7 +819,7 @@ function ReconcileGrid() {
             onToggle={toggle}
             onToggleAll={toggleAll}
             centralScope={centralScope}
-            showBook={allBooksScope}
+            showBook={allBooksScope || viewingForeignChapter}
             centralForItems={centralForItems}
             isManager={isManager}
             viewerPersonId={reconcile?.viewerPersonId ?? null}
