@@ -21,6 +21,16 @@ confirmed findings) → wait for CI → **squash-merge on green**. Merging to
 skip CI. This is the standing expectation; don't wait to be asked to PR or
 merge.
 
+**A PR you opened is not done until it is MERGED or you have said out loud
+that it isn't.** "I'll merge on green" is a commitment that has to be
+discharged in the same session. Before ending ANY turn, check every PR you
+opened this session and either merge it (green), fix it (red), or state its
+exact status in your reply. Never end a turn leaving one silently open —
+the user has no reason to suspect a PR you described as finished is still
+sitting there, and "I said I'd merge it and then didn't" is the failure
+this rule exists to prevent (2026-08-05: #502 sat green and unmerged
+because the session moved on after saying it would merge).
+
 **Polling while work is in flight (subagents, CI, deploys): use a
 persistent background Monitor ticker. NEVER use `send_later` — for
 anything.** It triggers a blocking permission prompt on every call on
@@ -29,7 +39,13 @@ interrupting whoever is at the keyboard. Arm one session-length Monitor
 (`while true; do sleep 300; echo "POLL TICK"; done`, persistent) and on
 each tick check in-flight branches, CI check runs, and deploy workflows —
 never passively wait for completion notifications and never take a
-subagent's self-report on faith. For one-shot waits use Bash
+subagent's self-report on faith.
+
+ONE ticker, and on every tick sweep **all** your open PRs — not the one you
+armed it for. A ticker mentally bound to a single PR goes stale the moment
+that PR merges and a newer one opens behind it, and then nothing is
+watching the thing that actually needs watching. Stop the ticker only when
+nothing you own is unmerged. For one-shot waits use Bash
 run_in_background with an `until` loop. Stop the ticker when nothing is
 outstanding.
 
