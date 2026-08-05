@@ -1770,7 +1770,6 @@ async function runUploadPipeline(
     result = await extractReceiptFields(ctx, {
       storageId: receipt.storageId,
       config,
-      blob,
       contentType,
       filename: receipt.filename,
       model: resolveOcrModel(config, modelOverride),
@@ -1992,7 +1991,6 @@ async function computeRetryExtraction(
     result = await extractReceiptFields(ctx, {
       storageId: receipt.storageId,
       config,
-      blob,
       contentType,
       filename: receipt.filename,
       model: resolveOcrModel(config, model),

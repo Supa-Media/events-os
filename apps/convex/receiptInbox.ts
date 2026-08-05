@@ -1398,10 +1398,20 @@ async function fetchAllReceiptAttachments(emailId: string): Promise<{
         console.log(`[receiptInbox] attachment download failed (${dl.status}).`);
         continue;
       }
-      const blob = await dl.blob();
+      // BUFFER the bytes into an in-memory Blob instead of handing the
+      // response's own Blob down the pipeline. In the Convex runtime a Blob
+      // from `res.blob()` is backed by the response STREAM: the first read
+      // consumes it and every later one throws
+      // `TypeError: Can't re-read streaming Blob`. The pipeline reads an
+      // attachment TWICE — once to `ctx.storage.store` it, once for the
+      // vision call's data URL — so a photo/screenshot receipt emailed in
+      // died on that second read (observed in prod 2026-08-05; PDFs survived
+      // only because their extraction reads the STORED file, never the blob).
+      // A Blob built from an ArrayBuffer holds its bytes and re-reads fine.
+      const streamed = await dl.blob();
       out.push({
-        blob,
-        contentType: target.content_type ?? blob.type ?? "application/octet-stream",
+        blob: new Blob([await streamed.arrayBuffer()], { type: streamed.type }),
+        contentType: target.content_type ?? streamed.type ?? "application/octet-stream",
         filename: target.filename ?? "receipt",
       });
     } catch (err) {
@@ -1867,6 +1877,12 @@ const SCANNED_PDF_UNREADABLE_MESSAGE =
   "automatically; re-upload as a photo/screenshot or enter the total " +
   "manually.";
 
+/** What extraction says when the file it was pointed at isn't in storage at
+ *  all — the receipt document still exists and a human can fix the total by
+ *  hand, so this is an `ocrError`, never a throw. */
+const MISSING_STORED_FILE_MESSAGE =
+  "The receipt file couldn't be read back from storage — enter the total manually.";
+
 /**
  * Route ONE stored file through extraction: a PDF tries its own TEXT LAYER
  * first (zero LLM — `receiptPdf.ts#extractPdfText`, an action→action call
@@ -1887,19 +1903,27 @@ const SCANNED_PDF_UNREADABLE_MESSAGE =
  * Shared by the email pipeline (`runPipeline`), the mass-upload pipeline
  * (`receipts.ts#runUploadPipeline`), and `receipts.ts#retryExtraction` — ONE
  * place decides "PDF text vs vision" so the three callers can't drift apart.
+ *
+ * The file is identified by `storageId` ONLY — every route (PDF text layer,
+ * scanned-page render, plain-image vision) reads the bytes back out of
+ * storage itself. It deliberately does NOT take the caller's own Blob: in the
+ * Convex runtime a Blob from `res.blob()` / `ctx.storage.get()` is
+ * stream-backed and single-read, so a caller that had already stored it
+ * handed us a spent one and the image route died on
+ * `TypeError: Can't re-read streaming Blob` (the emailed-screenshot bug).
+ * Reading from storage is what the PDF routes always did; now all of them do.
  */
 export async function extractReceiptFields(
   ctx: ActionCtx,
   args: {
     storageId: Id<"_storage">;
     config: AiEngineConfig;
-    blob: Blob;
     contentType: string;
     filename?: string;
     model: string;
   },
 ): Promise<OcrRoutingResult> {
-  const { storageId, config, blob, contentType, filename, model } = args;
+  const { storageId, config, contentType, filename, model } = args;
 
   if (isPdfContentType(contentType, filename)) {
     const { text } = await ctx.runAction(internal.receiptPdf.extractPdfText, {
@@ -1987,8 +2011,12 @@ export async function extractReceiptFields(
     }
   }
 
-  // An image (or anything else worth handing to the vision model).
-  const buf = await blob.arrayBuffer();
+  // An image (or anything else worth handing to the vision model). Read the
+  // bytes back out of storage — see this function's doc for why the caller's
+  // own Blob is never trusted here.
+  const stored = await ctx.storage.get(storageId);
+  if (!stored) return { ocrError: MISSING_STORED_FILE_MESSAGE };
+  const buf = await stored.arrayBuffer();
   const dataUrl = `data:${contentType};base64,${arrayBufferToBase64(buf)}`;
   const ocr = await ocrReceiptImage(config, [dataUrl], model);
   if ("error" in ocr) {
@@ -2233,7 +2261,6 @@ async function runPipeline(
       const result = await extractReceiptFields(ctx, {
         storageId,
         config,
-        blob: source.blob,
         contentType: source.contentType,
         filename: source.filename,
         model,

@@ -616,16 +616,17 @@ describe("extractReceiptFields — ocrError translation", () => {
       ...over,
     };
   }
-  // Image content-type never touches `ctx` (only the PDF branch does) — an
-  // unused stub is enough for a direct unit test.
-  const fakeCtx = {} as ActionCtx;
-  const blob = new Blob(["x"], { type: "image/png" });
+  // Extraction reads the file it was pointed at back out of storage (every
+  // route does — see `extractReceiptFields`'s doc), so the stub only needs a
+  // `storage.get` that hands back some image bytes.
+  const fakeCtx = {
+    storage: { get: async () => new Blob(["x"], { type: "image/png" }) },
+  } as unknown as ActionCtx;
 
   test("no_key → the Settings-pointing message", async () => {
     const result = await extractReceiptFields(fakeCtx, {
       storageId: "storage_id" as unknown as Id<"_storage">,
       config: config({ apiKey: null }),
-      blob,
       contentType: "image/png",
       model: "m",
     });
@@ -645,7 +646,6 @@ describe("extractReceiptFields — ocrError translation", () => {
     const result = await extractReceiptFields(fakeCtx, {
       storageId: "storage_id" as unknown as Id<"_storage">,
       config: config(),
-      blob,
       contentType: "image/png",
       model: "m",
     });
@@ -668,7 +668,6 @@ describe("extractReceiptFields — ocrError translation", () => {
     const result = await extractReceiptFields(fakeCtx, {
       storageId: "storage_id" as unknown as Id<"_storage">,
       config: config(),
-      blob,
       contentType: "image/png",
       model: "m",
     });
@@ -711,12 +710,6 @@ describe("extractReceiptFields — a scanned PDF never reaches a vision call", (
     };
   }
 
-  // A structurally-real PDF signature — if this ever leaked into a vision
-  // call's payload, it'd prove the guard failed.
-  const pdfBlob = new Blob(["%PDF-1.4 (scanned, no text layer)"], {
-    type: "application/pdf",
-  });
-
   /** A fake `ActionCtx` whose `runAction` answers `extractPdfText` with "no
    *  text layer" (the scanned-PDF branch) and `renderScannedPdfPages` with
    *  "couldn't render either" (`{ pages: [] }`) — the render fallback ALSO
@@ -756,7 +749,6 @@ describe("extractReceiptFields — a scanned PDF never reaches a vision call", (
     const result = await extractReceiptFields(fakeCtx, {
       storageId: "storage_pdf" as unknown as Id<"_storage">,
       config: config(),
-      blob: pdfBlob,
       contentType: "application/pdf",
       model: "m",
     });
@@ -784,7 +776,6 @@ describe("extractReceiptFields — a scanned PDF never reaches a vision call", (
     const result = await extractReceiptFields(fakeCtx, {
       storageId: "storage_pdf" as unknown as Id<"_storage">,
       config: config({ provider: "ollama", baseUrl: "http://localhost:11434" }),
-      blob: pdfBlob,
       contentType: "application/pdf",
       model: "m",
     });
@@ -1768,6 +1759,143 @@ describe("processInboundReceipt", () => {
       const receipts = await run(t, (ctx) => ctx.db.query("receipts").take(5));
       expect(receipts).toHaveLength(1);
       expect(receipts[0].filename).toBe("Google Workspace invoice.eml");
+    });
+  });
+
+  // ── An emailed SCREENSHOT / photo receipt ──────────────────────────────────
+  // THE BUG (prod, 2026-08-05): a team member emailed a screenshot of a Stuf
+  // invoice and the row came back `error — Pipeline error: TypeError: Can't
+  // re-read streaming Blob`, with no receipt document to open. In the Convex
+  // runtime a Blob from `res.blob()` is backed by the response STREAM, so it
+  // reads ONCE: the pipeline stored the attachment (read #1) and then read
+  // its bytes again to build the vision call's data URL (read #2), which
+  // threw. Emailed PDFs never hit it — their extraction reads the STORED file
+  // — so every photo/screenshot receipt failed while PDFs kept working.
+  // The fix is both halves: downloads are buffered into a re-readable Blob,
+  // and extraction reads the file it was pointed at back out of storage.
+  describe("an emailed screenshot of a receipt", () => {
+    const realFetch = globalThis.fetch;
+    const realResendKey = process.env.RESEND_API_KEY;
+    const realOpenRouterKey = process.env.OPENROUTER_API_KEY;
+    afterEach(() => {
+      globalThis.fetch = realFetch;
+      if (realResendKey === undefined) delete process.env.RESEND_API_KEY;
+      else process.env.RESEND_API_KEY = realResendKey;
+      if (realOpenRouterKey === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = realOpenRouterKey;
+    });
+
+    /** A Blob that behaves like the Convex runtime's stream-backed one: the
+     *  FIRST read consumes it and every later read throws the exact TypeError
+     *  prod threw. Node's own Blob is buffered and re-readable, so without
+     *  this the regression simply cannot be reproduced in a test. */
+    class StreamingBlob extends Blob {
+      private consumed = false;
+      private consume(): void {
+        if (this.consumed) throw new TypeError("Can't re-read streaming Blob");
+        this.consumed = true;
+      }
+      override async arrayBuffer(): Promise<ArrayBuffer> {
+        this.consume();
+        return await super.arrayBuffer();
+      }
+      override async text(): Promise<string> {
+        this.consume();
+        return await super.text();
+      }
+      override stream(): ReturnType<Blob["stream"]> {
+        this.consume();
+        return super.stream();
+      }
+    }
+
+    test("is stored and read by vision — a single-read download Blob never crashes the pipeline", async () => {
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedPerson(s, { email: "seyi@publicworship.life" });
+      const txn = await seedTxn(s, { amountCents: 15600, status: "categorized" });
+
+      process.env.RESEND_API_KEY = "test-key";
+      process.env.OPENROUTER_API_KEY = "test-key";
+      const visionImageUrls: string[] = [];
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/attachments")) {
+          return {
+            ok: true,
+            json: async () => ({
+              data: [
+                {
+                  id: "att_shot",
+                  filename: "IMG_1405.png",
+                  content_type: "image/png",
+                  size: 240_000,
+                  download_url: "https://files.example/att_shot",
+                },
+              ],
+            }),
+          };
+        }
+        if (url.startsWith("https://files.example/")) {
+          return {
+            ok: true,
+            blob: async () => new StreamingBlob(["screenshot-bytes"], { type: "image/png" }),
+          };
+        }
+        if (url.includes("chat/completions")) {
+          const body = JSON.parse(String(init?.body ?? "{}"));
+          for (const part of body.messages?.[1]?.content ?? []) {
+            if (part.type === "image_url") visionImageUrls.push(part.image_url.url);
+          }
+          return {
+            ok: true,
+            status: 200,
+            headers: { get: () => null },
+            json: async () => ({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      amount: 156.0,
+                      date: null,
+                      merchant: "Stuf",
+                      confidence: 0.9,
+                    }),
+                  },
+                },
+              ],
+            }),
+            text: async () => "",
+          };
+        }
+        return { ok: false, status: 500, text: async () => "no" };
+      }) as unknown as typeof fetch;
+
+      const { receiptId } = await t.mutation(internal.receiptInbox.recordInboundReceipt, {
+        envelope: {
+          emailId: "email_shot_1",
+          fromEmail: "seyi@publicworship.life",
+          subject: "Stuf August",
+        },
+      });
+      await t.action(internal.receiptInbox.processInboundReceipt, { receiptId });
+
+      const row = await run(t, (ctx) => ctx.db.get(receiptId));
+      expect(row?.detail ?? "").not.toContain("Pipeline error");
+      expect(row?.status).toBe("matched");
+      expect(row?.matchedTransactionId).toBe(txn);
+
+      // The screenshot's BYTES reached vision — the read that used to throw.
+      expect(visionImageUrls).toHaveLength(1);
+      expect(visionImageUrls[0]).toBe(
+        `data:image/png;base64,${btoa("screenshot-bytes")}`,
+      );
+
+      const receipts = await run(t, (ctx) => ctx.db.query("receipts").take(5));
+      expect(receipts).toHaveLength(1);
+      expect(receipts[0].filename).toBe("IMG_1405.png");
+      expect(receipts[0].ocrAmountCents).toBe(15600);
+      expect(receipts[0].ocrMerchant).toBe("Stuf");
     });
   });
 

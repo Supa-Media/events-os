@@ -36,10 +36,10 @@
  *           Only team/roster may trigger an auto-attach.
  *        b. Gets the receipt content: every MMS media item (each fetched with
  *           Twilio's Basic-auth scheme, mirroring `fetchAllReceiptAttachments`,
- *           then routed independently — a PDF through `extractReceiptFields`'s
- *           text-layer/render/vision routing, anything else straight to
- *           `ocrReceiptImage`), else the SMS `Body` text (`parseReceiptFromText`,
- *           ZERO LLM — same as an email body).
+ *           then stored and routed through `extractReceiptFields` — a PDF
+ *           gets its text layer/page render first, an image goes to vision),
+ *           else the SMS `Body` text (`parseReceiptFromText`, ZERO LLM — same
+ *           as an email body).
  *        c. Matches each via the SAME matcher email uses
  *           (`internal.receiptInbox.findReceiptMatches`).
  *        d. Creates `receipts` rows (source `"sms"`), auto-attaching a
@@ -72,10 +72,7 @@ import {
 } from "./lib/twilio";
 import {
   parseReceiptFromText,
-  ocrReceiptImage,
   resolveOcrModel,
-  arrayBufferToBase64,
-  isPdfContentType,
   extractReceiptFields,
 } from "./receiptInbox";
 
@@ -469,7 +466,13 @@ async function fetchTwilioMedia(
       console.log(`[smsReceipts] media fetch failed (${res.status}).`);
       return null;
     }
-    return await res.blob();
+    // BUFFERED, not the response's own stream-backed Blob: this media item is
+    // read twice (stored, then base64'd for the vision call) and in the
+    // Convex runtime a second read of a streaming Blob throws
+    // `TypeError: Can't re-read streaming Blob` — the same failure emailed-in
+    // screenshots hit (see `receiptInbox.ts#fetchAllReceiptAttachments`).
+    const streamed = await res.blob();
+    return new Blob([await streamed.arrayBuffer()], { type: streamed.type });
   } catch (err) {
     console.log(`[smsReceipts] media fetch errored: ${String(err)}`);
     return null;
@@ -574,51 +577,32 @@ async function runSmsPipeline(
       const storageId = await ctx.storage.store(blob);
       const contentType = item.contentType ?? blob.type ?? "application/octet-stream";
 
-      // A PDF over MMS (Twilio does deliver these) must route through the
-      // SAME PDF-aware extraction the email/upload pipelines use — text
-      // layer first, scanned-PDF render as a fallback — never straight into
-      // `ocrReceiptImage` with the raw bytes: base64'ing a PDF into an
+      // EVERY media item — photo or PDF — goes through the SAME extraction
+      // routing the email/upload pipelines use (`extractReceiptFields`, which
+      // reads the STORED file): a PDF gets its text layer first and a
+      // scanned-PDF page render as a fallback, never straight into
+      // `ocrReceiptImage` with the raw bytes — base64'ing a PDF into an
       // `image_url` reproduces the exact pre-#406 bug (Ollama sniffs the
       // bytes and 400s on `application/pdf` masquerading as an image; see
-      // `receiptInbox.ts`'s module doc for the full story).
-      if (isPdfContentType(contentType)) {
-        const result = await extractReceiptFields(ctx, {
-          storageId,
-          config,
-          blob,
-          contentType,
-          model,
-        });
-        extracted.push({
-          storageId,
-          sourceKind: "attachment",
-          ocrAmountCents: result.ocrAmountCents,
-          ocrDate: result.ocrDate,
-          ocrMerchant: result.ocrMerchant,
-          ocrConfidence: result.ocrConfidence,
-          ocrModel: result.ocrModel,
-          candidateTransactionIds: [],
-        });
-        continue;
-      }
-
-      const buf = await blob.arrayBuffer();
-      const dataUrl = `data:${contentType};base64,${arrayBufferToBase64(buf)}`;
-      // `ocrReceiptImage` now returns a typed `{ error }` (never a bare null)
-      // on any failure (see `receiptInbox.ts`'s own doc) — this channel
-      // doesn't surface the specific reason yet (out of scope here; email/
-      // upload/retry do — see `receiptInbox.ts#extractReceiptFields`), so a
-      // failure just degrades to blank OCR fields, same behavior as before.
-      const ocr = await ocrReceiptImage(config, [dataUrl], model);
-      const ocrOk = !("error" in ocr);
+      // `receiptInbox.ts`'s module doc for the full story). An image goes
+      // straight to vision from the stored bytes, exactly as before.
+      // Extraction's typed `ocrError` isn't surfaced on this channel yet
+      // (out of scope here; email/upload/retry do), so a failure still
+      // degrades to blank OCR fields.
+      const result = await extractReceiptFields(ctx, {
+        storageId,
+        config,
+        contentType,
+        model,
+      });
       extracted.push({
         storageId,
         sourceKind: "attachment",
-        ocrAmountCents: ocrOk ? (ocr.amountCents ?? undefined) : undefined,
-        ocrDate: ocrOk ? (ocr.date ?? undefined) : undefined,
-        ocrMerchant: ocrOk ? (ocr.merchant ?? undefined) : undefined,
-        ocrConfidence: ocrOk ? (ocr.confidence ?? undefined) : undefined,
-        ocrModel: model,
+        ocrAmountCents: result.ocrAmountCents,
+        ocrDate: result.ocrDate,
+        ocrMerchant: result.ocrMerchant,
+        ocrConfidence: result.ocrConfidence,
+        ocrModel: result.ocrModel,
         candidateTransactionIds: [],
       });
     }
