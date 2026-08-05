@@ -539,6 +539,11 @@ describe("listReconcile (server-side filters + counts + projections)", () => {
       spend: 2, // t1, t2 (t4 is inflow, not spend)
       needs_budget: 1, // t1
       missing_receipt: 1, // t1
+      // t1 only: t2 has a receipt, t4 is an inflow (owes nothing), t3 is
+      // excluded. Unlike `missing_receipt` this pill would ALSO count a
+      // `reconciled` row with nothing attached — see the `undocumented`
+      // coverage in `receiptExceptions.test.ts`.
+      undocumented: 1, // t1
       uncategorized: 2, // t1, t4
       ready: 1, // t2
       personal_unpaid: 0, // none flagged personal in this fixture

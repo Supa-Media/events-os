@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 import { describe, expect, test } from "vitest";
 import { ConvexError } from "convex/values";
-import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
+import { newT, run, setupChapter, storeBlob, type ChapterSetup } from "./setup.helpers";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { createReceipt } from "../lib/receiptLinks";
@@ -66,6 +66,16 @@ async function seedTxn(
     // `personId` in tests that flag this transaction personal.
     personId,
   });
+}
+
+/** Give a transaction a receipt WITHOUT going through `attachReceipt`, so a
+ *  test can reach `status:"reconciled"` (which now requires documentation —
+ *  see `finances.setTransactionStatus`'s RECEIPT_REQUIRED guard) without also
+ *  triggering attach's own side effects. Every test below that reconciles is
+ *  about the AUDIT TRAIL, not about how the row got documented. */
+async function giveReceipt(s: ChapterSetup, txnId: Id<"transactions">): Promise<void> {
+  const storageId = await storeBlob(s.t);
+  await run(s.t, (ctx) => ctx.db.patch(txnId, { receiptStorageId: storageId }));
 }
 
 async function seedFund(s: ChapterSetup): Promise<Id<"funds">> {
@@ -203,6 +213,7 @@ describe("setTransactionStatus — excluding requires a reason (the headline ins
     const personId = await seedSelfPerson(s);
     await grantRole(s, personId, "bookkeeper");
     const txnId = await seedTxn(s);
+    await giveReceipt(s, txnId);
 
     await s.as.mutation(api.finances.setTransactionStatus, {
       transactionId: txnId,
@@ -524,6 +535,7 @@ describe("financeAuditTrail — authz-gated (bookkeeper+) and scope-correct", ()
     const personId = await seedSelfPerson(s);
     await grantRole(s, personId, "manager");
     const txnId = await seedTxn(s);
+    await giveReceipt(s, txnId);
     await s.as.mutation(api.finances.setTransactionStatus, {
       transactionId: txnId,
       status: "reconciled",
@@ -547,6 +559,7 @@ describe("financeAuditTrail — authz-gated (bookkeeper+) and scope-correct", ()
     const personId = await seedSelfPerson(s);
     await grantRole(s, personId, "manager");
     const txnId = await seedTxn(s);
+    await giveReceipt(s, txnId);
     await s.as.mutation(api.finances.setTransactionStatus, {
       transactionId: txnId,
       status: "reconciled",
@@ -575,6 +588,7 @@ describe("financeAuditTrail — authz-gated (bookkeeper+) and scope-correct", ()
     const personId = await seedSelfPerson(s);
     await grantRole(s, personId, "bookkeeper");
     const txnId = await seedTxn(s);
+    await giveReceipt(s, txnId);
     await s.as.mutation(api.finances.setTransactionStatus, {
       transactionId: txnId,
       status: "reconciled",
@@ -590,6 +604,7 @@ describe("financeAuditTrail — authz-gated (bookkeeper+) and scope-correct", ()
     const ownerPerson = await seedSelfPerson(owner, "Owner");
     await grantRole(owner, ownerPerson, "bookkeeper");
     const txnId = await seedTxn(owner);
+    await giveReceipt(owner, txnId);
     await owner.as.mutation(api.finances.setTransactionStatus, {
       transactionId: txnId,
       status: "reconciled",
@@ -618,6 +633,7 @@ describe("financeAuditTrail — authz-gated (bookkeeper+) and scope-correct", ()
       postedAt: Date.now(),
       central: true,
     });
+    await giveReceipt(s, centralTxnId);
     await s.as.mutation(api.finances.setTransactionStatus, {
       transactionId: centralTxnId,
       status: "reconciled",

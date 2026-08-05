@@ -187,6 +187,81 @@ describe("cards.autoConvertOverdueReceipts", () => {
     expect((await getDoc(s, young))?.isPersonal).not.toBe(true);
   });
 
+  // ── The receipt-exception escape valve ────────────────────────────────────
+  // The reason this coupling exists: without it, turning the policy on makes
+  // the first cash tip at a venue somebody's personal debt — punishing a
+  // cardholder for a vendor's behavior rather than their own. It can't be
+  // self-served (approving is manager-gated, and over the org threshold the
+  // approver must differ from the filer). See
+  // `docs/plans/receipt-exceptions.md`.
+  test("an APPROVED receipt exception stops the auto-convert clock", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setPolicy(s, 7);
+    const holder = await seedPerson(s, "Holder");
+    const card = await seedCard(s, holder);
+    const txnId = await seedCardTxn(s, {
+      cardId: card,
+      personId: holder,
+      ageDays: 30,
+      amountCents: 400,
+    });
+
+    // Written directly rather than through the mutations: this test is about
+    // the SWEEP's reaction to an approved exception, and the attest/approve
+    // path (including separation of duties) has its own suite.
+    const exceptionId = await run(s.t, (ctx) =>
+      ctx.db.insert("receiptExceptions", {
+        transactionId: txnId,
+        chapterId: s.chapterId,
+        amountCents: 400,
+        reason: "no_receipt_issued",
+        note: "Cash tip for the sound engineer — no receipt is ever issued",
+        status: "approved",
+        attestedByUserId: s.userId,
+        attestedAt: Date.now(),
+      }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.patch(txnId, { approvedReceiptExceptionId: exceptionId }),
+    );
+
+    const r = await s.t.mutation(internal.cards.autoConvertOverdueReceipts, {});
+    expect(r.convertedCount).toBe(0);
+    expect((await getDoc(s, txnId))?.isPersonal).not.toBe(true);
+    expect((await repaymentsFor(s, txnId)).length).toBe(0);
+  });
+
+  test("a PENDING exception does NOT stop the clock — asking isn't being let off", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setPolicy(s, 7);
+    const holder = await seedPerson(s, "Holder");
+    const card = await seedCard(s, holder);
+    const txnId = await seedCardTxn(s, {
+      cardId: card,
+      personId: holder,
+      ageDays: 30,
+      amountCents: 400,
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("receiptExceptions", {
+        transactionId: txnId,
+        chapterId: s.chapterId,
+        amountCents: 400,
+        reason: "lost",
+        note: "I think I threw the receipt away at the venue",
+        status: "pending",
+        attestedByUserId: s.userId,
+        attestedAt: Date.now(),
+      }),
+    );
+
+    const r = await s.t.mutation(internal.cards.autoConvertOverdueReceipts, {});
+    expect(r.convertedCount).toBe(1);
+    expect((await getDoc(s, txnId))?.isPersonal).toBe(true);
+  });
+
   test("idempotent on a second run", async () => {
     const t = newT();
     const s = await setupChapter(t);

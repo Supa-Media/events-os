@@ -476,12 +476,22 @@ describe("reconcile writes: central-owned txns", () => {
     const now = Date.now();
     const centralTxn = await seedCentralTxn(s, { amountCents: 4200, postedAt: now });
 
+    // Receipt FIRST: `setTransactionStatus` now refuses `"reconciled"` on an
+    // undocumented row (RECEIPT_REQUIRED), so this is the real order a central
+    // desk works in — and it exercises both halves this test names.
+    const storageId = await storeBlob(t);
+    await s.as.mutation(api.finances.attachReceipt, {
+      transactionId: centralTxn,
+      storageId,
+    });
+
     await s.as.mutation(api.finances.setTransactionStatus, {
       transactionId: centralTxn,
       status: "reconciled",
     });
     const txn = await run(t, (ctx) => ctx.db.get(centralTxn));
     expect(txn?.status).toBe("reconciled");
+    expect(txn?.receiptStorageId).toBeDefined();
   });
 
   test("a chapter-only manager CANNOT setTransactionStatus on a central txn", async () => {

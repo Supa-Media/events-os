@@ -1632,6 +1632,18 @@ describe("setTransactionStatus clearing the reminder timeline", () => {
         (await run(s.t, (ctx) => ctx.db.get(txn)))?.receiptReminderStage,
       ).toBe("escalated");
 
+      // `setTransactionStatus` now refuses `"reconciled"` on an undocumented
+      // row (the RECEIPT_REQUIRED guard). Document it by patching the field
+      // DIRECTLY rather than via `attachReceipt`, which would clear the
+      // reminder timeline itself and so hide the very clear this test is
+      // asserting `setTransactionStatus` performs.
+      if (status === "reconciled") {
+        const storageId = await storeBlob(s.t);
+        await run(s.t, (ctx) =>
+          ctx.db.patch(txn, { receiptStorageId: storageId }),
+        );
+      }
+
       await s.as.mutation(api.finances.setTransactionStatus, {
         transactionId: txn,
         status,

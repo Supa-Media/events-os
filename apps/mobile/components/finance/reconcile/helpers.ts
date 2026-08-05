@@ -31,6 +31,7 @@ export type FilterKey =
   | "spend"
   | "needs_budget"
   | "missing_receipt"
+  | "undocumented"
   | "uncategorized"
   | "ready"
   | "personal_unpaid"
@@ -51,6 +52,13 @@ export const FILTERS: { key: FilterKey; label: string }[] = [
   { key: "spend", label: "Spend" },
   { key: "needs_budget", label: "Needs budget" },
   { key: "missing_receipt", label: "Missing receipt" },
+  // The PUBLISHING backlog, distinct from the pill above: rows with neither a
+  // receipt nor an approved exception, INCLUDING ones already marked
+  // Reconciled. "Missing receipt" stops chasing a reconciled row (someone made
+  // a call); this one doesn't, because a published ledger can't tell that row
+  // from a documented one. This is the count that has to reach zero before a
+  // period is publishable — see `docs/plans/receipt-exceptions.md`.
+  { key: "undocumented", label: "Undocumented" },
   { key: "uncategorized", label: "Uncategorized" },
   { key: "ready", label: "Ready" },
   // Founder ask: an unpaid personal expense is exactly the worklist a

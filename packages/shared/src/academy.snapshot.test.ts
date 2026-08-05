@@ -840,7 +840,9 @@ const EXPECTED_SECTIONS: {
     slug: "finance-chasing-receipts",
     title: "Chasing receipts",
     minutes: 3,
-    quizLength: 4,
+    // 4 → 5: the Missing-receipt vs Undocumented question, the treasurer's
+    // half of receipt exceptions (`docs/plans/receipt-exceptions.md`).
+    quizLength: 5,
     optional: false,
     capstoneKind: null,
   },
