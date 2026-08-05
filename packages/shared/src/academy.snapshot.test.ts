@@ -211,6 +211,27 @@
  * `packages/shared/src/seats.ts`), but `donor-stewardship` appears on only
  * ONE of those six role paths (`development_director`,
  * `packages/shared/src/academyPaths.ts`). The lesson MOVED — slug renamed
+ * Receipt exceptions (docs/plans/receipt-exceptions.md) INSERTED one section,
+ * `finance-receipt-exceptions` ("When there's genuinely no receipt", 4 min,
+ * 5-quiz), into the `finances-for-everyone` course directly after
+ * `finance-card-and-receipts`. Total: 106 sections; every section from it
+ * onward shifts by one `order`, which is derived from array position and so
+ * needs no hand-editing. It teaches the documented substitute for a receipt —
+ * the reason axis, the attestation note, evidence-vs-receipt, and the
+ * second-approver rule above $75 — and is required, not `optional`, so it
+ * counts toward "fully trained" (owner decision, 2026-08-05: the rules should
+ * be genuinely learned before people start filing exceptions, because a bad
+ * one becomes a published artifact).
+ *
+ * That lesson also PULLED CONTENT BACK OUT of two existing sections, which had
+ * briefly carried it: `finance-card-and-receipts` returns to a pointer plus its
+ * original 5 questions (the "where do you see your own charges" navigation
+ * question, dropped when the exception question was crammed in, is restored),
+ * and `finance-chasing-receipts` keeps its Missing-receipt-vs-Undocumented
+ * teaching at 5 questions but hands the approval decision to the new lesson.
+ * Neither one's title/minutes/quizLength moved as a result, so only the
+ * insertion shows up in the tables below.
+ *
  * `dev-data-export` → `foundations-data-export`, content moved from
  * `streams/development.ts` into `streams/foundations.ts` — into the
  * `how-we-work` course, right after `foundations-where-things-live`, since
@@ -330,6 +351,7 @@ const EXPECTED_SECTION_SLUGS: string[] = [
   "mgmt-frontline-no-final-yes",
   "finance-stewardship",
   "finance-card-and-receipts",
+  "finance-receipt-exceptions",
   "finance-reimbursements-and-flags",
   "finance-reconcile-grid",
   "finance-transfers-and-payouts",
@@ -854,6 +876,14 @@ const EXPECTED_SECTIONS: {
     capstoneKind: null,
   },
   {
+    slug: "finance-receipt-exceptions",
+    title: "When there's genuinely no receipt",
+    minutes: 4,
+    quizLength: 5,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
     slug: "finance-reimbursements-and-flags",
     title: "Reimbursement, and flagging a charge",
     minutes: 5,
@@ -1338,7 +1368,12 @@ const EXPECTED_COURSES: {
   {
     slug: "finances-for-everyone",
     themeKey: "finances",
-    moduleSlugs: ["finance-stewardship", "finance-card-and-receipts", "finance-reimbursements-and-flags"],
+    moduleSlugs: [
+      "finance-stewardship",
+      "finance-card-and-receipts",
+      "finance-receipt-exceptions",
+      "finance-reimbursements-and-flags",
+    ],
   },
   {
     slug: "chapter-money-model",
