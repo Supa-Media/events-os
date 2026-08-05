@@ -3,6 +3,8 @@
 import { describe, expect, test } from "@jest/globals";
 import {
   centsToDollarsInput,
+  extractionProgressLabel,
+  formatWait,
   isPdfReceipt,
   snapshotReceiptForm,
   shouldReseedReceiptForm,
@@ -183,5 +185,62 @@ describe("shouldReseedReceiptForm", () => {
       receipt({ _id: "r1", amountCents: 4210, merchant: "Costco" }),
     );
     expect(shouldReseedReceiptForm(untouchedForm, lastSeeded, server)).toBe(true);
+  });
+});
+
+/**
+ * The live extraction strip's WORDS. A generic spinner would leave a
+ * bookkeeper guessing which wait they're in — a staggered upload batch, a
+ * read happening now, or an automatic retry minutes out after an engine 500.
+ */
+describe("extractionProgressLabel", () => {
+  const now = 1_760_000_000_000;
+
+  test("a first read says what it's doing", () => {
+    expect(extractionProgressLabel({ status: "running", since: now, attempt: null, maxAttempts: null, nextAttemptAt: null }, now))
+      .toBe("Reading the receipt…");
+  });
+
+  test("an automatic attempt names its number, so 'still trying' is visible", () => {
+    expect(
+      extractionProgressLabel(
+        { status: "running", since: now, attempt: 2, maxAttempts: 3, nextAttemptAt: null },
+        now,
+      ),
+    ).toBe("Re-reading the receipt… · attempt 2 of 3");
+  });
+
+  test("a queued retry counts down to its real fire time", () => {
+    expect(
+      extractionProgressLabel(
+        { status: "queued", since: now, attempt: 2, maxAttempts: 3, nextAttemptAt: now + 4 * 60_000 },
+        now,
+      ),
+    ).toBe("Retrying automatically in 4 min · attempt 2 of 3");
+  });
+
+  test("a queued upload (no attempt number) reads as a queue position, not a retry", () => {
+    expect(
+      extractionProgressLabel(
+        { status: "queued", since: now, attempt: null, maxAttempts: null, nextAttemptAt: now + 12_000 },
+        now,
+      ),
+    ).toBe("Queued — starts in 12s");
+  });
+
+  test("nothing pending says nothing", () => {
+    expect(extractionProgressLabel(null, now)).toBe("");
+  });
+});
+
+describe("formatWait", () => {
+  test("seconds under a minute, whole minutes above — always rounded UP", () => {
+    expect(formatWait(0)).toBe("0s");
+    expect(formatWait(8_400)).toBe("9s");
+    expect(formatWait(59_000)).toBe("59s");
+    // 61s is "2 min", never "1 min" — a countdown must not promise sooner
+    // than it can deliver.
+    expect(formatWait(61_000)).toBe("2 min");
+    expect(formatWait(15 * 60_000)).toBe("15 min");
   });
 });

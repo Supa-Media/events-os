@@ -241,3 +241,42 @@ export function shouldReseedReceiptForm(
   if (!lastSeeded || lastSeeded.receiptId !== server.receiptId) return true;
   return receiptFormFieldsEqual(current, lastSeeded);
 }
+
+// ── Extraction progress (the live "reading…" state) ─────────────────────────
+/**
+ * What a receipt's in-flight extraction should SAY. Extraction is
+ * asynchronous — a scheduled action, several seconds of vision call, and (on
+ * an engine 5xx) an automatic retry minutes later — and before this the UI
+ * had nothing to show for any of it: the Retry button's spinner tracked the
+ * mutation, which returns the instant the work is *scheduled*.
+ *
+ * The label names the specific wait rather than a generic "loading": an
+ * upload sitting in a staggered batch, a read happening right now, or an
+ * automatic attempt with its number and how long until it fires.
+ */
+export function extractionProgressLabel(
+  extraction: ReceiptRow["extraction"],
+  now: number,
+): string {
+  if (!extraction) return "";
+  const of =
+    extraction.attempt != null && extraction.maxAttempts != null
+      ? ` · attempt ${extraction.attempt} of ${extraction.maxAttempts}`
+      : "";
+  if (extraction.status === "running") {
+    return `${extraction.attempt != null ? "Re-reading" : "Reading"} the receipt…${of}`;
+  }
+  const waitMs = (extraction.nextAttemptAt ?? extraction.since) - now;
+  if (waitMs <= 0) return `Starting…${of}`;
+  return extraction.attempt != null
+    ? `Retrying automatically in ${formatWait(waitMs)}${of}`
+    : `Queued — starts in ${formatWait(waitMs)}`;
+}
+
+/** A wait as a human would say it: seconds under a minute, then whole
+ *  minutes (rounded UP, so "1 min" never means "any second now"). */
+export function formatWait(ms: number): string {
+  const secs = Math.max(0, Math.ceil(ms / 1000));
+  if (secs < 60) return `${secs}s`;
+  return `${Math.ceil(secs / 60)} min`;
+}

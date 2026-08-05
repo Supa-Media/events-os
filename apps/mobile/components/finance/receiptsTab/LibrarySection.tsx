@@ -48,6 +48,7 @@ import {
 } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { formatDate } from "../../../lib/format";
+import { isReceiptExtractionActive } from "@events-os/shared";
 import {
   formatCents,
   isPdfReceipt,
@@ -211,6 +212,10 @@ function ReceiptGridRow({
   onJumpToOriginal?: () => void;
   original?: ReceiptRow;
 }) {
+  // Read-time clock for the in-flight badge below: it never has to TICK (the
+  // row re-renders on every extraction state change — the query is reactive),
+  // it just has to be current enough to apply the staleness rule.
+  const now = Date.now();
   // No content-type from the backend — infer PDF from the filename extension
   // (see `helpers.ts#isPdfReceipt`'s doc; ONE definition shared with
   // `ReceiptDetailModal`).
@@ -346,7 +351,16 @@ function ReceiptGridRow({
 
       <GridCell width={widths.status}>
         <View className="flex-1 flex-row flex-wrap items-center gap-1 px-2 py-1.5">
-          {receipt.linkCount > 0 ? (
+          {/* An in-flight read outranks both — a row that is being processed
+              right now (or is queued behind a staggered batch) shouldn't read
+              as a settled "Extraction failed" while that's still true. */}
+          {isReceiptExtractionActive(receipt.extraction, now) ? (
+            <Badge
+              label={receipt.extraction?.status === "running" ? "Reading…" : "Queued"}
+              tone="neutral"
+              icon="refresh-cw"
+            />
+          ) : receipt.linkCount > 0 ? (
             <Text className="text-2xs font-semibold text-success">
               {receipt.linkCount} {receipt.linkCount === 1 ? "link" : "links"}
             </Text>

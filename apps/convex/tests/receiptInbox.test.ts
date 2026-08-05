@@ -1899,6 +1899,231 @@ describe("processInboundReceipt", () => {
     });
   });
 
+  // ── An engine 5xx is repaired in the background, not parked in red ─────────
+  // THE COMPLAINT: the receipt above stored fine, then the OCR call came back
+  // `Ollama returned HTTP 500 for model "gemma4"` — an engine-side blip — and
+  // the receipt SAT there red until a human noticed and tapped Retry. The
+  // pipeline already knew that failure was transient (`ocrRetryable`); it just
+  // had nowhere to put that knowledge on the initial run. Now it schedules an
+  // automatic re-extraction (`lib/receiptRetry.ts`), and the LAST attempt asks
+  // a different vision model rather than a fourth identical question.
+  describe("a transport failure during the initial read", () => {
+    const realFetch = globalThis.fetch;
+    const realResendKey = process.env.RESEND_API_KEY;
+    const realOpenRouterKey = process.env.OPENROUTER_API_KEY;
+    afterEach(() => {
+      globalThis.fetch = realFetch;
+      if (realResendKey === undefined) delete process.env.RESEND_API_KEY;
+      else process.env.RESEND_API_KEY = realResendKey;
+      if (realOpenRouterKey === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = realOpenRouterKey;
+    });
+
+    /** Serve one image attachment, and answer every vision call from
+     *  `visionReplies` (each entry consumed in order; the last one repeats).
+     *  Records the model each call asked for. */
+    function mockEngine(
+      visionReplies: (
+        | { status: 500 }
+        | { amount: number | null; merchant?: string }
+      )[],
+      askedModels: string[],
+    ): void {
+      process.env.RESEND_API_KEY = "test-key";
+      process.env.OPENROUTER_API_KEY = "test-key";
+      let call = 0;
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/attachments")) {
+          return {
+            ok: true,
+            json: async () => ({
+              data: [
+                {
+                  id: "att_flaky",
+                  filename: "IMG_1405.png",
+                  content_type: "image/png",
+                  size: 240_000,
+                  download_url: "https://files.example/att_flaky",
+                },
+              ],
+            }),
+          };
+        }
+        if (url.startsWith("https://files.example/")) {
+          return {
+            ok: true,
+            blob: async () => new Blob(["screenshot-bytes"], { type: "image/png" }),
+          };
+        }
+        if (url.includes("chat/completions")) {
+          const body = JSON.parse(String(init?.body ?? "{}"));
+          askedModels.push(String(body.model));
+          const reply = visionReplies[Math.min(call, visionReplies.length - 1)];
+          call++;
+          if ("status" in reply) {
+            return {
+              ok: false,
+              status: 500,
+              headers: { get: () => null },
+              text: async () => '{"error":"Internal Server Error (ref: test)"}',
+              json: async () => ({}),
+            };
+          }
+          return {
+            ok: true,
+            status: 200,
+            headers: { get: () => null },
+            json: async () => ({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      amount: reply.amount,
+                      date: null,
+                      merchant: reply.merchant ?? null,
+                      confidence: reply.amount == null ? 0 : 0.9,
+                    }),
+                  },
+                },
+              ],
+            }),
+            text: async () => "",
+          };
+        }
+        return { ok: false, status: 500, text: async () => "no" };
+      }) as unknown as typeof fetch;
+    }
+
+    async function emailIn(t: ReturnType<typeof newT>, emailId: string) {
+      const { receiptId } = await t.mutation(internal.receiptInbox.recordInboundReceipt, {
+        envelope: {
+          emailId,
+          fromEmail: "seyi@publicworship.life",
+          subject: "Stuf August",
+        },
+      });
+      await t.action(internal.receiptInbox.processInboundReceipt, { receiptId });
+      return receiptId;
+    }
+
+    test("a 500 on the first read is repaired by the scheduled retry, with no human in the loop", async () => {
+      vi.useFakeTimers();
+      try {
+        const t = newT();
+        const s = await setupChapter(t);
+        await seedPerson(s, { email: "seyi@publicworship.life" });
+        const txn = await seedTxn(s, { amountCents: 15600, status: "categorized" });
+        const askedModels: string[] = [];
+        mockEngine([{ status: 500 }, { amount: 156.0, merchant: "Stuf" }], askedModels);
+
+        await emailIn(t, "email_flaky_1");
+
+        // The initial read failed — the receipt exists and says why.
+        const before = await run(t, (ctx) => ctx.db.query("receipts").take(5));
+        expect(before).toHaveLength(1);
+        expect(before[0].ocrError).toContain("500");
+        expect(before[0].ocrAmountCents).toBeUndefined();
+
+        await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+        // …and the scheduled retry read it and cleared the error.
+        const after = await run(t, (ctx) => ctx.db.get(before[0]._id));
+        expect(after?.ocrError).toBeUndefined();
+        expect(after?.ocrAmountCents).toBe(15600);
+        expect(after?.ocrMerchant).toBe("Stuf");
+
+        // The matching charge is now a SUGGESTION, not an auto-attach: a
+        // repaired read goes through the same `applyRetryExtraction` every
+        // retry uses, and no retry has ever auto-attached (money safety —
+        // the one auto-attach path stays the ingest pipeline's). The
+        // bookkeeper gets a one-tap match instead of a red card.
+        expect(after?.candidateTransactionIds).toEqual([txn]);
+        const links = await run(t, (ctx) => ctx.db.query("receiptLinks").take(5));
+        expect(links).toHaveLength(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test("a model that keeps 500ing gets a different one on the last attempt, then an honest error", async () => {
+      vi.useFakeTimers();
+      try {
+        const t = newT();
+        const s = await setupChapter(t);
+        await seedPerson(s, { email: "seyi@publicworship.life" });
+        const askedModels: string[] = [];
+        mockEngine([{ status: 500 }], askedModels); // never recovers
+
+        await emailIn(t, "email_flaky_2");
+        await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+        // Initial read + 3 automatic attempts, and the LAST one asked a
+        // different vision model instead of repeating the failing question.
+        expect(askedModels).toHaveLength(4);
+        expect(new Set(askedModels.slice(0, 3)).size).toBe(1);
+        expect(askedModels[3]).not.toBe(askedModels[0]);
+
+        // Attempts spent — the card tells the truth rather than retrying forever.
+        const receipts = await run(t, (ctx) => ctx.db.query("receipts").take(5));
+        expect(receipts[0].ocrError).toContain("500");
+        expect(receipts[0].ocrAmountCents).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test("the receipt says a retry is coming — queued with its fire time, then running, then clear", async () => {
+      vi.useFakeTimers();
+      try {
+        const t = newT();
+        const s = await setupChapter(t);
+        await seedPerson(s, { email: "seyi@publicworship.life" });
+        const askedModels: string[] = [];
+        mockEngine([{ status: 500 }, { amount: 156.0, merchant: "Stuf" }], askedModels);
+
+        await emailIn(t, "email_flaky_4");
+
+        // The initial read failed — and the row SAYS a retry is scheduled,
+        // with the time it fires, instead of looking like a settled error.
+        const queued = (await run(t, (ctx) => ctx.db.query("receipts").take(5)))[0];
+        expect(queued.extraction?.status).toBe("queued");
+        expect(queued.extraction?.attempt).toBe(1);
+        expect(queued.extraction?.maxAttempts).toBe(3);
+        expect(queued.extraction?.nextAttemptAt).toBeGreaterThan(queued.extraction!.since);
+
+        await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+        // Landed — nothing is pending, so nothing spins.
+        const done = await run(t, (ctx) => ctx.db.get(queued._id));
+        expect(done?.extraction).toBeUndefined();
+        expect(done?.ocrAmountCents).toBe(15600);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test("a read that simply found no total is NOT retried — nothing transient about it", async () => {
+      vi.useFakeTimers();
+      try {
+        const t = newT();
+        const s = await setupChapter(t);
+        await seedPerson(s, { email: "seyi@publicworship.life" });
+        const askedModels: string[] = [];
+        mockEngine([{ amount: null }], askedModels);
+
+        await emailIn(t, "email_flaky_3");
+        await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+        expect(askedModels).toHaveLength(1);
+        const receipts = await run(t, (ctx) => ctx.db.query("receipts").take(5));
+        expect(receipts[0].ocrError).toContain("couldn't find a clear total");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   // ── Google Group relay, end to end ─────────────────────────────────────────
   // The reported shape: a team member forwards a merchant receipt INLINE to
   // `receipts@publicworship.life` (the group humans know), Google relays it to

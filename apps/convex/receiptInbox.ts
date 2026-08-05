@@ -70,6 +70,7 @@ import {
   financeRoleAtLeast,
   FINANCE_ROLE_LABELS,
   OLLAMA_DEFAULT_OCR_MODEL,
+  OLLAMA_FALLBACK_OCR_MODEL,
   type ReceiptSenderClass,
 } from "@events-os/shared";
 import {
@@ -78,6 +79,7 @@ import {
   type ChatErrorKind,
 } from "./lib/aiEngine";
 import { ROLLUP_SCAN_LIMIT, txnMatchesMode, isSpend } from "./finances";
+import { scheduleAutoRetryExtraction } from "./lib/receiptRetry";
 import { readSandbox } from "./financeSettings";
 import { normalizeEmail, isAllowedEmail, ALLOWED_EMAIL_DOMAIN } from "./lib/access";
 import { getChapterIdOrNull } from "./lib/context";
@@ -131,6 +133,34 @@ export const SCANNED_PDF_RENDER_MAX_PAGES = 3;
  *  404s on ollama.com's cloud service.) */
 export function ocrModel(): string {
   return process.env.RECEIPT_OCR_MODEL ?? "google/gemini-2.0-flash-001";
+}
+
+/** The OpenRouter model the LAST automatic retry falls back to — a different
+ *  vendor's vision model, so a provider-side fault with the primary isn't
+ *  simply re-asked. Overridable via `RECEIPT_OCR_FALLBACK_MODEL`. */
+export function fallbackOcrModel(): string {
+  return process.env.RECEIPT_OCR_FALLBACK_MODEL ?? "openai/gpt-4o-mini";
+}
+
+/**
+ * The SECOND vision model to try when the resolved OCR model keeps failing
+ * for transport reasons (see `lib/receiptRetry.ts`). Returns `null` when
+ * there's no meaningfully different model to try — a fallback identical to
+ * what just failed is a wasted call, and the honest outcome is the engine's
+ * own error on the card.
+ *
+ * Deliberately ignores a stored/overridden `aiOcrModel` when picking the
+ * fallback: the point is to escape the model that is failing, whatever put it
+ * in place. The model that actually produced the read is recorded on the
+ * receipt, so a fallback read is never mistaken for the configured one.
+ */
+export function resolveFallbackOcrModel(
+  config: Pick<AiEngineConfig, "provider" | "ocrModel">,
+  primary: string,
+): string | null {
+  const fallback =
+    config.provider === "ollama" ? OLLAMA_FALLBACK_OCR_MODEL : fallbackOcrModel();
+  return fallback.trim() && fallback.trim() !== primary.trim() ? fallback.trim() : null;
 }
 
 /**
@@ -680,10 +710,16 @@ export const commitInboundReceipts = internalMutation({
     amountCents: v.union(v.number(), v.null()),
     matchedTransactionId: v.union(v.id("transactions"), v.null()),
     matchedMerchant: v.union(v.string(), v.null()),
+    /** The created `receipts` rows, in the SAME order as `extracted` — so the
+     *  caller can pair each one back to the read that produced it (which is
+     *  how a transport failure gets an automatic re-extraction scheduled
+     *  against the right receipt; see `lib/receiptRetry.ts`). */
+    receiptIds: v.array(v.id("receipts")),
   }),
   handler: async (ctx, args) => {
     const canAuto = receiptSenderCanAutoAttach(args.senderClass);
     const chapterKnown = args.chapterId != null;
+    const receiptIds: Id<"receipts">[] = [];
 
     let matchedCount = 0;
     let firstMatchedTxn: Id<"transactions"> | null = null;
@@ -725,6 +761,7 @@ export const commitInboundReceipts = internalMutation({
         fileSha256,
         duplicateOfReceiptId,
       });
+      receiptIds.push(receiptId);
 
       if (duplicateOfReceiptId) {
         // A likely duplicate submission — never auto-attach it, regardless of
@@ -856,6 +893,7 @@ export const commitInboundReceipts = internalMutation({
       amountCents: firstAmount,
       matchedTransactionId: firstMatchedTxn,
       matchedMerchant: firstMatchedMerchant,
+      receiptIds,
     };
   },
 });
@@ -2059,6 +2097,11 @@ interface ExtractedReceipt {
    *  merchant envelope the merchant fallback must prefer over the forwarder's
    *  (see `ForwardedEnvelope`). */
   envelope?: ForwardedEnvelope;
+  /** In-pipeline only (never persisted): the `ocrError` above is a TRANSPORT
+   *  failure (engine 5xx/429/timeout), so this receipt earns an automatic
+   *  re-extraction once its row exists — see `lib/receiptRetry.ts`. */
+  ocrRetryable?: boolean;
+  ocrRetryAfterSeconds?: number;
 }
 
 /**
@@ -2277,6 +2320,8 @@ async function runPipeline(
         ocrError: result.ocrError,
         candidateTransactionIds: [],
         envelope: source.envelope,
+        ocrRetryable: result.ocrRetryable,
+        ocrRetryAfterSeconds: result.ocrRetryAfterSeconds,
       });
     }
   } else {
@@ -2402,6 +2447,17 @@ async function runPipeline(
       })),
     },
   );
+
+  // 5b. Any receipt whose read failed on TRANSPORT (engine 5xx/429/timeout)
+  //     gets an automatic re-extraction — the read never happened, so a red
+  //     card that waits for a human to notice is the wrong answer
+  //     (`lib/receiptRetry.ts`). Paired back by index: `receiptIds` comes out
+  //     of the commit in the SAME order as `extracted`.
+  for (const [i, ex] of extracted.entries()) {
+    const createdId = result.receiptIds[i];
+    if (!createdId || !ex.ocrError || !ex.ocrRetryable) continue;
+    await scheduleAutoRetryExtraction(ctx, createdId, 1, ex.ocrRetryAfterSeconds);
+  }
 
   // 6. Courtesy reply — ONLY to trusted (team/roster) senders. We never
   //    confirm-or-deny anything to a stranger (a spoofable From:). The reply

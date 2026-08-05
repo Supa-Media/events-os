@@ -148,6 +148,18 @@ export const OLLAMA_DEFAULT_OCR_MODEL = "gemma4";
 export const OLLAMA_DEFAULT_CHAT_MODEL = "gemma4";
 
 /**
+ * The Ollama model the LAST automatic OCR retry falls back to when the
+ * configured one keeps failing on TRANSPORT (see
+ * `apps/convex/lib/receiptRetry.ts`). A different vision family on purpose:
+ * `gemma4`'s vision path returns HTTP 500 from ollama.com often enough that
+ * re-asking the same model a third time is the least useful thing to do.
+ * `qwen3.5` carries the same vision + cloud tags. Same caveat as the defaults
+ * above — if the id isn't in the account's live list the call surfaces a
+ * typed error naming the model, never a silent failure.
+ */
+export const OLLAMA_FALLBACK_OCR_MODEL = "qwen3.5";
+
+/**
  * Fallback chain the agent walks when its chosen FREE model is rate-limited
  * upstream (OpenRouter 429). Free models share heavily throttled upstream pools,
  * so a single provider being busy must not kill the turn — we transparently try

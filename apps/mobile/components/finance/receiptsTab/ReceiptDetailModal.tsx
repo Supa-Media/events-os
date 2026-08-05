@@ -38,13 +38,15 @@ import { Image, Linking, Modal, Platform, Pressable, ScrollView, Text, View } fr
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { Badge, Button, Field, Icon, ImageLightbox, TextField } from "../../ui";
+import { Badge, Button, Field, Icon, ImageLightbox, ProgressBar, TextField } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { formatDate } from "../../../lib/format";
 import { confirmAction } from "../../event/ticketing/helpers";
 import { Calendar } from "../../ui/Calendar";
 import type { ActionRunner } from "../../../lib/useActionToast";
+import { isReceiptExtractionActive, receiptExtractionFraction } from "@events-os/shared";
 import {
+  extractionProgressLabel,
   formatCents,
   isPdfReceipt,
   isDocumentReceipt,
@@ -115,6 +117,25 @@ export function ReceiptDetailModal({
   const [unmarkingDuplicate, setUnmarkingDuplicate] = useState(false);
   const [archiving, setArchiving] = useState(false);
   const [unarchiving, setUnarchiving] = useState(false);
+  // Ticks once a second ONLY while an extraction is in flight — what makes
+  // the countdown count down and the bar move. The receipt row itself is
+  // reactive (Convex `useQuery`), so the strip disappears on its own the
+  // moment the server clears `extraction`; this timer never decides that.
+  const [now, setNow] = useState(() => Date.now());
+  const extractionActive = isReceiptExtractionActive(receipt?.extraction, now);
+  useEffect(() => {
+    if (!extractionActive) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [extractionActive]);
+  // A newly-arrived `extraction` (e.g. the automatic retry being scheduled
+  // while the modal is open) needs `now` current before the first tick, or
+  // the first frame shows a stale countdown.
+  const extractionStatus = receipt?.extraction?.status ?? null;
+  const extractionSince = receipt?.extraction?.since ?? null;
+  useEffect(() => {
+    if (extractionStatus) setNow(Date.now());
+  }, [extractionStatus, extractionSince]);
 
   // Seed local edit state from the live query (BUG 1 fix): a freshly opened
   // (or switched-to) receipt ALWAYS seeds; the SAME receipt only re-seeds
@@ -644,12 +665,28 @@ export function ReceiptDetailModal({
                   numberOfLines={2}
                 />
 
+                {/* Extraction IN FLIGHT — a queued upload, a read happening
+                    now, or an automatic retry counting down to its next
+                    attempt. Shown ABOVE any error because it's the newer
+                    news: the error explains what failed last time, this says
+                    something is already being done about it. */}
+                {extractionActive ? (
+                  <View className="mb-2 -mt-1 gap-1.5 rounded-md border border-border bg-sunken px-3 py-2">
+                    <View className="flex-row items-center gap-2">
+                      <Icon name="refresh-cw" size={13} color={colors.muted} />
+                      <Text className="flex-1 text-xs text-muted">
+                        {extractionProgressLabel(receipt.extraction, now)}
+                      </Text>
+                    </View>
+                    <ProgressBar fraction={receiptExtractionFraction(receipt.extraction, now)} />
+                  </View>
+                ) : null}
                 {receipt.ocrError ? (
                   <View className="mb-2 -mt-1 flex-row items-start gap-2 rounded-md border border-danger bg-danger-bg px-3 py-2">
                     <Icon name="alert-triangle" size={14} color={colors.danger} />
                     <Text className="flex-1 text-xs text-danger">{receipt.ocrError}</Text>
                   </View>
-                ) : (
+                ) : extractionActive ? null : (
                   <Text className="mb-1 -mt-1 text-2xs text-faint">
                     OCR read: {receipt.ocrAmountCents != null ? formatCents(receipt.ocrAmountCents) : "—"} ·{" "}
                     {receipt.ocrDate != null ? formatDate(receipt.ocrDate) : "—"} ·{" "}
@@ -669,11 +706,16 @@ export function ReceiptDetailModal({
                 <View className="mb-4 gap-1.5">
                   <View className="flex-row flex-wrap items-center gap-2">
                     <Button
-                      title="Retry extraction"
+                      title={extractionActive ? "Reading…" : "Retry extraction"}
                       variant="secondary"
                       size="sm"
                       icon="refresh-cw"
-                      loading={retrying}
+                      // Stays spinning until the SERVER says the extraction is
+                      // done (`extraction` cleared) — `retrying` alone only
+                      // covered the mutation call, which returns the instant
+                      // the work is scheduled.
+                      loading={retrying || extractionActive}
+                      disabled={extractionActive}
                       onPress={() => void handleRetry()}
                     />
                     <Pressable onPress={() => setShowModelInput((v) => !v)} hitSlop={6}>
