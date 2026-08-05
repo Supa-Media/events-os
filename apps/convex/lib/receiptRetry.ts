@@ -20,18 +20,7 @@
  */
 import { internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
-
-/** Something that can schedule — an action or a mutation ctx. Narrow on
- *  purpose: this module only ever needs `scheduler.runAfter`. */
-export interface SchedulerCtx {
-  scheduler: {
-    runAfter: (
-      delayMs: number,
-      fn: typeof internal.receipts.autoRetryExtraction,
-      args: { receiptId: Id<"receipts">; attempt: number },
-    ) => Promise<unknown>;
-  };
-}
+import type { ActionCtx } from "../_generated/server";
 
 /**
  * Delay before attempt N (1-indexed): ~1min → 5min → 15min. Long enough that
@@ -59,9 +48,14 @@ export const AUTO_RETRY_FALLBACK_ATTEMPT = AUTO_RETRY_MAX_ATTEMPTS;
  * Schedule attempt `attempt` of the automatic re-extraction, or no-op once
  * the attempts are spent. A provider-declared `Retry-After` is honored as a
  * FLOOR (never shortens the backoff) — the same rule the bulk sweep follows.
+ *
+ * Stamps the wait onto the receipt (`extraction: queued`, carrying the fire
+ * time) in the same breath as scheduling it, so the UI can say "attempt 2 of
+ * 3, in 4 min" instead of showing a settled-looking error while a retry is
+ * already on the way.
  */
 export async function scheduleAutoRetryExtraction(
-  ctx: SchedulerCtx,
+  ctx: ActionCtx,
   receiptId: Id<"receipts">,
   attempt: number,
   retryAfterSeconds?: number,
@@ -69,9 +63,20 @@ export async function scheduleAutoRetryExtraction(
   if (attempt < 1 || attempt > AUTO_RETRY_MAX_ATTEMPTS) return;
   const base = AUTO_RETRY_DELAYS_MS[attempt - 1];
   const floor = (retryAfterSeconds ?? 0) * 1000;
-  await ctx.scheduler.runAfter(
-    Math.max(base, floor),
-    internal.receipts.autoRetryExtraction,
-    { receiptId, attempt },
-  );
+  const delay = Math.max(base, floor);
+  const now = Date.now();
+  await ctx.scheduler.runAfter(delay, internal.receipts.autoRetryExtraction, {
+    receiptId,
+    attempt,
+  });
+  await ctx.runMutation(internal.receipts.setExtractionProgress, {
+    receiptId,
+    extraction: {
+      status: "queued",
+      since: now,
+      attempt,
+      maxAttempts: AUTO_RETRY_MAX_ATTEMPTS,
+      nextAttemptAt: now + delay,
+    },
+  });
 }

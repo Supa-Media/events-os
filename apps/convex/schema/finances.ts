@@ -1371,6 +1371,31 @@ export const receipts = defineTable({
   // or — for the upload path — the original pipeline run) succeeds, so a
   // stale failure never lingers next to a fresh, successful read.
   ocrError: v.optional(v.string()),
+  // ── Extraction IN FLIGHT — what the UI shows instead of a dead card ─────────
+  // Extraction is asynchronous (a scheduled action, often several seconds of
+  // vision call), and before this field the UI had no way to know that: the
+  // Retry button's spinner tracked the MUTATION, which returns the instant
+  // the action is scheduled, so a receipt looked "done" while its read was
+  // still running — and an automatic retry (`lib/receiptRetry.ts`), which can
+  // be minutes away, was invisible entirely.
+  //  - `queued`: scheduled, not started. `nextAttemptAt` is when it fires, so
+  //    the UI can count down to it honestly.
+  //  - `running`: the extraction action is executing right now.
+  // `attempt`/`maxAttempts` are set only for the AUTOMATIC retry chain, so the
+  // UI can say "attempt 2 of 3" rather than a bare spinner. ALWAYS cleared by
+  // the two commit mutations (`applyUploadOcrAndAttach`, `applyRetryExtraction`)
+  // — every terminal path runs through one of them. Readers must still treat a
+  // stale value as inactive (see `isReceiptExtractionActive`): a lost scheduled
+  // function must never strand a receipt spinning forever.
+  extraction: v.optional(
+    v.object({
+      status: v.union(v.literal("queued"), v.literal("running")),
+      since: v.number(),
+      attempt: v.optional(v.number()),
+      maxAttempts: v.optional(v.number()),
+      nextAttemptAt: v.optional(v.number()),
+    }),
+  ),
   // The ORIGINAL attachment filename this receipt came from (e.g.
   // "receipt.pdf"), or a synthetic label when there was no file name to carry
   // — "email body" (the message text itself was the receipt) / "text

@@ -2073,6 +2073,36 @@ describe("processInboundReceipt", () => {
       }
     });
 
+    test("the receipt says a retry is coming — queued with its fire time, then running, then clear", async () => {
+      vi.useFakeTimers();
+      try {
+        const t = newT();
+        const s = await setupChapter(t);
+        await seedPerson(s, { email: "seyi@publicworship.life" });
+        const askedModels: string[] = [];
+        mockEngine([{ status: 500 }, { amount: 156.0, merchant: "Stuf" }], askedModels);
+
+        await emailIn(t, "email_flaky_4");
+
+        // The initial read failed — and the row SAYS a retry is scheduled,
+        // with the time it fires, instead of looking like a settled error.
+        const queued = (await run(t, (ctx) => ctx.db.query("receipts").take(5)))[0];
+        expect(queued.extraction?.status).toBe("queued");
+        expect(queued.extraction?.attempt).toBe(1);
+        expect(queued.extraction?.maxAttempts).toBe(3);
+        expect(queued.extraction?.nextAttemptAt).toBeGreaterThan(queued.extraction!.since);
+
+        await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+        // Landed — nothing is pending, so nothing spins.
+        const done = await run(t, (ctx) => ctx.db.get(queued._id));
+        expect(done?.extraction).toBeUndefined();
+        expect(done?.ocrAmountCents).toBe(15600);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
     test("a read that simply found no total is NOT retried — nothing transient about it", async () => {
       vi.useFakeTimers();
       try {
