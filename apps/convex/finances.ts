@@ -101,6 +101,7 @@ import {
   requireFinanceManager,
   requireFinanceCentral,
   requireAllBooksReconcile,
+  requireCrossBookAttribution,
   requireCentralFinanceRoleOrEdSeat,
   requireCentralEdOrFm,
   resolveCallerPersonId,
@@ -340,11 +341,35 @@ const reconcileRow = v.object({
   ...txnSummaryFields,
   cardholder: v.union(cardholderRef, v.null()),
   aiSuggestion: v.union(reconcileAiSuggestion, v.null()),
-  // Which book this charge belongs to (see `reconcileBook`). Always populated,
-  // in every scope — a single-book queue still labels its rows, so a screenshot
-  // of the grid is unambiguous on its own (the same reasoning behind
-  // `ScopeBadge` in the finance layout).
+  // Which book PAID for this charge — custody, i.e. whose card/account the
+  // money actually left (see `reconcileBook`). Always populated, in every
+  // scope: a single-book queue still labels its rows, so a screenshot of the
+  // grid is unambiguous on its own (the same reasoning behind `ScopeBadge`).
   book: reconcileBook,
+  // Which book this charge COUNTS AGAINST — the linked budget's owner. `null`
+  // while unattributed (most of the "To review" queue).
+  //
+  // Custody and attribution are two different facts and the app needs both.
+  // `book` is bank reality: it's what reconciles against a statement, and what
+  // `requireReconcileTxn` gates writes on. `chargedTo` is programme reality:
+  // it's what a budget's actuals count, and what the org rolls up. They agree
+  // on almost every row; where they DIFFER, one book fronted money for another
+  // and the difference is a receivable — netted into a settlement by
+  // `transfers.ts#interScopeBalances` and shown per-row here so a treasurer can
+  // see it at the point of coding, not only on the central dashboard's
+  // balances panel.
+  //
+  // Deliberately NOT collapsed into one field: an unattributed row has no
+  // budget (so a budget-derived book would be undefined for exactly the review
+  // queue), `canEdit` would flip as a row is coded, and a book's rows would
+  // stop summing to its bank statement.
+  chargedTo: v.union(
+    v.object({
+      id: v.union(v.id("chapters"), v.literal(CENTRAL)),
+      name: v.string(),
+    }),
+    v.null(),
+  ),
   // The linked personal repayment's LIVE status (`personalRepayments` via
   // `repaymentId`) — `null` for an unflagged charge (or a flagged one whose
   // repayment row vanished). Lets the grid's Personal badge distinguish
@@ -912,6 +937,106 @@ async function requireInCallerChapter<T extends "funds" | "budgetCategories" | "
     });
   }
   return doc as Doc<T>;
+}
+
+/**
+ * Resolve + authorize the budget a CENTRAL-owned transaction is being charged
+ * to. Two legitimate targets:
+ *
+ *  - A CENTRAL budget — central's own book paying for its own line item. The
+ *    only case the app allowed until now.
+ *  - A CHAPTER budget — CROSS-BOOK: central's card paid, but the spend belongs
+ *    to that chapter's programme (the founder's case: a Public Worship card
+ *    buying something for New York). Custody stays central — the money really
+ *    did leave central's account, and `transactions.chapterId` is never
+ *    rewritten — while the BUDGET decides whose programme it counts against.
+ *    The gap between the two is a receivable, which
+ *    `transfers.ts#interScopeBalances` already nets into a settlement as its
+ *    direction (b); that term was computed generically for exactly this, and
+ *    goes from always-zero to live the moment this branch is reachable.
+ *
+ * The cross-book branch goes through `requireCrossBookAttribution`
+ * (`lib/finance.ts`) rather than an inline `isCentral`, so restricting who may
+ * charge another book — or layering an acceptance step on top — is a one-file
+ * change later. Today that resolver's body is the central-reach check, which
+ * `requireReconcileTxn`/`requireFinanceCentral` already asserted before we get
+ * here; re-checking is deliberate (the gate must be true at the point the
+ * cross-book decision is actually made, not inferred from an earlier one).
+ *
+ * NOT relaxed into `requireInCallerChapter`'s `allowCentral` option: that
+ * helper answers "does this doc belong to the caller's scope (or central)?",
+ * and cross-book is precisely the case where the answer is NO and the write is
+ * still correct. Widening it there would silently loosen every other caller
+ * of that primitive — funds, categories, teams, events, projects, people.
+ */
+/**
+ * CROSS-BOOK ROWS CHARGED TO A CHAPTER'S BUDGETS — the transactions another
+ * book PAID for but that belong to `chapterId`'s programme.
+ *
+ * Every chapter-budget actual in this app was summed from the chapter's OWN
+ * transactions (`loadPeriodTxns(ctx, chapterId, …)`), and `actualsForRef` even
+ * filtered its `by_budget` read back down to `tr.chapterId === chapterId` as
+ * defence-in-depth. That was CORRECT while cross-book attribution only ran one
+ * way (a chapter fronting central, which lands on a CENTRAL budget and so was
+ * never a chapter budget's problem). Central budgets have always summed via
+ * `by_budget` across every chapter for exactly this reason.
+ *
+ * Opening the reverse direction (`requireBudgetForCentralTxn`) breaks that
+ * assumption: a Public Worship card charged to a New York budget is a real
+ * charge against New York's plan that no custody-scoped scan can see. Without
+ * this helper the budget would silently under-report — the card would show
+ * $500/$2,000 when $800 had actually been committed.
+ *
+ * Returns the mode-filtered central-owned rows whose `budgetId` resolves to one
+ * of this chapter's budgets, ready to be UNIONED with the chapter's own txns
+ * before any budget-actual math. Bounded by the chapter's budget count (one
+ * `by_budget` read each), which is the same shape `actualsForRef` and the
+ * central budget cards already use.
+ *
+ * DELIBERATELY NOT folded into `loadPeriodTxns`: that function answers "what
+ * did this chapter's account do", which is the honest input for the "Spent"
+ * tile, the recent-transactions digest, and anything reconciled against a bank
+ * statement. Those must stay custody-scoped — the difference between them and
+ * the budget view IS the receivable, and collapsing the two would hide it.
+ */
+async function loadCrossBookTxnsForChapterBudgets(
+  ctx: QueryCtx,
+  budgets: Doc<"budgets">[],
+  chapterId: Id<"chapters">,
+  sandboxMode: boolean,
+): Promise<Doc<"transactions">[]> {
+  const out: Doc<"transactions">[] = [];
+  for (const b of budgets) {
+    if (b.chapterId !== chapterId) continue;
+    const linked = await ctx.db
+      .query("transactions")
+      .withIndex("by_budget", (q) => q.eq("budgetId", b._id))
+      .take(ROLLUP_SCAN_LIMIT);
+    for (const tr of linked) {
+      // Only rows another book PAID for — the chapter's own are already in
+      // the custody scan every caller unions this with, and double-counting
+      // them would inflate every budget on the page.
+      if (tr.chapterId === chapterId) continue;
+      if (!txnMatchesMode(tr, sandboxMode)) continue;
+      out.push(tr);
+    }
+  }
+  return out;
+}
+
+async function requireBudgetForCentralTxn(
+  ctx: MutationCtx,
+  homeChapterId: Id<"chapters">,
+  budgetId: Id<"budgets">,
+): Promise<Doc<"budgets">> {
+  const budget = await ctx.db.get(budgetId);
+  if (!budget) {
+    throw new ConvexError({ code: "NOT_FOUND", message: "Budget not found." });
+  }
+  if (budget.chapterId !== CENTRAL) {
+    await requireCrossBookAttribution(ctx, homeChapterId);
+  }
+  return budget;
 }
 
 /** True iff a transaction contributes to category / budget / actual SPEND.
@@ -2569,6 +2694,27 @@ export const dashboardChapter = query({
       )
       .take(ROLLUP_SCAN_LIMIT);
 
+    // BUDGET-ACTUAL input set = this chapter's own txns UNION the cross-book
+    // rows another book paid for but charged to one of these budgets (see
+    // `loadCrossBookTxnsForChapterBudgets`). Every budget-card breakdown below
+    // filters this by `budgetId`, so a Public Worship card bought for New York
+    // lands on New York's card exactly like a New York card would.
+    //
+    // Only the BUDGET math reads this. `periodSpendCents` (the "Spent" tile),
+    // `unattributedCents`, and the recent-transactions digest deliberately stay
+    // on `yearTxns` — they answer "what did this chapter's own account do",
+    // which is the number that reconciles against its bank statement. The
+    // difference between the two IS the receivable central owes the chapter,
+    // and it's surfaced as such by `transfers.interScopeBalances`, not hidden
+    // by quietly merging the two questions into one.
+    const crossBookTxns = await loadCrossBookTxnsForChapterBudgets(
+      ctx,
+      budgets,
+      chapterId,
+      sandboxMode,
+    );
+    const budgetTxns = crossBookTxns.length > 0 ? [...yearTxns, ...crossBookTxns] : yearTxns;
+
     // One-time (event / project) budget cards (per-instance / one-off).
     // Bug 1a: month mode only shows a card RELEVANT to the viewed month (own
     // `month`, linked ref's date, or spend posted this month) — YTD/year mode
@@ -2580,10 +2726,10 @@ export const dashboardChapter = query({
       if (effectiveType(b) !== "one_time") continue;
       const refKind = effectiveRefKind(b);
       const { name, dateLabel, refDate, live } = await resolveBudgetRef(b, getEvent, getProject);
-      if (!oneTimeCardAppliesToDash(b, dp, refDate, yearTxns)) continue;
+      if (!oneTimeCardAppliesToDash(b, dp, refDate, budgetTxns)) continue;
       // Bug 1b: the card's OWN bar stays CUMULATIVE (never month-sliced) even
       // though its VISIBILITY above is month-gated — see `oneTimeCardBreakdown`.
-      const { spentCents, categories } = oneTimeCardBreakdown(b, yearTxns, catName);
+      const { spentCents, categories } = oneTimeCardBreakdown(b, budgetTxns, catName);
       // B1: the CAP driving pct/remaining/status is the EFFECTIVE one — a
       // budget pending an increase never advertises the unapproved amount.
       const capCents = effectiveCapCents(b);
@@ -2635,7 +2781,7 @@ export const dashboardChapter = query({
       if (!recurringAppliesToDash(b, dp)) continue;
       // Scope recurring spend to the dashboard period: THIS month (fixes
       // "$2,000/mo" showing YTD in month mode), or Jan..throughMonth in YTD mode.
-      const { spentCents, categories } = budgetSpendBreakdown(b, yearTxns, catName, dp);
+      const { spentCents, categories } = budgetSpendBreakdown(b, budgetTxns, catName, dp);
       // Prefer an author label; fall back to a legacy team name, then a generic.
       let name = b.label ?? (b.teamId ? teamName.get(b.teamId) : undefined) ?? "Recurring";
       // Allocation scales with the period in YTD (sum of month-equivalents;
@@ -2646,7 +2792,7 @@ export const dashboardChapter = query({
       // DASH-2.1 bug 1: ADDITIVE month-honest fields alongside the unchanged
       // cumulative `spentCents`/`budgetCents`/`pct` — see `recurringBudgetCard`'s
       // doc comment.
-      const periodSpendCents = monthOnlySpendCentsForBudget(b, yearTxns, dp);
+      const periodSpendCents = monthOnlySpendCentsForBudget(b, budgetTxns, dp);
       const fullCapCents = effectiveCapCents(b);
       recurringBudgets.push({
         id: b._id,
@@ -2715,7 +2861,7 @@ export const dashboardChapter = query({
       let budgetCents = 0;
       for (const b of tagBudgets.values()) {
         const refDate = await refDateForBudget(b, getEvent, getProject);
-        budgetCents += tagAllocationForDash(b, dp, refDate, yearTxns);
+        budgetCents += tagAllocationForDash(b, dp, refDate, budgetTxns);
       }
       // Tag totals are LINKED-ONLY: count only txns EXPLICITLY linked
       // (`budgetId`) to a budget carrying the tag — NO derived matching. A linked
@@ -2724,8 +2870,13 @@ export const dashboardChapter = query({
       // comment) scopes purely to the txn's own posted date falling in `dp`, so
       // a fixed-month one-time budget's spend lands in the month it was
       // actually posted, not the budget's own declared month.
+      // `budgetTxns`, not `yearTxns`: a tag rollup is BUDGET-linked spend by
+      // definition ("count only txns EXPLICITLY linked to a budget carrying the
+      // tag"), so it has to see the same cross-book rows the budget cards do —
+      // otherwise a tag and the budgets under it would report different totals
+      // for the same charges.
       let spentCents = 0;
-      for (const tr of yearTxns) {
+      for (const tr of budgetTxns) {
         if (tr.budgetId == null) continue;
         const b = tagBudgets.get(tr.budgetId);
         if (b && txnCountsTowardTagAgg(tr, b, dp)) spentCents += tr.amountCents;
@@ -4143,12 +4294,30 @@ async function actualsForRef(
     ),
   );
   const raw = rowsByBudget.flat();
-  // Defense-in-depth: never sum a row from another chapter even if a future
-  // link slipped through. A chapter caller only ever sees actuals scoped to
-  // ITS OWN chapter — once `transferProjectScope` moves a project's budget AND
-  // linked transactions to central together, they drop out of the origin
-  // chapter's actuals here exactly as they would have before this PR.
-  const rows = raw.filter((tr) => tr.chapterId === chapterId);
+  // Scope guard, now BOOK-aware rather than custody-only. It still refuses a
+  // row from an unrelated chapter (the original defence-in-depth: once
+  // `transferProjectScope` moves a project's budget AND its linked
+  // transactions to central together, they drop out of the origin chapter's
+  // actuals exactly as before). What it no longer refuses is a CROSS-BOOK row:
+  // another book paid, but the charge was deliberately attributed to a budget
+  // belonging to THIS ref — central fronting a chapter's event, say. That's a
+  // real actual against this ref's plan, and the old `tr.chapterId ===
+  // chapterId` test dropped it on the floor (it couldn't happen when this was
+  // written — the write path only ran the other way; see
+  // `requireBudgetForCentralTxn`).
+  //
+  // The admitted set is therefore: rows this chapter paid for, plus rows any
+  // other book paid for that are charged to a budget owned by THIS chapter.
+  // A budget that has itself moved to central keeps its old behaviour, since
+  // the ownership test below fails for it.
+  const budgetOwnedHere = new Set(
+    budgets.filter((b) => b.chapterId === chapterId).map((b) => b._id),
+  );
+  const rows = raw.filter(
+    (tr) =>
+      tr.chapterId === chapterId ||
+      (tr.budgetId != null && budgetOwnedHere.has(tr.budgetId)),
+  );
   const totalCents = rows.reduce((s, tr) => (isSpend(tr) ? s + tr.amountCents : s), 0);
   return { totalCents, transactions: rows.map(toTxnSummary) };
 }
@@ -4365,6 +4534,18 @@ export const budgetsGlance = query({
         q.eq("chapterId", chapterId).eq("year", now.year),
       )
       .take(ROLLUP_SCAN_LIMIT);
+    // Same UNION as `dashboardChapter`'s budget cards — this screen is "budgets
+    // at a glance" for the whole team, so a cardholder checking room-left must
+    // see the identical figure the treasurer's dashboard shows. Leaving it
+    // custody-scoped would make the two disagree by exactly the cross-book
+    // charges (see `loadCrossBookTxnsForChapterBudgets`).
+    const crossBookTxns = await loadCrossBookTxnsForChapterBudgets(
+      ctx,
+      budgets,
+      chapterId,
+      sandboxMode,
+    );
+    const budgetTxns = crossBookTxns.length > 0 ? [...yearTxns, ...crossBookTxns] : yearTxns;
 
     const getEvent = nameCache(ctx, "events");
     const getProject = nameCache(ctx, "projects");
@@ -4376,7 +4557,7 @@ export const budgetsGlance = query({
       // increase mid-review (`approvedCents` — its old cap still governs).
       if (b.approvedCents == null && !isAttributableBudget(b)) continue;
       const isOneTime = effectiveType(b) === "one_time";
-      const spentCents = yearTxns.reduce((sum, tr) => {
+      const spentCents = budgetTxns.reduce((sum, tr) => {
         const counts = isOneTime
           ? tr.budgetId === b._id && isSpend(tr)
           : txnCountsTowardBudget(tr, b, now.month);
@@ -7961,6 +8142,30 @@ export const listReconcile = query({
       };
     };
 
+    // Which book a row COUNTS AGAINST — the linked budget's owner (see
+    // `reconcileRow.chargedTo`). Resolved through the same `getBudget` cache
+    // the AI-suggestion resolver uses, plus a chapter-name cache: a cross-book
+    // row's budget can belong to a chapter that ISN'T among the books this
+    // query loaded, so `bookMeta` can't answer it.
+    // (`nameCache` is typed to a fixed table set that excludes `chapters`, so
+    // this is a plain read-through map rather than reaching into that helper.)
+    const chapterNames = new Map<Id<"chapters">, string>();
+    const resolveChargedTo = async (
+      tr: Doc<"transactions">,
+    ): Promise<{ id: Id<"chapters"> | typeof CENTRAL; name: string } | null> => {
+      if (tr.budgetId == null) return null;
+      const budget = await getBudget(tr.budgetId);
+      if (!budget) return null;
+      if (budget.chapterId === CENTRAL) return { id: CENTRAL, name: "Central" };
+      const ownerId = budget.chapterId;
+      let name = chapterNames.get(ownerId);
+      if (name === undefined) {
+        name = (await ctx.db.get(ownerId))?.name ?? "Chapter";
+        chapterNames.set(ownerId, name);
+      }
+      return { id: ownerId, name };
+    };
+
     const rows: (typeof reconcileRow.type)[] = [];
     for (const tr of selected) {
       rows.push({
@@ -7968,6 +8173,7 @@ export const listReconcile = query({
         cardholder: await resolveCardholder(tr),
         aiSuggestion: await resolveAiSuggestion(tr),
         book: bookOf(tr),
+        chargedTo: await resolveChargedTo(tr),
         repaymentStatus: await resolveRepaymentStatus(tr),
       });
     }
@@ -8489,8 +8695,9 @@ export const createManualTransaction = mutation({
         });
       }
       if (args.budgetId) {
-        // A central txn may only attribute to a CENTRAL budget.
-        await requireInCallerChapter(ctx, CENTRAL, "budgets", args.budgetId, "Budget");
+        // Central's own budget, or — cross-book — a chapter's, when central is
+        // fronting that chapter's spend. Same gate the reconcile path uses.
+        await requireBudgetForCentralTxn(ctx, homeChapterId, args.budgetId);
         // WP-wave4 (item 5): only an APPROVED budget can take a charge.
         await assertBudgetApprovedForAttribution(ctx, args.budgetId);
       }
@@ -8580,18 +8787,25 @@ export const categorizeTransaction = mutation({
   handler: async (ctx, args) => {
     // Scope-aware (WP-2.1): a central-owned txn is authorized at central reach,
     // a chapter txn at the caller's bookkeeper role in its chapter.
-    const { txn, scope, actorPersonId } = await requireReconcileTxn(
+    const { txn, scope, homeChapterId, actorPersonId } = await requireReconcileTxn(
       ctx,
       args.transactionId,
       "bookkeeper",
     );
     if (scope === CENTRAL) {
-      // Central txns carry no chapter-scoped links — only a central budget.
+      // Central txns carry no chapter-scoped links. Note this stays true even
+      // for a CROSS-BOOK charge (central card → chapter budget): the BUDGET is
+      // the whole attribution, and funds/categories/teams are chapter-scoped
+      // rows a central txn has no relationship to. Whether a cross-book charge
+      // should additionally take the receiving chapter's CATEGORY (so that
+      // chapter's own category rollup sees it) is a real question, deliberately
+      // deferred to the owner rather than assumed here — budget-only is the
+      // smaller, reversible first step.
       if (args.fundId || args.categoryId || args.teamId) {
         throw new ConvexError({
           code: "UNSUPPORTED",
           message:
-            "A central transaction can only be attributed to a central budget, not chapter-scoped links.",
+            "A central transaction can only be attributed to a budget, not chapter-scoped links.",
         });
       }
     } else {
@@ -8602,11 +8816,18 @@ export const categorizeTransaction = mutation({
       });
     }
     if (args.budgetId) {
-      // Verify against the txn's OWN scope: a central budget for a central txn;
-      // the chapter's own or a central budget for a chapter txn (allowCentral).
-      await requireInCallerChapter(ctx, scope, "budgets", args.budgetId, "Budget", {
-        allowCentral: true,
-      });
+      if (scope === CENTRAL) {
+        // A central-owned txn: its own book's budget, OR — cross-book — a
+        // chapter's, when central fronted that chapter's spend. See
+        // `requireBudgetForCentralTxn`.
+        await requireBudgetForCentralTxn(ctx, homeChapterId, args.budgetId);
+      } else {
+        // A chapter txn: its own chapter's budget or a central one
+        // (`allowCentral`) — the long-standing chapter-fronts-central case.
+        await requireInCallerChapter(ctx, scope, "budgets", args.budgetId, "Budget", {
+          allowCentral: true,
+        });
+      }
       // WP-wave4 (item 5): only an APPROVED budget can take a charge — the
       // "For" picker's own target gate.
       await assertBudgetApprovedForAttribution(ctx, args.budgetId);

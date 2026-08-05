@@ -376,6 +376,11 @@ function ReconcileRow({
   // backend would reject, which is the same "affordance that can't work" this
   // whole change set is about removing.
   const isCentralRow = row.book.id === CENTRAL;
+  // One book paid, a different book's budget absorbed it — see the For cell's
+  // CROSS-BOOK FLAG comment. `chargedTo` is null while the row is unattributed,
+  // which is most of the review queue, so this is false for those by
+  // construction rather than by a separate check.
+  const isCrossBook = row.chargedTo != null && row.chargedTo.id !== row.book.id;
   const hideCategory = centralScope || isCentralRow;
   const rowForItems = isCentralRow && centralForItems ? centralForItems : forItems;
 
@@ -625,22 +630,38 @@ function ReconcileRow({
       ) : null}
 
       {/* For (inline dropdown; grouped Events / Projects / Recurring — WP-U:
-          one picker, one home per dollar. For a CENTRAL row only Recurring ·
-          Central budgets are offered — events/projects are chapter-only —
-          whether that's because the whole grid is in central scope or because
-          this one row is central inside the merged queue (`rowForItems`).
+          one picker, one home per dollar. A CENTRAL row is offered central's
+          own budgets PLUS the chapter's, under a "central is fronting this"
+          heading — a central card really does buy things for a chapter's
+          programme, and the backend admits it (`requireBudgetForCentralTxn`).
           RANKED per-row (nearby spend → similar merchant → upcoming date →
           everything else, budget-less demoted) via `reconcileSuggest.
-          rankForPicker` — see `ForPickerCell`. */}
+          rankForPicker` — see `ForPickerCell`.
+
+          CROSS-BOOK FLAG: when the budget picked belongs to a DIFFERENT book
+          than the one that paid, the row says so right here. That gap is a
+          receivable — `transfers.interScopeBalances` nets it into a settlement
+          — and it used to be visible only on the central dashboard's balances
+          panel, i.e. nowhere near the moment a treasurer creates it. */}
       <Cell width={widths.forCol}>
-        <ForPickerCell
-          value={row.budgetId}
-          transactionId={id}
-          baseItems={rowForItems}
-          placeholder={row.needsBudget ? "Needs budget" : "None"}
-          warn={row.needsBudget}
-          onChange={onForChange}
-        />
+        <View className="flex-1 gap-0.5">
+          <ForPickerCell
+            value={row.budgetId}
+            transactionId={id}
+            baseItems={rowForItems}
+            placeholder={row.needsBudget ? "Needs budget" : "None"}
+            warn={row.needsBudget}
+            onChange={onForChange}
+          />
+          {isCrossBook ? (
+            <View className="flex-row items-center gap-1 px-2 pb-1">
+              <Icon name="corner-down-right" size={11} color={colors.warn} />
+              <Text className="text-2xs text-warn" numberOfLines={1}>
+                {row.book.name} paid · {row.chargedTo?.name} owes
+              </Text>
+            </View>
+          ) : null}
+        </View>
       </Cell>
 
       {/* Suggested — AI auto-coding proposal + Accept when the model has

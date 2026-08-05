@@ -254,6 +254,18 @@
  *    entities, and that a foreign chapter's rows are readable but not
  *    editable — plus one quiz question on that write boundary. Minutes 3→4,
  *    quiz length 3→4 (both bumped below). Total: still 105 sections.
+ *
+ * Cross-book attribution (founder request, 2026-08-05 — "a transaction should
+ * know its true book based on what budget it's in … then we can calculate in
+ * the backend what transfers need to be made") then touched the SAME
+ * `finance-cross-chapter-audit` section again: a rule ("Whose card paid ≠
+ * whose budget it counts against") teaching the two facts every charge
+ * carries — paid-from is custody and never moves when a charge is coded;
+ * charged-to is what a budget measures — and that the gap between them is a
+ * receivable the app computes and settles from Inter-chapter balances, plus
+ * one quiz question on the Public-Worship-card-buys-for-New-York case.
+ * Minutes 4→5, quiz length 4→5 (both bumped below). No other section moved;
+ * total stays 105.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -908,8 +920,8 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-cross-chapter-audit",
     title: "Auditing every chapter",
-    minutes: 4,
-    quizLength: 4,
+    minutes: 5,
+    quizLength: 5,
     optional: false,
     capstoneKind: null,
   },

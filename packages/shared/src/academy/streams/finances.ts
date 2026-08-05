@@ -1165,7 +1165,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     slug: "finance-cross-chapter-audit",
     title: "Auditing every chapter",
     subtitle: "The central rollup, drill-down, and the trust you're building",
-    minutes: 4,
+    minutes: 5,
     blocks: [
       {
         kind: "p",
@@ -1183,6 +1183,11 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "rule",
         title: "Trust, not permission",
         text: "You're not a gate a chapter's spending waits behind — you're the person who can look at any chapter's numbers at any time and vouch for them. The north-star metric for this whole system is exactly that: you trust every chapter's numbers without having to ask anyone.",
+      },
+      {
+        kind: "rule",
+        title: "Whose card paid ≠ whose budget it counts against",
+        text: "Every charge carries **two** facts, and they're different questions. **Paid from** is whose card or account the money actually left — that's what reconciles against a bank statement, and coding a charge never changes it. **Charged to** is whose budget it counts against — that's what a budget's spent-vs-left is measuring. Usually they match. When they don't, one book fronted money for another: a Public Worship card buying something for New York is *paid from Central, charged to New York*. Reconcile flags that row so you see it as you code it, the charge counts against New York's budget (not Central's), and the app works out what's owed — no spreadsheet, no accrual to remember. Settle it whenever you like from the central dashboard's **Inter-chapter balances**; the balance is recomputed live from the ledger, so a miscode you fix simply disappears from it.",
       },
       {
         kind: "rule",
@@ -1234,6 +1239,19 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 1,
         explanation:
           "Books stay separate even in the merged view. You can SEE every book — that's the whole audit posture — but coding a chapter's charge belongs to that chapter's Treasurer. Central's own rows and your own chapter's rows stay fully editable.",
+      },
+      {
+        prompt:
+          "You pay for New York's venue deposit on a Public Worship card and code it to New York's event budget. What happens?",
+        options: [
+          "The charge moves into New York's account — its book now shows the money leaving",
+          "It stays paid from Central, counts against New York's budget, and New York owes Central the amount",
+          "It counts against Central's budget instead, since Central's card paid",
+          "Nothing until someone records a transfer first",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Paid-from never moves — Central's account really did pay, and its statement has to keep matching. Charged-to is what the budget measures, so the deposit lands on New York's plan. The gap between the two is a receivable the app computes for you, visible in Inter-chapter balances and settleable whenever you choose.",
       },
       {
         prompt: "What's the FM's actual relationship to a chapter's spending?",
