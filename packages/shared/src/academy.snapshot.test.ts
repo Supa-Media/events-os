@@ -225,6 +225,47 @@
  * `dev-data-export`'s vacated slot leaves `donor-stewardship`'s remaining
  * three sections untouched and unmoved. Total: still 105 sections (moved,
  * not added or removed).
+ *
+ * Collecting personal charges (founder feedback: the "Personal charges
+ * outstanding" tile named a number with no way to see the rows or settle
+ * one, and Reconcile hid the flag entirely on charges that resolve no
+ * payer). `finance-reconcile-grid` is content-only again — two rules, one on
+ * a manager NAMING who owes an unattributed charge and one on where the
+ * collecting happens and what settling does to the ledger — because its quiz
+ * is still at the 5-question cap. The quiz question that pairs with it
+ * ("Mark repaid" posts an offsetting credit; nothing is deleted) went to
+ * `finance-monthly-close` instead, which had room and already carries the
+ * "check the Personal (unpaid) pill" close step: quiz length 3→4 (bumped
+ * below), minutes and placement unchanged. No slugs, sections, or courses
+ * moved; total stays 105 sections.
+ *
+ * The central/chapter BOOKS pass (founder report: a dashboard "to review"
+ * figure that pointed at a Reconcile view which never contained it) then
+ * touched two Finances sections, adding none and moving none:
+ *  - `finance-reconcile-grid` — the filter table's two mislabeled rows were
+ *    corrected to what those pills actually match ("Uncategorized" → "To
+ *    review", i.e. status-unreviewed; "Ready" → "Reconciled", i.e. already
+ *    cleared), and the quiz question about them was replaced with one that
+ *    teaches the tile→pill round trip. One question swapped for one, so its
+ *    snapshotted minutes/quizLength are unchanged.
+ *  - `finance-cross-chapter-audit` — gained a rule ("Separate books, one
+ *    queue when you hold both hats") teaching Reconcile's books selector,
+ *    that central and each chapter keep separate books as separate OPERATING
+ *    entities, and that a foreign chapter's rows are readable but not
+ *    editable — plus one quiz question on that write boundary. Minutes 3→4,
+ *    quiz length 3→4 (both bumped below). Total: still 105 sections.
+ *
+ * Cross-book attribution (founder request, 2026-08-05 — "a transaction should
+ * know its true book based on what budget it's in … then we can calculate in
+ * the backend what transfers need to be made") then touched the SAME
+ * `finance-cross-chapter-audit` section again: a rule ("Whose card paid ≠
+ * whose budget it counts against") teaching the two facts every charge
+ * carries — paid-from is custody and never moves when a charge is coded;
+ * charged-to is what a budget measures — and that the gap between them is a
+ * receivable the app computes and settles from Inter-chapter balances, plus
+ * one quiz question on the Public-Worship-card-buys-for-New-York case.
+ * Minutes 4→5, quiz length 4→5 (both bumped below). No other section moved;
+ * total stays 105.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -850,7 +891,7 @@ const EXPECTED_SECTIONS: {
     slug: "finance-monthly-close",
     title: "The monthly close",
     minutes: 3,
-    quizLength: 3,
+    quizLength: 4,
     optional: false,
     capstoneKind: null,
   },
@@ -881,8 +922,8 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-cross-chapter-audit",
     title: "Auditing every chapter",
-    minutes: 3,
-    quizLength: 3,
+    minutes: 5,
+    quizLength: 5,
     optional: false,
     capstoneKind: null,
   },

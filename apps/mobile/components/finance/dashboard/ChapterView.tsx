@@ -128,10 +128,10 @@ export function ChapterView({
   onAddTransaction: () => void;
   /** Navigate for an attention row's action (`a.kind`: "reimbursements" → the
    *  Reimbursements tab, "cards" → the Cards tab, "needs_budget" → Reconcile
-   *  pre-filtered to unattributed spend). Also reused by the "To review" KPI
-   *  tile and the recent-transactions digest's "View all" — Reconcile is the
-   *  dashboard's one review surface; there's no separate destination for
-   *  "unreviewed" generically. */
+   *  pre-filtered to unattributed spend; "to_review" → Reconcile pre-filtered
+   *  to UNREVIEWED charges, the "To review" KPI tile's own predicate). The
+   *  recent-transactions digest's "View all" reuses the `needs_budget` target
+   *  — Reconcile is the dashboard's one review surface. */
   onAttentionAction: (kind: string) => void;
   /** Clicking a spend-by-month bar sets the SAME period state the page's
    *  ‹ › picker uses — one state, no second control (see `MonthBars`). */
@@ -328,10 +328,15 @@ export function ChapterView({
             />
           );
         })}
+        {/* no-dead-numbers (founder report): this tile counts UNREVIEWED
+            charges, so it drills into Reconcile's "To review" pill — the one
+            pill built on that exact predicate. It used to open the grid with no
+            filter at all, landing on the `needs_budget` default, so the number
+            the treasurer had just tapped was nowhere on the screen it opened. */}
         {reviewTile ? (
           <ReviewLinkTile
             tile={reviewTile}
-            onPress={isDrilldown ? undefined : () => onAttentionAction("needs_budget")}
+            onPress={isDrilldown ? undefined : () => onAttentionAction("to_review")}
           />
         ) : null}
       </TileRow>

@@ -58,6 +58,17 @@
  * exactly, so this button's visibility never promises an action the backend
  * would then reject with `PAYEE_REQUIRED`.
  *
+ * NO-PAYEE ROWS (founder feedback: "in reconcile I can't mark everything as
+ * personal, some things it won't let me, the flag just doesn't exist"): a
+ * bank/ACH entry, a Relay CSV row whose last-4 was never linked to a person,
+ * or a hand-entered transaction resolves NOBODY — so the button used to be
+ * absent with no explanation, and the row simply couldn't be flagged. A
+ * MANAGER now gets the flag on those rows too; tapping it asks who owes it
+ * (`PersonPicker`) before the usual confirm, and `flagPersonalCharge`'s
+ * `payerPersonId` arg records that person as the charge's payer. Non-managers
+ * still don't see it — naming someone else's debt is a manager's call, and
+ * the server enforces the same split.
+ *
  * OWN-CHARGE FLAG (founder feedback review): `cards.flagPersonalCharge`
  * already allows the PAYER, not just a manager, to flag their own charge
  * server-side — but this grid used to only ever offer the button to
@@ -82,13 +93,14 @@ import {
   Button,
   Icon,
   OptionTag,
+  PersonPicker,
   Popover,
   SelectCell,
   GridHeaderCell,
   useAnchor,
   useResizableColumns,
 } from "../../ui";
-import { PAYOUT_PROCESSOR_LABELS } from "@events-os/shared";
+import { CENTRAL, PAYOUT_PROCESSOR_LABELS } from "@events-os/shared";
 import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
 import { TransactionNoteModal } from "../modals/TransactionNoteModal";
@@ -122,6 +134,13 @@ export type PickerItem = { value: string; label: string; header?: boolean; reaso
 // column but `check` wider/narrower, and remembers the result per-browser.
 const DEFAULT_COLS = {
   check: 40,
+  // Which BOOK the charge belongs to (Central / a chapter). Rendered when the
+  // page chrome alone can't answer it: the merged all-books queue, and a view
+  // into a chapter that isn't the caller's own desk. In an ordinary
+  // single-book view the books selector and the header's `ScopeBadge` already
+  // say so, and a column repeating it on every row would be noise. See
+  // `finances.ts#reconcileBook`.
+  book: 108,
   merchant: 210,
   date: 118, // fits "Mar 15, 2026" — year added for multi-year history
 
@@ -153,15 +172,38 @@ export function ReconcileList({
   onToggle,
   onToggleAll,
   centralScope = false,
+  showBook = false,
+  ownChapterId = null,
+  centralForItems,
   isManager = false,
   viewerPersonId = null,
 }: {
   rows: TxnRow[];
   categoryItems: PickerItem[];
   forItems: PickerItem[];
+  /** The "For" options valid for a CENTRAL-book row (central budgets only).
+   *  Only meaningful in the merged all-books queue, where central and chapter
+   *  rows share one grid: a central charge can't attribute to an event,
+   *  project, or chapter budget — the backend rejects it — so its picker has
+   *  to offer a different list than the chapter row directly above it. In a
+   *  single-book scope every row is the same kind and `forItems` already is
+   *  that list. */
+  centralForItems?: PickerItem[];
   selected: Set<string>;
   onToggle: (id: string) => void;
   onToggleAll: () => void;
+  /** The caller's OWN chapter, or null. Decides whether a CROSS-BOOK row's
+   *  Category cell is editable: the categories this grid loads are the
+   *  caller's chapter's, so a charge absorbed by a different chapter can't be
+   *  categorized from here (the server enforces the same rule against the
+   *  BUDGET's chapter — see `requireCategoryForCentralTxn`). */
+  ownChapterId?: Id<"chapters"> | null;
+  /** Render the Book column — true when "whose money is this?" stops being
+   *  answerable from the page chrome alone: the merged all-books queue (rows
+   *  from different books sit next to each other), or a view into a chapter
+   *  that isn't the caller's own desk (the chrome names their desk, not the
+   *  book on screen). */
+  showBook?: boolean;
   // WP-2.1: reconciling CENTRAL-owned txns. Central money carries no
   // chapter-scoped links (funds/categories/projects/events are chapter-only), so
   // the Category column is hidden — central coding is For + Status.
@@ -175,7 +217,13 @@ export function ReconcileList({
   // cardholder's OWN row, mirroring the server's cardholder-or-manager gate.
   viewerPersonId?: Id<"people"> | null;
 }) {
-  const allSelected = rows.length > 0 && rows.every((r) => selected.has(r.id));
+  // "Select all" only ever means the rows this caller can actually act on —
+  // an uneditable row (a foreign chapter's, in the merged queue) has no
+  // checkbox at all, so including it here would leave the header box unable to
+  // ever read as checked.
+  const selectableRows = rows.filter((r) => r.book.canEdit);
+  const allSelected =
+    selectableRows.length > 0 && selectableRows.every((r) => selected.has(r.id));
   // Founder feedback (2026-07-24): column widths are user-adjustable (drag
   // the header edge, web only) and remembered per-browser — `widths` starts
   // from `DEFAULT_COLS` and is overridden by whatever was last saved.
@@ -183,10 +231,23 @@ export function ReconcileList({
     RECONCILE_COLUMNS_STORAGE_KEY,
     DEFAULT_COLS,
   );
+  // The Category column is chapter-only, so single-central scope normally drops
+  // it — but a CROSS-BOOK row in that scope is absorbed by a chapter's budget
+  // and DOES take that chapter's category, so hiding the column there would put
+  // the one control that spend needs on a screen it isn't on. Data-driven: the
+  // column appears in central scope exactly when there's something in it.
+  const anyCrossBook = rows.some(
+    (r) => r.chargedTo != null && r.chargedTo.id !== r.book.id,
+  );
+  const showCategory = !centralScope || anyCrossBook;
   const tableWidth = (Object.values(widths) as number[]).reduce((sum, w) => sum + w, 0);
-  // Drop the chapter-only Category column's width in central scope so the
-  // grid doesn't leave dead space.
-  const width = centralScope ? tableWidth - widths.category : tableWidth;
+  // Drop the width of any column this scope doesn't render so the grid doesn't
+  // leave dead space: Category when it isn't shown, and the Book column outside
+  // the merged all-books queue.
+  const width =
+    tableWidth -
+    (showCategory ? 0 : widths.category) -
+    (showBook ? 0 : widths.book);
 
   return (
     <View className="overflow-hidden rounded-lg border border-border bg-raised shadow-card">
@@ -200,6 +261,13 @@ export function ReconcileList({
             >
               <CheckBox checked={allSelected} onPress={onToggleAll} />
             </View>
+            {showBook ? (
+              <GridHeaderCell
+                label="Book"
+                width={widths.book}
+                onResizeStart={startResize("book")}
+              />
+            ) : null}
             <GridHeaderCell
               label="Merchant"
               width={widths.merchant}
@@ -216,7 +284,7 @@ export function ReconcileList({
               width={widths.cardholder}
               onResizeStart={startResize("cardholder")}
             />
-            {!centralScope ? (
+            {showCategory ? (
               <GridHeaderCell
                 label="Category"
                 width={widths.category}
@@ -253,6 +321,10 @@ export function ReconcileList({
               onToggle={() => onToggle(row.id)}
               isLast={i === rows.length - 1}
               centralScope={centralScope}
+              showBook={showBook}
+              showCategory={showCategory}
+              ownChapterId={ownChapterId}
+              centralForItems={centralForItems}
               isManager={isManager}
               viewerPersonId={viewerPersonId}
               widths={widths}
@@ -272,6 +344,10 @@ function ReconcileRow({
   onToggle,
   isLast,
   centralScope,
+  showBook,
+  showCategory,
+  ownChapterId,
+  centralForItems,
   isManager,
   viewerPersonId,
   widths,
@@ -283,6 +359,10 @@ function ReconcileRow({
   onToggle: () => void;
   isLast: boolean;
   centralScope: boolean;
+  showBook: boolean;
+  showCategory: boolean;
+  ownChapterId: Id<"chapters"> | null;
+  centralForItems?: PickerItem[];
   isManager: boolean;
   viewerPersonId: Id<"people"> | null;
   widths: ColWidths;
@@ -303,6 +383,41 @@ function ReconcileRow({
   const unmarkTransfer = useMutation(api.finances.unmarkTransfer);
   const unmarkPayout = useMutation(api.finances.unmarkPayout);
   const id = row.id as Id<"transactions">;
+  // Server-resolved writability for THIS row's book (mirrors
+  // `requireReconcileTxn` — see `finances.ts#reconcileBook`). Drives the
+  // read-only rendering below rather than being re-derived client-side, so
+  // the grid and the mutations can't drift apart on who may edit what.
+  const readOnly = !row.book.canEdit;
+  // Is THIS row central-owned? In a single-book scope the answer is uniform
+  // (`centralScope` covers it), but the merged all-books queue interleaves
+  // central and chapter rows — and they don't accept the same coding. So the
+  // "For" picker offers that row's own valid options rather than offering
+  // options the backend would reject, which is the same "affordance that can't
+  // work" this whole change set is about removing.
+  const isCentralRow = row.book.id === CENTRAL;
+  // One book paid, a different book's budget absorbed it — see the For cell's
+  // CROSS-BOOK FLAG comment. `chargedTo` is null while the row is unattributed,
+  // which is most of the review queue, so this is false for those by
+  // construction rather than by a separate check.
+  const isCrossBook = row.chargedTo != null && row.chargedTo.id !== row.book.id;
+  // CATEGORY on a central-book row: normally none (categories are
+  // chapter-scoped), EXCEPT on a cross-book charge absorbed by the caller's own
+  // chapter — that spend lands on their budget card, and if it isn't
+  // categorized here it can never be, since the row lives in central's book and
+  // the chapter's treasurer can't write it (`requireCategoryForCentralTxn`).
+  // Scoped to the caller's OWN chapter because `categoryItems` is their
+  // chapter's list; a charge absorbed by some OTHER chapter would need that
+  // chapter's categories, which this screen doesn't load.
+  const canCategorizeCrossBook =
+    isCentralRow &&
+    isCrossBook &&
+    ownChapterId != null &&
+    row.chargedTo?.id === ownChapterId;
+  // Only CENTRAL rows are ever inert here, exactly as before — a chapter row
+  // (including a read-only peeked one, whose whole body is already
+  // non-interactive) still renders its real category rather than a bare dash.
+  const hideCategory = centralScope || (isCentralRow && !canCategorizeCrossBook);
+  const rowForItems = isCentralRow && centralForItems ? centralForItems : forItems;
 
   // Fire-and-surface: run a cell mutation, alerting the server's reason on error.
   const guard = (p: Promise<unknown>) => p.catch((err) => alertError(err));
@@ -326,6 +441,16 @@ function ReconcileRow({
     "mark" | "unmark" | null
   >(null);
   const [personalPromptBusy, setPersonalPromptBusy] = useState(false);
+  // No-payee rows only (see the file header): who the manager said owes this
+  // charge. The picker runs BEFORE the confirm prompt — two sequential modals
+  // rather than a picker nested inside the confirm — and `namedPayee` is what
+  // the confirm then names back to them and what `flagPersonalCharge`
+  // attributes the charge to. Cleared whenever either step is dismissed.
+  const [payeePickerOpen, setPayeePickerOpen] = useState(false);
+  const [namedPayee, setNamedPayee] = useState<{
+    id: Id<"people">;
+    name: string;
+  } | null>(null);
   // Accept feels TERMINAL: the moment a suggestion is accepted we show a brief
   // "Accepted" state in the Suggested cell instead of letting an
   // still-`isSuggestible` row (accepted the category but still needs a budget)
@@ -376,16 +501,33 @@ function ReconcileRow({
       // re-renders this row with `isPersonal`/`repaymentStatus` set the
       // moment either mutation commits.
       if (personalPromptMode === "mark") {
-        await flagPersonalCharge({ transactionId: id });
+        // `payerPersonId` only travels for a row that resolves no payee of its
+        // own — the server ignores it otherwise (it will never re-attribute a
+        // real cardholder's charge to someone else).
+        await flagPersonalCharge({
+          transactionId: id,
+          ...(namedPayee ? { payerPersonId: namedPayee.id } : {}),
+        });
       } else if (personalPromptMode === "unmark") {
         await unflagPersonalCharge({ transactionId: id });
       }
       setPersonalPromptMode(null);
+      setNamedPayee(null);
     } catch (err) {
       alertError(err);
     } finally {
       setPersonalPromptBusy(false);
     }
+  }
+
+  /** Tapping the flag: a row with a resolvable payee goes straight to the
+   *  confirm; one without asks a manager who owes it first. */
+  function startMarkPersonal() {
+    if (row.cardholder == null) {
+      setPayeePickerOpen(true);
+      return;
+    }
+    setPersonalPromptMode("mark");
   }
 
   // The "For" picker's value is just `budgetId` (WP-U: one home per dollar) —
@@ -407,13 +549,45 @@ function ReconcileRow({
         selected ? "bg-accent-soft" : "bg-raised"
       } ${isLast ? "border-b-0" : ""}`}
     >
-      {/* Select checkbox */}
+      {/* Select checkbox — replaced by a lock for a row this caller can't
+          write. `book.canEdit` is server-resolved and mirrors
+          `requireReconcileTxn` exactly (see `finances.ts#reconcileBook`), so
+          this is the same boundary the mutations enforce, not a guess. A
+          foreign chapter's rows in the merged queue (and a peeked chapter's)
+          land here: previously the grid offered every inline edit on them and
+          let the write fail with a toast. */}
       <View
         style={{ width: widths.check }}
         className="items-center justify-center border-r border-border/60"
       >
-        <CheckBox checked={selected} onPress={onToggle} />
+        {readOnly ? (
+          <Icon name="lock" size={12} color={colors.faint} />
+        ) : (
+          <CheckBox checked={selected} onPress={onToggle} />
+        )}
       </View>
+
+      {/* Book — merged all-books queue only. */}
+      {showBook ? (
+        <Cell width={widths.book}>
+          <View className="flex-1 px-2 py-1.5">
+            <Badge
+              label={row.book.name}
+              tone={row.book.id === CENTRAL ? "info" : "success"}
+            />
+          </View>
+        </Cell>
+      ) : null}
+
+      {/* Everything from here on is the editable body. Wrapping it in one
+          non-interactive container is deliberate: a read-only row must not
+          expose a SINGLE working affordance, and per-cell `disabled` props
+          would be six independent chances to miss one as this grid grows. */}
+      <View
+        className="flex-1 flex-row items-stretch"
+        pointerEvents={readOnly ? "none" : "auto"}
+        style={readOnly ? { opacity: 0.55 } : undefined}
+      >
 
       {/* Merchant (read-only) */}
       <Cell width={widths.merchant}>
@@ -460,8 +634,17 @@ function ReconcileRow({
         )}
       </Cell>
 
-      {/* Category (inline dropdown) — chapter-only; central txns have none. */}
-      {!centralScope ? (
+      {/* Category (inline dropdown) — chapter-only; central txns have none.
+          The COLUMN is present whenever any chapter row could be in view; an
+          individual central row renders an inert dash in it (see
+          `hideCategory`) so the grid stays aligned without offering a picker
+          that can't commit. */}
+      {showCategory ? (
+        hideCategory ? (
+          <Cell width={widths.category}>
+            <Text className="flex-1 px-2 py-1.5 text-sm text-faint">—</Text>
+          </Cell>
+        ) : (
         <Cell width={widths.category}>
           <PickerCell
             value={row.categoryId}
@@ -478,23 +661,42 @@ function ReconcileRow({
             }}
           />
         </Cell>
+        )
       ) : null}
 
       {/* For (inline dropdown; grouped Events / Projects / Recurring — WP-U:
-          one picker, one home per dollar. In central scope only Recurring ·
-          Central budgets are offered — events/projects are chapter-only).
+          one picker, one home per dollar. A CENTRAL row is offered central's
+          own budgets PLUS the chapter's, under a "central is fronting this"
+          heading — a central card really does buy things for a chapter's
+          programme, and the backend admits it (`requireBudgetForCentralTxn`).
           RANKED per-row (nearby spend → similar merchant → upcoming date →
           everything else, budget-less demoted) via `reconcileSuggest.
-          rankForPicker` — see `ForPickerCell`. */}
+          rankForPicker` — see `ForPickerCell`.
+
+          CROSS-BOOK FLAG: when the budget picked belongs to a DIFFERENT book
+          than the one that paid, the row says so right here. That gap is a
+          receivable — `transfers.interScopeBalances` nets it into a settlement
+          — and it used to be visible only on the central dashboard's balances
+          panel, i.e. nowhere near the moment a treasurer creates it. */}
       <Cell width={widths.forCol}>
-        <ForPickerCell
-          value={row.budgetId}
-          transactionId={id}
-          baseItems={forItems}
-          placeholder={row.needsBudget ? "Needs budget" : "None"}
-          warn={row.needsBudget}
-          onChange={onForChange}
-        />
+        <View className="flex-1 gap-0.5">
+          <ForPickerCell
+            value={row.budgetId}
+            transactionId={id}
+            baseItems={rowForItems}
+            placeholder={row.needsBudget ? "Needs budget" : "None"}
+            warn={row.needsBudget}
+            onChange={onForChange}
+          />
+          {isCrossBook ? (
+            <View className="flex-row items-center gap-1 px-2 pb-1">
+              <Icon name="corner-down-right" size={11} color={colors.warn} />
+              <Text className="text-2xs text-warn" numberOfLines={1}>
+                {row.book.name} paid · {row.chargedTo?.name} owes
+              </Text>
+            </View>
+          ) : null}
+        </View>
       </Cell>
 
       {/* Suggested — AI auto-coding proposal + Accept when the model has
@@ -668,25 +870,61 @@ function ReconcileRow({
                 </>
               )}
             </View>
-          ) : (isManager || isOwnCharge) && row.cardholder != null ? (
+          ) : /* A resolvable payee → manager or the payer themselves. No payee
+                at all → a manager only, who names who owes it (see the file
+                header's NO-PAYEE ROWS note). */
+          row.cardholder != null ? (
+            (isManager || isOwnCharge) && (
+              <Pressable
+                onPress={startMarkPersonal}
+                hitSlop={6}
+                accessibilityRole="button"
+                accessibilityLabel="Mark personal"
+                className="rounded p-1 active:opacity-70 web:hover:opacity-90"
+              >
+                <Icon name="flag" size={15} color={colors.muted} />
+              </Pressable>
+            )
+          ) : isManager ? (
             <Pressable
-              onPress={() => setPersonalPromptMode("mark")}
+              onPress={startMarkPersonal}
               hitSlop={6}
               accessibilityRole="button"
-              accessibilityLabel="Mark personal"
+              accessibilityLabel="Mark personal — pick who owes it"
               className="rounded p-1 active:opacity-70 web:hover:opacity-90"
             >
-              <Icon name="flag" size={15} color={colors.muted} />
+              <Icon name="flag" size={15} color={colors.faint} />
             </Pressable>
           ) : null}
         </View>
       </Cell>
+      </View>
+
+      {/* Step 1 for a no-payee row: who owes this? Mounted only while asking,
+          so the roster query it runs costs nothing on an ordinary grid. */}
+      {payeePickerOpen ? (
+        <PersonPicker
+          visible
+          title="Who owes this charge?"
+          subtitle="This transaction isn't on anyone's card, so pick the person who made it — they'll be recorded as the payer and asked to pay it back."
+          onPick={(personId, person) => {
+            setNamedPayee({ id: personId as Id<"people">, name: person.name });
+            setPayeePickerOpen(false);
+            setPersonalPromptMode("mark");
+          }}
+          onClose={() => setPayeePickerOpen(false)}
+        />
+      ) : null}
 
       {personalPromptMode ? (
         <MarkPersonalModal
           mode={personalPromptMode}
+          namedPayeeName={namedPayee?.name ?? null}
           submitting={personalPromptBusy}
-          onCancel={() => setPersonalPromptMode(null)}
+          onCancel={() => {
+            setPersonalPromptMode(null);
+            setNamedPayee(null);
+          }}
           onConfirm={() => void confirmPersonalPrompt()}
         />
       ) : null}

@@ -70,6 +70,7 @@ import {
   financeRoleAtLeast,
   FINANCE_ROLE_LABELS,
   OLLAMA_DEFAULT_OCR_MODEL,
+  OLLAMA_FALLBACK_OCR_MODEL,
   type ReceiptSenderClass,
 } from "@events-os/shared";
 import {
@@ -78,6 +79,7 @@ import {
   type ChatErrorKind,
 } from "./lib/aiEngine";
 import { ROLLUP_SCAN_LIMIT, txnMatchesMode, isSpend } from "./finances";
+import { scheduleAutoRetryExtraction } from "./lib/receiptRetry";
 import { readSandbox } from "./financeSettings";
 import { normalizeEmail, isAllowedEmail, ALLOWED_EMAIL_DOMAIN } from "./lib/access";
 import { getChapterIdOrNull } from "./lib/context";
@@ -131,6 +133,34 @@ export const SCANNED_PDF_RENDER_MAX_PAGES = 3;
  *  404s on ollama.com's cloud service.) */
 export function ocrModel(): string {
   return process.env.RECEIPT_OCR_MODEL ?? "google/gemini-2.0-flash-001";
+}
+
+/** The OpenRouter model the LAST automatic retry falls back to — a different
+ *  vendor's vision model, so a provider-side fault with the primary isn't
+ *  simply re-asked. Overridable via `RECEIPT_OCR_FALLBACK_MODEL`. */
+export function fallbackOcrModel(): string {
+  return process.env.RECEIPT_OCR_FALLBACK_MODEL ?? "openai/gpt-4o-mini";
+}
+
+/**
+ * The SECOND vision model to try when the resolved OCR model keeps failing
+ * for transport reasons (see `lib/receiptRetry.ts`). Returns `null` when
+ * there's no meaningfully different model to try — a fallback identical to
+ * what just failed is a wasted call, and the honest outcome is the engine's
+ * own error on the card.
+ *
+ * Deliberately ignores a stored/overridden `aiOcrModel` when picking the
+ * fallback: the point is to escape the model that is failing, whatever put it
+ * in place. The model that actually produced the read is recorded on the
+ * receipt, so a fallback read is never mistaken for the configured one.
+ */
+export function resolveFallbackOcrModel(
+  config: Pick<AiEngineConfig, "provider" | "ocrModel">,
+  primary: string,
+): string | null {
+  const fallback =
+    config.provider === "ollama" ? OLLAMA_FALLBACK_OCR_MODEL : fallbackOcrModel();
+  return fallback.trim() && fallback.trim() !== primary.trim() ? fallback.trim() : null;
 }
 
 /**
@@ -680,10 +710,16 @@ export const commitInboundReceipts = internalMutation({
     amountCents: v.union(v.number(), v.null()),
     matchedTransactionId: v.union(v.id("transactions"), v.null()),
     matchedMerchant: v.union(v.string(), v.null()),
+    /** The created `receipts` rows, in the SAME order as `extracted` — so the
+     *  caller can pair each one back to the read that produced it (which is
+     *  how a transport failure gets an automatic re-extraction scheduled
+     *  against the right receipt; see `lib/receiptRetry.ts`). */
+    receiptIds: v.array(v.id("receipts")),
   }),
   handler: async (ctx, args) => {
     const canAuto = receiptSenderCanAutoAttach(args.senderClass);
     const chapterKnown = args.chapterId != null;
+    const receiptIds: Id<"receipts">[] = [];
 
     let matchedCount = 0;
     let firstMatchedTxn: Id<"transactions"> | null = null;
@@ -725,6 +761,7 @@ export const commitInboundReceipts = internalMutation({
         fileSha256,
         duplicateOfReceiptId,
       });
+      receiptIds.push(receiptId);
 
       if (duplicateOfReceiptId) {
         // A likely duplicate submission — never auto-attach it, regardless of
@@ -856,6 +893,7 @@ export const commitInboundReceipts = internalMutation({
       amountCents: firstAmount,
       matchedTransactionId: firstMatchedTxn,
       matchedMerchant: firstMatchedMerchant,
+      receiptIds,
     };
   },
 });
@@ -1398,10 +1436,20 @@ async function fetchAllReceiptAttachments(emailId: string): Promise<{
         console.log(`[receiptInbox] attachment download failed (${dl.status}).`);
         continue;
       }
-      const blob = await dl.blob();
+      // BUFFER the bytes into an in-memory Blob instead of handing the
+      // response's own Blob down the pipeline. In the Convex runtime a Blob
+      // from `res.blob()` is backed by the response STREAM: the first read
+      // consumes it and every later one throws
+      // `TypeError: Can't re-read streaming Blob`. The pipeline reads an
+      // attachment TWICE — once to `ctx.storage.store` it, once for the
+      // vision call's data URL — so a photo/screenshot receipt emailed in
+      // died on that second read (observed in prod 2026-08-05; PDFs survived
+      // only because their extraction reads the STORED file, never the blob).
+      // A Blob built from an ArrayBuffer holds its bytes and re-reads fine.
+      const streamed = await dl.blob();
       out.push({
-        blob,
-        contentType: target.content_type ?? blob.type ?? "application/octet-stream",
+        blob: new Blob([await streamed.arrayBuffer()], { type: streamed.type }),
+        contentType: target.content_type ?? streamed.type ?? "application/octet-stream",
         filename: target.filename ?? "receipt",
       });
     } catch (err) {
@@ -1867,6 +1915,12 @@ const SCANNED_PDF_UNREADABLE_MESSAGE =
   "automatically; re-upload as a photo/screenshot or enter the total " +
   "manually.";
 
+/** What extraction says when the file it was pointed at isn't in storage at
+ *  all — the receipt document still exists and a human can fix the total by
+ *  hand, so this is an `ocrError`, never a throw. */
+const MISSING_STORED_FILE_MESSAGE =
+  "The receipt file couldn't be read back from storage — enter the total manually.";
+
 /**
  * Route ONE stored file through extraction: a PDF tries its own TEXT LAYER
  * first (zero LLM — `receiptPdf.ts#extractPdfText`, an action→action call
@@ -1887,19 +1941,27 @@ const SCANNED_PDF_UNREADABLE_MESSAGE =
  * Shared by the email pipeline (`runPipeline`), the mass-upload pipeline
  * (`receipts.ts#runUploadPipeline`), and `receipts.ts#retryExtraction` — ONE
  * place decides "PDF text vs vision" so the three callers can't drift apart.
+ *
+ * The file is identified by `storageId` ONLY — every route (PDF text layer,
+ * scanned-page render, plain-image vision) reads the bytes back out of
+ * storage itself. It deliberately does NOT take the caller's own Blob: in the
+ * Convex runtime a Blob from `res.blob()` / `ctx.storage.get()` is
+ * stream-backed and single-read, so a caller that had already stored it
+ * handed us a spent one and the image route died on
+ * `TypeError: Can't re-read streaming Blob` (the emailed-screenshot bug).
+ * Reading from storage is what the PDF routes always did; now all of them do.
  */
 export async function extractReceiptFields(
   ctx: ActionCtx,
   args: {
     storageId: Id<"_storage">;
     config: AiEngineConfig;
-    blob: Blob;
     contentType: string;
     filename?: string;
     model: string;
   },
 ): Promise<OcrRoutingResult> {
-  const { storageId, config, blob, contentType, filename, model } = args;
+  const { storageId, config, contentType, filename, model } = args;
 
   if (isPdfContentType(contentType, filename)) {
     const { text } = await ctx.runAction(internal.receiptPdf.extractPdfText, {
@@ -1987,8 +2049,12 @@ export async function extractReceiptFields(
     }
   }
 
-  // An image (or anything else worth handing to the vision model).
-  const buf = await blob.arrayBuffer();
+  // An image (or anything else worth handing to the vision model). Read the
+  // bytes back out of storage — see this function's doc for why the caller's
+  // own Blob is never trusted here.
+  const stored = await ctx.storage.get(storageId);
+  if (!stored) return { ocrError: MISSING_STORED_FILE_MESSAGE };
+  const buf = await stored.arrayBuffer();
   const dataUrl = `data:${contentType};base64,${arrayBufferToBase64(buf)}`;
   const ocr = await ocrReceiptImage(config, [dataUrl], model);
   if ("error" in ocr) {
@@ -2031,6 +2097,11 @@ interface ExtractedReceipt {
    *  merchant envelope the merchant fallback must prefer over the forwarder's
    *  (see `ForwardedEnvelope`). */
   envelope?: ForwardedEnvelope;
+  /** In-pipeline only (never persisted): the `ocrError` above is a TRANSPORT
+   *  failure (engine 5xx/429/timeout), so this receipt earns an automatic
+   *  re-extraction once its row exists — see `lib/receiptRetry.ts`. */
+  ocrRetryable?: boolean;
+  ocrRetryAfterSeconds?: number;
 }
 
 /**
@@ -2233,7 +2304,6 @@ async function runPipeline(
       const result = await extractReceiptFields(ctx, {
         storageId,
         config,
-        blob: source.blob,
         contentType: source.contentType,
         filename: source.filename,
         model,
@@ -2250,6 +2320,8 @@ async function runPipeline(
         ocrError: result.ocrError,
         candidateTransactionIds: [],
         envelope: source.envelope,
+        ocrRetryable: result.ocrRetryable,
+        ocrRetryAfterSeconds: result.ocrRetryAfterSeconds,
       });
     }
   } else {
@@ -2375,6 +2447,17 @@ async function runPipeline(
       })),
     },
   );
+
+  // 5b. Any receipt whose read failed on TRANSPORT (engine 5xx/429/timeout)
+  //     gets an automatic re-extraction — the read never happened, so a red
+  //     card that waits for a human to notice is the wrong answer
+  //     (`lib/receiptRetry.ts`). Paired back by index: `receiptIds` comes out
+  //     of the commit in the SAME order as `extracted`.
+  for (const [i, ex] of extracted.entries()) {
+    const createdId = result.receiptIds[i];
+    if (!createdId || !ex.ocrError || !ex.ocrRetryable) continue;
+    await scheduleAutoRetryExtraction(ctx, createdId, 1, ex.ocrRetryAfterSeconds);
+  }
 
   // 6. Courtesy reply — ONLY to trusted (team/roster) senders. We never
   //    confirm-or-deny anything to a stranger (a spoofable From:). The reply

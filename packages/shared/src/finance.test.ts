@@ -13,6 +13,9 @@ import {
   RECEIPT_EXCEPTION_REASON_HINTS,
   RECEIPT_EXCEPTION_STATUSES,
   RECEIPT_EXCEPTION_STATUS_LABELS,
+  isReceiptExtractionActive,
+  receiptExtractionFraction,
+  RECEIPT_EXTRACTION_STALE_MS,
 } from "./finance";
 
 /**
@@ -156,5 +159,69 @@ describe("receipt-exception enums stay in lock-step with their labels", () => {
     expect(Object.keys(RECEIPT_EXCEPTION_STATUS_LABELS).sort()).toEqual(
       [...RECEIPT_EXCEPTION_STATUSES].sort(),
     );
+  });
+});
+
+// ── Receipt extraction progress ──────────────────────────────────────────────
+// The rule that decides whether the UI shows a live "reading…" strip. A
+// spinner that never stops is worse than no spinner: a scheduled function
+// that never landed must eventually read as "not running", which is why
+// staleness is a reader-side rule and not just a stored flag.
+describe("isReceiptExtractionActive", () => {
+  const now = 1_760_000_000_000;
+
+  test("nothing pending is never active", () => {
+    expect(isReceiptExtractionActive(null, now)).toBe(false);
+    expect(isReceiptExtractionActive(undefined, now)).toBe(false);
+  });
+
+  test("a fresh run is active; one older than the stale window is not", () => {
+    expect(isReceiptExtractionActive({ status: "running", since: now - 5_000 }, now)).toBe(true);
+    expect(
+      isReceiptExtractionActive(
+        { status: "running", since: now - RECEIPT_EXTRACTION_STALE_MS - 1 },
+        now,
+      ),
+    ).toBe(false);
+  });
+
+  test("a queued attempt stays active until well past its fire time", () => {
+    expect(
+      isReceiptExtractionActive(
+        { status: "queued", since: now, nextAttemptAt: now + 15 * 60_000 },
+        now,
+      ),
+    ).toBe(true);
+    // Fired minutes ago and nothing ever moved to `running` — the scheduled
+    // function is gone; stop claiming a retry is coming.
+    expect(
+      isReceiptExtractionActive(
+        { status: "queued", since: now - 60 * 60_000, nextAttemptAt: now - 30 * 60_000 },
+        now,
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("receiptExtractionFraction", () => {
+  const now = 1_760_000_000_000;
+
+  test("a queued wait fills toward its fire time", () => {
+    const at = (elapsed: number) =>
+      receiptExtractionFraction(
+        { status: "queued", since: now, nextAttemptAt: now + 60_000 },
+        now + elapsed,
+      );
+    expect(at(0)).toBe(0);
+    expect(at(30_000)).toBeCloseTo(0.5, 2);
+    // Capped below full — the bar completing is the row updating, nothing else.
+    expect(at(60_000)).toBeLessThan(1);
+  });
+
+  test("a running read creeps but never claims to be finished", () => {
+    expect(receiptExtractionFraction({ status: "running", since: now }, now)).toBe(0);
+    expect(
+      receiptExtractionFraction({ status: "running", since: now }, now + 10 * 60_000),
+    ).toBeLessThan(1);
   });
 });

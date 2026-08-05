@@ -8,7 +8,10 @@
  * "Personal to repay" is backed by `api.cards.personalRepaymentsOutstanding`
  * (D4) — the chapter-scope aggregate of not-yet-paid personal-charge
  * repayments, viewer+ gated. The same query backs the matching tile on the
- * Reimbursements manager queue.
+ * Reimbursements manager queue. The tile DRILLS IN to
+ * `/finances/personal-charges` (`PersonalChargesView`), where the rows behind
+ * the number live and a manager confirms a repayment landed — it named a
+ * count with nowhere to go until that screen existed.
  *
  * CARDHOLDERS TABLE (owner report item 2): Increase cards ONLY — `activeCards`
  * excludes `source:"legacy"` (Relay) rows, which have no Increase controls and
@@ -27,6 +30,7 @@
  */
 import { useMemo, useState } from "react";
 import { Text, View } from "react-native";
+import { useRouter } from "expo-router";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
@@ -56,6 +60,7 @@ import { MyCardSection } from "./MyCardSection";
 import { hasReceiptDue, trainingBadge, type CardSummary } from "./helpers";
 
 export function ManagerCardsView() {
+  const router = useRouter();
   const cards = useQuery(api.cards.listCards, {});
   const personalToRepay = useQuery(api.cards.personalRepaymentsOutstanding, {});
   const requests = useQuery(api.cards.listCardRequests, {});
@@ -189,8 +194,9 @@ export function ManagerCardsView() {
           meta={
             personalToRepay === undefined
               ? "flagged by cardholders"
-              : `${personalToRepay.count} outstanding`
+              : `${personalToRepay.count} outstanding — view and settle`
           }
+          onPress={() => router.push("/finances/personal-charges")}
         />
       </View>
 

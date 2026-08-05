@@ -19,6 +19,7 @@ export function BulkBar({
   onMarkReconciled,
   onClear,
   hideCategory = false,
+  spansBooks = false,
   reassignItems,
   onReassign,
   onMarkTransfer,
@@ -34,8 +35,24 @@ export function BulkBar({
   // WP-2.1: hide "Set category" in central scope — central txns have no
   // categories (chapter-only), so only For + Mark Reconciled apply.
   hideCategory?: boolean;
-  // WP-2.2: central-seat holders can reassign the selection across the central
-  // boundary (→ Central or a chapter). Absent for chapter-only reconcilers.
+  // The selection spans BOOKS (central + at least one chapter) — only possible
+  // in the merged all-books queue. Coding is book-specific: a central charge
+  // takes no category and only a central budget, a chapter charge the reverse.
+  // There's no option list that's correct for both, so rather than offer one
+  // that half-fails, the two coding pickers step aside and say why. Every
+  // book-agnostic action (Mark reconciled, Reassign, transfer/payout marking)
+  // stays exactly where it was.
+  spansBooks?: boolean;
+  // WP-2.2: central-seat holders can move the selection to another BOOK (→
+  // Central or a chapter). Absent for chapter-only reconcilers.
+  //
+  // Labelled "Fix who paid", not "Reassign to". This rewrites custody — which
+  // account the money left — and since cross-book attribution shipped there is
+  // a second control ("For") that also makes a charge belong to another book,
+  // by budget, without touching custody. That one is the everyday case; this
+  // one is a data correction. A neutral label let them be confused, and
+  // confusing them silently breaks a book's bank reconciliation. `onReassign`
+  // now opens `MoveBookModal` rather than committing on the tap.
   reassignItems?: PickerItem[];
   onReassign?: (target: string | null) => void;
   // Marking (founder ask): reclassify already-ingested bank rows. "Mark as
@@ -53,18 +70,26 @@ export function BulkBar({
         {count} selected
       </Text>
       <View className="flex-row flex-wrap items-center gap-2">
-        {!hideCategory ? (
-          <BulkPicker
-            label="Set category"
-            items={categoryItems}
-            onPick={onSetCategory}
-          />
-        ) : null}
-        <BulkPicker
-          label="Set for"
-          items={forItems}
-          onPick={onSetFor}
-        />
+        {spansBooks ? (
+          <Text className="text-xs text-muted">
+            Mixed books — select one book&apos;s charges to code them
+          </Text>
+        ) : (
+          <>
+            {!hideCategory ? (
+              <BulkPicker
+                label="Set category"
+                items={categoryItems}
+                onPick={onSetCategory}
+              />
+            ) : null}
+            <BulkPicker
+              label="Set for"
+              items={forItems}
+              onPick={onSetFor}
+            />
+          </>
+        )}
         <Button
           title="Mark reconciled"
           variant="primary"
@@ -74,7 +99,7 @@ export function BulkBar({
         />
         {reassignItems && onReassign ? (
           <BulkPicker
-            label="Reassign to"
+            label="Fix who paid"
             items={reassignItems}
             onPick={onReassign}
           />

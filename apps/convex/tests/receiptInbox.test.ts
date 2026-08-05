@@ -616,16 +616,17 @@ describe("extractReceiptFields — ocrError translation", () => {
       ...over,
     };
   }
-  // Image content-type never touches `ctx` (only the PDF branch does) — an
-  // unused stub is enough for a direct unit test.
-  const fakeCtx = {} as ActionCtx;
-  const blob = new Blob(["x"], { type: "image/png" });
+  // Extraction reads the file it was pointed at back out of storage (every
+  // route does — see `extractReceiptFields`'s doc), so the stub only needs a
+  // `storage.get` that hands back some image bytes.
+  const fakeCtx = {
+    storage: { get: async () => new Blob(["x"], { type: "image/png" }) },
+  } as unknown as ActionCtx;
 
   test("no_key → the Settings-pointing message", async () => {
     const result = await extractReceiptFields(fakeCtx, {
       storageId: "storage_id" as unknown as Id<"_storage">,
       config: config({ apiKey: null }),
-      blob,
       contentType: "image/png",
       model: "m",
     });
@@ -645,7 +646,6 @@ describe("extractReceiptFields — ocrError translation", () => {
     const result = await extractReceiptFields(fakeCtx, {
       storageId: "storage_id" as unknown as Id<"_storage">,
       config: config(),
-      blob,
       contentType: "image/png",
       model: "m",
     });
@@ -668,7 +668,6 @@ describe("extractReceiptFields — ocrError translation", () => {
     const result = await extractReceiptFields(fakeCtx, {
       storageId: "storage_id" as unknown as Id<"_storage">,
       config: config(),
-      blob,
       contentType: "image/png",
       model: "m",
     });
@@ -711,12 +710,6 @@ describe("extractReceiptFields — a scanned PDF never reaches a vision call", (
     };
   }
 
-  // A structurally-real PDF signature — if this ever leaked into a vision
-  // call's payload, it'd prove the guard failed.
-  const pdfBlob = new Blob(["%PDF-1.4 (scanned, no text layer)"], {
-    type: "application/pdf",
-  });
-
   /** A fake `ActionCtx` whose `runAction` answers `extractPdfText` with "no
    *  text layer" (the scanned-PDF branch) and `renderScannedPdfPages` with
    *  "couldn't render either" (`{ pages: [] }`) — the render fallback ALSO
@@ -756,7 +749,6 @@ describe("extractReceiptFields — a scanned PDF never reaches a vision call", (
     const result = await extractReceiptFields(fakeCtx, {
       storageId: "storage_pdf" as unknown as Id<"_storage">,
       config: config(),
-      blob: pdfBlob,
       contentType: "application/pdf",
       model: "m",
     });
@@ -784,7 +776,6 @@ describe("extractReceiptFields — a scanned PDF never reaches a vision call", (
     const result = await extractReceiptFields(fakeCtx, {
       storageId: "storage_pdf" as unknown as Id<"_storage">,
       config: config({ provider: "ollama", baseUrl: "http://localhost:11434" }),
-      blob: pdfBlob,
       contentType: "application/pdf",
       model: "m",
     });
@@ -1768,6 +1759,368 @@ describe("processInboundReceipt", () => {
       const receipts = await run(t, (ctx) => ctx.db.query("receipts").take(5));
       expect(receipts).toHaveLength(1);
       expect(receipts[0].filename).toBe("Google Workspace invoice.eml");
+    });
+  });
+
+  // ── An emailed SCREENSHOT / photo receipt ──────────────────────────────────
+  // THE BUG (prod, 2026-08-05): a team member emailed a screenshot of a Stuf
+  // invoice and the row came back `error — Pipeline error: TypeError: Can't
+  // re-read streaming Blob`, with no receipt document to open. In the Convex
+  // runtime a Blob from `res.blob()` is backed by the response STREAM, so it
+  // reads ONCE: the pipeline stored the attachment (read #1) and then read
+  // its bytes again to build the vision call's data URL (read #2), which
+  // threw. Emailed PDFs never hit it — their extraction reads the STORED file
+  // — so every photo/screenshot receipt failed while PDFs kept working.
+  // The fix is both halves: downloads are buffered into a re-readable Blob,
+  // and extraction reads the file it was pointed at back out of storage.
+  describe("an emailed screenshot of a receipt", () => {
+    const realFetch = globalThis.fetch;
+    const realResendKey = process.env.RESEND_API_KEY;
+    const realOpenRouterKey = process.env.OPENROUTER_API_KEY;
+    afterEach(() => {
+      globalThis.fetch = realFetch;
+      if (realResendKey === undefined) delete process.env.RESEND_API_KEY;
+      else process.env.RESEND_API_KEY = realResendKey;
+      if (realOpenRouterKey === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = realOpenRouterKey;
+    });
+
+    /** A Blob that behaves like the Convex runtime's stream-backed one: the
+     *  FIRST read consumes it and every later read throws the exact TypeError
+     *  prod threw. Node's own Blob is buffered and re-readable, so without
+     *  this the regression simply cannot be reproduced in a test. */
+    class StreamingBlob extends Blob {
+      private consumed = false;
+      private consume(): void {
+        if (this.consumed) throw new TypeError("Can't re-read streaming Blob");
+        this.consumed = true;
+      }
+      override async arrayBuffer(): Promise<ArrayBuffer> {
+        this.consume();
+        return await super.arrayBuffer();
+      }
+      override async text(): Promise<string> {
+        this.consume();
+        return await super.text();
+      }
+      override stream(): ReturnType<Blob["stream"]> {
+        this.consume();
+        return super.stream();
+      }
+    }
+
+    test("is stored and read by vision — a single-read download Blob never crashes the pipeline", async () => {
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedPerson(s, { email: "seyi@publicworship.life" });
+      const txn = await seedTxn(s, { amountCents: 15600, status: "categorized" });
+
+      process.env.RESEND_API_KEY = "test-key";
+      process.env.OPENROUTER_API_KEY = "test-key";
+      const visionImageUrls: string[] = [];
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/attachments")) {
+          return {
+            ok: true,
+            json: async () => ({
+              data: [
+                {
+                  id: "att_shot",
+                  filename: "IMG_1405.png",
+                  content_type: "image/png",
+                  size: 240_000,
+                  download_url: "https://files.example/att_shot",
+                },
+              ],
+            }),
+          };
+        }
+        if (url.startsWith("https://files.example/")) {
+          return {
+            ok: true,
+            blob: async () => new StreamingBlob(["screenshot-bytes"], { type: "image/png" }),
+          };
+        }
+        if (url.includes("chat/completions")) {
+          const body = JSON.parse(String(init?.body ?? "{}"));
+          for (const part of body.messages?.[1]?.content ?? []) {
+            if (part.type === "image_url") visionImageUrls.push(part.image_url.url);
+          }
+          return {
+            ok: true,
+            status: 200,
+            headers: { get: () => null },
+            json: async () => ({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      amount: 156.0,
+                      date: null,
+                      merchant: "Stuf",
+                      confidence: 0.9,
+                    }),
+                  },
+                },
+              ],
+            }),
+            text: async () => "",
+          };
+        }
+        return { ok: false, status: 500, text: async () => "no" };
+      }) as unknown as typeof fetch;
+
+      const { receiptId } = await t.mutation(internal.receiptInbox.recordInboundReceipt, {
+        envelope: {
+          emailId: "email_shot_1",
+          fromEmail: "seyi@publicworship.life",
+          subject: "Stuf August",
+        },
+      });
+      await t.action(internal.receiptInbox.processInboundReceipt, { receiptId });
+
+      const row = await run(t, (ctx) => ctx.db.get(receiptId));
+      expect(row?.detail ?? "").not.toContain("Pipeline error");
+      expect(row?.status).toBe("matched");
+      expect(row?.matchedTransactionId).toBe(txn);
+
+      // The screenshot's BYTES reached vision — the read that used to throw.
+      expect(visionImageUrls).toHaveLength(1);
+      expect(visionImageUrls[0]).toBe(
+        `data:image/png;base64,${btoa("screenshot-bytes")}`,
+      );
+
+      const receipts = await run(t, (ctx) => ctx.db.query("receipts").take(5));
+      expect(receipts).toHaveLength(1);
+      expect(receipts[0].filename).toBe("IMG_1405.png");
+      expect(receipts[0].ocrAmountCents).toBe(15600);
+      expect(receipts[0].ocrMerchant).toBe("Stuf");
+    });
+  });
+
+  // ── An engine 5xx is repaired in the background, not parked in red ─────────
+  // THE COMPLAINT: the receipt above stored fine, then the OCR call came back
+  // `Ollama returned HTTP 500 for model "gemma4"` — an engine-side blip — and
+  // the receipt SAT there red until a human noticed and tapped Retry. The
+  // pipeline already knew that failure was transient (`ocrRetryable`); it just
+  // had nowhere to put that knowledge on the initial run. Now it schedules an
+  // automatic re-extraction (`lib/receiptRetry.ts`), and the LAST attempt asks
+  // a different vision model rather than a fourth identical question.
+  describe("a transport failure during the initial read", () => {
+    const realFetch = globalThis.fetch;
+    const realResendKey = process.env.RESEND_API_KEY;
+    const realOpenRouterKey = process.env.OPENROUTER_API_KEY;
+    afterEach(() => {
+      globalThis.fetch = realFetch;
+      if (realResendKey === undefined) delete process.env.RESEND_API_KEY;
+      else process.env.RESEND_API_KEY = realResendKey;
+      if (realOpenRouterKey === undefined) delete process.env.OPENROUTER_API_KEY;
+      else process.env.OPENROUTER_API_KEY = realOpenRouterKey;
+    });
+
+    /** Serve one image attachment, and answer every vision call from
+     *  `visionReplies` (each entry consumed in order; the last one repeats).
+     *  Records the model each call asked for. */
+    function mockEngine(
+      visionReplies: (
+        | { status: 500 }
+        | { amount: number | null; merchant?: string }
+      )[],
+      askedModels: string[],
+    ): void {
+      process.env.RESEND_API_KEY = "test-key";
+      process.env.OPENROUTER_API_KEY = "test-key";
+      let call = 0;
+      globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        if (url.includes("/attachments")) {
+          return {
+            ok: true,
+            json: async () => ({
+              data: [
+                {
+                  id: "att_flaky",
+                  filename: "IMG_1405.png",
+                  content_type: "image/png",
+                  size: 240_000,
+                  download_url: "https://files.example/att_flaky",
+                },
+              ],
+            }),
+          };
+        }
+        if (url.startsWith("https://files.example/")) {
+          return {
+            ok: true,
+            blob: async () => new Blob(["screenshot-bytes"], { type: "image/png" }),
+          };
+        }
+        if (url.includes("chat/completions")) {
+          const body = JSON.parse(String(init?.body ?? "{}"));
+          askedModels.push(String(body.model));
+          const reply = visionReplies[Math.min(call, visionReplies.length - 1)];
+          call++;
+          if ("status" in reply) {
+            return {
+              ok: false,
+              status: 500,
+              headers: { get: () => null },
+              text: async () => '{"error":"Internal Server Error (ref: test)"}',
+              json: async () => ({}),
+            };
+          }
+          return {
+            ok: true,
+            status: 200,
+            headers: { get: () => null },
+            json: async () => ({
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      amount: reply.amount,
+                      date: null,
+                      merchant: reply.merchant ?? null,
+                      confidence: reply.amount == null ? 0 : 0.9,
+                    }),
+                  },
+                },
+              ],
+            }),
+            text: async () => "",
+          };
+        }
+        return { ok: false, status: 500, text: async () => "no" };
+      }) as unknown as typeof fetch;
+    }
+
+    async function emailIn(t: ReturnType<typeof newT>, emailId: string) {
+      const { receiptId } = await t.mutation(internal.receiptInbox.recordInboundReceipt, {
+        envelope: {
+          emailId,
+          fromEmail: "seyi@publicworship.life",
+          subject: "Stuf August",
+        },
+      });
+      await t.action(internal.receiptInbox.processInboundReceipt, { receiptId });
+      return receiptId;
+    }
+
+    test("a 500 on the first read is repaired by the scheduled retry, with no human in the loop", async () => {
+      vi.useFakeTimers();
+      try {
+        const t = newT();
+        const s = await setupChapter(t);
+        await seedPerson(s, { email: "seyi@publicworship.life" });
+        const txn = await seedTxn(s, { amountCents: 15600, status: "categorized" });
+        const askedModels: string[] = [];
+        mockEngine([{ status: 500 }, { amount: 156.0, merchant: "Stuf" }], askedModels);
+
+        await emailIn(t, "email_flaky_1");
+
+        // The initial read failed — the receipt exists and says why.
+        const before = await run(t, (ctx) => ctx.db.query("receipts").take(5));
+        expect(before).toHaveLength(1);
+        expect(before[0].ocrError).toContain("500");
+        expect(before[0].ocrAmountCents).toBeUndefined();
+
+        await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+        // …and the scheduled retry read it and cleared the error.
+        const after = await run(t, (ctx) => ctx.db.get(before[0]._id));
+        expect(after?.ocrError).toBeUndefined();
+        expect(after?.ocrAmountCents).toBe(15600);
+        expect(after?.ocrMerchant).toBe("Stuf");
+
+        // The matching charge is now a SUGGESTION, not an auto-attach: a
+        // repaired read goes through the same `applyRetryExtraction` every
+        // retry uses, and no retry has ever auto-attached (money safety —
+        // the one auto-attach path stays the ingest pipeline's). The
+        // bookkeeper gets a one-tap match instead of a red card.
+        expect(after?.candidateTransactionIds).toEqual([txn]);
+        const links = await run(t, (ctx) => ctx.db.query("receiptLinks").take(5));
+        expect(links).toHaveLength(0);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test("a model that keeps 500ing gets a different one on the last attempt, then an honest error", async () => {
+      vi.useFakeTimers();
+      try {
+        const t = newT();
+        const s = await setupChapter(t);
+        await seedPerson(s, { email: "seyi@publicworship.life" });
+        const askedModels: string[] = [];
+        mockEngine([{ status: 500 }], askedModels); // never recovers
+
+        await emailIn(t, "email_flaky_2");
+        await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+        // Initial read + 3 automatic attempts, and the LAST one asked a
+        // different vision model instead of repeating the failing question.
+        expect(askedModels).toHaveLength(4);
+        expect(new Set(askedModels.slice(0, 3)).size).toBe(1);
+        expect(askedModels[3]).not.toBe(askedModels[0]);
+
+        // Attempts spent — the card tells the truth rather than retrying forever.
+        const receipts = await run(t, (ctx) => ctx.db.query("receipts").take(5));
+        expect(receipts[0].ocrError).toContain("500");
+        expect(receipts[0].ocrAmountCents).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test("the receipt says a retry is coming — queued with its fire time, then running, then clear", async () => {
+      vi.useFakeTimers();
+      try {
+        const t = newT();
+        const s = await setupChapter(t);
+        await seedPerson(s, { email: "seyi@publicworship.life" });
+        const askedModels: string[] = [];
+        mockEngine([{ status: 500 }, { amount: 156.0, merchant: "Stuf" }], askedModels);
+
+        await emailIn(t, "email_flaky_4");
+
+        // The initial read failed — and the row SAYS a retry is scheduled,
+        // with the time it fires, instead of looking like a settled error.
+        const queued = (await run(t, (ctx) => ctx.db.query("receipts").take(5)))[0];
+        expect(queued.extraction?.status).toBe("queued");
+        expect(queued.extraction?.attempt).toBe(1);
+        expect(queued.extraction?.maxAttempts).toBe(3);
+        expect(queued.extraction?.nextAttemptAt).toBeGreaterThan(queued.extraction!.since);
+
+        await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+        // Landed — nothing is pending, so nothing spins.
+        const done = await run(t, (ctx) => ctx.db.get(queued._id));
+        expect(done?.extraction).toBeUndefined();
+        expect(done?.ocrAmountCents).toBe(15600);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test("a read that simply found no total is NOT retried — nothing transient about it", async () => {
+      vi.useFakeTimers();
+      try {
+        const t = newT();
+        const s = await setupChapter(t);
+        await seedPerson(s, { email: "seyi@publicworship.life" });
+        const askedModels: string[] = [];
+        mockEngine([{ amount: null }], askedModels);
+
+        await emailIn(t, "email_flaky_3");
+        await t.finishAllScheduledFunctions(vi.runAllTimers);
+
+        expect(askedModels).toHaveLength(1);
+        const receipts = await run(t, (ctx) => ctx.db.query("receipts").take(5));
+        expect(receipts[0].ocrError).toContain("couldn't find a clear total");
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 

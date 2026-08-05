@@ -474,6 +474,65 @@ export function documentationState(
   return "undocumented";
 }
 
+// ── Receipt extraction progress ──────────────────────────────────────────────
+/** A receipt's in-flight extraction, as stored on `receipts.extraction` — see
+ *  that field's doc in `schema/finances.ts`. */
+export interface ReceiptExtractionProgress {
+  status: "queued" | "running";
+  since: number;
+  attempt?: number | null;
+  maxAttempts?: number | null;
+  nextAttemptAt?: number | null;
+}
+
+/** How long a `running` extraction may go unfinished before readers stop
+ *  believing it. Generous: a scanned multi-page PDF render plus a slow vision
+ *  call is minutes, not seconds. Past this, a lost scheduled function is the
+ *  likelier explanation than a still-working one, and a spinner that never
+ *  stops is worse than none. */
+export const RECEIPT_EXTRACTION_STALE_MS = 10 * 60_000;
+/** Same idea for a `queued` attempt: the fire time came and went this long
+ *  ago and nothing ever moved to `running`. */
+export const RECEIPT_EXTRACTION_QUEUE_STALE_MS = 10 * 60_000;
+
+/**
+ * True iff this extraction should still be shown as in-progress. The stored
+ * value is cleared by both commit mutations, so a stale one means the
+ * scheduled work never landed — never leave a receipt spinning on it.
+ */
+export function isReceiptExtractionActive(
+  extraction: ReceiptExtractionProgress | null | undefined,
+  now: number,
+): boolean {
+  if (!extraction) return false;
+  if (extraction.status === "running") {
+    return now - extraction.since < RECEIPT_EXTRACTION_STALE_MS;
+  }
+  const dueAt = extraction.nextAttemptAt ?? extraction.since;
+  return now - dueAt < RECEIPT_EXTRACTION_QUEUE_STALE_MS;
+}
+
+/**
+ * The 0..1 fill for a progress bar over this extraction — determinate while
+ * an attempt is QUEUED (the wait has a known end), and an elapsed-time creep
+ * that asymptotes below full while one is RUNNING (the read has no honest
+ * percentage, and a bar that sits at 100% while nothing has happened is a
+ * lie). Never returns 1: the bar completing is what the row updating means.
+ */
+export function receiptExtractionFraction(
+  extraction: ReceiptExtractionProgress | null | undefined,
+  now: number,
+): number {
+  if (!extraction) return 0;
+  if (extraction.status === "queued" && extraction.nextAttemptAt != null) {
+    const total = Math.max(1, extraction.nextAttemptAt - extraction.since);
+    return Math.max(0, Math.min(0.95, (now - extraction.since) / total));
+  }
+  // A typical vision read lands in ~15s; creep toward (never to) full.
+  const elapsed = Math.max(0, now - extraction.since);
+  return Math.min(0.9, elapsed / 15_000);
+}
+
 // Flows that DON'T count toward category / budget spend. A `transfer` is money
 // MOVING (chapter ↔ central skims/grants/settlements, a personal-charge
 // repayment netting its own charge, or an INTERNAL BANK TRANSFER a bookkeeper

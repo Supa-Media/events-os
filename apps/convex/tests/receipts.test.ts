@@ -1235,6 +1235,51 @@ describe("processUploadedReceipt (no OPENROUTER key)", () => {
   });
 });
 
+// ── Upload progress: the row says what's happening to it ────────────────────
+// A mass upload staggers its extractions `THROTTLE_MS` apart, so the last
+// file in a 25-photo drop waits minutes for its turn. Before `extraction`,
+// every one of those rows looked identical to a receipt whose read had
+// already finished and found nothing — an empty card with no explanation.
+describe("submitUploadedReceipts — extraction progress", () => {
+  test("each scheduled upload is stamped queued with the time its turn comes", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedBookkeeper(s);
+      const a = await storeBlobWithContent(s, "receipt one");
+      const b = await storeBlobWithContent(s, "receipt two");
+
+      const results = await s.as.mutation(api.receipts.submitUploadedReceipts, {
+        storageIds: [a, b],
+      });
+
+      const rows = await Promise.all(
+        results.map((r) => run(t, (ctx) => ctx.db.get(r.receiptId))),
+      );
+      for (const row of rows) {
+        expect(row?.extraction?.status).toBe("queued");
+        expect(row?.extraction?.nextAttemptAt).toBeGreaterThanOrEqual(row!.extraction!.since);
+      }
+      // The SECOND file waits behind the first — that stagger is the whole
+      // reason the row needs to say when its turn is.
+      expect(rows[1]!.extraction!.nextAttemptAt!).toBeGreaterThan(
+        rows[0]!.extraction!.nextAttemptAt!,
+      );
+
+      // Once processing runs (no engine key here → a clean no-key outcome),
+      // nothing is pending and the row stops claiming to be busy.
+      await t.finishAllScheduledFunctions(vi.runAllTimers);
+      for (const r of results) {
+        const done = await run(t, (ctx) => ctx.db.get(r.receiptId));
+        expect(done?.extraction).toBeUndefined();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 // ── applyUploadOcrAndAttach: the matching/attach policy ──────────────────────
 describe("applyUploadOcrAndAttach", () => {
   test("a unique untouched candidate auto-attaches and reconciles a categorized charge", async () => {

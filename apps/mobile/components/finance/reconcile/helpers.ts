@@ -24,53 +24,17 @@ export { formatCents };
 export type TxnRow =
   FunctionReturnType<typeof api.finances.listReconcile>["rows"][number];
 
-// ── Server-side filter pills ─────────────────────────────────────────────────
-/** Matches the backend `listReconcile` filter arg. */
-export type FilterKey =
-  | "all"
-  | "spend"
-  | "needs_budget"
-  | "missing_receipt"
-  | "undocumented"
-  | "uncategorized"
-  | "ready"
-  | "personal_unpaid"
-  | "transfers"
-  | "payouts";
-
-/** Per-filter counts returned by `listReconcile` (drives each pill's badge). */
-export type FilterCounts = FunctionReturnType<
-  typeof api.finances.listReconcile
->["counts"];
-
-export const FILTERS: { key: FilterKey; label: string }[] = [
-  { key: "all", label: "All" },
-  // no-dead-numbers: the dashboards' "Spent" KPI tile drills in here
-  // (`?filter=spend`) — shown as a real pill (not just a hidden deep-link
-  // target) so a treasurer landing on it can see which filter they're in
-  // and switch away cleanly.
-  { key: "spend", label: "Spend" },
-  { key: "needs_budget", label: "Needs budget" },
-  { key: "missing_receipt", label: "Missing receipt" },
-  // The PUBLISHING backlog, distinct from the pill above: rows with neither a
-  // receipt nor an approved exception, INCLUDING ones already marked
-  // Reconciled. "Missing receipt" stops chasing a reconciled row (someone made
-  // a call); this one doesn't, because a published ledger can't tell that row
-  // from a documented one. This is the count that has to reach zero before a
-  // period is publishable — see `docs/plans/receipt-exceptions.md`.
-  { key: "undocumented", label: "Undocumented" },
-  { key: "uncategorized", label: "Uncategorized" },
-  { key: "ready", label: "Ready" },
-  // Founder ask: an unpaid personal expense is exactly the worklist a
-  // treasurer needs — surfaced as its own pill rather than buried in "All".
-  { key: "personal_unpaid", label: "Personal (unpaid)" },
-  // The worklists for the two marking flows. Without these there's no way to
-  // review what's been marked — a marked transfer leaves "Needs budget" and a
-  // marked payout was never in any pill, so both would otherwise be visible
-  // only by scrolling "All".
-  { key: "transfers", label: "Transfers" },
-  { key: "payouts", label: "Payouts" },
-];
+// ── Filters ──────────────────────────────────────────────────────────────────
+// The filter keys, their grouping, the OR-within/AND-across set semantics, the
+// labels, and the URL round-trip ALL live in `@events-os/shared`
+// (`reconcileFilters.ts`) now — because `finances.listReconcile` has to apply
+// exactly the same rules server-side. A local copy of any of it would be a
+// second source of truth for "which rows does this selection mean", and the
+// counts and the rows would eventually disagree.
+//
+// What used to live here (`FILTERS`, `FILTER_GROUPS`, `parseFilterParam`,
+// `FilterKey`, `FilterCounts`) is deleted rather than re-exported: nothing but
+// its own test still referenced it once the grid moved to the shared module.
 
 // ── Status select options (the inline Status▾ cell + bulk "mark reconciled") ──
 export const STATUS_OPTIONS: SelectOption<TransactionStatus>[] = [
@@ -139,6 +103,9 @@ function rowHaystack(row: TxnRow): string {
     row.description ?? "",
     row.cardholder?.name ?? "",
     row.cardLast4 ?? "",
+    // Searchable in the merged all-books queue: typing "central" or a chapter
+    // name narrows to that book without leaving the merged view.
+    row.book.name,
     String(row.amountCents), // raw cents: "129400"
     money, // "$1,294.00"
     money.replace(/[$,]/g, ""), // bare decimal: "1294.00"

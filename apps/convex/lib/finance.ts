@@ -352,6 +352,108 @@ export async function requireFinanceCentral(
 }
 
 /**
+ * CROSS-BOOK ATTRIBUTION — may the caller charge a transaction to a budget in a
+ * DIFFERENT book than the one that paid for it?
+ *
+ * The founder's case: a Public Worship (central) card pays for something that
+ * belongs to New York's programme. The money left central's account (custody),
+ * but the spend is New York's (economics), so it should count against New
+ * York's budget and leave central holding a receivable.
+ *
+ * The reverse direction — a chapter card charged to a central budget — has
+ * always been allowed, and `transfers.ts#interScopeBalances` has always netted
+ * BOTH directions into a settlement (it calls them (a) and (b), and computed
+ * (b) generically for exactly this day). Only the write path was one-way.
+ *
+ * TODAY the answer is "whoever may already write that transaction" (owner
+ * decision, 2026-08-05): custody governs the write, so the central FM who can
+ * code a central-owned charge can point it at a chapter's budget, and the
+ * receiving chapter sees it appear against their budget and in the settlement
+ * balance without an approval step — symmetric with the reverse direction,
+ * where nobody at central approves a chapter fronting central's money. Since
+ * only a central-owned transaction can reach this, that reduces to central
+ * reach, which `requireReconcileTxn` has already asserted by the time this is
+ * called; the check is repeated here rather than assumed.
+ *
+ * If that ever needs restricting — the likeliest reason being a chapter
+ * wanting a say before its budget is consumed by a decision it didn't make —
+ * this graduates to a `finance.attributeCrossBook` string in
+ * `SEAT_CAPABILITIES`: add it, list it on the seats that should carry it, and
+ * change THIS body. The call sites don't move, and the approval flow would
+ * layer on top rather than replacing the gate.
+ */
+export async function hasCrossBookAttribution(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<boolean> {
+  const access = await getFinanceRole(ctx, chapterId);
+  return access.isCentral;
+}
+
+/** The `require` half of `hasCrossBookAttribution` — every call site uses this. */
+export async function requireCrossBookAttribution(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<FinanceAccess> {
+  const access = await getFinanceRole(ctx, chapterId);
+  if (!access.isCentral) {
+    throw new ConvexError({
+      code: "FORBIDDEN",
+      message:
+        "Charging a transaction to another book's budget needs central (org-wide) finance access.",
+    });
+  }
+  return access;
+}
+
+/**
+ * ALL-BOOKS RECONCILE — may the caller work ONE merged reconcile queue spanning
+ * every book (central + every chapter), instead of one book at a time?
+ *
+ * Central and each chapter are separate OPERATING entities under one legal
+ * entity, so merging them on screen is a workflow convenience, not a compliance
+ * question. It's still a power, though — so it gets a named resolver here
+ * rather than an inline `access.isCentral` at the call site (CLAUDE.md's "gate
+ * it behind a power, even when it's open today").
+ *
+ * TODAY the answer is "anyone with central finance reach" — the same test
+ * `requireFinanceCentral` applies. When the org actually splits its operating
+ * entities and a central FM should stop seeing a chapter's charges in their own
+ * queue by default, this graduates to a `finance.reconcile.allBooks` string in
+ * `SEAT_CAPABILITIES`: add it, list it on the seats that should carry it, and
+ * change THIS body. No call site moves.
+ *
+ * READS ONLY. Writing a row still goes through `finances.ts#requireReconcileTxn`,
+ * which is unchanged and strictly narrower: central-owned rows need central
+ * reach, chapter-owned rows must be the caller's OWN chapter. A caller can
+ * therefore READ a foreign chapter's row in the merged queue and not be able to
+ * edit it — `listReconcile` marks exactly those rows `canEdit: false` so the
+ * grid can render them read-only instead of inviting a rejected write.
+ */
+export async function hasAllBooksReconcile(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<boolean> {
+  const access = await getFinanceRole(ctx, chapterId);
+  return access.isCentral;
+}
+
+/** The `require` half of `hasAllBooksReconcile` — every call site uses this. */
+export async function requireAllBooksReconcile(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<FinanceAccess> {
+  const access = await getFinanceRole(ctx, chapterId);
+  if (!access.isCentral) {
+    throw new ConvexError({
+      code: "FORBIDDEN",
+      message: "Reconciling all books needs central (org-wide) finance access.",
+    });
+  }
+  return access;
+}
+
+/**
  * Assert the caller has central reach AND at least the `min` graded role — the
  * gate for a central-scoped MONEY WRITE (WP-4.1's skim). `requireFinanceCentral`
  * alone lets a central *viewer* through (it only checks org reach); recording a

@@ -505,8 +505,8 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           ["Spend", "Every dollar that counts as actual spend — the exact rows behind the dashboard's \"Spent\" figure, so tapping it always lands here"],
           ["Needs budget", "Categorized but not linked to a budget yet"],
           ["Missing receipt", "No receipt uploaded"],
-          ["Uncategorized", "No category assigned at all"],
-          ["Ready", "Receipt + category + budget all present"],
+          ["To review", "Still sitting at Unreviewed — nobody has touched it yet. This is the number the dashboard's \"To review\" tile shows, and tapping that tile lands you right here"],
+          ["Reconciled", "Already cleared and closed — the opposite of the \"N to clear\" count in the header"],
           ["Personal (unpaid)", "Flagged personal, not yet repaid — the worklist for chasing down what people owe back"],
           ["Transfers", "Money you marked as moving between your own accounts"],
           ["Payouts", "Deposits you marked as a processor settling donations to you"],
@@ -516,6 +516,16 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "rule",
         title: "Personal is a flag, not a status",
         text: "Marking a charge personal doesn't change its Category/Budget/Receipt coding at all — a fully Reconciled charge can also be an unpaid personal expense at the same time. Mark or un-mark it right from a row's actions (confirm first — marking emails the person who owes it); un-marking only works before it's been repaid.",
+      },
+      {
+        kind: "rule",
+        title: "A charge with no cardholder can still be personal",
+        text: "Most rows already know who spent the money — it's their card. A bank/ACH entry, an imported statement row nobody's card is linked to, or a hand-entered charge doesn't, so the flag asks you WHO OWES IT first and records that person as the payer. Only a manager can name someone: saying a teammate owes the chapter money isn't a coding decision, it's a bill.",
+      },
+      {
+        kind: "rule",
+        title: "Collecting it back — and what settling actually does",
+        text: "The Reconcile pill is the worklist; the collecting happens on Cards → \"Personal to repay\" (the same total shows on Reimbursements), which opens the list of who owes what. The person pays from their own card or bank on their Cards tab, and a MANAGER confirms the money arrived with \"Mark repaid\" — deliberately not self-serve, so nobody can flag their own charge and then zero it out. Settling deletes nothing: the original charge keeps its receipt and coding, an offsetting credit posts against it, and the pair nets to zero in category and budget spend. The row reads \"Repaid\" from then on.",
       },
       {
         kind: "rule",
@@ -561,11 +571,16 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "Unattributed is a first-class, visible bucket with a one-tap path into the exact filtered Reconcile view — it's designed to be noticed, not hidden.",
       },
       {
-        prompt: "Which Reconcile filter shows charges with no category assigned at all?",
-        options: ["Needs budget", "Missing receipt", "Uncategorized", "Ready"],
-        answerIndex: 2,
+        prompt: "The dashboard says \"To review 80\". You tap it. Where do you land, and what should you see?",
+        options: [
+          "The Needs budget filter — 80 charges missing a budget link",
+          "The To review filter, showing exactly those 80 charges still sitting at Unreviewed",
+          "The All filter, where you scroll to find them",
+          "The Reconciled filter — they've already been cleared",
+        ],
+        answerIndex: 1,
         explanation:
-          "Uncategorized is earlier in the pipeline than Needs budget — a charge needs a category before it can be linked to a budget.",
+          "Every number on the dashboard opens the exact rows behind it. \"To review\" counts charges still at the Unreviewed status, so it lands on the To review filter — same word, same rows, same count. If a figure you tap ever doesn't appear on the screen it opens, that's a bug worth reporting.",
       },
       {
         prompt: "You select 20 charges at once in Reconcile. What can you do?",
@@ -842,7 +857,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         items: [
           "**Reconcile at Ready:** every charge has a receipt, a category, and a budget link — the Ready filter's count climbs toward all of them.",
           "**Reimbursement queue triaged:** nothing sitting unreviewed that's actually yours to act on — the submission email is a nudge, not a substitute for actually clearing the queue.",
-          "**Personal (unpaid) filter checked:** a personal flag doesn't block Ready (it's a separate flag, not a status), so it's easy to close a month while real debts sit uncollected — check the Personal (unpaid) pill directly and nudge anyone who still owes.",
+          "**Personal (unpaid) filter checked:** a personal flag doesn't block Ready (it's a separate flag, not a status), so it's easy to close a month while real debts sit uncollected — check the Personal (unpaid) pill directly and nudge anyone who still owes. When someone's paid you back, confirm it on Cards → \"Personal to repay\" with \"Mark repaid\", or the debt stays open on the books no matter what landed in the account.",
           "**Report up:** the central Financial Manager should be able to open your chapter's numbers and trust them without a conversation — that trust IS the north-star metric this whole system is built around.",
         ],
       },
@@ -893,6 +908,19 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 1,
         explanation:
           "The FM trusting every chapter's numbers without asking is the system's stated north-star metric, right alongside the 30-minute close.",
+      },
+      {
+        prompt:
+          "A cardholder pays back a personal charge and you confirm it with \"Mark repaid\". What happens to the original charge?",
+        options: [
+          "It's deleted from the ledger — the debt is settled, so the row goes away",
+          "It stays on the ledger with its receipt and coding, and an offsetting credit posts against it so the two net to zero",
+          "It moves to the Excluded filter",
+          "Nothing changes until next month's bank import",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Nothing is ever deleted. Settling posts one offsetting credit against the charge — the pair nets to zero in category and budget spend, the row reads \"Repaid\", and the money's whole story stays on the books. Until you confirm it, the debt stays open no matter what landed in the account.",
       },
     ],
   },
@@ -1165,7 +1193,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     slug: "finance-cross-chapter-audit",
     title: "Auditing every chapter",
     subtitle: "The central rollup, drill-down, and the trust you're building",
-    minutes: 3,
+    minutes: 5,
     blocks: [
       {
         kind: "p",
@@ -1183,6 +1211,16 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "rule",
         title: "Trust, not permission",
         text: "You're not a gate a chapter's spending waits behind — you're the person who can look at any chapter's numbers at any time and vouch for them. The north-star metric for this whole system is exactly that: you trust every chapter's numbers without having to ask anyone.",
+      },
+      {
+        kind: "rule",
+        title: "Whose card paid ≠ whose budget it counts against",
+        text: "Every charge carries **two** facts, and they're different questions. **Paid from** is whose card or account the money actually left — that's what reconciles against a bank statement, and coding a charge never changes it. **Charged to** is whose budget it counts against — that's what a budget's spent-vs-left is measuring. Usually they match. When they don't, one book fronted money for another: a Public Worship card buying something for New York is *paid from Central, charged to New York*. Reconcile flags that row so you see it as you code it, the charge counts against New York's budget (not Central's), and the app works out what's owed — no spreadsheet, no accrual to remember. Settle it whenever you like from the central dashboard's **Inter-chapter balances**; the balance is recomputed live from the ledger, so a miscode you fix simply disappears from it.\n\nDon't reach for **Fix who paid** for this. That button rewrites which account the money left — it's for correcting a charge that landed in the wrong book, not for deciding whose budget carries the cost. Use it on the venue deposit and you'd be claiming New York's account paid, which its bank statement would flatly contradict, and the amount Central is owed would vanish with it.\n\nGive that row New York's **category** too, in the same pass. It's the only chance anyone gets: the charge lives in Central's book, so New York's Treasurer can't edit it — leave the category blank and that spend sits in an \"Uncategorized\" bar on their budget forever. (Fund stays Central's business either way. A fund records whose *restricted* money paid, and Central's card didn't draw on New York's.)",
+      },
+      {
+        kind: "rule",
+        title: "Separate books, one queue when you hold both hats",
+        text: "Central and every chapter keep SEPARATE books. They're separate operating entities — same legal entity, same 501(c)(3), but their money is never pooled on paper. Reconcile's books selector is where you choose: **All books** (everything at once, each row labelled with the book it belongs to), **Central** (the org's own charges), or a named chapter. Today one person is both the central Financial Manager and New York's Treasurer, so All books is the default at the central desk — one pass instead of two. Editing follows the books, not the view: you can always work Central's rows and your own chapter's; another chapter's rows show up read-only, with a lock instead of a checkbox, because its Treasurer owns them.",
       },
       {
         kind: "reveal",
@@ -1216,6 +1254,32 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 1,
         explanation:
           "Drill-down re-checks your central reach and then shows the chapter's real dashboard — the FM's audit tool IS the chapter's own view.",
+      },
+      {
+        prompt:
+          "In Reconcile's All books view you open a charge belonging to a chapter you're not the Treasurer of. What can you do with it?",
+        options: [
+          "Edit it like any other row — central reach means central can code anything",
+          "Read it, but not edit it — the row shows a lock instead of a checkbox",
+          "Nothing at all; other chapters' rows are hidden from you",
+          "Delete it, but not re-code it",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Books stay separate even in the merged view. You can SEE every book — that's the whole audit posture — but coding a chapter's charge belongs to that chapter's Treasurer. Central's own rows and your own chapter's rows stay fully editable.",
+      },
+      {
+        prompt:
+          "You pay for New York's venue deposit on a Public Worship card and code it to New York's event budget. What happens?",
+        options: [
+          "The charge moves into New York's account — its book now shows the money leaving",
+          "It stays paid from Central, counts against New York's budget, and New York owes Central the amount",
+          "It counts against Central's budget instead, since Central's card paid",
+          "Nothing until someone records a transfer first",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Paid-from never moves — Central's account really did pay, and its statement has to keep matching. Charged-to is what the budget measures, so the deposit lands on New York's plan. The gap between the two is a receivable the app computes for you, visible in Inter-chapter balances and settleable whenever you choose.",
       },
       {
         prompt: "What's the FM's actual relationship to a chapter's spending?",

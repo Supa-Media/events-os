@@ -2613,9 +2613,20 @@ export async function convertChargeToPersonalRepayment(
  * IDEMPOTENT: one repayment per transaction.
  *
  * PAYEE RESOLUTION: the transaction's own `personId` if set, else the
- * cardholder of its `cardId`. Never creates a repayment nobody can be
- * billed for — a transaction with neither throws `PAYEE_REQUIRED` (mirrors
- * `finances.ts`'s `REASON_REQUIRED` shape for excluding a transaction).
+ * cardholder of its `cardId`. A transaction with NEITHER (a bank/ACH entry, a
+ * Relay CSV row whose last-4 was never linked, a hand-entered row) can still
+ * be flagged — but only by a MANAGER, and only by NAMING who owes it via the
+ * optional `payerPersonId` arg, which is then written onto the transaction so
+ * every other surface (the Reconcile Cardholder column,
+ * `unflagPersonalCharge`, the repayment list) resolves the same answer. With
+ * no resolvable payee and no named one it still throws `PAYEE_REQUIRED`
+ * (mirrors `finances.ts`'s `REASON_REQUIRED` shape for excluding a
+ * transaction) — a repayment nobody can be billed for is never created.
+ *
+ * `payerPersonId` is IGNORED when the transaction already resolves a payee:
+ * re-attributing a real cardholder's charge to someone else isn't a flagging
+ * decision, it's a reassignment, and it would let a manager bill person B for
+ * person A's card swipe.
  *
  * MANAGER-INITIATED (D4): when a MANAGER flags someone ELSE's charge, the
  * payer is notified by best-effort email (`notifyPersonalChargeFlagged`,
@@ -2624,9 +2635,17 @@ export async function convertChargeToPersonalRepayment(
  * charge needs no such email (they already know).
  */
 export const flagPersonalCharge = mutation({
-  args: { transactionId: v.id("transactions") },
+  args: {
+    transactionId: v.id("transactions"),
+    // Manager-only, and only honored when the txn resolves no payee of its own
+    // — see PAYEE RESOLUTION above.
+    payerPersonId: v.optional(v.id("people")),
+  },
   returns: repaymentSummaryValidator,
-  handler: async (ctx, { transactionId }): Promise<RepaymentSummary> => {
+  handler: async (
+    ctx,
+    { transactionId, payerPersonId: namedPayerPersonId },
+  ): Promise<RepaymentSummary> => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     const access = await getFinanceRole(ctx, chapterId);
 
@@ -2644,11 +2663,27 @@ export const flagPersonalCharge = mutation({
       await requireInChapter(ctx, chapterId, card, "Card");
       payerPersonId = card!.cardholderPersonId;
     }
+    // Nobody resolvable — accept a MANAGER's explicit "bill this person", and
+    // persist it as the txn's attribution so the rest of the app agrees.
+    let attributedByName = false;
+    if (!payerPersonId && namedPayerPersonId) {
+      if (!access.isManager) {
+        throw new ConvexError({
+          code: "FORBIDDEN",
+          message:
+            "Only a finance manager can say who owes a charge that isn't on anyone's card.",
+        });
+      }
+      const person = await ctx.db.get(namedPayerPersonId);
+      await requireInChapter(ctx, chapterId, person, "Person");
+      payerPersonId = namedPayerPersonId;
+      attributedByName = true;
+    }
     if (!payerPersonId) {
       throw new ConvexError({
         code: "PAYEE_REQUIRED",
         message:
-          "Can't mark this as personal — there's no cardholder or assigned person to bill.",
+          "Can't mark this as personal — there's no cardholder or assigned person to bill. Pick who owes it.",
       });
     }
 
@@ -2658,6 +2693,25 @@ export const flagPersonalCharge = mutation({
       throw new ConvexError({
         code: "FORBIDDEN",
         message: "Only the payer or a finance manager can flag this charge.",
+      });
+    }
+
+    // A manager named the payer for an otherwise unattributed charge — write it
+    // onto the transaction BEFORE converting, so the Reconcile Cardholder
+    // column, `unflagPersonalCharge`'s own payer resolution, and the repayment
+    // list all read the same person instead of only the repayment row knowing.
+    if (attributedByName) {
+      await ctx.db.patch(transactionId, { personId: payerPersonId });
+      await logFinanceAudit(ctx, {
+        chapterId: transaction.chapterId,
+        subjectType: "transaction",
+        subjectId: transactionId,
+        action: "personal_flag",
+        actorPersonId: access.personId ?? null,
+        field: "personId",
+        before: "Unattributed",
+        after: "Billed to the named payer",
+        amountCents: transaction.amountCents,
       });
     }
 
@@ -2980,6 +3034,99 @@ export const personalRepaymentsOutstanding = query({
       count: outstanding.length,
       totalCents: outstanding.reduce((sum, r) => sum + r.amountCents, 0),
     };
+  },
+});
+
+const chapterRepaymentValidator = v.object({
+  id: v.id("personalRepayments"),
+  transactionId: v.id("transactions"),
+  payerPersonId: v.id("people"),
+  payerName: v.string(),
+  payerImageUrl: v.union(v.string(), v.null()),
+  amountCents: v.number(),
+  status: repaymentStatusValidator,
+  method: repaymentMethodValidator,
+  // The charge itself — what a manager needs to recognize the line without
+  // leaving for the Reconcile grid.
+  merchantName: v.union(v.string(), v.null()),
+  description: v.union(v.string(), v.null()),
+  postedAt: v.number(),
+  flaggedAt: v.number(),
+  // Whether the payer linked a bank account for the ACH rail (a "they've
+  // started" signal — the debit itself is still feature-gated off).
+  hasExternalAccount: v.boolean(),
+  // Set once settled — the offsetting credit `settleRepayment` posted.
+  creditTransactionId: v.union(v.id("transactions"), v.null()),
+});
+
+/**
+ * Every personal-charge repayment in the chapter, newest flag first — the ROW
+ * DETAIL behind `personalRepaymentsOutstanding`'s aggregate, so the "Personal
+ * charges outstanding" tiles on the Cards and Reimbursements tabs have
+ * somewhere to drill into: who owes it, which charge, and (for a manager) a
+ * "Mark repaid" confirmation. Before this, both tiles were dead numbers —
+ * the count was visible but the underlying rows were reachable only through
+ * the Reconcile grid's `personal_unpaid` pill, which has no way to settle one.
+ *
+ * Returns EVERY status (the caller splits outstanding vs. repaid, same
+ * contract as `myPersonalRepayments`) — a manager confirming a payment needs
+ * to see it land in the repaid list, not watch the row vanish.
+ *
+ * Viewer+ gated, the same floor as the aggregate it details; the mutations a
+ * row offers (`markRepaymentPaid`, `unflagPersonalCharge`) carry their own
+ * manager gates server-side.
+ */
+export const listPersonalRepayments = query({
+  args: {},
+  returns: v.array(chapterRepaymentValidator),
+  handler: async (ctx) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireFinanceRole(ctx, chapterId, "viewer");
+    const reps = await ctx.db
+      .query("personalRepayments")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .take(CHAPTER_REPAYMENTS_LIMIT);
+    // Newest flag first — an outstanding debt is chased in the order it
+    // appeared, and the repaid list reads as a reverse-chronological receipt.
+    reps.sort((a, b) => b.createdAt - a.createdAt);
+
+    // Read-through caches: several charges commonly belong to ONE payer (the
+    // cardholder who had a bad week), so resolving the person + their avatar
+    // once per payer keeps this linear in distinct people, not rows.
+    const people = new Map<Id<"people">, Doc<"people"> | null>();
+    const avatars = new Map<Id<"_storage">, string | null>();
+    return await Promise.all(
+      reps.map(async (r) => {
+        if (!people.has(r.payerPersonId)) {
+          people.set(r.payerPersonId, await ctx.db.get(r.payerPersonId));
+        }
+        const person = people.get(r.payerPersonId) ?? null;
+        let payerImageUrl: string | null = null;
+        if (person?.image) {
+          if (!avatars.has(person.image)) {
+            avatars.set(person.image, await ctx.storage.getUrl(person.image));
+          }
+          payerImageUrl = avatars.get(person.image) ?? null;
+        }
+        const txn = await ctx.db.get(r.transactionId);
+        return {
+          id: r._id,
+          transactionId: r.transactionId,
+          payerPersonId: r.payerPersonId,
+          payerName: person?.name ?? "Unknown person",
+          payerImageUrl,
+          amountCents: r.amountCents,
+          status: r.status,
+          method: r.method,
+          merchantName: txn?.merchantName ?? null,
+          description: txn?.description ?? null,
+          postedAt: txn?.postedAt ?? r.createdAt,
+          flaggedAt: r.createdAt,
+          hasExternalAccount: !!r.payerExternalAccountId,
+          creditTransactionId: r.creditTransactionId ?? null,
+        };
+      }),
+    );
   },
 });
 

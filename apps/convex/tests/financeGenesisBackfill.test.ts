@@ -247,8 +247,8 @@ describe("genesis backfill runner", () => {
     });
     expect(reconcile.counts.all).toBe(253);
     expect(reconcile.rows.length).toBe(253);
-    // Every genesis row is unreviewed → the whole set shows under "uncategorized".
-    expect(reconcile.counts.uncategorized).toBe(253);
+    // Every genesis row is unreviewed → the whole set shows under "To review".
+    expect(reconcile.counts.to_review).toBe(253);
   });
 
   test("LTN payments land as manual outflows carrying the paid-personally note", async () => {

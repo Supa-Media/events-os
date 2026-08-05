@@ -65,6 +65,25 @@ async function seedManager(s: ChapterSetup): Promise<Id<"people">> {
   return personId;
 }
 
+/**
+ * Body wrapper for a test whose mutation SCHEDULES something — for the flag
+ * path that's `notifyPersonalChargeFlagged`, the "a manager marked your charge
+ * personal" email. A job left pending doesn't stay inside its own test: it
+ * flushes at whatever later await point comes along, which lands it in a LATER
+ * test — and the email test at the bottom of this file stubs `globalThis.fetch`
+ * to count exactly one send. Same fake-timers + `finishAllScheduledFunctions`
+ * pattern `cards.test.ts` already uses around `flagPersonalCharge`; the drain
+ * is the last thing the body does.
+ */
+async function withDrainedSchedule(body: () => Promise<void>): Promise<void> {
+  vi.useFakeTimers();
+  try {
+    await body();
+  } finally {
+    vi.useRealTimers();
+  }
+}
+
 async function seedManualTxn(
   s: ChapterSetup,
   opts: { personId?: Id<"people">; cardId?: Id<"cards">; amountCents?: number },
@@ -123,6 +142,227 @@ describe("flagPersonalCharge — generalized payee resolution", () => {
     const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
     expect(txn?.isPersonal).toBeFalsy();
     expect(txn?.repaymentId).toBeUndefined();
+  });
+});
+
+// ── Naming the payer on a no-payee charge (founder feedback: "in reconcile I
+// can't mark everything as personal, some things it won't let me, the flag
+// just doesn't exist") ───────────────────────────────────────────────────────
+
+describe("flagPersonalCharge — manager names the payer (payerPersonId)", () => {
+  test("a manager can flag a charge that resolves nobody, and it's attributed to the named person", async () =>
+    withDrainedSchedule(async () => {
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedManager(s);
+      const owes = await seedPerson(s, { name: "Owes Money" });
+      const txnId = await seedManualTxn(s, { amountCents: 1874 });
+
+      const rep = await s.as.mutation(api.cards.flagPersonalCharge, {
+        transactionId: txnId,
+        payerPersonId: owes,
+      });
+      expect(rep.payerPersonId).toBe(owes);
+      expect(rep.amountCents).toBe(1874);
+      expect(rep.status).toBe("pending");
+
+      // Written onto the TRANSACTION too, so the Reconcile cardholder column,
+      // `unflagPersonalCharge`'s payer resolution and the repayment list all
+      // agree — not just the repayment row.
+      const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+      expect(txn?.personId).toBe(owes);
+      expect(txn?.isPersonal).toBe(true);
+      expect(txn?.repaymentId).toBe(rep.id);
+
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+    }));
+
+  test("a non-manager can't name someone else as the payer", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const self = await seedPerson(s, { name: "Bookkeeper", userId: s.userId });
+    await grantRole(s, self, "bookkeeper");
+    const someoneElse = await seedPerson(s, { name: "Someone Else" });
+    const txnId = await seedManualTxn(s, {});
+
+    let caught: unknown;
+    try {
+      await s.as.mutation(api.cards.flagPersonalCharge, {
+        transactionId: txnId,
+        payerPersonId: someoneElse,
+      });
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(ConvexError);
+    expect((caught as ConvexError<{ code: string }>).data.code).toBe("FORBIDDEN");
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.isPersonal).toBeFalsy();
+    expect(txn?.personId).toBeUndefined();
+  });
+
+  test("ignored when the charge already resolves a payee — a manager can't re-bill someone else's card swipe", async () =>
+    withDrainedSchedule(async () => {
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedManager(s);
+      const realPayer = await seedPerson(s, { name: "Real Payer" });
+      const innocent = await seedPerson(s, { name: "Innocent Bystander" });
+      const txnId = await seedManualTxn(s, { personId: realPayer });
+
+      const rep = await s.as.mutation(api.cards.flagPersonalCharge, {
+        transactionId: txnId,
+        payerPersonId: innocent,
+      });
+      expect(rep.payerPersonId).toBe(realPayer);
+      const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+      expect(txn?.personId).toBe(realPayer);
+
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+    }));
+
+  test("a named payer from another chapter is rejected", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const outsider = await run(s.t, async (ctx) => {
+      const otherChapterId = await ctx.db.insert("chapters", {
+        name: "Elsewhere",
+        isActive: true,
+        createdAt: Date.now(),
+      });
+      return await ctx.db.insert("people", {
+        chapterId: otherChapterId,
+        name: "Outsider",
+        isTeamMember: true,
+        createdAt: Date.now(),
+      });
+    });
+    const txnId = await seedManualTxn(s, {});
+
+    await expect(
+      s.as.mutation(api.cards.flagPersonalCharge, {
+        transactionId: txnId,
+        payerPersonId: outsider,
+      }),
+    ).rejects.toThrow();
+    expect((await run(s.t, (ctx) => ctx.db.get(txnId)))?.isPersonal).toBeFalsy();
+  });
+});
+
+// ── listPersonalRepayments (the manager collection surface) ──────────────────
+
+describe("listPersonalRepayments", () => {
+  test("returns every repayment in the chapter with its payer + charge detail, newest first", async () =>
+    withDrainedSchedule(async () => {
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedManager(s);
+      const alice = await seedPerson(s, { name: "Alice" });
+      const bob = await seedPerson(s, { name: "Bob" });
+      const first = await seedManualTxn(s, { personId: alice, amountCents: 500 });
+      const second = await seedManualTxn(s, { personId: bob, amountCents: 900 });
+
+      await s.as.mutation(api.cards.flagPersonalCharge, { transactionId: first });
+      // Fake timers freeze the clock, so without this both repayments share a
+      // `createdAt` and "newest first" has nothing to order by. Moves the clock
+      // WITHOUT firing pending timers (unlike `advanceTimersByTime`) — the
+      // scheduled flag emails are drained deliberately at the end.
+      vi.setSystemTime(Date.now() + 1000);
+      const secondRep = await s.as.mutation(api.cards.flagPersonalCharge, {
+        transactionId: second,
+      });
+
+      const rows = await s.as.query(api.cards.listPersonalRepayments, {});
+      expect(rows).toHaveLength(2);
+      // Newest flag first.
+      expect(rows[0].payerName).toBe("Bob");
+      expect(rows[0].amountCents).toBe(900);
+      expect(rows[0].merchantName).toBe("Test Merchant");
+      expect(rows[0].status).toBe("pending");
+      expect(rows[0].creditTransactionId).toBeNull();
+      expect(rows[1].payerName).toBe("Alice");
+
+      // A settled row stays in the list (it moves to the "Repaid" section
+      // rather than vanishing) and carries the offsetting credit.
+      await s.as.mutation(api.cards.markRepaymentPaid, {
+        repaymentId: secondRep.id,
+      });
+      const after = await s.as.query(api.cards.listPersonalRepayments, {});
+      const settled = after.find((r) => r.id === secondRep.id);
+      expect(settled?.status).toBe("paid");
+      expect(settled?.creditTransactionId).not.toBeNull();
+
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+    }));
+
+  test("requires at least the viewer finance role", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s, { name: "No Role", userId: s.userId });
+
+    await expect(
+      s.as.query(api.cards.listPersonalRepayments, {}),
+    ).rejects.toThrow();
+  });
+});
+
+// ── listReconcile.viewerIsManager — who the GRID may offer "Mark personal" to
+// (founder feedback: rows that plainly have a cardholder still showed no flag)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("listReconcile — viewerIsManager", () => {
+  test("a CENTRAL-scope manager grant reads as a manager, even with no chapter seat", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedPerson(s, { name: "Central FM", userId: s.userId });
+    // A central grant, exactly as `grantFinanceRole`/the specialized-roles
+    // bridge writes one — manager everywhere server-side, but it produces NO
+    // `scope:"chapter"` seat, which is what the grid used to look for. The
+    // regression this pins: the grid hid every manager-only row action from an
+    // Executive Director / Financial Manager sitting at Central.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeRoles", {
+        chapterId: "central" as unknown as Id<"chapters">,
+        personId,
+        role: "manager",
+        scope: "central",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const res = await s.as.query(api.finances.listReconcile, {});
+    expect(res.viewerIsManager).toBe(true);
+    expect(res.viewerPersonId).toBe(personId);
+
+    // And the permission it advertises is real — the same caller can actually
+    // flag someone else's charge.
+    const holder = await seedPerson(s, { name: "Card Holder" });
+    const txnId = await seedManualTxn(s, { personId: holder });
+    const rep = await s.as.mutation(api.cards.flagPersonalCharge, {
+      transactionId: txnId,
+    });
+    expect(rep.payerPersonId).toBe(holder);
+  });
+
+  test("a chapter-scope manager still reads as a manager", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+
+    const res = await s.as.query(api.finances.listReconcile, {});
+    expect(res.viewerIsManager).toBe(true);
+  });
+
+  test("a bookkeeper does NOT — full Reconcile access, but not this action", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedPerson(s, { name: "Books", userId: s.userId });
+    await grantRole(s, personId, "bookkeeper");
+
+    const res = await s.as.query(api.finances.listReconcile, {});
+    expect(res.viewerIsManager).toBe(false);
+    expect(res.viewerPersonId).toBe(personId);
   });
 });
 

@@ -63,9 +63,15 @@ import {
   candidateValidator,
   extractReceiptFields,
   resolveOcrModel,
+  resolveFallbackOcrModel,
   deriveMerchantFromEmail,
   type OcrRoutingResult,
 } from "./receiptInbox";
+import {
+  AUTO_RETRY_FALLBACK_ATTEMPT,
+  AUTO_RETRY_MAX_ATTEMPTS,
+  scheduleAutoRetryExtraction,
+} from "./lib/receiptRetry";
 import { isSpend, txnMatchesMode } from "./finances";
 import { readSandbox } from "./financeSettings";
 import { logFinanceAudit } from "./lib/financeAuditLog";
@@ -200,6 +206,21 @@ const receiptSummary = v.object({
   // A human-readable reason extraction produced NOTHING — see
   // `schema/finances.ts`'s doc comment on `receipts.ocrError`.
   ocrError: v.union(v.string(), v.null()),
+  // Extraction IN FLIGHT (queued/running, with the automatic retry's attempt
+  // number and fire time) — what the UI turns into a live progress strip
+  // instead of a button whose spinner stops before the work does. `null` when
+  // nothing is pending. See `receipts.extraction` in `schema/finances.ts`,
+  // and `isReceiptExtractionActive` for the staleness rule readers apply.
+  extraction: v.union(
+    v.object({
+      status: v.union(v.literal("queued"), v.literal("running")),
+      since: v.number(),
+      attempt: v.union(v.number(), v.null()),
+      maxAttempts: v.union(v.number(), v.null()),
+      nextAttemptAt: v.union(v.number(), v.null()),
+    }),
+    v.null(),
+  ),
   linkCount: v.number(),
   duplicateOfReceiptId: v.union(v.id("receipts"), v.null()),
   // Founder feedback PR: whether this receipt is archived (a nonsense
@@ -305,6 +326,15 @@ async function toReceiptSummary(ctx: QueryCtx, r: Doc<"receipts">, cache?: Prove
     ocrMerchant: r.ocrMerchant ?? null,
     ocrConfidence: r.ocrConfidence ?? null,
     ocrError: r.ocrError ?? null,
+    extraction: r.extraction
+      ? {
+          status: r.extraction.status,
+          since: r.extraction.since,
+          attempt: r.extraction.attempt ?? null,
+          maxAttempts: r.extraction.maxAttempts ?? null,
+          nextAttemptAt: r.extraction.nextAttemptAt ?? null,
+        }
+      : null,
     linkCount: r.linkCount,
     duplicateOfReceiptId: r.duplicateOfReceiptId ?? null,
     archived: r.archived === true,
@@ -1548,11 +1578,22 @@ export const submitUploadedReceipts = mutation({
       });
 
       if (!duplicateOfReceiptId) {
+        const delay = scheduledCount * THROTTLE_MS;
         await ctx.scheduler.runAfter(
-          scheduledCount * THROTTLE_MS,
+          delay,
           internal.receipts.processUploadedReceipt,
           { receiptId },
         );
+        // A staggered batch means the last file waits minutes for its turn —
+        // say so on the row (`extraction: queued` + when it fires) rather
+        // than showing an empty receipt that looks like a failed read.
+        await ctx.db.patch(receiptId, {
+          extraction: {
+            status: "queued",
+            since: Date.now(),
+            nextAttemptAt: Date.now() + delay,
+          },
+        });
         scheduledCount++;
       }
       results.push({ storageId, receiptId, duplicate: duplicateOfReceiptId != null });
@@ -1567,6 +1608,42 @@ export const getReceiptForProcessing = internalQuery({
   args: { receiptId: v.id("receipts") },
   returns: v.union(v.any(), v.null()),
   handler: async (ctx, { receiptId }) => await ctx.db.get(receiptId),
+});
+
+/**
+ * Stamp (or clear) what extraction is doing to this receipt RIGHT NOW, so the
+ * UI can show a live state instead of a button whose spinner stops the moment
+ * the action is scheduled. See `receipts.extraction` in `schema/finances.ts`.
+ *
+ * Only ever describes work that is genuinely pending: `queued` is written
+ * alongside the `scheduler.runAfter` that will run it, `running` by the
+ * action itself as it starts. Clearing is the commit mutations' job
+ * (`applyUploadOcrAndAttach` / `applyRetryExtraction`) — this mutation's
+ * `null` is for the paths that bail BEFORE a commit (a receipt that turned
+ * out to be a duplicate, a sweep that gave up), so nothing spins on work that
+ * is no longer coming.
+ */
+export const setExtractionProgress = internalMutation({
+  args: {
+    receiptId: v.id("receipts"),
+    extraction: v.union(
+      v.object({
+        status: v.union(v.literal("queued"), v.literal("running")),
+        since: v.number(),
+        attempt: v.optional(v.number()),
+        maxAttempts: v.optional(v.number()),
+        nextAttemptAt: v.optional(v.number()),
+      }),
+      v.null(),
+    ),
+  },
+  returns: v.null(),
+  handler: async (ctx, { receiptId, extraction }) => {
+    const receipt = await ctx.db.get(receiptId);
+    if (!receipt) return null;
+    await ctx.db.patch(receiptId, { extraction: extraction ?? undefined });
+    return null;
+  },
 });
 
 /** Read a stored file's content-type off the `_storage` system table
@@ -1636,7 +1713,14 @@ export const applyUploadOcrAndAttach = internalMutation({
     const receipt = await ctx.db.get(args.receiptId);
     if (!receipt) return null;
 
-    const patch: Record<string, unknown> = { updatedAt: Date.now(), ocrError: args.ocrError };
+    // `extraction` is cleared here (and in `applyRetryExtraction`) because
+    // these two mutations are the ONLY terminal points of every extraction
+    // path — so no path can leave a receipt spinning.
+    const patch: Record<string, unknown> = {
+      updatedAt: Date.now(),
+      ocrError: args.ocrError,
+      extraction: undefined,
+    };
     if (args.ocrAmountCents != null) patch.ocrAmountCents = args.ocrAmountCents;
     if (args.ocrDate != null) patch.ocrDate = args.ocrDate;
     if (args.ocrMerchant) patch.ocrMerchant = args.ocrMerchant;
@@ -1732,7 +1816,22 @@ async function runUploadPipeline(
   const receipt = (await ctx.runQuery(internal.receipts.getReceiptForProcessing, {
     receiptId,
   })) as Doc<"receipts"> | null;
-  if (!receipt || receipt.duplicateOfReceiptId) return; // gone, or never scheduled for a dupe
+  if (!receipt || receipt.duplicateOfReceiptId) {
+    // Gone, or never scheduled for a dupe — clear the `queued` stamp the
+    // submit mutation wrote so nothing spins on work that isn't coming.
+    if (receipt) {
+      await ctx.runMutation(internal.receipts.setExtractionProgress, {
+        receiptId,
+        extraction: null,
+      });
+    }
+    return;
+  }
+  // Reading now — the UI's spinner tracks THIS, not the scheduling call.
+  await ctx.runMutation(internal.receipts.setExtractionProgress, {
+    receiptId,
+    extraction: { status: "running", since: Date.now() },
+  });
 
   const blob = await ctx.storage.get(receipt.storageId);
   if (!blob) {
@@ -1770,7 +1869,6 @@ async function runUploadPipeline(
     result = await extractReceiptFields(ctx, {
       storageId: receipt.storageId,
       config,
-      blob,
       contentType,
       filename: receipt.filename,
       model: resolveOcrModel(config, modelOverride),
@@ -1810,6 +1908,14 @@ async function runUploadPipeline(
     ocrError: result.ocrError,
     candidateTransactionIds,
   });
+
+  // The engine failed on TRANSPORT (5xx/429/timeout) — the receipt is fine,
+  // the read simply never happened. Repair it in the background instead of
+  // leaving a red card for a human to notice and tap Retry on
+  // (`lib/receiptRetry.ts`). The error above stays visible meanwhile.
+  if (result.ocrError && result.ocrRetryable) {
+    await scheduleAutoRetryExtraction(ctx, receiptId, 1, result.ocrRetryAfterSeconds);
+  }
 }
 
 // ── retryExtraction (bookkeeper-triggered reprocessing) ──────────────────────
@@ -1854,6 +1960,12 @@ export const retryExtraction = mutation({
       receiptId: args.receiptId,
       model: args.model?.trim() ? args.model.trim() : undefined,
     });
+    // Stamped HERE, not in the action, so the UI flips to "reading" on the
+    // same round trip the bookkeeper's tap made — the action starts a moment
+    // later and re-stamps it `running`.
+    await ctx.db.patch(args.receiptId, {
+      extraction: { status: "queued", since: Date.now(), nextAttemptAt: Date.now() },
+    });
     return null;
   },
 });
@@ -1895,6 +2007,9 @@ export const applyRetryExtraction = internalMutation({
     const patch: Record<string, unknown> = {
       updatedAt: Date.now(),
       ocrError: args.ocrError,
+      // This attempt is over, whatever it produced — see
+      // `applyUploadOcrAndAttach` for why the clear lives on the commits.
+      extraction: undefined,
       // Always refresh the shortlist (even to empty) — a retry is a human
       // actively looking at this receipt, so a fresher read should surface
       // fresher matches even when canonical fields stay untouched.
@@ -1948,6 +2063,114 @@ export const runRetryExtraction = internalAction({
   },
 });
 
+/**
+ * AUTOMATIC re-extraction after a TRANSPORT failure — scheduled by whichever
+ * pipeline first read this receipt (email/upload) and by itself for each
+ * further attempt. See `lib/receiptRetry.ts` for the schedule and why this
+ * exists; the short version is that an engine 500 is a blip, not a verdict,
+ * and the initial run used to record it like one.
+ *
+ * Three rules keep it from ever fighting a human:
+ *  - It STOPS the moment `ocrError` is clear — a manual Retry, the bulk
+ *    sweep, or a bookkeeper typing the total in wins, and a slow automatic
+ *    read never lands on top of that.
+ *  - It only ever re-reads what is ALREADY a failure; `applyRetryExtraction`
+ *    fills canonical fields per-field and only where still empty.
+ *  - A retryable failure mid-chain leaves the visible `ocrError` UNTOUCHED
+ *    (the sweep's rule) — the card keeps saying what actually went wrong
+ *    rather than flickering between engine messages.
+ *
+ * It repairs the READ, never the ATTACH: like every other retry path this
+ * commits through `applyRetryExtraction`, which refreshes the candidate
+ * shortlist and NEVER links. Auto-attach stays the ingest pipelines' single
+ * responsibility (money safety) — so a receipt whose first read was lost to a
+ * 500 comes back with its total and a one-tap suggested match, not a silent
+ * background link.
+ *
+ * Errors are swallowed: this is background repair, and a thrown scheduled
+ * action would just retry the whole thing outside our own backoff.
+ */
+export const autoRetryExtraction = internalAction({
+  args: { receiptId: v.id("receipts"), attempt: v.number() },
+  returns: v.null(),
+  handler: async (ctx, { receiptId, attempt }) => {
+    try {
+      const receipt = (await ctx.runQuery(internal.receipts.getReceiptForProcessing, {
+        receiptId,
+      })) as Doc<"receipts"> | null;
+      // Gone, or already resolved by someone else — nothing left to repair.
+      if (!receipt || !receipt.ocrError) return null;
+
+      // This attempt is no longer a wait — it's happening. The UI switches
+      // from "in 4 min" to a live read on this write.
+      await ctx.runMutation(internal.receipts.setExtractionProgress, {
+        receiptId,
+        extraction: {
+          status: "running",
+          since: Date.now(),
+          attempt,
+          maxAttempts: AUTO_RETRY_MAX_ATTEMPTS,
+        },
+      });
+
+      const config = await ctx.runQuery(
+        internal.integrationSettings.readAiEngineConfig,
+        {},
+      );
+      const primary = resolveOcrModel(config);
+      // The last attempt asks a DIFFERENT vision model — see
+      // `AUTO_RETRY_FALLBACK_ATTEMPT`. No distinct fallback configured (or it
+      // resolves to the same id) → keep asking the primary.
+      const model =
+        attempt >= AUTO_RETRY_FALLBACK_ATTEMPT
+          ? (resolveFallbackOcrModel(config, primary) ?? primary)
+          : primary;
+
+      const computed = await computeRetryExtraction(ctx, receipt, model);
+      if (computed.missingFile) {
+        await ctx.runMutation(internal.receipts.applyRetryExtraction, {
+          receiptId,
+          candidateTransactionIds: receipt.candidateTransactionIds ?? [],
+          ocrError: "The stored file could not be found — it may have been deleted.",
+        });
+        return null;
+      }
+
+      const { result, candidateTransactionIds } = computed;
+      if (result.ocrError && result.ocrRetryable && attempt < AUTO_RETRY_MAX_ATTEMPTS) {
+        console.log(
+          `[receipts] auto-retry ${attempt}/${AUTO_RETRY_MAX_ATTEMPTS} for ${receiptId} still transient (${result.ocrError.slice(0, 120)}) — backing off.`,
+        );
+        await scheduleAutoRetryExtraction(
+          ctx,
+          receiptId,
+          attempt + 1,
+          result.ocrRetryAfterSeconds,
+        );
+        return null;
+      }
+
+      // A read (success), a permanent failure, or the last attempt's verdict
+      // — all of them belong on the receipt now.
+      await ctx.runMutation(internal.receipts.applyRetryExtraction, {
+        receiptId,
+        ocrAmountCents: result.ocrAmountCents,
+        ocrDate: result.ocrDate,
+        ocrMerchant: result.ocrMerchant,
+        ocrConfidence: result.ocrConfidence,
+        ocrModel: result.ocrModel,
+        ocrError: result.ocrError,
+        candidateTransactionIds,
+      });
+    } catch (err) {
+      console.error(
+        `[receipts] autoRetryExtraction attempt ${attempt} errored for ${receiptId}: ${String(err)}`,
+      );
+    }
+    return null;
+  },
+});
+
 /** Either a re-extraction READ (never yet committed to the receipt — the
  *  caller decides whether/how to persist it) or a signal that the stored
  *  file itself is gone. Shared by `runRetryPipeline` (the single-receipt
@@ -1992,7 +2215,6 @@ async function computeRetryExtraction(
     result = await extractReceiptFields(ctx, {
       storageId: receipt.storageId,
       config,
-      blob,
       contentType,
       filename: receipt.filename,
       model: resolveOcrModel(config, model),
@@ -2051,6 +2273,12 @@ async function runRetryPipeline(
     receiptId,
   })) as Doc<"receipts"> | null;
   if (!receipt) return;
+  // A human is watching this one — mark it running so the button's spinner
+  // lasts as long as the READ does, not as long as the mutation did.
+  await ctx.runMutation(internal.receipts.setExtractionProgress, {
+    receiptId,
+    extraction: { status: "running", since: Date.now() },
+  });
 
   const computed = await computeRetryExtraction(ctx, receipt, model);
   if (computed.missingFile) {
@@ -2117,6 +2345,12 @@ async function runSweepRetryPipeline(
   // advances past it once `findNextFailedReceipt` stops returning it.
   if (!receipt) return { status: "permanent_failure" };
 
+  // The sweep works one receipt at a time — show WHICH one is being read.
+  await ctx.runMutation(internal.receipts.setExtractionProgress, {
+    receiptId,
+    extraction: { status: "running", since: Date.now() },
+  });
+
   const computed = await computeRetryExtraction(ctx, receipt, model);
   if (computed.missingFile) {
     await ctx.runMutation(internal.receipts.applyRetryExtraction, {
@@ -2129,6 +2363,13 @@ async function runSweepRetryPipeline(
 
   const { result, candidateTransactionIds } = computed;
   if (result.ocrError && result.ocrRetryable) {
+    // Withheld commit (see this function's doc) — so clear the progress stamp
+    // by hand: the sweep will come back to this receipt, but not at a time
+    // this row can honestly name.
+    await ctx.runMutation(internal.receipts.setExtractionProgress, {
+      receiptId,
+      extraction: null,
+    });
     return { status: "retryable_failure", retryAfterSeconds: result.ocrRetryAfterSeconds };
   }
 

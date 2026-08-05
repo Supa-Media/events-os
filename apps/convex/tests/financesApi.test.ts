@@ -530,7 +530,7 @@ describe("listReconcile (server-side filters + counts + projections)", () => {
     });
     // t3: excluded → never in the inbox.
     await insertTxn(s, { status: "excluded", amountCents: 300 });
-    // t4: inflow, unreviewed → counted as all + uncategorized only (not spend).
+    // t4: inflow, unreviewed → counted as all + to_review only (not spend).
     const t4 = await insertTxn(s, { flow: "inflow", amountCents: 400 });
 
     const all = await s.as.query(api.finances.listReconcile, { filter: "all" });
@@ -539,13 +539,13 @@ describe("listReconcile (server-side filters + counts + projections)", () => {
       spend: 2, // t1, t2 (t4 is inflow, not spend)
       needs_budget: 1, // t1
       missing_receipt: 1, // t1
+      to_review: 2, // t1, t4
+      reconciled: 1, // t2
       // t1 only: t2 has a receipt, t4 is an inflow (owes nothing), t3 is
-      // excluded. Unlike `missing_receipt` this pill would ALSO count a
+      // excluded. Unlike `missing_receipt` this one would ALSO count a
       // `reconciled` row with nothing attached — see the `undocumented`
       // coverage in `receiptExceptions.test.ts`.
       undocumented: 1, // t1
-      uncategorized: 2, // t1, t4
-      ready: 1, // t2
       personal_unpaid: 0, // none flagged personal in this fixture
       transfers: 0, // nothing marked as an internal transfer here
       payouts: 0, // nothing marked as a processor payout here
@@ -571,15 +571,15 @@ describe("listReconcile (server-side filters + counts + projections)", () => {
     });
     expect(missingReceipt.rows.map((r) => r.id)).toEqual([t1]);
 
-    const uncategorized = await s.as.query(api.finances.listReconcile, {
-      filter: "uncategorized",
+    const toReview = await s.as.query(api.finances.listReconcile, {
+      filters: ["to_review"],
     });
-    expect(uncategorized.rows.map((r) => r.id).sort()).toEqual([t1, t4].sort());
+    expect(toReview.rows.map((r) => r.id).sort()).toEqual([t1, t4].sort());
 
-    const ready = await s.as.query(api.finances.listReconcile, {
-      filter: "ready",
+    const reconciledOnly = await s.as.query(api.finances.listReconcile, {
+      filters: ["reconciled"],
     });
-    expect(ready.rows.map((r) => r.id)).toEqual([t2]);
+    expect(reconciledOnly.rows.map((r) => r.id)).toEqual([t2]);
 
     // no-dead-numbers: `spend` is the "Spent" KPI tile's drill-down target
     // — every outflow row regardless of budget/receipt/status, but NOT the
@@ -593,7 +593,7 @@ describe("listReconcile (server-side filters + counts + projections)", () => {
     // receipt (the treasurer closed it receipt-less on purpose), which is
     // exactly what `receiptChase` NEVER counted — the two surfaces disagreed.
     // A treasurer closed this row without a receipt on purpose; it should
-    // stay visible under `all`/`ready` but drop out of `missing_receipt`.
+    // stay visible under `all`/`reconciled` but drop out of `missing_receipt`.
     const t = newT();
     const s = await setupChapter(t);
     await asManager(s);
@@ -612,8 +612,8 @@ describe("listReconcile (server-side filters + counts + projections)", () => {
     });
     expect(missingReceipt.rows.map((r) => r.id)).toEqual([stillOwing]);
 
-    const ready = await s.as.query(api.finances.listReconcile, { filter: "ready" });
-    expect(ready.rows.map((r) => r.id)).toEqual([closedNoReceipt]);
+    const reconciledOnly = await s.as.query(api.finances.listReconcile, { filter: "reconciled" });
+    expect(reconciledOnly.rows.map((r) => r.id)).toEqual([closedNoReceipt]);
   });
 
   test("projects hasReceipt, cardLast4 and resolves the cardholder (personId OR card)", async () => {

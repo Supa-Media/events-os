@@ -203,6 +203,13 @@ function DashboardBody({ seats }: { seats: Seats }) {
     // Unattributed spend → Reconcile, which already defaults to the
     // `needs_budget` filter.
     else if (kind === "needs_budget") router.navigate("/finances/reconcile" as never);
+    // no-dead-numbers: the "To review N" KPI tile counts UNREVIEWED charges —
+    // a different predicate from `needs_budget`, and one Reconcile has its own
+    // pill for. Passing the filter explicitly is what makes the tapped number
+    // the number on the next screen (founder report: "it says review 80, but
+    // when you click it 80 is nowhere to be found").
+    else if (kind === "to_review")
+      router.navigate("/finances/reconcile?filter=to_review" as never);
   }
 
   // A budget row's body press now opens the shareable detail page instead of

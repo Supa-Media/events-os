@@ -348,18 +348,21 @@ const interScopeBalanceRow = v.object({
  *
  *  (b) CHAPTER OWES CENTRAL: a txn OWNED by central whose `budgetId` resolves
  *      to a CHAPTER budget — central fronted money for a chapter's line item.
- *      VERIFIED NOT ATTRIBUTABLE TODAY: `categorizeTransaction` and
- *      `createManualTransaction`'s central path both call
- *      `requireInCallerChapter(ctx, CENTRAL, "budgets", budgetId, ..., {
- *      allowCentral: true })`, which for a central-scope caller only ever
- *      admits a budget whose OWN `chapterId` is also `CENTRAL` — a chapter
- *      budget is rejected `NOT_FOUND` (#151's rule; see
- *      `transfers.test.ts`'s "central txn cannot attribute to a chapter
- *      budget" case). So this term is ALWAYS 0 through every write path in
- *      the app today. It's still computed generically here (not hardcoded)
- *      rather than assumed, so the balance stays correct — and this comment
- *      stays honest — if that restriction is ever relaxed, and so a stray
- *      legacy/migration row is still caught rather than silently dropped.
+ *      NOW LIVE (2026-08-05, founder request: "if I spent something using a
+ *      public worship card, if it's attached to a local budget it's part of
+ *      the local book, and then we can calculate in the backend what transfers
+ *      need to be made"). `categorizeTransaction` and
+ *      `createManualTransaction`'s central path route the budget through
+ *      `finances.ts#requireBudgetForCentralTxn`, which admits a chapter budget
+ *      behind `requireCrossBookAttribution` (`lib/finance.ts`).
+ *
+ *      This term was previously ALWAYS 0 — the old gate
+ *      (`requireInCallerChapter(ctx, CENTRAL, "budgets", …, { allowCentral:
+ *      true })`) only ever admitted a budget whose own `chapterId` was also
+ *      CENTRAL. It was computed generically here anyway rather than assumed
+ *      zero, precisely so the balance would stay correct if that restriction
+ *      were ever relaxed. It has been, and this query needed NO math change:
+ *      the direction simply started producing rows.
  *
  * SETTLED LEGS ALREADY RECORDED are netted out. `source:"transfer"` (every
  * NEW transfer) and the historical `source:"settlement"` (rows written

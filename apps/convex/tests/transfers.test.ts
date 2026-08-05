@@ -609,12 +609,59 @@ describe("interScopeBalances — direction (a): chapter spend linked to a CENTRA
   });
 });
 
-describe("interScopeBalances — direction (b): verified NOT attributable today", () => {
-  test("a central txn cannot attribute to a chapter budget (write-time rejection)", async () => {
+describe("interScopeBalances — direction (b): central fronts a chapter's spend", () => {
+  // Cross-book attribution went LIVE 2026-08-05 (founder request). This
+  // `describe` used to be titled "verified NOT attributable today" and its
+  // first test asserted the write was REJECTED — that rejection was the thing
+  // being removed, so the test is inverted here rather than deleted: the same
+  // call now succeeds and produces a real balance.
+  test("a central txn CAN attribute to a chapter budget, and it books the debt", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await asCentral(s, "manager");
     const chapterBudgetId = await makeChapterBudget(s, 10_000);
+    const txnId = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 500,
+      postedAt: MARCH_2026,
+      budgetId: chapterBudgetId,
+      central: true,
+    });
+
+    // Custody is UNCHANGED — central's account really did pay. Only the
+    // budget says whose programme it belongs to.
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.chapterId).toBe(CENTRAL);
+    expect(txn?.budgetId).toBe(chapterBudgetId);
+
+    // ...and the chapter now owes central for it (negative = chapter owes).
+    const balances = await s.as.query(api.transfers.interScopeBalances, {
+      year: 2026,
+      month: 3,
+    });
+    const row = balances.find((b) => b.chapterId === s.chapterId);
+    expect(row?.netCents).toBe(-500);
+    expect(row?.periodNetCents).toBe(-500);
+  });
+
+  test("a chapter-only treasurer cannot charge central's card to their own budget", async () => {
+    // The gate is `requireCrossBookAttribution` (central reach today). A
+    // chapter manager can't write a central-owned txn at all, so this is
+    // belt-and-braces on the outer gate rather than a new hole.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const chapterBudgetId = await run(s.t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: s.chapterId,
+        amountCents: 10_000,
+        type: "recurring",
+        cadence: "monthly",
+        year: 2026,
+        approvalStatus: "approved",
+        createdAt: Date.now(),
+      }),
+    );
     await expect(
       s.as.mutation(api.finances.createManualTransaction, {
         flow: "outflow",
@@ -626,7 +673,7 @@ describe("interScopeBalances — direction (b): verified NOT attributable today"
     ).rejects.toThrow(ConvexError);
   });
 
-  test("query math IS correct for direction (b) if the link existed anyway (future-proofing)", async () => {
+  test("query math IS correct for direction (b) when the row is written directly", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await asCentral(s, "bookkeeper");
