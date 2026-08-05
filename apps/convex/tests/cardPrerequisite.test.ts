@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import { ConvexError } from "convex/values";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api, internal } from "../_generated/api";
+import { ACADEMY_COURSES } from "@events-os/shared";
 import type { Id } from "../_generated/dataModel";
 
 /**
@@ -22,18 +23,18 @@ import type { Id } from "../_generated/dataModel";
  *  - `listCards` / `listCardRequests` report `prerequisiteMet` correctly (null
  *    when unset, true/false when set).
  *
- * The real finance COURSE slug (not a section slug) is `finances-for-everyone`;
- * its required modules are the three "Finances for Everyone" sections — see
- * `packages/shared/src/academy/streams/finances.ts`.
+ * The real finance COURSE slug (not a section slug) is `finances-for-everyone`
+ * — see `packages/shared/src/academy/streams/finances.ts`.
  */
 
 const FINANCE_COURSE = "finances-for-everyone";
 const FINANCE_COURSE_TITLE = "Finances for Everyone";
-const FINANCE_MODULE_SLUGS = [
-  "finance-stewardship",
-  "finance-card-and-receipts",
-  "finance-reimbursements-and-flags",
-];
+/** DERIVED from the catalog, not hand-listed. The course gains modules over
+ *  time (`finance-receipt-exceptions` was the most recent), and a hardcoded
+ *  copy makes the "every required module passed" test fail for the wrong
+ *  reason the moment one lands — the gate is fine, the fixture is stale. */
+const FINANCE_MODULE_SLUGS =
+  ACADEMY_COURSES.find((c) => c.slug === FINANCE_COURSE)?.moduleSlugs ?? [];
 
 // ── Seed helpers ─────────────────────────────────────────────────────────────
 

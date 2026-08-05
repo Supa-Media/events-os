@@ -239,9 +239,8 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         text: "Nobody has to ask permission to fix it: the moment you upload the missing receipt, the auto-lock lifts on its own. The rule exists so the Treasurer's monthly close is never blocked on a receipt nobody remembers.",
       },
       {
-        kind: "rule",
-        title: "When a receipt genuinely doesn't exist: file an exception",
-        text: "Some spending never produces a receipt — a cash tip, a parking meter, a donation box. For those, open the charge and **file a receipt exception**: pick why there's no receipt, then write what the money was for. That note is what gets published in place of the document, under your name, so write it the way you'd want a backer to read it.\n\nTwo things this is NOT. It is not a way out of losing your receipt — \"lost\" is one of the reasons, and someone else decides whether it stands. And it is not self-serve: a Finance manager has to approve it, and above $75 that approver can't be you. Until it's approved, the charge is still missing its receipt and the clock keeps running.",
+        kind: "p",
+        text: "Some spending genuinely never produces a receipt — a cash tip, a parking meter, a donation box. That has its own answer, and its own lesson: **you file a receipt exception**, and someone else approves it. The next lesson is all of it. What matters here is that it doesn't change the rule above — until an exception is approved, the charge is still missing its receipt and the 7-day clock keeps running.",
       },
       {
         kind: "try_status",
@@ -281,19 +280,6 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "The unlock is self-service and instant: uploading the missing receipt clears the auto-lock the moment it lands, at any stage.",
       },
       {
-        prompt:
-          "You tipped a sound engineer $40 in cash. No receipt exists and never will. What's the right move?",
-        options: [
-          "Mark the charge Reconciled and move on",
-          "File a receipt exception — pick the reason, say what it was for, and let a manager approve it",
-          "Nothing; small cash amounts are exempt",
-          "Ask the venue to write you a receipt for it later",
-        ],
-        answerIndex: 1,
-        explanation:
-          "An exception is the documented substitute for a receipt, not a shrug: your reason plus your note gets published under your name once a Finance manager approves it. Marking it Reconciled with nothing attached is the exact thing the app now refuses — a published ledger can't tell that row from a documented one.",
-      },
-      {
         prompt: "Why does the app lock the card instead of just sending more reminders forever?",
         options: [
           "To punish cardholders",
@@ -304,6 +290,18 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 1,
         explanation:
           "The lock protects the close, not the cardholder's behavior for its own sake — an open loop at month-end is exactly what the Treasurer course teaches you to avoid.",
+      },
+      {
+        prompt: "Where do you see and manage your own card's charges?",
+        options: [
+          "My Transactions",
+          "The central dashboard",
+          "The Reconcile grid",
+          "You can't see your own charges",
+        ],
+        answerIndex: 0,
+        explanation:
+          "My Transactions is your mini-reconcile — attach receipts, add a category and a short note on who and why, and flag charges on your own transactions, all without needing a finance seat. What you add pre-fills the finance team's review.",
       },
       {
         prompt:
@@ -321,7 +319,139 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 33 · Finances for everyone: reimbursements + flags ─────────────────────
+  // ── 33 · Finances for everyone: when no receipt exists ─────────────────────
+  // Its own lesson rather than a rule bolted onto the card lesson: the concept
+  // carries new vocabulary a member has to actually hold (the reason axis,
+  // attestation, evidence-vs-receipt, the second approver) and it changes a
+  // money rule.
+  //
+  // Lives in `finances-for-everyone`, not `treasurer`, even though it teaches
+  // both filing AND approving. A section may belong to exactly ONE course
+  // (`assertCourseCatalogIntegrity`), and the Treasurer's own path already
+  // runs through `finances-for-everyone` (see `academyPaths.ts`) — so putting
+  // it in the member course reaches every cardholder AND every Treasurer,
+  // while the reverse would hide it from the people who file most of them.
+  // The approver's half is a tip block at the end for that reason.
+  // See `docs/plans/receipt-exceptions.md`.
+  {
+    slug: "finance-receipt-exceptions",
+    title: "When there's genuinely no receipt",
+    subtitle: "Document it anyway — with your name on it",
+    minutes: 4,
+    blocks: [
+      {
+        kind: "p",
+        text: "We publish every transaction we make. That's the point of the whole finance system: a backer can look at what their money did. Which creates a problem the last lesson didn't solve — some real, honest spending never produces a receipt. A cash tip to a sound engineer. A parking meter. A donation box at a venue. Flowers bought from a stall that doesn't print anything.",
+      },
+      {
+        kind: "rule",
+        title: "The answer is never a blank",
+        text: "The wrong fix is to quietly mark the charge Reconciled and move on. A published ledger can't tell that row from a properly documented one — and neither can we, six months later. So the app refuses it: **you can't reconcile a charge that has neither a receipt nor an approved exception.**\n\nThe right fix is to say, on the record, what the money was for and why no receipt exists. That's a **receipt exception**. It isn't an absence — it's a substitute document with a name attached to it.",
+      },
+      {
+        kind: "bullets",
+        items: [
+          "**Pick the reason, don't type one.** No receipt was issued · Receipt lost · Predates the receipt policy · Vendor can't reproduce it · Bank record only. \"Missing\" and \"unattainable\" aren't different states — they're different reasons, and the ledger should say which.",
+          "**Write what it was for.** This is the part that actually gets published in place of the document, under your name. \"Cash tip for the sound engineer at the Aug 2 outdoor service — $40, agreed with Kansi beforehand\" is a real record. \"n/a\" is not, and the app won't take it.",
+          "**Attach proof if it exists — up to 5 files.** You often can't get the receipt but you can absolutely get *something*: photos of the flowers at the event, a bank statement line, an order confirmation email, a picture of what you bought.",
+          "**Someone else approves it.** A Finance manager decides. Above $75, that approver can't be you — that's not distrust, it's the same separation-of-duties rule that governs every approval in the app.",
+        ],
+      },
+      {
+        kind: "rule",
+        title: "Evidence is not a receipt, and we don't pretend otherwise",
+        text: "A photo of flowers at an event proves the flowers existed. It doesn't prove what was paid for them. So evidence attaches to the exception, never to the charge as a receipt — it shows up labelled as proof of purchase, not as the document.\n\nThat honesty is the whole reason anyone should believe our published ledger. A system that quietly upgraded photos into receipts would be easier to use and worth less.",
+      },
+      {
+        kind: "try_status",
+        title: "A charge with no receipt",
+        options: [
+          { value: "none", label: "No receipt, nothing filed", color: "gray" },
+          { value: "pending", label: "Exception awaiting approval", color: "amber" },
+          { value: "approved", label: "Approved — documented", color: "green" },
+        ],
+        terminal: "approved",
+        caption:
+          "Only the last state counts as documentation. While it's pending you're still on the clock: the reminders keep coming and the 7-day card lock still applies — asking to be let off isn't being let off.",
+      },
+      {
+        kind: "rule",
+        title: "It is not a way out of losing your receipt",
+        text: "\"Receipt lost\" is one of the reasons on the list, and filing it is the honest thing to do. But it's a reason someone else weighs, not a self-issued pass — a Finance manager can reject it, and \"lost it\" on a $600 charge reads very differently from a $6 one.\n\nIf a receipt exists, get the receipt. If one turns up after an exception was approved, attach it anyway — the receipt takes over automatically and the exception retires itself.",
+      },
+      {
+        kind: "tip",
+        text: "**Treasurers:** your side of this is the decision. Read the note before approving — an exception you wave through becomes the org's public answer for that money. Rejecting is fine and often right; say what would make it approvable, and the charge goes back to owing a receipt. In Reconcile, the **Undocumented** filter is the honest backlog: every row with neither a receipt nor an approved exception, *including* ones already marked Reconciled. That's the number that has to reach zero before a period can be published.",
+      },
+    ],
+    quiz: [
+      {
+        prompt:
+          "You tipped a sound engineer $40 in cash. No receipt exists and never will. What's the right move?",
+        options: [
+          "Mark the charge Reconciled and move on",
+          "File a receipt exception — pick the reason, say what it was for, and let a manager approve it",
+          "Nothing; small cash amounts are exempt",
+          "Ask the venue to write you a receipt for it later",
+        ],
+        answerIndex: 1,
+        explanation:
+          "An exception is the documented substitute for a receipt, not a shrug. Marking it Reconciled with nothing attached is exactly what the app refuses — a published ledger can't tell that row from a documented one.",
+      },
+      {
+        prompt:
+          "You bought flowers for an event and never got a receipt, but you have photos of them at the service. What do the photos count as?",
+        options: [
+          "A receipt — attach them and the charge is documented",
+          "Evidence on the exception — proof of the purchase, but not a receipt",
+          "Nothing; only paper receipts count",
+          "A reimbursement claim",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Photos prove the flowers existed; they don't prove what was paid. They attach to the exception as proof of purchase and are labelled that way. Pretending evidence is a receipt would make the published ledger easier to produce and less worth believing.",
+      },
+      {
+        prompt: "You filed an exception this morning. Is the charge documented?",
+        options: [
+          "Yes — filing is what counts",
+          "Not until a Finance manager approves it; until then the reminders and the 7-day lock still apply",
+          "Yes, if you attached a photo",
+          "Only if it's under $75",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Asking to be let off isn't being let off. A pending exception stops nothing — not the reminder timeline, not the card auto-lock. Only an approved one stands in for a receipt.",
+      },
+      {
+        prompt:
+          "You're a Finance manager and you filed a $200 exception on your own charge. Can you approve it?",
+        options: [
+          "Yes — you have the permission",
+          "No — above $75 the approver has to be someone other than the person who filed it",
+          "Yes, if you attach evidence",
+          "Only after 7 days",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Separation of duties, the same rule that governs reimbursements, budgets, and campaigns. Without it everyone would simply except their own charges and the receipt policy would mean nothing. Under $75 a manager can approve their own — a two-name ceremony on a parking meter buys nothing.",
+      },
+      {
+        prompt: "A receipt turns up weeks after an exception was already approved. Now what?",
+        options: [
+          "Nothing — the exception already settled it",
+          "Attach the receipt; it takes over and the exception retires itself",
+          "Withdraw the exception first, then attach the receipt",
+          "Ask a manager to reverse the approval",
+        ],
+        answerIndex: 1,
+        explanation:
+          "A receipt always outranks an attestation. Attaching it is enough — the app supersedes the exception on its own, so the row stops reading \"documented exception\" the moment it has the real document.",
+      },
+    ],
+  },
+
+  // ── 34 · Finances for everyone: reimbursements + flags ─────────────────────
   {
     slug: "finance-reimbursements-and-flags",
     title: "Reimbursement, and flagging a charge",
@@ -754,13 +884,8 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         text: "For that handful, you don't have to text them yourself anymore. Chase Receipts has a **Send reminder** button on each cardholder's group (and a **Remind all** for the whole list) — one click re-sends the same reminder email the automated timeline sends, plus a text if they have a phone on file. It's capped at once per cardholder per day, so mashing the button can't spam anyone; a nudge already sent today just reads \"Nudged today\" instead of firing again.",
       },
       {
-        kind: "rule",
-        title: "Approving an exception is a decision, not a formality",
-        text: "Some charges will never produce a receipt. The cardholder files a **receipt exception** — a reason plus a note saying what the money was for — and you decide. Approve it and that note becomes the transaction's documentation of record, published under their name; it also stops the auto-lock and the no-receipt clock on that charge.\n\nSo read the note before you approve. \"Lost it\" on a $600 charge is not the same as \"cash tip, no receipt is ever issued\", and above $75 you can't approve an exception you filed yourself. Rejecting is fine — say what would make it approvable, and the charge goes back to owing a receipt.",
-      },
-      {
         kind: "p",
-        text: "Reconcile has a pill for the other half of this: **Undocumented** — every row with neither a receipt nor an approved exception, *including* ones already marked Reconciled. That's the number to drive to zero before a period gets published, and it's deliberately harder to please than **Missing receipt**, which stops counting a row the moment someone reconciles it.",
+        text: "Two filters, and the difference matters. **Missing receipt** is this chase — it stops counting a row the moment someone reconciles it, because there's nobody left to nudge. **Undocumented** ignores status entirely: every row with neither a receipt nor an approved receipt exception, *including* ones already marked Reconciled. That second one is the publishing backlog, it's deliberately harder to please, and it's the number that has to reach zero before a period goes public. (Approving the exceptions themselves is its own lesson.)",
       },
       {
         kind: "reveal",
@@ -1943,6 +2068,7 @@ export const FINANCES_COURSES: Course[] = [
     moduleSlugs: [
       "finance-stewardship",
       "finance-card-and-receipts",
+      "finance-receipt-exceptions",
       "finance-reimbursements-and-flags",
     ],
   },
