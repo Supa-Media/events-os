@@ -209,21 +209,60 @@ export async function withdrawException(
 }
 
 /**
+ * Retire whatever approved exception a transaction currently carries, clearing
+ * the denormalized pointer with it. Returns whether there was one.
+ *
+ * Two callers, for two different reasons — both cases where the approved
+ * attestation has stopped describing the row it's attached to:
+ *  - a real receipt landed (a document outranks an assertion),
+ *  - the row's AMOUNT was corrected (see `retireApprovedExceptionOnAmountChange`).
+ * A no-op when there's nothing approved, so callers can invoke it blind.
+ */
+export async function retireApprovedException(
+  ctx: MutationCtx,
+  transactionId: Id<"transactions">,
+): Promise<boolean> {
+  const txn = await ctx.db.get(transactionId);
+  if (!txn?.approvedReceiptExceptionId) return false;
+  await ctx.db.patch(txn.approvedReceiptExceptionId, { status: "withdrawn" });
+  await ctx.db.patch(transactionId, {
+    approvedReceiptExceptionId: undefined,
+  });
+  return true;
+}
+
+/**
  * Retire any approved exception on a transaction because a real receipt just
- * landed. Called by the receipt-link write path: a receipt outranks an
- * exception (`documentationState`), and leaving a stale pointer behind would
- * keep the row reading "Documented exception" when it now has the document
- * itself. A no-op when there's no approved exception, so every attach path can
- * call it unconditionally.
+ * landed. A receipt outranks an exception (`documentationState`), and leaving
+ * a stale pointer behind would keep the row reading "Documented exception"
+ * when it now has the document itself.
  */
 export async function supersedeApprovedExceptionOnReceipt(
   ctx: MutationCtx,
   transactionId: Id<"transactions">,
 ): Promise<void> {
-  const txn = await ctx.db.get(transactionId);
-  if (!txn?.approvedReceiptExceptionId) return;
-  await ctx.db.patch(txn.approvedReceiptExceptionId, { status: "withdrawn" });
-  await ctx.db.patch(transactionId, {
-    approvedReceiptExceptionId: undefined,
-  });
+  await retireApprovedException(ctx, transactionId);
+}
+
+/**
+ * Retire any approved exception because the transaction's AMOUNT changed.
+ *
+ * This is a SECURITY fix, not tidiness. An exception snapshots the amount it
+ * was filed against, and the separation-of-duties threshold is evaluated
+ * against that snapshot (`receiptExceptions.approve`). Without this, a manager
+ * could file a $5 exception, self-approve it legitimately (under the
+ * threshold, where SOD doesn't apply), then correct the transaction to $5,000
+ * — leaving a large charge documented by a self-approved attestation that
+ * would have required a second person. Retiring it forces a re-file at the
+ * true amount, which re-runs the threshold check.
+ *
+ * Matches what `schema/finances.ts` already promises about these rows: an
+ * exception is re-filed, never patched, so "what was claimed, and against what
+ * number" stays recoverable.
+ */
+export async function retireApprovedExceptionOnAmountChange(
+  ctx: MutationCtx,
+  transactionId: Id<"transactions">,
+): Promise<boolean> {
+  return retireApprovedException(ctx, transactionId);
 }

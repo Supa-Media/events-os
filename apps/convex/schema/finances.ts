@@ -486,6 +486,20 @@ export const transactions = defineTable({
     v.union(...PAYOUT_PROCESSORS.map((p) => v.literal(p))),
   ),
 
+  // RECONSTRUCTED HISTORY marker: which historical import wrote this row (a
+  // batch label, e.g. "genesis-2026-08"). Absent on everything observed as it
+  // happened — a bank sync, a card charge, an in-app manual entry.
+  //
+  // Not a permission field: correcting a row is gated on `source` (see
+  // `isCorrectableSource`), not on this. It exists so the ledger can SAY which
+  // of its rows were rebuilt from a spreadsheet or a Notion doc rather than
+  // watched. A published ledger that silently mixes the two is overclaiming.
+  //
+  // Rows from the ORIGINAL genesis backfill carry no value here and don't need
+  // one — their `externalId` already starts with `genesis-`, which
+  // `isReconstructedHistory` recognizes, so nothing had to be migrated.
+  historicalImportBatch: v.optional(v.string()),
+
   // Provenance / dedup. `externalId` is the provider's unique id for the row
   // (Increase transaction id, Stripe FC transaction id) — the idempotent sync
   // dedup key. `sourceAccountId` is the Increase/legacy account it came from.

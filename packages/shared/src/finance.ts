@@ -224,6 +224,7 @@ export const FINANCE_AUDIT_ACTIONS = [
   "receipt_exception_attest", // receiptExceptions.attest / attestBulk
   "receipt_exception_decide", // receiptExceptions.approve / reject
   "receipt_exception_withdraw", // receiptExceptions.withdraw
+  "correction", // finances.correctTransaction (amount/date/merchant/description)
   "personal_flag", // cards.flagPersonalCharge / cards.unflagPersonalCharge
   "transfer_mark", // finances.markAsTransfer / unmarkTransfer (BOTH legs logged)
   "payout_mark", // finances.markAsPayout / unmarkPayout
@@ -242,6 +243,7 @@ export const FINANCE_AUDIT_ACTION_LABELS: Record<FinanceAuditAction, string> = {
   receipt_exception_attest: "Receipt exception filed",
   receipt_exception_decide: "Receipt exception decided",
   receipt_exception_withdraw: "Receipt exception withdrawn",
+  correction: "Corrected",
   personal_flag: "Personal flag changed",
   transfer_mark: "Internal transfer marking changed",
   payout_mark: "Processor payout marking changed",
@@ -885,6 +887,66 @@ export type FinanceRoleScope = (typeof FINANCE_ROLE_SCOPES)[number];
 // row. The value is self-describing. On the Convex side a chapter-or-central
 // scope is `Id<"chapters"> | typeof CENTRAL`; we never import Convex `Id` here.
 /** The org level ("central") as a chapterId sentinel — see finance-handoff. */
+// ── Correcting a transaction (reconstructed history) ─────────────────────────
+// Owner ask (2026-08-05): "a lot of these purchases were added by another agent
+// by reading historical CSVs / Notion docs, and it did some things wrong… I
+// should be able to edit the manually imported ones. Obviously we shouldn't be
+// able to edit actual transactions that came from Relay or Increase."
+//
+// The gate is a property of the ROW, not of the person editing it. A row synced
+// from a bank feed is a THIRD PARTY'S CLAIM about money that actually moved:
+// editing it means the ledger no longer reconciles against a statement, which
+// is the single property that makes the whole thing believable. A `manual` row
+// is a HUMAN ASSERTION, and assertions get corrected.
+//
+// This is deliberately narrower than "not a bank feed". `reimbursement`,
+// `repayment` and `transfer` rows are system-written LEGS tied to another
+// record (a payout, a repayment, a paired transfer) — editing one in isolation
+// would silently desync it from its counterpart. Only `manual` is a standalone
+// human claim about the world, and only `manual` is correctable.
+//
+// The retired `skim`/`launch_grant`/`settlement` legs are excluded for the same
+// reason as `transfer`: they are paired legs, just historical ones.
+export const CORRECTABLE_TRANSACTION_SOURCES: readonly TransactionSource[] = [
+  "manual",
+];
+
+/** True iff a transaction's SOURCE permits correcting its amount/date/merchant.
+ *  The safety half of the gate — the authorization half lives in
+ *  `apps/convex/lib/financeEditAccess.ts`. Pure, so both sides share it. */
+export function isCorrectableSource(source: TransactionSource): boolean {
+  return CORRECTABLE_TRANSACTION_SOURCES.includes(source);
+}
+
+/** Every `externalId` the genesis backfill wrote starts with this, across all
+ *  three of its datasets (`genesis-bank:`, `genesis-ltn:`,
+ *  `genesis-inkind-exp:`) — see `apps/convex/financeGenesisBackfill.ts`. It is
+ *  the provenance handle that already exists in production data, which is why
+ *  reconstructed rows need no migration to be recognizable. */
+export const GENESIS_IMPORT_PREFIX = "genesis-";
+
+/**
+ * True iff this row is RECONSTRUCTED HISTORY — loaded from a spreadsheet,
+ * export or document rather than observed as it happened.
+ *
+ * Two ways to be one, on purpose. `historicalImportBatch` is the explicit
+ * marker every FUTURE import stamps; the `genesis-` prefix recognizes the rows
+ * already in production from the original backfill, so nothing has to be
+ * migrated to be labelled honestly today.
+ *
+ * This does NOT gate editing (`isCorrectableSource` does). It exists so the
+ * ledger can SAY which of its rows are reconstructions — a published ledger
+ * that silently mixes "we watched this happen" with "we rebuilt this from a
+ * Notion doc" is overclaiming, and the distinction costs nothing to keep.
+ */
+export function isReconstructedHistory(row: {
+  externalId?: string | null;
+  historicalImportBatch?: string | null;
+}): boolean {
+  if (row.historicalImportBatch) return true;
+  return row.externalId?.startsWith(GENESIS_IMPORT_PREFIX) === true;
+}
+
 export const CENTRAL = "central" as const;
 export type Central = typeof CENTRAL;
 /** True iff a chapterId field points at the org (central) level. */

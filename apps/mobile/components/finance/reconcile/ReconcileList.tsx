@@ -105,6 +105,7 @@ import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
 import { ReceiptExceptionModal } from "../modals/ReceiptExceptionModal";
 import { TransactionNoteModal } from "../modals/TransactionNoteModal";
+import { CorrectTransactionModal } from "../modals/CorrectTransactionModal";
 import { ExcludeReasonModal } from "../modals/ExcludeReasonModal";
 import { MarkPersonalModal } from "../modals/MarkPersonalModal";
 import { ReceiptViewerModal } from "../receipts/ReceiptViewerModal";
@@ -371,6 +372,7 @@ function ReconcileRow({
   const categorize = useMutation(api.finances.categorizeTransaction);
   const setStatus = useMutation(api.finances.setTransactionStatus);
   const attachReceipt = useMutation(api.finances.attachReceipt);
+  const correctTransaction = useMutation(api.finances.correctTransaction);
   const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
   const acceptSuggestion = useMutation(api.aiCodingData.acceptSuggestion);
   const recordCodingOverride = useMutation(api.aiCodingData.recordCodingOverride);
@@ -431,6 +433,8 @@ function ReconcileRow({
     viewerPersonId != null && row.cardholder?.personId === viewerPersonId;
 
   const [noteModalOpen, setNoteModalOpen] = useState(false);
+  const [correctOpen, setCorrectOpen] = useState(false);
+  const [correcting, setCorrecting] = useState(false);
   // Reason prompt (server-enforced, `finances.setTransactionStatus`) — set
   // ONLY while the picker is asking for a reason; `guard(setStatus(...))`
   // never fires until the bookkeeper confirms one.
@@ -814,6 +818,21 @@ function ReconcileRow({
               color={row.note ? colors.accent : colors.faint}
             />
           </Pressable>
+          {/* Correct a manually-entered row's amount / date / merchant. Shown
+              only when the SERVER says the row's source accepts it
+              (`row.correctable` — `manual` only), so a synced row never offers
+              a button that would throw. Manager-gated server-side too. */}
+          {row.correctable && isManager ? (
+            <Pressable
+              onPress={() => setCorrectOpen(true)}
+              hitSlop={6}
+              accessibilityRole="button"
+              accessibilityLabel="Correct this transaction"
+              className="rounded p-1 active:opacity-70 web:hover:opacity-90"
+            >
+              <Icon name="edit-2" size={14} color={colors.faint} />
+            </Pressable>
+          ) : null}
           {/* Marking badges. Both carry an un-mark affordance for a mis-pick,
               bookkeeper+ only (`isManager` here is the grid's existing
               write-rank flag) — the server gates it again regardless. A
@@ -937,6 +956,33 @@ function ReconcileRow({
           transactionId={id}
           currentNote={row.note}
           onClose={() => setNoteModalOpen(false)}
+        />
+      ) : null}
+
+      {correctOpen ? (
+        <CorrectTransactionModal
+          current={{
+            amountCents: row.amountCents,
+            postedAt: row.postedAt,
+            merchantName: row.merchantName,
+            description: row.description,
+            isReconstructed: row.isReconstructed,
+          }}
+          submitting={correcting}
+          onCancel={() => setCorrectOpen(false)}
+          onConfirm={(args) => {
+            void (async () => {
+              setCorrecting(true);
+              try {
+                await correctTransaction({ transactionId: id, ...args });
+                setCorrectOpen(false);
+              } catch (err) {
+                alertError(err);
+              } finally {
+                setCorrecting(false);
+              }
+            })();
+          }}
         />
       ) : null}
     </View>
