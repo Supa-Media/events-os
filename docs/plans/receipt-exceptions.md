@@ -45,7 +45,8 @@ field. `RECEIPT_EXCEPTION_REASONS` (`packages/shared/src/finance.ts`):
 Every exception carries a **note** (what the spend was for — the substitute for
 the document), **who attested**, and **who approved**.
 
-It can also carry **evidence**: `evidenceStorageIds`, a list. Owner framing
+It can also carry **evidence**: `evidenceStorageIds`, a list of up to
+`MAX_EXCEPTION_EVIDENCE` (**5**) files. Owner framing
 (2026-08-05): *"we bought flowers for an event, we didn't get the receipt but
 have pictures of the flowers at the event."* That is the strongest artifact an
 exception can hold, and it's routinely several photos — hence a list, not a

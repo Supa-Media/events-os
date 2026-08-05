@@ -213,18 +213,35 @@ export function ReceiptExceptionModal({
                     (optional, but do it)
                   </Text>
                 </Text>
+                {/* At the cap the link is replaced by the reason it's gone,
+                    not just removed — a control that silently disappears
+                    reads as a bug. The running count shows up as soon as
+                    there's anything to count, so the limit is never a
+                    surprise at the moment it bites. */}
                 {evidence.length < MAX_EXCEPTION_EVIDENCE ? (
-                  <Pressable
-                    onPress={pickEvidence}
-                    accessibilityRole="button"
-                    disabled={uploading}
-                    className="active:opacity-70"
-                  >
-                    <Text className="text-xs font-medium text-accent">
-                      {uploading ? "Uploading…" : "Add photo"}
-                    </Text>
-                  </Pressable>
-                ) : null}
+                  <View className="flex-row items-center gap-2">
+                    {evidence.length > 0 ? (
+                      <Text className="text-2xs text-muted">
+                        {evidence.length} of {MAX_EXCEPTION_EVIDENCE}
+                      </Text>
+                    ) : null}
+                    <Pressable
+                      onPress={pickEvidence}
+                      accessibilityRole="button"
+                      disabled={uploading}
+                      className="active:opacity-70"
+                    >
+                      <Text className="text-xs font-medium text-accent">
+                        {uploading ? "Uploading…" : "Add photo"}
+                      </Text>
+                    </Pressable>
+                  </View>
+                ) : (
+                  <Text className="text-2xs text-muted">
+                    {MAX_EXCEPTION_EVIDENCE} of {MAX_EXCEPTION_EVIDENCE} — remove
+                    one to swap it
+                  </Text>
+                )}
               </View>
               <Text className="mb-2 text-2xs text-muted">
                 Bought flowers and never got a receipt? Photos of them at the

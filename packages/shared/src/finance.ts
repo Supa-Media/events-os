@@ -408,10 +408,12 @@ export const MIN_EXCEPTION_NOTE_LENGTH = 12;
  *  justification, not a document. */
 export const MAX_EXCEPTION_NOTE_LENGTH = 2000;
 
-/** Cap on evidence files per exception. Generous — a few photos of what was
- *  bought plus a statement line is the normal shape — but bounded so one
- *  filer can't turn an attestation into an album. */
-export const MAX_EXCEPTION_EVIDENCE = 10;
+/** Cap on evidence files per exception (owner decision, 2026-08-05). Enough
+ *  for the normal shape — a few photos of what was bought, plus a statement
+ *  line or a confirmation email — and low enough that filing stays a decision
+ *  about the best proof rather than an upload of everything on the camera
+ *  roll. Shared by the server guard and the picker, so the two can't drift. */
+export const MAX_EXCEPTION_EVIDENCE = 5;
 
 /** Default second-approver threshold: the IRS accountable-plan substantiation
  *  line ($75). At or above it an exception needs a DIFFERENT person to
