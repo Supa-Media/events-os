@@ -31,8 +31,8 @@ export type FilterKey =
   | "spend"
   | "needs_budget"
   | "missing_receipt"
-  | "uncategorized"
-  | "ready"
+  | "to_review"
+  | "reconciled"
   | "personal_unpaid"
   | "transfers"
   | "payouts";
@@ -51,8 +51,16 @@ export const FILTERS: { key: FilterKey; label: string }[] = [
   { key: "spend", label: "Spend" },
   { key: "needs_budget", label: "Needs budget" },
   { key: "missing_receipt", label: "Missing receipt" },
-  { key: "uncategorized", label: "Uncategorized" },
-  { key: "ready", label: "Ready" },
+  // The dashboards' "To review N" tile drills in HERE — same words, same
+  // predicate (`status === "unreviewed"`). This pill was labelled
+  // "Uncategorized", which described a different thing entirely, and the tile
+  // linked to `needs_budget` instead; between them the tile's number appeared
+  // nowhere on the screen it opened (the founder report). See
+  // `finances.ts#reconcileFilterValidator`'s NAMING note.
+  { key: "to_review", label: "To review" },
+  // Rows already CLEARED — the complement of the header's "N to clear", not
+  // (as "Ready" read) the backlog waiting to be worked.
+  { key: "reconciled", label: "Reconciled" },
   // Founder ask: an unpaid personal expense is exactly the worklist a
   // treasurer needs — surfaced as its own pill rather than buried in "All".
   { key: "personal_unpaid", label: "Personal (unpaid)" },
@@ -63,6 +71,27 @@ export const FILTERS: { key: FilterKey; label: string }[] = [
   { key: "transfers", label: "Transfers" },
   { key: "payouts", label: "Payouts" },
 ];
+
+/**
+ * Deep links written before the `uncategorized`→`to_review` /
+ * `ready`→`reconciled` rename (see `finances.ts#reconcileFilterValidator`'s
+ * NAMING note). A stale bookmark, a pasted URL, or a back-navigation into an
+ * old history entry still lands on the pill it meant instead of silently
+ * falling back to the default filter — which is the exact failure mode this
+ * whole change set exists to remove.
+ */
+const LEGACY_FILTER_ALIASES: Record<string, FilterKey> = {
+  uncategorized: "to_review",
+  ready: "reconciled",
+};
+
+/** Resolve a `?filter=` param to a real `FilterKey`, or `null` if unknown. */
+export function parseFilterParam(raw: string | undefined): FilterKey | null {
+  if (!raw) return null;
+  const aliased = LEGACY_FILTER_ALIASES[raw];
+  if (aliased) return aliased;
+  return FILTERS.some((f) => f.key === raw) ? (raw as FilterKey) : null;
+}
 
 // ── Status select options (the inline Status▾ cell + bulk "mark reconciled") ──
 export const STATUS_OPTIONS: SelectOption<TransactionStatus>[] = [
@@ -131,6 +160,9 @@ function rowHaystack(row: TxnRow): string {
     row.description ?? "",
     row.cardholder?.name ?? "",
     row.cardLast4 ?? "",
+    // Searchable in the merged all-books queue: typing "central" or a chapter
+    // name narrows to that book without leaving the merged view.
+    row.book.name,
     String(row.amountCents), // raw cents: "129400"
     money, // "$1,294.00"
     money.replace(/[$,]/g, ""), // bare decimal: "1294.00"

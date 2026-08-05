@@ -100,7 +100,7 @@ import {
   useAnchor,
   useResizableColumns,
 } from "../../ui";
-import { PAYOUT_PROCESSOR_LABELS } from "@events-os/shared";
+import { CENTRAL, PAYOUT_PROCESSOR_LABELS } from "@events-os/shared";
 import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
 import { TransactionNoteModal } from "../modals/TransactionNoteModal";
@@ -134,6 +134,13 @@ export type PickerItem = { value: string; label: string; header?: boolean; reaso
 // column but `check` wider/narrower, and remembers the result per-browser.
 const DEFAULT_COLS = {
   check: 40,
+  // Which BOOK the charge belongs to (Central / a chapter). Rendered when the
+  // page chrome alone can't answer it: the merged all-books queue, and a view
+  // into a chapter that isn't the caller's own desk. In an ordinary
+  // single-book view the books selector and the header's `ScopeBadge` already
+  // say so, and a column repeating it on every row would be noise. See
+  // `finances.ts#reconcileBook`.
+  book: 108,
   merchant: 210,
   date: 118, // fits "Mar 15, 2026" — year added for multi-year history
 
@@ -165,15 +172,31 @@ export function ReconcileList({
   onToggle,
   onToggleAll,
   centralScope = false,
+  showBook = false,
+  centralForItems,
   isManager = false,
   viewerPersonId = null,
 }: {
   rows: TxnRow[];
   categoryItems: PickerItem[];
   forItems: PickerItem[];
+  /** The "For" options valid for a CENTRAL-book row (central budgets only).
+   *  Only meaningful in the merged all-books queue, where central and chapter
+   *  rows share one grid: a central charge can't attribute to an event,
+   *  project, or chapter budget — the backend rejects it — so its picker has
+   *  to offer a different list than the chapter row directly above it. In a
+   *  single-book scope every row is the same kind and `forItems` already is
+   *  that list. */
+  centralForItems?: PickerItem[];
   selected: Set<string>;
   onToggle: (id: string) => void;
   onToggleAll: () => void;
+  /** Render the Book column — true when "whose money is this?" stops being
+   *  answerable from the page chrome alone: the merged all-books queue (rows
+   *  from different books sit next to each other), or a view into a chapter
+   *  that isn't the caller's own desk (the chrome names their desk, not the
+   *  book on screen). */
+  showBook?: boolean;
   // WP-2.1: reconciling CENTRAL-owned txns. Central money carries no
   // chapter-scoped links (funds/categories/projects/events are chapter-only), so
   // the Category column is hidden — central coding is For + Status.
@@ -187,7 +210,13 @@ export function ReconcileList({
   // cardholder's OWN row, mirroring the server's cardholder-or-manager gate.
   viewerPersonId?: Id<"people"> | null;
 }) {
-  const allSelected = rows.length > 0 && rows.every((r) => selected.has(r.id));
+  // "Select all" only ever means the rows this caller can actually act on —
+  // an uneditable row (a foreign chapter's, in the merged queue) has no
+  // checkbox at all, so including it here would leave the header box unable to
+  // ever read as checked.
+  const selectableRows = rows.filter((r) => r.book.canEdit);
+  const allSelected =
+    selectableRows.length > 0 && selectableRows.every((r) => selected.has(r.id));
   // Founder feedback (2026-07-24): column widths are user-adjustable (drag
   // the header edge, web only) and remembered per-browser — `widths` starts
   // from `DEFAULT_COLS` and is overridden by whatever was last saved.
@@ -196,9 +225,13 @@ export function ReconcileList({
     DEFAULT_COLS,
   );
   const tableWidth = (Object.values(widths) as number[]).reduce((sum, w) => sum + w, 0);
-  // Drop the chapter-only Category column's width in central scope so the
-  // grid doesn't leave dead space.
-  const width = centralScope ? tableWidth - widths.category : tableWidth;
+  // Drop the width of any column this scope doesn't render so the grid doesn't
+  // leave dead space: the chapter-only Category column in central scope, and
+  // the Book column outside the merged all-books queue.
+  const width =
+    tableWidth -
+    (centralScope ? widths.category : 0) -
+    (showBook ? 0 : widths.book);
 
   return (
     <View className="overflow-hidden rounded-lg border border-border bg-raised shadow-card">
@@ -212,6 +245,13 @@ export function ReconcileList({
             >
               <CheckBox checked={allSelected} onPress={onToggleAll} />
             </View>
+            {showBook ? (
+              <GridHeaderCell
+                label="Book"
+                width={widths.book}
+                onResizeStart={startResize("book")}
+              />
+            ) : null}
             <GridHeaderCell
               label="Merchant"
               width={widths.merchant}
@@ -265,6 +305,8 @@ export function ReconcileList({
               onToggle={() => onToggle(row.id)}
               isLast={i === rows.length - 1}
               centralScope={centralScope}
+              showBook={showBook}
+              centralForItems={centralForItems}
               isManager={isManager}
               viewerPersonId={viewerPersonId}
               widths={widths}
@@ -284,6 +326,8 @@ function ReconcileRow({
   onToggle,
   isLast,
   centralScope,
+  showBook,
+  centralForItems,
   isManager,
   viewerPersonId,
   widths,
@@ -295,6 +339,8 @@ function ReconcileRow({
   onToggle: () => void;
   isLast: boolean;
   centralScope: boolean;
+  showBook: boolean;
+  centralForItems?: PickerItem[];
   isManager: boolean;
   viewerPersonId: Id<"people"> | null;
   widths: ColWidths;
@@ -315,6 +361,23 @@ function ReconcileRow({
   const unmarkTransfer = useMutation(api.finances.unmarkTransfer);
   const unmarkPayout = useMutation(api.finances.unmarkPayout);
   const id = row.id as Id<"transactions">;
+  // Server-resolved writability for THIS row's book (mirrors
+  // `requireReconcileTxn` — see `finances.ts#reconcileBook`). Drives the
+  // read-only rendering below rather than being re-derived client-side, so
+  // the grid and the mutations can't drift apart on who may edit what.
+  const readOnly = !row.book.canEdit;
+  // Is THIS row central-owned? In a single-book scope the answer is uniform
+  // (`centralScope` covers it), but the merged all-books queue interleaves
+  // central and chapter rows — and they don't accept the same coding. A
+  // central charge has no category at all (categories are chapter-scoped) and
+  // can only attribute to a CENTRAL budget, both enforced server-side. So the
+  // Category cell renders inert on a central row, and the "For" picker offers
+  // that row's own valid options — rather than offering chapter options the
+  // backend would reject, which is the same "affordance that can't work" this
+  // whole change set is about removing.
+  const isCentralRow = row.book.id === CENTRAL;
+  const hideCategory = centralScope || isCentralRow;
+  const rowForItems = isCentralRow && centralForItems ? centralForItems : forItems;
 
   // Fire-and-surface: run a cell mutation, alerting the server's reason on error.
   const guard = (p: Promise<unknown>) => p.catch((err) => alertError(err));
@@ -446,13 +509,45 @@ function ReconcileRow({
         selected ? "bg-accent-soft" : "bg-raised"
       } ${isLast ? "border-b-0" : ""}`}
     >
-      {/* Select checkbox */}
+      {/* Select checkbox — replaced by a lock for a row this caller can't
+          write. `book.canEdit` is server-resolved and mirrors
+          `requireReconcileTxn` exactly (see `finances.ts#reconcileBook`), so
+          this is the same boundary the mutations enforce, not a guess. A
+          foreign chapter's rows in the merged queue (and a peeked chapter's)
+          land here: previously the grid offered every inline edit on them and
+          let the write fail with a toast. */}
       <View
         style={{ width: widths.check }}
         className="items-center justify-center border-r border-border/60"
       >
-        <CheckBox checked={selected} onPress={onToggle} />
+        {readOnly ? (
+          <Icon name="lock" size={12} color={colors.faint} />
+        ) : (
+          <CheckBox checked={selected} onPress={onToggle} />
+        )}
       </View>
+
+      {/* Book — merged all-books queue only. */}
+      {showBook ? (
+        <Cell width={widths.book}>
+          <View className="flex-1 px-2 py-1.5">
+            <Badge
+              label={row.book.name}
+              tone={row.book.id === CENTRAL ? "info" : "success"}
+            />
+          </View>
+        </Cell>
+      ) : null}
+
+      {/* Everything from here on is the editable body. Wrapping it in one
+          non-interactive container is deliberate: a read-only row must not
+          expose a SINGLE working affordance, and per-cell `disabled` props
+          would be six independent chances to miss one as this grid grows. */}
+      <View
+        className="flex-1 flex-row items-stretch"
+        pointerEvents={readOnly ? "none" : "auto"}
+        style={readOnly ? { opacity: 0.55 } : undefined}
+      >
 
       {/* Merchant (read-only) */}
       <Cell width={widths.merchant}>
@@ -499,8 +594,17 @@ function ReconcileRow({
         )}
       </Cell>
 
-      {/* Category (inline dropdown) — chapter-only; central txns have none. */}
+      {/* Category (inline dropdown) — chapter-only; central txns have none.
+          The COLUMN is present whenever any chapter row could be in view; an
+          individual central row renders an inert dash in it (see
+          `hideCategory`) so the grid stays aligned without offering a picker
+          that can't commit. */}
       {!centralScope ? (
+        hideCategory ? (
+          <Cell width={widths.category}>
+            <Text className="flex-1 px-2 py-1.5 text-sm text-faint">—</Text>
+          </Cell>
+        ) : (
         <Cell width={widths.category}>
           <PickerCell
             value={row.categoryId}
@@ -517,11 +621,14 @@ function ReconcileRow({
             }}
           />
         </Cell>
+        )
       ) : null}
 
       {/* For (inline dropdown; grouped Events / Projects / Recurring — WP-U:
-          one picker, one home per dollar. In central scope only Recurring ·
-          Central budgets are offered — events/projects are chapter-only).
+          one picker, one home per dollar. For a CENTRAL row only Recurring ·
+          Central budgets are offered — events/projects are chapter-only —
+          whether that's because the whole grid is in central scope or because
+          this one row is central inside the merged queue (`rowForItems`).
           RANKED per-row (nearby spend → similar merchant → upcoming date →
           everything else, budget-less demoted) via `reconcileSuggest.
           rankForPicker` — see `ForPickerCell`. */}
@@ -529,7 +636,7 @@ function ReconcileRow({
         <ForPickerCell
           value={row.budgetId}
           transactionId={id}
-          baseItems={forItems}
+          baseItems={rowForItems}
           placeholder={row.needsBudget ? "Needs budget" : "None"}
           warn={row.needsBudget}
           onChange={onForChange}
@@ -735,6 +842,7 @@ function ReconcileRow({
           ) : null}
         </View>
       </Cell>
+      </View>
 
       {/* Step 1 for a no-payee row: who owes this? Mounted only while asking,
           so the roster query it runs costs nothing on an ordinary grid. */}

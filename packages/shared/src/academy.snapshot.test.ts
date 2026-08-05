@@ -238,6 +238,22 @@
  * "check the Personal (unpaid) pill" close step: quiz length 3→4 (bumped
  * below), minutes and placement unchanged. No slugs, sections, or courses
  * moved; total stays 105 sections.
+ *
+ * The central/chapter BOOKS pass (founder report: a dashboard "to review"
+ * figure that pointed at a Reconcile view which never contained it) then
+ * touched two Finances sections, adding none and moving none:
+ *  - `finance-reconcile-grid` — the filter table's two mislabeled rows were
+ *    corrected to what those pills actually match ("Uncategorized" → "To
+ *    review", i.e. status-unreviewed; "Ready" → "Reconciled", i.e. already
+ *    cleared), and the quiz question about them was replaced with one that
+ *    teaches the tile→pill round trip. One question swapped for one, so its
+ *    snapshotted minutes/quizLength are unchanged.
+ *  - `finance-cross-chapter-audit` — gained a rule ("Separate books, one
+ *    queue when you hold both hats") teaching Reconcile's books selector,
+ *    that central and each chapter keep separate books as separate OPERATING
+ *    entities, and that a foreign chapter's rows are readable but not
+ *    editable — plus one quiz question on that write boundary. Minutes 3→4,
+ *    quiz length 3→4 (both bumped below). Total: still 105 sections.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -892,8 +908,8 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-cross-chapter-audit",
     title: "Auditing every chapter",
-    minutes: 3,
-    quizLength: 3,
+    minutes: 4,
+    quizLength: 4,
     optional: false,
     capstoneKind: null,
   },
