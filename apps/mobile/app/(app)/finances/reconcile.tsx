@@ -70,6 +70,7 @@ import {
   type TransferLegPreview,
 } from "../../../components/finance/modals/MarkTransferModal";
 import { MarkPayoutModal } from "../../../components/finance/modals/MarkPayoutModal";
+import { MoveBookModal } from "../../../components/finance/modals/MoveBookModal";
 import { CENTRAL, type PayoutProcessor } from "@events-os/shared";
 
 function NoFinanceAccess() {
@@ -537,20 +538,45 @@ function ReconcileGrid() {
       { errorTitle: "Couldn't set budget" },
     );
   }
-  async function bulkReassign(target: string | null) {
-    if (!target) return;
-    await run(
-      () =>
-        reassignTransactions({
-          transactionIds: bulkIds,
-          target:
-            target === "central"
-              ? ("central" as const)
-              : (target as Id<"chapters">),
-        }),
-      { errorTitle: "Couldn't reassign" },
-    );
-    clearSelection();
+  // "Fix who paid" — a CUSTODY rewrite, confirmed before it commits. Picking a
+  // target no longer fires the mutation; it stages the target and opens
+  // `MoveBookModal`, which names what's being rewritten and points at the "For"
+  // column for the case this gets reached for by mistake (see that modal's own
+  // doc comment for why the two controls need telling apart).
+  const [moveBookTarget, setMoveBookTarget] = useState<string | null>(null);
+  const [moveBookBusy, setMoveBookBusy] = useState(false);
+  const moveBookTargetName =
+    moveBookTarget == null
+      ? ""
+      : (reassignItems?.find((i) => i.value === moveBookTarget)?.label ?? "another book");
+
+  async function confirmMoveBook() {
+    if (!moveBookTarget) return;
+    setMoveBookBusy(true);
+    try {
+      await run(
+        () =>
+          reassignTransactions({
+            transactionIds: bulkIds,
+            target:
+              moveBookTarget === "central"
+                ? ("central" as const)
+                : (moveBookTarget as Id<"chapters">),
+          }),
+        {
+          errorTitle: "Couldn't move these charges",
+          // Success-only, matching the transfer/payout confirms above: a
+          // server refusal leaves the selection intact so it can be corrected
+          // rather than silently dropped.
+          onSuccess: () => {
+            setMoveBookTarget(null);
+            clearSelection();
+          },
+        },
+      );
+    } finally {
+      setMoveBookBusy(false);
+    }
   }
   // ── Marking (founder ask) ──────────────────────────────────────────────────
   // Both open a confirm modal rather than committing on the tap: marking moves
@@ -825,7 +851,7 @@ function ReconcileGrid() {
             hideCategory={bulkHideCategory}
             spansBooks={selectionSpansBooks}
             reassignItems={reassignItems}
-            onReassign={hasCentralSeat ? bulkReassign : undefined}
+            onReassign={hasCentralSeat ? setMoveBookTarget : undefined}
             onMarkTransfer={() => setTransferPromptOpen(true)}
             onMarkPayout={() => setPayoutPromptOpen(true)}
           />
@@ -839,6 +865,16 @@ function ReconcileGrid() {
             onConfirm={(note) => void confirmMarkTransfer(note)}
           />
         ) : null}
+        {moveBookTarget ? (
+          <MoveBookModal
+            count={selectedInView.length}
+            targetName={moveBookTargetName}
+            submitting={moveBookBusy}
+            onCancel={() => setMoveBookTarget(null)}
+            onConfirm={() => void confirmMoveBook()}
+          />
+        ) : null}
+
         {payoutPromptOpen ? (
           <MarkPayoutModal
             count={selectedInView.length}
