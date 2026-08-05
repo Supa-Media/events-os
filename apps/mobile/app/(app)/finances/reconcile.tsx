@@ -33,7 +33,7 @@
  * friendly empty state instead of the root error boundary.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { View, Text, TextInput, Pressable, ScrollView } from "react-native";
+import { View, Text, TextInput, Pressable } from "react-native";
 import { useQuery, useMutation } from "convex/react";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { api } from "@events-os/convex/_generated/api";
@@ -41,6 +41,7 @@ import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
   Button,
   EmptyState,
+  FilterSelect,
   FULL_WIDTH,
   Icon,
   InfoTooltip,
@@ -59,6 +60,7 @@ import {
 } from "../../../components/finance/reconcile/ReconcileList";
 import {
   FILTERS,
+  FILTER_GROUPS,
   filterReconcileRows,
   parseFilterParam,
   type FilterKey,
@@ -374,6 +376,24 @@ function ReconcileGrid() {
     [rows, query],
   );
   const searching = query.trim().length > 0;
+
+  // The filter dropdown's options: every filter, with its live count, under
+  // the group headings from `FILTER_GROUPS`. Built here rather than in the
+  // component so the counts stay bound to the live query result.
+  const filterOptions = useMemo(
+    () =>
+      FILTER_GROUPS.flatMap((group) => [
+        ...(group.title
+          ? [{ value: `__${group.title}`, label: group.title, header: true }]
+          : []),
+        ...group.keys.map((key) => ({
+          value: key,
+          label: FILTERS.find((f) => f.key === key)?.label ?? key,
+          count: counts ? counts[key] : undefined,
+        })),
+      ]),
+    [counts],
+  );
 
   // Category picker items — "None" (clears) + every chapter category.
   const categoryItems = useMemo<PickerItem[]>(
@@ -757,81 +777,66 @@ function ReconcileGrid() {
               : "Code each charge, confirm the receipt, mark it reconciled. Edit any cell inline."}
           </Text>
 
-          {/* Search — narrows the active pill's rows (merchant, cardholder,
-              card last-4, amount) client-side. */}
-          <View
-            className={`mb-3 flex-row items-center rounded-md border bg-raised px-3 ${
-              searchFocused ? "border-accent" : "border-border-strong"
-            }`}
-          >
-            <Icon name="search" size={16} color={colors.faint} />
-            <TextInput
-              value={query}
-              onChangeText={setQuery}
-              onFocus={() => setSearchFocused(true)}
-              onBlur={() => setSearchFocused(false)}
-              placeholder="Search merchant, cardholder, card, amount…"
-              placeholderTextColor={colors.faint}
-              autoCapitalize="none"
-              autoCorrect={false}
-              returnKeyType="search"
-              className="flex-1 px-2 py-2.5 text-base text-ink"
-            />
-            {query.length > 0 ? (
-              <Pressable
-                onPress={() => setQuery("")}
-                hitSlop={8}
-                accessibilityRole="button"
-                accessibilityLabel="Clear search"
-                className="rounded p-1 active:opacity-70"
-              >
-                <Icon name="x" size={16} color={colors.muted} />
-              </Pressable>
-            ) : null}
-          </View>
+          {/* Search + filter on ONE row — the standard pairing, and the shape a
+              filter bar takes in every other CRM-ish screen in this app (the
+              giving Donors screen's `FilterSelect` row is the direct
+              precedent).
 
-          {/* Server-side filter pills, each with its live count.
+              This replaced a row of nine counted chips, which had been through
+              two bad shapes: wrapped, they cost three rows and pushed the first
+              transaction below the fold; scrolling horizontally, they fit one
+              row but put most of the counts offscreen behind a gesture with no
+              affordance — a worse failure, since the counts ARE the worklist.
 
-              ONE HORIZONTALLY-SCROLLING ROW (founder: "redesign these chips to
-              be more compact"). Nine filters with counts don't fit a phone's
-              width: wrapped, they cost three rows, and with the description and
-              search above them the first transaction started below the fold.
-              Shrinking the chips alone only recovered one of those rows — the
-              labels are the width, not the padding — so they scroll instead,
-              the same pattern the finance sub-nav directly above already uses
-              (`finances/_layout.tsx`). Every count stays truthful and reachable;
-              none of them is hidden behind a "More" affordance, which is the
-              usual alternative and the one that makes a number disappear.
-
-              The compact `size="sm"` still applies: it fits ~4 chips per screen
-              instead of ~3, so less scrolling to reach the ones on the right.
-
-              "Chase receipts" moved up to the page header (see above) — it's an
-              action, not a filter, and it was wrapping onto its own line here.
-              `chaseHref` still carries the grid's CURRENT scope through as
-              route params, so the list it opens reads the SAME bucket the
-              missing_receipt count came from. */}
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ gap: 8, alignItems: "center", paddingRight: 16 }}
-            className="mb-4 grow-0"
-          >
-            {FILTERS.map((f) => (
-              <Pill
-                key={f.key}
-                label={f.label}
-                size="sm"
-                count={counts ? counts[f.key] : undefined}
-                selected={filter === f.key}
-                onPress={() => setFilter(f.key)}
+              A dropdown fixes the thing chips fundamentally couldn't: open it
+              and ALL NINE counts are visible at once, grouped by the question
+              they answer (see `FILTER_GROUPS`). Closed, it still names the
+              active filter and its count, so the current view is never
+              ambiguous. One row, nothing hidden, and it scales — a tenth filter
+              costs nothing here where it used to cost another wrapped line. */}
+          <View className="mb-4 flex-row items-center gap-2">
+            <View
+              className={`h-9 flex-1 flex-row items-center rounded-md border bg-raised px-3 ${
+                searchFocused ? "border-accent" : "border-border-strong"
+              }`}
+            >
+              <Icon name="search" size={16} color={colors.faint} />
+              <TextInput
+                value={query}
+                onChangeText={setQuery}
+                onFocus={() => setSearchFocused(true)}
+                onBlur={() => setSearchFocused(false)}
+                placeholder="Search merchant, cardholder, amount…"
+                placeholderTextColor={colors.faint}
+                autoCapitalize="none"
+                autoCorrect={false}
+                returnKeyType="search"
+                className="flex-1 px-2 py-1.5 text-sm text-ink"
               />
-            ))}
+              {query.length > 0 ? (
+                <Pressable
+                  onPress={() => setQuery("")}
+                  hitSlop={8}
+                  accessibilityRole="button"
+                  accessibilityLabel="Clear search"
+                  className="rounded p-1 active:opacity-70"
+                >
+                  <Icon name="x" size={16} color={colors.muted} />
+                </Pressable>
+              ) : null}
+            </View>
+            <FilterSelect
+              label="Show"
+              value={filter}
+              options={filterOptions}
+              onChange={(v) => setFilter(v as FilterKey)}
+              minWidth={240}
+            />
             <InfoTooltip
               text="Spend: every dollar that counts as actual spend. Needs budget: categorized but no budget linked. Missing receipt: no receipt uploaded. To review: still Unreviewed — nobody has touched it. Reconciled: already cleared. Personal (unpaid): flagged personal, not yet repaid."
               size={14}
             />
-          </ScrollView>
+          </View>
         </Narrow>
 
         {/* Bulk action bar (multi-select). `selectedInView` is already

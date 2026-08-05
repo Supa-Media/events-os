@@ -73,6 +73,37 @@ export const FILTERS: { key: FilterKey; label: string }[] = [
 ];
 
 /**
+ * The filters, grouped for the Reconcile filter dropdown.
+ *
+ * Presenting all nine as a flat row of equal chips was the real defect behind
+ * "these chips are terrible UX" — not just the layout. They aren't nine peers;
+ * they answer three different questions, and flattening them made the reader
+ * do that sorting every time:
+ *
+ *  - a LENS on which rows count at all (All / Spend);
+ *  - a WORKLIST — what's still missing before a charge can be cleared;
+ *  - a state or row KIND that isn't outstanding work at all (already cleared,
+ *    or not spend in the first place).
+ *
+ * The group headings carry that structure, so the menu reads as "where is the
+ * work" rather than a wall of options. `null` title = no heading (the lens
+ * pair sits at the top unlabelled, where a default belongs).
+ *
+ * Every key in `FILTERS` must appear exactly once here — asserted by
+ * `helpers.test.ts` so adding a filter without placing it can't silently drop
+ * it from the only control that reaches it.
+ */
+export const FILTER_GROUPS: { title: string | null; keys: FilterKey[] }[] = [
+  { title: null, keys: ["all", "spend"] },
+  {
+    title: "Needs work",
+    keys: ["to_review", "needs_budget", "missing_receipt", "personal_unpaid"],
+  },
+  { title: "Cleared", keys: ["reconciled"] },
+  { title: "Not spend", keys: ["transfers", "payouts"] },
+];
+
+/**
  * Deep links written before the `uncategorized`→`to_review` /
  * `ready`→`reconciled` rename (see `finances.ts#reconcileFilterValidator`'s
  * NAMING note). A stale bookmark, a pasted URL, or a back-navigation into an
