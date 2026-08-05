@@ -103,6 +103,7 @@ import {
 import { CENTRAL, PAYOUT_PROCESSOR_LABELS } from "@events-os/shared";
 import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
+import { ReceiptExceptionModal } from "../modals/ReceiptExceptionModal";
 import { TransactionNoteModal } from "../modals/TransactionNoteModal";
 import { ExcludeReasonModal } from "../modals/ExcludeReasonModal";
 import { MarkPersonalModal } from "../modals/MarkPersonalModal";
@@ -298,7 +299,7 @@ export function ReconcileList({
               onResizeStart={startResize("suggested")}
             />
             <GridHeaderCell
-              label="Receipt"
+              label="Documentation"
               width={widths.receipt}
               onResizeStart={startResize("receipt")}
             />
@@ -745,6 +746,8 @@ function ReconcileRow({
       <Cell width={widths.receipt}>
         <ReceiptCell
           hasReceipt={row.hasReceipt}
+          documentation={row.documentation}
+          amountCents={row.amountCents}
           reminderStage={row.reminderStage}
           transactionId={id}
           onUpload={async (storageId) => {
@@ -1245,6 +1248,9 @@ export function ReceiptCell({
   transactionId,
   onUpload,
   generateUploadUrl,
+  documentation,
+  amountCents,
+  onExceptionFiled,
 }: {
   hasReceipt: boolean;
   reminderStage: "none" | "flagged" | "escalated";
@@ -1256,10 +1262,26 @@ export function ReceiptCell({
   transactionId?: Id<"transactions">;
   onUpload: (storageId: Id<"_storage">) => Promise<void>;
   generateUploadUrl: () => Promise<string>;
+  /** What actually backs this row up (`listReconcile`'s `documentation`).
+   *  Absent on the call sites that only know `hasReceipt` (MoneyView), which
+   *  keeps the old receipt-only rendering — the cell never GUESSES a
+   *  documentation state it wasn't given. */
+  documentation?: {
+    state: "receipt" | "exception" | "undocumented";
+    reasonLabel: string | null;
+    pendingReason: string | null;
+  };
+  /** Amount, for the exception modal's second-approver hint. */
+  amountCents?: number;
+  /** Called after an exception is filed from this cell, so the grid can
+   *  refresh optimistically. */
+  onExceptionFiled?: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [attachOpen, setAttachOpen] = useState(false);
+  const [noDocOpen, setNoDocOpen] = useState(false);
+  const attestException = useMutation(api.receiptExceptions.attest);
 
   async function uploadBlob(blob: Blob, contentType: string) {
     setBusy(true);
@@ -1340,6 +1362,20 @@ export function ReceiptCell({
       </>
     );
   }
+  // ACKNOWLEDGED: an approved exception documents this row. Reads as a settled
+  // state, not a warning — the whole point is that "we know, we wrote down
+  // why, we moved on" is a legitimate resting place, not a permanent nag.
+  if (documentation?.state === "exception") {
+    return (
+      <View className="flex-1 flex-row items-center gap-1 px-2 py-1.5">
+        <Icon name="edit-3" size={14} color={colors.muted} />
+        <Text className="flex-1 text-sm text-muted" numberOfLines={1}>
+          {documentation.reasonLabel ?? "No receipt"}
+        </Text>
+      </View>
+    );
+  }
+
   const escalated = reminderStage === "escalated";
   const flagged = reminderStage === "flagged";
   const tint = escalated ? colors.danger : flagged ? colors.warn : colors.muted;
@@ -1379,7 +1415,49 @@ export function ReceiptCell({
             <Icon name="search" size={13} color={colors.faint} />
           </Pressable>
         ) : null}
+        {/* "There is no receipt for this" — the third option alongside upload
+            and search, right where a bookkeeper already is. Before this it
+            existed only in the dashboard drill-down's detail panel, which is
+            not where anyone reconciles. */}
+        {transactionId && !busy && documentation ? (
+          documentation.pendingReason ? (
+            <Text className="ml-1 text-2xs text-warn" numberOfLines={1}>
+              Awaiting approval
+            </Text>
+          ) : (
+            <Pressable
+              onPress={() => setNoDocOpen(true)}
+              hitSlop={6}
+              accessibilityLabel="There is no receipt for this"
+              className="ml-1 active:opacity-70 web:hover:opacity-90"
+            >
+              <Text className="text-2xs text-faint">No receipt</Text>
+            </Pressable>
+          )
+        ) : null}
       </View>
+      {noDocOpen && transactionId ? (
+        <ReceiptExceptionModal
+          amountCents={amountCents ?? 0}
+          onCancel={() => setNoDocOpen(false)}
+          onConfirm={({ reason, note, evidenceStorageIds }) => {
+            void (async () => {
+              try {
+                await attestException({
+                  transactionId,
+                  reason,
+                  note,
+                  ...(evidenceStorageIds.length ? { evidenceStorageIds } : {}),
+                });
+                setNoDocOpen(false);
+                onExceptionFiled?.();
+              } catch (err) {
+                alertError(err);
+              }
+            })();
+          }}
+        />
+      ) : null}
       {attachOpen && transactionId ? (
         <ReceiptAttachPicker
           transactionId={transactionId}

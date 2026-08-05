@@ -202,16 +202,23 @@ export const attestBulk = mutation({
     reason: reasonValidator,
     note: v.string(),
   },
-  returns: v.object({ filed: v.number(), skipped: v.number() }),
+  returns: v.object({
+    filed: v.number(),
+    approved: v.number(),
+    pendingApproval: v.number(),
+    skipped: v.number(),
+  }),
   handler: async (ctx, args) => {
     const userId = (await requireUserId(ctx)) as Id<"users">;
+    const threshold = await approvalThresholdCents(ctx);
     let filed = 0;
+    let approved = 0;
     let skipped = 0;
     for (const transactionId of args.transactionIds) {
       try {
         const { txn, scope, actorPersonId } =
           await requireAttestReceiptException(ctx, transactionId);
-        await attestException(ctx, {
+        const exceptionId = await attestException(ctx, {
           txn,
           scope,
           reason: args.reason,
@@ -231,6 +238,44 @@ export const attestBulk = mutation({
           amountCents: txn.amountCents,
         });
         filed += 1;
+
+        // ACKNOWLEDGE-AND-MOVE-ON. Filing 200 transit fares that each then sit
+        // in an approval queue is the clutter this flow exists to remove, and
+        // the queue would be rubber-stamped anyway. So when the caller could
+        // legitimately approve this row on its own — manager rank, and under
+        // the org threshold where separation of duties doesn't apply — do it
+        // in the same pass. Above the threshold it stays PENDING and still
+        // needs a second name, which is the whole point of the threshold.
+        if (!exceptionNeedsSecondApprover(txn.amountCents, threshold)) {
+          try {
+            await requireApproveReceiptException(ctx, transactionId);
+            const filedRow = (await ctx.db.get(
+              exceptionId,
+            )) as Doc<"receiptExceptions"> | null;
+            if (filedRow) {
+              await decideException(ctx, {
+                exception: filedRow,
+                approve: true,
+                decidedByPersonId: actorPersonId,
+                decidedByUserId: userId,
+              });
+              await logFinanceAudit(ctx, {
+                chapterId: scope,
+                subjectType: "transaction",
+                subjectId: transactionId,
+                action: "receipt_exception_decide",
+                actorPersonId,
+                field: "receiptException",
+                before: "Awaiting approval",
+                after: `Approved — ${RECEIPT_EXCEPTION_REASON_LABELS[args.reason]}`,
+                amountCents: txn.amountCents,
+              });
+              approved += 1;
+            }
+          } catch {
+            // Not a manager — the attestation stands and waits for one.
+          }
+        }
       } catch (err) {
         // A malformed note is the caller's mistake on EVERY row, not a
         // per-row skip — rethrow it rather than silently reporting 400
@@ -245,7 +290,7 @@ export const attestBulk = mutation({
         skipped += 1;
       }
     }
-    return { filed, skipped };
+    return { filed, approved, pendingApproval: filed - approved, skipped };
   },
 });
 

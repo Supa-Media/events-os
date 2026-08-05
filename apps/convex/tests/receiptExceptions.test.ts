@@ -573,11 +573,88 @@ describe("bulk backfill", () => {
       reason: "predates_policy",
       note: "Pre-2025 history — reconstructed from the Relay statement export",
     });
-    expect(result).toEqual({ filed: 2, skipped: 1 });
+    // Both under the $75 threshold and the caller is a manager, so they're
+    // acknowledged outright rather than parked in an approval queue.
+    expect(result).toEqual({
+      filed: 2,
+      approved: 2,
+      pendingApproval: 0,
+      skipped: 1,
+    });
 
     // Per-row, not blanket: each filed row carries its OWN amount.
     const rows = await run(s.t, (ctx) => ctx.db.query("receiptExceptions").collect());
     expect(rows.map((r) => r.amountCents).sort((x, y) => x - y)).toEqual([400, 900]);
+  });
+
+  test("under the threshold a manager's bulk acknowledge lands APPROVED, not queued", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const a = await seedTxn(s, { amountCents: 290 });
+    const b = await seedTxn(s, { amountCents: 290 });
+
+    const res = await s.as.mutation(api.receiptExceptions.attestBulk, {
+      transactionIds: [a, b],
+      reason: "no_receipt_issued",
+      note: "Subway fares between outreach sites — OMNY taps, no receipt issued",
+    });
+    expect(res.approved).toBe(2);
+    expect(res.pendingApproval).toBe(0);
+
+    // Approved means DOCUMENTED: the pointer is set and the rows leave both
+    // the chase and the publishing backlog. This is the whole point of the
+    // flow — acknowledging has to actually clear the queue, or people go back
+    // to marking things Reconciled bare.
+    for (const id of [a, b]) {
+      expect(
+        (await run(s.t, (ctx) => ctx.db.get(id)))?.approvedReceiptExceptionId,
+      ).toBeTruthy();
+    }
+    const counts = (await s.as.query(api.finances.listReconcile, { filter: "all" })).counts;
+    expect(counts.missing_receipt).toBe(0);
+    expect(counts.undocumented).toBe(0);
+  });
+
+  test("at or above the threshold bulk still parks rows for a second approver", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const big = await seedTxn(s, { amountCents: 9000 });
+    const small = await seedTxn(s, { amountCents: 500 });
+
+    const res = await s.as.mutation(api.receiptExceptions.attestBulk, {
+      transactionIds: [big, small],
+      reason: "lost",
+      note: "Receipts lost in the move — reconstructed from the statement",
+    });
+    expect(res.filed).toBe(2);
+    // The $90 one can't be self-approved; the $5 one can.
+    expect(res.approved).toBe(1);
+    expect(res.pendingApproval).toBe(1);
+    expect(
+      (await run(s.t, (ctx) => ctx.db.get(big)))?.approvedReceiptExceptionId,
+    ).toBeUndefined();
+    expect(
+      (await run(s.t, (ctx) => ctx.db.get(small)))?.approvedReceiptExceptionId,
+    ).toBeTruthy();
+  });
+
+  test("a bookkeeper's bulk acknowledge files but never self-approves", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await grantRole(s, personId, "bookkeeper");
+    const a = await seedTxn(s, { amountCents: 290 });
+
+    const res = await s.as.mutation(api.receiptExceptions.attestBulk, {
+      transactionIds: [a],
+      reason: "no_receipt_issued",
+      note: "Subway fare between outreach sites — no receipt issued",
+    });
+    expect(res.filed).toBe(1);
+    expect(res.approved).toBe(0);
+    expect(res.pendingApproval).toBe(1);
   });
 
   test("a bad note fails the whole batch rather than reporting every row skipped", async () => {
