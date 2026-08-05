@@ -92,6 +92,7 @@ import { queueSuggestionOnIngest } from "./aiCodingData";
 import { createReceipt, linkReceiptToTransaction } from "./lib/receiptLinks";
 import { logFinanceAudit } from "./lib/financeAuditLog";
 import { pendingExceptionForTransaction } from "./lib/receiptExceptions";
+import { requireCorrectTransaction, isTransactionCorrectable } from "./lib/financeEditAccess";
 import {
   getChapterIdOrNull,
   requireChapterId,
@@ -120,6 +121,7 @@ import {
   countsTowardFacet,
   matchesReconcileFilters,
   RECEIPT_EXCEPTION_REASON_LABELS,
+  isReconstructedHistory,
   type ReconcileFilterKey,
 } from "@events-os/shared";
 import {
@@ -355,6 +357,13 @@ const reconcileRow = v.object({
   // decided — deliberately NOT part of `state`, because asking to be let off
   // isn't being let off, and the cell has to be able to say "awaiting
   // approval" without claiming the row is documented.
+  // True iff this row's SOURCE will accept a correction (`manual` only). The
+  // server decides, so the grid never offers an edit button that would throw —
+  // same discipline as `book.canEdit`.
+  correctable: v.boolean(),
+  // Reconstructed from a spreadsheet / export / document rather than observed
+  // as it happened. A label, never a permission — see `isReconstructedHistory`.
+  isReconstructed: v.boolean(),
   documentation: v.object({
     state: v.union(
       v.literal("receipt"),
@@ -8338,6 +8347,11 @@ export const listReconcile = query({
     for (const tr of selected) {
       rows.push({
         ...toTxnSummary(tr),
+        correctable: isTransactionCorrectable(tr),
+        isReconstructed: isReconstructedHistory({
+          externalId: tr.externalId ?? null,
+          historicalImportBatch: tr.historicalImportBatch ?? null,
+        }),
         documentation: await resolveDocumentation(tr),
         cardholder: await resolveCardholder(tr),
         aiSuggestion: await resolveAiSuggestion(tr),
@@ -8812,7 +8826,6 @@ export const createManualTransaction = mutation({
     flow: flowValidator,
     amountCents: v.number(),
     postedAt: v.number(),
-    source: v.optional(sourceValidator),
     description: v.optional(v.string()),
     merchantName: v.optional(v.string()),
     fundId: v.optional(v.id("funds")),
@@ -8873,7 +8886,7 @@ export const createManualTransaction = mutation({
       }
       const txnId = await ctx.db.insert("transactions", {
         chapterId: CENTRAL,
-        source: args.source ?? "manual",
+        source: "manual",
         flow: args.flow,
         amountCents: args.amountCents,
         currency: "usd",
@@ -8912,7 +8925,7 @@ export const createManualTransaction = mutation({
     const fundId = args.fundId ?? (await defaultFundId(ctx, chapterId)) ?? undefined;
     const txnId = await ctx.db.insert("transactions", {
       chapterId,
-      source: args.source ?? "manual",
+      source: "manual",
       flow: args.flow,
       amountCents: args.amountCents,
       currency: "usd",
@@ -9687,6 +9700,145 @@ export const unmarkPayout = mutation({
       after: null,
       amountCents: txn.amountCents,
     });
+    return null;
+  },
+});
+
+/**
+ * CORRECT a manually-entered transaction — its amount, date, merchant or
+ * description.
+ *
+ * Exists because a large slice of the ledger was reconstructed by an agent
+ * reading historical CSVs and Notion exports, and it got things wrong (owner,
+ * 2026-08-05). Before this there was NO edit path for those fields on any
+ * transaction — not a restricted one, an absent one — so the only way to fix a
+ * wrong amount was to exclude the row and re-create it, which severs the audit
+ * thread at exactly the moment you most want it.
+ *
+ * WHAT IT WILL NOT TOUCH: anything that came from a bank feed, and either leg
+ * of a paired system record. `lib/financeEditAccess.ts` owns that rule and
+ * refuses with `NOT_CORRECTABLE` before it even looks at the caller's role —
+ * see its module doc for why that ordering matters.
+ *
+ * EVERY FIELD CHANGE IS LOGGED, before → after, to `financeAuditLog`. These
+ * rows are going to be published, and "we corrected our history" has to be
+ * distinguishable from "we quietly changed our history" — that distinction is
+ * most of what publishing is worth. It's also the answer when a backer asks why
+ * a row says $445 when some document said $455.
+ *
+ * A `reason` is REQUIRED. A correction with no stated why is indistinguishable
+ * from a typo in the other direction.
+ */
+export const correctTransaction = mutation({
+  args: {
+    transactionId: v.id("transactions"),
+    amountCents: v.optional(v.number()),
+    postedAt: v.optional(v.number()),
+    merchantName: v.optional(v.union(v.string(), v.null())),
+    description: v.optional(v.union(v.string(), v.null())),
+    reason: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { txn, scope, actorPersonId } = await requireCorrectTransaction(
+      ctx,
+      args.transactionId,
+    );
+    const reason = args.reason.trim();
+    if (!reason) {
+      throw new ConvexError({
+        code: "REASON_REQUIRED",
+        message:
+          "Say what you're correcting and why — this row is published, and the trail is what makes a correction different from a quiet edit.",
+      });
+    }
+    // The house invariant: direction rides on `flow`, never on a sign. A
+    // negative amount here would silently invert every rollup this row feeds.
+    if (args.amountCents !== undefined && args.amountCents < 0) {
+      throw new ConvexError({
+        code: "INVALID_AMOUNT",
+        message: "Enter the amount as a positive number — inflow or outflow is set by the row's direction, not by a minus sign.",
+      });
+    }
+    if (args.postedAt !== undefined && !Number.isFinite(args.postedAt)) {
+      throw new ConvexError({
+        code: "INVALID_DATE",
+        message: "That date isn't valid.",
+      });
+    }
+
+    const patch: Record<string, unknown> = {};
+    const entries: { field: string; before: string; after: string }[] = [];
+    const money = (cents: number) => formatCents(cents);
+    const day = (ms: number) =>
+      new Date(ms).toLocaleDateString("en-US", {
+        month: "short",
+        day: "2-digit",
+        year: "numeric",
+        timeZone: "America/New_York",
+      });
+
+    if (args.amountCents !== undefined && args.amountCents !== txn.amountCents) {
+      patch.amountCents = args.amountCents;
+      entries.push({
+        field: "amount",
+        before: money(txn.amountCents),
+        after: money(args.amountCents),
+      });
+    }
+    if (args.postedAt !== undefined && args.postedAt !== txn.postedAt) {
+      patch.postedAt = args.postedAt;
+      entries.push({
+        field: "date",
+        before: day(txn.postedAt),
+        after: day(args.postedAt),
+      });
+    }
+    if (
+      args.merchantName !== undefined &&
+      (args.merchantName ?? null) !== (txn.merchantName ?? null)
+    ) {
+      patch.merchantName = args.merchantName?.trim() || undefined;
+      entries.push({
+        field: "merchant",
+        before: txn.merchantName ?? "—",
+        after: args.merchantName?.trim() || "—",
+      });
+    }
+    if (
+      args.description !== undefined &&
+      (args.description ?? null) !== (txn.description ?? null)
+    ) {
+      patch.description = args.description?.trim() || undefined;
+      entries.push({
+        field: "description",
+        before: txn.description ?? "—",
+        after: args.description?.trim() || "—",
+      });
+    }
+
+    // A no-op correction writes nothing — an audit trail of "changed X to X"
+    // is noise that makes the real corrections harder to find.
+    if (entries.length === 0) return null;
+
+    await ctx.db.patch(args.transactionId, patch);
+    // ONE audit row per field, so a two-field correction reads as two facts
+    // rather than one blob — matching how `logRecodeAudit` already splits
+    // category and budget.
+    for (const entry of entries) {
+      await logFinanceAudit(ctx, {
+        chapterId: scope,
+        subjectType: "transaction",
+        subjectId: args.transactionId,
+        action: "correction",
+        actorPersonId,
+        field: entry.field,
+        before: entry.before,
+        after: entry.after,
+        reason,
+        amountCents: patch.amountCents as number | undefined ?? txn.amountCents,
+      });
+    }
     return null;
   },
 });

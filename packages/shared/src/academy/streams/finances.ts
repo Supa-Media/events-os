@@ -644,6 +644,11 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "rule",
+        title: "Some rows you can correct; bank rows you never can",
+        text: "A chunk of our early history was rebuilt from spreadsheets and Notion docs rather than watched as it happened, and some of it came out wrong. Those rows — hand-entered ones — carry a pencil in the Actions column: a Finance manager can fix the amount, date, merchant or description, with a required note saying why. Every field you change is logged, before and after, under your name.\n\nRows that came from Relay, Increase or Stripe have no pencil, and no role adds one. Those are the bank's own record of money that moved: if we edit them, our books stop matching the statement, and matching the statement is the reason anyone should believe the rest. Same for a reimbursement or transfer leg — it's paired to another record, so editing one side quietly breaks the pair. If one of those is wrong, add a note or exclude it with a reason; don't reach for an edit that isn't there.",
+      },
+      {
+        kind: "rule",
         title: "Personal is a flag, not a status",
         text: "Marking a charge personal doesn't change its Category/Budget/Receipt coding at all — a fully Reconciled charge can also be an unpaid personal expense at the same time. Mark or un-mark it right from a row's actions (confirm first — marking emails the person who owes it); un-marking only works before it's been repaid.",
       },

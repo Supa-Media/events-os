@@ -110,6 +110,13 @@ const DEDUP_DATE_TOLERANCE_MS = 2 * 24 * 60 * 60 * 1000;
 
 /** `externalId` prefixes — the idempotent self-dedup keys, and the marker that
  *  excludes our own prior inserts from the cross-source dedup candidate set. */
+/** Stamped on every row this module writes, so a reconstructed row is
+ *  recognizable by an explicit field rather than only by its `externalId`
+ *  prefix. Rows written before this field existed stay recognizable via the
+ *  prefix — see `isReconstructedHistory` (`@events-os/shared`), which accepts
+ *  either, so nothing had to be migrated. */
+const HISTORICAL_IMPORT_BATCH = "genesis";
+
 const BANK_REF_PREFIX = "genesis-bank:";
 const LTN_REF_PREFIX = "genesis-ltn:";
 const INKIND_REF_PREFIX = "genesis-inkind-exp:";
@@ -293,6 +300,7 @@ async function applyBankRow(
       note,
       status: "unreviewed",
       externalId,
+      historicalImportBatch: HISTORICAL_IMPORT_BATCH,
       createdAt: Date.now(),
     });
   }
@@ -341,6 +349,7 @@ async function applyLtnRow(
       note,
       status: "unreviewed",
       externalId,
+      historicalImportBatch: HISTORICAL_IMPORT_BATCH,
       createdAt: Date.now(),
     });
   }
@@ -385,6 +394,7 @@ async function applyInkindRow(
       note,
       status: "unreviewed",
       externalId,
+      historicalImportBatch: HISTORICAL_IMPORT_BATCH,
       createdAt: Date.now(),
     });
   }
