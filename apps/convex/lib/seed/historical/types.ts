@@ -86,3 +86,35 @@ export type GenesisInkindExpenseRow = {
   /** The matching giving-side in-kind gift's externalRef, for the note's cross-reference. */
   sourceGiftRef: string;
 };
+
+/**
+ * One 2024 gear ORDER — a single card charge backed by a single receipt document.
+ * The receipt-backed replacement rows for the lumped `genesis-inkind-exp:gear2024`
+ * transaction; see `gear2024Orders.ts` for the dataset and why it is per-order
+ * rather than per-line-item.
+ *
+ * `amountCents` is the receipt's grand total (tax + shipping included) and is
+ * stored NON-NEGATIVE — unlike `GenesisInkindExpenseRow`, whose amounts are signed
+ * negative. The runner supplies `flow: "outflow"`.
+ */
+export type Gear2024OrderRow = {
+  /** The merchant's own order number — the idempotency key's distinguishing part
+   *  (the txn `externalId` is "genesis-inkind-exp:gear2024:<orderRef>"). Amazon
+   *  orders use their bare order number; Sweetwater is prefixed "SW-" so the two
+   *  numbering schemes can never collide. */
+  orderRef: string;
+  /** UTC epoch ms of the ORDER date (when the purchase was made). */
+  dateMs: number;
+  merchant: "Amazon" | "Sweetwater";
+  /** The receipt's grand total in NON-NEGATIVE integer cents, tax included. */
+  amountCents: number;
+  /** The order's line items, joined into the transaction description by the runner. */
+  items: string[];
+  /** An extra caveat appended to the transaction note (e.g. a suspected duplicate
+   *  purchase). Omitted on an unremarkable order. */
+  note?: string;
+  /** Basename of the source screenshot in the owner's "2024 Equipment" folder.
+   *  Documentation only — no Convex function reads it (uploads happen outside the
+   *  deployment and pass a `storageId` back keyed by `orderRef`). */
+  receiptFile: string;
+};

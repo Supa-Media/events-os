@@ -60,6 +60,7 @@ import type * as financeRoles from "../financeRoles.js";
 import type * as financeSettings from "../financeSettings.js";
 import type * as finances from "../finances.js";
 import type * as formSubmissions from "../formSubmissions.js";
+import type * as gear2024Split from "../gear2024Split.js";
 import type * as givebutterSync from "../givebutterSync.js";
 import type * as giving from "../giving.js";
 import type * as givingActivity from "../givingActivity.js";
@@ -340,6 +341,7 @@ declare const fullApi: ApiFromModules<{
   financeSettings: typeof financeSettings;
   finances: typeof finances;
   formSubmissions: typeof formSubmissions;
+  gear2024Split: typeof gear2024Split;
   givebutterSync: typeof givebutterSync;
   giving: typeof giving;
   givingActivity: typeof givingActivity;
