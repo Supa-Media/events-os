@@ -62,3 +62,16 @@ export function appUrl(path: string): string | null {
   const base = process.env.APP_URL?.replace(/\/+$/, "");
   return base ? `${base}${path}` : null;
 }
+
+/**
+ * Deep link straight into GUEST sign-in, pre-filled with `email` — what a
+ * "you've been granted access" email's CTA should point at, instead of a
+ * bare appUrl("/login") (which lands a first-time visitor on the MEMBER
+ * username screen and makes them find + retype the email themselves).
+ * Null when APP_URL is unset, per appUrl's contract — callers must degrade
+ * the same way appUrl's other callers do (see cards.ts#notifyPersonalChargeFlagged).
+ */
+export function guestSignInUrl(email: string): string | null {
+  const base = appUrl("/login");
+  return base ? `${base}?guestEmail=${encodeURIComponent(email)}` : null;
+}

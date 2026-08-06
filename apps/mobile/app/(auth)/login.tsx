@@ -6,7 +6,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useConvexAuth } from "convex/react";
 import { Card, Button, TextField, Icon, ToastView } from "../../components/ui";
 import { colors } from "../../lib/theme";
-import { ALLOWED_DOMAIN } from "./login.helpers";
+import { ALLOWED_DOMAIN, initialGuestState } from "./login.helpers";
 import { useEmailOtpLogin } from "./useEmailOtpLogin";
 
 /** Only ever follow a same-app relative path. Rejects protocol-relative
@@ -31,13 +31,21 @@ function safeRedirect(redirect: string | undefined): string | null {
  * share-link page (and anything else that bounces an unauthenticated visitor
  * here) sets it so a successful sign-in lands back where they started instead
  * of the app home.
+ *
+ * Also accepts an optional `?guestEmail=<email>` — the deep link a
+ * "you've been granted access" email's CTA points at (`guestSignInUrl` on the
+ * backend) — which starts the screen already in guest mode, pre-filled,
+ * instead of the default member/username screen (see `login.helpers.ts#initialGuestState`).
  */
 export default function LoginScreen() {
   const { isAuthenticated } = useConvexAuth();
   const router = useRouter();
   const insets = useSafeAreaInsets();
-  const { redirect } = useLocalSearchParams<{ redirect?: string }>();
-  const login = useEmailOtpLogin();
+  const { redirect, guestEmail } = useLocalSearchParams<{
+    redirect?: string;
+    guestEmail?: string;
+  }>();
+  const login = useEmailOtpLogin(initialGuestState(guestEmail));
   const { step, mode } = login;
 
   // Navigate only once Convex reports the session is live. `signIn` resolves a

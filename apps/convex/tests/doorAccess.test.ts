@@ -1,6 +1,6 @@
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import type { Id } from "../_generated/dataModel";
-import { api } from "../_generated/api";
+import { api, internal } from "../_generated/api";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import {
   activeDoorGrantFor,
@@ -486,5 +486,87 @@ describe("doorOnly + myDoorEvents", () => {
     expect(events.map((e) => e.eventId)).toEqual([eventB, eventA]);
     expect(events[0].name).toBe("Worship Night on the Pier");
     expect(events[0].chapterName).toBe("New York");
+  });
+});
+
+// ── The grant email's guest sign-in link ────────────────────────────────────
+
+describe("sendDoorGrantEmail — the guest sign-in link", () => {
+  const realFetch = globalThis.fetch;
+
+  test("with APP_URL set, the email's button links straight into guest sign-in, pre-filled with the volunteer's email", async () => {
+    const prevAppUrl = process.env.APP_URL;
+    const prevResendKey = process.env.RESEND_API_KEY;
+    process.env.APP_URL = "https://app.publicworship.life";
+    process.env.RESEND_API_KEY = "resend_test_key";
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      void s;
+
+      const sent: { to: string; subject: string; html: string }[] = [];
+      globalThis.fetch = (async (_url: string, init?: { body?: string }) => {
+        const body = init?.body ? JSON.parse(init.body) : {};
+        sent.push({ to: body.to, subject: body.subject, html: body.html });
+        return { ok: true, status: 200, text: async () => "{}" };
+      }) as unknown as typeof fetch;
+
+      await t.action(internal.doorAccess.sendDoorGrantEmail, {
+        email: "vol@example.com",
+        eventName: "Worship Night on the Pier",
+      });
+
+      expect(sent).toHaveLength(1);
+      // `[^>]*` before `href`: the themed button helper (`lib/emailShell.ts#emailButton`)
+      // emits `class="pw-btn"` first, so attribute order isn't part of the contract.
+      expect(sent[0].html).toMatch(
+        /<a[^>]*href="https:\/\/app\.publicworship\.life\/login\?guestEmail=vol%40example\.com"[^>]*>/,
+      );
+    } finally {
+      globalThis.fetch = realFetch;
+      if (prevAppUrl === undefined) delete process.env.APP_URL;
+      else process.env.APP_URL = prevAppUrl;
+      if (prevResendKey === undefined) delete process.env.RESEND_API_KEY;
+      else process.env.RESEND_API_KEY = prevResendKey;
+    }
+  });
+
+  test("with APP_URL unset, the email still sends (no dead link) and degrades LOUDLY via console.error", async () => {
+    const prevAppUrl = process.env.APP_URL;
+    const prevResendKey = process.env.RESEND_API_KEY;
+    delete process.env.APP_URL;
+    process.env.RESEND_API_KEY = "resend_test_key";
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      void s;
+
+      const sent: { to: string; subject: string; html: string }[] = [];
+      globalThis.fetch = (async (_url: string, init?: { body?: string }) => {
+        const body = init?.body ? JSON.parse(init.body) : {};
+        sent.push({ to: body.to, subject: body.subject, html: body.html });
+        return { ok: true, status: 200, text: async () => "{}" };
+      }) as unknown as typeof fetch;
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      await t.action(internal.doorAccess.sendDoorGrantEmail, {
+        email: "vol@example.com",
+        eventName: "Worship Night on the Pier",
+      });
+
+      expect(sent).toHaveLength(1); // transactional — still sends
+      expect(sent[0].html).not.toMatch(/<a[^>]*href=/); // no anchor at all, in any attribute order
+      expect(sent[0].html).toContain("Sign in as a guest");
+      expect(
+        errorSpy.mock.calls.some((c) => String(c[0]).includes("APP_URL is unset")),
+      ).toBe(true);
+      errorSpy.mockRestore();
+    } finally {
+      globalThis.fetch = realFetch;
+      if (prevAppUrl === undefined) delete process.env.APP_URL;
+      else process.env.APP_URL = prevAppUrl;
+      if (prevResendKey === undefined) delete process.env.RESEND_API_KEY;
+      else process.env.RESEND_API_KEY = prevResendKey;
+    }
   });
 });
