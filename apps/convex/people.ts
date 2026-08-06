@@ -635,11 +635,19 @@ export const teamMembers = query({
   },
 });
 
-/** Fetch a single person in the caller's chapter. */
+/** Fetch a single person in the caller's chapter, with their profile photo
+ *  storageId resolved to a servable `imageUrl` (mirrors `list`'s own
+ *  resolution) — callers (the People-tab deep-link fallback,
+ *  `PersonPreviewModal`) show a real photo instead of always falling back
+ *  to initials. */
 export const get = query({
   args: { personId: v.id("people") },
   handler: async (ctx, { personId }) => {
-    return await requireOwned(ctx, "people", personId, "Person");
+    const person = await requireOwned(ctx, "people", personId, "Person");
+    return {
+      ...person,
+      imageUrl: person.image ? await ctx.storage.getUrl(person.image) : null,
+    };
   },
 });
 
