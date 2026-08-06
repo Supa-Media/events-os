@@ -27,5 +27,7 @@
     "react-native-webview",
     "react-native-css-interop"
   ],
-  "gated": []
+  "gated": [
+    "expo-camera"
+  ]
 }

@@ -37,6 +37,37 @@ async function seedEvent(s: ChapterSetup): Promise<Id<"events">> {
   });
 }
 
+/**
+ * Grant the caller door check-in access on `eventId` via the "assigned" path
+ * — a `people` row for the caller's userId, holding a `roleAssignments` row
+ * for this specific event (see `lib/ticketingAccess.ts#requireCheckInAccess`).
+ * Used wherever a test needs `checkInTicket` to actually succeed, now that
+ * it's gated.
+ */
+async function grantCheckInAccess(s: ChapterSetup, eventId: Id<"events">): Promise<void> {
+  await run(s.t, async (ctx) => {
+    const personId = await ctx.db.insert("people", {
+      chapterId: s.chapterId,
+      name: "Door Volunteer",
+      userId: s.userId,
+      createdAt: Date.now(),
+    });
+    const roleId = await ctx.db.insert("eventRoles", {
+      eventId,
+      key: "door",
+      label: "Door",
+      order: 0,
+    });
+    await ctx.db.insert("roleAssignments", {
+      eventId,
+      chapterId: s.chapterId,
+      roleId,
+      personId,
+      createdAt: Date.now(),
+    });
+  });
+}
+
 /** Create + publish a page, returning its slug. */
 async function publishPage(s: ChapterSetup, eventId: Id<"events">) {
   const pageId = await s.as.mutation(api.ticketing.createPage, { eventId });
@@ -266,6 +297,20 @@ describe("orders & tickets", () => {
     const [ticket] = await s.as.query(api.ticketing.listTicketsAdmin, {
       eventId,
     });
+
+    // The caller has no door-check-in access yet — `checkInTicket` is gated
+    // behind `requireCheckInAccess` (see `lib/ticketingAccess.ts`), so this
+    // must reject rather than silently succeed.
+    await expect(
+      s.as.mutation(api.ticketing.checkInTicket, {
+        eventId,
+        code: ticket.code.toLowerCase(),
+      }),
+    ).rejects.toThrow();
+
+    // Grant access the "assigned" way — a roleAssignments row for THIS
+    // event — then the same idempotent ok/already/not_found flow works.
+    await grantCheckInAccess(s, eventId);
 
     const ok = await s.as.mutation(api.ticketing.checkInTicket, {
       eventId,

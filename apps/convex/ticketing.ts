@@ -37,6 +37,7 @@ import { Doc, Id } from "./_generated/dataModel";
 import { normalizeEmail } from "./lib/access";
 import { normalizePhone } from "./lib/twilio";
 import { requireEvent, requireOwned, requireUserId } from "./lib/context";
+import { hasCheckInAccess, requireCheckInAccess } from "./lib/ticketingAccess";
 import { beginEmailVerification, clearEmailCode } from "./lib/emailCodes";
 import { linkRsvpToPerson } from "./lib/rsvpPeople";
 import { createPaidDonationForOrder } from "./giving";
@@ -704,11 +705,17 @@ export const listTicketsAdmin = query({
   },
 });
 
-/** Door check-in by ticket code (idempotent-safe: reports prior check-in). */
+/**
+ * Door check-in by ticket code (idempotent-safe: reports prior check-in).
+ * Gated on `requireCheckInAccess` — narrower than the bare chapter-member
+ * `requireEvent` gate every OTHER ticketing admin action still uses (see
+ * `lib/ticketingAccess.ts`'s doc). `requireCheckInAccess` calls `requireEvent`
+ * itself, so a bad/foreign event id still throws its own `NOT_FOUND`.
+ */
 export const checkInTicket = mutation({
   args: { eventId: v.id("events"), code: v.string() },
   handler: async (ctx, { eventId, code }) => {
-    await requireEvent(ctx, eventId);
+    await requireCheckInAccess(ctx, eventId);
     const userId = await requireUserId(ctx);
     const normalized = code.trim().toUpperCase();
     const ticket = await ctx.db
@@ -737,6 +744,16 @@ export const checkInTicket = mutation({
       ticketTypeName: ticket.ticketTypeName,
     };
   },
+});
+
+/** Non-throwing door-access check the client drives its UI state off — the
+ *  locked state vs. the manual field + scanner in `CheckInCard`/the
+ *  scan-tickets route. Mirrors `hasBlastSend`-backed queries elsewhere. */
+export const myCheckInAccess = query({
+  args: { eventId: v.id("events") },
+  handler: async (ctx, { eventId }) => ({
+    allowed: await hasCheckInAccess(ctx, eventId),
+  }),
 });
 
 // ── PUBLIC: landing page data ────────────────────────────────────────────────

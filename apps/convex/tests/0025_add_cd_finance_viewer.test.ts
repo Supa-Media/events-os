@@ -107,6 +107,8 @@ describe("0025_add_cd_finance_viewer", () => {
       "nav.giving",
       // 2026-07-31: bulk data export (see seats.ts's `data.export` doc).
       "data.export",
+      // 2026-08-06: door check-in access (see seats.ts's `events.checkin` doc).
+      "events.checkin",
     ]);
 
     const result = await run(t, (ctx) => runAddCdFinanceViewer(ctx));
@@ -156,6 +158,8 @@ describe("0025_add_cd_finance_viewer", () => {
       "nav.giving",
       // 2026-07-31: bulk data export (see seats.ts's `data.export` doc).
       "data.export",
+      // 2026-08-06: door check-in access (see seats.ts's `events.checkin` doc).
+      "events.checkin",
     ]);
   });
 });

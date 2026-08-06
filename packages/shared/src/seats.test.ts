@@ -255,6 +255,9 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
     // 2026-07-17: added finance.viewer (owner decision — CD sees chapter
     // spending, but reconcile/record stays the Treasurer's job).
     // F-6 P1: chapter-lens giving.view + nav.giving (development desk read).
+    // 2026-08-06: added events.checkin — door check-in access for the QR
+    // scanner (the chapter director is one of "signed-in people we've given
+    // access to" by default — see seats.ts's `events.checkin` doc).
     chapter_director: [
       "finance.approve",
       "finance.viewer",
@@ -262,6 +265,7 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
       "giving.view",
       "nav.giving",
       "data.export",
+      "events.checkin",
     ],
     treasurer: [
       "finance.manager",
@@ -273,9 +277,11 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
     music_lead: [],
     vocal_lead: [],
     band_lead: [],
-    event_lead: [],
-    event_organizers: [],
-    production_coordinator: [],
+    // 2026-08-06: added events.checkin — the door check-in gate for the QR
+    // scanner (see seats.ts's `events.checkin` doc for the full default list).
+    event_lead: ["events.checkin"],
+    event_organizers: ["events.checkin"],
+    production_coordinator: ["events.checkin"],
     marketing_lead: [],
   };
 

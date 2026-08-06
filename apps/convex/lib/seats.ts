@@ -281,6 +281,34 @@ export async function holdsApprovalSeatAt(
   return false;
 }
 
+/**
+ * True iff `personId` holds ANY seat AT `scope` whose def carries
+ * `events.checkin` — the seat-derived side of the door check-in gate
+ * (`lib/ticketingAccess.ts#requireCheckInAccess`). Copies `holdsApprovalSeatAt`'s
+ * body exactly (same bound, same `derived`-seat skip, same in-memory scope
+ * filter on a `by_person` scan) — see that function's doc for the shape's
+ * rationale. ADDITIVE, not folded into `getSeatDerivedCapabilities`: door
+ * check-in is a ticketing-desk axis, unrelated to the finance ladder.
+ */
+export async function holdsCheckInSeatAt(
+  ctx: QueryCtx,
+  personId: Id<"people">,
+  scope: Id<"chapters"> | "central",
+): Promise<boolean> {
+  const assignments = await ctx.db
+    .query("seatAssignments")
+    .withIndex("by_person", (q) => q.eq("personId", personId))
+    .take(PERSON_SEAT_ASSIGNMENT_LIMIT);
+
+  for (const assignment of assignments) {
+    if (assignment.scope !== scope) continue;
+    const def = await ctx.db.get(assignment.seatDefId);
+    if (def?.derived) continue; // computed/rolled-up seats are never real occupancy
+    if (def?.capabilities.includes("events.checkin")) return true;
+  }
+  return false;
+}
+
 // ── Giving (F-6 P1) seat-derived capabilities ────────────────────────────────
 
 /** One scope's seat-derived GIVING capabilities (the donor-CRM analog of the

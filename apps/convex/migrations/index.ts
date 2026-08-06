@@ -78,6 +78,7 @@ import { upgradeBuiltInNewsletterTiptap } from "./0056_upgrade_builtin_newslette
 import { backfillIncreaseAccountActivity } from "./0057_backfill_increase_transactions";
 import { addDataExportDefaults } from "./0058_add_data_export_defaults";
 import { splitLegacyIncreaseCards } from "./0059_split_legacy_increase_cards";
+import { addEventsCheckinDefaults } from "./0060_add_events_checkin_defaults";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -323,4 +324,10 @@ export const MIGRATIONS: Migration[] = [
   // which are re-pointed onto it. Idempotent (repaired rows stop matching).
   // See 0059.
   splitLegacyIncreaseCards,
+  // Door check-in as an assignable per-role power (events.checkin, 2026-08-06)
+  // — add it to chapter_director/event_lead/event_organizers/
+  // production_coordinator's live seatDefs rows so already-seeded orgs pick
+  // up the same default door-check-in access the template now grants a
+  // brand-new org automatically. Additive-only (see 0060's doc). Idempotent.
+  addEventsCheckinDefaults,
 ];

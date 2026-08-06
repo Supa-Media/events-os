@@ -67,6 +67,37 @@ async function seedEvent(
   });
 }
 
+/**
+ * Grant the caller door check-in access on `eventId` via the "assigned" path
+ * — a `people` row for the caller's userId, holding a `roleAssignments` row
+ * for this specific event (see `lib/ticketingAccess.ts#requireCheckInAccess`).
+ * `checkInTicket` is gated behind this now — see `ticketing.test.ts`'s
+ * identical helper.
+ */
+async function grantCheckInAccess(s: ChapterSetup, eventId: Id<"events">): Promise<void> {
+  await run(s.t, async (ctx) => {
+    const personId = await ctx.db.insert("people", {
+      chapterId: s.chapterId,
+      name: "Door Volunteer",
+      userId: s.userId,
+      createdAt: Date.now(),
+    });
+    const roleId = await ctx.db.insert("eventRoles", {
+      eventId,
+      key: "door",
+      label: "Door",
+      order: 0,
+    });
+    await ctx.db.insert("roleAssignments", {
+      eventId,
+      chapterId: s.chapterId,
+      roleId,
+      personId,
+      createdAt: Date.now(),
+    });
+  });
+}
+
 /** Create a page for the event and set its Givebutter campaign id. */
 async function seedPage(
   s: ChapterSetup,
@@ -475,6 +506,7 @@ describe("applyGivebutterTickets", () => {
     await seedPage(s, eventId);
     await apply(s, eventId, [gbTicket({ externalId: "door", email: "z@x.com" })]);
     const code = (await rows(s, "tickets", eventId))[0].code;
+    await grantCheckInAccess(s, eventId);
 
     const out = await s.as.mutation(api.ticketing.checkInTicket, {
       eventId,
