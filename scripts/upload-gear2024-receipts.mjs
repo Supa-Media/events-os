@@ -24,7 +24,7 @@
  * runner skips any transaction that already has a receipt, so the orphaned blobs are
  * inert — still, prefer resuming with the printed payload over re-uploading.
  */
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -55,6 +55,21 @@ const RECEIPT_FILES = [
   ["113-3096883-7982617", "Screenshot 2026-08-05 at 8.53.38 PM.png"],
   ["113-7023722-7963431", "Screenshot 2026-08-05 at 8.54.03 PM.png"],
 ];
+
+/**
+ * Fold a filename to a comparison key: Unicode-normalized, with every kind of
+ * space collapsed to a plain one, lowercased.
+ *
+ * macOS names its screenshots with a NARROW NO-BREAK SPACE (U+202F) before AM/PM —
+ * visually identical to a normal space, so the names in `RECEIPT_FILES` (typed with
+ * ordinary spaces) miss by one byte and `readFile` throws ENOENT on a file that is
+ * plainly sitting right there. Matching on this key instead of the raw string makes
+ * the lookup immune to that and to NFC/NFD differences, which HFS+/APFS also
+ * introduce.
+ */
+function fileKey(name) {
+  return name.normalize("NFC").replace(/\s/gu, " ").toLowerCase();
+}
 
 function parseArgs(argv) {
   const args = { dir: null, prod: false, apply: false };
@@ -95,10 +110,21 @@ async function main() {
     `Uploading ${RECEIPT_FILES.length} receipts from ${dir} to ${prod ? "PROD" : "dev"}…`,
   );
 
+  // Resolve each wanted name against what's actually on disk (see `fileKey`).
+  const onDisk = new Map(
+    (await readdir(dir)).map((name) => [fileKey(name), name]),
+  );
+  const missing = RECEIPT_FILES.filter(([, f]) => !onDisk.has(fileKey(f)));
+  if (missing.length) {
+    console.error(`Missing ${missing.length} receipt file(s) in ${dir}:`);
+    for (const [orderRef, f] of missing) console.error(`  ${orderRef}: ${f}`);
+    process.exit(1);
+  }
+
   const uploads = [];
   for (const [orderRef, file] of RECEIPT_FILES) {
-    const path = join(dir, file);
-    const bytes = await readFile(path); // throws loudly on a missing/renamed file
+    const path = join(dir, onDisk.get(fileKey(file)));
+    const bytes = await readFile(path);
     const uploadUrl = await convexRun(
       "gear2024Split:generateGear2024UploadUrl",
       undefined,
