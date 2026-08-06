@@ -34,8 +34,9 @@ import { Doc, Id } from "./_generated/dataModel";
 import { hasAccess, isAllowedEmail, normalizeEmail } from "./lib/access";
 import { requireSuperuser } from "./lib/superuser";
 import { sendEmail } from "./ticketingEmails";
-import { emailHeading, emailParagraph, emailShell } from "./lib/emailShell";
+import { emailButton, emailHeading, emailParagraph, emailShell } from "./lib/emailShell";
 import { escapeHtml } from "./lib/html";
+import { guestSignInUrl } from "./lib/siteUrl";
 
 /**
  * Pre-flight access check for the login screen. Public + unauthenticated so the
@@ -206,12 +207,29 @@ export const sendAccessGrantedEmail = internalAction({
   args: { email: v.string() },
   handler: async (ctx, { email }) => {
     const subject = "You've been given access to Chapter OS";
+    // KNOWN REPO TRAP (see cards.ts#notifyPersonalChargeFlagged): a
+    // `link ? <a> : ""` pattern would silently ship a CTA-less email whenever
+    // APP_URL is unset. Degrade LOUDLY instead — log so the gap is visible in
+    // production, and always render SOME actionable text.
+    const link = guestSignInUrl(email);
+    if (!link) {
+      console.error(
+        "[accessAllowlist] sendAccessGrantedEmail: APP_URL is unset — sending WITHOUT a guest-sign-in link",
+        email,
+      );
+    }
+    const signInHtml = link
+      ? `${emailParagraph(
+          `Tap below to sign in as a guest — we'll pre-fill your email (<b>${escapeHtml(email)}</b>).`,
+        )}
+      ${emailButton(link, "Sign in as a guest")}`
+      : emailParagraph(
+          `Open the app, choose <b>Sign in as a guest</b>, and enter this email address (<b>${escapeHtml(email)}</b>). We'll email you a one-time code each time you sign in.`,
+        );
     const html = emailShell(`
       ${emailHeading("You're in 🎉")}
       ${emailParagraph("You've been granted guest access to <b>Chapter OS</b>.")}
-      ${emailParagraph(
-        `Open the app, choose <b>Sign in as a guest</b>, and enter this email address (<b>${escapeHtml(email)}</b>). We'll email you a one-time code each time you sign in.`,
-      )}
+      ${signInHtml}
       ${emailParagraph("See you inside.", { size: 12, margin: "0" })}`);
 
     await sendEmail(ctx, { to: email, subject, html });

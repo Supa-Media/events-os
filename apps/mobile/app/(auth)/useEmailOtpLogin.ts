@@ -15,16 +15,23 @@ const NO_ACCESS_MESSAGE =
  * presentation: request a code for a member username or an invited guest email,
  * then verify it. The guest pre-flight (`checkEmail`) blocks an unapproved email
  * before any code is sent; the server still gates every data call afterward.
+ *
+ * `initial` seeds guest mode from a `?guestEmail=` deep link (see
+ * `login.helpers.ts#initialGuestState`) — a "you've been granted access" email's
+ * CTA lands here already in guest mode, pre-filled, instead of the member
+ * username screen. Defaults to today's behavior when omitted.
  */
-export function useEmailOtpLogin() {
+export function useEmailOtpLogin(
+  initial: { mode: Mode; guestEmail: string } = { mode: "member", guestEmail: "" },
+) {
   const { signIn } = useAuthActions();
   const convex = useConvex();
   const { run, toast, dismiss } = useActionRunner();
 
   const [step, setStep] = useState<Step>("request");
-  const [mode, setMode] = useState<Mode>("member");
+  const [mode, setMode] = useState<Mode>(initial.mode);
   const [username, setUsername] = useState("");
-  const [guestEmail, setGuestEmail] = useState("");
+  const [guestEmail, setGuestEmail] = useState(initial.guestEmail);
   const [code, setCode] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [resending, setResending] = useState(false);

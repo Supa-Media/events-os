@@ -20,3 +20,14 @@ export function toEmail(username: string): string {
 export function isValidEmail(email: string): boolean {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim());
 }
+
+/** Derives the login screen's initial mode/email from a `?guestEmail=`
+ *  deep link (what `guestSignInUrl` in the backend composes). A present,
+ *  non-empty value means "arrive already in guest mode, pre-filled" —
+ *  absent/empty preserves today's default (member mode, blank fields). */
+export function initialGuestState(
+  guestEmailParam: string | undefined,
+): { mode: Mode; guestEmail: string } {
+  const email = guestEmailParam?.trim() ?? "";
+  return email ? { mode: "guest", guestEmail: email } : { mode: "member", guestEmail: "" };
+}

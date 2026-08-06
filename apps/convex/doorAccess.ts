@@ -30,8 +30,9 @@ import {
 } from "./lib/access";
 import { requireDoorGrantManage } from "./lib/ticketingAccess";
 import { sendEmail } from "./ticketingEmails";
-import { emailHeading, emailParagraph, emailShell } from "./lib/emailShell";
+import { emailButton, emailHeading, emailParagraph, emailShell } from "./lib/emailShell";
 import { escapeHtml } from "./lib/html";
+import { guestSignInUrl } from "./lib/siteUrl";
 
 // ── Allowlist coupling ──────────────────────────────────────────────────────
 
@@ -237,14 +238,31 @@ export const sendDoorGrantEmail = internalAction({
   args: { email: v.string(), eventName: v.string() },
   handler: async (ctx, { email, eventName }) => {
     const subject = `You're on the door for ${eventName}`;
+    // KNOWN REPO TRAP (see cards.ts#notifyPersonalChargeFlagged): a
+    // `link ? <a> : ""` pattern would silently ship a CTA-less email whenever
+    // APP_URL is unset. Degrade LOUDLY instead — log so the gap is visible in
+    // production, and always render SOME actionable text.
+    const link = guestSignInUrl(email);
+    if (!link) {
+      console.error(
+        "[doorAccess] sendDoorGrantEmail: APP_URL is unset — sending WITHOUT a guest-sign-in link",
+        email,
+      );
+    }
+    const signInHtml = link
+      ? `${emailParagraph(
+          `Tap below to sign in as a guest — we'll pre-fill your email (<b>${escapeHtml(email)}</b>).`,
+        )}
+      ${emailButton(link, "Sign in as a guest")}`
+      : emailParagraph(
+          `Open the app, choose <b>Sign in as a guest</b>, and enter this email address (<b>${escapeHtml(email)}</b>). We'll email you a one-time code each time you sign in — then just point the scanner at each guest's ticket.`,
+        );
     const html = emailShell(`
       ${emailHeading("You're on the door 🎟️")}
       ${emailParagraph(
         `You've been given check-in access for <b>${escapeHtml(eventName)}</b> on <b>Chapter OS</b>.`,
       )}
-      ${emailParagraph(
-        `Open the app, choose <b>Sign in as a guest</b>, and enter this email address (<b>${escapeHtml(email)}</b>). We'll email you a one-time code each time you sign in — then just point the scanner at each guest's ticket.`,
-      )}
+      ${signInHtml}
       ${emailParagraph("See you at the door.", { size: 12, margin: "0" })}`);
 
     await sendEmail(ctx, { to: email, subject, html });
