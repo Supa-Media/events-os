@@ -269,6 +269,54 @@ describe("runGenesisCleanup", () => {
     }
   });
 
+  test("a misfiled central budget is MOVED to the chapter, not reached into", async () => {
+    // Production shape, and the reason `CLEANUP_BUDGET_MOVES` exists: "Worship in
+    // Public - Social Media Growth Strategy" was created on `central` while its
+    // project and all its transactions are New York's. The fix is to reparent it —
+    // teaching the resolver to read central would have papered over the misfiling.
+    const label = "Worship in Public - Social Media Growth Strategy";
+    const s = await setup({ skipBudget: label });
+    const budgetId = await run(s.t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: "central" as const, label,
+        amountCents: 300000, cadence: "yearly", year: 2025, createdAt: Date.now(),
+      }),
+    );
+
+    const dry = await s.t.mutation(RUN, { editedBy: s.userId });
+    expect(dry.counts.budgetsMoved).toBe(1);
+    expect(dry.unresolved).toEqual([]); // a dry run must not misreport it as unresolved
+    expect((await run(s.t, (ctx) => ctx.db.get(budgetId)))!.chapterId).toBe("central");
+
+    const res = await s.t.mutation(RUN, { editedBy: s.userId, execute: true });
+    expect(res.counts.budgetsMoved).toBe(1);
+    expect(res.unresolved).toEqual([]);
+    expect((await run(s.t, (ctx) => ctx.db.get(budgetId)))!.chapterId).toBe(s.chapterId);
+
+    // …and the row that needed it lands on that budget.
+    const zoom = CLEANUP_PATCHES.find((p) => p.mergeExternalIds?.length)!;
+    const rows = await txns(s);
+    expect(rows.find((r) => r.externalId === zoom.externalId)!.budgetId).toBe(budgetId);
+
+    // Idempotent: nothing left on central to move.
+    const again = await s.t.mutation(RUN, { editedBy: s.userId, execute: true });
+    expect(again.counts.budgetsMoved).toBe(0);
+  });
+
+  test("central budgets this cleanup does NOT name are left alone", async () => {
+    // Two other central budgets have some New York rows but are genuinely shared and
+    // are live 2026 spend. Moving them would pull money out of central's reporting.
+    const s = await setup();
+    const shared = await run(s.t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: "central" as const, label: "Renegade Evergreen (EP)",
+        amountCents: 300000, cadence: "yearly", year: 2026, createdAt: Date.now(),
+      }),
+    );
+    await s.t.mutation(RUN, { editedBy: s.userId, execute: true });
+    expect((await run(s.t, (ctx) => ctx.db.get(shared)))!.chapterId).toBe("central");
+  });
+
   test("an unresolvable budget is reported, not silently miscoded", async () => {
     const s = await setup({ skipBudget: "Eden · June 2025" });
     const res = await s.t.mutation(RUN, { editedBy: s.userId, execute: true });
