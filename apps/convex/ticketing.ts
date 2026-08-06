@@ -746,6 +746,37 @@ export const checkInTicket = mutation({
   },
 });
 
+/**
+ * The guest list for DOOR CHECK-IN — every issued ticket, name-sorted, with
+ * just what the door needs (name, type, status, when, and the code the
+ * check-in button replays through `checkInTicket`). Gated on
+ * `requireCheckInAccess` like `checkInTicket` itself — NOT `requireEvent` —
+ * so door-granted volunteers (`doorAccess.ts`, membership-free) can see who
+ * they're admitting. Deliberately omits `attendeeEmail`/order linkage: the
+ * door doesn't need them, and a door volunteer shouldn't see them
+ * (`listTicketsAdmin` stays the member-gated full view).
+ */
+export const listCheckInAttendees = query({
+  args: { eventId: v.id("events") },
+  handler: async (ctx, { eventId }) => {
+    await requireCheckInAccess(ctx, eventId);
+    const tickets = await ctx.db
+      .query("tickets")
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
+      .take(1000);
+    return tickets
+      .map((t) => ({
+        _id: t._id,
+        attendeeName: t.attendeeName,
+        ticketTypeName: t.ticketTypeName,
+        code: t.code,
+        status: t.status,
+        checkedInAt: t.checkedInAt ?? null,
+      }))
+      .sort((a, b) => a.attendeeName.localeCompare(b.attendeeName));
+  },
+});
+
 /** Non-throwing door-access check the client drives its UI state off — the
  *  locked state vs. the manual field + scanner in `CheckInCard`/the
  *  scan-tickets route. Mirrors `hasBlastSend`-backed queries elsewhere. */

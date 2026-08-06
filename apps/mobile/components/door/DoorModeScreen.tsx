@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { View, Text, Pressable, ActivityIndicator } from "react-native";
+import { View, Text, Pressable, ActivityIndicator, ScrollView } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useQuery } from "convex/react";
 import { useAuthActions } from "@convex-dev/auth/react";
@@ -7,6 +7,7 @@ import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { Card, Button, Icon, ToastView } from "../ui";
 import { TicketScanner } from "../event/ticketing/TicketScanner";
+import { AttendeeCheckInList } from "./AttendeeCheckInList";
 import { useActionRunner } from "../../lib/useActionToast";
 import { colors } from "../../lib/theme";
 
@@ -43,7 +44,7 @@ export function DoorModeScreen() {
           </View>
 
           {activeEvent ? (
-            <>
+            <ScrollView showsVerticalScrollIndicator={false}>
               <Pressable
                 onPress={() => setActiveEventId(null)}
                 accessibilityRole="button"
@@ -56,7 +57,8 @@ export function DoorModeScreen() {
                 </Text>
               </Pressable>
               <TicketScanner eventId={activeEvent.eventId} run={run} />
-            </>
+              <AttendeeCheckInList eventId={activeEvent.eventId} run={run} />
+            </ScrollView>
           ) : (
             <DoorEventList events={events} onOpen={setActiveEventId} />
           )}
