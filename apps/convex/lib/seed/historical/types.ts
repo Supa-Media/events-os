@@ -118,3 +118,57 @@ export type Gear2024OrderRow = {
    *  deployment and pass a `storageId` back keyed by `orderRef`). */
   receiptFile: string;
 };
+
+// ── Genesis cleanup (2026-08-06) ─────────────────────────────────────────────
+// Shapes for `genesisCleanup2026.ts`. Budgets and categories are named, not
+// id'd — Convex ids are per-deployment, so the runner resolves them against the
+// live chapter and reports anything that doesn't resolve.
+
+/** A purchase that reached neither Notion nor the ledger. */
+export type CleanupNewTxn = {
+  /** Distinguishing part of the idempotency key ("genesis-cleanup:<slug>"). */
+  slug: string;
+  dateMs: number;
+  /** NON-NEGATIVE integer cents — the receipt's grand total. */
+  amountCents: number;
+  merchant: string;
+  description: string;
+  budgetLabel: string;
+  categoryName: string;
+  /** Basename of the source document; resolved across the owner's folders. */
+  receiptFile: string;
+};
+
+/** A correction to an existing row. Absent fields are left untouched. */
+export type CleanupPatch = {
+  externalId: string;
+  amountCents?: number;
+  dateMs?: number;
+  budgetLabel?: string;
+  description?: string;
+  /** Why the stored value was wrong — carried into the row's note. */
+  reason: string;
+  /** Rows this patch absorbs; deleted once the patch lands. */
+  mergeExternalIds?: string[];
+  receiptFile?: string;
+};
+
+/** The expense category for a row that had none. */
+export type CleanupCategory = { externalId: string; categoryName: string };
+
+/**
+ * A row with no obtainable receipt, filed as a receipt exception. `evidenceFile`
+ * is a photo/screenshot standing in for the document — never written as a
+ * receipt (see `receiptExceptions.evidenceStorageIds`).
+ */
+export type CleanupException = {
+  externalId: string;
+  reason:
+    | "no_receipt_issued"
+    | "lost"
+    | "predates_policy"
+    | "vendor_unreachable"
+    | "bank_record_only";
+  note: string;
+  evidenceFile?: string;
+};
