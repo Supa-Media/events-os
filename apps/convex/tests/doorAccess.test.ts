@@ -228,6 +228,46 @@ describe("requireCheckInAccess door path", () => {
   });
 });
 
+// ── The door guest list (manual check-in from the attendee list) ────────────
+
+describe("listCheckInAttendees", () => {
+  test("a door guest sees the name-sorted guest list and can check in from it; outsiders can't", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    const code = await seedTicket(s, eventId);
+    const guest = await setupDoorGuest(s, "vol@example.com", { stamped: true });
+    await insertGrant(s, eventId, guest.email);
+
+    const list = await guest.as.query(api.ticketing.listCheckInAttendees, { eventId });
+    expect(list).toHaveLength(1);
+    expect(list[0]).toMatchObject({
+      attendeeName: "Ben Buyer",
+      ticketTypeName: "Community (Free)",
+      code,
+      status: "valid",
+      checkedInAt: null,
+    });
+    // The door view must not leak the buyer's email or order linkage.
+    expect(Object.keys(list[0]).sort()).toEqual(
+      ["_id", "attendeeName", "checkedInAt", "code", "status", "ticketTypeName"].sort(),
+    );
+
+    // Checking in from the list is the same mutation the row's code replays.
+    const ok = await guest.as.mutation(api.ticketing.checkInTicket, { eventId, code });
+    expect(ok.result).toBe("ok");
+    const after = await guest.as.query(api.ticketing.listCheckInAttendees, { eventId });
+    expect(after[0].status).toBe("checked_in");
+    expect(after[0].checkedInAt).not.toBeNull();
+
+    // No grant (a different signed-in guest) → refused.
+    const stranger = await setupDoorGuest(s, "stranger@example.com");
+    await expect(
+      stranger.as.query(api.ticketing.listCheckInAttendees, { eventId }),
+    ).rejects.toThrow();
+  });
+});
+
 // ── Milestone 3: requireDoorGrantManage ─────────────────────────────────────
 
 describe("requireDoorGrantManage", () => {
