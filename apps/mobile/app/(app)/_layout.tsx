@@ -5,6 +5,7 @@ import { api } from "@events-os/convex/_generated/api";
 import { AppShell } from "../../components/ui";
 import { AccessDeniedScreen } from "../../components/onboarding/AccessDeniedScreen";
 import { OnboardingScreen } from "../../components/onboarding/OnboardingScreen";
+import { DoorModeScreen } from "../../components/door/DoorModeScreen";
 import { ChapterContextProvider } from "../../lib/ChapterContext";
 
 /** Reassembles the current route's path + query string (`usePathname` gives
@@ -82,6 +83,14 @@ export default function AppLayout() {
 
   if (me && me.allowed === false) {
     return <AccessDeniedScreen email={me.email} />;
+  }
+
+  // Door-only guests (an active per-event door grant, no chapter) get the
+  // scanner shell INSTEAD of onboarding — they must never join a chapter
+  // (`completeOnboarding` refuses them server-side too). Checked before the
+  // onboarding branch since both match `!onboarded`.
+  if (me && !me.onboarded && me.doorOnly) {
+    return <DoorModeScreen />;
   }
 
   if (me && !me.onboarded) {
