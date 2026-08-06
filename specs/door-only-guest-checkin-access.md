@@ -239,9 +239,11 @@ b. **GREEN** — `apps/convex/doorAccess.ts`. `grant` args
 `requireDoorGrantManage` → `normalizeEmail` (reject empty/no-`@` with a
 friendly ConvexError, mirroring `grantGuest`'s validation) → upsert
 `doorGrants` by `by_event_email` → if `!isAllowedEmail(email)`, upsert
-allowlist (fresh insert stamped `grantedVia: "door"`; reactivate an
-inactive row, stamping only if it was already stamped or brand new; leave
-active rows untouched) → schedule `internal.doorAccess.sendDoorGrantEmail`
+allowlist (fresh insert stamped `grantedVia: "door"`; reactivating an
+inactive row stamps it too — least privilege, a door grant must never
+silently restore full onboarding rights an old general-guest row carried;
+ACTIVE rows are left completely untouched) → schedule
+`internal.doorAccess.sendDoorGrantEmail`
 `{ email, eventName: event.name }` only when the grant is newly
 created/reactivated. `revoke` args `{ grantId: v.id("doorGrants") }`: load,
 `requireDoorGrantManage(ctx, grant.eventId)`, patch inactive, then the

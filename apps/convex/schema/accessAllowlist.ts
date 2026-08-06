@@ -19,4 +19,10 @@ export const accessAllowlist = defineTable({
   note: v.optional(v.string()),
   isActive: v.optional(v.boolean()),
   createdAt: v.optional(v.number()),
+  // Provenance stamp for rows created by a per-event door grant
+  // (`doorAccess.ts`): a stamped row lets the volunteer SIGN IN but
+  // `profiles.completeOnboarding` refuses to make them a chapter member —
+  // door access must never quietly escalate to full membership. Absent on
+  // rows granted by a superuser (general guests), which onboard as before.
+  grantedVia: v.optional(v.literal("door")),
 }).index("by_email", ["email"]);
