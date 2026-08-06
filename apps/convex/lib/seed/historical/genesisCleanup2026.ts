@@ -46,6 +46,32 @@ import type {
   CleanupException,
 } from "./types";
 
+/**
+ * Budgets filed on `central` that belong to New York, reparented before anything
+ * else runs (owner ruling, 2026-08-06: "all these imports should live in the New York
+ * chapter, they shouldn't live in Central").
+ *
+ * "Worship in Public - Social Media Growth Strategy" is unambiguous: it sits on
+ * `central`, but its linked PROJECT is already a New York project and all 17
+ * transactions referencing it are New York rows. It was created in the wrong scope.
+ * Moving it is a single-field patch — nothing denormalizes the budget's chapter
+ * (0 `budgetLines`, 0 `budgetTagLinks`, and `budgetApprovalLog` carries no
+ * `chapterId`), so there is no fan-out to keep in step.
+ *
+ * DELIBERATELY NOT MOVED — two other central budgets also have some New York rows,
+ * but they are genuinely mixed and are live 2026 spend, not genesis imports:
+ * "Renegade Evergreen (EP)" (4 of 12 rows are NY) and "Setup $10,000 Google Ad Spend"
+ * (1 of 2). Reparenting a budget that central really does share would move money out
+ * of central's own reporting. Flagged for the owner; out of scope for this cleanup.
+ */
+export const CLEANUP_BUDGET_MOVES: { label: string; reason: string }[] = [
+  {
+    label: "Worship in Public - Social Media Growth Strategy",
+    reason:
+      "Created on central, but its project and all 17 of its transactions are New York's.",
+  },
+];
+
 /** The one row that was never an expense. */
 export const CLEANUP_DELETIONS: { externalId: string; reason: string }[] = [
   {

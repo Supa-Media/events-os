@@ -46,6 +46,7 @@ import { ConvexError, v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import { NEW_YORK_CHAPTER_SLUG } from "./lib/seed/historical/mapping";
 import {
+  CLEANUP_BUDGET_MOVES,
   CLEANUP_DELETIONS,
   CLEANUP_NEW_TXNS,
   CLEANUP_PATCHES,
@@ -75,9 +76,52 @@ type Ctxs = {
   budgetByLabel: Map<string, Id<"budgets">>;
   categoryByName: Map<string, Id<"budgetCategories">>;
   fundId: Id<"funds"> | undefined;
+  budgetsMoved: number;
+  budgetsNotFound: string[];
 };
 
-async function loadContext(ctx: MutationCtx): Promise<Ctxs> {
+/**
+ * Reparent the budgets in `CLEANUP_BUDGET_MOVES` from `central` onto the chapter, and
+ * return how many actually moved.
+ *
+ * Runs FIRST, before any label is resolved — the whole point is that these budgets
+ * are New York's, so the resolver should find them on New York rather than be taught
+ * to reach into central. Idempotent: a budget already on the chapter is skipped, and
+ * a label that matches nothing on either scope is left for the caller to report.
+ */
+async function moveMisfiledBudgets(
+  ctx: MutationCtx,
+  chapterId: Id<"chapters">,
+  write: boolean,
+): Promise<{ moved: number; notFound: string[] }> {
+  const central = await ctx.db
+    .query("budgets")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", "central"))
+    .collect();
+  const onChapter = await ctx.db
+    .query("budgets")
+    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+    .collect();
+  let moved = 0;
+  const notFound: string[] = [];
+  for (const mv of CLEANUP_BUDGET_MOVES) {
+    const hits = central.filter((b) => b.label === mv.label);
+    if (hits.length === 0) {
+      // Already on the chapter is the SATISFIED case, not a failure — that is what a
+      // second run, and a deployment that never had the misfiling, both look like.
+      // Only a label present in neither scope is worth reporting.
+      if (!onChapter.some((b) => b.label === mv.label)) notFound.push(mv.label);
+      continue;
+    }
+    for (const b of hits) {
+      if (write) await ctx.db.patch(b._id, { chapterId });
+      moved++;
+    }
+  }
+  return { moved, notFound };
+}
+
+async function loadContext(ctx: MutationCtx, write = false): Promise<Ctxs> {
   const chapter = await ctx.db
     .query("chapters")
     .withIndex("by_slug", (q) => q.eq("slug", NEW_YORK_CHAPTER_SLUG))
@@ -88,6 +132,7 @@ async function loadContext(ctx: MutationCtx): Promise<Ctxs> {
       message: `NY chapter (slug "${NEW_YORK_CHAPTER_SLUG}") not found.`,
     });
   }
+  const moves = await moveMisfiledBudgets(ctx, chapter._id, write);
   const txns = await ctx.db
     .query("transactions")
     .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", chapter._id))
@@ -96,12 +141,27 @@ async function loadContext(ctx: MutationCtx): Promise<Ctxs> {
   const byExternalId = new Map<string, Doc<"transactions">>();
   for (const t of txns) if (t.externalId) byExternalId.set(t.externalId, t);
 
+  // Chapter-scoped, deliberately. These are all New York's imports and they belong on
+  // New York's budgets; reaching into `central` to resolve a label would paper over a
+  // misfiled budget rather than fix it (see `CLEANUP_BUDGET_MOVES`).
+  // In a real run the moves above have already landed, so the chapter query finds
+  // them. In a DRY run nothing was written, so also read the budgets this run *would*
+  // have moved — otherwise a dry run would report them unresolved and misrepresent
+  // what the real run does.
+  const movedLabels = new Set(CLEANUP_BUDGET_MOVES.map((m) => m.label));
   const budgets = await ctx.db
     .query("budgets")
     .withIndex("by_chapter", (q) => q.eq("chapterId", chapter._id))
     .collect();
+  if (!write) {
+    const central = await ctx.db
+      .query("budgets")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", "central"))
+      .collect();
+    budgets.push(...central.filter((b) => b.label && movedLabels.has(b.label)));
+  }
   // Labels are not unique across years (three budgets are literally named "Worship
-  // With Strangers"). Keep the FIRST match by label, which is stable for the six
+  // With Strangers"). Keep the FIRST match by label, which is stable for the five
   // distinct labels this dataset actually names — all of which are unique.
   const budgetByLabel = new Map<string, Id<"budgets">>();
   for (const b of budgets) {
@@ -123,12 +183,15 @@ async function loadContext(ctx: MutationCtx): Promise<Ctxs> {
     budgetByLabel,
     categoryByName,
     fundId: anyGenesis?.fundId,
+    budgetsMoved: moves.moved,
+    budgetsNotFound: moves.notFound,
   };
 }
 
 // ── Runner 1: the cleanup ────────────────────────────────────────────────────
 
 const countsValidator = v.object({
+  budgetsMoved: v.number(),
   deleted: v.number(),
   created: v.number(),
   patched: v.number(),
@@ -154,8 +217,8 @@ export const runGenesisCleanup = internalMutation({
   }),
   handler: async (ctx, { editedBy, execute }) => {
     const write = execute ?? false;
-    const c = await loadContext(ctx);
-    const unresolved: string[] = [];
+    const c = await loadContext(ctx, write);
+    const unresolved: string[] = [...c.budgetsNotFound.map((l) => `budget move: "${l}" not found on central`)];
     let deleted = 0, created = 0, patched = 0, merged = 0;
     let categorised = 0, exceptionsFiled = 0, alreadyApplied = 0;
     let netChangeCents = 0;
@@ -327,6 +390,7 @@ export const runGenesisCleanup = internalMutation({
     return {
       dryRun: !write,
       counts: {
+        budgetsMoved: c.budgetsMoved,
         deleted, created, patched, merged, categorised, exceptionsFiled,
         alreadyApplied,
         giftReducedCents: giftNeedsReduction ? OWNER_GIFT_REDUCTION_CENTS : 0,
@@ -376,7 +440,7 @@ export const attachCleanupDocuments = internalMutation({
   }),
   handler: async (ctx, { uploads, execute }) => {
     const write = execute ?? false;
-    const c = await loadContext(ctx);
+    const c = await loadContext(ctx, false);
     const evidenceKeys = new Set(
       CLEANUP_EXCEPTIONS.filter((e) => e.evidenceFile).map((e) => e.externalId),
     );
