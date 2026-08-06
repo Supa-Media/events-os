@@ -18,15 +18,7 @@
  * Inline cells commit on `onBlur` (onEndEditing does not fire on RN-web).
  */
 import { useMemo, useState } from "react";
-import {
-  View,
-  Text,
-  Pressable,
-  ScrollView,
-  Modal,
-  Platform,
-  Linking,
-} from "react-native";
+import { View, Text, Pressable, Platform } from "react-native";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Doc, Id } from "@events-os/convex/_generated/dataModel";
@@ -38,12 +30,11 @@ import {
   OptionTag,
   Popover,
   PersonPicker,
-  Badge,
   InlineText,
   useAnchor,
 } from "../ui";
 import { colors } from "../../lib/theme";
-import { formatDate } from "../../lib/format";
+import { PersonPreviewModal } from "../people/PersonPreviewModal";
 import {
   EngagementTable,
   type EngagementColumn,
@@ -396,157 +387,6 @@ function sortVolunteers(
     return r * sort.dir;
   };
   return [...rows].sort(cmp);
-}
-
-// ── Person detail modal (read-only contact + engagement history) ──────────────
-function PersonDetail({
-  personId,
-  name,
-  onClose,
-}: {
-  personId: string | null;
-  name: string;
-  onClose: () => void;
-}) {
-  return (
-    <Modal
-      visible={personId !== null}
-      transparent
-      animationType="fade"
-      onRequestClose={onClose}
-    >
-      <Pressable
-        onPress={onClose}
-        className="flex-1 items-center justify-center bg-ink/30 p-6"
-      >
-        <Pressable
-          onPress={() => {}}
-          className="w-full max-w-lg overflow-hidden rounded-xl border border-border bg-raised shadow-pop"
-        >
-          {personId ? (
-            <PersonDetailBody
-              personId={personId}
-              name={name}
-              onClose={onClose}
-            />
-          ) : null}
-        </Pressable>
-      </Pressable>
-    </Modal>
-  );
-}
-
-function PersonDetailBody({
-  personId,
-  name,
-  onClose,
-}: {
-  personId: string;
-  name: string;
-  onClose: () => void;
-}) {
-  const person = useQuery(api.people.get, {
-    personId: personId as Id<"people">,
-  });
-  const history = useQuery(api.engagements.historyForPerson, {
-    personId: personId as Id<"people">,
-  });
-  const email = person?.email ?? null;
-  const phone = person?.phone ?? null;
-
-  return (
-    <>
-      <View className="flex-row items-center justify-between border-b border-border px-5 py-4">
-        <View className="flex-1 flex-row items-center gap-3">
-          <Avatar name={name || "?"} size={36} />
-          <Text className="font-display text-lg text-ink" numberOfLines={1}>
-            {name || "Untitled"}
-          </Text>
-        </View>
-        <Pressable onPress={onClose} hitSlop={8} className="rounded-md p-1">
-          <Icon name="x" size={18} color={colors.muted} />
-        </Pressable>
-      </View>
-
-      <ScrollView style={{ maxHeight: 460 }} contentContainerStyle={{ padding: 20 }}>
-        {email || phone ? (
-          <View className="mb-5 gap-2">
-            {email ? (
-              <ContactLink icon="mail" label={email} url={`mailto:${email}`} />
-            ) : null}
-            {phone ? (
-              <ContactLink icon="phone" label={phone} url={`tel:${phone}`} />
-            ) : null}
-          </View>
-        ) : null}
-
-        <Text className="mb-2 text-2xs font-bold uppercase tracking-wider text-muted">
-          Event history
-        </Text>
-        {history === undefined ? (
-          <Text className="text-sm text-muted">Loading history…</Text>
-        ) : history.count === 0 ? (
-          <Text className="text-sm text-muted">No event history yet.</Text>
-        ) : (
-          <>
-            <Text className="mb-2 text-sm font-semibold text-muted">
-              {history.count} {history.count === 1 ? "event" : "events"} ·{" "}
-              {history.volunteerCount} volunteer · {history.paidCount} paid · $
-              {history.paidTotal} paid total
-            </Text>
-            <View className="gap-2">
-              {history.history.map((h) => (
-                <View
-                  key={h.engagementId}
-                  className="gap-1 rounded-lg border border-border p-3"
-                >
-                  <View className="flex-row items-center justify-between gap-2">
-                    <Text
-                      className="flex-1 text-sm font-bold text-ink"
-                      numberOfLines={1}
-                    >
-                      {h.eventName}
-                    </Text>
-                    <Badge
-                      label={h.type === "paid" ? "Paid" : "Volunteer"}
-                      tone={h.type === "paid" ? "accent" : "neutral"}
-                    />
-                  </View>
-                  <Text className="text-xs text-muted">
-                    {formatDate(h.eventDate)}
-                    {h.service ? ` · ${h.service}` : ""}
-                    {h.type === "paid"
-                      ? ` · $${h.amountUsd}${h.paymentStatus ? ` (${h.paymentStatus})` : ""}`
-                      : ""}
-                  </Text>
-                </View>
-              ))}
-            </View>
-          </>
-        )}
-      </ScrollView>
-    </>
-  );
-}
-
-function ContactLink({
-  icon,
-  label,
-  url,
-}: {
-  icon: "mail" | "phone";
-  label: string;
-  url: string;
-}) {
-  return (
-    <Pressable
-      onPress={() => Linking.openURL(url)}
-      className="flex-row items-center gap-2 active:opacity-70"
-    >
-      <Icon name={icon} size={15} color={colors.muted} />
-      <Text className="text-sm text-info">{label}</Text>
-    </Pressable>
-  );
 }
 
 // ── Sections ──────────────────────────────────────────────────────────────────
@@ -983,8 +823,8 @@ export function CrewSections({ eventId }: { eventId: string }) {
         onClose={() => setReplacingId(null)}
       />
 
-      {/* Person detail (read-only contact + engagement history) */}
-      <PersonDetail
+      {/* Person preview (read-only contact + engagement history) */}
+      <PersonPreviewModal
         personId={openPersonId}
         name={openPersonName}
         onClose={() => setOpenPersonId(null)}
