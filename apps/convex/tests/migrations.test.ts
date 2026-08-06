@@ -339,6 +339,7 @@ const REGISTRY_NAMES = [
   "0057_backfill_increase_transactions",
   "0058_add_data_export_defaults",
   "0059_split_legacy_increase_cards",
+  "0060_add_events_checkin_defaults",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

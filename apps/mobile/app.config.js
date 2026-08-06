@@ -79,6 +79,13 @@ module.exports = ({ config }) => ({
           "Allow Chapter OS to access your photos so you can attach images.",
       },
     ],
+    [
+      "expo-camera",
+      {
+        cameraPermission:
+          "Allow Chapter OS to access your camera to scan ticket QR codes.",
+      },
+    ],
   ],
   extra: {
     convexUrl: resolveConvexUrl(),

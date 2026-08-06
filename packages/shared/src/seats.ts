@@ -124,6 +124,18 @@ export const SEAT_CAPABILITIES = [
    *  people file with no giving columns. Founder grant (2026-07-31): the four
    *  central directors + the FM + the Chapter Director (their own chapter). */
   "data.export",
+  /** Door check-in at an event — scan/type a guest's ticket code and admit
+   *  them (`apps/convex/lib/ticketingAccess.ts`). Deliberately narrower than
+   *  general Tickets-tab admin access (`requireEvent`'s bare "any chapter
+   *  member" gate every other ticketing admin action still uses): "who can
+   *  admit guests at the door" is a real, asked-for restriction, granted
+   *  EITHER by holding this capability at the event's chapter OR by being
+   *  scheduled on that specific event's team (a `roleAssignments` row —
+   *  the two paths are equally sufficient, see `requireCheckInAccess`'s
+   *  doc). Default holders: `chapter_director`, `event_lead`,
+   *  `event_organizers` (the natural home for door volunteers), and
+   *  `production_coordinator`. */
+  "events.checkin",
 ] as const;
 export type SeatCapability = (typeof SEAT_CAPABILITIES)[number];
 
@@ -501,6 +513,9 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       "giving.view",
       "nav.giving",
       "data.export",
+      // 2026-08-06: door check-in access for the QR scanner — the CD is one
+      // of the "signed-in people we've given access to" by default.
+      "events.checkin",
     ],
     legacyTitle: "president",
   },
@@ -567,7 +582,8 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       "Coordinate volunteers",
       "Own the run-of-show",
     ],
-    capabilities: [],
+    // 2026-08-06: door check-in access for the QR scanner.
+    capabilities: ["events.checkin"],
   },
   event_organizers: {
     id: "event_organizers",
@@ -576,7 +592,8 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     parentId: "event_lead",
     maxHolders: MULTI_HOLDER_CAP,
     duties: [],
-    capabilities: [],
+    // 2026-08-06: door check-in access — the natural home for door volunteers.
+    capabilities: ["events.checkin"],
   },
   production_coordinator: {
     id: "production_coordinator",
@@ -585,7 +602,8 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     parentId: "event_lead",
     maxHolders: MULTI_HOLDER_CAP,
     duties: [],
-    capabilities: [],
+    // 2026-08-06: door check-in access for the QR scanner.
+    capabilities: ["events.checkin"],
   },
   marketing_lead: {
     id: "marketing_lead",

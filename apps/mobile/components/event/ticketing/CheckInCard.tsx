@@ -1,22 +1,24 @@
 /**
- * Door check-in — type/scan a ticket code, get an inline verdict. The
- * mutation is idempotent-safe server-side: "already" reports the prior
+ * Door check-in — type a ticket code or scan its QR, get an inline verdict.
+ * The mutation is idempotent-safe server-side: "already" reports the prior
  * check-in time instead of double-admitting.
+ *
+ * Gated on `myCheckInAccess` (`lib/ticketingAccess.ts#requireCheckInAccess`
+ * backs both `checkInTicket` and this query) — a caller without door access
+ * sees a locked message instead of the manual field or the scan button; the
+ * scan-tickets route independently re-checks the same query rather than
+ * trusting this card's gate.
  */
 import { useState } from "react";
-import { Text, View } from "react-native";
-import { useMutation } from "convex/react";
+import { Text } from "react-native";
+import { useQuery } from "convex/react";
+import { useRouter } from "expo-router";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { Button, Card, TextField } from "../../ui";
-import { formatTime } from "../../../lib/format";
+import { Button, Card } from "../../ui";
 import type { ActionRunner } from "../../../lib/useActionToast";
-
-type CheckInResult =
-  | { result: "ok"; attendeeName: string; ticketTypeName: string }
-  | { result: "already"; attendeeName: string; checkedInAt: number | null }
-  | { result: "not_found" }
-  | { result: "void" };
+import { CheckInResultBanner, type CheckInOutcome } from "./CheckInResultBanner";
+import { ManualCheckInEntry } from "./ManualCheckInEntry";
 
 export function CheckInCard({
   eventId,
@@ -25,75 +27,45 @@ export function CheckInCard({
   eventId: Id<"events">;
   run: ActionRunner["run"];
 }) {
-  const checkIn = useMutation(api.ticketing.checkInTicket);
-  const [code, setCode] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [outcome, setOutcome] = useState<CheckInResult | null>(null);
+  const access = useQuery(api.ticketing.myCheckInAccess, { eventId });
+  const router = useRouter();
+  const [outcome, setOutcome] = useState<CheckInOutcome | null>(null);
 
-  async function handleCheckIn() {
-    const trimmed = code.trim();
-    if (!trimmed) return;
-    setBusy(true);
-    const res = (await run(() => checkIn({ eventId, code: trimmed }), {
-      errorTitle: "Couldn't check in",
-    })) as CheckInResult | undefined;
-    setBusy(false);
-    if (res === undefined) return; // error already surfaced
-    setOutcome(res);
-    if (res.result === "ok") setCode("");
+  if (access === undefined) {
+    return (
+      <Card>
+        <Text className="text-base text-muted">Loading…</Text>
+      </Card>
+    );
+  }
+
+  if (!access.allowed) {
+    return (
+      <Card>
+        <Text className="text-base text-muted">
+          Door access needed — ask an event lead to add you to this event's
+          team, or grant your seat check-in access.
+        </Text>
+      </Card>
+    );
   }
 
   return (
     <Card>
-      <TextField
-        label="Ticket code"
-        value={code}
-        onChangeText={(t) => setCode(t.toUpperCase())}
-        placeholder="PW-XXXX-XXXX"
-        autoCapitalize="characters"
-        autoCorrect={false}
-        onSubmitEditing={() => void handleCheckIn()}
+      <ManualCheckInEntry
+        eventId={eventId}
+        run={run}
+        onResult={setOutcome}
+        trailing={
+          <Button
+            title="Scan QR code"
+            icon="camera"
+            variant="secondary"
+            onPress={() => router.push(`/event/${eventId}/scan-tickets`)}
+          />
+        }
       />
-      <View className="flex-row items-center gap-3">
-        <Button
-          title="Check in"
-          icon="check-circle"
-          loading={busy}
-          disabled={code.trim() === ""}
-          onPress={() => void handleCheckIn()}
-        />
-      </View>
-      {outcome ? <ResultLine outcome={outcome} /> : null}
+      {outcome ? <CheckInResultBanner outcome={outcome} /> : null}
     </Card>
-  );
-}
-
-function ResultLine({ outcome }: { outcome: CheckInResult }) {
-  if (outcome.result === "ok") {
-    return (
-      <Text className="mt-3 text-base font-semibold text-success">
-        ✓ {outcome.attendeeName} checked in · {outcome.ticketTypeName}
-      </Text>
-    );
-  }
-  if (outcome.result === "already") {
-    return (
-      <Text className="mt-3 text-base font-semibold text-warn">
-        {outcome.attendeeName} already checked in
-        {outcome.checkedInAt != null ? ` at ${formatTime(outcome.checkedInAt)}` : ""}
-      </Text>
-    );
-  }
-  if (outcome.result === "void") {
-    return (
-      <Text className="mt-3 text-base font-semibold text-danger">
-        This ticket was voided.
-      </Text>
-    );
-  }
-  return (
-    <Text className="mt-3 text-base font-semibold text-danger">
-      No such ticket for this event.
-    </Text>
   );
 }

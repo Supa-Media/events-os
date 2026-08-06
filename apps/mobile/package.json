@@ -39,6 +39,7 @@
     "codemirror": "^6.0.2",
     "convex": "^1.31.3",
     "expo": "~54.0.23",
+    "expo-camera": "~17.0.10",
     "expo-constants": "~18.0.12",
     "expo-device": "~8.0.10",
     "expo-font": "^14.0.12",
