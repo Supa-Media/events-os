@@ -746,6 +746,39 @@ export const checkInTicket = mutation({
   },
 });
 
+/**
+ * The guest list for DOOR CHECK-IN — every issued ticket, name-sorted,
+ * VIEW-ONLY: name, type, status, when. Gated on `requireCheckInAccess` like
+ * `checkInTicket` itself — NOT `requireEvent` — so door-granted volunteers
+ * (`doorAccess.ts`, membership-free) can see who they're admitting.
+ *
+ * Deliberately omits the ticket `code` (and `attendeeEmail`/order linkage):
+ * admission must PROVE POSSESSION of the ticket — scan its QR or type the
+ * code off the guest's screen. A list that exposed codes would let anyone at
+ * the door check in any name without the guest present, which is exactly the
+ * pass-back this flow exists to prevent. (`listTicketsAdmin` stays the
+ * member-gated full view.)
+ */
+export const listCheckInAttendees = query({
+  args: { eventId: v.id("events") },
+  handler: async (ctx, { eventId }) => {
+    await requireCheckInAccess(ctx, eventId);
+    const tickets = await ctx.db
+      .query("tickets")
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
+      .take(1000);
+    return tickets
+      .map((t) => ({
+        _id: t._id,
+        attendeeName: t.attendeeName,
+        ticketTypeName: t.ticketTypeName,
+        status: t.status,
+        checkedInAt: t.checkedInAt ?? null,
+      }))
+      .sort((a, b) => a.attendeeName.localeCompare(b.attendeeName));
+  },
+});
+
 /** Non-throwing door-access check the client drives its UI state off — the
  *  locked state vs. the manual field + scanner in `CheckInCard`/the
  *  scan-tickets route. Mirrors `hasBlastSend`-backed queries elsewhere. */

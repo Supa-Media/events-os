@@ -1265,6 +1265,7 @@ export function EventTools({
   moneyActive,
   isTraining,
   onSongs,
+  onDoorAccess,
   meView,
   onToggleMeView,
   onDelete,
@@ -1286,6 +1287,8 @@ export function EventTools({
    *  Money tool entirely rather than opening it onto a permanently-empty view. */
   isTraining: boolean;
   onSongs: () => void;
+  /** Opens the per-event door-volunteer list (`/event/<id>/door-access`). */
+  onDoorAccess: () => void;
   meView: boolean;
   onToggleMeView: () => void;
   onDelete: () => void;
@@ -1403,6 +1406,14 @@ export function EventTools({
           onPress={() => {
             closeMenu();
             onSongs();
+          }}
+        />
+        <ToolsMenuRow
+          icon="key"
+          label="Door access"
+          onPress={() => {
+            closeMenu();
+            onDoorAccess();
           }}
         />
         <ToolsMenuRow

@@ -340,6 +340,31 @@ export const tickets = defineTable({
   .index("by_code", ["code"]);
 
 /**
+ * Per-event door access for OUTSIDE volunteers — the third grant path of
+ * `lib/ticketingAccess.ts#requireCheckInAccess`, granted by email from the
+ * event page (`doorAccess.ts`). Deliberately email-keyed, not person-keyed:
+ * the grantee usually has no `people` row and NO chapter membership — being
+ * chapterless is exactly what keeps them out of every member surface
+ * (`requireChapterId`), so this table must not require one. `email` is stored
+ * pre-normalized (`lib/access.ts#normalizeEmail`). `isActive` absent = active
+ * (soft revoke keeps history), mirroring `accessAllowlist`. Off-domain grants
+ * also upsert an `accessAllowlist` row stamped `grantedVia: "door"` so the
+ * volunteer can sign in as a guest — and so `profiles.completeOnboarding` can
+ * refuse to escalate them into a full member.
+ */
+export const doorGrants = defineTable({
+  eventId: v.id("events"),
+  chapterId: v.id("chapters"),
+  email: v.string(),
+  note: v.optional(v.string()),
+  isActive: v.optional(v.boolean()),
+  createdAt: v.number(),
+})
+  .index("by_event", ["eventId"])
+  .index("by_email", ["email"])
+  .index("by_event_email", ["eventId", "email"]);
+
+/**
  * Comments on the public page: top-level posts, one-level replies to another
  * comment (`parentId`), or replies hanging off an RSVP activity entry
  * (`replyToRsvpId`) — Partiful's "Reply" under "X rsvped Going".

@@ -726,6 +726,7 @@ export default function EventDetailScreen() {
                 moneyActive={activeTab === "money"}
                 isTraining={event.isTraining === true}
                 onSongs={() => router.push(`/event/${eventId}/songs`)}
+                onDoorAccess={() => router.push(`/event/${eventId}/door-access`)}
                 meView={meView}
                 onToggleMeView={() => setMeView((v) => !v)}
                 onDelete={confirmDelete}
@@ -763,6 +764,7 @@ export default function EventDetailScreen() {
                 moneyActive={false}
                 isTraining={event.isTraining === true}
                 onSongs={() => router.push(`/event/${eventId}/songs`)}
+                onDoorAccess={() => router.push(`/event/${eventId}/door-access`)}
                 meView={meView}
                 onToggleMeView={() => setMeView((v) => !v)}
                 onDelete={confirmDelete}

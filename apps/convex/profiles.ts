@@ -25,8 +25,10 @@ import { Id } from "./_generated/dataModel";
 import { v, ConvexError } from "convex/values";
 import { getOptionalAuth } from "@supa-media/convex/auth";
 import { requireUserId, requireAccess, hasAccess } from "./lib/context";
+import { isAllowedEmail, normalizeEmail } from "./lib/access";
 import { isSuperuserEmail } from "./lib/superuser";
 import { reconcilePersonForUser } from "./lib/people";
+import { hasAnyActiveDoorGrant } from "./lib/ticketingAccess";
 
 /** Load the current user's profile row (or null). */
 async function getProfile(ctx: QueryCtx, userId: string) {
@@ -96,6 +98,13 @@ export const me = query({
     const hasProfile = !!profile;
     const hasChapter = !!membership;
 
+    // A chapterless-but-allowed account holding an active per-event door
+    // grant gets the door-mode shell instead of onboarding (see
+    // `doorAccess.ts` / the `(app)` layout). Membership always wins: a full
+    // member with a grant just uses the normal app.
+    const doorOnly =
+      allowed && !hasChapter && (await hasAnyActiveDoorGrant(ctx, email));
+
     return {
       userId: user._id as Id<"users">,
       email,
@@ -104,6 +113,7 @@ export const me = query({
       hasProfile,
       hasChapter,
       onboarded: hasProfile && hasChapter,
+      doorOnly,
       profile: profile
         ? { name: profile.name as string, phone: profile.phone as string }
         : null,
@@ -142,6 +152,25 @@ export const completeOnboarding = triggerMutation({
     await requireAccess(ctx);
     const userId = await requireUserId(ctx);
     const now = Date.now();
+
+    // Door-granted guests may SIGN IN but must never become chapter members:
+    // their allowlist row is stamped `grantedVia: "door"` (`doorAccess.ts`),
+    // and membership is what would open every member surface to them.
+    const auth0 = await getOptionalAuth(ctx);
+    const loginEmail = normalizeEmail((auth0?.email as string | undefined) ?? null);
+    if (loginEmail && !isAllowedEmail(loginEmail)) {
+      const allowlistRow = await ctx.db
+        .query("accessAllowlist")
+        .withIndex("by_email", (q) => q.eq("email", loginEmail))
+        .first();
+      if (allowlistRow?.grantedVia === "door") {
+        throw new ConvexError({
+          code: "DOOR_ONLY",
+          message:
+            "This account has door access only — ask the organizer if you need full access.",
+        });
+      }
+    }
 
     const name = args.name.trim();
     const phone = args.phone.trim();
