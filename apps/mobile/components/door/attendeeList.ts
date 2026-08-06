@@ -4,33 +4,28 @@
  * helpers, not components — see `ticketScan.test.ts`'s doc comment).
  */
 
-/** One row of `api.ticketing.listCheckInAttendees`. */
+/** One row of `api.ticketing.listCheckInAttendees` — VIEW-ONLY: the server
+ *  deliberately withholds the ticket code (admission must prove possession
+ *  of the ticket; the guest supplies their code, scanned or typed). */
 export type DoorAttendee = {
   _id: string;
   attendeeName: string;
   ticketTypeName: string;
-  code: string;
   status: "valid" | "checked_in" | "void";
   checkedInAt: number | null;
 };
 
 /**
- * Case-insensitive substring match on the attendee's name OR ticket code
- * (dashes ignored in both the query and the code, so "agsz q7" finds
- * "PW-AGSZ-Q7AT"). An empty/whitespace query returns the full list.
+ * Case-insensitive substring match on the attendee's name. An
+ * empty/whitespace query returns the full list.
  */
-export function filterAttendees<T extends Pick<DoorAttendee, "attendeeName" | "code">>(
+export function filterAttendees<T extends Pick<DoorAttendee, "attendeeName">>(
   attendees: T[],
   query: string,
 ): T[] {
   const q = query.trim().toLowerCase();
   if (!q) return attendees;
-  const qCompact = q.replace(/[-\s]/g, "");
-  return attendees.filter(
-    (a) =>
-      a.attendeeName.toLowerCase().includes(q) ||
-      a.code.toLowerCase().replace(/-/g, "").includes(qCompact),
-  );
+  return attendees.filter((a) => a.attendeeName.toLowerCase().includes(q));
 }
 
 /**

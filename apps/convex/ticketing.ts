@@ -747,14 +747,17 @@ export const checkInTicket = mutation({
 });
 
 /**
- * The guest list for DOOR CHECK-IN — every issued ticket, name-sorted, with
- * just what the door needs (name, type, status, when, and the code the
- * check-in button replays through `checkInTicket`). Gated on
- * `requireCheckInAccess` like `checkInTicket` itself — NOT `requireEvent` —
- * so door-granted volunteers (`doorAccess.ts`, membership-free) can see who
- * they're admitting. Deliberately omits `attendeeEmail`/order linkage: the
- * door doesn't need them, and a door volunteer shouldn't see them
- * (`listTicketsAdmin` stays the member-gated full view).
+ * The guest list for DOOR CHECK-IN — every issued ticket, name-sorted,
+ * VIEW-ONLY: name, type, status, when. Gated on `requireCheckInAccess` like
+ * `checkInTicket` itself — NOT `requireEvent` — so door-granted volunteers
+ * (`doorAccess.ts`, membership-free) can see who they're admitting.
+ *
+ * Deliberately omits the ticket `code` (and `attendeeEmail`/order linkage):
+ * admission must PROVE POSSESSION of the ticket — scan its QR or type the
+ * code off the guest's screen. A list that exposed codes would let anyone at
+ * the door check in any name without the guest present, which is exactly the
+ * pass-back this flow exists to prevent. (`listTicketsAdmin` stays the
+ * member-gated full view.)
  */
 export const listCheckInAttendees = query({
   args: { eventId: v.id("events") },
@@ -769,7 +772,6 @@ export const listCheckInAttendees = query({
         _id: t._id,
         attendeeName: t.attendeeName,
         ticketTypeName: t.ticketTypeName,
-        code: t.code,
         status: t.status,
         checkedInAt: t.checkedInAt ?? null,
       }))

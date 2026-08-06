@@ -7,8 +7,14 @@ import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { Card, Button, Icon, ToastView } from "../ui";
 import { TicketScanner } from "../event/ticketing/TicketScanner";
+import { ManualCheckInEntry } from "../event/ticketing/ManualCheckInEntry";
+import {
+  CheckInResultBanner,
+  type CheckInOutcome,
+} from "../event/ticketing/CheckInResultBanner";
+import { loadCameraScanning } from "../../lib/cameraScanning";
 import { AttendeeCheckInList } from "./AttendeeCheckInList";
-import { useActionRunner } from "../../lib/useActionToast";
+import { useActionRunner, type ActionRunner } from "../../lib/useActionToast";
 import { colors } from "../../lib/theme";
 
 /**
@@ -57,7 +63,12 @@ export function DoorModeScreen() {
                 </Text>
               </Pressable>
               <TicketScanner eventId={activeEvent.eventId} run={run} />
-              <AttendeeCheckInList eventId={activeEvent.eventId} run={run} />
+              {/* The scanner shows its own manual field when the camera is
+                  unavailable — only add the standalone one when it doesn't. */}
+              {loadCameraScanning() ? (
+                <ManualEntryCard eventId={activeEvent.eventId} run={run} />
+              ) : null}
+              <AttendeeCheckInList eventId={activeEvent.eventId} />
             </ScrollView>
           ) : (
             <DoorEventList events={events} onOpen={setActiveEventId} />
@@ -66,6 +77,28 @@ export function DoorModeScreen() {
       </View>
       <ToastView toast={toast} onDismiss={dismiss} />
     </SafeAreaView>
+  );
+}
+
+/** "Can't scan? Type the guest's code" — the manual input path when the
+ *  camera IS available (the guest reads their code off their ticket). Same
+ *  mutation and outcome banner as the scanner. */
+function ManualEntryCard({
+  eventId,
+  run,
+}: {
+  eventId: Parameters<typeof ManualCheckInEntry>[0]["eventId"];
+  run: ActionRunner["run"];
+}) {
+  const [outcome, setOutcome] = useState<CheckInOutcome | null>(null);
+  return (
+    <Card className="mt-3">
+      <Text className="mb-3 text-sm text-muted">
+        Can't scan? Ask the guest for the code on their ticket.
+      </Text>
+      <ManualCheckInEntry eventId={eventId} run={run} onResult={setOutcome} />
+      {outcome ? <CheckInResultBanner outcome={outcome} /> : null}
+    </Card>
   );
 }
 

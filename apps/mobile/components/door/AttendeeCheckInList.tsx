@@ -1,31 +1,24 @@
 import { useState } from "react";
 import { View, Text, ActivityIndicator } from "react-native";
-import { useQuery, useMutation } from "convex/react";
+import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { Card, Button, TextField, Icon } from "../ui";
-import type { ActionRunner } from "../../lib/useActionToast";
+import { Card, TextField, Icon } from "../ui";
 import { colors } from "../../lib/theme";
 import { checkInProgress, filterAttendees, type DoorAttendee } from "./attendeeList";
 import { formatDateTime } from "../../lib/format";
 
 /**
- * The event's guest list for the door — every issued ticket with a manual
- * "Check in" button, so a guest whose QR won't scan (cracked screen, paper
- * printout left at home) can be admitted by name. Reads
- * `listCheckInAttendees` (door-gated, same `requireCheckInAccess` as the
- * scanner) and replays the row's ticket code through the SAME `checkInTicket`
- * mutation — the list is purely another input path, like manual code entry.
- * Reactive: a check-in from the scanner or another door volunteer flips the
- * row live.
+ * The event's guest list for the door — VIEW-ONLY. Shows who's expected and
+ * who's already in (name, ticket type, status, when), searchable by name,
+ * with a checked-in tally. There is deliberately NO check-in action here and
+ * no ticket code on the rows: admitting a guest requires the code from THEIR
+ * ticket (scanned by the camera or typed into the code field), proving the
+ * ticket is present — the server (`listCheckInAttendees`) withholds codes
+ * for the same reason. Reactive: check-ins from any door volunteer flip the
+ * rows live.
  */
-export function AttendeeCheckInList({
-  eventId,
-  run,
-}: {
-  eventId: Id<"events">;
-  run: ActionRunner["run"];
-}) {
+export function AttendeeCheckInList({ eventId }: { eventId: Id<"events"> }) {
   const attendees = useQuery(api.ticketing.listCheckInAttendees, { eventId });
   const [query, setQuery] = useState("");
 
@@ -63,7 +56,7 @@ export function AttendeeCheckInList({
             <TextField
               value={query}
               onChangeText={setQuery}
-              placeholder="Search name or ticket code"
+              placeholder="Search names"
               autoCapitalize="none"
               autoCorrect={false}
             />
@@ -76,13 +69,7 @@ export function AttendeeCheckInList({
             </View>
           ) : (
             shown.map((a, i) => (
-              <AttendeeRow
-                key={a._id}
-                attendee={a}
-                isLast={i === shown.length - 1}
-                eventId={eventId}
-                run={run}
-              />
+              <AttendeeRow key={a._id} attendee={a} isLast={i === shown.length - 1} />
             ))
           )}
         </Card>
@@ -94,28 +81,10 @@ export function AttendeeCheckInList({
 function AttendeeRow({
   attendee,
   isLast,
-  eventId,
-  run,
 }: {
-  attendee: DoorAttendee & { _id: Id<"tickets"> };
+  attendee: DoorAttendee;
   isLast: boolean;
-  eventId: Id<"events">;
-  run: ActionRunner["run"];
 }) {
-  const checkIn = useMutation(api.ticketing.checkInTicket);
-  const [busy, setBusy] = useState(false);
-
-  async function handleCheckIn() {
-    setBusy(true);
-    try {
-      await run(() => checkIn({ eventId, code: attendee.code }), {
-        errorTitle: "Couldn't check in",
-      });
-    } finally {
-      setBusy(false);
-    }
-  }
-
   return (
     <View
       className={`flex-row items-center gap-3 px-4 py-3 ${
@@ -127,7 +96,7 @@ function AttendeeRow({
           {attendee.attendeeName}
         </Text>
         <Text className="mt-0.5 text-xs text-muted" numberOfLines={1}>
-          {attendee.ticketTypeName} · {attendee.code}
+          {attendee.ticketTypeName}
         </Text>
       </View>
       {attendee.status === "checked_in" ? (
@@ -140,13 +109,7 @@ function AttendeeRow({
       ) : attendee.status === "void" ? (
         <Text className="text-xs text-muted line-through">Void</Text>
       ) : (
-        <Button
-          title="Check in"
-          size="sm"
-          variant="secondary"
-          loading={busy}
-          onPress={handleCheckIn}
-        />
+        <Text className="text-xs text-muted">Not arrived</Text>
       )}
     </View>
   );
