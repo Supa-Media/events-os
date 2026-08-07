@@ -266,6 +266,7 @@ import type * as people from "../people.js";
 import type * as peopleImport from "../peopleImport.js";
 import type * as personEmails from "../personEmails.js";
 import type * as places from "../places.js";
+import type * as processorFees from "../processorFees.js";
 import type * as profiles from "../profiles.js";
 import type * as projectActions from "../projectActions.js";
 import type * as projects from "../projects.js";
@@ -616,6 +617,7 @@ declare const fullApi: ApiFromModules<{
   peopleImport: typeof peopleImport;
   personEmails: typeof personEmails;
   places: typeof places;
+  processorFees: typeof processorFees;
   profiles: typeof profiles;
   projectActions: typeof projectActions;
   projects: typeof projects;
