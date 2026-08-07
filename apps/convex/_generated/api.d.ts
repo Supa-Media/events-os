@@ -281,6 +281,7 @@ import type * as reimbursementBackfill from "../reimbursementBackfill.js";
 import type * as reimbursements from "../reimbursements.js";
 import type * as reminders from "../reminders.js";
 import type * as responsibilities from "../responsibilities.js";
+import type * as restoreTruistDeposit from "../restoreTruistDeposit.js";
 import type * as roleAssignments from "../roleAssignments.js";
 import type * as roles from "../roles.js";
 import type * as schema_academy from "../schema/academy.js";
@@ -632,6 +633,7 @@ declare const fullApi: ApiFromModules<{
   reimbursements: typeof reimbursements;
   reminders: typeof reminders;
   responsibilities: typeof responsibilities;
+  restoreTruistDeposit: typeof restoreTruistDeposit;
   roleAssignments: typeof roleAssignments;
   roles: typeof roles;
   "schema/academy": typeof schema_academy;
