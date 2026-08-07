@@ -781,6 +781,10 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         text: "Excluded is for a row that should never count at all — a duplicate, a bank error. Using it on a transfer hides the row instead of explaining it, only ever fixes one of the two legs, and drops it out of the receipt chase. Using it on a payout deletes real income. Both now have a marking that keeps the row honest and visible.",
       },
       {
+        kind: "tip",
+        text: "STRIPE payouts mark themselves. Every morning the reconciliation engine detects new Stripe payouts, labels the bank deposit as a payout for you, and books each chapter's share of the money onto its own book as an automatic transfer (you'll see those on the Accounts page, badged \"Payout allocation\", where the Financial Manager can audit and flag them). Givebutter and other deposits still need the hand-marking this lesson teaches — and so does any Stripe deposit from before the engine was turned on.",
+      },
+      {
         kind: "scenario",
         prompt: "Two rows land the same week: a $2,400 deposit described \"GIVEBUTTER PAYOUT\", and a $5,000 withdrawal described \"PUBLIC WORSHIP | Transfer\" with a matching $5,000 deposit into your savings account. How do you code them?",
         options: [
@@ -1409,7 +1413,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "Paid-from never moves — Central's account really did pay, and its statement has to keep matching. Charged-to is what the budget measures, so the deposit lands on New York's plan. The gap between the two is a receivable the app computes for you, visible in Inter-chapter balances and settleable whenever you choose.",
+          "Paid-from never moves — Central's account really did pay, and its statement has to keep matching. Charged-to is what the budget measures, so the deposit lands on New York's plan. The gap between the two is a receivable the app computes for you, visible in Inter-chapter balances — and settled automatically by the morning reconciliation engine, which books the transfer overnight so every book reads true by morning (the Accounts page shows each one for audit).",
       },
       {
         prompt: "What's the FM's actual relationship to a chapter's spending?",

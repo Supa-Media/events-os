@@ -578,6 +578,76 @@ export const PAYOUT_PROCESSOR_LABELS: Record<PayoutProcessor, string> = {
   other: "Other processor",
 };
 
+// ── Morning reconciliation engine ────────────────────────────────────────────
+// The daily engine (`apps/convex/reconciliation.ts`) books central↔chapter
+// transfer pairs AUTOMATICALLY for two well-defined reasons, and stamps each
+// pair's legs with `transactions.transferOrigin` so every reader can tell an
+// engine-booked pair from a human-recorded one. ABSENT = a manual transfer
+// (every pre-engine row, and every `recordTransfer` the finance desk records
+// by hand). The two origins are deliberately excluded from the City Launch
+// Fund position (they're revenue distribution / cash true-up, not
+// skims/grants), and `payout_allocation` pairs are excluded from
+// `interScopeBalances`' settling legs (they distribute revenue; they don't pay
+// down a card-spend imbalance — `auto_settlement` pairs are what do that).
+export const AUTO_TRANSFER_ORIGINS = [
+  // A chapter's share of a Stripe payout that landed in central's bank
+  // account: donations, ticket sales, and gifts that belong to a chapter's
+  // book, net of Stripe's fees. Direction is central→chapter (or
+  // chapter→central when refunds outweigh revenue in a payout).
+  "payout_allocation",
+  // The daily true-up of `interScopeBalances` — cross-book card spend ("your
+  // card determines whose account paid; reconcile determines whose budget it
+  // was") settled by the engine instead of waiting for a human to record it.
+  "auto_settlement",
+] as const;
+export type AutoTransferOrigin = (typeof AUTO_TRANSFER_ORIGINS)[number];
+
+export const AUTO_TRANSFER_ORIGIN_LABELS: Record<AutoTransferOrigin, string> = {
+  payout_allocation: "Payout allocation",
+  auto_settlement: "Auto settlement",
+};
+
+// Our processing state for one detected Stripe payout (NOT Stripe's own payout
+// status, which is stored alongside as `stripeStatus`):
+//  - pending   → detected, not yet allocated (or allocation is retrying)
+//  - allocated → its per-scope breakdown is computed and transfers are booked
+//  - failed    → allocation errored; the morning run retries and the error is
+//                surfaced on the accounts page until it succeeds
+export const STRIPE_PAYOUT_PROCESS_STATES = [
+  "pending",
+  "allocated",
+  "failed",
+] as const;
+export type StripePayoutProcessState =
+  (typeof STRIPE_PAYOUT_PROCESS_STATES)[number];
+
+// How one payout item (one Stripe balance transaction) was attributed to a
+// book. `unmapped` is the loud bucket: money we could not trace to an order /
+// donation / gift / repayment stays on central's book and is surfaced for the
+// Financial Manager instead of being silently absorbed.
+export const PAYOUT_ITEM_KINDS = [
+  "ticket_order", // a paid ticket order (maps via session metadata.orderId)
+  "event_donation", // an event-page donation (metadata.donationId)
+  "give_donation", // a one-time /give gift (gifts.by_externalRef "give:<session>")
+  "pledge_cycle", // a backer subscription cycle (charge.invoice → gifts.by_stripeInvoice)
+  "repayment", // a personal-charge repayment (metadata.repaymentIds) — cash
+  // returning to the org; the chapter's book was already credited at settle
+  // (`cards.ts`), so the engine books NO allocation transfer for these.
+  "refund", // a refund of any of the above (negative, netted against its scope)
+  "unmapped", // couldn't be traced — stays central, surfaced loudly
+] as const;
+export type PayoutItemKind = (typeof PAYOUT_ITEM_KINDS)[number];
+
+// A Financial Manager's audit flag on an engine artifact (a transfer pair or a
+// detected payout): "this needs a human decision." Resolution is a note — the
+// ledger fix itself is an offsetting entry per docs/plans/transfers-ops-notes.md.
+export const RECONCILIATION_FLAG_KINDS = ["transfer", "payout"] as const;
+export type ReconciliationFlagKind = (typeof RECONCILIATION_FLAG_KINDS)[number];
+
+export const RECONCILIATION_FLAG_STATUSES = ["open", "resolved"] as const;
+export type ReconciliationFlagStatus =
+  (typeof RECONCILIATION_FLAG_STATUSES)[number];
+
 // ── Reimbursements ───────────────────────────────────────────────────────────
 // Public-form submissions (accountless, secret token). Optional pre-approval
 // gate, then the approval → payout lifecycle. Terminal: paid / rejected /

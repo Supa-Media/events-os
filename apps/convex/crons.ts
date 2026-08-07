@@ -104,6 +104,23 @@ crons.cron(
   {},
 );
 
+// Daily 09:30 UTC = 5:30am EDT: the MORNING RECONCILIATION ENGINE — detect
+// Stripe payouts, book each chapter's share of the deposit as
+// `payout_allocation` transfer pairs (net of fees), label the bank deposit,
+// settle cross-book card spend (`auto_settlement`), and snapshot Increase
+// bank balances — so every book reflects its true value by the time anyone
+// wakes up. Deliberately AFTER the two bank-feed backstops above (Stripe FC
+// 07:00, Increase 08:00) so the deposits it matches against have synced in.
+// Ledger writes only — never real bank movement. Idempotent (deterministic
+// transfer group ids); no-ops per part when its vendor key is unset;
+// pausable from the accounts page (`financeSettings.autoReconciliationPaused`).
+crons.cron(
+  "morning reconciliation engine",
+  "30 9 * * *",
+  internal.reconciliation.runMorningReconciliation,
+  {},
+);
+
 // Daily 05:00 UTC: sweep rate-limit "attempt" rows older than their 1-hour
 // window from reimbursementSubmitAttempts (#134) and cardDetailsRevealAttempts
 // (#161) — both tables only ever grow otherwise.

@@ -4032,6 +4032,14 @@ export const dashboardCentral = query({
       // none and stays env-neutral (`matchesMode` returns `true` for a
       // falsy id either way).
       if (!matchesMode(tr.externalId ?? null, sandboxMode)) continue;
+      // ENGINE-BOOKED pairs are excluded from the fund position entirely. A
+      // `payout_allocation` pair distributes a chapter's own Stripe revenue
+      // out of central's bank deposit, and an `auto_settlement` pair trues up
+      // cross-book card spend — neither is a skim received nor a grant made,
+      // and with the morning engine booking them daily they'd otherwise drown
+      // the fund position in noise within a week. Only HUMAN-recorded
+      // transfers (transferOrigin absent) carry fund intent.
+      if (tr.transferOrigin != null) continue;
       const inPeriod = inDashRange(tr.postedAt, dp);
       const receivedFromChapter =
         tr.source === "skim" ||

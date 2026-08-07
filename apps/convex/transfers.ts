@@ -81,7 +81,12 @@ import { mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { Doc, Id } from "./_generated/dataModel";
-import { CENTRAL, easternParts, matchesMode } from "@events-os/shared";
+import {
+  CENTRAL,
+  easternParts,
+  matchesMode,
+  type AutoTransferOrigin,
+} from "@events-os/shared";
 import { requireChapterId, requireUserId } from "./lib/context";
 import {
   requireCentralEdOrFm,
@@ -153,19 +158,28 @@ interface RecordPairArgs {
   postedAt: number;
   note?: string;
   transferDirection: TransferDirection;
-  userId: Id<"users">;
+  // Absent for an engine-booked pair (`reconciliation.ts` runs from a cron —
+  // there is no human caller; `transferOrigin` says which process wrote it).
+  userId?: Id<"users">;
+  // Set ONLY by the morning reconciliation engine; a human-recorded pair
+  // leaves it absent. See `AUTO_TRANSFER_ORIGINS` (`@events-os/shared`).
+  transferOrigin?: AutoTransferOrigin;
 }
 
 /**
  * Insert the two `flow:"transfer"` legs (outflow on `sourceScope`, inflow on
  * `destScope`), both carrying the same `transferGroupId` and `source:"transfer"`.
  * REJECTS with `ALREADY_RECORDED` when a pair for that id already exists —
- * defense in depth against a genuine `transferGroupId` collision (see this
- * file's header comment on why that id is random rather than deterministic
- * for a generic transfer). Returns the two leg ids (outflow = the
- * money-leaving leg, inflow = the money-arriving leg).
+ * defense in depth against a genuine `transferGroupId` collision for a manual
+ * transfer (see this file's header comment on why that id is random rather
+ * than deterministic), and the IDEMPOTENCY GUARD for the reconciliation
+ * engine, whose group ids ARE deterministic (`payoutalloc-…`/`autosettle-…`)
+ * precisely so a re-run can never book the same allocation twice. Returns the
+ * two leg ids (outflow = the money-leaving leg, inflow = the money-arriving
+ * leg). Exported for `reconciliation.ts` — the engine books pairs through
+ * this same choke point so the pair invariant has exactly one writer.
  */
-async function recordTransferPair(
+export async function recordTransferPair(
   ctx: MutationCtx,
   a: RecordPairArgs,
 ): Promise<{ outflowId: Id<"transactions">; inflowId: Id<"transactions"> }> {
@@ -193,6 +207,7 @@ async function recordTransferPair(
     description: a.note,
     transferGroupId: a.transferGroupId,
     transferDirection: a.transferDirection,
+    transferOrigin: a.transferOrigin,
     status: "reconciled" as const,
     createdBy: a.userId,
     createdAt: now,
@@ -221,9 +236,11 @@ const recordResult = v.object({
 
 /** Which way a transfer moves money — the ONLY thing that used to be implied
  *  by "kind" (skim was always chapter→central; a launch grant was always
- *  central→chapter). A generic transfer states it explicitly every time. */
+ *  central→chapter). A generic transfer states it explicitly every time.
+ *  Exported for `reconciliation.ts` (the engine states direction the same
+ *  way). */
 const TRANSFER_DIRECTIONS = ["chapter_to_central", "central_to_chapter"] as const;
-type TransferDirection = (typeof TRANSFER_DIRECTIONS)[number];
+export type TransferDirection = (typeof TRANSFER_DIRECTIONS)[number];
 const transferDirectionValidator = v.union(
   ...TRANSFER_DIRECTIONS.map((d) => v.literal(d)),
 );
@@ -239,8 +256,9 @@ const transferArgs = {
   note: v.optional(v.string()),
 };
 
-/** The source/dest scopes for a transfer pair, by direction. */
-function transferScopes(
+/** The source/dest scopes for a transfer pair, by direction. Exported for
+ *  `reconciliation.ts`, which books pairs with the same direction semantics. */
+export function transferScopes(
   chapterId: Id<"chapters">,
   direction: TransferDirection,
 ): { sourceScope: FinanceScope; destScope: FinanceScope } {
@@ -376,12 +394,16 @@ const interScopeBalanceRow = v.object({
  * `"chapter_to_central"` means this chapter paid central (pays down (b)).
  * `netCents = (a - settled_a) - (b - settled_b)`.
  *
- * CONSENT SEMANTICS (owner-decided): upward attribution — a chapter fronting
- * money for central — stays VISIBLE-BUT-UNSETTLED here until central actually
- * records a transfer that pays it down. There is no auto-settle, no accrual
- * write, no separate balances table: this query is a pure ledger read,
- * recomputed live from `transactions` + recorded transfer/settlement legs
- * every call.
+ * CONSENT SEMANTICS (revised 2026-08-07, owner request — "instead of
+ * surfacing that transfers need to be made, the engine does the necessary
+ * internal transfers"): the morning reconciliation engine
+ * (`reconciliation.ts#runAutoSettlement`) now books an `auto_settlement`
+ * transfer pair daily for any nonzero net, so this balance normally reads 0
+ * by morning and the settlement history is the audit trail. The query itself
+ * is unchanged: still a pure ledger read, no accrual write, no separate
+ * balances table — the engine just became one more writer of settling legs
+ * (which the FM can flag and offset, exactly like a manual one). Pausing the
+ * engine restores the old visible-but-unsettled behavior.
  *
  * Mode-filtered like the City Launch Fund position (#163's IMPORTANT-1 fix):
  * the underlying card/ACH spend is filtered via `txnMatchesMode`, and a
@@ -466,7 +488,7 @@ export const interScopeBalances = query({
  *  can compute anything. Inlines the same `isActive !== false` filter
  *  `listActiveChapters` applies (rather than calling it directly) because the
  *  truncation warning needs the RAW pre-filter scan length. */
-async function loadInterScopeContext(
+export async function loadInterScopeContext(
   ctx: QueryCtx,
 ): Promise<{ centralBudgetIds: Set<Id<"budgets">>; chapters: Doc<"chapters">[] }> {
   const centralBudgetDocs = await ctx.db
@@ -493,7 +515,7 @@ async function loadInterScopeContext(
  *  anyway), grouped by the chapter whose budget absorbed the spend. Read once
  *  (central-owned txns are low-volume, like the City Launch Fund scan);
  *  mode-filtered inline via `txnMatchesMode`. */
-async function loadChapterOwesCentralRows(
+export async function loadChapterOwesCentralRows(
   ctx: QueryCtx,
   centralBudgetIds: Set<Id<"budgets">>,
   sandboxMode: boolean,
@@ -537,7 +559,7 @@ async function loadChapterOwesCentralRows(
  * `inPeriod`-filtered for the period figure); `interScopeBalanceContributors`
  * returns them directly as the "why" behind a chapter's balance.
  */
-function chapterInterScopeRows(
+export function chapterInterScopeRows(
   chapterTxns: Doc<"transactions">[],
   centralBudgetIds: Set<Id<"budgets">>,
   chapterOwesCentralRows: Doc<"transactions">[],
@@ -557,6 +579,13 @@ function chapterInterScopeRows(
   const settlingRows = modeFiltered.filter(
     (tr) =>
       (tr.source === "transfer" || tr.source === "settlement") &&
+      // A payout-allocation pair distributes Stripe REVENUE to the book that
+      // earned it — it never pays down a card-spend imbalance, so counting it
+      // as a settling leg would let every payout silently erase real
+      // central↔chapter debt. `auto_settlement` pairs are the engine legs
+      // that DO settle this balance (that's their whole job), and manual
+      // transfers (origin absent) keep counting exactly as before.
+      tr.transferOrigin !== "payout_allocation" &&
       matchesMode(tr.externalId ?? null, sandboxMode),
   );
   const settledCentralToChapterRows = settlingRows.filter(
@@ -574,7 +603,7 @@ function chapterInterScopeRows(
   };
 }
 
-function sumAllCents(rows: Doc<"transactions">[]): number {
+export function sumAllCents(rows: Doc<"transactions">[]): number {
   return rows.reduce((s, tr) => s + tr.amountCents, 0);
 }
 
