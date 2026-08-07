@@ -854,9 +854,24 @@ const REAL_MOVES_PER_RUN = 25;
 
 /**
  * Engine-booked pairs (`transferOrigin` set) whose cash hasn't moved yet
- * (legs carry no `externalId`). Central's leg of every pair makes one bounded
- * scan sufficient. Ordered oldest-first so the backlog drains in booking
- * order.
+ * (legs carry no `externalId`) AND that are SAFE to execute:
+ *
+ *  - BOOKED AT/AFTER the enable stamp (`autoTransferRealMovementSinceMs`) —
+ *    the historical backlog never auto-moves. Pairs booked while the toggle
+ *    was off include pre-Increase-era allocations whose cash never reached
+ *    the central Increase account; executing those would drain central for
+ *    money it never physically held.
+ *  - THE UNDERLYING CASH IS AT INCREASE, per kind: an `autosettle-…` pair
+ *    settles spend across the org's own Increase accounts (safe by
+ *    construction); a `payoutalloc-po_…` pair requires its Stripe payout's
+ *    MATCHED DEPOSIT to be an `increase_ach` row (the deposit really landed
+ *    at central's Increase account — not the legacy bank); a
+ *    `payoutalloc-manual-…` pair requires the same of the deposit it
+ *    allocates. Unknown shapes are skipped.
+ *
+ * Central's leg of every pair makes one bounded scan sufficient — NEWEST
+ * first so fresh pairs are never starved by an old remainder, with a loud
+ * warning if the scan window truncates.
  */
 export const listUnexecutedEnginePairs = internalQuery({
   args: {},
@@ -872,11 +887,26 @@ export const listUnexecutedEnginePairs = internalQuery({
     }),
   ),
   handler: async (ctx) => {
+    const settings = await ctx.db.query("financeSettings").first();
+    const enabledSinceMs = settings?.autoTransferRealMovementSinceMs;
+    if (enabledSinceMs == null) return []; // never enabled — nothing executes
+
+    /** True iff the deposit row backing an allocation is cash that actually
+     *  sits in an Increase account. */
+    const depositAtIncrease = (
+      deposit: Doc<"transactions"> | null,
+    ): boolean => deposit != null && deposit.source === "increase_ach";
+
     const centralTxns = await ctx.db
       .query("transactions")
       .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", CENTRAL))
-      .order("asc")
+      .order("desc")
       .take(ROLLUP_SCAN_LIMIT);
+    if (centralTxns.length === ROLLUP_SCAN_LIMIT) {
+      console.warn(
+        `[reconciliation] listUnexecutedEnginePairs hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}); older unexecuted pairs may be missed this run.`,
+      );
+    }
     const out: {
       transferGroupId: string;
       chapterId: Id<"chapters">;
@@ -888,17 +918,46 @@ export const listUnexecutedEnginePairs = internalQuery({
       if (leg.transferOrigin == null) continue; // manual pairs never execute
       if (leg.externalId != null) continue; // cash already moved
       if (leg.transferGroupId == null || leg.transferDirection == null) continue;
+      if (leg.createdAt < enabledSinceMs) continue; // pre-enable backlog
+
+      // Kind-specific "the cash is really at Increase" checks.
+      const groupId = leg.transferGroupId;
+      if (groupId.startsWith("payoutalloc-po_")) {
+        const payoutMatch = groupId.match(/^payoutalloc-(po_[^-]+)-/);
+        const payout = payoutMatch
+          ? await ctx.db
+              .query("stripePayouts")
+              .withIndex("by_stripe_payout", (q) =>
+                q.eq("stripePayoutId", payoutMatch[1]),
+              )
+              .unique()
+          : null;
+        const deposit = payout?.matchedTransactionId
+          ? await ctx.db.get(payout.matchedTransactionId)
+          : null;
+        if (!depositAtIncrease(deposit)) continue;
+      } else if (groupId.startsWith("payoutalloc-manual-")) {
+        const txnId = ctx.db.normalizeId(
+          "transactions",
+          groupId.slice("payoutalloc-manual-".length),
+        );
+        const deposit = txnId ? await ctx.db.get(txnId) : null;
+        if (!depositAtIncrease(deposit)) continue;
+      } else if (!groupId.startsWith("autosettle-")) {
+        continue; // unknown engine-pair shape — never move cash on a guess
+      }
+
       // The pair's chapter side names the counterparty account.
       const pair = await ctx.db
         .query("transactions")
         .withIndex("by_transfer_group", (q) =>
-          q.eq("transferGroupId", leg.transferGroupId!),
+          q.eq("transferGroupId", groupId),
         )
         .collect();
       const chapterLeg = pair.find((p) => p.chapterId !== CENTRAL);
       if (!chapterLeg || chapterLeg.chapterId === CENTRAL) continue;
       out.push({
-        transferGroupId: leg.transferGroupId,
+        transferGroupId: groupId,
         chapterId: chapterLeg.chapterId as Id<"chapters">,
         direction: leg.transferDirection,
         amountCents: leg.amountCents,
@@ -1409,13 +1468,20 @@ async function runEngine(
         );
         let moved = 0;
         const notReady = new Set<string>();
+        // One account lookup per distinct chapter, not per pair.
+        const accountsByChapter = new Map<
+          string,
+          { centralAccountId: string | null; chapterAccountId: string | null }
+        >();
         for (const pair of pending) {
-          const accounts: {
-            centralAccountId: string | null;
-            chapterAccountId: string | null;
-          } = await ctx.runQuery(internal.reconciliation.productionAccountIds, {
-            chapterId: pair.chapterId,
-          });
+          let accounts = accountsByChapter.get(pair.chapterId);
+          if (!accounts) {
+            accounts = await ctx.runQuery(
+              internal.reconciliation.productionAccountIds,
+              { chapterId: pair.chapterId },
+            );
+            accountsByChapter.set(pair.chapterId, accounts);
+          }
           if (!accounts.centralAccountId || !accounts.chapterAccountId) {
             notReady.add(pair.chapterId);
             continue;
@@ -1425,6 +1491,14 @@ async function runEngine(
               ? [accounts.centralAccountId, accounts.chapterAccountId]
               : [accounts.chapterAccountId, accounts.centralAccountId];
           try {
+            // Idempotency-Key = the pair's transferGroupId, STABLE across
+            // runs on purpose: the failure mode that must be impossible is a
+            // double-send (a crashed run that DID create the transfer but
+            // died before stamping retries next morning and gets the same
+            // transfer back, not a second one). The accepted cost: if the
+            // provider caches an ERROR response under the key, that pair can
+            // wedge — it stays visibly "Cash not moved" with a FAILED note
+            // every run, and the human fix is a manual bank transfer.
             const transfer = await increasePost(
               incKey,
               incBase,
@@ -1435,19 +1509,28 @@ async function runEngine(
                 amount: pair.amountCents,
                 description: `Chapter OS ${pair.transferGroupId}`.slice(0, 80),
               },
-              pair.transferGroupId, // Idempotency-Key — one movement per pair, ever
+              pair.transferGroupId,
             );
             const transferId =
               typeof transfer.id === "string" ? transfer.id : null;
-            if (transferId) {
+            const status =
+              typeof transfer.status === "string" ? transfer.status : "unknown";
+            if (transferId && status !== "pending_approval" && status !== "canceled") {
+              // Stamped only once the transfer is actually underway — a
+              // pending-approval transfer that later gets DECLINED must not
+              // read as "cash moved" forever.
               await ctx.runMutation(internal.reconciliation.stampPairMoved, {
                 transferGroupId: pair.transferGroupId,
                 increaseTransferId: transferId,
               });
               moved += 1;
+            } else if (transferId && status === "pending_approval") {
+              notes.push(
+                `Real movement for ${pair.transferGroupId} needs APPROVAL in the Increase dashboard (${transferId}) — not marked moved until it completes.`,
+              );
             } else {
               notes.push(
-                `Real movement for ${pair.transferGroupId}: Increase returned no transfer id — will retry next run.`,
+                `Real movement for ${pair.transferGroupId}: unexpected Increase response (status ${status}) — will retry next run.`,
               );
             }
           } catch (err) {
@@ -1582,9 +1665,14 @@ export const setRealMovementEnabled = mutation({
     await requireReconciliationAudit(ctx);
     const userId = (await requireUserId(ctx)) as Id<"users">;
     const existing = await ctx.db.query("financeSettings").first();
+    // Enabling (re)stamps the cutoff: only pairs booked FROM THIS MOMENT
+    // execute. The backlog booked while the toggle was off never auto-moves
+    // — moving older cash is a deliberate manual bank transfer.
+    const stamp = enabled ? { autoTransferRealMovementSinceMs: Date.now() } : {};
     if (existing) {
       await ctx.db.patch(existing._id, {
         autoTransferRealMovement: enabled,
+        ...stamp,
         updatedBy: userId,
         updatedAt: Date.now(),
       });
@@ -1592,6 +1680,7 @@ export const setRealMovementEnabled = mutation({
       await ctx.db.insert("financeSettings", {
         sandboxMode: false,
         autoTransferRealMovement: enabled,
+        ...stamp,
         updatedBy: userId,
         updatedAt: Date.now(),
       });
@@ -1600,8 +1689,9 @@ export const setRealMovementEnabled = mutation({
   },
 });
 
-/** Pause/resume the engine (the kill switch — ledger writes only, so this is
- *  an audit-control, not a money-movement gate). */
+/** Pause/resume the engine — THE kill switch: a paused run books nothing and
+ *  (since real movement runs inside the morning run) moves no cash either.
+ *  Pausing is deliberately one friction-free tap. */
 export const setReconciliationPaused = mutation({
   args: { paused: v.boolean() },
   returns: v.null(),

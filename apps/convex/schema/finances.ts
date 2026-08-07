@@ -1835,6 +1835,13 @@ export const financeSettings = defineTable({
   // pairs are never executed (they record movements that already happened
   // outside the app).
   autoTransferRealMovement: v.optional(v.boolean()),
+  // Stamped to "now" every time real movement is ENABLED. Only pairs BOOKED
+  // at/after this instant execute — the historical backlog (pairs booked
+  // while the toggle was off, including pre-Increase-era allocations whose
+  // cash never reached the central Increase account) NEVER auto-moves.
+  // Anything older that should physically move is a deliberate manual
+  // transfer in the bank, recorded the normal way.
+  autoTransferRealMovementSinceMs: v.optional(v.number()),
 });
 
 // ── Morning reconciliation engine ────────────────────────────────────────────

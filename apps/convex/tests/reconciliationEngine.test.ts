@@ -833,12 +833,29 @@ describe("real cash movement — eligibility, stamping, toggle", () => {
     });
   }
 
-  test("only UNSTAMPED ENGINE pairs are eligible; manual pairs never execute", async () => {
+  test("only UNSTAMPED ENGINE pairs booked AFTER enabling are eligible; manual pairs never execute", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await asCentralEd(s);
 
-    // An engine settlement pair (eligible)…
+    // Nothing is EVER eligible before real movement has been enabled.
+    expect(
+      await t.query(internal.reconciliation.listUnexecutedEnginePairs, {}),
+    ).toHaveLength(0);
+
+    // A pre-enable engine pair (the historical backlog) stays ineligible…
+    await seedCrossBookSpendFor(s, 3_000);
+    await t.mutation(internal.reconciliation.runAutoSettlement, {
+      dateStr: "2026-08-07",
+    });
+    await s.as.mutation(api.reconciliation.setRealMovementEnabled, {
+      enabled: true,
+    });
+    expect(
+      await t.query(internal.reconciliation.listUnexecutedEnginePairs, {}),
+    ).toHaveLength(0);
+
+    // …a post-enable engine settlement pair is eligible…
     await seedCrossBookSpendFor(s, 10_000);
     await t.mutation(internal.reconciliation.runAutoSettlement, {
       dateStr: "2026-08-08",
@@ -896,6 +913,65 @@ describe("real cash movement — eligibility, stamping, toggle", () => {
     expect(balances.find((b) => b.chapterId === s.chapterId)?.netCents).toBe(
       -5_000,
     );
+  });
+
+  test("a payout pair moves cash only when its deposit really landed at Increase", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await s.as.mutation(api.reconciliation.setRealMovementEnabled, {
+      enabled: true,
+    });
+
+    // Payout A: allocated but deposit NOT matched → ineligible.
+    await seedDonorWithGift(s, s.chapterId, {
+      stripeInvoiceId: "in_rm1",
+      amountCents: 5_000,
+    });
+    await seedDetectedPayout(s, { stripePayoutId: "po_rm1", amountCents: 4_825 });
+    await t.mutation(internal.reconciliation.applyPayoutAllocation, {
+      stripePayoutId: "po_rm1",
+      items: [
+        { grossCents: 5_000, feeCents: 175, netCents: 4_825, invoiceId: "in_rm1" },
+      ],
+    });
+    expect(
+      await t.query(internal.reconciliation.listUnexecutedEnginePairs, {}),
+    ).toHaveLength(0);
+
+    // Payout B: matched to an increase_ach deposit → eligible.
+    await seedDonorWithGift(s, s.chapterId, {
+      stripeInvoiceId: "in_rm2",
+      amountCents: 5_000,
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: CENTRAL,
+        source: "increase_ach",
+        flow: "inflow",
+        amountCents: 4_825,
+        currency: "usd",
+        postedAt: Date.now(),
+        merchantName: "STRIPE",
+        status: "unreviewed",
+        externalId: "transaction_rm2",
+        createdAt: Date.now(),
+      }),
+    );
+    await seedDetectedPayout(s, { stripePayoutId: "po_rm2", amountCents: 4_825 });
+    await t.mutation(internal.reconciliation.applyPayoutAllocation, {
+      stripePayoutId: "po_rm2",
+      items: [
+        { grossCents: 5_000, feeCents: 175, netCents: 4_825, invoiceId: "in_rm2" },
+      ],
+    });
+    const pending = await t.query(
+      internal.reconciliation.listUnexecutedEnginePairs,
+      {},
+    );
+    expect(pending.map((p) => p.transferGroupId)).toEqual([
+      `payoutalloc-po_rm2-${s.chapterId}`,
+    ]);
   });
 
   test("productionAccountIds requires ACTIVE production accounts on both sides", async () => {

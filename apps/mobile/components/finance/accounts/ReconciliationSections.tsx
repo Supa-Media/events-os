@@ -207,6 +207,11 @@ export function ReconciliationSection() {
   const { run, toast, dismiss } = useActionRunner();
   const [flagging, setFlagging] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+  // Two-step confirm for ENABLING real movement (web-safe — Alert.alert
+  // no-ops on web): first tap arms, second tap within the armed state
+  // commits. Disabling is one tap; turning money movement OFF should never
+  // have friction.
+  const [confirmingRealMove, setConfirmingRealMove] = useState(false);
 
   if (overview === undefined) {
     return (
@@ -227,8 +232,11 @@ export function ReconciliationSection() {
       <Text className="mb-3 text-sm text-muted">
         Every morning the engine detects Stripe payouts, moves each book&apos;s
         share of the deposit onto its own book (net of fees), labels the bank
-        deposit, and settles cross-book card spend — ledger entries only, no
-        real money moves. Flag anything that looks off.
+        deposit, and settles cross-book card spend.{" "}
+        {overview.realMovement
+          ? "Real cash movement is ON: it also executes those transfers between the Increase accounts, so the cash follows the books."
+          : "Ledger entries only while Real cash movement is off — no real money moves."}{" "}
+        Flag anything that looks off.
       </Text>
       <View className="mb-1">
         <ToastView toast={toast} onDismiss={dismiss} />
@@ -298,17 +306,51 @@ export function ReconciliationSection() {
                   ? "The morning run executes each booked transfer as a real Increase account-to-account movement, so the cash follows the books."
                   : "Off: the engine writes ledger entries only. Turn on to have the morning run move the actual cash between Increase accounts to match."}
               </Text>
+              {confirmingRealMove && !overview.realMovement ? (
+                <Text className="mt-1 text-2xs font-semibold text-warn">
+                  This authorizes the engine to move real money every morning —
+                  transfers booked from this moment on will execute
+                  automatically. Tap Confirm to proceed.
+                </Text>
+              ) : null}
             </View>
-            <Button
-              title={overview.realMovement ? "Turn off" : "Turn on"}
-              variant={overview.realMovement ? "secondary" : "primary"}
-              onPress={() =>
-                void run(
-                  () => setRealMovement({ enabled: !overview.realMovement }),
-                  { errorTitle: "Couldn't change real cash movement" },
-                )
-              }
-            />
+            {overview.realMovement ? (
+              <Button
+                title="Turn off"
+                variant="secondary"
+                onPress={() =>
+                  void run(() => setRealMovement({ enabled: false }), {
+                    errorTitle: "Couldn't change real cash movement",
+                  })
+                }
+              />
+            ) : confirmingRealMove ? (
+              <View className="gap-1.5">
+                <Button
+                  title="Confirm — move real money"
+                  onPress={() =>
+                    void run(
+                      async () => {
+                        await setRealMovement({ enabled: true });
+                        setConfirmingRealMove(false);
+                      },
+                      { errorTitle: "Couldn't change real cash movement" },
+                    )
+                  }
+                />
+                <Button
+                  title="Cancel"
+                  variant="secondary"
+                  onPress={() => setConfirmingRealMove(false)}
+                />
+              </View>
+            ) : (
+              <Button
+                title="Turn on"
+                variant="secondary"
+                onPress={() => setConfirmingRealMove(true)}
+              />
+            )}
           </View>
 
           {overview.sinceMs != null ? (

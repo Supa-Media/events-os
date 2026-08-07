@@ -239,9 +239,9 @@ export const applyIncreaseAccountTransaction = internalMutation({
         );
         return { inserted: false, skipped: true };
       }
-      // 3. A historical auto-initiated transfer leg: the retired skim/
-      //    launch-grant/settlement flows stamped the leg's `externalId` with
-      //    the Increase transfer id (see `transfers.ts`'s header comment).
+      // 3. A historical auto-initiated transfer leg — OR a morning-engine
+      //    real movement (`reconciliation.ts` stamps both legs' `externalId`
+      //    with the account-transfer id right after creating it).
       const bookedLeg = await ctx.db
         .query("transactions")
         .withIndex("by_external_id", (q) => q.eq("externalId", args.transferId))
@@ -249,6 +249,32 @@ export const applyIncreaseAccountTransaction = internalMutation({
       if (bookedLeg) {
         console.log(
           `[increase] account ingestion: skipping ${args.externalId} (${args.category}) — transfer leg already booked as ${bookedLeg._id}`,
+        );
+        return { inserted: false, skipped: true };
+      }
+    }
+
+    // 4. A morning-engine real movement whose webhook RACED the stamp: the
+    //    engine stamps the pair's legs only after `POST /account_transfers`
+    //    returns, and an account transfer settles instantly — so this
+    //    entry's `transaction.created` can arrive before the stamp lands.
+    //    The engine puts the pair's `transferGroupId` in the transfer's
+    //    description ("Chapter OS <groupId>") precisely so this guard can
+    //    resolve the pair deterministically without the (not-yet-written)
+    //    externalId. A matching BOOKED pair → this entry settles it → skip.
+    const descMatch = args.description?.match(
+      /Chapter OS ((?:payoutalloc|autosettle)-\S+)/,
+    );
+    if (descMatch) {
+      const engineLeg = await ctx.db
+        .query("transactions")
+        .withIndex("by_transfer_group", (q) =>
+          q.eq("transferGroupId", descMatch[1]),
+        )
+        .first();
+      if (engineLeg) {
+        console.log(
+          `[increase] account ingestion: skipping ${args.externalId} (${args.category}) — settles engine pair ${descMatch[1]}`,
         );
         return { inserted: false, skipped: true };
       }
