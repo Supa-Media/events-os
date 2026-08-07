@@ -57,6 +57,7 @@ export function useModuleCalendar({
   const addItem = useMutation(api.items.addEventItem);
   const updateItem = useMutation(api.items.updateEventItem);
   const setOwner = useMutation(api.items.assignOwner);
+  const removeEventItemMutation = useMutation(api.items.removeEventItem);
 
   const today = startOfDay(Date.now());
   const eventDay = startOfDay(eventDate);
@@ -209,6 +210,15 @@ export function useModuleCalendar({
     void setItemStatus({ itemId: item._id as Id<"eventItems">, status });
   };
 
+  // Delete an item outright (day panel's delete button, confirmed by the
+  // caller before this runs). If it was mid-move ("pick a day on the
+  // calendar"), exit move mode too — otherwise the "Moving …" banner would
+  // keep referencing a row that no longer exists.
+  const removeItem = (item: ScheduleItem) => {
+    if (moving?._id === item._id) setMoving(null);
+    void removeEventItemMutation({ itemId: item._id as Id<"eventItems"> });
+  };
+
   // Persist a field-chip edit: system columns patch their promoted field, custom
   // columns merge into the fields bag (null deletes the key server-side).
   const saveField = (item: ScheduleItem, column: CalendarColumn, value: unknown) => {
@@ -289,6 +299,7 @@ export function useModuleCalendar({
     goToday,
     openComposeOn,
     setStatus,
+    removeItem,
     saveField,
     reschedule,
     moving,
