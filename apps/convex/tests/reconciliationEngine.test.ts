@@ -620,6 +620,29 @@ describe("signedBookCents — every ledger shape signs correctly", () => {
     expect(signedBookCents(pair(chapterId, "chapter_to_central"))).toBe(-1_000);
   });
 
+  test("revenue's bank arrivals contribute ZERO — counted once at the gifts/tickets layer", () => {
+    // A labeled/engine-matched payout deposit is the cash arrival of
+    // already-counted revenue.
+    expect(
+      signedBookCents(tr({ flow: "inflow", payoutProcessor: "stripe" })),
+    ).toBe(0);
+    expect(
+      signedBookCents(tr({ flow: "inflow", stripePayoutId: "po_1" })),
+    ).toBe(0);
+    // A payout-allocation pair leg redistributes that same deposit.
+    expect(
+      signedBookCents(
+        tr({
+          flow: "transfer",
+          source: "transfer",
+          transferOrigin: "payout_allocation",
+          transferDirection: "central_to_chapter",
+          chapterId: "ch_1" as Id<"chapters">,
+        }),
+      ),
+    ).toBe(0);
+  });
+
   test("marked bank transfers keep the bank's direction; special sources sign by meaning", () => {
     expect(
       signedBookCents(tr({ flow: "transfer", preMarkFlow: "outflow" })),
@@ -707,16 +730,47 @@ describe("audit surface — accounts-page queries + flags", () => {
     const balances = await s.as.query(api.reconciliation.accountBalances, {});
     const central = balances.find((b) => b.scope === CENTRAL);
     const chapter = balances.find((b) => b.scope === s.chapterId);
-    // Central: +4825 deposit − 4825 allocation outflow leg = 0.
+    // Founder model: money-in from the GIVING layer, not bank arrivals.
+    // Central earned nothing; its matched deposit + allocation outflow leg
+    // both contribute 0 to the ledger side (revenue counted once).
     expect(central?.bookBalanceCents).toBe(0);
-    // Chapter: +4825 allocation inflow leg — its true value by morning.
-    expect(chapter?.bookBalanceCents).toBe(4_825);
+    expect(central?.revenueCents).toBe(0);
+    expect(central?.ledgerNetCents).toBe(0);
+    // Chapter: the $50 gift is its revenue (gross of Stripe's $1.75 fee);
+    // the allocation inflow leg contributes 0 — no double-count.
+    expect(chapter?.bookBalanceCents).toBe(5_000);
+    expect(chapter?.revenueCents).toBe(5_000);
+    expect(chapter?.ledgerNetCents).toBe(0);
 
     const history = await s.as.query(api.reconciliation.listTransferHistory, {});
     expect(history.length).toBe(1);
     expect(history[0]?.origin).toBe("payout_allocation");
     expect(history[0]?.stripePayoutId).toBe("po_8");
     expect(history[0]?.chapterName).toBe("New York");
+  });
+
+  test("accountBalances: ticket sales are revenue; ledger spend subtracts", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await seedTicketOrder(s, 2_500); // a paid GA ticket
+    await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 1_000,
+        postedAt: Date.now(),
+        status: "categorized",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const balances = await s.as.query(api.reconciliation.accountBalances, {});
+    const chapter = balances.find((b) => b.scope === s.chapterId);
+    expect(chapter?.revenueCents).toBe(2_500);
+    expect(chapter?.ledgerNetCents).toBe(-1_000);
+    expect(chapter?.bookBalanceCents).toBe(1_500);
   });
 
   test("flags: one open flag per artifact, resolvable with a note", async () => {

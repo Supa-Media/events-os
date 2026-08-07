@@ -498,13 +498,14 @@ export const transactions = defineTable({
   // Processor payout marking (`finances.markAsPayout`): a settlement deposit
   // from Givebutter/Stripe, batching many donations into one bank inflow.
   //
-  // This is a LABEL ONLY — a marked payout keeps `flow:"inflow"` and is never
-  // rewritten to `flow:"transfer"`. Donations live in `gifts` and never reach
-  // this table, so the deposit is the ledger's only record of that income;
-  // excluding it would erase real revenue. See `PAYOUT_PROCESSORS`
-  // (`@events-os/shared`) for the full reasoning and the prior incident it
-  // mirrors. Unlike a transfer this has NO counterpart leg to pair with —
-  // nothing else in the ledger books the same dollars.
+  // This is a LABEL — a marked payout keeps `flow:"inflow"` and is never
+  // rewritten to `flow:"transfer"` (a transfer is money between two of the
+  // org's own accounts; this arrived from outside). Under the 2026-08-07
+  // book-value model the label is also the anti-double-count switch: revenue
+  // is counted at the GIVING layer (`gifts` + ticket orders), so a LABELED
+  // deposit contributes zero to book value (`lib/bookBalance.ts`) while an
+  // unmarked one still counts as plain inflow until a human marks it. See
+  // `PAYOUT_PROCESSORS` (`@events-os/shared`) for the full model.
   payoutProcessor: v.optional(
     v.union(...PAYOUT_PROCESSORS.map((p) => v.literal(p))),
   ),

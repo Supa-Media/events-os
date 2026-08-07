@@ -57,11 +57,11 @@ export function BalancesSection() {
     <>
       <SectionHeader title="Account balances" />
       <Text className="mb-3 text-sm text-muted">
-        Book value is what each book is actually worth on the ledger — the
-        morning engine keeps it true by allocating Stripe payouts and settling
-        cross-book card spend. Bank is the cash physically sitting in the
-        scope&apos;s Increase account (cash pools where Stripe pays out, so the
-        two differing is normal).
+        Book value = the money a book has earned (donations + ticket sales,
+        gross of processor fees) minus what its ledger says went out, with
+        cross-book card spend settled by the morning engine. Bank is the cash
+        physically sitting in the scope&apos;s Increase account — the two
+        differing is normal until cash movement catches the books up.
       </Text>
       <Card>
         {balances === undefined ? (
@@ -90,9 +90,15 @@ export function BalancesSection() {
                   <Text className="font-display text-base text-ink" numberOfLines={1}>
                     {row.scopeName}
                   </Text>
+                  <Text className="text-2xs text-faint">
+                    {formatCents(row.revenueCents)} earned ·{" "}
+                    {row.ledgerNetCents <= 0
+                      ? `${formatCents(Math.abs(row.ledgerNetCents))} out`
+                      : `${formatCents(row.ledgerNetCents)} ledger net`}
+                  </Text>
                   {row.truncated ? (
                     <Text className="text-2xs text-warn">
-                      Ledger scan truncated — treat as approximate
+                      Scan truncated — treat as approximate
                     </Text>
                   ) : null}
                 </View>
