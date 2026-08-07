@@ -1826,6 +1826,22 @@ export const financeSettings = defineTable({
   // allocate older payouts — after checking those deposits weren't already
   // manually settled (see the mutation's doc).
   autoReconciliationSinceMs: v.optional(v.number()),
+  // REAL cash follows the books: when true, the morning engine EXECUTES each
+  // engine-booked transfer pair as an actual Increase account-to-account
+  // transfer (central ↔ chapter, production accounts only) and stamps the
+  // pair's legs with the transfer id. DEFAULT OFF — flipping it on from the
+  // accounts page is the standing human authorization the money-gating rule
+  // requires; a merge alone never moves real money. Manual `recordTransfer`
+  // pairs are never executed (they record movements that already happened
+  // outside the app).
+  autoTransferRealMovement: v.optional(v.boolean()),
+  // Stamped to "now" every time real movement is ENABLED. Only pairs BOOKED
+  // at/after this instant execute — the historical backlog (pairs booked
+  // while the toggle was off, including pre-Increase-era allocations whose
+  // cash never reached the central Increase account) NEVER auto-moves.
+  // Anything older that should physically move is a deliberate manual
+  // transfer in the bank, recorded the normal way.
+  autoTransferRealMovementSinceMs: v.optional(v.number()),
 });
 
 // ── Morning reconciliation engine ────────────────────────────────────────────

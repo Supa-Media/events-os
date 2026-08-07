@@ -796,3 +796,236 @@ describe("audit surface — accounts-page queries + flags", () => {
     expect(second).toBeNull();
   });
 });
+
+// ── Real cash movement (default-off; DB seams of the execution step) ─────────
+// The Increase POST itself lives in the action (network); these cover the
+// seams the money depends on: which pairs are eligible, the both-legs stamp
+// that also feeds `increaseLedger`'s already-booked guard, the account
+// readiness read, and the FM-gated toggle.
+
+describe("real cash movement — eligibility, stamping, toggle", () => {
+  /** Direction (a) cross-book spend, same shape as the settlement suite's
+   *  local helper (that one is scoped to its own describe). */
+  async function seedCrossBookSpendFor(
+    s: ChapterSetup,
+    amountCents: number,
+  ): Promise<void> {
+    await run(s.t, async (ctx) => {
+      const centralBudgetId = await ctx.db.insert("budgets", {
+        chapterId: CENTRAL,
+        amountCents: 100_000,
+        type: "recurring",
+        cadence: "monthly",
+        year: 2026,
+        approvalStatus: "approved",
+        createdAt: Date.now(),
+      });
+      await ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "manual",
+        flow: "outflow",
+        amountCents,
+        postedAt: Date.now(),
+        status: "categorized",
+        budgetId: centralBudgetId,
+        createdAt: Date.now(),
+      });
+    });
+  }
+
+  test("only UNSTAMPED ENGINE pairs booked AFTER enabling are eligible; manual pairs never execute", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+
+    // Nothing is EVER eligible before real movement has been enabled.
+    expect(
+      await t.query(internal.reconciliation.listUnexecutedEnginePairs, {}),
+    ).toHaveLength(0);
+
+    // A pre-enable engine pair (the historical backlog) stays ineligible…
+    await seedCrossBookSpendFor(s, 3_000);
+    await t.mutation(internal.reconciliation.runAutoSettlement, {
+      dateStr: "2026-08-07",
+    });
+    await s.as.mutation(api.reconciliation.setRealMovementEnabled, {
+      enabled: true,
+    });
+    expect(
+      await t.query(internal.reconciliation.listUnexecutedEnginePairs, {}),
+    ).toHaveLength(0);
+
+    // …a post-enable engine settlement pair is eligible…
+    await seedCrossBookSpendFor(s, 10_000);
+    await t.mutation(internal.reconciliation.runAutoSettlement, {
+      dateStr: "2026-08-08",
+    });
+    // …and a MANUAL transfer (never eligible — it records cash that already
+    // moved outside the app).
+    await s.as.mutation(api.transfers.recordTransfer, {
+      direction: "central_to_chapter",
+      chapterId: s.chapterId,
+      amountCents: 5_000,
+      postedAt: Date.now(),
+    });
+
+    const pending = await t.query(
+      internal.reconciliation.listUnexecutedEnginePairs,
+      {},
+    );
+    expect(pending).toHaveLength(1);
+    expect(pending[0]).toMatchObject({
+      transferGroupId: `autosettle-${s.chapterId}-2026-08-08`,
+      chapterId: s.chapterId,
+      direction: "central_to_chapter",
+      amountCents: 10_000,
+    });
+
+    // Stamping marks BOTH legs and empties the eligible list; re-stamping is
+    // a no-op that never overwrites the recorded transfer id.
+    await t.mutation(internal.reconciliation.stampPairMoved, {
+      transferGroupId: pending[0]!.transferGroupId,
+      increaseTransferId: "account_transfer_1",
+    });
+    const legs = await legsFor(s, pending[0]!.transferGroupId);
+    expect(legs.map((l) => l.externalId)).toEqual([
+      "account_transfer_1",
+      "account_transfer_1",
+    ]);
+    await t.mutation(internal.reconciliation.stampPairMoved, {
+      transferGroupId: pending[0]!.transferGroupId,
+      increaseTransferId: "account_transfer_2",
+    });
+    expect(
+      (await legsFor(s, pending[0]!.transferGroupId)).map((l) => l.externalId),
+    ).toEqual(["account_transfer_1", "account_transfer_1"]);
+    expect(
+      await t.query(internal.reconciliation.listUnexecutedEnginePairs, {}),
+    ).toHaveLength(0);
+
+    // A PRODUCTION-stamped settling leg still nets in the live balance
+    // (matchesMode keeps prod ids) — the settlement stays paid-down. The
+    // fixture's extra $50 MANUAL transfer over-settles: 10,000 owed −
+    // 10,000 stamped auto-settle − 5,000 manual = −5,000. If the stamp had
+    // dropped the auto-settle leg out of the mode filter, this would read
+    // +5,000 instead.
+    const balances = await s.as.query(api.transfers.interScopeBalances, {});
+    expect(balances.find((b) => b.chapterId === s.chapterId)?.netCents).toBe(
+      -5_000,
+    );
+  });
+
+  test("a payout pair moves cash only when its deposit really landed at Increase", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await s.as.mutation(api.reconciliation.setRealMovementEnabled, {
+      enabled: true,
+    });
+
+    // Payout A: allocated but deposit NOT matched → ineligible.
+    await seedDonorWithGift(s, s.chapterId, {
+      stripeInvoiceId: "in_rm1",
+      amountCents: 5_000,
+    });
+    await seedDetectedPayout(s, { stripePayoutId: "po_rm1", amountCents: 4_825 });
+    await t.mutation(internal.reconciliation.applyPayoutAllocation, {
+      stripePayoutId: "po_rm1",
+      items: [
+        { grossCents: 5_000, feeCents: 175, netCents: 4_825, invoiceId: "in_rm1" },
+      ],
+    });
+    expect(
+      await t.query(internal.reconciliation.listUnexecutedEnginePairs, {}),
+    ).toHaveLength(0);
+
+    // Payout B: matched to an increase_ach deposit → eligible.
+    await seedDonorWithGift(s, s.chapterId, {
+      stripeInvoiceId: "in_rm2",
+      amountCents: 5_000,
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: CENTRAL,
+        source: "increase_ach",
+        flow: "inflow",
+        amountCents: 4_825,
+        currency: "usd",
+        postedAt: Date.now(),
+        merchantName: "STRIPE",
+        status: "unreviewed",
+        externalId: "transaction_rm2",
+        createdAt: Date.now(),
+      }),
+    );
+    await seedDetectedPayout(s, { stripePayoutId: "po_rm2", amountCents: 4_825 });
+    await t.mutation(internal.reconciliation.applyPayoutAllocation, {
+      stripePayoutId: "po_rm2",
+      items: [
+        { grossCents: 5_000, feeCents: 175, netCents: 4_825, invoiceId: "in_rm2" },
+      ],
+    });
+    const pending = await t.query(
+      internal.reconciliation.listUnexecutedEnginePairs,
+      {},
+    );
+    expect(pending.map((p) => p.transferGroupId)).toEqual([
+      `payoutalloc-po_rm2-${s.chapterId}`,
+    ]);
+  });
+
+  test("productionAccountIds requires ACTIVE production accounts on both sides", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // Only a SANDBOX chapter account + an active production central account.
+    await run(s.t, async (ctx) => {
+      await ctx.db.insert("increaseAccounts", {
+        chapterId: "central",
+        sandbox: false,
+        increaseAccountId: "account_central",
+        onboardingStatus: "active",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      await ctx.db.insert("increaseAccounts", {
+        chapterId: s.chapterId,
+        sandbox: true,
+        increaseAccountId: "sandbox_account_ch",
+        onboardingStatus: "active",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    });
+    const ids = await t.query(internal.reconciliation.productionAccountIds, {
+      chapterId: s.chapterId,
+    });
+    expect(ids.centralAccountId).toBe("account_central");
+    expect(ids.chapterAccountId).toBeNull(); // sandbox row never qualifies
+  });
+
+  test("the toggle is FM-gated, defaults OFF, and round-trips", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedSelfPerson(s);
+    await expect(
+      s.as.mutation(api.reconciliation.setRealMovementEnabled, {
+        enabled: true,
+      }),
+    ).rejects.toThrow(/Executive Director and Financial Manager/i);
+
+    const t2 = newT();
+    const s2 = await setupChapter(t2);
+    await asCentralEd(s2);
+    expect(
+      (await s2.as.query(api.reconciliation.reconciliationOverview, {}))
+        .realMovement,
+    ).toBe(false);
+    await s2.as.mutation(api.reconciliation.setRealMovementEnabled, {
+      enabled: true,
+    });
+    expect(
+      (await s2.as.query(api.reconciliation.reconciliationOverview, {}))
+        .realMovement,
+    ).toBe(true);
+  });
+});

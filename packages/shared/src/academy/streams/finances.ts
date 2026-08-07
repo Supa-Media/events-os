@@ -1413,7 +1413,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "Paid-from never moves — Central's account really did pay, and its statement has to keep matching. Charged-to is what the budget measures, so the deposit lands on New York's plan. The gap between the two is a receivable the app computes for you, visible in Inter-chapter balances — and settled automatically by the morning reconciliation engine, which books the transfer overnight so every book reads true by morning (the Accounts page shows each one for audit).",
+          "Paid-from never moves — Central's account really did pay, and its statement has to keep matching. Charged-to is what the budget measures, so the deposit lands on New York's plan. The gap between the two is a receivable the app computes for you, visible in Inter-chapter balances — and settled automatically by the morning reconciliation engine, which books the transfer overnight so every book reads true by morning (the Accounts page shows each one for audit, and when the Financial Manager has turned on Real cash movement, the actual money moves between the Increase accounts to match).",
       },
       {
         prompt: "What's the FM's actual relationship to a chapter's spending?",
