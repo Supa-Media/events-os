@@ -30,7 +30,6 @@ import { internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 import type { Doc } from "./_generated/dataModel";
 import { decideException } from "./lib/receiptExceptions";
-import { logFinanceAudit } from "./lib/financeAuditLog";
 import { CLEANUP_EXCEPTIONS } from "./lib/seed/historical/genesisCleanup2026";
 
 const SCAN_LIMIT = 6000;
@@ -93,16 +92,24 @@ export const approveGenesisExceptions = internalMutation({
             decidedByPersonId,
             decidedByUserId,
           });
-          await logFinanceAudit(ctx, {
+          // Written directly rather than through `logFinanceAudit`, which derives its
+          // actor from `requireUserId(ctx)` — a CLI-invoked internal mutation has no
+          // session, so the helper throws. The row is byte-identical to what the
+          // helper would insert, using the decider passed in. Dropping the audit
+          // entry instead was not an option: an approval with no trail is exactly
+          // what this table exists to prevent.
+          await ctx.db.insert("financeAuditLog", {
             chapterId: txn.chapterId,
+            actorUserId: decidedByUserId,
+            actorPersonId: decidedByPersonId,
             subjectType: "transaction",
             subjectId: txn._id,
             action: "receipt_exception_decide",
-            actorPersonId: decidedByPersonId,
             field: "receiptException",
             before: "Awaiting approval",
             after: "Approved — Lost",
             amountCents: txn.amountCents,
+            createdAt: Date.now(),
           });
         }
         approved++;
