@@ -421,6 +421,14 @@ function ReconcileRow({
   // (including a read-only peeked one, whose whole body is already
   // non-interactive) still renders its real category rather than a bare dash.
   const hideCategory = centralScope || (isCentralRow && !canCategorizeCrossBook);
+  // A transfer leg has no category and no budget BY DESIGN — it isn't spend,
+  // it's the same money moving between two books, and `signedBookCents`
+  // deliberately keeps it out of both. Rendering it as an empty "Uncategorized"
+  // picker read as unfinished work (owner, 2026-08-07: these rows "need to be
+  // filled out in a standard way"), so say what it is instead. The row's note
+  // carries the arithmetic — see `reconciliation.ts`'s settlement/allocation
+  // notes, which spell out every sum the net came from.
+  const isTransferLeg = row.flow === "transfer";
   const rowForItems = isCentralRow && centralForItems ? centralForItems : forItems;
 
   // Fire-and-surface: run a cell mutation, alerting the server's reason on error.
@@ -646,7 +654,13 @@ function ReconcileRow({
           `hideCategory`) so the grid stays aligned without offering a picker
           that can't commit. */}
       {showCategory ? (
-        hideCategory ? (
+        isTransferLeg ? (
+          <Cell width={widths.category}>
+            <Text className="flex-1 px-2 py-1.5 text-sm text-muted">
+              Internal transfer
+            </Text>
+          </Cell>
+        ) : hideCategory ? (
           <Cell width={widths.category}>
             <Text className="flex-1 px-2 py-1.5 text-sm text-faint">—</Text>
           </Cell>

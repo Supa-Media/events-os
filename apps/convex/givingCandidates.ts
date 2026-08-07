@@ -391,3 +391,103 @@ export const dismissGiftCandidate = mutation({
     return null;
   },
 });
+
+/**
+ * Attach an EXISTING gift to the bank row its money arrived on.
+ *
+ * ── WHY THIS EXISTS ─────────────────────────────────────────────────────────
+ * `accountBalances` counts revenue at the gifts layer, so when the same money
+ * ALSO sits in the ledger as a plain bank credit it is counted twice. The only
+ * signal it skips on is `gifts.transactionId` — the link this mutation writes.
+ *
+ * `confirmExternalGift` already produces linked gifts, but it CREATES the gift
+ * from the transaction. It has nothing to offer when the gift already exists
+ * and merely lost track of its deposit — which is the common case for imported
+ * history: at the time of writing, 3 of 180 gifts carry a link, and the two
+ * `genesis:truist:*` gifts do not. Their $500 + $500 was in New York's book as
+ * $1,000 of gifts AND $1,000 of unlinked inflow.
+ *
+ * Processor money never needs this: a Stripe or Givebutter deposit is labelled
+ * a payout and already contributes zero. This is for gifts that arrived as
+ * DIRECT bank credits — wires, ACH pulls, transfers from another of the org's
+ * own accounts.
+ *
+ * ── WHAT IT REFUSES ─────────────────────────────────────────────────────────
+ * The amounts must match exactly, and both rows must sit in the same book. A
+ * near-miss is a different problem (a fee taken in transit, a partial deposit)
+ * and quietly linking mismatched rows would move book value by the difference
+ * while looking like housekeeping.
+ *
+ * It will not steal a transaction another gift already claims, and it will not
+ * relink a gift that already points somewhere. Both are the shape of a
+ * double-click or a stale screen, and both should say so rather than silently
+ * rewrite an evidence trail.
+ *
+ * NOTE the deliberate asymmetry with the UI that calls it: the suspicion is
+ * raised on amount and date proximity, but CONFIRMING is a human act. Two
+ * separate deposits of the same size on one day are an ordinary thing — a
+ * heuristic must never be allowed to complete this on its own.
+ */
+export const linkGiftToTransaction = mutation({
+  args: {
+    giftId: v.id("gifts"),
+    transactionId: v.id("transactions"),
+  },
+  returns: v.null(),
+  handler: async (ctx, { giftId, transactionId }) => {
+    const gift = await ctx.db.get(giftId);
+    if (!gift) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Gift not found." });
+    }
+    const txn = await ctx.db.get(transactionId);
+    if (!txn) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Transaction not found.",
+      });
+    }
+    await requireGivingManage(ctx, gift.scope as GivingScope);
+
+    if (gift.transactionId !== undefined) {
+      throw new ConvexError({
+        code: "ALREADY_LINKED",
+        message: "This gift is already matched to a bank row.",
+      });
+    }
+    if (String(txn.chapterId) !== String(gift.scope)) {
+      throw new ConvexError({
+        code: "SCOPE_MISMATCH",
+        message: "The gift and the bank row belong to different books.",
+      });
+    }
+    if (txn.flow !== "inflow") {
+      throw new ConvexError({
+        code: "NOT_AN_INFLOW",
+        message: "Only a bank credit can be a gift's arrival.",
+      });
+    }
+    if (txn.amountCents !== gift.amountCents) {
+      throw new ConvexError({
+        code: "AMOUNT_MISMATCH",
+        message:
+          "The gift and the bank row are different amounts — link only rows that are the same money.",
+      });
+    }
+
+    // One bank row can only be one gift's arrival. Bounded read: gifts already
+    // linked to THIS transaction, which is 0 or 1 by this very rule.
+    const claimed = await ctx.db
+      .query("gifts")
+      .withIndex("by_scope", (q) => q.eq("scope", gift.scope))
+      .take(4000);
+    if (claimed.some((g) => g.transactionId === transactionId)) {
+      throw new ConvexError({
+        code: "TRANSACTION_TAKEN",
+        message: "Another gift is already matched to that bank row.",
+      });
+    }
+
+    await ctx.db.patch(giftId, { transactionId });
+    return null;
+  },
+});

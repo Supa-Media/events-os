@@ -21,12 +21,14 @@
  * proof deleted a real $500 deposit from this deployment; the UI asks a person
  * instead.
  */
+import { useState } from "react";
 import { Modal, Pressable, ScrollView, Text, View } from "react-native";
-import { useQuery } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import { formatCents } from "@events-os/shared";
-import { Badge, Card, Icon } from "../../ui";
+import { Badge, Button, Card, Icon, ToastView } from "../../ui";
 import { colors } from "../../../lib/theme";
+import { useActionRunner } from "../../../lib/useActionToast";
 
 type Scope = string;
 
@@ -108,6 +110,11 @@ export function BookValueBreakdownModal({
     api.reconciliation.bookValueBreakdown,
     scope ? ({ scope } as never) : "skip",
   );
+  const linkGift = useMutation(api.givingCandidates.linkGiftToTransaction);
+  const { run, toast, dismiss } = useActionRunner();
+  // Which suspicion is mid-flight — so its button alone shows the pending state
+  // rather than every row going busy at once.
+  const [linking, setLinking] = useState<string | null>(null);
 
   return (
     <Modal
@@ -185,6 +192,34 @@ export function BookValueBreakdownModal({
                           {methodLabel(s.giftMethod)} gift
                           {s.giftExternalRef ? ` (${s.giftExternalRef})` : ""}
                         </Text>
+                        {/* Confirming is a HUMAN act. The suspicion came from
+                            amounts matching on nearby dates, which is a hint and
+                            not proof — two separate deposits of the same size on
+                            one day happen. So the app offers the button and
+                            never presses it. */}
+                        <View className="mt-2 flex-row items-center gap-3">
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            title="Same money — link them"
+                            loading={linking === s.transactionId}
+                            disabled={linking !== null}
+                            onPress={() => {
+                              setLinking(s.transactionId);
+                              void run(
+                                () =>
+                                  linkGift({
+                                    giftId: s.giftId,
+                                    transactionId: s.transactionId,
+                                  }),
+                                { errorTitle: "Couldn't link them" },
+                              ).finally(() => setLinking(null));
+                            }}
+                          />
+                          <Text className="flex-1 text-2xs text-faint">
+                            Counts it once, at the gift.
+                          </Text>
+                        </View>
                       </View>
                     ))}
                   </Card>
@@ -321,6 +356,7 @@ export function BookValueBreakdownModal({
               <View className="h-6" />
             </ScrollView>
           )}
+          <ToastView toast={toast} onDismiss={dismiss} />
         </View>
       </View>
     </Modal>
