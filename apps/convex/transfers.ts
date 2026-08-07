@@ -78,36 +78,40 @@
  * launch grant's #149 gate even though the launch-grant KIND is gone.
  */
 import { mutation, query } from "./_generated/server";
-import type { MutationCtx, QueryCtx } from "./_generated/server";
+import type { QueryCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { Doc, Id } from "./_generated/dataModel";
 import {
   CENTRAL,
   easternParts,
   matchesMode,
-  type AutoTransferOrigin,
 } from "@events-os/shared";
 import { requireChapterId, requireUserId } from "./lib/context";
 import {
   requireCentralEdOrFm,
   requireCentralFinanceRole,
   getChapterAccountForMode,
-  type FinanceScope,
 } from "./lib/finance";
+import {
+  TRANSFER_DIRECTIONS,
+  assertPositiveCents,
+  recordTransferPair,
+  transferScopes,
+  type TransferDirection,
+} from "./lib/transferPair";
 import { readSandbox } from "./financeSettings";
 import { ROLLUP_SCAN_LIMIT, isSpend, inPeriod, txnMatchesMode } from "./finances";
 
-// ── Shared amount validation ─────────────────────────────────────────────────
-
-/** A transfer amount must be a positive whole number of cents (invariant #1). */
-function assertPositiveCents(amountCents: number, label = "Transfer amount"): void {
-  if (!Number.isInteger(amountCents) || amountCents <= 0) {
-    throw new ConvexError({
-      code: "INVALID_AMOUNT",
-      message: `${label} must be a positive whole number of cents.`,
-    });
-  }
-}
+// ── The pair machinery lives in `lib/transferPair.ts` ────────────────────────
+// (factored out so `finances.ts` — which this file imports from — and
+// `reconciliation.ts` can book pairs through the same choke point without an
+// import cycle). This file re-exports the pieces its own consumers use.
+export {
+  recordTransferPair,
+  transferScopes,
+  transferPairLegs,
+  type TransferDirection,
+} from "./lib/transferPair";
 
 /** `postedAt` must be a real epoch-ms timestamp — the caller states the date
  *  the money actually moved (it can be in the past; this is a truth record
@@ -135,94 +139,6 @@ async function loadRealChapter(
   return chapter;
 }
 
-// ── The ledger pair (the shared core the generic mutation records) ───────────
-
-/** Every transaction row carrying this `transferGroupId` (0, or the 2 legs). */
-async function transferPairLegs(
-  ctx: QueryCtx,
-  transferGroupId: string,
-): Promise<Doc<"transactions">[]> {
-  return await ctx.db
-    .query("transactions")
-    .withIndex("by_transfer_group", (q) =>
-      q.eq("transferGroupId", transferGroupId),
-    )
-    .collect();
-}
-
-interface RecordPairArgs {
-  sourceScope: FinanceScope;
-  destScope: FinanceScope;
-  amountCents: number;
-  transferGroupId: string;
-  postedAt: number;
-  note?: string;
-  transferDirection: TransferDirection;
-  // Absent for an engine-booked pair (`reconciliation.ts` runs from a cron —
-  // there is no human caller; `transferOrigin` says which process wrote it).
-  userId?: Id<"users">;
-  // Set ONLY by the morning reconciliation engine; a human-recorded pair
-  // leaves it absent. See `AUTO_TRANSFER_ORIGINS` (`@events-os/shared`).
-  transferOrigin?: AutoTransferOrigin;
-}
-
-/**
- * Insert the two `flow:"transfer"` legs (outflow on `sourceScope`, inflow on
- * `destScope`), both carrying the same `transferGroupId` and `source:"transfer"`.
- * REJECTS with `ALREADY_RECORDED` when a pair for that id already exists —
- * defense in depth against a genuine `transferGroupId` collision for a manual
- * transfer (see this file's header comment on why that id is random rather
- * than deterministic), and the IDEMPOTENCY GUARD for the reconciliation
- * engine, whose group ids ARE deterministic (`payoutalloc-…`/`autosettle-…`)
- * precisely so a re-run can never book the same allocation twice. Returns the
- * two leg ids (outflow = the money-leaving leg, inflow = the money-arriving
- * leg). Exported for `reconciliation.ts` — the engine books pairs through
- * this same choke point so the pair invariant has exactly one writer.
- */
-export async function recordTransferPair(
-  ctx: MutationCtx,
-  a: RecordPairArgs,
-): Promise<{ outflowId: Id<"transactions">; inflowId: Id<"transactions"> }> {
-  assertPositiveCents(a.amountCents);
-  const existing = await transferPairLegs(ctx, a.transferGroupId);
-  if (existing.length > 0) {
-    throw new ConvexError({
-      code: "ALREADY_RECORDED",
-      message: "This transfer has already been recorded.",
-    });
-  }
-  const now = Date.now();
-  // Shared columns for both legs. `flow:"transfer"` → excluded from spend;
-  // `status:"reconciled"` (it's a settled, fully-attributed movement, not a
-  // charge awaiting review). `source:"transfer"` — every NEW transfer writes
-  // this ONE source regardless of what it's for (see this file's header
-  // comment); the historical `skim`/`launch_grant`/`settlement` sources only
-  // ever appear on rows written before this collapse.
-  const shared = {
-    source: "transfer" as const,
-    flow: "transfer" as const,
-    amountCents: a.amountCents,
-    currency: "usd",
-    postedAt: a.postedAt,
-    description: a.note,
-    transferGroupId: a.transferGroupId,
-    transferDirection: a.transferDirection,
-    transferOrigin: a.transferOrigin,
-    status: "reconciled" as const,
-    createdBy: a.userId,
-    createdAt: now,
-  };
-  const outflowId = await ctx.db.insert("transactions", {
-    chapterId: a.sourceScope,
-    ...shared,
-  });
-  const inflowId = await ctx.db.insert("transactions", {
-    chapterId: a.destScope,
-    ...shared,
-  });
-  return { outflowId, inflowId };
-}
-
 // ── Return validators ────────────────────────────────────────────────────────
 
 const recordResult = v.object({
@@ -234,13 +150,6 @@ const recordResult = v.object({
 
 // ── The generic manual transfer ───────────────────────────────────────────────
 
-/** Which way a transfer moves money — the ONLY thing that used to be implied
- *  by "kind" (skim was always chapter→central; a launch grant was always
- *  central→chapter). A generic transfer states it explicitly every time.
- *  Exported for `reconciliation.ts` (the engine states direction the same
- *  way). */
-const TRANSFER_DIRECTIONS = ["chapter_to_central", "central_to_chapter"] as const;
-export type TransferDirection = (typeof TRANSFER_DIRECTIONS)[number];
 const transferDirectionValidator = v.union(
   ...TRANSFER_DIRECTIONS.map((d) => v.literal(d)),
 );
@@ -255,17 +164,6 @@ const transferArgs = {
   postedAt: v.number(),
   note: v.optional(v.string()),
 };
-
-/** The source/dest scopes for a transfer pair, by direction. Exported for
- *  `reconciliation.ts`, which books pairs with the same direction semantics. */
-export function transferScopes(
-  chapterId: Id<"chapters">,
-  direction: TransferDirection,
-): { sourceScope: FinanceScope; destScope: FinanceScope } {
-  return direction === "central_to_chapter"
-    ? { sourceScope: CENTRAL, destScope: chapterId }
-    : { sourceScope: chapterId, destScope: CENTRAL };
-}
 
 /** See this file's header comment for the collision-safety rationale. */
 function genericTransferGroupId(

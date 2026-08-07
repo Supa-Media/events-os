@@ -85,6 +85,7 @@ import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import {
   CENTRAL,
+  easternParts,
   PAYOUT_ITEM_KINDS,
   STRIPE_PAYOUT_PROCESS_STATES,
   RECONCILIATION_FLAG_KINDS,
@@ -135,12 +136,14 @@ const HISTORY_DEFAULT_LIMIT = 25;
 const HISTORY_MAX_LIMIT = 100;
 
 /** `YYYY-MM-DD` in America/New_York — the org's "which day is it" for the
- *  deterministic daily settlement group id (same one-liner as
- *  `transfers.ts#easternDateStrLocal`). */
+ *  deterministic daily settlement group id. Built from the shared
+ *  `easternParts` (rather than a third copy of the `toLocaleDateString`
+ *  one-liner in `finances.ts`/`transfers.ts`) so the org's day rule has one
+ *  timezone source. */
 function easternDateStr(ts: number): string {
-  return new Date(ts).toLocaleDateString("en-CA", {
-    timeZone: "America/New_York",
-  });
+  const { year, month, day } = easternParts(ts);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${year}-${pad(month)}-${pad(day)}`;
 }
 
 // ── Validators shared by the engine's internal plumbing ──────────────────────
@@ -565,6 +568,7 @@ export const applyPayoutAllocation = internalMutation({
     // no pair — the deposit already lands on central's book.
     let transfersBooked = 0;
     let allocatedCents = 0;
+    const driftNotes: string[] = [];
     const allocation: (typeof allocationEntryValidator.type)[] = [];
     for (const [scope, bucket] of byScope) {
       const entry = { scope, ...bucket } as typeof allocationEntryValidator.type;
@@ -591,10 +595,30 @@ export const applyPayoutAllocation = internalMutation({
           transfersBooked += 1;
           allocatedCents += amountCents;
         } catch (err) {
-          // ALREADY_RECORDED = an earlier run booked this exact allocation —
-          // the idempotent re-run case, not an error. Anything else is real.
+          // ALREADY_RECORDED = an earlier run booked this allocation — the
+          // idempotent re-run case. But a re-run can RESOLVE items the first
+          // pass couldn't (e.g. a gift row that arrived late), recomputing a
+          // DIFFERENT net than the booked pair moved. Never silently display
+          // a number the ledger didn't book: compare and surface the drift
+          // loudly (the fix is a human offsetting entry, not an auto-edit —
+          // transfer pairs are append-only per transfers-ops-notes).
           if (!(err instanceof ConvexError) || err.data?.code !== "ALREADY_RECORDED") {
             throw err;
+          }
+          const bookedLeg = await ctx.db
+            .query("transactions")
+            .withIndex("by_transfer_group", (q) =>
+              q.eq("transferGroupId", transferGroupId),
+            )
+            .first();
+          if (
+            bookedLeg &&
+            (bookedLeg.amountCents !== amountCents ||
+              bookedLeg.transferDirection !== direction)
+          ) {
+            driftNotes.push(
+              `${scope}: booked pair moved ${bookedLeg.amountCents} cents (${bookedLeg.transferDirection}) but this run recomputes ${amountCents} cents (${direction}) — record an offsetting transfer for the difference (docs/plans/transfers-ops-notes.md).`,
+            );
           }
         }
         entry.transferGroupId = transferGroupId;
@@ -622,7 +646,9 @@ export const applyPayoutAllocation = internalMutation({
       itemKindCounts: kindCounts,
       unmappedNetCents,
       repaymentNetCents,
-      error: undefined,
+      // Drift stays visible until a human clears it via offsetting entries
+      // (re-runs keep recomputing it); a clean run clears any stale error.
+      error: driftNotes.length > 0 ? driftNotes.join(" ") : undefined,
       updatedAt: Date.now(),
     });
 
@@ -663,6 +689,10 @@ async function matchPayoutDeposit(
     (tr) =>
       tr.flow === "inflow" &&
       BANK_FEEDS.has(tr.source) &&
+      // LIVE rows only (#163 precedent): a sandbox-account test deposit must
+      // never be claimed as a real payout's arrival — the match is one-shot,
+      // so a wrong claim would leave the real deposit unlabeled forever.
+      txnMatchesMode(tr, false) &&
       tr.amountCents === payout.amountCents &&
       tr.stripePayoutId == null &&
       looksLikeStripe(tr),
@@ -675,6 +705,35 @@ async function matchPayoutDeposit(
   });
   return match._id;
 }
+
+/**
+ * Fetch-free deposit-match retry for an ALLOCATED payout whose bank deposit
+ * hadn't synced in yet — the cheap path the morning run uses instead of
+ * re-paging the payout's balance transactions (which never change once
+ * allocated). No-op once matched.
+ */
+export const retryDepositMatch = internalMutation({
+  args: { stripePayoutId: v.string() },
+  returns: v.object({ depositMatched: v.boolean() }),
+  handler: async (ctx, { stripePayoutId }) => {
+    const payout = await ctx.db
+      .query("stripePayouts")
+      .withIndex("by_stripe_payout", (q) =>
+        q.eq("stripePayoutId", stripePayoutId),
+      )
+      .unique();
+    if (!payout) return { depositMatched: false };
+    if (payout.matchedTransactionId != null) return { depositMatched: true };
+    const matched = await matchPayoutDeposit(ctx, payout);
+    if (matched) {
+      await ctx.db.patch(payout._id, {
+        matchedTransactionId: matched,
+        updatedAt: Date.now(),
+      });
+    }
+    return { depositMatched: matched != null };
+  },
+});
 
 // ── Auto settlement (internal — network-free) ────────────────────────────────
 
@@ -694,7 +753,13 @@ export const runAutoSettlement = internalMutation({
     settledCents: v.number(),
   }),
   handler: async (ctx, { dateStr }) => {
-    const sandboxMode = await readSandbox(ctx);
+    // ALWAYS the LIVE balance, never the current toggle. `financeSettings.
+    // sandboxMode` is a superuser demo state — if the engine computed nets
+    // from sandbox card spend it would book mode-NEUTRAL settling legs (a
+    // `recordTransferPair` leg has no `externalId`) that permanently corrupt
+    // live balances after the toggle flips back. Sandbox imbalances are demo
+    // artifacts; only real money gets auto-settled.
+    const sandboxMode = false;
     const { centralBudgetIds, chapters } = await loadInterScopeContext(ctx);
     const chapterOwesCentralRowsByChapter = await loadChapterOwesCentralRows(
       ctx,
@@ -1066,6 +1131,11 @@ async function runEngine(
       internal.reconciliation.ensureSince,
       {},
     );
+    // Stripe's `arrival_date` is midnight UTC of the arrival DAY, while
+    // `sinceMs` is stamped mid-day — compare at day granularity or payouts
+    // arriving on the activation day itself would be silently unreachable
+    // forever (midnight < mid-day, every run).
+    const sinceDayMs = Math.floor(sinceMs / DAY_MS) * DAY_MS;
 
     // ── 1+2+3: detect + allocate payouts ────────────────────────────────────
     if (key) {
@@ -1081,7 +1151,7 @@ async function runEngine(
         for (let page = 0; page < MAX_PAYOUT_PAGES; page++) {
           const params = new URLSearchParams();
           params.set("limit", String(STRIPE_PAGE_SIZE));
-          params.set("arrival_date[gte]", String(Math.floor(sinceMs / 1000)));
+          params.set("arrival_date[gte]", String(Math.floor(sinceDayMs / 1000)));
           if (startingAfter) params.set("starting_after", startingAfter);
           const body = await stripeGet(key, `/payouts?${params.toString()}`);
           const rows = (body.data ?? []) as StripePayoutObject[];
@@ -1094,7 +1164,7 @@ async function runEngine(
       for (const po of payouts) {
         if (!po?.id) continue;
         const arrivalMs = (po.arrival_date ?? 0) * 1000;
-        if (arrivalMs < sinceMs) continue; // pre-start-date payout (webhook path)
+        if (arrivalMs < sinceDayMs) continue; // pre-start-date payout (webhook path)
         const { processState } = await ctx.runMutation(
           internal.reconciliation.upsertDetectedPayout,
           {
@@ -1105,11 +1175,23 @@ async function runEngine(
             arrivalDate: arrivalMs,
           },
         );
-        // Allocate paid payouts that still owe allocation; re-visit allocated
-        // ones only to retry an unmatched deposit (cheap — the mutation
-        // short-circuits the transfer booking via ALREADY_RECORDED).
         if (po.status !== "paid") continue;
-        if (processState === "allocated" && trigger === "webhook") continue;
+        // An ALLOCATED payout never re-fetches Stripe — its balance
+        // transactions don't change, and re-paging every historical payout
+        // each morning would grow the run without bound. Only the (fetch-free)
+        // deposit match retries until the bank feed syncs the arrival in.
+        if (processState === "allocated") {
+          const retried: { depositMatched: boolean } = await ctx.runMutation(
+            internal.reconciliation.retryDepositMatch,
+            { stripePayoutId: po.id },
+          );
+          if (!retried.depositMatched) {
+            notes.push(
+              `Payout ${po.id}: bank deposit still not found — will retry next run.`,
+            );
+          }
+          continue;
+        }
         try {
           const items = await fetchPayoutItems(key, po.id);
           const result: {

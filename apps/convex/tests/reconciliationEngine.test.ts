@@ -356,6 +356,45 @@ describe("applyPayoutAllocation — the per-book money math", () => {
     expect(po?.itemKindCounts?.repayment).toBe(1);
   });
 
+  test("a re-run that recomputes a DIFFERENT net surfaces the drift instead of silently overwriting", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedDetectedPayout(s, { stripePayoutId: "po_drift", amountCents: 0 });
+    // First pass: only an unmapped-ish traceable item nets the chapter 4825.
+    await seedDonorWithGift(s, s.chapterId, {
+      stripeInvoiceId: "in_drift",
+      amountCents: 5_000,
+    });
+    const items1 = [
+      { grossCents: 5_000, feeCents: 175, netCents: 4_825, invoiceId: "in_drift" },
+    ];
+    await t.mutation(internal.reconciliation.applyPayoutAllocation, {
+      stripePayoutId: "po_drift",
+      items: items1,
+    });
+    // Second pass resolves an EXTRA item to the chapter (late-arriving gift):
+    // the recomputed net (9650) no longer matches the booked pair (4825).
+    await seedDonorWithGift(s, s.chapterId, {
+      stripeInvoiceId: "in_drift2",
+      amountCents: 5_000,
+    });
+    await t.mutation(internal.reconciliation.applyPayoutAllocation, {
+      stripePayoutId: "po_drift",
+      items: [
+        ...items1,
+        { grossCents: 5_000, feeCents: 175, netCents: 4_825, invoiceId: "in_drift2" },
+      ],
+    });
+
+    // Still exactly one pair, at the ORIGINAL amount…
+    const legs = await legsFor(s, `payoutalloc-po_drift-${s.chapterId}`);
+    expect(legs.length).toBe(2);
+    expect(legs[0]?.amountCents).toBe(4_825);
+    // …and the drift is loud on the payout row.
+    const po = await payoutRow(s, "po_drift");
+    expect(po?.error).toMatch(/offsetting transfer/i);
+  });
+
   test("the bank deposit is found and labeled like markAsPayout would", async () => {
     const t = newT();
     const s = await setupChapter(t);
@@ -364,6 +403,22 @@ describe("applyPayoutAllocation — the per-book money math", () => {
       stripeInvoiceId: "in_5",
       amountCents: 5_000,
     });
+    // A SANDBOX test deposit with the same amount + text must never be
+    // claimed as the real payout's arrival (mode filter, #163 precedent).
+    await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: CENTRAL,
+        source: "increase_ach",
+        flow: "inflow",
+        amountCents: 4_825,
+        currency: "usd",
+        postedAt: arrival + 30_000,
+        merchantName: "STRIPE",
+        status: "unreviewed",
+        externalId: "sandbox_transaction_dep_1",
+        createdAt: Date.now(),
+      }),
+    );
     // The ingested central bank row for the deposit (net amount, STRIPE text).
     const depositId = await run(s.t, (ctx) =>
       ctx.db.insert("transactions", {

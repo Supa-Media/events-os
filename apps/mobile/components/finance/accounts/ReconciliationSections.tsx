@@ -26,7 +26,16 @@ import {
   formatCents,
   type ReconciliationFlagKind,
 } from "@events-os/shared";
-import { Badge, Button, Card, EmptyState, Icon, SectionHeader, TextField } from "../../ui";
+import {
+  Badge,
+  Button,
+  Card,
+  EmptyState,
+  Icon,
+  SectionHeader,
+  TextField,
+  ToastView,
+} from "../../ui";
 import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
 
@@ -197,8 +206,6 @@ export function ReconciliationSection() {
   const { run, toast, dismiss } = useActionRunner();
   const [flagging, setFlagging] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
-  void toast;
-  void dismiss;
 
   if (overview === undefined) {
     return (
@@ -222,6 +229,9 @@ export function ReconciliationSection() {
         deposit, and settles cross-book card spend — ledger entries only, no
         real money moves. Flag anything that looks off.
       </Text>
+      <View className="mb-1">
+        <ToastView toast={toast} onDismiss={dismiss} />
+      </View>
       <Card>
         <View className="gap-3">
           <View className="flex-row flex-wrap items-center justify-between gap-2">
@@ -463,7 +473,7 @@ export function TransferHistorySection() {
   const history = useQuery(api.reconciliation.listTransferHistory, { limit });
   const flagEntry = useMutation(api.reconciliation.flagReconciliationEntry);
   const resolveFlag = useMutation(api.reconciliation.resolveReconciliationFlag);
-  const { run } = useActionRunner();
+  const { run, toast, dismiss } = useActionRunner();
   const [flagging, setFlagging] = useState<string | null>(null);
 
   return (
@@ -478,6 +488,9 @@ export function TransferHistorySection() {
         that needs a human decision; correct a wrong entry with an offsetting
         transfer.
       </Text>
+      <View className="mb-1">
+        <ToastView toast={toast} onDismiss={dismiss} />
+      </View>
       {history === undefined ? (
         <Card>
           <Text className="text-sm text-muted">Loading…</Text>

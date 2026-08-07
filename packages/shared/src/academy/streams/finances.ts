@@ -782,7 +782,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "tip",
-        text: "STRIPE payouts mark themselves. Every morning the reconciliation engine detects new Stripe payouts, labels the bank deposit as a payout for you, and books each chapter's share of the money onto its own book as an automatic transfer (you'll see those on the Accounts page, badged \"Payout allocation\", where the Financial Manager can audit and flag them). Givebutter and other deposits still need the hand-marking this lesson teaches — and so does any Stripe deposit from before the engine was turned on.",
+        text: "STRIPE payouts mark themselves. Every morning the reconciliation engine detects new Stripe payouts, labels the bank deposit as a payout for you, and books each chapter's share of the money onto its own book as an automatic transfer (you'll see those on the Accounts page, badged \"Payout allocation\", where the Financial Manager can audit and flag them). Givebutter and other deposits still need the hand-marking this lesson teaches — and when you mark one, the modal also asks WHOSE money it is: pick the book it belongs to (some Givebutter payouts are central's, some are a chapter's) and the app books that transfer for you. Changing your mind later is an offsetting transfer, so pick deliberately.",
       },
       {
         kind: "scenario",
