@@ -2028,10 +2028,20 @@ export const accountBalances = query({
       );
     };
 
-    // ── Phase 1 — money in, all scopes in parallel: every CASH gift to the
-    // book (all channels dual-write into `gifts`; `in_kind` is excluded —
-    // gear bought FOR the org counts toward the giver's statement but no
-    // cash ever arrives) + the book's paid ticket orders. Also collects the
+    // ── Phase 1 — money in, all scopes in parallel: EVERY gift to the book
+    // (all channels dual-write into `gifts`) + the book's paid ticket orders.
+    //
+    // IN-KIND GIFTS ARE INCLUDED (founder decision, 2026-08-07). They used to be
+    // excluded on the reasoning that no cash arrives — but the expense they paid
+    // for IS in the ledger, so excluding only the revenue side counted the cost
+    // and not the contribution, and pushed a book negative for being given
+    // things. Someone buying $500 of gear for the org is a $500 gift and a $500
+    // expense; the pair nets to zero on book value, which is the honest answer.
+    // The books this most affects are the genesis-era ones, where nearly every
+    // expense was a founder's personal card.
+    //
+    // Book value is therefore NOT a cash figure and will not track the bank —
+    // that is the point of having both columns. Also collects the
     // bank rows that CONFIRMED gifts link to (`gifts.transactionId`,
     // `givingCandidates.confirmExternalGift`) — a donor wiring directly to
     // the account produces a gift AND a plain-inflow bank row for the same
@@ -2053,7 +2063,6 @@ export const accountBalances = query({
           if (gift.transactionId != null) {
             linkedGiftTxnIds.add(gift.transactionId);
           }
-          if (gift.method === "in_kind") continue;
           revenueCents += gift.amountCents;
         }
         if (scope !== CENTRAL) {

@@ -749,6 +749,41 @@ describe("audit surface — accounts-page queries + flags", () => {
     expect(history[0]?.chapterName).toBe("New York");
   });
 
+  test("accountBalances: an in-kind gift is revenue, and nets to zero against its expense", async () => {
+    // Founder decision 2026-08-07. In-kind gifts used to be excluded from revenue
+    // because no cash arrives — but the expense they paid for IS in the ledger, so
+    // excluding only the revenue side counted the cost and not the contribution and
+    // pushed a book negative for being given things. The pair must net to zero.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await run(s.t, async (ctx) => {
+      const donorId = await ctx.db.insert("donors", {
+        scope: s.chapterId, kind: "individual", name: "Founder", status: "active",
+        lifetimeCents: 50_000, giftCount: 1, createdAt: Date.now(),
+      });
+      await ctx.db.insert("gifts", {
+        donorId, scope: s.chapterId, amountCents: 50_000, currency: "usd",
+        receivedAt: Date.now(), method: "in_kind", createdAt: Date.now(),
+      });
+      // The gear they bought for the org — the expense side of the same act.
+      await ctx.db.insert("transactions", {
+        chapterId: s.chapterId, source: "manual", flow: "outflow",
+        amountCents: 50_000, currency: "usd", postedAt: Date.now(),
+        description: "Gear bought personally", status: "categorized",
+        createdAt: Date.now(),
+      });
+    });
+
+    const balances = await s.as.query(api.reconciliation.accountBalances, {});
+    const chapter = balances.find((b) => b.scope === s.chapterId);
+    expect(chapter?.revenueCents).toBe(50_000);
+    expect(chapter?.ledgerNetCents).toBe(-50_000);
+    // The whole point: being given $500 of gear leaves the book where it started,
+    // not $500 in the hole.
+    expect(chapter?.bookBalanceCents).toBe(0);
+  });
+
   test("accountBalances: ticket sales are revenue; ledger spend subtracts", async () => {
     const t = newT();
     const s = await setupChapter(t);
