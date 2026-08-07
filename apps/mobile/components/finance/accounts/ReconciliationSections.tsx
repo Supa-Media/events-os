@@ -201,6 +201,7 @@ const RUN_STATUS_TONE: Record<string, "success" | "warn" | "danger" | "neutral">
 export function ReconciliationSection() {
   const overview = useQuery(api.reconciliation.reconciliationOverview, {});
   const setPaused = useMutation(api.reconciliation.setReconciliationPaused);
+  const setRealMovement = useMutation(api.reconciliation.setRealMovementEnabled);
   const flagEntry = useMutation(api.reconciliation.flagReconciliationEntry);
   const runNow = useAction(api.reconciliation.runReconciliationNow);
   const { run, toast, dismiss } = useActionRunner();
@@ -278,6 +279,36 @@ export function ReconciliationSection() {
                 }
               />
             </View>
+          </View>
+
+          <View className="flex-row items-start justify-between gap-3 rounded-lg border border-border bg-sunken/40 px-3 py-2">
+            <View className="min-w-0 flex-1">
+              <View className="flex-row flex-wrap items-center gap-2">
+                <Text className="text-xs font-semibold text-ink">
+                  Real cash movement
+                </Text>
+                <Badge
+                  label={overview.realMovement ? "ON" : "Off"}
+                  tone={overview.realMovement ? "success" : "neutral"}
+                  icon={overview.realMovement ? "zap" : "lock"}
+                />
+              </View>
+              <Text className="mt-0.5 text-2xs text-muted">
+                {overview.realMovement
+                  ? "The morning run executes each booked transfer as a real Increase account-to-account movement, so the cash follows the books."
+                  : "Off: the engine writes ledger entries only. Turn on to have the morning run move the actual cash between Increase accounts to match."}
+              </Text>
+            </View>
+            <Button
+              title={overview.realMovement ? "Turn off" : "Turn on"}
+              variant={overview.realMovement ? "secondary" : "primary"}
+              onPress={() =>
+                void run(
+                  () => setRealMovement({ enabled: !overview.realMovement }),
+                  { errorTitle: "Couldn't change real cash movement" },
+                )
+              }
+            />
           </View>
 
           {overview.sinceMs != null ? (
@@ -527,6 +558,11 @@ export function TransferHistorySection() {
                   </View>
                   <View className="flex-row flex-wrap items-center gap-2">
                     <Badge label={badge.label} tone={badge.tone} />
+                    {row.cashMoved === true ? (
+                      <Badge label="Cash moved" tone="success" icon="check" />
+                    ) : row.cashMoved === false ? (
+                      <Badge label="Cash not moved" tone="neutral" />
+                    ) : null}
                     {row.stripePayoutId ? (
                       <Text className="text-2xs text-faint">{row.stripePayoutId}</Text>
                     ) : null}
