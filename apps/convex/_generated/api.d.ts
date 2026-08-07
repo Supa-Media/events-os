@@ -57,6 +57,7 @@ import type * as gear2024Split from "../gear2024Split.js";
 import type * as genesisApproveExceptions from "../genesisApproveExceptions.js";
 import type * as genesisCleanup from "../genesisCleanup.js";
 import type * as genesisDedupe from "../genesisDedupe.js";
+import type * as givebutterRepair from "../givebutterRepair.js";
 import type * as genesisGiftSync from "../genesisGiftSync.js";
 import type * as genesisRevenueSync from "../genesisRevenueSync.js";
 import type * as givebutterSync from "../givebutterSync.js";
@@ -409,6 +410,7 @@ declare const fullApi: ApiFromModules<{
   genesisApproveExceptions: typeof genesisApproveExceptions;
   genesisCleanup: typeof genesisCleanup;
   genesisDedupe: typeof genesisDedupe;
+  givebutterRepair: typeof givebutterRepair;
   genesisGiftSync: typeof genesisGiftSync;
   genesisRevenueSync: typeof genesisRevenueSync;
   givebutterSync: typeof givebutterSync;

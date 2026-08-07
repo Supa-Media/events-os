@@ -1818,4 +1818,277 @@ describe("Givebutter donation sync (transactions → gifts)", () => {
     expect(page?.externalGiftsCount ?? 0).toBe(0);
     expect(await giftRows(s, eventId)).toHaveLength(0);
   });
+
+  // ── Revenue is what was COLLECTED, not what the tier lists ────────────────
+  // A ticket's `price` on /v1/tickets is the tier's list price. Pop The Balloon
+  // issued per-person promo codes, so six $50 tickets were comped or sold for
+  // $20 and the mirror booked all six at $50 — $315 of revenue Givebutter never
+  // took. The transaction's line-item `total` is post-discount and is the truth.
+
+  test("a discounted ticket books what was collected, not the tier's list price", async () => {
+    process.env.GIVEBUTTER_API_KEY = "test_key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId, "686283");
+
+    // Tier lists at $50; a promo code brought it to $20.
+    mockGb({
+      transactions: [
+        {
+          id: "disc1",
+          campaign_id: 686283,
+          status: "succeeded",
+          email: "promo@x.com",
+          created_at: new Date().toISOString(),
+          transactions: [
+            {
+              refunded: false,
+              line_items: [
+                { subtype: "ticket", price: 50, discount: 30, total: 20 },
+                { subtype: "fee", total: 1.2 },
+              ],
+            },
+          ],
+        },
+      ],
+      tickets: [
+        {
+          id: 900,
+          transaction_id: "disc1",
+          email: "promo@x.com",
+          price: 50,
+          title: "Legacy",
+          created_at: new Date().toISOString(),
+        },
+      ],
+    });
+
+    await expect(
+      t.action(internal.givebutterSync.syncGivebutterCampaign, { eventId }),
+    ).resolves.toBeNull();
+
+    expect((await pageRow(s, eventId))?.revenueCents).toBe(2000);
+    const orders = await rows(s, "ticketOrders", eventId);
+    expect(orders[0]).toMatchObject({ totalCents: 2000 });
+    expect(orders[0].items[0].unitPriceCents).toBe(2000);
+  });
+
+  test("a bundle's money is split across the $0 admissions it paid for", async () => {
+    process.env.GIVEBUTTER_API_KEY = "test_key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId, "686283");
+
+    // "His & Hers": one $40 BUNDLE line, and two admissions listed at $0. The
+    // ticket sweep never sees bundle rows, so without this the $40 lands
+    // nowhere and the event reads two free seats.
+    mockGb({
+      transactions: [
+        {
+          id: "bundle1",
+          campaign_id: 686283,
+          status: "succeeded",
+          email: "pair@x.com",
+          created_at: new Date().toISOString(),
+          transactions: [
+            { refunded: false, line_items: [{ subtype: "bundle", total: 40 }] },
+          ],
+        },
+      ],
+      tickets: [
+        {
+          id: 910,
+          transaction_id: "bundle1",
+          email: "pair@x.com",
+          price: 0,
+          title: "His Ticket",
+          created_at: new Date().toISOString(),
+        },
+        {
+          id: 911,
+          transaction_id: "bundle1",
+          email: "pair@x.com",
+          price: 0,
+          title: "Her Ticket",
+          created_at: new Date().toISOString(),
+        },
+      ],
+    });
+
+    await expect(
+      t.action(internal.givebutterSync.syncGivebutterCampaign, { eventId }),
+    ).resolves.toBeNull();
+
+    expect((await pageRow(s, eventId))?.revenueCents).toBe(4000);
+    const orders = await rows(s, "ticketOrders", eventId);
+    expect(orders.map((o) => o.totalCents).sort()).toEqual([2000, 2000]);
+  });
+
+  test("an uneven split still sums to exactly what was collected", async () => {
+    process.env.GIVEBUTTER_API_KEY = "test_key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId, "686283");
+
+    // $10 collected across three equally-listed tickets — 333.33¢ each. The
+    // remainder must be handed out, not dropped: a few cents adrift here would
+    // compound into the event rollup and, through accountBalances, book value.
+    mockGb({
+      transactions: [
+        {
+          id: "odd1",
+          campaign_id: 686283,
+          status: "succeeded",
+          email: "odd@x.com",
+          created_at: new Date().toISOString(),
+          transactions: [
+            { refunded: false, line_items: [{ subtype: "ticket", total: 10 }] },
+          ],
+        },
+      ],
+      tickets: [910, 911, 912].map((id) => ({
+        id,
+        transaction_id: "odd1",
+        email: "odd@x.com",
+        price: 20,
+        title: "GA",
+        created_at: new Date().toISOString(),
+      })),
+    });
+
+    await expect(
+      t.action(internal.givebutterSync.syncGivebutterCampaign, { eventId }),
+    ).resolves.toBeNull();
+
+    const orders = await rows(s, "ticketOrders", eventId);
+    expect(orders.reduce((sum, o) => sum + o.totalCents, 0)).toBe(1000);
+    expect((await pageRow(s, eventId))?.revenueCents).toBe(1000);
+  });
+
+  test("a transaction with no readable line items keeps its list price", async () => {
+    process.env.GIVEBUTTER_API_KEY = "test_key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId, "686283");
+
+    // Zero ticket money read means "this payload told us nothing", NOT "free" —
+    // conflating the two would zero real revenue on every older payload shape.
+    mockGb({
+      transactions: [
+        {
+          id: "bare1",
+          campaign_id: 686283,
+          status: "succeeded",
+          email: "bare@x.com",
+          created_at: new Date().toISOString(),
+          transactions: [{ refunded: false }],
+        },
+      ],
+      tickets: [
+        {
+          id: 920,
+          transaction_id: "bare1",
+          email: "bare@x.com",
+          price: 25,
+          title: "GA",
+          created_at: new Date().toISOString(),
+        },
+      ],
+    });
+
+    await expect(
+      t.action(internal.givebutterSync.syncGivebutterCampaign, { eventId }),
+    ).resolves.toBeNull();
+
+    expect((await pageRow(s, eventId))?.revenueCents).toBe(2500);
+  });
+
+  // ── The CSV-backfill collision ────────────────────────────────────────────
+
+  test("a donation already held under the CSV backfill's key is not recorded twice", async () => {
+    process.env.GIVEBUTTER_API_KEY = "test_key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId, "686283");
+
+    const when = new Date("2025-12-07T04:00:00.000Z").toISOString();
+    const txn = (id: string) => ({
+      id,
+      campaign_id: 686283,
+      status: "succeeded",
+      first_name: "Dana",
+      last_name: "Donor",
+      email: "dana@x.com",
+      created_at: when,
+      transactions: [
+        { refunded: false, line_items: [{ subtype: "donation", total: 50 }] },
+      ],
+    });
+
+    // First sync records the gift under the API's transaction id.
+    mockGb({ transactions: [txn("apiTokenA")], tickets: [] });
+    await t.action(internal.givebutterSync.syncGivebutterCampaign, { eventId });
+    expect(await giftRows(s, eventId)).toHaveLength(1);
+
+    // Rewrite it to the shape the 2026-07 CSV backfill produced: keyed on the
+    // EXPORT's reference number, and with no eventId. This is exactly the state
+    // Pop The Balloon was in — the same money under an id the sync can't match.
+    await run(s.t, async (ctx) => {
+      const g = (await ctx.db.query("gifts").collect())[0];
+      await ctx.db.patch(g._id, { externalRef: "gb:txn:9152641734" });
+    });
+
+    // Re-sync. The exact-key dedup misses, so only the legacy guard stands
+    // between this and a duplicate.
+    await run(s.t, async (ctx) => {
+      const page = await ctx.db.query("eventPages").first();
+      if (page) await ctx.db.patch(page._id, { givebutterLastSyncedAt: 0 });
+    });
+    mockGb({ transactions: [txn("apiTokenA")], tickets: [] });
+    await t.action(internal.givebutterSync.syncGivebutterCampaign, { eventId });
+
+    const after = await run(s.t, (ctx) => ctx.db.query("gifts").collect());
+    expect(after).toHaveLength(1);
+    expect((await pageRow(s, eventId))?.givebutterLastSyncError).toMatch(
+      /CSV backfill/,
+    );
+  });
+
+  test("two genuine same-day, same-amount donations both land", async () => {
+    process.env.GIVEBUTTER_API_KEY = "test_key";
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId, "686283");
+
+    // The guard only ever suppresses against a `gb:txn:`-keyed backfill row. It
+    // must NOT collapse two real gifts that happen to match on amount and day —
+    // that is the mistake that deleted a real $500 bank deposit elsewhere in
+    // this reconciliation.
+    const when = new Date("2025-12-07T04:00:00.000Z").toISOString();
+    const twin = (id: string) => ({
+      id,
+      campaign_id: 686283,
+      status: "succeeded",
+      first_name: "Dana",
+      last_name: "Donor",
+      email: "dana@x.com",
+      created_at: when,
+      transactions: [
+        { refunded: false, line_items: [{ subtype: "donation", total: 50 }] },
+      ],
+    });
+
+    mockGb({ transactions: [twin("tokenA"), twin("tokenB")], tickets: [] });
+    await t.action(internal.givebutterSync.syncGivebutterCampaign, { eventId });
+
+    const gifts = await giftRows(s, eventId);
+    expect(gifts).toHaveLength(2);
+    expect((await pageRow(s, eventId))?.externalGiftsCents).toBe(10000);
+  });
 });
