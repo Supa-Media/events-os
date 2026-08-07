@@ -70,7 +70,10 @@ import {
   MarkTransferModal,
   type TransferLegPreview,
 } from "../../../components/finance/modals/MarkTransferModal";
-import { MarkPayoutModal } from "../../../components/finance/modals/MarkPayoutModal";
+import {
+  MarkPayoutModal,
+  type PayoutAllocationChoice,
+} from "../../../components/finance/modals/MarkPayoutModal";
 import { MoveBookModal } from "../../../components/finance/modals/MoveBookModal";
 import {
   CENTRAL,
@@ -712,15 +715,28 @@ function ReconcileGrid() {
     }
   }
 
-  async function confirmMarkPayout(processor: PayoutProcessor) {
+  async function confirmMarkPayout(
+    processor: PayoutProcessor,
+    allocation: PayoutAllocationChoice,
+  ) {
     setMarkBusy(true);
     try {
       // A loop over the per-row mutation, same shape as `bulkMarkReconciled`
-      // — a month of payouts from one processor is a single action.
+      // — a month of payouts from one processor is a single action. The
+      // "whose money is this?" choice applies to every selected deposit
+      // (server-side no-op for rows already sitting on the stated book).
       await run(
         () =>
           Promise.all(
-            bulkIds.map((id) => markAsPayout({ transactionId: id, processor })),
+            bulkIds.map((id) =>
+              markAsPayout({
+                transactionId: id,
+                processor,
+                ...(allocation.kind === "scope"
+                  ? { allocateToScope: allocation.scope }
+                  : {}),
+              }),
+            ),
           ),
         {
           errorTitle: "Couldn't mark as payout",
@@ -996,7 +1012,9 @@ function ReconcileGrid() {
             count={selectedInView.length}
             submitting={markBusy}
             onCancel={() => setPayoutPromptOpen(false)}
-            onConfirm={(processor) => void confirmMarkPayout(processor)}
+            onConfirm={(processor, allocation) =>
+              void confirmMarkPayout(processor, allocation)
+            }
           />
         ) : null}
 

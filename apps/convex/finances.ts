@@ -116,6 +116,12 @@ import {
   type FinanceScope,
 } from "./lib/finance";
 import { requireSuperuser, isSuperuser } from "./lib/superuser";
+import {
+  recordTransferPair,
+  transferPairLegs,
+  transferScopes,
+  type TransferDirection,
+} from "./lib/transferPair";
 import { viewerPerson, callerHasEventEditRights } from "./lib/org";
 import { holdsApprovalSeatAt } from "./lib/seats";
 import { listActiveChapters } from "./lib/chapters";
@@ -4032,6 +4038,14 @@ export const dashboardCentral = query({
       // none and stays env-neutral (`matchesMode` returns `true` for a
       // falsy id either way).
       if (!matchesMode(tr.externalId ?? null, sandboxMode)) continue;
+      // ENGINE-BOOKED pairs are excluded from the fund position entirely. A
+      // `payout_allocation` pair distributes a chapter's own Stripe revenue
+      // out of central's bank deposit, and an `auto_settlement` pair trues up
+      // cross-book card spend — neither is a skim received nor a grant made,
+      // and with the morning engine booking them daily they'd otherwise drown
+      // the fund position in noise within a week. Only HUMAN-recorded
+      // transfers (transferOrigin absent) carry fund intent.
+      if (tr.transferOrigin != null) continue;
       const inPeriod = inDashRange(tr.postedAt, dp);
       const receivedFromChapter =
         tr.source === "skim" ||
@@ -9623,6 +9637,15 @@ export const unmarkTransfer = mutation({
   },
 });
 
+/** The deterministic transfer group id for a MANUAL whole-deposit payout
+ *  allocation (`markAsPayout`'s "whose money is this?" — one allocation per
+ *  deposit row, ever; the engine's per-item Stripe ids use `payoutalloc-<po>-…`). */
+export function manualPayoutAllocationGroupId(
+  transactionId: Id<"transactions">,
+): string {
+  return `payoutalloc-manual-${transactionId}`;
+}
+
 /**
  * Mark an inflow as a donation-processor settlement deposit.
  *
@@ -9635,11 +9658,30 @@ export const unmarkTransfer = mutation({
  * `PAYOUT_PROCESSORS` (`@events-os/shared`) for why marking a payout as a
  * transfer would delete the org's revenue from every total, and for the
  * reimbursement-payout incident that already proved it once.
+ *
+ * WHOSE MONEY IS IT? (founder, 2026-08-07: "some Givebutter payouts are for
+ * central, and some are for the New York chapter... right now they all go to
+ * central"). `allocateToScope` optionally states which BOOK the deposit's
+ * money belongs to. The deposit row itself never moves (custody: the bank
+ * account it landed in really received it); when the stated book differs
+ * from the deposit's own, the mutation books ONE whole-amount transfer pair
+ * — `transferOrigin:"payout_allocation"`, deterministic group id, visible
+ * and flaggable on the accounts page like the engine's Stripe pairs. One
+ * allocation per deposit, ever: changing your mind afterwards is an
+ * offsetting transfer (docs/plans/transfers-ops-notes.md), and unmarking is
+ * BLOCKED while an allocation pair exists. A deposit the Stripe engine
+ * already matched (`stripePayoutId` set) is refused — its contents were
+ * allocated item-by-item; a whole-amount pair on top would double-move.
  */
 export const markAsPayout = mutation({
   args: {
     transactionId: v.id("transactions"),
     processor: v.union(...PAYOUT_PROCESSORS.map((p) => v.literal(p))),
+    // Which book this deposit's money belongs to. Omitted = label only
+    // (today's behavior — the money stays where it landed).
+    allocateToScope: v.optional(
+      v.union(v.id("chapters"), v.literal("central")),
+    ),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -9656,19 +9698,78 @@ export const markAsPayout = mutation({
       });
     }
     const before = txn.payoutProcessor ?? null;
-    if (before === args.processor) return null; // true no-op, nothing to log
-    await ctx.db.patch(args.transactionId, { payoutProcessor: args.processor });
-    await logFinanceAudit(ctx, {
-      chapterId: txn.chapterId,
-      subjectType: "transaction",
-      subjectId: args.transactionId,
-      action: "payout_mark",
-      actorPersonId,
-      field: "payoutProcessor",
-      before: before ? PAYOUT_PROCESSOR_LABELS[before] : null,
-      after: PAYOUT_PROCESSOR_LABELS[args.processor],
-      amountCents: txn.amountCents,
-    });
+    if (before !== args.processor) {
+      await ctx.db.patch(args.transactionId, { payoutProcessor: args.processor });
+      await logFinanceAudit(ctx, {
+        chapterId: txn.chapterId,
+        subjectType: "transaction",
+        subjectId: args.transactionId,
+        action: "payout_mark",
+        actorPersonId,
+        field: "payoutProcessor",
+        before: before ? PAYOUT_PROCESSOR_LABELS[before] : null,
+        after: PAYOUT_PROCESSOR_LABELS[args.processor],
+        amountCents: txn.amountCents,
+      });
+    }
+
+    // ── Optional whole-deposit book allocation ──────────────────────────────
+    if (args.allocateToScope == null || args.allocateToScope === txn.chapterId) {
+      return null; // label only, or the money already sits on the stated book
+    }
+    if (txn.stripePayoutId != null) {
+      throw new ConvexError({
+        code: "ENGINE_ALLOCATED",
+        message:
+          "The reconciliation engine already allocated this Stripe payout item-by-item — a whole-deposit allocation on top would double-move the money. Record a manual transfer for any correction instead.",
+      });
+    }
+    // Exactly one side of the pair must be central (the transfer model is
+    // central↔chapter; a chapter→chapter deposit reassignment isn't a thing
+    // the ledger can express today).
+    let chapterSide: Id<"chapters">;
+    let direction: TransferDirection;
+    if (txn.chapterId === CENTRAL && args.allocateToScope !== CENTRAL) {
+      chapterSide = args.allocateToScope;
+      direction = "central_to_chapter";
+    } else if (txn.chapterId !== CENTRAL && args.allocateToScope === CENTRAL) {
+      chapterSide = txn.chapterId;
+      direction = "chapter_to_central";
+    } else {
+      throw new ConvexError({
+        code: "UNSUPPORTED_ALLOCATION",
+        message:
+          "A payout can be allocated between central and a chapter, not from one chapter to another.",
+      });
+    }
+    const chapter = await ctx.db.get(chapterSide);
+    if (!chapter) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Chapter not found." });
+    }
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    try {
+      await recordTransferPair(ctx, {
+        ...transferScopes(chapterSide, direction),
+        amountCents: txn.amountCents,
+        transferGroupId: manualPayoutAllocationGroupId(args.transactionId),
+        postedAt: txn.postedAt,
+        note: `Manual: ${PAYOUT_PROCESSOR_LABELS[args.processor]} payout allocated to ${
+          args.allocateToScope === CENTRAL ? "Central" : chapter.name
+        }`,
+        transferDirection: direction,
+        transferOrigin: "payout_allocation",
+        userId,
+      });
+    } catch (err) {
+      if (err instanceof ConvexError && err.data?.code === "ALREADY_RECORDED") {
+        throw new ConvexError({
+          code: "ALREADY_ALLOCATED",
+          message:
+            "This deposit was already allocated to a book. To change it, record an offsetting transfer (see the transfers ops notes).",
+        });
+      }
+      throw err;
+    }
     return null;
   },
 });
@@ -9689,6 +9790,21 @@ export const unmarkPayout = mutation({
       throw new ConvexError({
         code: "NOT_MARKED_PAYOUT",
         message: "That row isn't marked as a processor payout.",
+      });
+    }
+    // A deposit whose money was ALLOCATED to a book keeps its label: silently
+    // unmarking would leave the whole-amount allocation pair dangling with no
+    // visible reason it exists. The fix path is an offsetting transfer first
+    // (docs/plans/transfers-ops-notes.md).
+    const allocationLegs = await transferPairLegs(
+      ctx,
+      manualPayoutAllocationGroupId(args.transactionId),
+    );
+    if (allocationLegs.length > 0) {
+      throw new ConvexError({
+        code: "ALLOCATED_PAYOUT",
+        message:
+          "This payout's money was allocated to a book — record an offsetting transfer before unmarking it (see the transfers ops notes).",
       });
     }
     await ctx.db.patch(args.transactionId, { payoutProcessor: undefined });

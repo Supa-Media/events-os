@@ -560,6 +560,28 @@ http.route({
       await ctx.runMutation(internal.givingPledges.cancelPledgeSubscription, {
         subscriptionId: event.data.object.id,
       });
+    } else if (event.type.startsWith("payout.")) {
+      // Morning reconciliation engine fast-path: a payout event
+      // (`payout.paid` is the one that matters; created/updated/failed keep
+      // the stored status fresh) schedules a single-payout engine pass —
+      // detect, allocate the per-book transfer pairs, and try the deposit
+      // match — so the books don't wait for the morning cron. Dedup on the
+      // provider event id (Stripe redelivers); the engine itself is
+      // idempotent on top of that, so a duplicate slipping through books
+      // nothing twice. `data.object` is the Payout, so its id is the `po_…`
+      // id. NOTE: Stripe only sends these if payout events are enabled on
+      // the webhook endpoint — the daily cron is the backstop either way.
+      const { isNew } = await ctx.runMutation(
+        internal.webhooks.recordWebhookEvent,
+        { provider: "stripe", eventId: event.id, summary: event.type },
+      );
+      if (isNew) {
+        await ctx.scheduler.runAfter(
+          0,
+          internal.reconciliation.processPayoutEvent,
+          { stripePayoutId: event.data.object.id },
+        );
+      }
     }
     return new Response("ok", { status: 200 });
   }),

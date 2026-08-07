@@ -447,3 +447,141 @@ describe("finances.markAsPayout", () => {
     ).rejects.toThrow(/isn't marked/i);
   });
 });
+
+// ── markAsPayout — "whose money is this?" (whole-deposit book allocation) ────
+// Founder, 2026-08-07: "some Givebutter payouts are for central, and some are
+// for the New York chapter... right now they all go to central." Marking a
+// payout can now also state which BOOK the money belongs to; a differing book
+// gets ONE whole-amount transfer pair (`transferOrigin:"payout_allocation"`,
+// deterministic `payoutalloc-manual-<txnId>` group id). Custody never moves —
+// the deposit row stays on the bank account's own book.
+
+describe("finances.markAsPayout — allocateToScope", () => {
+  const allocationLegs = (s: ChapterSetup, id: Id<"transactions">) =>
+    run(s.t, (ctx) =>
+      ctx.db
+        .query("transactions")
+        .withIndex("by_transfer_group", (q) =>
+          q.eq("transferGroupId", `payoutalloc-manual-${id}`),
+        )
+        .collect(),
+    );
+
+  test("allocating a chapter-book deposit to central books ONE chapter→central pair", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setupBookkeeper(s);
+    const deposit = await seedTxn(s, {
+      amountCents: 250_000,
+      flow: "inflow",
+      merchantName: "GIVEBUTTER PAYOUT",
+    });
+
+    await s.as.mutation(api.finances.markAsPayout, {
+      transactionId: deposit,
+      processor: "givebutter",
+      allocateToScope: "central",
+    });
+
+    // The deposit row itself: labeled, still inflow, still on the chapter book.
+    const doc = await txn(s, deposit);
+    expect(doc!.payoutProcessor).toBe("givebutter");
+    expect(doc!.flow).toBe("inflow");
+    expect(doc!.chapterId).toBe(s.chapterId);
+
+    const legs = await allocationLegs(s, deposit);
+    expect(legs).toHaveLength(2);
+    for (const leg of legs) {
+      expect(leg.amountCents).toBe(250_000);
+      expect(leg.transferDirection).toBe("chapter_to_central");
+      expect(leg.transferOrigin).toBe("payout_allocation");
+      expect(leg.description).toMatch(/Givebutter payout allocated to Central/);
+    }
+
+    // Stating the book it ALREADY sits on is a label-only no-op.
+    const deposit2 = await seedTxn(s, { amountCents: 100, flow: "inflow" });
+    await s.as.mutation(api.finances.markAsPayout, {
+      transactionId: deposit2,
+      processor: "givebutter",
+      allocateToScope: s.chapterId,
+    });
+    expect(await allocationLegs(s, deposit2)).toHaveLength(0);
+  });
+
+  test("one allocation per deposit, ever — a second differing attempt is refused loudly", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setupBookkeeper(s);
+    const deposit = await seedTxn(s, { amountCents: 5_000, flow: "inflow" });
+
+    await s.as.mutation(api.finances.markAsPayout, {
+      transactionId: deposit,
+      processor: "givebutter",
+      allocateToScope: "central",
+    });
+    await expect(
+      s.as.mutation(api.finances.markAsPayout, {
+        transactionId: deposit,
+        processor: "givebutter",
+        allocateToScope: "central",
+      }),
+    ).rejects.toThrow(/already allocated/i);
+    expect(await allocationLegs(s, deposit)).toHaveLength(2);
+  });
+
+  test("un-marking is BLOCKED while the allocation pair exists", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setupBookkeeper(s);
+    const deposit = await seedTxn(s, { amountCents: 5_000, flow: "inflow" });
+
+    await s.as.mutation(api.finances.markAsPayout, {
+      transactionId: deposit,
+      processor: "givebutter",
+      allocateToScope: "central",
+    });
+    await expect(
+      s.as.mutation(api.finances.unmarkPayout, { transactionId: deposit }),
+    ).rejects.toThrow(/offsetting transfer/i);
+    // Label survived the refused unmark.
+    expect((await txn(s, deposit))!.payoutProcessor).toBe("givebutter");
+  });
+
+  test("a deposit the Stripe engine already matched is refused (no double-move)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setupBookkeeper(s);
+    const deposit = await seedTxn(s, { amountCents: 5_000, flow: "inflow" });
+    await run(s.t, (ctx) => ctx.db.patch(deposit, { stripePayoutId: "po_x" }));
+
+    await expect(
+      s.as.mutation(api.finances.markAsPayout, {
+        transactionId: deposit,
+        processor: "stripe",
+        allocateToScope: "central",
+      }),
+    ).rejects.toThrow(/item-by-item/i);
+  });
+
+  test("chapter→chapter allocation is unsupported and says so", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setupBookkeeper(s);
+    const otherChapterId = await run(s.t, (ctx) =>
+      ctx.db.insert("chapters", {
+        name: "Columbus",
+        isActive: true,
+        createdAt: Date.now(),
+      }),
+    );
+    const deposit = await seedTxn(s, { amountCents: 5_000, flow: "inflow" });
+
+    await expect(
+      s.as.mutation(api.finances.markAsPayout, {
+        transactionId: deposit,
+        processor: "givebutter",
+        allocateToScope: otherChapterId,
+      }),
+    ).rejects.toThrow(/central and a chapter/i);
+  });
+});

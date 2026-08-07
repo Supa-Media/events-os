@@ -36,6 +36,10 @@ import {
   SPECIALIZED_ROLE_TITLES,
   SPECIALIZED_ROLE_KINDS,
   FINANCE_AUDIT_ACTIONS,
+  AUTO_TRANSFER_ORIGINS,
+  STRIPE_PAYOUT_PROCESS_STATES,
+  RECONCILIATION_FLAG_KINDS,
+  RECONCILIATION_FLAG_STATUSES,
 } from "@events-os/shared";
 
 /**
@@ -418,6 +422,25 @@ export const transactions = defineTable({
   // `settlement` kinds on historical rows), and none of those are markable or
   // un-markable; only a row this feature touched carries this field.
   preMarkFlow: v.optional(v.union(v.literal("outflow"), v.literal("inflow"))),
+  // Which automatic process booked this transfer pair, when one did. ABSENT =
+  // a human recorded it (`transfers.recordTransfer`, and every pre-engine
+  // row). Set on BOTH legs by the morning reconciliation engine
+  // (`reconciliation.ts`) — `"payout_allocation"` distributes a Stripe
+  // payout's per-chapter revenue shares; `"auto_settlement"` trues up
+  // `interScopeBalances`' cross-book card spend. Readers that interpret
+  // transfer pairs as HUMAN money decisions must exclude engine rows:
+  // the City Launch Fund position skips both origins (revenue distribution
+  // is not a skim/grant), and `interScopeBalances`' settling legs skip
+  // `payout_allocation` (revenue doesn't pay down a card imbalance).
+  transferOrigin: v.optional(
+    v.union(...AUTO_TRANSFER_ORIGINS.map((o) => v.literal(o))),
+  ),
+  // The Stripe payout this row was matched to by the reconciliation engine —
+  // set on the central bank DEPOSIT row (`increase_ach`/`stripe_fc` inflow)
+  // when the engine identifies it as the arrival of payout `po_…`, alongside
+  // `payoutProcessor:"stripe"`. Display/audit link only; the payout's own
+  // record lives in `stripePayouts` (which stores the reverse link).
+  stripePayoutId: v.optional(v.string()),
 
   status: v.union(...TRANSACTION_STATUSES.map((s) => v.literal(s))),
 
@@ -822,7 +845,13 @@ export const increaseAccounts = defineTable({
   onboardingStatus: v.union(
     ...INCREASE_ONBOARDING_STATUSES.map((s) => v.literal(s)),
   ),
+  // Cached BANK balance (Increase's own number, cents), refreshed best-effort
+  // by the morning reconciliation engine's snapshot step — display only, never
+  // summed into the ledger. `balanceAsOf` stamps when it was last fetched so
+  // the accounts page can say how stale it is. Both absent until the engine's
+  // first successful snapshot for this account.
   balanceCents: v.optional(v.number()),
+  balanceAsOf: v.optional(v.number()),
   routingLast4: v.optional(v.string()),
   accountLast4: v.optional(v.string()),
   createdAt: v.number(),
@@ -1785,4 +1814,128 @@ export const financeSettings = defineTable({
   // "off": there is no way to switch separation of duties off entirely, which
   // is the point. Enforced in `receiptExceptions.approveReceiptException`.
   receiptExceptionApprovalThresholdCents: v.optional(v.number()),
+  // Morning reconciliation engine kill switch (accounts page, ED/FM). The
+  // engine defaults to RUNNING — it books ledger transfer pairs, never real
+  // bank movement, so the money-gating rule doesn't apply — but the Financial
+  // Manager can pause it while investigating a flagged allocation.
+  autoReconciliationPaused: v.optional(v.boolean()),
+  // Only Stripe payouts ARRIVING at/after this instant are auto-allocated.
+  // Stamped to "now" by the engine's first run (so deploying the feature
+  // never retroactively books transfers against months of already-hand-coded
+  // history); the FM can move it back deliberately from the accounts page to
+  // allocate older payouts — after checking those deposits weren't already
+  // manually settled (see the mutation's doc).
+  autoReconciliationSinceMs: v.optional(v.number()),
 });
+
+// ── Morning reconciliation engine ────────────────────────────────────────────
+// The daily engine that (a) detects Stripe payouts and books each chapter's
+// share of the deposit as central↔chapter transfer pairs, and (b) trues up
+// `interScopeBalances`' cross-book card spend — so every book reflects its
+// true value by morning instead of waiting for a human to record transfers.
+// See `reconciliation.ts`'s module doc for the full model.
+
+/**
+ * One Stripe payout the engine has detected — the allocation record tying a
+ * bank deposit to the per-book revenue it settles. `stripePayoutId` (`po_…`)
+ * is the identity + idempotency key: one row per payout, ever; re-detection
+ * (webhook redelivery, the daily poll) updates in place. The `allocation`
+ * array is BOUNDED by the number of scopes (central + active chapters), never
+ * by payout size — per-item detail is deliberately NOT persisted (Stripe
+ * remains the system of record for charge-level data; `itemCount`s and the
+ * loud `unmapped` bucket summarize it).
+ */
+export const stripePayouts = defineTable({
+  stripePayoutId: v.string(),
+  // The deposit amount Stripe reports (net of fees), non-negative cents;
+  // direction lives in `stripeStatus`/allocation, matching the ledger's
+  // flow-not-sign rule.
+  amountCents: v.number(),
+  currency: v.string(),
+  // Stripe's own lifecycle string ("paid", "in_transit", "failed", …) as last
+  // seen — kept verbatim so a status we've never heard of still stores.
+  stripeStatus: v.string(),
+  arrivalDate: v.number(), // epoch ms of Stripe's arrival_date
+  // OUR processing state — see `STRIPE_PAYOUT_PROCESS_STATES`.
+  processState: v.union(
+    ...STRIPE_PAYOUT_PROCESS_STATES.map((s) => v.literal(s)),
+  ),
+  // Per-scope breakdown once allocated. `transferGroupId` is set on entries
+  // that booked a pair (central's own entry and zero-net entries book none).
+  allocation: v.optional(
+    v.array(
+      v.object({
+        scope: v.union(v.id("chapters"), v.literal("central")),
+        grossCents: v.number(), // signed sum of item gross amounts
+        feeCents: v.number(), // signed sum of Stripe fees on those items
+        netCents: v.number(), // signed; what the scope is owed from this payout
+        itemCount: v.number(),
+        transferGroupId: v.optional(v.string()),
+      }),
+    ),
+  ),
+  // Item-kind rollup for the audit surface (how many ticket orders vs gifts vs
+  // unmapped items composed this payout) — keys from `PAYOUT_ITEM_KINDS`.
+  itemKindCounts: v.optional(v.record(v.string(), v.number())),
+  // The loud buckets: money that stayed on central's book because it couldn't
+  // be traced (`unmappedNetCents`) or because it's a repayment cash return
+  // whose chapter book was already credited at settle (`repaymentNetCents`).
+  unmappedNetCents: v.optional(v.number()),
+  repaymentNetCents: v.optional(v.number()),
+  // The central bank deposit row this payout was matched to, once found
+  // (`transactions` gains the reverse `stripePayoutId` link + the
+  // `payoutProcessor:"stripe"` label). Absent until the deposit syncs in —
+  // the engine retries the match on every run.
+  matchedTransactionId: v.optional(v.id("transactions")),
+  error: v.optional(v.string()),
+  createdAt: v.number(),
+  updatedAt: v.number(),
+})
+  .index("by_stripe_payout", ["stripePayoutId"])
+  .index("by_process_state", ["processState"])
+  .index("by_arrival", ["arrivalDate"]);
+
+/**
+ * One run of the morning engine — the audit trail the accounts page renders
+ * ("what did the robot do overnight"). Append-only; `notes` is a BOUNDED
+ * human-readable log (the engine caps how many lines it writes per run).
+ */
+export const reconciliationRuns = defineTable({
+  trigger: v.union(v.literal("cron"), v.literal("manual"), v.literal("webhook")),
+  status: v.union(
+    v.literal("running"),
+    v.literal("ok"),
+    v.literal("error"),
+    v.literal("skipped"), // paused, or Stripe isn't configured
+  ),
+  startedAt: v.number(),
+  finishedAt: v.optional(v.number()),
+  payoutsProcessed: v.number(),
+  transfersBooked: v.number(),
+  settlementsBooked: v.number(),
+  allocatedCents: v.number(), // total |net| moved by this run's transfers
+  notes: v.array(v.string()),
+  error: v.optional(v.string()),
+}).index("by_startedAt", ["startedAt"]);
+
+/**
+ * A Financial Manager's audit flag on an engine artifact — "this allocation /
+ * transfer needs a human decision." Flagging never rewrites the ledger; the
+ * fix, when one is needed, is an offsetting entry per
+ * docs/plans/transfers-ops-notes.md, and resolving the flag records what was
+ * decided. `refKey` is a `transferGroupId` (kind "transfer") or a Stripe
+ * payout id (kind "payout").
+ */
+export const reconciliationFlags = defineTable({
+  kind: v.union(...RECONCILIATION_FLAG_KINDS.map((k) => v.literal(k))),
+  refKey: v.string(),
+  note: v.string(),
+  status: v.union(...RECONCILIATION_FLAG_STATUSES.map((s) => v.literal(s))),
+  createdBy: v.id("users"),
+  createdAt: v.number(),
+  resolvedBy: v.optional(v.id("users")),
+  resolvedAt: v.optional(v.number()),
+  resolutionNote: v.optional(v.string()),
+})
+  .index("by_status", ["status"])
+  .index("by_refKey", ["refKey"]);

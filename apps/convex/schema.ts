@@ -75,6 +75,9 @@ import {
   cardDetailsRevealAttempts,
   receiptNudgeAttempts,
   financeSettings,
+  stripePayouts,
+  reconciliationRuns,
+  reconciliationFlags,
   inboundReceipts,
   receiptReplyBatches,
   receipts,
@@ -306,6 +309,11 @@ const schema = defineSchema({
   // "Remind all" nudge — at most one per cardholder per 24h.
   receiptNudgeAttempts,
   financeSettings,
+  // Morning reconciliation engine: detected Stripe payouts + per-book
+  // allocation records, the run audit trail, and FM audit flags.
+  stripePayouts,
+  reconciliationRuns,
+  reconciliationFlags,
   // Inbound email → OCR → reconcile pipeline (receipt backfill). See receiptInbox.ts.
   inboundReceipts,
   // Debounce batches for the courtesy reply an emailed receipt earns its

@@ -16,13 +16,24 @@
  */
 import { useState } from "react";
 import { Modal, Pressable, Text, View } from "react-native";
+import { useQuery } from "convex/react";
+import { api } from "@events-os/convex/_generated/api";
+import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
+  CENTRAL,
   PAYOUT_PROCESSORS,
   PAYOUT_PROCESSOR_LABELS,
   type PayoutProcessor,
 } from "@events-os/shared";
 import { Button, Icon } from "../../ui";
 import { colors } from "../../../lib/theme";
+
+/** The "whose money is this?" choice: keep = label only (money stays on the
+ *  book it landed in); otherwise the stated book gets a whole-deposit
+ *  allocation transfer (`finances.markAsPayout`'s `allocateToScope`). */
+export type PayoutAllocationChoice =
+  | { kind: "keep" }
+  | { kind: "scope"; scope: Id<"chapters"> | typeof CENTRAL; label: string };
 
 export function MarkPayoutModal({
   count,
@@ -33,11 +44,21 @@ export function MarkPayoutModal({
   /** How many selected rows this will label (the bulk bar allows more than
    *  one — a month of payouts from the same processor is one action). */
   count: number;
-  onConfirm: (processor: PayoutProcessor) => void;
+  onConfirm: (
+    processor: PayoutProcessor,
+    allocation: PayoutAllocationChoice,
+  ) => void;
   onCancel: () => void;
   submitting?: boolean;
 }) {
   const [processor, setProcessor] = useState<PayoutProcessor>("givebutter");
+  const [allocation, setAllocation] = useState<PayoutAllocationChoice>({
+    kind: "keep",
+  });
+  // Central-reach callers get the chapter list; a chapter-only treasurer gets
+  // [] and sees only "Central" as an allocation target (their Givebutter
+  // deposit may still be central's money).
+  const chapters = useQuery(api.financeRoles.listChaptersForPeek, {}) ?? [];
 
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onCancel}>
@@ -95,13 +116,63 @@ export function MarkPayoutModal({
                 })}
               </View>
             </View>
+
+            <View className="gap-1.5">
+              <Text className="text-[11px] font-semibold uppercase tracking-wide text-faint">
+                Whose money is this?
+              </Text>
+              <Text className="text-2xs text-muted">
+                Some payouts belong to a different book than the account they
+                landed in. Picking a book records the transfer for you — it
+                shows on the Accounts page, badged and flaggable. Changing it
+                later takes an offsetting transfer.
+              </Text>
+              <View className="flex-row flex-wrap gap-2">
+                {(
+                  [
+                    { key: "keep", label: "Leave where it landed", choice: { kind: "keep" } as PayoutAllocationChoice },
+                    { key: "central", label: "Central", choice: { kind: "scope", scope: CENTRAL, label: "Central" } as PayoutAllocationChoice },
+                    ...chapters.map((c) => ({
+                      key: String(c.chapterId),
+                      label: c.name,
+                      choice: { kind: "scope", scope: c.chapterId, label: c.name } as PayoutAllocationChoice,
+                    })),
+                  ] as { key: string; label: string; choice: PayoutAllocationChoice }[]
+                ).map((opt) => {
+                  const active =
+                    allocation.kind === "keep"
+                      ? opt.choice.kind === "keep"
+                      : opt.choice.kind === "scope" &&
+                        opt.choice.scope === allocation.scope;
+                  return (
+                    <Pressable
+                      key={opt.key}
+                      onPress={() => setAllocation(opt.choice)}
+                      accessibilityRole="radio"
+                      accessibilityState={{ selected: active }}
+                      className={`rounded-full border px-3 py-1.5 active:opacity-70 ${
+                        active
+                          ? "border-accent bg-accent-soft"
+                          : "border-border bg-raised"
+                      }`}
+                    >
+                      <Text
+                        className={`text-xs ${active ? "font-semibold text-accent" : "text-muted"}`}
+                      >
+                        {opt.label}
+                      </Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
+            </View>
           </View>
 
           <View className="flex-row justify-end gap-2 border-t border-border px-5 py-4">
             <Button title="Cancel" variant="secondary" onPress={onCancel} />
             <Button
               title={count > 1 ? `Mark ${count} payouts` : "Mark as payout"}
-              onPress={() => onConfirm(processor)}
+              onPress={() => onConfirm(processor, allocation)}
               loading={submitting}
             />
           </View>

@@ -1,5 +1,10 @@
 /**
- * FINANCES · ACCOUNTS — two DISTINCT things live here, kept clearly separate:
+ * FINANCES · ACCOUNTS — the ED/FM money-audit page. The top half is the
+ * MORNING RECONCILIATION ENGINE's surface (`ReconciliationSections.tsx`):
+ * per-book balances (book value vs bank cash), engine status + detected
+ * Stripe payouts with their allocation breakdowns, and the full
+ * central↔chapter transfer history (manual + engine) with flag/resolve.
+ * Below it, two DISTINCT account lists, kept clearly separate:
  *
  *  1. The ORG'S INCREASE ACCOUNTS — the native card + ACH-payout layer (issue
  *     member cards, send reimbursement payouts), one per chapter PLUS central
@@ -58,6 +63,11 @@ import { AccountRow } from "../../../components/finance/accounts/AccountRow";
 import { ConnectPanel } from "../../../components/finance/accounts/ConnectPanel";
 import { AiUsageSection } from "../../../components/finance/accounts/AiUsageSection";
 import { FinancePolicySection } from "../../../components/finance/accounts/FinancePolicySection";
+import {
+  BalancesSection,
+  ReconciliationSection,
+  TransferHistorySection,
+} from "../../../components/finance/accounts/ReconciliationSections";
 
 const ONBOARDING_BADGE: Record<
   "not_started" | "pending" | "active" | "disabled",
@@ -132,6 +142,12 @@ function AccountsBody() {
         <View className="mb-1">
           <ToastView toast={toast} onDismiss={dismiss} />
         </View>
+
+        <BalancesSection />
+
+        <ReconciliationSection />
+
+        <TransferHistorySection />
 
         <SectionHeader title="Card & payout accounts (Increase)" />
         <Text className="mb-3 text-sm text-muted">
