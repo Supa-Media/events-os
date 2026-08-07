@@ -323,6 +323,7 @@ import type * as schema_ticketing from "../schema/ticketing.js";
 import type * as seatProposals from "../seatProposals.js";
 import type * as seatStructure from "../seatStructure.js";
 import type * as seats from "../seats.js";
+import type * as salesSync from "../salesSync.js";
 import type * as seed from "../seed.js";
 import type * as seedTicketing from "../seedTicketing.js";
 import type * as serviceOptions from "../serviceOptions.js";
@@ -672,6 +673,7 @@ declare const fullApi: ApiFromModules<{
   seatProposals: typeof seatProposals;
   seatStructure: typeof seatStructure;
   seats: typeof seats;
+  salesSync: typeof salesSync;
   seed: typeof seed;
   seedTicketing: typeof seedTicketing;
   serviceOptions: typeof serviceOptions;

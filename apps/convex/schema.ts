@@ -42,6 +42,7 @@ import {
   blasts,
   blastRecipients,
   doorGrants,
+  sales,
 } from "./schema/ticketing";
 import {
   funds,
@@ -247,6 +248,7 @@ const schema = defineSchema({
   ticketOrders,
   tickets,
   doorGrants,
+  sales,
   donations,
   eventComments,
   pageReactions,
