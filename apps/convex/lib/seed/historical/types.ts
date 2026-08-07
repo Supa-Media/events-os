@@ -172,3 +172,38 @@ export type CleanupException = {
   note: string;
   evidenceFile?: string;
 };
+
+// ── Genesis dedupe (2026-08-06) ──────────────────────────────────────────────
+
+/** A duplicated import row and the bank-feed row it shadows. */
+export type DedupePair = {
+  /** The `genesis-bank:*` copy to remove. */
+  deleteExternalId: string;
+  /** The live-feed row that survives; receipts move here first. */
+  keepExternalId: string;
+  /** Asserted against BOTH rows before deletion — a mismatch aborts the pair. */
+  amountCents: number;
+  /** Human note on what the two descriptions are, for the reviewer. */
+  note: string;
+};
+
+/** A row removed outright together with its mirrored gift. */
+export type DedupeDeletion = {
+  externalId: string;
+  /** The giving-side row that must go with it. */
+  giftRef: string;
+  /** Asserted against the transaction before deletion. */
+  amountCents: number;
+  reason: string;
+};
+
+/** An amount/description correction applied to a row and its mirrored gift. */
+export type DedupePatch = {
+  externalId: string;
+  /** Present when a gift must move with the amount; absent for document-only rows. */
+  giftRef?: string;
+  amountCents: number;
+  description?: string;
+  reason: string;
+  receiptFile?: string;
+};
