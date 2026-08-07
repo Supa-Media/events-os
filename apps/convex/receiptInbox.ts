@@ -2921,7 +2921,10 @@ export const manualMatchInboundReceipt = mutation({
     if (!row) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Inbound receipt not found." });
     }
-    if (row.chapterId !== chapterId) {
+    // Same rule as dismissing: a chapterless row (unknown sender) is actionable, and
+    // attaching it adopts it into the caller's chapter. Otherwise the queue shows a
+    // receipt that can be neither attached nor dismissed.
+    if (row.chapterId != null && row.chapterId !== chapterId) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Inbound receipt not found in your chapter." });
     }
     if (row.status === "matched") {
@@ -2951,7 +2954,10 @@ export const manualMatchInboundReceipt = mutation({
       existing[0]?._id;
     if (!receiptDocId) {
       receiptDocId = await createReceipt(ctx, {
-        chapterId: row.chapterId,
+        // Unknown-sender mail carries no chapter; the bookkeeper attaching it is
+        // asserting whose it is, so the document lands in their chapter rather than
+        // as another "Unassigned" row.
+        chapterId: row.chapterId ?? chapterId,
         storageId: row.receiptStorageId,
         source: "email",
         inboundReceiptId: args.receiptId,
@@ -2975,6 +2981,8 @@ export const manualMatchInboundReceipt = mutation({
 
     await ctx.db.patch(args.receiptId, {
       status: "matched",
+      // Adopt an unassigned row as it's decided — see the chapter check above.
+      ...(row.chapterId == null ? { chapterId } : {}),
       matchedTransactionId: args.transactionId,
       resolvedByPersonId: person,
       resolvedAt: Date.now(),
@@ -3006,7 +3014,17 @@ export const dismissInboundReceipt = mutation({
       });
     }
     const row = await ctx.db.get(args.receiptId);
-    if (!row || row.chapterId !== chapterId) {
+    if (!row) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Inbound receipt not found." });
+    }
+    // A CHAPTERLESS row is dismissable. Mail from a sender with no roster match has
+    // no chapter to infer (see `inboundReceipts.chapterId`'s schema doc), and
+    // `listInboundQueue` deliberately SHOWS those rows to every chapter so they
+    // aren't invisible. Requiring an exact chapter match here made them permanently
+    // undismissable: the bookkeeper saw the row, clicked dismiss, and got told it
+    // wasn't in their chapter. Acting on one adopts it into the caller's chapter,
+    // which is what the bookkeeper is asserting by deciding it.
+    if (row.chapterId != null && row.chapterId !== chapterId) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Inbound receipt not found in your chapter." });
     }
     if (row.status === "matched") {
@@ -3024,6 +3042,9 @@ export const dismissInboundReceipt = mutation({
     }
     await ctx.db.patch(args.receiptId, {
       status: "ignored",
+      // Adopt an unassigned row as it's decided, so it stops floating across every
+      // chapter's queue once someone has dealt with it.
+      ...(row.chapterId == null ? { chapterId } : {}),
       resolvedByPersonId: access.personId ?? undefined,
       resolvedAt: Date.now(),
       updatedAt: Date.now(),
