@@ -2065,6 +2065,18 @@ export const accountBalances = query({
           }
           revenueCents += gift.amountCents;
         }
+        // SALES — merch, snacks, drinks (founder model 2026-08-07: "revenue = gift
+        // rows, tickets, and sales"). Counted GROSS like the other two; Stripe's fee
+        // is a separate expense, not a haircut on revenue. Chapter-scoped, same as
+        // ticket orders — central sells nothing directly.
+        if (scope !== CENTRAL) {
+          const salesRows = await ctx.db
+            .query("sales")
+            .withIndex("by_chapter_and_soldAt", (q) => q.eq("chapterId", scope))
+            .take(ROLLUP_SCAN_LIMIT);
+          if (salesRows.length === ROLLUP_SCAN_LIMIT) warnTruncated(scope, "sales");
+          for (const sale of salesRows) revenueCents += sale.grossCents;
+        }
         if (scope !== CENTRAL) {
           const orders = await ctx.db
             .query("ticketOrders")

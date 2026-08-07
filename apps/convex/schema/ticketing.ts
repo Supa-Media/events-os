@@ -479,3 +479,61 @@ export const blastRecipients = defineTable({
   .index("by_blast", ["blastId"])
   .index("by_blast_and_email", ["blastId", "email"])
   .index("by_token", ["unsubscribeToken"]);
+
+/**
+ * IN-PERSON AND ONLINE SALES — merch, snacks, drinks. The third revenue stream
+ * alongside gifts and ticket orders (founder model, 2026-08-07: "revenue = gift rows,
+ * tickets, and sales").
+ *
+ * SEPARATE FROM `ticketOrders` on purpose. A sale is structurally similar — a paid
+ * Stripe charge tied to an event — but folding merch into ticket orders would inflate
+ * attendance and ticket reporting: 178 popcorn purchases would read as 178 more people
+ * at Field Day. Ticket counts stay ticket counts.
+ *
+ * ONE ROW PER STRIPE CHARGE, with its decomposed items inline. A single tap often
+ * covered several products (someone bought popcorn and a water and the operator typed
+ * $6), so `items` is a list — but the charge is the atom, because the charge is what
+ * the money and the fee actually attach to.
+ */
+export const sales = defineTable({
+  chapterId: v.id("chapters"),
+  /** The event this sale happened at. Absent if it couldn't be attributed by date. */
+  eventId: v.optional(v.id("events")),
+  /** Stripe charge id — the idempotency key. One sale row per charge, forever. */
+  stripeChargeId: v.string(),
+  /** When the card was tapped, not when we imported it. */
+  soldAt: v.number(),
+  /** Gross, before Stripe's cut — the customer paid this. */
+  grossCents: v.number(),
+  /** Stripe's fee on this charge, read from its balance transaction. Never derived. */
+  feeCents: v.number(),
+  /** What was sold. Reconstructed from the amount when the payment app sent no line
+   *  items — see `lib/salesCatalog.ts` for why that's sound and where it stops. */
+  items: v.array(
+    v.object({
+      /** Product name, or a price-point label ("$2 item") when the price is shared. */
+      label: v.string(),
+      quantity: v.number(),
+      unitPriceCents: v.number(),
+      /** Every product this line could be. Length > 1 means the item is genuinely
+       *  uncertain and must never be reported as a single product. */
+      candidates: v.array(v.string()),
+    }),
+  ),
+  /** How the item breakdown was arrived at:
+   *   - `stripe_line_items` — Stripe told us, exactly.
+   *   - `amount_decomposition` — reconstructed from the amount against the catalogue.
+   *   - `unresolved` — the amount matched nothing; `items` is empty and a human must
+   *     look. The revenue still counts; only the breakdown is missing. */
+  itemSource: v.union(
+    v.literal("stripe_line_items"),
+    v.literal("amount_decomposition"),
+    v.literal("unresolved"),
+  ),
+  /** Card-present vs online checkout — the two ways a sale reaches us. */
+  channel: v.union(v.literal("in_person"), v.literal("online")),
+  createdAt: v.number(),
+})
+  .index("by_charge", ["stripeChargeId"])
+  .index("by_chapter_and_soldAt", ["chapterId", "soldAt"])
+  .index("by_event", ["eventId"]);

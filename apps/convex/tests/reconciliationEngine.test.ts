@@ -749,6 +749,32 @@ describe("audit surface — accounts-page queries + flags", () => {
     expect(history[0]?.chapterName).toBe("New York");
   });
 
+  test("accountBalances: a sale is revenue, gross of the Stripe fee", async () => {
+    // Third revenue stream (founder model 2026-08-07). In-person sales never reached
+    // the books at all, so their cash sat in the bank with no revenue behind it.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await run(s.t, (ctx) =>
+      ctx.db.insert("sales", {
+        chapterId: s.chapterId,
+        stripeChargeId: "ch_test_1",
+        soldAt: Date.now(),
+        grossCents: 3_000,
+        feeCents: 117,
+        items: [{ label: "PW Tee", quantity: 1, unitPriceCents: 3_000, candidates: ["PW Tee"] }],
+        itemSource: "amount_decomposition",
+        channel: "in_person",
+        createdAt: Date.now(),
+      }),
+    );
+    const balances = await s.as.query(api.reconciliation.accountBalances, {});
+    const chapter = balances.find((b) => b.scope === s.chapterId);
+    // Gross, not net — the fee is an expense, not a haircut on what was sold.
+    expect(chapter?.revenueCents).toBe(3_000);
+    expect(chapter?.bookBalanceCents).toBe(3_000);
+  });
+
   test("accountBalances: an in-kind gift is revenue, and nets to zero against its expense", async () => {
     // Founder decision 2026-08-07. In-kind gifts used to be excluded from revenue
     // because no cash arrives — but the expense they paid for IS in the ledger, so
