@@ -33,7 +33,8 @@
  * through, because neither performs a deploy. It only surfaces at `convex deploy`.
  */
 
-import { action, internalMutation } from "./_generated/server";
+import { action, internalAction, internalMutation } from "./_generated/server";
+import type { ActionCtx } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { ConvexError, v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
@@ -152,21 +153,22 @@ export const upsertSales = internalMutation({
  * `execute` omitted / false = a zero-write dry run reporting exactly what a real run
  * would import. Superuser-gated: it reads the whole payment history.
  */
-export const syncStripeSales = action({
-  args: { execute: v.optional(v.boolean()) },
-  returns: v.object({
-    dryRun: v.boolean(),
-    chargesScanned: v.number(),
-    cardPresent: v.number(),
-    created: v.number(),
-    alreadyPresent: v.number(),
-    unresolved: v.number(),
-    grossCents: v.number(),
-    feeCents: v.number(),
-    unmatchedEvents: v.array(v.string()),
-  }),
-  handler: async (ctx, { execute }) => {
-    await requireSuperuser(ctx);
+const syncReturns = v.object({
+  dryRun: v.boolean(),
+  chargesScanned: v.number(),
+  cardPresent: v.number(),
+  created: v.number(),
+  alreadyPresent: v.number(),
+  unresolved: v.number(),
+  grossCents: v.number(),
+  feeCents: v.number(),
+  unmatchedEvents: v.array(v.string()),
+});
+
+/** The sync itself, with no authorization of its own — each entry point below brings
+ *  its own. Shared so the app-facing and ops paths can never drift apart. */
+async function runSync(ctx: ActionCtx, execute: boolean | undefined) {
+  {
     const key = process.env.STRIPE_SECRET_KEY;
     if (!key) throw new ConvexError({ code: "NO_KEY", message: "STRIPE_SECRET_KEY is not set." });
 
@@ -257,5 +259,32 @@ export const syncStripeSales = action({
       chargesScanned, cardPresent, created, alreadyPresent, unresolved,
       grossCents, feeCents, unmatchedEvents: [...unmatchedEvents],
     };
+  }
+}
+
+/**
+ * App-facing sync. Superuser-gated because it reads the entire payment history.
+ * This is what a "Sync from Stripe" control in the Sales tab calls.
+ */
+export const syncStripeSales = action({
+  args: { execute: v.optional(v.boolean()) },
+  returns: syncReturns,
+  handler: async (ctx, { execute }) => {
+    await requireSuperuser(ctx);
+    return runSync(ctx, execute);
   },
+});
+
+/**
+ * Ops entry point for the one-time backfill, run from the CLI.
+ *
+ * No `requireSuperuser`: that resolves the caller from an authenticated session, and a
+ * CLI invocation has none — it carries the deployment admin key instead, which is
+ * strictly stronger. Gating on a session here would only make the backfill impossible
+ * to run, not safer. Same body as the public action, so behaviour cannot diverge.
+ */
+export const syncStripeSalesOps = internalAction({
+  args: { execute: v.optional(v.boolean()) },
+  returns: syncReturns,
+  handler: async (ctx, { execute }) => runSync(ctx, execute),
 });
