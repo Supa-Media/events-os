@@ -1973,11 +1973,21 @@ export const reconciliationOverview = query({
 });
 
 /**
- * Per-book balances for the accounts page: the LEDGER ("book") balance —
- * Σ `signedBookCents` over the book's transactions, the number the engine
- * keeps true — plus the cached BANK balance where the morning snapshot has
- * one. Book vs bank differing is normal (cash pools physically in central's
- * account; the ledger states who it belongs to) — the page explains that.
+ * Per-book balances for the accounts page — the founder's model (2026-08-07):
+ * "we should be using donations and ticket sales to calculate the money we
+ * have, and then use transactions from reconcile to determine money going
+ * out."
+ *
+ *   bookBalance = revenue (gifts + paid ticket orders, per scope, GROSS of
+ *                 processor fees)
+ *               + ledger net (Σ `signedBookCents` — spend, corrections,
+ *                 settlements; payout deposits and payout-allocation pairs
+ *                 contribute ZERO there so revenue is never counted twice —
+ *                 see `lib/bookBalance.ts`)
+ *
+ * plus the cached BANK balance where the morning snapshot has one. Book vs
+ * bank differing is normal (cash pools where processors pay out; the book
+ * states what each scope is worth) — the page explains that.
  */
 export const accountBalances = query({
   args: {},
@@ -1986,6 +1996,8 @@ export const accountBalances = query({
       scope: financeScopeValidator,
       scopeName: v.string(),
       bookBalanceCents: v.number(),
+      revenueCents: v.number(),
+      ledgerNetCents: v.number(),
       truncated: v.boolean(),
       bankBalanceCents: v.union(v.number(), v.null()),
       bankBalanceAsOf: v.union(v.number(), v.null()),
@@ -2012,26 +2024,59 @@ export const accountBalances = query({
       scope: FinanceScope;
       scopeName: string;
       bookBalanceCents: number;
+      revenueCents: number;
+      ledgerNetCents: number;
       truncated: boolean;
       bankBalanceCents: number | null;
       bankBalanceAsOf: number | null;
     }[] = [];
     for (const { scope, scopeName: name } of scopes) {
+      let truncated = false;
+      const warnTruncated = (what: string) => {
+        truncated = true;
+        console.warn(
+          `[reconciliation] accountBalances hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading ${what} for ${scope}; book value truncated.`,
+        );
+      };
+
+      // ── Money in: every gift to this book (all channels — event
+      // donations, /give, pledge cycles, sponsorships, manual/imported —
+      // dual-write into `gifts`) + this book's paid ticket orders. ──────────
+      let revenueCents = 0;
+      const gifts = await ctx.db
+        .query("gifts")
+        .withIndex("by_scope", (q) => q.eq("scope", scope))
+        .take(ROLLUP_SCAN_LIMIT);
+      if (gifts.length === ROLLUP_SCAN_LIMIT) warnTruncated("gifts");
+      for (const gift of gifts) revenueCents += gift.amountCents;
+      if (scope !== CENTRAL) {
+        const orders = await ctx.db
+          .query("ticketOrders")
+          .withIndex("by_chapter", (q) =>
+            q.eq("chapterId", scope as Id<"chapters">),
+          )
+          .take(ROLLUP_SCAN_LIMIT);
+        if (orders.length === ROLLUP_SCAN_LIMIT) warnTruncated("ticket orders");
+        for (const order of orders) {
+          // `totalCents` is the ticket subtotal only — an order's bundled
+          // add-on donation settles as a `donations` row → gift, already
+          // counted above.
+          if (order.status === "paid") revenueCents += order.totalCents;
+        }
+      }
+
+      // ── Money out (and corrections): the reconcile ledger. ────────────────
       const txns = await ctx.db
         .query("transactions")
         .withIndex("by_chapter", (q) => q.eq("chapterId", scope))
         .take(ROLLUP_SCAN_LIMIT);
-      const truncated = txns.length === ROLLUP_SCAN_LIMIT;
-      if (truncated) {
-        console.warn(
-          `[reconciliation] accountBalances hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) for ${scope}; book balance truncated.`,
-        );
-      }
-      let bookBalanceCents = 0;
+      if (txns.length === ROLLUP_SCAN_LIMIT) warnTruncated("transactions");
+      let ledgerNetCents = 0;
       for (const tr of txns) {
         if (!txnMatchesMode(tr, sandboxMode)) continue;
-        bookBalanceCents += signedBookCents(tr);
+        ledgerNetCents += signedBookCents(tr);
       }
+
       // The account row for the current environment (mirrors
       // `getChapterAccountForMode` without an extra read per scope).
       const account =
@@ -2044,7 +2089,9 @@ export const accountBalances = query({
       out.push({
         scope,
         scopeName: name,
-        bookBalanceCents,
+        bookBalanceCents: revenueCents + ledgerNetCents,
+        revenueCents,
+        ledgerNetCents,
         truncated,
         bankBalanceCents: account?.balanceCents ?? null,
         bankBalanceAsOf: account?.balanceAsOf ?? null,

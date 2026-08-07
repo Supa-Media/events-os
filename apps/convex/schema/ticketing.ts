@@ -280,7 +280,10 @@ export const ticketOrders = defineTable({
   .index("by_stripe_session", ["stripeCheckoutSessionId"])
   .index("by_external_ref", ["externalRef"])
   // A guest's own orders — powers the signed-in "your tickets" list.
-  .index("by_rsvp", ["rsvpId"]);
+  .index("by_rsvp", ["rsvpId"])
+  // The accounts page's book-value revenue sum: a chapter's ticket sales in
+  // one bounded read (`reconciliation.ts#accountBalances`).
+  .index("by_chapter", ["chapterId"]);
 
 /**
  * A donation to an event — the money flow the schema couldn't record before
