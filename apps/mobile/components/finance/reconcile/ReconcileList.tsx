@@ -104,6 +104,7 @@ import { CENTRAL, PAYOUT_PROCESSOR_LABELS } from "@events-os/shared";
 import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
 import { ReceiptExceptionModal } from "../modals/ReceiptExceptionModal";
+import { ReceiptExceptionDecideModal } from "../modals/ReceiptExceptionDecideModal";
 import { TransactionNoteModal } from "../modals/TransactionNoteModal";
 import { CorrectTransactionModal } from "../modals/CorrectTransactionModal";
 import { ExcludeReasonModal } from "../modals/ExcludeReasonModal";
@@ -752,6 +753,7 @@ function ReconcileRow({
           hasReceipt={row.hasReceipt}
           documentation={row.documentation}
           amountCents={row.amountCents}
+          readOnly={readOnly}
           reminderStage={row.reminderStage}
           transactionId={id}
           onUpload={async (storageId) => {
@@ -1296,6 +1298,7 @@ export function ReceiptCell({
   generateUploadUrl,
   documentation,
   amountCents,
+  readOnly,
   onExceptionFiled,
 }: {
   hasReceipt: boolean;
@@ -1321,12 +1324,15 @@ export function ReceiptCell({
   amountCents?: number;
   /** Called after an exception is filed from this cell, so the grid can
    *  refresh optimistically. */
+  /** Peek / below-bookkeeper: a pending exception stays readable, not decidable. */
+  readOnly?: boolean;
   onExceptionFiled?: () => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [attachOpen, setAttachOpen] = useState(false);
   const [noDocOpen, setNoDocOpen] = useState(false);
+  const [decideOpen, setDecideOpen] = useState(false);
   const attestException = useMutation(api.receiptExceptions.attest);
 
   async function uploadBlob(blob: Blob, contentType: string) {
@@ -1467,9 +1473,22 @@ export function ReceiptCell({
             not where anyone reconciles. */}
         {transactionId && !busy && documentation ? (
           documentation.pendingReason ? (
-            <Text className="ml-1 text-2xs text-warn" numberOfLines={1}>
-              Awaiting approval
-            </Text>
+            // Was inert text. Filing an exception worked from the grid but deciding
+            // one only existed in the dashboard drill-down's detail panel — the same
+            // asymmetry noted above for filing, and it stranded exactly the person
+            // working the receipt chase.
+            <Pressable
+              onPress={() => setDecideOpen(true)}
+              hitSlop={6}
+              accessibilityLabel={
+                readOnly ? "View this receipt exception" : "Decide this receipt exception"
+              }
+              className="ml-1 active:opacity-70 web:hover:opacity-90"
+            >
+              <Text className="text-2xs text-warn underline" numberOfLines={1}>
+                Awaiting approval
+              </Text>
+            </Pressable>
           ) : (
             <Pressable
               onPress={() => setNoDocOpen(true)}
@@ -1482,6 +1501,15 @@ export function ReceiptCell({
           )
         ) : null}
       </View>
+      {decideOpen && transactionId ? (
+        <ReceiptExceptionDecideModal
+          transactionId={transactionId}
+          amountCents={amountCents ?? 0}
+          readOnly={readOnly ?? false}
+          onClose={() => setDecideOpen(false)}
+          onError={() => setDecideOpen(false)}
+        />
+      ) : null}
       {noDocOpen && transactionId ? (
         <ReceiptExceptionModal
           amountCents={amountCents ?? 0}

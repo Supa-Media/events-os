@@ -54,6 +54,7 @@ import type * as financeSettings from "../financeSettings.js";
 import type * as finances from "../finances.js";
 import type * as formSubmissions from "../formSubmissions.js";
 import type * as gear2024Split from "../gear2024Split.js";
+import type * as genesisApproveExceptions from "../genesisApproveExceptions.js";
 import type * as genesisCleanup from "../genesisCleanup.js";
 import type * as genesisDedupe from "../genesisDedupe.js";
 import type * as givebutterSync from "../givebutterSync.js";
@@ -399,6 +400,7 @@ declare const fullApi: ApiFromModules<{
   finances: typeof finances;
   formSubmissions: typeof formSubmissions;
   gear2024Split: typeof gear2024Split;
+  genesisApproveExceptions: typeof genesisApproveExceptions;
   genesisCleanup: typeof genesisCleanup;
   genesisDedupe: typeof genesisDedupe;
   givebutterSync: typeof givebutterSync;
