@@ -2555,4 +2555,93 @@ describe("manualMatchInboundReceipt", () => {
       }),
     ).rejects.toThrow(ConvexError);
   });
+
+  /**
+   * Mail from a sender with no roster match has no chapter to infer, and
+   * `listInboundQueue` deliberately shows those rows to every chapter so they aren't
+   * invisible. Both actions used to require an exact chapter match, which made such a
+   * row permanently STUCK: visible in the queue, and neither dismissable nor
+   * attachable — the bookkeeper got "not found in your chapter" while looking at it.
+   */
+  describe("a chapterless row (unknown sender) is still actionable", () => {
+    /** Same as `seedInboundRow` but with no chapter, the unknown-sender shape. */
+    async function seedChapterlessRow(s: ChapterSetup, storageId: Id<"_storage">) {
+      return run(s.t, (ctx) =>
+        ctx.db.insert("inboundReceipts", {
+          emailId: `e_${Math.random()}`,
+          status: "needs_review",
+          fromEmail: "stranger@nowhere.com",
+          receiptStorageId: storageId,
+          receivedAt: Date.now(),
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        }),
+      );
+    }
+
+    test("it can be dismissed, and is adopted into the caller's chapter", async () => {
+      const t = newT();
+      const s = await setupChapter(t);
+      const self = await seedPerson(s, { linkUser: true });
+      await grantRole(s, self, "bookkeeper");
+      const rowId = await seedChapterlessRow(s, await storeReceipt(s));
+
+      await s.as.mutation(api.receiptInbox.dismissInboundReceipt, { receiptId: rowId });
+
+      const row = await run(t, (ctx) => ctx.db.get(rowId));
+      expect(row?.status).toBe("ignored");
+      // Adopted, so it stops floating across every chapter's queue once decided.
+      expect(row?.chapterId).toBe(s.chapterId);
+    });
+
+    test("it can be attached, and the receipt lands in the caller's chapter", async () => {
+      const t = newT();
+      const s = await setupChapter(t);
+      const self = await seedPerson(s, { linkUser: true });
+      await grantRole(s, self, "bookkeeper");
+      const storageId = await storeReceipt(s);
+      const rowId = await seedChapterlessRow(s, storageId);
+      const txn = await seedTxn(s, { status: "categorized" });
+
+      await s.as.mutation(api.receiptInbox.manualMatchInboundReceipt, {
+        receiptId: rowId,
+        transactionId: txn,
+      });
+
+      const row = await run(t, (ctx) => ctx.db.get(rowId));
+      expect(row?.status).toBe("matched");
+      expect(row?.chapterId).toBe(s.chapterId);
+      // The document must not land as another "Unassigned" row.
+      const docs = await run(t, (ctx) => ctx.db.query("receipts").collect());
+      expect(docs.some((d) => d.chapterId === s.chapterId)).toBe(true);
+    });
+
+    test("a row belonging to ANOTHER chapter is still refused", async () => {
+      const t = newT();
+      const s = await setupChapter(t);
+      const self = await seedPerson(s, { linkUser: true });
+      await grantRole(s, self, "bookkeeper");
+      const otherChapterId = await run(t, (ctx) =>
+        ctx.db.insert("chapters", {
+          name: "Boston", slug: "boston", isActive: true, createdAt: Date.now(),
+        }),
+      );
+      const storageId = await storeReceipt(s);
+      const rowId = await run(t, (ctx) =>
+        ctx.db.insert("inboundReceipts", {
+          emailId: `e_${Math.random()}`,
+          status: "needs_review",
+          fromEmail: "sender@x.com",
+          chapterId: otherChapterId,
+          receiptStorageId: storageId,
+          receivedAt: Date.now(),
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        }),
+      );
+      await expect(
+        s.as.mutation(api.receiptInbox.dismissInboundReceipt, { receiptId: rowId }),
+      ).rejects.toThrow(ConvexError);
+    });
+  });
 });

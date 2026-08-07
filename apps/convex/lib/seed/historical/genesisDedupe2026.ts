@@ -80,6 +80,28 @@ export const DEDUPE_DELETIONS: DedupeDeletion[] = [
       "bought that leg, so it was never his to give. Owner decision 2026-08-06: remove. " +
       "If Layomi supplies the receipt it can be re-recorded as hers.",
   },
+  {
+    externalId: "genesis-inkind-exp:buy25:7",
+    giftRef: "genesis:buy25:7",
+    amountCents: 3196,
+    reason:
+      "Uber to Central Park, March 2025 — owner decision 2026-08-07: remove. One of the " +
+      "three unverifiable March Central Park rides; the documented Central Park trips are " +
+      "the June 14 Eden pair, which are recorded separately from his own trip history.",
+  },
+  {
+    // The owner corrected this row in-app on 2026-08-06 (merchant -> "Uber",
+    // $37.44 -> $32.34) before deciding to remove it. `correctTransaction` moves the
+    // transaction but not the mirrored gift, so the gift is still $37.44 — asserting
+    // the TRANSACTION amount here and letting `removeGiftRow` take the gift whole is
+    // what keeps both legs consistent through the deletion.
+    externalId: "genesis-inkind-exp:buy25:8",
+    giftRef: "genesis:buy25:8",
+    amountCents: 3234,
+    reason:
+      "Uber from Central Park (1/2), March 2025 — owner decision 2026-08-07: remove, " +
+      "same reasoning as buy25:7.",
+  },
 ];
 
 /**
