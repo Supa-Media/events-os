@@ -767,8 +767,8 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "rule",
-        title: "A payout is NOT a transfer — it's your income",
-        text: "When Givebutter or Stripe pays out, that deposit is the ONLY record of those donations in your books: individual gifts live in the donor CRM, not the ledger. So \"Mark as payout\" just LABELS where the money came from and leaves it counted as income. Never mark a payout as a transfer — that would take real revenue out of your totals and quietly shrink the year.",
+        title: "A payout is NOT a transfer — it's your revenue arriving",
+        text: "When Givebutter or Stripe pays out, that deposit is donation and ticket money you've ALREADY earned — the gifts live in the donor records, and that's where the org counts its revenue (the Accounts page's book value = donations + ticket sales earned, minus spend). So \"Mark as payout\" tells the books this bank credit is the arrival of already-counted revenue: it keeps the deposit honest and stops the same dollars being counted twice. Never mark a payout as a transfer — a transfer is money between two of OUR accounts, and this money came from outside.",
       },
       {
         kind: "rule",
@@ -778,11 +778,11 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "Don't reach for Excluded",
-        text: "Excluded is for a row that should never count at all — a duplicate, a bank error. Using it on a transfer hides the row instead of explaining it, only ever fixes one of the two legs, and drops it out of the receipt chase. Using it on a payout deletes real income. Both now have a marking that keeps the row honest and visible.",
+        text: "Excluded is for a row that should never count at all — a duplicate, a bank error. Using it on a transfer hides the row instead of explaining it, only ever fixes one of the two legs, and drops it out of the receipt chase. Using it on a payout hides the settlement record your books need — and for a deposit nobody marked yet, it erases real income. Both now have a marking that keeps the row honest and visible.",
       },
       {
         kind: "tip",
-        text: "STRIPE payouts mark themselves. Every morning the reconciliation engine detects new Stripe payouts, labels the bank deposit as a payout for you, and books each chapter's share of the money onto its own book as an automatic transfer (you'll see those on the Accounts page, badged \"Payout allocation\", where the Financial Manager can audit and flag them). Givebutter and other deposits still need the hand-marking this lesson teaches — and when you mark one, the modal also asks WHOSE money it is: pick the book it belongs to (some Givebutter payouts are central's, some are a chapter's) and the app books that transfer for you. Changing your mind later is an offsetting transfer, so pick deliberately.",
+        text: "STRIPE payouts mark themselves. Every morning the reconciliation engine detects new Stripe payouts, labels the bank deposit as a payout for you, and books each chapter's share as an automatic transfer — that's what routes the CASH to the right account (and, when the Financial Manager has Real cash movement on, actually moves it). You'll see each one on the Accounts page, badged \"Payout allocation\", where the Financial Manager can audit and flag them. Givebutter and other deposits still need the hand-marking this lesson teaches — and when you mark one, the modal also asks WHOSE money it is: pick the book it belongs to (some Givebutter payouts are central's, some are a chapter's) and the app books that transfer for you. Changing your mind later is an offsetting transfer, so pick deliberately.",
       },
       {
         kind: "scenario",
@@ -791,18 +791,18 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           {
             text: "Mark all three as transfers — none of them are purchases",
             feedback:
-              "The $5,000 pair, yes. But the Givebutter deposit is real income: those donations aren't recorded anywhere else in your ledger. Marking it a transfer would take $2,400 straight out of your revenue.",
+              "The $5,000 pair, yes. But the Givebutter deposit is your revenue arriving from outside — a transfer is money between two of OUR accounts. Marking it a transfer would misstate where $2,400 of donation money came from and break its settlement record.",
           },
           {
             text: "Mark the $5,000 pair as a transfer; mark the $2,400 deposit as a payout",
             correct: true,
             feedback:
-              "Right. The pair is money moving — both legs leave spend so the same dollars aren't counted twice. The payout is money arriving — labelled, but still counted as income.",
+              "Right. The pair is money moving — both legs leave spend so the same dollars aren't counted twice. The payout is your already-earned revenue arriving — the label tells the books it's settled donation money, counted once at the donor records.",
           },
           {
             text: "Exclude all three so nothing double-counts",
             feedback:
-              "Excluding hides rather than explains, and it drops all three out of the receipt chase. It would also erase the $2,400 of real donation income from your totals.",
+              "Excluding hides rather than explains, and it drops all three out of the receipt chase. The payout deposit needs its marking — that's what tells the books it's settled, already-counted donation revenue.",
           },
           {
             text: "Mark only the $5,000 withdrawal — the deposit side is obvious",
@@ -829,13 +829,13 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt: "A Givebutter payout lands in your bank account. How should it be marked?",
         options: [
           "As a transfer — the donations were already recorded elsewhere",
-          "As a payout, which labels it but keeps it counted as income",
+          "As a payout — the label that says it's already-counted revenue arriving",
           "As Excluded, to avoid double-counting the gifts",
           "It doesn't need marking at all",
         ],
         answerIndex: 1,
         explanation:
-          "Individual gifts live in the donor CRM, not the ledger — so the payout deposit is the only record of that revenue in your books. Marking it a transfer or excluding it would erase real income from your totals. \"Payout\" says where it came from and leaves it counted.",
+          "The org counts its revenue from the donor records — donations and ticket sales — and the payout deposit is that money physically arriving. \"Mark as payout\" tells the books exactly that, so the deposit stays honest and nothing is counted twice. Marking it a transfer would claim it moved between our own accounts; excluding it would hide the settlement record.",
       },
       {
         prompt: "Why does the app refuse to mark a transfer from just one row?",

@@ -560,15 +560,22 @@ export function countsAsSpend(flow: TransactionFlow): boolean {
 // covering many gifts.
 //
 // A payout is NOT an internal transfer, and marking one must never set
-// `flow:"transfer"`. Donations live in `gifts` (donor CRM) and are NEVER
-// written to `transactions`, so this deposit is the ledger's ONLY record of
-// that income — excluding it from inflow the way a transfer is excluded would
-// erase the org's revenue outright. This is the same trap the reimbursement
-// payout fell into and was reversed out of (`increase.ts`'s header comment:
-// posting as `flow:"transfer"` on "an anti-double-count theory" that assumed a
-// second row booked the money; none did). A marked payout therefore stays a
-// plain `inflow` and only gains a `payoutProcessor` LABEL saying where it came
+// `flow:"transfer"` — a transfer is money between two of the org's own
+// accounts, and this money arrived from outside. A marked payout stays a
+// plain `inflow` and gains a `payoutProcessor` LABEL saying where it came
 // from.
+//
+// WHAT THE LABEL MEANS FOR BOOK VALUE (model revised 2026-08-07, founder):
+// the org counts its revenue at the GIVING layer — `gifts` (every donation
+// channel dual-writes there) plus paid ticket orders — and the accounts
+// page's book value is that revenue minus the reconcile ledger's spend
+// (`apps/convex/lib/bookBalance.ts`). A LABELED payout deposit is therefore
+// the arrival of already-counted revenue and contributes ZERO to book value;
+// an UNMARKED deposit still counts as plain inflow (and double-counts
+// against its gifts) until a human marks it — marking is the fix, and the
+// morning engine marks Stripe's automatically. The label also still matters
+// to spend/rollup surfaces exactly as before: the row is income-shaped, not
+// a transfer, and stays out of no ledger total.
 export const PAYOUT_PROCESSORS = ["givebutter", "stripe", "other"] as const;
 export type PayoutProcessor = (typeof PAYOUT_PROCESSORS)[number];
 

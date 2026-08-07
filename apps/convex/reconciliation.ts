@@ -2020,6 +2020,64 @@ export const accountBalances = query({
       .query("increaseAccounts")
       .take(ROLLUP_SCAN_LIMIT);
 
+    const truncatedScopes = new Set<string>();
+    const warnTruncated = (scope: FinanceScope, what: string) => {
+      truncatedScopes.add(scope);
+      console.warn(
+        `[reconciliation] accountBalances hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading ${what} for ${scope}; book value truncated.`,
+      );
+    };
+
+    // ── Phase 1 — money in, all scopes in parallel: every CASH gift to the
+    // book (all channels dual-write into `gifts`; `in_kind` is excluded —
+    // gear bought FOR the org counts toward the giver's statement but no
+    // cash ever arrives) + the book's paid ticket orders. Also collects the
+    // bank rows that CONFIRMED gifts link to (`gifts.transactionId`,
+    // `givingCandidates.confirmExternalGift`) — a donor wiring directly to
+    // the account produces a gift AND a plain-inflow bank row for the same
+    // dollars, and phase 2 must skip that row or the money counts twice.
+    // Collected ACROSS scopes before any ledger sum so a cross-book link
+    // still excludes. Revenue is a REAL-money figure; in the sandbox demo
+    // state it reads 0 so demo books stay pure sandbox-ledger numbers. ─────
+    const linkedGiftTxnIds = new Set<string>();
+    const revenueByScope = new Map<FinanceScope, number>();
+    await Promise.all(
+      scopes.map(async ({ scope }) => {
+        let revenueCents = 0;
+        const gifts = await ctx.db
+          .query("gifts")
+          .withIndex("by_scope", (q) => q.eq("scope", scope))
+          .take(ROLLUP_SCAN_LIMIT);
+        if (gifts.length === ROLLUP_SCAN_LIMIT) warnTruncated(scope, "gifts");
+        for (const gift of gifts) {
+          if (gift.transactionId != null) {
+            linkedGiftTxnIds.add(gift.transactionId);
+          }
+          if (gift.method === "in_kind") continue;
+          revenueCents += gift.amountCents;
+        }
+        if (scope !== CENTRAL) {
+          const orders = await ctx.db
+            .query("ticketOrders")
+            .withIndex("by_chapter", (q) =>
+              q.eq("chapterId", scope as Id<"chapters">),
+            )
+            .take(ROLLUP_SCAN_LIMIT);
+          if (orders.length === ROLLUP_SCAN_LIMIT) {
+            warnTruncated(scope, "ticket orders");
+          }
+          for (const order of orders) {
+            // `totalCents` is the ticket subtotal only — an order's bundled
+            // add-on donation settles as a `donations` row → gift, already
+            // counted above.
+            if (order.status === "paid") revenueCents += order.totalCents;
+          }
+        }
+        revenueByScope.set(scope, sandboxMode ? 0 : revenueCents);
+      }),
+    );
+
+    // ── Phase 2 — money out (and corrections): the reconcile ledger. ────────
     const out: {
       scope: FinanceScope;
       scopeName: string;
@@ -2030,73 +2088,51 @@ export const accountBalances = query({
       bankBalanceCents: number | null;
       bankBalanceAsOf: number | null;
     }[] = [];
-    for (const { scope, scopeName: name } of scopes) {
-      let truncated = false;
-      const warnTruncated = (what: string) => {
-        truncated = true;
-        console.warn(
-          `[reconciliation] accountBalances hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) reading ${what} for ${scope}; book value truncated.`,
-        );
-      };
-
-      // ── Money in: every gift to this book (all channels — event
-      // donations, /give, pledge cycles, sponsorships, manual/imported —
-      // dual-write into `gifts`) + this book's paid ticket orders. ──────────
-      let revenueCents = 0;
-      const gifts = await ctx.db
-        .query("gifts")
-        .withIndex("by_scope", (q) => q.eq("scope", scope))
-        .take(ROLLUP_SCAN_LIMIT);
-      if (gifts.length === ROLLUP_SCAN_LIMIT) warnTruncated("gifts");
-      for (const gift of gifts) revenueCents += gift.amountCents;
-      if (scope !== CENTRAL) {
-        const orders = await ctx.db
-          .query("ticketOrders")
-          .withIndex("by_chapter", (q) =>
-            q.eq("chapterId", scope as Id<"chapters">),
-          )
+    await Promise.all(
+      scopes.map(async ({ scope, scopeName: name }) => {
+        const txns = await ctx.db
+          .query("transactions")
+          .withIndex("by_chapter", (q) => q.eq("chapterId", scope))
           .take(ROLLUP_SCAN_LIMIT);
-        if (orders.length === ROLLUP_SCAN_LIMIT) warnTruncated("ticket orders");
-        for (const order of orders) {
-          // `totalCents` is the ticket subtotal only — an order's bundled
-          // add-on donation settles as a `donations` row → gift, already
-          // counted above.
-          if (order.status === "paid") revenueCents += order.totalCents;
+        if (txns.length === ROLLUP_SCAN_LIMIT) {
+          warnTruncated(scope, "transactions");
         }
-      }
+        let ledgerNetCents = 0;
+        for (const tr of txns) {
+          if (!txnMatchesMode(tr, sandboxMode)) continue;
+          // A bank credit a confirmed gift links to IS that gift's cash —
+          // already counted in phase 1.
+          if (linkedGiftTxnIds.has(tr._id)) continue;
+          ledgerNetCents += signedBookCents(tr);
+        }
 
-      // ── Money out (and corrections): the reconcile ledger. ────────────────
-      const txns = await ctx.db
-        .query("transactions")
-        .withIndex("by_chapter", (q) => q.eq("chapterId", scope))
-        .take(ROLLUP_SCAN_LIMIT);
-      if (txns.length === ROLLUP_SCAN_LIMIT) warnTruncated("transactions");
-      let ledgerNetCents = 0;
-      for (const tr of txns) {
-        if (!txnMatchesMode(tr, sandboxMode)) continue;
-        ledgerNetCents += signedBookCents(tr);
-      }
-
-      // The account row for the current environment (mirrors
-      // `getChapterAccountForMode` without an extra read per scope).
-      const account =
-        accountRows.find(
-          (a) =>
-            a.chapterId === scope &&
-            (a.sandbox ?? a.increaseAccountId?.startsWith("sandbox_") ?? false) ===
-              sandboxMode,
-        ) ?? null;
-      out.push({
-        scope,
-        scopeName: name,
-        bookBalanceCents: revenueCents + ledgerNetCents,
-        revenueCents,
-        ledgerNetCents,
-        truncated,
-        bankBalanceCents: account?.balanceCents ?? null,
-        bankBalanceAsOf: account?.balanceAsOf ?? null,
-      });
-    }
+        // The account row for the current environment (mirrors
+        // `getChapterAccountForMode` without an extra read per scope).
+        const account =
+          accountRows.find(
+            (a) =>
+              a.chapterId === scope &&
+              (a.sandbox ?? a.increaseAccountId?.startsWith("sandbox_") ?? false) ===
+                sandboxMode,
+          ) ?? null;
+        const revenueCents = revenueByScope.get(scope) ?? 0;
+        out.push({
+          scope,
+          scopeName: name,
+          bookBalanceCents: revenueCents + ledgerNetCents,
+          revenueCents,
+          ledgerNetCents,
+          truncated: truncatedScopes.has(scope),
+          bankBalanceCents: account?.balanceCents ?? null,
+          bankBalanceAsOf: account?.balanceAsOf ?? null,
+        });
+      }),
+    );
+    // Parallel pushes land in arbitrary order — restore the scope order.
+    const orderIndex = new Map(scopes.map((s, i) => [s.scope, i]));
+    out.sort(
+      (a, b) => (orderIndex.get(a.scope) ?? 0) - (orderIndex.get(b.scope) ?? 0),
+    );
     return out;
   },
 });
