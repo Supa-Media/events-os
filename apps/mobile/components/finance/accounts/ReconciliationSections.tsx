@@ -38,6 +38,7 @@ import {
 } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
+import { BookValueBreakdownModal } from "./BookValueBreakdownModal";
 
 /** `Aug 7` / `Aug 7, 5:31 AM` in the org's timezone — compact display dates. */
 function shortDate(ts: number, withTime = false): string {
@@ -53,15 +54,19 @@ function shortDate(ts: number, withTime = false): string {
 
 export function BalancesSection() {
   const balances = useQuery(api.reconciliation.accountBalances, {});
+  // Which book's breakdown is open. Null = closed. A two-number summary is not
+  // auditable on its own; tapping a row opens the itemisation behind it.
+  const [openScope, setOpenScope] = useState<string | null>(null);
   return (
     <>
       <SectionHeader title="Account balances" />
       <Text className="mb-3 text-sm text-muted">
-        Book value = the money a book has earned (donations + ticket sales,
-        gross of processor fees) minus what its ledger says went out, with
-        cross-book card spend settled by the morning engine. Bank is the cash
-        physically sitting in the scope&apos;s Increase account — the two
-        differing is normal until cash movement catches the books up.
+        Book value = the money a book has earned (donations, ticket sales and
+        in-person sales, gross of processor fees) minus what its ledger says
+        went out, with cross-book card spend settled by the morning engine. Bank
+        is the cash physically sitting in the scope&apos;s Increase account — the
+        two differing is normal until cash movement catches the books up.{" "}
+        <Text className="text-ink">Tap a book to see what makes up its number.</Text>
       </Text>
       <Card>
         {balances === undefined ? (
@@ -80,16 +85,22 @@ export function BalancesSection() {
               </Text>
             </View>
             {balances.map((row, i) => (
-              <View
+              <Pressable
                 key={row.scope}
+                onPress={() => setOpenScope(row.scope)}
+                accessibilityRole="button"
+                accessibilityLabel={`${row.scopeName} — see what makes up this book value`}
                 className={`flex-row items-center gap-3 py-2 ${
                   i > 0 ? "border-t border-border-strong" : ""
                 }`}
               >
                 <View className="min-w-0 flex-1">
-                  <Text className="font-display text-base text-ink" numberOfLines={1}>
-                    {row.scopeName}
-                  </Text>
+                  <View className="flex-row items-center gap-1.5">
+                    <Text className="font-display text-base text-ink" numberOfLines={1}>
+                      {row.scopeName}
+                    </Text>
+                    <Icon name="chevron-right" size={14} color={colors.faint} />
+                  </View>
                   <Text className="text-2xs text-faint">
                     {formatCents(row.revenueCents)} earned ·{" "}
                     {row.ledgerNetCents <= 0
@@ -127,11 +138,12 @@ export function BalancesSection() {
                     </>
                   )}
                 </View>
-              </View>
+              </Pressable>
             ))}
           </View>
         )}
       </Card>
+      <BookValueBreakdownModal scope={openScope} onClose={() => setOpenScope(null)} />
     </>
   );
 }
