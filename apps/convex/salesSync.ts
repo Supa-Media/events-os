@@ -25,8 +25,13 @@
  * The action pages Stripe and hands batches to an internal mutation; Convex actions
  * can't touch the database directly. Idempotent on `stripeChargeId`, so re-running
  * imports only what's new.
+ *
+ * NO `"use node"` — deliberately, and it is load-bearing. `fetch()` runs in Convex's
+ * default runtime (same reasoning as `stripeFinance.ts`), and a Node file may contain
+ * ONLY actions. With the directive, the `upsertSales` mutation below fails the push
+ * with `InvalidModules` — which typecheck and the test suite both pass straight
+ * through, because neither performs a deploy. It only surfaces at `convex deploy`.
  */
-"use node";
 
 import { action, internalMutation } from "./_generated/server";
 import { internal } from "./_generated/api";
