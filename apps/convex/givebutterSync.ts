@@ -100,6 +100,13 @@ const GIVEBUTTER_MAX_PAGES = 50;
  *  list is expected to be much shorter than any one campaign's ticket count. */
 const GIVEBUTTER_CAMPAIGN_LOOKUP_MAX_PAGES = 10;
 
+/** Tickets handed to `applyGivebutterTickets` in one call. The sweep now
+ *  collects every matched ticket before applying any (so a transaction's
+ *  tickets can be repriced together), and this keeps each mutation's write set
+ *  bounded regardless of how large that collection got. A transaction is never
+ *  split across two batches, so this is a floor rather than a hard cap. */
+const TICKET_APPLY_BATCH = 50;
+
 /** Manual-sync throttle: ignore a re-request within this window of the last one
  *  (guards a double-tap / impatient operator from stacking redundant syncs). */
 const SYNC_THROTTLE_MS = 60_000;
@@ -619,17 +626,24 @@ export const applyGivebutterDonations = triggerInternalMutation({
     eventId: v.id("events"),
     donations: v.array(gbDonationValidator),
   },
-  returns: v.object({ inserted: v.number(), skipped: v.number() }),
+  returns: v.object({
+    inserted: v.number(),
+    skipped: v.number(),
+    legacyCollisions: v.number(),
+  }),
   handler: async (ctx, { eventId, donations }) => {
     const page = await ctx.db
       .query("eventPages")
       .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .unique();
-    if (!page) return { inserted: 0, skipped: donations.length };
+    if (!page) {
+      return { inserted: 0, skipped: donations.length, legacyCollisions: 0 };
+    }
     const scope = page.chapterId;
 
     let inserted = 0;
     let skipped = 0;
+    let legacyCollisions = 0;
     for (const d of donations) {
       if (!Number.isInteger(d.donationCents) || d.donationCents <= 0) {
         skipped += 1;
@@ -655,6 +669,42 @@ export const applyGivebutterDonations = triggerInternalMutation({
         phone: d.phone ?? undefined,
         source: "givebutter-import",
       });
+
+      // ── LEGACY-BACKFILL GUARD ────────────────────────────────────────────
+      // The dedup above is an exact key match, and that is not enough on its
+      // own: a one-time CSV backfill (2026-07-19) wrote its gifts keyed
+      // `gb:txn:<CSV Reference Number>` — the 10-digit number the Givebutter
+      // EXPORT prints — while this sync keys on the API's own 16-character
+      // transaction id. Different id spaces for the same transaction, so the
+      // lookup misses and the donation is recorded a SECOND time. Attaching
+      // Pop The Balloon's campaign did exactly that: $665 of duplicate giving,
+      // repaired by `givebutterRepair.ts`.
+      //
+      // So: before inserting, check whether THIS donor already holds a
+      // legacy-keyed gift for the same money on the same UTC day. Scoped to
+      // `gb:txn:`-prefixed rows deliberately — it can never suppress against
+      // this sync's own rows, so two genuine same-amount gifts on one day
+      // still both land (the mistake that cost a real $500 bank deposit
+      // earlier in this reconciliation was exactly that kind of collapse).
+      // Bounded read: one donor's gift history, not a table scan.
+      const priorForDonor = await ctx.db
+        .query("gifts")
+        .withIndex("by_donor", (q) => q.eq("donorId", donorId))
+        .take(200);
+      const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+      const legacyTwin = priorForDonor.find(
+        (g) =>
+          String(g.externalRef ?? "").startsWith("gb:txn:") &&
+          g.amountCents === d.donationCents &&
+          day(g.receivedAt) === day(d.receivedAt),
+      );
+      if (legacyTwin) {
+        // Reported, never silently dropped — the caller raises it as a sync
+        // warning so an operator retires the backfill row rather than
+        // wondering why a donation is missing.
+        legacyCollisions += 1;
+        continue;
+      }
       // `recordGiftForDonor` bumps the event's externalGiftsCents/Count because
       // `eventId` is set and `donationId` is NOT (the double-count firewall).
       await recordGiftForDonor(ctx, {
@@ -667,7 +717,7 @@ export const applyGivebutterDonations = triggerInternalMutation({
       });
       inserted += 1;
     }
-    return { inserted, skipped };
+    return { inserted, skipped, legacyCollisions };
   },
 });
 
@@ -919,9 +969,15 @@ async function validateNumericCampaignId(
 async function sweepCampaignTransactions(
   key: string,
   campaignId: string,
-): Promise<{ ids: Set<string>; donations: GbDonation[]; truncated: boolean }> {
+): Promise<{
+  ids: Set<string>;
+  donations: GbDonation[];
+  ticketMoneyByTxn: Map<string, number>;
+  truncated: boolean;
+}> {
   const ids = new Set<string>();
   const donations: GbDonation[] = [];
+  const ticketMoneyByTxn = new Map<string, number>();
   let url: string | null = `${GIVEBUTTER_API_BASE}/transactions`;
   for (let page = 0; page < GIVEBUTTER_MAX_PAGES && url; page++) {
     const res = await gbGet(key, url);
@@ -938,13 +994,104 @@ async function sweepCampaignTransactions(
       ids.add(String(txn.id));
       const donation = normalizeTransactionDonation(txn);
       if (donation) donations.push(donation);
+      // Recorded ONLY when positive. A zero here means "this payload carried no
+      // readable ticket line items", not "these tickets were free" — and the
+      // two must not be confused, because allocating zero would wipe the list
+      // price off every ticket in the transaction. Absent = keep list price.
+      const ticketCents = ticketCentsFromTransaction(txn);
+      if (ticketCents > 0) ticketMoneyByTxn.set(String(txn.id), ticketCents);
     }
     url = nextPageUrl(body.links?.next);
   }
   console.log(
     `[givebutter] transaction sweep for campaign ${campaignId}: ${ids.size} matching ids, ${donations.length} with a donation portion`,
   );
-  return { ids, donations, truncated: url !== null };
+  return { ids, donations, ticketMoneyByTxn, truncated: url !== null };
+}
+
+/**
+ * The TICKET money a transaction actually collected, in integer cents.
+ *
+ * The sibling of `donationCentsFromTransaction`, read from the same nested
+ * `transactions[].line_items[]`, and it exists because a ticket's own `price`
+ * on `GET /v1/tickets` is the tier's LIST price — not what the buyer paid.
+ * Pop The Balloon issued per-person promo codes; six Legacy/Team tickets listed
+ * at $50 were comped or sold for $20, and the mirror booked all six at $50.
+ * That overstated one event's revenue by $315 against money Givebutter never
+ * took. The line item's `total` is post-discount, so it is the honest figure.
+ *
+ * INCLUDES `subtype:"bundle"` alongside `subtype:"ticket"`. A bundle (Pop The
+ * Balloon's $40 "His & Hers") carries the money for admissions that are
+ * themselves priced at $0 — the ticket sweep imports the two $0 admissions and
+ * never sees the bundle row, so counting bundle money here is what lets
+ * `allocateTicketMoney` push it back onto the tickets it paid for. Excludes
+ * `subtype:"fee"` (the processor's cut, not revenue) and `subtype:"donation"`
+ * (already the gift half, counted by `donationCentsFromTransaction`).
+ */
+function ticketCentsFromTransaction(txn: GivebutterTransactionRaw): number {
+  let dollars = 0;
+  for (const sub of txn.transactions ?? []) {
+    for (const li of sub.line_items ?? []) {
+      const subtype = (li.subtype ?? "").toLowerCase();
+      if (subtype !== "ticket" && subtype !== "bundle") continue;
+      const raw = li.total ?? li.price ?? 0;
+      const amount = typeof raw === "number" ? raw : Number(raw);
+      if (Number.isFinite(amount) && amount > 0) dollars += amount;
+    }
+  }
+  return Math.round(dollars * 100);
+}
+
+/**
+ * Spread one transaction's actual ticket money across the tickets it bought,
+ * returning the per-ticket cents index-aligned to `tickets`.
+ *
+ * PRO-RATA BY LIST PRICE, because a mixed basket's discount belongs to the tier
+ * it was applied to — a $50 tier and a $20 tier in one order should not absorb
+ * the same share. Where every list price is 0 (a bundle's admissions) the money
+ * splits EQUALLY, which is what makes a $40 "His & Hers" read as two $20 seats
+ * rather than two free ones plus $40 of revenue that lands nowhere.
+ *
+ * The remainder from integer division is handed out largest-fraction-first, so
+ * the allocation sums to `totalCents` EXACTLY. A few cents adrift here would
+ * compound into an event's revenue rollup and, through
+ * `reconciliation.ts#accountBalances`, into book value.
+ *
+ * Returns null when there is nothing trustworthy to allocate — no tickets, or a
+ * transaction the sweep recorded no ticket money for — and the caller then
+ * keeps the list price it already had. Falling back to today's behaviour is
+ * always safe; inventing a split is not.
+ */
+function allocateTicketMoney(
+  tickets: GbTicket[],
+  totalCents: number | undefined,
+): number[] | null {
+  if (tickets.length === 0) return null;
+  // `undefined` or 0 both mean the sweep read no ticket money for this
+  // transaction — an older/partial payload, not a free ticket. Keep what the
+  // tickets already carry rather than zeroing real revenue.
+  if (totalCents === undefined || totalCents <= 0) return null;
+  const faceTotal = tickets.reduce((sum, t) => sum + t.priceCents, 0);
+  // A transaction whose tickets already add up to what was collected needs no
+  // restatement — the overwhelmingly common, undiscounted case.
+  if (faceTotal === totalCents) return tickets.map((t) => t.priceCents);
+
+  const weights = faceTotal > 0 ? tickets.map((t) => t.priceCents) : tickets.map(() => 1);
+  const weightTotal = weights.reduce((a, b) => a + b, 0);
+  if (weightTotal <= 0) return null;
+
+  const exact = weights.map((w) => (totalCents * w) / weightTotal);
+  const floors = exact.map((x) => Math.floor(x));
+  let remainder = totalCents - floors.reduce((a, b) => a + b, 0);
+  const order = exact
+    .map((x, i) => ({ i, frac: x - Math.floor(x) }))
+    .sort((a, b) => b.frac - a.frac);
+  for (const { i } of order) {
+    if (remainder <= 0) break;
+    floors[i] += 1;
+    remainder -= 1;
+  }
+  return floors;
 }
 
 /**
@@ -1129,6 +1276,9 @@ async function syncOneCampaign(
   if (!config) return; // no page / no campaign id → nothing to sync
 
   let errorMessage: string | null = null;
+  /** Set when the donation apply hit CSV-backfill rows it refused to duplicate;
+   *  reported alongside a clean sync rather than instead of one. */
+  let legacyCollisionWarning: string | null = null;
   try {
     let campaignId = config.campaignId.trim();
     let resolved = false;
@@ -1157,11 +1307,18 @@ async function syncOneCampaign(
     const {
       ids: transactionIds,
       donations,
+      ticketMoneyByTxn,
       truncated: txnTruncated,
     } = await sweepCampaignTransactions(key, campaignId);
     let ticketsTruncated = false;
     let matched = 0;
     if (transactionIds.size > 0) {
+      // COLLECTED WHOLE, then applied — not page by page as this used to be.
+      // Restating a discounted price needs every ticket of a transaction in
+      // hand at once (see `allocateTicketMoney`), and `GET /v1/tickets` gives
+      // no guarantee that siblings land on the same page. Bounded by
+      // GIVEBUTTER_MAX_PAGES, so this is a page count's worth of small objects.
+      const byTxn = new Map<string, GbTicket[]>();
       let url: string | null = `${GIVEBUTTER_API_BASE}/tickets`;
       for (let page = 0; page < GIVEBUTTER_MAX_PAGES && url; page++) {
         const res = await gbGet(key, url);
@@ -1171,9 +1328,7 @@ async function syncOneCampaign(
           );
         }
         const body = (await res.json()) as GivebutterTicketsPage;
-        const rows = body.data ?? [];
-        const normalized: GbTicket[] = [];
-        for (const row of rows) {
+        for (const row of body.data ?? []) {
           if (
             row.transaction_id === undefined ||
             row.transaction_id === null ||
@@ -1181,22 +1336,48 @@ async function syncOneCampaign(
           ) {
             continue;
           }
-          if (!transactionIds.has(String(row.transaction_id))) continue;
+          const txnId = String(row.transaction_id);
+          if (!transactionIds.has(txnId)) continue;
           const t = normalizeTicket(row);
-          if (t) normalized.push(t);
-        }
-        if (normalized.length > 0) {
-          matched += normalized.length;
-          await ctx.runMutation(
-            internal.givebutterSync.applyGivebutterTickets,
-            { eventId, tickets: normalized },
-          );
+          if (!t) continue;
+          const bucket = byTxn.get(txnId);
+          if (bucket) bucket.push(t);
+          else byTxn.set(txnId, [t]);
+          matched += 1;
         }
         url = nextPageUrl(body.links?.next);
       }
       ticketsTruncated = url !== null;
+
+      // Restate list prices to what was actually collected, then apply in
+      // bounded batches. A transaction is never split across batches, so a
+      // partial failure can't leave one order priced and its sibling not.
+      let restated = 0;
+      let batch: GbTicket[] = [];
+      const flush = async (): Promise<void> => {
+        if (batch.length === 0) return;
+        await ctx.runMutation(internal.givebutterSync.applyGivebutterTickets, {
+          eventId,
+          tickets: batch,
+        });
+        batch = [];
+      };
+      for (const [txnId, tickets] of byTxn) {
+        const allocation = allocateTicketMoney(tickets, ticketMoneyByTxn.get(txnId));
+        if (allocation) {
+          tickets.forEach((t, i) => {
+            if (t.priceCents !== allocation[i]) restated += 1;
+            t.priceCents = allocation[i];
+          });
+        }
+        if (batch.length + tickets.length > TICKET_APPLY_BATCH) await flush();
+        batch.push(...tickets);
+      }
+      await flush();
+
       console.log(
-        `[givebutter] ticket sweep for event ${eventId}: ${matched} tickets matched campaign ${campaignId}`,
+        `[givebutter] ticket sweep for event ${eventId}: ${matched} tickets matched campaign ${campaignId}` +
+          (restated > 0 ? `, ${restated} repriced from the transaction's line items` : ""),
       );
     }
 
@@ -1213,8 +1394,16 @@ async function syncOneCampaign(
         { eventId, donations },
       );
       console.log(
-        `[givebutter] donation apply for event ${eventId}: ${donationResult.inserted} recorded, ${donationResult.skipped} skipped`,
+        `[givebutter] donation apply for event ${eventId}: ${donationResult.inserted} recorded, ${donationResult.skipped} skipped, ${donationResult.legacyCollisions} legacy collisions`,
       );
+      if (donationResult.legacyCollisions > 0) {
+        // Not an error — the money IS recorded, just under the CSV backfill's
+        // key rather than this sync's. Surfaced so the stale rows get retired
+        // instead of the gap being mistaken for a sync failure.
+        legacyCollisionWarning =
+          `${donationResult.legacyCollisions} donation(s) already recorded by the 2026-07 CSV backfill under a ` +
+          `different key — left alone to avoid double-counting. Retire those gift rows to let the sync own them.`;
+      }
     }
 
     // A capped ACCOUNT-WIDE sweep means rows past the cap were silently
@@ -1226,6 +1415,9 @@ async function syncOneCampaign(
         txnTruncated ? "transactions" : "tickets"
       } — synced what was swept, but counts may be incomplete.`;
     }
+    // A truncated sweep is the more serious of the two, so it wins the single
+    // status slot; otherwise the collision warning takes it.
+    if (errorMessage === null) errorMessage = legacyCollisionWarning;
   } catch (err) {
     errorMessage =
       err instanceof Error ? err.message : "Givebutter sync failed.";
