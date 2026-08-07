@@ -94,6 +94,7 @@ import { Doc, Id } from "./_generated/dataModel";
 import {
   CENTRAL,
   easternParts,
+  formatCents,
   PAYOUT_ITEM_KINDS,
   STRIPE_PAYOUT_PROCESS_STATES,
   RECONCILIATION_FLAG_KINDS,
@@ -603,7 +604,18 @@ export const applyPayoutAllocation = internalMutation({
             amountCents,
             transferGroupId,
             postedAt: payout.arrivalDate,
-            note: `Auto: allocation of Stripe payout ${stripePayoutId} (${bucket.itemCount} item${bucket.itemCount === 1 ? "" : "s"}, net of fees)`,
+            // Show the arithmetic, not just the conclusion (owner request,
+            // 2026-08-07: transfer rows need "comments on how the transfer was
+            // calculated"). A settled pair carries no category and no budget —
+            // a transfer isn't spend — so this sentence is the ONLY explanation
+            // a reader gets, and "net of fees" without the gross and the fee
+            // asks them to take the number on faith.
+            note:
+              `Auto: allocation of Stripe payout ${stripePayoutId} — ` +
+              `${bucket.itemCount} item${bucket.itemCount === 1 ? "" : "s"} earned by this book, ` +
+              `${formatCents(bucket.grossCents)} gross less ${formatCents(bucket.feeCents)} Stripe fees ` +
+              `= ${formatCents(Math.abs(bucket.netCents))} ${direction === "central_to_chapter" ? "owed to it" : "owed back to central"}. ` +
+              `The payout itself landed in central's account.`,
             transferDirection: direction,
             transferOrigin: "payout_allocation",
           });
@@ -821,7 +833,21 @@ export const runAutoSettlement = internalMutation({
           amountCents: Math.abs(netCents),
           transferGroupId,
           postedAt: Date.now(),
-          note: `Auto: settlement of cross-book card spend through ${dateStr}`,
+          // The four sums the net came from, spelled out. Same reasoning as the
+          // payout-allocation note above: a transfer pair carries no category
+          // and no budget, so this sentence is the whole audit trail. Someone
+          // asked to justify a $224.53 movement should be able to read it off
+          // the row instead of re-deriving `chapterInterScopeRows` by hand.
+          note:
+            `Auto: settlement of cross-book card spend through ${dateStr}. ` +
+            `${chapter.name}'s spend on central's cards ${formatCents(sumAllCents(grouped.centralOwesChapterRows))} ` +
+            `(${grouped.centralOwesChapterRows.length} row${grouped.centralOwesChapterRows.length === 1 ? "" : "s"}) ` +
+            `less ${formatCents(sumAllCents(grouped.settledCentralToChapterRows))} already settled; ` +
+            `central's spend on ${chapter.name}'s cards ${formatCents(sumAllCents(grouped.chapterOwesCentralRows))} ` +
+            `(${grouped.chapterOwesCentralRows.length} row${grouped.chapterOwesCentralRows.length === 1 ? "" : "s"}) ` +
+            `less ${formatCents(sumAllCents(grouped.settledChapterToCentralRows))} already settled. ` +
+            `Net ${formatCents(Math.abs(netCents))} ` +
+            `${direction === "central_to_chapter" ? `central → ${chapter.name}` : `${chapter.name} → central`}.`,
           transferDirection: direction,
           transferOrigin: "auto_settlement",
         });

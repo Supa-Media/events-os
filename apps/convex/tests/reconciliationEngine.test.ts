@@ -963,6 +963,14 @@ describe("real cash movement — eligibility, stamping, toggle", () => {
     await t.mutation(internal.reconciliation.runAutoSettlement, {
       dateStr: "2026-08-07",
     });
+    // Eligibility is "booked AT/AFTER the enable stamp", and both sides of that
+    // comparison are `Date.now()` at millisecond resolution. In a test the pair
+    // and the stamp can land in the SAME millisecond, which makes this
+    // deliberately-pre-enable pair read as post-enable and fails the assertion
+    // below — the whole flake, ~4 runs in 14. Production can't hit it (a human
+    // flips the toggle days apart from a cron run), so the fix belongs here, not
+    // in the comparison. One clear millisecond is enough to make it decisive.
+    await new Promise((r) => setTimeout(r, 2));
     await s.as.mutation(api.reconciliation.setRealMovementEnabled, {
       enabled: true,
     });
