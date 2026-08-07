@@ -39,10 +39,16 @@ const ACCOUNTS_TAB = { label: "Accounts", path: "/finances/accounts" };
 // `finances.budgetsGlance` (see its doc comment).
 const BUDGETS_TAB = { label: "Budgets", path: "/finances/budgets" };
 
+// Sales — merch, snacks and drinks sold in person — is seat-only. It's the
+// third revenue stream (alongside gifts and ticket orders) and the last one to
+// get a surface; before this its money reached Stripe and stopped there. Gated
+// with the rest of the seat tabs rather than added to MEMBER_TABS: a cardholder
+// has no reason to read chapter revenue detail.
 const SEAT_TABS: { label: string; path: string }[] = [
   { label: "Dashboard", path: "/finances" },
   { label: "Reconcile", path: "/finances/reconcile" },
   { label: "Receipts", path: "/finances/receipts" },
+  { label: "Sales", path: "/finances/sales" },
   BUDGETS_TAB,
   { label: "Cards", path: "/finances/cards" },
   { label: "Reimbursements", path: "/finances/reimbursements" },

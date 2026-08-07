@@ -2158,6 +2158,290 @@ export const accountBalances = query({
   },
 });
 
+/**
+ * ONE BOOK'S BOOK VALUE, ITEMISED — the drill-down behind an Account Balances row.
+ *
+ * `accountBalances` gives two numbers per book and no way to interrogate them.
+ * When the founder's reaction to New York's $9,639.16 was "that doesn't seem
+ * right", there was no way to answer it from the app: the only route was
+ * exporting the tables and re-implementing `signedBookCents` offline. This
+ * query is that investigation, in the product.
+ *
+ * It re-derives the SAME arithmetic `accountBalances` uses — deliberately, so
+ * the two can never quietly disagree — and returns the components instead of
+ * the total:
+ *   - REVENUE, split by gift method plus tickets and sales;
+ *   - LEDGER OUT, grouped by budget category;
+ *   - LEDGER IN, listed individually, because a book's inflows are few and each
+ *     one is a judgement call worth eyeballing;
+ *   - what contributed NOTHING and why (payout deposits, allocation legs,
+ *     excluded rows, bank credits already counted as a linked gift) — the
+ *     zero-contributors are where a wrong number usually hides, and they are
+ *     invisible in any total.
+ *
+ * ── THE DOUBLE-COUNT DETECTOR ────────────────────────────────────────────────
+ * `suspectedDoubleCounts` is the part that earns its keep. Revenue is counted
+ * at the gifts layer, so when the same money ALSO lands as a plain bank inflow
+ * it is counted twice — unless the gift carries `transactionId` linking it to
+ * that bank row, which is the only signal `accountBalances` skips on.
+ *
+ * At the time of writing exactly 3 of 180 gifts carry that link, and the two
+ * `genesis:truist:*` gifts do not: their $500 + $500 sits in this book as
+ * $1,000 of gifts AND $1,000 of unlinked bank inflow. Processor money is safe
+ * (a Stripe/Givebutter deposit is labelled a payout and contributes 0), so this
+ * only ever bites gifts that arrived as direct bank credits — wires, ACH pulls,
+ * transfers from another of the org's own accounts.
+ *
+ * Matching on amount + a ±3 day window is a HEURISTIC and is reported as a
+ * suspicion, never acted on. Two genuinely separate $500 deposits on one day
+ * are a real thing that happens — treating that pattern as proof is what
+ * deleted a real deposit from this deployment on 2026-08-07 — so this surfaces
+ * the pair and leaves the judgement to a person.
+ */
+export const bookValueBreakdown = query({
+  args: { scope: financeScopeValidator },
+  returns: v.object({
+    scope: financeScopeValidator,
+    scopeName: v.string(),
+    bookBalanceCents: v.number(),
+    revenueCents: v.number(),
+    ledgerNetCents: v.number(),
+    revenue: v.object({
+      gifts: v.array(
+        v.object({ method: v.string(), amountCents: v.number(), count: v.number() }),
+      ),
+      ticketCents: v.number(),
+      ticketCount: v.number(),
+      saleCents: v.number(),
+      saleCount: v.number(),
+    }),
+    outflowsByCategory: v.array(
+      v.object({ category: v.string(), amountCents: v.number(), count: v.number() }),
+    ),
+    inflows: v.array(
+      v.object({
+        transactionId: v.id("transactions"),
+        postedAt: v.number(),
+        amountCents: v.number(),
+        description: v.string(),
+        source: v.string(),
+        status: v.string(),
+      }),
+    ),
+    zeroContributors: v.object({
+      payoutDeposits: v.number(),
+      allocationLegs: v.number(),
+      excluded: v.number(),
+      linkedGiftCredits: v.number(),
+      unknownTransferShape: v.number(),
+    }),
+    suspectedDoubleCounts: v.array(
+      v.object({
+        transactionId: v.id("transactions"),
+        postedAt: v.number(),
+        amountCents: v.number(),
+        description: v.string(),
+        giftId: v.id("gifts"),
+        giftMethod: v.string(),
+        giftExternalRef: v.union(v.string(), v.null()),
+      }),
+    ),
+    truncated: v.boolean(),
+  }),
+  handler: async (ctx, { scope }) => {
+    await requireReconciliationAudit(ctx);
+    const sandboxMode = await readSandbox(ctx);
+
+    let scopeName = "Central";
+    if (scope !== CENTRAL) {
+      const chapter = await ctx.db.get(scope as Id<"chapters">);
+      scopeName = chapter?.name ?? "Unknown book";
+    }
+
+    // ── Revenue, mirroring accountBalances phase 1 ───────────────────────────
+    const gifts = await ctx.db
+      .query("gifts")
+      .withIndex("by_scope", (q) => q.eq("scope", scope))
+      .take(ROLLUP_SCAN_LIMIT);
+    let truncated = gifts.length === ROLLUP_SCAN_LIMIT;
+
+    const byMethod = new Map<string, { amountCents: number; count: number }>();
+    const linkedGiftTxnIds = new Set<string>();
+    let revenueCents = 0;
+    for (const gift of gifts) {
+      if (gift.transactionId != null) linkedGiftTxnIds.add(gift.transactionId);
+      revenueCents += gift.amountCents;
+      const slot = byMethod.get(gift.method) ?? { amountCents: 0, count: 0 };
+      slot.amountCents += gift.amountCents;
+      slot.count += 1;
+      byMethod.set(gift.method, slot);
+    }
+
+    let ticketCents = 0;
+    let ticketCount = 0;
+    let saleCents = 0;
+    let saleCount = 0;
+    if (scope !== CENTRAL) {
+      const salesRows = await ctx.db
+        .query("sales")
+        .withIndex("by_chapter_and_soldAt", (q) => q.eq("chapterId", scope))
+        .take(ROLLUP_SCAN_LIMIT);
+      if (salesRows.length === ROLLUP_SCAN_LIMIT) truncated = true;
+      for (const sale of salesRows) {
+        saleCents += sale.grossCents;
+        saleCount += 1;
+      }
+      const orders = await ctx.db
+        .query("ticketOrders")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", scope as Id<"chapters">))
+        .take(ROLLUP_SCAN_LIMIT);
+      if (orders.length === ROLLUP_SCAN_LIMIT) truncated = true;
+      for (const order of orders) {
+        if (order.status !== "paid") continue;
+        ticketCents += order.totalCents;
+        ticketCount += 1;
+      }
+      revenueCents += ticketCents + saleCents;
+    }
+    if (sandboxMode) revenueCents = 0;
+
+    // ── Ledger, mirroring accountBalances phase 2 ────────────────────────────
+    const txns = await ctx.db
+      .query("transactions")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", scope))
+      .take(ROLLUP_SCAN_LIMIT);
+    if (txns.length === ROLLUP_SCAN_LIMIT) truncated = true;
+
+    const categories = await ctx.db.query("budgetCategories").take(ROLLUP_SCAN_LIMIT);
+    const categoryName = new Map(categories.map((c) => [c._id as string, c.name]));
+
+    const outByCategory = new Map<string, { amountCents: number; count: number }>();
+    const inflows: {
+      transactionId: Id<"transactions">;
+      postedAt: number;
+      amountCents: number;
+      description: string;
+      source: string;
+      status: string;
+    }[] = [];
+    const zero = {
+      payoutDeposits: 0,
+      allocationLegs: 0,
+      excluded: 0,
+      linkedGiftCredits: 0,
+      unknownTransferShape: 0,
+    };
+    let ledgerNetCents = 0;
+    const countedInflowRows: Doc<"transactions">[] = [];
+
+    for (const tr of txns) {
+      if (!txnMatchesMode(tr, sandboxMode)) continue;
+      if (linkedGiftTxnIds.has(tr._id)) {
+        zero.linkedGiftCredits += 1;
+        continue;
+      }
+      if (tr.status === "excluded") {
+        zero.excluded += 1;
+        continue;
+      }
+      if (tr.payoutProcessor != null || tr.stripePayoutId != null) {
+        zero.payoutDeposits += 1;
+        continue;
+      }
+      if (tr.transferOrigin === "payout_allocation") {
+        zero.allocationLegs += 1;
+        continue;
+      }
+      const signed = signedBookCents(tr);
+      ledgerNetCents += signed;
+      if (signed === 0) {
+        zero.unknownTransferShape += 1;
+      } else if (signed < 0) {
+        const key = tr.categoryId
+          ? (categoryName.get(tr.categoryId) ?? "Unknown category")
+          : "Uncategorised";
+        const slot = outByCategory.get(key) ?? { amountCents: 0, count: 0 };
+        slot.amountCents += signed;
+        slot.count += 1;
+        outByCategory.set(key, slot);
+      } else {
+        countedInflowRows.push(tr);
+        inflows.push({
+          transactionId: tr._id,
+          postedAt: tr.postedAt,
+          amountCents: signed,
+          description: tr.description ?? "",
+          source: tr.source ?? "",
+          status: tr.status,
+        });
+      }
+    }
+
+    // ── The detector ────────────────────────────────────────────────────────
+    // Only UNLINKED gifts can double-count, and only against an inflow that
+    // actually contributed. A gift already consumed by one inflow is not
+    // offered against a second, so two $500 deposits and two $500 gifts pair
+    // off cleanly rather than reporting four suspicions.
+    const WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
+    const unlinkedGifts = gifts.filter((g) => g.transactionId == null);
+    const claimed = new Set<string>();
+    const suspectedDoubleCounts: {
+      transactionId: Id<"transactions">;
+      postedAt: number;
+      amountCents: number;
+      description: string;
+      giftId: Id<"gifts">;
+      giftMethod: string;
+      giftExternalRef: string | null;
+    }[] = [];
+    for (const tr of countedInflowRows) {
+      const twin = unlinkedGifts.find(
+        (g) =>
+          !claimed.has(g._id) &&
+          g.amountCents === tr.amountCents &&
+          Math.abs(g.receivedAt - tr.postedAt) <= WINDOW_MS,
+      );
+      if (!twin) continue;
+      claimed.add(twin._id);
+      suspectedDoubleCounts.push({
+        transactionId: tr._id,
+        postedAt: tr.postedAt,
+        amountCents: tr.amountCents,
+        description: tr.description ?? "",
+        giftId: twin._id,
+        giftMethod: twin.method,
+        giftExternalRef: twin.externalRef ?? null,
+      });
+    }
+
+    return {
+      scope,
+      scopeName,
+      bookBalanceCents: revenueCents + ledgerNetCents,
+      revenueCents,
+      ledgerNetCents,
+      revenue: {
+        gifts: [...byMethod.entries()]
+          .map(([method, v2]) => ({ method, ...v2 }))
+          .sort((a, b) => b.amountCents - a.amountCents),
+        ticketCents,
+        ticketCount,
+        saleCents,
+        saleCount,
+      },
+      outflowsByCategory: [...outByCategory.entries()]
+        .map(([category, v2]) => ({ category, ...v2 }))
+        .sort((a, b) => a.amountCents - b.amountCents),
+      inflows: inflows.sort((a, b) => b.amountCents - a.amountCents),
+      zeroContributors: zero,
+      suspectedDoubleCounts: suspectedDoubleCounts.sort(
+        (a, b) => b.amountCents - a.amountCents,
+      ),
+      truncated,
+    };
+  },
+});
+
 const historyRowValidator = v.object({
   transferGroupId: v.string(),
   postedAt: v.number(),
