@@ -1,6 +1,7 @@
 # Transaction coding — IRS-grade substantiation, self-serve
 
-**Status:** ratified 2026-08-08 (decisions below) — implementation not yet started
+**Status:** ratified 2026-08-08 (decisions below) — **phase 1 implemented**
+(schema, gate, facets, review loop, Reconcile editor; phases 2–4 pending)
 **Owner ask (2026-08-08):** travel line items need a from/to; meals need the
 names of everyone there (or a headcount for big groups); business purpose has
 to be real ("travel to NY to film Eden event", not "bus to NY"). Cardholders

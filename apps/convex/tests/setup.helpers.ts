@@ -61,6 +61,38 @@ export function storeBlob(t: TestConvex): Promise<Id<"_storage">> {
   );
 }
 
+/**
+ * Push `codingRequiredSinceMs` to the far future for this test database.
+ *
+ * The transaction-coding policy ARMS ITSELF on 2026-09-01
+ * (`DEFAULT_CODING_REQUIRED_SINCE_MS` is the fallback when no
+ * `financeSettings` row says otherwise), at which point
+ * `setTransactionStatus(…, "reconciled")` starts refusing uncoded spend with
+ * `CODING_REQUIRED`. Suites that reconcile `Date.now()`-posted fixtures but
+ * are NOT about coding call this from their seed helpers so they don't
+ * start failing on the policy date. Idempotent — safe to call once per
+ * inserted transaction. Coding's own suite (`transactionCodings.test.ts`)
+ * deliberately does NOT use this; it pins `postedAt` around the default
+ * policy date instead.
+ */
+export async function disarmCodingPolicy(t: TestConvex): Promise<void> {
+  const FAR_FUTURE = Date.UTC(2100, 0, 1);
+  await run(t, async (ctx) => {
+    const settings = await ctx.db.query("financeSettings").first();
+    if (settings) {
+      if (settings.codingRequiredSinceMs !== FAR_FUTURE) {
+        await ctx.db.patch(settings._id, { codingRequiredSinceMs: FAR_FUTURE });
+      }
+    } else {
+      await ctx.db.insert("financeSettings", {
+        sandboxMode: false,
+        updatedAt: Date.now(),
+        codingRequiredSinceMs: FAR_FUTURE,
+      });
+    }
+  });
+}
+
 export interface ChapterSetup {
   /** An authenticated client scoped to the seeded user. */
   as: ReturnType<TestConvex["withIdentity"]>;

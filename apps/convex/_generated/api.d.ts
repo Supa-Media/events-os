@@ -202,6 +202,8 @@ import type * as lib_templates from "../lib/templates.js";
 import type * as lib_ticketApiRoutes from "../lib/ticketApiRoutes.js";
 import type * as lib_ticketingAccess from "../lib/ticketingAccess.js";
 import type * as lib_tiptapCampaignRender from "../lib/tiptapCampaignRender.js";
+import type * as lib_transactionCoding from "../lib/transactionCoding.js";
+import type * as lib_transactionCodingAccess from "../lib/transactionCodingAccess.js";
 import type * as lib_twilio from "../lib/twilio.js";
 import type * as lib_unsubscribePage from "../lib/unsubscribePage.js";
 import type * as maintenance from "../maintenance.js";
@@ -354,6 +356,7 @@ import type * as ticketingCountersBackfill from "../ticketingCountersBackfill.js
 import type * as ticketingEmails from "../ticketingEmails.js";
 import type * as ticketingSms from "../ticketingSms.js";
 import type * as ticketingVerification from "../ticketingVerification.js";
+import type * as transactionCodings from "../transactionCodings.js";
 import type * as transfers from "../transfers.js";
 import type * as webhooks from "../webhooks.js";
 import type * as work from "../work.js";
@@ -559,6 +562,8 @@ declare const fullApi: ApiFromModules<{
   "lib/ticketApiRoutes": typeof lib_ticketApiRoutes;
   "lib/ticketingAccess": typeof lib_ticketingAccess;
   "lib/tiptapCampaignRender": typeof lib_tiptapCampaignRender;
+  "lib/transactionCoding": typeof lib_transactionCoding;
+  "lib/transactionCodingAccess": typeof lib_transactionCodingAccess;
   "lib/twilio": typeof lib_twilio;
   "lib/unsubscribePage": typeof lib_unsubscribePage;
   maintenance: typeof maintenance;
@@ -711,6 +716,7 @@ declare const fullApi: ApiFromModules<{
   ticketingEmails: typeof ticketingEmails;
   ticketingSms: typeof ticketingSms;
   ticketingVerification: typeof ticketingVerification;
+  transactionCodings: typeof transactionCodings;
   transfers: typeof transfers;
   webhooks: typeof webhooks;
   work: typeof work;

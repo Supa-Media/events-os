@@ -84,6 +84,7 @@ import {
   receipts,
   receiptLinks,
   receiptExceptions,
+  transactionCodings,
   receiptSweepState,
 } from "./schema/finances";
 import {
@@ -332,6 +333,12 @@ const schema = defineSchema({
   // `transactions.approvedReceiptExceptionId` pointer. See
   // `docs/plans/receipt-exceptions.md`.
   receiptExceptions,
+  // The structured, human-authored substantiation record per transaction
+  // (travel route, meal attendees, business purpose) with its own review
+  // lifecycle. Written only through lib/transactionCoding.ts, which also owns
+  // the denormalized `transactions.codingState`. See
+  // `docs/plans/transaction-coding.md`.
+  transactionCodings,
   // Per-chapter "is a failed-extraction retry sweep running" marker — see
   // `schema/finances.ts`'s doc + `receipts.ts#retryFailedExtractions`.
   receiptSweepState,
