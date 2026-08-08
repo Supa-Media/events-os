@@ -298,6 +298,45 @@
  * title/minutes/quizLength are unchanged — the cardholder-facing lesson and
  * quiz land with phase 2 (self-serve coding). No slugs, sections, or courses
  * moved; total stays 105.
+ *
+ * Transaction coding phase 2 (self-serve coding — the cardholder writes the
+ * substantiation themselves) cashes that promise and INSERTS one section:
+ * `finance-coding-your-charges` ("Coding your charges", 5 min, 5-quiz), into
+ * the `finances-for-everyone` course between `finance-receipt-exceptions` and
+ * `finance-reimbursements-and-flags`. Total: 106 sections; every section from
+ * it onward shifts by one `order`, which is derived from array position and
+ * so needs no hand-editing. It teaches the spender's half of the record —
+ * what it was, why it served the work, who was involved; the business purpose
+ * written for the PUBLIC ledger; routes on travel; the 15-HEAD (never dollar)
+ * meal threshold; that names never publish, only the affiliation breakdown;
+ * the lodging itemized-receipt exception to the receipt-exception flow; why
+ * nothing is pre-filled and no AI drafts a coding; and the clock, ending at
+ * the 60-day auto-convert to a personal repayment and the plain-words reason
+ * it exists (unsubstantiated spending is legally taxable income to the
+ * spender under IRS accountable-plan rules). It sits AFTER
+ * `finance-receipt-exceptions` rather than beside the card lesson because it
+ * leans on the exception vocabulary instead of repeating it; both of those
+ * neighbours are unchanged (their quizzes are at the 5-question cap
+ * `apps/convex/tests/academy.test.ts` enforces), so only the insertion shows
+ * up in the tables below. It is required, not `optional`, so it counts toward
+ * "fully trained" — the same reasoning as `finance-receipt-exceptions`, and
+ * it is the lesson `financeSettings.cardPrerequisiteCourseSlug` is meant to
+ * put on the record before a card is issued (its course,
+ * `finances-for-everyone`, is the prerequisite candidate).
+ *
+ * Transaction coding phase 3 (reimbursement parity) is a content-only edit to
+ * `finance-reimbursements-and-flags`, one course over: two new rules — per-LINE
+ * substantiation with the same elements and the same shared validator in the
+ * app, the `/reimburse/<token>` page and the server (cross-referencing
+ * `finance-coding-your-charges` rather than restating the meal/travel rules,
+ * and noting reimbursements have NO receipt-exception path), and the new
+ * `changes_requested` send-back loop (required note, resubmission keeps the
+ * original submission date, substantiation-only revisions, not payable while
+ * sent back). Its quiz stays at the 5-question cap by swapping the "where do
+ * you see both directions" navigation question — still taught by the bullet
+ * above it — for one on send-back-vs-rejected. Title, minutes (5), and
+ * quizLength (5) are all unchanged, so nothing in the tables below moved; no
+ * slugs, sections, or courses moved either, and the total stays 106.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -363,6 +402,7 @@ const EXPECTED_SECTION_SLUGS: string[] = [
   "finance-stewardship",
   "finance-card-and-receipts",
   "finance-receipt-exceptions",
+  "finance-coding-your-charges",
   "finance-reimbursements-and-flags",
   "finance-reconcile-grid",
   "finance-transfers-and-payouts",
@@ -895,6 +935,14 @@ const EXPECTED_SECTIONS: {
     capstoneKind: null,
   },
   {
+    slug: "finance-coding-your-charges",
+    title: "Coding your charges",
+    minutes: 5,
+    quizLength: 5,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
     slug: "finance-reimbursements-and-flags",
     title: "Reimbursement, and flagging a charge",
     minutes: 5,
@@ -1383,6 +1431,7 @@ const EXPECTED_COURSES: {
       "finance-stewardship",
       "finance-card-and-receipts",
       "finance-receipt-exceptions",
+      "finance-coding-your-charges",
       "finance-reimbursements-and-flags",
     ],
   },

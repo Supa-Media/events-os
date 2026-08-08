@@ -14,6 +14,17 @@
  * question at a time: pick "meal" and exactly the meal questions appear
  * (headcount, then one name row per head at/below the org threshold, or a
  * group description above it); travel/lodging ask for the route.
+ *
+ * Two more things every field owes its author, because this form is the only
+ * training most people will ever read (phase 2, `docs/plans/transaction-coding.md`):
+ *  - WHY, in one line, at the moment the rule applies — "the IRS requires who
+ *    attended and their relationship to the org". The Academy lesson's job is
+ *    depth; the form's job is the reminder.
+ *  - WHAT PUBLISHES. The business purpose is written for the public and says
+ *    so at the field; attendee names are internal forever and only the
+ *    breakdown ("3 volunteers, 1 guest") is ever printed. Somebody typing a
+ *    sentence into a public record is entitled to know that before they type
+ *    it, not after it's published.
  */
 import { useMemo, useState } from "react";
 import { Modal, Pressable, ScrollView, Text, View } from "react-native";
@@ -54,6 +65,8 @@ export function TransactionCodingModal({
   namesMaxHeadcount,
   minPurposeLength,
   initial,
+  reviewNote,
+  submitLabel = "Submit for review",
   submitting,
   onConfirm,
   onCancel,
@@ -65,6 +78,13 @@ export function TransactionCodingModal({
   minPurposeLength: number;
   /** Present when revising after a send-back — the author's own prior words. */
   initial?: CodingFormValue | null;
+  /** The reviewer's send-back note, when this is a revision. Shown INSIDE the
+   *  editor: "what would make this approvable" is useless one screen away from
+   *  the fields it's about. */
+  reviewNote?: string | null;
+  /** "Resubmit for review" when revising — a button that says the same thing
+   *  on the first pass and the fourth hides which one you're on. */
+  submitLabel?: string;
   submitting?: boolean;
   onConfirm: (value: CodingFormValue) => void;
   onCancel: () => void;
@@ -171,8 +191,22 @@ export function TransactionCodingModal({
 
           <ScrollView className="max-h-[460px]">
             <View className="px-5 py-4">
+              {reviewNote ? (
+                <View className="mb-4 rounded-lg border border-danger/40 bg-danger-bg px-3 py-2.5">
+                  <Text className="text-2xs font-semibold uppercase tracking-wide text-danger">
+                    What the reviewer asked for
+                  </Text>
+                  <Text className="mt-0.5 text-sm text-ink">“{reviewNote}”</Text>
+                </View>
+              ) : null}
+
               <Text className="mb-2 text-2xs font-semibold uppercase tracking-wide text-muted">
                 What kind of expense?
+              </Text>
+              <Text className="mb-2 text-2xs text-muted">
+                This only decides which questions you get asked — travel and
+                meals carry extra elements the IRS names specifically. It
+                isn&apos;t a category, and nothing picks it for you.
               </Text>
               <View className="mb-4 gap-2">
                 {EXPENSE_TYPES.map((t) => {
@@ -216,12 +250,20 @@ export function TransactionCodingModal({
                     multiline
                     numberOfLines={3}
                   />
-                  <Text className="mt-1 text-2xs text-muted">
-                    In your own words, at least {minPurposeLength} characters.
-                    This description will appear on Public Worship&apos;s
-                    public ledger — &quot;travel to NY to film Eden
-                    event&quot;, not &quot;bus to NY&quot;.
-                  </Text>
+                  <View className="mt-1.5 flex-row items-start gap-2 rounded-md border border-border bg-sunken px-3 py-2">
+                    <Icon name="globe" size={13} color={colors.muted} />
+                    <Text className="flex-1 text-2xs text-muted">
+                      <Text className="font-semibold text-ink">
+                        This sentence publishes.
+                      </Text>{" "}
+                      Public Worship is making every transaction public, and
+                      what you write here is what the ledger prints, word for
+                      word — so write it for a stranger reading it next year.
+                      &quot;Travel to NY to film the Eden event&quot;, not
+                      &quot;bus to NY&quot;. In your own words, at least{" "}
+                      {minPurposeLength} characters.
+                    </Text>
+                  </View>
                 </>
               ) : null}
 
@@ -247,10 +289,11 @@ export function TransactionCodingModal({
                     </View>
                   </View>
                   <Text className="mt-1 text-2xs text-muted">
-                    City level is enough — the IRS travel elements are amount,
-                    date, place, and purpose.
+                    The IRS asks travel for a PLACE, not just a trip — where
+                    from and where to. City level is enough, and the route
+                    publishes at city level too.
                     {expenseType === "lodging"
-                      ? " Lodging always needs an itemized receipt, at any amount."
+                      ? " Lodging always needs an itemized receipt, at any amount — a bank line won't do."
                       : ""}
                   </Text>
                 </View>
@@ -267,16 +310,35 @@ export function TransactionCodingModal({
                     placeholder="e.g. 4"
                     keyboardType="number-pad"
                   />
+                  <Text className="mt-1 text-2xs text-muted">
+                    Everyone the meal was bought for, including you. The number
+                    decides what comes next: {namesMaxHeadcount} or fewer and
+                    we ask for names, more and a group description is enough.
+                  </Text>
                   {namesMode === true ? (
                     <View className="mt-3">
                       <Text className="mb-1 text-2xs font-semibold uppercase tracking-wide text-muted">
                         Who was there?
                       </Text>
                       <Text className="mb-2 text-2xs text-muted">
-                        The IRS requires who attended and how they relate to
-                        the org. Names stay internal — only the breakdown
-                        (&quot;3 volunteers, 1 guest&quot;) is ever published.
+                        The IRS requires who attended and their relationship to
+                        the org — that&apos;s the business-relationship
+                        element, and it&apos;s the one a receipt can never
+                        carry.
                       </Text>
+                      <View className="mb-2 flex-row items-start gap-2 rounded-md border border-border bg-sunken px-3 py-2">
+                        <Icon name="lock" size={13} color={colors.muted} />
+                        <Text className="flex-1 text-2xs text-muted">
+                          <Text className="font-semibold text-ink">
+                            Names stay internal, forever.
+                          </Text>{" "}
+                          The public ledger prints the breakdown only —
+                          &quot;3 volunteers, 1 guest&quot; — never who they
+                          were. Some of the people you list didn&apos;t
+                          consent to a public financial record, and some are
+                          minors.
+                        </Text>
+                      </View>
                       <View className="gap-2">
                         {rows.map((row, i) => (
                           <View
@@ -331,15 +393,26 @@ export function TransactionCodingModal({
                       />
                       <Text className="mt-1 text-2xs text-muted">
                         Over {namesMaxHeadcount} people a headcount and an
-                        identifiable group is enough — no names needed.
+                        identifiable group is enough — no names needed. It has
+                        to be identifiable, though: an auditor accepts
+                        &quot;volunteers writing and producing the album&quot;
+                        and rejects &quot;some people&quot;. This one
+                        publishes.
                       </Text>
                     </View>
                   ) : null}
                 </View>
               ) : null}
 
+              {/* THE MISSING PIECES, in place. Submit stays disabled until
+                  this list is empty — the server throws the FIRST of these
+                  same problems, so nothing gets rejected here that the form
+                  could have said out loud first. */}
               {touched && problems.length > 0 ? (
                 <View className="mt-4 gap-1.5 rounded-md border border-border bg-sunken px-3 py-2">
+                  <Text className="text-2xs font-semibold uppercase tracking-wide text-muted">
+                    Still needed before you can submit
+                  </Text>
                   {problems.map((p) => (
                     <View key={p.code} className="flex-row items-start gap-2">
                       <Icon name="info" size={13} color={colors.muted} />
@@ -356,7 +429,7 @@ export function TransactionCodingModal({
           <View className="flex-row justify-end gap-2 border-t border-border px-5 py-4">
             <Button title="Cancel" variant="secondary" onPress={onCancel} />
             <Button
-              title="Submit for review"
+              title={submitLabel}
               onPress={() => {
                 if (value != null && problems.length === 0) onConfirm(value);
               }}

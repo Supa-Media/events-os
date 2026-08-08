@@ -108,14 +108,35 @@ export default function ReceiptChaseScreen() {
  *  Receipt column language (day-1 "Reminder sent" → day-3 "Day 3 overdue"). */
 function ReminderBadge({
   stage,
+  outstanding,
 }: {
   stage: "none" | "flagged" | "escalated";
+  /** What this row still owes (`chargeOutstanding`), or null for a row with
+   *  no cardholder — a marked transfer/payout, which owes a statement. */
+  outstanding: string | null;
 }) {
   if (stage === "escalated") {
     return <Badge label="Day 3 overdue" tone="danger" icon="alert-triangle" />;
   }
   if (stage === "flagged") return <Badge label="Reminder sent" tone="warn" />;
-  return <Badge label="No receipt" tone="neutral" />;
+  // The un-nudged state names the ACTUAL debt. This list stopped being
+  // receipt-only when the chase absorbed coding, so a hardcoded "No receipt"
+  // now libels the common case: a charge whose receipt is attached and whose
+  // coding isn't shows up here, and the badge would flatly contradict the
+  // receipt sitting on the row. Falls back only for the cardholder-less rows.
+  return (
+    <Badge
+      label={outstanding ? sentenceCase(outstanding) : "Needs documentation"}
+      tone="neutral"
+    />
+  );
+}
+
+/** "needs coding" → "Needs coding". The labels are authored lowercase because
+ *  they're written to sit mid-sentence in an email ("3 charges — needs
+ *  coding"); a badge is their one uppercase home. */
+function sentenceCase(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 /** Outcome copy for a single nudge target — shared by the "Send reminder"
@@ -309,12 +330,23 @@ function ReceiptChaseBody() {
                           {t.merchantName ?? t.description ?? "Unlabeled charge"}
                         </Text>
                         <Text className="text-xs text-muted" numberOfLines={1}>
-                          {[shortDate(t.postedAt), t.cardLast4 ? `card ··${t.cardLast4}` : null]
+                          {[
+                            shortDate(t.postedAt),
+                            t.cardLast4 ? `card ··${t.cardLast4}` : null,
+                            // What this row actually owes, in the SAME words the
+                            // cardholder's digest uses — the chase now covers
+                            // coding as well as receipts, so a line that just
+                            // said "$58.30" would leave the treasurer guessing
+                            // which debt the reminder is about. Null only for
+                            // the cardholder-less rows (a marked transfer or
+                            // payout) that owe a statement, not a person.
+                            t.outstanding,
+                          ]
                             .filter(Boolean)
                             .join(" · ")}
                         </Text>
                       </View>
-                      <ReminderBadge stage={t.reminderStage} />
+                      <ReminderBadge stage={t.reminderStage} outstanding={t.outstanding} />
                       <Text className="w-[90px] text-right text-sm font-semibold text-ink">
                         {signedMoney(t.amountCents, "outflow")}
                       </Text>

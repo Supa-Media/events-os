@@ -202,12 +202,20 @@ describe("curriculum content", () => {
     // FOUNDATIONS rather than the development stream on purpose: `data.export`
     // is held by six seats across finance/development/marketing/chapter, and
     // how-we-work is the only substantive course on all six role paths.)
-    expect(ACADEMY_SECTION_COUNT).toBe(106);
+    // + 1 (finance-coding-your-charges, inserted into the finances-for-everyone
+    // course after finance-receipt-exceptions — required, not a capstone. The
+    // cardholder's half of transaction coding: the what/why/who record a
+    // second person approves, the 15-HEAD meal-names threshold, why attendee
+    // names never publish, and the 60-day accountable-plan clock that turns an
+    // uncoded charge into money you owe back. Placed one past
+    // `finance-card-and-receipts` so it can lean on the exception vocabulary
+    // rather than re-teach it. See `docs/plans/transaction-coding.md` phase 2.)
+    expect(ACADEMY_SECTION_COUNT).toBe(107);
     expect(ACADEMY_SECTIONS.map((s) => s.order)).toEqual(
-      Array.from({ length: 106 }, (_v, i) => i + 1),
+      Array.from({ length: 107 }, (_v, i) => i + 1),
     );
     // The optional bonus is excluded from the trained denominator.
-    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(105);
+    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(106);
     expect(ACADEMY_CAPSTONE_SECTIONS).toHaveLength(6);
     // The suite leans on this order — pin it.
     expect(CAPSTONE_JOIN.capstone!.kind).toBe("join_event");

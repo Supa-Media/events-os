@@ -23,6 +23,7 @@
 import { mutation, query } from "./_generated/server";
 import { v, ConvexError, type Infer } from "convex/values";
 import type { QueryCtx } from "./_generated/server";
+import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
   ATTENDEE_AFFILIATIONS,
@@ -348,6 +349,15 @@ export const requestChanges = mutation({
       after: "Changes requested",
       reason: args.reviewNote.trim(),
       amountCents: txn.amountCents,
+    });
+    // TELL THE AUTHOR. A send-back nobody hears about is a note in a row
+    // nobody re-opens — the loop only closes if "the receipt must show the
+    // exact amount" reaches the person who can act on it. Scheduled (not
+    // awaited) so a slow or failing Resend never blocks the review itself;
+    // degrades to a logged no-op without `RESEND_API_KEY`, like every other
+    // send in the app.
+    await ctx.scheduler.runAfter(0, internal.cards.notifyCodingSentBack, {
+      transactionId: args.transactionId,
     });
     return null;
   },

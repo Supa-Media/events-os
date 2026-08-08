@@ -15,9 +15,13 @@
  * qty × rate (amount is the product, editable line-by-line), a REQUIRED
  * per-line receipt uploaded straight to Convex storage the moment it's picked
  * (mirrors `ReceiptButton`'s generate-url → POST → storageId flow) so the
- * `receiptStorageId` travels with the line on submit, and a REQUIRED per-line
- * transaction date. Submission is blocked — with an inline, itemized error —
- * until every line clears all three.
+ * `receiptStorageId` travels with the line on submit, a REQUIRED per-line
+ * transaction date, and the REQUIRED per-line substantiation (`CodingFields` —
+ * the §274(d) elements: what kind of expense, the business purpose the public
+ * ledger will print, a travel route, who ate). Submission is blocked — with an
+ * inline, itemized error — until every line clears all four, checked with the
+ * SHARED `codingFieldProblems` the server throws on, so nobody learns about a
+ * thin purpose from a round-trip.
  *
  * Name/email/phone prefill, funds, and the "For" (event/project/recurring
  * budget) tag options come from `api.reimbursements.newRequestOptions` — a
@@ -53,7 +57,12 @@ import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 // expo-image-picker is Expo Go-safe (classified `core`); only used on native.
 import * as ImagePicker from "expo-image-picker";
-import { BUDGET_CADENCE_LABELS, type BudgetCadence } from "@events-os/shared";
+import {
+  BUDGET_CADENCE_LABELS,
+  DEFAULT_MEAL_ATTENDEE_NAMES_MAX_HEADCOUNT,
+  MIN_PURPOSE_LENGTH,
+  type BudgetCadence,
+} from "@events-os/shared";
 import {
   Button,
   Field,
@@ -71,6 +80,13 @@ import { formatMoney, parseDollars } from "../../event/ticketing/helpers";
 import { Calendar } from "../../ui/Calendar";
 import { Popover } from "../../ui/Popover";
 import { useAnchor } from "../../ui/useAnchor";
+import {
+  CodingFields,
+  codingArgs,
+  codingProblems,
+  emptyCoding,
+  type LineCoding,
+} from "./CodingFields";
 
 // ── Backend contract types. These mirror the `api.reimbursements.*` shapes
 // (`purpose`, per-line `transactionDate`, `externalAccountId`, `budgetId`,
@@ -90,6 +106,10 @@ type NewRequestOptionsResult = {
     projects: ForOptionRow[];
     budgets: BudgetOptionRow[];
   };
+  /** The org's coding policy, so the form asks for attendee names at exactly
+   *  the headcount the server requires them at. */
+  namesMaxHeadcount: number;
+  minPurposeLength: number;
 };
 type NewRequestOptionsFn = FunctionReference<
   "query",
@@ -121,7 +141,7 @@ type SubmitLineArg = {
   amountCents: number;
   receiptStorageId: Id<"_storage">;
   transactionDate: number;
-};
+} & ReturnType<typeof codingArgs>;
 type SubmitReimbursementArgs = {
   payeeName?: string;
   payeeEmail?: string;
@@ -174,6 +194,10 @@ type DraftLine = {
   /** Defaults to "now" (always inside the valid window) so a member who
    *  never touches the picker still submits a legal date. */
   transactionDate: number;
+  /** The line's own §274(d) substantiation — REQUIRED at submit, per LINE
+   *  because one request routinely mixes kinds (a fare, a hotel night, a team
+   *  dinner). Nothing is pre-filled: it's the spender's own testimony. */
+  coding: LineCoding;
 };
 
 function emptyLine(): DraftLine {
@@ -186,6 +210,7 @@ function emptyLine(): DraftLine {
     receiptName: null,
     uploading: false,
     transactionDate: Date.now(),
+    coding: emptyCoding(),
   };
 }
 
@@ -294,6 +319,12 @@ export function ReimbursementRequestForm({
 
   const totalCents = lines.reduce((sum, l) => sum + lineAmountCents(l), 0);
   const forOptions = buildForOptions(options?.forOptions);
+  // The org's coding policy (owner decision: names at 15 or fewer). Falls back
+  // to the shared defaults only while the query is in flight — the server is
+  // the authority either way.
+  const namesMaxHeadcount =
+    options?.namesMaxHeadcount ?? DEFAULT_MEAL_ATTENDEE_NAMES_MAX_HEADCOUNT;
+  const minPurposeLength = options?.minPurposeLength ?? MIN_PURPOSE_LENGTH;
 
   function updateLine(key: string, patch: Partial<DraftLine>) {
     setLines((ls) => ls.map((l) => (l.key === key ? { ...l, ...patch } : l)));
@@ -383,11 +414,22 @@ export function ReimbursementRequestForm({
       }
     }
     // Every line needs a receipt — list which ones don't, rather than a single
-    // generic error, so it's obvious what's still missing.
+    // generic error, so it's obvious what's still missing. HARD requirement,
+    // no exception path: a reimbursement is a voluntary submission, unlike a
+    // card charge that already happened.
     const missingReceipts = usable.filter((l) => !l.receiptStorageId);
     if (missingReceipts.length > 0) {
       const names = missingReceipts.map((l, i) => l.description.trim() || `Line ${i + 1}`);
       return `Add a receipt for: ${names.join(", ")}.`;
+    }
+    // …and its substantiation, checked with the SHARED rules the server
+    // throws on — no round-trip needed to learn a purpose is too thin.
+    for (let i = 0; i < usable.length; i++) {
+      const problems = codingProblems(usable[i].coding, namesMaxHeadcount);
+      if (problems.length > 0) {
+        const name = usable[i].description.trim() || `Line ${i + 1}`;
+        return `${name} — ${problems[0].message}`;
+      }
     }
     if (!routingNumber.trim() || !accountNumber.trim()) {
       return "Add your routing and account number so we can pay you by direct deposit.";
@@ -470,6 +512,7 @@ export function ReimbursementRequestForm({
             amountCents: lineAmountCents(l),
             receiptStorageId: l.receiptStorageId as Id<"_storage">,
             transactionDate: l.transactionDate,
+            ...codingArgs(l.coding),
           })),
         }),
       { errorTitle: requestPreApproval ? "Couldn't request pre-approval" : "Couldn't submit" },
@@ -625,6 +668,8 @@ export function ReimbursementRequestForm({
                   key={line.key}
                   line={line}
                   canRemove={lines.length > 1}
+                  namesMaxHeadcount={namesMaxHeadcount}
+                  minPurposeLength={minPurposeLength}
                   onChange={(patch) => updateLine(line.key, patch)}
                   onRemove={() => removeLine(line.key)}
                   onPickReceipt={() => pickReceipt(line.key)}
@@ -702,10 +747,12 @@ export function ReimbursementRequestForm({
 }
 
 /** One line-item row: description, qty × rate (amount is their product), a
- *  receipt dropzone, and a remove button. */
+ *  receipt dropzone, the line's own substantiation, and a remove button. */
 function LineRow({
   line,
   canRemove,
+  namesMaxHeadcount,
+  minPurposeLength,
   onChange,
   onRemove,
   onPickReceipt,
@@ -713,6 +760,8 @@ function LineRow({
 }: {
   line: DraftLine;
   canRemove: boolean;
+  namesMaxHeadcount: number;
+  minPurposeLength: number;
   onChange: (patch: Partial<DraftLine>) => void;
   onRemove: () => void;
   onPickReceipt: () => void;
@@ -794,6 +843,15 @@ function LineRow({
           </Pressable>
         )}
       </View>
+
+      {/* What it was, why it served the org's work, and who was involved —
+          per line, because one request routinely mixes kinds. */}
+      <CodingFields
+        value={line.coding}
+        namesMaxHeadcount={namesMaxHeadcount}
+        minPurposeLength={minPurposeLength}
+        onChange={(patch) => onChange({ coding: { ...line.coding, ...patch } })}
+      />
     </View>
   );
 }

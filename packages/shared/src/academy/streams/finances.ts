@@ -75,6 +75,52 @@
  * flows are now taught as deliberate, by-design manual transfers. Its quiz
  * answer about automation timing was corrected to match (still 3 questions —
  * no snapshot change there). Title and slug are unchanged for both sections.
+ *
+ * Transaction coding (docs/plans/transaction-coding.md, owner decisions
+ * 2026-08-08). Phase 1 added the Treasurer's half as a rule on
+ * `finance-reconcile-grid` ("Reconciled means coded, too"). Phase 2 makes it
+ * every cardholder's job, so this file gained a NEW section —
+ * `finance-coding-your-charges` (5 min, 5-quiz), inserted into
+ * `finances-for-everyone` between `finance-receipt-exceptions` and
+ * `finance-reimbursements-and-flags`. It teaches the spender's half: the
+ * what/why/who record you author and someone else approves, the business
+ * purpose written FOR THE PUBLIC ("travel to NY to film Eden event", never
+ * "bus to NY"), routes on travel, the 15-HEAD meal threshold (names +
+ * relationship at or below it, headcount + an identifiable group above it —
+ * never a dollar trigger), that names never publish (the ledger prints the
+ * affiliation breakdown instead), the lodging itemized-receipt exception to
+ * the exception flow, why nothing is pre-filled and no AI drafts a coding,
+ * and the clock — one digest, day-3 escalation, the existing day-7 lock, and
+ * the 60-day auto-convert to a personal repayment, explained in plain words
+ * (unsubstantiated spending is legally taxable income to the spender under
+ * IRS accountable-plan rules). The policy applies to charges posted on/after
+ * September 1, 2026; earlier history is a separate deliberate cleanup.
+ * `finance-card-and-receipts` and `finance-receipt-exceptions` were left
+ * alone — both quizzes sit at the 5-question cap, and this lesson leans on
+ * the exception vocabulary rather than repeating it, which is why it sits
+ * after that section rather than directly after the card lesson.
+ *
+ * Transaction coding phase 3 — reimbursement parity — then updated
+ * `finance-reimbursements-and-flags` for two shipped behavior changes, adding
+ * no sections and moving none. (1) A new rule, "Every line answers for
+ * itself": substantiation is per LINE, not per request (one request mixes a
+ * fare, a hotel night and a team dinner), validated by the same shared
+ * checker in the in-app form, the accountless `/reimburse/<token>` page, and
+ * the server, with submission blocked until every line is complete — it
+ * deliberately CROSS-REFERENCES `finance-coding-your-charges` for the meal/
+ * travel rules instead of restating them, and states the receipt asymmetry
+ * plainly: no exception path here, because a reimbursement is a claim you
+ * choose to make while a card charge already happened. (2) A new rule, "Sent
+ * back is not rejected": the `changes_requested` loop with its required note,
+ * the email, resubmission preserving the ORIGINAL submission date, and the
+ * two deliberate limits (a revision may change substantiation only — a wrong
+ * amount is a reject-and-refile, never a quiet edit under a reviewer who
+ * already saw the number — and a sent-back request stays cancelable and
+ * rejectable but is not payable). The first bullet and the `try_status`
+ * caption were updated to match. Quiz length stays 5 (the cap): the "where do
+ * you see both directions" navigation question was retired — still taught by
+ * the bullet right above it — for one on the send-back loop, and the
+ * out-of-pocket question's answer now names per-line coding. Minutes stay 5.
  */
 
 import type {
@@ -451,7 +497,229 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 34 · Finances for everyone: reimbursements + flags ─────────────────────
+  // ── 34 · Finances for everyone: coding your own charges ────────────────────
+  // Sits AFTER `finance-receipt-exceptions` on purpose, even though it's the
+  // cardholder's other half of `finance-card-and-receipts`: this lesson leans
+  // on the exception flow it doesn't re-teach ("no receipt? you already know
+  // the honest path") and on the lodging exception-to-the-exception, both of
+  // which only make sense once the reader has the exception vocabulary. It
+  // also hands off to `finance-reimbursements-and-flags` next, which is where
+  // the same fields reappear on a request you submit.
+  //
+  // Its own lesson rather than more blocks on the card lesson: it introduces
+  // a new required record with its own review loop, its own clock, and a
+  // publication rule (names never publish) — and both neighbouring quizzes
+  // are already at the 5-question cap `apps/convex/tests/academy.test.ts`
+  // enforces. The Treasurer's half of this ships as a rule on
+  // `finance-reconcile-grid` ("Reconciled means coded, too"); this is the
+  // spender's half. See `docs/plans/transaction-coding.md`.
+  {
+    slug: "finance-coding-your-charges",
+    title: "Coding your charges",
+    subtitle: "What it was, why it served the work, and who was there",
+    minutes: 5,
+    blocks: [
+      {
+        kind: "p",
+        text: "A receipt proves you paid $312.40 to a bus company. It doesn't say why Public Worship should have. That gap is fine while the books are ours alone — and useless the moment we publish them, which is exactly what we're about to do with every transaction we make. So from **September 1, 2026**, every card charge carries a second thing alongside its receipt: a **coding**.",
+      },
+      {
+        kind: "rule",
+        title: "You write it, someone else approves it",
+        text: "A coding answers three questions about a charge: **what it was**, **why it served the org's work**, and **who was involved**. You write it — you're the only person who actually knows — and a different person approves it, the same separation of duties that governs exceptions, reimbursements, and budgets.\n\nIt's a first-class record with its own review, not a note field. If a reviewer sends it back, it comes with a note saying exactly what would make it approvable (\"receipt must show the exact amount\"), and you fix it and resubmit. Nobody guesses on your behalf, and nobody signs off on their own.",
+      },
+      {
+        kind: "rule",
+        title: "Write the purpose for the public, not for the bookkeeper",
+        text: "The business purpose is the sentence a stranger reads on Public Worship's public ledger, under our name, forever. So write it for them.\n\n**\"Bus to NY\"** is what the bank already told us. **\"Travel to NY to film the Eden event\"** is a reason. The test: could someone who wasn't there tell what happened and why it was worth backers' money?",
+      },
+      {
+        kind: "table",
+        headers: ["If the charge is…", "What it asks for on top of the purpose"],
+        rows: [
+          [
+            "**General**",
+            "Nothing extra — the purpose carries the whole record. Most charges are this.",
+          ],
+          [
+            "**Travel**",
+            "A route: where from, where to. City level is enough (\"Kansas City → New York\"), plus who travelled.",
+          ],
+          [
+            "**Lodging**",
+            "The same route — **plus an itemized receipt, at any amount**. This is the one place a bank-record-only exception is refused outright; the IRS wants the itemized folio for lodging, full stop.",
+          ],
+          [
+            "**A meal**",
+            "A headcount, always. 15 people or fewer: every attendee named, with how they relate to the org. More than 15: the headcount plus an identifiable group.",
+          ],
+        ],
+      },
+      {
+        kind: "rule",
+        title: "Meals count people, not dollars",
+        text: "The threshold is **15 heads**, and it has nothing to do with the amount. A $40 pizza order for 16 volunteers gets a headcount and a group description. A $400 dinner for 4 gets four names.\n\nNames come with a relationship — **team · volunteer · community member · contractor · guest** — because \"who was there\" without \"who they are to us\" doesn't answer anything. Above 15, the group description has to be *identifiable*: \"volunteers writing and producing the album\" is a real answer. \"Some people\" is not, and it's the answer a reviewer will send straight back.",
+      },
+      {
+        kind: "rule",
+        title: "Names never publish",
+        text: "We ask for names, and then we don't print them. Ever. The public ledger shows the shape of the room — **\"meal · 5 volunteers, 3 community members, 2 contractors\"** — and the names stay inside the app.\n\nThat isn't a hedge. Volunteers, community members and guests never agreed to appear in a public financial record, and some of them are minors. Publishing our own spending is a decision we made about ourselves; it isn't a decision we get to make about the people who showed up to help us.",
+      },
+      {
+        kind: "p",
+        text: "**A receipt and a coding are two separate obligations.** A charge with a perfect receipt and no coding is exactly as open as one with neither — the reminders chase the whole charge being closed out, not just the paperwork half. The two do end differently, though, and it's worth knowing which is which: a missing RECEIPT is what locks your card at day 7, while a missing CODING is what turns the charge into money you owe back at day 60. And if there genuinely is no receipt, you already know the honest path from the last lesson: pick a reason, explain it, attach up to five photos of proof. It lives in the same sheet as the coding, so you're never bounced between two screens. The only exception to the exception is lodging, above.",
+      },
+      {
+        kind: "rule",
+        title: "Nothing is pre-filled, and no AI writes it for you",
+        text: "There is no suggested purpose, no drafted description, no guessed expense type. That's deliberate, and it's the single decision this whole feature rests on: **a pre-filled field gets rubber-stamped; a blank field with a good prompt gets answered.**\n\nWhat we publish has to be the testimony of the person who was actually there. An AI's plausible sentence about a charge it didn't witness is worth nothing to a backer, an auditor, or you.",
+      },
+      {
+        kind: "table",
+        headers: ["Day", "What happens"],
+        rows: [
+          [
+            "Day of charge",
+            "The charge lands in My Transactions, uncoded. Code it here and none of the rest of this table ever happens.",
+          ],
+          [
+            "Day 1–3",
+            "**One digest email** — \"you have 3 charges to code\" — not one nag per charge.",
+          ],
+          [
+            "Day 3+",
+            "The reminder escalates, and your open charges become visible to your Treasurer.",
+          ],
+          [
+            "Day 7",
+            "A charge still missing its **receipt** locks your card automatically — the same 7-day rule you already know, unchanged. Coding doesn't lock the card; it has its own deadline below.",
+          ],
+          [
+            "Day 60",
+            "A charge still unsubstantiated **auto-converts to a personal repayment**. You pay it back.",
+          ],
+        ],
+      },
+      {
+        kind: "rule",
+        title: "Why day 60 has teeth",
+        text: "This isn't an escalating punishment someone invented to make a point. Public Worship pays expenses under what the IRS calls an **accountable plan**, and one of its conditions is that spending gets substantiated within a reasonable period — 60 days is the safe harbor.\n\nPast it, spending nobody substantiated doesn't stay a loose end: it legally becomes **taxable income to the person who spent it**. Converting it to a repayment you can settle is the kinder of the two endings. Coding it in week one avoids both.",
+      },
+      {
+        kind: "try_status",
+        title: "A charge waiting on its coding",
+        options: [
+          { value: "uncoded", label: "Uncoded", color: "gray" },
+          { value: "submitted", label: "Submitted for review", color: "amber" },
+          { value: "approved", label: "Approved", color: "green" },
+        ],
+        terminal: "approved",
+        caption:
+          "Changes requested is the real fourth state — a reviewer's note lands back in your court, and the charge is open until you fix it and resubmit. Submitted is your part done; the clock is measured against APPROVED.",
+      },
+      {
+        kind: "scenario",
+        prompt:
+          "Two charges, same week: $38 of pizza for 16 volunteers at an album work session, and a $410 dinner with 4 people — you, a videographer you contract, and two community members considering joining. How do you code the attendees?",
+        options: [
+          {
+            text: "Name everyone on both — you know who was in both rooms",
+            feedback:
+              "Overkill on the pizza, and not what the record wants: above 15 heads it asks for a headcount and an identifiable group instead.",
+          },
+          {
+            text: "Headcount plus \"volunteers writing and producing the album\" for the pizza; four names with their relationships for the dinner",
+            correct: true,
+            feedback:
+              "Right. The threshold is 15 HEADS, not dollars — the cheap charge gets the headcount, the expensive one gets names. And the dinner's names carry relationships: contractor, community member, community member, team.",
+          },
+          {
+            text: "Headcount for the pizza; headcount for the dinner too, since it's the bigger amount",
+            feedback:
+              "Backwards — dollars never move this line. Four people is enumerable, so four names and their relationships is what the record asks for.",
+          },
+          {
+            text: "Names for the pizza since it's a small charge; a group description for the $410 dinner",
+            feedback:
+              "That's the dollar instinct, inverted. It's a headcount rule: 16 people is over the line no matter how little it cost, and 4 people is under it no matter how much.",
+          },
+        ],
+      },
+      {
+        kind: "tip",
+        text: "**Reimbursements work the same way.** You code each LINE as you submit it — same purpose, same route on travel, same attendees on meals — and a reviewer can send it back with a note to fix and resubmit rather than rejecting it outright. One habit, both directions. And the policy starts at charges posted **on or after September 1, 2026**: you are not on the hook for reconstructing last spring from memory. That history is a separate, deliberate cleanup, and it will publish flagged for what it is.",
+      },
+    ],
+    quiz: [
+      {
+        prompt:
+          "You take a bus to New York to film the Eden event. What does the coding need beyond the amount and the receipt?",
+        options: [
+          "Nothing — the receipt is the record",
+          "A purpose written for the public, plus where you travelled from and where to",
+          "Just the word \"travel\" and the date",
+          "Approval from your Treasurer before you go",
+        ],
+        answerIndex: 1,
+        explanation:
+          "\"Bus to NY\" is what the bank already told us. \"Travel to NY to film the Eden event\" is a reason — and travel adds a route (city level is enough), because where the money went is part of what the record has to say.",
+      },
+      {
+        prompt:
+          "A $38 pizza order feeds 16 volunteers. A $410 dinner is for 4 people. Which one needs every attendee named?",
+        options: [
+          "The $410 dinner — 4 people is under the 15-head line, so it gets names",
+          "The $38 pizza — small charges are easier to itemize",
+          "Both — any meal needs names",
+          "Neither — meals only ever need a headcount",
+        ],
+        answerIndex: 0,
+        explanation:
+          "It's a HEADCOUNT threshold, not a dollar one. 15 or fewer means names with relationships; more than 15 means the headcount plus an identifiable group (\"volunteers writing and producing the album\"). The price never moves the line.",
+      },
+      {
+        prompt:
+          "Your meal coding lists 10 people by name. What does the public ledger show?",
+        options: [
+          "The full list of names",
+          "First names only",
+          "The headcount and the affiliation breakdown — \"5 volunteers, 3 community members, 2 contractors\"",
+          "Nothing about who was there",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Names never publish. Volunteers, community members and guests didn't consent to a public financial record and some are minors — so the ledger prints the shape of the room and the names stay inside the app.",
+      },
+      {
+        prompt:
+          "A charge from September is still uncoded 60 days later. What happens, and why?",
+        options: [
+          "Nothing — the Treasurer codes it for you at year end",
+          "It auto-converts to a personal repayment you owe back: under IRS accountable-plan rules, spending nobody substantiates becomes taxable income to the person who spent it",
+          "The card is cancelled permanently",
+          "It's written off and removed from the books",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The 60-day safe harbor is the accountable plan's substantiation window. Past it, unsubstantiated spending is legally wages to the spender — converting it to a repayment you can settle is the kinder of the two endings, and coding it in week one avoids both.",
+      },
+      {
+        prompt:
+          "Why does the app leave the purpose blank instead of pre-filling it or letting AI draft it?",
+        options: [
+          "The feature just isn't built yet",
+          "AI is banned everywhere in the app",
+          "Because the record has to be the testimony of the person who was there — a pre-filled field gets rubber-stamped, a blank one with a good prompt gets answered",
+          "To keep the app cheap to run",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Nothing is pre-filled and no AI suggests an expense type or a purpose. A plausible sentence about a charge nobody witnessed is worth nothing to a backer or an auditor — the first-hand account is the whole reason the ledger is worth publishing.",
+      },
+    ],
+  },
+
+  // ── 35 · Finances for everyone: reimbursements + flags ─────────────────────
   {
     slug: "finance-reimbursements-and-flags",
     title: "Reimbursement, and flagging a charge",
@@ -465,7 +733,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "bullets",
         items: [
-          "**Reimbursement — Public Worship owes you:** submit the request in-app with a short note on WHY it was needed, a transaction date on every line, and a receipt for every line — none of that is optional, the app blocks submission until all three are there. Your full bank details (routing + account, not just a last-4) are captured up front too, so the moment someone approves it, the ACH payout fires automatically from the chapter's Increase account — no one has to separately go send it (unless that account isn't set up yet for the chapter, in which case the Treasurer pays it manually instead). It then moves through submitted → approved → paying → paid. Someone else — never you — has to approve it.",
+          "**Reimbursement — Public Worship owes you:** submit the request in-app with a short note on WHY it was needed, plus a transaction date, a receipt, and a full coding on every line — none of that is optional, the app blocks submission until all of it is there. Your full bank details (routing + account, not just a last-4) are captured up front too, so the moment someone approves it, the ACH payout fires automatically from the chapter's Increase account — no one has to separately go send it (unless that account isn't set up yet for the chapter, in which case the Treasurer pays it manually instead). It then moves through submitted → approved → paying → paid, with a detour back to you if a reviewer sends it back for a fix. Someone else — never you — has to approve it.",
           "**A reimbursed purchase spends the budget, same as a card swipe:** once it's paid, it counts against whatever budget and category it's coded to — a $300 team meal you fronted eats $300 of Food & Meals either way. So code it as carefully as you'd code a card charge: the \"what's this for?\" and the per-line category are what decide which bucket it lands in, not paperwork.",
           "**Personal-charge flag — you owe Public Worship:** flag your own charge as personal on My Transactions, or a manager flags it for you from the Reconcile grid (its \"Personal (unpaid)\" filter is the Treasurer's worklist for exactly this). It opens an owed balance, tracked the same way, just pointed the other direction — and it's a FLAG, not a status: the same charge can be Reconciled AND an unpaid personal expense at the same time.",
           "**Pay it back by card or by bank:** once flagged, pay it back instantly by card (real-time, via Stripe Checkout) or by linking your bank account (ACH). Either way the flag only actually clears to \"repaid\" once the payment is CONFIRMED — closing the tab on a card payment without finishing it leaves the charge exactly as owed as before.",
@@ -476,12 +744,22 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "rule",
+        title: "Every line answers for itself",
+        text: "One request routinely mixes a $38 fare, a hotel night and a team dinner — three kinds of spending that owe three different answers. So the substantiation is per LINE, not per request: the expense type, a real business purpose, the route on travel, the people at a meal.\n\nSame questions, same rules as the coding you write on your own card charges — the 15-head names threshold and all (see *Coding your charges*). The difference is that here you answer them line by line, at submission, before anyone has seen the request. The same checker runs in the in-app form, in the emailed link an accountless payee uses, and on the server, so no door into this is easier than another.\n\nReceipts stay hard here too: one per line, and **no exception path**. A card charge already happened, and some real spending genuinely never produces a receipt. A reimbursement is a claim you're choosing to make — so \"no receipt\" is a reason not to claim it, not a form to file.",
+      },
+      {
+        kind: "rule",
+        title: "Sent back is not rejected",
+        text: "A reviewer who spots a thin purpose, or a receipt that doesn't show the exact amount, used to have two moves: approve it anyway, or reject it. Rejected is terminal and reads as \"you lost your money\" — so questions quietly turned into approvals.\n\nNow there's a third: **send it back with a note**, and the note is required (\"receipt must show exact amount\"). You get an email, fix the substantiation, resubmit — and it returns to review carrying its ORIGINAL submission date, so being asked a question never costs you your place in the queue.\n\nTwo limits, both deliberate. A revision may change the **substantiation only** — never the amounts, never the lines; a wrong amount is a reject and a fresh request, because a resubmission must never quietly move a number a reviewer already looked at. And while it sits with you it isn't payable, though you can still cancel it and the reviewer can still reject it outright.",
+      },
+      {
+        kind: "rule",
         title: "Approver ≠ you, always",
         text: "Separation of duties means the person who submits a reimbursement is never the person who approves it — even a Treasurer can't approve their own request. It's the same rule for everyone, including the Executive Director. In practice, your chapter's Treasurer approves most requests; if the Treasurer is the one requesting, it's the central Financial Manager who approves instead — their reach covers every chapter, which is exactly the failsafe for \"the approver and the requester would otherwise be the same person.\"",
       },
       {
         kind: "tip",
-        text: "**Something time-sensitive?** There's no in-app \"urgent\" flag or fast lane — a request sits in the same queue whether it's due in an hour or next month. Submitting already emails every approver who could act on it — your chapter's Treasurer(s) and the central Financial Manager(s) — so nobody has to be checking the queue on faith. If it's genuinely urgent, that email is your baseline, not your whole plan: also reach your Treasurer (or the Financial Manager, if they're the one who'd have to approve it) directly — a call or a text — and ask them to check the queue now. A direct nudge to the person who can actually approve it is what turns \"they'll see it eventually\" into \"they saw it today.\"",
+        text: "**Something time-sensitive?** There's no in-app \"urgent\" flag or fast lane — a request sits in the same queue whether it's due in an hour or next month. Submitting already emails every approver who could act on it (your chapter's Treasurer(s) and the central Financial Manager(s)), so nobody is checking the queue on faith. If it's genuinely urgent, treat that email as your baseline, not your whole plan: reach the person who'd actually approve it directly — a call or a text — and ask them to look now. That's what turns \"they'll see it eventually\" into \"they saw it today.\"",
       },
       {
         kind: "try_status",
@@ -493,7 +771,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         terminal: "paid",
         caption:
-          "Rejected and canceled exist too — those land in your History, not stuck in the middle.",
+          "Changes requested is the state that isn't on this line: it hands the request back to YOU with a note, keeps its original submission date, and rejoins at Submitted the moment you resubmit. Rejected and canceled are endings — those land in your History, not stuck in the middle.",
       },
       {
         kind: "scenario",
@@ -556,14 +834,14 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         prompt: "You paid for event supplies with your own card. What do you do?",
         options: [
-          "Submit a reimbursement request with the line items, a receipt and date on each, and why it was needed",
+          "Submit a reimbursement request — every line with its own receipt, date, and coding (purpose, plus route or attendees where they apply)",
           "Nothing — it evens out eventually",
           "Ask your Treasurer to send you cash directly",
           "Put it on your Public Worship card retroactively",
         ],
         answerIndex: 0,
         explanation:
-          "A reimbursement request is the front door for out-of-pocket mission spending — every line needs its own receipt and transaction date, and the request itself needs a short note on why, or it won't submit. That's how \"Public Worship owes you\" gets tracked to paid.",
+          "A reimbursement request is the front door for out-of-pocket mission spending — and every line carries its own receipt, date, and substantiation, because one request routinely mixes a fare, a hotel night and a meal. The app blocks submission until each line is complete. That's how \"Public Worship owes you\" gets tracked to paid.",
       },
       {
         prompt: "A personal charge accidentally hit your Public Worship card. What's true?",
@@ -602,16 +880,17 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "Flagging \"personal\" says you made the charge — wrong move for a genuine mystery. Freezing your own card is instant and self-serve, and looping in your Treasurer or the Financial Manager gets it actually investigated.",
       },
       {
-        prompt: "Where do you see both directions — what you're owed and what you owe — at once?",
+        prompt:
+          "A reviewer sends your request back with the note \"the hotel line needs where you travelled from and to.\" What's true?",
         options: [
-          "The Reimbursements tab, side by side",
-          "Two different apps",
-          "Only in a spreadsheet the Treasurer keeps",
-          "You have to ask the Financial Manager",
+          "It's rejected — you'll have to start a brand-new request",
+          "It's in Changes requested: fix the substantiation on that line and resubmit, and it returns to review with your original submission date",
+          "It's approved as long as you reply to the email explaining the trip",
+          "You can fix the route and correct the line's amount while you're in there",
         ],
-        answerIndex: 0,
+        answerIndex: 1,
         explanation:
-          "Both directions render together on the same screen — nothing you owe quietly offsets something you're owed without you seeing it.",
+          "Sent back is not rejected — rejected is terminal, this is a revision loop, and resubmitting keeps your original submission date so a question never costs you your place in the queue. But a revision may change the SUBSTANTIATION only: a wrong amount is a reject and a fresh request, never a quiet edit under a reviewer who already saw the number. While it sits with you it isn't payable, though you can still cancel it.",
       },
     ],
   },
@@ -2077,14 +2356,15 @@ export const FINANCES_COURSES: Course[] = [
     audience: "team",
     description:
       "What every member needs: where the money comes from, using your " +
-      "card + the 7-day receipt rule, and both directions of reimbursement. " +
-      "Gains a 'getting your budget approved' module once budget approval " +
-      "(Phase 3) ships.",
+      "card + the 7-day receipt rule, coding what you spent and why, and " +
+      "both directions of reimbursement. Gains a 'getting your budget " +
+      "approved' module once budget approval (Phase 3) ships.",
     icon: "dollar-sign",
     moduleSlugs: [
       "finance-stewardship",
       "finance-card-and-receipts",
       "finance-receipt-exceptions",
+      "finance-coding-your-charges",
       "finance-reimbursements-and-flags",
     ],
   },

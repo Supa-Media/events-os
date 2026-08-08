@@ -15,7 +15,15 @@ import type { ActionCtx } from "../_generated/server";
 import { api } from "../_generated/api";
 import { ConvexError, v } from "convex/values";
 import type { Id } from "../_generated/dataModel";
-import type { ExternalAccountFunding } from "@events-os/shared";
+import {
+  ATTENDEE_AFFILIATIONS,
+  EXPENSE_TYPES,
+  MIN_PURPOSE_LENGTH,
+  type AttendeeAffiliation,
+  type ExpenseType,
+  type ExternalAccountFunding,
+} from "@events-os/shared";
+import { codingPolicy } from "./transactionCoding";
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -78,27 +86,85 @@ function optStr(value: unknown): string | undefined {
   return value ? String(value) : undefined;
 }
 
+/** One line's §274(d) substantiation, coerced from untrusted JSON. Only the
+ *  SHAPE is settled here — every "is this complete?" question belongs to the
+ *  shared `codingFieldProblems` behind `reimbursements.ts`, so this page can
+ *  never enforce a different standard than the in-app form.
+ *
+ *  Enum values are checked against the shared tuples rather than cast: an
+ *  unrecognized one would otherwise fail deep in Convex arg validation as an
+ *  opaque 400, and "pick one of these" is a fixable answer.
+ *
+ *  Attendee `personId` is deliberately NOT accepted: the public page never
+ *  sees the chapter's roster (same privacy rule that keeps funds/categories
+ *  off it), so a public attendee is always free text. */
+type LineCodingPayload = {
+  expenseType?: ExpenseType;
+  businessPurpose?: string;
+  travelFrom?: string;
+  travelTo?: string;
+  headcount?: number;
+  attendees?: Array<{ name: string; affiliation: AttendeeAffiliation }>;
+  groupDescription?: string;
+};
+
+function toCoding(it: Record<string, unknown>): LineCodingPayload {
+  const expenseType = it.expenseType ? String(it.expenseType) : undefined;
+  if (expenseType && !EXPENSE_TYPES.includes(expenseType as ExpenseType)) {
+    throw new ConvexError({
+      code: "INVALID_INPUT",
+      message: "Pick an expense type from the list.",
+    });
+  }
+  const rawAttendees = Array.isArray(it.attendees) ? it.attendees : [];
+  const attendees = rawAttendees.map((a) => {
+    const at = a as { name?: unknown; affiliation?: unknown };
+    const affiliation = String(at.affiliation ?? "");
+    if (!ATTENDEE_AFFILIATIONS.includes(affiliation as AttendeeAffiliation)) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "Pick how each attendee relates to the organization.",
+      });
+    }
+    return {
+      name: String(at.name ?? ""),
+      affiliation: affiliation as AttendeeAffiliation,
+    };
+  });
+  return {
+    expenseType: expenseType as ExpenseType | undefined,
+    businessPurpose: optStr(it.businessPurpose),
+    travelFrom: optStr(it.travelFrom),
+    travelTo: optStr(it.travelTo),
+    headcount:
+      it.headcount != null && it.headcount !== ""
+        ? Math.round(Number(it.headcount))
+        : undefined,
+    attendees: attendees.length > 0 ? attendees : undefined,
+    groupDescription: optStr(it.groupDescription),
+  };
+}
+
 /** Coerce an untrusted line-items payload into the submit mutation's shape.
  *  Money + `transactionDate` are sanity-checked server-side; the receipt id is
- *  verified to belong to the chapter's storage. NO `categoryId`/`fundId` here
+ *  verified to belong to the chapter's storage; the substantiation block goes
+ *  through `toCoding` above and is validated by the shared
+ *  `codingFieldProblems` server-side. NO `categoryId`/`fundId` here
  *  on purpose — the public form no longer collects either (categorization is
  *  a finance manager's review-time job); `submitPublicReimbursement`
  *  additionally strips those fields server-side even if a raw API call tries
  *  to smuggle them through. */
-function toLines(raw: unknown): Array<{
-  description: string;
-  amountCents: number;
-  receiptStorageId?: Id<"_storage">;
-  transactionDate?: number;
-}> {
+function toLines(raw: unknown): Array<
+  {
+    description: string;
+    amountCents: number;
+    receiptStorageId?: Id<"_storage">;
+    transactionDate?: number;
+  } & LineCodingPayload
+> {
   if (!Array.isArray(raw)) return [];
   return raw.map((item) => {
-    const it = item as {
-      description?: unknown;
-      amountCents?: unknown;
-      receiptStorageId?: unknown;
-      transactionDate?: unknown;
-    };
+    const it = item as Record<string, unknown>;
     return {
       description: String(it.description ?? ""),
       amountCents: Math.round(Number(it.amountCents)),
@@ -109,6 +175,22 @@ function toLines(raw: unknown): Array<{
         it.transactionDate != null && it.transactionDate !== ""
           ? Math.round(Number(it.transactionDate))
           : undefined,
+      ...toCoding(it),
+    };
+  });
+}
+
+/** Coerce an untrusted REVISION payload — the same substantiation block, but
+ *  addressed to lines that already exist (`lineId`). */
+function toRevisedLines(raw: unknown): Array<
+  { lineId: Id<"reimbursementLineItems"> } & LineCodingPayload
+> {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((item) => {
+    const it = item as Record<string, unknown>;
+    return {
+      lineId: String(it.lineId ?? "") as Id<"reimbursementLineItems">,
+      ...toCoding(it),
     };
   });
 }
@@ -229,6 +311,21 @@ export function registerReimburseApiRoutes(http: HttpRouter): void {
     ),
   });
 
+  // Resubmit a sent-back request with revised per-line substantiation
+  // (token-scoped). A POST, never a GET: mail scanners prefetch links, and a
+  // state change on a GET would let a scanner resubmit somebody's request for
+  // them (see `lib/projectActionPage.ts`'s module doc for the same trap).
+  http.route({
+    path: "/api/reimburse/resubmit",
+    method: "POST",
+    handler: jsonPost((ctx, body) =>
+      ctx.runMutation(api.reimbursements.resubmitPublicReimbursement, {
+        token: String(body.token ?? ""),
+        lines: toRevisedLines(body.lines),
+      }),
+    ),
+  });
+
   // Claimant status view (token-scoped) → getPublicReimbursement (or 404).
   http.route({
     path: "/api/reimburse/status",
@@ -272,6 +369,11 @@ export function registerReimburseApiRoutes(http: HttpRouter): void {
  * structure — categorizing a line is a finance manager's review-time job,
  * done in their own tooling after the request lands. Null when the slug is
  * unknown.
+ *
+ * It DOES carry the org's coding policy numbers (the meal-names threshold and
+ * the business-purpose floor) — not chapter data, just the rule the server
+ * will enforce, so the form asks for names at exactly the headcount the
+ * server requires them at instead of hard-coding a copy of the threshold.
  */
 export const chapterForReimburse = query({
   args: { slug: v.string() },
@@ -281,10 +383,13 @@ export const chapterForReimburse = query({
       .withIndex("by_slug", (q) => q.eq("slug", slug))
       .unique();
     if (!chapter) return null;
+    const { namesMaxHeadcount } = await codingPolicy(ctx);
 
     return {
       slug: chapter.slug ?? slug,
       name: chapter.name,
+      namesMaxHeadcount,
+      minPurposeLength: MIN_PURPOSE_LENGTH,
     };
   },
 });

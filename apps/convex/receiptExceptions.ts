@@ -141,6 +141,12 @@ export const listForTransaction = query({
  * `transactions.receiptStorageId` and never inserted into the receipts
  * library: evidence isn't a receipt and must never be counted as one or
  * auto-matched to another charge.
+ *
+ * One reason is refused outright: `bank_record_only` on a row coded as
+ * LODGING (`LODGING_RECEIPT_REQUIRED` — the IRS wants an itemized folio at any
+ * amount). The rule lives in the single writer
+ * (`lib/receiptExceptions.ts#attestException`) so this path and the bulk one
+ * below can't drift on it.
  */
 export const attest = mutation({
   args: {
@@ -192,9 +198,11 @@ export const attest = mutation({
  * Per-row, not blanket: every transaction still gets its own attestation with
  * its own amount and its own audit entry, so no row is anonymously waived. A
  * row that can't take an exception (already receipted, already has a pending
- * one, outside the caller's scope) is SKIPPED and counted rather than failing
- * the batch — a backfill selection routinely contains a few of each, and
- * throwing would make the caller re-derive which ones were fine.
+ * one, outside the caller's scope, or — for `bank_record_only` — coded as
+ * LODGING, which the IRS says needs an itemized receipt at any amount) is
+ * SKIPPED and counted rather than failing the batch: a backfill selection
+ * routinely contains a few of each, and throwing would make the caller
+ * re-derive which ones were fine.
  */
 export const attestBulk = mutation({
   args: {

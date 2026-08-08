@@ -259,6 +259,17 @@ export function TransactionCodingSection({
           amountCents={amountCents}
           namesMaxHeadcount={namesMaxHeadcount}
           minPurposeLength={minPurposeLength}
+          // A revision is a conversation: the note that sent it back belongs
+          // next to the fields it's about, not one panel away behind the
+          // editor that's covering it.
+          reviewNote={
+            coding?.status === "changes_requested" ? coding.reviewNote : null
+          }
+          submitLabel={
+            coding?.status === "changes_requested"
+              ? "Resubmit for review"
+              : "Submit for review"
+          }
           initial={
             coding
               ? {

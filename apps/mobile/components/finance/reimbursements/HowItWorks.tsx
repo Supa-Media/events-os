@@ -3,15 +3,20 @@ import { Card } from "../../ui";
 
 type Step = { title: string; detail: string };
 
-/** The prototype's reimbursement "How it works" 3-step explainer. Static copy. */
+/** The prototype's reimbursement "How it works" explainer. Static copy —
+ *  kept truthful about the review loop: a reviewer's send-back ("almost — fix
+ *  this one thing") is a normal outcome, not a rejection, and a claimant who
+ *  expects that reads the email very differently. */
 const STEPS: Step[] = [
   {
-    title: "Submit with receipts",
-    detail: "Line items tagged to a category, with receipts attached.",
+    title: "Submit with receipts and details",
+    detail:
+      "Every line needs a receipt, the date you paid, and what it was for — a travel route, or who was at a meal. The IRS requires those details, and they're what our public ledger shows.",
   },
   {
-    title: "Finance manager approves",
-    detail: "They review each receipt and check it lands in an approved budget line before any money moves.",
+    title: "Finance manager reviews",
+    detail:
+      "They check each receipt and that it lands in an approved budget line before any money moves. If something's missing they send it back with a note — you fix it and resubmit; nothing is lost.",
   },
   {
     title: "ACH payout",

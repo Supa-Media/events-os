@@ -124,10 +124,12 @@ import {
 } from "./lib/transferPair";
 import { viewerPerson, callerHasEventEditRights } from "./lib/org";
 import { codingPolicy } from "./lib/transactionCoding";
+import { chargeOutstanding } from "./lib/codingReminders";
 import { holdsApprovalSeatAt } from "./lib/seats";
 import { listActiveChapters } from "./lib/chapters";
 import {
   RECONCILE_FILTER_KEYS,
+  TRANSACTION_CODING_STATUSES,
   countsTowardFacet,
   matchesReconcileFilters,
   RECEIPT_EXCEPTION_REASON_LABELS,
@@ -274,6 +276,28 @@ const txnSummaryFields = {
   // True iff a receipt is attached (`receiptStorageId != null`) — the truthful
   // signal behind the reconcile chase filter + Documentation column.
   hasReceipt: v.boolean(),
+  // True iff an APPROVED receipt exception stands in for the receipt
+  // (`approvedReceiptExceptionId != null`). Paired with `hasReceipt` this is
+  // everything `documentationState` (`@events-os/shared`) needs, so a client
+  // can render the three-value documentation story from the payload alone.
+  // Read off the denormalized pointer — no query into `receiptExceptions`.
+  hasApprovedException: v.boolean(),
+  // Where this row's substantiation record sits in review
+  // (`transactionCodings`), or null when none has ever been submitted. Read
+  // off the `transactions.codingState` denorm, which exists precisely so no
+  // reader needs a per-row join.
+  //
+  // On `personTransactions` this is what lets the member's own "My
+  // transactions" screen sort and filter its queue — "needs coding", "sent
+  // back — needs your edit" — from ONE subscription instead of one per row.
+  // The reviewer's send-back NOTE is deliberately not here: it's needed only
+  // when a member opens a charge, so it stays a single `getForTransaction`
+  // read on that one row rather than a string shipped for every row in the
+  // list.
+  codingState: v.union(
+    ...TRANSACTION_CODING_STATUSES.map((s) => v.literal(s)),
+    v.null(),
+  ),
   // The personal-charge flag (`cards.flagPersonalCharge` / `flagPersonal`) —
   // an accidental personal charge, excluded from every SPEND total until
   // repaid. Surfaced (R1b follow-up) so the Reconcile grid + member "My
@@ -925,6 +949,8 @@ function toTxnSummary(tr: Doc<"transactions">) {
     budgetId: tr.budgetId ?? null,
     needsBudget: needsBudget(tr),
     hasReceipt: tr.receiptStorageId != null,
+    hasApprovedException: tr.approvedReceiptExceptionId != null,
+    codingState: tr.codingState ?? null,
     isPersonal: tr.isPersonal === true,
     isMarkedTransfer: isMarkedTransfer(tr),
     payoutProcessor: tr.payoutProcessor ?? null,
@@ -8473,6 +8499,17 @@ const chaseTxn = v.object({
     v.literal("flagged"),
     v.literal("escalated"),
   ),
+  // WHAT this row still owes, in the same words the cardholder's own digest
+  // uses (`lib/codingReminders.ts#chargeOutstanding`) — "needs coding",
+  // "needs a receipt", "needs coding and a receipt", "sent back — needs your
+  // edit". Null for a row that owes only documentation and carries no
+  // cardholder to chase (a marked transfer or payout), which the chase list
+  // still shows under Unattributed.
+  //
+  // Surfaced because the FM now chases TWO debts from one screen: without it
+  // the page can say "3 charges" while the person on the other end is being
+  // emailed about something the page never named.
+  outstanding: v.union(v.string(), v.null()),
 });
 
 // One cardholder's bundle of receipt-owing charges. `personId` is `null` for
@@ -8574,10 +8611,31 @@ export const receiptChase = query({
           .take(ROLLUP_SCAN_LIMIT),
       );
     }
+    // THE CHASE IS NOW TWO DEBTS, UNIONED (transaction-coding phase 2).
+    //
+    // The cardholder digest and the FM's "Remind all" both chase whatever a
+    // charge still owes — a receipt, a coding, or both
+    // (`lib/codingReminders.ts#chargeOutstanding`). This page is the FM's view
+    // of that same worklist, so it has to list the same rows: keyed on
+    // documentation alone it would show "3 charges" and then email someone
+    // about a fourth it never displayed.
+    //
+    // Union rather than replacement, because the two predicates cover
+    // deliberately different populations. `needsDocumentation` includes MARKED
+    // internal transfers and MARKED processor payouts — rows with no cardholder
+    // at all, which land in Unattributed and are chased with a statement, not a
+    // person. `chargeOutstanding` is cardholder-shaped (outflow spend only), so
+    // swapping it in wholesale would silently drop those from the treasurer's
+    // list. Taking both keeps every owed row visible and lets each say which
+    // debt it carries.
+    const { sinceMs: codingSinceMs } = await codingPolicy(ctx);
     const owing = perBook
       .flat()
       .filter((tr) => txnMatchesMode(tr, sandboxMode))
-      .filter(needsDocumentation);
+      .filter(
+        (tr) =>
+          needsDocumentation(tr) || chargeOutstanding(tr, codingSinceMs) != null,
+      );
 
     const resolveCardholder = makeCardholderResolver(ctx);
     const byHolder = new Map<string, typeof chaseGroup.type>();
@@ -8604,6 +8662,7 @@ export const receiptChase = query({
         description: tr.description ?? null,
         cardLast4: tr.cardLast4 ?? null,
         reminderStage: tr.receiptReminderStage ?? ("none" as const),
+        outstanding: chargeOutstanding(tr, codingSinceMs),
       });
     }
 

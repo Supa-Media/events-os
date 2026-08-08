@@ -10,6 +10,10 @@ import {
   type TestConvex,
 } from "./setup.helpers";
 import { api, internal } from "../_generated/api";
+import {
+  DEFAULT_MEAL_ATTENDEE_NAMES_MAX_HEADCOUNT,
+  MIN_PURPOSE_LENGTH,
+} from "@events-os/shared";
 import type { Id } from "../_generated/dataModel";
 import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
 
@@ -23,7 +27,10 @@ import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
  *    categories (categorization is a finance manager's review-time job);
  *  - `purpose`, every line's `description`/`receiptStorageId`/
  *    `transactionDate` are REQUIRED (server-enforced, one invariant owner:
- *    `createReimbursement`);
+ *    `createReimbursement`) — as is every line's §274(d) substantiation, whose
+ *    own rules and the `changes_requested` revision loop live in
+ *    `reimbursementCoding.test.ts` (this file just carries a complete line in
+ *    its `validLine` fixture);
  *  - a pre-submit, no-token, rate-limited receipt-upload endpoint
  *    (`preSubmitUploadUrl`) backs the public flow's "receipts before submit";
  *  - NO reimbursement request may be created without a real ACH destination:
@@ -225,19 +232,29 @@ type ValidLine = {
   amountCents: number;
   receiptStorageId: Id<"_storage">;
   transactionDate: number;
+  expenseType: "general" | "travel" | "meal" | "lodging";
+  businessPurpose: string;
 };
 
+/** A business purpose that clears `MIN_PURPOSE_LENGTH` — the shared floor the
+ *  server enforces on every line. */
+const VALID_PURPOSE = "Supplies for the Worship with Strangers shoot in July";
+
 /** One VALID line — description/amountCents overridable, a real stored
- *  receipt + a fresh `transactionDate` always present (both REQUIRED now). */
+ *  receipt + a fresh `transactionDate` + the REQUIRED substantiation always
+ *  present (a `general` expense with a real business purpose is the minimum a
+ *  line can carry; the travel/meal branches get their own tests). */
 async function validLine(
   s: ChapterSetup,
-  overrides: Partial<Pick<ValidLine, "description" | "amountCents" | "transactionDate">> = {},
+  overrides: Partial<Omit<ValidLine, "receiptStorageId">> = {},
 ): Promise<ValidLine> {
   const receiptStorageId = await storeBlob(s.t);
   return {
     description: "Gaffer tape",
     amountCents: 1200,
     transactionDate: Date.now(),
+    expenseType: "general",
+    businessPurpose: VALID_PURPOSE,
     ...overrides,
     receiptStorageId,
   };
@@ -501,6 +518,8 @@ describe("public submission + status view", () => {
           amountCents: 1200,
           receiptStorageId,
           transactionDate: Date.now(),
+          expenseType: "general",
+          businessPurpose: VALID_PURPOSE,
         },
       ],
     });
@@ -568,7 +587,14 @@ describe("public-page privacy: no funds/categories in the payload", () => {
     const view = await t.query(api.lib.reimburseApiRoutes.chapterForReimburse, {
       slug: "nyc",
     });
-    expect(view).toEqual({ slug: "nyc", name: chapter!.name });
+    // Slug + name + the org's coding POLICY numbers (a rule the form has to
+    // ask by, not chapter data) — and still no funds/categories.
+    expect(view).toEqual({
+      slug: "nyc",
+      name: chapter!.name,
+      namesMaxHeadcount: DEFAULT_MEAL_ATTENDEE_NAMES_MAX_HEADCOUNT,
+      minPurposeLength: MIN_PURPOSE_LENGTH,
+    });
     expect(view as Record<string, unknown>).not.toHaveProperty("funds");
     expect(view as Record<string, unknown>).not.toHaveProperty("categories");
   });

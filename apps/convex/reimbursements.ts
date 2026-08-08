@@ -31,6 +31,17 @@
  *  - Status transitions are guarded against the current status via explicit
  *    allowed-from sets; reject/cancel are legal only before a payout is in
  *    motion, and approved/paying/terminal requests can't be walked back here.
+ *  - Every LINE carries its own §274(d) substantiation (expense type, business
+ *    purpose, travel route, who ate) — required at submit, validated by the
+ *    SHARED `codingFieldProblems` so the public page, the in-app form and the
+ *    server can't drift. Per line, not per request, because one request
+ *    routinely mixes kinds. Receipts stay HARD-required per line with no
+ *    exception path (a reimbursement is a voluntary submission).
+ *  - REVIEW IS A CONVERSATION, not a verdict: `requestChanges` sends a request
+ *    back to its claimant with a required note (`changes_requested`), they
+ *    revise their lines and resubmit (`resubmitPublicReimbursement` /
+ *    `resubmitMyReimbursement`), and it lands in front of the reviewer again.
+ *    `rejected` stays what it is — final.
  *  - The reimbursement PAYOUT (an `outflow` transaction — the expense itself,
  *    see `increase.ts#postReimbursementSpend`) is Phase 4 — this file NEVER
  *    creates transactions. A line's `matchedTransactionId` links it to an
@@ -61,9 +72,17 @@ import {
   REIMBURSEMENT_STATUSES,
   REIMBURSEMENT_STATUS_LABELS,
   EXTERNAL_ACCOUNT_FUNDINGS,
+  ATTENDEE_AFFILIATIONS,
+  EXPENSE_TYPES,
+  EXPENSE_TYPE_LABELS,
+  MAX_PURPOSE_LENGTH,
+  MIN_PURPOSE_LENGTH,
+  codingFieldProblems,
   type ReimbursementStatus,
   type ExternalAccountFunding,
   type BudgetCadence,
+  type AttendeeAffiliation,
+  type ExpenseType,
 } from "@events-os/shared";
 import { normalizeEmail, getUserEmail } from "./lib/access";
 import {
@@ -91,6 +110,7 @@ import {
   effectiveBudgetType,
 } from "./lib/forPickerCandidates";
 import { ROLLUP_SCAN_LIMIT, isAttributableBudget } from "./finances";
+import { codingPolicy } from "./lib/transactionCoding";
 
 const externalAccountFundingValidator = v.union(
   ...EXTERNAL_ACCOUNT_FUNDINGS.map((f) => v.literal(f)),
@@ -101,13 +121,81 @@ const reimbursementStatusValidator = v.union(
   ...REIMBURSEMENT_STATUSES.map((s) => v.literal(s)),
 );
 
+// ── Per-line substantiation (transaction-coding parity, phase 3) ─────────────
+// A reimbursement line carries the SAME §274(d) elements a card charge's
+// `transactionCodings` row does — expense type, a real business purpose, a
+// travel route, who ate — but PER LINE, because one request routinely mixes
+// kinds (a fare, a hotel night, and a team dinner). Validation is the SHARED
+// `codingFieldProblems`, the same list the in-app form and the public token
+// page render, so no surface can disagree with another about what complete
+// substantiation is. See `docs/plans/transaction-coding.md` (phase 3).
+//
+// Reimbursements keep the HARD per-line receipt requirement — no exception
+// path (open question 2, default kept): a reimbursement is a VOLUNTARY
+// submission, unlike a card charge that already happened and has to be
+// substantiated after the fact.
+
+const attendeeValidator = v.object({
+  personId: v.optional(v.id("people")),
+  name: v.string(),
+  affiliation: v.union(...ATTENDEE_AFFILIATIONS.map((a) => v.literal(a))),
+});
+
+/** The substantiation block, as a validator fragment — spread into BOTH the
+ *  submit-line shape and the revision shape so the two can't drift. Every
+ *  field is `v.optional` at the validator level for the same reason
+ *  `receiptStorageId`/`transactionDate` are (below): an arg validator can't
+ *  express "required, and required differently per expense type". The real
+ *  gate is `normalizeLineCoding`, the one invariant owner. */
+const lineCodingValidators = {
+  expenseType: v.optional(v.union(...EXPENSE_TYPES.map((t) => v.literal(t)))),
+  businessPurpose: v.optional(v.string()),
+  travelFrom: v.optional(v.string()),
+  travelTo: v.optional(v.string()),
+  headcount: v.optional(v.number()),
+  attendees: v.optional(v.array(attendeeValidator)),
+  groupDescription: v.optional(v.string()),
+};
+
+type LineAttendee = {
+  personId?: Id<"people">;
+  name: string;
+  affiliation: AttendeeAffiliation;
+};
+
+/** The substantiation a caller supplies for one line (untrusted, unvalidated). */
+type LineCodingInput = {
+  expenseType?: ExpenseType;
+  businessPurpose?: string;
+  travelFrom?: string;
+  travelTo?: string;
+  headcount?: number;
+  attendees?: LineAttendee[];
+  groupDescription?: string;
+};
+
+/** The substantiation as STORED on a line — every key always present so the
+ *  same object works for an insert AND for a patch: a line retyped from
+ *  "meal" to "general" must have its stale headcount/attendees CLEARED, and a
+ *  patch only clears a field when the key is there with `undefined`. */
+type StoredLineCoding = {
+  expenseType: ExpenseType;
+  businessPurpose: string;
+  travelFrom: string | undefined;
+  travelTo: string | undefined;
+  headcount: number | undefined;
+  attendees: LineAttendee[] | undefined;
+  groupDescription: string | undefined;
+};
+
 /** The submitted line-item shape, shared by the public + in-app submit paths.
  *  Money is a raw `v.number()` here — the integer-cents check is enforced in
  *  `assertLineCents` (an arg validator can't reject a non-integer). Kept
  *  OPTIONAL at the validator level for `receiptStorageId`/`transactionDate`
  *  even though `createReimbursement` requires both for a NEW line — an arg
  *  validator can't express "required except on legacy rows"; the actual gate
- *  is `assertRequiredLineFields` below, the one invariant owner. */
+ *  is `assertRequiredLineFields` below, the one invariant owner. Same posture
+ *  for the substantiation block (see `lineCodingValidators`). */
 const submitLineValidator = v.object({
   description: v.string(),
   amountCents: v.number(),
@@ -115,6 +203,7 @@ const submitLineValidator = v.object({
   fundId: v.optional(v.id("funds")),
   receiptStorageId: v.optional(v.id("_storage")),
   transactionDate: v.optional(v.number()),
+  ...lineCodingValidators,
 });
 type SubmitLine = {
   description: string;
@@ -123,15 +212,135 @@ type SubmitLine = {
   fundId?: Id<"funds">;
   receiptStorageId?: Id<"_storage">;
   transactionDate?: number;
-};
+} & LineCodingInput;
+
+/** One line's revised substantiation, on the claimant's resubmission path. */
+const reviseLineValidator = v.object({
+  lineId: v.id("reimbursementLineItems"),
+  ...lineCodingValidators,
+});
+type ReviseLine = { lineId: Id<"reimbursementLineItems"> } & LineCodingInput;
+
+/**
+ * Validate + normalize one line's substantiation. Delegates every REQUIRED
+ * check to the shared `codingFieldProblems` and throws the FIRST problem with
+ * its stable code — exactly what `lib/transactionCoding.ts#normalizeCodingFields`
+ * does for a card charge — so the public page, the in-app form, and the server
+ * can never disagree about what a complete coding is. Type-irrelevant fields
+ * are dropped: a line retyped from "travel" to "general" must not keep a stale
+ * route, and one retyped away from "meal" must not keep a stale attendee list.
+ *
+ * Deliberately NOT `normalizeCodingFields` itself: that one also carries
+ * `travelers`, which `transactionCodings` has and a reimbursement line does
+ * not. The VALIDATION — the part that must never drift — is the shared
+ * function both call.
+ */
+function normalizeLineCoding(
+  input: LineCodingInput,
+  namesMaxHeadcount: number,
+  label: string,
+): StoredLineCoding {
+  if (!input.expenseType) {
+    throw new ConvexError({
+      code: "EXPENSE_TYPE_REQUIRED",
+      message: `${label} needs an expense type — it's what decides which details the IRS requires (a route for travel, who ate for a meal).`,
+    });
+  }
+  const problems = codingFieldProblems(
+    {
+      expenseType: input.expenseType,
+      businessPurpose: input.businessPurpose ?? "",
+      travelFrom: input.travelFrom,
+      travelTo: input.travelTo,
+      headcount: input.headcount,
+      attendees: input.attendees?.map((a) => ({
+        ...(a.personId ? { personId: a.personId } : {}),
+        name: a.name,
+        affiliation: a.affiliation,
+      })),
+      groupDescription: input.groupDescription,
+    },
+    namesMaxHeadcount,
+  );
+  if (problems.length > 0) {
+    throw new ConvexError({
+      code: problems[0].code,
+      // Prefixed with the line it belongs to — a request can carry 100 lines,
+      // and "a meal needs a headcount" is useless without saying WHICH one.
+      message: `${label} — ${problems[0].message}`,
+    });
+  }
+  const isTravelish =
+    input.expenseType === "travel" || input.expenseType === "lodging";
+  const isMeal = input.expenseType === "meal";
+  const attendees = isMeal
+    ? input.attendees?.map((a) => ({
+        ...(a.personId ? { personId: a.personId } : {}),
+        name: a.name.trim(),
+        affiliation: a.affiliation,
+      }))
+    : undefined;
+  return {
+    expenseType: input.expenseType,
+    businessPurpose: input.businessPurpose!.trim(),
+    travelFrom: isTravelish ? input.travelFrom?.trim() : undefined,
+    travelTo: isTravelish ? input.travelTo?.trim() : undefined,
+    headcount: isMeal ? input.headcount : undefined,
+    attendees: attendees?.length ? attendees : undefined,
+    groupDescription: isMeal
+      ? input.groupDescription?.trim() || undefined
+      : undefined,
+  };
+}
+
+/** A short label for a line in an error message ("Snacks for the crew"). */
+function lineLabel(description: string, index: number): string {
+  const trimmed = description.trim();
+  return trimmed ? `"${cap(trimmed, 60)}"` : `Line ${index + 1}`;
+}
+
+/**
+ * Re-validate a STORED line's substantiation — used on the claimant's
+ * resubmission, so a send-back can't be answered by resubmitting the same
+ * incomplete record.
+ *
+ * LEGACY ROWS ARE SKIPPED: a line with no `expenseType` at all predates phase
+ * 3 and never had a chance to carry one. That is the same posture
+ * `receiptStorageId`/`transactionDate` already take (required for lines
+ * created from now on, `v.optional` on the table so history still validates) —
+ * the alternative is a revision loop a pre-existing request can never escape.
+ */
+function assertStoredLineCoding(
+  line: Doc<"reimbursementLineItems">,
+  namesMaxHeadcount: number,
+  index: number,
+): void {
+  if (!line.expenseType) return;
+  normalizeLineCoding(
+    {
+      expenseType: line.expenseType as ExpenseType,
+      businessPurpose: line.businessPurpose,
+      travelFrom: line.travelFrom,
+      travelTo: line.travelTo,
+      headcount: line.headcount,
+      attendees: line.attendees as LineAttendee[] | undefined,
+      groupDescription: line.groupDescription,
+    },
+    namesMaxHeadcount,
+    lineLabel(line.description, index),
+  );
+}
 
 // ── Status machine ───────────────────────────────────────────────────────────
 /** Statuses a claimant / manager may still edit (add receipts, approve, etc.).
- *  Once past these the request is under final review or finished. */
+ *  Once past these the request is under final review or finished.
+ *  `changes_requested` is the MOST editable of them all — the reviewer sent it
+ *  back precisely so the claimant could fix something (see `requestChanges`). */
 const EDITABLE_STATUSES: readonly ReimbursementStatus[] = [
   "pending_preapproval",
   "preapproved",
   "submitted",
+  "changes_requested",
 ];
 
 /** Statuses in which a bank DESTINATION may still be (re)linked. The editable
@@ -149,11 +358,27 @@ const LINKABLE_STATUSES: readonly ReimbursementStatus[] = [
 
 /** The pre-approval / pre-payout states. `reject` and `cancel` are only legal
  *  from here — never from `approved`/`paying`/terminal, so an in-flight payout
- *  (Phase 4) can't be desynced by a late reject/cancel. */
+ *  (Phase 4) can't be desynced by a late reject/cancel. Includes
+ *  `changes_requested`: a request sitting with its claimant is not payable, but
+ *  it must stay cancelable (the claimant gave up / the reviewer killed it) —
+ *  a state you can neither finish nor abandon is a leak. */
 const PRE_PAYOUT_STATUSES: readonly ReimbursementStatus[] = [
   "pending_preapproval",
   "preapproved",
   "submitted",
+  "changes_requested",
+];
+
+/** The states a reviewer may act on: approve, or send back for a fix. The
+ *  same allowed-from set for both, so "send it back" is always available
+ *  wherever "approve" is — the send-back exists to be the SOFTER of the two,
+ *  and a reviewer who can only approve or reject reaches for reject.
+ *  Deliberately NOT `changes_requested` itself: the ball is with the claimant,
+ *  and approving a record its author is mid-revision would approve something
+ *  nobody has read. */
+const REVIEWABLE_STATUSES: readonly ReimbursementStatus[] = [
+  "submitted",
+  "preapproved",
 ];
 
 /** Guard a transition: `current` must be one of `allowedFrom`, else throw. */
@@ -324,6 +549,10 @@ function timelineFor(
     case "pending_preapproval":
     case "preapproved":
     case "submitted":
+    // Sent back for a fix: the ball is with the CLAIMANT, not the reviewer, so
+    // review is still the live step — the page's own send-back callout (which
+    // carries the note and the revise form) is what says whose move it is.
+    case "changes_requested":
       doneThrough = 0;
       nowIndex = 1;
       break;
@@ -501,6 +730,7 @@ async function matchPerson(
  * then hands validated-but-untrusted field values here. This single helper
  * owns EVERY invariant — name/email validation, the REQUIRED purpose, per-line integer-
  * cents + REQUIRED receipt + REQUIRED sanity-checked `transactionDate` +
+ * REQUIRED substantiation (`normalizeLineCoding`) +
  * chapter-ownership checks, the total, the REQUIRED bank destination, the
  * mutually-exclusive "For" tag (event XOR project XOR recurring budget), the
  * pre-approval status, and the request+lines insert — so the two surfaces can
@@ -638,11 +868,18 @@ async function createReimbursement(
     });
   }
 
+  // The org's meal-names threshold (owner decision: 15) — read ONCE for the
+  // whole request rather than per line.
+  const { namesMaxHeadcount } = await codingPolicy(ctx);
+
   // Validate every line: money, a non-blank description, a REQUIRED receipt,
-  // a REQUIRED sanity-checked transaction date, + verify any fund/category
-  // belongs to this chapter (untrusted input must never reference another
-  // chapter).
-  for (const line of input.lines) {
+  // a REQUIRED sanity-checked transaction date, the REQUIRED substantiation
+  // block, + verify any fund/category belongs to this chapter (untrusted input
+  // must never reference another chapter). Normalized codings are collected
+  // in line order so the insert loop below writes exactly what was validated.
+  const codings: StoredLineCoding[] = [];
+  for (let i = 0; i < input.lines.length; i++) {
+    const line = input.lines[i];
     assertLineCents(line.amountCents);
     if (!cap(line.description, 500)) {
       throw new ConvexError({
@@ -650,6 +887,8 @@ async function createReimbursement(
         message: "Every line needs a description.",
       });
     }
+    // HARD receipt requirement, per line, no exception path — see the
+    // substantiation section's note at the top of this file.
     if (!line.receiptStorageId) {
       throw new ConvexError({
         code: "INVALID_INPUT",
@@ -657,6 +896,13 @@ async function createReimbursement(
       });
     }
     assertTransactionDate(line.transactionDate);
+    codings.push(
+      normalizeLineCoding(
+        line,
+        namesMaxHeadcount,
+        lineLabel(line.description, i),
+      ),
+    );
     if (line.fundId) {
       const fund = await ctx.db.get(line.fundId);
       if (!fund || fund.chapterId !== chapterId) {
@@ -763,6 +1009,8 @@ async function createReimbursement(
       categoryId: line.categoryId,
       receiptStorageId: line.receiptStorageId,
       transactionDate: line.transactionDate,
+      // The §274(d) block, validated + normalized above (same index).
+      ...codings[i],
       order: i,
       createdAt: now,
     });
@@ -1217,6 +1465,10 @@ export const newRequestOptions = query({
   args: {},
   handler: async (ctx) => {
     const chapterId = await getChapterIdOrNull(ctx);
+    // The org's coding policy is a RULE, not chapter data — so the form asks
+    // for attendee names at exactly the headcount the server requires them
+    // at, even on the degraded no-chapter path.
+    const { namesMaxHeadcount } = await codingPolicy(ctx);
     if (!chapterId) {
       return {
         defaultPayeeName: "",
@@ -1224,6 +1476,8 @@ export const newRequestOptions = query({
         defaultPayeePhone: "",
         funds: [],
         forOptions: { events: [], projects: [], budgets: [] },
+        namesMaxHeadcount,
+        minPurposeLength: MIN_PURPOSE_LENGTH,
       };
     }
     const person = await viewerPerson(ctx, chapterId as Id<"chapters">);
@@ -1241,6 +1495,8 @@ export const newRequestOptions = query({
         .sort((a, b) => a.sortOrder - b.sortOrder)
         .map((f) => ({ id: f._id, name: f.name })),
       forOptions: await forRequestOptions(ctx, chapterId as Id<"chapters">),
+      namesMaxHeadcount,
+      minPurposeLength: MIN_PURPOSE_LENGTH,
     };
   },
 });
@@ -1251,6 +1507,11 @@ export const newRequestOptions = query({
  * own roster person via `by_person`; NEVER returns another member's requests
  * or the secret `token`. Degrades to `[]` when the caller has no chapter or no
  * roster row yet, rather than throwing (this is a passive dashboard read).
+ *
+ * Carries the reviewer's send-back note + each line's substantiation: on a
+ * `changes_requested` request THIS list is the claimant's revise surface (the
+ * in-app twin of the public token page), so it has to show what was asked for
+ * and what's currently on record.
  */
 export const myReimbursements = query({
   args: {},
@@ -1265,6 +1526,7 @@ export const myReimbursements = query({
       .withIndex("by_person", (q) => q.eq("personId", person._id))
       .order("desc")
       .take(50);
+    const { namesMaxHeadcount } = await codingPolicy(ctx);
 
     return await Promise.all(
       requests
@@ -1281,6 +1543,37 @@ export const myReimbursements = query({
             statusBadge: REIMBURSEMENT_STATUS_LABELS[req.status],
             totalCents: req.totalCents,
             approvedCents: req.approvedCents,
+            reviewNote: req.reviewNote ?? null,
+            // Whether THIS caller may revise-and-resubmit in the app, decided
+            // by the same rule `resubmitMyReimbursement` enforces
+            // (`identityVerified`), so the screen can't offer an edit the
+            // mutation will refuse.
+            //
+            // The gap is real and not hypothetical: this list is keyed by
+            // `by_person`, and the PUBLIC form best-effort matches a
+            // submission to a roster person by email/phone without verifying
+            // anyone. Such a request is legitimately the caller's and shows up
+            // here, but was never authenticated as theirs, so the resubmit
+            // path refuses it. Without this flag the member got a fully
+            // editable card whose Resubmit button always threw FORBIDDEN —
+            // the worst version, because they'd have retyped everything
+            // first. They revise it from the emailed link instead, where the
+            // secret token is the proof of identity.
+            canReviseInApp: req.identityVerified === true,
+            namesMaxHeadcount,
+            lines: lines.map((l) => ({
+              _id: l._id,
+              description: l.description,
+              amountCents: l.amountCents,
+              hasReceipt: !!l.receiptStorageId,
+              expenseType: (l.expenseType as ExpenseType | undefined) ?? null,
+              businessPurpose: l.businessPurpose ?? null,
+              travelFrom: l.travelFrom ?? null,
+              travelTo: l.travelTo ?? null,
+              headcount: l.headcount ?? null,
+              attendees: (l.attendees as LineAttendee[] | undefined) ?? null,
+              groupDescription: l.groupDescription ?? null,
+            })),
           };
         }),
     );
@@ -1290,6 +1583,13 @@ export const myReimbursements = query({
 /**
  * The claimant's status view for the public page — keyed by the secret token,
  * NO secrets returned (never the token). Null when the token is unknown.
+ *
+ * Carries each line's own substantiation (and its id), because on a
+ * `changes_requested` request the page IS the revise form: the accountless
+ * claimant has no other surface on which to answer the reviewer's note. Line
+ * ids are already token-scoped (`lib/reimburseApiRoutes.ts#linesForToken`
+ * hands the same ids to the receipt-attach flow), and everything here is the
+ * claimant's own writing.
  */
 export const getPublicReimbursement = query({
   args: { token: v.string() },
@@ -1297,19 +1597,36 @@ export const getPublicReimbursement = query({
     const req = await byToken(ctx, token);
     if (!req) return null;
     const lines = await linesFor(ctx, req._id);
+    const { namesMaxHeadcount } = await codingPolicy(ctx);
     return {
       reference: referenceFor(req._id),
       status: req.status,
       statusLabel: REIMBURSEMENT_STATUS_LABELS[req.status],
+      // The reviewer's send-back note — what the claimant has to fix.
+      reviewNote: req.reviewNote ?? null,
+      // The org's meal-names threshold, so the form's attendee rows appear at
+      // exactly the headcount the SERVER will require them at.
+      namesMaxHeadcount,
+      minPurposeLength: MIN_PURPOSE_LENGTH,
       payeeName: req.payeeName,
       totalCents: req.totalCents,
       approvedCents: req.approvedCents,
       lines: await Promise.all(
         lines.map(async (l) => ({
+          lineId: l._id,
           description: l.description,
           amountCents: l.amountCents,
           category: await categoryName(ctx, l.categoryId),
           hasReceipt: !!l.receiptStorageId,
+          // The claimant's own substantiation — null/absent on a legacy line
+          // (see `assertStoredLineCoding`'s doc).
+          expenseType: (l.expenseType as ExpenseType | undefined) ?? null,
+          businessPurpose: l.businessPurpose ?? null,
+          travelFrom: l.travelFrom ?? null,
+          travelTo: l.travelTo ?? null,
+          headcount: l.headcount ?? null,
+          attendees: (l.attendees as LineAttendee[] | undefined) ?? null,
+          groupDescription: l.groupDescription ?? null,
         })),
       ),
       submittedAt: req.submittedAt ?? req.createdAt,
@@ -1377,6 +1694,130 @@ export const attachPublicReceipt = mutation({
     await ctx.db.patch(lineId, { receiptStorageId });
     await ctx.db.patch(req._id, { updatedAt: Date.now() });
     return null;
+  },
+});
+
+// ── The revision loop (a claimant's answer to a send-back) ───────────────────
+
+/**
+ * Apply a claimant's revised substantiation and put the request back in front
+ * of the reviewer — the other half of `requestChanges`.
+ *
+ * WHY only the substantiation is editable here: a send-back says "this record
+ * doesn't yet justify the money" ("say which event this served", "receipt must
+ * show exact amount"). The claimant answers by rewriting the coding, or by
+ * replacing a receipt (the existing attach path, which `changes_requested`
+ * keeps open via `EDITABLE_STATUSES`). Amounts and lines deliberately CAN'T
+ * move: a resubmission must never silently change what's being claimed under a
+ * reviewer who has already seen a number. A wrong amount is a `reject` and a
+ * fresh request.
+ *
+ * Every line is re-validated, not just the edited ones — otherwise a request
+ * could be resubmitted with a still-incomplete line the claimant never
+ * touched. Legacy lines are skipped (see `assertStoredLineCoding`).
+ *
+ * Returns to `preapproved` when the request had been pre-approved, else to
+ * `submitted` — a pre-approval decision already made isn't undone by a
+ * substantiation fix. `submittedAt` deliberately keeps the ORIGINAL submission
+ * date: it's when the claimant first asked, and the staleness sweep counts
+ * from it.
+ */
+async function applyRevisionAndResubmit(
+  ctx: MutationCtx,
+  req: Doc<"reimbursementRequests">,
+  edits: ReviseLine[],
+): Promise<{ status: ReimbursementStatus }> {
+  assertTransition(req.status, ["changes_requested"], "resubmit");
+
+  const lines = await linesFor(ctx, req._id);
+  const byId = new Map(lines.map((l) => [String(l._id), l]));
+  const { namesMaxHeadcount } = await codingPolicy(ctx);
+
+  for (const edit of edits) {
+    const line = byId.get(String(edit.lineId));
+    if (!line) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "That line item isn't part of this reimbursement.",
+      });
+    }
+    const coding = normalizeLineCoding(
+      edit,
+      namesMaxHeadcount,
+      lineLabel(line.description, line.order),
+    );
+    // Every key is present (some `undefined`) so a retype CLEARS what no
+    // longer applies — see `StoredLineCoding`.
+    await ctx.db.patch(line._id, coding);
+    byId.set(String(line._id), { ...line, ...coding });
+  }
+
+  const revised = [...byId.values()].sort((a, b) => a.order - b.order);
+  revised.forEach((line, i) => assertStoredLineCoding(line, namesMaxHeadcount, i));
+
+  const status: ReimbursementStatus = req.preApprovedByPersonId
+    ? "preapproved"
+    : "submitted";
+  await ctx.db.patch(req._id, {
+    status,
+    // The note answered is a note gone — the round-by-round history lives in
+    // `approvals`, not in a field the claimant now sees stale copy from.
+    reviewNote: undefined,
+    updatedAt: Date.now(),
+  });
+  // Tell the approvers it's back: the queue is pull-only, so without this a
+  // revision sits exactly as long as the original submission would have.
+  await ctx.scheduler.runAfter(
+    0,
+    internal.reimbursements.sendReimbursementSubmittedEmail,
+    { reimbursementId: req._id },
+  );
+  return { status };
+}
+
+/**
+ * Resubmit an accountless claimant's sent-back request (token-scoped, the same
+ * trust boundary as `attachPublicReceipt`) with their revised per-line
+ * substantiation. Backs the public token page's revise form.
+ */
+export const resubmitPublicReimbursement = mutation({
+  args: { token: v.string(), lines: v.array(reviseLineValidator) },
+  handler: async (ctx, { token, lines }) => {
+    const req = await byToken(ctx, token);
+    if (!req) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "We couldn't find that reimbursement.",
+      });
+    }
+    return await applyRevisionAndResubmit(ctx, req, lines);
+  },
+});
+
+/**
+ * The AUTHENTICATED twin: an in-app member resubmitting their OWN sent-back
+ * request. Ownership is the same verified-identity check `beginLinkBankAccount`
+ * uses — a member may only revise a request that is genuinely theirs, never
+ * one whose `personId` was a public-path best-effort match.
+ */
+export const resubmitMyReimbursement = mutation({
+  args: {
+    reimbursementId: v.id("reimbursementRequests"),
+    lines: v.array(reviseLineValidator),
+  },
+  handler: async (ctx, { reimbursementId, lines }) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const callerPersonId = await resolveCallerPersonId(ctx, chapterId);
+    const req = await ctx.db.get(reimbursementId);
+    await requireInChapter(ctx, chapterId, req, "Reimbursement");
+    const request = req!;
+    if (!request.identityVerified || request.personId !== callerPersonId) {
+      throw new ConvexError({
+        code: "FORBIDDEN",
+        message: "You can only resubmit your own reimbursement.",
+      });
+    }
+    return await applyRevisionAndResubmit(ctx, request, lines);
   },
 });
 
@@ -1710,6 +2151,10 @@ export const get = query({
       preApprovedByPersonId: request.preApprovedByPersonId ?? null,
       reviewedByPersonId: request.reviewedByPersonId ?? null,
       rejectedReason: request.rejectedReason ?? null,
+      // The latest send-back note, while the request is with its claimant —
+      // shown to the reviewer too, so a second manager can see what was
+      // already asked for rather than asking again.
+      reviewNote: request.reviewNote ?? null,
       lines: await Promise.all(
         lines.map(async (l) => ({
           _id: l._id,
@@ -1729,6 +2174,21 @@ export const get = query({
           receiptUrl: l.receiptStorageId
             ? await ctx.storage.getUrl(l.receiptStorageId)
             : null,
+          // The §274(d) substantiation this line carries — what the reviewer
+          // is actually reviewing (null on a legacy line). Attendee NAMES are
+          // internal-only forever (owner decision, 2026-08-08): this read is
+          // finance-role gated, and a public ledger renders the headcount +
+          // affiliation breakdown in their place, never the names.
+          expenseType: (l.expenseType as ExpenseType | undefined) ?? null,
+          expenseTypeLabel: l.expenseType
+            ? EXPENSE_TYPE_LABELS[l.expenseType as ExpenseType]
+            : null,
+          businessPurpose: l.businessPurpose ?? null,
+          travelFrom: l.travelFrom ?? null,
+          travelTo: l.travelTo ?? null,
+          headcount: l.headcount ?? null,
+          attendees: (l.attendees as LineAttendee[] | undefined) ?? null,
+          groupDescription: l.groupDescription ?? null,
           approved: l.approved ?? null,
           order: l.order,
         })),
@@ -1798,7 +2258,9 @@ async function recordApproval(
   ctx: MutationCtx,
   chapterId: Id<"chapters">,
   reimbursementId: Id<"reimbursementRequests">,
-  action: "preapprove" | "approve" | "reject" | "cancel",
+  // `edit` = a reviewer sending the request BACK for revision — see
+  // `requestChanges` for why that literal carries it.
+  action: "preapprove" | "approve" | "reject" | "cancel" | "edit",
   actorPersonId: Id<"people">,
   note?: string,
 ): Promise<void> {
@@ -1845,7 +2307,7 @@ export const approve = mutation({
   handler: async (ctx, { reimbursementId, approvedLineIds }) => {
     const { chapterId, req, callerPersonId, callerEmail } =
       await loadForManage(ctx, reimbursementId);
-    assertTransition(req.status, ["submitted", "preapproved"], "approve");
+    assertTransition(req.status, REVIEWABLE_STATUSES, "approve");
     assertApprovalSoD(callerPersonId, callerEmail, req);
 
     const lines = await linesFor(ctx, req._id);
@@ -1883,6 +2345,71 @@ export const approve = mutation({
     });
     await recordApproval(ctx, chapterId, req._id, "approve", callerPersonId);
     return { approvedCents };
+  },
+});
+
+/**
+ * Send a request BACK to its claimant with a required note — "receipt must
+ * show exact amount", "say which event this served".
+ *
+ * WHY this exists: until now the only send-back was `reject`, which is
+ * terminal and reads as "you lost your money" — so a reviewer facing "almost,
+ * fix this one thing" either rejected (harsh, and the claimant has to re-file
+ * everything) or approved something under-substantiated. This is the third
+ * door, and the same door `transactionCodings.requestChanges` opens for a card
+ * charge (`docs/plans/transaction-coding.md`, phase 3).
+ *
+ * Same authorization bar and same separation of duties as `approve`: a
+ * reviewer who can't approve a request can't send it back either, and nobody
+ * reviews their own. The note is REQUIRED — "sent back, no explanation" is how
+ * a policy stops being followed, and it's the entire content of the email the
+ * claimant receives.
+ */
+export const requestChanges = mutation({
+  args: {
+    reimbursementId: v.id("reimbursementRequests"),
+    note: v.string(),
+  },
+  handler: async (ctx, { reimbursementId, note }) => {
+    const { chapterId, req, callerPersonId, callerEmail } =
+      await loadForManage(ctx, reimbursementId);
+    assertTransition(req.status, REVIEWABLE_STATUSES, "send back");
+    assertApprovalSoD(callerPersonId, callerEmail, req);
+    const reviewNote = cap(note, MAX_PURPOSE_LENGTH);
+    if (!reviewNote) {
+      throw new ConvexError({
+        code: "REASON_REQUIRED",
+        message:
+          "Sending a request back requires a note — the claimant needs to know what would make it approvable.",
+      });
+    }
+    await ctx.db.patch(req._id, {
+      status: "changes_requested",
+      reviewNote,
+      updatedAt: Date.now(),
+    });
+    // `approvals` has no `request_changes` literal (its schema predates this
+    // loop and belongs to the finance foundation, not this file) — `edit` is
+    // the one reserved-but-unwired action, and "go edit this" is exactly what
+    // a send-back says. The note rides along, so the trail reads round by
+    // round. A claimant's RESUBMISSION logs nothing here on purpose: an
+    // accountless payee has no `people` row, and `approvals.actorPersonId` is
+    // required — a trail that silently skips half its rows would be worse
+    // than one that only records decisions.
+    await recordApproval(
+      ctx,
+      chapterId,
+      req._id,
+      "edit",
+      callerPersonId,
+      reviewNote,
+    );
+    await ctx.scheduler.runAfter(
+      0,
+      internal.reimbursements.sendReimbursementChangesRequestedEmail,
+      { reimbursementId: req._id },
+    );
+    return null;
   },
 });
 
@@ -1959,7 +2486,11 @@ export const listStaleReimbursements = internalQuery({
     // for the whole chapter rather than per request.
     const chapter = await ctx.db.get(chapterId);
     const candidates: Doc<"reimbursementRequests">[] = [];
-    for (const status of ["submitted", "preapproved"] as const) {
+    // `changes_requested` joins the sweep on the SAME staleness window: a
+    // request sitting with its claimant is the most stallable state there is
+    // (nobody is waiting on it but the person who stopped thinking about it),
+    // and the nudge carries the reviewer's note back to them.
+    for (const status of ["submitted", "preapproved", "changes_requested"] as const) {
       const rows = await ctx.db
         .query("reimbursementRequests")
         .withIndex("by_chapter_and_status", (q) =>
@@ -1975,6 +2506,9 @@ export const listStaleReimbursements = internalQuery({
       totalCents: number;
       status: ReimbursementStatus;
       missingReceipts: boolean;
+      /** The reviewer's send-back note, on a `changes_requested` request —
+       *  the nudge repeats what to fix rather than just saying "it's open". */
+      reviewNote: string | null;
       // True only for the authenticated in-app submit path (`personId`
       // server-derived from the caller's own roster row — see the schema
       // doc on `reimbursementRequests.identityVerified`), i.e. the claimant
@@ -1999,6 +2533,7 @@ export const listStaleReimbursements = internalQuery({
         totalCents: req.totalCents,
         status: req.status,
         missingReceipts,
+        reviewNote: req.reviewNote ?? null,
         identityVerified: req.identityVerified === true,
         token: req.token,
         chapterSlug: chapter?.slug ?? null,
@@ -2125,9 +2660,12 @@ export const sendReimbursementReminders = internalAction({
       for (const r of stale) {
         if (!r.payeeEmail) continue;
         const dollars = `$${(r.totalCents / 100).toFixed(2)}`;
-        const reason = r.missingReceipts
-          ? "We're still waiting on a receipt for one or more line items."
-          : "It's still waiting on a manager to review it.";
+        const reason =
+          r.status === "changes_requested"
+            ? `A reviewer sent it back for one fix: ${r.reviewNote ?? "open it to see what's needed"}`
+            : r.missingReceipts
+              ? "We're still waiting on a receipt for one or more line items."
+              : "It's still waiting on a manager to review it.";
         const link = r.identityVerified
           ? appUrl("/finances/reimbursements")
           : r.chapterSlug
@@ -2305,6 +2843,88 @@ export const sendReimbursementSubmittedEmail = internalAction({
     } catch (err) {
       console.error(
         "sendReimbursementSubmittedEmail: failed",
+        reimbursementId,
+        err,
+      );
+    }
+    return null;
+  },
+});
+
+// ── INTERNAL: send-back notice to the claimant ───────────────────────────────
+
+/**
+ * Everything `sendReimbursementChangesRequestedEmail` needs, or `null` when
+ * the request no longer exists / has already moved on (a scheduled job racing
+ * a resubmission — it should degrade, not throw).
+ *
+ * The recipient is the CLAIMANT and only the claimant: this email is the whole
+ * reason the send-back is softer than a rejection, and it's useless if it
+ * doesn't reach the person who has to act. The CTA-link split is the same one
+ * `listStaleReimbursements` documents — an in-app member goes to their
+ * Reimbursements tab, an accountless payee to their own token status page,
+ * which is where the revise form lives.
+ */
+export const getReimbursementChangesRequestedEmailPayload = internalQuery({
+  args: { reimbursementId: v.id("reimbursementRequests") },
+  handler: async (ctx, { reimbursementId }) => {
+    const req = await ctx.db.get(reimbursementId);
+    if (!req || req.status !== "changes_requested") return null;
+    const chapter = await ctx.db.get(req.chapterId);
+    return {
+      payeeEmail: req.payeeEmail ?? null,
+      payeeName: req.payeeName,
+      reference: referenceFor(req._id),
+      totalCents: req.totalCents,
+      reviewNote: req.reviewNote ?? "",
+      identityVerified: req.identityVerified === true,
+      token: req.token,
+      chapterSlug: chapter?.slug ?? null,
+    };
+  },
+});
+
+/**
+ * "Your reimbursement needs one fix" — best-effort Resend to the claimant,
+ * scheduled by `requestChanges`. Wrapped in a try/catch for the same reason
+ * `sendReimbursementSubmittedEmail` is: it runs after the decision has already
+ * committed, and a missing RESEND_API_KEY (dev/CI) or a transient Resend
+ * failure must degrade silently rather than surface as a failed scheduled job.
+ */
+export const sendReimbursementChangesRequestedEmail = internalAction({
+  args: { reimbursementId: v.id("reimbursementRequests") },
+  handler: async (ctx, { reimbursementId }) => {
+    try {
+      const payload = await ctx.runQuery(
+        internal.reimbursements.getReimbursementChangesRequestedEmailPayload,
+        { reimbursementId },
+      );
+      if (!payload?.payeeEmail) return null;
+      const dollars = `$${(payload.totalCents / 100).toFixed(2)}`;
+      const link = payload.identityVerified
+        ? appUrl("/finances/reimbursements")
+        : payload.chapterSlug
+          ? `${siteUrl()}/reimburse/${encodeURIComponent(payload.chapterSlug)}?token=${encodeURIComponent(payload.token)}`
+          : null;
+      await sendEmail(ctx, {
+        to: payload.payeeEmail,
+        subject: `Your reimbursement ${payload.reference} needs a small fix`,
+        html: emailShell(`
+        ${emailHeading(`Reimbursement ${escapeHtml(payload.reference)}`)}
+        ${emailParagraph(`Hi ${escapeHtml(payload.payeeName)} — your ${escapeHtml(dollars)} reimbursement isn't rejected: a reviewer just needs one thing fixed before it can be approved and paid.`)}
+        ${emailParagraph(`<b>What to fix:</b> ${escapeHtml(payload.reviewNote)}`)}
+        ${
+          link
+            ? emailButtonRow(link, "Update and resubmit →")
+            : emailParagraph(
+                "Open your reimbursement to update it and send it back for review.",
+                { size: 12, margin: "0" },
+              )
+        }`),
+      });
+    } catch (err) {
+      console.error(
+        "sendReimbursementChangesRequestedEmail: failed",
         reimbursementId,
         err,
       );
