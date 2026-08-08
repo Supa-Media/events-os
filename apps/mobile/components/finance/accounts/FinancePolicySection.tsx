@@ -27,8 +27,19 @@ import { useActionRunner } from "../../../lib/useActionToast";
 // Keep the picker to the finance track — the card prerequisite is a finance
 // competency, and listing all ~30 courses would bury the relevant ones. Any
 // finance course (including Kansi's future card-and-receipts course) shows up.
-const FINANCE_COURSE_OPTIONS = ACADEMY_COURSES.filter((c) =>
-  c.slug.startsWith("finance-"),
+//
+// Filtered by STREAM, not by slug prefix. The original `slug.startsWith(
+// "finance-")` matched nothing and left this dropdown permanently empty: the
+// finance SECTION slugs are `finance-…`, but the COURSE slugs are
+// `finances-for-everyone`, `treasurer`, `financial-manager`, … — none of
+// which carry that prefix (`finances-` isn't `finance-`). So the card
+// prerequisite could never be set from the UI at all, which matters more now
+// that passing the prerequisite course is how a cardholder's acknowledgment
+// of the coding policy gets on the record (`docs/plans/transaction-coding.md`).
+// `themeKey` is the real "is this the finance track" axis and can't drift
+// from a naming convention.
+const FINANCE_COURSE_OPTIONS = ACADEMY_COURSES.filter(
+  (c) => c.themeKey === "finances",
 ).map((c) => ({ value: c.slug, label: c.title }));
 
 const NONE_VALUE = "__none__";

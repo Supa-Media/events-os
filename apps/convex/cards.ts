@@ -80,7 +80,7 @@ import {
   internalAction,
 } from "./_generated/server";
 import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
-import { ConvexError, v } from "convex/values";
+import { ConvexError, v, type Infer } from "convex/values";
 import { api, internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import {
@@ -140,7 +140,15 @@ import {
   emailList,
   emailPanel,
   emailParagraph,
+  emailTextStyle,
 } from "./lib/emailShell";
+import {
+  chargeOutstanding,
+  codingOverdueMs,
+  isDocumented,
+  isUncodedCharge,
+} from "./lib/codingReminders";
+import { codingForTransaction, codingPolicy } from "./lib/transactionCoding";
 import { escapeHtml } from "./lib/html";
 import { appUrl } from "./lib/siteUrl";
 import { normalizePhone, resolveTwilioCredentials, sendSms } from "./lib/twilio";
@@ -2905,12 +2913,25 @@ export const notifyPersonalChargeFlagged = internalAction({
             timeZone: "America/New_York",
           })
         : null;
-      const subject = auto
-        ? `A charge with no receipt became a personal charge — you owe ${dollars}`
-        : `A charge on your card was marked personal — you owe ${dollars}`;
-      const reason = auto
-        ? `${escapeHtml(merchant)} (${escapeHtml(dollars)}${when ? `, ${escapeHtml(when)}` : ""}) passed the receipt deadline with no receipt attached, so it was automatically converted to a personal charge.`
-        : `a finance manager marked ${escapeHtml(merchant)} (${escapeHtml(dollars)}${when ? `, ${escapeHtml(when)}` : ""}) as a personal charge.`;
+      const uncoded = auto === true && cause === "uncoded";
+      const what = `${escapeHtml(merchant)} (${escapeHtml(dollars)}${when ? `, ${escapeHtml(when)}` : ""})`;
+      const subject = uncoded
+        ? `A charge nobody coded became a personal charge — you owe ${dollars}`
+        : auto
+          ? `A charge with no receipt became a personal charge — you owe ${dollars}`
+          : `A charge on your card was marked personal — you owe ${dollars}`;
+      // THE WHOLE ENFORCEMENT STORY, in plain words (owner ask, 2026-08-08 —
+      // and docs/plans/transaction-coding.md §D). Under IRS accountable-plan
+      // rules (Treas. Reg. §1.62-2) spending the org can't substantiate inside
+      // the safe-harbor window is taxable income to the person who spent it.
+      // Saying that outright is the point: this is not a punishment the app
+      // invented, it's the choice between paying it back and having it show up
+      // on a W-2 — and coding it is still the better ending than either.
+      const reason = uncoded
+        ? `${what} was never coded — the record of what it was for, and why it served the org's work, was never written. Under IRS accountable-plan rules, spending we can't substantiate becomes taxable income to the person who spent it, so it was converted to a personal charge instead. If you can still say what it was for, code it and ask a finance manager to reverse this.`
+        : auto
+          ? `${what} passed the receipt deadline with no receipt attached, so it was automatically converted to a personal charge.`
+          : `a finance manager marked ${what} as a personal charge.`;
       // The Cards tab's member view (`MemberCardsView`) owns the per-charge
       // flag/pay-back list this charge lives in — not Reimbursements (which
       // only shows the aggregate "you owe" total).
@@ -2947,6 +2968,119 @@ export const notifyPersonalChargeFlagged = internalAction({
         repaymentId,
         err,
       );
+    }
+    return null;
+  },
+});
+
+// ── Coding sent back (the review loop's other half) ──────────────────────────
+
+/** Who to tell that their coding came back, and what the reviewer said. Null
+ *  when the author has no reachable email (same degrade as
+ *  `getPersonalChargeFlagContact`) or the row is no longer in
+ *  `changes_requested` — a coding resubmitted before this scheduled job ran
+ *  must not re-open a conversation the author already answered. */
+export const getCodingSendBackContact = internalQuery({
+  args: { transactionId: v.id("transactions") },
+  returns: v.union(
+    v.object({
+      email: v.string(),
+      authorName: v.string(),
+      reviewerName: v.union(v.string(), v.null()),
+      reviewNote: v.string(),
+      merchantName: v.union(v.string(), v.null()),
+      amountCents: v.number(),
+      postedAt: v.union(v.number(), v.null()),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, { transactionId }) => {
+    const coding = await codingForTransaction(ctx, transactionId);
+    if (!coding || coding.status !== "changes_requested") return null;
+    if (!coding.reviewNote) return null;
+    // The AUTHOR is who owes the edit — not the cardholder, since a bookkeeper
+    // may have coded on someone's behalf and it's the typist who knows what
+    // they wrote. `codedByUserId` is the fallback for a superuser with no
+    // roster row (the same escape hatch the coding gates already allow).
+    const person = coding.codedByPersonId
+      ? await ctx.db.get(coding.codedByPersonId)
+      : null;
+    const user = await ctx.db.get(coding.codedByUserId);
+    const email = person?.pwEmail ?? person?.email ?? user?.email ?? null;
+    if (!email) return null;
+    const reviewer = coding.decidedByPersonId
+      ? await ctx.db.get(coding.decidedByPersonId)
+      : null;
+    const txn = await ctx.db.get(transactionId);
+    return {
+      email,
+      authorName: person?.name ?? user?.name ?? "there",
+      reviewerName: reviewer?.name ?? null,
+      reviewNote: coding.reviewNote,
+      merchantName: txn?.merchantName ?? null,
+      amountCents: txn?.amountCents ?? 0,
+      postedAt: txn?.postedAt ?? null,
+    };
+  },
+});
+
+/**
+ * Best-effort "your coding came back with a note" email — logs + no-ops
+ * without `RESEND_API_KEY` (same degrade as every other send in this file),
+ * and never throws past itself: it's a scheduled fire-and-forget job off
+ * `transactionCodings.requestChanges`, so a Resend failure must not surface as
+ * a failed review.
+ *
+ * WHY IT EXISTS: a send-back with no email is a note filed in a row nobody
+ * re-opens. The reviewer's whole job here is to say what would make the
+ * substantiation approvable ("the receipt must show the exact amount") — if
+ * that sentence doesn't reach the person who wrote the coding, the review loop
+ * is a queue that only ever grows.
+ */
+export const notifyCodingSentBack = internalAction({
+  args: { transactionId: v.id("transactions") },
+  returns: v.null(),
+  handler: async (ctx, { transactionId }) => {
+    try {
+      const contact = await ctx.runQuery(
+        internal.cards.getCodingSendBackContact,
+        { transactionId },
+      );
+      if (!contact) return null;
+      const dollars = `$${(contact.amountCents / 100).toFixed(2)}`;
+      const merchant = contact.merchantName ?? "a charge on your card";
+      const when = contact.postedAt
+        ? new Date(contact.postedAt).toLocaleDateString("en-US", {
+            month: "long",
+            day: "numeric",
+            year: "numeric",
+            timeZone: "America/New_York",
+          })
+        : null;
+      const subject = `Your coding for ${merchant} (${dollars}) needs a change`;
+      const byBit = contact.reviewerName
+        ? ` by ${escapeHtml(contact.reviewerName)}`
+        : "";
+      const lead = `your coding for ${escapeHtml(merchant)} (${escapeHtml(dollars)}${when ? `, ${escapeHtml(when)}` : ""}) was sent back${byBit}.`;
+      // The reviewer's words, verbatim and set apart — this is the entire
+      // actionable content of the email.
+      const noteBlock = emailPanel(
+        `<div style="${emailTextStyle({ strong: true })}"><b>What to change:</b> ${escapeHtml(contact.reviewNote)}</div>`,
+        { dashed: true },
+      );
+      const link = appUrl("/finances/my-transactions?filter=uncoded");
+      await sendEmail(ctx, {
+        to: contact.email,
+        subject,
+        html: emailShell(`
+          ${emailHeading("Your coding needs a change")}
+          ${emailParagraph(`Hi ${escapeHtml(contact.authorName)} — ${lead}`)}
+          ${noteBlock}
+          ${emailParagraph("Edit it and resubmit — the charge stays on the substantiation clock until the coding is approved.")}
+          ${link ? emailButtonRow(link, "Fix the coding →") : ""}`),
+      });
+    } catch (err) {
+      console.error("notifyCodingSentBack: email failed", transactionId, err);
     }
     return null;
   },
@@ -4299,7 +4433,7 @@ export const sendReceiptReminders = internalAction({
   },
 });
 
-// ── Manual receipt nudge (Chase Receipts "Send reminder" / "Remind all") ────
+// ── Manual nudge (Chase Receipts "Send reminder" / "Remind all") ────────────
 //
 // The tester-requested on-demand counterpart to the automated day-1/day-3
 // digest above: an FM/Treasurer viewing `/finances/receipt-chase` can nudge
@@ -4308,6 +4442,10 @@ export const sendReceiptReminders = internalAction({
 // verbatim for the email (same subject/body shape the automated reminder
 // sends) and adds a best-effort SMS pointing at the text-to-receipt number
 // (`smsReceipts.ts`) — email is the required channel; SMS never blocks it.
+//
+// Like the automated digest, the nudge chases CODINGS, not receipts (owner
+// decision, 2026-08-08): a charge whose receipt is filed but whose purpose
+// was never written is exactly as nudgeable as one with no receipt at all.
 //
 // Manager-gated (`requireFinanceManager`, same floor as `lockCard`/
 // `cancelCard`) and RATE-LIMITED to one nudge per cardholder per
@@ -4342,22 +4480,6 @@ function chaseTxnMatchesMode(tr: Doc<"transactions">, sandboxMode: boolean): boo
 }
 
 /**
- * MIRRORS finances.ts's `receiptChase`/`isSpend` "still owed a receipt"
- * predicate exactly (a SPEND charge — outflow, not excluded/personal — with
- * no receipt attached and not yet reconciled). Duplicated rather than
- * imported for the same reason as above; the two must be kept in sync.
- */
-function isReceiptChaseOwing(tr: Doc<"transactions">): boolean {
-  return (
-    tr.flow === "outflow" &&
-    tr.status !== "excluded" &&
-    tr.isPersonal !== true &&
-    tr.status !== "reconciled" &&
-    tr.receiptStorageId == null
-  );
-}
-
-/**
  * MIRRORS finances.ts's `makeCardholderResolver`: the txn's own `personId`,
  * else the person who owns its `cardId`. Duplicated rather than imported for
  * the same reason as the two helpers above.
@@ -4372,17 +4494,16 @@ async function resolveChaseCardholderId(
   return card?.cardholderPersonId ?? null;
 }
 
-/** One cardholder's current missing-receipt bundle, resolved for a manual
- *  nudge — the SAME shape `getReceiptReminderDigests` builds for the
- *  automated digest, plus `personId`/`phone` so the caller can rate-limit and
- *  SMS. */
+/** One cardholder's currently-outstanding bundle, resolved for a manual nudge
+ *  — the SAME shape `getReceiptReminderDigests` builds for the automated
+ *  digest, plus `personId`/`phone` so the caller can rate-limit and SMS. */
 type ManualNudgeTarget = {
   personId: Id<"people">;
   email: string | null;
   phone: string | null;
   cardholderName: string;
   anyEscalated: boolean;
-  charges: Array<{ amountCents: number; merchantName: string | null; escalated: boolean }>;
+  charges: Array<Infer<typeof reminderChargeValidator>>;
 };
 
 const manualNudgeTargetValidator = v.object({
@@ -4396,11 +4517,17 @@ const manualNudgeTargetValidator = v.object({
 
 /**
  * Resolve who to nudge + what they currently owe: EVERY cardholder (or just
- * `personId`, when given) with at least one charge still missing a receipt
- * RIGHT NOW — the exact same "owing" set `finances.receiptChase` renders, so
- * a manual nudge can never disagree with the list the FM is looking at. The
- * "Unattributed" bucket (no resolvable cardholder) is silently skipped —
- * mirrors `receiptChase`'s own doc comment: there's no one to chase for it.
+ * `personId`, when given) with at least one charge that still OWES something
+ * RIGHT NOW — a receipt, a coding, or an answer to a reviewer's send-back
+ * (`chargeOutstanding`, the one predicate the automated digest and the
+ * escalation stages read too). The "Unattributed" bucket (no resolvable
+ * cardholder) is silently skipped — mirrors `receiptChase`'s own doc comment:
+ * there's no one to chase for it.
+ *
+ * NOTE the chase page (`finances.receiptChase`) counts the DOCUMENTATION
+ * backlog; this counts everything a cardholder is on the hook for, which is a
+ * superset the day the coding policy arms. Keep the two moving together — an
+ * FM who nudges from that page should recognize what the email says.
  *
  * `scope`/`chapterId` are the SAME pair `receiptChase` takes (#383) — a
  * manager nudging from a central/peeked-chapter Chase Receipts view must
@@ -4440,6 +4567,7 @@ export const getManualNudgeTargets = internalQuery({
     }
 
     const sandboxMode = await readSandbox(ctx);
+    const { sinceMs } = await codingPolicy(ctx);
     const owing = (
       await ctx.db
         .query("transactions")
@@ -4448,10 +4576,14 @@ export const getManualNudgeTargets = internalQuery({
         .take(RECEIPT_NUDGE_SCAN_LIMIT)
     )
       .filter((tr) => chaseTxnMatchesMode(tr, sandboxMode))
-      .filter(isReceiptChaseOwing);
+      .map((tr) => ({ tr, outstanding: chargeOutstanding(tr, sinceMs) }))
+      .filter(
+        (row): row is { tr: Doc<"transactions">; outstanding: string } =>
+          row.outstanding != null,
+      );
 
     const byPerson = new Map<string, ManualNudgeTarget>();
-    for (const tr of owing) {
+    for (const { tr, outstanding } of owing) {
       const holderId = await resolveChaseCardholderId(ctx, tr);
       if (!holderId) continue; // Unattributed — nobody to nudge.
       if (personId && holderId !== personId) continue;
@@ -4474,6 +4606,9 @@ export const getManualNudgeTargets = internalQuery({
         amountCents: tr.amountCents,
         merchantName: tr.merchantName ?? null,
         escalated: tr.receiptReminderStage === "escalated",
+        outstanding,
+        missingReceipt: !isDocumented(tr),
+        needsCoding: isUncodedCharge(tr, sinceMs),
       });
     }
     return [...byPerson.values()].map((e) => ({
@@ -4546,11 +4681,16 @@ export const getManualNudgeStatus = query({
 /** Best-effort SMS nudge pointing at the text-to-receipt number
  *  (`smsReceipts.ts`) — mirrors `replyToSmsSender`'s shape (no-op without
  *  Twilio configured, swallows its own failures, never throws). Returns
- *  whether it actually attempted (and didn't error on) a send. */
+ *  whether it actually attempted (and didn't error on) a send.
+ *
+ *  The reply-with-a-photo instruction is only appended when a RECEIPT is
+ *  actually part of what's missing: texting a photo can't write a business
+ *  purpose, and telling someone it will is how a channel loses its
+ *  credibility. Coding-only debts point at the app instead. */
 async function sendManualNudgeSms(
   ctx: ActionCtx,
   phone: string,
-  charges: Array<{ amountCents: number; merchantName: string | null }>,
+  charges: Array<Infer<typeof reminderChargeValidator>>,
 ): Promise<boolean> {
   const creds = await resolveTwilioCredentials(ctx);
   if (!creds) return false;
@@ -4560,10 +4700,13 @@ async function sendManualNudgeSms(
   const count = charges.length;
   const fmt = (c: { amountCents: number; merchantName: string | null }) =>
     `$${(c.amountCents / 100).toFixed(2)}${c.merchantName ? ` at ${c.merchantName}` : ""}`;
+  const closer = charges.some((c) => c.missingReceipt)
+    ? "Reply here with a photo to file a receipt, or open Finances → My Transactions in the app to finish the coding."
+    : "Open Finances → My Transactions in the app to finish the coding.";
   const body =
     count === 1
-      ? `Reminder: you still owe a receipt for ${fmt(charges[0])}. Reply here with a photo to file it.`
-      : `Reminder: you still owe receipts for ${count} card charges (starting with ${fmt(charges[0])}). Reply here with a photo of each to file it.`;
+      ? `Reminder: ${fmt(charges[0])} ${charges[0].outstanding}. ${closer}`
+      : `Reminder: ${count} of your card charges still need coding (starting with ${fmt(charges[0])} — ${charges[0].outstanding}). ${closer}`;
   try {
     await sendSms(creds, { to, body });
     return true;

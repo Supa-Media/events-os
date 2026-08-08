@@ -1,127 +1,167 @@
 /**
- * FINANCES · MY TRANSACTIONS — the member/cardholder's mini-reconcile (D3).
+ * FINANCES · MY TRANSACTIONS — the cardholder's own desk.
  *
- * A no-finance-seat caller's own transactions (`api.finances.personTransactions`
- * — caller-scoped: it returns the CALLER's own rows without needing a finance
- * grant). On their OWN card charge a cardholder can now PRE-FILL the
- * bookkeeper's Reconcile review "Concur-style": pick a spend category, write an
- * explanatory note (the who/why), upload a receipt, and mark it personal — all
- * through `api.finances.submitOwnCharge` (category + note + optional personal
- * flag) and `api.finances.attachReceipt` (receipt). This deliberately does NOT
- * expose fund/team/budget reattribution — that stays the bookkeeper's Reconcile
- * grid.
+ * Phase 2 of `docs/plans/transaction-coding.md`. This screen used to be a
+ * read-mostly list with a small "add a category and a note" editor. It is now
+ * the place a cardholder FINISHES a charge: the reminder digest ("you have 3
+ * charges to code") deep-links straight here with `?filter=uncoded`, and
+ * everything that link promises — the substantiation record, the receipt, and
+ * the no-receipt exception when one never existed — happens in
+ * `FinishChargeSheet` without leaving the row and without a finance role.
  *
- * Category options come from `api.finances.myChargeCategories`, a member-safe
- * read (no finance-role gate — membership is the gate, like `budgetsGlance`),
- * so a plain cardholder can pick a category without a finance grant.
+ * Three things this screen owes the person reading it, in order:
+ *  1. WHAT STILL OWES SOMETHING, first. `chargeTodo` ranks every row and the
+ *     actionable ones sort to the top, in the digest's own words, so the
+ *     screen and the email can't disagree about what's outstanding.
+ *  2. THE REVIEWER'S NOTE, loudly. A charge a reviewer sent back gets the note
+ *     rendered under its row, quoted — for the person who has to act on it
+ *     that sentence is the most useful string on the page, and it is worth
+ *     more room than any badge.
+ *  3. The old affordances, unbroken: `personTransactions` is caller-scoped
+ *     (it returns the CALLER's own rows with no finance grant), the
+ *     bookkeeper's `note` is still visible on the member's OWN rows, the
+ *     category/personal-flag editor still exists (inside the sheet now), and
+ *     receipt upload is still the exact same `ReceiptCell` the Reconcile grid
+ *     uses, so uploading looks identical everywhere.
  *
- * Owner decision: a member sees the bookkeeper's freeform `note` on their OWN
- * transactions; `personTransactions` enforces this server-side (nulls `note` on
- * any row that isn't the caller's own). The receipt-upload affordance is the
- * exact same `ReceiptCell` the Reconcile grid uses (exported from
- * `ReconcileList.tsx`) so uploading looks and behaves identically everywhere.
+ * DATA NOTE — why `ChargeStateProbe` exists: `personTransactions` projects
+ * `txnSummary`, which carries neither `codingState` nor documentation state,
+ * and this screen has to sort and filter on both. See that component's doc
+ * comment for the backend change that would delete it.
  */
-import { Fragment, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
+import { useLocalSearchParams } from "expo-router";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
+import { DEFAULT_CODING_REQUIRED_SINCE_MS } from "@events-os/shared";
 import {
   Badge,
   Button,
   Cell,
   EmptyState,
-  Field,
   HeaderCell,
   Icon,
   Narrow,
   Row,
   Screen,
-  Select,
   Table,
   TableHeader,
-  TextField,
   ToastView,
 } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
-import { SignedMoney, txnStatusTone } from "../../../components/finance/dashboard/parts";
+import { SignedMoney } from "../../../components/finance/dashboard/parts";
 import { ReceiptCell } from "../../../components/finance/reconcile/ReconcileList";
+import { ChargeStateProbe } from "../../../components/finance/myTransactions/ChargeStateProbe";
+import { FinishChargeSheet } from "../../../components/finance/myTransactions/FinishChargeSheet";
+import {
+  chargeTodo,
+  isSpendCharge,
+  parseChargeFilter,
+  sortByTodo,
+  type ChargeCodingState,
+  type ChargeFilter,
+  type MyTxnRow,
+} from "../../../components/finance/myTransactions/chargeTodo";
 
 /** `YYYY-MM-DD` in the finance timezone for display (mirrors MemberView). */
 function dateStr(ts: number): string {
   return new Date(ts).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
 }
 
-type Txn = {
-  id: string;
-  categoryId: string | null;
-  note: string | null;
-  isPersonal: boolean;
-  cardLast4: string | null;
-  status: string;
-};
-
 export default function MyTransactionsScreen() {
+  // The reminder email's deep link (`/finances/my-transactions?filter=uncoded`).
+  const params = useLocalSearchParams<{ filter?: string }>();
   const transactions = useQuery(api.finances.personTransactions, {});
   const categories = useQuery(api.finances.myChargeCategories, {});
+  const policy = useQuery(api.transactionCodings.policy, {});
   const attachReceipt = useMutation(api.finances.attachReceipt);
   const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
-  const flagPersonalCharge = useMutation(api.cards.flagPersonalCharge);
-  const submitOwnCharge = useMutation(api.finances.submitOwnCharge);
   const { run, toast, dismiss } = useActionRunner();
 
-  // Which row's inline "details" editor is open, plus its draft state (only one
-  // is ever open at a time, so a single draft suffices). Drafts seed from the
-  // live row when the editor opens.
+  const [filter, setFilter] = useState<ChargeFilter>(() =>
+    parseChargeFilter(params.filter),
+  );
+  // The param can arrive after the first render (deep link → auth → screen),
+  // so follow it rather than only seeding from it.
+  useEffect(() => {
+    setFilter(parseChargeFilter(params.filter));
+  }, [params.filter]);
+
   const [openId, setOpenId] = useState<string | null>(null);
-  const [catDraft, setCatDraft] = useState<string | null>(null);
-  const [noteDraft, setNoteDraft] = useState("");
-  const [personalDraft, setPersonalDraft] = useState(false);
-  const [saving, setSaving] = useState(false);
+  const [states, setStates] = useState<Record<string, ChargeCodingState>>({});
+  const onResolved = useCallback(
+    (transactionId: string, state: ChargeCodingState) => {
+      setStates((prev) => {
+        const current = prev[transactionId];
+        // Bail on an unchanged report: every probe re-reports whenever its
+        // query pushes, and re-sorting the list underneath somebody's cursor
+        // for no reason is its own kind of bug.
+        if (
+          current &&
+          current.codingStatus === state.codingStatus &&
+          current.reviewNote === state.reviewNote &&
+          current.hasApprovedException === state.hasApprovedException &&
+          current.hasPendingException === state.hasPendingException
+        ) {
+          return prev;
+        }
+        return { ...prev, [transactionId]: state };
+      });
+    },
+    [],
+  );
 
-  function openEditor(t: Txn) {
-    setOpenId(t.id);
-    setCatDraft(t.categoryId);
-    setNoteDraft(t.note ?? "");
-    setPersonalDraft(t.isPersonal);
-  }
+  // The policy date decides which rows are CHASED for a coding at all
+  // (pre-2026-09-01 spend is the voluntary on-ramp). Falling back to the
+  // shared default keeps the first paint honest instead of briefly claiming
+  // every old charge needs coding.
+  const sinceMs = policy?.sinceMs ?? DEFAULT_CODING_REQUIRED_SINCE_MS;
 
-  async function handleFlag(id: string) {
-    // No local flagged state needed (R1b follow-up): `personTransactions` rows
-    // carry `isPersonal`, and the live subscription re-renders the row the
-    // moment the flag commits — including a flag a manager made from Reconcile.
-    await run(
-      () => flagPersonalCharge({ transactionId: id as Id<"transactions"> }),
-      { errorTitle: "Couldn't flag this charge" },
-    );
-  }
+  const rows = useMemo(() => {
+    return (transactions ?? []).map((t: MyTxnRow) => {
+      const state = states[t.id];
+      const facts = {
+        postedAt: t.postedAt,
+        flow: t.flow,
+        status: t.status,
+        isPersonal: t.isPersonal,
+        hasReceipt: t.hasReceipt,
+        ...(state
+          ? {
+              hasApprovedException: state.hasApprovedException,
+              codingStatus: state.codingStatus,
+            }
+          : {}),
+      };
+      return {
+        txn: t,
+        todo: chargeTodo(facts, sinceMs),
+        reviewNote: state?.reviewNote ?? null,
+        /** Only rows that could owe something get a live probe — see the
+         *  component's doc comment on why the count matters. */
+        probe: isSpendCharge(facts),
+      };
+    });
+  }, [transactions, states, sinceMs]);
 
-  async function handleSave(t: Txn) {
-    setSaving(true);
-    const res = await run(
-      () =>
-        submitOwnCharge({
-          transactionId: t.id as Id<"transactions">,
-          // Send the current draft (idempotent when unchanged); "" clears it.
-          categoryId: (catDraft
-            ? catDraft
-            : null) as Id<"budgetCategories"> | null,
-          note: noteDraft.trim() ? noteDraft.trim() : null,
-          // Only ever flag ON (the flag is one-way, like `flagPersonalCharge`) —
-          // omit when it was already personal or the member didn't toggle it.
-          flagPersonal: personalDraft && !t.isPersonal ? true : undefined,
-        }),
-      { errorTitle: "Couldn't save charge details" },
-    );
-    setSaving(false);
-    if (res !== undefined) setOpenId(null);
-  }
+  const actionableCount = rows.filter((r) => r.todo.actionable).length;
+  const visible = useMemo(() => {
+    const subset =
+      filter === "uncoded" ? rows.filter((r) => r.todo.actionable) : rows;
+    return sortByTodo(subset, (r) => ({
+      rank: r.todo.rank,
+      postedAt: r.txn.postedAt,
+    }));
+  }, [rows, filter]);
 
   const categoryOptions = [
     { value: "", label: "No category" },
     ...(categories ?? []).map((c) => ({ value: c.id, label: c.name })),
   ];
+  const openRow = rows.find((r) => r.txn.id === openId) ?? null;
 
   if (transactions === undefined) {
     return (
@@ -136,19 +176,72 @@ export default function MyTransactionsScreen() {
   return (
     <Screen maxWidth={1080}>
       <Narrow>
+        {/* The probes are mounted OUTSIDE the filtered list on purpose: a row
+            hidden by the "Needs you" filter must keep its subscription, or a
+            charge a reviewer sends back while this screen is open would never
+            reappear. They render nothing. */}
+        {rows.map((r) =>
+          r.probe ? (
+            <ChargeStateProbe
+              key={`probe-${r.txn.id}`}
+              transactionId={r.txn.id as Id<"transactions">}
+              hasReceipt={r.txn.hasReceipt}
+              onResolved={onResolved}
+            />
+          ) : null,
+        )}
+
         <View className="mb-1">
           <Text className="font-display text-2xl text-ink">My transactions</Text>
         </View>
-        <Text className="mb-4 text-sm text-muted">
-          Charges and entries attributed to you. On your own card charges, add a
-          category and a note so the finance team knows who and why — attach a
-          receipt, or flag a charge as personal.
+        <Text className="mb-3 text-sm text-muted">
+          Every charge attributed to you, and what each one still needs. Coding
+          a charge means saying — in your own words — what it bought, which org
+          work it served, and who was there; that answer is yours to write, and
+          it&apos;s what keeps the money you spent from becoming taxable income
+          to you.
         </Text>
+
+        {transactions.length > 0 ? (
+          <View className="mb-4 flex-row items-center gap-2">
+            <FilterChip
+              label={`Needs you${actionableCount > 0 ? ` (${actionableCount})` : ""}`}
+              active={filter === "uncoded"}
+              onPress={() => setFilter("uncoded")}
+            />
+            <FilterChip
+              label={`All (${rows.length})`}
+              active={filter === "all"}
+              onPress={() => setFilter("all")}
+            />
+            {actionableCount === 0 ? (
+              <View className="flex-row items-center gap-1.5">
+                <Icon name="check-circle" size={13} color={colors.success} />
+                <Text className="text-xs text-muted">
+                  Nothing outstanding — you&apos;re square.
+                </Text>
+              </View>
+            ) : null}
+          </View>
+        ) : null}
 
         {transactions.length === 0 ? (
           <EmptyState
             title="No transactions yet"
             message="Charges and entries attributed to you show up here."
+          />
+        ) : visible.length === 0 ? (
+          <EmptyState
+            title="Nothing needs you right now"
+            message="Every charge of yours is coded, documented, or with a reviewer."
+            action={
+              <Button
+                title="Show all"
+                variant="secondary"
+                size="sm"
+                onPress={() => setFilter("all")}
+              />
+            }
           />
         ) : (
           <Table>
@@ -157,54 +250,47 @@ export default function MyTransactionsScreen() {
               <HeaderCell width={110} align="right">
                 Amount
               </HeaderCell>
-              <HeaderCell width={120} align="right">
-                Status
-              </HeaderCell>
+              <HeaderCell width={185}>Still needs</HeaderCell>
               <HeaderCell width={130}>Receipt</HeaderCell>
-              <HeaderCell width={150} align="right">
-                Personal charge
+              <HeaderCell width={110} align="right">
+                {" "}
               </HeaderCell>
             </TableHeader>
-            {transactions.map((t, i) => {
-              const status = txnStatusTone(t.status);
-              // A person-attributed txn only ever gets `cardId` + `cardLast4`
-              // set together, so `cardLast4` is the reliable "this is a card
-              // charge the cardholder can self-service" signal (`submitOwnCharge`
-              // and `flagPersonalCharge` both reject a non-card txn server-side).
-              const isCardCharge = t.cardLast4 != null;
-              const open = openId === t.id;
+            {visible.map((r, i) => {
+              const t = r.txn;
+              const sentBack = r.todo.kind === "sent_back" && r.reviewNote;
+              const last = i === visible.length - 1;
               return (
                 <Fragment key={t.id}>
-                  <Row last={i === transactions.length - 1 && !open}>
+                  <Row last={last && !sentBack}>
                     <Cell flex={2}>
-                      <Text className="text-sm font-semibold text-ink" numberOfLines={1}>
-                        {t.merchantName ?? t.description ?? "—"}
-                      </Text>
+                      <View className="flex-row items-center gap-2">
+                        <Text
+                          className="text-sm font-semibold text-ink"
+                          numberOfLines={1}
+                        >
+                          {t.merchantName ?? t.description ?? "—"}
+                        </Text>
+                        {t.isPersonal ? (
+                          <Badge label="Personal" tone="accent" />
+                        ) : null}
+                      </View>
                       <Text className="text-xs text-muted" numberOfLines={1}>
-                        {[dateStr(t.postedAt), t.merchantName ? t.description : null]
+                        {[
+                          dateStr(t.postedAt),
+                          t.merchantName ? t.description : null,
+                          t.cardLast4 ? `card ••${t.cardLast4}` : null,
+                        ]
                           .filter(Boolean)
                           .join(" · ")}
                       </Text>
                       {t.note ? (
-                        <Text className="mt-0.5 text-xs italic text-muted" numberOfLines={2}>
+                        <Text
+                          className="mt-0.5 text-xs italic text-muted"
+                          numberOfLines={2}
+                        >
                           {t.note}
                         </Text>
-                      ) : null}
-                      {isCardCharge ? (
-                        <Pressable
-                          onPress={() => (open ? setOpenId(null) : openEditor(t))}
-                          hitSlop={6}
-                          className="mt-1 flex-row items-center gap-1 active:opacity-70"
-                        >
-                          <Icon
-                            name={open ? "chevron-up" : "edit-2"}
-                            size={12}
-                            color={colors.accent}
-                          />
-                          <Text className="text-xs font-semibold text-accent">
-                            {open ? "Close" : "Add category & note"}
-                          </Text>
-                        </Pressable>
                       ) : null}
                     </Cell>
                     <Cell width={110} align="right">
@@ -214,8 +300,8 @@ export default function MyTransactionsScreen() {
                         className="text-sm font-semibold"
                       />
                     </Cell>
-                    <Cell width={120} align="right">
-                      <Badge label={status.label} tone={status.tone} />
+                    <Cell width={185}>
+                      <Badge label={r.todo.label} tone={r.todo.tone} />
                     </Cell>
                     <Cell width={130}>
                       <ReceiptCell
@@ -235,93 +321,44 @@ export default function MyTransactionsScreen() {
                         generateUploadUrl={generateUploadUrl}
                       />
                     </Cell>
-                    <Cell width={150} align="right">
-                      {t.isPersonal ? (
-                        <Badge label="Personal" tone="accent" />
-                      ) : isCardCharge ? (
-                        <Button
-                          title="Flag personal"
-                          variant="ghost"
-                          size="sm"
-                          icon="flag"
-                          onPress={() => handleFlag(t.id)}
-                        />
-                      ) : null}
+                    <Cell width={110} align="right">
+                      <Button
+                        title={r.todo.actionable ? "Finish" : "Open"}
+                        variant={r.todo.actionable ? "primary" : "ghost"}
+                        size="sm"
+                        onPress={() => setOpenId(t.id)}
+                      />
                     </Cell>
                   </Row>
 
-                  {open ? (
-                    <View
-                      className={`bg-sunken px-4 py-4 ${
-                        i === transactions.length - 1 ? "" : "border-b border-border"
+                  {/* THE SEND-BACK NOTE. Quoted, in full, under the row it
+                      belongs to — a badge saying "changes requested" tells
+                      somebody they have work; only the note tells them what
+                      the work is. */}
+                  {sentBack ? (
+                    <Pressable
+                      onPress={() => setOpenId(t.id)}
+                      accessibilityRole="button"
+                      className={`bg-danger-bg px-4 py-2.5 active:opacity-80 ${
+                        last ? "" : "border-b border-border"
                       }`}
                     >
-                      <View className="gap-3">
-                        <Select
-                          label="Category"
-                          hint="What kind of spend was this? The finance team can change it later."
-                          value={catDraft ?? ""}
-                          options={categoryOptions}
-                          onChange={(v) => setCatDraft(v || null)}
-                          placeholder="No category"
+                      <View className="flex-row items-start gap-2">
+                        <Icon
+                          name="corner-up-left"
+                          size={13}
+                          color={colors.danger}
                         />
-                        <TextField
-                          label="Note — who was this for and why?"
-                          value={noteDraft}
-                          onChangeText={setNoteDraft}
-                          placeholder="A short explanation the finance team can review at a glance…"
-                          multiline
-                          numberOfLines={3}
-                        />
-                        {t.isPersonal ? (
-                          <View className="flex-row items-center gap-2">
-                            <Icon name="check-circle" size={14} color={colors.accent} />
-                            <Text className="text-xs text-muted">
-                              Already flagged as a personal charge — pay it back
-                              from the Cards tab.
-                            </Text>
-                          </View>
-                        ) : (
-                          <Pressable
-                            onPress={() => setPersonalDraft((p) => !p)}
-                            className="flex-row items-center gap-2 active:opacity-70"
-                            accessibilityRole="checkbox"
-                            accessibilityState={{ checked: personalDraft }}
-                          >
-                            <View
-                              className={`h-5 w-5 items-center justify-center rounded border ${
-                                personalDraft
-                                  ? "border-accent bg-accent"
-                                  : "border-border-strong bg-raised"
-                              }`}
-                            >
-                              {personalDraft ? (
-                                <Icon name="check" size={13} color={colors.accentText} />
-                              ) : null}
-                            </View>
-                            <Text className="text-sm text-ink">
-                              This was a personal charge — I&apos;ll pay it back
-                            </Text>
-                          </Pressable>
-                        )}
-                        <View className="flex-row justify-end gap-2">
-                          <Button
-                            title="Cancel"
-                            variant="secondary"
-                            size="sm"
-                            disabled={saving}
-                            onPress={() => setOpenId(null)}
-                          />
-                          <Button
-                            title="Save"
-                            size="sm"
-                            icon="check"
-                            loading={saving}
-                            onPress={() => void handleSave(t)}
-                          />
+                        <View className="flex-1">
+                          <Text className="text-2xs font-semibold uppercase tracking-wide text-danger">
+                            Sent back to you
+                          </Text>
+                          <Text className="mt-0.5 text-sm text-ink">
+                            “{r.reviewNote}”
+                          </Text>
                         </View>
                       </View>
-                    </View>
+                    </Pressable>
                   ) : null}
                 </Fragment>
               );
@@ -329,7 +366,44 @@ export default function MyTransactionsScreen() {
           </Table>
         )}
       </Narrow>
+
+      {openRow ? (
+        <FinishChargeSheet
+          txn={openRow.txn}
+          categoryOptions={categoryOptions}
+          onClose={() => setOpenId(null)}
+        />
+      ) : null}
       <ToastView toast={toast} onDismiss={dismiss} />
     </Screen>
+  );
+}
+
+/** The two-state list filter. Deliberately not a `Select`: there are two
+ *  choices and one of them is what the reminder email sent you here for. */
+function FilterChip({
+  label,
+  active,
+  onPress,
+}: {
+  label: string;
+  active: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="radio"
+      accessibilityState={{ selected: active }}
+      className={`rounded-full border px-3 py-1 active:opacity-70 ${
+        active ? "border-accent bg-accent/10" : "border-border bg-sunken"
+      }`}
+    >
+      <Text
+        className={`text-xs ${active ? "font-semibold text-accent" : "text-muted"}`}
+      >
+        {label}
+      </Text>
+    </Pressable>
   );
 }

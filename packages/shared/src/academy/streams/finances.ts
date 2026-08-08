@@ -509,7 +509,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "Write the purpose for the public, not for the bookkeeper",
-        text: "The business purpose is the sentence a stranger will read on Public Worship's public ledger, under our name, forever. So write it for them.\n\n**\"Bus to NY\"** is what the bank already told us. **\"Travel to NY to film the Eden event\"** is a reason. The test: could someone who wasn't there tell what happened and why it was worth backers' money? If a phrase would only make sense to the four people on the trip, it isn't done yet.",
+        text: "The business purpose is the sentence a stranger reads on Public Worship's public ledger, under our name, forever. So write it for them.\n\n**\"Bus to NY\"** is what the bank already told us. **\"Travel to NY to film the Eden event\"** is a reason. The test: could someone who wasn't there tell what happened and why it was worth backers' money?",
       },
       {
         kind: "table",
@@ -581,7 +581,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "Why day 60 has teeth",
-        text: "This isn't an escalating punishment someone invented to make a point. Public Worship pays expenses under what the IRS calls an **accountable plan**, and one of its conditions is that spending gets substantiated within a reasonable period — 60 days is the safe harbor.\n\nSpending nobody substantiates doesn't stay a loose end. It legally becomes **taxable income to the person who spent it** — your money, on your tax return. Converting it to a repayment you can settle is the app choosing the kinder of the two endings. Coding it in week one avoids both.",
+        text: "This isn't an escalating punishment someone invented to make a point. Public Worship pays expenses under what the IRS calls an **accountable plan**, and one of its conditions is that spending gets substantiated within a reasonable period — 60 days is the safe harbor.\n\nPast it, spending nobody substantiated doesn't stay a loose end: it legally becomes **taxable income to the person who spent it**. Converting it to a repayment you can settle is the kinder of the two endings. Coding it in week one avoids both.",
       },
       {
         kind: "try_status",
@@ -603,7 +603,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           {
             text: "Name everyone on both — you know who was in both rooms",
             feedback:
-              "Overkill on the pizza, and it's not what the record wants. Above 15 heads the ledger needs a headcount and an identifiable group; 16 names is a list nobody can verify and nobody will read.",
+              "Overkill on the pizza, and not what the record wants: above 15 heads it asks for a headcount and an identifiable group instead.",
           },
           {
             text: "Headcount plus \"volunteers writing and producing the album\" for the pizza; four names with their relationships for the dinner",
@@ -614,7 +614,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           {
             text: "Headcount for the pizza; headcount for the dinner too, since it's the bigger amount",
             feedback:
-              "Backwards. Dollars never move this line. Four people is enumerable, so four names and their relationships are exactly what the record asks for.",
+              "Backwards — dollars never move this line. Four people is enumerable, so four names and their relationships is what the record asks for.",
           },
           {
             text: "Names for the pizza since it's a small charge; a group description for the $410 dinner",
@@ -625,7 +625,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "tip",
-        text: "**Reimbursements work the same way.** When you submit a request, you code each LINE as you go — same purpose, same route on travel, same attendees on meals — and a reviewer can send the whole thing back with a note for you to fix and resubmit rather than rejecting it outright. One habit, both directions. And the policy starts at charges posted **on or after September 1, 2026** — you are not on the hook for reconstructing last spring from memory. That history is a separate, deliberate cleanup, and it will publish flagged for what it is.",
+        text: "**Reimbursements work the same way.** You code each LINE as you submit it — same purpose, same route on travel, same attendees on meals — and a reviewer can send it back with a note to fix and resubmit rather than rejecting it outright. One habit, both directions. And the policy starts at charges posted **on or after September 1, 2026**: you are not on the hook for reconstructing last spring from memory. That history is a separate, deliberate cleanup, and it will publish flagged for what it is.",
       },
     ],
     quiz: [

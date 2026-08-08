@@ -63,6 +63,7 @@ import {
 } from "../../../components/finance/dashboard/parts";
 import { ChapterView } from "../../../components/finance/dashboard/ChapterView";
 import { CentralView } from "../../../components/finance/dashboard/CentralView";
+import { PublishabilityCard } from "../../../components/finance/dashboard/PublishabilityCard";
 import { usePreviousDefined } from "../../../components/finance/dashboard/usePreviousDefined";
 import { BudgetCreateModal } from "../../../components/finance/modals/BudgetCreateModal";
 import { ManualTransactionModal } from "../../../components/finance/modals/ManualTransactionModal";
@@ -293,6 +294,22 @@ function DashboardBody({ seats }: { seats: Seats }) {
             </View>
           ) : null}
         </View>
+
+        {/* The close-gate artifact (transaction-coding phase 4): how many rows
+            and dollars stand between this period and a public ledger. Its own
+            boundary with a NULL fallback — the query gates on
+            `lib/publishabilityAccess.ts`, so a caller who may not read it
+            simply doesn't get the card, and there's no second client-side copy
+            of the rule to drift from the server's. */}
+        <FinanceBoundary fallback={null}>
+          <PublishabilityCard
+            year={ym.year}
+            month={ym.month}
+            period={period}
+            scope={atCentralDesk ? "central" : undefined}
+            chapterId={atCentralDesk ? undefined : chapterId}
+          />
+        </FinanceBoundary>
 
         {atCentralDesk ? (
           <FinanceBoundary fallback={<NoFinanceAccess />}>
