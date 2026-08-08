@@ -869,6 +869,17 @@ export const increaseAccounts = defineTable({
   // first successful snapshot for this account.
   balanceCents: v.optional(v.number()),
   balanceAsOf: v.optional(v.number()),
+  // Money committed but not yet settled: card authorizations the merchant has
+  // placed and not captured. Increase's `current_balance` counts them and
+  // `available_balance` doesn't, so this is the difference between the two —
+  // no extra call.
+  //
+  // Worth surfacing because these rows exist NOWHERE else in the app. The
+  // webhook fan-out only handles `transaction.created` (settled), so a pending
+  // authorization never reaches Reconcile and never reaches book value, while
+  // the bank figure has ALREADY had it deducted. That asymmetry made book value
+  // read high against the bank with nothing on screen to explain it.
+  pendingCents: v.optional(v.number()),
   routingLast4: v.optional(v.string()),
   accountLast4: v.optional(v.string()),
   createdAt: v.number(),
@@ -1909,6 +1920,15 @@ export const financeSettings = defineTable({
   // `undefined` = OFF (no auto-conversion) until central finance picks a number.
   // Enforced by the daily `cards.autoConvertOverdueReceipts` sweep.
   noReceiptAutoConvertDays: v.optional(v.number()),
+  // Cached STRIPE balance (cents), refreshed by the morning engine's snapshot
+  // step alongside the per-account bank balances. Org-level, not per-book:
+  // there is one Stripe account and its balance can't be attributed to a
+  // chapter until it pays out. Display only, never summed into any ledger.
+  // `available` is what a payout could take today; `pending` is money from
+  // charges Stripe hasn't released yet.
+  stripeAvailableCents: v.optional(v.number()),
+  stripePendingCents: v.optional(v.number()),
+  stripeBalanceAsOf: v.optional(v.number()),
   // Org-wide card prerequisite: the Academy course slug a member must complete
   // before a card can be issued/activated. `undefined` = no prerequisite gate
   // (issuance unaffected), so cards keep working until central finance points
