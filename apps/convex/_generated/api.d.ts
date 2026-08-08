@@ -59,6 +59,7 @@ import type * as genesisCleanup from "../genesisCleanup.js";
 import type * as genesisDedupe from "../genesisDedupe.js";
 import type * as givebutterRepair from "../givebutterRepair.js";
 import type * as linkTruistGifts from "../linkTruistGifts.js";
+import type * as markPtbPayout from "../markPtbPayout.js";
 import type * as septemberAndCashApp from "../septemberAndCashApp.js";
 import type * as genesisGiftSync from "../genesisGiftSync.js";
 import type * as genesisRevenueSync from "../genesisRevenueSync.js";
@@ -415,6 +416,7 @@ declare const fullApi: ApiFromModules<{
   genesisDedupe: typeof genesisDedupe;
   givebutterRepair: typeof givebutterRepair;
   linkTruistGifts: typeof linkTruistGifts;
+  markPtbPayout: typeof markPtbPayout;
   septemberAndCashApp: typeof septemberAndCashApp;
   genesisGiftSync: typeof genesisGiftSync;
   genesisRevenueSync: typeof genesisRevenueSync;
