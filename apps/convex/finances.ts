@@ -9474,11 +9474,35 @@ export const markAsTransfer = mutation({
     const a = await requireReconcileTxn(ctx, args.transactionId, MARK_MIN_ROLE);
     const b = await requireReconcileTxn(ctx, args.counterpartTransactionId, MARK_MIN_ROLE);
 
-    if (a.txn.chapterId !== b.txn.chapterId) {
+    // CROSS-BOOK IS ALLOWED WHEN CENTRAL IS ONE SIDE (owner report, 2026-08-07:
+    // a $2,873.21 central→New York move made by hand in Increase, ingested as
+    // two bank rows, that this refused to mark).
+    //
+    // The old rule sent every cross-book pair to `transfers.recordTransfer`,
+    // which is right for a movement the app is ASKED to make and wrong for one
+    // that already happened: `recordTransfer` INSERTS two fresh legs, so using
+    // it on a movement the bank feed already delivered leaves four rows for one
+    // transfer and books it twice. There was no path at all for "these two
+    // EXISTING rows are the movement" across books, which is the ordinary case
+    // whenever a treasurer moves money in the bank's own UI.
+    //
+    // Chapter↔chapter stays refused: every movement in this model routes
+    // through central, so a pair with no central leg is two unrelated rows that
+    // happen to match, and marking them would invent a crossing that doesn't
+    // exist. `transferDirection` is set below for a cross-book pair (the
+    // same-scope case still leaves it unset — there's no crossing to name).
+    //
+    // Book value does NOT move: `signedBookCents` reads `preMarkFlow` before it
+    // reads `transferDirection`, so each leg keeps contributing exactly what it
+    // did as a raw inflow/outflow. The cash genuinely moved between the two
+    // books' accounts, so that is the correct answer — marking only stops the
+    // rows demanding a budget and a category they can never have.
+    const isCrossBook = a.txn.chapterId !== b.txn.chapterId;
+    if (isCrossBook && a.txn.chapterId !== CENTRAL && b.txn.chapterId !== CENTRAL) {
       throw new ConvexError({
         code: "CROSS_SCOPE_TRANSFER",
         message:
-          "Those rows belong to different books. Record a central-to-chapter movement with the Transfers tool instead.",
+          "Those rows belong to two different chapters. A movement between books always goes through Central.",
       });
     }
     for (const leg of [a.txn, b.txn]) {
@@ -9531,7 +9555,15 @@ export const markAsTransfer = mutation({
     // Reuse the created-pair linkage so a reader that already understands
     // `transferGroupId` sees a marked pair as one movement too. Keyed on the
     // OUTFLOW leg's timestamp so the id reads as "when the money left".
-    const groupId = `marked-${a.txn.chapterId}-${outLeg.txn.postedAt}-${crypto.randomUUID().slice(0, 8)}`;
+    const groupId = `marked-${outLeg.txn.chapterId}-${outLeg.txn.postedAt}-${crypto.randomUUID().slice(0, 8)}`;
+    // Name the crossing, but only when there is one. A same-scope marking
+    // deliberately leaves this unset — it's one account moving money to another
+    // inside a single book, and there is no central/chapter direction to state.
+    const transferDirection = isCrossBook
+      ? outLeg.txn.chapterId === CENTRAL
+        ? ("central_to_chapter" as const)
+        : ("chapter_to_central" as const)
+      : undefined;
     const trimmedNote = args.note?.trim() || null;
     if (trimmedNote && trimmedNote.length > MAX_NOTE_LENGTH) {
       throw new ConvexError({
@@ -9545,6 +9577,7 @@ export const markAsTransfer = mutation({
         flow: "transfer",
         preMarkFlow: leg.txn.flow as "outflow" | "inflow",
         transferGroupId: groupId,
+        ...(transferDirection ? { transferDirection } : {}),
         // Only fill a note that isn't already saying something.
         ...(trimmedNote && !leg.txn.note ? { note: trimmedNote } : {}),
       });
@@ -9620,6 +9653,11 @@ export const unmarkTransfer = mutation({
         flow: restored,
         preMarkFlow: undefined,
         transferGroupId: undefined,
+        // Cleared with the rest of the marking. A cross-book marking sets this
+        // to name the crossing; leaving it behind on a row that is a plain bank
+        // inflow again would have `signedBookCents` resolve a direction for a
+        // transfer that no longer exists.
+        transferDirection: undefined,
       });
       await logFinanceAudit(ctx, {
         chapterId: leg.chapterId,

@@ -67,11 +67,14 @@ async function seedTxn(
     isPersonal?: boolean;
     note?: string;
     currency?: string;
+    /** Defaults to the chapter; pass `"central"` for the other side of a
+     *  cross-book movement. */
+    chapterId?: Id<"chapters"> | "central";
   },
 ): Promise<Id<"transactions">> {
   return await run(s.t, (ctx) =>
     ctx.db.insert("transactions", {
-      chapterId: s.chapterId,
+      chapterId: opts.chapterId ?? s.chapterId,
       // `stripe_fc` is the real-world path for the founder's row (the Relay
       // account synced via Stripe Financial Connections).
       source: opts.source ?? "stripe_fc",
@@ -95,6 +98,24 @@ async function setupBookkeeper(s: ChapterSetup): Promise<Id<"people">> {
   return me;
 }
 
+/** Marking a cross-book pair authorizes EACH leg at its own scope, so the
+ *  caller needs central rights as well as the chapter's. */
+async function grantCentralRole(
+  s: ChapterSetup,
+  personId: Id<"people">,
+  role: "viewer" | "bookkeeper" | "manager",
+): Promise<void> {
+  await run(s.t, (ctx) =>
+    ctx.db.insert("financeRoles", {
+      chapterId: "central",
+      personId,
+      role,
+      scope: "central",
+      createdAt: Date.now(),
+    }),
+  );
+}
+
 const txn = (s: ChapterSetup, id: Id<"transactions">) =>
   run(s.t, (ctx) => ctx.db.get(id));
 
@@ -106,6 +127,112 @@ const auditFor = (s: ChapterSetup, id: Id<"transactions">) =>
   );
 
 describe("finances.markAsTransfer", () => {
+  // ── Cross-book marking (owner report, 2026-08-07) ────────────────────────
+  // A $2,873.21 central→New York move made by hand in Increase arrived as two
+  // ordinary bank rows, and marking them was refused with "record it with the
+  // Transfers tool instead" — a tool that INSERTS two fresh legs and would have
+  // left four rows for one movement, booking it twice.
+
+  test("marks a central↔chapter pair of existing rows and names the crossing", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const me = await setupBookkeeper(s);
+    await grantCentralRole(s, me, "bookkeeper");
+
+    const centralLeg = await seedTxn(s, {
+      amountCents: 287_321,
+      flow: "outflow",
+      chapterId: "central",
+    });
+    const chapterLeg = await seedTxn(s, { amountCents: 287_321, flow: "inflow" });
+
+    await s.as.mutation(api.finances.markAsTransfer, {
+      transactionId: centralLeg,
+      counterpartTransactionId: chapterLeg,
+      note: "moved New York's balance to its own account",
+    });
+
+    const c = await txn(s, centralLeg);
+    const ch = await txn(s, chapterLeg);
+    expect(c!.flow).toBe("transfer");
+    expect(ch!.flow).toBe("transfer");
+    // Central paid out, so the money crossed central → chapter.
+    expect(c!.transferDirection).toBe("central_to_chapter");
+    expect(ch!.transferDirection).toBe("central_to_chapter");
+    expect(c!.transferGroupId).toBe(ch!.transferGroupId);
+    // `preMarkFlow` survives on both, which is what keeps book value still.
+    expect(c!.preMarkFlow).toBe("outflow");
+    expect(ch!.preMarkFlow).toBe("inflow");
+  });
+
+  test("a chapter→central pair names the crossing the other way", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const me = await setupBookkeeper(s);
+    await grantCentralRole(s, me, "bookkeeper");
+
+    const chapterLeg = await seedTxn(s, { amountCents: 50_000, flow: "outflow" });
+    const centralLeg = await seedTxn(s, {
+      amountCents: 50_000,
+      flow: "inflow",
+      chapterId: "central",
+    });
+
+    await s.as.mutation(api.finances.markAsTransfer, {
+      transactionId: chapterLeg,
+      counterpartTransactionId: centralLeg,
+    });
+
+    expect((await txn(s, chapterLeg))!.transferDirection).toBe("chapter_to_central");
+    expect((await txn(s, centralLeg))!.transferDirection).toBe("chapter_to_central");
+  });
+
+  test("un-marking a cross-book pair clears the direction with the rest", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const me = await setupBookkeeper(s);
+    await grantCentralRole(s, me, "bookkeeper");
+
+    const centralLeg = await seedTxn(s, {
+      amountCents: 10_000,
+      flow: "outflow",
+      chapterId: "central",
+    });
+    const chapterLeg = await seedTxn(s, { amountCents: 10_000, flow: "inflow" });
+    await s.as.mutation(api.finances.markAsTransfer, {
+      transactionId: centralLeg,
+      counterpartTransactionId: chapterLeg,
+    });
+    await s.as.mutation(api.finances.unmarkTransfer, { transactionId: centralLeg });
+
+    const c = await txn(s, centralLeg);
+    const ch = await txn(s, chapterLeg);
+    // Left behind, `transferDirection` would have `signedBookCents` resolve a
+    // crossing for a transfer that no longer exists.
+    expect(c!.transferDirection).toBeUndefined();
+    expect(ch!.transferDirection).toBeUndefined();
+    expect(c!.flow).toBe("outflow");
+    expect(ch!.flow).toBe("inflow");
+  });
+
+  test("a same-scope marking still names no crossing", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setupBookkeeper(s);
+
+    const out = await seedTxn(s, { amountCents: 4_000, flow: "outflow" });
+    const inn = await seedTxn(s, { amountCents: 4_000, flow: "inflow" });
+    await s.as.mutation(api.finances.markAsTransfer, {
+      transactionId: out,
+      counterpartTransactionId: inn,
+    });
+
+    // One account to another INSIDE one book — there is no central/chapter
+    // direction to state, and inventing one would misreport the movement.
+    expect((await txn(s, out))!.transferDirection).toBeUndefined();
+    expect((await txn(s, inn))!.transferDirection).toBeUndefined();
+  });
+
   test("marks both legs, drops them out of spend, and links them as one pair", async () => {
     const t = newT();
     const s = await setupChapter(t);
