@@ -76,6 +76,7 @@ import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
   MAX_NOTE_LENGTH,
   FINANCE_AUDIT_ACTION_LABELS,
+  formatCents,
   type BudgetRefKind,
   type TransactionFlow,
   type TransactionStatus,
@@ -615,6 +616,10 @@ function TransactionDetailBody({
         )}
       </View>
 
+      {/* What a processor-fee rollup is made of. Renders for nothing else —
+          the query returns null for every other transaction. */}
+      <ProcessorFeeSection transactionId={txn.id} />
+
       {/* History — the `financeAuditLog` trail (actor · when · what changed),
           collapsed by default so it never competes with the fields above.
           Read-only for everyone who can view this modal (peek included) —
@@ -622,6 +627,104 @@ function TransactionDetailBody({
           bookkeeper viewer simply sees an empty/loading list rather than a
           FORBIDDEN error surfacing here. */}
       <TransactionHistorySection transactionId={txn.id} />
+    </View>
+  );
+}
+
+/**
+ * "What this is made of" — the evidence behind a monthly processor-fee row.
+ *
+ * The fee row is one line standing in for hundreds of Stripe ledger entries,
+ * and until now that was all a treasurer could see: "it doesn't keep a record
+ * of which transactions have fees, so it feels like a made up number" (owner,
+ * 2026-08-08). `processorFees.feeRowDetail` returns the stored entries; this
+ * shows the per-kind split immediately (the answer to "is $84.83 plausible?")
+ * and keeps the entry-by-entry list one tap away (the answer to "prove it").
+ *
+ * NOT `"skip"`ped the way `TransactionHistorySection` is: this section has to
+ * decide whether to exist at all, and only the server knows whether a given
+ * transaction is a fee rollup. The query is a single `db.get` plus a prefix
+ * test for every other transaction, which is cheaper than teaching this
+ * component to sniff merchant strings — and can't drift from the sync's own
+ * idea of what a fee row is.
+ */
+function ProcessorFeeSection({ transactionId }: { transactionId: Id<"transactions"> }) {
+  const [expanded, setExpanded] = useState(false);
+  const detail = useQuery(api.processorFees.feeRowDetail, { transactionId });
+  if (!detail) return null;
+
+  // The stored entries are summed independently of the row's own amount, so
+  // this comparison is a real check rather than a restatement. They can differ
+  // for exactly one benign reason — a sync that wrote entries and then failed
+  // before the row — and saying so is better than showing two numbers and
+  // letting someone conclude the ledger lies.
+  const mismatch = detail.totalCents !== detail.rowAmountCents;
+
+  return (
+    <View className="border-t border-border pt-3">
+      <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+        What this is made of
+      </Text>
+      <View className="mt-2 gap-1">
+        {detail.byType.map((t) => (
+          <View key={t.type} className="flex-row items-baseline justify-between gap-3">
+            <Text className="text-xs text-ink">{t.label}</Text>
+            <Text className="text-xs text-muted" style={TABULAR}>
+              {formatCents(t.feeCents)} · {t.count}
+            </Text>
+          </View>
+        ))}
+        <View className="mt-1 flex-row items-baseline justify-between gap-3 border-t border-border pt-1">
+          <Text className="text-xs font-medium text-ink">
+            {detail.entryCount} Stripe ledger entries
+          </Text>
+          <Text className="text-xs font-medium text-ink" style={TABULAR}>
+            {formatCents(detail.totalCents)}
+          </Text>
+        </View>
+      </View>
+      {mismatch ? (
+        <Text className="mt-1 text-xs text-warn">
+          These entries add up to {formatCents(detail.totalCents)}, but the row says{" "}
+          {formatCents(detail.rowAmountCents)}. The next fee sync re-reads both.
+        </Text>
+      ) : null}
+      <Pressable
+        onPress={() => setExpanded((e) => !e)}
+        accessibilityRole="button"
+        className="mt-2 flex-row items-center gap-1 self-start active:opacity-70 web:hover:opacity-90"
+      >
+        <Icon name={expanded ? "chevron-up" : "chevron-down"} size={14} color={colors.muted} />
+        <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+          {expanded ? "Hide entries" : `Every entry (${detail.entryCount})`}
+        </Text>
+      </Pressable>
+      {expanded ? (
+        <View className="mt-2 gap-2">
+          {detail.entries.map((e) => (
+            <View key={e.id} className="border-l-2 border-border pl-2">
+              <View className="flex-row items-baseline justify-between gap-3">
+                <Text className="text-xs text-ink" numberOfLines={1}>
+                  {e.description || e.label}
+                </Text>
+                <Text className="text-xs text-ink" style={TABULAR}>
+                  {formatCents(e.feeCents)}
+                </Text>
+              </View>
+              <Text className="text-2xs text-faint" numberOfLines={1}>
+                {shortDate(e.occurredAt)}
+                {e.grossCents !== 0 ? ` · on ${formatCents(e.grossCents)}` : ""}
+                {e.sourceId ? ` · ${e.sourceId}` : ` · ${e.balanceTransactionId}`}
+              </Text>
+            </View>
+          ))}
+          {detail.truncated ? (
+            <Text className="text-2xs text-faint">
+              Showing the {detail.entries.length} most recent of {detail.entryCount}.
+            </Text>
+          ) : null}
+        </View>
+      ) : null}
     </View>
   );
 }

@@ -55,6 +55,7 @@ import {
   budgetTagLinks,
   budgetLines,
   transactions,
+  processorFeeEntries,
   reimbursementRequests,
   reimbursementLineItems,
   cards,
@@ -279,6 +280,10 @@ const schema = defineSchema({
   budgetTagLinks,
   budgetLines,
   transactions,
+  // The per-ledger-entry evidence behind each monthly processor-fee rollup row
+  // (`processorFees.ts`) — a rollup nobody can inspect is a number taken on
+  // faith. See `schema/finances.ts`'s doc on this table.
+  processorFeeEntries,
   reimbursementRequests,
   reimbursementLineItems,
   cards,
