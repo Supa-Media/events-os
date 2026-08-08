@@ -8,11 +8,19 @@
  * for the fee to be a real expense line rather than a haircut on revenue, which is also
  * the treatment that keeps gross giving reportable.
  *
- * FEES ARE READ FROM STRIPE, NEVER DERIVED. Each charge's balance transaction carries
- * the exact fee. An earlier attempt at this tried to infer fees by subtracting recorded
- * revenue from banked deposits; that produced "fees MINUS unrecorded sales", which is
- * not a fee and would have written a wrong number into the ledger. The Stripe read has
- * no such ambiguity.
+ * FEES ARE READ FROM STRIPE, NEVER DERIVED. An earlier attempt at this tried to infer
+ * fees by subtracting recorded revenue from banked deposits; that produced "fees MINUS
+ * unrecorded sales", which is not a fee and would have written a wrong number into the
+ * ledger. The Stripe read has no such ambiguity.
+ *
+ * EVERY FEE, not just the ones attached to a payment. The first version of this read
+ * `charge.balance_transaction.fee` and so counted only Stripe's cut of each sale. It
+ * missed everything Stripe bills on its own account — Terminal reader fees above all.
+ * Pop The Balloon made that visible: $558.00 of card-present sales less $28.81 of
+ * per-charge fees implies a $529.19 payout, and $513.99 arrived. The missing $15.20 was
+ * real money the books never saw, and a month with card readers in the field produces
+ * one every time. `runFeeSync` now sweeps the balance-transaction ledger, where both
+ * shapes live.
  *
  * ONE ROW PER MONTH PER PROCESSOR, not one per charge. 264 charges would bury the
  * reconcile grid in sub-dollar rows nobody codes or reads, and the fee is not a decision
@@ -85,9 +93,10 @@ export const upsertFeeRows = internalMutation({
       totalFeeCents += mo.feeCents;
       const externalId = `${FEE_REF_PREFIX}${mo.month}`;
       const note =
-        `Stripe processing fees for ${mo.month}, across ${mo.chargeCount} charges. ` +
-        `Read from each charge's balance transaction — revenue is recorded gross, so ` +
-        `this is the difference between what was given and what banked.`;
+        `Stripe fees for ${mo.month}, across ${mo.chargeCount} balance-transaction entries. ` +
+        `Includes both the cut taken from each payment AND the fees Stripe bills on its ` +
+        `own account (Terminal readers, payout and account fees). Revenue is recorded ` +
+        `gross, so this is the whole difference between what was given and what banked.`;
       const prior = byRef.get(externalId);
       if (prior) {
         // A later month can still gain charges (a late capture, a refund reversal), so
@@ -120,9 +129,16 @@ export const upsertFeeRows = internalMutation({
   },
 });
 
+const feeTypeRow = v.object({
+  type: v.string(),
+  feeCents: v.number(),
+  count: v.number(),
+});
+
 const feeReturns = v.object({
   dryRun: v.boolean(),
   chargesScanned: v.number(),
+  byType: v.array(feeTypeRow),
   monthsWithFees: v.number(),
   created: v.number(),
   updated: v.number(),
@@ -133,6 +149,7 @@ const feeReturns = v.object({
 type FeeSyncResult = {
   dryRun: boolean;
   chargesScanned: number;
+  byType: { type: string; feeCents: number; count: number }[];
   monthsWithFees: number;
   created: number;
   updated: number;
@@ -158,35 +175,85 @@ async function runFeeSync(
   if (!key) throw new ConvexError({ code: "NO_KEY", message: "STRIPE_SECRET_KEY is not set." });
 
   const byMonth = new Map<string, { feeCents: number; chargeCount: number }>();
+  /** Fee cents by balance-transaction type, for the dry run's report. */
+  const byType = new Map<string, { feeCents: number; count: number }>();
   let startingAfter: string | undefined;
   let chargesScanned = 0;
 
+  // ── SWEEP BALANCE TRANSACTIONS, NOT CHARGES ────────────────────────────────
+  // This used to page `/v1/charges` and take each one's `balance_transaction.fee`,
+  // which sees only the fee ATTACHED TO A PAYMENT and misses every fee Stripe
+  // bills on its own. Pop The Balloon exposed the gap: 142 card-present sales
+  // grossed $558.00 with $28.81 of per-charge fees, and the payout that landed
+  // was $513.99 — $15.20 short of the $529.19 those two numbers imply. That
+  // $15.20 is real money Stripe took and the books never saw, and there is one
+  // of these for every month with Terminal hardware in the field.
+  //
+  // The balance-transaction ledger is where all of it lives, so sweep that
+  // instead and take fees from BOTH shapes:
+  //   - a payment's own cut, `bt.fee` (what the old sweep got), and
+  //   - a STANDALONE fee row, which carries `fee: 0` and a NEGATIVE `amount`
+  //     that IS the charge — Terminal reader fees, account fees, payout fees.
+  //
+  // `FEE_ONLY_TYPES` is an allowlist, not "any negative amount". Refunds,
+  // payouts and transfers are all negative too, and counting those as expenses
+  // would turn every payout into a cost. An unrecognised type contributes
+  // nothing and shows up in `byType` so it can be looked at rather than guessed
+  // at.
+  const FEE_ONLY_TYPES = new Set([
+    "stripe_fee",
+    "payout_fee",
+    "application_fee",
+    "tax_fee",
+    "network_cost",
+  ]);
+
   for (;;) {
-    const params = new URLSearchParams({ limit: String(PAGE), "expand[]": "data.balance_transaction" });
+    const params = new URLSearchParams({ limit: String(PAGE) });
     if (startingAfter) params.set("starting_after", startingAfter);
-    const res = await fetch(`${STRIPE_API}/charges?${params.toString()}`, {
+    const res = await fetch(`${STRIPE_API}/balance_transactions?${params.toString()}`, {
       headers: { Authorization: `Bearer ${key}` },
     });
     if (!res.ok) {
-      throw new ConvexError({ code: "STRIPE_ERROR", message: `Stripe charges read failed (${res.status}).` });
+      throw new ConvexError({
+        code: "STRIPE_ERROR",
+        message: `Stripe balance transactions read failed (${res.status}).`,
+      });
     }
     const page = (await res.json()) as { data: Array<Record<string, unknown>>; has_more: boolean };
     if (!page.data.length) break;
 
-    for (const c of page.data) {
+    for (const bt of page.data) {
       chargesScanned++;
-      if (c.status !== "succeeded" || c.captured !== true) continue;
-      const bt = c.balance_transaction as { fee?: number } | string | null;
-      const fee = typeof bt === "object" && bt ? (bt.fee ?? 0) : 0;
-      if (!fee) continue;
-      const month = new Date((c.created as number) * 1000).toISOString().slice(0, 7);
+      const type = String(bt.type ?? "unknown");
+      const amount = Number(bt.amount ?? 0);
+      const ownFee = Number(bt.fee ?? 0);
+      // A standalone fee row's cost is its (negative) amount; a payment's is
+      // its `fee`. Never both — a payment's `amount` is revenue, not a cost.
+      const feeCents =
+        FEE_ONLY_TYPES.has(type) && amount < 0 ? -amount + ownFee : ownFee;
+      if (feeCents <= 0) continue;
+
+      const month = new Date((bt.created as number) * 1000).toISOString().slice(0, 7);
       const slot = byMonth.get(month) ?? { feeCents: 0, chargeCount: 0 };
-      slot.feeCents += fee; slot.chargeCount += 1;
+      slot.feeCents += feeCents; slot.chargeCount += 1;
       byMonth.set(month, slot);
+
+      const t = byType.get(type) ?? { feeCents: 0, count: 0 };
+      t.feeCents += feeCents; t.count += 1;
+      byType.set(type, t);
     }
     if (!page.has_more) break;
     startingAfter = page.data[page.data.length - 1].id as string;
   }
+
+  console.log(
+    `[processorFees] fee sweep by balance-transaction type: ` +
+      [...byType.entries()]
+        .sort((a, b) => b[1].feeCents - a[1].feeCents)
+        .map(([t, v2]) => `${t}=${v2.count} rows/${v2.feeCents}¢`)
+        .join(", "),
+  );
 
   const months = [...byMonth.entries()]
     .sort(([a], [b]) => a.localeCompare(b))
@@ -205,6 +272,9 @@ async function runFeeSync(
   return {
     dryRun: !execute,
     chargesScanned,
+    byType: [...byType.entries()]
+      .map(([type, v2]) => ({ type, ...v2 }))
+      .sort((a, b) => b.feeCents - a.feeCents),
     monthsWithFees: months.length,
     created: r.created,
     updated: r.updated,
