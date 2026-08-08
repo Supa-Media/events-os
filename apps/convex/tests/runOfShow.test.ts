@@ -3,9 +3,11 @@ import {
   DEFAULT_COLUMNS,
   MINUTE_MS,
   RUN_OF_SHOW_FINAL_WINDOW_MS,
+  buildRunOfShowSegments,
   computeDueDate,
   computeRunTime,
   isLocalMidnight,
+  runOfShowNowIndex,
   runOfShowSegmentEnd,
 } from "@events-os/shared";
 import { api } from "../_generated/api";
@@ -53,6 +55,42 @@ describe("run of show helpers (shared)", () => {
     );
     // A final row WITH a duration still honors it.
     expect(runOfShowSegmentEnd(start, 20, null)).toBe(start + 20 * MINUTE_MS);
+  });
+
+  test("buildRunOfShowSegments sorts by offset and resolves start/end/showEnd", () => {
+    const eventStart = new Date(2026, 6, 27, 18, 0).getTime();
+    const rows = [
+      { title: "Set", offsetMinutes: 30, durationMinutes: null },
+      { title: "Doors", offsetMinutes: -15, durationMinutes: 10 },
+      { title: "Send-off", offsetMinutes: 90, durationMinutes: null },
+    ];
+    const segs = buildRunOfShowSegments(eventStart, rows);
+    expect(segs.map((s) => s.row.title)).toEqual(["Doors", "Set", "Send-off"]);
+    // Doors: explicit 10-min duration wins over the next start.
+    expect(segs[0].start).toBe(eventStart - 15 * MINUTE_MS);
+    expect(segs[0].end).toBe(segs[0].start + 10 * MINUTE_MS);
+    expect(segs[0].showEnd).toBe(true);
+    // Set: no duration → runs until Send-off starts.
+    expect(segs[1].end).toBe(segs[2].start);
+    // Send-off: final row, no duration → 2h cap, and no end label.
+    expect(segs[2].end).toBe(segs[2].start + RUN_OF_SHOW_FINAL_WINDOW_MS);
+    expect(segs[2].showEnd).toBe(false);
+  });
+
+  test("runOfShowNowIndex: in-window, pre-show, and after-the-end", () => {
+    const eventStart = new Date(2026, 6, 27, 18, 0).getTime();
+    const segs = buildRunOfShowSegments(eventStart, [
+      { offsetMinutes: 0, durationMinutes: 30 },
+      { offsetMinutes: 30, durationMinutes: 30 },
+    ]);
+    // Mid-first-segment → 0; mid-second → 1.
+    expect(runOfShowNowIndex(segs, eventStart + 10 * MINUTE_MS)).toBe(0);
+    expect(runOfShowNowIndex(segs, eventStart + 40 * MINUTE_MS)).toBe(1);
+    // Before the show, the first row reads "up next".
+    expect(runOfShowNowIndex(segs, eventStart - 60 * MINUTE_MS)).toBe(0);
+    // After the last window closes, nothing is highlighted.
+    expect(runOfShowNowIndex(segs, eventStart + 61 * MINUTE_MS)).toBe(-1);
+    expect(runOfShowNowIndex([], eventStart)).toBe(-1);
   });
 });
 
@@ -258,5 +296,51 @@ describe("0019 backfill run_of_show duration", () => {
     const res2 = await run(t, (ctx) => runBackfillRunOfShowDuration(ctx));
     expect(res2.templateColumnsAdded).toBe(0);
     expect(res2.eventColumnsAdded).toBe(0);
+  });
+});
+
+// ── Volunteer briefing payload ───────────────────────────────────────────────
+describe("crew briefing run of show", () => {
+  test("publicCrew carries a sanitized, offset-sorted run of show", async () => {
+    const t = newT();
+    const { as, chapterId } = await setupChapter(t);
+    const eventTypeId = (await as.mutation(api.eventTypes.create, {
+      name: "Worship Night",
+    })) as Id<"eventTypes">;
+    const eventId = (await as.mutation(api.events.createFromTemplate, {
+      eventTypeId,
+      name: "Worship Night — August",
+      eventDate: new Date(2026, 7, 1, 18, 0).getTime(),
+    })) as Id<"events">;
+
+    await run(t, async (ctx) => {
+      // Deliberately out of order, with internal-ish columns (owner/role) that
+      // must NOT leak into the public payload.
+      await ctx.db.insert("eventItems", {
+        eventId,
+        chapterId,
+        module: "run_of_show",
+        title: "Set",
+        order: 0,
+        offsetMinutes: 30,
+        fields: { duration: 45, notes: "Full band", role: "Worship Lead" },
+      });
+      await ctx.db.insert("eventItems", {
+        eventId,
+        chapterId,
+        module: "run_of_show",
+        title: "Doors",
+        order: 1,
+        offsetMinutes: -15,
+        fields: { duration: 0 },
+      });
+    });
+
+    const crew = await t.query(api.events.publicCrew, { eventId });
+    expect(crew?.runOfShow).toEqual([
+      // Zero duration reads as "no duration"; missing notes come back null.
+      { title: "Doors", offsetMinutes: -15, durationMinutes: null, notes: null },
+      { title: "Set", offsetMinutes: 30, durationMinutes: 45, notes: "Full band" },
+    ]);
   });
 });

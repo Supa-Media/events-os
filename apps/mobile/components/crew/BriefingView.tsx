@@ -4,8 +4,9 @@ import { useRouter } from "expo-router";
 import { api } from "@events-os/convex/_generated/api";
 import { Card, Icon, OptionTag } from "../ui";
 import { MarkdownView } from "../markdown";
+import { RunOfShowView } from "./RunOfShowView";
 import { colors } from "../../lib/theme";
-import { formatDateTime } from "../../lib/format";
+import { formatDateTimeEastern } from "../../lib/format";
 import { videoEmbedUrl } from "../../lib/videoEmbed";
 import type { FunctionReturnType } from "convex/server";
 
@@ -276,8 +277,9 @@ export function BriefingView({
         <View className="flex-row flex-wrap items-center gap-x-4 gap-y-1">
           <View className="flex-row items-center gap-1.5">
             <Icon name="calendar" size={14} color={colors.muted} />
+            {/* Eastern-pinned like the run of show below — one page, one clock. */}
             <Text className="text-sm text-muted">
-              {formatDateTime(crew.eventDate)}
+              {formatDateTimeEastern(crew.eventDate)}
             </Text>
           </View>
           {crew.location ? (
@@ -291,6 +293,10 @@ export function BriefingView({
           <Text className="mt-1 text-sm text-faint">{subtitle}</Text>
         ) : null}
       </View>
+
+      {/* The schedule first — what's happening and when, Eastern-pinned, with
+          a live "NOW" highlight while the event runs. Hidden when empty. */}
+      <RunOfShowView eventDate={crew.eventDate} runOfShow={crew.runOfShow} />
 
       {/* Optional site map — where everyone & everything is placed. */}
       {siteMap}

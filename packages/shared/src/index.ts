@@ -981,6 +981,71 @@ export function runOfShowSegmentEnd(
   return start + RUN_OF_SHOW_FINAL_WINDOW_MS;
 }
 
+/** The minimum a run-of-show row needs to be placed on the clock. */
+export type RunOfShowRowInput = {
+  offsetMinutes?: number | null;
+  durationMinutes?: number | null;
+};
+
+/** A run-of-show row resolved to its wall-clock window. */
+export type RunOfShowSegment<T extends RunOfShowRowInput> = {
+  row: T;
+  start: number;
+  end: number;
+  /** False only for a final row with no duration — its `end` is the 2h cap,
+   *  so callers show a single time instead of a bogus range. */
+  showEnd: boolean;
+};
+
+/**
+ * Sort run-of-show rows by offset and resolve each to its wall-clock START and
+ * END (via {@link computeRunTime} + {@link runOfShowSegmentEnd}). Single source
+ * of truth for every surface that draws the timeline (Day-of, the public
+ * volunteer briefing), so their labels and "now" windows can never disagree.
+ */
+export function buildRunOfShowSegments<T extends RunOfShowRowInput>(
+  eventStart: number,
+  rows: T[],
+): RunOfShowSegment<T>[] {
+  const sorted = [...rows].sort(
+    (a, b) => (a.offsetMinutes ?? 0) - (b.offsetMinutes ?? 0),
+  );
+  return sorted.map((row, i) => {
+    const start = computeRunTime(eventStart, row.offsetMinutes ?? 0);
+    const nextStart =
+      i + 1 < sorted.length
+        ? computeRunTime(eventStart, sorted[i + 1].offsetMinutes ?? 0)
+        : null;
+    const duration =
+      typeof row.durationMinutes === "number" && row.durationMinutes > 0
+        ? row.durationMinutes
+        : null;
+    return {
+      row,
+      start,
+      end: runOfShowSegmentEnd(start, duration, nextStart),
+      showEnd: duration != null || nextStart != null,
+    };
+  });
+}
+
+/**
+ * Which segment the "now / up-next" highlight sits on: the segment whose
+ * [start, end) window contains `now`, or — before the show starts — the first
+ * row (it reads "up next"). -1 when nothing should be highlighted (between
+ * segments with no live window, or after the last window closes).
+ */
+export function runOfShowNowIndex(
+  segments: { start: number; end: number }[],
+  now: number,
+): number {
+  for (let i = 0; i < segments.length; i++) {
+    if (now >= segments[i].start && now < segments[i].end) return i;
+  }
+  if (segments.length > 0 && now < segments[0].start) return 0;
+  return -1;
+}
+
 /** One cell in a calendar month grid. `ms` is that day at local midnight. */
 export type CalendarCell = { ms: number; day: number; inMonth: boolean };
 
