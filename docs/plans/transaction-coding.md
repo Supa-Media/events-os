@@ -91,8 +91,9 @@ all three axes are green. Do **not** add new values to
   (mirror `lib/receiptLinks.ts`).
 - `expenseType`: `"general" | "travel" | "meal" | "lodging"` — exists **only**
   to drive which substantiation fields are required. It is not a category
-  taxonomy; funds/categories/budgets already own that. Default suggested
-  from `merchantCategory` (and the AI coder, below).
+  taxonomy; funds/categories/budgets already own that. Chosen by the human —
+  the UI shows the merchant category as context, but nothing pre-selects
+  (see the no-AI decision below).
 - `businessPurpose`: required, `MIN_PURPOSE_LENGTH` (proposed **20** chars),
   max `MAX_NOTE_LENGTH`. This is the string the public ledger prints.
 - Travel: `travelFrom`, `travelTo` (required when `travel`; city-level is
@@ -170,9 +171,10 @@ Per the house rule, gated from day one via `lib/transactionCodingAccess.ts`:
 
 ### A. Charge lands → cardholder codes it
 
-1. Ingest (`applyIncreaseCardTransaction` et al.) already schedules the AI
-   coding suggestion; it now also stamps `codingState: "uncoded"` (when
-   posted ≥ `codingRequiredSinceMs` and a cardholder is known).
+1. Ingest (`applyIncreaseCardTransaction` et al.) now stamps
+   `codingState: "uncoded"` (when posted ≥ `codingRequiredSinceMs` and a
+   cardholder is known). The existing reviewer-side `aiSuggestion` schedule
+   is untouched — it stays out of the coding flow entirely.
 2. **The reminder unit changes: we stop chasing receipts and start chasing
    codings** (owner call, 2026-08-08). A receipt is one *field* of a coding,
    not its own nag stream. `notifyReceiptDigest`, the escalation stages
@@ -183,12 +185,12 @@ Per the house rule, gated from day one via `lib/transactionCodingAccess.ts`:
    Cardholders are authed members, so **no new token infrastructure** in v1
    (the token page family stays reimbursement-only).
 3. **My Transactions** grows the coding editor — an extension of the
-   existing Concur-style `submitOwnCharge` sheet: expense type (AI-suggested,
-   confirmable), business purpose with per-type prompts ("What was it, for
-   which event/project, and why?"), from/to for travel, attendee picker
-   (people-table typeahead + free-text guests + affiliation) or
-   headcount+group for meals, receipt upload **in the same sheet**, and the
-   budget/"For" picker (reusing `forPicker` + AI suggestion).
+   existing Concur-style `submitOwnCharge` sheet: expense type (human-picked,
+   merchant category shown as context), business purpose with per-type
+   prompts ("What was it, for which event/project, and why?"), from/to for
+   travel, attendee picker (people-table typeahead + free-text guests +
+   affiliation) or headcount+group for meals, receipt upload **in the same
+   sheet**, and the budget/"For" picker (reusing `forPicker`).
 4. **No receipt?** The same sheet surfaces the existing exception flow
    verbatim: the five `RECEIPT_EXCEPTION_REASONS` with their hints, up to 5
    evidence photos, bank-statement option, required explanation. Nothing new
@@ -197,11 +199,18 @@ Per the house rule, gated from day one via `lib/transactionCodingAccess.ts`:
    scope just puts it in the cardholder's path instead of the treasurer's.
 5. Submit → `codingState: "submitted"`, audit `coding_submit`.
 
-Purpose quality can't be regexed. Three layers: per-type prompt templates in
-the UI; the existing AI coding engine (`aiCoding.ts` /
-`lib/codingEvidence.ts`) extended to flag vague purposes before submit
-("'bus to NY' doesn't say why — add the event or project"); and the human
-reviewer as the real gate.
+Purpose quality can't be regexed. Two layers, both human: per-type prompt
+templates in the UI that show what a complete purpose looks like ("what was
+it, for which event or project, and why" — with a good and a bad example
+inline), and the reviewer as the real gate. **No AI anywhere in coding**
+(owner decision, 2026-08-08): substantiation is human-authored end to end —
+no pre-filled purposes, no AI drafts, no AI-picked expense types. A
+pre-filled field gets rubber-stamped; a blank field with a good prompt gets
+answered, and the answer is the cardholder's own testimony, which is what
+an accountable plan (and a public ledger) actually needs. The existing
+reconcile AI suggestions (`aiSuggestion` on transactions) remain what they
+are today — a reviewer-side hint for budget/category in the FM's picker —
+and never write into a `transactionCodings` row.
 
 ### Mistake-proofing the editor (owner call: intuitive, prevents mistakes)
 
@@ -210,9 +219,11 @@ make a rejectable submission hard to produce:
 
 - **One question at a time, driven by `expenseType`.** Pick "meal" and the
   sheet shows exactly the meal questions; travel shows from/to. No blank
-  20-field form, no fields that don't apply. AI pre-fills type, budget, and
-  a draft purpose from `merchantCategory` + history — the cardholder
-  confirms rather than composes.
+  20-field form, no fields that don't apply. Nothing is pre-filled — the
+  cardholder composes every answer (owner decision: no AI in coding) — but
+  the form makes composing easy: merchant, amount, and date are displayed
+  as context, and each field carries an inline example of a complete
+  answer.
 - **Submit is disabled until the required elements exist**, with the missing
   ones listed in place ("Add who was there — 4 people means 4 names"). No
   server-side rejection for omissions the client could see.
@@ -349,7 +360,7 @@ it.
    Ships value immediately: the treasurer can start coding to the new
    standard.
 2. **Self-serve** — My Transactions editor on `submitOwnCharge`'s bones,
-   unified digest email, review/send-back loop, AI purpose-vagueness check.
+   unified digest email, review/send-back loop.
 3. **Reimbursement parity** — line-item fields in-app + token page,
    `changes_requested` loop.
 4. **Publish prep** — publishability report, monthly-close gate, redaction
@@ -379,6 +390,11 @@ the capstone templates.
    the affiliation breakdown ("5 volunteers, 3 community members,
    2 contractors"); full names stay internal behind
    `requireCodingNamesView`.
+5. **No AI in coding.** Substantiation is human-authored end to end: no
+   pre-fills, no drafts, no AI-picked types, no AI quality gate. The form's
+   prompts and the human reviewer are the quality mechanism. Existing
+   reviewer-side `aiSuggestion` hints for budget/category are unchanged but
+   never touch a coding.
 
 ## Still open (defaults apply unless overridden — neither blocks phase 1)
 
