@@ -381,12 +381,24 @@ describe("finances.markAsTransfer", () => {
 
     // Before this feature the outflow leg would have vanished from the chase
     // the instant it stopped being spend, and the inflow leg was never in it.
-    const counts = (
-      await s.as.query(api.finances.listReconcile, { filter: "all" })
-    ).counts;
-    expect(counts.missing_receipt).toBe(2);
+    //
+    // THE CHASE IS THE SURFACE THAT OWNS THIS CONSTRAINT, so it's what gets
+    // asserted. Reconcile no longer lists transfer legs by default — nothing to
+    // code, nothing to close — which means its `missing_receipt` FACET goes
+    // quiet here (a facet count promises rows the queue would show, and it
+    // would show none). That is a change of venue, not of obligation: both legs
+    // still return true from `needsDocumentation`, both still appear on the
+    // chase page, and `chaseCount` — what the "Chase receipts" button is gated
+    // on — still counts them, so the route to them stays open.
+    const res = await s.as.query(api.finances.listReconcile, { filter: "all" });
+    expect(res.counts.missing_receipt).toBe(0);
+    expect(res.chaseCount).toBe(2);
+
     const chase = await s.as.query(api.finances.receiptChase, {});
     expect(chase.count).toBe(2);
+    expect(chase.groups.flatMap((g) => g.transactions.map((c) => c.id)).sort()).toEqual(
+      [out, inn].sort(),
+    );
   });
 
   test("requires two DIFFERENT rows", async () => {

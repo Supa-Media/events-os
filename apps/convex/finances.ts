@@ -8059,6 +8059,11 @@ export const listReconcile = query({
     // Separate from `counts` because those are facet counts now (see the
     // handler); this one deliberately ignores the active selection.
     toClearCount: v.number(),
+    // Rows in scope that owe a receipt or a coding — `receiptChase`'s exact
+    // population. Also selection-independent, and the gate for the "Chase
+    // receipts" entry point; see the handler for why the `missing_receipt`
+    // facet can no longer serve that purpose.
+    chaseCount: v.number(),
     // The caller's OWN roster person id (home-chapter scoped, `null` for a
     // superuser with no roster row) — founder feedback review: lets the grid
     // widen "Mark personal" to a cardholder viewing their OWN charge, not
@@ -8112,6 +8117,7 @@ export const listReconcile = query({
         rows: [],
         counts: zero,
         toClearCount: 0,
+        chaseCount: 0,
         viewerPersonId: null,
         viewerIsManager: false,
       };
@@ -8282,25 +8288,33 @@ export const listReconcile = query({
     // elsewhere. With nothing selected these equal the old global counts
     // exactly.
     // INTERNAL TRANSFER LEGS ARE NOT QUEUE WORK. Reconcile asks three things of
-    // a row — code it, document it, close it — and an unmarked `flow:"transfer"`
-    // leg owes none of them: it was written as a matched PAIR sharing a
-    // `transferGroupId`, with a `note` spelling out the arithmetic, it takes no
-    // category and no budget, and `needsDocumentation` is false for it. It's the
-    // org moving money between its own books, so it sat in the queue as pure
-    // volume the treasurer could only ever skip past (owner, 2026-08).
+    // a row — code it, confirm its documentation, close it — and a
+    // `flow:"transfer"` leg answers none of them. It's one half of a matched
+    // PAIR sharing a `transferGroupId`, with a `note` spelling out the
+    // arithmetic; it takes no category and no budget, so there is nothing to
+    // code. It's the org moving money between its own books, and it sat in this
+    // queue as volume the treasurer could only ever scroll past (owner,
+    // 2026-08, pointing at both a hand-marked balance transfer and the
+    // engine's own "Auto: settlement of cross-book card spend" legs).
     //
-    // A MARKED transfer is deliberately NOT hidden. `markAsTransfer` leaves the
-    // row owing a receipt on purpose (see `needsDocumentation`'s doc comment —
-    // the founder's "an internal transfer should still have receipts"), so
-    // hiding it would silently end a chase that's still live. The bright line is
-    // therefore "did a human mark this, or did the app book it", which is
-    // exactly `isMarkedTransfer`.
+    // MARKED legs are hidden too, and that is safe — the point deserves stating
+    // because it looks like it contradicts `needsDocumentation`'s founder rule
+    // ("marking a row must never be a way to make it stop being chased"). It
+    // doesn't. THE RECEIPT CHASE IS A SEPARATE SURFACE: `receiptChase` runs its
+    // own scan and its own `needsDocumentation(tr) || chargeOutstanding(...)`
+    // union, with no reference to this list or its filters, and it's where a
+    // cardholder-less row (a bank transfer, a processor deposit) is chased with
+    // a statement rather than a person. So a marked transfer hidden from HERE
+    // still owes its receipt, still returns true from `needsDocumentation`, and
+    // still appears on the treasurer's chase page. Marking still changes
+    // nothing about what a row owes — only where it is listed. Neither
+    // `needsDocumentation` nor `isMarkedTransfer` is touched by any of this.
     //
     // Hidden, not gone: Kind → Transfers lifts the exclusion, and the hidden
     // rows still feed that key's facet count below, so the number beside it is a
     // number you can get to.
     const isHiddenTransferLeg = (tr: Doc<"transactions">): boolean =>
-      tr.flow === "transfer" && !isMarkedTransfer(tr);
+      tr.flow === "transfer";
     const transfersRequested = activeFilters.includes("transfers");
 
     // `counts.all` is the DEFAULT queue's size, not the raw scan's — counting
@@ -8317,15 +8331,29 @@ export const listReconcile = query({
     // drift as filters change. The backlog headline has to be stable, so it's
     // counted here directly, ignoring the selection entirely.
     let toClearCount = 0;
+    // How many rows in scope owe a receipt or a coding — deliberately counted
+    // over EVERY row including the hidden transfer legs, and ignoring the
+    // selection. This is `receiptChase`'s own population, expression for
+    // expression, and it exists because the "Chase receipts" button used to be
+    // gated on `counts.missing_receipt`: a facet count that (a) narrows with the
+    // selection and (b) no longer sees a marked transfer, since the queue hides
+    // it. A book whose only receipt-owing rows are marked transfers would have
+    // lost its only route to a chase page that still lists them.
+    let chaseCount = 0;
     for (const tr of all) {
       const flags = flagsFor(tr);
+      if (needsDocumentation(tr) || chargeOutstanding(tr, codingSinceMs) != null) {
+        chaseCount += 1;
+      }
       if (isHiddenTransferLeg(tr)) {
         // A hidden leg contributes exactly ONE thing to the unfiltered view:
         // the `transfers` facet count, so the dropdown can advertise the rows
         // it's holding back. It stays out of `counts.all`, out of
         // `toClearCount` (nothing to clear), and out of every other facet —
-        // an unreviewed leg counted under "To review" would be the dead number
-        // this whole area exists to prevent.
+        // "To review 1" or "Needs documentation 1" beside a queue that renders
+        // zero rows is the dead number this whole area exists to prevent. What
+        // a hidden row still OWES is unaffected and is counted by `chaseCount`
+        // above, which is what the chase page and its button read.
         if (countsTowardFacet(flags, activeFilters, "transfers")) counts.transfers += 1;
         if (transfersRequested && matchesReconcileFilters(flags, activeFilters)) {
           selected.push(tr);
@@ -8442,6 +8470,7 @@ export const listReconcile = query({
       rows,
       counts,
       toClearCount,
+      chaseCount,
       viewerPersonId: viewer?._id ?? null,
       viewerIsManager: access.isManager,
     };
@@ -8507,6 +8536,14 @@ const chaseGroup = v.object({
  * "Unattributed" group — pinned last, which is the right priority: the
  * treasurer owes those a statement or settlement report, not a person owing a
  * receipt for a card charge.
+ *
+ * THIS IS WHY THE RECONCILE QUEUE CAN HIDE A MARKED TRANSFER. `listReconcile`
+ * drops every `flow:"transfer"` leg from its default view — there's nothing to
+ * code on one and nothing to close. That is purely a question of where a row is
+ * LISTED: this query is a separate surface with its own scan and its own
+ * predicate union, so a marked transfer hidden there still owes its receipt,
+ * still returns true from `needsDocumentation`, and still shows up right here.
+ * Marking a row remains no way to stop it being chased.
  *
  * `scope`/`chapterId` mirror `listReconcile`'s args and resolution byte for
  * byte (central desk / central drill-down / caller's own chapter, same authz
