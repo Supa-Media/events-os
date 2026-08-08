@@ -1,3 +1,17 @@
+/**
+ * Pure sign-in helpers for `app/(auth)/login.tsx`.
+ *
+ * These live OUTSIDE `app/` on purpose. Expo Router treats every `.ts`/`.tsx`
+ * under the app root as a route — its `require.context` (expo-router/_ctx)
+ * matches everything except `+api`/`+middleware`/`+html`/`+native-intent`, and
+ * there is no exclusion setting. A non-route module colocated there becomes a
+ * phantom route, and a colocated `*.test.ts` is worse than phantom: Metro
+ * bundles it into the app, its `@jest/globals` import throws on load, and the
+ * whole app dies at startup with "Do not import `@jest/globals` outside of the
+ * Jest test environment". Keep `app/` to routes only; helpers, hooks and their
+ * tests belong here.
+ */
+
 /** The members' email domain. Guests sign in with a full off-domain email. */
 export const ALLOWED_DOMAIN = "publicworship.life";
 

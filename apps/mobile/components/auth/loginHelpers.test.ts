@@ -1,5 +1,5 @@
 import { describe, expect, test } from "@jest/globals";
-import { initialGuestState } from "./login.helpers";
+import { initialGuestState } from "./loginHelpers";
 
 describe("initialGuestState", () => {
   test("a present guestEmail param starts the screen in guest mode, pre-filled", () => {
