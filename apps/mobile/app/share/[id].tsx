@@ -14,8 +14,9 @@ import type { Id } from "@events-os/convex/_generated/dataModel";
  * This route lives under `app/` OUTSIDE the `(app)`/`(auth)` route groups, so it
  * is NOT behind the auth guard; the root layout just renders `<Slot/>` inside the
  * Convex provider. It reads the no-auth `api.events.publicCrew` query and renders
- * a warm, scannable briefing of teams, their expectations, and who's on each
- * team via the shared `BriefingView`. No edit controls, no pickers, no money.
+ * a warm, scannable briefing — the run of show (Eastern-pinned, with a live
+ * "NOW" highlight), teams, their expectations, and who's on each team — via the
+ * shared `BriefingView`. No edit controls, no pickers, no money.
  */
 export default function ShareCrewScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();

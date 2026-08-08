@@ -4,6 +4,7 @@ import { useRouter } from "expo-router";
 import { api } from "@events-os/convex/_generated/api";
 import { Card, Icon, OptionTag } from "../ui";
 import { MarkdownView } from "../markdown";
+import { RunOfShowView } from "./RunOfShowView";
 import { colors } from "../../lib/theme";
 import { formatDateTime } from "../../lib/format";
 import { videoEmbedUrl } from "../../lib/videoEmbed";
@@ -291,6 +292,10 @@ export function BriefingView({
           <Text className="mt-1 text-sm text-faint">{subtitle}</Text>
         ) : null}
       </View>
+
+      {/* The schedule first — what's happening and when, Eastern-pinned, with
+          a live "NOW" highlight while the event runs. Hidden when empty. */}
+      <RunOfShowView eventDate={crew.eventDate} runOfShow={crew.runOfShow} />
 
       {/* Optional site map — where everyone & everything is placed. */}
       {siteMap}

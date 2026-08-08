@@ -39,6 +39,25 @@ export function formatDateTime(ts: number): string {
   return `${formatDate(ts)} · ${formatTime(ts)}`;
 }
 
+/** Public Worship runs on Eastern time — public pages (the volunteer briefing)
+ *  pin times to it so a phone in any timezone reads the same schedule. */
+export const EASTERN_TIME_ZONE = "America/New_York";
+
+/** e.g. "7:05 PM" pinned to Eastern time, whatever the device timezone. Falls
+ *  back to device-local `formatTime` on runtimes without timezone data. */
+export function formatTimeEastern(ts: number): string {
+  try {
+    return new Intl.DateTimeFormat("en-US", {
+      timeZone: EASTERN_TIME_ZONE,
+      hour: "numeric",
+      minute: "2-digit",
+      hour12: true,
+    }).format(ts);
+  } catch {
+    return formatTime(ts);
+  }
+}
+
 /** True when the timestamp is in the past (relative to now). */
 export function isOverdue(ts: number): boolean {
   return ts < Date.now();

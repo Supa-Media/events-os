@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { View, Text, StyleSheet, Pressable } from "react-native";
 import { Stack, useLocalSearchParams } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
@@ -19,10 +19,11 @@ import { formatTime } from "../../../../lib/format";
 import { useActionRunner } from "../../../../lib/useActionToast";
 import {
   TASK_STATUS_OPTIONS,
-  computeRunTime,
+  buildRunOfShowSegments,
   isLocalMidnight,
-  runOfShowSegmentEnd,
+  runOfShowNowIndex,
 } from "@events-os/shared";
+import { useNow } from "../../../../lib/useNow";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 
 /** The ordered planning-doc task status values (not_started → in_progress → done). */
@@ -157,16 +158,6 @@ function PermitFallbackPrompt({
   );
 }
 
-/** A live wall clock — re-renders every 30s. Anchors the now/next highlight. */
-function useNow(intervalMs = 30_000): number {
-  const [now, setNow] = useState(() => Date.now());
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), intervalMs);
-    return () => clearInterval(id);
-  }, [intervalMs]);
-  return now;
-}
-
 /** DAY-OF MODE: big, scannable field view. */
 export default function DayOfScreen() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -200,46 +191,19 @@ export default function DayOfScreen() {
   const { event, eventTypeName, runOfShow, roles, tasks } = data;
   const permitsNeedingFallback = data.permitsNeedingFallback ?? [];
 
-  // Each segment resolved to its wall-clock START and END. END = start +
-  // duration when a positive `duration` (minutes, in the fields bag) is set,
-  // else the next segment's start, else a 2h cap on the final row
-  // (runOfShowSegmentEnd). `showEnd` is false only for a final row with no
-  // duration — there we show a single time, not a bogus 2h range.
-  const sorted = [...runOfShow].sort(
-    (a, b) => (a.offsetMinutes ?? 0) - (b.offsetMinutes ?? 0),
+  // Each segment resolved to its wall-clock START and END, and the "now/next"
+  // highlight index — both via the shared helpers so this view, the public
+  // briefing, and the segment math in `@events-os/shared` can never disagree.
+  // `duration` is a typed number in the fields bag (minutes).
+  const segments = buildRunOfShowSegments(
+    event.eventDate,
+    runOfShow.map((r) => ({
+      ...r,
+      durationMinutes:
+        typeof r.fields?.duration === "number" ? r.fields.duration : null,
+    })),
   );
-  const segments = sorted.map((r, i) => {
-    const start = computeRunTime(event.eventDate, r.offsetMinutes ?? 0);
-    const nextStart =
-      i + 1 < sorted.length
-        ? computeRunTime(event.eventDate, sorted[i + 1].offsetMinutes ?? 0)
-        : null;
-    const duration =
-      typeof r.fields?.duration === "number" && r.fields.duration > 0
-        ? r.fields.duration
-        : null;
-    return {
-      row: r,
-      start,
-      end: runOfShowSegmentEnd(start, duration, nextStart),
-      showEnd: duration != null || nextStart != null,
-    };
-  });
-
-  // The "now/next" block: the segment currently in progress (its start has
-  // passed but its END — the real end, honoring durations — hasn't), or, before
-  // the event, the first upcoming row. Highlights what the team should be doing.
-  let nowIndex = -1;
-  for (let i = 0; i < segments.length; i++) {
-    if (now >= segments[i].start && now < segments[i].end) {
-      nowIndex = i;
-      break;
-    }
-  }
-  // Before the first row starts, point "next" at the first upcoming row.
-  if (nowIndex === -1 && segments.length > 0 && now < segments[0].start) {
-    nowIndex = 0;
-  }
+  const nowIndex = runOfShowNowIndex(segments, now);
 
   // Old events created before start-times existed sit at local midnight, so
   // every segment renders at 12:xx AM. Prompt (non-blocking) to set a real one.

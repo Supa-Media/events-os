@@ -986,12 +986,23 @@ const crewPersonValidator = v.object({
   callTime: v.union(v.string(), v.null()),
   status: v.union(v.string(), v.null()),
 });
+/** One sanitized run-of-show row for the volunteer briefing: the segment, its
+ *  offset from the event start, an optional length, and its notes. Wall-clock
+ *  times are always DERIVED client-side from `eventDate` + `offsetMinutes`
+ *  (never stored), matching the Day-of view. No owner, role, or money info. */
+const crewRunOfShowValidator = v.object({
+  title: v.string(),
+  offsetMinutes: v.number(),
+  durationMinutes: v.union(v.number(), v.null()),
+  notes: v.union(v.string(), v.null()),
+});
 /** The sanitized, volunteer-facing crew briefing for one event — NO money,
  *  vendor, or budget info. Shared by `publicCrew` and `myBriefing`. */
 export const crewBriefingValidator = v.object({
   name: v.string(),
   eventDate: v.number(),
   location: v.union(v.string(), v.null()),
+  runOfShow: v.array(crewRunOfShowValidator),
   teams: v.array(
     v.object({
       value: v.string(),
@@ -1008,10 +1019,10 @@ export const crewBriefingValidator = v.object({
 });
 
 /**
- * The sanitized volunteer briefing for one event: teams, their expectations,
- * and who's on each team. Extracted so both the public share query and the
- * authenticated `myBriefing` render the SAME shape. Never includes payment,
- * vendor, or budget info.
+ * The sanitized volunteer briefing for one event: the run of show, teams,
+ * their expectations, and who's on each team. Extracted so both the public
+ * share query and the authenticated `myBriefing` render the SAME shape. Never
+ * includes payment, vendor, or budget info.
  */
 export async function buildCrewBriefing(
   ctx: QueryCtx,
@@ -1108,6 +1119,28 @@ export async function buildCrewBriefing(
     })),
   );
 
+  // The run of show, sanitized for volunteers: title / offset / length / notes
+  // only (no owner, role, or money columns). Sorted by offset so the payload is
+  // already in timeline order; the client derives wall-clock times from
+  // `eventDate` + `offsetMinutes` exactly like the Day-of view.
+  const runOfShowItems = await ctx.db
+    .query("eventItems")
+    .withIndex("by_event_module", (q) =>
+      q.eq("eventId", eventId).eq("module", "run_of_show"),
+    )
+    .collect();
+  const runOfShow = runOfShowItems
+    .map((it) => ({
+      title: it.title ?? "",
+      offsetMinutes: it.offsetMinutes ?? 0,
+      durationMinutes:
+        typeof it.fields?.duration === "number" && it.fields.duration > 0
+          ? it.fields.duration
+          : null,
+      notes: typeof it.fields?.notes === "string" ? it.fields.notes : null,
+    }))
+    .sort((a, b) => a.offsetMinutes - b.offsetMinutes);
+
   // Anything whose team isn't a known option → the unassigned bucket.
   const unassigned = {
     expectations: await Promise.all(
@@ -1127,6 +1160,7 @@ export async function buildCrewBriefing(
     name: event.name,
     eventDate: event.eventDate,
     location: event.location ?? null,
+    runOfShow,
     teams,
     unassigned,
   };
