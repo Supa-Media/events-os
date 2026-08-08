@@ -92,7 +92,9 @@ type TxnFixture = Partial<{
   flow: "outflow" | "inflow" | "transfer";
   status: "unreviewed" | "categorized" | "reconciled" | "excluded";
   receipt: boolean;
-  codingState: "uncoded" | "submitted" | "changes_requested" | "approved";
+  // Absent = no coding has ever been submitted (there is no `"uncoded"`
+  // literal — `TRANSACTION_CODING_STATUSES` starts at `"submitted"`).
+  codingState: "submitted" | "changes_requested" | "approved";
   historicalImportBatch: string;
   externalId: string;
   isPersonal: boolean;

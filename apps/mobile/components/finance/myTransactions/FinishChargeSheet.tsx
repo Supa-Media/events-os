@@ -31,6 +31,7 @@ import { Modal, Pressable, ScrollView, Text, View } from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import {
   ATTENDEE_AFFILIATION_LABELS,
+  documentationState,
   formatCents,
   type AttendeeAffiliation,
   type ReceiptExceptionReason,
@@ -146,7 +147,13 @@ export function FinishChargeSheet({
     exceptions?.find((e) => e.status === "pending") ?? null;
   const approvedException =
     exceptions?.find((e) => e.status === "approved") ?? null;
-  const documented = txn.hasReceipt || approvedException != null;
+  // The step's done/not-done marker comes off the ROW (`hasReceipt` +
+  // `hasApprovedException`, both denormalized) so it's right on first paint;
+  // the exception list is only read for the reason label and the "filed but
+  // not decided" wording, which nobody needs until this sheet is open.
+  const documented =
+    documentationState(txn.hasReceipt, txn.hasApprovedException) !==
+    "undocumented";
   const merchantLine = `${txn.merchantName ?? txn.description ?? "—"} · ${dateStr(txn.postedAt)}`;
   // A person-attributed txn only ever gets `cardId` + `cardLast4` together, so
   // this is the reliable "the cardholder can self-service this" signal
@@ -354,13 +361,15 @@ export function FinishChargeSheet({
                       </View>
                     ) : null}
                   </View>
-                ) : approvedException != null ? (
+                ) : txn.hasApprovedException ? (
                   <View className="flex-row items-start gap-2">
                     <Icon name="check-circle" size={13} color={colors.success} />
                     <Text className="flex-1 text-2xs text-muted">
-                      Documented by an approved exception —{" "}
-                      {approvedException.reasonLabel.toLowerCase()}. Attach a
-                      receipt any time and it takes over.
+                      Documented by an approved exception
+                      {approvedException
+                        ? ` — ${approvedException.reasonLabel.toLowerCase()}`
+                        : ""}
+                      . Attach a receipt any time and it takes over.
                     </Text>
                   </View>
                 ) : pendingException != null ? (

@@ -2470,10 +2470,10 @@ export const listStaleReimbursements = internalQuery({
     // for the whole chapter rather than per request.
     const chapter = await ctx.db.get(chapterId);
     const candidates: Doc<"reimbursementRequests">[] = [];
-    // `changes_requested` joins the sweep: a request sitting with its claimant
-    // is the MOST stallable state there is (nobody is waiting on it but the
-    // person who has stopped thinking about it), and the nudge carries the
-    // reviewer's note back to them.
+    // `changes_requested` joins the sweep on the SAME staleness window: a
+    // request sitting with its claimant is the most stallable state there is
+    // (nobody is waiting on it but the person who stopped thinking about it),
+    // and the nudge carries the reviewer's note back to them.
     for (const status of ["submitted", "preapproved", "changes_requested"] as const) {
       const rows = await ctx.db
         .query("reimbursementRequests")

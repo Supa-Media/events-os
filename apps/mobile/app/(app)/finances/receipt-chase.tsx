@@ -309,7 +309,18 @@ function ReceiptChaseBody() {
                           {t.merchantName ?? t.description ?? "Unlabeled charge"}
                         </Text>
                         <Text className="text-xs text-muted" numberOfLines={1}>
-                          {[shortDate(t.postedAt), t.cardLast4 ? `card ··${t.cardLast4}` : null]
+                          {[
+                            shortDate(t.postedAt),
+                            t.cardLast4 ? `card ··${t.cardLast4}` : null,
+                            // What this row actually owes, in the SAME words the
+                            // cardholder's digest uses — the chase now covers
+                            // coding as well as receipts, so a line that just
+                            // said "$58.30" would leave the treasurer guessing
+                            // which debt the reminder is about. Null only for
+                            // the cardholder-less rows (a marked transfer or
+                            // payout) that owe a statement, not a person.
+                            t.outstanding,
+                          ]
                             .filter(Boolean)
                             .join(" · ")}
                         </Text>

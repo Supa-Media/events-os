@@ -13,10 +13,11 @@
  *  1. WHAT STILL OWES SOMETHING, first. `chargeTodo` ranks every row and the
  *     actionable ones sort to the top, in the digest's own words, so the
  *     screen and the email can't disagree about what's outstanding.
- *  2. THE REVIEWER'S NOTE, loudly. A charge a reviewer sent back gets the note
- *     rendered under its row, quoted — for the person who has to act on it
- *     that sentence is the most useful string on the page, and it is worth
- *     more room than any badge.
+ *  2. A SEND-BACK, loudly. A charge a reviewer handed back gets its own
+ *     full-width strip under the row, not a badge among badges — it's a
+ *     different kind of news from "still on your list", and it's the one state
+ *     where somebody already wrote down exactly what to do. Opening the strip
+ *     puts the reviewer's own words in front of them, quoted.
  *  3. The old affordances, unbroken: `personTransactions` is caller-scoped
  *     (it returns the CALLER's own rows with no finance grant), the
  *     bookkeeper's `note` is still visible on the member's OWN rows, the
@@ -24,12 +25,15 @@
  *     receipt upload is still the exact same `ReceiptCell` the Reconcile grid
  *     uses, so uploading looks identical everywhere.
  *
- * DATA NOTE — why `ChargeStateProbe` exists: `personTransactions` projects
- * `txnSummary`, which carries neither `codingState` nor documentation state,
- * and this screen has to sort and filter on both. See that component's doc
- * comment for the backend change that would delete it.
+ * DATA NOTE: everything the ranking needs rides on the list payload —
+ * `txnSummary` carries `codingState` and `hasApprovedException` off their
+ * denormalized columns, so ordering the whole queue costs zero per-row reads.
+ * The one thing it deliberately doesn't carry is the reviewer's send-back
+ * NOTE, which matters only once somebody opens a charge: the row shows the
+ * state, `FinishChargeSheet` reads the words for the single row being looked
+ * at.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Text, View } from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import { useMutation, useQuery } from "convex/react";
@@ -49,7 +53,6 @@ import {
 } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
-import { ChargeStateProbe } from "../../../components/finance/myTransactions/ChargeStateProbe";
 import {
   ChargeRow,
   FilterChip,
@@ -57,10 +60,8 @@ import {
 import { FinishChargeSheet } from "../../../components/finance/myTransactions/FinishChargeSheet";
 import {
   chargeTodo,
-  isSpendCharge,
   parseChargeFilter,
   sortByTodo,
-  type ChargeCodingState,
   type ChargeFilter,
   type MyTxnRow,
 } from "../../../components/finance/myTransactions/chargeTodo";
@@ -85,28 +86,6 @@ export default function MyTransactionsScreen() {
   }, [params.filter]);
 
   const [openId, setOpenId] = useState<string | null>(null);
-  const [states, setStates] = useState<Record<string, ChargeCodingState>>({});
-  const onResolved = useCallback(
-    (transactionId: string, state: ChargeCodingState) => {
-      setStates((prev) => {
-        const current = prev[transactionId];
-        // Bail on an unchanged report: every probe re-reports whenever its
-        // query pushes, and re-sorting the list underneath somebody's cursor
-        // for no reason is its own kind of bug.
-        if (
-          current &&
-          current.codingStatus === state.codingStatus &&
-          current.reviewNote === state.reviewNote &&
-          current.hasApprovedException === state.hasApprovedException &&
-          current.hasPendingException === state.hasPendingException
-        ) {
-          return prev;
-        }
-        return { ...prev, [transactionId]: state };
-      });
-    },
-    [],
-  );
 
   // The policy date decides which rows are CHASED for a coding at all
   // (pre-2026-09-01 spend is the voluntary on-ramp). Falling back to the
@@ -115,31 +94,22 @@ export default function MyTransactionsScreen() {
   const sinceMs = policy?.sinceMs ?? DEFAULT_CODING_REQUIRED_SINCE_MS;
 
   const rows = useMemo(() => {
-    return (transactions ?? []).map((t: MyTxnRow) => {
-      const state = states[t.id];
-      const facts = {
-        postedAt: t.postedAt,
-        flow: t.flow,
-        status: t.status,
-        isPersonal: t.isPersonal,
-        hasReceipt: t.hasReceipt,
-        ...(state
-          ? {
-              hasApprovedException: state.hasApprovedException,
-              codingStatus: state.codingStatus,
-            }
-          : {}),
-      };
-      return {
-        txn: t,
-        todo: chargeTodo(facts, sinceMs),
-        reviewNote: state?.reviewNote ?? null,
-        /** Only rows that could owe something get a live probe — see the
-         *  component's doc comment on why the count matters. */
-        probe: isSpendCharge(facts),
-      };
-    });
-  }, [transactions, states, sinceMs]);
+    return (transactions ?? []).map((t: MyTxnRow) => ({
+      txn: t,
+      todo: chargeTodo(
+        {
+          postedAt: t.postedAt,
+          flow: t.flow,
+          status: t.status,
+          isPersonal: t.isPersonal,
+          hasReceipt: t.hasReceipt,
+          hasApprovedException: t.hasApprovedException,
+          codingStatus: t.codingState,
+        },
+        sinceMs,
+      ),
+    }));
+  }, [transactions, sinceMs]);
 
   const actionableCount = rows.filter((r) => r.todo.actionable).length;
   const visible = useMemo(() => {
@@ -170,21 +140,6 @@ export default function MyTransactionsScreen() {
   return (
     <Screen maxWidth={1080}>
       <Narrow>
-        {/* The probes are mounted OUTSIDE the filtered list on purpose: a row
-            hidden by the "Needs you" filter must keep its subscription, or a
-            charge a reviewer sends back while this screen is open would never
-            reappear. They render nothing. */}
-        {rows.map((r) =>
-          r.probe ? (
-            <ChargeStateProbe
-              key={`probe-${r.txn.id}`}
-              transactionId={r.txn.id as Id<"transactions">}
-              hasReceipt={r.txn.hasReceipt}
-              onResolved={onResolved}
-            />
-          ) : null,
-        )}
-
         <View className="mb-1">
           <Text className="font-display text-2xl text-ink">My transactions</Text>
         </View>
@@ -255,7 +210,6 @@ export default function MyTransactionsScreen() {
                 key={r.txn.id}
                 txn={r.txn}
                 todo={r.todo}
-                reviewNote={r.reviewNote}
                 last={i === visible.length - 1}
                 onOpen={() => setOpenId(r.txn.id)}
                 onUpload={async (storageId) => {

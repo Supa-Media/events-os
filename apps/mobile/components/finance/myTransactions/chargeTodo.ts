@@ -19,6 +19,13 @@
  * `codingRequired` mirror `finances.ts#isSpend` / `requiresCoding` /
  * `isUncoded` field for field, so this screen can never tell a cardholder a
  * charge is finished that the `CODING_REQUIRED` reconcile gate would refuse.
+ *
+ * Everything it reads now arrives on the list row itself (`codingState` and
+ * `hasApprovedException` joined `txnSummary`), so ranking the whole list costs
+ * zero extra reads. What deliberately does NOT arrive is the reviewer's
+ * send-back NOTE: it matters only once somebody opens the charge, so the row
+ * shows the STATE ("sent back — needs your edit") and `FinishChargeSheet`
+ * fetches the words themselves for the one row being looked at.
  */
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
@@ -26,39 +33,28 @@ import type { TransactionCodingStatus } from "@events-os/shared";
 import type { BadgeTone } from "../../ui";
 
 /** One row of the member's own ledger — the exact `personTransactions`
- *  projection (`txnSummary`). Note what it does NOT carry: `codingState` and
- *  documentation state, which is why `ChargeStateProbe` exists. */
+ *  projection (`txnSummary`), which now carries `codingState` and
+ *  `hasApprovedException` off their denormalized columns, so this screen
+ *  needs no per-row query to rank a row. */
 export type MyTxnRow =
   FunctionReturnType<typeof api.finances.personTransactions>[number];
 
-/** What the per-transaction probes learn that the list query can't tell us. */
-export interface ChargeCodingState {
-  /** `null` = no coding row exists yet. */
-  codingStatus: TransactionCodingStatus | null;
-  /** The reviewer's send-back note — the most important string on this screen
-   *  for the person who has to act on it. */
-  reviewNote: string | null;
-  /** An APPROVED receipt exception documents a row exactly as a receipt does
-   *  (`documentationState`) — nagging for a receipt anyway would be nagging
-   *  for something the org already decided it doesn't need. */
-  hasApprovedException: boolean;
-  /** Filed, not yet decided. Asking to be let off isn't being let off, so this
-   *  never counts as documentation — it only changes what we SAY. */
-  hasPendingException: boolean;
-}
-
-/** The facts `chargeTodo` reasons over — the list row plus whatever the probe
- *  has learned so far. */
+/** The facts `chargeTodo` reasons over — all of them straight off the list
+ *  row. Deliberately a plain structural type rather than `MyTxnRow` itself:
+ *  what the ranking depends on should be readable in one place, and the tests
+ *  shouldn't have to fabricate thirty irrelevant fields to exercise it. */
 export interface ChargeFacts {
   postedAt: number;
   flow: "inflow" | "outflow" | "transfer";
   status: string;
   isPersonal: boolean;
   hasReceipt: boolean;
+  /** An APPROVED receipt exception documents a row exactly as a receipt does
+   *  (`documentationState`) — nagging for a receipt anyway would be nagging
+   *  for something the org already decided it doesn't need. */
   hasApprovedException?: boolean;
-  /** Omitted while the probe is still in flight — treated as "no coding yet",
-   *  which is both the common case and the safe one (it over-reports work
-   *  rather than telling someone they're done when they aren't). */
+  /** `null` = no coding has ever been submitted. There is no "uncoded"
+   *  literal — absence IS the uncoded state, on the wire and here. */
   codingStatus?: TransactionCodingStatus | null;
 }
 

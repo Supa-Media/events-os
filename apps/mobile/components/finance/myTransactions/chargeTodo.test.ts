@@ -106,10 +106,13 @@ describe("chargeTodo", () => {
     );
   });
 
-  test("an unresolved probe over-reports work rather than claiming done", () => {
-    // `codingStatus` omitted = the probe hasn't landed yet.
-    expect(chargeTodo(charge({ hasReceipt: true }), SINCE).actionable).toBe(
-      true,
+  test("an absent coding IS the uncoded state — there is no 'uncoded' literal", () => {
+    // `null` on the wire and an omitted field must rank identically.
+    expect(
+      chargeTodo(charge({ hasReceipt: true, codingStatus: null }), SINCE).label,
+    ).toBe("Needs coding");
+    expect(chargeTodo(charge({ hasReceipt: true }), SINCE).label).toBe(
+      "Needs coding",
     );
   });
 });

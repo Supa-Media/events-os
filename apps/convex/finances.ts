@@ -124,6 +124,7 @@ import {
 } from "./lib/transferPair";
 import { viewerPerson, callerHasEventEditRights } from "./lib/org";
 import { codingPolicy } from "./lib/transactionCoding";
+import { chargeOutstanding } from "./lib/codingReminders";
 import { holdsApprovalSeatAt } from "./lib/seats";
 import { listActiveChapters } from "./lib/chapters";
 import {
@@ -8498,6 +8499,17 @@ const chaseTxn = v.object({
     v.literal("flagged"),
     v.literal("escalated"),
   ),
+  // WHAT this row still owes, in the same words the cardholder's own digest
+  // uses (`lib/codingReminders.ts#chargeOutstanding`) — "needs coding",
+  // "needs a receipt", "needs coding and a receipt", "sent back — needs your
+  // edit". Null for a row that owes only documentation and carries no
+  // cardholder to chase (a marked transfer or payout), which the chase list
+  // still shows under Unattributed.
+  //
+  // Surfaced because the FM now chases TWO debts from one screen: without it
+  // the page can say "3 charges" while the person on the other end is being
+  // emailed about something the page never named.
+  outstanding: v.union(v.string(), v.null()),
 });
 
 // One cardholder's bundle of receipt-owing charges. `personId` is `null` for
@@ -8599,10 +8611,31 @@ export const receiptChase = query({
           .take(ROLLUP_SCAN_LIMIT),
       );
     }
+    // THE CHASE IS NOW TWO DEBTS, UNIONED (transaction-coding phase 2).
+    //
+    // The cardholder digest and the FM's "Remind all" both chase whatever a
+    // charge still owes — a receipt, a coding, or both
+    // (`lib/codingReminders.ts#chargeOutstanding`). This page is the FM's view
+    // of that same worklist, so it has to list the same rows: keyed on
+    // documentation alone it would show "3 charges" and then email someone
+    // about a fourth it never displayed.
+    //
+    // Union rather than replacement, because the two predicates cover
+    // deliberately different populations. `needsDocumentation` includes MARKED
+    // internal transfers and MARKED processor payouts — rows with no cardholder
+    // at all, which land in Unattributed and are chased with a statement, not a
+    // person. `chargeOutstanding` is cardholder-shaped (outflow spend only), so
+    // swapping it in wholesale would silently drop those from the treasurer's
+    // list. Taking both keeps every owed row visible and lets each say which
+    // debt it carries.
+    const { sinceMs: codingSinceMs } = await codingPolicy(ctx);
     const owing = perBook
       .flat()
       .filter((tr) => txnMatchesMode(tr, sandboxMode))
-      .filter(needsDocumentation);
+      .filter(
+        (tr) =>
+          needsDocumentation(tr) || chargeOutstanding(tr, codingSinceMs) != null,
+      );
 
     const resolveCardholder = makeCardholderResolver(ctx);
     const byHolder = new Map<string, typeof chaseGroup.type>();
@@ -8629,6 +8662,7 @@ export const receiptChase = query({
         description: tr.description ?? null,
         cardLast4: tr.cardLast4 ?? null,
         reminderStage: tr.receiptReminderStage ?? ("none" as const),
+        outstanding: chargeOutstanding(tr, codingSinceMs),
       });
     }
 

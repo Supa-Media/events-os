@@ -9,11 +9,13 @@
  *    match the reminder email that sent this person here;
  *  - the receipt cell, the identical `ReceiptCell` the Reconcile grid uses, so
  *    uploading behaves the same everywhere;
- *  - THE SEND-BACK NOTE, quoted in full on its own strip under the row. A
- *    badge saying "changes requested" tells somebody they have work; only the
- *    note tells them what the work is, and for the person who has to act on it
- *    that sentence is the most useful string on the page. Tapping it opens the
- *    sheet, because reading it is the moment you want to fix it.
+ *  - THE SEND-BACK STRIP: a charge a reviewer returned gets its own full-width
+ *    band under the row rather than a badge among badges, because "somebody
+ *    read this and handed it back to you" is a different kind of news from
+ *    "this is still on your list". The strip says a reviewer wrote a note and
+ *    opens the sheet, where `getForTransaction` produces the note itself —
+ *    the list payload deliberately doesn't carry a per-row string that only
+ *    matters once one row is opened.
  */
 import { Pressable, Text, View } from "react-native";
 import type { Id } from "@events-os/convex/_generated/dataModel";
@@ -33,7 +35,6 @@ function dateStr(ts: number): string {
 export function ChargeRow({
   txn,
   todo,
-  reviewNote,
   last,
   onOpen,
   onUpload,
@@ -41,13 +42,12 @@ export function ChargeRow({
 }: {
   txn: MyTxnRow;
   todo: ChargeTodo;
-  reviewNote: string | null;
   last: boolean;
   onOpen: () => void;
   onUpload: (storageId: Id<"_storage">) => Promise<void>;
   generateUploadUrl: () => Promise<string>;
 }) {
-  const sentBack = todo.kind === "sent_back" && reviewNote != null;
+  const sentBack = todo.kind === "sent_back";
 
   return (
     <>
@@ -111,14 +111,18 @@ export function ChargeRow({
             last ? "" : "border-b border-border"
           }`}
         >
-          <View className="flex-row items-start gap-2">
+          <View className="flex-row items-center gap-2">
             <Icon name="corner-up-left" size={13} color={colors.danger} />
             <View className="flex-1">
               <Text className="text-2xs font-semibold uppercase tracking-wide text-danger">
                 Sent back to you
               </Text>
-              <Text className="mt-0.5 text-sm text-ink">“{reviewNote}”</Text>
+              <Text className="mt-0.5 text-sm text-ink">
+                A reviewer wrote you a note about this charge — open it to read
+                what would make it approvable.
+              </Text>
             </View>
+            <Icon name="chevron-right" size={16} color={colors.danger} />
           </View>
         </Pressable>
       ) : null}
