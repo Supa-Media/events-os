@@ -173,6 +173,36 @@ export async function submitCoding(
   },
 ): Promise<{ codingId: Id<"transactionCodings">; resubmission: boolean }> {
   const fields = normalizeCodingFields(args.fields, args.namesMaxHeadcount);
+  // THE OTHER HALF OF THE LODGING RULE. `lib/receiptExceptions.ts` refuses a
+  // `bank_record_only` exception on a charge already coded `lodging` — but
+  // the two facts arrive in either order, and nothing stopped the cheaper
+  // sequence: file the bank-record exception on an uncoded charge (where the
+  // guard reads no `expenseType` and passes), let it auto-approve under the
+  // small-dollar threshold, and only then code it as lodging. The rule would
+  // be enforced or not depending purely on which button someone pressed
+  // first, which is not a rule.
+  //
+  // So typing a charge as lodging is refused while a bank-record exception
+  // stands on it. Withdrawing the exception is one tap and is the honest
+  // move: the folio either exists or a different reason is the true one.
+  if (fields.expenseType === "lodging") {
+    const exceptions = await ctx.db
+      .query("receiptExceptions")
+      .withIndex("by_transaction", (q) => q.eq("transactionId", args.txn._id))
+      .collect();
+    const bankRecord = exceptions.find(
+      (e) =>
+        e.reason === "bank_record_only" &&
+        (e.status === "approved" || e.status === "pending"),
+    );
+    if (bankRecord) {
+      throw new ConvexError({
+        code: "LODGING_RECEIPT_REQUIRED",
+        message:
+          "This charge is documented by a bank record only, which the IRS doesn't accept for lodging at any amount — a statement line can't show what the stay covered. Withdraw that receipt exception and attach the hotel's itemized folio, or code this as something other than lodging if that's what it really was.",
+      });
+    }
+  }
   const existing = await codingForTransaction(ctx, args.txn._id);
   const now = Date.now();
   if (existing) {

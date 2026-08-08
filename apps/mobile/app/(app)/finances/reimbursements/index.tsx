@@ -276,13 +276,41 @@ function MemberReimbursementsScreen() {
               title="Needs your attention"
               count={needsRevision.length}
             />
-            {needsRevision.map((r) => (
-              <ReviseForm
-                key={r._id}
-                request={r as unknown as RevisableRequest}
-                minPurposeLength={MIN_PURPOSE_LENGTH}
-              />
-            ))}
+            {needsRevision.map((r) =>
+              r.canReviseInApp ? (
+                <ReviseForm
+                  key={r._id}
+                  request={r as unknown as RevisableRequest}
+                  minPurposeLength={MIN_PURPOSE_LENGTH}
+                />
+              ) : (
+                // Sent back, but submitted through the PUBLIC form and only
+                // best-effort matched to this person — never authenticated as
+                // theirs, so `resubmitMyReimbursement` refuses it and the
+                // secret link from the email is the only door. Show the
+                // reviewer's note (they still need to know what was asked)
+                // and say where to fix it, rather than rendering an editor
+                // whose Resubmit could only ever fail.
+                <View
+                  key={r._id}
+                  className="mb-3 rounded-lg border border-border bg-sunken px-4 py-3"
+                >
+                  <Text className="text-sm font-medium text-ink">
+                    {r.reference} · {formatCents(r.totalCents)}
+                  </Text>
+                  {r.reviewNote ? (
+                    <Text className="mt-1 text-xs italic text-muted">
+                      “{r.reviewNote}”
+                    </Text>
+                  ) : null}
+                  <Text className="mt-2 text-xs text-muted">
+                    Update this one from the link in your reimbursement email —
+                    it was submitted through the public form, so that link is
+                    what proves it&apos;s yours.
+                  </Text>
+                </View>
+              ),
+            )}
           </>
         ) : null}
 

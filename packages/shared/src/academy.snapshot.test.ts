@@ -323,6 +323,20 @@
  * it is the lesson `financeSettings.cardPrerequisiteCourseSlug` is meant to
  * put on the record before a card is issued (its course,
  * `finances-for-everyone`, is the prerequisite candidate).
+ *
+ * Transaction coding phase 3 (reimbursement parity) is a content-only edit to
+ * `finance-reimbursements-and-flags`, one course over: two new rules — per-LINE
+ * substantiation with the same elements and the same shared validator in the
+ * app, the `/reimburse/<token>` page and the server (cross-referencing
+ * `finance-coding-your-charges` rather than restating the meal/travel rules,
+ * and noting reimbursements have NO receipt-exception path), and the new
+ * `changes_requested` send-back loop (required note, resubmission keeps the
+ * original submission date, substantiation-only revisions, not payable while
+ * sent back). Its quiz stays at the 5-question cap by swapping the "where do
+ * you see both directions" navigation question — still taught by the bullet
+ * above it — for one on send-back-vs-rejected. Title, minutes (5), and
+ * quizLength (5) are all unchanged, so nothing in the tables below moved; no
+ * slugs, sections, or courses moved either, and the total stays 106.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";

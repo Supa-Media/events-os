@@ -35,12 +35,23 @@ export function outstandingLabel(args: {
   const needsCoding =
     args.requiresCoding &&
     (args.codingState == null || args.codingState === "changes_requested");
-  if (needsCoding && !args.hasDocumentation) return "needs coding and a receipt";
-  if (needsCoding) {
-    return args.codingState === "changes_requested"
-      ? "sent back — needs your edit"
-      : "needs coding";
+  // SENT BACK OUTRANKS EVERYTHING ELSE THIS ROW OWES.
+  //
+  // A reviewer wrote this person a specific note, and that note is the only
+  // instruction that tells them what to actually do — "needs coding and a
+  // receipt" describes the same row correctly and helps nobody. It also has
+  // to come first for a plainer reason: the member's own screen
+  // (`chargeTodo`) ranks a sent-back charge above everything, so ordering the
+  // combined case ahead of it here made the email and the screen name the
+  // same charge differently in the single most common send-back case (a row
+  // sent back precisely BECAUSE its receipt was wrong, i.e. still
+  // undocumented). The two must agree — that agreement is the whole reason
+  // this function is shared.
+  if (needsCoding && args.codingState === "changes_requested") {
+    return "sent back — needs your edit";
   }
+  if (needsCoding && !args.hasDocumentation) return "needs coding and a receipt";
+  if (needsCoding) return "needs coding";
   if (!args.hasDocumentation) return "needs a receipt";
   return null;
 }

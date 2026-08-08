@@ -1544,6 +1544,22 @@ export const myReimbursements = query({
             totalCents: req.totalCents,
             approvedCents: req.approvedCents,
             reviewNote: req.reviewNote ?? null,
+            // Whether THIS caller may revise-and-resubmit in the app, decided
+            // by the same rule `resubmitMyReimbursement` enforces
+            // (`identityVerified`), so the screen can't offer an edit the
+            // mutation will refuse.
+            //
+            // The gap is real and not hypothetical: this list is keyed by
+            // `by_person`, and the PUBLIC form best-effort matches a
+            // submission to a roster person by email/phone without verifying
+            // anyone. Such a request is legitimately the caller's and shows up
+            // here, but was never authenticated as theirs, so the resubmit
+            // path refuses it. Without this flag the member got a fully
+            // editable card whose Resubmit button always threw FORBIDDEN —
+            // the worst version, because they'd have retyped everything
+            // first. They revise it from the emailed link instead, where the
+            // secret token is the proof of identity.
+            canReviseInApp: req.identityVerified === true,
             namesMaxHeadcount,
             lines: lines.map((l) => ({
               _id: l._id,

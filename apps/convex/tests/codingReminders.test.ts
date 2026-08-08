@@ -3,6 +3,7 @@ import { describe, expect, test, vi } from "vitest";
 import { DAY_MS } from "@events-os/shared";
 import { newT, run, setupChapter, storeBlob, type ChapterSetup } from "./setup.helpers";
 import { api, internal } from "../_generated/api";
+import { outstandingLabel } from "../lib/codingReminders";
 import type { Id } from "../_generated/dataModel";
 
 /**
@@ -647,6 +648,65 @@ describe("notifyCodingSentBack", () => {
 
 // ── Lodging needs an itemized receipt at any amount ──────────────────────────
 
+describe("outstandingLabel — the email and the screen must say the same thing", () => {
+  // The label is shared on purpose: `chargeTodo` on the member's own screen
+  // renders these exact strings, so a divergence here is a user reading one
+  // thing in their inbox and a different thing on the page it links to.
+  test("sent back outranks the combined debt", () => {
+    // The most common send-back is "your receipt is wrong" — which means the
+    // row is BOTH sent back and still undocumented. Ordered the other way,
+    // the email said "needs coding and a receipt" while the screen said
+    // "sent back", for the same charge, in the single most likely case.
+    expect(
+      outstandingLabel({
+        hasDocumentation: false,
+        codingState: "changes_requested",
+        requiresCoding: true,
+      }),
+    ).toBe("sent back — needs your edit");
+  });
+
+  test("the other combinations are unchanged", () => {
+    expect(
+      outstandingLabel({
+        hasDocumentation: false,
+        codingState: undefined,
+        requiresCoding: true,
+      }),
+    ).toBe("needs coding and a receipt");
+    expect(
+      outstandingLabel({
+        hasDocumentation: true,
+        codingState: undefined,
+        requiresCoding: true,
+      }),
+    ).toBe("needs coding");
+    expect(
+      outstandingLabel({
+        hasDocumentation: false,
+        codingState: "approved",
+        requiresCoding: true,
+      }),
+    ).toBe("needs a receipt");
+    // Pre-policy: a receipt is the whole obligation.
+    expect(
+      outstandingLabel({
+        hasDocumentation: false,
+        codingState: undefined,
+        requiresCoding: false,
+      }),
+    ).toBe("needs a receipt");
+    // Nothing left to ask for.
+    expect(
+      outstandingLabel({
+        hasDocumentation: true,
+        codingState: "approved",
+        requiresCoding: true,
+      }),
+    ).toBeNull();
+  });
+});
+
 describe("receiptExceptions — the lodging rule", () => {
   const LODGING_PURPOSE = "Two nights in NY for the Eden event shoot crew";
   const EXCEPTION_NOTE =
@@ -686,6 +746,75 @@ describe("receiptExceptions — the lodging rule", () => {
         note: EXCEPTION_NOTE,
       }),
     ).rejects.toMatchObject({ data: { code: "LODGING_RECEIPT_REQUIRED" } });
+  });
+
+  test("the rule holds in the OTHER order too — exception first, lodging coding second", async () => {
+    // The cheap way around a one-sided guard: file the bank-record exception
+    // while the charge is still uncoded (nothing says "lodging" yet, so the
+    // attest-side check reads no expenseType and passes), then type it as
+    // lodging afterwards. Enforcement can't depend on which button someone
+    // pressed first.
+    const t = newT();
+    const s = await setupChapter(t);
+    await armCodingPolicy(s);
+    await asManager(s);
+    const txnId = await seedCharge(s, { ageDays: 2 });
+
+    // Uncoded: the exception is accepted, exactly as before.
+    await s.as.mutation(api.receiptExceptions.attest, {
+      transactionId: txnId,
+      reason: "bank_record_only",
+      note: EXCEPTION_NOTE,
+    });
+
+    // Now typing it as lodging is refused while that exception stands.
+    await expect(
+      s.as.mutation(api.transactionCodings.submit, {
+        transactionId: txnId,
+        expenseType: "lodging",
+        businessPurpose: LODGING_PURPOSE,
+        travelFrom: "Boston",
+        travelTo: "New York",
+      }),
+    ).rejects.toMatchObject({ data: { code: "LODGING_RECEIPT_REQUIRED" } });
+
+    // Withdrawing it is the way through — the folio either exists, or a
+    // different reason is the true one.
+    const filed = await run(s.t, async (ctx) =>
+      (await ctx.db.query("receiptExceptions").collect())[0],
+    );
+    await s.as.mutation(api.receiptExceptions.withdraw, {
+      exceptionId: filed._id,
+    });
+    await s.as.mutation(api.transactionCodings.submit, {
+      transactionId: txnId,
+      expenseType: "lodging",
+      businessPurpose: LODGING_PURPOSE,
+      travelFrom: "Boston",
+      travelTo: "New York",
+    });
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.codingState).toBe("submitted");
+  });
+
+  test("a non-lodging coding is unaffected by a standing bank-record exception", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await armCodingPolicy(s);
+    await asManager(s);
+    const txnId = await seedCharge(s, { ageDays: 2 });
+    await s.as.mutation(api.receiptExceptions.attest, {
+      transactionId: txnId,
+      reason: "bank_record_only",
+      note: EXCEPTION_NOTE,
+    });
+    await s.as.mutation(api.transactionCodings.submit, {
+      transactionId: txnId,
+      expenseType: "general",
+      businessPurpose: "Gaffer tape and sandbags for the Eden event shoot",
+    });
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.codingState).toBe("submitted");
   });
 
   test("every other reason still works on lodging — a lost folio is a judgment call", async () => {

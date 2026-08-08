@@ -99,6 +99,28 @@
  * alone — both quizzes sit at the 5-question cap, and this lesson leans on
  * the exception vocabulary rather than repeating it, which is why it sits
  * after that section rather than directly after the card lesson.
+ *
+ * Transaction coding phase 3 — reimbursement parity — then updated
+ * `finance-reimbursements-and-flags` for two shipped behavior changes, adding
+ * no sections and moving none. (1) A new rule, "Every line answers for
+ * itself": substantiation is per LINE, not per request (one request mixes a
+ * fare, a hotel night and a team dinner), validated by the same shared
+ * checker in the in-app form, the accountless `/reimburse/<token>` page, and
+ * the server, with submission blocked until every line is complete — it
+ * deliberately CROSS-REFERENCES `finance-coding-your-charges` for the meal/
+ * travel rules instead of restating them, and states the receipt asymmetry
+ * plainly: no exception path here, because a reimbursement is a claim you
+ * choose to make while a card charge already happened. (2) A new rule, "Sent
+ * back is not rejected": the `changes_requested` loop with its required note,
+ * the email, resubmission preserving the ORIGINAL submission date, and the
+ * two deliberate limits (a revision may change substantiation only — a wrong
+ * amount is a reject-and-refile, never a quiet edit under a reviewer who
+ * already saw the number — and a sent-back request stays cancelable and
+ * rejectable but is not payable). The first bullet and the `try_status`
+ * caption were updated to match. Quiz length stays 5 (the cap): the "where do
+ * you see both directions" navigation question was retired — still taught by
+ * the bullet right above it — for one on the send-back loop, and the
+ * out-of-pocket question's answer now names per-line coding. Minutes stay 5.
  */
 
 import type {
@@ -545,7 +567,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "p",
-        text: "**A receipt and a coding are two separate obligations.** A charge with a perfect receipt and no coding is exactly as open as one with neither — the reminders, and the day-7 lock, now chase the whole charge being closed out. And if there genuinely is no receipt, you already know the honest path from the last lesson: pick a reason, explain it, attach up to five photos of proof. It lives in the same sheet as the coding, so you're never bounced between two screens. The only exception to the exception is lodging, above.",
+        text: "**A receipt and a coding are two separate obligations.** A charge with a perfect receipt and no coding is exactly as open as one with neither — the reminders chase the whole charge being closed out, not just the paperwork half. The two do end differently, though, and it's worth knowing which is which: a missing RECEIPT is what locks your card at day 7, while a missing CODING is what turns the charge into money you owe back at day 60. And if there genuinely is no receipt, you already know the honest path from the last lesson: pick a reason, explain it, attach up to five photos of proof. It lives in the same sheet as the coding, so you're never bounced between two screens. The only exception to the exception is lodging, above.",
       },
       {
         kind: "rule",
@@ -570,7 +592,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           ],
           [
             "Day 7",
-            "Your card **locks automatically** — the same 7-day rule you already know, now measured on the charge being closed out, receipt and coding both.",
+            "A charge still missing its **receipt** locks your card automatically — the same 7-day rule you already know, unchanged. Coding doesn't lock the card; it has its own deadline below.",
           ],
           [
             "Day 60",
@@ -711,7 +733,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "bullets",
         items: [
-          "**Reimbursement — Public Worship owes you:** submit the request in-app with a short note on WHY it was needed, a transaction date on every line, and a receipt for every line — none of that is optional, the app blocks submission until all three are there. Your full bank details (routing + account, not just a last-4) are captured up front too, so the moment someone approves it, the ACH payout fires automatically from the chapter's Increase account — no one has to separately go send it (unless that account isn't set up yet for the chapter, in which case the Treasurer pays it manually instead). It then moves through submitted → approved → paying → paid. Someone else — never you — has to approve it.",
+          "**Reimbursement — Public Worship owes you:** submit the request in-app with a short note on WHY it was needed, plus a transaction date, a receipt, and a full coding on every line — none of that is optional, the app blocks submission until all of it is there. Your full bank details (routing + account, not just a last-4) are captured up front too, so the moment someone approves it, the ACH payout fires automatically from the chapter's Increase account — no one has to separately go send it (unless that account isn't set up yet for the chapter, in which case the Treasurer pays it manually instead). It then moves through submitted → approved → paying → paid, with a detour back to you if a reviewer sends it back for a fix. Someone else — never you — has to approve it.",
           "**A reimbursed purchase spends the budget, same as a card swipe:** once it's paid, it counts against whatever budget and category it's coded to — a $300 team meal you fronted eats $300 of Food & Meals either way. So code it as carefully as you'd code a card charge: the \"what's this for?\" and the per-line category are what decide which bucket it lands in, not paperwork.",
           "**Personal-charge flag — you owe Public Worship:** flag your own charge as personal on My Transactions, or a manager flags it for you from the Reconcile grid (its \"Personal (unpaid)\" filter is the Treasurer's worklist for exactly this). It opens an owed balance, tracked the same way, just pointed the other direction — and it's a FLAG, not a status: the same charge can be Reconciled AND an unpaid personal expense at the same time.",
           "**Pay it back by card or by bank:** once flagged, pay it back instantly by card (real-time, via Stripe Checkout) or by linking your bank account (ACH). Either way the flag only actually clears to \"repaid\" once the payment is CONFIRMED — closing the tab on a card payment without finishing it leaves the charge exactly as owed as before.",
@@ -722,12 +744,22 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "rule",
+        title: "Every line answers for itself",
+        text: "One request routinely mixes a $38 fare, a hotel night and a team dinner — three kinds of spending that owe three different answers. So the substantiation is per LINE, not per request: the expense type, a real business purpose, the route on travel, the people at a meal.\n\nSame questions, same rules as the coding you write on your own card charges — the 15-head names threshold and all (see *Coding your charges*). The difference is that here you answer them line by line, at submission, before anyone has seen the request. The same checker runs in the in-app form, in the emailed link an accountless payee uses, and on the server, so no door into this is easier than another.\n\nReceipts stay hard here too: one per line, and **no exception path**. A card charge already happened, and some real spending genuinely never produces a receipt. A reimbursement is a claim you're choosing to make — so \"no receipt\" is a reason not to claim it, not a form to file.",
+      },
+      {
+        kind: "rule",
+        title: "Sent back is not rejected",
+        text: "A reviewer who spots a thin purpose, or a receipt that doesn't show the exact amount, used to have two moves: approve it anyway, or reject it. Rejected is terminal and reads as \"you lost your money\" — so questions quietly turned into approvals.\n\nNow there's a third: **send it back with a note**, and the note is required (\"receipt must show exact amount\"). You get an email, fix the substantiation, resubmit — and it returns to review carrying its ORIGINAL submission date, so being asked a question never costs you your place in the queue.\n\nTwo limits, both deliberate. A revision may change the **substantiation only** — never the amounts, never the lines; a wrong amount is a reject and a fresh request, because a resubmission must never quietly move a number a reviewer already looked at. And while it sits with you it isn't payable, though you can still cancel it and the reviewer can still reject it outright.",
+      },
+      {
+        kind: "rule",
         title: "Approver ≠ you, always",
         text: "Separation of duties means the person who submits a reimbursement is never the person who approves it — even a Treasurer can't approve their own request. It's the same rule for everyone, including the Executive Director. In practice, your chapter's Treasurer approves most requests; if the Treasurer is the one requesting, it's the central Financial Manager who approves instead — their reach covers every chapter, which is exactly the failsafe for \"the approver and the requester would otherwise be the same person.\"",
       },
       {
         kind: "tip",
-        text: "**Something time-sensitive?** There's no in-app \"urgent\" flag or fast lane — a request sits in the same queue whether it's due in an hour or next month. Submitting already emails every approver who could act on it — your chapter's Treasurer(s) and the central Financial Manager(s) — so nobody has to be checking the queue on faith. If it's genuinely urgent, that email is your baseline, not your whole plan: also reach your Treasurer (or the Financial Manager, if they're the one who'd have to approve it) directly — a call or a text — and ask them to check the queue now. A direct nudge to the person who can actually approve it is what turns \"they'll see it eventually\" into \"they saw it today.\"",
+        text: "**Something time-sensitive?** There's no in-app \"urgent\" flag or fast lane — a request sits in the same queue whether it's due in an hour or next month. Submitting already emails every approver who could act on it (your chapter's Treasurer(s) and the central Financial Manager(s)), so nobody is checking the queue on faith. If it's genuinely urgent, treat that email as your baseline, not your whole plan: reach the person who'd actually approve it directly — a call or a text — and ask them to look now. That's what turns \"they'll see it eventually\" into \"they saw it today.\"",
       },
       {
         kind: "try_status",
@@ -739,7 +771,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         terminal: "paid",
         caption:
-          "Rejected and canceled exist too — those land in your History, not stuck in the middle.",
+          "Changes requested is the state that isn't on this line: it hands the request back to YOU with a note, keeps its original submission date, and rejoins at Submitted the moment you resubmit. Rejected and canceled are endings — those land in your History, not stuck in the middle.",
       },
       {
         kind: "scenario",
@@ -802,14 +834,14 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         prompt: "You paid for event supplies with your own card. What do you do?",
         options: [
-          "Submit a reimbursement request with the line items, a receipt and date on each, and why it was needed",
+          "Submit a reimbursement request — every line with its own receipt, date, and coding (purpose, plus route or attendees where they apply)",
           "Nothing — it evens out eventually",
           "Ask your Treasurer to send you cash directly",
           "Put it on your Public Worship card retroactively",
         ],
         answerIndex: 0,
         explanation:
-          "A reimbursement request is the front door for out-of-pocket mission spending — every line needs its own receipt and transaction date, and the request itself needs a short note on why, or it won't submit. That's how \"Public Worship owes you\" gets tracked to paid.",
+          "A reimbursement request is the front door for out-of-pocket mission spending — and every line carries its own receipt, date, and substantiation, because one request routinely mixes a fare, a hotel night and a meal. The app blocks submission until each line is complete. That's how \"Public Worship owes you\" gets tracked to paid.",
       },
       {
         prompt: "A personal charge accidentally hit your Public Worship card. What's true?",
@@ -848,16 +880,17 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "Flagging \"personal\" says you made the charge — wrong move for a genuine mystery. Freezing your own card is instant and self-serve, and looping in your Treasurer or the Financial Manager gets it actually investigated.",
       },
       {
-        prompt: "Where do you see both directions — what you're owed and what you owe — at once?",
+        prompt:
+          "A reviewer sends your request back with the note \"the hotel line needs where you travelled from and to.\" What's true?",
         options: [
-          "The Reimbursements tab, side by side",
-          "Two different apps",
-          "Only in a spreadsheet the Treasurer keeps",
-          "You have to ask the Financial Manager",
+          "It's rejected — you'll have to start a brand-new request",
+          "It's in Changes requested: fix the substantiation on that line and resubmit, and it returns to review with your original submission date",
+          "It's approved as long as you reply to the email explaining the trip",
+          "You can fix the route and correct the line's amount while you're in there",
         ],
-        answerIndex: 0,
+        answerIndex: 1,
         explanation:
-          "Both directions render together on the same screen — nothing you owe quietly offsets something you're owed without you seeing it.",
+          "Sent back is not rejected — rejected is terminal, this is a revision loop, and resubmitting keeps your original submission date so a question never costs you your place in the queue. But a revision may change the SUBSTANTIATION only: a wrong amount is a reject and a fresh request, never a quiet edit under a reviewer who already saw the number. While it sits with you it isn't payable, though you can still cancel it.",
       },
     ],
   },
