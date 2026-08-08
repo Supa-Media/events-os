@@ -1,6 +1,6 @@
 # Transaction coding — IRS-grade substantiation, self-serve
 
-**Status:** proposed (scope for review — not yet implemented)
+**Status:** ratified 2026-08-08 (decisions below) — implementation not yet started
 **Owner ask (2026-08-08):** travel line items need a from/to; meals need the
 names of everyone there (or a headcount for big groups); business purpose has
 to be real ("travel to NY to film Eden event", not "bus to NY"). Cardholders
@@ -44,11 +44,10 @@ On attendees, the IRS practice (and every auditor's expectation) is:
 **names + business relationship when the group is enumerable; headcount +
 an identifiable group description when it isn't** ("14 volunteers writing
 and producing the album" is fine; "some people" is not). Note this is a
-**headcount** threshold, not a dollar threshold — a $40 pizza order for 15
-volunteers gets a headcount, a $400 dinner for 4 gets four names. (The owner
-ask framed it as a dollar amount; recommendation below is headcount with the
-dollar amount as an *extra* trigger for reviewer scrutiny, see Open
-questions.)
+**headcount** threshold, not a dollar threshold — a $40 pizza order for 16
+volunteers gets a headcount, a $400 dinner for 4 gets four names. **Decided
+2026-08-08: headcount basis, threshold 15** — more than 15 people →
+headcount + group description; 15 or fewer → names.
 
 The teeth: an expense still unsubstantiated when the accountable-plan clock
 runs out is, by law, **wages to the spender**. We already have the mechanism
@@ -101,9 +100,11 @@ all three axes are green. Do **not** add new values to
 - Meal: `headcount` (required), and — when
   `headcount <= mealAttendeeNamesMaxHeadcount` — `attendees[]`:
   `{ personId?, name, affiliation }` where `affiliation` is
-  `"team" | "volunteer" | "guest" | "vendor" | "other"` (the business
-  relationship element). When over the threshold: `groupDescription`
-  required ("volunteers writing and producing the album").
+  `"team" | "volunteer" | "community_member" | "contractor" | "guest" |
+  "other"` (the business-relationship element; the taxonomy the owner wants
+  the ledger to speak — "5 volunteers, 3 community members, 2 contractors").
+  When over the threshold: `groupDescription` required ("volunteers writing
+  and producing the album") plus an optional affiliation-count breakdown.
 - Lodging: reuses travel from/to; its special rule is on the receipt side
   (below).
 - Review: `status: "draft" | "submitted" | "changes_requested" | "approved"`,
@@ -124,7 +125,11 @@ without joins.
   an instant 100% backlog and the feature dies on arrival. Historical
   cleanup is a separate, deliberate effort (the `historicalImportBatch` /
   reconstructed-history story already covers how honest that has to be).
-- `mealAttendeeNamesMaxHeadcount?` (default proposed **10**).
+  **Decided: 2026-09-01.** The feature itself ships as soon as it's built —
+  August is the voluntary on-ramp: the editor, reminders, and review loop
+  all run, but the reconcile gate and auto-convert only bite charges posted
+  on/after the policy date.
+- `mealAttendeeNamesMaxHeadcount?` (**decided: 15**).
 - `codingOverdueDays?` — joins the receipt clock for the 60-day story.
 
 New `FINANCE_AUDIT_ACTIONS`: `coding_submit`, `coding_edit`,
@@ -280,9 +285,14 @@ imposes on this feature:
 1. **Two audiences, one record.** `businessPurpose` is written *for the
    public* — the UI says so at the field ("This description will appear on
    Public Worship's public ledger"). Attendee **names are internal-only**,
-   forever: members, volunteers, and guests did not consent to appearing in
-   a public financial record, and some are minors. The ledger prints
-   **headcount and affiliation mix** ("meal — 4 team members"), never names.
+   forever (decided 2026-08-08): members, volunteers, and guests did not
+   consent to appearing in a public financial record, and some are minors.
+   The ledger prints the **headcount and affiliation breakdown** — "meal —
+   5 volunteers, 3 community members, 2 contractors" — never names. Full
+   names are visible internally behind `requireCodingNamesView` in the
+   access resolver (finance viewer+ today; graduates to a
+   `finance.coding.viewNames` capability string the day a seat needs it
+   carried or stripped separately — the standard gate-it-now pattern).
    Travel from/to publishes at city level.
 2. **Publishable = three green axes**: documentation state
    (receipt/exception — the existing `documentationState`), coding state
@@ -322,6 +332,15 @@ it.
 - **Substantiation-lag metric** — report `submittedAt - postedAt` per
   cardholder; the number an auditor asks for first, and the receipt-chase
   page already has the right shape to host it.
+- **Policy acknowledgment before the card** — the accountable plan should
+  exist as a written policy each cardholder has acknowledged. We already
+  have the mechanism: `cardPrerequisiteCourseSlug`. Add the new coding
+  lesson to the card-prerequisite course, and passing it *is* the
+  acknowledgment, on the record, before the card is issued.
+- **Record retention** — receipts, codings, exceptions, and audit rows are
+  never hard-deleted (IRS lookback is 3 years minimum, 4 for
+  employment-tax questions — which is exactly what a failed accountable
+  plan becomes). Archiving stays; deletion doesn't exist in this domain.
 
 ## Phasing
 
@@ -344,18 +363,27 @@ warrants a new lesson — *"Coding your charges: what the IRS and the public
 ledger both need"* — plus quiz updates and a check of `academyPaths.ts` and
 the capstone templates.
 
-## Open questions (blocking phase 1 settings, not phase 1 build)
+## Decisions (owner, 2026-08-08)
 
-1. **Meal threshold basis** — recommend headcount (names ≤ 10, else
-   headcount + group description). Optionally *also* require names on any
-   meal over a dollar line (e.g. $75+) regardless of size? Owner call.
-2. **`codingRequiredSinceMs`** — policy start date. Recommend the feature's
-   ship date; historical cleanup scheduled separately.
-3. **Reimbursement receipt exceptions** — keep the hard per-line receipt
-   requirement for reimbursements (recommended: yes — reimbursements are
-   voluntary submissions, unlike card charges that already happened)?
-4. **Auto-convert uncoded to personal** after 60+N days — same teeth as
-   receipts (recommended: yes, with the taxable-income explanation)?
-5. **Alcohol flag** — yes/no.
-6. **Public redaction policy** — confirm names-never, city-level travel,
-   aggregated benevolence.
+1. **Meal names threshold: 15, headcount-based.** More than 15 people →
+   headcount + group description (+ affiliation counts); 15 or fewer →
+   names with affiliations. No additional dollar trigger.
+2. **Policy start date: September 1, 2026** (`codingRequiredSinceMs`).
+   Build and launch the tooling now; the gate and auto-convert apply to
+   charges posted on/after the policy date. August = voluntary on-ramp and
+   the window to train (Academy lesson ships with phase 1).
+3. **Auto-convert to personal repayment: yes** for post-policy-date charges
+   still unsubstantiated at the deadline, with the plain-words
+   taxable-income explanation in the escalation emails.
+4. **Publication redaction: names never publish.** The public ledger shows
+   the affiliation breakdown ("5 volunteers, 3 community members,
+   2 contractors"); full names stay internal behind
+   `requireCodingNamesView`.
+
+## Still open (defaults apply unless overridden — neither blocks phase 1)
+
+1. **Alcohol flag** — default: include `includesAlcohol?` on meal codings
+   (one boolean now vs. an awkward retrofit; the public will ask).
+2. **Reimbursement receipt exceptions** — default: keep the hard per-line
+   receipt requirement (reimbursements are voluntary submissions, unlike
+   card charges that already happened).
