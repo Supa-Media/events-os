@@ -26,7 +26,7 @@ import { Modal, Pressable, ScrollView, Text, View } from "react-native";
 import { useRouter } from "expo-router";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
-import { formatCents } from "@events-os/shared";
+import { formatCents, increasePendingCategoryLabel } from "@events-os/shared";
 import { Badge, Button, Card, Icon, ToastView } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
@@ -111,6 +111,9 @@ export function BookValueBreakdownModal({
     api.reconciliation.bookValueBreakdown,
     scope ? ({ scope } as never) : "skip",
   );
+  // Org-level and cheap (one settings row). Mounted with the modal rather than
+  // hoisted into the page so the drill-down owns everything it displays.
+  const stripe = useQuery(api.reconciliation.stripeBalance, scope ? {} : "skip");
   const router = useRouter();
   const linkGift = useMutation(api.givingCandidates.linkGiftToTransaction);
   const { run, toast, dismiss } = useActionRunner();
@@ -159,6 +162,99 @@ export function BookValueBreakdownModal({
                   />
                 </View>
               </Card>
+
+              {/* THE CASH SIDE — the two figures the table shows next to book
+                  value, which this drill-down used to omit entirely. The
+                  founder: "Is the pending and held at Stripe even accurate? It
+                  doesn't really show up in the breakdown when I click on it,
+                  and it's a little confusing." You cannot check a number you
+                  cannot see, and a bare "Pending $940.79" invites a reader to
+                  go hunting for card spend that may not be what it's made of. */}
+              <Group title="Cash in this book's bank account">
+                <Text className="mb-2 text-2xs text-muted">
+                  Book value above is what this book is WORTH. This is where its
+                  cash physically is. They are not meant to match row by row —
+                  payouts all land in central&apos;s account, so central holds
+                  what the chapters earned until the morning engine moves it. The
+                  org-wide check is on the accounts page.
+                </Text>
+                {data.cash.bankBalanceCents == null ? (
+                  <Text className="text-sm text-muted">
+                    No bank balance has ever synced for this book.
+                  </Text>
+                ) : (
+                  <Line
+                    label="Available in the account"
+                    hint={
+                      data.cash.bankBalanceAsOf
+                        ? `As of ${shortDate(data.cash.bankBalanceAsOf)}`
+                        : undefined
+                    }
+                    value={formatCents(data.cash.bankBalanceCents)}
+                  />
+                )}
+                {data.cash.pendingCents == null ? null : (
+                  <>
+                    <Line
+                      label="Set aside, not yet posted"
+                      hint="The bank has already taken this off the available balance, but it hasn't posted — so the ledger hasn't seen it and book value hasn't either"
+                      value={formatCents(data.cash.pendingCents)}
+                      tone={data.cash.pendingCents > 0 ? "warn" : "muted"}
+                    />
+                    {data.cash.pendingCents > 0 &&
+                    data.cash.pendingBreakdown.length === 0 ? (
+                      <Text className="text-2xs text-faint">
+                        What it&apos;s made of hasn&apos;t been read yet — it
+                        arrives with the next balance sync.
+                      </Text>
+                    ) : null}
+                    {/* Increase reports pending amounts SIGNED, and only the
+                        negative ones move the available balance — a positive
+                        one (an unsettled card refund) is money on its way back
+                        that the bank hasn't credited yet. Adding its magnitude
+                        to the total would overstate what's held, so the sign is
+                        kept and said out loud. */}
+                    {data.cash.pendingBreakdown.map((p) => (
+                      <Line
+                        key={p.category}
+                        label={increasePendingCategoryLabel(p.category)}
+                        hint={`${p.count} ${p.count === 1 ? "item" : "items"}${
+                          p.amountCents > 0
+                            ? " · coming back to us; doesn't change the available balance"
+                            : ""
+                        }`}
+                        value={
+                          p.amountCents > 0
+                            ? `+${formatCents(p.amountCents)}`
+                            : formatCents(Math.abs(p.amountCents))
+                        }
+                        tone="muted"
+                      />
+                    ))}
+                  </>
+                )}
+                {/* Org-level, not this book's — there is one Stripe account and
+                    its balance can't be attributed to a chapter until it pays
+                    out. Shown here anyway because it's the other figure the
+                    accounts page states without explaining, and a reader
+                    checking "where is my money" needs to know some of it hasn't
+                    reached a bank at all yet. */}
+                {stripe &&
+                (stripe.availableCents != null || stripe.pendingCents != null) ? (
+                  <View className="mt-2 border-t border-border pt-2">
+                    <Line
+                      label="Still at Stripe (whole org)"
+                      hint={`Earned and already counted in book value, but not yet paid into any bank account${
+                        stripe.asOf ? ` · as of ${shortDate(stripe.asOf)}` : ""
+                      }`}
+                      value={formatCents(
+                        (stripe.availableCents ?? 0) + (stripe.pendingCents ?? 0),
+                      )}
+                      tone="muted"
+                    />
+                  </View>
+                ) : null}
+              </Group>
 
               {data.suspectedDoubleCounts.length > 0 ? (
                 <View className="mt-4">

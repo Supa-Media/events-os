@@ -1,9 +1,16 @@
 /**
- * FINANCES · ACCOUNTS — the ED/FM money-audit page. The top half is the
- * MORNING RECONCILIATION ENGINE's surface (`ReconciliationSections.tsx`):
- * per-book balances (book value vs bank cash), engine status + detected
- * Stripe payouts with their allocation breakdowns, and the full
- * central↔chapter transfer history (manual + engine) with flag/resolve.
+ * FINANCES · ACCOUNTS — the ED/FM money-audit page. It opens with the
+ * RECONCILIATION VERDICT (`ReconciliationSummary.tsx`): do the books match the
+ * money, and if not, by how much and where to look. Everything under it is the
+ * evidence for that one figure — per-book balances (book value vs bank cash),
+ * engine status + detected Stripe payouts, and the full central↔chapter
+ * transfer history (manual + engine) with flag/resolve.
+ *
+ * That order is the 2026-08-08 fix. The page had every number and stated no
+ * conclusion, so answering "are we short?" meant adding four columns in your
+ * head. Opening the page also now re-reads the bank and Stripe balances, since
+ * a verdict computed from a figure fetched at 5am is not a verdict.
+ *
  * Below it, two DISTINCT account lists, kept clearly separate:
  *
  *  1. The ORG'S INCREASE ACCOUNTS — the native card + ACH-payout layer (issue
@@ -68,6 +75,7 @@ import {
   ReconciliationSection,
   TransferHistorySection,
 } from "../../../components/finance/accounts/ReconciliationSections";
+import { ReconciliationSummary } from "../../../components/finance/accounts/ReconciliationSummary";
 
 const ONBOARDING_BADGE: Record<
   "not_started" | "pending" | "active" | "disabled",
@@ -142,6 +150,11 @@ function AccountsBody() {
         <View className="mb-1">
           <ToastView toast={toast} onDismiss={dismiss} />
         </View>
+
+        {/* The verdict FIRST, then the evidence. Whether the books match the
+            money is the question this page exists to answer, and it used to be
+            derivable only by mentally adding four columns of the table below. */}
+        <ReconciliationSummary />
 
         <BalancesSection />
 

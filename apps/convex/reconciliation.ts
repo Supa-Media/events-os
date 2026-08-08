@@ -117,6 +117,7 @@ import {
   requireReconciliationAudit,
 } from "./lib/reconciliationAccess";
 import { signedBookCents } from "./lib/bookBalance";
+import { reconcileOrgMoney } from "./lib/reconciliationGap";
 import {
   increaseEnvForMode,
   increaseEnvForObjectId,
@@ -342,6 +343,10 @@ export const upsertDetectedPayout = internalMutation({
     currency: v.string(),
     stripeStatus: v.string(),
     arrivalDate: v.number(),
+    /** Stripe's `automatic` flag — false when a human pressed "pay out now".
+     *  Optional so a caller that didn't read it leaves the stored value alone
+     *  rather than overwriting a known value with a guess. */
+    automatic: v.optional(v.boolean()),
   },
   returns: v.object({
     processState: v.union(
@@ -364,6 +369,7 @@ export const upsertDetectedPayout = internalMutation({
         currency: args.currency,
         stripeStatus: args.stripeStatus,
         arrivalDate: args.arrivalDate,
+        ...(args.automatic !== undefined ? { automatic: args.automatic } : {}),
         processState: "pending",
         createdAt: now,
         updatedAt: now,
@@ -374,11 +380,37 @@ export const upsertDetectedPayout = internalMutation({
       existing.processState === "allocated" &&
       (args.stripeStatus === "failed" || args.stripeStatus === "canceled") &&
       existing.stripeStatus !== args.stripeStatus;
+    // ── HEAL AN OBSOLETE ALLOCATION FAILURE ──────────────────────────────────
+    // "failed" only ever meant "the per-payout allocation step errored", and
+    // #553 deleted that step: attribution comes from the revenue layer now, and
+    // a payout's only remaining job is to have its bank deposit labelled. So a
+    // stored `failed` describes work that is no longer attempted, cannot be
+    // retried, and does not need to be — yet it kept rendering as a red badge
+    // over a raw Stripe error blob, on a page whose entire purpose is telling a
+    // treasurer whether something needs their attention.
+    //
+    // The concrete case: po_1U1qk8Qv9S5xW6eKsjkeLJvv was initiated by hand in
+    // the Stripe dashboard, and Stripe will not itemise a manual payout
+    // ("Balance transaction history can only be filtered on automatic
+    // transfers, not manual"). Correct refusal, obsolete requirement.
+    //
+    // Cleared here rather than by a migration so it heals wherever it exists —
+    // including any deployment that acquires one before the code that could
+    // create it is finally deleted. A payout Stripe itself reports as failed or
+    // canceled is left alone; that is a real problem and keeps its record.
+    const healingObsoleteFailure =
+      existing.processState === "failed" &&
+      args.stripeStatus !== "failed" &&
+      args.stripeStatus !== "canceled";
     await ctx.db.patch(existing._id, {
       amountCents: args.amountCents,
       currency: args.currency,
       stripeStatus: args.stripeStatus,
       arrivalDate: args.arrivalDate,
+      ...(args.automatic !== undefined ? { automatic: args.automatic } : {}),
+      ...(healingObsoleteFailure
+        ? { processState: "pending" as const, error: undefined }
+        : {}),
       updatedAt: now,
     });
     if (failedAfterAllocation) {
@@ -392,7 +424,9 @@ export const upsertDetectedPayout = internalMutation({
       });
     }
     return {
-      processState: existing.processState,
+      processState: healingObsoleteFailure
+        ? ("pending" as const)
+        : existing.processState,
       stripeStatus: args.stripeStatus,
     };
   },
@@ -1225,6 +1259,117 @@ export const saveAccountBalance = internalMutation({
   },
 });
 
+/** The category rollup behind one account's pending total — see the schema
+ *  field's doc for why a bare total wasn't enough. */
+export const savePendingBreakdown = internalMutation({
+  args: {
+    accountRowId: v.id("increaseAccounts"),
+    breakdown: v.array(
+      v.object({
+        category: v.string(),
+        amountCents: v.number(),
+        count: v.number(),
+      }),
+    ),
+  },
+  returns: v.null(),
+  handler: async (ctx, { accountRowId, breakdown }) => {
+    await ctx.db.patch(accountRowId, {
+      pendingBreakdown: breakdown,
+      pendingBreakdownAsOf: Date.now(),
+      updatedAt: Date.now(),
+    });
+    return null;
+  },
+});
+
+/**
+ * How long a completed snapshot is considered fresh enough to reuse.
+ *
+ * The founder asked for the page to "sync every time I open" it, and this is
+ * the smallest brake that honours that without letting a page load become a
+ * denial-of-service on two vendors. One minute means a treasurer who opens the
+ * page, reads it, and opens it again is looking at live figures, while a
+ * component that remounts on every keystroke costs one call a minute.
+ */
+const SNAPSHOT_FRESH_MS = 60 * 1000;
+
+/**
+ * How long an in-flight snapshot blocks others before it is presumed dead.
+ *
+ * The lock exists so two page opens a second apart don't both call Increase and
+ * Stripe. It has to expire, because an action that crashes between claiming and
+ * finishing would otherwise wedge every future refresh — permanently, silently,
+ * and in a way that looks exactly like "the page just isn't updating". Two
+ * minutes is comfortably longer than the snapshot's worst case (a handful of
+ * sequential HTTP calls) and short enough that nobody notices the recovery.
+ */
+const SNAPSHOT_LOCK_MS = 2 * 60 * 1000;
+
+/**
+ * Decide — transactionally — whether this caller gets to run a snapshot.
+ *
+ * A Convex mutation is the only place this check can honestly live. Doing it in
+ * the action would read, then decide, then act, with every other caller free to
+ * do the same in between; doing it on the client would forget on every remount
+ * and wouldn't know about the other three people with the page open.
+ */
+export const claimBalanceSnapshot = internalMutation({
+  args: {
+    /** A human pressed Refresh. Skips the freshness check (they can see the
+     *  "as of" and have decided it isn't good enough) but NOT the in-flight
+     *  lock, which exists to stop concurrent callers, not impatient ones. */
+    force: v.boolean(),
+  },
+  returns: v.object({ proceed: v.boolean() }),
+  handler: async (ctx, { force }) => {
+    const now = Date.now();
+    const row = await ctx.db.query("financeSettings").first();
+    if (!row) {
+      // No settings row yet — nothing to lock against, and the snapshot's own
+      // writes will create one. Let it run.
+      return { proceed: true };
+    }
+    const running = row.balanceSnapshotRunningSince;
+    if (running != null && now - running < SNAPSHOT_LOCK_MS) {
+      return { proceed: false };
+    }
+    const last = row.balanceSnapshotAt;
+    if (!force && last != null && now - last < SNAPSHOT_FRESH_MS) {
+      return { proceed: false };
+    }
+    await ctx.db.patch(row._id, {
+      balanceSnapshotRunningSince: now,
+      updatedAt: now,
+    });
+    return { proceed: true };
+  },
+});
+
+/** Release the lock and stamp "we last looked at" — the page's "as of". */
+export const finishBalanceSnapshot = internalMutation({
+  args: {},
+  returns: v.null(),
+  handler: async (ctx) => {
+    const now = Date.now();
+    const row = await ctx.db.query("financeSettings").first();
+    if (row) {
+      await ctx.db.patch(row._id, {
+        balanceSnapshotAt: now,
+        balanceSnapshotRunningSince: undefined,
+        updatedAt: now,
+      });
+    } else {
+      await ctx.db.insert("financeSettings", {
+        sandboxMode: false,
+        balanceSnapshotAt: now,
+        updatedAt: now,
+      });
+    }
+    return null;
+  },
+});
+
 /** Org-level Stripe balance snapshot — one Stripe account, so not per-book. */
 export const saveStripeBalance = internalMutation({
   args: { availableCents: v.number(), pendingCents: v.number() },
@@ -1251,6 +1396,9 @@ interface StripePayoutObject {
   currency?: string;
   status?: string;
   arrival_date?: number; // unix seconds
+  /** False when a human pressed "pay out now" in the Stripe dashboard rather
+   *  than the payout schedule producing it. See `stripePayouts.automatic`. */
+  automatic?: boolean;
 }
 
 interface StripeBalanceTxn {
@@ -1470,6 +1618,177 @@ async function fetchPayoutItems(
   return items;
 }
 
+// ── Balance snapshot (shared by the morning engine and the page's refresh) ───
+
+/** Pages of `GET /pending_transactions` to read per account. 100 per page, so
+ *  this covers 300 open pending items — far past anything a chapter produces,
+ *  and a hard stop on an account that somehow has thousands. */
+const PENDING_TXN_PAGES = 3;
+
+/**
+ * Read each Increase account's balance + Stripe's, and cache them.
+ *
+ * Extracted from `runEngine` so the accounts page can refresh the SAME figures
+ * on open without running the engine. That separation is the point, not a
+ * convenience: the engine books ledger rows and (when real movement is on)
+ * moves actual cash between bank accounts, and opening a page must never do
+ * either. This function only reads — every write it makes is to a cached
+ * display figure.
+ *
+ * ALL BEST-EFFORT. A processor being down is not a reason to fail a
+ * reconciliation run, and a stale balance is visibly stale (`balanceAsOf`)
+ * rather than silently wrong. A failed fetch leaves the previous value alone.
+ *
+ * One caller-visible caveat: `settleChapterBalances` settles against
+ * `increaseAccounts.balanceCents`, which this writes. That is deliberate and
+ * safe — the morning run snapshots immediately before settling precisely so it
+ * settles against a fresh figure, and a page-open refresh can only make that
+ * figure fresher.
+ */
+async function snapshotBalances(ctx: ActionCtx): Promise<void> {
+  const accounts: {
+    accountRowId: Id<"increaseAccounts">;
+    increaseAccountId: string;
+  }[] = await ctx.runQuery(internal.reconciliation.listAccountsForSnapshot, {});
+
+  for (const account of accounts) {
+    const { key: incKey, base } = increaseEnvForObjectId(
+      account.increaseAccountId,
+    );
+    if (!incKey) continue;
+    try {
+      const balance = await increaseGet(
+        incKey,
+        base,
+        `/accounts/${encodeURIComponent(account.increaseAccountId)}/balance`,
+      );
+      const available =
+        typeof balance.available_balance === "number"
+          ? balance.available_balance
+          : null;
+      const current =
+        typeof balance.current_balance === "number"
+          ? balance.current_balance
+          : null;
+      const cents = available ?? current;
+      // ── WHAT `current − available` ACTUALLY IS ───────────────────────────
+      // Increase: "The available balance […] is calculated as the current
+      // balance minus the sum of all negative Pending Transactions." So the
+      // difference is EVERY pending item, of which `card_authorization` is one
+      // category among roughly sixteen — outbound ACH/wire/check instructions
+      // and inbound-funds holds land here too. This code called it "card
+      // authorizations" until 2026-08-08; the total was right, the name was
+      // not, and `pendingBreakdown` below now itemises it so nobody has to
+      // take either on trust.
+      //
+      // Non-negative by construction: a POSITIVE pending transaction (an
+      // unsettled card refund) does not raise the available balance, so
+      // available can never exceed current. The clamp is belt-and-braces
+      // against a provider surprise, not a case we expect.
+      const pendingCents =
+        available != null && current != null
+          ? Math.max(0, current - available)
+          : undefined;
+      if (cents != null) {
+        await ctx.runMutation(internal.reconciliation.saveAccountBalance, {
+          accountRowId: account.accountRowId,
+          balanceCents: cents,
+          ...(pendingCents !== undefined ? { pendingCents } : {}),
+        });
+      }
+    } catch (err) {
+      // Display-only data — log and move on.
+      console.error(
+        `[reconciliation] balance snapshot failed for ${account.increaseAccountId}`,
+        err,
+      );
+    }
+
+    // What the pending total is MADE OF. A separate, separately-failing call:
+    // the total above is the one the reconciliation arithmetic depends on, and
+    // it must not be lost because the itemisation endpoint had a bad minute.
+    try {
+      const byCategory = new Map<string, { amountCents: number; count: number }>();
+      let cursor: string | undefined;
+      for (let page = 0; page < PENDING_TXN_PAGES; page++) {
+        const params = new URLSearchParams();
+        params.set("account_id", account.increaseAccountId);
+        // Increase's dotted-array filter style. `complete` pending transactions
+        // have already become real transactions and are no longer held against
+        // the available balance, so including them would overstate the total.
+        params.append("status.in[]", "pending");
+        params.set("limit", "100");
+        if (cursor) params.set("cursor", cursor);
+        const body = await increaseGet(
+          incKey,
+          base,
+          `/pending_transactions?${params.toString()}`,
+        );
+        const rows = (body.data ?? []) as Array<{
+          amount?: number;
+          category?: string;
+        }>;
+        for (const row of rows) {
+          if (typeof row.amount !== "number") continue;
+          const category = row.category ?? "other";
+          const entry = byCategory.get(category) ?? { amountCents: 0, count: 0 };
+          entry.amountCents += row.amount;
+          entry.count += 1;
+          byCategory.set(category, entry);
+        }
+        const next = body.next_cursor;
+        if (typeof next !== "string" || next.length === 0) break;
+        cursor = next;
+      }
+      await ctx.runMutation(internal.reconciliation.savePendingBreakdown, {
+        accountRowId: account.accountRowId,
+        breakdown: [...byCategory.entries()]
+          .map(([category, e]) => ({ category, ...e }))
+          // Biggest absolute mover first — a reader scanning this wants the
+          // line that explains most of the total, not alphabetical order.
+          .sort((a, b) => Math.abs(b.amountCents) - Math.abs(a.amountCents)),
+      });
+    } catch (err) {
+      console.error(
+        `[reconciliation] pending itemisation failed for ${account.increaseAccountId}`,
+        err,
+      );
+    }
+  }
+
+  // Stripe's own balance, in the same best-effort spirit. Money sitting at the
+  // processor is real money the org holds and the accounts page could not see
+  // it — every figure there was either a book total or an Increase balance, so
+  // funds in transit looked like they had vanished.
+  const key = process.env.STRIPE_SECRET_KEY;
+  if (key) {
+    try {
+      const bal = await stripeGet(key, "/balance");
+      const sumUsd = (arr: unknown): number =>
+        Array.isArray(arr)
+          ? arr
+              .filter(
+                (b): b is { amount: number; currency: string } =>
+                  typeof (b as { amount?: unknown })?.amount === "number" &&
+                  (b as { currency?: unknown })?.currency === "usd",
+              )
+              .reduce((sum, b) => sum + b.amount, 0)
+          : 0;
+      await ctx.runMutation(internal.reconciliation.saveStripeBalance, {
+        availableCents: sumUsd(bal.available),
+        pendingCents: sumUsd(bal.pending),
+      });
+    } catch (err) {
+      console.error("[reconciliation] Stripe balance snapshot failed", err);
+    }
+  }
+
+  // Stamped LAST and unconditionally: this is "when we last went and looked",
+  // which is the honest thing to show beside figures that are individually
+  // best-effort. A run where Stripe was down still looked.
+  await ctx.runMutation(internal.reconciliation.finishBalanceSnapshot, {});
+}
+
 // ── The engine core (shared by cron, webhook, and manual runs) ───────────────
 
 async function runEngine(
@@ -1572,6 +1891,9 @@ async function runEngine(
             currency: (po.currency ?? "usd").toLowerCase(),
             stripeStatus: po.status ?? "unknown",
             arrivalDate: arrivalMs,
+            ...(typeof po.automatic === "boolean"
+              ? { automatic: po.automatic }
+              : {}),
           },
         );
         if (po.status !== "paid") continue;
@@ -1737,84 +2059,9 @@ async function runEngine(
 
     // ── 6: bank-balance snapshot (best-effort, display only) ────────────────
     if (trigger !== "webhook") {
-      const accounts: {
-        accountRowId: Id<"increaseAccounts">;
-        increaseAccountId: string;
-      }[] = await ctx.runQuery(
-        internal.reconciliation.listAccountsForSnapshot,
-        {},
-      );
-      for (const account of accounts) {
-        const { key: incKey, base } = increaseEnvForObjectId(
-          account.increaseAccountId,
-        );
-        if (!incKey) continue;
-        try {
-          const balance = await increaseGet(
-            incKey,
-            base,
-            `/accounts/${encodeURIComponent(account.increaseAccountId)}/balance`,
-          );
-          const available =
-            typeof balance.available_balance === "number"
-              ? balance.available_balance
-              : null;
-          const current =
-            typeof balance.current_balance === "number"
-              ? balance.current_balance
-              : null;
-          const cents = available ?? current;
-          // `current` counts authorizations still held; `available` doesn't.
-          // Their difference IS the pending total, so it costs no extra call.
-          // Clamped at 0 — a negative would mean available exceeds current,
-          // which isn't a pending hold and shouldn't be shown as one.
-          const pendingCents =
-            available != null && current != null
-              ? Math.max(0, current - available)
-              : undefined;
-          if (cents != null) {
-            await ctx.runMutation(internal.reconciliation.saveAccountBalance, {
-              accountRowId: account.accountRowId,
-              balanceCents: cents,
-              ...(pendingCents !== undefined ? { pendingCents } : {}),
-            });
-          }
-        } catch (err) {
-          // Display-only data — log and move on.
-          console.error(
-            `[reconciliation] balance snapshot failed for ${account.increaseAccountId}`,
-            err,
-          );
-        }
-      }
+      await snapshotBalances(ctx);
 
-      // Stripe's own balance, in the same best-effort spirit. Money sitting at
-      // the processor is real money the org holds and the accounts page could
-      // not see it — every figure there was either a book total or an Increase
-      // balance, so funds in transit looked like they had vanished.
-      if (key) {
-        try {
-          const bal = await stripeGet(key, "/balance");
-          const sumUsd = (arr: unknown): number =>
-            Array.isArray(arr)
-              ? arr
-                  .filter(
-                    (b): b is { amount: number; currency: string } =>
-                      typeof (b as { amount?: unknown })?.amount === "number" &&
-                      (b as { currency?: unknown })?.currency === "usd",
-                  )
-                  .reduce((sum, b) => sum + b.amount, 0)
-              : 0;
-          await ctx.runMutation(internal.reconciliation.saveStripeBalance, {
-            availableCents: sumUsd(bal.available),
-            pendingCents: sumUsd(bal.pending),
-          });
-        } catch (err) {
-          console.error("[reconciliation] Stripe balance snapshot failed", err);
-        }
-      }
-
-      // ── Processor fees (best-effort) ─────────────────────────────────────
+      // ── 7: processor fees (best-effort) ──────────────────────────────────
       // Nothing ran the fee sweep automatically, so the still-running month's
       // fee row sat wherever the last manual run left it — on 2026-08-08 the
       // August row was still dated Aug 31, a transaction in the future, and it
@@ -1862,12 +2109,14 @@ async function runEngine(
         }
       }
 
-      // ── 6: bring each chapter's CASH to its BOOK ─────────────────────────
-      // Deliberately the LAST step, and deliberately after the balance
-      // snapshot: it compares book against bank, so it needs the bank figure
-      // fetched moments ago rather than yesterday's. Running it before the
-      // snapshot would settle against a stale balance and move the wrong
-      // amount — the one mistake here that reaches real money.
+      // ── 8: bring each chapter's CASH to its BOOK ─────────────────────────
+      // Deliberately the LAST step, and deliberately after BOTH the balance
+      // snapshot and the fee sweep. It compares book against bank, so it needs
+      // the bank figure fetched moments ago rather than yesterday's — and it
+      // needs the book figure to have stopped moving. Fees are an expense, so
+      // booking them changes book value; settling before they land moves cash
+      // against a book that is about to change. Either ordering mistake is the
+      // one class of bug here that reaches real money.
       const balSettle: {
         settlementsBooked: number;
         movedCents: number;
@@ -1894,9 +2143,12 @@ async function runEngine(
   }
 }
 
-/** The morning cron entry (see `crons.ts`) — full sweep: detect, allocate,
- *  snapshot, book processor fees, settle. No-ops per part when its vendor key
- *  is unset. */
+/** The morning cron entry (see `crons.ts`) — full sweep, in this order and for
+ *  the reasons spelled out at each step: label payout deposits, settle
+ *  cross-book card spend, move cash, snapshot balances, book processor fees,
+ *  then bring each chapter's cash to its book. ("Allocate" is gone: #553
+ *  replaced per-payout allocation with settling chapters against their books.)
+ *  No-ops per part when its vendor key is unset. */
 export const runMorningReconciliation = internalAction({
   args: {},
   returns: v.null(),
@@ -1906,9 +2158,9 @@ export const runMorningReconciliation = internalAction({
   },
 });
 
-/** Webhook fast-path (`payout.paid` etc. — see `http.ts`): detect + allocate
- *  ONE payout as soon as Stripe announces it, so the books don't wait for
- *  morning. Settlement + snapshots stay with the morning run. */
+/** Webhook fast-path (`payout.paid` etc. — see `http.ts`): detect ONE payout
+ *  and label its deposit as soon as Stripe announces it, so the books don't
+ *  wait for morning. Settlement, snapshots and fees stay with the morning run. */
 export const processPayoutEvent = internalAction({
   args: { stripePayoutId: v.string() },
   returns: v.null(),
@@ -1938,6 +2190,51 @@ export const runReconciliationNow = action({
     await ctx.runQuery(internal.reconciliation.assertAuditAccess, {});
     await runEngine(ctx, "manual");
     return null;
+  },
+});
+
+/**
+ * Re-read the bank and Stripe balances — and NOTHING else.
+ *
+ * The accounts page calls this when it opens. The founder, 2026-08-08: "I need
+ * it to sync every time I open the page." Before this the only thing that ever
+ * refreshed a balance was the morning cron, so an FM opening the page at 4pm
+ * was asked whether the books matched the bank using a bank figure from 5am.
+ *
+ * DELIBERATELY NOT `runEngine`. That books ledger rows, settles chapters
+ * against their books, and — when real cash movement is on — executes real
+ * bank transfers. Wiring any of that to a page load would mean the act of
+ * LOOKING at the books could change them, and a burst of tab-switching could
+ * move money. This action reads two vendors and updates cached display figures;
+ * that is the entire blast radius.
+ *
+ * Throttled server-side (see `claimBalanceSnapshot`) rather than in the
+ * component, because the thing being protected is a rate limit at Increase and
+ * Stripe, and client state doesn't survive a remount or know about the other
+ * people with this page open.
+ *
+ * Returns whether it actually went out, so the UI can distinguish "refreshed"
+ * from "already fresh" instead of claiming a sync it didn't do.
+ */
+export const refreshBalancesNow = action({
+  args: {
+    /** A human pressed Refresh — bypass the freshness window (not the lock). */
+    force: v.optional(v.boolean()),
+  },
+  returns: v.object({ refreshed: v.boolean() }),
+  handler: async (ctx, { force }) => {
+    await ctx.runQuery(internal.reconciliation.assertAuditAccess, {});
+    const { proceed }: { proceed: boolean } = await ctx.runMutation(
+      internal.reconciliation.claimBalanceSnapshot,
+      { force: force ?? false },
+    );
+    if (!proceed) return { refreshed: false };
+    // `snapshotBalances` releases the lock on its own last line. It swallows
+    // every vendor error internally, so the only way out without releasing is a
+    // crash of the action host — which `SNAPSHOT_LOCK_MS` is there to recover
+    // from.
+    await snapshotBalances(ctx);
+    return { refreshed: true };
   },
 });
 
@@ -2136,6 +2433,10 @@ const overviewPayoutValidator = v.object({
   unmappedNetCents: v.number(),
   repaymentNetCents: v.number(),
   depositMatched: v.boolean(),
+  /** Stripe's `automatic` flag; null for payouts detected before we recorded
+   *  it. `false` is the whole explanation for the one scary error this list has
+   *  ever shown — see `stripePayouts.automatic`. */
+  automatic: v.union(v.boolean(), v.null()),
   error: v.union(v.string(), v.null()),
   flagged: v.boolean(),
 });
@@ -2232,7 +2533,17 @@ export const reconciliationOverview = query({
         unmappedNetCents: po.unmappedNetCents ?? 0,
         repaymentNetCents: po.repaymentNetCents ?? 0,
         depositMatched: po.matchedTransactionId != null,
-        error: po.error ?? null,
+        automatic: po.automatic ?? null,
+        // An `error` is only meaningful alongside a Stripe status that says
+        // something went wrong. Nothing has written this field since #553
+        // removed the allocation step, so anything still stored on a healthy
+        // payout describes work the engine no longer attempts — showing it
+        // reads as a live problem and is not one. `upsertDetectedPayout` clears
+        // those on sight; this makes sure one never renders in the meantime.
+        error:
+          po.stripeStatus === "failed" || po.stripeStatus === "canceled"
+            ? (po.error ?? null)
+            : null,
         flagged: flaggedKeys.has(po.stripePayoutId),
       });
     }
@@ -2288,6 +2599,9 @@ export type BookBalanceRow = {
   scopeName: string;
   bookBalanceCents: number;
   revenueCents: number;
+  /** The slice of `revenueCents` that is in-kind — goods and services, never
+   *  cash. Its offset is the expense it paid for, already in the ledger. */
+  inKindRevenueCents: number;
   ledgerNetCents: number;
   truncated: boolean;
   bankBalanceCents: number | null;
@@ -2357,9 +2671,18 @@ async function computeBookBalances(
     // state it reads 0 so demo books stay pure sandbox-ledger numbers. ─────
     const linkedGiftTxnIds = new Set<string>();
     const revenueByScope = new Map<FinanceScope, number>();
+    // IN-KIND, tracked separately for the reconciliation panel. It is a slice of
+    // the revenue above, NOT an addition to it: goods and services given to the
+    // org, with no cash behind them at any point. The org-wide gap has to be
+    // able to say so, because in-kind revenue is the one thing on the books
+    // side that legitimately has no counterpart on the cash side (its offset is
+    // the expense it paid for, which is already in the ledger). Free to collect
+    // — the gift scan is happening anyway.
+    const inKindByScope = new Map<FinanceScope, number>();
     await Promise.all(
       scopes.map(async ({ scope }) => {
         let revenueCents = 0;
+        let inKindCents = 0;
         const gifts = await ctx.db
           .query("gifts")
           .withIndex("by_scope", (q) => q.eq("scope", scope))
@@ -2370,6 +2693,7 @@ async function computeBookBalances(
             linkedGiftTxnIds.add(gift.transactionId);
           }
           revenueCents += gift.amountCents;
+          if (gift.method === "in_kind") inKindCents += gift.amountCents;
         }
         // SALES — merch, snacks, drinks (founder model 2026-08-07: "revenue = gift
         // rows, tickets, and sales"). Counted GROSS like the other two; Stripe's fee
@@ -2401,6 +2725,7 @@ async function computeBookBalances(
           }
         }
         revenueByScope.set(scope, sandboxMode ? 0 : revenueCents);
+        inKindByScope.set(scope, sandboxMode ? 0 : inKindCents);
       }),
     );
 
@@ -2410,6 +2735,7 @@ async function computeBookBalances(
       scopeName: string;
       bookBalanceCents: number;
       revenueCents: number;
+      inKindRevenueCents: number;
       ledgerNetCents: number;
       truncated: boolean;
       bankBalanceCents: number | null;
@@ -2449,6 +2775,7 @@ async function computeBookBalances(
           scopeName: name,
           bookBalanceCents: revenueCents + ledgerNetCents,
           revenueCents,
+          inKindRevenueCents: inKindByScope.get(scope) ?? 0,
           ledgerNetCents,
           truncated: truncatedScopes.has(scope),
           bankBalanceCents: account?.balanceCents ?? null,
@@ -2473,19 +2800,182 @@ export const accountBalances = query({
       scopeName: v.string(),
       bookBalanceCents: v.number(),
       revenueCents: v.number(),
+      inKindRevenueCents: v.number(),
       ledgerNetCents: v.number(),
       truncated: v.boolean(),
       bankBalanceCents: v.union(v.number(), v.null()),
       bankBalanceAsOf: v.union(v.number(), v.null()),
-      /** Card authorizations held but not settled. They reach neither
-       *  Reconcile nor book value, but the bank figure already excludes them —
-       *  so without this the two differ with nothing on screen to say why. */
+      /** Everything the bank has set aside but not posted — card
+       *  authorizations, outbound transfers in flight, inbound-funds holds.
+       *  None of it reaches Reconcile or book value, but the bank figure
+       *  already excludes it, so without this the two differ with nothing on
+       *  screen to say why. */
       pendingCents: v.union(v.number(), v.null()),
     }),
   ),
   handler: async (ctx) => {
     await requireReconciliationAudit(ctx);
     return computeBookBalances(ctx);
+  },
+});
+
+/**
+ * DOES IT ADD UP? — the org-wide answer, in one query.
+ *
+ * The accounts page has always shown book value, bank, pending and a Stripe
+ * footnote, and has never once said whether they agree. The founder,
+ * 2026-08-08: "if we take all the pending, all the stuff in payout, and all the
+ * stuff in Stripe, and all the stuff in the account, we're still missing $50.
+ * […] right now it's just very abstract to get that information."
+ *
+ * The arithmetic — and every reason each term sits on the side it does — lives
+ * in `lib/reconciliationGap.ts`. This query's job is to assemble the inputs
+ * honestly and to hand the UI the leads that make a non-zero gap actionable
+ * rather than merely alarming.
+ *
+ * ── WHY THE BANK SIDE IS SUMMED FROM ACCOUNTS, NOT FROM BOOK ROWS ────────────
+ * `computeBookBalances` attaches each book's account balance to its row, which
+ * is right for the per-book table and WRONG for a total: an Increase account
+ * belonging to a chapter that has since been deactivated has real cash in it
+ * and no row to hang it on. Summing the account table directly means no dollar
+ * the org holds can go missing from the "money we can point at" side just
+ * because its chapter left. Anything found that way is reported separately, by
+ * account, so it reads as the anomaly it is rather than padding the total.
+ */
+export const reconciliationSummary = query({
+  args: {},
+  returns: v.object({
+    bookValueCents: v.number(),
+    bankAvailableCents: v.number(),
+    bankPendingCents: v.number(),
+    stripeAvailableCents: v.union(v.number(), v.null()),
+    stripePendingCents: v.union(v.number(), v.null()),
+    locatedCents: v.number(),
+    differenceCents: v.number(),
+    verdict: v.union(
+      v.literal("balanced"),
+      v.literal("cash_exceeds_books"),
+      v.literal("books_exceed_cash"),
+    ),
+    /** Stripe has never been snapshotted, so the cash side is knowably short. */
+    incomplete: v.boolean(),
+    /** In-kind revenue inside book value — no cash exists for it, by design. */
+    inKindRevenueCents: v.number(),
+    /** When the balances were last fetched (any vendor), for the "as of". */
+    balancesAsOf: v.union(v.number(), v.null()),
+    /** A snapshot is in flight right now (the page opened moments ago). */
+    refreshing: v.boolean(),
+    /** Any book whose bank balance has never synced — the cash side is missing
+     *  that account entirely, which is not the same as it holding zero. */
+    booksWithoutBankBalance: v.array(v.string()),
+    /** Cash in Increase accounts that no listed book claims. Included in the
+     *  bank total (it IS the org's money) and named so it can be explained. */
+    unattributedBankCents: v.number(),
+    /** Payouts Stripe says are paid whose bank deposit we never found. Each is
+     *  a candidate double count: the deposit lands in the ledger as a plain
+     *  credit while the revenue is already counted at the gift/ticket. */
+    unmatchedPayoutCount: v.number(),
+    unmatchedPayoutCents: v.number(),
+    /** A book's scan hit the read limit, so its figure is approximate and the
+     *  gap cannot be trusted to the cent. */
+    truncated: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    await requireReconciliationAudit(ctx);
+    const sandboxMode = await readSandbox(ctx);
+    const books = await computeBookBalances(ctx);
+    const settings = await ctx.db.query("financeSettings").first();
+
+    const bookValueCents = books.reduce((s, b) => s + b.bookBalanceCents, 0);
+    const inKindRevenueCents = books.reduce(
+      (s, b) => s + b.inKindRevenueCents,
+      0,
+    );
+
+    // Every account in the CURRENT environment, whether or not a live book
+    // claims it. Mirrors `computeBookBalances`' mode filter exactly — mixing a
+    // sandbox account's balance into a production reconciliation would invent a
+    // gap out of demo data.
+    const accountRows = await ctx.db
+      .query("increaseAccounts")
+      .take(ROLLUP_SCAN_LIMIT);
+    const liveAccounts = accountRows.filter(
+      (a) =>
+        (a.sandbox ?? a.increaseAccountId?.startsWith("sandbox_") ?? false) ===
+        sandboxMode,
+    );
+    const bookScopes = new Set(books.map((b) => String(b.scope)));
+
+    let bankAvailableCents = 0;
+    let bankPendingCents = 0;
+    let unattributedBankCents = 0;
+    let balancesAsOf: number | null = null;
+    for (const account of liveAccounts) {
+      const available = account.balanceCents ?? 0;
+      bankAvailableCents += available;
+      bankPendingCents += account.pendingCents ?? 0;
+      if (!bookScopes.has(String(account.chapterId))) {
+        unattributedBankCents += available;
+      }
+      if (
+        account.balanceAsOf != null &&
+        (balancesAsOf == null || account.balanceAsOf > balancesAsOf)
+      ) {
+        balancesAsOf = account.balanceAsOf;
+      }
+    }
+
+    const stripeAvailableCents = settings?.stripeAvailableCents ?? null;
+    const stripePendingCents = settings?.stripePendingCents ?? null;
+
+    const gap = reconcileOrgMoney({
+      bookValueCents,
+      bankAvailableCents,
+      bankPendingCents,
+      stripeAvailableCents,
+      stripePendingCents,
+    });
+
+    // The completed-snapshot stamp is the honest "as of" when we have one: it
+    // says when we last went and LOOKED, including the runs where a vendor was
+    // down. Falling back to the newest per-account stamp keeps the line
+    // populated on deployments whose last snapshot predates that field.
+    const snapshotAt = settings?.balanceSnapshotAt ?? null;
+    const running = settings?.balanceSnapshotRunningSince ?? null;
+
+    // Payouts Stripe considers delivered whose deposit we never matched. Bounded
+    // by the same window the overview uses — a payout old enough to have fallen
+    // off that list is not a live lead.
+    const payoutDocs = await ctx.db
+      .query("stripePayouts")
+      .withIndex("by_arrival")
+      .order("desc")
+      .take(OVERVIEW_PAYOUT_LIMIT);
+    const unmatched = payoutDocs.filter(
+      (p) => p.stripeStatus === "paid" && p.matchedTransactionId == null,
+    );
+
+    return {
+      bookValueCents,
+      bankAvailableCents,
+      bankPendingCents,
+      stripeAvailableCents,
+      stripePendingCents,
+      locatedCents: gap.locatedCents,
+      differenceCents: gap.differenceCents,
+      verdict: gap.verdict,
+      incomplete: gap.incomplete,
+      inKindRevenueCents,
+      balancesAsOf: snapshotAt ?? balancesAsOf,
+      refreshing: running != null && Date.now() - running < SNAPSHOT_LOCK_MS,
+      booksWithoutBankBalance: books
+        .filter((b) => b.bankBalanceCents == null)
+        .map((b) => b.scopeName),
+      unattributedBankCents,
+      unmatchedPayoutCount: unmatched.length,
+      unmatchedPayoutCents: unmatched.reduce((s, p) => s + p.amountCents, 0),
+      truncated: books.some((b) => b.truncated),
+    };
   },
 });
 
@@ -2607,6 +3097,33 @@ export const bookValueBreakdown = query({
         giftExternalRef: v.union(v.string(), v.null()),
       }),
     ),
+    /**
+     * THE CASH SIDE, for the same book — added 2026-08-08 because the two
+     * figures the accounts-page table shows next to book value simply weren't
+     * in here. The founder: "Is the pending and held at Stripe even accurate?
+     * It doesn't really show up in the breakdown when I click on it, and it's a
+     * little confusing." A drill-down that omits the numbers it is drilling
+     * into can't answer that, and a reader with no way to check a figure has to
+     * either trust it or ignore it.
+     *
+     * `pendingBreakdown` is the itemisation behind the Pending column, by
+     * Increase Pending Transaction category. Empty until a snapshot has read
+     * it; that is not the same as "nothing is pending", so the UI distinguishes
+     * them.
+     */
+    cash: v.object({
+      bankBalanceCents: v.union(v.number(), v.null()),
+      bankBalanceAsOf: v.union(v.number(), v.null()),
+      pendingCents: v.union(v.number(), v.null()),
+      pendingBreakdown: v.array(
+        v.object({
+          category: v.string(),
+          amountCents: v.number(),
+          count: v.number(),
+        }),
+      ),
+      pendingBreakdownAsOf: v.union(v.number(), v.null()),
+    }),
     truncated: v.boolean(),
   }),
   handler: async (ctx, { scope }) => {
@@ -2618,6 +3135,11 @@ export const bookValueBreakdown = query({
       const chapter = await ctx.db.get(scope as Id<"chapters">);
       scopeName = chapter?.name ?? "Unknown book";
     }
+
+    // The book's own Increase account, for the cash side of the drill-down —
+    // the same row (and therefore the same numbers) the accounts-page table
+    // reads, so the two can never disagree.
+    const account = await getChapterAccountForMode(ctx, scope, sandboxMode);
 
     // ── Revenue, mirroring accountBalances phase 1 ───────────────────────────
     const gifts = await ctx.db
@@ -2798,6 +3320,13 @@ export const bookValueBreakdown = query({
       suspectedDoubleCounts: suspectedDoubleCounts.sort(
         (a, b) => b.amountCents - a.amountCents,
       ),
+      cash: {
+        bankBalanceCents: account?.balanceCents ?? null,
+        bankBalanceAsOf: account?.balanceAsOf ?? null,
+        pendingCents: account?.pendingCents ?? null,
+        pendingBreakdown: account?.pendingBreakdown ?? [],
+        pendingBreakdownAsOf: account?.pendingBreakdownAsOf ?? null,
+      },
       truncated,
     };
   },

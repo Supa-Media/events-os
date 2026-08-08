@@ -973,17 +973,54 @@ export const increaseAccounts = defineTable({
   // first successful snapshot for this account.
   balanceCents: v.optional(v.number()),
   balanceAsOf: v.optional(v.number()),
-  // Money committed but not yet settled: card authorizations the merchant has
-  // placed and not captured. Increase's `current_balance` counts them and
-  // `available_balance` doesn't, so this is the difference between the two —
-  // no extra call.
+  // Money the bank has set aside but not posted — `current_balance` minus
+  // `available_balance`, so no extra call.
   //
-  // Worth surfacing because these rows exist NOWHERE else in the app. The
-  // webhook fan-out only handles `transaction.created` (settled), so a pending
-  // authorization never reaches Reconcile and never reaches book value, while
+  // NOT "card authorizations", which is what this field claimed until
+  // 2026-08-08 and what the accounts page told the reader. Increase's own docs
+  // are explicit: available balance is "the current balance minus the sum of
+  // all negative Pending Transactions", and `card_authorization` is ONE of
+  // roughly sixteen Pending Transaction categories. The others are ordinary
+  // here: an outbound ACH/wire/check sits as a `*_transfer_instruction` until
+  // it posts, and an ACH debit we PULL creates an `inbound_funds_hold` for the
+  // return window. Calling the total "card authorizations" invites a reader to
+  // go looking for card spend that does not exist.
+  //
+  // Worth surfacing at all because these amounts exist NOWHERE else in the app.
+  // The webhook fan-out only handles `transaction.created` (posted), so a
+  // pending item never reaches Reconcile and never reaches book value, while
   // the bank figure has ALREADY had it deducted. That asymmetry made book value
   // read high against the bank with nothing on screen to explain it.
+  //
+  // Always ≥ 0: positive Pending Transactions (an unsettled card refund) do not
+  // raise the available balance, so available can never exceed current.
   pendingCents: v.optional(v.number()),
+  // What that pending total is actually MADE OF, by Increase Pending
+  // Transaction category — read from `GET /pending_transactions` during the
+  // snapshot and rolled up so the per-book drill-down can itemise it.
+  //
+  // Exists because a bare total is not auditable: the founder's question about
+  // this page was "is the pending even accurate? It doesn't really show up in
+  // the breakdown when I click on it, and it's a little confusing." A category
+  // rollup is the smallest thing that answers it. Per-item detail is
+  // deliberately NOT persisted — Increase stays the system of record, and a
+  // pending item is by definition about to become a transaction anyway.
+  //
+  // `amountCents` is the SIGNED sum Increase reports for that category (debits
+  // are negative), so the categories sum to −`pendingCents` when nothing is
+  // positive. Absent until the first snapshot that reaches the endpoint; a
+  // failed fetch leaves the previous rollup rather than blanking it, so
+  // `pendingBreakdownAsOf` says how old it is.
+  pendingBreakdown: v.optional(
+    v.array(
+      v.object({
+        category: v.string(),
+        amountCents: v.number(),
+        count: v.number(),
+      }),
+    ),
+  ),
+  pendingBreakdownAsOf: v.optional(v.number()),
   routingLast4: v.optional(v.string()),
   accountLast4: v.optional(v.string()),
   createdAt: v.number(),
@@ -2033,6 +2070,24 @@ export const financeSettings = defineTable({
   stripeAvailableCents: v.optional(v.number()),
   stripePendingCents: v.optional(v.number()),
   stripeBalanceAsOf: v.optional(v.number()),
+  // ── Balance-snapshot throttle (see `reconciliation.ts#refreshBalancesNow`) ──
+  // The accounts page refreshes balances when it OPENS, because figures hours
+  // old can't answer "do the books match the bank right now". That means a page
+  // load reaches out to Increase (once per account) and Stripe (once), so it
+  // needs a brake that survives remounts, several viewers, and a web refresh —
+  // which client-side state does not. These two fields are that brake, and they
+  // live in the database precisely so it is shared.
+  //   · `balanceSnapshotAt`      — when a snapshot last COMPLETED. Doubles as
+  //                                the "as of" the page shows, and as the
+  //                                throttle's clock.
+  //   · `balanceSnapshotRunningSince` — set while one is in flight and cleared
+  //                                when it finishes, so two page opens a second
+  //                                apart don't both call out. Treated as stale
+  //                                (and overridden) after a couple of minutes so
+  //                                a crashed action can't wedge refreshes
+  //                                forever.
+  balanceSnapshotAt: v.optional(v.number()),
+  balanceSnapshotRunningSince: v.optional(v.number()),
   // Org-wide card prerequisite: the Academy course slug a member must complete
   // before a card can be issued/activated. `undefined` = no prerequisite gate
   // (issuance unaffected), so cards keep working until central finance points
@@ -2125,6 +2180,20 @@ export const stripePayouts = defineTable({
   // seen — kept verbatim so a status we've never heard of still stores.
   stripeStatus: v.string(),
   arrivalDate: v.number(), // epoch ms of Stripe's arrival_date
+  // Stripe's `automatic` flag: false when a human pressed "pay out now" in the
+  // Stripe dashboard rather than the payout schedule producing it.
+  //
+  // Recorded because it is the whole explanation for the one alarming red
+  // "Failed" this page has ever shown. Stripe refuses to itemise a manual
+  // payout ("Balance transaction history can only be filtered on automatic
+  // transfers, not manual"), so the pre-#553 allocation step failed on
+  // po_1U1qk8Qv9S5xW6eKsjkeLJvv and stored that blob. #553 deleted the need for
+  // itemisation entirely — chapter attribution now comes from the revenue layer
+  // — so the failure is obsolete, but nothing said so and the badge stayed red.
+  // Storing the flag lets the row explain itself: "you initiated this one by
+  // hand", which is a fact, not a fault. Absent for payouts detected before
+  // this field existed.
+  automatic: v.optional(v.boolean()),
   // OUR processing state — see `STRIPE_PAYOUT_PROCESS_STATES`.
   processState: v.union(
     ...STRIPE_PAYOUT_PROCESS_STATES.map((s) => v.literal(s)),
