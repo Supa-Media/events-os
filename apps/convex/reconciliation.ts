@@ -124,6 +124,7 @@ import {
   increasePost,
 } from "./lib/increaseApi";
 import { ROLLUP_SCAN_LIMIT, txnMatchesMode } from "./finances";
+import { feeBudgetNotes } from "./processorFees";
 
 const STRIPE_API = "https://api.stripe.com/v1";
 
@@ -1813,6 +1814,54 @@ async function runEngine(
         }
       }
 
+      // ── Processor fees (best-effort) ─────────────────────────────────────
+      // Nothing ran the fee sweep automatically, so the still-running month's
+      // fee row sat wherever the last manual run left it — on 2026-08-08 the
+      // August row was still dated Aug 31, a transaction in the future, and it
+      // would have stayed there until somebody remembered. It self-corrects the
+      // moment the sweep runs, so the fix is to run it every morning.
+      //
+      // BEFORE the settlement below, for the same reason the balance snapshot
+      // is: fees are an expense, so booking them moves BOOK value, and settling
+      // first would move real cash against a book that is about to change.
+      //
+      // Best-effort like the snapshots — a bookkeeping line must never take the
+      // rest of the morning's run (including cash movement) down with it.
+      //
+      // The sweep re-reads the WHOLE Stripe ledger each time (it is what makes
+      // the sync idempotent), which at this org's volume is a few hundred
+      // balance transactions and a handful of pages. If that ever grows to the
+      // point where a daily full sweep is the wrong shape, bound it by date
+      // HERE — the manual `syncStripeFees` should keep re-reading everything.
+      if (key) {
+        try {
+          const fees: {
+            created: number;
+            updated: number;
+            budgets: {
+              year: number;
+              label: string;
+              status: string;
+              createdNow: boolean;
+              attachedRows: number;
+            }[];
+          } = await ctx.runAction(internal.processorFees.syncStripeFeesOps, {
+            execute: true,
+          });
+          if (fees.created > 0 || fees.updated > 0) {
+            notes.push(
+              `Refreshed Stripe processor fees (${fees.created} new, ${fees.updated} updated monthly row(s)).`,
+            );
+          }
+          notes.push(...feeBudgetNotes(fees.budgets));
+        } catch (err) {
+          console.error("[reconciliation] processor fee sync failed", err);
+          notes.push(
+            "Stripe processor fee sync FAILED — fee rows may be stale; will retry next run.",
+          );
+        }
+      }
+
       // ── 6: bring each chapter's CASH to its BOOK ─────────────────────────
       // Deliberately the LAST step, and deliberately after the balance
       // snapshot: it compares book against bank, so it needs the bank figure
@@ -1846,7 +1895,8 @@ async function runEngine(
 }
 
 /** The morning cron entry (see `crons.ts`) — full sweep: detect, allocate,
- *  settle, snapshot. No-ops per part when its vendor key is unset. */
+ *  snapshot, book processor fees, settle. No-ops per part when its vendor key
+ *  is unset. */
 export const runMorningReconciliation = internalAction({
   args: {},
   returns: v.null(),

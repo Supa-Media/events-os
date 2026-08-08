@@ -611,6 +611,53 @@ export const transactions = defineTable({
   .index("by_reimbursement", ["reimbursementId"])
   .index("by_transfer_group", ["transferGroupId"]);
 
+// ── Processor-fee entries (the evidence behind one monthly fee row) ──────────
+/** ONE row per fee-bearing processor ledger entry — the receipt for the single
+ *  monthly `transactions` row `processorFees.ts` books.
+ *
+ *  That row is a rollup on purpose (264 sub-dollar charges would bury the
+ *  reconcile grid), but a rollup with nothing under it is a number you have to
+ *  take on faith: "it doesn't keep a record of which transactions have fees, so
+ *  it feels like a made up number" (owner, 2026-08-08). This table is that
+ *  record. `sum(feeCents) WHERE month = M` EQUALS the month's fee row
+ *  `amountCents` — that equality is the whole point, and
+ *  `processorFees.feeRowDetail` is what a treasurer reads to check it.
+ *
+ *  NOT chapter-scoped, deliberately. These entries belong to the Stripe ACCOUNT
+ *  (org-level); which chapter's book the rollup lands in is a downstream
+ *  booking decision that could change without the evidence changing. Tenancy is
+ *  resolved through the parent fee transaction (found by `externalId`
+ *  `stripe-fees:<month>`), so there is no denormalized chapter that can drift.
+ *
+ *  `type` is Stripe's own balance-transaction type, stored as a free string
+ *  rather than a union: Stripe adds types, and an unrecognised one must be
+ *  RECORDABLE (it contributes nothing to the fee — see `FEE_ONLY_TYPES` — but
+ *  its existence is exactly what someone would want to see). */
+export const processorFeeEntries = defineTable({
+  // "stripe" today. Givebutter deliberately isn't covered — see processorFees.ts.
+  processor: v.literal("stripe"),
+  // YYYY-MM — the bucket, and the suffix of the parent row's `externalId`.
+  month: v.string(),
+  // Stripe's balance-transaction id (`txn_...`). The dedup key: an entry is
+  // written once and re-found by this on every later sweep.
+  balanceTransactionId: v.string(),
+  type: v.string(),
+  // This entry's contribution to the month's total. Always positive.
+  feeCents: v.number(),
+  // The ledger entry's own `amount` — for a payment, the sale the fee was taken
+  // out of. Signed: a standalone fee row's amount is negative and IS the fee.
+  grossCents: v.number(),
+  // Stripe's `created`, in ms.
+  occurredAt: v.number(),
+  // `bt.source` (`ch_...`, `py_...`) — what to look up in the Stripe dashboard.
+  sourceId: v.optional(v.string()),
+  // Stripe's own words ("Terminal reader fee"), when it gives any.
+  description: v.optional(v.string()),
+  createdAt: v.number(),
+})
+  .index("by_balance_transaction", ["balanceTransactionId"])
+  .index("by_processor_and_month", ["processor", "month"]);
+
 // ── Reimbursement requests (public, token-scoped) ────────────────────────────
 /** A public reimbursement submission. Accountless: a secret `token` (the
  *  `rsvps.token` precedent) lets a claimant submit + check status without an
