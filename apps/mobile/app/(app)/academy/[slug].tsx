@@ -24,6 +24,7 @@ import {
   moduleCourseIndex,
   nextModuleInCourse,
   previousModuleInCourse,
+  quizQuestionKey,
   shuffledOptionOrder,
   type AcademySection,
   type ModuleKey,
@@ -288,6 +289,12 @@ function Quiz({
           submitQuiz({
             sectionSlug: section.slug,
             answers: section.quiz.map((_q, i) => snapshot[i] ?? -1),
+            // Name the questions this build actually rendered. The backend
+            // deploys on merge while this bundle only changes on an OTA, so
+            // its copy of the quiz can be a question ahead of ours — the keys
+            // are what let it grade what the reader saw instead of rejecting
+            // the whole attempt.
+            questionKeys: section.quiz.map((q) => quizQuestionKey(q.prompt)),
           }),
         { errorTitle: "Couldn't grade the quiz" },
       );
