@@ -16,6 +16,7 @@ export type DoorAttendee = {
   checkedInAt: number | null;
   /** The guest team assigned at check-in, when the event uses teams. Null
    *  before the guest arrives — teams are handed out at the door, not sold. */
+  teamId: string | null;
   teamName: string | null;
   teamColor: string | null;
 };
@@ -53,7 +54,12 @@ export function checkInProgress(
 }
 
 /** One team's live headcount, for the door's standings strip. */
-export type TeamStanding = { name: string; color: string; count: number };
+export type TeamStanding = {
+  teamId: string;
+  name: string;
+  color: string;
+  count: number;
+};
 
 /**
  * Live headcount per team, biggest first, from the guest list itself.
@@ -63,23 +69,29 @@ export type TeamStanding = { name: string; color: string; count: number };
  * volunteer sanity-checks the balance against, and two sources that drift
  * would be worse than none. Teams nobody has been assigned to yet are absent
  * by construction, which is correct for a door that's still filling up.
+ *
+ * Grouped by team ID, not by name. Names are meant to be unique (renaming
+ * rejects a clash) but the id is the identity, so two rows that somehow share
+ * a label still count as the two teams they actually are instead of silently
+ * merging into one chip with a combined total.
  */
 export function teamStandings(
-  attendees: Pick<DoorAttendee, "teamName" | "teamColor">[],
+  attendees: Pick<DoorAttendee, "teamId" | "teamName" | "teamColor">[],
 ): TeamStanding[] {
-  const byName = new Map<string, TeamStanding>();
+  const byId = new Map<string, TeamStanding>();
   for (const a of attendees) {
-    if (!a.teamName) continue;
-    const existing = byName.get(a.teamName);
+    if (!a.teamId || !a.teamName) continue;
+    const existing = byId.get(a.teamId);
     if (existing) existing.count += 1;
     else
-      byName.set(a.teamName, {
+      byId.set(a.teamId, {
+        teamId: a.teamId,
         name: a.teamName,
         color: a.teamColor ?? "",
         count: 1,
       });
   }
-  return [...byName.values()].sort(
+  return [...byId.values()].sort(
     (a, b) => b.count - a.count || a.name.localeCompare(b.name),
   );
 }

@@ -187,6 +187,18 @@ export const renameTeam = mutation({
         message: "Give the team a name.",
       });
     }
+    // Two teams with the same name is a door problem before it's a data
+    // problem: the volunteer calls out "Red" and two groups answer. The name
+    // is how a team is spoken about, so it has to be the unique thing.
+    const clash = (await allTeamsForEvent(ctx, team.eventId)).find(
+      (t) => t._id !== teamId && t.name.toLowerCase() === trimmed.toLowerCase(),
+    );
+    if (clash) {
+      throw new ConvexError({
+        code: "INVALID",
+        message: `Another team is already called "${clash.name}".`,
+      });
+    }
     await ctx.db.patch(teamId, { name: trimmed });
   },
 });
@@ -220,6 +232,16 @@ export const setTicketTeam = mutation({
         throw new ConvexError({
           code: "NOT_FOUND",
           message: "That team isn't on this event.",
+        });
+      }
+      // A deactivated team is one the door has stopped handing out bands for.
+      // Moving someone onto it would grow a count that `pickTeamIndex` never
+      // sees (it balances over ACTIVE teams only), so the guest would hold a
+      // retired color and their head would be invisible to the balance.
+      if (next.isActive === false) {
+        throw new ConvexError({
+          code: "INVALID",
+          message: "That team isn't in play for this event any more.",
         });
       }
     }

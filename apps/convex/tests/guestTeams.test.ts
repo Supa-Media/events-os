@@ -202,6 +202,27 @@ describe("configuring teams", () => {
     expect(back.teams.filter((x) => x.isActive)).toHaveLength(10);
   });
 
+  test("a duplicate name is rejected — two teams can't both be 'Red' at a door", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { eventId } = await seedDoor(s);
+    await s.as.mutation(api.guestTeams.setEnabled, { eventId, enabled: true });
+    const { teams } = await s.as.query(api.guestTeams.listForEvent, { eventId });
+
+    await expect(
+      s.as.mutation(api.guestTeams.renameTeam, {
+        teamId: teams[1]._id,
+        name: "  red  ", // case/whitespace-insensitive clash with team 0 "Red"
+      }),
+    ).rejects.toThrow();
+
+    // Renaming a team to its OWN current name is a no-op, not a clash.
+    await s.as.mutation(api.guestTeams.renameTeam, {
+      teamId: teams[0]._id,
+      name: "Red",
+    });
+  });
+
   test("an empty name is rejected rather than blanking the wristband", async () => {
     const t = newT();
     const s = await setupChapter(t);
@@ -415,6 +436,27 @@ describe("manual override", () => {
     });
     const after = await s.as.query(api.guestTeams.listForEvent, { eventId });
     expect(after.teams.reduce((n, x) => n + x.assignedCount, 0)).toBe(0);
+  });
+
+  test("a retired team is refused — nobody gets a colour the door stopped using", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { eventId, slug, freeId } = await seedDoor(s);
+    await s.as.mutation(api.guestTeams.setEnabled, { eventId, enabled: true });
+    const before = await s.as.query(api.guestTeams.listForEvent, { eventId });
+    const retired = before.teams[9];
+
+    const [code] = await buyTickets(s, eventId, slug, freeId, "Ada");
+    await s.as.mutation(api.ticketing.checkInTicket, { eventId, code });
+    await s.as.mutation(api.guestTeams.setTeamCount, { eventId, count: 4 });
+    const [ticket] = await s.as.query(api.ticketing.listTicketsAdmin, { eventId });
+
+    await expect(
+      s.as.mutation(api.guestTeams.setTicketTeam, {
+        ticketId: ticket._id,
+        teamId: retired._id,
+      }),
+    ).rejects.toThrow();
   });
 
   test("a team from another event is refused", async () => {

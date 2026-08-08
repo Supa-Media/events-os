@@ -209,14 +209,22 @@ export async function requireGuestTeamManage(
  *
  * Written as check-in-access-OR-membership rather than as two near-identical
  * queries so there is exactly one power named "can see this event's teams".
+ *
+ * Routed through `hasCheckInAccess` rather than a second bare try/catch, so
+ * this file has exactly ONE place that turns a check-in-access rejection into
+ * a boolean. Note what that costs: `hasCheckInAccess` cannot tell "you're not
+ * a door volunteer" from an incidental failure inside the gate, so either way
+ * we fall through to the membership check and a genuine member still gets in.
+ * A non-member gets `requireEvent`'s own error, which is the same error they'd
+ * have received before this resolver existed.
  */
 export async function requireGuestTeamRead(
   ctx: QueryCtx,
   eventId: Id<"events">,
 ): Promise<Doc<"events">> {
-  try {
-    return await requireCheckInAccess(ctx, eventId);
-  } catch {
-    return await requireEvent(ctx, eventId);
+  if (await hasCheckInAccess(ctx, eventId)) {
+    const event = await ctx.db.get(eventId);
+    if (event) return event;
   }
+  return await requireEvent(ctx, eventId);
 }

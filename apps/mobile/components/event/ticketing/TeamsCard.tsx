@@ -12,7 +12,7 @@
  * Names are editable; colors are not. Team N always wears `TEAM_COLORS[N]`, so
  * the wristbands the door is holding never shift meaning underneath them.
  */
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Text, View } from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -39,6 +39,8 @@ export function TeamsCard({
   // Per-team local edit buffer, committed on blur/submit — the same
   // type-locally, save-on-commit shape the slug and ticket-type fields use.
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  // Renames already in flight — read synchronously, so a ref not state.
+  const committing = useRef<Set<string>>(new Set());
 
   if (data === undefined) {
     return (
@@ -59,18 +61,29 @@ export function TeamsCard({
     });
   }
 
+  /**
+   * Commit one rename. Guarded by a ref because a keyboard submit fires
+   * `onSubmitEditing` AND the `onBlur` it causes, and both callbacks close over
+   * the same pre-clear `drafts` object — without this the mutation dispatches
+   * twice and a failure would raise two error toasts for one edit.
+   */
   function commitName(teamId: string, fallback: string) {
+    if (committing.current.has(teamId)) return;
     const draft = drafts[teamId];
+    committing.current.add(teamId);
     setDrafts((d) => {
       const { [teamId]: _dropped, ...rest } = d;
       return rest;
     });
     const next = (draft ?? "").trim();
-    if (next === "" || next === fallback) return;
+    if (next === "" || next === fallback) {
+      committing.current.delete(teamId);
+      return;
+    }
     void run(
       () => renameTeam({ teamId: teamId as Id<"guestTeams">, name: next }),
       { errorTitle: "Couldn't rename team" },
-    );
+    ).finally(() => committing.current.delete(teamId));
   }
 
   return (

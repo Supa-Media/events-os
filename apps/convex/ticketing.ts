@@ -792,6 +792,9 @@ export const listCheckInAttendees = query({
           ticketTypeName: t.ticketTypeName,
           status: t.status,
           checkedInAt: t.checkedInAt ?? null,
+          // The id, not just the name, so the door can group and re-assign by
+          // identity — two teams could share a display name on legacy rows.
+          teamId: team?._id ?? null,
           teamName: team?.name ?? null,
           teamColor: team?.color ?? null,
         };

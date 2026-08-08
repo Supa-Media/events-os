@@ -11,10 +11,10 @@ const roster = [
 
 /** A roster once the event assigns teams at the door. */
 const teamed = [
-  { attendeeName: "Ada Okafor", teamName: "Blue", teamColor: "blue" },
-  { attendeeName: "Ben Buyer", teamName: "Red", teamColor: "red" },
-  { attendeeName: "Chidi Eze", teamName: "Blue", teamColor: "blue" },
-  { attendeeName: "Dami Ade", teamName: null, teamColor: null },
+  { attendeeName: "Ada Okafor", teamId: "t_blue", teamName: "Blue", teamColor: "blue" },
+  { attendeeName: "Ben Buyer", teamId: "t_red", teamName: "Red", teamColor: "red" },
+  { attendeeName: "Chidi Eze", teamId: "t_blue", teamName: "Blue", teamColor: "blue" },
+  { attendeeName: "Dami Ade", teamId: null, teamName: null, teamColor: null },
 ];
 
 describe("filterAttendees", () => {
@@ -54,21 +54,32 @@ describe("checkInProgress", () => {
 describe("teamStandings", () => {
   test("counts per team, biggest first, ignoring the unplaced", () => {
     expect(teamStandings(teamed)).toEqual([
-      { name: "Blue", color: "blue", count: 2 },
-      { name: "Red", color: "red", count: 1 },
+      { teamId: "t_blue", name: "Blue", color: "blue", count: 2 },
+      { teamId: "t_red", name: "Red", color: "red", count: 1 },
     ]);
   });
 
   test("ties fall back to alphabetical so the strip doesn't reshuffle", () => {
     expect(
       teamStandings([
-        { teamName: "Red", teamColor: "red" },
-        { teamName: "Blue", teamColor: "blue" },
+        { teamId: "t_red", teamName: "Red", teamColor: "red" },
+        { teamId: "t_blue", teamName: "Blue", teamColor: "blue" },
       ]).map((s) => s.name),
     ).toEqual(["Blue", "Red"]);
   });
 
   test("nobody placed yet means no strip at all", () => {
-    expect(teamStandings([{ teamName: null, teamColor: null }])).toEqual([]);
+    expect(
+      teamStandings([{ teamId: null, teamName: null, teamColor: null }]),
+    ).toEqual([]);
+  });
+
+  test("same-named teams stay separate — grouping is by id, not label", () => {
+    expect(
+      teamStandings([
+        { teamId: "t_red", teamName: "Red", teamColor: "red" },
+        { teamId: "t_crimson", teamName: "Red", teamColor: "crimson" },
+      ]),
+    ).toHaveLength(2);
   });
 });

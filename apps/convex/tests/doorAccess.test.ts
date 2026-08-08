@@ -247,6 +247,7 @@ describe("listCheckInAttendees", () => {
       status: "valid",
       checkedInAt: null,
       // This event doesn't use guest teams, so there's nothing to show.
+      teamId: null,
       teamName: null,
       teamColor: null,
     });
@@ -261,6 +262,7 @@ describe("listCheckInAttendees", () => {
         "checkedInAt",
         "status",
         "teamColor",
+        "teamId",
         "teamName",
         "ticketTypeName",
       ].sort(),

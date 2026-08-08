@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { View, Text, ActivityIndicator } from "react-native";
-import { useQuery } from "convex/react";
+import { View, Text, ActivityIndicator, Pressable } from "react-native";
+import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { teamColor } from "@events-os/shared";
@@ -28,6 +28,8 @@ import { formatDateTime } from "../../lib/format";
 export function AttendeeCheckInList({ eventId }: { eventId: Id<"events"> }) {
   const attendees = useQuery(api.ticketing.listCheckInAttendees, { eventId });
   const [query, setQuery] = useState("");
+  // Ticket id whose team picker is open, or null. One at a time.
+  const [moving, setMoving] = useState<string | null>(null);
 
   if (attendees === undefined) {
     return (
@@ -55,7 +57,7 @@ export function AttendeeCheckInList({ eventId }: { eventId: Id<"events"> }) {
       {standings.length > 0 ? (
         <View className="mb-2 flex-row flex-wrap gap-1.5">
           {standings.map((s) => (
-            <TeamStandingChip key={s.name} standing={s} />
+            <TeamStandingChip key={s.teamId} standing={s} />
           ))}
         </View>
       ) : null}
@@ -87,11 +89,115 @@ export function AttendeeCheckInList({ eventId }: { eventId: Id<"events"> }) {
             </View>
           ) : (
             shown.map((a, i) => (
-              <AttendeeRow key={a._id} attendee={a} isLast={i === shown.length - 1} />
+              <View key={a._id}>
+                <AttendeeRow
+                  attendee={a}
+                  isLast={i === shown.length - 1 && moving !== a._id}
+                  // Only a guest who's actually been placed can be moved —
+                  // before they arrive there's no wristband to correct.
+                  onPress={
+                    a.teamId
+                      ? () => setMoving(moving === a._id ? null : a._id)
+                      : undefined
+                  }
+                />
+                {moving === a._id ? (
+                  <TeamPicker
+                    eventId={eventId}
+                    attendee={a}
+                    onDone={() => setMoving(null)}
+                  />
+                ) : null}
+              </View>
             ))
           )}
         </Card>
       )}
+    </View>
+  );
+}
+
+/**
+ * The move-this-guest-to-another-team control, opened by tapping a checked-in
+ * guest's row.
+ *
+ * The door's only escape hatch: assignment hands out a PHYSICAL wristband, so
+ * a mis-scan, a wrong band, or a family that wants to be together can't be
+ * undone any other way (nothing in this app un-checks-in a ticket). Gated
+ * server-side on check-in access, not on manage access, because the person who
+ * needs it is whoever is standing at the door when it goes wrong.
+ *
+ * Moving someone leaves one team a head over and another a head under; the
+ * balancing rule absorbs that over the next few arrivals rather than needing a
+ * rebalance, so there's deliberately no "even them out" button here.
+ */
+function TeamPicker({
+  eventId,
+  attendee,
+  onDone,
+}: {
+  eventId: Id<"events">;
+  attendee: DoorAttendee;
+  onDone: () => void;
+}) {
+  const data = useQuery(api.guestTeams.listForEvent, { eventId });
+  const setTicketTeam = useMutation(api.guestTeams.setTicketTeam);
+  const [busy, setBusy] = useState(false);
+  const teams = (data?.teams ?? []).filter((t) => t.isActive);
+
+  if (teams.length === 0) return null;
+
+  async function move(teamId: string) {
+    if (teamId === attendee.teamId) return onDone();
+    setBusy(true);
+    try {
+      await setTicketTeam({
+        ticketId: attendee._id as Id<"tickets">,
+        teamId: teamId as Id<"guestTeams">,
+      });
+      onDone();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <View className="border-b border-border bg-sunken px-4 py-3">
+      <Text className="mb-2 text-2xs font-bold uppercase tracking-wider text-muted">
+        Move {attendee.attendeeName} to
+      </Text>
+      <View className="flex-row flex-wrap gap-1.5">
+        {teams.map((t) => {
+          const c = teamColor(t.color);
+          const current = t._id === attendee.teamId;
+          return (
+            <Pressable
+              key={t._id}
+              disabled={busy}
+              onPress={() => void move(t._id)}
+              accessibilityRole="button"
+              accessibilityState={{ selected: current, disabled: busy }}
+              className={`rounded-pill px-3 py-1.5 active:opacity-70 ${busy ? "opacity-50" : ""}`}
+              style={{
+                backgroundColor: current ? c.solid : c.chipBg,
+                borderWidth: 1,
+                borderColor: c.solid,
+              }}
+            >
+              <Text
+                className="text-xs font-bold"
+                style={{ color: current ? c.onSolid : c.chipText }}
+              >
+                {t.name}
+                {current ? " ✓" : ""}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      <Pressable onPress={onDone} className="mt-2 active:opacity-70">
+        <Text className="text-xs text-muted">Cancel</Text>
+      </Pressable>
     </View>
   );
 }
@@ -118,16 +224,25 @@ function TeamStandingChip({ standing }: { standing: TeamStanding }) {
 function AttendeeRow({
   attendee,
   isLast,
+  onPress,
 }: {
   attendee: DoorAttendee;
   isLast: boolean;
+  /** Present only when this guest can be moved (checked in, on a team). */
+  onPress?: () => void;
 }) {
   const c = attendee.teamName ? teamColor(attendee.teamColor) : null;
   return (
-    <View
+    <Pressable
+      disabled={!onPress}
+      onPress={onPress}
+      accessibilityRole={onPress ? "button" : undefined}
+      accessibilityLabel={
+        onPress ? `Change ${attendee.attendeeName}'s team` : undefined
+      }
       className={`flex-row items-center gap-3 px-4 py-3 ${
-        isLast ? "" : "border-b border-border"
-      }`}
+        onPress ? "active:opacity-70" : ""
+      } ${isLast ? "" : "border-b border-border"}`}
     >
       <View className="flex-1">
         <View className="flex-row items-center gap-2">
@@ -161,6 +276,6 @@ function AttendeeRow({
       ) : (
         <Text className="text-xs text-muted">Not arrived</Text>
       )}
-    </View>
+    </Pressable>
   );
 }

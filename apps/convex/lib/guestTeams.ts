@@ -107,16 +107,32 @@ export async function assignTeamIfNeeded(
 }
 
 /**
+ * How many tickets `recountTeams` will read before giving up. Sized to the
+ * same order as the ticket reads elsewhere in this feature
+ * (`listCheckInAttendees`, `listTicketsAdmin` both `.take(1000)`); an event
+ * with more admissions than this is far outside anything the door flow has
+ * been built for.
+ */
+const RECOUNT_TICKET_LIMIT = 10_000;
+
+/**
  * Recount `assignedCount` for every team on an event from the tickets that
  * actually point at them, and write back the ones that drifted.
  *
- * The counter is maintained incrementally by the two writers that move tickets
- * between teams, so this is a repair path, not the normal one: it exists
- * because a denormalized counter that only ever goes up on one code path is
- * exactly the kind of thing that silently desyncs, and a desynced counter
- * quietly stops balancing. Cheap at door scale (one event's tickets) and run
- * whenever the team set is resized, which is the moment the standings are read
- * for a decision that persists.
+ * This is a REPAIR path, not the source of truth. Both writers that move a
+ * ticket between teams (`assignTeamIfNeeded`, `guestTeams.setTicketTeam`)
+ * adjust the counter inside the same serializable transaction as the ticket
+ * patch, so the counters shouldn't drift in the first place — this exists
+ * because a denormalized counter is exactly the kind of thing that desyncs
+ * quietly, and a desynced counter stops balancing without ever complaining.
+ * Run on resize, which is the moment the standings drive a decision that
+ * sticks.
+ *
+ * Being a repair is why an oversized event SKIPS the recount rather than
+ * truncating or throwing: a partial count would write confidently wrong
+ * numbers (worse than the drift it's meant to fix), and throwing would fail
+ * the caller's whole resize over a consistency check that is not the point of
+ * the operation. The incrementally-maintained counters stay as they are.
  */
 export async function recountTeams(
   ctx: MutationCtx,
@@ -125,7 +141,13 @@ export async function recountTeams(
   const tickets = await ctx.db
     .query("tickets")
     .withIndex("by_event", (q) => q.eq("eventId", eventId))
-    .collect();
+    .take(RECOUNT_TICKET_LIMIT + 1);
+  if (tickets.length > RECOUNT_TICKET_LIMIT) {
+    console.warn(
+      `[guestTeams] skipped team recount for event ${eventId}: more than ${RECOUNT_TICKET_LIMIT} tickets. Counters keep their incrementally-maintained values.`,
+    );
+    return;
+  }
   const counts = new Map<string, number>();
   for (const t of tickets) {
     if (!t.guestTeamId) continue;
