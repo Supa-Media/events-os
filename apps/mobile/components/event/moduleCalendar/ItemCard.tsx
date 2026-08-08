@@ -13,9 +13,12 @@
 import { useRef, useState } from "react";
 import { View, Pressable } from "react-native";
 import { Card } from "../../ui";
+import { Icon } from "../../ui/Icon";
 import { Popover } from "../../ui/Popover";
 import { type AnchorRect } from "../../ui/useAnchor";
 import { measureAnchor } from "../../ui/ContextMenu";
+import { colors } from "../../../lib/theme";
+import { confirmAction } from "../ticketing/helpers";
 import {
   asArray,
   statusIcon,
@@ -49,12 +52,14 @@ export function ItemCard({
   copyPlaceholder,
   initialCopy,
   canSendGoogleChat,
+  itemNoun,
   onSetStatus,
   onSetOffset,
   onPickOnCalendar,
   onSaveField,
   onSaveCopy,
   onSaveTitle,
+  onDelete,
 }: {
   item: ScheduleItem;
   eventDate: number;
@@ -72,6 +77,8 @@ export function ItemCard({
   initialCopy: string;
   /** Comms-module only — shows the Send-to-Google-Chat button next to Copy. */
   canSendGoogleChat?: boolean;
+  /** Singular noun for this item, e.g. "send" / "task" — powers the delete confirm copy. */
+  itemNoun: string;
   onSetStatus: (status: string | null) => void;
   /** Reschedule to a signed day offset; null unschedules. */
   onSetOffset: (offsetDays: number | null) => void;
@@ -80,6 +87,8 @@ export function ItemCard({
   onSaveField: (column: CalendarColumn, value: unknown) => void;
   onSaveCopy: (copy: string) => void;
   onSaveTitle: (title: string) => void;
+  /** Permanently delete this item (already confirmed by the caller). */
+  onDelete: () => void;
 }) {
   const statusOpt = item.status ? statusMap.get(item.status) : undefined;
   const badges = badgeField ? asArray(item.fields?.[badgeField]) : [];
@@ -145,7 +154,27 @@ export function ItemCard({
           />
         </View>
 
-        <StatusPill option={statusOpt} onPress={openStatus} />
+        <View className="items-end gap-1.5">
+          <Pressable
+            onPress={() =>
+              confirmAction({
+                title: `Delete this ${itemNoun}?`,
+                message: item.title
+                  ? `“${item.title}” will be permanently deleted.`
+                  : `This ${itemNoun} will be permanently deleted.`,
+                confirmLabel: "Delete",
+                destructive: true,
+                onConfirm: onDelete,
+              })
+            }
+            hitSlop={6}
+            accessibilityLabel={`Delete ${itemNoun}`}
+            className="rounded p-1 active:bg-sunken web:hover:bg-sunken"
+          >
+            <Icon name="trash-2" size={13} color={colors.faint} />
+          </Pressable>
+          <StatusPill option={statusOpt} onPress={openStatus} />
+        </View>
       </View>
 
       <CopyEditor

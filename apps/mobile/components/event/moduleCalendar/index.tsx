@@ -117,12 +117,14 @@ export function ModuleCalendar({
         copyPlaceholder={config.copyPlaceholder}
         initialCopy={readCopy(item, config.copyField)}
         canSendGoogleChat={config.module === "comms"}
+        itemNoun={config.itemNoun}
         onSetStatus={(status) => cal.setStatus(item, status)}
         onSetOffset={(offset) => cal.reschedule(item, offset)}
         onPickOnCalendar={() => cal.startMove(item)}
         onSaveField={(column, value) => cal.saveField(item, column, value)}
         onSaveCopy={(copy) => cal.saveCopy(item, copy)}
         onSaveTitle={(title) => cal.saveTitle(item, title)}
+        onDelete={() => cal.removeItem(item)}
       />
     </DraggableCard>
   );
