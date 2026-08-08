@@ -532,6 +532,22 @@ export const transactions = defineTable({
   // dedup key. `sourceAccountId` is the Increase/legacy account it came from.
   externalId: v.optional(v.string()),
   sourceAccountId: v.optional(v.string()),
+  // A REFUND pairing, marked by a human in Reconcile (`finances.markAsRefund`).
+  // The charge carries `refundedByTransactionId`; the credit that reversed it
+  // carries `refundsTransactionId`. Both, so either row can be read on its own.
+  //
+  // Book value never needed this — a charge and its refund already net to zero
+  // there. BUDGETS did: `isSpend` is outflow-only, so a credit can't reduce a
+  // category no matter how it's coded, and a refunded charge went on counting
+  // against its budget forever. A $676.40 Peerspace booking that was refunded
+  // the next day still showed as $676.40 spent on Pop The Balloon.
+  //
+  // FULL refunds only. A partial one has to leave the charge counting for the
+  // part that stuck, which needs signed spend sums rather than a boolean — a
+  // much larger change, and refusing it outright beats half-doing it.
+  refundedByTransactionId: v.optional(v.id("transactions")),
+  refundsTransactionId: v.optional(v.id("transactions")),
+
   // Pending (authorization) vs posted (settled) lifecycle from the card network.
   pending: v.optional(v.boolean()),
   authorizedAt: v.optional(v.number()),

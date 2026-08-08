@@ -23,6 +23,7 @@ export function BulkBar({
   reassignItems,
   onReassign,
   onMarkTransfer,
+  onMarkRefund,
   onMarkPayout,
   onNoDocumentation,
 }: {
@@ -69,6 +70,10 @@ export function BulkBar({
   // so the requirement is discoverable instead of the button being missing.
   onMarkTransfer?: () => void;
   onMarkPayout?: () => void;
+  // "Mark as refund" is a PAIR too, for the same reason as transfer — but a
+  // different meaning: a transfer belongs to no budget, whereas a refund exists
+  // precisely so the ORIGINAL CHARGE stops counting against one.
+  onMarkRefund?: () => void;
 }) {
   const canMarkTransfer = count === 2;
   return (
@@ -121,6 +126,16 @@ export function BulkBar({
             onPress={onMarkTransfer}
           />
         ) : null}
+        {onMarkRefund ? (
+          <Button
+            title="Mark as refund"
+            variant="secondary"
+            size="sm"
+            icon="corner-up-left"
+            disabled={!canMarkTransfer}
+            onPress={onMarkRefund}
+          />
+        ) : null}
         {onMarkPayout ? (
           <Button
             title="Mark as payout"
@@ -140,10 +155,10 @@ export function BulkBar({
           />
         ) : null}
       </View>
-      {onMarkTransfer && !canMarkTransfer ? (
+      {(onMarkTransfer || onMarkRefund) && !canMarkTransfer ? (
         <Text className="w-full text-[11px] text-faint">
-          A transfer needs both legs — select the two rows that move the same
-          amount out of one account and into the other.
+          A transfer or refund needs both rows — select the two that move the
+          same amount, one out and one back in.
         </Text>
       ) : null}
       <Pressable

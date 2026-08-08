@@ -1184,7 +1184,16 @@ export function isSpend(tr: Doc<"transactions">): boolean {
     tr.flow === "outflow" &&
     countsAsSpend(tr.flow) &&
     tr.status !== "excluded" &&
-    tr.isPersonal !== true
+    tr.isPersonal !== true &&
+    // A charge that was refunded in full is not spend. The money came back, so
+    // counting it against a budget overstates what the budget consumed.
+    //
+    // Done HERE rather than at the ~30 call sites because every one of them —
+    // budget totals, "needs budget", the dashboard drills, receipt chasing —
+    // wants the same answer, and a predicate they all already share is the only
+    // place to change it once. The refunding CREDIT needs no special case: it's
+    // an inflow, and `isSpend` was never true for those.
+    tr.refundedByTransactionId === undefined
   );
 }
 
@@ -9584,6 +9593,204 @@ const MARK_MIN_ROLE = "bookkeeper" as const;
  * clearing it would destroy a bookkeeper's earlier work to no numerical effect
  * — and marking has to be reversible.
  */
+/**
+ * Mark TWO already-ingested rows as a charge and the refund that reversed it.
+ *
+ * ── WHY IT'S NOT "MARK AS TRANSFER" ─────────────────────────────────────────
+ * A transfer moves money between the org's own accounts and belongs to no
+ * budget. A refund is the same merchant handing money back, and the point of
+ * recording it is that the ORIGINAL CHARGE should stop counting as spend.
+ * `isSpend` is outflow-only, so no amount of coding the credit can reduce a
+ * category — a refunded charge went on consuming its budget forever. A $676.40
+ * Peerspace booking refunded the next day still read as $676.40 against Pop The
+ * Balloon.
+ *
+ * Book value never had the problem: the charge (−) and the credit (+) already
+ * net to zero there, and they still do. Nothing about book value changes here.
+ *
+ * ── FULL REFUNDS ONLY ───────────────────────────────────────────────────────
+ * The amounts must match exactly. A PARTIAL refund has to leave the charge
+ * counting for the part that stuck, which means spend has to become a signed
+ * sum rather than a boolean — a much larger change across every aggregation.
+ * Refusing partials outright is better than approximating them: a charge
+ * silently dropped whole when only half came back understates spend, and
+ * nothing on screen would say so.
+ *
+ * ── WHAT IT REFUSES ─────────────────────────────────────────────────────────
+ * Different books, two rows moving the same way, mismatched amounts or
+ * currencies, a row already in a refund pair, and a row that is part of a
+ * transfer pair or a payout. Each is a different situation wearing a similar
+ * shape, and quietly accepting any of them moves a budget by the difference.
+ *
+ * The credit inherits the charge's category and budget. Purely for legibility —
+ * it changes no total, because an inflow is never spend — but a refund sitting
+ * uncategorised next to the charge it reversed reads like unexplained income.
+ */
+export const markAsRefund = mutation({
+  args: {
+    /** The original outflow. */
+    chargeTransactionId: v.id("transactions"),
+    /** The inflow that gave the money back. */
+    refundTransactionId: v.id("transactions"),
+    note: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    if (args.chargeTransactionId === args.refundTransactionId) {
+      throw new ConvexError({
+        code: "SAME_TRANSACTION",
+        message: "A refund needs two different rows — the charge and the credit.",
+      });
+    }
+    const charge = await requireReconcileTxn(
+      ctx,
+      args.chargeTransactionId,
+      MARK_MIN_ROLE,
+    );
+    const refund = await requireReconcileTxn(
+      ctx,
+      args.refundTransactionId,
+      MARK_MIN_ROLE,
+    );
+
+    if (charge.txn.chapterId !== refund.txn.chapterId) {
+      throw new ConvexError({
+        code: "CROSS_SCOPE_REFUND",
+        message:
+          "Those rows belong to different books. A refund lands back on the book that paid.",
+      });
+    }
+    if (charge.txn.flow !== "outflow" || refund.txn.flow !== "inflow") {
+      throw new ConvexError({
+        code: "NOT_A_PAIR",
+        message:
+          "A refund is one charge going out and one credit coming back — pick one of each.",
+      });
+    }
+    if (charge.txn.amountCents !== refund.txn.amountCents) {
+      throw new ConvexError({
+        code: "PARTIAL_REFUND",
+        message:
+          "Only a full refund can be marked — these amounts differ. Leave a partial refund coded as income against the same budget.",
+      });
+    }
+    if ((charge.txn.currency ?? "usd") !== (refund.txn.currency ?? "usd")) {
+      throw new ConvexError({
+        code: "CURRENCY_MISMATCH",
+        message: "Those two rows are in different currencies.",
+      });
+    }
+    for (const leg of [charge.txn, refund.txn]) {
+      if (leg.refundsTransactionId != null || leg.refundedByTransactionId != null) {
+        throw new ConvexError({
+          code: "ALREADY_REFUND",
+          message: "One of those rows is already part of a refund.",
+        });
+      }
+      if (leg.transferGroupId != null) {
+        throw new ConvexError({
+          code: "IS_TRANSFER",
+          message:
+            "One of those rows is part of a transfer. Un-mark it first if it's really a refund.",
+        });
+      }
+      if (leg.payoutProcessor != null) {
+        throw new ConvexError({
+          code: "IS_PAYOUT",
+          message: "One of those rows is marked as a processor payout.",
+        });
+      }
+    }
+
+    const trimmedNote = args.note?.trim() || null;
+    if (trimmedNote && trimmedNote.length > MAX_NOTE_LENGTH) {
+      throw new ConvexError({
+        code: "NOTE_TOO_LONG",
+        message: `A note can't be longer than ${MAX_NOTE_LENGTH} characters.`,
+      });
+    }
+
+    await ctx.db.patch(charge.txn._id, {
+      refundedByTransactionId: refund.txn._id,
+      ...(trimmedNote && !charge.txn.note ? { note: trimmedNote } : {}),
+    });
+    await ctx.db.patch(refund.txn._id, {
+      refundsTransactionId: charge.txn._id,
+      // Legibility only — an inflow is never spend, so this moves no total.
+      ...(charge.txn.categoryId ? { categoryId: charge.txn.categoryId } : {}),
+      ...(charge.txn.budgetId ? { budgetId: charge.txn.budgetId } : {}),
+      ...(trimmedNote && !refund.txn.note ? { note: trimmedNote } : {}),
+    });
+
+    for (const leg of [charge, refund]) {
+      await logFinanceAudit(ctx, {
+        chapterId: leg.txn.chapterId,
+        subjectType: "transaction",
+        subjectId: leg.txn._id,
+        action: "refund_mark",
+        actorPersonId: leg.actorPersonId,
+        field: "refund",
+        before: "none",
+        after: "refunded",
+        reason: trimmedNote,
+        amountCents: leg.txn.amountCents,
+      });
+    }
+    return null;
+  },
+});
+
+/**
+ * Undo a refund marking, on either row of the pair.
+ *
+ * Symmetric with `markAsRefund` — the charge goes back to counting as spend
+ * against its budget, which is the whole point of being able to reverse it. The
+ * category the credit inherited is deliberately LEFT: it was a real coding
+ * decision once made, and clearing it would destroy a bookkeeper's work for a
+ * total that never moved either way.
+ */
+export const unmarkRefund = mutation({
+  args: { transactionId: v.id("transactions") },
+  returns: v.null(),
+  handler: async (ctx, { transactionId }) => {
+    const { txn, actorPersonId } = await requireReconcileTxn(
+      ctx,
+      transactionId,
+      MARK_MIN_ROLE,
+    );
+    const otherId = txn.refundedByTransactionId ?? txn.refundsTransactionId;
+    if (otherId == null) {
+      throw new ConvexError({
+        code: "NOT_A_REFUND",
+        message: "That row isn't part of a refund.",
+      });
+    }
+    const other = await ctx.db.get(otherId);
+    await ctx.db.patch(txn._id, {
+      refundedByTransactionId: undefined,
+      refundsTransactionId: undefined,
+    });
+    if (other) {
+      await ctx.db.patch(other._id, {
+        refundedByTransactionId: undefined,
+        refundsTransactionId: undefined,
+      });
+    }
+    await logFinanceAudit(ctx, {
+      chapterId: txn.chapterId,
+      subjectType: "transaction",
+      subjectId: txn._id,
+      action: "refund_mark",
+      actorPersonId,
+      field: "refund",
+      before: "refunded",
+      after: "none",
+      amountCents: txn.amountCents,
+    });
+    return null;
+  },
+});
+
 export const markAsTransfer = mutation({
   args: {
     transactionId: v.id("transactions"),

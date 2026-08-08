@@ -3,6 +3,8 @@ import { describe, expect, test } from "vitest";
 import { ConvexError } from "convex/values";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api } from "../_generated/api";
+import { isSpend } from "../finances";
+import { signedBookCents } from "../lib/bookBalance";
 import type { Doc, Id } from "../_generated/dataModel";
 
 /**
@@ -125,6 +127,99 @@ const auditFor = (s: ChapterSetup, id: Id<"transactions">) =>
       (e) => e.subjectId === (id as string),
     ),
   );
+
+// ── Refunds ─────────────────────────────────────────────────────────────────
+// A refund is a PAIR like a transfer, but it exists for a different reason: a
+// transfer belongs to no budget, whereas a refund is marked precisely so the
+// ORIGINAL CHARGE stops counting against one. `isSpend` is outflow-only, so no
+// amount of coding the credit could ever reduce a category — a refunded charge
+// consumed its budget forever.
+
+describe("finances.markAsRefund", () => {
+  test("stops the refunded charge counting as spend", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setupBookkeeper(s);
+
+    const charge = await seedTxn(s, { amountCents: 67_640, flow: "outflow" });
+    const credit = await seedTxn(s, { amountCents: 67_640, flow: "inflow" });
+    // Before: the charge is spend and owes a budget.
+    expect(isSpend((await txn(s, charge))!)).toBe(true);
+
+    await s.as.mutation(api.finances.markAsRefund, {
+      chargeTransactionId: charge,
+      refundTransactionId: credit,
+    });
+
+    // After: it isn't. Every budget total, "needs budget" badge and dashboard
+    // drill reads through this one predicate, so they all correct together.
+    expect(isSpend((await txn(s, charge))!)).toBe(false);
+    expect((await txn(s, charge))!.refundedByTransactionId).toBe(credit);
+    expect((await txn(s, credit))!.refundsTransactionId).toBe(charge);
+  });
+
+  test("book value is unchanged — it always netted to zero", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setupBookkeeper(s);
+    const charge = await seedTxn(s, { amountCents: 67_640, flow: "outflow" });
+    const credit = await seedTxn(s, { amountCents: 67_640, flow: "inflow" });
+    await s.as.mutation(api.finances.markAsRefund, {
+      chargeTransactionId: charge,
+      refundTransactionId: credit,
+    });
+    const pair = [(await txn(s, charge))!, (await txn(s, credit))!];
+    expect(pair.reduce((sum, r) => sum + signedBookCents(r), 0)).toBe(0);
+  });
+
+  test("refuses a partial refund rather than approximating it", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setupBookkeeper(s);
+    const charge = await seedTxn(s, { amountCents: 67_640, flow: "outflow" });
+    const credit = await seedTxn(s, { amountCents: 30_000, flow: "inflow" });
+    // Dropping the charge whole when only part came back would UNDERSTATE
+    // spend, and nothing on screen would say so.
+    await expect(
+      s.as.mutation(api.finances.markAsRefund, {
+        chargeTransactionId: charge,
+        refundTransactionId: credit,
+      }),
+    ).rejects.toThrow(ConvexError);
+  });
+
+  test("refuses two rows moving the same way", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setupBookkeeper(s);
+    const a = await seedTxn(s, { amountCents: 5_000, flow: "outflow" });
+    const b = await seedTxn(s, { amountCents: 5_000, flow: "outflow" });
+    await expect(
+      s.as.mutation(api.finances.markAsRefund, {
+        chargeTransactionId: a,
+        refundTransactionId: b,
+      }),
+    ).rejects.toThrow(ConvexError);
+  });
+
+  test("un-marking puts the charge back into spend", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setupBookkeeper(s);
+    const charge = await seedTxn(s, { amountCents: 67_640, flow: "outflow" });
+    const credit = await seedTxn(s, { amountCents: 67_640, flow: "inflow" });
+    await s.as.mutation(api.finances.markAsRefund, {
+      chargeTransactionId: charge,
+      refundTransactionId: credit,
+    });
+    // Reversible from EITHER row — a bookkeeper shouldn't have to work out
+    // which half of the pair they're allowed to click.
+    await s.as.mutation(api.finances.unmarkRefund, { transactionId: credit });
+    expect(isSpend((await txn(s, charge))!)).toBe(true);
+    expect((await txn(s, charge))!.refundedByTransactionId).toBeUndefined();
+    expect((await txn(s, credit))!.refundsTransactionId).toBeUndefined();
+  });
+});
 
 describe("finances.markAsTransfer", () => {
   // ── Cross-book marking (owner report, 2026-08-07) ────────────────────────

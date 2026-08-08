@@ -227,6 +227,7 @@ export const FINANCE_AUDIT_ACTIONS = [
   "correction", // finances.correctTransaction (amount/date/merchant/description)
   "personal_flag", // cards.flagPersonalCharge / cards.unflagPersonalCharge
   "transfer_mark", // finances.markAsTransfer / unmarkTransfer (BOTH legs logged)
+  "refund_mark", // finances.markAsRefund / unmarkRefund (BOTH rows logged)
   "payout_mark", // finances.markAsPayout / unmarkPayout
   "note_edit", // setTransactionNote
   "manual_create", // createManualTransaction
@@ -248,6 +249,7 @@ export const FINANCE_AUDIT_ACTION_LABELS: Record<FinanceAuditAction, string> = {
   correction: "Corrected",
   personal_flag: "Personal flag changed",
   transfer_mark: "Internal transfer marking changed",
+  refund_mark: "Refund marking changed",
   payout_mark: "Processor payout marking changed",
   note_edit: "Note edited",
   manual_create: "Created manually",
