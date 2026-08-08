@@ -30,6 +30,9 @@ import {
   RECEIPT_SENDER_CLASSES,
   RECEIPT_EXCEPTION_REASONS,
   RECEIPT_EXCEPTION_STATUSES,
+  EXPENSE_TYPES,
+  ATTENDEE_AFFILIATIONS,
+  TRANSACTION_CODING_STATUSES,
   LEGACY_ACCOUNT_STATUSES,
   FINANCE_ROLES,
   FINANCE_ROLE_SCOPES,
@@ -551,6 +554,19 @@ export const transactions = defineTable({
   // documentation yet, and a row shouldn't leave the chase because someone
   // asked to be let off. Pending rows are found via `by_transaction`.
   approvedReceiptExceptionId: v.optional(v.id("receiptExceptions")),
+
+  // The transaction's CODING state — where its substantiation record
+  // (`transactionCodings`, at most one row per transaction) sits in review.
+  // DENORMALIZED, single-writer (`lib/transactionCoding.ts`), same discipline
+  // as `approvedReceiptExceptionId` above: mirrors the coding row's `status`
+  // exactly, so the reconcile grid's `uncoded`/`coding_review` facets and the
+  // `CODING_REQUIRED` reconcile gate read it without a join. `undefined` =
+  // no coding has ever been submitted (whether that means "uncoded backlog"
+  // is the POLICY's call — `requiresCoding` in `finances.ts` consults
+  // `codingRequiredSinceMs`, so pre-policy history doesn't light up).
+  codingState: v.optional(
+    v.union(...TRANSACTION_CODING_STATUSES.map((s) => v.literal(s))),
+  ),
 
   // Receipt-reminder timeline (day-1 flag → day-3 escalate, tracked by
   // `cards.advanceReceiptReminders`). `undefined` = no reminder sent yet.
@@ -1689,6 +1705,96 @@ export const receiptExceptions = defineTable({
   // The approval queue: pending exceptions for one scope, oldest first.
   .index("by_chapter_and_status", ["chapterId", "status"]);
 
+// ── Transaction codings (IRS-grade substantiation) ───────────────────────────
+/** The structured, HUMAN-AUTHORED answer to "what was this, why, and who was
+ *  involved" — the §274(d) substantiation elements — with its own review
+ *  lifecycle. See `docs/plans/transaction-coding.md` and the enums' doc
+ *  comments in `@events-os/shared`.
+ *
+ *  ONE ROW PER TRANSACTION, revised in place. Unlike `receiptExceptions`
+ *  (append-mostly, re-filed on rejection) the send-back loop here is an EDIT
+ *  conversation — "receipt must show exact amount" → fix → resubmit — so the
+ *  row's fields ARE rewritten across rounds and the revision history lives in
+ *  `financeAuditLog` (`coding_submit` per round, `coding_decide` per
+ *  decision). Same orthogonality argument as exceptions: coding state is not
+ *  a 5th `TRANSACTION_STATUS`; the denormalized `transactions.codingState`
+ *  mirrors `status` here, and `lib/transactionCoding.ts` is the ONLY writer
+ *  of both sides.
+ *
+ *  PRIVACY: `attendees` names are INTERNAL-ONLY, forever (owner decision,
+ *  2026-08-08 — members/guests didn't consent to a public financial record,
+ *  and some are minors). A public ledger renders `businessPurpose`, the
+ *  headcount, and the affiliation breakdown — never a name. Reads gate names
+ *  behind `lib/transactionCodingAccess.ts#hasCodingNamesView`. */
+export const transactionCodings = defineTable({
+  transactionId: v.id("transactions"),
+  // Denormalized from the transaction (a real chapter or "central") — same
+  // pattern + rationale as `receiptExceptions.chapterId`.
+  chapterId: v.union(v.id("chapters"), v.literal("central")),
+  // Which §274(d) branch applies — drives the required fields below. NOT a
+  // category taxonomy (funds/categories/budgets own that).
+  expenseType: v.union(...EXPENSE_TYPES.map((t) => v.literal(t))),
+  // THE STRING THE PUBLIC LEDGER PRINTS — "travel to NY to film Eden event",
+  // never "bus to NY". Human-authored (no AI pre-fill anywhere in this flow),
+  // length-floored (`MIN_PURPOSE_LENGTH`).
+  businessPurpose: v.string(),
+  // Travel/lodging: the route (required for those types; city level is
+  // enough, and city level is what publishes).
+  travelFrom: v.optional(v.string()),
+  travelTo: v.optional(v.string()),
+  // Who traveled — optional context on travel rows (the spender is implied by
+  // `transactions.personId`; extra travelers get listed when the fare covered
+  // more than one person).
+  travelers: v.optional(
+    v.array(
+      v.object({
+        personId: v.optional(v.id("people")),
+        name: v.string(),
+        affiliation: v.union(
+          ...ATTENDEE_AFFILIATIONS.map((a) => v.literal(a)),
+        ),
+      }),
+    ),
+  ),
+  // Meals: headcount always; names+affiliations at/below the org threshold
+  // (`mealAttendeeNamesMaxHeadcount`, default 15), an identifiable group
+  // description above it. `attendees` is bounded by that same threshold —
+  // over it the group is DESCRIBED, never enumerated — so the embedded array
+  // can't grow past ~15 entries (the no-unbounded-arrays rule holds).
+  headcount: v.optional(v.number()),
+  attendees: v.optional(
+    v.array(
+      v.object({
+        personId: v.optional(v.id("people")),
+        name: v.string(),
+        affiliation: v.union(
+          ...ATTENDEE_AFFILIATIONS.map((a) => v.literal(a)),
+        ),
+      }),
+    ),
+  ),
+  groupDescription: v.optional(v.string()),
+  status: v.union(...TRANSACTION_CODING_STATUSES.map((s) => v.literal(s))),
+  // Who authored it. A bookkeeper may code on someone's behalf (reality
+  // demands it) — these fields say who actually typed, and the SoD check in
+  // `transactionCodings.approve` compares the DECIDER against them.
+  codedByPersonId: v.optional(v.id("people")),
+  codedByUserId: v.id("users"),
+  submittedAt: v.number(), // first submission
+  updatedAt: v.number(), // latest edit/resubmission
+  // The latest decision. Rewritten per round (history in `financeAuditLog`).
+  decidedByPersonId: v.optional(v.id("people")),
+  decidedByUserId: v.optional(v.id("users")),
+  decidedAt: v.optional(v.number()),
+  // The reviewer's latest send-back note ("receipt must show exact amount") —
+  // required on `changes_requested`, cleared on approval.
+  reviewNote: v.optional(v.string()),
+})
+  // At most one row per transaction (enforced by `lib/transactionCoding.ts`).
+  .index("by_transaction", ["transactionId"])
+  // The review queue: submitted codings for one scope, oldest first.
+  .index("by_chapter_and_status", ["chapterId", "status"]);
+
 // ── Public reimbursement submit rate limit (deployment-wide) ─────────────────
 /** A single timestamped hit against the anonymous `submitPublicReimbursement`
  *  rate limiter. NOT chapter-scoped — the same abuse (a bot hammering the
@@ -1815,6 +1921,21 @@ export const financeSettings = defineTable({
   // "off": there is no way to switch separation of duties off entirely, which
   // is the point. Enforced in `receiptExceptions.approveReceiptException`.
   receiptExceptionApprovalThresholdCents: v.optional(v.number()),
+  // Org-wide coding policy start: spend posted at/after this instant REQUIRES
+  // an approved coding before it can be reconciled (`CODING_REQUIRED` gate in
+  // `finances.setTransactionStatus`). `undefined` falls back to
+  // `DEFAULT_CODING_REQUIRED_SINCE_MS` (2026-09-01, the owner-decided policy
+  // date) — a fallback, not "off": the policy arms itself on the date with no
+  // config step, and moving it is a deliberate central-finance act. Pre-date
+  // history never lights up (`docs/plans/transaction-coding.md`,
+  // "grandfathering").
+  codingRequiredSinceMs: v.optional(v.number()),
+  // Org-wide meal-names threshold: at/below this headcount a meal coding must
+  // name every attendee (with affiliation); above it, headcount + group
+  // description. `undefined` falls back to
+  // `DEFAULT_MEAL_ATTENDEE_NAMES_MAX_HEADCOUNT` (15, owner decision
+  // 2026-08-08).
+  mealAttendeeNamesMaxHeadcount: v.optional(v.number()),
   // Morning reconciliation engine kill switch (accounts page, ED/FM). The
   // engine defaults to RUNNING — it books ledger transfer pairs, never real
   // bank movement, so the money-gating rule doesn't apply — but the Financial

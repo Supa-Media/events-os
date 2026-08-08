@@ -489,7 +489,13 @@ describe("listReconcile (server-side filters + counts + projections)", () => {
         source: "manual",
         flow: fields.flow ?? "outflow",
         amountCents: fields.amountCents ?? 100,
-        postedAt: Date.now(),
+        // Pinned BEFORE the coding policy date (2026-09-01,
+        // `DEFAULT_CODING_REQUIRED_SINCE_MS`): this fixture is about the
+        // documentation/budget/status facets, and a `Date.now()` here would
+        // flip `uncoded` on for every row the day the policy arms. The
+        // coding facets get their own post-policy fixture in
+        // `transactionCodings.test.ts`.
+        postedAt: Date.UTC(2026, 0, 15),
         status: fields.status ?? "unreviewed",
         budgetId: fields.budgetId,
         receiptStorageId: fields.receiptStorageId,
@@ -546,6 +552,11 @@ describe("listReconcile (server-side filters + counts + projections)", () => {
       // `reconciled` row with nothing attached — see the `undocumented`
       // coverage in `receiptExceptions.test.ts`.
       undocumented: 1, // t1
+      // Every row here is pinned pre-policy (see `insertTxn`), so the coding
+      // facets stay dark — post-policy coverage lives in
+      // `transactionCodings.test.ts`.
+      uncoded: 0,
+      coding_review: 0,
       personal_unpaid: 0, // none flagged personal in this fixture
       transfers: 0, // nothing marked as an internal transfer here
       payouts: 0, // nothing marked as a processor payout here

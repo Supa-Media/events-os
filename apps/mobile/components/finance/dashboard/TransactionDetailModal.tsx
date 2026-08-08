@@ -88,6 +88,7 @@ import { SignedMoney, txnStatusTone } from "./parts";
 import { STATUS_OPTIONS, shortDate } from "../reconcile/helpers";
 import { ReceiptCell } from "../reconcile/ReconcileList";
 import { ReceiptExceptionSection } from "../reconcile/ReceiptExceptionSection";
+import { TransactionCodingSection } from "../reconcile/TransactionCodingSection";
 import { ReceiptViewerModal } from "../receipts/ReceiptViewerModal";
 import { ExcludeReasonModal } from "../modals/ExcludeReasonModal";
 import type { DrilldownTxn } from "./TransactionList";
@@ -546,6 +547,23 @@ function TransactionDetailBody({
         transactionId={txn.id}
         amountCents={txn.amountCents}
         hasReceipt={hasReceipt}
+        readOnly={readOnly}
+        onError={alertError}
+      />
+
+      {/* Coding — the structured what/why/who substantiation record, with
+          its own review loop. Spend posted at/after the policy date
+          (2026-09-01) can't be reconciled without an approved one. See
+          `docs/plans/transaction-coding.md`. */}
+      <TransactionCodingSection
+        transactionId={txn.id}
+        merchantLine={[
+          txn.merchantName ?? txn.description ?? "Charge",
+          txn.dateMs != null ? shortDate(txn.dateMs) : null,
+        ]
+          .filter(Boolean)
+          .join(" · ")}
+        amountCents={txn.amountCents}
         readOnly={readOnly}
         onError={alertError}
       />

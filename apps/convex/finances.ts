@@ -123,6 +123,7 @@ import {
   type TransferDirection,
 } from "./lib/transferPair";
 import { viewerPerson, callerHasEventEditRights } from "./lib/org";
+import { codingPolicy } from "./lib/transactionCoding";
 import { holdsApprovalSeatAt } from "./lib/seats";
 import { listActiveChapters } from "./lib/chapters";
 import {
@@ -461,6 +462,8 @@ const reconcileFilterValidator = v.union(
   v.literal("spend"),
   v.literal("needs_budget"),
   v.literal("missing_receipt"),
+  v.literal("uncoded"),
+  v.literal("coding_review"),
   v.literal("to_review"),
   v.literal("reconciled"),
   v.literal("undocumented"),
@@ -475,6 +478,8 @@ const reconcileCounts = v.object({
   spend: v.number(),
   needs_budget: v.number(),
   missing_receipt: v.number(),
+  uncoded: v.number(),
+  coding_review: v.number(),
   to_review: v.number(),
   reconciled: v.number(),
   undocumented: v.number(),
@@ -1251,6 +1256,40 @@ export function isUndocumented(tr: Doc<"transactions">): boolean {
   if (tr.receiptStorageId != null) return false;
   if (tr.approvedReceiptExceptionId != null) return false;
   return isSpend(tr) || isMarkedTransfer(tr) || isProcessorPayout(tr);
+}
+
+/**
+ * True iff the CODING POLICY says this row owes a substantiation record
+ * (`transactionCodings` — see `docs/plans/transaction-coding.md`): spend
+ * posted at/after `sinceMs` (`lib/transactionCoding.ts#codingPolicy`, default
+ * 2026-09-01, the owner-decided policy date). Deliberately narrower than the
+ * documentation predicates above — transfers, payouts, inflows and personal
+ * charges are exempt; coding is about SPEND substantiation. Pre-policy
+ * history never lights up: that backlog is a separate, deliberate cleanup
+ * (`historicalImportBatch`), not an ambient nag.
+ */
+export function requiresCoding(
+  tr: Doc<"transactions">,
+  sinceMs: number,
+): boolean {
+  if (tr.postedAt < sinceMs) return false;
+  return isSpend(tr);
+}
+
+/**
+ * True iff a row the policy gates is waiting on its AUTHOR: no coding ever
+ * submitted, or the reviewer sent it back (`changes_requested`). A coding
+ * sitting in review (`submitted`) is deliberately NOT uncoded — that row is
+ * waiting on the treasurer, and it has its own facet (`coding_review`).
+ */
+export function isUncoded(tr: Doc<"transactions">, sinceMs: number): boolean {
+  if (!requiresCoding(tr, sinceMs)) return false;
+  // CHASE semantics, like `needsDocumentation`: a closed row has nobody left
+  // to chase. Post-policy rows can't legitimately CLOSE uncoded (the
+  // `CODING_REQUIRED` gate refuses), so the only rows this skips are
+  // legacy/direct writes — visible to an audit, not to the nag.
+  if (tr.status === "reconciled") return false;
+  return tr.codingState == null || tr.codingState === "changes_requested";
 }
 
 /**
@@ -8086,6 +8125,8 @@ export const listReconcile = query({
       spend: 0,
       needs_budget: 0,
       missing_receipt: 0,
+      uncoded: 0,
+      coding_review: 0,
       to_review: 0,
       reconciled: 0,
       undocumented: 0,
@@ -8223,6 +8264,9 @@ export const listReconcile = query({
     // narrowing and the counts (`@events-os/shared`'s pure set logic takes
     // these flags rather than a transaction, so the semantics are testable
     // without a database — see `reconcileFilters.test.ts`).
+    // The coding policy's start date — read once per query, consulted per row
+    // by `isUncoded` (pre-policy history must never light the facet up).
+    const { sinceMs: codingSinceMs } = await codingPolicy(ctx);
     const flagsFor = (tr: Doc<"transactions">): Record<ReconcileFilterKey, boolean> => ({
       spend: isSpend(tr),
       transfers: isMarkedTransfer(tr),
@@ -8230,6 +8274,13 @@ export const listReconcile = query({
       to_review: tr.status === "unreviewed",
       needs_budget: needsBudget(tr),
       missing_receipt: needsDocumentation(tr),
+      // The substantiation chase (`docs/plans/transaction-coding.md`):
+      // `uncoded` waits on the AUTHOR (nothing submitted, or sent back);
+      // `coding_review` waits on a REVIEWER — deliberately keyed off
+      // `codingState` alone, so a voluntarily-coded pre-policy row still
+      // reaches the review queue.
+      uncoded: isUncoded(tr, codingSinceMs),
+      coding_review: tr.codingState === "submitted",
       personal_unpaid: isPersonalUnpaid(tr),
       reconciled: tr.status === "reconciled",
       // The PUBLISHING backlog. Unlike `missing_receipt` this ignores status
@@ -9249,6 +9300,22 @@ export const setTransactionStatus = mutation({
         message:
           "Attach a receipt before reconciling — or, if no receipt exists, file a receipt exception saying why.",
       });
+    }
+    // RECONCILED MEANS SUBSTANTIATED, too (transaction-coding PR): spend
+    // posted at/after the coding policy date (2026-09-01 by default —
+    // `docs/plans/transaction-coding.md`) also needs an APPROVED coding — the
+    // structured what/why/who record — before it can close. Same
+    // write-guard-only posture as the receipt gate above: pre-policy history
+    // and already-closed rows are untouched.
+    if (args.status === "reconciled") {
+      const { sinceMs } = await codingPolicy(ctx);
+      if (requiresCoding(txn, sinceMs) && txn.codingState !== "approved") {
+        throw new ConvexError({
+          code: "CODING_REQUIRED",
+          message:
+            "This charge still needs its coding — what it was for, and who was involved — submitted and approved before it can be reconciled.",
+        });
+      }
     }
     // A human just acted on this transaction's status manually — clear any
     // stored AI suggestion so it can never later resurface via

@@ -232,6 +232,8 @@ export const FINANCE_AUDIT_ACTIONS = [
   "manual_create", // createManualTransaction
   "budget_amount_change", // updateBudget (amountCents only)
   "budget_delete", // deleteBudget
+  "coding_submit", // transactionCodings.submit — initial submission AND each resubmission after a send-back (the revision history)
+  "coding_decide", // transactionCodings.approve / requestChanges
 ] as const;
 export type FinanceAuditAction = (typeof FINANCE_AUDIT_ACTIONS)[number];
 
@@ -251,6 +253,8 @@ export const FINANCE_AUDIT_ACTION_LABELS: Record<FinanceAuditAction, string> = {
   manual_create: "Created manually",
   budget_amount_change: "Budget amount changed",
   budget_delete: "Budget deleted",
+  coding_submit: "Coding submitted",
+  coding_decide: "Coding decided",
 };
 
 // ── Inbound email receipts (backfill pipeline) ───────────────────────────────
@@ -476,6 +480,270 @@ export function documentationState(
   if (hasReceipt) return "receipt";
   if (hasApprovedException) return "exception";
   return "undocumented";
+}
+
+// ── Transaction coding (IRS-grade substantiation) ────────────────────────────
+// A CODING is the structured, human-authored, reviewed answer to "what was
+// this, why, and who was involved" — the §274(d) substantiation elements a
+// receipt alone doesn't carry. One `transactionCodings` row per transaction,
+// with its own review lifecycle, orthogonal to `TRANSACTION_STATUSES` (same
+// argument that kept receipt exceptions out of that enum) and to
+// documentation state. See `docs/plans/transaction-coding.md`.
+//
+// NO AI ANYWHERE IN THIS FLOW (owner decision, 2026-08-08): every field is the
+// spender's own words. The reviewer-side `transactions.aiSuggestion` hints for
+// budget/category are a different feature and never write into a coding.
+
+/** Which substantiation fields a coding must carry. NOT a category taxonomy —
+ *  funds/categories/budgets own that; this exists ONLY to drive the §274(d)
+ *  required-elements branch (travel wants a route, a meal wants who ate). */
+export const EXPENSE_TYPES = ["general", "travel", "meal", "lodging"] as const;
+export type ExpenseType = (typeof EXPENSE_TYPES)[number];
+
+export const EXPENSE_TYPE_LABELS: Record<ExpenseType, string> = {
+  general: "General",
+  travel: "Travel",
+  meal: "Meal",
+  lodging: "Lodging",
+};
+
+/** The business-relationship element for a meal attendee — the taxonomy the
+ *  public ledger speaks ("5 volunteers, 3 community members, 2 contractors").
+ *  Names never publish; these do (owner decision, 2026-08-08). */
+export const ATTENDEE_AFFILIATIONS = [
+  "team",
+  "volunteer",
+  "community_member",
+  "contractor",
+  "guest",
+  "other",
+] as const;
+export type AttendeeAffiliation = (typeof ATTENDEE_AFFILIATIONS)[number];
+
+export const ATTENDEE_AFFILIATION_LABELS: Record<AttendeeAffiliation, string> =
+  {
+    team: "Team member",
+    volunteer: "Volunteer",
+    community_member: "Community member",
+    contractor: "Contractor",
+    guest: "Guest",
+    other: "Other",
+  };
+
+// A coding's review lifecycle. ONE row per transaction, revised in place — the
+// send-back loop ("receipt must show exact amount") is an EDIT conversation,
+// not a re-file, so `changes_requested` returns to `submitted` on resubmit.
+// Revision history lives in `financeAuditLog` (`coding_submit` per round).
+// There is deliberately no server-side `draft`: an unsubmitted coding is
+// simply an uncoded transaction.
+export const TRANSACTION_CODING_STATUSES = [
+  "submitted", // authored + submitted, awaiting review
+  "changes_requested", // a reviewer sent it back with a note
+  "approved", // stands as this transaction's substantiation of record
+] as const;
+export type TransactionCodingStatus =
+  (typeof TRANSACTION_CODING_STATUSES)[number];
+
+export const TRANSACTION_CODING_STATUS_LABELS: Record<
+  TransactionCodingStatus,
+  string
+> = {
+  submitted: "Awaiting review",
+  changes_requested: "Changes requested",
+  approved: "Approved",
+};
+
+/** The business purpose is the string the public ledger prints — "travel to
+ *  NY to film Eden event", never "bus to NY". Length-floored so a shrug can't
+ *  submit; the reviewer is the real quality gate. */
+export const MIN_PURPOSE_LENGTH = 20;
+/** Same cap + rationale as `MAX_NOTE_LENGTH` — a purpose is a sentence or
+ *  three, not a document. */
+export const MAX_PURPOSE_LENGTH = 2000;
+/** Cap for travel from/to and each attendee name — short identifiers, and the
+ *  route publishes at city level. */
+export const MAX_CODING_PLACE_LENGTH = 200;
+
+/** Meal names threshold (owner decision, 2026-08-08): 15 or fewer attendees →
+ *  every name + affiliation; more than 15 → headcount + an identifiable group
+ *  description ("volunteers writing and producing the album"). A HEADCOUNT
+ *  threshold, not a dollar one — a $40 pizza for 16 volunteers gets a
+ *  headcount, a $400 dinner for 4 gets four names. Stored as
+ *  `financeSettings.mealAttendeeNamesMaxHeadcount`; this is the fallback. */
+export const DEFAULT_MEAL_ATTENDEE_NAMES_MAX_HEADCOUNT = 15;
+
+/** Policy start (owner decision, 2026-08-08): coding is REQUIRED — the
+ *  reconcile gate refuses `reconciled` on an uncoded row — only for spend
+ *  posted at/after September 1, 2026 UTC. The tooling itself ships before the
+ *  date, so August is the voluntary on-ramp; history stays a deliberate,
+ *  separate cleanup (`historicalImportBatch`). Stored as
+ *  `financeSettings.codingRequiredSinceMs`; this is the fallback, so the
+ *  policy arms itself on the date with no runtime config step. */
+export const DEFAULT_CODING_REQUIRED_SINCE_MS = Date.UTC(2026, 8, 1);
+
+/** True iff a meal of this size must name every attendee (vs. headcount +
+ *  group description). Shared by the server guard and the form. */
+export function mealNamesRequired(
+  headcount: number,
+  namesMaxHeadcount: number = DEFAULT_MEAL_ATTENDEE_NAMES_MAX_HEADCOUNT,
+): boolean {
+  return headcount <= namesMaxHeadcount;
+}
+
+/** One meal attendee, in the filer's words. `personId` (a `people` row id,
+ *  kept as a plain string here so the shared package stays server-agnostic)
+ *  when the typeahead matched; free text for genuine guests. */
+export interface CodingAttendee {
+  personId?: string;
+  name: string;
+  affiliation: AttendeeAffiliation;
+}
+
+/** The author-editable substance of a coding — what `codingFieldProblems`
+ *  validates and what the submit mutation accepts. */
+export interface TransactionCodingFields {
+  expenseType: ExpenseType;
+  businessPurpose: string;
+  travelFrom?: string;
+  travelTo?: string;
+  headcount?: number;
+  attendees?: CodingAttendee[];
+  groupDescription?: string;
+}
+
+export interface CodingProblem {
+  /** Stable machine code — the server throws it as a `ConvexError` code. */
+  code:
+    | "PURPOSE_REQUIRED"
+    | "PURPOSE_TOO_LONG"
+    | "TRAVEL_ROUTE_REQUIRED"
+    | "PLACE_TOO_LONG"
+    | "HEADCOUNT_REQUIRED"
+    | "ATTENDEES_REQUIRED"
+    | "ATTENDEE_COUNT_MISMATCH"
+    | "ATTENDEE_NAME_REQUIRED"
+    | "ATTENDEES_OVER_THRESHOLD"
+    | "GROUP_DESCRIPTION_REQUIRED";
+  message: string;
+}
+
+/**
+ * Every problem with a coding's fields, in display order — the form renders
+ * the whole list in place (submit stays disabled until it's empty) and the
+ * server throws the FIRST one, so client and server can never disagree about
+ * what a complete coding is. Pure, so it's testable and usable from the app
+ * without a server round-trip.
+ */
+export function codingFieldProblems(
+  fields: TransactionCodingFields,
+  namesMaxHeadcount: number = DEFAULT_MEAL_ATTENDEE_NAMES_MAX_HEADCOUNT,
+): CodingProblem[] {
+  const problems: CodingProblem[] = [];
+  const purpose = fields.businessPurpose.trim();
+  if (purpose.length < MIN_PURPOSE_LENGTH) {
+    problems.push({
+      code: "PURPOSE_REQUIRED",
+      message: `Say what this was for and which org work it served — at least ${MIN_PURPOSE_LENGTH} characters. "Travel to NY to film Eden event", not "bus to NY". This description will appear on the public ledger.`,
+    });
+  } else if (purpose.length > MAX_PURPOSE_LENGTH) {
+    problems.push({
+      code: "PURPOSE_TOO_LONG",
+      message: `Keep the business purpose under ${MAX_PURPOSE_LENGTH} characters.`,
+    });
+  }
+
+  if (fields.expenseType === "travel" || fields.expenseType === "lodging") {
+    const from = fields.travelFrom?.trim() ?? "";
+    const to = fields.travelTo?.trim() ?? "";
+    if (!from || !to) {
+      problems.push({
+        code: "TRAVEL_ROUTE_REQUIRED",
+        message:
+          "Travel needs a route — where from and where to (city level is enough).",
+      });
+    } else if (
+      from.length > MAX_CODING_PLACE_LENGTH ||
+      to.length > MAX_CODING_PLACE_LENGTH
+    ) {
+      problems.push({
+        code: "PLACE_TOO_LONG",
+        message: `Keep each place under ${MAX_CODING_PLACE_LENGTH} characters.`,
+      });
+    }
+  }
+
+  if (fields.expenseType === "meal") {
+    const headcount = fields.headcount;
+    if (
+      headcount == null ||
+      !Number.isInteger(headcount) ||
+      headcount < 1
+    ) {
+      problems.push({
+        code: "HEADCOUNT_REQUIRED",
+        message: "How many people had this meal?",
+      });
+    } else if (mealNamesRequired(headcount, namesMaxHeadcount)) {
+      const attendees = fields.attendees ?? [];
+      if (attendees.length === 0) {
+        problems.push({
+          code: "ATTENDEES_REQUIRED",
+          message: `A meal for ${namesMaxHeadcount} or fewer people needs every attendee named, with how they relate to the org — the IRS business-relationship element. Names stay internal; only the breakdown publishes.`,
+        });
+      } else if (attendees.length !== headcount) {
+        problems.push({
+          code: "ATTENDEE_COUNT_MISMATCH",
+          message: `Headcount says ${headcount} but ${attendees.length} ${attendees.length === 1 ? "person is" : "people are"} listed — ${headcount} people means ${headcount} names.`,
+        });
+      } else if (
+        attendees.some(
+          (a) =>
+            !a.name.trim() || a.name.trim().length > MAX_CODING_PLACE_LENGTH,
+        )
+      ) {
+        problems.push({
+          code: "ATTENDEE_NAME_REQUIRED",
+          message: "Every attendee needs a (reasonably short) name.",
+        });
+      }
+    } else {
+      // Over the threshold: a group is described, never enumerated — keeps
+      // the row bounded and matches the decided policy (names ≤ threshold).
+      if ((fields.attendees?.length ?? 0) > 0) {
+        problems.push({
+          code: "ATTENDEES_OVER_THRESHOLD",
+          message: `Over ${namesMaxHeadcount} people, describe the group instead of listing names.`,
+        });
+      }
+      const group = fields.groupDescription?.trim() ?? "";
+      if (!group) {
+        problems.push({
+          code: "GROUP_DESCRIPTION_REQUIRED",
+          message:
+            'Describe the group so it\'s identifiable — "volunteers writing and producing the album", not "some people".',
+        });
+      } else if (group.length > MAX_PURPOSE_LENGTH) {
+        problems.push({
+          code: "PURPOSE_TOO_LONG",
+          message: `Keep the group description under ${MAX_PURPOSE_LENGTH} characters.`,
+        });
+      }
+    }
+  }
+
+  return problems;
+}
+
+/** The affiliation breakdown a coding publishes in place of names —
+ *  `{ volunteer: 5, community_member: 3, contractor: 2 }`. */
+export function attendeeAffiliationBreakdown(
+  attendees: readonly CodingAttendee[],
+): Partial<Record<AttendeeAffiliation, number>> {
+  const out: Partial<Record<AttendeeAffiliation, number>> = {};
+  for (const a of attendees) {
+    out[a.affiliation] = (out[a.affiliation] ?? 0) + 1;
+  }
+  return out;
 }
 
 // ── Receipt extraction progress ──────────────────────────────────────────────

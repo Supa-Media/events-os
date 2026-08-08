@@ -15,6 +15,7 @@ import { ConvexError } from "convex/values";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import {
+  disarmCodingPolicy,
   newT,
   run,
   setupChapter,
@@ -144,6 +145,9 @@ async function seedTxn(
     status?: "unreviewed" | "categorized" | "reconciled" | "excluded";
   } = {},
 ): Promise<Id<"transactions">> {
+  // This suite reconciles `Date.now()`-posted rows and is not about coding —
+  // keep it independent of the 2026-09-01 policy date.
+  await disarmCodingPolicy(s.t);
   return await run(s.t, (ctx) =>
     ctx.db.insert("transactions", {
       chapterId: opts.chapterId ?? s.chapterId,

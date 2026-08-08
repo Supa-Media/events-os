@@ -1,7 +1,7 @@
 /// <reference types="vite/client" />
 import { describe, expect, test } from "vitest";
 import { ConvexError } from "convex/values";
-import { newT, run, setupChapter, storeBlob, type ChapterSetup } from "./setup.helpers";
+import { disarmCodingPolicy, newT, run, setupChapter, storeBlob, type ChapterSetup } from "./setup.helpers";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { createReceipt } from "../lib/receiptLinks";
@@ -56,6 +56,9 @@ async function seedTxn(
   amountCents = 4200,
   personId?: Id<"people">,
 ): Promise<Id<"transactions">> {
+  // This suite reconciles `Date.now()`-posted rows and is not about coding —
+  // keep it independent of the 2026-09-01 policy date.
+  await disarmCodingPolicy(s.t);
   return await s.as.mutation(api.finances.createManualTransaction, {
     flow: "outflow",
     amountCents,

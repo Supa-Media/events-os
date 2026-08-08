@@ -287,6 +287,17 @@
  * one quiz question on the Public-Worship-card-buys-for-New-York case.
  * Minutes 4→5, quiz length 4→5 (both bumped below). No other section moved;
  * total stays 105.
+ *
+ * Transaction coding phase 1 (`docs/plans/transaction-coding.md` — IRS-grade
+ * substantiation, owner decisions 2026-08-08) is a content-only edit to
+ * `finance-reconcile-grid`: two filter-table rows for the new Reconcile
+ * facets ("Needs coding", "Coding review") and a rule ("Reconciled means
+ * coded, too") teaching the Sept 1, 2026 policy date, the what/why/who
+ * record, the 15-person meal-names threshold, the send-back loop, and that
+ * names never publish (affiliation breakdowns do). Its snapshotted
+ * title/minutes/quizLength are unchanged — the cardholder-facing lesson and
+ * quiz land with phase 2 (self-serve coding). No slugs, sections, or courses
+ * moved; total stays 105.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";

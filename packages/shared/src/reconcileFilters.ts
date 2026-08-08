@@ -57,6 +57,8 @@ export const RECONCILE_FILTER_KEYS = [
   "to_review",
   "needs_budget",
   "missing_receipt",
+  "uncoded",
+  "coding_review",
   "undocumented",
   "personal_unpaid",
   "reconciled",
@@ -87,6 +89,8 @@ export const RECONCILE_FILTER_GROUPS: readonly {
       "to_review",
       "needs_budget",
       "missing_receipt",
+      "uncoded",
+      "coding_review",
       "undocumented",
       "personal_unpaid",
       "reconciled",
@@ -108,6 +112,13 @@ export const RECONCILE_FILTER_LABELS: Record<ReconcileFilterKey, string> = {
   // (documentation) rather than one way of reaching it (a receipt) is what
   // keeps the backlog honest AND small (owner ask, 2026-08-05).
   missing_receipt: "Needs documentation",
+  // The substantiation chase (transaction coding — see
+  // `docs/plans/transaction-coding.md`). `uncoded` is a row the POLICY says
+  // owes a coding (spend posted at/after `codingRequiredSinceMs`) that has
+  // none approved-or-awaiting; `coding_review` is a submitted coding waiting
+  // on a reviewer — the treasurer's inbox, not the cardholder's.
+  uncoded: "Needs coding",
+  coding_review: "Coding review",
   undocumented: "Undocumented",
   personal_unpaid: "Personal (unpaid)",
   reconciled: "Reconciled",

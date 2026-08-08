@@ -635,6 +635,8 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           ["Spend", "Every dollar that counts as actual spend — the exact rows behind the dashboard's \"Spent\" figure, so tapping it always lands here"],
           ["Needs budget", "Categorized but not linked to a budget yet"],
           ["Needs documentation", "No receipt, and no acknowledged reason there isn't one"],
+          ["Needs coding", "Spend under the coding policy (posted Sept 1, 2026 or later) still waiting on its author — what it was for, and who was involved"],
+          ["Coding review", "A submitted coding waiting on YOU to approve it or send it back with a note"],
           ["To review", "Still sitting at Unreviewed — nobody has touched it yet. This is the number the dashboard's \"To review\" tile shows, and tapping that tile lands you right here"],
           ["Reconciled", "Already cleared and closed — the opposite of the \"N to clear\" count in the header"],
           ["Personal (unpaid)", "Flagged personal, not yet repaid — the worklist for chasing down what people owe back"],
@@ -666,6 +668,11 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "rule",
         title: "Unattributed is loud on purpose",
         text: "A charge with no explicit budget link doesn't get absorbed into whichever budget looks closest — it shows up as Unattributed on the dashboard, in plain sight, with a one-tap path back into this exact filtered view. Loud and wrong beats quiet and wrong.",
+      },
+      {
+        kind: "rule",
+        title: "Reconciled means coded, too",
+        text: 'From September 1, 2026, spend needs one more thing before it can close: a CODING — the IRS-grade record of what the charge was for, written by a human, approved by a different human. "Travel to NY to film Eden event", never "bus to NY". Travel asks where from and where to; a meal asks who was there — every name and their relationship to the org up to 15 people, a headcount and an identifiable group ("volunteers writing and producing the album") above that. Names never publish: the public ledger shows "5 volunteers, 3 community members, 2 contractors", not who they were.\n\nYou\'ll find the panel on any charge\'s detail view. Approve a coding only when it would satisfy a stranger reading the public ledger; otherwise send it back with a note that says exactly what would make it approvable ("receipt must show exact amount"). Nothing is pre-filled and nothing is AI-suggested — the record is the spender\'s own testimony, which is exactly what makes it worth publishing. Charges from before the policy date don\'t owe one; that history is a separate, deliberate cleanup.',
       },
       {
         kind: "try_status",
