@@ -110,10 +110,17 @@ export function shortDate(ts: number): string {
  * cardholder name, card last-4, and several amount spellings so typing an
  * amount works — raw cents (`1294`), the formatted string (`$12.94`), and the
  * bare decimal (`12.94`). Commas are stripped so `1294` still finds `$1,294.00`.
+ *
+ * BOTH merchant names are searchable, deliberately. Typing "Costco" has to
+ * find a row renamed to Costco, and typing the bank's own `IC* COSTCO BY IN
+ * CAR` has to keep finding it too — someone reconciling against a statement is
+ * reading the provider's string, and a rename must never make a row
+ * unfindable by what the statement calls it.
  */
 function rowHaystack(row: TxnRow): string {
   const money = formatCents(row.amountCents); // e.g. "$1,294.00"
   const parts = [
+    row.merchantNameOverride ?? "",
     row.merchantName ?? "",
     row.description ?? "",
     row.cardholder?.name ?? "",

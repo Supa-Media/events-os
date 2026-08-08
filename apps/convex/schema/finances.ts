@@ -333,6 +333,39 @@ export const transactions = defineTable({
   postedAt: v.number(),
   description: v.optional(v.string()),
   merchantName: v.optional(v.string()),
+  // The bookkeeper's READABLE rename of the row's merchant slot — "Costco" for
+  // `IC* COSTCO BY IN CAR`, "Amazon" for `AMAZON MKTPL*56OXD2TB2`. Written
+  // ONLY by `finances.renameMerchant`; cleared by `clearMerchantRename`.
+  //
+  // A SEPARATE FIELD, deliberately, rather than an edit to `merchantName`
+  // above. `merchantName`/`description` are what the bank or processor
+  // actually sent — that is provenance, and it is not ours to destroy. An
+  // auditor asking "what did the statement say" must always be able to get the
+  // original back, and a rename must never be able to launder a row into
+  // looking like something else. Storing the human name BESIDE the provider's
+  // makes that property structural instead of a rule someone has to remember:
+  // no code path can overwrite the original, because no code path writes to
+  // it. Every reader resolves the two through `displayMerchantName`
+  // (`@events-os/shared`).
+  //
+  // Contrast `finances.correctTransaction`, which DOES rewrite `merchantName`
+  // — it is restricted to `manual` rows (`lib/financeEditAccess.ts`), which
+  // are standalone human assertions with no provider claim to preserve.
+  merchantNameOverride: v.optional(v.string()),
+  // When this row was last renamed. Set (never cleared) by BOTH
+  // `renameMerchant` and `clearMerchantRename`, because the trail outlives the
+  // override: rename-then-clear leaves no override but still has a history
+  // worth reading.
+  //
+  // Denormalized purely so the Reconcile grid can decide whether to render the
+  // history icon at all — the owner asked for the affordance only on rows that
+  // actually have history, and an icon on every row is noise. The history
+  // ITSELF lives in `financeAuditLog` (one shared audit table every finance
+  // surface writes to — see that table's doc comment); the alternative here
+  // was a `by_subject` lookup PER ROW on every grid render, i.e. a hundred
+  // extra reads to answer one boolean. This field is a rendering hint and
+  // nothing else — never the record of a rename.
+  merchantNameRenamedAt: v.optional(v.number()),
   merchantCategory: v.optional(v.string()),
   // Card last-4 parsed out of the description (FC syncs the card only inside
   // that string). Powers legacy-card matching (`by_chapter_and_last4`) + display.

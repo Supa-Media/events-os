@@ -77,6 +77,7 @@ import {
   MAX_NOTE_LENGTH,
   FINANCE_AUDIT_ACTION_LABELS,
   formatCents,
+  displayMerchantName,
   type BudgetRefKind,
   type TransactionFlow,
   type TransactionStatus,
@@ -128,6 +129,10 @@ type Normalized = {
   dateMs: number | null; // null only if a "lookup" row can't be found at all
   description: string | null;
   merchantName: string | null;
+  /** The bookkeeper's rename, carried separately from the provider's own
+   *  `merchantName` so this modal can SHOW the readable name while the
+   *  original stays available (both entry paths supply it). */
+  merchantNameOverride: string | null;
   amountCents: number;
   flow: TransactionFlow;
   status: TransactionStatus;
@@ -189,6 +194,7 @@ export function TransactionDetailModal({
           dateMs: source.txn.date,
           description: source.txn.description,
           merchantName: source.txn.merchantName,
+          merchantNameOverride: source.txn.merchantNameOverride,
           amountCents: source.txn.amountCents,
           flow: source.txn.flow,
           status: source.txn.status,
@@ -213,6 +219,7 @@ export function TransactionDetailModal({
               dateMs: row.postedAt,
               description: row.description,
               merchantName: row.merchantName,
+              merchantNameOverride: row.merchantNameOverride,
               amountCents: row.amountCents,
               flow: row.flow,
               status: row.status,
@@ -241,7 +248,7 @@ export function TransactionDetailModal({
               <Text className="font-display text-lg text-ink" numberOfLines={1}>
                 {normalized === "loading" || normalized === "not_found"
                   ? "Transaction"
-                  : (normalized.merchantName ?? normalized.description ?? "Transaction")}
+                  : displayMerchantName(normalized, "Transaction")}
               </Text>
               {normalized !== "loading" && normalized !== "not_found" ? (
                 <Text className="mt-0.5 text-xs text-muted">
@@ -559,7 +566,7 @@ function TransactionDetailBody({
       <TransactionCodingSection
         transactionId={txn.id}
         merchantLine={[
-          txn.merchantName ?? txn.description ?? "Charge",
+          displayMerchantName(txn, "Charge"),
           txn.dateMs != null ? shortDate(txn.dateMs) : null,
         ]
           .filter(Boolean)

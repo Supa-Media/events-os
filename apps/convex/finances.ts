@@ -134,6 +134,8 @@ import {
   matchesReconcileFilters,
   RECEIPT_EXCEPTION_REASON_LABELS,
   isReconstructedHistory,
+  MAX_MERCHANT_NAME_LENGTH,
+  providerMerchantName,
   type ReconcileFilterKey,
 } from "@events-os/shared";
 import {
@@ -262,6 +264,20 @@ const txnSummaryFields = {
   status: statusValidator,
   description: v.union(v.string(), v.null()),
   merchantName: v.union(v.string(), v.null()),
+  // The bookkeeper's readable RENAME of the merchant slot, or null when the
+  // row has never been renamed (or the rename was cleared). Shipped ALONGSIDE
+  // the provider's `merchantName`/`description` rather than folded into them:
+  // the client resolves what to show through `displayMerchantName`
+  // (`@events-os/shared`), and the original stays one field away for anyone
+  // who needs to see what the statement actually said.
+  merchantNameOverride: v.union(v.string(), v.null()),
+  // True iff this row has ever been renamed — the ONLY thing the grid needs to
+  // decide whether to offer the history affordance. Deliberately a boolean and
+  // not the timestamp behind it: "when" belongs in the trail
+  // (`financeAuditTrail`), which is where anyone who cares is about to look
+  // anyway, and shipping a bare `renamedAt` invites a second, poorer rendering
+  // of the same fact next to the real one.
+  hasMerchantRenameHistory: v.boolean(),
   // R1a: the bookkeeper's own freeform note ("who was this for and why") —
   // distinct from `description` (provider-sourced). Null until set.
   note: v.union(v.string(), v.null()),
@@ -943,6 +959,8 @@ function toTxnSummary(tr: Doc<"transactions">) {
     status: tr.status,
     description: tr.description ?? null,
     merchantName: tr.merchantName ?? null,
+    merchantNameOverride: tr.merchantNameOverride ?? null,
+    hasMerchantRenameHistory: tr.merchantNameRenamedAt != null,
     note: tr.note ?? null,
     fundId: tr.fundId ?? null,
     categoryId: tr.categoryId ?? null,
@@ -10360,6 +10378,166 @@ export const correctTransaction = mutation({
         amountCents: patch.amountCents as number | undefined ?? txn.amountCents,
       });
     }
+    return null;
+  },
+});
+
+// ── Merchant rename (a readable name, never an overwrite) ────────────────────
+/**
+ * RENAME a transaction's merchant to something a human would recognize —
+ * "Costco" for `IC* COSTCO BY IN CAR`, "Amazon" for `AMAZON MKTPL*56OXD2TB2`,
+ * "Amazon (return)" for `Return from AMAZON.COM | Address: SEATTLE, WA, US |
+ * **8728`. Owner ask (finance owner, 2026-08-08): "there should be a way to
+ * edit these merchant names inline, and then once it's edited, it keeps a
+ * trail of all the things it used to be called."
+ *
+ * THE PROVIDER'S VALUE IS NEVER TOUCHED. This writes `merchantNameOverride`
+ * and nothing else; `merchantName` and `description` are what the bank or
+ * processor actually sent, and that is provenance we don't get to destroy.
+ * Two properties fall out of that for free rather than having to be enforced:
+ * an auditor asking "what did the statement say" can always get the original
+ * back, and a rename can never launder a row into looking like a different
+ * charge, because the original is still sitting right there in the row and in
+ * the trail. Un-naming is `clearMerchantRename` below — dropping the override,
+ * not restoring a copy of something we overwrote.
+ *
+ * This is why it is a separate mutation from `correctTransaction` rather than
+ * a relaxation of it. That one really does rewrite `merchantName`, which is
+ * exactly why it is manager-only and refuses every non-`manual` row: a
+ * hand-entered row is a standalone human assertion with no provider claim to
+ * preserve. A rename makes no claim about what happened — only about what to
+ * call it — so it is safe on the bank-fed rows a correction must never touch,
+ * and it needs no `reason`: the before → after IS the explanation.
+ *
+ * ENGINE-WRITTEN ROWS ARE RENAMEABLE, deliberately. Some rows in this column
+ * are not merchants at all — they are sentences the reconciliation engine
+ * wrote into `description` ("Auto: settlement of cross-book card spend through
+ * 2026-08-07", "Manual: Givebutter payout allocated to New York"), which
+ * surface in the merchant slot only because it falls back to `description`
+ * when there is no merchant. Renaming one is allowed because, structurally, it
+ * cannot cost anything: the override fills an EMPTY merchant slot rather than
+ * replacing the sentence, and that sentence — which for a transfer leg is the
+ * whole audit trail of how the number was computed — stays untouched in
+ * `description` and `note`, still rendered in the transaction detail modal.
+ * A treasurer gets a scannable "Aug settlement — NY" in the grid without the
+ * arithmetic going anywhere. Refusing the rename here would have protected
+ * nothing and only made the column's worst rows the ones that can't be fixed.
+ *
+ * ACCESS: `requireReconcileTxn(..., MARK_MIN_ROLE)` — the same bookkeeper+,
+ * scope-aware gate every other reclassification on this grid uses. Naming a
+ * charge is bookkeeping. A read-only viewer (peek included) is refused by that
+ * gate, not by anything special here.
+ *
+ * The trail goes to `financeAuditLog` like every other finance field change —
+ * one table every finance surface writes to, so "who changed what" is one
+ * question with one answer rather than a per-feature history store. The FIRST
+ * rename's `before` is the PROVIDER's own name (`providerMerchantName`), so
+ * the trail's opening line always names what the statement said instead of a
+ * bare "—".
+ */
+export const renameMerchant = mutation({
+  args: {
+    transactionId: v.id("transactions"),
+    /** The readable name. Trimmed; blank is rejected — clearing a rename is
+     *  `clearMerchantRename`, an explicit act with its own audit row, not an
+     *  empty string quietly meaning something different. */
+    merchantName: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { txn, actorPersonId } = await requireReconcileTxn(
+      ctx,
+      args.transactionId,
+      MARK_MIN_ROLE,
+    );
+    const next = args.merchantName.trim();
+    if (!next) {
+      throw new ConvexError({
+        code: "MERCHANT_NAME_REQUIRED",
+        message:
+          "Give the merchant a name. To go back to what the bank called it, clear the rename instead.",
+      });
+    }
+    if (next.length > MAX_MERCHANT_NAME_LENGTH) {
+      throw new ConvexError({
+        code: "MERCHANT_NAME_TOO_LONG",
+        message: `A merchant name can't be longer than ${MAX_MERCHANT_NAME_LENGTH} characters.`,
+      });
+    }
+    const before = txn.merchantNameOverride ?? null;
+    // A no-op rename writes nothing — a trail of "renamed X to X" is noise
+    // that makes the real renames harder to find (same rule
+    // `correctTransaction` and `setTransactionNote` apply).
+    if (before === next) return null;
+
+    await ctx.db.patch(args.transactionId, {
+      merchantNameOverride: next,
+      merchantNameRenamedAt: Date.now(),
+    });
+    await logFinanceAudit(ctx, {
+      chapterId: txn.chapterId,
+      subjectType: "transaction",
+      subjectId: args.transactionId,
+      action: "merchant_rename",
+      actorPersonId,
+      field: "merchant",
+      // On the FIRST rename there is no prior override, and "—" would be a
+      // lie: the row was called something, by the bank. Naming the provider's
+      // own string here is what makes the trail readable end to end — "it was
+      // initially called this, then renamed to this by this person."
+      before: before ?? providerMerchantName(txn),
+      after: next,
+      amountCents: txn.amountCents,
+    });
+    return null;
+  },
+});
+
+/**
+ * Drop a rename and let the provider's own name show through again.
+ *
+ * Nothing is "restored" — the provider's value was never overwritten, so this
+ * only removes the override that was sitting in front of it. That is the whole
+ * point of storing the rename separately.
+ *
+ * `merchantNameRenamedAt` is deliberately NOT cleared: the trail outlives the
+ * override, and a row that was renamed and then un-renamed still has a history
+ * worth reading, so it keeps its history affordance in the grid.
+ */
+export const clearMerchantRename = mutation({
+  args: { transactionId: v.id("transactions") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { txn, actorPersonId } = await requireReconcileTxn(
+      ctx,
+      args.transactionId,
+      MARK_MIN_ROLE,
+    );
+    const before = txn.merchantNameOverride ?? null;
+    if (before == null) {
+      throw new ConvexError({
+        code: "NOT_RENAMED",
+        message: "That row hasn't been renamed.",
+      });
+    }
+    await ctx.db.patch(args.transactionId, {
+      merchantNameOverride: undefined,
+      merchantNameRenamedAt: Date.now(),
+    });
+    await logFinanceAudit(ctx, {
+      chapterId: txn.chapterId,
+      subjectType: "transaction",
+      subjectId: args.transactionId,
+      action: "merchant_rename",
+      actorPersonId,
+      field: "merchant",
+      before,
+      // Where the name lands, which is the provider's own value — spelled out
+      // rather than left null so the trail reads as a real transition instead
+      // of "renamed to nothing".
+      after: providerMerchantName(txn),
+      amountCents: txn.amountCents,
+    });
     return null;
   },
 });

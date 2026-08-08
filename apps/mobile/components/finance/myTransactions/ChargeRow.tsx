@@ -18,6 +18,7 @@
  *    matters once one row is opened.
  */
 import { Pressable, Text, View } from "react-native";
+import { displayMerchantName } from "@events-os/shared";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { Badge, Button, Cell, Icon, Row } from "../../ui";
 import { colors } from "../../../lib/theme";
@@ -55,7 +56,7 @@ export function ChargeRow({
         <Cell flex={2}>
           <View className="flex-row items-center gap-2">
             <Text className="text-sm font-semibold text-ink" numberOfLines={1}>
-              {txn.merchantName ?? txn.description ?? "—"}
+              {displayMerchantName(txn, "—")}
             </Text>
             {txn.isPersonal ? <Badge label="Personal" tone="accent" /> : null}
           </View>

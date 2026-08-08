@@ -6,11 +6,19 @@
  * `Cell`-wrapped cells that each commit ONE field via its own mutation.
  *
  * Columns: [☐] Merchant · Date · Amount · Cardholder · Category▾ · For▾ ·
- * Suggested · Receipt · Status▾ · Actions. Category / For / Status edit
- * inline (dropdowns, commit per row); Suggested shows the AI auto-coding
- * proposal (when present + unreviewed) with an Accept action; Receipt shows
- * ✓ or an inline upload; Amount is read-only (signed). The fund is hidden —
- * the backend defaults it to the General Fund on categorize.
+ * Suggested · Receipt · Status▾ · Actions. Merchant / Category / For / Status
+ * edit inline (Merchant a text cell, the rest dropdowns, all committing per
+ * row); Suggested shows the AI auto-coding proposal (when present +
+ * unreviewed) with an Accept action; Receipt shows ✓ or an inline upload;
+ * Amount is read-only (signed). The fund is hidden — the backend defaults it
+ * to the General Fund on categorize.
+ *
+ * MERCHANT is a RENAME, not an edit of the bank's record — it writes a
+ * separate `merchantNameOverride` and leaves the provider's own string
+ * untouched, with a history icon on renamed rows. The icon stays live on a
+ * read-only row (a foreign book, a peek) even though the name itself goes
+ * flat there — reading what a row used to be called is a read. See
+ * `MerchantCell` below and `finances.renameMerchant`.
  *
  * Suggested / on-demand "Suggest": most unreviewed charges already carry a
  * proposal by the time the bookkeeper opens this grid — new transactions get
@@ -92,6 +100,7 @@ import {
   Badge,
   Button,
   Icon,
+  InlineText,
   OptionTag,
   PersonPicker,
   Popover,
@@ -100,13 +109,20 @@ import {
   useAnchor,
   useResizableColumns,
 } from "../../ui";
-import { CENTRAL, PAYOUT_PROCESSOR_LABELS } from "@events-os/shared";
+import {
+  CENTRAL,
+  PAYOUT_PROCESSOR_LABELS,
+  MAX_MERCHANT_NAME_LENGTH,
+  displayMerchantName,
+  providerMerchantName,
+} from "@events-os/shared";
 import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
 import { ReceiptExceptionModal } from "../modals/ReceiptExceptionModal";
 import { ReceiptExceptionDecideModal } from "../modals/ReceiptExceptionDecideModal";
 import { TransactionNoteModal } from "../modals/TransactionNoteModal";
 import { CorrectTransactionModal } from "../modals/CorrectTransactionModal";
+import { MerchantHistoryModal } from "../modals/MerchantHistoryModal";
 import { ExcludeReasonModal } from "../modals/ExcludeReasonModal";
 import { MarkPersonalModal } from "../modals/MarkPersonalModal";
 import { ReceiptViewerModal } from "../receipts/ReceiptViewerModal";
@@ -593,25 +609,33 @@ function ReconcileRow({
         </Cell>
       ) : null}
 
+      {/* Merchant — MIXED, so it sits OUTSIDE the read-only wrapper below and
+          owns its own `readOnly` handling. It holds one write affordance (the
+          inline rename) and one READ affordance (the name-history icon), and
+          the wrapper can only disable a subtree wholesale.
+
+          This is the only cell that gets to sit out here, and the distinction
+          that earns it is narrow: a read is not a write. The wrapper exists so
+          a read-only row can never expose a working WRITE — see its own
+          comment — and pushing a read-only affordance through it is not a
+          precedent for pushing an editable one through. Anything that COMMITS
+          belongs inside the wrapper; if a future cell wants out, the question
+          is whether it can change data, not whether it's inconvenient. */}
+      <Cell width={widths.merchant}>
+        <MerchantCell row={row} readOnly={readOnly} />
+      </Cell>
+
       {/* Everything from here on is the editable body. Wrapping it in one
           non-interactive container is deliberate: a read-only row must not
-          expose a SINGLE working affordance, and per-cell `disabled` props
-          would be six independent chances to miss one as this grid grows. */}
+          expose a SINGLE working WRITE affordance, and per-cell `disabled`
+          props would be six independent chances to miss one as this grid
+          grows. `pointerEvents="none"` covers the whole subtree, which is the
+          point — it can't be partially defeated by a cell forgetting. */}
       <View
         className="flex-1 flex-row items-stretch"
         pointerEvents={readOnly ? "none" : "auto"}
         style={readOnly ? { opacity: 0.55 } : undefined}
       >
-
-      {/* Merchant (read-only) */}
-      <Cell width={widths.merchant}>
-        <Text
-          className="flex-1 px-2 py-1.5 text-sm font-medium text-ink"
-          numberOfLines={1}
-        >
-          {row.merchantName ?? row.description ?? "Unlabeled charge"}
-        </Text>
-      </Cell>
 
       {/* Date (read-only) */}
       <Cell width={widths.date}>
@@ -1042,6 +1066,111 @@ function SuggestCell({ transactionId }: { transactionId: Id<"transactions"> }) {
       loading={busy}
       onPress={handleSuggest}
     />
+  );
+}
+
+// ── Merchant cell (inline rename + name history) ─────────────────────────────
+/**
+ * The MERCHANT column, editable in place.
+ *
+ * A bank feed's merchant string is a machine artifact — `IC* COSTCO BY IN
+ * CAR`, `AMAZON MKTPL*56OXD2TB2`, `Purchase from AMAZON.COM*569A3 | Address:
+ * SEATTLE, WA, US | **8728` — and a bookkeeper wants to call the row what it
+ * actually was (owner ask, 2026-08-08). Typing here calls
+ * `finances.renameMerchant`, which writes a SEPARATE `merchantNameOverride`
+ * and never touches the provider's own value; see that mutation's doc comment
+ * for why that separation is the whole design.
+ *
+ * WHAT COMMITS. `InlineText` fires `onCommit` on every blur, including a blur
+ * with nothing typed — so this diffs against what's currently ON SCREEN before
+ * calling anything. Without that, tabbing through the grid would silently
+ * stamp the bank's own string into the override field on every row it passed,
+ * which would look like nothing happened and be a lie in the audit trail.
+ * Emptying the cell CLEARS a rename (the provider's name comes back); emptying
+ * a row that was never renamed is a no-op, and the text snaps back.
+ *
+ * THE HISTORY ICON renders only on a row that has actually been renamed
+ * (`hasMerchantRenameHistory`, server-resolved) — the owner asked for the
+ * affordance on renamed rows, and an icon on all 200 rows of a reconcile queue
+ * is noise. It survives a clear: a row renamed and then un-renamed still has a
+ * story worth reading.
+ *
+ * ON A READ-ONLY ROW (a foreign book in the merged queue, or a peek) the NAME
+ * goes flat — a `Text`, not an input, so there is nothing to focus and nothing
+ * that could commit — but THE HISTORY ICON STAYS LIVE. Reading what a row used
+ * to be called is exactly the question a reviewer looking at someone else's
+ * ledger has, and `financeAuditTrail` is already gated and scoped server-side,
+ * so nothing here is what decides whether they may see it. This is why this
+ * cell renders outside the row's read-only wrapper; see the call site for why
+ * that exception is about reads only.
+ */
+function MerchantCell({ row, readOnly }: { row: TxnRow; readOnly: boolean }) {
+  const renameMerchant = useMutation(api.finances.renameMerchant);
+  const clearMerchantRename = useMutation(api.finances.clearMerchantRename);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const shown = displayMerchantName(row);
+
+  function onCommit(next: string) {
+    const trimmed = next.trim();
+    if (trimmed === shown) return; // untouched — never write, never log
+    if (!trimmed) {
+      // Emptying the cell means "go back to what the bank called it". With no
+      // rename in place there is nothing to go back to, so this is a no-op —
+      // `InlineText` re-syncs its text from `value` on the next render.
+      if (row.merchantNameOverride == null) return;
+      void clearMerchantRename({ transactionId: row.id }).catch(alertError);
+      return;
+    }
+    void renameMerchant({ transactionId: row.id, merchantName: trimmed }).catch(
+      alertError,
+    );
+  }
+
+  return (
+    <>
+      {readOnly ? (
+        // Dimmed to the same 0.55 the rest of the read-only row carries, so
+        // hoisting this cell out of that wrapper doesn't make it the one cell
+        // that looks editable on a row that isn't.
+        <Text
+          className="flex-1 px-2 py-1.5 text-sm font-medium text-ink"
+          style={{ opacity: 0.55 }}
+          numberOfLines={1}
+        >
+          {shown}
+        </Text>
+      ) : (
+        <InlineText
+          value={shown}
+          onCommit={onCommit}
+          weight="medium"
+          maxLength={MAX_MERCHANT_NAME_LENGTH}
+        />
+      )}
+      {row.hasMerchantRenameHistory ? (
+        <Pressable
+          onPress={() => setHistoryOpen(true)}
+          hitSlop={6}
+          accessibilityRole="button"
+          accessibilityLabel="Name history"
+          className="rounded p-1 active:opacity-70 web:hover:opacity-90"
+        >
+          <Icon name="clock" size={13} color={colors.muted} />
+        </Pressable>
+      ) : null}
+      {historyOpen ? (
+        <MerchantHistoryModal
+          transactionId={row.id}
+          providerName={providerMerchantName(row)}
+          currentOverride={row.merchantNameOverride}
+          // The trail is readable on a read-only row; un-naming is a WRITE, and
+          // a button the server would refuse is the same dead control this
+          // change set is removing.
+          canClear={!readOnly}
+          onClose={() => setHistoryOpen(false)}
+        />
+      ) : null}
+    </>
   );
 }
 

@@ -235,6 +235,7 @@ export const FINANCE_AUDIT_ACTIONS = [
   "budget_delete", // deleteBudget
   "coding_submit", // transactionCodings.submit — initial submission AND each resubmission after a send-back (the revision history)
   "coding_decide", // transactionCodings.approve / requestChanges
+  "merchant_rename", // finances.renameMerchant / clearMerchantRename (display name only — the provider's own string is never touched)
 ] as const;
 export type FinanceAuditAction = (typeof FINANCE_AUDIT_ACTIONS)[number];
 
@@ -257,6 +258,7 @@ export const FINANCE_AUDIT_ACTION_LABELS: Record<FinanceAuditAction, string> = {
   budget_delete: "Budget deleted",
   coding_submit: "Coding submitted",
   coding_decide: "Coding decided",
+  merchant_rename: "Merchant renamed",
 };
 
 // ── Inbound email receipts (backfill pipeline) ───────────────────────────────
@@ -1076,6 +1078,76 @@ export const RECEIPT_ESCALATE_DAYS = 3;
  *  `TransactionNoteModal` (the `TextField`'s `maxLength`) so the two never
  *  drift apart. */
 export const MAX_NOTE_LENGTH = 2000;
+
+// ── Merchant display name (the bookkeeper's readable rename) ─────────────────
+/**
+ * A bank feed's merchant string is a machine artifact, not a name a human
+ * would use — `IC* COSTCO BY IN CAR`, `AMAZON MKTPL*56OXD2TB2`,
+ * `Purchase from AMAZON.COM*569A3 | Address: SEATTLE, WA, US | **8728`. A
+ * bookkeeper needs to call the row what it actually was.
+ *
+ * THE RENAME IS A SEPARATE FIELD, NEVER AN OVERWRITE. `transactions.
+ * merchantName` and `.description` are the provider's own claim about money
+ * that moved; they are provenance and it is not ours to destroy. An auditor
+ * asking "what did the statement say" must always be able to get the original
+ * back, and no rename may be able to launder a row into looking like something
+ * else. So the human name lives in `transactions.merchantNameOverride`, every
+ * reader resolves it through `displayMerchantName` below, and un-naming a row
+ * is simply clearing the override — the history is intact BY CONSTRUCTION
+ * rather than by discipline.
+ *
+ * Capped for the same reason `MAX_NOTE_LENGTH` is (a runaway paste must not
+ * bloat a row); shorter, because this is a label rendered in one grid cell.
+ * Shared by `finances.renameMerchant` (server-side enforcement) and the
+ * mobile editor's `maxLength` so the two can never drift apart.
+ */
+export const MAX_MERCHANT_NAME_LENGTH = 120;
+
+/** The provider-sourced strings a display name is resolved from, plus the
+ *  bookkeeper's override. Structural so any projection carrying these fields
+ *  can be passed straight in. */
+export interface MerchantNameSource {
+  /** The bookkeeper's readable rename. Null/undefined when never renamed (or
+   *  cleared), which is when the provider's own value shows through. */
+  merchantNameOverride?: string | null;
+  /** The provider's merchant string. NEVER written by a rename. */
+  merchantName?: string | null;
+  /** The provider's (or the reconciliation engine's) description. Also never
+   *  written by a rename — see `renameMerchant`'s doc comment on why an
+   *  engine-written sentence keeps showing here after a row is renamed. */
+  description?: string | null;
+}
+
+/**
+ * What to SHOW in a merchant slot: the bookkeeper's rename if there is one,
+ * else the provider's merchant string, else its description, else `fallback`.
+ *
+ * The provider fallback chain is exactly what every merchant-rendering call
+ * site already did by hand (`merchantName ?? description ?? "…"`); the only
+ * new thing in front of it is the override. Centralized so "renamed rows show
+ * their new name" is one decision rather than one decision per screen.
+ */
+export function displayMerchantName(
+  row: MerchantNameSource,
+  fallback = "Unlabeled charge",
+): string {
+  return (
+    row.merchantNameOverride ?? row.merchantName ?? row.description ?? fallback
+  );
+}
+
+/**
+ * The provider's own name for a row, ignoring any rename — what the statement
+ * says. Used by the rename editor (to show what is being renamed FROM) and by
+ * the audit trail's `before` on a first rename, so the trail's opening line is
+ * always the original rather than "—".
+ */
+export function providerMerchantName(
+  row: MerchantNameSource,
+  fallback = "Unlabeled charge",
+): string {
+  return row.merchantName ?? row.description ?? fallback;
+}
 
 // ── Card requests (WP-C.1: request-a-card) ──────────────────────────────────
 // A member's request for a card, decided by an FM/Treasurer (never self-serve).

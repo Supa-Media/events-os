@@ -79,6 +79,7 @@ import {
   CENTRAL,
   RECONCILE_FILTER_GROUPS,
   RECONCILE_FILTER_LABELS,
+  displayMerchantName,
   parseReconcileFilters,
   serializeReconcileFilters,
   type PayoutProcessor,
@@ -681,7 +682,10 @@ function ReconcileGrid() {
         postedAt: r.postedAt,
         amountCents: r.amountCents,
         flow: r.flow,
-        label: r.merchantName ?? r.description ?? "Transaction",
+        // The name the bookkeeper is LOOKING at in the grid — a confirm
+        // prompt that named the row differently from the row it came from
+        // would be asking them to verify a pairing they can't recognize.
+        label: displayMerchantName(r, "Transaction"),
       }));
       return [a, b];
     },

@@ -37,7 +37,7 @@ import { Text, View } from "react-native";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { formatCents } from "@events-os/shared";
+import { displayMerchantName, formatCents } from "@events-os/shared";
 import {
   Badge,
   Button,
@@ -253,7 +253,7 @@ export function MemberCardsView() {
               >
                 <View className="flex-1">
                   <Text className="text-sm font-semibold text-ink" numberOfLines={1}>
-                    {t.merchantName ?? t.description ?? "Charge"}
+                    {displayMerchantName(t, "Charge")}
                   </Text>
                   <View className="flex-row items-center gap-1.5">
                     {rep ? (
