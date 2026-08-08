@@ -6,11 +6,17 @@
  * `Cell`-wrapped cells that each commit ONE field via its own mutation.
  *
  * Columns: [☐] Merchant · Date · Amount · Cardholder · Category▾ · For▾ ·
- * Suggested · Receipt · Status▾ · Actions. Category / For / Status edit
- * inline (dropdowns, commit per row); Suggested shows the AI auto-coding
- * proposal (when present + unreviewed) with an Accept action; Receipt shows
- * ✓ or an inline upload; Amount is read-only (signed). The fund is hidden —
- * the backend defaults it to the General Fund on categorize.
+ * Suggested · Receipt · Status▾ · Actions. Merchant / Category / For / Status
+ * edit inline (Merchant a text cell, the rest dropdowns, all committing per
+ * row); Suggested shows the AI auto-coding proposal (when present +
+ * unreviewed) with an Accept action; Receipt shows ✓ or an inline upload;
+ * Amount is read-only (signed). The fund is hidden — the backend defaults it
+ * to the General Fund on categorize.
+ *
+ * MERCHANT is a RENAME, not an edit of the bank's record — it writes a
+ * separate `merchantNameOverride` and leaves the provider's own string
+ * untouched, with a history icon on renamed rows. See `MerchantCell` below
+ * and `finances.renameMerchant`.
  *
  * Suggested / on-demand "Suggest": most unreviewed charges already carry a
  * proposal by the time the bookkeeper opens this grid — new transactions get
@@ -92,6 +98,7 @@ import {
   Badge,
   Button,
   Icon,
+  InlineText,
   OptionTag,
   PersonPicker,
   Popover,
@@ -100,13 +107,20 @@ import {
   useAnchor,
   useResizableColumns,
 } from "../../ui";
-import { CENTRAL, PAYOUT_PROCESSOR_LABELS } from "@events-os/shared";
+import {
+  CENTRAL,
+  PAYOUT_PROCESSOR_LABELS,
+  MAX_MERCHANT_NAME_LENGTH,
+  displayMerchantName,
+  providerMerchantName,
+} from "@events-os/shared";
 import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
 import { ReceiptExceptionModal } from "../modals/ReceiptExceptionModal";
 import { ReceiptExceptionDecideModal } from "../modals/ReceiptExceptionDecideModal";
 import { TransactionNoteModal } from "../modals/TransactionNoteModal";
 import { CorrectTransactionModal } from "../modals/CorrectTransactionModal";
+import { MerchantHistoryModal } from "../modals/MerchantHistoryModal";
 import { ExcludeReasonModal } from "../modals/ExcludeReasonModal";
 import { MarkPersonalModal } from "../modals/MarkPersonalModal";
 import { ReceiptViewerModal } from "../receipts/ReceiptViewerModal";
@@ -603,14 +617,9 @@ function ReconcileRow({
         style={readOnly ? { opacity: 0.55 } : undefined}
       >
 
-      {/* Merchant (read-only) */}
+      {/* Merchant (inline editable — see `MerchantCell`) */}
       <Cell width={widths.merchant}>
-        <Text
-          className="flex-1 px-2 py-1.5 text-sm font-medium text-ink"
-          numberOfLines={1}
-        >
-          {row.merchantName ?? row.description ?? "Unlabeled charge"}
-        </Text>
+        <MerchantCell row={row} />
       </Cell>
 
       {/* Date (read-only) */}
@@ -1042,6 +1051,92 @@ function SuggestCell({ transactionId }: { transactionId: Id<"transactions"> }) {
       loading={busy}
       onPress={handleSuggest}
     />
+  );
+}
+
+// ── Merchant cell (inline rename + name history) ─────────────────────────────
+/**
+ * The MERCHANT column, editable in place.
+ *
+ * A bank feed's merchant string is a machine artifact — `IC* COSTCO BY IN
+ * CAR`, `AMAZON MKTPL*56OXD2TB2`, `Purchase from AMAZON.COM*569A3 | Address:
+ * SEATTLE, WA, US | **8728` — and a bookkeeper wants to call the row what it
+ * actually was (owner ask, 2026-08-08). Typing here calls
+ * `finances.renameMerchant`, which writes a SEPARATE `merchantNameOverride`
+ * and never touches the provider's own value; see that mutation's doc comment
+ * for why that separation is the whole design.
+ *
+ * WHAT COMMITS. `InlineText` fires `onCommit` on every blur, including a blur
+ * with nothing typed — so this diffs against what's currently ON SCREEN before
+ * calling anything. Without that, tabbing through the grid would silently
+ * stamp the bank's own string into the override field on every row it passed,
+ * which would look like nothing happened and be a lie in the audit trail.
+ * Emptying the cell CLEARS a rename (the provider's name comes back); emptying
+ * a row that was never renamed is a no-op, and the text snaps back.
+ *
+ * THE HISTORY ICON renders only on a row that has actually been renamed
+ * (`hasMerchantRenameHistory`, server-resolved) — the owner asked for the
+ * affordance on renamed rows, and an icon on all 200 rows of a reconcile queue
+ * is noise. It survives a clear: a row renamed and then un-renamed still has a
+ * story worth reading.
+ *
+ * On a READ-ONLY row (a foreign book in the merged queue, or a peek) the whole
+ * cell — icon included — is inert, because it sits inside the row's single
+ * `pointerEvents="none"` body wrapper. That's the grid's existing rule and
+ * worth keeping even though the history is only a read: the same trail is
+ * reachable from the transaction detail modal's History section, which is
+ * where a peeking reviewer already goes.
+ */
+function MerchantCell({ row }: { row: TxnRow }) {
+  const renameMerchant = useMutation(api.finances.renameMerchant);
+  const clearMerchantRename = useMutation(api.finances.clearMerchantRename);
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const shown = displayMerchantName(row);
+
+  function onCommit(next: string) {
+    const trimmed = next.trim();
+    if (trimmed === shown) return; // untouched — never write, never log
+    if (!trimmed) {
+      // Emptying the cell means "go back to what the bank called it". With no
+      // rename in place there is nothing to go back to, so this is a no-op —
+      // `InlineText` re-syncs its text from `value` on the next render.
+      if (row.merchantNameOverride == null) return;
+      void clearMerchantRename({ transactionId: row.id }).catch(alertError);
+      return;
+    }
+    void renameMerchant({ transactionId: row.id, merchantName: trimmed }).catch(
+      alertError,
+    );
+  }
+
+  return (
+    <>
+      <InlineText
+        value={shown}
+        onCommit={onCommit}
+        weight="medium"
+        maxLength={MAX_MERCHANT_NAME_LENGTH}
+      />
+      {row.hasMerchantRenameHistory ? (
+        <Pressable
+          onPress={() => setHistoryOpen(true)}
+          hitSlop={6}
+          accessibilityRole="button"
+          accessibilityLabel="Name history"
+          className="rounded p-1 active:opacity-70 web:hover:opacity-90"
+        >
+          <Icon name="clock" size={13} color={colors.muted} />
+        </Pressable>
+      ) : null}
+      {historyOpen ? (
+        <MerchantHistoryModal
+          transactionId={row.id}
+          providerName={providerMerchantName(row)}
+          currentOverride={row.merchantNameOverride}
+          onClose={() => setHistoryOpen(false)}
+        />
+      ) : null}
+    </>
   );
 }
 

@@ -16,6 +16,10 @@ import {
   isReceiptExtractionActive,
   receiptExtractionFraction,
   RECEIPT_EXTRACTION_STALE_MS,
+  displayMerchantName,
+  providerMerchantName,
+  FINANCE_AUDIT_ACTIONS,
+  FINANCE_AUDIT_ACTION_LABELS,
 } from "./finance";
 
 /**
@@ -223,5 +227,53 @@ describe("receiptExtractionFraction", () => {
     expect(
       receiptExtractionFraction({ status: "running", since: now }, now + 10 * 60_000),
     ).toBeLessThan(1);
+  });
+});
+
+describe("merchant display name", () => {
+  // The whole feature in one property: a rename is something rendered IN FRONT
+  // of the provider's value, never something written over it.
+  const BANK = "IC* COSTCO BY IN CAR";
+  const ENGINE = "Auto: settlement of cross-book card spend through 2026-08-07";
+
+  test("the bookkeeper's rename wins when there is one", () => {
+    expect(
+      displayMerchantName({ merchantNameOverride: "Costco", merchantName: BANK }),
+    ).toBe("Costco");
+  });
+
+  test("the provider's value shows through when there is no rename", () => {
+    expect(displayMerchantName({ merchantName: BANK })).toBe(BANK);
+    expect(
+      displayMerchantName({ merchantNameOverride: null, merchantName: BANK }),
+    ).toBe(BANK);
+  });
+
+  test("a merchant-less row falls back to its description, then to the fallback", () => {
+    expect(displayMerchantName({ description: ENGINE })).toBe(ENGINE);
+    expect(displayMerchantName({})).toBe("Unlabeled charge");
+    expect(displayMerchantName({}, "Transaction")).toBe("Transaction");
+  });
+
+  test("the provider's own name stays retrievable behind a rename", () => {
+    expect(
+      providerMerchantName({ merchantNameOverride: "Costco", merchantName: BANK }),
+    ).toBe(BANK);
+    // An engine-written row has no merchant at all — its description IS what
+    // the row was called before anyone renamed it.
+    expect(
+      providerMerchantName({
+        merchantNameOverride: "Aug settlement — NY",
+        description: ENGINE,
+      }),
+    ).toBe(ENGINE);
+  });
+});
+
+describe("finance audit actions", () => {
+  test("every action carries a label (a new action must not render blank)", () => {
+    for (const action of FINANCE_AUDIT_ACTIONS) {
+      expect(FINANCE_AUDIT_ACTION_LABELS[action]).toBeTruthy();
+    }
   });
 });

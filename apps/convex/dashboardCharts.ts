@@ -670,6 +670,12 @@ const budgetTxnRow = v.object({
   date: v.number(),
   description: v.union(v.string(), v.null()),
   merchantName: v.union(v.string(), v.null()),
+  // The bookkeeper's readable rename, carried alongside the provider's own
+  // string exactly as `finances.ts#toTxnSummary` carries it — the detail modal
+  // this feeds is ALSO reachable from the reconcile grid, and a charge that is
+  // "Costco" there must not become `IC* COSTCO BY IN CAR` here. Resolved for
+  // display via `displayMerchantName` (`@events-os/shared`).
+  merchantNameOverride: v.union(v.string(), v.null()),
   amountCents: v.number(),
   flow: budgetTxnFlowValidator,
   categoryId: v.union(v.id("budgetCategories"), v.null()),
@@ -866,6 +872,7 @@ export const budgetTransactions = query({
         date: tr.postedAt,
         description: tr.description ?? null,
         merchantName: tr.merchantName ?? null,
+        merchantNameOverride: tr.merchantNameOverride ?? null,
         amountCents: tr.amountCents,
         flow: tr.flow,
         categoryId: tr.categoryId ?? null,

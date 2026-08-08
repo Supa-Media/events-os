@@ -31,6 +31,7 @@ import { Modal, Pressable, ScrollView, Text, View } from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import {
   ATTENDEE_AFFILIATION_LABELS,
+  displayMerchantName,
   documentationState,
   formatCents,
   type AttendeeAffiliation,
@@ -154,7 +155,7 @@ export function FinishChargeSheet({
   const documented =
     documentationState(txn.hasReceipt, txn.hasApprovedException) !==
     "undocumented";
-  const merchantLine = `${txn.merchantName ?? txn.description ?? "—"} · ${dateStr(txn.postedAt)}`;
+  const merchantLine = `${displayMerchantName(txn, "—")} · ${dateStr(txn.postedAt)}`;
   // A person-attributed txn only ever gets `cardId` + `cardLast4` together, so
   // this is the reliable "the cardholder can self-service this" signal
   // (`submitOwnCharge` / `flagPersonalCharge` both refuse a non-card txn).

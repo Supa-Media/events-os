@@ -30,6 +30,7 @@ export function InlineText<T = string>({
   parse,
   format,
   weight,
+  maxLength,
 }: {
   value: T;
   onCommit: (v: T) => void;
@@ -40,6 +41,9 @@ export function InlineText<T = string>({
   /** Map the value to its displayed text (defaults to String(value)). */
   format?: (v: T) => string;
   weight?: "normal" | "medium";
+  /** Hard cap on typed length. Pass the SAME constant the server enforces so
+   *  a cell can't accept text the mutation will then reject. */
+  maxLength?: number;
 }) {
   const display = () =>
     format ? format(value) : value == null ? "" : String(value);
@@ -57,6 +61,7 @@ export function InlineText<T = string>({
       placeholderTextColor={colors.faint}
       keyboardType={numeric ? "numbers-and-punctuation" : "default"}
       autoCapitalize="none"
+      maxLength={maxLength}
       onBlur={() => onCommit(parse ? parse(text) : (text as unknown as T))}
       className={`flex-1 px-2 py-1.5 text-sm leading-snug text-ink ${
         weight === "medium" ? "font-medium" : ""

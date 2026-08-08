@@ -337,6 +337,21 @@
  * above it — for one on send-back-vs-rejected. Title, minutes (5), and
  * quizLength (5) are all unchanged, so nothing in the tables below moved; no
  * slugs, sections, or courses moved either, and the total stays 106.
+ *
+ * Inline merchant rename (finance-owner ask, 2026-08-08 — bank feeds hand us
+ * `IC* COSTCO BY IN CAR`) is a content-only edit to `finance-reconcile-grid`:
+ * one rule, "Renaming a merchant is not correcting a row", teaching that the
+ * typed name is stored BESIDE the provider's string rather than over it (which
+ * is why a bookkeeper may do it on bank rows, which the pencil above it must
+ * never touch), that both names stay searchable, that the clock icon opens the
+ * name history, and that clearing a rename restores nothing because nothing
+ * was overwritten. The neighbouring "Some rows you can correct" rule's closing
+ * line was amended so it no longer reads as "no edit of any kind exists on a
+ * bank row". Its snapshotted title/minutes/quizLength are UNCHANGED — the
+ * matching quiz question could not land, because this section's quiz is at the
+ * 5-question cap `apps/convex/tests/academy.test.ts` enforces and no existing
+ * question here is redundant enough to swap out. No slugs, sections, or
+ * courses moved; total stays 106.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
