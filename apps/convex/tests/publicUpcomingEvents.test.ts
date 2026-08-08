@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { startOfNextEasternDay } from "@events-os/shared";
 import { api } from "../_generated/api";
 import {
   newT,
@@ -12,11 +13,40 @@ import type { Id } from "../_generated/dataModel";
 /**
  * The public "upcoming events" feed that powers the marketing site's Important
  * Links section: `api.ticketing.listPublishedUpcoming` and its HTTP wrapper
- * GET /api/events/upcoming. Pins the filtering (published + not-yet-over +
- * non-training), soonest-first ordering, the limit, and the JSON shape.
+ * GET /api/events/upcoming. Pins the filtering (published + still on its
+ * event day ET or later + non-training), soonest-first ordering, the limit,
+ * and the JSON shape — plus the `startOfNextEasternDay` cutoff helper.
  */
 
 const DAY = 24 * 60 * 60 * 1000;
+
+describe("startOfNextEasternDay", () => {
+  test("winter (EST, UTC-5): next ET midnight lands at 05:00 UTC", () => {
+    // Jan 15 23:00 UTC = Jan 15 6 PM ET → next ET midnight = Jan 16 05:00 UTC.
+    expect(startOfNextEasternDay(Date.UTC(2026, 0, 15, 23, 0))).toBe(
+      Date.UTC(2026, 0, 16, 5, 0),
+    );
+  });
+
+  test("summer (EDT, UTC-4): next ET midnight lands at 04:00 UTC", () => {
+    // Jul 15 23:00 UTC = Jul 15 7 PM ET → next ET midnight = Jul 16 04:00 UTC.
+    expect(startOfNextEasternDay(Date.UTC(2026, 6, 15, 23, 0))).toBe(
+      Date.UTC(2026, 6, 16, 4, 0),
+    );
+  });
+
+  test("exactly ET midnight rolls to the NEXT midnight (strictly after)", () => {
+    expect(startOfNextEasternDay(Date.UTC(2026, 6, 16, 4, 0))).toBe(
+      Date.UTC(2026, 6, 17, 4, 0),
+    );
+  });
+
+  test("month rollover", () => {
+    expect(startOfNextEasternDay(Date.UTC(2026, 6, 31, 23, 0))).toBe(
+      Date.UTC(2026, 7, 1, 4, 0),
+    );
+  });
+});
 
 async function seedEvent(
   s: ChapterSetup,
@@ -106,6 +136,23 @@ describe("listPublishedUpcoming", () => {
 
     const list = await t.query(api.ticketing.listPublishedUpcoming, {});
     expect(list.map((e) => e.eventName)).toEqual(["Soon", "Later"]);
+  });
+
+  test("keeps an event that already started — it stays up through its ET day", async () => {
+    // The homepage-link regression: an event whose start time (or legacy
+    // midnight anchor) has passed must NOT vanish while its event day is
+    // still underway — people need the link on the day itself.
+    const t = newT();
+    const s = await setupChapter(t);
+    const now = Date.now();
+    const startedToday = await seedEvent(s, {
+      name: "Tonight",
+      eventDate: now - 1000, // started moments ago — same ET day as `now`
+    });
+    await makePage(s, startedToday);
+
+    const list = await t.query(api.ticketing.listPublishedUpcoming, {});
+    expect(list.map((e) => e.eventName)).toEqual(["Tonight"]);
   });
 
   test("keeps an in-progress event (started, endDate still ahead)", async () => {

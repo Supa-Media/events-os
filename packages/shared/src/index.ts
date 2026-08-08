@@ -981,6 +981,53 @@ export function runOfShowSegmentEnd(
   return start + RUN_OF_SHOW_FINAL_WINDOW_MS;
 }
 
+/** IANA timezone the org runs on — public surfaces (the volunteer briefing's
+ *  clock labels, the homepage's "is this event still on?" cutoff) pin to it so
+ *  a viewer or server in any timezone reads the same schedule. */
+export const EASTERN_TIME_ZONE = "America/New_York";
+
+const HOUR_MS = 60 * MINUTE_MS;
+
+/**
+ * Epoch ms of the first Eastern-timezone midnight strictly AFTER `ts` — i.e.
+ * when "the day after `ts`" begins in ET. Public listings use it to keep an
+ * event visible through its WHOLE event day (an event that started at 7 PM —
+ * or a legacy midnight-anchored one — must not vanish while people still need
+ * the link) and drop it the next ET day. DST-safe: the EDT/EST offset is
+ * probed from the formatter, never hard-coded. Falls back to `ts + 24h` on a
+ * runtime without timezone data.
+ */
+export function startOfNextEasternDay(ts: number): number {
+  try {
+    const [y, m, d] = new Intl.DateTimeFormat("en-CA", {
+      timeZone: EASTERN_TIME_ZONE,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    })
+      .format(ts)
+      .split("-")
+      .map(Number);
+    // ET midnight of the next calendar day, guessed at UTC-4 (EDT), then
+    // corrected by what the formatter says that instant reads in ET (23:00 →
+    // we're in EST and an hour early; 01:00 is defensive — ET never skips
+    // midnight, but a wrong guess must never silently stand).
+    let candidate = Date.UTC(y, m - 1, d + 1, 4);
+    const hour = Number(
+      new Intl.DateTimeFormat("en-US", {
+        timeZone: EASTERN_TIME_ZONE,
+        hour: "numeric",
+        hourCycle: "h23",
+      }).format(candidate),
+    );
+    if (hour === 23) candidate += HOUR_MS;
+    else if (hour === 1) candidate -= HOUR_MS;
+    return candidate;
+  } catch {
+    return ts + 24 * HOUR_MS;
+  }
+}
+
 /** The minimum a run-of-show row needs to be placed on the clock. */
 export type RunOfShowRowInput = {
   offsetMinutes?: number | null;

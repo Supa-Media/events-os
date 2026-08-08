@@ -4,8 +4,8 @@
 # These are the FIXED links. Between the `lead` card (Donate) and the
 # `trail` cards (socials + Zelle), the site auto-inserts up to two of our
 # currently-published event RSVP pages — pulled live from the OS at runtime
-# (GET /api/events/upcoming), soonest event first, dropping off once an
-# event is over. Publish/unpublish an event's page in the OS and this
+# (GET /api/events/upcoming), soonest event first, dropping off the day
+# after an event ends (ET). Publish/unpublish an event's page in the OS and this
 # section updates itself; nothing here needs editing for events.
 #
 # How to add a FIXED link:

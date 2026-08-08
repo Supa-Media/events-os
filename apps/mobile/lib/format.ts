@@ -40,8 +40,10 @@ export function formatDateTime(ts: number): string {
 }
 
 /** Public Worship runs on Eastern time — public pages (the volunteer briefing)
- *  pin times to it so a phone in any timezone reads the same schedule. */
-export const EASTERN_TIME_ZONE = "America/New_York";
+ *  pin times to it so a phone in any timezone reads the same schedule. The
+ *  zone itself lives in `@events-os/shared` (the backend pins to it too). */
+import { EASTERN_TIME_ZONE } from "@events-os/shared";
+export { EASTERN_TIME_ZONE };
 
 /** True when this runtime can actually pin formatting to Eastern (IANA
  *  timezone data present). When false, the Eastern formatters fall back to

@@ -47,6 +47,7 @@ import { beginEmailVerification, clearEmailCode } from "./lib/emailCodes";
 import { linkRsvpToPerson } from "./lib/rsvpPeople";
 import { createPaidDonationForOrder } from "./giving";
 import { RSVP_STATUSES } from "./schema/ticketing";
+import { startOfNextEasternDay } from "@events-os/shared";
 
 // ── Small helpers ────────────────────────────────────────────────────────────
 
@@ -1110,10 +1111,13 @@ export const getPublicPage = query({
  * same-origin via GET /api/events/upcoming (registered in http.ts). Returns
  * only page-level, non-PII fields.
  *
- * "Upcoming" = the event hasn't ended yet (`endDate ?? eventDate >= now`), so a
- * page drops off the homepage on its own once the event is over — no manual
- * cleanup. Training-sandbox events are always excluded (they must never reach a
- * public surface). Ordered soonest-first, capped by `limit`.
+ * "Upcoming" = the Eastern day after the event's end hasn't started yet
+ * (`now < startOfNextEasternDay(endDate ?? eventDate)`), so the link stays on
+ * the homepage through the WHOLE event day — an event that starts at 7 PM (or
+ * a legacy midnight-anchored one) must not vanish that morning while people
+ * still need the link — and drops off on its own the next ET day. No manual
+ * cleanup. Training-sandbox events are always excluded (they must never reach
+ * a public surface). Ordered soonest-first, capped by `limit`.
  *
  * Read cost stays flat as historical published pages accumulate: we read the
  * most-recently-created published pages first (upcoming events are always among
@@ -1147,7 +1151,9 @@ export const listPublishedUpcoming = query({
       // Skip orphaned pages and the Academy's training sandbox events.
       if (!event || event.isTraining) continue;
       const endsAt = page.endDate ?? event.eventDate;
-      if (endsAt < now) continue;
+      // Keep the card up through the whole event day (ET); drop it only once
+      // the Eastern day AFTER the event's end has begun.
+      if (now >= startOfNextEasternDay(endsAt)) continue;
       upcoming.push({
         slug: page.slug,
         eventName: event.name,
