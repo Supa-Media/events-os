@@ -5,7 +5,7 @@ import {
   runOfShowNowIndex,
 } from "@events-os/shared";
 import { Card } from "../ui";
-import { formatTimeEastern } from "../../lib/format";
+import { canFormatEastern, formatTimeEastern } from "../../lib/format";
 import { useNow } from "../../lib/useNow";
 
 /** One sanitized run-of-show row off the crew briefing payload. */
@@ -48,7 +48,12 @@ export function RunOfShowView({
       <View className="gap-0.5">
         <Text className="font-display text-xl text-ink">Run of show</Text>
         <Text className="text-sm text-faint">
-          What's happening and when · all times Eastern (ET).
+          {/* Only claim the Eastern pin when the runtime can actually honor
+              it — on the rare runtime without timezone data the formatters
+              fall back to device-local, and the label must say so. */}
+          {canFormatEastern()
+            ? "What's happening and when · all times Eastern (ET)."
+            : "What's happening and when · times shown in your local time."}
         </Text>
       </View>
       <Card padding="sm">

@@ -43,8 +43,22 @@ export function formatDateTime(ts: number): string {
  *  pin times to it so a phone in any timezone reads the same schedule. */
 export const EASTERN_TIME_ZONE = "America/New_York";
 
+/** True when this runtime can actually pin formatting to Eastern (IANA
+ *  timezone data present). When false, the Eastern formatters fall back to
+ *  device-local time — callers must label times accordingly, never claim a
+ *  pin that isn't in effect. */
+export function canFormatEastern(): boolean {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: EASTERN_TIME_ZONE });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** e.g. "7:05 PM" pinned to Eastern time, whatever the device timezone. Falls
- *  back to device-local `formatTime` on runtimes without timezone data. */
+ *  back to device-local `formatTime` on runtimes without timezone data (see
+ *  `canFormatEastern`). */
 export function formatTimeEastern(ts: number): string {
   try {
     return new Intl.DateTimeFormat("en-US", {
@@ -55,6 +69,23 @@ export function formatTimeEastern(ts: number): string {
     }).format(ts);
   } catch {
     return formatTime(ts);
+  }
+}
+
+/** e.g. "Mar 14, 2026 · 7:05 PM" pinned to Eastern — the briefing header's
+ *  companion to `formatTimeEastern`, so one page never shows two disagreeing
+ *  clocks. Device-local fallback mirrors `formatTimeEastern`'s. */
+export function formatDateTimeEastern(ts: number): string {
+  try {
+    const date = new Intl.DateTimeFormat("en-US", {
+      timeZone: EASTERN_TIME_ZONE,
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    }).format(ts);
+    return `${date} · ${formatTimeEastern(ts)}`;
+  } catch {
+    return formatDateTime(ts);
   }
 }
 
