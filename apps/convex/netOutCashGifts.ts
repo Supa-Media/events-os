@@ -45,8 +45,10 @@
  * ── ALLOCATION ──────────────────────────────────────────────────────────────
  * Each cash gift is netted from the in-kind gift covering the spending of its
  * own period, so both stay individually true rather than only summing right:
- * the 2024 cash ($2,015) comes off `genesis:gear2024`, the Dec-2025 $50 off
- * `genesis:buy25`.
+ * the 2024 cash ($2,015) comes off `genesis:gear2024`, and Zayy's Dec-2025 $50
+ * off `genesis:cleanup2026` — dated four days after his cash arrived, and the
+ * only in-kind gift covering that period (2025's own spending is ~30 separate
+ * `genesis:buy25:N` gifts, none of which is the natural home for it).
  *
  * Book value drops $2,065. The expenses are untouched — they have receipts and
  * the money really was spent. What moves is who gets credit for putting it in.
@@ -67,9 +69,15 @@ const RESTATEMENTS = [
     cashCents: 201500,
   },
   {
-    giftRef: "genesis:buy25",
-    fromCents: 433194,
-    toCents: 428194, // less Zayy Powell's Dec-2025 $50
+    // The 2025 in-kind is ~30 individual `genesis:buy25:N` gifts, not a lump,
+    // so Zayy's Dec-2025 cash nets against `cleanup2026` instead — the one
+    // in-kind gift covering that period (dated 2025-12-31, four days after his
+    // $50 arrived). It currently matches its expenses exactly at $843.03;
+    // afterwards it sits $50 below them, which is the point: $50 of that
+    // spending was his money, not the founder's.
+    giftRef: "genesis:cleanup2026",
+    fromCents: 84303,
+    toCents: 79303,
     cashRefs: ["genesis:don24:tajzai2"],
     cashCents: 5000,
   },
