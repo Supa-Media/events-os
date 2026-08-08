@@ -57,7 +57,7 @@ import type * as gear2024Split from "../gear2024Split.js";
 import type * as genesisApproveExceptions from "../genesisApproveExceptions.js";
 import type * as genesisCleanup from "../genesisCleanup.js";
 import type * as genesisDedupe from "../genesisDedupe.js";
-import type * as fixGear2024Gift from "../fixGear2024Gift.js";
+import type * as netOutCashGifts from "../netOutCashGifts.js";
 import type * as givebutterRepair from "../givebutterRepair.js";
 import type * as linkTruistGifts from "../linkTruistGifts.js";
 import type * as markPtbPayout from "../markPtbPayout.js";
@@ -415,7 +415,7 @@ declare const fullApi: ApiFromModules<{
   genesisApproveExceptions: typeof genesisApproveExceptions;
   genesisCleanup: typeof genesisCleanup;
   genesisDedupe: typeof genesisDedupe;
-  fixGear2024Gift: typeof fixGear2024Gift;
+  netOutCashGifts: typeof netOutCashGifts;
   givebutterRepair: typeof givebutterRepair;
   linkTruistGifts: typeof linkTruistGifts;
   markPtbPayout: typeof markPtbPayout;
