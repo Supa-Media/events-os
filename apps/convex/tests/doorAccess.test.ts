@@ -268,6 +268,14 @@ describe("listCheckInAttendees", () => {
       ].sort(),
     );
 
+    // The organizer's code-bearing roster is NOT reachable from the door.
+    // This is the whole point of the two-list split: the door volunteer holds
+    // check-in access and still cannot obtain a code, so they can never admit
+    // a guest who isn't standing in front of them.
+    await expect(
+      guest.as.query(api.ticketing.listCheckInAttendeesAdmin, { eventId }),
+    ).rejects.toThrow();
+
     // A check-in (code supplied BY the guest, scanned or typed) flips the
     // row reactively.
     const ok = await guest.as.mutation(api.ticketing.checkInTicket, { eventId, code });

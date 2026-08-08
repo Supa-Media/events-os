@@ -37,7 +37,11 @@ import { Doc, Id } from "./_generated/dataModel";
 import { normalizeEmail } from "./lib/access";
 import { normalizePhone } from "./lib/twilio";
 import { requireEvent, requireOwned, requireUserId } from "./lib/context";
-import { hasCheckInAccess, requireCheckInAccess } from "./lib/ticketingAccess";
+import {
+  hasCheckInAccess,
+  requireCheckInAccess,
+  requireTicketCodeRead,
+} from "./lib/ticketingAccess";
 import { allTeamsForEvent, assignTeamIfNeeded } from "./lib/guestTeams";
 import { beginEmailVerification, clearEmailCode } from "./lib/emailCodes";
 import { linkRsvpToPerson } from "./lib/rsvpPeople";
@@ -794,6 +798,50 @@ export const listCheckInAttendees = query({
           checkedInAt: t.checkedInAt ?? null,
           // The id, not just the name, so the door can group and re-assign by
           // identity — two teams could share a display name on legacy rows.
+          teamId: team?._id ?? null,
+          teamName: team?.name ?? null,
+          teamColor: team?.color ?? null,
+        };
+      })
+      .sort((a, b) => a.attendeeName.localeCompare(b.attendeeName));
+  },
+});
+
+/**
+ * The guest list for the ORGANIZER's own event page — the same roster as
+ * `listCheckInAttendees` but WITH each ticket's code.
+ *
+ * The deliberate counterpart to that query, not a replacement for it. The door
+ * withholds codes because a volunteer with a list of them could admit people
+ * who aren't there; inside Chapter OS the caller is a chapter member looking at
+ * their own event, where "a guest turned up having lost their confirmation
+ * email" is a real job that was otherwise impossible. Gated on
+ * `requireTicketCodeRead` (see `lib/ticketingAccess.ts`), which is
+ * membership — NOT `requireCheckInAccess`, so a door-granted volunteer calling
+ * this directly is refused.
+ */
+export const listCheckInAttendeesAdmin = query({
+  args: { eventId: v.id("events") },
+  handler: async (ctx, { eventId }) => {
+    await requireTicketCodeRead(ctx, eventId);
+    const tickets = await ctx.db
+      .query("tickets")
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
+      .take(1000);
+    const teams = new Map(
+      (await allTeamsForEvent(ctx, eventId)).map((t) => [t._id, t]),
+    );
+    return tickets
+      .map((t) => {
+        const team = t.guestTeamId ? teams.get(t.guestTeamId) : undefined;
+        return {
+          _id: t._id,
+          attendeeName: t.attendeeName,
+          attendeeEmail: t.attendeeEmail,
+          ticketTypeName: t.ticketTypeName,
+          code: t.code,
+          status: t.status,
+          checkedInAt: t.checkedInAt ?? null,
           teamId: team?._id ?? null,
           teamName: team?.name ?? null,
           teamColor: team?.color ?? null,

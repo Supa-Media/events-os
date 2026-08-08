@@ -182,6 +182,32 @@ export async function requireDoorGrantManage(
 }
 
 /**
+ * Assert the caller may READ TICKET CODES for `eventId`.
+ *
+ * This is the one power that separates the organizer's own event page from the
+ * door. `listCheckInAttendees` (the door's list) strips codes on purpose: a
+ * door volunteer holding a list of codes could admit anyone whose name they
+ * can read, with the guest nowhere nearby, which is the pass-back the scan
+ * flow exists to prevent. Inside Chapter OS the calculus is different — the
+ * caller is a chapter member looking at their own event, and needing a code
+ * ("the guest lost their confirmation email") is a real job the app otherwise
+ * can't do at all.
+ *
+ * So: today this is any signed-in member of the event's chapter, the same bare
+ * gate every other Tickets-tab admin surface uses — and deliberately NOT
+ * `requireCheckInAccess`, because a door-granted volunteer holds check-in but
+ * must never be handed the codes. Per CLAUDE.md's "gate it behind a power"
+ * rule the resolver exists so that line can move to a named seat capability by
+ * changing THIS body only.
+ */
+export async function requireTicketCodeRead(
+  ctx: QueryCtx,
+  eventId: Id<"events">,
+): Promise<Doc<"events">> {
+  return await requireEvent(ctx, eventId);
+}
+
+/**
  * Assert the caller may CONFIGURE guest teams for `eventId` — turn team
  * assignment on/off, change how many teams there are, rename them
  * (`guestTeams.ts`). Today: any signed-in member of the event's chapter, the

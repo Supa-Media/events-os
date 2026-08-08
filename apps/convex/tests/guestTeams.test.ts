@@ -376,6 +376,30 @@ describe("assignment at the door", () => {
     expect(teams.reduce((n, x) => n + x.assignedCount, 0)).toBe(0);
   });
 
+  test("the organizer's roster carries codes; the door's carries none", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { eventId, slug, freeId } = await seedDoor(s);
+    await s.as.mutation(api.guestTeams.setEnabled, { eventId, enabled: true });
+    const [code] = await buyTickets(s, eventId, slug, freeId, "Ada");
+    await s.as.mutation(api.ticketing.checkInTicket, { eventId, code });
+
+    const admin = await s.as.query(api.ticketing.listCheckInAttendeesAdmin, {
+      eventId,
+    });
+    expect(admin[0].code).toBe(code);
+    expect(admin[0].attendeeEmail).toBeTruthy();
+    expect(admin[0].teamName).toBeTruthy();
+
+    // Same roster from the door's query — same guest, same team, no code.
+    const door = await s.as.query(api.ticketing.listCheckInAttendees, {
+      eventId,
+    });
+    expect(door[0].teamName).toBe(admin[0].teamName);
+    expect(Object.keys(door[0])).not.toContain("code");
+    expect(Object.keys(door[0])).not.toContain("attendeeEmail");
+  });
+
   test("the door's guest list carries each guest's team", async () => {
     const t = newT();
     const s = await setupChapter(t);
