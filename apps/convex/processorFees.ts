@@ -22,6 +22,10 @@
  * one every time. `runFeeSync` now sweeps the balance-transaction ledger, where both
  * shapes live.
  *
+ * DATED AT PERIOD END, except for the month still running — that one is dated
+ * TODAY, because a fee row for an unfinished month otherwise lands in the
+ * future and keeps changing under you.
+ *
  * ONE ROW PER MONTH PER PROCESSOR, not one per charge. 264 charges would bury the
  * reconcile grid in sub-dollar rows nobody codes or reads, and the fee is not a decision
  * anyone makes per transaction — it's a cost of the rail. A month is the smallest unit a
@@ -100,9 +104,20 @@ export const upsertFeeRows = internalMutation({
       const prior = byRef.get(externalId);
       if (prior) {
         // A later month can still gain charges (a late capture, a refund reversal), so
-        // the row is re-summed rather than assumed final.
-        if (prior.amountCents === mo.feeCents) { unchanged++; continue; }
-        if (write) await ctx.db.patch(prior._id, { amountCents: mo.feeCents, note });
+        // the row is re-summed rather than assumed final. `postedAt` is re-checked
+        // too: the month still running moves its date forward as it accrues, and
+        // rows written before that rule existed are sitting in the FUTURE (an
+        // August fee row dated Aug 31 while it was Aug 7). Comparing only the
+        // amount would leave those stranded there forever.
+        const samePostedAt = prior.postedAt === mo.postedAt;
+        if (prior.amountCents === mo.feeCents && samePostedAt) { unchanged++; continue; }
+        if (write) {
+          await ctx.db.patch(prior._id, {
+            amountCents: mo.feeCents,
+            postedAt: mo.postedAt,
+            note,
+          });
+        }
         updated++;
         continue;
       }
@@ -259,8 +274,18 @@ async function runFeeSync(
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([month, v2]) => {
       const [y, mo] = month.split("-").map(Number);
-      // Last day of the month at noon UTC — a period cost booked at period end.
-      return { month, ...v2, postedAt: Date.UTC(y, mo, 0, 12) };
+      // A CLOSED month books at its last day — a period cost at period end.
+      //
+      // The month still running books at TODAY instead. Dating it to the
+      // month's end put an August fee row on Aug 31 while it was Aug 7: a
+      // transaction in the future, sorting above everything real, for a period
+      // that hasn't happened yet. It also kept growing each time the sync ran,
+      // so the future-dated amount was never even final.
+      //
+      // Today is the honest date for it — everything in the row HAS been
+      // charged, and the row moves forward with the month as more accrues.
+      const monthEnd = Date.UTC(y, mo, 0, 12);
+      return { month, ...v2, postedAt: Math.min(monthEnd, Date.now()) };
     });
 
   const r: {
