@@ -3,9 +3,16 @@ import { View, Text, ActivityIndicator } from "react-native";
 import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
+import { teamColor } from "@events-os/shared";
 import { Card, TextField, Icon } from "../ui";
 import { colors } from "../../lib/theme";
-import { checkInProgress, filterAttendees, type DoorAttendee } from "./attendeeList";
+import {
+  checkInProgress,
+  filterAttendees,
+  teamStandings,
+  type DoorAttendee,
+  type TeamStanding,
+} from "./attendeeList";
 import { formatDateTime } from "../../lib/format";
 
 /**
@@ -32,6 +39,7 @@ export function AttendeeCheckInList({ eventId }: { eventId: Id<"events"> }) {
 
   const progress = checkInProgress(attendees);
   const shown = filterAttendees(attendees, query);
+  const standings = teamStandings(attendees);
 
   return (
     <View className="mt-4">
@@ -43,6 +51,14 @@ export function AttendeeCheckInList({ eventId }: { eventId: Id<"events"> }) {
           {progress.checkedIn} of {progress.total} checked in
         </Text>
       </View>
+
+      {standings.length > 0 ? (
+        <View className="mb-2 flex-row flex-wrap gap-1.5">
+          {standings.map((s) => (
+            <TeamStandingChip key={s.name} standing={s} />
+          ))}
+        </View>
+      ) : null}
 
       {attendees.length === 0 ? (
         <Card>
@@ -56,7 +72,9 @@ export function AttendeeCheckInList({ eventId }: { eventId: Id<"events"> }) {
             <TextField
               value={query}
               onChangeText={setQuery}
-              placeholder="Search names"
+              placeholder={
+                standings.length > 0 ? "Search names or teams" : "Search names"
+              }
               autoCapitalize="none"
               autoCorrect={false}
             />
@@ -78,6 +96,25 @@ export function AttendeeCheckInList({ eventId }: { eventId: Id<"events"> }) {
   );
 }
 
+/** "Blue 11" — one team's running headcount above the list. */
+function TeamStandingChip({ standing }: { standing: TeamStanding }) {
+  const c = teamColor(standing.color);
+  return (
+    <View
+      className="flex-row items-center gap-1.5 rounded-pill px-2.5 py-1"
+      style={{ backgroundColor: c.chipBg }}
+    >
+      <View
+        className="h-2 w-2 rounded-pill"
+        style={{ backgroundColor: c.solid }}
+      />
+      <Text className="text-2xs font-bold" style={{ color: c.chipText }}>
+        {standing.name} {standing.count}
+      </Text>
+    </View>
+  );
+}
+
 function AttendeeRow({
   attendee,
   isLast,
@@ -85,6 +122,7 @@ function AttendeeRow({
   attendee: DoorAttendee;
   isLast: boolean;
 }) {
+  const c = attendee.teamName ? teamColor(attendee.teamColor) : null;
   return (
     <View
       className={`flex-row items-center gap-3 px-4 py-3 ${
@@ -92,9 +130,21 @@ function AttendeeRow({
       }`}
     >
       <View className="flex-1">
-        <Text className="text-sm font-medium text-ink" numberOfLines={1}>
-          {attendee.attendeeName}
-        </Text>
+        <View className="flex-row items-center gap-2">
+          <Text className="shrink text-sm font-medium text-ink" numberOfLines={1}>
+            {attendee.attendeeName}
+          </Text>
+          {c && attendee.teamName ? (
+            <View
+              className="rounded-pill px-2 py-0.5"
+              style={{ backgroundColor: c.chipBg }}
+            >
+              <Text className="text-2xs font-bold" style={{ color: c.chipText }}>
+                {attendee.teamName}
+              </Text>
+            </View>
+          ) : null}
+        </View>
         <Text className="mt-0.5 text-xs text-muted" numberOfLines={1}>
           {attendee.ticketTypeName}
         </Text>

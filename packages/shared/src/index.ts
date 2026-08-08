@@ -2052,3 +2052,6 @@ export * from "./csv";
 // ── Data export: dataset registry, job vocabulary, cell formatters ───────────
 export * from "./dataExport";
 export * from "./reconcileFilters";
+
+// ── Guest teams: door-assigned attendee teams (palette + balancing rule) ─────
+export * from "./guestTeams";

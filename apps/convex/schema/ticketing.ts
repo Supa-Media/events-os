@@ -62,6 +62,12 @@ export const eventPages = defineTable({
   // (see the `*Cents` rollups below). Unset = no goal shown.
   goalCents: v.optional(v.number()),
   showGuestList: v.optional(v.boolean()), // default true
+  // Guest teams — split arriving guests into N even teams at check-in (see
+  // `guestTeams` below). Off by default; turning it on seeds the default team
+  // set. Kept as its OWN flag rather than inferred from "are there any teams"
+  // so an event can switch assignment off for a night without losing the team
+  // names it already customized.
+  teamsEnabled: v.optional(v.boolean()), // default false
   // Partiful-style gate: activity feed visible only after you RSVP.
   activityRestricted: v.optional(v.boolean()), // default true
   capacity: v.optional(v.number()),
@@ -317,6 +323,38 @@ export const donations = defineTable({
   .index("by_event", ["eventId"])
   .index("by_stripe_session", ["stripeCheckoutSessionId"]);
 
+/**
+ * A guest team for an event — the thing a guest is put on when they're
+ * admitted (`eventPages.teamsEnabled`). Attendee-facing and door-assigned;
+ * NOT the crew teams on the `volunteer_expectations` module's `team` column,
+ * which are staff and assigned in advance. See
+ * `@events-os/shared#pickTeamIndex` for the balancing rule.
+ *
+ * `color` is a key into that module's `TEAM_COLORS` palette, assigned by
+ * position when the team set is sized and never changed afterward — the name
+ * is what's editable, so an event can call the blue team "Dolphins" without
+ * the wristbands changing color underneath them.
+ *
+ * `assignedCount` is denormalized (the same never-`.collect().length`-at-read
+ * -time rule the `eventPages` rollups follow) because every check-in needs the
+ * current standings to pick the least-loaded team; counting tickets per scan
+ * would read the whole ticket table at the door.
+ *
+ * Shrinking the team set soft-deactivates (`isActive: false`) instead of
+ * deleting, so already-admitted guests keep a resolvable team and a re-grown
+ * set gets its custom names back. Absent = active, mirroring `doorGrants`.
+ */
+export const guestTeams = defineTable({
+  eventId: v.id("events"),
+  chapterId: v.id("chapters"),
+  name: v.string(),
+  color: v.string(), // key into TEAM_COLORS
+  sortOrder: v.number(),
+  isActive: v.optional(v.boolean()),
+  assignedCount: v.number(),
+  createdAt: v.number(),
+}).index("by_event", ["eventId"]);
+
 /** An issued ticket (one row per admission; `code` backs the QR). */
 export const tickets = defineTable({
   eventId: v.id("events"),
@@ -326,6 +364,13 @@ export const tickets = defineTable({
   ticketTypeName: v.string(), // snapshot
   attendeeName: v.string(),
   attendeeEmail: v.string(),
+  // The guest team this admission was assigned at check-in, when the event has
+  // teams on. Set once and never reassigned — the guest is already wearing the
+  // wristband — except by an explicit `guestTeams.setTicketTeam` override.
+  // Lives on the TICKET, not the order or the person: a two-ticket order is
+  // two humans who each need their own team (and the balancing rule splits
+  // them by construction).
+  guestTeamId: v.optional(v.id("guestTeams")),
   // Human-safe code (e.g. "PW-8FK2-QW9T"): printed under the QR, scanned at
   // the door, and the key of the public /t/<code> ticket page.
   code: v.string(),

@@ -246,11 +246,24 @@ describe("listCheckInAttendees", () => {
       ticketTypeName: "Community (Free)",
       status: "valid",
       checkedInAt: null,
+      // This event doesn't use guest teams, so there's nothing to show.
+      teamName: null,
+      teamColor: null,
     });
     // View-only is the contract: no `code` (admission must prove possession
     // of the ticket — the guest supplies it), no email, no order linkage.
+    // The team fields are safe to add here — they're what the volunteer is at
+    // the door to hand out, and neither one admits anybody.
     expect(Object.keys(list[0]).sort()).toEqual(
-      ["_id", "attendeeName", "checkedInAt", "status", "ticketTypeName"].sort(),
+      [
+        "_id",
+        "attendeeName",
+        "checkedInAt",
+        "status",
+        "teamColor",
+        "teamName",
+        "ticketTypeName",
+      ].sort(),
     );
 
     // A check-in (code supplied BY the guest, scanned or typed) flips the

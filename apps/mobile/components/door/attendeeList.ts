@@ -1,7 +1,8 @@
 /**
- * Pure logic behind `AttendeeCheckInList` — the search filter and the
- * checked-in progress tally. Extracted so it's testable (this app tests pure
- * helpers, not components — see `ticketScan.test.ts`'s doc comment).
+ * Pure logic behind `AttendeeCheckInList` — the search filter, the checked-in
+ * progress tally, and the per-team standings. Extracted so it's testable (this
+ * app tests pure helpers, not components — see `ticketScan.test.ts`'s doc
+ * comment).
  */
 
 /** One row of `api.ticketing.listCheckInAttendees` — VIEW-ONLY: the server
@@ -13,19 +14,28 @@ export type DoorAttendee = {
   ticketTypeName: string;
   status: "valid" | "checked_in" | "void";
   checkedInAt: number | null;
+  /** The guest team assigned at check-in, when the event uses teams. Null
+   *  before the guest arrives — teams are handed out at the door, not sold. */
+  teamName: string | null;
+  teamColor: string | null;
 };
 
 /**
- * Case-insensitive substring match on the attendee's name. An
- * empty/whitespace query returns the full list.
+ * Case-insensitive substring match on the attendee's name OR their team name.
+ * Matching the team too turns the search box into "show me everyone on Blue",
+ * which is what a door volunteer reaches for when a team needs rounding up.
+ * An empty/whitespace query returns the full list.
  */
-export function filterAttendees<T extends Pick<DoorAttendee, "attendeeName">>(
-  attendees: T[],
-  query: string,
-): T[] {
+export function filterAttendees<
+  T extends Pick<DoorAttendee, "attendeeName"> & Partial<Pick<DoorAttendee, "teamName">>,
+>(attendees: T[], query: string): T[] {
   const q = query.trim().toLowerCase();
   if (!q) return attendees;
-  return attendees.filter((a) => a.attendeeName.toLowerCase().includes(q));
+  return attendees.filter(
+    (a) =>
+      a.attendeeName.toLowerCase().includes(q) ||
+      (a.teamName ?? "").toLowerCase().includes(q),
+  );
 }
 
 /**
@@ -40,4 +50,36 @@ export function checkInProgress(
     checkedIn: admittable.filter((a) => a.status === "checked_in").length,
     total: admittable.length,
   };
+}
+
+/** One team's live headcount, for the door's standings strip. */
+export type TeamStanding = { name: string; color: string; count: number };
+
+/**
+ * Live headcount per team, biggest first, from the guest list itself.
+ *
+ * Derived from the rows rather than read off `guestTeams.assignedCount` so the
+ * strip can't disagree with the list it sits above — this is the number a
+ * volunteer sanity-checks the balance against, and two sources that drift
+ * would be worse than none. Teams nobody has been assigned to yet are absent
+ * by construction, which is correct for a door that's still filling up.
+ */
+export function teamStandings(
+  attendees: Pick<DoorAttendee, "teamName" | "teamColor">[],
+): TeamStanding[] {
+  const byName = new Map<string, TeamStanding>();
+  for (const a of attendees) {
+    if (!a.teamName) continue;
+    const existing = byName.get(a.teamName);
+    if (existing) existing.count += 1;
+    else
+      byName.set(a.teamName, {
+        name: a.teamName,
+        color: a.teamColor ?? "",
+        count: 1,
+      });
+  }
+  return [...byName.values()].sort(
+    (a, b) => b.count - a.count || a.name.localeCompare(b.name),
+  );
 }

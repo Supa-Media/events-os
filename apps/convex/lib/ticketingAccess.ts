@@ -180,3 +180,43 @@ export async function requireDoorGrantManage(
 ): Promise<Doc<"events">> {
   return await requireEvent(ctx, eventId);
 }
+
+/**
+ * Assert the caller may CONFIGURE guest teams for `eventId` — turn team
+ * assignment on/off, change how many teams there are, rename them
+ * (`guestTeams.ts`). Today: any signed-in member of the event's chapter, the
+ * same bare gate every other Tickets-tab setting uses (page setup, ticket
+ * types, giving).
+ *
+ * Deliberately NOT `requireCheckInAccess`: a door volunteer hands out
+ * wristbands, they don't get to re-cut the teams mid-event. Per CLAUDE.md's
+ * "gate it behind a power" rule this resolver exists so that restriction can
+ * graduate to a named seat capability by changing THIS body only.
+ */
+export async function requireGuestTeamManage(
+  ctx: QueryCtx,
+  eventId: Id<"events">,
+): Promise<Doc<"events">> {
+  return await requireEvent(ctx, eventId);
+}
+
+/**
+ * Assert the caller may READ an event's guest teams — a strictly wider gate
+ * than either writer, because two different audiences need the same list:
+ * the door (a chapterless door-granted volunteer reading team names and live
+ * standings off `DoorModeScreen`) and the organizer configuring them from the
+ * Tickets tab (a chapter member who may hold no check-in access at all).
+ *
+ * Written as check-in-access-OR-membership rather than as two near-identical
+ * queries so there is exactly one power named "can see this event's teams".
+ */
+export async function requireGuestTeamRead(
+  ctx: QueryCtx,
+  eventId: Id<"events">,
+): Promise<Doc<"events">> {
+  try {
+    return await requireCheckInAccess(ctx, eventId);
+  } catch {
+    return await requireEvent(ctx, eventId);
+  }
+}

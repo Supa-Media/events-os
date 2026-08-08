@@ -33,6 +33,7 @@ import { GivingCard } from "./GivingCard";
 import { GuestListCard, type GuestFilter } from "./GuestListCard";
 import { ImportAttendanceCard } from "./ImportAttendanceCard";
 import { CheckInCard } from "./CheckInCard";
+import { TeamsCard } from "./TeamsCard";
 import { BlastComposerCard } from "./BlastComposerCard";
 import { LaunchStepper } from "./LaunchStepper";
 import { PhaseSection } from "./PhaseSection";
@@ -157,6 +158,9 @@ export default function TicketingTab({ eventId }: { eventId: Id<"events"> }) {
           <View className="gap-5">
             <PhaseBlock label="Door check-in">
               <CheckInCard eventId={eventId} run={run} />
+            </PhaseBlock>
+            <PhaseBlock label="Teams">
+              <TeamsCard eventId={eventId} run={run} />
             </PhaseBlock>
             <PhaseBlock label="Giving">
               <GivingCard eventId={eventId} page={pageRow} run={run} />
