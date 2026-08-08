@@ -23,6 +23,7 @@
  */
 import { useState } from "react";
 import { Modal, Pressable, ScrollView, Text, View } from "react-native";
+import { useRouter } from "expo-router";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import { formatCents } from "@events-os/shared";
@@ -110,6 +111,7 @@ export function BookValueBreakdownModal({
     api.reconciliation.bookValueBreakdown,
     scope ? ({ scope } as never) : "skip",
   );
+  const router = useRouter();
   const linkGift = useMutation(api.givingCandidates.linkGiftToTransaction);
   const { run, toast, dismiss } = useActionRunner();
   // Which suspicion is mid-flight — so its button alone shows the pending state
@@ -343,6 +345,22 @@ export function BookValueBreakdownModal({
                   />
                 ) : null}
               </Group>
+
+              {/* The grouped view above answers "what shape is this number".
+                  When the answer is "still doesn't look right", the next rung
+                  is every individual line — see `finances/book-value`. */}
+              <View className="mt-4">
+                <Button
+                  variant="secondary"
+                  title="See every line"
+                  onPress={() => {
+                    onClose();
+                    router.navigate(
+                      `/finances/book-value?scope=${encodeURIComponent(data.scope)}` as never,
+                    );
+                  }}
+                />
+              </View>
 
               {data.truncated ? (
                 <View className="mt-4">
