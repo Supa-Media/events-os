@@ -58,6 +58,12 @@ export function signedBookCents(tr: Doc<"transactions">): number {
   // the engine pairs that redistribute that arrival, contribute nothing.
   if (tr.payoutProcessor != null || tr.stripePayoutId != null) return 0;
   if (tr.transferOrigin === "payout_allocation") return 0;
+  // A balance settlement moves a chapter the cash it has already earned — the
+  // revenue is on its book from the gift/ticket/sale, and this only puts the
+  // money where the book says it belongs. Zero, or the target would chase
+  // itself: crediting a chapter's book for the top-up would raise the very
+  // number the top-up is aiming at, and the engine would never converge.
+  if (tr.transferOrigin === "balance_settlement") return 0;
 
   // ── A MARKED TRANSFER MOVES CASH, NOT VALUE ────────────────────────────────
   // `preMarkFlow` is written by `finances.markAsTransfer` and nothing else, so

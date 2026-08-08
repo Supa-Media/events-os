@@ -874,11 +874,25 @@ export const AUTO_TRANSFER_ORIGINS = [
   // card determines whose account paid; reconcile determines whose budget it
   // was") settled by the engine instead of waiting for a human to record it.
   "auto_settlement",
+  // The daily true-up of a chapter's CASH against its BOOK. Every payout lands
+  // in central's account, so central holds money the chapters have earned; this
+  // moves each chapter the difference between what its book says it's worth and
+  // what its bank actually holds.
+  //
+  // It replaced `payout_allocation` (founder decision, 2026-08-08). Attributing
+  // a payout per-chapter meant tracing every balance transaction back to the
+  // record that earned it — fragile (it fails outright on manually-initiated
+  // payouts, which Stripe won't itemise), impossible for Givebutter (no API),
+  // and redundant, because gifts, ticket orders and sales are already
+  // chapter-scoped before a payout exists. The allocation legs also contributed
+  // ZERO to book value, so all that machinery made no number correct.
+  "balance_settlement",
 ] as const;
 export type AutoTransferOrigin = (typeof AUTO_TRANSFER_ORIGINS)[number];
 
 export const AUTO_TRANSFER_ORIGIN_LABELS: Record<AutoTransferOrigin, string> = {
   payout_allocation: "Payout allocation",
+  balance_settlement: "Balance settlement",
   auto_settlement: "Auto settlement",
 };
 

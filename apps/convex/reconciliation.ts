@@ -773,6 +773,149 @@ export const retryDepositMatch = internalMutation({
  * day, and a re-run recomputes a net the earlier booking already zeroed, so
  * it books nothing.
  */
+/**
+ * Move each chapter the cash its book says it is owed.
+ *
+ * ── WHY THIS REPLACED PER-PAYOUT ALLOCATION ─────────────────────────────────
+ * Every payout lands in central's account, so central perpetually holds money
+ * the chapters earned. The old answer was to itemise each payout — trace every
+ * balance transaction back to the ticket order, donation or gift that produced
+ * it, then book one central→chapter pair per chapter per payout.
+ *
+ * That was the hard way round for no gain. Chapter attribution is already
+ * SOLVED at the revenue layer: gifts, ticket orders and sales are chapter-
+ * scoped and dated before a payout exists. Re-deriving it from Stripe's side
+ * was fragile (a manually-initiated payout can't be itemised at all — Stripe
+ * returns "Balance transaction history can only be filtered on automatic
+ * transfers"), impossible for Givebutter (no API, so its payouts were
+ * allocated by hand), and produced legs that contributed ZERO to book value.
+ * All that machinery made no number correct.
+ *
+ * So: a payout is now just cash arriving at central. Once a run, this compares
+ * each chapter's BOOK to its BANK and moves the difference.
+ *
+ * ── WHY IT CONVERGES INSTEAD OF SOLVING EXACTLY ─────────────────────────────
+ * Book and the right cash balance are not the same number at any instant:
+ * revenue can be earned but still clearing at the processor, and card
+ * authorizations leave the bank before they reach the ledger. Rather than
+ * model both, this aims at book value and lets the next run correct what has
+ * moved since. The settlement legs contribute 0 to book value, so the target
+ * never chases itself — crediting a chapter for its own top-up would raise the
+ * number the top-up aims at and the engine would never settle.
+ *
+ * BOUNDED BY WHAT CENTRAL ACTUALLY HOLDS. A chapter is owed what it earned, but
+ * central can only send what it has; the remainder is picked up next run once
+ * more has cleared. Without this the engine would book transfers that then fail
+ * to execute, leaving pairs the ledger claims happened and the bank denies.
+ *
+ * `MIN_SETTLEMENT_CENTS` stops the engine booking a pair every morning to chase
+ * a few cents of rounding — a ledger row costs a reader's attention, and $5 of
+ * drift is not worth one.
+ */
+export const settleChapterBalances = internalMutation({
+  args: { dateStr: v.string() },
+  returns: v.object({
+    settlementsBooked: v.number(),
+    movedCents: v.number(),
+    notes: v.array(v.string()),
+  }),
+  handler: async (ctx, { dateStr }) => {
+    const notes: string[] = [];
+    let settlementsBooked = 0;
+    let movedCents = 0;
+
+    const balances = await computeBookBalances(ctx);
+    const accountRows = await ctx.db
+      .query("increaseAccounts")
+      .take(ROLLUP_SCAN_LIMIT);
+    const bankFor = (scope: FinanceScope): number | null => {
+      const row = accountRows.find(
+        (a) =>
+          a.chapterId === scope &&
+          (a.sandbox ?? a.increaseAccountId?.startsWith("sandbox_") ?? false) === false,
+      );
+      return row?.balanceCents ?? null;
+    };
+
+    const centralBank = bankFor(CENTRAL);
+    if (centralBank == null) {
+      notes.push("Balance settlement skipped — no central bank balance yet.");
+      return { settlementsBooked, movedCents, notes };
+    }
+    // Only cash central is actually free to send. Reduced as each chapter is
+    // funded so two chapters can't both be promised the same dollar.
+    let centralAvailable = centralBank;
+
+    // Largest shortfall first: if central can't cover everyone, the chapter
+    // furthest from its book gets made whole before a chapter that's nearly
+    // there. Arbitrary order would fund whoever happened to be read first.
+    const shortfalls = balances
+      .filter((b) => b.scope !== CENTRAL)
+      .map((b) => ({ ...b, bank: bankFor(b.scope) }))
+      .filter((b): b is typeof b & { bank: number } => b.bank != null)
+      .map((b) => ({ ...b, owed: b.bookBalanceCents - b.bank }))
+      .sort((a, b) => b.owed - a.owed);
+
+    for (const chapter of shortfalls) {
+      if (Math.abs(chapter.owed) < MIN_SETTLEMENT_CENTS) continue;
+
+      // A chapter holding MORE than its book returns the excess — the same
+      // true-up in reverse, and central is where the surplus belongs.
+      const direction: TransferDirection =
+        chapter.owed > 0 ? "central_to_chapter" : "chapter_to_central";
+      let amountCents = Math.abs(chapter.owed);
+
+      if (direction === "central_to_chapter") {
+        if (centralAvailable < MIN_SETTLEMENT_CENTS) {
+          notes.push(
+            `${chapter.scopeName}: owed ${formatCents(chapter.owed)} but central has nothing free — next run.`,
+          );
+          continue;
+        }
+        if (amountCents > centralAvailable) {
+          notes.push(
+            `${chapter.scopeName}: owed ${formatCents(chapter.owed)}, sending ${formatCents(centralAvailable)} — the rest once more clears.`,
+          );
+          amountCents = centralAvailable;
+        }
+        centralAvailable -= amountCents;
+      }
+
+      const { sourceScope, destScope } = transferScopes(
+        chapter.scope as Id<"chapters">,
+        direction,
+      );
+      // One settlement per chapter per Eastern day, deterministic so a re-run
+      // (a manual "Run now" after the cron) books nothing twice.
+      const transferGroupId = `balsettle-${chapter.scope}-${dateStr}`;
+      try {
+        await recordTransferPair(ctx, {
+          sourceScope,
+          destScope,
+          amountCents,
+          transferGroupId,
+          postedAt: Date.now(),
+          note:
+            `Auto: ${chapter.scopeName}'s cash brought to its book. Book ` +
+            `${formatCents(chapter.bookBalanceCents)} against ${formatCents(chapter.bank)} in the bank ` +
+            `= ${formatCents(chapter.owed)} ${chapter.owed > 0 ? "owed to it" : "held above its book"}. ` +
+            `Every payout lands in central's account, so central holds what the chapters earn.`,
+          transferDirection: direction,
+          transferOrigin: "balance_settlement",
+        });
+        settlementsBooked += 1;
+        movedCents += amountCents;
+      } catch (err) {
+        // Already settled today (a manual re-run after the cron) — fine.
+        if (!(err instanceof ConvexError) || err.data?.code !== "ALREADY_RECORDED") {
+          throw err;
+        }
+      }
+    }
+    return { settlementsBooked, movedCents, notes };
+  },
+});
+
 export const runAutoSettlement = internalMutation({
   args: { dateStr: v.string() },
   returns: v.object({
@@ -1435,56 +1578,30 @@ async function runEngine(
         // transactions don't change, and re-paging every historical payout
         // each morning would grow the run without bound. Only the (fetch-free)
         // deposit match retries until the bank feed syncs the arrival in.
-        if (processState === "allocated") {
-          const retried: { depositMatched: boolean } = await ctx.runMutation(
-            internal.reconciliation.retryDepositMatch,
-            { stripePayoutId: po.id },
+        // ── NO PER-PAYOUT ALLOCATION ANY MORE ─────────────────────────────
+        // A payout is now just cash arriving at central. Its only job here is
+        // to find its bank deposit and label it, so `signedBookCents` returns 0
+        // for that row instead of counting already-counted revenue twice.
+        // `settleChapterBalances` moves the money to the chapters afterwards,
+        // from what their books say they're owed.
+        //
+        // The itemisation this replaced could not survive contact with real
+        // payouts: Stripe refuses to itemise a manually-initiated one
+        // ("Balance transaction history can only be filtered on automatic
+        // transfers"), Givebutter has no API to itemise at all, and the legs it
+        // produced contributed ZERO to book value. It was elaborate machinery
+        // for a number that was already correct.
+        const matched: { depositMatched: boolean } = await ctx.runMutation(
+          internal.reconciliation.retryDepositMatch,
+          { stripePayoutId: po.id },
+        );
+        payoutsProcessed += 1;
+        if (!matched.depositMatched) {
+          notes.push(
+            `Payout ${po.id}: bank deposit not found yet — will retry next run.`,
           );
-          if (!retried.depositMatched) {
-            notes.push(
-              `Payout ${po.id}: bank deposit still not found — will retry next run.`,
-            );
-          }
-          continue;
         }
-        try {
-          const items = await fetchPayoutItems(key, po.id);
-          const result: {
-            transfersBooked: number;
-            allocatedCents: number;
-            depositMatched: boolean;
-            unmappedNetCents: number;
-          } = await ctx.runMutation(
-            internal.reconciliation.applyPayoutAllocation,
-            { stripePayoutId: po.id, items },
-          );
-          payoutsProcessed += 1;
-          transfersBooked += result.transfersBooked;
-          allocatedCents += result.allocatedCents;
-          if (result.transfersBooked > 0) {
-            notes.push(
-              `Payout ${po.id}: booked ${result.transfersBooked} allocation transfer(s).`,
-            );
-          }
-          if (result.unmappedNetCents !== 0) {
-            notes.push(
-              `Payout ${po.id}: ${result.unmappedNetCents} cents could not be traced — left on central's book (review on the accounts page).`,
-            );
-          }
-          if (!result.depositMatched) {
-            notes.push(
-              `Payout ${po.id}: bank deposit not found yet — will retry next run.`,
-            );
-          }
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          console.error(`[reconciliation] payout ${po.id} failed:`, err);
-          notes.push(`Payout ${po.id} FAILED: ${message}`);
-          await ctx.runMutation(internal.reconciliation.markPayoutFailed, {
-            stripePayoutId: po.id,
-            error: message,
-          });
-        }
+        continue;
       }
     }
 
@@ -1694,6 +1811,29 @@ async function runEngine(
         } catch (err) {
           console.error("[reconciliation] Stripe balance snapshot failed", err);
         }
+      }
+
+      // ── 6: bring each chapter's CASH to its BOOK ─────────────────────────
+      // Deliberately the LAST step, and deliberately after the balance
+      // snapshot: it compares book against bank, so it needs the bank figure
+      // fetched moments ago rather than yesterday's. Running it before the
+      // snapshot would settle against a stale balance and move the wrong
+      // amount — the one mistake here that reaches real money.
+      const balSettle: {
+        settlementsBooked: number;
+        movedCents: number;
+        notes: string[];
+      } = await ctx.runMutation(
+        internal.reconciliation.settleChapterBalances,
+        { dateStr: easternDateStr(Date.now()) },
+      );
+      settlementsBooked += balSettle.settlementsBooked;
+      allocatedCents += balSettle.movedCents;
+      notes.push(...balSettle.notes);
+      if (balSettle.settlementsBooked > 0) {
+        notes.push(
+          `Brought ${balSettle.settlementsBooked} chapter(s) to their book value.`,
+        );
       }
     }
 
@@ -2088,26 +2228,39 @@ export const reconciliationOverview = query({
  * bank differing is normal (cash pools where processors pay out; the book
  * states what each scope is worth) — the page explains that.
  */
-export const accountBalances = query({
-  args: {},
-  returns: v.array(
-    v.object({
-      scope: financeScopeValidator,
-      scopeName: v.string(),
-      bookBalanceCents: v.number(),
-      revenueCents: v.number(),
-      ledgerNetCents: v.number(),
-      truncated: v.boolean(),
-      bankBalanceCents: v.union(v.number(), v.null()),
-      bankBalanceAsOf: v.union(v.number(), v.null()),
-      /** Card authorizations held but not settled. They reach neither
-       *  Reconcile nor book value, but the bank figure already excludes them —
-       *  so without this the two differ with nothing on screen to say why. */
-      pendingCents: v.union(v.number(), v.null()),
-    }),
-  ),
-  handler: async (ctx) => {
-    await requireReconciliationAudit(ctx);
+/** A settlement smaller than this isn't worth a ledger row — the engine would
+ *  book a pair every morning to chase rounding, and each row costs a reader's
+ *  attention. */
+const MIN_SETTLEMENT_CENTS = 500;
+
+export type BookBalanceRow = {
+  scope: FinanceScope;
+  scopeName: string;
+  bookBalanceCents: number;
+  revenueCents: number;
+  ledgerNetCents: number;
+  truncated: boolean;
+  bankBalanceCents: number | null;
+  bankBalanceAsOf: number | null;
+  pendingCents: number | null;
+};
+
+/**
+ * Every book's value, in one place.
+ *
+ * Extracted so `accountBalances` (what the page shows) and
+ * `settleChapterBalances` (what the engine moves money against) run the SAME
+ * arithmetic. A settlement computed from its own copy could drift from the
+ * number a treasurer is reading and move real cash on the difference — the one
+ * way this engine could do damage that isn't visible until the bank statement.
+ *
+ * Ungated: both callers gate themselves (the query on the reconciliation-audit
+ * power, the mutation by being internal to the engine).
+ */
+async function computeBookBalances(
+  ctx: QueryCtx,
+): Promise<BookBalanceRow[]> {
+
     const sandboxMode = await readSandbox(ctx);
 
     const rawChapters = await ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT);
@@ -2260,6 +2413,29 @@ export const accountBalances = query({
       (a, b) => (orderIndex.get(a.scope) ?? 0) - (orderIndex.get(b.scope) ?? 0),
     );
     return out;
+}
+
+export const accountBalances = query({
+  args: {},
+  returns: v.array(
+    v.object({
+      scope: financeScopeValidator,
+      scopeName: v.string(),
+      bookBalanceCents: v.number(),
+      revenueCents: v.number(),
+      ledgerNetCents: v.number(),
+      truncated: v.boolean(),
+      bankBalanceCents: v.union(v.number(), v.null()),
+      bankBalanceAsOf: v.union(v.number(), v.null()),
+      /** Card authorizations held but not settled. They reach neither
+       *  Reconcile nor book value, but the bank figure already excludes them —
+       *  so without this the two differ with nothing on screen to say why. */
+      pendingCents: v.union(v.number(), v.null()),
+    }),
+  ),
+  handler: async (ctx) => {
+    await requireReconciliationAudit(ctx);
+    return computeBookBalances(ctx);
   },
 });
 
@@ -2874,6 +3050,7 @@ const historyRowValidator = v.object({
     v.literal("manual"),
     v.literal("payout_allocation"),
     v.literal("auto_settlement"),
+    v.literal("balance_settlement"),
   ),
   note: v.union(v.string(), v.null()),
   stripePayoutId: v.union(v.string(), v.null()),
