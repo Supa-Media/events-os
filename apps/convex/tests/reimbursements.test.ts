@@ -225,19 +225,29 @@ type ValidLine = {
   amountCents: number;
   receiptStorageId: Id<"_storage">;
   transactionDate: number;
+  expenseType: "general" | "travel" | "meal" | "lodging";
+  businessPurpose: string;
 };
 
+/** A business purpose that clears `MIN_PURPOSE_LENGTH` — the shared floor the
+ *  server enforces on every line. */
+const VALID_PURPOSE = "Supplies for the Worship with Strangers shoot in July";
+
 /** One VALID line — description/amountCents overridable, a real stored
- *  receipt + a fresh `transactionDate` always present (both REQUIRED now). */
+ *  receipt + a fresh `transactionDate` + the REQUIRED substantiation always
+ *  present (a `general` expense with a real business purpose is the minimum a
+ *  line can carry; the travel/meal branches get their own tests). */
 async function validLine(
   s: ChapterSetup,
-  overrides: Partial<Pick<ValidLine, "description" | "amountCents" | "transactionDate">> = {},
+  overrides: Partial<Omit<ValidLine, "receiptStorageId">> = {},
 ): Promise<ValidLine> {
   const receiptStorageId = await storeBlob(s.t);
   return {
     description: "Gaffer tape",
     amountCents: 1200,
     transactionDate: Date.now(),
+    expenseType: "general",
+    businessPurpose: VALID_PURPOSE,
     ...overrides,
     receiptStorageId,
   };

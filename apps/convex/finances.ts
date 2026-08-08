@@ -128,6 +128,7 @@ import { holdsApprovalSeatAt } from "./lib/seats";
 import { listActiveChapters } from "./lib/chapters";
 import {
   RECONCILE_FILTER_KEYS,
+  TRANSACTION_CODING_STATUSES,
   countsTowardFacet,
   matchesReconcileFilters,
   RECEIPT_EXCEPTION_REASON_LABELS,
@@ -274,6 +275,28 @@ const txnSummaryFields = {
   // True iff a receipt is attached (`receiptStorageId != null`) — the truthful
   // signal behind the reconcile chase filter + Documentation column.
   hasReceipt: v.boolean(),
+  // True iff an APPROVED receipt exception stands in for the receipt
+  // (`approvedReceiptExceptionId != null`). Paired with `hasReceipt` this is
+  // everything `documentationState` (`@events-os/shared`) needs, so a client
+  // can render the three-value documentation story from the payload alone.
+  // Read off the denormalized pointer — no query into `receiptExceptions`.
+  hasApprovedException: v.boolean(),
+  // Where this row's substantiation record sits in review
+  // (`transactionCodings`), or null when none has ever been submitted. Read
+  // off the `transactions.codingState` denorm, which exists precisely so no
+  // reader needs a per-row join.
+  //
+  // On `personTransactions` this is what lets the member's own "My
+  // transactions" screen sort and filter its queue — "needs coding", "sent
+  // back — needs your edit" — from ONE subscription instead of one per row.
+  // The reviewer's send-back NOTE is deliberately not here: it's needed only
+  // when a member opens a charge, so it stays a single `getForTransaction`
+  // read on that one row rather than a string shipped for every row in the
+  // list.
+  codingState: v.union(
+    ...TRANSACTION_CODING_STATUSES.map((s) => v.literal(s)),
+    v.null(),
+  ),
   // The personal-charge flag (`cards.flagPersonalCharge` / `flagPersonal`) —
   // an accidental personal charge, excluded from every SPEND total until
   // repaid. Surfaced (R1b follow-up) so the Reconcile grid + member "My
@@ -925,6 +948,8 @@ function toTxnSummary(tr: Doc<"transactions">) {
     budgetId: tr.budgetId ?? null,
     needsBudget: needsBudget(tr),
     hasReceipt: tr.receiptStorageId != null,
+    hasApprovedException: tr.approvedReceiptExceptionId != null,
+    codingState: tr.codingState ?? null,
     isPersonal: tr.isPersonal === true,
     isMarkedTransfer: isMarkedTransfer(tr),
     payoutProcessor: tr.payoutProcessor ?? null,

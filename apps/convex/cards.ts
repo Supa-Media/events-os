@@ -4335,7 +4335,7 @@ async function notifyReceiptDigest(
   if (count === 0) return;
   const fmt = (c: { amountCents: number; merchantName: string | null }) =>
     `$${(c.amountCents / 100).toFixed(2)} at ${c.merchantName ?? "a charge"}`;
-  const noun = count === 1 ? "charge" : "charges";
+  const headline = count === 1 ? "1 charge to code" : `${count} charges to code`;
   const subject =
     count === 1
       ? `${digest.anyEscalated ? "Still open: " : ""}code your ${fmt(digest.charges[0])} charge`
@@ -4354,10 +4354,11 @@ async function notifyReceiptDigest(
               `${escapeHtml(fmt(c))} — ${escapeHtml(c.outstanding)}${c.escalated && c.missingReceipt ? " (<b>locks soon</b>)" : ""}`,
           ),
         );
-  // WHY it matters, in plain words — the one sentence the whole enforcement
-  // story rests on (docs/plans/transaction-coding.md §D). Only when a coding
-  // is actually what's missing: a charge that just needs its receipt uploaded
-  // gets the lock warning below instead, and stacking both reads as boilerplate.
+  // WHY it matters, in plain words — the sentence the whole enforcement story
+  // rests on (docs/plans/transaction-coding.md §D). Printed only when a coding
+  // is genuinely part of what's missing; a digest that's purely "upload the
+  // receipt" gets the lock warning below and nothing about taxable income,
+  // because a rule quoted where it doesn't apply stops being read.
   const anyNeedsCoding = digest.charges.some((c) => c.needsCoding);
   // (No day count here on purpose: `codingOverdueDays` is an org setting, and
   // an email that hard-codes "60 days" is one settings change away from
@@ -4383,7 +4384,7 @@ async function notifyReceiptDigest(
     to: digest.email,
     subject,
     html: emailShell(`
-      ${emailHeading(escapeHtml(count === 1 ? `1 ${noun} to code` : `${count} ${noun} to code`))}
+      ${emailHeading(headline)}
       ${emailParagraph(`Hi ${escapeHtml(digest.cardholderName)} — ${intro}`, {
         margin: `0 0 ${count === 1 ? 16 : 8}px`,
       })}

@@ -11,8 +11,10 @@
  *
  * **Seat holder**: the manager approval queue. Every request submitted through
  * the public /reimburse form: filter by state (All / Pre-approval / Submitted /
- * Paying), expand a request to its line items, and act on it — Reject,
- * Pre-approve, Approve all (`approve({})`), or Approve a subset of lines
+ * Sent back / Paying), expand a request to its line items, and act on it —
+ * Reject, Send back with a note (`requestChanges` — the revision loop, so
+ * "almost, fix this one thing" doesn't have to be a rejection), Pre-approve,
+ * Approve all (`approve({})`), or Approve a subset of lines
  * (`approve({ approvedLineIds })`, partial approval). The backend enforces
  * separation of duties (an approver can't approve their own request); that
  * `SOD_VIOLATION` ConvexError is surfaced via the action runner. Also shows a
@@ -25,6 +27,10 @@
  * perspective if they ever switch seats, same as anyone else).
  *
  * **No finance seat (member)**: two clear directions (D4), plus submit:
+ *  - "Needs your attention" — any request a reviewer sent back
+ *    (`changes_requested`), rendered as an editable `ReviseForm`: the note,
+ *    each line's substantiation, and one "Update and resubmit". The in-app
+ *    twin of the public token page's revise form.
  *  - "You owe Public Worship" — `OwedBanner` (shared with the Cards-tab owe
  *    banner; see its doc comment), sourced from `api.cards.myPersonalRepayments`.
  *  - "Public Worship owes you" — their non-terminal reimbursements (pending
@@ -54,7 +60,7 @@ import { useQuery, useMutation, useAction } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import type { FunctionReturnType } from "convex/server";
-import { formatCents } from "@events-os/shared";
+import { MIN_PURPOSE_LENGTH, formatCents } from "@events-os/shared";
 import {
   Badge,
   Button,
@@ -74,6 +80,10 @@ import { useActionRunner } from "../../../../lib/useActionToast";
 import { FinanceBoundary } from "../../../../components/finance/dashboard/parts";
 import { HowItWorks } from "../../../../components/finance/reimbursements/HowItWorks";
 import { RequestCard } from "../../../../components/finance/reimbursements/RequestCard";
+import {
+  ReviseForm,
+  type RevisableRequest,
+} from "../../../../components/finance/reimbursements/ReviseForm";
 import { OwedBanner } from "../../../../components/finance/cards/OwedBanner";
 import { CardTile } from "../../../../components/finance/cards/CardTile";
 import {
@@ -215,6 +225,14 @@ function MemberReimbursementsScreen() {
   const owedEmpty =
     owedToMe === undefined ? undefined : owedToMe.length === 0 || owedBannerEmpty;
 
+  // Sent back for a fix — surfaced ABOVE everything else as an editable card
+  // (`ReviseForm`), because it's the only row on this screen where the member
+  // is the one holding things up. They still appear in "owes you" below, so
+  // the amount is never double-counted out of the section's story.
+  const needsRevision = reimbursements?.filter(
+    (r) => r.status === "changes_requested",
+  );
+
   const owedToMember = reimbursements?.filter((r) => isOwedToMember(r.status));
   // History = the codebase's terminal source of truth (paid/rejected/canceled
   // — see `isTerminal`/`REIMBURSEMENT_TERMINAL_STATUSES`), NOT `!isOwedToMember`.
@@ -248,6 +266,25 @@ function MemberReimbursementsScreen() {
           Paid for something out of pocket? Submit a request and a finance
           manager will review and pay it by ACH.
         </Text>
+
+        {/* "A reviewer needs one fix" — the revision loop's member half. Only
+            rendered when something is actually sent back; the note plus each
+            line's substantiation, editable, with one Resubmit. */}
+        {needsRevision && needsRevision.length > 0 ? (
+          <>
+            <SectionHeader
+              title="Needs your attention"
+              count={needsRevision.length}
+            />
+            {needsRevision.map((r) => (
+              <ReviseForm
+                key={r._id}
+                request={r as unknown as RevisableRequest}
+                minPurposeLength={MIN_PURPOSE_LENGTH}
+              />
+            ))}
+          </>
+        ) : null}
 
         {/* "You owe Public Worship" — flagged personal-card charges. Shared
             banner + pay-back flow with the Cards tab (`OwedBanner`). */}

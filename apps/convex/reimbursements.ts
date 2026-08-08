@@ -1465,6 +1465,10 @@ export const newRequestOptions = query({
   args: {},
   handler: async (ctx) => {
     const chapterId = await getChapterIdOrNull(ctx);
+    // The org's coding policy is a RULE, not chapter data — so the form asks
+    // for attendee names at exactly the headcount the server requires them
+    // at, even on the degraded no-chapter path.
+    const { namesMaxHeadcount } = await codingPolicy(ctx);
     if (!chapterId) {
       return {
         defaultPayeeName: "",
@@ -1472,6 +1476,8 @@ export const newRequestOptions = query({
         defaultPayeePhone: "",
         funds: [],
         forOptions: { events: [], projects: [], budgets: [] },
+        namesMaxHeadcount,
+        minPurposeLength: MIN_PURPOSE_LENGTH,
       };
     }
     const person = await viewerPerson(ctx, chapterId as Id<"chapters">);
@@ -1489,6 +1495,8 @@ export const newRequestOptions = query({
         .sort((a, b) => a.sortOrder - b.sortOrder)
         .map((f) => ({ id: f._id, name: f.name })),
       forOptions: await forRequestOptions(ctx, chapterId as Id<"chapters">),
+      namesMaxHeadcount,
+      minPurposeLength: MIN_PURPOSE_LENGTH,
     };
   },
 });

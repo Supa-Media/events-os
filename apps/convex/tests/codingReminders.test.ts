@@ -255,6 +255,33 @@ describe("getReceiptReminderDigests — one email, per-line debts", () => {
   });
 });
 
+describe("getManualNudgeTargets — the FM's on-demand nudge", () => {
+  test("picks up a coding-only debt, labelled, alongside a missing receipt", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await armCodingPolicy(s);
+    await asManager(s);
+    const holder = await seedPerson(s, "Holder", {
+      pwEmail: "holder@publicworship.life",
+    });
+    const cardId = await seedCard(s, holder);
+    await seedCharge(s, {
+      cardId,
+      ageDays: 4,
+      amountCents: 2500,
+      receiptStorageId: await storeBlob(s.t),
+    });
+    await seedCharge(s, { cardId, ageDays: 4, amountCents: 900 });
+
+    const targets = await s.as.query(internal.cards.getManualNudgeTargets, {});
+    const holderTarget = targets.find((x) => x.personId === holder)!;
+    expect(holderTarget.charges).toHaveLength(2);
+    const byAmount = new Map(holderTarget.charges.map((c) => [c.amountCents, c]));
+    expect(byAmount.get(2500)?.outstanding).toBe("needs coding");
+    expect(byAmount.get(900)?.outstanding).toBe("needs coding and a receipt");
+  });
+});
+
 describe("the digest email itself", () => {
   const realFetch = globalThis.fetch;
 
