@@ -2468,6 +2468,289 @@ export const bookValueBreakdown = query({
   },
 });
 
+/**
+ * EVERY LINE BEHIND A BOOK'S VALUE — the audit view.
+ *
+ * `bookValueBreakdown` groups: revenue by gift method, spend by category. That
+ * answers "what shape is this number", and the founder's next question was the
+ * one grouping can't answer — "show me the line items, because there has to be
+ * a duplicate or an undercount in here somewhere."
+ *
+ * This returns every individual row on both sides, plus every row that
+ * contributed NOTHING and the reason it didn't. A grouped view can hide the
+ * same $500 counted twice inside a category subtotal; a list can't.
+ *
+ * ── THE DUPLICATE SCAN ──────────────────────────────────────────────────────
+ * `sameAmountSameDay` groups every contributing line — revenue and ledger
+ * alike — by (amount, UTC day) and returns the groups with more than one
+ * member. That is deliberately a WIDE net: most groups it surfaces are
+ * innocent, because a $20 ticket price generates dozens of legitimate matches.
+ * It is a place to look, not a verdict, and the UI says so.
+ *
+ * Narrowing it would be the wrong instinct. The two real double-counts found in
+ * this deployment — the Truist gifts and the Pop The Balloon payout — were both
+ * exactly this shape, and both were only distinguishable from an innocent match
+ * by a human who knew what the money was. A filter tight enough to have
+ * excluded the noise would have excluded them too.
+ *
+ * Bounded by `ROLLUP_SCAN_LIMIT` per collection, and `truncated` says so rather
+ * than quietly returning a short list — a partial audit that looks complete is
+ * worse than one that admits its edge.
+ */
+export const bookValueLines = query({
+  args: { scope: financeScopeValidator },
+  returns: v.object({
+    scope: financeScopeValidator,
+    scopeName: v.string(),
+    revenueCents: v.number(),
+    ledgerNetCents: v.number(),
+    bookBalanceCents: v.number(),
+    earned: v.array(
+      v.object({
+        kind: v.union(v.literal("gift"), v.literal("ticket"), v.literal("sale")),
+        id: v.string(),
+        at: v.number(),
+        amountCents: v.number(),
+        label: v.string(),
+        detail: v.string(),
+        /** A gift matched to the bank row its cash arrived on — that row is
+         *  skipped on the ledger side, so the money counts once. */
+        linkedToBankRow: v.boolean(),
+      }),
+    ),
+    ledger: v.array(
+      v.object({
+        id: v.id("transactions"),
+        at: v.number(),
+        /** Signed exactly as it lands in book value. */
+        amountCents: v.number(),
+        description: v.string(),
+        category: v.string(),
+        source: v.string(),
+        status: v.string(),
+      }),
+    ),
+    ignored: v.array(
+      v.object({
+        id: v.id("transactions"),
+        at: v.number(),
+        amountCents: v.number(),
+        description: v.string(),
+        reason: v.string(),
+      }),
+    ),
+    sameAmountSameDay: v.array(
+      v.object({
+        amountCents: v.number(),
+        day: v.string(),
+        members: v.array(v.string()),
+      }),
+    ),
+    truncated: v.boolean(),
+  }),
+  handler: async (ctx, { scope }) => {
+    await requireReconciliationAudit(ctx);
+    const sandboxMode = await readSandbox(ctx);
+
+    let scopeName = "Central";
+    if (scope !== CENTRAL) {
+      const chapter = await ctx.db.get(scope as Id<"chapters">);
+      scopeName = chapter?.name ?? "Unknown book";
+    }
+    let truncated = false;
+    const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+
+    const earned: {
+      kind: "gift" | "ticket" | "sale";
+      id: string;
+      at: number;
+      amountCents: number;
+      label: string;
+      detail: string;
+      linkedToBankRow: boolean;
+    }[] = [];
+
+    const gifts = await ctx.db
+      .query("gifts")
+      .withIndex("by_scope", (q) => q.eq("scope", scope))
+      .take(ROLLUP_SCAN_LIMIT);
+    if (gifts.length === ROLLUP_SCAN_LIMIT) truncated = true;
+    const linkedGiftTxnIds = new Set<string>();
+    // One read for the donor names rather than one per gift.
+    const donorIds = [...new Set(gifts.map((g) => g.donorId))];
+    const donors = await Promise.all(donorIds.map((id) => ctx.db.get(id)));
+    const donorName = new Map<string, string>();
+    for (const d of donors) if (d) donorName.set(d._id as string, d.name);
+
+    let revenueCents = 0;
+    for (const g of gifts) {
+      if (g.transactionId != null) linkedGiftTxnIds.add(g.transactionId);
+      revenueCents += g.amountCents;
+      earned.push({
+        kind: "gift",
+        id: g._id,
+        at: g.receivedAt,
+        amountCents: g.amountCents,
+        label: donorName.get(g.donorId as string) ?? "Unknown donor",
+        detail: [g.method, g.externalRef].filter(Boolean).join(" · "),
+        linkedToBankRow: g.transactionId != null,
+      });
+    }
+
+    if (scope !== CENTRAL) {
+      const salesRows = await ctx.db
+        .query("sales")
+        .withIndex("by_chapter_and_soldAt", (q) => q.eq("chapterId", scope))
+        .take(ROLLUP_SCAN_LIMIT);
+      if (salesRows.length === ROLLUP_SCAN_LIMIT) truncated = true;
+      for (const s of salesRows) {
+        revenueCents += s.grossCents;
+        earned.push({
+          kind: "sale",
+          id: s._id,
+          at: s.soldAt,
+          amountCents: s.grossCents,
+          label:
+            s.items.length > 0
+              ? s.items.map((i) => `${i.quantity}× ${i.label}`).join(" + ")
+              : "Unresolved item",
+          detail: s.stripeChargeId,
+          linkedToBankRow: false,
+        });
+      }
+      const orders = await ctx.db
+        .query("ticketOrders")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", scope as Id<"chapters">))
+        .take(ROLLUP_SCAN_LIMIT);
+      if (orders.length === ROLLUP_SCAN_LIMIT) truncated = true;
+      for (const o of orders) {
+        if (o.status !== "paid") continue;
+        revenueCents += o.totalCents;
+        earned.push({
+          kind: "ticket",
+          id: o._id,
+          at: o.createdAt,
+          amountCents: o.totalCents,
+          label: o.name,
+          detail: o.items
+            .map((i) => `${i.quantity}× ${i.name}`)
+            .join(" + "),
+          linkedToBankRow: false,
+        });
+      }
+    }
+    if (sandboxMode) revenueCents = 0;
+
+    const txns = await ctx.db
+      .query("transactions")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", scope))
+      .take(ROLLUP_SCAN_LIMIT);
+    if (txns.length === ROLLUP_SCAN_LIMIT) truncated = true;
+    const categories = await ctx.db.query("budgetCategories").take(ROLLUP_SCAN_LIMIT);
+    const categoryName = new Map(categories.map((c) => [c._id as string, c.name]));
+
+    const ledger: {
+      id: Id<"transactions">;
+      at: number;
+      amountCents: number;
+      description: string;
+      category: string;
+      source: string;
+      status: string;
+    }[] = [];
+    const ignored: {
+      id: Id<"transactions">;
+      at: number;
+      amountCents: number;
+      description: string;
+      reason: string;
+    }[] = [];
+    let ledgerNetCents = 0;
+
+    for (const tr of txns) {
+      if (!txnMatchesMode(tr, sandboxMode)) continue;
+      const push = (reason: string) =>
+        ignored.push({
+          id: tr._id,
+          at: tr.postedAt,
+          amountCents: tr.amountCents,
+          description: tr.description ?? "",
+          reason,
+        });
+      if (linkedGiftTxnIds.has(tr._id)) {
+        push("Already counted as the gift it belongs to");
+        continue;
+      }
+      if (tr.status === "excluded") {
+        push("Excluded by hand");
+        continue;
+      }
+      if (tr.payoutProcessor != null || tr.stripePayoutId != null) {
+        push(
+          `Processor payout — the revenue is already counted at the gift, ticket or sale`,
+        );
+        continue;
+      }
+      if (tr.transferOrigin === "payout_allocation") {
+        push("Allocation leg — moves money already counted");
+        continue;
+      }
+      const signed = signedBookCents(tr);
+      if (signed === 0) {
+        push("Transfer with no recorded direction — contributes nothing rather than guess");
+        continue;
+      }
+      ledgerNetCents += signed;
+      ledger.push({
+        id: tr._id,
+        at: tr.postedAt,
+        amountCents: signed,
+        description: tr.description ?? "",
+        category: tr.categoryId
+          ? (categoryName.get(tr.categoryId) ?? "Unknown category")
+          : tr.flow === "transfer"
+            ? "Internal transfer"
+            : "Uncategorised",
+        source: tr.source ?? "",
+        status: tr.status,
+      });
+    }
+
+    // ── The wide net ────────────────────────────────────────────────────────
+    const buckets = new Map<string, string[]>();
+    const add = (cents: number, at: number, label: string) => {
+      const key = `${Math.abs(cents)}|${day(at)}`;
+      const arr = buckets.get(key);
+      if (arr) arr.push(label);
+      else buckets.set(key, [label]);
+    };
+    for (const e of earned) add(e.amountCents, e.at, `${e.kind}: ${e.label}`);
+    for (const l of ledger) {
+      add(l.amountCents, l.at, `ledger: ${l.description || "(no description)"}`);
+    }
+    const sameAmountSameDay = [...buckets.entries()]
+      .filter(([, members]) => members.length > 1)
+      .map(([key, members]) => {
+        const [cents, d] = key.split("|");
+        return { amountCents: Number(cents), day: d, members };
+      })
+      .sort((a, b) => b.amountCents - a.amountCents);
+
+    return {
+      scope,
+      scopeName,
+      revenueCents,
+      ledgerNetCents,
+      bookBalanceCents: revenueCents + ledgerNetCents,
+      earned: earned.sort((a, b) => b.at - a.at),
+      ledger: ledger.sort((a, b) => b.at - a.at),
+      ignored: ignored.sort((a, b) => b.at - a.at),
+      sameAmountSameDay,
+      truncated,
+    };
+  },
+});
+
 const historyRowValidator = v.object({
   transferGroupId: v.string(),
   postedAt: v.number(),
