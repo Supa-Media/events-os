@@ -91,11 +91,11 @@ dashboard read queries return and the screens render.
 - **recurringBudgets** (monthly/quarterly/yearly buckets): `[{name, cadence,
   spentCents, budgetCents, pct, status, categories?:[{name, spentCents, barPct}], note?}]`.
 - **recentTransactions**: `[{_id, date, merchant, cardLast4?, spenderName, timeOrNote,
-  codedTo?:{fundOrProject, category}, aiSuggestion?:{fund, category}, amountCents,
-  flow, status:"reconciled"|"needs_accept"|"paid"}]` (Accept button when aiSuggestion + needs_accept).
+  codedTo?:{fundOrProject, category}, amountCents,
+  flow, status:"reconciled"|"needs_accept"|"paid"}]`.
 - **attention**: `[{kind, title, badgeCount, detail, actionLabel}]` — reimbursements
   to approve; cards nearing auto-lock.
-- AI auto-coding banner (static copy).
+
 
 ### Dashboard — MEMBER
 - **card**: `{last4, cardholderName, status, spentThisMonthCents, receiptsDueBadge?}` + virtual-card art.
@@ -119,9 +119,9 @@ dashboard read queries return and the screens render.
 - Header "N to clear"; pills Needs review / Missing receipt / Ready. Two-pane list+detail.
 - list: `[{_id, merchant, date, cardLast4?, spenderOrSource, state:"uncategorized"|
   "receipt_due"|"ready", amountCents}]`.
-- detail: `{merchant, amountCents, meta, receiptState:"none"|"due"|"ok", aiRationale,
-  aiSuggested:{fundOrProject, category, eventLink?}, receiptReminderTimeline}`. Editable
-  Fund/project, Category, Link-to-event selects. Actions Edit · Accept & reconcile.
+- detail: `{merchant, amountCents, meta, receiptState:"none"|"due"|"ok",
+  receiptReminderTimeline}`. Editable Fund/project, Category, Link-to-event
+  selects. Actions Edit · Reconcile.
 - Receipt-reminder timeline: Purchased→reminder · End-of-day flag · Day-3 escalate ·
   Day-7 auto-lock (unlock on upload).
 

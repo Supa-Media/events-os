@@ -45,7 +45,6 @@ import {
   extractAccountActivity,
   type IncreaseTransactionLite,
 } from "./lib/increaseExtract";
-import { queueSuggestionOnIngest } from "./aiCodingData";
 
 /** Resolve the owning scope (chapter or central) from an Increase account id.
  *  Null when the account isn't ours — the caller skips the row. */
@@ -132,7 +131,7 @@ export const applyIncreaseCardTransaction = internalMutation({
     // stays fund-less.
     const fundId = (await defaultFundId(ctx, chapterId)) ?? undefined;
 
-    const txnId = await ctx.db.insert("transactions", {
+    await ctx.db.insert("transactions", {
       chapterId,
       source: "increase_card",
       flow: args.flow,
@@ -151,13 +150,6 @@ export const applyIncreaseCardTransaction = internalMutation({
       status: "unreviewed",
       createdAt: Date.now(),
     });
-    // ON-INGEST HOOK (owner: suggestions generated AS TRANSACTIONS ARRIVE,
-    // not just on the hourly sweep) — fire-and-forget: ONLY schedules a
-    // separate transaction that does the actual eligibility + debounce work
-    // (central-owned / already-coded txns no-op there), so neither a throw
-    // nor debounce-mutex contention can ever roll back this money insert.
-    // See `aiCodingData.queueSuggestionOnIngest`'s doc comment.
-    await queueSuggestionOnIngest(ctx, txnId);
     return { inserted: true, skipped: false };
   },
 });
@@ -284,7 +276,7 @@ export const applyIncreaseAccountTransaction = internalMutation({
     // no funds → stays fund-less there).
     const fundId = (await defaultFundId(ctx, chapterId)) ?? undefined;
 
-    const txnId = await ctx.db.insert("transactions", {
+    await ctx.db.insert("transactions", {
       chapterId,
       source: "increase_ach",
       flow: args.flow,
@@ -300,8 +292,6 @@ export const applyIncreaseAccountTransaction = internalMutation({
       status: "unreviewed",
       createdAt: Date.now(),
     });
-    // Same fire-and-forget AI-coding hook as the card lane (see its comment).
-    await queueSuggestionOnIngest(ctx, txnId);
     return { inserted: true, skipped: false };
   },
 });

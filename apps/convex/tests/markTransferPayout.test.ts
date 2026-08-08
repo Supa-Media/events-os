@@ -381,12 +381,24 @@ describe("finances.markAsTransfer", () => {
 
     // Before this feature the outflow leg would have vanished from the chase
     // the instant it stopped being spend, and the inflow leg was never in it.
-    const counts = (
-      await s.as.query(api.finances.listReconcile, { filter: "all" })
-    ).counts;
-    expect(counts.missing_receipt).toBe(2);
+    //
+    // THE CHASE IS THE SURFACE THAT OWNS THIS CONSTRAINT, so it's what gets
+    // asserted. Reconcile no longer lists transfer legs by default — nothing to
+    // code, nothing to close — which means its `missing_receipt` FACET goes
+    // quiet here (a facet count promises rows the queue would show, and it
+    // would show none). That is a change of venue, not of obligation: both legs
+    // still return true from `needsDocumentation`, both still appear on the
+    // chase page, and `chaseCount` — what the "Chase receipts" button is gated
+    // on — still counts them, so the route to them stays open.
+    const res = await s.as.query(api.finances.listReconcile, { filter: "all" });
+    expect(res.counts.missing_receipt).toBe(0);
+    expect(res.chaseCount).toBe(2);
+
     const chase = await s.as.query(api.finances.receiptChase, {});
     expect(chase.count).toBe(2);
+    expect(chase.groups.flatMap((g) => g.transactions.map((c) => c.id)).sort()).toEqual(
+      [out, inn].sort(),
+    );
   });
 
   test("requires two DIFFERENT rows", async () => {
@@ -566,8 +578,16 @@ describe("finances.unmarkTransfer", () => {
     const counts = (
       await s.as.query(api.finances.listReconcile, { filter: "all" })
     ).counts;
-    expect(counts.transfers).toBe(0);
+    // They DO fall under Kind → Transfers — that key means "an internal
+    // transfer leg", not "a leg someone marked", and it's the only way back to
+    // rows the default queue now hides. What "not markable, not chased" pins is
+    // the two lines below it: `isMarkedTransfer` is still false for them (so
+    // `unmarkTransfer` refuses, asserted above) and they owe no documentation.
+    expect(counts.transfers).toBe(4);
     expect(counts.missing_receipt).toBe(0);
+    // And they're out of the default queue entirely: nothing to code, nothing
+    // to document, nothing to close.
+    expect(counts.all).toBe(0);
   });
 });
 

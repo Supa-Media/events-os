@@ -2247,6 +2247,10 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
   // alongside it — a not-yet-approved or absent budget's spend now surfaces
   // in the "Needs Budget" bucket instead, resolved by sending that budget for
   // review (previous lesson), not by picking it into existence.
+  //
+  // The AI-suggestion caveat this lesson used to carry ("a suggestion is not a
+  // link") was removed with the feature itself — a graded quiz answer that
+  // describes a screen the learner will never see is worse than no caveat.
   {
     slug: "finance-one-home-per-dollar",
     title: "One home per dollar",
@@ -2255,14 +2259,14 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Attribution in this system is explicit-only, everywhere: a transaction counts toward a budget the moment a person — or an accepted AI suggestion — deliberately links it there. Nothing is coded automatically; no charge quietly lands on the nearest-looking budget just because the dates or amounts happen to line up.",
+        text: "Attribution in this system is explicit-only, everywhere: a transaction counts toward a budget the moment a person deliberately links it there. Nothing is coded automatically; no charge quietly lands on the nearest-looking budget just because the dates or amounts happen to line up.",
       },
       {
         kind: "bullets",
         items: [
           "**Unattributed is the honest name for \"not yet claimed.\"** Every charge without an explicit link sits in the Needs Budget bucket, in plain sight on the dashboard — a number the whole chapter works to drive to zero, never one to quietly bury.",
           "**Only an approved budget can take a charge.** The \"For\" picker — grouped Events / Projects / Recurring — only ever offers budgets that have actually cleared review (the budget lifecycle, previous lesson). A Draft or Awaiting-approval budget can't receive a link yet, on purpose.",
-          "**An AI suggestion is a suggestion, not a link.** The assistant can propose a likely match for a charge, but nothing attributes until a person taps to accept it — same explicit-only rule, just with a head start.",
+          "**Nothing codes a charge but a person.** The \"For\" picker ranks the likely homes for a charge so the right one is usually first, but ranking is only ordering — a link exists because someone chose it.",
         ],
       },
       {
@@ -2283,13 +2287,13 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt: "How does a transaction end up counted toward a budget?",
         options: [
           "The system infers the closest match automatically",
-          "A person — or an accepted AI suggestion — explicitly links it; nothing is inferred automatically",
+          "A person explicitly links it; nothing is inferred automatically",
           "Any charge in the same category counts by default",
           "The Treasurer assigns it at month-end",
         ],
         answerIndex: 1,
         explanation:
-          "Explicit-only attribution means a link only exists because a human made it real — even an AI's suggestion needs a tap to count.",
+          "Explicit-only attribution means a link only exists because a human made it real. The picker can rank the likely homes; it never picks one.",
       },
       {
         prompt: "What does the Needs Budget bucket mean?",

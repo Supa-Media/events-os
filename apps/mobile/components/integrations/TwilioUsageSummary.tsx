@@ -1,6 +1,6 @@
 /**
  * "SMS usage" — the Twilio spend rollup for Profile → Integrations, the SMS
- * analog of `AiUsageSection.tsx` (finance's "AI usage" panel). Backed by
+ * analog of the retired finance "AI usage" panel. Backed by
  * `api.smsUsage.getSmsSpendSummary`, which soft-gates (superuser or central
  * ED/FM; anyone else gets null, never a throw) so this panel renders nothing
  * for unauthorized viewers instead of crashing the integrations screen.
@@ -9,7 +9,7 @@
  *
  * Deliberately compact: current-month total + blast/verification split, a
  * one-line previous-month comparison, and a short per-chapter list — no new
- * screen, no charts, matching `AiUsageSection`'s idiom.
+ * screen, no charts.
  */
 import { Text, View } from "react-native";
 import { useQuery } from "convex/react";

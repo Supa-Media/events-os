@@ -17,7 +17,7 @@
  *
  * NOTE: no `"use node"` — `fetch` works in the default Convex runtime, and this
  * module is imported by `receiptInbox.ts` (which also exports queries/mutations,
- * so it can't be a node file). Node-runtime callers (`aiCoding.ts`,
+ * so it can't be a node file). Node-runtime callers (
  * `aiActions.ts`) import it fine.
  */
 import {

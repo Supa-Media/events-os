@@ -495,8 +495,9 @@ export function documentationState(
 // documentation state. See `docs/plans/transaction-coding.md`.
 //
 // NO AI ANYWHERE IN THIS FLOW (owner decision, 2026-08-08): every field is the
-// spender's own words. The reviewer-side `transactions.aiSuggestion` hints for
-// budget/category are a different feature and never write into a coding.
+// spender's own words. The reviewer-side AI budget/category hints that used to
+// sit beside this in Reconcile were a different feature, never wrote into a
+// coding, and have since been removed outright.
 
 /** Which substantiation fields a coding must carry. NOT a category taxonomy —
  *  funds/categories/budgets own that; this exists ONLY to drive the §274(d)

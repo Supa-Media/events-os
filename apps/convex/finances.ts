@@ -88,7 +88,6 @@ import {
   unlockCardIfReceiptsResolved,
   convertChargeToPersonalRepayment,
 } from "./cards";
-import { queueSuggestionOnIngest } from "./aiCodingData";
 import { createReceipt, linkReceiptToTransaction } from "./lib/receiptLinks";
 import { logFinanceAudit } from "./lib/financeAuditLog";
 import {
@@ -361,24 +360,6 @@ const cardholderRef = v.object({
   imageUrl: v.union(v.string(), v.null()),
 });
 
-// The AI auto-coding proposal, resolved to display names — only ever populated
-// (non-null) for a row that's still `isSuggestible` (unreviewed, OR
-// categorized but still `needsBudget` — PR fix-suggest-broaden) AND carries at
-// least one proposed link, so the Reconcile grid only ever shows an
-// actionable suggestion. WP-U (one home per dollar): the model proposes a
-// BUDGET directly instead of a separate project/event link — `budgetId`
-// subsumes both.
-const reconcileAiSuggestion = v.object({
-  fundId: v.union(v.id("funds"), v.null()),
-  categoryId: v.union(v.id("budgetCategories"), v.null()),
-  budgetId: v.union(v.id("budgets"), v.null()),
-  fundName: v.union(v.string(), v.null()),
-  categoryName: v.union(v.string(), v.null()),
-  budgetName: v.union(v.string(), v.null()),
-  confidence: v.union(v.number(), v.null()),
-  rationale: v.union(v.string(), v.null()),
-});
-
 // ── Books (the central/chapter split, made visible) ──────────────────────────
 // Central and each chapter keep SEPARATE BOOKS. They're separate OPERATING
 // entities under one legal entity, so merging them into one queue is a workflow
@@ -432,7 +413,6 @@ const reconcileRow = v.object({
     pendingReason: v.union(v.string(), v.null()),
   }),
   cardholder: v.union(cardholderRef, v.null()),
-  aiSuggestion: v.union(reconcileAiSuggestion, v.null()),
   // Which book PAID for this charge — custody, i.e. whose card/account the
   // money actually left (see `reconcileBook`). Always populated, in every
   // scope: a single-book queue still labels its rows, so a screenshot of the
@@ -687,9 +667,6 @@ const recentTxnCard = v.object({
       }),
       v.null(),
     ),
-  ),
-  aiSuggestion: v.optional(
-    v.union(v.object({ category: v.string() }), v.null()),
   ),
   amountCents: v.number(),
   flow: flowValidator,
@@ -1216,10 +1193,7 @@ export function isSpend(tr: Doc<"transactions">): boolean {
 }
 
 /** True iff a spend transaction still needs a budget attached — the
- *  Reconcile "needs budget" soft-attribution signal (never a hard block).
- *  Exported so `aiCodingData.ts` can gate AI-suggestion eligibility off the
- *  EXACT same predicate the grid's own `needs_budget` filter/badge use
- *  (single source of truth — see `isSuggestible` below). */
+ *  Reconcile "needs budget" soft-attribution signal (never a hard block). */
 export function needsBudget(tr: Doc<"transactions">): boolean {
   return isSpend(tr) && tr.budgetId == null;
 }
@@ -1343,24 +1317,6 @@ export function isUncoded(tr: Doc<"transactions">, sinceMs: number): boolean {
   // legacy/direct writes — visible to an audit, not to the nag.
   if (tr.status === "reconciled") return false;
   return tr.codingState == null || tr.codingState === "changes_requested";
-}
-
-/**
- * True iff a transaction is a candidate for an AI coding suggestion (the
- * Reconcile grid's per-row "Suggest" button, the on-demand `suggestCoding`
- * gate, and the on-ingest/hourly sweep all share this ONE predicate — PR
- * fix-suggest-broaden). A row qualifies either:
- *  - it's still `unreviewed` (never reviewed at all — the original rule), OR
- *  - it's `categorized` but STILL `needsBudget` (a human coded the category
- *    but the row never got a budget attached — the majority of the
- *    "Needs budget" backlog the owner reported this button was missing on).
- * `reconciled` (treasurer-closed) and `excluded`/personal/non-spend rows are
- * never suggestible, regardless of budget state — they fall outside both
- * branches above by construction.
- */
-export function isSuggestible(tr: Doc<"transactions">): boolean {
-  if (tr.status === "unreviewed") return true;
-  return tr.status === "categorized" && needsBudget(tr);
 }
 
 // ── Period helpers (Eastern-time bucketing) ──────────────────────────────────
@@ -3201,12 +3157,6 @@ export const dashboardChapter = query({
               scopeRefId: recentScopeRefId,
             }
           : null;
-      const ai =
-        tr.aiSuggestion && tr.aiSuggestion.categoryId
-          ? {
-              category: catName.get(tr.aiSuggestion.categoryId) ?? "",
-            }
-          : null;
       // Mirrors `resolveCardholder` (Reconcile): a reassigned central card
       // charge has its `personId` cleared (chapter-scoped link) but keeps its
       // `cardId` (provenance is never touched by reassignment) — fall back to
@@ -3227,7 +3177,6 @@ export const dashboardChapter = query({
         spenderName,
         timeOrNote: tr.description ?? null,
         codedTo,
-        aiSuggestion: ai,
         amountCents: tr.amountCents,
         flow: tr.flow,
         status: tr.status,
@@ -7790,16 +7739,6 @@ const fundMergeResult = v.object({
  * `reimbursementLineItems`; `legacyAccounts.defaultFundId`), then deletes the
  * now-empty extra fund docs.
  *
- * Also fixes a stale `transactions.aiSuggestion.fundId` pointing at the extra
- * fund, via TWO passes: the `by_fund`-indexed transactions scan above repoints
- * a suggestion in the same patch as a coded txn's top-level `fundId`; a
- * second, cached chapter-wide scan (reusing the same pattern as `budgets`/
- * `reimbursementLineItems`) catches an UNCODED txn — top-level `fundId` unset
- * — whose stored suggestion still points at the extra fund, which the
- * `by_fund` index alone would miss. Left uncaught, that dangling suggestion
- * id would survive the fund's deletion below and could later be copied onto
- * the transaction by `acceptSuggestion`.
- *
  * A chapter with 0 or 1 funds is a no-op (nothing to merge) — this is what
  * makes a re-run of the whole migration idempotent.
  */
@@ -7854,12 +7793,6 @@ async function runMergeFundsIntoGeneralForChapter(
     .query("legacyAccounts")
     .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
     .take(ROLLUP_SCAN_LIMIT);
-  // Chapter-wide, so it also catches a dangling `aiSuggestion.fundId` on an
-  // uncoded txn (top-level `fundId` unset) — see the docstring above.
-  const chapterTransactions = await ctx.db
-    .query("transactions")
-    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-    .take(ROLLUP_SCAN_LIMIT);
 
   for (const extra of extras) {
     // budgetCategories.fundId is REQUIRED — a dangling reference here would
@@ -7885,29 +7818,8 @@ async function runMergeFundsIntoGeneralForChapter(
       .withIndex("by_fund", (q) => q.eq("fundId", extra._id))
       .take(ROLLUP_SCAN_LIMIT);
     for (const tr of transactions) {
-      await ctx.db.patch(tr._id, {
-        fundId: keeperId,
-        // Fix a stale AI suggestion on the SAME row while we're already here.
-        ...(tr.aiSuggestion?.fundId === extra._id
-          ? { aiSuggestion: { ...tr.aiSuggestion, fundId: keeperId } }
-          : {}),
-      });
+      await ctx.db.patch(tr._id, { fundId: keeperId });
       transactionsRepointed++;
-    }
-
-    // The `by_fund` scan above only finds txns whose TOP-LEVEL fundId is the
-    // extra fund. An uncoded txn (no top-level fundId) whose stored AI
-    // suggestion picked the extra fund would otherwise escape — repoint its
-    // suggestion too, from the cached chapter-wide scan. Skip rows already
-    // handled above (top-level fundId === extra) to avoid a double count.
-    for (const tr of chapterTransactions) {
-      if (tr.fundId === extra._id) continue;
-      if (tr.aiSuggestion?.fundId === extra._id) {
-        await ctx.db.patch(tr._id, {
-          aiSuggestion: { ...tr.aiSuggestion, fundId: keeperId },
-        });
-        transactionsRepointed++;
-      }
     }
 
     for (const l of chapterLines) {
@@ -8075,8 +7987,15 @@ export const listTransactions = query({
  *     can honestly be published. See `docs/plans/receipt-exceptions.md`.
  *   - `to_review`      status `unreviewed`
  *   - `reconciled`     status `reconciled`
- *   - `transfers`      an internal bank transfer marked via `markAsTransfer`
- *   - `payouts`        a processor settlement deposit marked via `markAsPayout`
+ *   - `transfers`      any internal transfer leg (`flow:"transfer"`) — the ones
+ *     a bookkeeper marked via `markAsTransfer` AND the ones the app booked
+ *     itself. This key is also the queue's one INCLUSION filter: an unmarked
+ *     leg is hidden from the default view because it owes no coding, no
+ *     receipt and no close, and picking Transfers is how you reach it again.
+ *     See `isHiddenTransferLeg` in the handler for the full reasoning.
+ *   - `payouts`        a processor settlement deposit marked via `markAsPayout`.
+ *     Deliberately NOT hidden alongside transfers: a payout is outside money
+ *     arriving and the org's only record of that revenue, so it earns a look.
  *
  * Kept to a SINGLE bounded scan over `by_chapter_and_postedAt`: that one desc
  * read yields both the newest-first ordering the grid wants AND every pill's
@@ -8140,6 +8059,11 @@ export const listReconcile = query({
     // Separate from `counts` because those are facet counts now (see the
     // handler); this one deliberately ignores the active selection.
     toClearCount: v.number(),
+    // Rows in scope that owe a receipt or a coding — `receiptChase`'s exact
+    // population. Also selection-independent, and the gate for the "Chase
+    // receipts" entry point; see the handler for why the `missing_receipt`
+    // facet can no longer serve that purpose.
+    chaseCount: v.number(),
     // The caller's OWN roster person id (home-chapter scoped, `null` for a
     // superuser with no roster row) — founder feedback review: lets the grid
     // widen "Mark personal" to a cardholder viewing their OWN charge, not
@@ -8193,6 +8117,7 @@ export const listReconcile = query({
         rows: [],
         counts: zero,
         toClearCount: 0,
+        chaseCount: 0,
         viewerPersonId: null,
         viewerIsManager: false,
       };
@@ -8322,7 +8247,17 @@ export const listReconcile = query({
     const { sinceMs: codingSinceMs } = await codingPolicy(ctx);
     const flagsFor = (tr: Doc<"transactions">): Record<ReconcileFilterKey, boolean> => ({
       spend: isSpend(tr),
-      transfers: isMarkedTransfer(tr),
+      // EVERY internal transfer leg, not just the MARKED ones. This used to be
+      // `isMarkedTransfer`, which left the app-created legs (a
+      // `transfers.recordTransfer` pair, a reimbursement/repayment leg, the
+      // reconciliation engine's allocation legs, the retired skim/launch_grant/
+      // settlement kinds still on prod) matchable by no key at all. That was
+      // survivable while they sat in the default queue; it isn't now that the
+      // queue hides them (see `isHiddenTransferLeg` below), because Kind →
+      // Transfers is what brings them back. `isMarkedTransfer` still decides
+      // what a row OWES (`needsDocumentation`) and whether Un-mark is offered —
+      // widening the FILTER doesn't widen either of those.
+      transfers: tr.flow === "transfer",
       payouts: isProcessorPayout(tr),
       to_review: tr.status === "unreviewed",
       needs_budget: needsBudget(tr),
@@ -8352,7 +8287,42 @@ export const listReconcile = query({
     // dropdown stay comparable while still reflecting what's narrowed
     // elsewhere. With nothing selected these equal the old global counts
     // exactly.
-    const counts = { ...zero, all: all.length };
+    // INTERNAL TRANSFER LEGS ARE NOT QUEUE WORK. Reconcile asks three things of
+    // a row — code it, confirm its documentation, close it — and a
+    // `flow:"transfer"` leg answers none of them. It's one half of a matched
+    // PAIR sharing a `transferGroupId`, with a `note` spelling out the
+    // arithmetic; it takes no category and no budget, so there is nothing to
+    // code. It's the org moving money between its own books, and it sat in this
+    // queue as volume the treasurer could only ever scroll past (owner,
+    // 2026-08, pointing at both a hand-marked balance transfer and the
+    // engine's own "Auto: settlement of cross-book card spend" legs).
+    //
+    // MARKED legs are hidden too, and that is safe — the point deserves stating
+    // because it looks like it contradicts `needsDocumentation`'s founder rule
+    // ("marking a row must never be a way to make it stop being chased"). It
+    // doesn't. THE RECEIPT CHASE IS A SEPARATE SURFACE: `receiptChase` runs its
+    // own scan and its own `needsDocumentation(tr) || chargeOutstanding(...)`
+    // union, with no reference to this list or its filters, and it's where a
+    // cardholder-less row (a bank transfer, a processor deposit) is chased with
+    // a statement rather than a person. So a marked transfer hidden from HERE
+    // still owes its receipt, still returns true from `needsDocumentation`, and
+    // still appears on the treasurer's chase page. Marking still changes
+    // nothing about what a row owes — only where it is listed. Neither
+    // `needsDocumentation` nor `isMarkedTransfer` is touched by any of this.
+    //
+    // Hidden, not gone: Kind → Transfers lifts the exclusion, and the hidden
+    // rows still feed that key's facet count below, so the number beside it is a
+    // number you can get to.
+    const isHiddenTransferLeg = (tr: Doc<"transactions">): boolean =>
+      tr.flow === "transfer";
+    const transfersRequested = activeFilters.includes("transfers");
+
+    // `counts.all` is the DEFAULT queue's size, not the raw scan's — counting
+    // rows the grid refuses to show would put a total in the header that no
+    // amount of scrolling reaches. It's accumulated in the loop rather than
+    // taken from `all.length` for that reason, and it stays unmoved by the
+    // selection (hidden legs never join it, even when Transfers is picked).
+    const counts = { ...zero };
     const selected: Doc<"transactions">[] = [];
     // The header's "N to clear" — everything in SCOPE that isn't reconciled.
     // It can't be derived from `counts` anymore: `counts.all` is the scope
@@ -8361,8 +8331,36 @@ export const listReconcile = query({
     // drift as filters change. The backlog headline has to be stable, so it's
     // counted here directly, ignoring the selection entirely.
     let toClearCount = 0;
+    // How many rows in scope owe a receipt or a coding — deliberately counted
+    // over EVERY row including the hidden transfer legs, and ignoring the
+    // selection. This is `receiptChase`'s own population, expression for
+    // expression, and it exists because the "Chase receipts" button used to be
+    // gated on `counts.missing_receipt`: a facet count that (a) narrows with the
+    // selection and (b) no longer sees a marked transfer, since the queue hides
+    // it. A book whose only receipt-owing rows are marked transfers would have
+    // lost its only route to a chase page that still lists them.
+    let chaseCount = 0;
     for (const tr of all) {
       const flags = flagsFor(tr);
+      if (needsDocumentation(tr) || chargeOutstanding(tr, codingSinceMs) != null) {
+        chaseCount += 1;
+      }
+      if (isHiddenTransferLeg(tr)) {
+        // A hidden leg contributes exactly ONE thing to the unfiltered view:
+        // the `transfers` facet count, so the dropdown can advertise the rows
+        // it's holding back. It stays out of `counts.all`, out of
+        // `toClearCount` (nothing to clear), and out of every other facet —
+        // "To review 1" or "Needs documentation 1" beside a queue that renders
+        // zero rows is the dead number this whole area exists to prevent. What
+        // a hidden row still OWES is unaffected and is counted by `chaseCount`
+        // above, which is what the chase page and its button read.
+        if (countsTowardFacet(flags, activeFilters, "transfers")) counts.transfers += 1;
+        if (transfersRequested && matchesReconcileFilters(flags, activeFilters)) {
+          selected.push(tr);
+        }
+        continue;
+      }
+      counts.all += 1;
       if (!flags.reconciled) toClearCount += 1;
       if (matchesReconcileFilters(flags, activeFilters)) selected.push(tr);
       for (const key of RECONCILE_FILTER_KEYS) {
@@ -8374,9 +8372,6 @@ export const listReconcile = query({
     // `storage.getUrl` calls), caching people / cards / image urls across rows
     // (`makeCardholderResolver` — shared with the `receiptChase` view).
     const resolveCardholder = makeCardholderResolver(ctx);
-    // Same read-through caching for the AI suggestion's resolved display names.
-    const getFund = nameCache(ctx, "funds");
-    const getCategory = nameCache(ctx, "budgetCategories");
     // The linked personal repayment's live status (`repaymentId` →
     // `personalRepayments.status`) — the grid's Personal badge reads "Repaid"
     // once it settles. Every returned row is a member of `all`
@@ -8386,35 +8381,9 @@ export const listReconcile = query({
     const resolveRepaymentStatus = async (tr: Doc<"transactions">) =>
       tr.isPersonal === true ? (repaymentStatusByTxnId.get(tr._id) ?? null) : null;
 
-    // The AI suggestion, resolved to display names — only for a still-
-    // `isSuggestible` row (unreviewed, OR categorized but still needsBudget —
-    // PR fix-suggest-broaden, same predicate the per-row "Suggest" button and
-    // the sweep gate off) whose proposal actually carries at least one link (a
-    // confidence/rationale-only proposal has nothing actionable to show or
-    // Accept). WP-U: the model proposes a BUDGET directly (one home per
-    // dollar) — `ai.projectId`/`ai.eventId` are dead schema-only fields
-    // nothing writes anymore (see `aiCodingData.writeSuggestion`).
+    // Read-through cache for the linked budget's display name (see
+    // `reconcileRow.chargedTo` below).
     const getBudget = nameCache(ctx, "budgets");
-    const resolveAiSuggestion = async (tr: Doc<"transactions">) => {
-      const ai = tr.aiSuggestion;
-      if (!isSuggestible(tr) || !ai) return null;
-      if (!ai.fundId && !ai.categoryId && !ai.budgetId) return null;
-      const [fund, category, budget] = await Promise.all([
-        ai.fundId ? getFund(ai.fundId) : null,
-        ai.categoryId ? getCategory(ai.categoryId) : null,
-        ai.budgetId ? getBudget(ai.budgetId) : null,
-      ]);
-      return {
-        fundId: ai.fundId ?? null,
-        categoryId: ai.categoryId ?? null,
-        budgetId: ai.budgetId ?? null,
-        fundName: fund?.name ?? null,
-        categoryName: category?.name ?? null,
-        budgetName: budget ? budgetDisplayName(budget) : null,
-        confidence: ai.confidence ?? null,
-        rationale: ai.rationale ?? null,
-      };
-    };
 
     // Which book a row COUNTS AGAINST — the linked budget's owner (see
     // `reconcileRow.chargedTo`). Resolved through the same `getBudget` cache
@@ -8481,7 +8450,6 @@ export const listReconcile = query({
         }),
         documentation: await resolveDocumentation(tr),
         cardholder: await resolveCardholder(tr),
-        aiSuggestion: await resolveAiSuggestion(tr),
         book: bookOf(tr),
         chargedTo: await resolveChargedTo(tr),
         repaymentStatus: await resolveRepaymentStatus(tr),
@@ -8502,6 +8470,7 @@ export const listReconcile = query({
       rows,
       counts,
       toClearCount,
+      chaseCount,
       viewerPersonId: viewer?._id ?? null,
       viewerIsManager: access.isManager,
     };
@@ -8567,6 +8536,14 @@ const chaseGroup = v.object({
  * "Unattributed" group — pinned last, which is the right priority: the
  * treasurer owes those a statement or settlement report, not a person owing a
  * receipt for a card charge.
+ *
+ * THIS IS WHY THE RECONCILE QUEUE CAN HIDE A MARKED TRANSFER. `listReconcile`
+ * drops every `flow:"transfer"` leg from its default view — there's nothing to
+ * code on one and nothing to close. That is purely a question of where a row is
+ * LISTED: this query is a separate surface with its own scan and its own
+ * predicate union, so a marked transfer hidden there still owes its receipt,
+ * still returns true from `needsDocumentation`, and still shows up right here.
+ * Marking a row remains no way to stop it being chased.
  *
  * `scope`/`chapterId` mirror `listReconcile`'s args and resolution byte for
  * byte (central desk / central drill-down / caller's own chapter, same authz
@@ -9102,13 +9079,6 @@ export const createManualTransaction = mutation({
       createdAt: Date.now(),
     });
     await logManualCreate(chapterId, txnId, access.personId);
-    // ON-INGEST HOOK — fire-and-forget: ONLY schedules a separate transaction
-    // that does the actual eligibility + debounce work (a manual entry
-    // submitted already coded — `status` above is already `"categorized"` —
-    // no-ops there), so neither a throw nor debounce-mutex contention can
-    // ever roll back this money insert. See
-    // `aiCodingData.queueSuggestionOnIngest`'s doc comment.
-    await queueSuggestionOnIngest(ctx, txnId);
     return txnId;
   },
 });
@@ -9230,9 +9200,6 @@ export const categorizeTransaction = mutation({
       (patch.categoryId ?? txn.categoryId) ||
       (scope === CENTRAL && args.budgetId != null);
     if (nowCoded && txn.status === "unreviewed") patch.status = "categorized";
-    // A human just categorized this manually — clear any stored AI suggestion
-    // so it can never later resurface via `acceptSuggestion` and clobber this.
-    patch.aiSuggestion = undefined;
     await ctx.db.patch(args.transactionId, patch);
     // financeAuditLog (recode) — see `logRecodeAudit`'s own doc comment; only
     // logs the attribution fields the CALLER explicitly touched, never the
@@ -9317,9 +9284,6 @@ export const bulkCategorize = mutation({
         (patch.categoryId ?? txn.categoryId) ||
         (scope === CENTRAL && args.budgetId != null);
       if (nowCoded && txn.status === "unreviewed") patch.status = "categorized";
-      // A human just categorized this manually — clear any stored AI suggestion
-      // so it can never later resurface via `acceptSuggestion` and clobber this.
-      patch.aiSuggestion = undefined;
       await ctx.db.patch(id, patch);
       // financeAuditLog (recode) — same rule `categorizeTransaction` documents
       // (one row per explicitly-touched attribution field, never the silent
@@ -9403,12 +9367,8 @@ export const setTransactionStatus = mutation({
         });
       }
     }
-    // A human just acted on this transaction's status manually — clear any
-    // stored AI suggestion so it can never later resurface via
-    // `acceptSuggestion` and clobber whatever state this call put it in.
     await ctx.db.patch(args.transactionId, {
       status: args.status,
-      aiSuggestion: undefined,
       // A manager just resolved this txn — the receipt-reminder timeline is
       // moot from here on, so clear it too (mirrors `attachReceipt`'s clear).
       // Otherwise the "Day 3 overdue" badge keeps rendering forever on a row
@@ -10644,9 +10604,6 @@ export const setTransactionCategory = mutation({
     // Advance unreviewed -> categorized the same way `categorizeTransaction`
     // does when a category makes the txn "coded".
     if (args.categoryId && txn.status === "unreviewed") patch.status = "categorized";
-    // A human just categorized this manually — clear any stored AI suggestion,
-    // mirrors `categorizeTransaction`'s own rule.
-    patch.aiSuggestion = undefined;
     await ctx.db.patch(args.transactionId, patch);
     // financeAuditLog (recode) — shares `categorizeTransaction`'s helper so
     // both attribution-change paths log identically; this mutation only ever
@@ -10749,7 +10706,6 @@ export const submitOwnCharge = mutation({
       categoryId?: Id<"budgetCategories">;
       note?: string;
       status?: "categorized";
-      aiSuggestion?: undefined;
     } = {};
     if (args.categoryId !== undefined) {
       if (args.categoryId) {
@@ -10766,10 +10722,6 @@ export const submitOwnCharge = mutation({
       } else {
         patch.categoryId = undefined; // clear
       }
-      // A human just coded this manually — clear any stored AI suggestion so it
-      // can't later resurface via `acceptSuggestion` and clobber it (mirrors
-      // `categorizeTransaction`/`setTransactionCategory`).
-      patch.aiSuggestion = undefined;
     }
     if (args.note !== undefined) {
       const trimmed = args.note?.trim() || null;

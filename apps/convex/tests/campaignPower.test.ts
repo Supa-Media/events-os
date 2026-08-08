@@ -428,7 +428,7 @@ describe("campaigns.design — the desk's bottom rung", () => {
     // Image library — the write path a designer lives in.
     // `ctx.storage.store` exists on convex-test's writer but not on the
     // generated `StorageWriter` type — the cast `campaignTemplates.test.ts`
-    // and `aiCoding.test.ts` already use.
+    // already uses.
     const storageId = (await run(s.t, (ctx) =>
       (ctx.storage as unknown as { store: (b: Blob) => Promise<Id<"_storage">> }).store(
         new Blob(["png"], { type: "image/png" }),

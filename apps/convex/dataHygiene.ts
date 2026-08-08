@@ -50,7 +50,6 @@
  *   rsvps.personId ............... idx by_person
  *   formSubmissions.personId .... idx by_person
  *   personAudit.personId ........ idx by_person
- *   aiUsageEvents.cardholderPersonId ..... scan by_chapter_and_time (+central)
  *   songs.createdBy ............. scan by_chapter
  *   docs.createdBy .............. scan by_chapter
  *   responsibilities.assigneePersonIds[] . scan by_chapter (id array)
@@ -466,11 +465,6 @@ async function repointPersonRefs(
   await repointScan(ctx, counts, "budgets", budgets, dup, surv, ["approvedByPersonId", "submittedByPersonId"]);
   const financeRolesRows = [...(await byChapter("financeRoles")), ...(await centralRows(ctx, "financeRoles"))];
   await repointScan(ctx, counts, "financeRoles", financeRolesRows, dup, surv, ["grantedByPersonId"]);
-  const aiUsageRows = [
-    ...((await (ctx.db.query("aiUsageEvents") as any).withIndex("by_chapter_and_time", (q: any) => q.eq("chapterId", chapterId)).take(SCAN_CAP)) as any[]),
-    ...((await (ctx.db.query("aiUsageEvents") as any).withIndex("by_chapter_and_time", (q: any) => q.eq("chapterId", "central")).take(SCAN_CAP)) as any[]),
-  ];
-  await repointScan(ctx, counts, "aiUsageEvents", aiUsageRows, dup, surv, ["cardholderPersonId"]);
 
   // donors.personId / ownerPersonId — scan the chapter's donors and central's.
   const donorRows = [

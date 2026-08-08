@@ -574,6 +574,14 @@ function ReconcileGrid() {
   // that subtraction would mix two populations and make the backlog headline
   // drift every time a filter changed.
   const toClear = reconcile?.toClearCount ?? 0;
+  // Whether the chase page has anything on it — server-computed over EVERY row
+  // in scope, selection included and transfer legs included. This used to read
+  // `counts.missing_receipt`, which is a facet count: it narrows with the
+  // active filters, and it no longer sees a marked transfer now that the queue
+  // hides transfer legs. Either would take the button away while
+  // `receiptChase` still had rows to show — and this button is the only route
+  // to that page.
+  const chaseCount = reconcile?.chaseCount ?? 0;
 
   const bulkIds = selectedInView as Id<"transactions">[];
 
@@ -877,7 +885,7 @@ function ReconcileGrid() {
                   : `${toClear} to clear`}
               </Text>
             </View>
-            {counts && counts.missing_receipt > 0 ? (
+            {chaseCount > 0 ? (
               <Button
                 title="Chase receipts"
                 variant="ghost"
@@ -999,7 +1007,7 @@ function ReconcileGrid() {
               />
             ))}
             <InfoTooltip
-              text="Spend: every dollar that counts as actual spend. Needs budget: categorized but no budget linked. Needs documentation: no receipt and no acknowledged reason there isn't one. Undocumented: the same, but counting rows already marked Reconciled too — the backlog to clear before publishing. To review: still Unreviewed — nobody has touched it. Reconciled: already cleared. Personal (unpaid): flagged personal, not yet repaid."
+              text="Spend: every dollar that counts as actual spend. Transfers: money moving between your own books — hidden from this queue by default, since a transfer owes no coding, no receipt and no close; pick it to see them. Needs budget: categorized but no budget linked. Needs documentation: no receipt and no acknowledged reason there isn't one. Undocumented: the same, but counting rows already marked Reconciled too — the backlog to clear before publishing. To review: still Unreviewed — nobody has touched it. Reconciled: already cleared. Personal (unpaid): flagged personal, not yet repaid."
               size={14}
             />
           </View>

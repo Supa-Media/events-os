@@ -16,7 +16,7 @@ import { createReceipt } from "../lib/receiptLinks";
  * attempt instead of recording it as a permanent failure.
  *
  * No test ever calls OpenRouter for real — a 429 is simulated via a stubbed
- * global `fetch` (mirrors `aiCoding.test.ts`); the "permanent failure" tests
+ * global `fetch`; the "permanent failure" tests
  * instead lean on the deterministic `no_key` degrade path (no
  * `OPENROUTER_API_KEY` set), which needs no fetch mock at all.
  */
@@ -105,7 +105,7 @@ async function scheduledJobs(
 }
 
 /** Stub OpenRouter's chat-completions endpoint to always return a 429 with
- *  the given `Retry-After` header (seconds). Mirrors `aiCoding.test.ts`'s
+ *  the given `Retry-After` header (seconds). Mirrors this file's own
  *  `stubOpenRouterOk`, and `aiEngine.test.ts`'s header-aware `mockFetch`. */
 function stubOpenRouter429(retryAfterSeconds: number) {
   vi.stubGlobal(

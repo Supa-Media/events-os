@@ -825,7 +825,7 @@ export const setAiEngine = mutation({
 /**
  * Action-facing read of the resolved AI engine config — the ONLY path the raw
  * Ollama key leaves the table. Every AI call site (`receiptInbox.ocrReceiptImage`,
- * `aiCoding`, `aiActions`) consults this via `ctx.runQuery` to resolve
+ * `aiActions`) consults this via `ctx.runQuery` to resolve
  * `{provider, baseUrl, apiKey, model, ocrModel}`, STORED-FIRST → ENV FALLBACK:
  *   - ollama key: stored `ollamaApiKey` → `OLLAMA_API_KEY`
  *   - openrouter key: `OPENROUTER_API_KEY` (unchanged; never stored in-app)

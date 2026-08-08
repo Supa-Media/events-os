@@ -6,12 +6,10 @@
  * `Cell`-wrapped cells that each commit ONE field via its own mutation.
  *
  * Columns: [☐] Merchant · Date · Amount · Cardholder · Category▾ · For▾ ·
- * Suggested · Receipt · Status▾ · Actions. Merchant / Category / For / Status
- * edit inline (Merchant a text cell, the rest dropdowns, all committing per
- * row); Suggested shows the AI auto-coding proposal (when present +
- * unreviewed) with an Accept action; Receipt shows ✓ or an inline upload;
- * Amount is read-only (signed). The fund is hidden — the backend defaults it
- * to the General Fund on categorize.
+ * Receipt · Status▾ · Actions. Merchant / Category / For / Status edit inline
+ * (Merchant a text cell, the rest dropdowns, all committing per row); Receipt
+ * shows ✓ or an inline upload; Amount is read-only (signed). The fund is
+ * hidden — the backend defaults it to the General Fund on categorize.
  *
  * MERCHANT is a RENAME, not an edit of the bank's record — it writes a
  * separate `merchantNameOverride` and leaves the provider's own string
@@ -19,22 +17,6 @@
  * read-only row (a foreign book, a peek) even though the name itself goes
  * flat there — reading what a row used to be called is a read. See
  * `MerchantCell` below and `finances.renameMerchant`.
- *
- * Suggested / on-demand "Suggest": most unreviewed charges already carry a
- * proposal by the time the bookkeeper opens this grid — new transactions get
- * one within seconds of arriving (the on-ingest sweep, see
- * `aiCodingData.scheduleSuggestionOnIngest`), not just on the old hourly
- * cron. A still-`isSuggestible` row (`helpers.ts#isSuggestible` — unreviewed,
- * OR categorized but still needing a budget; PR fix-suggest-broaden) that
- * STILL has none (the on-ingest/hourly sweep's batch cap was exceeded,
- * OPENROUTER_API_KEY was unset when it landed, or a prior attempt failed and
- * is still cooling down) shows a "Suggest" button instead of the AI badge —
- * tapping it runs the exact same model-call core (`aiCoding.suggestCoding`)
- * for just that one transaction, on demand (`SuggestCell` below). Either path
- * lands in the same Accept/reject UI. A "Categorized" row whose "For" cell
- * still reads "Needs budget" is the majority of the backlog this covers — the
- * button used to only ever render on an unreviewed row, leaving that whole
- * bucket stuck at a bare "—" with no way to trigger a suggestion.
  *
  * The "For" column (WP-U: one home per dollar) replaces the old separate
  * Budget + Link columns/pickers with ONE picker, grouped Events / Projects /
@@ -90,7 +72,7 @@
  */
 import { useEffect, useRef, useState } from "react";
 import { View, Text, Pressable, Platform, ScrollView, TextInput } from "react-native";
-import { useAction, useMutation, useQuery } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 // expo-image-picker is Expo Go-safe (classified `core`); only used on native.
@@ -129,7 +111,6 @@ import { ReceiptViewerModal } from "../receipts/ReceiptViewerModal";
 import { ReceiptAttachPicker } from "../receipts/ReceiptAttachPicker";
 import {
   STATUS_OPTIONS,
-  isSuggestible,
   signedMoney,
   shortDate,
   type TxnRow,
@@ -167,7 +148,6 @@ const DEFAULT_COLS = {
   cardholder: 168,
   category: 168,
   forCol: 200,
-  suggested: 220,
   // Founder feedback (2026-07-24): 96px clipped BOTH the "Upload" label+icon
   // AND the "attach existing" search-icon affordance next to it — too tight
   // to comfortably click either. The table already scrolls horizontally, so
@@ -312,11 +292,6 @@ export function ReconcileList({
             ) : null}
             <GridHeaderCell label="For" width={widths.forCol} onResizeStart={startResize("forCol")} />
             <GridHeaderCell
-              label="Suggested"
-              width={widths.suggested}
-              onResizeStart={startResize("suggested")}
-            />
-            <GridHeaderCell
               label="Documentation"
               width={widths.receipt}
               onResizeStart={startResize("receipt")}
@@ -391,8 +366,6 @@ function ReconcileRow({
   const attachReceipt = useMutation(api.finances.attachReceipt);
   const correctTransaction = useMutation(api.finances.correctTransaction);
   const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
-  const acceptSuggestion = useMutation(api.aiCodingData.acceptSuggestion);
-  const recordCodingOverride = useMutation(api.aiCodingData.recordCodingOverride);
   const flagPersonalCharge = useMutation(api.cards.flagPersonalCharge);
   const unflagPersonalCharge = useMutation(api.cards.unflagPersonalCharge);
   // Un-marking only. MARKING a transfer needs two rows, so it lives in the
@@ -481,49 +454,6 @@ function ReconcileRow({
     id: Id<"people">;
     name: string;
   } | null>(null);
-  // Accept feels TERMINAL: the moment a suggestion is accepted we show a brief
-  // "Accepted" state in the Suggested cell instead of letting an
-  // still-`isSuggestible` row (accepted the category but still needs a budget)
-  // immediately re-render a fresh "Suggest" button — testers misread that
-  // re-appearing button as "the suggestion didn't clear". Session-local (per
-  // row); a reload starts fresh.
-  const [justAccepted, setJustAccepted] = useState(false);
-
-  async function handleAccept() {
-    try {
-      await acceptSuggestion({ transactionId: id });
-      setJustAccepted(true);
-    } catch (err) {
-      alertError(err);
-    }
-  }
-
-  // Measurement (precision): when a human hand-codes a Category / For value that
-  // DIFFERS from a live suggestion's proposal for that dimension, log it as an
-  // override BEFORE `categorize` clears the suggestion server-side. Best-effort
-  // — a measurement write must never block or fail the actual coding edit.
-  async function recordOverrideIfConflicting(
-    dimension: "category" | "budget",
-    chosen: string | null,
-  ) {
-    const ai = row.aiSuggestion;
-    if (!ai) return;
-    const suggested = dimension === "category" ? ai.categoryId : ai.budgetId;
-    if (suggested == null) return; // the model didn't propose this dimension
-    if (chosen === suggested) return; // agreement, not an override
-    try {
-      await recordCodingOverride({
-        transactionId: id,
-        dimension,
-        ...(dimension === "category"
-          ? { chosenCategoryId: chosen as Id<"budgetCategories"> | null }
-          : { chosenBudgetId: chosen as Id<"budgets"> | null }),
-      });
-    } catch {
-      // swallow — never let measurement interfere with the coding edit
-    }
-  }
-
   async function confirmPersonalPrompt() {
     setPersonalPromptBusy(true);
     try {
@@ -564,7 +494,6 @@ function ReconcileRow({
   // always a real, APPROVED budget already (item 5) — no summon/resolution
   // step needed.
   async function onForChange(value: string | null) {
-    await recordOverrideIfConflicting("budget", value);
     guard(
       categorize({
         transactionId: id,
@@ -694,8 +623,7 @@ function ReconcileRow({
             value={row.categoryId}
             items={categoryItems}
             placeholder="Uncategorized"
-            onChange={async (value) => {
-              await recordOverrideIfConflicting("category", value);
+            onChange={(value) => {
               guard(
                 categorize({
                   transactionId: id,
@@ -741,48 +669,6 @@ function ReconcileRow({
             </View>
           ) : null}
         </View>
-      </Cell>
-
-      {/* Suggested — AI auto-coding proposal + Accept when the model has
-          already proposed something for this (still-unreviewed) row; a
-          still-unreviewed row with NO suggestion yet offers an on-demand
-          "Suggest" button instead (`SuggestCell`) rather than a bare dash —
-          most new charges are suggested within seconds on arrival, but the
-          batch cap / a cooling-down failed attempt / a stale charge that
-          predates the feature can still leave one without one. */}
-      <Cell width={widths.suggested}>
-        {row.aiSuggestion ? (
-          <View className="flex-1 gap-1 px-2 py-1.5">
-            <Badge
-              label={`AI: ${[row.aiSuggestion.categoryName, row.aiSuggestion.budgetName]
-                .filter(Boolean)
-                .join(" · ")}`}
-              tone="lavender"
-              icon="sparkles"
-            />
-            <Button
-              title="Accept"
-              size="sm"
-              variant="secondary"
-              onPress={handleAccept}
-            />
-          </View>
-        ) : justAccepted ? (
-          // Terminal state: the suggestion was just accepted this session. Show
-          // it as done rather than immediately re-offering "Suggest" on a row
-          // that still `isSuggestible` (accepted the category, still needs a
-          // budget) — which testers read as the suggestion not clearing.
-          <View className="flex-1 flex-row items-center gap-1 px-2 py-1.5">
-            <Icon name="check-circle" size={15} color={colors.success} />
-            <Text className="text-sm font-medium text-success">Accepted</Text>
-          </View>
-        ) : isSuggestible(row) ? (
-          <View className="flex-1 px-2 py-1.5">
-            <SuggestCell transactionId={id} />
-          </View>
-        ) : (
-          <Text className="flex-1 px-2 py-1.5 text-sm text-faint">—</Text>
-        )}
       </Cell>
 
       {/* Receipt (✓ or inline upload, escalating with the reminder timeline) */}
@@ -1026,46 +912,6 @@ function ReconcileRow({
         />
       ) : null}
     </View>
-  );
-}
-
-// ── On-demand "Suggest" (Suggested column, unreviewed row with no proposal
-// yet) — runs the same model-call core as the on-ingest/hourly sweep
-// (`api.aiCoding.suggestCoding`) for just this one transaction. Bookkeeper+
-// gated server-side (`loadForSuggestion`'s finance-role check, same rank the
-// rest of this grid's writes require) — a caller without the role sees the
-// button fail with a readable error via `alertError`, same as every other
-// cell's `guard()`. Loading state is local (`busy`): the button shows a
-// spinner while the OpenRouter call is in flight and disables itself so a
-// double-tap can't fire two calls; on error it re-enables — tapping again is
-// the retry, no separate affordance needed. Success needs no local handling
-// at all: `listReconcile`'s live subscription re-renders this row with
-// `aiSuggestion` set the moment `writeSuggestion` commits, swapping this
-// button out for the normal Accept UI above. ──────────────────────────────
-function SuggestCell({ transactionId }: { transactionId: Id<"transactions"> }) {
-  const suggestCoding = useAction(api.aiCoding.suggestCoding);
-  const [busy, setBusy] = useState(false);
-
-  async function handleSuggest() {
-    setBusy(true);
-    try {
-      await suggestCoding({ transactionId });
-    } catch (err) {
-      alertError(err);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Button
-      title="Suggest"
-      size="sm"
-      variant="secondary"
-      icon="sparkles"
-      loading={busy}
-      onPress={handleSuggest}
-    />
   );
 }
 

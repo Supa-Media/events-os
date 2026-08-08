@@ -11,7 +11,7 @@ import { seedChapterFinance } from "../lib/seed/finance";
  *  - the `runMergeFundsIntoGeneral` migration merges every extra fund a
  *    chapter already has into its General Fund, repointing every reference
  *    (`budgetCategories.fundId` — required, `budgets.fundId`,
- *    `transactions.fundId` + a stale `aiSuggestion.fundId` on the same row,
+ *    `transactions.fundId`,
  *    `reimbursementLineItems.fundId`, `legacyAccounts.defaultFundId`) before
  *    deleting the extra fund docs,
  *  - the whole migration is idempotent (a settled re-run is a no-op) and safe
@@ -101,8 +101,7 @@ describe("runMergeFundsIntoGeneral (WP-1.4 fund merge migration)", () => {
         createdAt: Date.now(),
       }),
     );
-    // A transaction coded to the extra fund, WITH a stale AI suggestion
-    // pointing at the same extra fund.
+    // A transaction coded to the extra fund.
     const txnId = await run(s.t, (ctx) =>
       ctx.db.insert("transactions", {
         chapterId: s.chapterId,
@@ -111,7 +110,6 @@ describe("runMergeFundsIntoGeneral (WP-1.4 fund merge migration)", () => {
         amountCents: 500,
         postedAt: Date.now(),
         fundId: designatedId,
-        aiSuggestion: { fundId: designatedId, categoryId },
         status: "categorized",
         createdAt: Date.now(),
       }),
@@ -173,7 +171,6 @@ describe("runMergeFundsIntoGeneral (WP-1.4 fund merge migration)", () => {
     );
     const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
     expect(txn?.fundId).toBe(generalId);
-    expect(txn?.aiSuggestion?.fundId).toBe(generalId);
     expect((await run(s.t, (ctx) => ctx.db.get(lineId)))?.fundId).toBe(
       generalId,
     );
@@ -186,52 +183,6 @@ describe("runMergeFundsIntoGeneral (WP-1.4 fund merge migration)", () => {
     expect(funds).toHaveLength(1);
     expect(funds[0]._id).toBe(generalId);
     expect(await run(s.t, (ctx) => ctx.db.get(designatedId))).toBeNull();
-  });
-
-  test("repoints a dangling aiSuggestion.fundId on an uncoded txn (no top-level fundId)", async () => {
-    const t = newT();
-    const s = await setupChapter(t);
-    const generalId = await insertFund(s, {
-      name: "General Fund",
-      restriction: "unrestricted",
-      sortOrder: 0,
-    });
-    const designatedId = await insertFund(s, {
-      name: "Designated",
-      restriction: "designated",
-      sortOrder: 1,
-    });
-
-    // Unreviewed/uncoded: no top-level fundId, but the stored AI suggestion
-    // picked the extra fund. The `by_fund` index scan alone (keyed on the
-    // TOP-LEVEL fundId) would never find this row.
-    const txnId = await run(s.t, (ctx) =>
-      ctx.db.insert("transactions", {
-        chapterId: s.chapterId,
-        source: "manual",
-        flow: "outflow",
-        amountCents: 300,
-        postedAt: Date.now(),
-        aiSuggestion: { fundId: designatedId, confidence: 0.6 },
-        status: "unreviewed",
-        createdAt: Date.now(),
-      }),
-    );
-
-    const result = await t.mutation(
-      internal.finances.runMergeFundsIntoGeneral,
-      {},
-    );
-    expect(result.chaptersMerged).toBe(1);
-    expect(result.fundsDeleted).toBe(1);
-
-    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
-    // Still uncoded — the migration must not fake a categorization.
-    expect(txn?.fundId).toBeUndefined();
-    expect(txn?.status).toBe("unreviewed");
-    // But the dangling suggestion is repointed to the keeper, not left
-    // pointing at a fund doc that's about to be deleted.
-    expect(txn?.aiSuggestion?.fundId).toBe(generalId);
   });
 
   test("idempotent: a re-run on an already-merged chapter is a no-op", async () => {

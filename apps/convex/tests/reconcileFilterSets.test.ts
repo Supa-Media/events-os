@@ -2,7 +2,8 @@
 import { describe, expect, test } from "vitest";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api } from "../_generated/api";
-import type { Id } from "../_generated/dataModel";
+import { isMarkedTransfer, needsDocumentation } from "../finances";
+import type { Doc, Id } from "../_generated/dataModel";
 
 /**
  * MULTI-SELECT RECONCILE FILTERS, end to end.
@@ -46,6 +47,11 @@ async function txn(
     status: "unreviewed" | "categorized" | "reconciled";
     receiptStorageId: Id<"_storage">;
     amountCents: number;
+    /** The tell `markAsTransfer` writes — what makes a leg MARKED, not booked. */
+    preMarkFlow: "inflow" | "outflow";
+    /** The tell `markAsPayout` writes. */
+    payoutProcessor: "givebutter" | "stripe" | "other";
+    transferGroupId: string;
   }> = {},
 ): Promise<Id<"transactions">> {
   return await run(s.t, (ctx) =>
@@ -57,6 +63,9 @@ async function txn(
       postedAt: Date.now(),
       status: fields.status ?? "unreviewed",
       receiptStorageId: fields.receiptStorageId,
+      preMarkFlow: fields.preMarkFlow,
+      payoutProcessor: fields.payoutProcessor,
+      transferGroupId: fields.transferGroupId,
       createdAt: Date.now(),
     }),
   );
@@ -134,29 +143,19 @@ describe("facet counts — the number shown is a number you can get to", () => {
     await asManager(s);
 
     await txn(s, { flow: "outflow" }); // spend, no receipt
-    // A MARKED internal transfer: not spend, but it does owe a receipt
-    // (`needsDocumentation` covers spend, marked transfers, and payouts — a
-    // plain inflow owes nothing, which is why this fixture isn't one).
-    // `preMarkFlow` is the tell `markAsTransfer` writes and `isMarkedTransfer`
-    // reads.
-    await run(s.t, (ctx) =>
-      ctx.db.insert("transactions", {
-        chapterId: s.chapterId,
-        source: "manual",
-        flow: "transfer",
-        preMarkFlow: "outflow",
-        amountCents: 100,
-        postedAt: Date.now(),
-        status: "unreviewed",
-        createdAt: Date.now(),
-      }),
-    );
+    // A MARKED PROCESSOR PAYOUT: not spend, but it does owe a receipt
+    // (`needsDocumentation` covers spend, marked transfers, and marked payouts
+    // — a plain inflow owes nothing, which is why this fixture isn't one). A
+    // marked transfer would read just as well here and used to be the fixture,
+    // but transfer legs are no longer in the default queue, so it could no
+    // longer demonstrate a count NARROWING; a payout stays visible.
+    await txn(s, { flow: "inflow", payoutProcessor: "givebutter" });
 
     // Unfiltered, both receiptless rows count.
     const wide = await s.as.query(api.finances.listReconcile, { filters: [] });
     expect(wide.counts.missing_receipt).toBe(2);
 
-    // With Kind=Spend active, the transfer can never be surfaced by picking
+    // With Kind=Spend active, the payout can never be surfaced by picking
     // "Missing receipt" — so it must stop being counted under it. A global
     // count here would promise 2 rows and deliver 1.
     const narrowed = await s.as.query(api.finances.listReconcile, {
@@ -196,6 +195,157 @@ describe("facet counts — the number shown is a number you can get to", () => {
     const res = await s.as.query(api.finances.listReconcile, { filters: ["spend"] });
     expect(res.counts.all).toBe(2);
     expect(res.rows).toHaveLength(1);
+  });
+});
+
+/**
+ * INTERNAL TRANSFERS ARE NOT QUEUE WORK.
+ *
+ * Reconcile asks three things of a row: code it, document it, close it. A leg
+ * the app booked itself (`transfers.recordTransfer` and friends) owes none of
+ * them — it's one half of a matched pair with a note explaining the
+ * arithmetic, it takes no category or budget, and it owes no receipt. It was
+ * therefore volume the treasurer could only skip past. It's hidden by default
+ * and reachable under Kind → Transfers.
+ *
+ * The line is `isMarkedTransfer`, NOT `flow === "transfer"`: a leg a human
+ * MARKED still owes a receipt on purpose (`needsDocumentation`), so hiding it
+ * would silently end a live chase.
+ */
+describe("internal transfer legs are hidden from the default queue", () => {
+  test("a booked leg is out of the rows, the total, and the backlog headline", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+
+    const spend = await txn(s, { flow: "outflow" });
+    const leg = await txn(s, { flow: "transfer", transferGroupId: "grp_1" });
+
+    const res = await s.as.query(api.finances.listReconcile, { filters: [] });
+    expect(res.rows.map((r) => r.id)).toEqual([spend]);
+    // The header's total has to be a number scrolling can reach.
+    expect(res.counts.all).toBe(1);
+    // Both rows are unreviewed, but only one of them is work.
+    expect(res.toClearCount).toBe(1);
+    expect(res.counts.to_review).toBe(1);
+    // Suppressed, not lost — see the next test.
+    expect(res.counts.transfers).toBe(1);
+    expect(leg).toBeDefined();
+  });
+
+  test("Kind → Transfers is the way back, and its count says how many", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+
+    await txn(s, { flow: "outflow" });
+    const legOut = await txn(s, { flow: "transfer", transferGroupId: "grp_1" });
+    const legIn = await txn(s, { flow: "transfer", transferGroupId: "grp_1" });
+
+    // The facet count is computed over the hidden rows, so the dropdown can
+    // advertise what selecting it would produce.
+    const hidden = await s.as.query(api.finances.listReconcile, { filters: [] });
+    expect(hidden.counts.transfers).toBe(2);
+
+    const shown = await s.as.query(api.finances.listReconcile, {
+      filters: ["transfers"],
+    });
+    expect(shown.rows.map((r) => r.id).sort()).toEqual([legOut, legIn].sort());
+    expect(shown.rows).toHaveLength(hidden.counts.transfers);
+  });
+
+  /**
+   * THE ONE THAT STOPS THIS BEING RE-LITIGATED FROM THE ROW'S ABSENCE ALONE.
+   *
+   * A leg a human MARKED via `markAsTransfer` owes a receipt on purpose — the
+   * founder rule that marking must never be a way to stop being chased. It is
+   * still hidden here, and that is not a contradiction: hiding is about where a
+   * row is LISTED, and the chase is a different surface (`receiptChase`, its own
+   * scan, its own predicate union, reached from the "Chase receipts" button).
+   * So the row is absent from this queue AND still owes everything it did.
+   */
+  test("a MARKED transfer is hidden too — and still owes its documentation", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+
+    const marked = await txn(s, { flow: "transfer", preMarkFlow: "outflow" });
+    await txn(s, { flow: "transfer", transferGroupId: "grp_1" });
+
+    const res = await s.as.query(api.finances.listReconcile, { filters: [] });
+    expect(res.rows).toHaveLength(0);
+    // Kind → Transfers covers BOTH classes — that's what makes it the single
+    // way back to every hidden leg, hand-marked or app-booked.
+    expect(res.counts.transfers).toBe(2);
+
+    // What the row OWES is untouched by where the queue lists it. Read straight
+    // off the predicates, so this can't drift with the view.
+    const doc = (await run(s.t, (ctx) => ctx.db.get(marked))) as Doc<"transactions">;
+    expect(isMarkedTransfer(doc)).toBe(true);
+    expect(needsDocumentation(doc)).toBe(true);
+
+    // And it's still reachable by the surface that does the chasing: the
+    // "Chase receipts" button is gated on this number, not on a facet count.
+    expect(res.chaseCount).toBe(1);
+    const chase = await s.as.query(api.finances.receiptChase, {});
+    expect(chase.count).toBe(1);
+    expect(chase.groups.flatMap((g) => g.transactions.map((c) => c.id))).toEqual([marked]);
+  });
+
+  test("a payout deposit stays — outside money arriving earns one look", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+
+    // Deliberately still `flow:"inflow"` — `markAsPayout` never rewrites a
+    // deposit to a transfer, because that would erase the org's revenue.
+    const payout = await txn(s, { flow: "inflow", payoutProcessor: "givebutter" });
+    await txn(s, { flow: "transfer", transferGroupId: "grp_1" });
+
+    const res = await s.as.query(api.finances.listReconcile, { filters: [] });
+    expect(res.rows.map((r) => r.id)).toEqual([payout]);
+    expect(res.counts.payouts).toBe(1);
+  });
+
+  test("hidden legs never leak into another facet's count", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+
+    await txn(s, { flow: "transfer", status: "unreviewed", transferGroupId: "g1" });
+    await txn(s, { flow: "transfer", status: "reconciled", transferGroupId: "g2" });
+
+    // A count you can't get to is the defect this whole area exists to
+    // prevent: "To review 1" beside a queue that will render zero rows.
+    const res = await s.as.query(api.finances.listReconcile, { filters: [] });
+    expect(res.rows).toHaveLength(0);
+    expect(res.counts.to_review).toBe(0);
+    expect(res.counts.reconciled).toBe(0);
+    expect(res.counts.missing_receipt).toBe(0);
+    expect(res.counts.all).toBe(0);
+    expect(res.toClearCount).toBe(0);
+    expect(res.counts.transfers).toBe(2);
+    // Booked legs owe nothing, so the chase headline stays empty too — unlike
+    // the marked-transfer case above, where it must not.
+    expect(res.chaseCount).toBe(0);
+  });
+
+  test("another group's selection still narrows the transfers count", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    await txn(s, { flow: "transfer", transferGroupId: "g1" });
+
+    // A transfer leg is never `needs_budget`, so asking for both is a real
+    // empty set — and the count has to say so rather than promising a row.
+    const res = await s.as.query(api.finances.listReconcile, {
+      filters: ["needs_budget"],
+    });
+    expect(res.counts.transfers).toBe(0);
+    const both = await s.as.query(api.finances.listReconcile, {
+      filters: ["needs_budget", "transfers"],
+    });
+    expect(both.rows).toHaveLength(0);
   });
 });
 

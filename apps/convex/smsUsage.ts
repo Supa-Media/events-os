@@ -1,7 +1,6 @@
 /**
  * SMS usage/cost ledger — read/write surface for `schema/smsUsage.ts`
- * (`smsUsageEvents`), the Twilio analog of `aiCodingData.ts`'s
- * `aiUsageEvents` ledger. Written per send attempt by
+ * (`smsUsageEvents`). Written per send attempt by
  * `blasts.ts#deliverSmsBlast` (purpose "blast") and
  * `ticketingSms.ts#sendVerificationSms` (purpose "verification");
  * `getSmsSpendSummary` is the monthly rollup behind
@@ -39,16 +38,15 @@ export const recordUsageEvent = internalMutation({
   },
 });
 
-/** The UTC calendar-month boundary `ts` falls in — same "roughly right, not
- *  per-viewer-exact" convention as `aiCodingData.ts#startOfMonthUtc`; this is
- *  an org-wide spend rollup, not a per-chapter-timezone report. */
+/** The UTC calendar-month boundary `ts` falls in — deliberately "roughly
+ *  right, not per-viewer-exact": this is an org-wide spend rollup, not a
+ *  per-chapter-timezone report. */
 function startOfMonthUtc(ts: number): number {
   const d = new Date(ts);
   return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1);
 }
 
-/** Bounded scan — a low-volume audit surface (same spirit as
- *  `aiCodingData.ts`'s `USAGE_SCAN_LIMIT`), not a paginated ledger. Two
+/** Bounded scan — a low-volume audit surface, not a paginated ledger. Two
  *  calendar months of SMS sends is comfortably under this cap for any
  *  realistic org SMS volume. Exported so tests can assert the boundary
  *  arithmetic (`isScanTruncated`) without inserting `SPEND_SCAN_LIMIT` rows. */
@@ -112,8 +110,7 @@ const monthTotalsValidator = v.object({
  * Monthly SMS spend rollup — current + previous calendar month totals (only
  * `outcome:"sent"` rows count), plus a per-chapter breakdown for the CURRENT
  * month (which chapter should carry its own "SMS / Texting" budget line —
- * see docs/plans/sms-comms.md). Same gate as the AI-usage audit trail
- * (`aiCodingData.getUsageSummary`) — central ED/FM only.
+ * see docs/plans/sms-comms.md). Central ED/FM only.
  */
 export const getSmsSpendSummary = query({
   args: {},
