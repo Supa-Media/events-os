@@ -40,13 +40,20 @@ export function MerchantHistoryModal({
    *  while the trail is still loading. */
   providerName,
   /** The bookkeeper's current rename, or null when the provider's own name is
-   *  what's showing. Drives whether "Use the original name" is offered. */
+   *  what's showing. There has to BE a rename for un-naming to mean anything. */
   currentOverride,
+  /** Whether this caller may un-name the row. False on a read-only row (a
+   *  foreign book in the merged queue, or a peek), where the trail is still
+   *  readable — reading is not writing — but the server would refuse the
+   *  clear. Both conditions gate the button; neither is the real authority,
+   *  which is `clearMerchantRename`'s own gate. */
+  canClear,
   onClose,
 }: {
   transactionId: Id<"transactions">;
   providerName: string;
   currentOverride: string | null;
+  canClear: boolean;
   onClose: () => void;
 }) {
   const trail = useQuery(api.finances.financeAuditTrail, {
@@ -126,7 +133,7 @@ export function MerchantHistoryModal({
           </ScrollView>
 
           <View className="flex-row justify-end gap-2 border-t border-border px-5 py-4">
-            {currentOverride != null ? (
+            {canClear && currentOverride != null ? (
               <Button
                 title="Use the original name"
                 variant="secondary"

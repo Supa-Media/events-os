@@ -15,8 +15,10 @@
  *
  * MERCHANT is a RENAME, not an edit of the bank's record — it writes a
  * separate `merchantNameOverride` and leaves the provider's own string
- * untouched, with a history icon on renamed rows. See `MerchantCell` below
- * and `finances.renameMerchant`.
+ * untouched, with a history icon on renamed rows. The icon stays live on a
+ * read-only row (a foreign book, a peek) even though the name itself goes
+ * flat there — reading what a row used to be called is a read. See
+ * `MerchantCell` below and `finances.renameMerchant`.
  *
  * Suggested / on-demand "Suggest": most unreviewed charges already carry a
  * proposal by the time the bookkeeper opens this grid — new transactions get
@@ -607,20 +609,33 @@ function ReconcileRow({
         </Cell>
       ) : null}
 
+      {/* Merchant — MIXED, so it sits OUTSIDE the read-only wrapper below and
+          owns its own `readOnly` handling. It holds one write affordance (the
+          inline rename) and one READ affordance (the name-history icon), and
+          the wrapper can only disable a subtree wholesale.
+
+          This is the only cell that gets to sit out here, and the distinction
+          that earns it is narrow: a read is not a write. The wrapper exists so
+          a read-only row can never expose a working WRITE — see its own
+          comment — and pushing a read-only affordance through it is not a
+          precedent for pushing an editable one through. Anything that COMMITS
+          belongs inside the wrapper; if a future cell wants out, the question
+          is whether it can change data, not whether it's inconvenient. */}
+      <Cell width={widths.merchant}>
+        <MerchantCell row={row} readOnly={readOnly} />
+      </Cell>
+
       {/* Everything from here on is the editable body. Wrapping it in one
           non-interactive container is deliberate: a read-only row must not
-          expose a SINGLE working affordance, and per-cell `disabled` props
-          would be six independent chances to miss one as this grid grows. */}
+          expose a SINGLE working WRITE affordance, and per-cell `disabled`
+          props would be six independent chances to miss one as this grid
+          grows. `pointerEvents="none"` covers the whole subtree, which is the
+          point — it can't be partially defeated by a cell forgetting. */}
       <View
         className="flex-1 flex-row items-stretch"
         pointerEvents={readOnly ? "none" : "auto"}
         style={readOnly ? { opacity: 0.55 } : undefined}
       >
-
-      {/* Merchant (inline editable — see `MerchantCell`) */}
-      <Cell width={widths.merchant}>
-        <MerchantCell row={row} />
-      </Cell>
 
       {/* Date (read-only) */}
       <Cell width={widths.date}>
@@ -1080,14 +1095,16 @@ function SuggestCell({ transactionId }: { transactionId: Id<"transactions"> }) {
  * is noise. It survives a clear: a row renamed and then un-renamed still has a
  * story worth reading.
  *
- * On a READ-ONLY row (a foreign book in the merged queue, or a peek) the whole
- * cell — icon included — is inert, because it sits inside the row's single
- * `pointerEvents="none"` body wrapper. That's the grid's existing rule and
- * worth keeping even though the history is only a read: the same trail is
- * reachable from the transaction detail modal's History section, which is
- * where a peeking reviewer already goes.
+ * ON A READ-ONLY ROW (a foreign book in the merged queue, or a peek) the NAME
+ * goes flat — a `Text`, not an input, so there is nothing to focus and nothing
+ * that could commit — but THE HISTORY ICON STAYS LIVE. Reading what a row used
+ * to be called is exactly the question a reviewer looking at someone else's
+ * ledger has, and `financeAuditTrail` is already gated and scoped server-side,
+ * so nothing here is what decides whether they may see it. This is why this
+ * cell renders outside the row's read-only wrapper; see the call site for why
+ * that exception is about reads only.
  */
-function MerchantCell({ row }: { row: TxnRow }) {
+function MerchantCell({ row, readOnly }: { row: TxnRow; readOnly: boolean }) {
   const renameMerchant = useMutation(api.finances.renameMerchant);
   const clearMerchantRename = useMutation(api.finances.clearMerchantRename);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -1111,12 +1128,25 @@ function MerchantCell({ row }: { row: TxnRow }) {
 
   return (
     <>
-      <InlineText
-        value={shown}
-        onCommit={onCommit}
-        weight="medium"
-        maxLength={MAX_MERCHANT_NAME_LENGTH}
-      />
+      {readOnly ? (
+        // Dimmed to the same 0.55 the rest of the read-only row carries, so
+        // hoisting this cell out of that wrapper doesn't make it the one cell
+        // that looks editable on a row that isn't.
+        <Text
+          className="flex-1 px-2 py-1.5 text-sm font-medium text-ink"
+          style={{ opacity: 0.55 }}
+          numberOfLines={1}
+        >
+          {shown}
+        </Text>
+      ) : (
+        <InlineText
+          value={shown}
+          onCommit={onCommit}
+          weight="medium"
+          maxLength={MAX_MERCHANT_NAME_LENGTH}
+        />
+      )}
       {row.hasMerchantRenameHistory ? (
         <Pressable
           onPress={() => setHistoryOpen(true)}
@@ -1133,6 +1163,10 @@ function MerchantCell({ row }: { row: TxnRow }) {
           transactionId={row.id}
           providerName={providerMerchantName(row)}
           currentOverride={row.merchantNameOverride}
+          // The trail is readable on a read-only row; un-naming is a WRITE, and
+          // a button the server would refuse is the same dead control this
+          // change set is removing.
+          canClear={!readOnly}
           onClose={() => setHistoryOpen(false)}
         />
       ) : null}
