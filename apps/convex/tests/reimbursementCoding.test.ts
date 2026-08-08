@@ -883,7 +883,113 @@ describe("resubmission — the claimant's answer", () => {
   });
 });
 
-// ── 3. The reviewer's read + the claimant's nudge ────────────────────────────
+// ── 3. The public page's own HTTP surface ────────────────────────────────────
+
+describe("the public token page carries the same questions", () => {
+  test("POST /api/reimburse/submit carries a line's substantiation through", async () => {
+    const s = await setupChapter(newT());
+    await setSlug(s, "nyc");
+    const receiptStorageId = await storeBlob(s.t);
+    const body = {
+      chapterSlug: "nyc",
+      payeeName: "Vera Volunteer",
+      payeeEmail: "vera@example.com",
+      purpose: "Event supplies",
+      routingNumber: "011000015",
+      accountNumber: "555000111",
+      lines: [
+        {
+          description: "Crew dinner",
+          amountCents: 4200,
+          transactionDate: Date.now(),
+          receiptStorageId,
+          expenseType: "meal",
+          businessPurpose: "Dinner with the crew after the Eden shoot in July",
+          headcount: 2,
+          attendees: [
+            { name: "Vera", affiliation: "volunteer" },
+            { name: "Sam", affiliation: "contractor" },
+          ],
+        },
+      ],
+    };
+    const res = await s.t.fetch("/api/reimburse/submit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(200);
+    const { token } = (await res.json()) as { token: string };
+    const req = await reqByToken(s, token);
+    const [only] = await linesOf(s, req._id);
+    expect(only.expenseType).toBe("meal");
+    expect(only.headcount).toBe(2);
+    expect(only.attendees?.map((a) => a.affiliation)).toEqual([
+      "volunteer",
+      "contractor",
+    ]);
+
+    // An unrecognized enum is a friendly 400, not an opaque validator blowup.
+    const bad = await s.t.fetch("/api/reimburse/submit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ...body,
+        lines: [{ ...body.lines[0], expenseType: "vibes" }],
+      }),
+    });
+    expect(bad.status).toBe(400);
+    expect(((await bad.json()) as { error: string }).error).toContain(
+      "expense type",
+    );
+  });
+
+  test("the sent-back page renders the note + a revise form, and resubmit is a POST", async () => {
+    const { s } = await chapterWithManager();
+    const { token } = await submitPublic(s);
+    const req = await reqByToken(s, token);
+    await s.as.mutation(api.reimbursements.requestChanges, {
+      reimbursementId: req._id,
+      note: "Say which event this served.",
+    });
+
+    const page = await s.t.fetch(
+      `/reimburse/nyc?token=${encodeURIComponent(token)}`,
+      { method: "GET" },
+    );
+    expect(page.status).toBe(200);
+    const html = await page.text();
+    expect(html).toContain("Say which event this served.");
+    expect(html).toContain("Update and resubmit");
+    // A GET must never move the request — mail scanners prefetch links.
+    const stillBack = await run(s.t, (ctx) => ctx.db.get(req._id));
+    expect(stillBack?.status).toBe("changes_requested");
+
+    const [only] = await linesOf(s, req._id);
+    const res = await s.t.fetch("/api/reimburse/resubmit", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        token,
+        lines: [
+          {
+            lineId: only._id,
+            expenseType: "travel",
+            businessPurpose: "Travel to NY to film the Eden event in July",
+            travelFrom: "Boston",
+            travelTo: "New York",
+          },
+        ],
+      }),
+    });
+    expect(res.status).toBe(200);
+    const after = await run(s.t, (ctx) => ctx.db.get(req._id));
+    expect(after?.status).toBe("submitted");
+    expect(after?.reviewNote).toBeUndefined();
+  });
+});
+
+// ── 4. The reviewer's read + the claimant's nudge ────────────────────────────
 
 describe("the substantiation reaches the surfaces that need it", () => {
   test("the manager detail read carries each line's elements + the send-back note", async () => {

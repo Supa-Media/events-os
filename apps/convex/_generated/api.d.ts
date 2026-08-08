@@ -161,6 +161,7 @@ import type * as lib_pollPage from "../lib/pollPage.js";
 import type * as lib_projectActionPage from "../lib/projectActionPage.js";
 import type * as lib_readiness from "../lib/readiness.js";
 import type * as lib_receiptExceptionAccess from "../lib/receiptExceptionAccess.js";
+import type * as lib_publishabilityAccess from "../lib/publishabilityAccess.js";
 import type * as lib_receiptExceptions from "../lib/receiptExceptions.js";
 import type * as lib_receiptLinks from "../lib/receiptLinks.js";
 import type * as lib_receiptRetry from "../lib/receiptRetry.js";
@@ -532,6 +533,7 @@ declare const fullApi: ApiFromModules<{
   "lib/projectActionPage": typeof lib_projectActionPage;
   "lib/readiness": typeof lib_readiness;
   "lib/receiptExceptionAccess": typeof lib_receiptExceptionAccess;
+  "lib/publishabilityAccess": typeof lib_publishabilityAccess;
   "lib/receiptExceptions": typeof lib_receiptExceptions;
   "lib/receiptLinks": typeof lib_receiptLinks;
   "lib/receiptRetry": typeof lib_receiptRetry;
