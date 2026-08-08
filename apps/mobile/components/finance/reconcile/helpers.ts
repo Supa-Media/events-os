@@ -70,10 +70,25 @@ export function isSuggestible(row: TxnRow): boolean {
 /** U+2212 true minus (matches the prototype), not an ASCII hyphen. */
 const MINUS = "−";
 
-/** Signed money: outflow renders `−$64.20`, inflow/transfer stays positive. */
-export function signedMoney(amountCents: number, flow: string): string {
+/**
+ * Signed money: outflow renders `−$64.20`, inflow stays positive.
+ *
+ * `preMarkFlow` matters for a MARKED transfer. `markAsTransfer` rewrites `flow`
+ * to "transfer" on both legs and preserves each one's original direction in
+ * `preMarkFlow` — so reading `flow` alone renders a pair as two POSITIVE rows,
+ * which is how a $2,873.21 Central→New York movement came to look like $5,746.42
+ * of arrivals (owner report, 2026-08-07). Book value was never affected —
+ * `signedBookCents` reads `preMarkFlow` first — but the grid said something
+ * untrue. Fall back to `flow` when there's no marking.
+ */
+export function signedMoney(
+  amountCents: number,
+  flow: string,
+  preMarkFlow?: "inflow" | "outflow" | null,
+): string {
   const money = formatCents(amountCents);
-  return flow === "outflow" ? `${MINUS}${money}` : money;
+  const direction = flow === "transfer" && preMarkFlow ? preMarkFlow : flow;
+  return direction === "outflow" ? `${MINUS}${money}` : money;
 }
 
 const TZ = "America/New_York";
