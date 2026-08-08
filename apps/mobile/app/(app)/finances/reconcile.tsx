@@ -406,6 +406,7 @@ function ReconcileGrid() {
   const attestBulk = useMutation(api.receiptExceptions.attestBulk);
   const reassignTransactions = useMutation(api.finances.reassignTransactions);
   const markAsTransfer = useMutation(api.finances.markAsTransfer);
+  const markAsRefund = useMutation(api.finances.markAsRefund);
   const markAsPayout = useMutation(api.finances.markAsPayout);
   const { run, toast, dismiss } = useActionRunner();
 
@@ -661,6 +662,7 @@ function ReconcileGrid() {
   // server re-validates everything (pairing, amounts, scope, flow) — these
   // previews only help a bookkeeper catch a mis-pick first.
   const [transferPromptOpen, setTransferPromptOpen] = useState(false);
+  const [refundPromptOpen, setRefundPromptOpen] = useState(false);
   const [payoutPromptOpen, setPayoutPromptOpen] = useState(false);
   const [markBusy, setMarkBusy] = useState(false);
 
@@ -706,6 +708,49 @@ function ReconcileGrid() {
           errorTitle: "Couldn't mark as transfer",
           onSuccess: () => {
             setTransferPromptOpen(false);
+            clearSelection();
+          },
+        },
+      );
+    } finally {
+      setMarkBusy(false);
+    }
+  }
+
+  async function confirmMarkRefund(note: string | null) {
+    if (!transferLegs) return;
+    setMarkBusy(true);
+    try {
+      // The server wants the charge and the credit named, not just "these two".
+      // Ordering them here rather than asking means the bookkeeper selects two
+      // rows and is done; a wrong pick still refuses loudly on the server.
+      const charge = transferLegs.find((l) => l.flow === "outflow");
+      const credit = transferLegs.find((l) => l.flow === "inflow");
+      if (!charge || !credit) {
+        // The modal already warns on this shape, so reaching here means the
+        // preview was bypassed; refuse rather than guess which row is which.
+        await run(
+          () =>
+            Promise.reject(
+              new Error(
+                "A refund is one charge going out and one credit coming back — pick one of each.",
+              ),
+            ),
+          { errorTitle: "Couldn't mark as refund" },
+        );
+        return;
+      }
+      await run(
+        () =>
+          markAsRefund({
+            chargeTransactionId: charge.id as Id<"transactions">,
+            refundTransactionId: credit.id as Id<"transactions">,
+            ...(note ? { note } : {}),
+          }),
+        {
+          errorTitle: "Couldn't mark as refund",
+          onSuccess: () => {
+            setRefundPromptOpen(false);
             clearSelection();
           },
         },
@@ -975,6 +1020,7 @@ function ReconcileGrid() {
             reassignItems={reassignItems}
             onReassign={hasCentralSeat ? setMoveBookTarget : undefined}
             onMarkTransfer={() => setTransferPromptOpen(true)}
+            onMarkRefund={() => setRefundPromptOpen(true)}
             onMarkPayout={() => setPayoutPromptOpen(true)}
             onNoDocumentation={() => setNoDocOpen(true)}
           />
@@ -986,6 +1032,16 @@ function ReconcileGrid() {
             submitting={noDocBusy}
             onCancel={() => setNoDocOpen(false)}
             onConfirm={(args) => void confirmNoDocumentation(args)}
+          />
+        ) : null}
+
+        {refundPromptOpen && transferLegs ? (
+          <MarkTransferModal
+            legs={transferLegs}
+            submitting={markBusy}
+            kind="refund"
+            onCancel={() => setRefundPromptOpen(false)}
+            onConfirm={(note) => void confirmMarkRefund(note)}
           />
         ) : null}
 

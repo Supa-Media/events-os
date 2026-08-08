@@ -35,6 +35,7 @@ export function MarkTransferModal({
   onConfirm,
   onCancel,
   submitting,
+  kind = "transfer",
 }: {
   /** Exactly the two selected rows, in selection order. The server re-checks
    *  everything that matters (one out / one in, equal amounts, same books) —
@@ -43,7 +44,13 @@ export function MarkTransferModal({
   onConfirm: (note: string | null) => void;
   onCancel: () => void;
   submitting?: boolean;
+  /** A refund is the same two-row confirmation with a different meaning: a
+   *  transfer belongs to no budget, a refund exists so the ORIGINAL CHARGE
+   *  stops counting against one. Same shape, so the same modal — only the
+   *  wording changes. */
+  kind?: "transfer" | "refund";
 }) {
+  const isRefund = kind === "refund";
   const [note, setNote] = useState("");
   const [a, b] = legs;
   // Surfaced as a warning, not a block — the server is the real gate
@@ -54,9 +61,13 @@ export function MarkTransferModal({
     (a.flow === "outflow" && b.flow === "inflow") ||
     (a.flow === "inflow" && b.flow === "outflow");
   const problem = !oppositeFlows
-    ? "A transfer is one row leaving an account and one arriving. These two move the same way."
+    ? isRefund
+      ? "A refund is one charge going out and one credit coming back. These two move the same way."
+      : "A transfer is one row leaving an account and one arriving. These two move the same way."
     : !amountsMatch
-      ? "These two amounts don't match. Check you've picked both sides of the same movement."
+      ? isRefund
+        ? "These amounts differ, so this is a partial refund — only a full one can be marked. Leave it coded as income against the same budget."
+        : "These two amounts don't match. Check you've picked both sides of the same movement."
       : null;
 
   return (
@@ -71,7 +82,7 @@ export function MarkTransferModal({
         >
           <View className="flex-row items-center justify-between border-b border-border px-5 py-4">
             <Text className="font-display text-lg text-ink">
-              Mark as internal transfer
+              {isRefund ? "Mark as refund" : "Mark as internal transfer"}
             </Text>
             <Pressable onPress={onCancel} hitSlop={8} className="rounded-md p-1">
               <Icon name="x" size={18} color={colors.muted} />
@@ -129,7 +140,7 @@ export function MarkTransferModal({
           <View className="flex-row justify-end gap-2 border-t border-border px-5 py-4">
             <Button title="Cancel" variant="secondary" onPress={onCancel} />
             <Button
-              title="Mark as transfer"
+              title={isRefund ? "Mark as refund" : "Mark as transfer"}
               onPress={() => onConfirm(note.trim() || null)}
               loading={submitting}
             />
