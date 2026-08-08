@@ -77,6 +77,8 @@
  * person-column index, so the next page returns only still-unmerged rows).
  */
 import { query } from "./_generated/server";
+import { paginator } from "convex-helpers/server/pagination";
+import schema from "./schema";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 // `mutation` is the triggers-wrapped builder, not `./_generated/server`'s —
 // `mergePeople` patches/deletes `people` rows (via `mergePeopleCore`) and
@@ -812,7 +814,13 @@ export const mergeDonors = mutation({
     let lastGiftAt: number | undefined;
     let cursor: string | null = null;
     for (let page = 0; page < MAX_DRAIN_PAGES; page++) {
-      const res = await ctx.db
+      // `paginator`, NOT `ctx.db….paginate()`: this loop issues MORE THAN ONE
+      // paginated read in a single mutation, and built-in `.paginate()` allows
+      // exactly one per function. It only ever worked because a donor's gift
+      // count fits in one `DRAIN_PAGE` — the same latent bug that took the
+      // People tab down in production on 2026-07-27 (#458) and the deploy red
+      // before that (#454). Do NOT swap this back to `ctx.db`.
+      const res = await paginator(ctx.db, schema)
         .query("gifts")
         .withIndex("by_donor", (q) => q.eq("donorId", survivorId))
         .paginate({ numItems: DRAIN_PAGE, cursor });
