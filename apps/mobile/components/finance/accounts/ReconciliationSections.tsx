@@ -54,6 +54,10 @@ function shortDate(ts: number, withTime = false): string {
 
 export function BalancesSection() {
   const balances = useQuery(api.reconciliation.accountBalances, {});
+  // Money at the processor is real money the org holds, and nothing on this
+  // page could see it before — every figure was a book total or an Increase
+  // balance, so funds in transit looked like they had vanished.
+  const stripe = useQuery(api.reconciliation.stripeBalance, {});
   // Which book's breakdown is open. Null = closed. A two-number summary is not
   // auditable on its own; tapping a row opens the itemisation behind it.
   const [openScope, setOpenScope] = useState<string | null>(null);
@@ -65,7 +69,9 @@ export function BalancesSection() {
         in-person sales, gross of processor fees) minus what its ledger says
         went out, with cross-book card spend settled by the morning engine. Bank
         is the cash physically sitting in the scope&apos;s Increase account — the
-        two differing is normal until cash movement catches the books up.{" "}
+        two differing is normal until cash movement catches the books up.
+        Pending is card authorizations the bank has already held back but that
+        haven&apos;t settled — they reach neither Reconcile nor book value yet.{" "}
         <Text className="text-ink">Tap a book to see what makes up its number.</Text>
       </Text>
       <Card>
@@ -82,6 +88,9 @@ export function BalancesSection() {
               </Text>
               <Text className="w-24 text-right text-[11px] font-semibold uppercase tracking-wide text-faint">
                 Bank
+              </Text>
+              <Text className="w-20 text-right text-[11px] font-semibold uppercase tracking-wide text-faint">
+                Pending
               </Text>
             </View>
             {balances.map((row, i) => (
@@ -138,11 +147,34 @@ export function BalancesSection() {
                     </>
                   )}
                 </View>
+                {/* Authorizations held but not settled. They're already OUT of
+                    the Bank figure and not yet IN the ledger, so showing them
+                    is what makes the two columns reconcile by eye. */}
+                <View className="w-20 items-end">
+                  {row.pendingCents == null ? (
+                    <Text className="text-2xs text-faint">—</Text>
+                  ) : (
+                    <Text
+                      className={`text-sm ${row.pendingCents > 0 ? "text-warn" : "text-faint"}`}
+                      style={{ fontVariant: ["tabular-nums"] }}
+                    >
+                      {formatCents(row.pendingCents)}
+                    </Text>
+                  )}
+                </View>
               </Pressable>
             ))}
           </View>
         )}
       </Card>
+      {stripe && (stripe.availableCents != null || stripe.pendingCents != null) ? (
+        <Text className="mt-2 text-2xs text-muted">
+          Held at Stripe: {formatCents(stripe.availableCents ?? 0)} available
+          {stripe.pendingCents ? ` · ${formatCents(stripe.pendingCents)} still clearing` : ""}
+          {stripe.asOf ? ` · as of ${shortDate(stripe.asOf)}` : ""}. Not in any
+          book until it pays out.
+        </Text>
+      ) : null}
       <BookValueBreakdownModal scope={openScope} onClose={() => setOpenScope(null)} />
     </>
   );

@@ -1066,14 +1066,35 @@ export const saveAccountBalance = internalMutation({
   args: {
     accountRowId: v.id("increaseAccounts"),
     balanceCents: v.number(),
+    /** Authorizations held but not settled — see the schema field's doc. */
+    pendingCents: v.optional(v.number()),
   },
   returns: v.null(),
-  handler: async (ctx, { accountRowId, balanceCents }) => {
+  handler: async (ctx, { accountRowId, balanceCents, pendingCents }) => {
     await ctx.db.patch(accountRowId, {
       balanceCents,
+      ...(pendingCents !== undefined ? { pendingCents } : {}),
       balanceAsOf: Date.now(),
       updatedAt: Date.now(),
     });
+    return null;
+  },
+});
+
+/** Org-level Stripe balance snapshot — one Stripe account, so not per-book. */
+export const saveStripeBalance = internalMutation({
+  args: { availableCents: v.number(), pendingCents: v.number() },
+  returns: v.null(),
+  handler: async (ctx, { availableCents, pendingCents }) => {
+    const row = await ctx.db.query("financeSettings").first();
+    const patch = {
+      stripeAvailableCents: availableCents,
+      stripePendingCents: pendingCents,
+      stripeBalanceAsOf: Date.now(),
+      updatedAt: Date.now(),
+    };
+    if (row) await ctx.db.patch(row._id, patch);
+    else await ctx.db.insert("financeSettings", { sandboxMode: false, ...patch });
     return null;
   },
 });
@@ -1616,16 +1637,28 @@ async function runEngine(
             base,
             `/accounts/${encodeURIComponent(account.increaseAccountId)}/balance`,
           );
-          const cents =
+          const available =
             typeof balance.available_balance === "number"
               ? balance.available_balance
-              : typeof balance.current_balance === "number"
-                ? balance.current_balance
-                : null;
+              : null;
+          const current =
+            typeof balance.current_balance === "number"
+              ? balance.current_balance
+              : null;
+          const cents = available ?? current;
+          // `current` counts authorizations still held; `available` doesn't.
+          // Their difference IS the pending total, so it costs no extra call.
+          // Clamped at 0 — a negative would mean available exceeds current,
+          // which isn't a pending hold and shouldn't be shown as one.
+          const pendingCents =
+            available != null && current != null
+              ? Math.max(0, current - available)
+              : undefined;
           if (cents != null) {
             await ctx.runMutation(internal.reconciliation.saveAccountBalance, {
               accountRowId: account.accountRowId,
               balanceCents: cents,
+              ...(pendingCents !== undefined ? { pendingCents } : {}),
             });
           }
         } catch (err) {
@@ -1634,6 +1667,32 @@ async function runEngine(
             `[reconciliation] balance snapshot failed for ${account.increaseAccountId}`,
             err,
           );
+        }
+      }
+
+      // Stripe's own balance, in the same best-effort spirit. Money sitting at
+      // the processor is real money the org holds and the accounts page could
+      // not see it — every figure there was either a book total or an Increase
+      // balance, so funds in transit looked like they had vanished.
+      if (key) {
+        try {
+          const bal = await stripeGet(key, "/balance");
+          const sumUsd = (arr: unknown): number =>
+            Array.isArray(arr)
+              ? arr
+                  .filter(
+                    (b): b is { amount: number; currency: string } =>
+                      typeof (b as { amount?: unknown })?.amount === "number" &&
+                      (b as { currency?: unknown })?.currency === "usd",
+                  )
+                  .reduce((sum, b) => sum + b.amount, 0)
+              : 0;
+          await ctx.runMutation(internal.reconciliation.saveStripeBalance, {
+            availableCents: sumUsd(bal.available),
+            pendingCents: sumUsd(bal.pending),
+          });
+        } catch (err) {
+          console.error("[reconciliation] Stripe balance snapshot failed", err);
         }
       }
     }
@@ -2041,6 +2100,10 @@ export const accountBalances = query({
       truncated: v.boolean(),
       bankBalanceCents: v.union(v.number(), v.null()),
       bankBalanceAsOf: v.union(v.number(), v.null()),
+      /** Card authorizations held but not settled. They reach neither
+       *  Reconcile nor book value, but the bank figure already excludes them —
+       *  so without this the two differ with nothing on screen to say why. */
+      pendingCents: v.union(v.number(), v.null()),
     }),
   ),
   handler: async (ctx) => {
@@ -2148,6 +2211,7 @@ export const accountBalances = query({
       truncated: boolean;
       bankBalanceCents: number | null;
       bankBalanceAsOf: number | null;
+      pendingCents: number | null;
     }[] = [];
     await Promise.all(
       scopes.map(async ({ scope, scopeName: name }) => {
@@ -2186,6 +2250,7 @@ export const accountBalances = query({
           truncated: truncatedScopes.has(scope),
           bankBalanceCents: account?.balanceCents ?? null,
           bankBalanceAsOf: account?.balanceAsOf ?? null,
+          pendingCents: account?.pendingCents ?? null,
         });
       }),
     );
@@ -2195,6 +2260,36 @@ export const accountBalances = query({
       (a, b) => (orderIndex.get(a.scope) ?? 0) - (orderIndex.get(b.scope) ?? 0),
     );
     return out;
+  },
+});
+
+/**
+ * Money sitting at Stripe — org-level, because there is one Stripe account and
+ * its balance cannot be attributed to a chapter until it pays out.
+ *
+ * Exists so the accounts page can show the WHOLE picture. Before this, every
+ * figure there was either a book total or an Increase balance, so funds in
+ * transit at the processor simply weren't anywhere — the founder could hold
+ * thousands at Stripe and see no trace of it.
+ *
+ * Refreshed by the morning engine's snapshot step. Null until its first
+ * successful run, which the UI renders as "not yet" rather than as zero.
+ */
+export const stripeBalance = query({
+  args: {},
+  returns: v.object({
+    availableCents: v.union(v.number(), v.null()),
+    pendingCents: v.union(v.number(), v.null()),
+    asOf: v.union(v.number(), v.null()),
+  }),
+  handler: async (ctx) => {
+    await requireReconciliationAudit(ctx);
+    const row = await ctx.db.query("financeSettings").first();
+    return {
+      availableCents: row?.stripeAvailableCents ?? null,
+      pendingCents: row?.stripePendingCents ?? null,
+      asOf: row?.stripeBalanceAsOf ?? null,
+    };
   },
 });
 
