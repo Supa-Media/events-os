@@ -61,9 +61,11 @@ assistant all follow the one global provider/model:
 
 - **Receipt OCR** — `receiptInbox.ocrReceiptImage` (email pipeline,
   `receipts.processUploadedReceipt` upload, `smsReceipts` MMS).
-- **Finance auto-coding** — `aiCoding.suggestCoding` /
-  `suggestCodingSystem`. The `aiUsageEvents` audit trail is intact; on Ollama the
-  row logs token counts with **$0 cost** (subscription — no per-call charge).
+- ~~**Finance auto-coding**~~ — REMOVED. `aiCoding.suggestCoding` /
+  `suggestCodingSystem`, the `aiUsageEvents` audit trail, and the Reconcile
+  grid's Suggested column are gone: the owner's read was that the suggestion
+  chip was noise, and a model call per ingested transaction is not worth
+  paying for to produce one nobody acts on.
 - **Assistant** — `aiActions.runAssistant` / `runDocAssistant` /
   `runInventoryAssistant` / `autofillItem`. OpenRouter behavior (retry, free-model
   fallback, prompt-cache, tool-calling) is unchanged; on Ollama tools pass through
@@ -74,6 +76,6 @@ assistant all follow the one global provider/model:
 
 `lib/aiEngine.chatCompletion` takes the model in its request, and every call
 site resolves `override > stored > default`. The retry-UI parameter is already
-plumbed: `receipts.processUploadedReceipt({ receiptId, modelOverride })`,
-`aiCoding.suggestCoding({ transactionId, modelOverride })`. Pass a different
-model id as `modelOverride` to re-run one extraction/coding on a stronger model.
+plumbed: `receipts.processUploadedReceipt({ receiptId, modelOverride })`. Pass
+a different model id as `modelOverride` to re-run one extraction on a stronger
+model.

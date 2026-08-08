@@ -8,7 +8,7 @@ import { isScanTruncated, SPEND_SCAN_LIMIT } from "../smsUsage";
 /**
  * SMS usage/cost ledger (Attendance F) — `smsUsage.getSmsSpendSummary`, the
  * monthly rollup behind `TwilioUsageSummary.tsx`:
- *  - central ED/FM-only (same gate as `aiCodingData.getUsageSummary`), a
+ *  - central ED/FM-only, a
  *    superuser passes it too (the gate's short-circuit).
  *  - current vs previous UTC-calendar-month totals, split by purpose.
  *  - only `outcome:"sent"` rows count toward spend (failed/opted_out never

@@ -118,11 +118,6 @@ import {
   aiUsage,
   aiSettings,
 } from "./schema/ai";
-import {
-  aiUsageEvents,
-  aiCodingIngestState,
-  aiCodingOutcomes,
-} from "./schema/aiUsage";
 import { academyProgress, courseCompletions } from "./schema/academy";
 import { schemaMigrations } from "./schema/migrations";
 import { integrationSettings } from "./schema/integrationSettings";
@@ -459,15 +454,6 @@ const schema = defineSchema({
   aiUsage,
   aiSettings,
 
-  // AI usage audit trail — finance auto-coding's per-call OpenRouter log
-  // (distinct from the assistant's `aiUsage` budget table above).
-  aiUsageEvents,
-  // Debounce mutex for the on-ingest AI-coding suggestion trigger.
-  aiCodingIngestState,
-  // Append-only human-decision log for AI coding suggestions — the substrate
-  // for measuring suggestion precision by dimension (fund/category/budget).
-  aiCodingOutcomes,
-
   // Academy (per-person curriculum progress + earned course badges).
   academyProgress,
   courseCompletions,
@@ -491,7 +477,7 @@ const schema = defineSchema({
   // schema/smsOptOuts.ts + smsOptOuts.ts + the `/twilio/webhook` route.
   smsOptOuts,
   // SMS usage/cost ledger (Attendance F) — one row per send attempt (blast or
-  // verification code), the Twilio analog of `aiUsageEvents`. See
+  // verification code). See
   // schema/smsUsage.ts + smsUsage.ts.
   smsUsageEvents,
 

@@ -46,6 +46,11 @@ async function txn(
     status: "unreviewed" | "categorized" | "reconciled";
     receiptStorageId: Id<"_storage">;
     amountCents: number;
+    /** The tell `markAsTransfer` writes — what makes a leg MARKED, not booked. */
+    preMarkFlow: "inflow" | "outflow";
+    /** The tell `markAsPayout` writes. */
+    payoutProcessor: "givebutter" | "stripe" | "other";
+    transferGroupId: string;
   }> = {},
 ): Promise<Id<"transactions">> {
   return await run(s.t, (ctx) =>
@@ -57,6 +62,9 @@ async function txn(
       postedAt: Date.now(),
       status: fields.status ?? "unreviewed",
       receiptStorageId: fields.receiptStorageId,
+      preMarkFlow: fields.preMarkFlow,
+      payoutProcessor: fields.payoutProcessor,
+      transferGroupId: fields.transferGroupId,
       createdAt: Date.now(),
     }),
   );
@@ -196,6 +204,132 @@ describe("facet counts — the number shown is a number you can get to", () => {
     const res = await s.as.query(api.finances.listReconcile, { filters: ["spend"] });
     expect(res.counts.all).toBe(2);
     expect(res.rows).toHaveLength(1);
+  });
+});
+
+/**
+ * INTERNAL TRANSFERS ARE NOT QUEUE WORK.
+ *
+ * Reconcile asks three things of a row: code it, document it, close it. A leg
+ * the app booked itself (`transfers.recordTransfer` and friends) owes none of
+ * them — it's one half of a matched pair with a note explaining the
+ * arithmetic, it takes no category or budget, and it owes no receipt. It was
+ * therefore volume the treasurer could only skip past. It's hidden by default
+ * and reachable under Kind → Transfers.
+ *
+ * The line is `isMarkedTransfer`, NOT `flow === "transfer"`: a leg a human
+ * MARKED still owes a receipt on purpose (`needsDocumentation`), so hiding it
+ * would silently end a live chase.
+ */
+describe("internal transfer legs are hidden from the default queue", () => {
+  test("a booked leg is out of the rows, the total, and the backlog headline", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+
+    const spend = await txn(s, { flow: "outflow" });
+    const leg = await txn(s, { flow: "transfer", transferGroupId: "grp_1" });
+
+    const res = await s.as.query(api.finances.listReconcile, { filters: [] });
+    expect(res.rows.map((r) => r.id)).toEqual([spend]);
+    // The header's total has to be a number scrolling can reach.
+    expect(res.counts.all).toBe(1);
+    // Both rows are unreviewed, but only one of them is work.
+    expect(res.toClearCount).toBe(1);
+    expect(res.counts.to_review).toBe(1);
+    // Suppressed, not lost — see the next test.
+    expect(res.counts.transfers).toBe(1);
+    expect(leg).toBeDefined();
+  });
+
+  test("Kind → Transfers is the way back, and its count says how many", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+
+    await txn(s, { flow: "outflow" });
+    const legOut = await txn(s, { flow: "transfer", transferGroupId: "grp_1" });
+    const legIn = await txn(s, { flow: "transfer", transferGroupId: "grp_1" });
+
+    // The facet count is computed over the hidden rows, so the dropdown can
+    // advertise what selecting it would produce.
+    const hidden = await s.as.query(api.finances.listReconcile, { filters: [] });
+    expect(hidden.counts.transfers).toBe(2);
+
+    const shown = await s.as.query(api.finances.listReconcile, {
+      filters: ["transfers"],
+    });
+    expect(shown.rows.map((r) => r.id).sort()).toEqual([legOut, legIn].sort());
+    expect(shown.rows).toHaveLength(hidden.counts.transfers);
+  });
+
+  test("a MARKED transfer stays — it still owes a receipt", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+
+    const marked = await txn(s, { flow: "transfer", preMarkFlow: "outflow" });
+    await txn(s, { flow: "transfer", transferGroupId: "grp_1" });
+
+    const res = await s.as.query(api.finances.listReconcile, { filters: [] });
+    expect(res.rows.map((r) => r.id)).toEqual([marked]);
+    expect(res.counts.missing_receipt).toBe(1);
+    // Kind → Transfers covers BOTH classes — that's what makes it the single
+    // way back to the hidden ones.
+    expect(res.counts.transfers).toBe(2);
+  });
+
+  test("a payout deposit stays — outside money arriving earns one look", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+
+    // Deliberately still `flow:"inflow"` — `markAsPayout` never rewrites a
+    // deposit to a transfer, because that would erase the org's revenue.
+    const payout = await txn(s, { flow: "inflow", payoutProcessor: "givebutter" });
+    await txn(s, { flow: "transfer", transferGroupId: "grp_1" });
+
+    const res = await s.as.query(api.finances.listReconcile, { filters: [] });
+    expect(res.rows.map((r) => r.id)).toEqual([payout]);
+    expect(res.counts.payouts).toBe(1);
+  });
+
+  test("hidden legs never leak into another facet's count", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+
+    await txn(s, { flow: "transfer", status: "unreviewed", transferGroupId: "g1" });
+    await txn(s, { flow: "transfer", status: "reconciled", transferGroupId: "g2" });
+
+    // A count you can't get to is the defect this whole area exists to
+    // prevent: "To review 1" beside a queue that will render zero rows.
+    const res = await s.as.query(api.finances.listReconcile, { filters: [] });
+    expect(res.rows).toHaveLength(0);
+    expect(res.counts.to_review).toBe(0);
+    expect(res.counts.reconciled).toBe(0);
+    expect(res.counts.missing_receipt).toBe(0);
+    expect(res.counts.all).toBe(0);
+    expect(res.toClearCount).toBe(0);
+    expect(res.counts.transfers).toBe(2);
+  });
+
+  test("another group's selection still narrows the transfers count", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    await txn(s, { flow: "transfer", transferGroupId: "g1" });
+
+    // A transfer leg is never `needs_budget`, so asking for both is a real
+    // empty set — and the count has to say so rather than promising a row.
+    const res = await s.as.query(api.finances.listReconcile, {
+      filters: ["needs_budget"],
+    });
+    expect(res.counts.transfers).toBe(0);
+    const both = await s.as.query(api.finances.listReconcile, {
+      filters: ["needs_budget", "transfers"],
+    });
+    expect(both.rows).toHaveLength(0);
   });
 });
 

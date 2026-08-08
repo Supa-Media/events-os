@@ -566,8 +566,16 @@ describe("finances.unmarkTransfer", () => {
     const counts = (
       await s.as.query(api.finances.listReconcile, { filter: "all" })
     ).counts;
-    expect(counts.transfers).toBe(0);
+    // They DO fall under Kind → Transfers — that key means "an internal
+    // transfer leg", not "a leg someone marked", and it's the only way back to
+    // rows the default queue now hides. What "not markable, not chased" pins is
+    // the two lines below it: `isMarkedTransfer` is still false for them (so
+    // `unmarkTransfer` refuses, asserted above) and they owe no documentation.
+    expect(counts.transfers).toBe(4);
     expect(counts.missing_receipt).toBe(0);
+    // And they're out of the default queue entirely: nothing to code, nothing
+    // to document, nothing to close.
+    expect(counts.all).toBe(0);
   });
 });
 

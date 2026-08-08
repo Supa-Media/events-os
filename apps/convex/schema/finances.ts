@@ -480,16 +480,26 @@ export const transactions = defineTable({
 
   status: v.union(...TRANSACTION_STATUSES.map((s) => v.literal(s))),
 
-  // AI auto-coding proposal (a human confirms; the model never moves money).
+  // DEAD FIELD, retained only so existing rows validate. The AI auto-coding
+  // suggestion pipeline that wrote this (a model proposing a fund/category/
+  // budget, a bookkeeper accepting it in Reconcile) was removed — the owner's
+  // read was that the grid's suggestion column was noise, and a model call per
+  // ingested transaction is not worth paying for to produce a chip nobody
+  // acts on. Nothing reads or writes this now; the last suggestions written
+  // before the removal are simply inert.
+  //
+  // It CANNOT be dropped from the schema yet: production transactions still
+  // carry the object, and Convex fails a deploy on any document with a field
+  // the validator doesn't allow (verified with `convex deploy --dry-run`
+  // against prod). Deleting it needs a migration that strips the field from
+  // every row first — worth doing, deliberately not bundled into a change
+  // whose point was to take a column off a screen. The shape below is
+  // therefore frozen as-written: it exists to accept history, not to describe
+  // anything the app produces.
   aiSuggestion: v.optional(
     v.object({
       fundId: v.optional(v.id("funds")),
       categoryId: v.optional(v.id("budgetCategories")),
-      // WP-U (one home per dollar): the model now proposes a BUDGET directly
-      // instead of a separate event/project link — budgetId subsumes both.
-      // `projectId`/`eventId` are kept below only so an OLD stored suggestion
-      // (written before this PR) still validates; nothing writes them anymore
-      // (see `aiCodingData.writeSuggestion`) — phase B drops them.
       budgetId: v.optional(v.id("budgets")),
       projectId: v.optional(v.id("projects")),
       eventId: v.optional(v.id("events")),
@@ -497,24 +507,7 @@ export const transactions = defineTable({
       rationale: v.optional(v.string()),
       model: v.optional(v.string()),
       suggestedAt: v.optional(v.number()),
-      // Set when this "suggestion" is actually a failed-attempt marker (the
-      // OpenRouter call errored, non-200'd, or returned unparseable JSON) —
-      // never a real proposal. Lets the hourly sweep tell "never attempted"
-      // apart from "attempted and failed", so it can retry after a cooldown
-      // instead of resubmitting every run forever. See aiCodingData.ts.
       failed: v.optional(v.boolean()),
-      // Snapshot of the txn's OWN status/fund/category/budget at the exact
-      // moment the model read it (`gatherSuggestionContext`, BEFORE the
-      // OpenRouter call) — PR fix-suggest-broaden. `acceptSuggestion` diffs
-      // this against the txn's LIVE values to detect a real human edit that
-      // raced the suggestion (a stale `writeSuggestion` landing after a
-      // manual edit already cleared the old suggestion), field-by-field —
-      // not just a status flip, since a `categorized`-origin suggestion
-      // (broadened eligibility) can be invalidated by a category/fund/budget
-      // change alone without the status itself moving again. Optional: a
-      // suggestion written before this field existed (or seeded directly in
-      // a test) has none, and `acceptSuggestion` falls back to its original
-      // unreviewed-only gate in that case.
       baseline: v.optional(
         v.object({
           status: v.union(...TRANSACTION_STATUSES.map((s) => v.literal(s))),

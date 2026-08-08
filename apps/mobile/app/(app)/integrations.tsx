@@ -316,7 +316,7 @@ function AiEngineCard({
         <View className="flex-1">
           <Text className="text-sm font-semibold text-ink">AI engine</Text>
           <Text className="text-xs text-muted">
-            Global model powers finance auto-coding + the assistant; receipt OCR uses its own
+            Global model powers the assistant; receipt OCR uses its own
             dedicated model below.
           </Text>
         </View>

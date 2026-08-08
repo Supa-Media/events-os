@@ -18,6 +18,12 @@
  *
  *   KIND  — what sort of row is this? Spend, an internal transfer, a processor
  *           payout. Roughly exclusive per row, but selectable together to widen.
+ *           `transfers` is also the ONE key that widens the queue's population
+ *           rather than narrowing it: an unmarked internal transfer leg is
+ *           hidden from the default queue (it owes no coding, no receipt and no
+ *           close — see `finances.listReconcile`), and picking Transfers is how
+ *           you get it back. Its count is computed over the hidden rows too, so
+ *           the number in the dropdown is still one you can get to.
  *   STATE — where is it in the pipeline? Needs review, needs a budget, needs a
  *           receipt, undocumented, owed back personally, or already cleared. A
  *           row can be in several of these at once.
@@ -101,6 +107,11 @@ export const RECONCILE_FILTER_GROUPS: readonly {
 /** Human labels — one source, so the menu, the trigger and any summary agree. */
 export const RECONCILE_FILTER_LABELS: Record<ReconcileFilterKey, string> = {
   spend: "Spend",
+  // Every internal transfer leg, not just the ones a bookkeeper MARKED as one
+  // (`finances.ts#isMarkedTransfer`). The marked/unmarked distinction still
+  // decides what a row OWES and whether Un-mark is offered; it deliberately
+  // doesn't decide what "Transfers" finds, because the unmarked legs are the
+  // ones the default queue hides and this is their only way back.
   transfers: "Transfers",
   payouts: "Payouts",
   to_review: "To review",

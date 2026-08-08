@@ -9,7 +9,7 @@ import type { QueryCtx } from "./_generated/server";
 import { v } from "convex/values";
 
 /** Bounded scan cap for the opt-out set — an audit/filter surface, not a
- *  paginated ledger (same spirit as `aiCodingData.ts`'s `USAGE_SCAN_LIMIT`).
+ *  paginated ledger.
  *  20k opted-out numbers deployment-wide is generously above anything this
  *  org's SMS volume will produce. */
 const OPT_OUT_SCAN_LIMIT = 20_000;

@@ -174,8 +174,7 @@ Per the house rule, gated from day one via `lib/transactionCodingAccess.ts`:
 
 1. Ingest (`applyIncreaseCardTransaction` et al.) now stamps
    `codingState: "uncoded"` (when posted ≥ `codingRequiredSinceMs` and a
-   cardholder is known). The existing reviewer-side `aiSuggestion` schedule
-   is untouched — it stays out of the coding flow entirely.
+   cardholder is known).
 2. **The reminder unit changes: we stop chasing receipts and start chasing
    codings** (owner call, 2026-08-08). A receipt is one *field* of a coding,
    not its own nag stream. `notifyReceiptDigest`, the escalation stages
@@ -208,10 +207,11 @@ inline), and the reviewer as the real gate. **No AI anywhere in coding**
 no pre-filled purposes, no AI drafts, no AI-picked expense types. A
 pre-filled field gets rubber-stamped; a blank field with a good prompt gets
 answered, and the answer is the cardholder's own testimony, which is what
-an accountable plan (and a public ledger) actually needs. The existing
-reconcile AI suggestions (`aiSuggestion` on transactions) remain what they
-are today — a reviewer-side hint for budget/category in the FM's picker —
-and never write into a `transactionCodings` row.
+an accountable plan (and a public ledger) actually needs. The one AI surface
+that used to sit next to this — the reviewer-side `aiSuggestion` budget/category
+hints in the Reconcile grid — was a separate feature that never wrote into a
+`transactionCodings` row, and has since been removed outright (the owner's read
+was that the column was noise).
 
 ### Mistake-proofing the editor (owner call: intuitive, prevents mistakes)
 
@@ -393,9 +393,9 @@ the capstone templates.
    `requireCodingNamesView`.
 5. **No AI in coding.** Substantiation is human-authored end to end: no
    pre-fills, no drafts, no AI-picked types, no AI quality gate. The form's
-   prompts and the human reviewer are the quality mechanism. Existing
-   reviewer-side `aiSuggestion` hints for budget/category are unchanged but
-   never touch a coding.
+   prompts and the human reviewer are the quality mechanism. (The separate
+   reviewer-side `aiSuggestion` budget/category hints never touched a coding,
+   and have since been removed from the product entirely.)
 
 ## Still open (defaults apply unless overridden — neither blocks phase 1)
 

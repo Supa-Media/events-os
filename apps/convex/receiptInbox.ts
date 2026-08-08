@@ -1859,7 +1859,7 @@ function ocrFailureMessage(
 }
 
 /** Extract the first balanced JSON object from a model reply (mirrors
- *  `aiCoding.parseModelJson`, kept local to avoid a cross-module import). */
+ *  a model reply, kept local to this module). */
 function extractJson(s: string): any | null {
   const start = s.indexOf("{");
   if (start === -1) return null;

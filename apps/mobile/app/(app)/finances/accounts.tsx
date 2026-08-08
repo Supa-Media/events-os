@@ -68,7 +68,6 @@ import {
 import { useActionRunner } from "../../../lib/useActionToast";
 import { AccountRow } from "../../../components/finance/accounts/AccountRow";
 import { ConnectPanel } from "../../../components/finance/accounts/ConnectPanel";
-import { AiUsageSection } from "../../../components/finance/accounts/AiUsageSection";
 import { FinancePolicySection } from "../../../components/finance/accounts/FinancePolicySection";
 import {
   BalancesSection,
@@ -237,8 +236,6 @@ function AccountsBody() {
             />
           ))
         )}
-
-        <AiUsageSection />
 
         <SectionHeader title="Receipt & card policy" />
         <Card>

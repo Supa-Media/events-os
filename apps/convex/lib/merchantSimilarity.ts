@@ -2,11 +2,11 @@
  * Shared merchant-string tokenization + similarity primitives.
  *
  * Extracted from `reconcileSuggest.ts` (the "For" picker's tier-1/2 evidence
- * ranker) so the SAME normalization/tokenization/overlap rules are reused by
- * the LLM auto-coding evidence builder (`lib/codingEvidence.ts`, fed into the
- * prompt via `aiCodingData.gatherSuggestionContext`). Keeping one copy means
- * the heuristic "For" picker and the model see merchant history the same way —
- * they can't silently drift apart on what counts as "the same merchant".
+ * ranker) back when a second consumer — the AI auto-coding evidence builder —
+ * needed the SAME normalization/tokenization/overlap rules. That consumer is
+ * gone; the file stays split out because these are pure primitives with their
+ * own unit tests (`tests/merchantSimilarity.test.ts`) and `reconcileSuggest.ts`
+ * is a query module, not a home for string algebra.
  *
  * Pure functions, no Convex imports — trivially unit-testable and safe to
  * import from either the Node (action) or default (query/mutation) runtime.

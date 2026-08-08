@@ -93,9 +93,7 @@ actually gets billed:
 
 ## 3. Usage/cost ledger
 
-`smsUsageEvents` (`schema/smsUsage.ts`) — one row per SEND ATTEMPT, the
-Twilio analog of `aiUsageEvents` (finance auto-coding's OpenRouter audit
-trail):
+`smsUsageEvents` (`schema/smsUsage.ts`) — one row per SEND ATTEMPT:
 
 ```ts
 smsUsageEvents: {
@@ -120,7 +118,7 @@ Written by:
   `"central"` if the RSVP scope can't be resolved.
 
 `smsUsage.getSmsSpendSummary` (central ED/FM-gated, same as
-`aiCodingData.getUsageSummary`) rolls this up: current + previous UTC-calendar
+the retired AI-usage panel) rolls this up: current + previous UTC-calendar
 -month totals split by purpose, plus a per-chapter breakdown for the current
 month. Only `outcome: "sent"` rows count toward spend — a failed send or a
 send skipped for an opt-out never actually billed. `TwilioUsageSummary.tsx`

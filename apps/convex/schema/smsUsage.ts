@@ -2,7 +2,8 @@ import { defineTable } from "convex/server";
 import { v } from "convex/values";
 
 /**
- * SMS usage/cost ledger (Attendance F) — the Twilio analog of `aiUsageEvents`
+ * SMS usage/cost ledger (Attendance F) — the Twilio analog of the retired
+ * `aiUsageEvents`
  * (`schema/aiUsage.ts`): one row per SMS SEND ATTEMPT, success or failure, so
  * spend is queryable/reviewable instead of only living in Twilio's own
  * console. See docs/plans/sms-comms.md for the pricing constant, the segment
@@ -18,7 +19,7 @@ import { v } from "convex/values";
  */
 export const smsUsageEvents = defineTable({
   // The scope this send was for: a real chapter, or the `"central"` string
-  // sentinel (same convention as `aiUsageEvents.chapterId` — this repo never
+  // sentinel (this repo never
   // uses null sentinels for scope). A blast always carries a real chapter
   // (`blasts.chapterId`); a verification text derives its chapter from the
   // RSVP's event when available, else falls back to "central".
@@ -31,7 +32,7 @@ export const smsUsageEvents = defineTable({
   phoneLast4: v.string(),
   segments: v.number(),
   // USD cost in MICRO-dollars (1e-6 USD), same convention as
-  // `aiUsageEvents.costUsdMicros` — sum and divide by 1_000_000 for display.
+  // Micro-dollars — sum and divide by 1_000_000 for display.
   // 0 for a "failed" or "opted_out" row (no real spend was incurred).
   costUsdMicros: v.number(),
   outcome: v.union(

@@ -8,8 +8,9 @@
  * HUMAN-AUTHORED, end to end (owner decision, 2026-08-08): nothing here
  * pre-fills, drafts, or AI-suggests any field — every answer is the author's
  * own words, which is what makes the record the spender's testimony rather
- * than a rubber-stamped guess. The reviewer-side `transactions.aiSuggestion`
- * budget/category hints are a different feature and never touch these rows.
+ * than a rubber-stamped guess. The reviewer-side AI budget/category hints that
+ * once sat beside this in the Reconcile grid were a separate feature, never
+ * touched these rows, and were removed outright shortly after this shipped.
  *
  * Authored by the transaction's own person or a bookkeeper
  * (`lib/transactionCodingAccess.ts`), decided by a finance manager who is NOT
