@@ -252,6 +252,11 @@ const txnSummaryFields = {
   postedAt: v.number(),
   amountCents: v.number(),
   flow: flowValidator,
+  // The flow this row was INGESTED with, kept when `markAsTransfer` rewrites
+  // `flow` to "transfer". Sent to the client because the grid renders the sign
+  // from `flow`, and a marked pair would otherwise show BOTH legs positive —
+  // the money's direction survives only here (owner report, 2026-08-07).
+  preMarkFlow: v.union(v.literal("inflow"), v.literal("outflow"), v.null()),
   status: statusValidator,
   description: v.union(v.string(), v.null()),
   merchantName: v.union(v.string(), v.null()),
@@ -910,6 +915,7 @@ function toTxnSummary(tr: Doc<"transactions">) {
     postedAt: tr.postedAt,
     amountCents: tr.amountCents,
     flow: tr.flow,
+    preMarkFlow: tr.preMarkFlow ?? null,
     status: tr.status,
     description: tr.description ?? null,
     merchantName: tr.merchantName ?? null,

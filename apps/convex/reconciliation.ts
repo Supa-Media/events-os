@@ -1118,9 +1118,23 @@ async function stripeGet(
   if (!res.ok) {
     const text = await res.text();
     console.error(`[reconciliation] Stripe GET ${path} failed:`, text);
+    // Carry Stripe's OWN message into the error, not just the status. A payout
+    // allocation that fails writes this string to `stripePayouts.error`, and
+    // "Stripe request failed (400)" told a reader nothing they could act on —
+    // the reason was only ever in the logs, which had rotated by the time
+    // anyone looked (po_1U1qk8Qv9S5xW6eKsjkeLJvv, 2026-08-07).
+    let detail = "";
+    try {
+      const parsed = JSON.parse(text) as { error?: { message?: string; param?: string } };
+      const msg = parsed.error?.message;
+      const param = parsed.error?.param;
+      if (msg) detail = ` ${msg}${param ? ` (param: ${param})` : ""}`;
+    } catch {
+      if (text) detail = ` ${text.slice(0, 200)}`;
+    }
     throw new ConvexError({
       code: "STRIPE_ERROR",
-      message: `Stripe request failed (${res.status}).`,
+      message: `Stripe request failed (${res.status}).${detail}`,
     });
   }
   return (await res.json()) as Record<string, unknown>;
