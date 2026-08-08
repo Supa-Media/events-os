@@ -37,7 +37,12 @@ import { Doc, Id } from "./_generated/dataModel";
 import { normalizeEmail } from "./lib/access";
 import { normalizePhone } from "./lib/twilio";
 import { requireEvent, requireOwned, requireUserId } from "./lib/context";
-import { hasCheckInAccess, requireCheckInAccess } from "./lib/ticketingAccess";
+import {
+  hasCheckInAccess,
+  requireCheckInAccess,
+  requireTicketCodeRead,
+} from "./lib/ticketingAccess";
+import { allTeamsForEvent, assignTeamIfNeeded } from "./lib/guestTeams";
 import { beginEmailVerification, clearEmailCode } from "./lib/emailCodes";
 import { linkRsvpToPerson } from "./lib/rsvpPeople";
 import { createPaidDonationForOrder } from "./giving";
@@ -711,6 +716,14 @@ export const listTicketsAdmin = query({
  * `requireEvent` gate every OTHER ticketing admin action still uses (see
  * `lib/ticketingAccess.ts`'s doc). `requireCheckInAccess` calls `requireEvent`
  * itself, so a bad/foreign event id still throws its own `NOT_FOUND`.
+ *
+ * When the event has guest teams on (`eventPages.teamsEnabled`) the admitted
+ * guest is also put on the least-loaded team and it comes back on `guestTeam`
+ * — the door's whole job in that mode is to read the color off this result and
+ * hand over the matching wristband. `already` carries the team too, and for
+ * the same reason: "sorry, what team was I?" is the most-asked question at a
+ * door, and the answer has to be the one already on their wrist, never a fresh
+ * pick (see `lib/guestTeams.ts#assignTeamIfNeeded`).
  */
 export const checkInTicket = mutation({
   args: { eventId: v.id("events"), code: v.string() },
@@ -731,6 +744,7 @@ export const checkInTicket = mutation({
         result: "already" as const,
         attendeeName: ticket.attendeeName,
         checkedInAt: ticket.checkedInAt ?? null,
+        guestTeam: await assignTeamIfNeeded(ctx, ticket),
       };
     }
     await ctx.db.patch(ticket._id, {
@@ -742,6 +756,7 @@ export const checkInTicket = mutation({
       result: "ok" as const,
       attendeeName: ticket.attendeeName,
       ticketTypeName: ticket.ticketTypeName,
+      guestTeam: await assignTeamIfNeeded(ctx, ticket),
     };
   },
 });
@@ -767,14 +782,71 @@ export const listCheckInAttendees = query({
       .query("tickets")
       .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .take(1000);
+    // One read of the (≤20) team rows resolves every ticket's team name/color,
+    // instead of a per-ticket `ctx.db.get` across a thousand-row guest list.
+    const teams = new Map(
+      (await allTeamsForEvent(ctx, eventId)).map((t) => [t._id, t]),
+    );
     return tickets
-      .map((t) => ({
-        _id: t._id,
-        attendeeName: t.attendeeName,
-        ticketTypeName: t.ticketTypeName,
-        status: t.status,
-        checkedInAt: t.checkedInAt ?? null,
-      }))
+      .map((t) => {
+        const team = t.guestTeamId ? teams.get(t.guestTeamId) : undefined;
+        return {
+          _id: t._id,
+          attendeeName: t.attendeeName,
+          ticketTypeName: t.ticketTypeName,
+          status: t.status,
+          checkedInAt: t.checkedInAt ?? null,
+          // The id, not just the name, so the door can group and re-assign by
+          // identity — two teams could share a display name on legacy rows.
+          teamId: team?._id ?? null,
+          teamName: team?.name ?? null,
+          teamColor: team?.color ?? null,
+        };
+      })
+      .sort((a, b) => a.attendeeName.localeCompare(b.attendeeName));
+  },
+});
+
+/**
+ * The guest list for the ORGANIZER's own event page — the same roster as
+ * `listCheckInAttendees` but WITH each ticket's code.
+ *
+ * The deliberate counterpart to that query, not a replacement for it. The door
+ * withholds codes because a volunteer with a list of them could admit people
+ * who aren't there; inside Chapter OS the caller is a chapter member looking at
+ * their own event, where "a guest turned up having lost their confirmation
+ * email" is a real job that was otherwise impossible. Gated on
+ * `requireTicketCodeRead` (see `lib/ticketingAccess.ts`), which is
+ * membership — NOT `requireCheckInAccess`, so a door-granted volunteer calling
+ * this directly is refused.
+ */
+export const listCheckInAttendeesAdmin = query({
+  args: { eventId: v.id("events") },
+  handler: async (ctx, { eventId }) => {
+    await requireTicketCodeRead(ctx, eventId);
+    const tickets = await ctx.db
+      .query("tickets")
+      .withIndex("by_event", (q) => q.eq("eventId", eventId))
+      .take(1000);
+    const teams = new Map(
+      (await allTeamsForEvent(ctx, eventId)).map((t) => [t._id, t]),
+    );
+    return tickets
+      .map((t) => {
+        const team = t.guestTeamId ? teams.get(t.guestTeamId) : undefined;
+        return {
+          _id: t._id,
+          attendeeName: t.attendeeName,
+          attendeeEmail: t.attendeeEmail,
+          ticketTypeName: t.ticketTypeName,
+          code: t.code,
+          status: t.status,
+          checkedInAt: t.checkedInAt ?? null,
+          teamId: team?._id ?? null,
+          teamName: team?.name ?? null,
+          teamColor: team?.color ?? null,
+        };
+      })
       .sort((a, b) => a.attendeeName.localeCompare(b.attendeeName));
   },
 });

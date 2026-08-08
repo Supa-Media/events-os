@@ -180,3 +180,77 @@ export async function requireDoorGrantManage(
 ): Promise<Doc<"events">> {
   return await requireEvent(ctx, eventId);
 }
+
+/**
+ * Assert the caller may READ TICKET CODES for `eventId`.
+ *
+ * This is the one power that separates the organizer's own event page from the
+ * door. `listCheckInAttendees` (the door's list) strips codes on purpose: a
+ * door volunteer holding a list of codes could admit anyone whose name they
+ * can read, with the guest nowhere nearby, which is the pass-back the scan
+ * flow exists to prevent. Inside Chapter OS the calculus is different — the
+ * caller is a chapter member looking at their own event, and needing a code
+ * ("the guest lost their confirmation email") is a real job the app otherwise
+ * can't do at all.
+ *
+ * So: today this is any signed-in member of the event's chapter, the same bare
+ * gate every other Tickets-tab admin surface uses — and deliberately NOT
+ * `requireCheckInAccess`, because a door-granted volunteer holds check-in but
+ * must never be handed the codes. Per CLAUDE.md's "gate it behind a power"
+ * rule the resolver exists so that line can move to a named seat capability by
+ * changing THIS body only.
+ */
+export async function requireTicketCodeRead(
+  ctx: QueryCtx,
+  eventId: Id<"events">,
+): Promise<Doc<"events">> {
+  return await requireEvent(ctx, eventId);
+}
+
+/**
+ * Assert the caller may CONFIGURE guest teams for `eventId` — turn team
+ * assignment on/off, change how many teams there are, rename them
+ * (`guestTeams.ts`). Today: any signed-in member of the event's chapter, the
+ * same bare gate every other Tickets-tab setting uses (page setup, ticket
+ * types, giving).
+ *
+ * Deliberately NOT `requireCheckInAccess`: a door volunteer hands out
+ * wristbands, they don't get to re-cut the teams mid-event. Per CLAUDE.md's
+ * "gate it behind a power" rule this resolver exists so that restriction can
+ * graduate to a named seat capability by changing THIS body only.
+ */
+export async function requireGuestTeamManage(
+  ctx: QueryCtx,
+  eventId: Id<"events">,
+): Promise<Doc<"events">> {
+  return await requireEvent(ctx, eventId);
+}
+
+/**
+ * Assert the caller may READ an event's guest teams — a strictly wider gate
+ * than either writer, because two different audiences need the same list:
+ * the door (a chapterless door-granted volunteer reading team names and live
+ * standings off `DoorModeScreen`) and the organizer configuring them from the
+ * Tickets tab (a chapter member who may hold no check-in access at all).
+ *
+ * Written as check-in-access-OR-membership rather than as two near-identical
+ * queries so there is exactly one power named "can see this event's teams".
+ *
+ * Routed through `hasCheckInAccess` rather than a second bare try/catch, so
+ * this file has exactly ONE place that turns a check-in-access rejection into
+ * a boolean. Note what that costs: `hasCheckInAccess` cannot tell "you're not
+ * a door volunteer" from an incidental failure inside the gate, so either way
+ * we fall through to the membership check and a genuine member still gets in.
+ * A non-member gets `requireEvent`'s own error, which is the same error they'd
+ * have received before this resolver existed.
+ */
+export async function requireGuestTeamRead(
+  ctx: QueryCtx,
+  eventId: Id<"events">,
+): Promise<Doc<"events">> {
+  if (await hasCheckInAccess(ctx, eventId)) {
+    const event = await ctx.db.get(eventId);
+    if (event) return event;
+  }
+  return await requireEvent(ctx, eventId);
+}

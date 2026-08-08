@@ -36,6 +36,7 @@ import {
   rsvpPhoneCodes,
   ticketOrders,
   tickets,
+  guestTeams,
   donations,
   eventComments,
   pageReactions,
@@ -248,6 +249,9 @@ const schema = defineSchema({
   rsvpPhoneCodes,
   ticketOrders,
   tickets,
+  // Door-assigned attendee teams (see schema/ticketing.ts) — distinct from the
+  // crew teams that live as select options on the volunteer_expectations grid.
+  guestTeams,
   doorGrants,
   sales,
   donations,

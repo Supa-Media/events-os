@@ -19,6 +19,7 @@ import { Button, Card } from "../../ui";
 import type { ActionRunner } from "../../../lib/useActionToast";
 import { CheckInResultBanner, type CheckInOutcome } from "./CheckInResultBanner";
 import { ManualCheckInEntry } from "./ManualCheckInEntry";
+import { AdminCheckInRoster } from "./AdminCheckInRoster";
 
 export function CheckInCard({
   eventId,
@@ -30,6 +31,9 @@ export function CheckInCard({
   const access = useQuery(api.ticketing.myCheckInAccess, { eventId });
   const router = useRouter();
   const [outcome, setOutcome] = useState<CheckInOutcome | null>(null);
+  // A wrapper object, not a bare string, so tapping the same guest twice
+  // re-fills the field (see ManualCheckInEntry's `prefill`).
+  const [prefill, setPrefill] = useState<{ code: string } | undefined>();
 
   if (access === undefined) {
     return (
@@ -56,6 +60,7 @@ export function CheckInCard({
         eventId={eventId}
         run={run}
         onResult={setOutcome}
+        prefill={prefill}
         trailing={
           <Button
             title="Scan QR code"
@@ -66,6 +71,12 @@ export function CheckInCard({
         }
       />
       {outcome ? <CheckInResultBanner outcome={outcome} /> : null}
+      {/* Codes live here and NOT on the door-mode screen — see
+          AdminCheckInRoster's doc for why the two lists differ. */}
+      <AdminCheckInRoster
+        eventId={eventId}
+        onPickCode={(code) => setPrefill({ code })}
+      />
     </Card>
   );
 }

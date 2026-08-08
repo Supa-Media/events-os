@@ -6,8 +6,8 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useConvexAuth } from "convex/react";
 import { Card, Button, TextField, Icon, ToastView } from "../../components/ui";
 import { colors } from "../../lib/theme";
-import { ALLOWED_DOMAIN, initialGuestState } from "./login.helpers";
-import { useEmailOtpLogin } from "./useEmailOtpLogin";
+import { ALLOWED_DOMAIN, initialGuestState } from "../../components/auth/loginHelpers";
+import { useEmailOtpLogin } from "../../components/auth/useEmailOtpLogin";
 
 /** Only ever follow a same-app relative path. Rejects protocol-relative
  *  ("//evil.com" — a browser resolves that as an absolute URL) and anything
@@ -35,7 +35,8 @@ function safeRedirect(redirect: string | undefined): string | null {
  * Also accepts an optional `?guestEmail=<email>` — the deep link a
  * "you've been granted access" email's CTA points at (`guestSignInUrl` on the
  * backend) — which starts the screen already in guest mode, pre-filled,
- * instead of the default member/username screen (see `login.helpers.ts#initialGuestState`).
+ * instead of the default member/username screen (see
+ * `components/auth/loginHelpers.ts#initialGuestState`).
  */
 export default function LoginScreen() {
   const { isAuthenticated } = useConvexAuth();

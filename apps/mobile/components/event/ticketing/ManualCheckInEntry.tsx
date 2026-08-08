@@ -6,7 +6,7 @@
  * own `code`/`busy` state; reports each result up via `onResult` so the
  * caller decides how to render the outcome (`CheckInResultBanner`).
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { View } from "react-native";
 import { useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -20,6 +20,7 @@ export function ManualCheckInEntry({
   run,
   onResult,
   trailing,
+  prefill,
 }: {
   eventId: Id<"events">;
   run: ActionRunner["run"];
@@ -28,10 +29,18 @@ export function ManualCheckInEntry({
    *  "Scan QR code" button) — kept as a slot so this component owns no
    *  navigation concerns of its own. */
   trailing?: React.ReactNode;
+  /** A code to drop into the field, from the organizer's roster. A fresh
+   *  wrapper object per tap (never a bare string) so re-tapping the SAME guest
+   *  re-fills the field after it's been cleared or edited. */
+  prefill?: { code: string };
 }) {
   const checkIn = useMutation(api.ticketing.checkInTicket);
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (prefill) setCode(prefill.code.toUpperCase());
+  }, [prefill]);
 
   async function handleCheckIn() {
     const trimmed = code.trim();

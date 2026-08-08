@@ -246,12 +246,35 @@ describe("listCheckInAttendees", () => {
       ticketTypeName: "Community (Free)",
       status: "valid",
       checkedInAt: null,
+      // This event doesn't use guest teams, so there's nothing to show.
+      teamId: null,
+      teamName: null,
+      teamColor: null,
     });
     // View-only is the contract: no `code` (admission must prove possession
     // of the ticket — the guest supplies it), no email, no order linkage.
+    // The team fields are safe to add here — they're what the volunteer is at
+    // the door to hand out, and neither one admits anybody.
     expect(Object.keys(list[0]).sort()).toEqual(
-      ["_id", "attendeeName", "checkedInAt", "status", "ticketTypeName"].sort(),
+      [
+        "_id",
+        "attendeeName",
+        "checkedInAt",
+        "status",
+        "teamColor",
+        "teamId",
+        "teamName",
+        "ticketTypeName",
+      ].sort(),
     );
+
+    // The organizer's code-bearing roster is NOT reachable from the door.
+    // This is the whole point of the two-list split: the door volunteer holds
+    // check-in access and still cannot obtain a code, so they can never admit
+    // a guest who isn't standing in front of them.
+    await expect(
+      guest.as.query(api.ticketing.listCheckInAttendeesAdmin, { eventId }),
+    ).rejects.toThrow();
 
     // A check-in (code supplied BY the guest, scanned or typed) flips the
     // row reactively.

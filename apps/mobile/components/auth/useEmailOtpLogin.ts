@@ -3,7 +3,7 @@ import { useConvex } from "convex/react";
 import { useAuthActions } from "@convex-dev/auth/react";
 import { api } from "@events-os/convex/_generated/api";
 import { useActionRunner } from "../../lib/useActionToast";
-import { Mode, isValidEmail, toEmail } from "./login.helpers";
+import { Mode, isValidEmail, toEmail } from "./loginHelpers";
 
 type Step = "request" | "verify";
 
@@ -17,7 +17,7 @@ const NO_ACCESS_MESSAGE =
  * before any code is sent; the server still gates every data call afterward.
  *
  * `initial` seeds guest mode from a `?guestEmail=` deep link (see
- * `login.helpers.ts#initialGuestState`) — a "you've been granted access" email's
+ * `loginHelpers.ts#initialGuestState`) — a "you've been granted access" email's
  * CTA lands here already in guest mode, pre-filled, instead of the member
  * username screen. Defaults to today's behavior when omitted.
  */
