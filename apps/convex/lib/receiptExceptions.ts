@@ -23,6 +23,7 @@ import {
   type ReceiptExceptionReason,
 } from "@events-os/shared";
 import type { FinanceScope } from "./finance";
+import { codingForTransaction } from "./transactionCoding";
 
 /** Every exception ever filed against one transaction, newest first — the
  *  detail panel's history. Bounded by how many times one row has been filed
@@ -74,6 +75,11 @@ export function normalizeExceptionNote(note: string): string {
  * attestation — a second pending row would give an approver two claims to
  * decide between with no way to tell which is current.
  *
+ * LODGING is refused a `bank_record_only` exception outright — see the guard
+ * below. Enforced HERE, in the single writer, so `receiptExceptions.attest`,
+ * the bulk backfill, and anything filed later all inherit the rule instead of
+ * each remembering it.
+ *
  * Does NOT touch `transactions.approvedReceiptExceptionId`: a pending
  * attestation is not documentation yet, and a row must not leave the chase
  * merely because somebody asked to be let off.
@@ -102,6 +108,24 @@ export async function attestException(
       code: "TOO_MUCH_EVIDENCE",
       message: `Attach at most ${MAX_EXCEPTION_EVIDENCE} files of evidence.`,
     });
+  }
+  // LODGING NEEDS AN ITEMIZED RECEIPT AT ANY AMOUNT (IRS §274(d) — the $75
+  // documentary-evidence line every other expense enjoys simply does not apply
+  // to lodging). So "the bank statement line is the only evidence that exists"
+  // is never an acceptable answer for a hotel: the statement proves an amount,
+  // and what the rule wants is the folio showing what the amount was FOR
+  // (room vs. meals vs. movies vs. someone else's room). The other four
+  // reasons stay available — a lost folio with photo evidence is a judgment
+  // call a manager may still accept.
+  if (args.reason === "bank_record_only") {
+    const coding = await codingForTransaction(ctx, args.txn._id);
+    if (coding?.expenseType === "lodging") {
+      throw new ConvexError({
+        code: "LODGING_RECEIPT_REQUIRED",
+        message:
+          "Lodging needs an itemized receipt at any amount — the IRS's $75 documentary-evidence line doesn't apply to hotels, and a bank record can't show what the stay actually covered. Ask the hotel to re-send the folio (they keep them for years); if it truly can't be produced, file a different reason and attach what evidence you have.",
+      });
+    }
   }
   const open = await pendingExceptionForTransaction(ctx, args.txn._id);
   if (open) {

@@ -2875,11 +2875,20 @@ export const getPersonalChargeFlagContact = internalQuery({
  *  Never throws past itself (it's a scheduled fire-and-forget job off the
  *  flagging mutation, so a Resend failure here must not surface anywhere). */
 export const notifyPersonalChargeFlagged = internalAction({
-  // `auto` distinguishes the no-receipt sweep's auto-conversion
+  // `auto` distinguishes the daily sweep's auto-conversion
   // (`autoConvertOverdueReceipts`) from a manager's manual flag — same email
-  // machinery, different reason copy.
-  args: { repaymentId: v.id("personalRepayments"), auto: v.optional(v.boolean()) },
-  handler: async (ctx, { repaymentId, auto }) => {
+  // machinery, different reason copy. `cause` says WHICH sweep clock ran out
+  // (defaults to the no-receipt one, the only clock that existed before
+  // coding): the two endings need genuinely different explanations, and the
+  // uncoded one has to teach the accountable-plan rule it's enforcing.
+  args: {
+    repaymentId: v.id("personalRepayments"),
+    auto: v.optional(v.boolean()),
+    cause: v.optional(
+      v.union(v.literal("no_receipt"), v.literal("uncoded")),
+    ),
+  },
+  handler: async (ctx, { repaymentId, auto, cause }) => {
     try {
       const contact = await ctx.runQuery(
         internal.cards.getPersonalChargeFlagContact,
@@ -3862,39 +3871,57 @@ export const autoLockOverdueCards = internalMutation({
 // ── autoConvertOverdueReceipts (no-receipt → personal repayment) ─────────────
 
 /**
- * The org-wide no-receipt auto-conversion sweep the daily cron calls — the
- * TERMINAL step past the day-1/day-3 receipt reminders and the day-7 auto-lock.
+ * The org-wide auto-conversion sweep the daily cron calls — the TERMINAL step
+ * past the day-1/day-3 reminders and the day-7 auto-lock. TWO clocks run here,
+ * both ending the same way (the charge becomes money the cardholder owes back)
+ * and both reusing the shared `convertChargeToPersonalRepayment`, so the
+ * flag/pay-back machinery is identical to a manual flag:
  *
- * Reads the org-wide deadline (`financeSettings.noReceiptAutoConvertDays` via
- * `readNoReceiptAutoConvertDays`). `null` (the default — central finance never
- * picked a number) → NO-OP. Otherwise every card charge still missing its
- * receipt PAST that many days is converted into a `pending` personal repayment
- * the cardholder owes back (via the shared `convertChargeToPersonalRepayment`,
- * so the flag/pay-back machinery is identical to a manual flag).
+ *  1. NO RECEIPT — `financeSettings.noReceiptAutoConvertDays` (via
+ *     `readNoReceiptAutoConvertDays`). `null` (the default — central finance
+ *     never picked a number) turns this clock OFF. Eligibility is
+ *     `isOverdueReceiptCharge`, the auto-lock sweep's own predicate.
+ *  2. NOT CODED — the 60-day ACCOUNTABLE-PLAN clock (`codingOverdueDays`,
+ *     default `DEFAULT_CODING_OVERDUE_DAYS`), running on any charge the coding
+ *     policy covers that is still `isUncodedCharge` that long after posting.
+ *     This one has no "off" value, exactly like the policy date itself: it is
+ *     the IRS's safe harbor, not a preference. Treas. Reg. §1.62-2 is blunt —
+ *     spending the org can't substantiate in a reasonable period is WAGES to
+ *     the person who spent it. Billing it back is the kinder ending, and the
+ *     escalation email says so in plain words.
  *
- * Same age basis (`postedAt`) and eligibility predicate as the auto-lock sweep:
- * `isOverdueReceiptCharge`, which (since this WP excludes `isPersonal`) also
- * skips an already-converted charge — so a converted charge is never re-swept
- * and, critically, no longer keeps its card auto-locked. Bounded + idempotent
- * like the reminder sweep: at most `REMINDER_BATCH_LIMIT` conversions per run,
- * globally oldest-first, so a backlog drains gradually instead of converting
- * (and emailing) everyone in one burst. Each first-time conversion best-effort
+ * A charge overdue on BOTH is reported as the receipt case: that clock is
+ * usually the shorter one and it's the one the cardholder has already been
+ * warned about twice.
+ *
+ * Age basis is `postedAt` for both. Already-personal charges are excluded by
+ * both predicates, so a converted charge is never re-swept and, critically, no
+ * longer keeps its card auto-locked. Bounded + idempotent like the reminder
+ * sweep: at most `REMINDER_BATCH_LIMIT` conversions per run, globally
+ * oldest-first, so a backlog drains gradually instead of converting (and
+ * emailing) everyone in one burst. Each first-time conversion best-effort
  * emails the cardholder (scheduled, degrades without a Resend key).
  */
 export const autoConvertOverdueReceipts = internalMutation({
   args: {},
   returns: v.object({ convertedCount: v.number() }),
   handler: async (ctx): Promise<{ convertedCount: number }> => {
-    const days = await readNoReceiptAutoConvertDays(ctx);
-    // Policy OFF (the default) — nothing auto-converts.
-    if (days == null) return { convertedCount: 0 };
     const now = Date.now();
-    const cutoff = now - days * DAY_MS;
+    const days = await readNoReceiptAutoConvertDays(ctx);
+    // `null` = the no-receipt clock is OFF (the default). The coding clock
+    // below still runs — it's the accountable-plan deadline, not a setting.
+    const receiptCutoff = days == null ? null : now - days * DAY_MS;
+    const { sinceMs } = await codingPolicy(ctx);
+    const codingCutoff = now - (await codingOverdueMs(ctx));
     const cards = await ctx.db.query("cards").take(AUTOLOCK_LIMIT);
 
     // Gather every eligible charge across ALL cards first, so the batch cap
     // below picks the globally oldest — mirrors `advanceReceiptReminders`.
-    const candidates: { tr: Doc<"transactions">; card: Doc<"cards"> }[] = [];
+    const candidates: {
+      tr: Doc<"transactions">;
+      card: Doc<"cards">;
+      cause: "no_receipt" | "uncoded";
+    }[] = [];
     for (const card of cards) {
       if (card.status === "canceled") continue;
       const txns = await ctx.db
@@ -3903,8 +3930,17 @@ export const autoConvertOverdueReceipts = internalMutation({
         .order("desc")
         .take(CARD_TXN_LIMIT);
       for (const tr of txns) {
-        if (isOverdueReceiptCharge(tr, card, cutoff)) {
-          candidates.push({ tr, card });
+        if (
+          receiptCutoff != null &&
+          isOverdueReceiptCharge(tr, card, receiptCutoff)
+        ) {
+          candidates.push({ tr, card, cause: "no_receipt" });
+        } else if (
+          tr.chapterId === card.chapterId &&
+          tr.postedAt < codingCutoff &&
+          isUncodedCharge(tr, sinceMs)
+        ) {
+          candidates.push({ tr, card, cause: "uncoded" });
         }
       }
     }
@@ -3912,7 +3948,7 @@ export const autoConvertOverdueReceipts = internalMutation({
     const batch = candidates.slice(0, REMINDER_BATCH_LIMIT);
 
     let convertedCount = 0;
-    for (const { tr, card } of batch) {
+    for (const { tr, card, cause } of batch) {
       const { repayment, created } = await convertChargeToPersonalRepayment(
         ctx,
         tr,
@@ -3925,6 +3961,7 @@ export const autoConvertOverdueReceipts = internalMutation({
       await ctx.scheduler.runAfter(0, internal.cards.notifyPersonalChargeFlagged, {
         repaymentId: repayment._id,
         auto: true,
+        cause,
       });
     }
     return { convertedCount };
@@ -3934,14 +3971,22 @@ export const autoConvertOverdueReceipts = internalMutation({
 // ── advanceReceiptReminders (day-1 flag / day-3 escalate) ────────────────────
 
 /**
- * Advances the receipt-reminder TIMELINE for every card's missing-receipt
- * charges — the steps ahead of the terminal day-7 auto-lock above:
+ * Advances the reminder TIMELINE for every card charge that still OWES its
+ * cardholder something — the steps ahead of the terminal day-7 auto-lock
+ * above:
  *
- *  - a charge that's crossed one full day still missing its receipt, with no
- *    stage yet → `receiptReminderStage: "flagged"` (the "end of purchase day"
- *    nudge);
- *  - a charge that's crossed `RECEIPT_ESCALATE_DAYS` (3) still missing its
- *    receipt, not yet escalated → `receiptReminderStage: "escalated"`.
+ *  - a charge that's crossed one full day still owing, with no stage yet →
+ *    `receiptReminderStage: "flagged"` (the "end of purchase day" nudge);
+ *  - a charge that's crossed `RECEIPT_ESCALATE_DAYS` (3) still owing, not yet
+ *    escalated → `receiptReminderStage: "escalated"`.
+ *
+ * "OWES" is `chargeOutstanding` (`lib/codingReminders.ts`), not "has no
+ * receipt": since the chase rekeyed onto CODINGS (owner decision, 2026-08-08)
+ * a charge with a perfect receipt and no business purpose is exactly as
+ * overdue as one with neither, and a charge a reviewer sent back is overdue
+ * again from the author's side. The field keeps its `receiptReminderStage`
+ * name — it is the same timeline, and renaming a stamped column mid-flight
+ * would strand every row already on it.
  *
  * Purely a state transition (mirrors `autoLockOverdueCards`'s DB-apply shape,
  * kept a `mutation` so it's directly testable); it does NOT lock anything and
@@ -3956,8 +4001,8 @@ export const autoConvertOverdueReceipts = internalMutation({
  * older than `REMINDER_SEED_ONLY_DAYS` still get their stage set (within that
  * cap) but are never included in the returned `flagged`/`escalated` arrays,
  * so `sendReceiptReminders` never emails for them. Personal charges
- * (`isPersonal`) are skipped entirely — the cardholder already flagged +
- * is repaying it, so a receipt nag on top is redundant.
+ * (`isPersonal`) are skipped by `chargeOutstanding` itself — the cardholder
+ * already flagged + is repaying it, so a nag on top is redundant.
  */
 export const advanceReceiptReminders = internalMutation({
   args: {},
@@ -3975,6 +4020,7 @@ export const advanceReceiptReminders = internalMutation({
     const flagCutoff = now - DAY_MS;
     const escalateCutoff = now - RECEIPT_ESCALATE_DAYS * DAY_MS;
     const seedOnlyCutoff = now - REMINDER_SEED_ONLY_DAYS * DAY_MS;
+    const { sinceMs } = await codingPolicy(ctx);
     const cards = await ctx.db.query("cards").take(AUTOLOCK_LIMIT);
 
     // Gather every charge due to advance a stage THIS pass, across ALL cards,
@@ -3992,10 +4038,10 @@ export const advanceReceiptReminders = internalMutation({
         .order("desc")
         .take(CARD_TXN_LIMIT);
       for (const tr of txns) {
-        if (!isMissingReceiptCharge(tr, card)) continue;
-        // Personal charges are already flagged + being repaid by the
-        // cardholder directly — don't pile a receipt-reminder nag on top.
-        if (tr.isPersonal === true) continue;
+        // Defensive: `by_card` can only return this card's rows, but every
+        // other sweep in this file re-checks the chapter, so this one does too.
+        if (tr.chapterId !== card.chapterId) continue;
+        if (chargeOutstanding(tr, sinceMs) == null) continue;
         if (
           tr.postedAt < escalateCutoff &&
           tr.receiptReminderStage !== "escalated"
@@ -4037,20 +4083,40 @@ export const advanceReceiptReminders = internalMutation({
   },
 });
 
-/** One line per missing-receipt charge in a cardholder's reminder digest. */
+/** One line per outstanding charge in a cardholder's reminder digest. */
 const reminderChargeValidator = v.object({
   amountCents: v.number(),
   merchantName: v.union(v.string(), v.null()),
   escalated: v.boolean(),
+  // What this charge still owes, in the words the digest prints
+  // (`lib/codingReminders.ts#outstandingLabel`) — the ONE string the email,
+  // the escalation stages and the FM's nudge all read, so they can't drift on
+  // what "still owes something" means.
+  outstanding: v.string(),
+  // Whether the RECEIPT is (part of) what's missing. The day-7 card auto-lock
+  // acts on receipts and nothing else, so the "your card locks" warning has to
+  // know the difference between a charge missing its document and one merely
+  // missing its coding — otherwise the email threatens a lock that will never
+  // come, which is how a warning stops being believed.
+  missingReceipt: v.boolean(),
+  // Whether the CODING is (part of) what's missing — i.e. whether the 60-day
+  // accountable-plan clock is the thing running on this row.
+  needsCoding: v.boolean(),
 });
 
 /**
  * Group the charges that transitioned a reminder stage THIS pass by cardholder,
- * so `sendReceiptReminders` sends ONE digest email per person listing all their
- * still-missing receipts — never one email per charge (a cardholder with five
- * un-receipted charges was getting five separate emails). A cardholder with no
+ * so `sendReceiptReminders` sends ONE digest email per person listing
+ * everything they still owe — never one email per charge (a cardholder with
+ * five open charges was getting five separate emails). A cardholder with no
  * reachable email is dropped. `flagged`/`escalated` are disjoint per pass; a
  * charge is tagged `escalated` when it hit the day-3 step.
+ *
+ * Each line carries its OWN debt (`chargeOutstanding`), because since the
+ * chase rekeyed onto codings the answer differs per row: one charge needs a
+ * receipt, the next needs its purpose written, the next was sent back by a
+ * reviewer. A row that settled between the sweep and this read is dropped
+ * rather than nagged about.
  */
 export const getReceiptReminderDigests = internalQuery({
   args: {
@@ -4066,6 +4132,7 @@ export const getReceiptReminderDigests = internalQuery({
     }),
   ),
   handler: async (ctx, args) => {
+    const { sinceMs } = await codingPolicy(ctx);
     const escalatedSet = new Set(args.escalated.map((id) => id as string));
     const seen = new Set<string>();
     const byPerson = new Map<
@@ -4073,7 +4140,7 @@ export const getReceiptReminderDigests = internalQuery({
       {
         email: string;
         cardholderName: string;
-        charges: Array<{ amountCents: number; merchantName: string | null; escalated: boolean }>;
+        charges: Array<Infer<typeof reminderChargeValidator>>;
       }
     >();
     for (const txnId of [...args.flagged, ...args.escalated]) {
@@ -4081,6 +4148,8 @@ export const getReceiptReminderDigests = internalQuery({
       seen.add(txnId as string);
       const tr = await ctx.db.get(txnId);
       if (!tr?.cardId) continue;
+      const outstanding = chargeOutstanding(tr, sinceMs);
+      if (!outstanding) continue;
       const card = await ctx.db.get(tr.cardId);
       if (!card) continue;
       const person = await ctx.db.get(card.cardholderPersonId);
@@ -4093,6 +4162,9 @@ export const getReceiptReminderDigests = internalQuery({
         amountCents: tr.amountCents,
         merchantName: tr.merchantName ?? null,
         escalated: escalatedSet.has(txnId as string),
+        outstanding,
+        missingReceipt: !isDocumented(tr),
+        needsCoding: isUncodedCharge(tr, sinceMs),
       });
       byPerson.set(key, entry);
     }
@@ -4103,57 +4175,85 @@ export const getReceiptReminderDigests = internalQuery({
   },
 });
 
-/** Best-effort digest email for ONE cardholder listing all their charges still
- *  missing a receipt — logs + no-ops without `RESEND_API_KEY` (dev). */
+/**
+ * Best-effort digest email for ONE cardholder listing everything still open on
+ * their charges — logs + no-ops without `RESEND_API_KEY` (dev).
+ *
+ * ONE EMAIL, ONE UNIT: "you have N charges to code" (owner decision,
+ * 2026-08-08). A charge needing a receipt, a charge needing its purpose
+ * written, and a charge a reviewer sent back are all the same debt to the
+ * cardholder — the person who spent the money still owes an account of it —
+ * so they share one message with a per-line label
+ * (`lib/codingReminders.ts#outstandingLabel`) saying exactly what each one
+ * needs. Splitting them back into separate streams is what produced five
+ * emails a day and taught people to filter the sender.
+ */
 async function notifyReceiptDigest(
   ctx: ActionCtx,
   digest: {
     email: string;
     cardholderName: string;
     anyEscalated: boolean;
-    charges: Array<{ amountCents: number; merchantName: string | null; escalated: boolean }>;
+    charges: Array<Infer<typeof reminderChargeValidator>>;
   },
 ): Promise<void> {
   const count = digest.charges.length;
   if (count === 0) return;
   const fmt = (c: { amountCents: number; merchantName: string | null }) =>
     `$${(c.amountCents / 100).toFixed(2)} at ${c.merchantName ?? "a charge"}`;
+  const noun = count === 1 ? "charge" : "charges";
   const subject =
     count === 1
-      ? `${digest.anyEscalated ? "Still missing" : "Add"} a receipt for your ${fmt(digest.charges[0])}`
-      : `${count} charges still need receipts`;
+      ? `${digest.anyEscalated ? "Still open: " : ""}code your ${fmt(digest.charges[0])} charge`
+      : `${digest.anyEscalated ? "Still open: " : ""}${count} charges to code`;
   const daysLeft = RECEIPT_GRACE_DAYS - RECEIPT_ESCALATE_DAYS;
   const intro =
     count === 1
-      ? `You still need to add a receipt for your ${escapeHtml(fmt(digest.charges[0]))}.`
-      : `You have ${count} card charges still missing receipts:`;
+      ? `your ${escapeHtml(fmt(digest.charges[0]))} charge ${escapeHtml(digest.charges[0].outstanding)}.`
+      : `you have ${count} card charges waiting on you:`;
   const list =
     count === 1
       ? ""
       : emailList(
           digest.charges.map(
-            (c) => `${escapeHtml(fmt(c))}${c.escalated ? " — <b>locks soon</b>" : ""}`,
+            (c) =>
+              `${escapeHtml(fmt(c))} — ${escapeHtml(c.outstanding)}${c.escalated && c.missingReceipt ? " (<b>locks soon</b>)" : ""}`,
           ),
         );
-  const lockNote = digest.anyEscalated
+  // WHY it matters, in plain words — the one sentence the whole enforcement
+  // story rests on (docs/plans/transaction-coding.md §D). Only when a coding
+  // is actually what's missing: a charge that just needs its receipt uploaded
+  // gets the lock warning below instead, and stacking both reads as boilerplate.
+  const anyNeedsCoding = digest.charges.some((c) => c.needsCoding);
+  const whyNote = anyNeedsCoding
     ? emailParagraph(
-        `Add ${count === 1 ? "it" : "them"} soon — a charge still missing its receipt after ${RECEIPT_GRACE_DAYS} days locks your card (${daysLeft} more day${daysLeft === 1 ? "" : "s"} for the escalated one${count === 1 ? "" : "s"}).`,
+        `Coding a charge is saying what it was, why it served the org's work, and who was there. The IRS gives us 60 days — after that, spending we can't substantiate counts as taxable income to the person who spent it, so it gets billed back to you instead.`,
       )
     : "";
-  // The bookkeeper's missing-receipt queue — same filter pill the Reconcile
-  // grid's "Missing receipt" pill drives. Null (omitted) when APP_URL is unset.
-  const link = appUrl("/finances/reconcile?filter=missing_receipt");
+  // The day-7 auto-lock acts on the RECEIPT alone — never warn about it for a
+  // charge whose only debt is its coding.
+  const anyLockable = digest.charges.some((c) => c.escalated && c.missingReceipt);
+  const lockNote = anyLockable
+    ? emailParagraph(
+        `Add the receipt${count === 1 ? "" : "s"} soon — a charge still missing its receipt after ${RECEIPT_GRACE_DAYS} days locks your card (${daysLeft} more day${daysLeft === 1 ? "" : "s"} for the escalated one${count === 1 ? "" : "s"}).`,
+      )
+    : "";
+  // The cardholder's OWN list, pre-filtered to what they owe — where the
+  // coding sheet (purpose, people, receipt) lives. Null (omitted) when APP_URL
+  // is unset.
+  const link = appUrl("/finances/my-transactions?filter=uncoded");
   await sendEmail(ctx, {
     to: digest.email,
     subject,
     html: emailShell(`
-      ${emailHeading(escapeHtml(count === 1 ? subject : "Receipts still needed"))}
+      ${emailHeading(escapeHtml(count === 1 ? `1 ${noun} to code` : `${count} ${noun} to code`))}
       ${emailParagraph(`Hi ${escapeHtml(digest.cardholderName)} — ${intro}`, {
         margin: `0 0 ${count === 1 ? 16 : 8}px`,
       })}
       ${list}
+      ${whyNote}
       ${lockNote}
-      ${link ? emailButtonRow(link, `Add receipt${count === 1 ? "" : "s"} →`) : ""}`),
+      ${link ? emailButtonRow(link, `Code ${count === 1 ? "it" : "them"} →`) : ""}`),
   });
 }
 

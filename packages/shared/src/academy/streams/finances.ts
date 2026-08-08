@@ -75,6 +75,30 @@
  * flows are now taught as deliberate, by-design manual transfers. Its quiz
  * answer about automation timing was corrected to match (still 3 questions —
  * no snapshot change there). Title and slug are unchanged for both sections.
+ *
+ * Transaction coding (docs/plans/transaction-coding.md, owner decisions
+ * 2026-08-08). Phase 1 added the Treasurer's half as a rule on
+ * `finance-reconcile-grid` ("Reconciled means coded, too"). Phase 2 makes it
+ * every cardholder's job, so this file gained a NEW section —
+ * `finance-coding-your-charges` (5 min, 5-quiz), inserted into
+ * `finances-for-everyone` between `finance-receipt-exceptions` and
+ * `finance-reimbursements-and-flags`. It teaches the spender's half: the
+ * what/why/who record you author and someone else approves, the business
+ * purpose written FOR THE PUBLIC ("travel to NY to film Eden event", never
+ * "bus to NY"), routes on travel, the 15-HEAD meal threshold (names +
+ * relationship at or below it, headcount + an identifiable group above it —
+ * never a dollar trigger), that names never publish (the ledger prints the
+ * affiliation breakdown instead), the lodging itemized-receipt exception to
+ * the exception flow, why nothing is pre-filled and no AI drafts a coding,
+ * and the clock — one digest, day-3 escalation, the existing day-7 lock, and
+ * the 60-day auto-convert to a personal repayment, explained in plain words
+ * (unsubstantiated spending is legally taxable income to the spender under
+ * IRS accountable-plan rules). The policy applies to charges posted on/after
+ * September 1, 2026; earlier history is a separate deliberate cleanup.
+ * `finance-card-and-receipts` and `finance-receipt-exceptions` were left
+ * alone — both quizzes sit at the 5-question cap, and this lesson leans on
+ * the exception vocabulary rather than repeating it, which is why it sits
+ * after that section rather than directly after the card lesson.
  */
 
 import type {
@@ -451,7 +475,229 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 34 · Finances for everyone: reimbursements + flags ─────────────────────
+  // ── 34 · Finances for everyone: coding your own charges ────────────────────
+  // Sits AFTER `finance-receipt-exceptions` on purpose, even though it's the
+  // cardholder's other half of `finance-card-and-receipts`: this lesson leans
+  // on the exception flow it doesn't re-teach ("no receipt? you already know
+  // the honest path") and on the lodging exception-to-the-exception, both of
+  // which only make sense once the reader has the exception vocabulary. It
+  // also hands off to `finance-reimbursements-and-flags` next, which is where
+  // the same fields reappear on a request you submit.
+  //
+  // Its own lesson rather than more blocks on the card lesson: it introduces
+  // a new required record with its own review loop, its own clock, and a
+  // publication rule (names never publish) — and both neighbouring quizzes
+  // are already at the 5-question cap `apps/convex/tests/academy.test.ts`
+  // enforces. The Treasurer's half of this ships as a rule on
+  // `finance-reconcile-grid` ("Reconciled means coded, too"); this is the
+  // spender's half. See `docs/plans/transaction-coding.md`.
+  {
+    slug: "finance-coding-your-charges",
+    title: "Coding your charges",
+    subtitle: "What it was, why it served the work, and who was there",
+    minutes: 5,
+    blocks: [
+      {
+        kind: "p",
+        text: "A receipt proves you paid $312.40 to a bus company. It doesn't say why Public Worship should have. That gap is fine while the books are ours alone — and useless the moment we publish them, which is exactly what we're about to do with every transaction we make. So from **September 1, 2026**, every card charge carries a second thing alongside its receipt: a **coding**.",
+      },
+      {
+        kind: "rule",
+        title: "You write it, someone else approves it",
+        text: "A coding answers three questions about a charge: **what it was**, **why it served the org's work**, and **who was involved**. You write it — you're the only person who actually knows — and a different person approves it, the same separation of duties that governs exceptions, reimbursements, and budgets.\n\nIt's a first-class record with its own review, not a note field. If a reviewer sends it back, it comes with a note saying exactly what would make it approvable (\"receipt must show the exact amount\"), and you fix it and resubmit. Nobody guesses on your behalf, and nobody signs off on their own.",
+      },
+      {
+        kind: "rule",
+        title: "Write the purpose for the public, not for the bookkeeper",
+        text: "The business purpose is the sentence a stranger will read on Public Worship's public ledger, under our name, forever. So write it for them.\n\n**\"Bus to NY\"** is what the bank already told us. **\"Travel to NY to film the Eden event\"** is a reason. The test: could someone who wasn't there tell what happened and why it was worth backers' money? If a phrase would only make sense to the four people on the trip, it isn't done yet.",
+      },
+      {
+        kind: "table",
+        headers: ["If the charge is…", "What it asks for on top of the purpose"],
+        rows: [
+          [
+            "**General**",
+            "Nothing extra — the purpose carries the whole record. Most charges are this.",
+          ],
+          [
+            "**Travel**",
+            "A route: where from, where to. City level is enough (\"Kansas City → New York\"), plus who travelled.",
+          ],
+          [
+            "**Lodging**",
+            "The same route — **plus an itemized receipt, at any amount**. This is the one place a bank-record-only exception is refused outright; the IRS wants the itemized folio for lodging, full stop.",
+          ],
+          [
+            "**A meal**",
+            "A headcount, always. 15 people or fewer: every attendee named, with how they relate to the org. More than 15: the headcount plus an identifiable group.",
+          ],
+        ],
+      },
+      {
+        kind: "rule",
+        title: "Meals count people, not dollars",
+        text: "The threshold is **15 heads**, and it has nothing to do with the amount. A $40 pizza order for 16 volunteers gets a headcount and a group description. A $400 dinner for 4 gets four names.\n\nNames come with a relationship — **team · volunteer · community member · contractor · guest** — because \"who was there\" without \"who they are to us\" doesn't answer anything. Above 15, the group description has to be *identifiable*: \"volunteers writing and producing the album\" is a real answer. \"Some people\" is not, and it's the answer a reviewer will send straight back.",
+      },
+      {
+        kind: "rule",
+        title: "Names never publish",
+        text: "We ask for names, and then we don't print them. Ever. The public ledger shows the shape of the room — **\"meal · 5 volunteers, 3 community members, 2 contractors\"** — and the names stay inside the app.\n\nThat isn't a hedge. Volunteers, community members and guests never agreed to appear in a public financial record, and some of them are minors. Publishing our own spending is a decision we made about ourselves; it isn't a decision we get to make about the people who showed up to help us.",
+      },
+      {
+        kind: "p",
+        text: "**A receipt and a coding are two separate obligations.** A charge with a perfect receipt and no coding is exactly as open as one with neither — the reminders, and the day-7 lock, now chase the whole charge being closed out. And if there genuinely is no receipt, you already know the honest path from the last lesson: pick a reason, explain it, attach up to five photos of proof. It lives in the same sheet as the coding, so you're never bounced between two screens. The only exception to the exception is lodging, above.",
+      },
+      {
+        kind: "rule",
+        title: "Nothing is pre-filled, and no AI writes it for you",
+        text: "There is no suggested purpose, no drafted description, no guessed expense type. That's deliberate, and it's the single decision this whole feature rests on: **a pre-filled field gets rubber-stamped; a blank field with a good prompt gets answered.**\n\nWhat we publish has to be the testimony of the person who was actually there. An AI's plausible sentence about a charge it didn't witness is worth nothing to a backer, an auditor, or you.",
+      },
+      {
+        kind: "table",
+        headers: ["Day", "What happens"],
+        rows: [
+          [
+            "Day of charge",
+            "The charge lands in My Transactions, uncoded. Code it here and none of the rest of this table ever happens.",
+          ],
+          [
+            "Day 1–3",
+            "**One digest email** — \"you have 3 charges to code\" — not one nag per charge.",
+          ],
+          [
+            "Day 3+",
+            "The reminder escalates, and your open charges become visible to your Treasurer.",
+          ],
+          [
+            "Day 7",
+            "Your card **locks automatically** — the same 7-day rule you already know, now measured on the charge being closed out, receipt and coding both.",
+          ],
+          [
+            "Day 60",
+            "A charge still unsubstantiated **auto-converts to a personal repayment**. You pay it back.",
+          ],
+        ],
+      },
+      {
+        kind: "rule",
+        title: "Why day 60 has teeth",
+        text: "This isn't an escalating punishment someone invented to make a point. Public Worship pays expenses under what the IRS calls an **accountable plan**, and one of its conditions is that spending gets substantiated within a reasonable period — 60 days is the safe harbor.\n\nSpending nobody substantiates doesn't stay a loose end. It legally becomes **taxable income to the person who spent it** — your money, on your tax return. Converting it to a repayment you can settle is the app choosing the kinder of the two endings. Coding it in week one avoids both.",
+      },
+      {
+        kind: "try_status",
+        title: "A charge waiting on its coding",
+        options: [
+          { value: "uncoded", label: "Uncoded", color: "gray" },
+          { value: "submitted", label: "Submitted for review", color: "amber" },
+          { value: "approved", label: "Approved", color: "green" },
+        ],
+        terminal: "approved",
+        caption:
+          "Changes requested is the real fourth state — a reviewer's note lands back in your court, and the charge is open until you fix it and resubmit. Submitted is your part done; the clock is measured against APPROVED.",
+      },
+      {
+        kind: "scenario",
+        prompt:
+          "Two charges, same week: $38 of pizza for 16 volunteers at an album work session, and a $410 dinner with 4 people — you, a videographer you contract, and two community members considering joining. How do you code the attendees?",
+        options: [
+          {
+            text: "Name everyone on both — you know who was in both rooms",
+            feedback:
+              "Overkill on the pizza, and it's not what the record wants. Above 15 heads the ledger needs a headcount and an identifiable group; 16 names is a list nobody can verify and nobody will read.",
+          },
+          {
+            text: "Headcount plus \"volunteers writing and producing the album\" for the pizza; four names with their relationships for the dinner",
+            correct: true,
+            feedback:
+              "Right. The threshold is 15 HEADS, not dollars — the cheap charge gets the headcount, the expensive one gets names. And the dinner's names carry relationships: contractor, community member, community member, team.",
+          },
+          {
+            text: "Headcount for the pizza; headcount for the dinner too, since it's the bigger amount",
+            feedback:
+              "Backwards. Dollars never move this line. Four people is enumerable, so four names and their relationships are exactly what the record asks for.",
+          },
+          {
+            text: "Names for the pizza since it's a small charge; a group description for the $410 dinner",
+            feedback:
+              "That's the dollar instinct, inverted. It's a headcount rule: 16 people is over the line no matter how little it cost, and 4 people is under it no matter how much.",
+          },
+        ],
+      },
+      {
+        kind: "tip",
+        text: "**Reimbursements work the same way.** When you submit a request, you code each LINE as you go — same purpose, same route on travel, same attendees on meals — and a reviewer can send the whole thing back with a note for you to fix and resubmit rather than rejecting it outright. One habit, both directions. And the policy starts at charges posted **on or after September 1, 2026** — you are not on the hook for reconstructing last spring from memory. That history is a separate, deliberate cleanup, and it will publish flagged for what it is.",
+      },
+    ],
+    quiz: [
+      {
+        prompt:
+          "You take a bus to New York to film the Eden event. What does the coding need beyond the amount and the receipt?",
+        options: [
+          "Nothing — the receipt is the record",
+          "A purpose written for the public, plus where you travelled from and where to",
+          "Just the word \"travel\" and the date",
+          "Approval from your Treasurer before you go",
+        ],
+        answerIndex: 1,
+        explanation:
+          "\"Bus to NY\" is what the bank already told us. \"Travel to NY to film the Eden event\" is a reason — and travel adds a route (city level is enough), because where the money went is part of what the record has to say.",
+      },
+      {
+        prompt:
+          "A $38 pizza order feeds 16 volunteers. A $410 dinner is for 4 people. Which one needs every attendee named?",
+        options: [
+          "The $410 dinner — 4 people is under the 15-head line, so it gets names",
+          "The $38 pizza — small charges are easier to itemize",
+          "Both — any meal needs names",
+          "Neither — meals only ever need a headcount",
+        ],
+        answerIndex: 0,
+        explanation:
+          "It's a HEADCOUNT threshold, not a dollar one. 15 or fewer means names with relationships; more than 15 means the headcount plus an identifiable group (\"volunteers writing and producing the album\"). The price never moves the line.",
+      },
+      {
+        prompt:
+          "Your meal coding lists 10 people by name. What does the public ledger show?",
+        options: [
+          "The full list of names",
+          "First names only",
+          "The headcount and the affiliation breakdown — \"5 volunteers, 3 community members, 2 contractors\"",
+          "Nothing about who was there",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Names never publish. Volunteers, community members and guests didn't consent to a public financial record and some are minors — so the ledger prints the shape of the room and the names stay inside the app.",
+      },
+      {
+        prompt:
+          "A charge from September is still uncoded 60 days later. What happens, and why?",
+        options: [
+          "Nothing — the Treasurer codes it for you at year end",
+          "It auto-converts to a personal repayment you owe back: under IRS accountable-plan rules, spending nobody substantiates becomes taxable income to the person who spent it",
+          "The card is cancelled permanently",
+          "It's written off and removed from the books",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The 60-day safe harbor is the accountable plan's substantiation window. Past it, unsubstantiated spending is legally wages to the spender — converting it to a repayment you can settle is the kinder of the two endings, and coding it in week one avoids both.",
+      },
+      {
+        prompt:
+          "Why does the app leave the purpose blank instead of pre-filling it or letting AI draft it?",
+        options: [
+          "The feature just isn't built yet",
+          "AI is banned everywhere in the app",
+          "Because the record has to be the testimony of the person who was there — a pre-filled field gets rubber-stamped, a blank one with a good prompt gets answered",
+          "To keep the app cheap to run",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Nothing is pre-filled and no AI suggests an expense type or a purpose. A plausible sentence about a charge nobody witnessed is worth nothing to a backer or an auditor — the first-hand account is the whole reason the ledger is worth publishing.",
+      },
+    ],
+  },
+
+  // ── 35 · Finances for everyone: reimbursements + flags ─────────────────────
   {
     slug: "finance-reimbursements-and-flags",
     title: "Reimbursement, and flagging a charge",
@@ -2077,14 +2323,15 @@ export const FINANCES_COURSES: Course[] = [
     audience: "team",
     description:
       "What every member needs: where the money comes from, using your " +
-      "card + the 7-day receipt rule, and both directions of reimbursement. " +
-      "Gains a 'getting your budget approved' module once budget approval " +
-      "(Phase 3) ships.",
+      "card + the 7-day receipt rule, coding what you spent and why, and " +
+      "both directions of reimbursement. Gains a 'getting your budget " +
+      "approved' module once budget approval (Phase 3) ships.",
     icon: "dollar-sign",
     moduleSlugs: [
       "finance-stewardship",
       "finance-card-and-receipts",
       "finance-receipt-exceptions",
+      "finance-coding-your-charges",
       "finance-reimbursements-and-flags",
     ],
   },

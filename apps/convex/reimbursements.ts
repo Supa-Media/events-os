@@ -61,9 +61,17 @@ import {
   REIMBURSEMENT_STATUSES,
   REIMBURSEMENT_STATUS_LABELS,
   EXTERNAL_ACCOUNT_FUNDINGS,
+  ATTENDEE_AFFILIATIONS,
+  EXPENSE_TYPES,
+  EXPENSE_TYPE_LABELS,
+  MAX_PURPOSE_LENGTH,
+  MIN_PURPOSE_LENGTH,
+  codingFieldProblems,
   type ReimbursementStatus,
   type ExternalAccountFunding,
   type BudgetCadence,
+  type AttendeeAffiliation,
+  type ExpenseType,
 } from "@events-os/shared";
 import { normalizeEmail, getUserEmail } from "./lib/access";
 import {
@@ -91,6 +99,7 @@ import {
   effectiveBudgetType,
 } from "./lib/forPickerCandidates";
 import { ROLLUP_SCAN_LIMIT, isAttributableBudget } from "./finances";
+import { codingPolicy } from "./lib/transactionCoding";
 
 const externalAccountFundingValidator = v.union(
   ...EXTERNAL_ACCOUNT_FUNDINGS.map((f) => v.literal(f)),
@@ -101,13 +110,81 @@ const reimbursementStatusValidator = v.union(
   ...REIMBURSEMENT_STATUSES.map((s) => v.literal(s)),
 );
 
+// ── Per-line substantiation (transaction-coding parity, phase 3) ─────────────
+// A reimbursement line carries the SAME §274(d) elements a card charge's
+// `transactionCodings` row does — expense type, a real business purpose, a
+// travel route, who ate — but PER LINE, because one request routinely mixes
+// kinds (a fare, a hotel night, and a team dinner). Validation is the SHARED
+// `codingFieldProblems`, the same list the in-app form and the public token
+// page render, so no surface can disagree with another about what complete
+// substantiation is. See `docs/plans/transaction-coding.md` (phase 3).
+//
+// Reimbursements keep the HARD per-line receipt requirement — no exception
+// path (open question 2, default kept): a reimbursement is a VOLUNTARY
+// submission, unlike a card charge that already happened and has to be
+// substantiated after the fact.
+
+const attendeeValidator = v.object({
+  personId: v.optional(v.id("people")),
+  name: v.string(),
+  affiliation: v.union(...ATTENDEE_AFFILIATIONS.map((a) => v.literal(a))),
+});
+
+/** The substantiation block, as a validator fragment — spread into BOTH the
+ *  submit-line shape and the revision shape so the two can't drift. Every
+ *  field is `v.optional` at the validator level for the same reason
+ *  `receiptStorageId`/`transactionDate` are (below): an arg validator can't
+ *  express "required, and required differently per expense type". The real
+ *  gate is `normalizeLineCoding`, the one invariant owner. */
+const lineCodingValidators = {
+  expenseType: v.optional(v.union(...EXPENSE_TYPES.map((t) => v.literal(t)))),
+  businessPurpose: v.optional(v.string()),
+  travelFrom: v.optional(v.string()),
+  travelTo: v.optional(v.string()),
+  headcount: v.optional(v.number()),
+  attendees: v.optional(v.array(attendeeValidator)),
+  groupDescription: v.optional(v.string()),
+};
+
+type LineAttendee = {
+  personId?: Id<"people">;
+  name: string;
+  affiliation: AttendeeAffiliation;
+};
+
+/** The substantiation a caller supplies for one line (untrusted, unvalidated). */
+type LineCodingInput = {
+  expenseType?: ExpenseType;
+  businessPurpose?: string;
+  travelFrom?: string;
+  travelTo?: string;
+  headcount?: number;
+  attendees?: LineAttendee[];
+  groupDescription?: string;
+};
+
+/** The substantiation as STORED on a line — every key always present so the
+ *  same object works for an insert AND for a patch: a line retyped from
+ *  "meal" to "general" must have its stale headcount/attendees CLEARED, and a
+ *  patch only clears a field when the key is there with `undefined`. */
+type StoredLineCoding = {
+  expenseType: ExpenseType;
+  businessPurpose: string;
+  travelFrom: string | undefined;
+  travelTo: string | undefined;
+  headcount: number | undefined;
+  attendees: LineAttendee[] | undefined;
+  groupDescription: string | undefined;
+};
+
 /** The submitted line-item shape, shared by the public + in-app submit paths.
  *  Money is a raw `v.number()` here — the integer-cents check is enforced in
  *  `assertLineCents` (an arg validator can't reject a non-integer). Kept
  *  OPTIONAL at the validator level for `receiptStorageId`/`transactionDate`
  *  even though `createReimbursement` requires both for a NEW line — an arg
  *  validator can't express "required except on legacy rows"; the actual gate
- *  is `assertRequiredLineFields` below, the one invariant owner. */
+ *  is `assertRequiredLineFields` below, the one invariant owner. Same posture
+ *  for the substantiation block (see `lineCodingValidators`). */
 const submitLineValidator = v.object({
   description: v.string(),
   amountCents: v.number(),
@@ -115,6 +192,7 @@ const submitLineValidator = v.object({
   fundId: v.optional(v.id("funds")),
   receiptStorageId: v.optional(v.id("_storage")),
   transactionDate: v.optional(v.number()),
+  ...lineCodingValidators,
 });
 type SubmitLine = {
   description: string;
@@ -123,15 +201,135 @@ type SubmitLine = {
   fundId?: Id<"funds">;
   receiptStorageId?: Id<"_storage">;
   transactionDate?: number;
-};
+} & LineCodingInput;
+
+/** One line's revised substantiation, on the claimant's resubmission path. */
+const reviseLineValidator = v.object({
+  lineId: v.id("reimbursementLineItems"),
+  ...lineCodingValidators,
+});
+type ReviseLine = { lineId: Id<"reimbursementLineItems"> } & LineCodingInput;
+
+/**
+ * Validate + normalize one line's substantiation. Delegates every REQUIRED
+ * check to the shared `codingFieldProblems` and throws the FIRST problem with
+ * its stable code — exactly what `lib/transactionCoding.ts#normalizeCodingFields`
+ * does for a card charge — so the public page, the in-app form, and the server
+ * can never disagree about what a complete coding is. Type-irrelevant fields
+ * are dropped: a line retyped from "travel" to "general" must not keep a stale
+ * route, and one retyped away from "meal" must not keep a stale attendee list.
+ *
+ * Deliberately NOT `normalizeCodingFields` itself: that one also carries
+ * `travelers`, which `transactionCodings` has and a reimbursement line does
+ * not. The VALIDATION — the part that must never drift — is the shared
+ * function both call.
+ */
+function normalizeLineCoding(
+  input: LineCodingInput,
+  namesMaxHeadcount: number,
+  label: string,
+): StoredLineCoding {
+  if (!input.expenseType) {
+    throw new ConvexError({
+      code: "EXPENSE_TYPE_REQUIRED",
+      message: `${label} needs an expense type — it's what decides which details the IRS requires (a route for travel, who ate for a meal).`,
+    });
+  }
+  const problems = codingFieldProblems(
+    {
+      expenseType: input.expenseType,
+      businessPurpose: input.businessPurpose ?? "",
+      travelFrom: input.travelFrom,
+      travelTo: input.travelTo,
+      headcount: input.headcount,
+      attendees: input.attendees?.map((a) => ({
+        ...(a.personId ? { personId: a.personId } : {}),
+        name: a.name,
+        affiliation: a.affiliation,
+      })),
+      groupDescription: input.groupDescription,
+    },
+    namesMaxHeadcount,
+  );
+  if (problems.length > 0) {
+    throw new ConvexError({
+      code: problems[0].code,
+      // Prefixed with the line it belongs to — a request can carry 100 lines,
+      // and "a meal needs a headcount" is useless without saying WHICH one.
+      message: `${label} — ${problems[0].message}`,
+    });
+  }
+  const isTravelish =
+    input.expenseType === "travel" || input.expenseType === "lodging";
+  const isMeal = input.expenseType === "meal";
+  const attendees = isMeal
+    ? input.attendees?.map((a) => ({
+        ...(a.personId ? { personId: a.personId } : {}),
+        name: a.name.trim(),
+        affiliation: a.affiliation,
+      }))
+    : undefined;
+  return {
+    expenseType: input.expenseType,
+    businessPurpose: input.businessPurpose!.trim(),
+    travelFrom: isTravelish ? input.travelFrom?.trim() : undefined,
+    travelTo: isTravelish ? input.travelTo?.trim() : undefined,
+    headcount: isMeal ? input.headcount : undefined,
+    attendees: attendees?.length ? attendees : undefined,
+    groupDescription: isMeal
+      ? input.groupDescription?.trim() || undefined
+      : undefined,
+  };
+}
+
+/** A short label for a line in an error message ("Snacks for the crew"). */
+function lineLabel(description: string, index: number): string {
+  const trimmed = description.trim();
+  return trimmed ? `"${cap(trimmed, 60)}"` : `Line ${index + 1}`;
+}
+
+/**
+ * Re-validate a STORED line's substantiation — used on the claimant's
+ * resubmission, so a send-back can't be answered by resubmitting the same
+ * incomplete record.
+ *
+ * LEGACY ROWS ARE SKIPPED: a line with no `expenseType` at all predates phase
+ * 3 and never had a chance to carry one. That is the same posture
+ * `receiptStorageId`/`transactionDate` already take (required for lines
+ * created from now on, `v.optional` on the table so history still validates) —
+ * the alternative is a revision loop a pre-existing request can never escape.
+ */
+function assertStoredLineCoding(
+  line: Doc<"reimbursementLineItems">,
+  namesMaxHeadcount: number,
+  index: number,
+): void {
+  if (!line.expenseType) return;
+  normalizeLineCoding(
+    {
+      expenseType: line.expenseType as ExpenseType,
+      businessPurpose: line.businessPurpose,
+      travelFrom: line.travelFrom,
+      travelTo: line.travelTo,
+      headcount: line.headcount,
+      attendees: line.attendees as LineAttendee[] | undefined,
+      groupDescription: line.groupDescription,
+    },
+    namesMaxHeadcount,
+    lineLabel(line.description, index),
+  );
+}
 
 // ── Status machine ───────────────────────────────────────────────────────────
 /** Statuses a claimant / manager may still edit (add receipts, approve, etc.).
- *  Once past these the request is under final review or finished. */
+ *  Once past these the request is under final review or finished.
+ *  `changes_requested` is the MOST editable of them all — the reviewer sent it
+ *  back precisely so the claimant could fix something (see `requestChanges`). */
 const EDITABLE_STATUSES: readonly ReimbursementStatus[] = [
   "pending_preapproval",
   "preapproved",
   "submitted",
+  "changes_requested",
 ];
 
 /** Statuses in which a bank DESTINATION may still be (re)linked. The editable
@@ -149,11 +347,27 @@ const LINKABLE_STATUSES: readonly ReimbursementStatus[] = [
 
 /** The pre-approval / pre-payout states. `reject` and `cancel` are only legal
  *  from here — never from `approved`/`paying`/terminal, so an in-flight payout
- *  (Phase 4) can't be desynced by a late reject/cancel. */
+ *  (Phase 4) can't be desynced by a late reject/cancel. Includes
+ *  `changes_requested`: a request sitting with its claimant is not payable, but
+ *  it must stay cancelable (the claimant gave up / the reviewer killed it) —
+ *  a state you can neither finish nor abandon is a leak. */
 const PRE_PAYOUT_STATUSES: readonly ReimbursementStatus[] = [
   "pending_preapproval",
   "preapproved",
   "submitted",
+  "changes_requested",
+];
+
+/** The states a reviewer may act on: approve, or send back for a fix. The
+ *  same allowed-from set for both, so "send it back" is always available
+ *  wherever "approve" is — the send-back exists to be the SOFTER of the two,
+ *  and a reviewer who can only approve or reject reaches for reject.
+ *  Deliberately NOT `changes_requested` itself: the ball is with the claimant,
+ *  and approving a record its author is mid-revision would approve something
+ *  nobody has read. */
+const REVIEWABLE_STATUSES: readonly ReimbursementStatus[] = [
+  "submitted",
+  "preapproved",
 ];
 
 /** Guard a transition: `current` must be one of `allowedFrom`, else throw. */
@@ -324,6 +538,10 @@ function timelineFor(
     case "pending_preapproval":
     case "preapproved":
     case "submitted":
+    // Sent back for a fix: the ball is with the CLAIMANT, not the reviewer, so
+    // review is still the live step — the page's own send-back callout (which
+    // carries the note and the revise form) is what says whose move it is.
+    case "changes_requested":
       doneThrough = 0;
       nowIndex = 1;
       break;
@@ -501,6 +719,7 @@ async function matchPerson(
  * then hands validated-but-untrusted field values here. This single helper
  * owns EVERY invariant — name/email validation, the REQUIRED purpose, per-line integer-
  * cents + REQUIRED receipt + REQUIRED sanity-checked `transactionDate` +
+ * REQUIRED substantiation (`normalizeLineCoding`) +
  * chapter-ownership checks, the total, the REQUIRED bank destination, the
  * mutually-exclusive "For" tag (event XOR project XOR recurring budget), the
  * pre-approval status, and the request+lines insert — so the two surfaces can
@@ -638,11 +857,18 @@ async function createReimbursement(
     });
   }
 
+  // The org's meal-names threshold (owner decision: 15) — read ONCE for the
+  // whole request rather than per line.
+  const { namesMaxHeadcount } = await codingPolicy(ctx);
+
   // Validate every line: money, a non-blank description, a REQUIRED receipt,
-  // a REQUIRED sanity-checked transaction date, + verify any fund/category
-  // belongs to this chapter (untrusted input must never reference another
-  // chapter).
-  for (const line of input.lines) {
+  // a REQUIRED sanity-checked transaction date, the REQUIRED substantiation
+  // block, + verify any fund/category belongs to this chapter (untrusted input
+  // must never reference another chapter). Normalized codings are collected
+  // in line order so the insert loop below writes exactly what was validated.
+  const codings: StoredLineCoding[] = [];
+  for (let i = 0; i < input.lines.length; i++) {
+    const line = input.lines[i];
     assertLineCents(line.amountCents);
     if (!cap(line.description, 500)) {
       throw new ConvexError({
@@ -650,6 +876,8 @@ async function createReimbursement(
         message: "Every line needs a description.",
       });
     }
+    // HARD receipt requirement, per line, no exception path — see the
+    // substantiation section's note at the top of this file.
     if (!line.receiptStorageId) {
       throw new ConvexError({
         code: "INVALID_INPUT",
@@ -657,6 +885,13 @@ async function createReimbursement(
       });
     }
     assertTransactionDate(line.transactionDate);
+    codings.push(
+      normalizeLineCoding(
+        line,
+        namesMaxHeadcount,
+        lineLabel(line.description, i),
+      ),
+    );
     if (line.fundId) {
       const fund = await ctx.db.get(line.fundId);
       if (!fund || fund.chapterId !== chapterId) {
@@ -763,6 +998,8 @@ async function createReimbursement(
       categoryId: line.categoryId,
       receiptStorageId: line.receiptStorageId,
       transactionDate: line.transactionDate,
+      // The §274(d) block, validated + normalized above (same index).
+      ...codings[i],
       order: i,
       createdAt: now,
     });
@@ -1290,6 +1527,13 @@ export const myReimbursements = query({
 /**
  * The claimant's status view for the public page — keyed by the secret token,
  * NO secrets returned (never the token). Null when the token is unknown.
+ *
+ * Carries each line's own substantiation (and its id), because on a
+ * `changes_requested` request the page IS the revise form: the accountless
+ * claimant has no other surface on which to answer the reviewer's note. Line
+ * ids are already token-scoped (`lib/reimburseApiRoutes.ts#linesForToken`
+ * hands the same ids to the receipt-attach flow), and everything here is the
+ * claimant's own writing.
  */
 export const getPublicReimbursement = query({
   args: { token: v.string() },
@@ -1297,19 +1541,36 @@ export const getPublicReimbursement = query({
     const req = await byToken(ctx, token);
     if (!req) return null;
     const lines = await linesFor(ctx, req._id);
+    const { namesMaxHeadcount } = await codingPolicy(ctx);
     return {
       reference: referenceFor(req._id),
       status: req.status,
       statusLabel: REIMBURSEMENT_STATUS_LABELS[req.status],
+      // The reviewer's send-back note — what the claimant has to fix.
+      reviewNote: req.reviewNote ?? null,
+      // The org's meal-names threshold, so the form's attendee rows appear at
+      // exactly the headcount the SERVER will require them at.
+      namesMaxHeadcount,
+      minPurposeLength: MIN_PURPOSE_LENGTH,
       payeeName: req.payeeName,
       totalCents: req.totalCents,
       approvedCents: req.approvedCents,
       lines: await Promise.all(
         lines.map(async (l) => ({
+          lineId: l._id,
           description: l.description,
           amountCents: l.amountCents,
           category: await categoryName(ctx, l.categoryId),
           hasReceipt: !!l.receiptStorageId,
+          // The claimant's own substantiation — null/absent on a legacy line
+          // (see `assertStoredLineCoding`'s doc).
+          expenseType: (l.expenseType as ExpenseType | undefined) ?? null,
+          businessPurpose: l.businessPurpose ?? null,
+          travelFrom: l.travelFrom ?? null,
+          travelTo: l.travelTo ?? null,
+          headcount: l.headcount ?? null,
+          attendees: (l.attendees as LineAttendee[] | undefined) ?? null,
+          groupDescription: l.groupDescription ?? null,
         })),
       ),
       submittedAt: req.submittedAt ?? req.createdAt,
@@ -1710,6 +1971,10 @@ export const get = query({
       preApprovedByPersonId: request.preApprovedByPersonId ?? null,
       reviewedByPersonId: request.reviewedByPersonId ?? null,
       rejectedReason: request.rejectedReason ?? null,
+      // The latest send-back note, while the request is with its claimant —
+      // shown to the reviewer too, so a second manager can see what was
+      // already asked for rather than asking again.
+      reviewNote: request.reviewNote ?? null,
       lines: await Promise.all(
         lines.map(async (l) => ({
           _id: l._id,

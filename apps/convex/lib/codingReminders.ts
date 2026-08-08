@@ -14,6 +14,7 @@ import {
   DEFAULT_CODING_OVERDUE_DAYS,
   type TransactionCodingStatus,
 } from "@events-os/shared";
+import type { Doc } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 
 /** The org's substantiation deadline in ms, falling back to the IRS safe
@@ -42,4 +43,72 @@ export function outstandingLabel(args: {
   }
   if (!args.hasDocumentation) return "needs a receipt";
   return null;
+}
+
+/** True iff the row can prove itself with a document: a receipt, or the
+ *  approved exception that stands in for one. The same pair
+ *  `finances.isUndocumented` reads — kept here so the chase and the
+ *  publishing backlog agree on what "documented" means. */
+export function isDocumented(tr: Doc<"transactions">): boolean {
+  return tr.receiptStorageId != null || tr.approvedReceiptExceptionId != null;
+}
+
+/**
+ * The rows a cardholder can be chased on at all: their own open SPEND.
+ *
+ * CHASE semantics, like `finances.needsDocumentation` — a closed row
+ * (`excluded`/`reconciled`) has nobody left to chase, and a personal charge is
+ * money being repaid rather than an expense awaiting substantiation. Both are
+ * the same carve-outs `cards.isMissingReceiptCharge` has always made; this
+ * predicate is the coding-era superset of it.
+ */
+function chaseEligible(tr: Doc<"transactions">): boolean {
+  return (
+    tr.flow === "outflow" &&
+    tr.status !== "excluded" &&
+    tr.status !== "reconciled" &&
+    tr.isPersonal !== true
+  );
+}
+
+/**
+ * What a cardholder still owes on ONE of their charges, or `null` when there
+ * is nothing left to ask them for.
+ *
+ * THE chase predicate: the digest email, the `receiptReminderStage` timeline
+ * and the manual FM nudge all read this one function, so "you have 3 charges
+ * to code" can never disagree with the three rows the sweep transitioned.
+ * `sinceMs` is the coding policy date (`lib/transactionCoding.ts#codingPolicy`)
+ * — pre-policy history owes a receipt and nothing more, which is what keeps
+ * September 1 from turning years of ledger into an overnight backlog.
+ */
+export function chargeOutstanding(
+  tr: Doc<"transactions">,
+  sinceMs: number,
+): string | null {
+  if (!chaseEligible(tr)) return null;
+  return outstandingLabel({
+    hasDocumentation: isDocumented(tr),
+    codingState: tr.codingState,
+    requiresCoding: tr.postedAt >= sinceMs,
+  });
+}
+
+/**
+ * True iff a row the coding policy covers is STILL waiting on its author —
+ * the state the 60-day accountable-plan clock runs against.
+ *
+ * MIRRORS `finances.isUncoded` (and the `requiresCoding` it builds on) rather
+ * than importing it: `finances.ts` already imports helpers FROM `cards.ts`,
+ * this module's only consumer, and importing back would close that cycle —
+ * the same reason `cards.ts` keeps its own copies of `txnMatchesMode` et al.
+ * The two must be kept in sync by hand.
+ */
+export function isUncodedCharge(
+  tr: Doc<"transactions">,
+  sinceMs: number,
+): boolean {
+  if (!chaseEligible(tr)) return false;
+  if (tr.postedAt < sinceMs) return false;
+  return tr.codingState == null || tr.codingState === "changes_requested";
 }
