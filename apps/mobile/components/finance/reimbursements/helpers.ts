@@ -27,7 +27,12 @@ export type ReimbursementDetail = FunctionReturnType<
 export type ReimbursementLine = ReimbursementDetail["lines"][number];
 
 // ── Filter pills (drive the `list({status})` arg) ────────────────────────────
-export type FilterKey = "all" | "preapproval" | "submitted" | "paying";
+export type FilterKey =
+  | "all"
+  | "preapproval"
+  | "submitted"
+  | "changes_requested"
+  | "paying";
 
 export const FILTERS: {
   key: FilterKey;
@@ -38,6 +43,14 @@ export const FILTERS: {
   { key: "all", label: "All" },
   { key: "preapproval", label: "Pre-approval", status: "pending_preapproval" },
   { key: "submitted", label: "Submitted", status: "submitted" },
+  // Sent back and sitting with the claimant — its own facet because it's the
+  // one queue state nobody is waiting on a manager for, and a reviewer needs
+  // to be able to see (and chase) what they've already sent back.
+  {
+    key: "changes_requested",
+    label: "Sent back",
+    status: "changes_requested",
+  },
   { key: "paying", label: "Paying", status: "paying" },
 ];
 
@@ -76,6 +89,19 @@ const TERMINAL = new Set<ReimbursementStatus>(REIMBURSEMENT_TERMINAL_STATUSES);
 /** Statuses where a manager can approve (full or partial) — matches `approve`. */
 export function canApprove(status: ReimbursementStatus): boolean {
   return status === "submitted" || status === "preapproved";
+}
+
+/** Statuses where a reviewer can send the request BACK with a note — matches
+ *  `requestChanges`'s `REVIEWABLE_STATUSES`, i.e. exactly where approving is
+ *  on offer. The softer of the two doors is always next to the harder one. */
+export function canRequestChanges(status: ReimbursementStatus): boolean {
+  return canApprove(status);
+}
+
+/** True while the request sits with its claimant awaiting a revision — the
+ *  card shows the note instead of decision buttons. */
+export function isAwaitingRevision(status: ReimbursementStatus): boolean {
+  return status === "changes_requested";
 }
 
 /** The single state that offers pre-approval — matches `preApprove`. */
@@ -121,6 +147,10 @@ export function isOpen(status: ReimbursementStatus): boolean {
 const OWED_TO_MEMBER_STATUSES = new Set<ReimbursementStatus>([
   "pending_preapproval",
   "submitted",
+  // Sent back for a fix — the money is still owed AND the ball is with the
+  // member, so it belongs at the top of what they're waiting on, never in
+  // History next to rejected (which is what it would read as otherwise).
+  "changes_requested",
   "preapproved",
   "approved",
   "paying",

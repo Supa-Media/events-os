@@ -339,6 +339,7 @@ function ManagerReimbursementsScreen() {
   const approve = useMutation(api.reimbursements.approve);
   const preApprove = useMutation(api.reimbursements.preApprove);
   const reject = useMutation(api.reimbursements.reject);
+  const requestChanges = useMutation(api.reimbursements.requestChanges);
   const markPaid = useMutation(api.increasePayouts.markPaidManually);
   const payReimbursement = useAction(api.increasePayouts.payReimbursement);
   const { run, toast, dismiss } = useActionRunner();
@@ -391,6 +392,16 @@ function ManagerReimbursementsScreen() {
   const handleReject = (id: Id<"reimbursementRequests">) =>
     run(() => reject({ reimbursementId: id }), {
       errorTitle: "Couldn't reject",
+    }).then(() => {});
+
+  // Send it back for a revision instead of killing it — the note is required
+  // (the server rejects a blank one) and becomes the email the claimant gets.
+  const handleRequestChanges = (
+    id: Id<"reimbursementRequests">,
+    note: string,
+  ) =>
+    run(() => requestChanges({ reimbursementId: id, note }), {
+      errorTitle: "Couldn't send it back",
     }).then(() => {});
 
   // Pay an approved request by hand — the fallback for when auto-pay (above)
@@ -516,6 +527,7 @@ function ManagerReimbursementsScreen() {
                   onApprove={handleApprove}
                   onPreApprove={handlePreApprove}
                   onReject={handleReject}
+                  onRequestChanges={handleRequestChanges}
                   onMarkPaid={handleMarkPaid}
                   onRetryPayout={handleRetryPayout}
                 />

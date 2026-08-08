@@ -29,22 +29,19 @@
  * and this screen has to sort and filter on both. See that component's doc
  * comment for the backend change that would delete it.
  */
-import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
-import { Pressable, Text, View } from "react-native";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Text, View } from "react-native";
 import { useLocalSearchParams } from "expo-router";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { DEFAULT_CODING_REQUIRED_SINCE_MS } from "@events-os/shared";
 import {
-  Badge,
   Button,
-  Cell,
   EmptyState,
   HeaderCell,
   Icon,
   Narrow,
-  Row,
   Screen,
   Table,
   TableHeader,
@@ -52,9 +49,11 @@ import {
 } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
-import { SignedMoney } from "../../../components/finance/dashboard/parts";
-import { ReceiptCell } from "../../../components/finance/reconcile/ReconcileList";
 import { ChargeStateProbe } from "../../../components/finance/myTransactions/ChargeStateProbe";
+import {
+  ChargeRow,
+  FilterChip,
+} from "../../../components/finance/myTransactions/ChargeRow";
 import { FinishChargeSheet } from "../../../components/finance/myTransactions/FinishChargeSheet";
 import {
   chargeTodo,
@@ -65,11 +64,6 @@ import {
   type ChargeFilter,
   type MyTxnRow,
 } from "../../../components/finance/myTransactions/chargeTodo";
-
-/** `YYYY-MM-DD` in the finance timezone for display (mirrors MemberView). */
-function dateStr(ts: number): string {
-  return new Date(ts).toLocaleDateString("en-CA", { timeZone: "America/New_York" });
-}
 
 export default function MyTransactionsScreen() {
   // The reminder email's deep link (`/finances/my-transactions?filter=uncoded`).
@@ -256,113 +250,27 @@ export default function MyTransactionsScreen() {
                 {" "}
               </HeaderCell>
             </TableHeader>
-            {visible.map((r, i) => {
-              const t = r.txn;
-              const sentBack = r.todo.kind === "sent_back" && r.reviewNote;
-              const last = i === visible.length - 1;
-              return (
-                <Fragment key={t.id}>
-                  <Row last={last && !sentBack}>
-                    <Cell flex={2}>
-                      <View className="flex-row items-center gap-2">
-                        <Text
-                          className="text-sm font-semibold text-ink"
-                          numberOfLines={1}
-                        >
-                          {t.merchantName ?? t.description ?? "—"}
-                        </Text>
-                        {t.isPersonal ? (
-                          <Badge label="Personal" tone="accent" />
-                        ) : null}
-                      </View>
-                      <Text className="text-xs text-muted" numberOfLines={1}>
-                        {[
-                          dateStr(t.postedAt),
-                          t.merchantName ? t.description : null,
-                          t.cardLast4 ? `card ••${t.cardLast4}` : null,
-                        ]
-                          .filter(Boolean)
-                          .join(" · ")}
-                      </Text>
-                      {t.note ? (
-                        <Text
-                          className="mt-0.5 text-xs italic text-muted"
-                          numberOfLines={2}
-                        >
-                          {t.note}
-                        </Text>
-                      ) : null}
-                    </Cell>
-                    <Cell width={110} align="right">
-                      <SignedMoney
-                        cents={t.amountCents}
-                        flow={t.flow}
-                        className="text-sm font-semibold"
-                      />
-                    </Cell>
-                    <Cell width={185}>
-                      <Badge label={r.todo.label} tone={r.todo.tone} />
-                    </Cell>
-                    <Cell width={130}>
-                      <ReceiptCell
-                        hasReceipt={t.hasReceipt}
-                        reminderStage={t.reminderStage}
-                        transactionId={t.id as Id<"transactions">}
-                        onUpload={async (storageId) => {
-                          await run(
-                            () =>
-                              attachReceipt({
-                                transactionId: t.id as Id<"transactions">,
-                                storageId,
-                              }),
-                            { errorTitle: "Couldn't attach receipt" },
-                          );
-                        }}
-                        generateUploadUrl={generateUploadUrl}
-                      />
-                    </Cell>
-                    <Cell width={110} align="right">
-                      <Button
-                        title={r.todo.actionable ? "Finish" : "Open"}
-                        variant={r.todo.actionable ? "primary" : "ghost"}
-                        size="sm"
-                        onPress={() => setOpenId(t.id)}
-                      />
-                    </Cell>
-                  </Row>
-
-                  {/* THE SEND-BACK NOTE. Quoted, in full, under the row it
-                      belongs to — a badge saying "changes requested" tells
-                      somebody they have work; only the note tells them what
-                      the work is. */}
-                  {sentBack ? (
-                    <Pressable
-                      onPress={() => setOpenId(t.id)}
-                      accessibilityRole="button"
-                      className={`bg-danger-bg px-4 py-2.5 active:opacity-80 ${
-                        last ? "" : "border-b border-border"
-                      }`}
-                    >
-                      <View className="flex-row items-start gap-2">
-                        <Icon
-                          name="corner-up-left"
-                          size={13}
-                          color={colors.danger}
-                        />
-                        <View className="flex-1">
-                          <Text className="text-2xs font-semibold uppercase tracking-wide text-danger">
-                            Sent back to you
-                          </Text>
-                          <Text className="mt-0.5 text-sm text-ink">
-                            “{r.reviewNote}”
-                          </Text>
-                        </View>
-                      </View>
-                    </Pressable>
-                  ) : null}
-                </Fragment>
-              );
-            })}
+            {visible.map((r, i) => (
+              <ChargeRow
+                key={r.txn.id}
+                txn={r.txn}
+                todo={r.todo}
+                reviewNote={r.reviewNote}
+                last={i === visible.length - 1}
+                onOpen={() => setOpenId(r.txn.id)}
+                onUpload={async (storageId) => {
+                  await run(
+                    () =>
+                      attachReceipt({
+                        transactionId: r.txn.id as Id<"transactions">,
+                        storageId,
+                      }),
+                    { errorTitle: "Couldn't attach receipt" },
+                  );
+                }}
+                generateUploadUrl={generateUploadUrl}
+              />
+            ))}
           </Table>
         )}
       </Narrow>
@@ -376,34 +284,5 @@ export default function MyTransactionsScreen() {
       ) : null}
       <ToastView toast={toast} onDismiss={dismiss} />
     </Screen>
-  );
-}
-
-/** The two-state list filter. Deliberately not a `Select`: there are two
- *  choices and one of them is what the reminder email sent you here for. */
-function FilterChip({
-  label,
-  active,
-  onPress,
-}: {
-  label: string;
-  active: boolean;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      accessibilityRole="radio"
-      accessibilityState={{ selected: active }}
-      className={`rounded-full border px-3 py-1 active:opacity-70 ${
-        active ? "border-accent bg-accent/10" : "border-border bg-sunken"
-      }`}
-    >
-      <Text
-        className={`text-xs ${active ? "font-semibold text-accent" : "text-muted"}`}
-      >
-        {label}
-      </Text>
-    </Pressable>
   );
 }

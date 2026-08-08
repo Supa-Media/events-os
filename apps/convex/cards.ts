@@ -4359,9 +4359,12 @@ async function notifyReceiptDigest(
   // is actually what's missing: a charge that just needs its receipt uploaded
   // gets the lock warning below instead, and stacking both reads as boilerplate.
   const anyNeedsCoding = digest.charges.some((c) => c.needsCoding);
+  // (No day count here on purpose: `codingOverdueDays` is an org setting, and
+  // an email that hard-codes "60 days" is one settings change away from
+  // lying.)
   const whyNote = anyNeedsCoding
     ? emailParagraph(
-        `Coding a charge is saying what it was, why it served the org's work, and who was there. The IRS gives us 60 days — after that, spending we can't substantiate counts as taxable income to the person who spent it, so it gets billed back to you instead.`,
+        `Coding a charge means saying what it was, why it served the org's work, and who was there. Under IRS rules, spending we can't substantiate in time counts as taxable income to the person who spent it — so a charge left uncoded eventually gets billed back to you instead.`,
       )
     : "";
   // The day-7 auto-lock acts on the RECEIPT alone — never warn about it for a

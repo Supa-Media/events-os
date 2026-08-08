@@ -93,7 +93,9 @@ async function seedCharge(
     amountCents?: number;
     merchantName?: string;
     receiptStorageId?: Id<"_storage">;
-    codingState?: "uncoded" | "submitted" | "changes_requested" | "approved";
+    // `undefined` IS "uncoded" — the denorm only carries the states a coding
+    // row can be in (`TRANSACTION_CODING_STATUSES`).
+    codingState?: "submitted" | "changes_requested" | "approved";
   },
 ): Promise<Id<"transactions">> {
   const now = Date.now();

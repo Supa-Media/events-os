@@ -3,8 +3,11 @@
  * Reimbursements tab). Shows the requester, a status + receipts badge, and the
  * total; expands to the line-item table; and offers the state-appropriate
  * manager actions:
- *   - submitted / preapproved → Reject · Approve lines… · Approve & pay
+ *   - submitted / preapproved → Reject · Send back… · Approve lines… ·
+ *                                Approve & pay
  *   - pending_preapproval      → Decline · Pre-approve
+ *   - changes_requested        → read-only, showing the note it was sent back
+ *                                with (the ball is with the claimant)
  *   - approved                 → Pay by ACH (retry) · Mark paid
  *                                (`markPaidManually`) — this state is now the
  *                                FALLBACK: the parent auto-initiates the ACH
@@ -20,9 +23,16 @@
  * follows either with `api.increasePayouts.payReimbursement` to auto-pay. Both
  * surface the server-side separation-of-duties error via the parent's action
  * runner.
+ *
+ * "Send back…" (`requestChanges`) is the third door, deliberately sitting
+ * between Reject and Approve: most review outcomes are "almost — fix this one
+ * thing", and before it existed the only way to say that was a rejection,
+ * which is terminal and reads as "you lost your money". It requires a note
+ * (the server enforces it too), which is the entire content of the email the
+ * claimant gets.
  */
 import { useMemo, useState } from "react";
-import { View, Text, Pressable, Linking } from "react-native";
+import { View, Text, Pressable, TextInput, Linking } from "react-native";
 import { useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
@@ -36,7 +46,9 @@ import {
   canApprove,
   canPreApprove,
   canMarkPaid,
+  canRequestChanges,
   isActionable,
+  isAwaitingRevision,
   shortDate,
   type ReimbursementRow,
   type ReimbursementDetail,
@@ -50,8 +62,24 @@ type Payout = FunctionReturnType<typeof api.increasePayouts.listPayouts>[number]
  *  the backend contract adds (every line now carries the date it was
  *  actually paid) but that hasn't landed in the generated return type yet
  *  (a sibling agent owns `apps/convex` and is adding it concurrently). Kept
- *  optional so the column degrades to an em dash until it does. */
-type ReimbursementLineWithDate = ReimbursementLine & { transactionDate?: number };
+ *  optional so the column degrades to an em dash until it does. The
+ *  substantiation block rides in the same shape for the same reason. */
+type ReimbursementLineWithDate = ReimbursementLine & {
+  transactionDate?: number;
+  expenseTypeLabel?: string | null;
+  businessPurpose?: string | null;
+  travelFrom?: string | null;
+  travelTo?: string | null;
+  headcount?: number | null;
+  attendees?: Array<{ name: string; affiliation: string }> | null;
+  groupDescription?: string | null;
+};
+
+/** `get`'s request shape, extended locally with the reviewer's send-back note
+ *  (same generated-type lag as above). */
+type ReimbursementDetailWithNote = ReimbursementDetail & {
+  reviewNote?: string | null;
+};
 
 /** `list`'s row shape, extended locally with `plannedPurchaseDate` (a
  *  pre-approval ask's "when the claimant plans to buy") — same generated-type
@@ -72,6 +100,11 @@ type Props = {
   ) => Promise<void>;
   onPreApprove: (id: Id<"reimbursementRequests">) => Promise<void>;
   onReject: (id: Id<"reimbursementRequests">) => Promise<void>;
+  /** Send it back to the claimant with a REQUIRED note (`requestChanges`). */
+  onRequestChanges: (
+    id: Id<"reimbursementRequests">,
+    note: string,
+  ) => Promise<void>;
   /** Mark an approved request paid by hand (`markPaidManually`) — the
    *  fallback when auto-pay couldn't start the ACH transfer. */
   onMarkPaid: (id: Id<"reimbursementRequests">) => Promise<void>;
@@ -86,19 +119,29 @@ export function RequestCard({
   onApprove,
   onPreApprove,
   onReject,
+  onRequestChanges,
   onMarkPaid,
   onRetryPayout,
 }: Props) {
   // `expanded` shows the read-only line table; `selecting` swaps it for the
-  // per-line checkbox approve selector. Either mode needs the request's lines.
+  // per-line checkbox approve selector; `sendingBack` for the note composer.
+  // Every mode but the last needs the request's lines.
   const [expanded, setExpanded] = useState(false);
   const [selecting, setSelecting] = useState(false);
+  const [sendingBack, setSendingBack] = useState(false);
+  const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
 
   const detail = useQuery(
     api.reimbursements.get,
-    expanded || selecting ? { reimbursementId: row._id } : "skip",
+    expanded || selecting || isAwaitingRevision(row.status)
+      ? { reimbursementId: row._id }
+      : "skip",
   );
+  // The note it was sent back with — shown while it sits with the claimant so
+  // a second reviewer doesn't ask for the same thing twice.
+  const reviewNote = (detail as ReimbursementDetailWithNote | undefined)
+    ?.reviewNote;
 
   const status = STATUS_BADGE[row.status];
   const receipts = RECEIPTS_BADGE[row.receiptsState];
@@ -211,6 +254,73 @@ export function RequestCard({
         />
       ) : null}
 
+      {/* Sent back and waiting on the claimant — the note is the whole story
+          of why it's sitting here, so a second reviewer can see it too. */}
+      {isAwaitingRevision(row.status) ? (
+        <View className="mt-3 rounded-md bg-warn-bg px-3 py-2">
+          <View className="flex-row items-center gap-2">
+            <Icon name="corner-up-left" size={14} color={colors.warn} />
+            <Text className="flex-1 text-xs font-semibold text-warn">
+              Sent back to {row.requesterName} — waiting on their revision.
+            </Text>
+          </View>
+          {reviewNote ? (
+            <Text className="mt-1 text-xs text-warn">“{reviewNote}”</Text>
+          ) : null}
+        </View>
+      ) : null}
+
+      {/* Send-back composer — the note is REQUIRED (the server enforces it
+          too): "rejected, no explanation" is how a policy stops being
+          followed, and this note IS the email the claimant receives. */}
+      {sendingBack ? (
+        <View className="mt-3 rounded-md border border-border-strong bg-sunken p-3">
+          <Text className="mb-2 text-xs font-bold uppercase tracking-wider text-muted">
+            What needs to change?
+          </Text>
+          <TextInput
+            value={note}
+            onChangeText={setNote}
+            multiline
+            numberOfLines={3}
+            placeholder="e.g. The receipt has to show the exact amount charged — please attach the itemized one."
+            placeholderTextColor={colors.faint}
+            className="rounded-md border border-border-strong bg-raised px-2.5 py-2 text-sm text-ink"
+          />
+          <Text className="mt-1 text-2xs text-faint">
+            They'll get this by email with a link to fix it and resubmit —
+            nothing is rejected and nothing is lost.
+          </Text>
+          <View className="mt-3 flex-row justify-end gap-2">
+            <Button
+              title="Cancel"
+              variant="ghost"
+              size="sm"
+              disabled={busy}
+              onPress={() => {
+                setSendingBack(false);
+                setNote("");
+              }}
+            />
+            <Button
+              title="Send back"
+              variant="secondary"
+              size="sm"
+              icon="corner-up-left"
+              loading={busy}
+              disabled={!note.trim()}
+              onPress={() =>
+                runBusy(async () => {
+                  await onRequestChanges(row._id, note.trim());
+                  setSendingBack(false);
+                  setNote("");
+                })
+              }
+            />
+          </View>
+        </View>
+      ) : null}
+
       {/* SoD strip — only where an approval decision is on offer. */}
       {actionable ? (
         <View className="mt-3 flex-row items-center gap-2 rounded-md bg-warn-bg px-3 py-2">
@@ -235,7 +345,7 @@ export function RequestCard({
       ) : null}
 
       {/* Actions. */}
-      {!selecting ? (
+      {!selecting && !sendingBack ? (
         <View className="mt-3 flex-row flex-wrap justify-end gap-2">
           {canPreApprove(row.status) ? (
             <>
@@ -266,6 +376,19 @@ export function RequestCard({
                 disabled={busy}
                 onPress={() => runBusy(() => onReject(row._id))}
               />
+              {canRequestChanges(row.status) ? (
+                <Button
+                  title="Send back…"
+                  variant="secondary"
+                  size="sm"
+                  icon="corner-up-left"
+                  disabled={busy}
+                  onPress={() => {
+                    setExpanded(false);
+                    setSendingBack(true);
+                  }}
+                />
+              ) : null}
               <Button
                 title="Approve lines…"
                 variant="secondary"
@@ -329,7 +452,9 @@ function ReadOnlyNote({
       ? "ACH transfer initiated from the chapter's Increase account."
       : status === "paid"
         ? `Paid out via ${via}.`
-        : "No further action needed.";
+        : status === "changes_requested"
+          ? "Nothing to do until they resubmit — you'll see it back in Submitted."
+          : "No further action needed.";
   return <Text className="text-xs text-muted">{text}</Text>;
 }
 
@@ -393,6 +518,10 @@ function LineTable({
                 {line.category ? (
                   <Text className="text-xs text-muted">{line.category}</Text>
                 ) : null}
+                {/* The §274(d) substantiation this line carries — what a
+                    reviewer is actually approving. Absent on a legacy line
+                    (submitted before per-line coding shipped). */}
+                <LineSubstantiation line={dated} />
               </View>
               <Text className="w-20 text-xs text-muted">
                 {dated.transactionDate != null ? shortDate(dated.transactionDate) : "—"}
@@ -421,6 +550,43 @@ function LineTable({
           );
         })}
       </View>
+    </View>
+  );
+}
+
+/**
+ * One line's substantiation, as the claimant wrote it: expense type, the
+ * business purpose (the sentence the public ledger will print), the travel
+ * route, and who ate.
+ *
+ * Attendee NAMES are internal-only forever (owner decision, 2026-08-08) —
+ * this view is finance-role gated, and the public ledger renders the headcount
+ * and affiliation breakdown in their place, never the names.
+ */
+function LineSubstantiation({ line }: { line: ReimbursementLineWithDate }) {
+  if (!line.businessPurpose && !line.expenseTypeLabel) return null;
+  const route =
+    line.travelFrom && line.travelTo
+      ? `${line.travelFrom} → ${line.travelTo}`
+      : null;
+  const who = line.attendees?.length
+    ? line.attendees.map((a) => a.name).join(", ")
+    : line.groupDescription;
+  return (
+    <View className="mt-1">
+      {line.businessPurpose ? (
+        <Text className="text-xs text-muted">{line.businessPurpose}</Text>
+      ) : null}
+      <Text className="mt-0.5 text-2xs text-faint">
+        {[
+          line.expenseTypeLabel,
+          route,
+          line.headcount != null ? `${line.headcount} people` : null,
+          who,
+        ]
+          .filter(Boolean)
+          .join(" · ")}
+      </Text>
     </View>
   );
 }

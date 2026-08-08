@@ -224,7 +224,7 @@ export function FinishChargeSheet({
                   done={coding != null && coding.status !== "changes_requested"}
                   hint={
                     data?.requiresCoding === false
-                      ? "Not required for a charge this old, but any spend can carry one."
+                      ? "Not required for this row, but any spend can carry one."
                       : "The IRS calls this substantiation: what the money bought, which org work it served, and who was involved."
                   }
                 />
