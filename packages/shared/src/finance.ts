@@ -912,11 +912,24 @@ export const AUTO_TRANSFER_ORIGIN_LABELS: Record<AutoTransferOrigin, string> = {
 };
 
 // Our processing state for one detected Stripe payout (NOT Stripe's own payout
-// status, which is stored alongside as `stripeStatus`):
-//  - pending   → detected, not yet allocated (or allocation is retrying)
-//  - allocated → its per-scope breakdown is computed and transfers are booked
-//  - failed    → allocation errored; the morning run retries and the error is
-//                surfaced on the accounts page until it succeeds
+// status, which is stored alongside as `stripeStatus`).
+//
+// ALL THREE VALUES ARE NOW HISTORY. They described the per-payout ALLOCATION
+// step — itemise the payout at Stripe, work out each chapter's share, book a
+// transfer pair — which #553 removed. Chapter attribution comes from the
+// revenue layer instead, and a payout's only remaining job is to find and label
+// its bank deposit (`stripePayouts.matchedTransactionId`).
+//
+// The values are kept so existing rows still validate, and nothing writes
+// "failed" any more. The accounts page deliberately does NOT render them: it
+// badges a payout from Stripe's own status plus whether the deposit was
+// labelled, which are the two facts that still mean something. Reading a stored
+// "failed" as a live problem is exactly the false alarm this comment exists to
+// prevent — see `stripePayouts.automatic` in the schema for the one real case.
+//  - pending   → detected (the state every new payout is written in)
+//  - allocated → historical: its per-scope breakdown was computed pre-#553
+//  - failed    → historical: allocation errored pre-#553. Obsolete, and healed
+//                back to "pending" the next time the engine sees the payout.
 export const STRIPE_PAYOUT_PROCESS_STATES = [
   "pending",
   "allocated",
@@ -924,6 +937,42 @@ export const STRIPE_PAYOUT_PROCESS_STATES = [
 ] as const;
 export type StripePayoutProcessState =
   (typeof STRIPE_PAYOUT_PROCESS_STATES)[number];
+
+/**
+ * Plain-English names for Increase's Pending Transaction categories — what the
+ * "Pending" column on the accounts page is actually made of.
+ *
+ * Only the categories this org can plausibly produce are named; anything else
+ * falls back to the raw category with underscores stripped, so a category
+ * Increase adds tomorrow still renders as words rather than disappearing.
+ * Deliberately describes the MONEY, not the API object: "Waiting on an
+ * inbound ACH to clear" tells a treasurer what to do with the number, where
+ * "inbound_funds_hold" does not.
+ */
+export const INCREASE_PENDING_CATEGORY_LABELS: Record<string, string> = {
+  card_authorization: "Card spend, not yet settled",
+  ach_transfer_instruction: "ACH payment on its way out",
+  check_transfer_instruction: "Check sent, not yet cashed",
+  wire_transfer_instruction: "Wire on its way out",
+  real_time_payments_transfer_instruction: "Instant payment on its way out",
+  fednow_transfer_instruction: "Instant payment on its way out",
+  account_transfer_instruction: "Moving between our own accounts",
+  check_deposit_instruction: "Check deposited, not yet cleared",
+  inbound_funds_hold: "Money in, held until it can't be clawed back",
+  inbound_wire_transfer_reversal: "Inbound wire being reversed",
+  user_initiated_hold: "Held on purpose by us",
+  card_push_transfer_instruction: "Push-to-card payment on its way out",
+  other: "Other",
+};
+
+/** `card_authorization` → "Card spend, not yet settled"; unknown → "Inbound
+ *  funds hold"-style title case of whatever Increase sent. */
+export function increasePendingCategoryLabel(category: string): string {
+  const known = INCREASE_PENDING_CATEGORY_LABELS[category];
+  if (known) return known;
+  const words = category.replace(/_/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
 
 // How one payout item (one Stripe balance transaction) was attributed to a
 // book. `unmapped` is the loud bucket: money we could not trace to an order /

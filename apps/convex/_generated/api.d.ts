@@ -166,6 +166,7 @@ import type * as lib_receiptExceptions from "../lib/receiptExceptions.js";
 import type * as lib_receiptLinks from "../lib/receiptLinks.js";
 import type * as lib_receiptRetry from "../lib/receiptRetry.js";
 import type * as lib_reconciliationAccess from "../lib/reconciliationAccess.js";
+import type * as lib_reconciliationGap from "../lib/reconciliationGap.js";
 import type * as lib_reimburseApiRoutes from "../lib/reimburseApiRoutes.js";
 import type * as lib_reimbursePage from "../lib/reimbursePage.js";
 import type * as lib_reimbursementTxnFields from "../lib/reimbursementTxnFields.js";
@@ -538,6 +539,7 @@ declare const fullApi: ApiFromModules<{
   "lib/receiptLinks": typeof lib_receiptLinks;
   "lib/receiptRetry": typeof lib_receiptRetry;
   "lib/reconciliationAccess": typeof lib_reconciliationAccess;
+  "lib/reconciliationGap": typeof lib_reconciliationGap;
   "lib/reimburseApiRoutes": typeof lib_reimburseApiRoutes;
   "lib/reimbursePage": typeof lib_reimbursePage;
   "lib/reimbursementTxnFields": typeof lib_reimbursementTxnFields;
