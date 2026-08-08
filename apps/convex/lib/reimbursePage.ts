@@ -25,10 +25,27 @@ import { FONTS, FAVICON } from "./landingPageStyles";
 /** Chapter display data for the form (from api.lib.reimburseApiRoutes.chapterForReimburse).
  *  Deliberately just name + slug — NO funds/categories (owner mandate,
  *  public-page privacy): categorizing a line is a finance manager's
- *  review-time job, not something a logged-out claimant sees or picks. */
+ *  review-time job, not something a logged-out claimant sees or picks. The
+ *  two policy numbers are the RULE the server enforces, not chapter data:
+ *  the form asks for attendee names at exactly the headcount the server
+ *  requires them at. */
 export type ReimburseChapterView = {
   slug: string;
   name: string;
+  namesMaxHeadcount: number;
+  minPurposeLength: number;
+};
+
+/** One line's §274(d) substantiation as the claimant wrote it — null on a
+ *  legacy line (see `reimbursements.ts#assertStoredLineCoding`). */
+export type ReimburseLineCoding = {
+  expenseType: string | null;
+  businessPurpose: string | null;
+  travelFrom: string | null;
+  travelTo: string | null;
+  headcount: number | null;
+  attendees: Array<{ name: string; affiliation: string }> | null;
+  groupDescription: string | null;
 };
 
 /** Claimant status view (from api.reimbursements.getPublicReimbursement). */
@@ -36,15 +53,22 @@ export type ReimburseStatusView = {
   reference: string;
   status: string;
   statusLabel: string;
+  /** The reviewer's send-back note while `status:"changes_requested"`. */
+  reviewNote?: string | null;
+  namesMaxHeadcount: number;
+  minPurposeLength: number;
   payeeName: string;
   totalCents: number;
   approvedCents?: number | null;
-  lines: Array<{
-    description: string;
-    amountCents: number;
-    category: string | null;
-    hasReceipt: boolean;
-  }>;
+  lines: Array<
+    {
+      lineId: string;
+      description: string;
+      amountCents: number;
+      category: string | null;
+      hasReceipt: boolean;
+    } & ReimburseLineCoding
+  >;
   submittedAt: number;
   timeline: Array<{
     step: string;
@@ -139,6 +163,10 @@ select.forminput{appearance:none;-webkit-appearance:none;background-image:url("d
 .li-head{display:grid;grid-template-columns:1fr 130px 96px 34px;gap:8px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);padding:0 2px;}
 .li-row{display:grid;grid-template-columns:1fr 130px 96px 34px;gap:8px;align-items:center;}
 .li-receipt{grid-column:1 / -1;}
+/* A line is a tall block now (it carries its own substantiation), so it gets
+   a card of its own — otherwise two lines read as one long form. */
+#lines .line{border:1px solid var(--border);border-radius:var(--r-md);padding:12px;background:var(--raised);}
+.attrow{align-items:center;}
 .li-receipt.missing .dropzone{border-color:var(--accent);color:var(--accent-hover);}
 .dropzone{border:1px dashed var(--border-strong);border-radius:var(--r-md);background:var(--sunken);padding:10px 12px;display:flex;align-items:center;gap:10px;color:var(--muted);font-size:13px;cursor:pointer;width:100%;text-align:left;}
 .dropzone svg{width:17px;height:17px;stroke:var(--muted);flex:0 0 17px;}
@@ -212,6 +240,10 @@ export function renderReimburseForm(chapter: ReimburseChapterView): string {
   const init = JSON.stringify({
     slug: chapter.slug,
     name: chapter.name,
+    // The org's rule, handed to the form so it asks for attendee names at
+    // exactly the headcount the server requires them at.
+    namesMax: chapter.namesMaxHeadcount,
+    minPurpose: chapter.minPurposeLength,
   }).replace(/</g, "\\u003c");
 
   return `<!doctype html>
@@ -244,7 +276,7 @@ ${pubbar(chapter.name)}
         <div class="li-head"><span>Description</span><span>Date</span><span style="text-align:right">Amount</span><span></span></div>
         <div class="col gap12" id="lines"></div>
         <button id="addline" class="btn btn-ghost sm mt4" style="align-self:flex-start"><svg ${ICON_ATTRS}><use href="#i-plus"/></svg>Add line item</button>
-        <span class="xs faint">Every line needs a receipt (photo or PDF) and the date you paid.</span>
+        <span class="xs faint">Every line needs a receipt (photo or PDF), the date you paid, and a few details about what it was for — the IRS requires them, and they're what makes our public ledger honest.</span>
       </div>
 
       <div class="field">
@@ -301,6 +333,10 @@ export function renderReimburseStatus(
 ): string {
   const firstName = view.payeeName.trim().split(/\s+/)[0] || view.payeeName;
   const receiptsMissing = view.lines.filter((l) => !l.hasReceipt).length;
+  // Sent back for a fix — this page IS the claimant's revise surface (they
+  // have no account), so it grows an editable substantiation block per line
+  // and a resubmit button. Everything below stays read-only otherwise.
+  const revising = view.status === "changes_requested";
 
   const timeline = view.timeline
     .map((t) => {
@@ -336,7 +372,43 @@ export function renderReimburseStatus(
       ? `<div class="callout ok mt8"><svg width="13" height="13" fill="none" stroke="var(--success)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align:-1px"><use href="#i-check"/></svg> A receipt is attached to every line, so nothing's blocking review.</div>`
       : `<div class="callout mt8">${receiptsMissing} line${receiptsMissing === 1 ? "" : "s"} still need${receiptsMissing === 1 ? "s" : ""} a receipt — add ${receiptsMissing === 1 ? "it" : "them"} below to keep review moving.</div>`;
 
-  const cfg = JSON.stringify({ token, slug }).replace(/</g, "\\u003c");
+  const cfg = JSON.stringify({
+    token,
+    slug,
+    revising,
+    namesMax: view.namesMaxHeadcount,
+    minPurpose: view.minPurposeLength,
+    // Only what the revise form needs to rebuild each line's current answers.
+    lines: view.lines.map((l) => ({
+      lineId: l.lineId,
+      description: l.description,
+      expenseType: l.expenseType,
+      businessPurpose: l.businessPurpose,
+      travelFrom: l.travelFrom,
+      travelTo: l.travelTo,
+      headcount: l.headcount,
+      attendees: l.attendees,
+      groupDescription: l.groupDescription,
+    })),
+  }).replace(/</g, "\\u003c");
+
+  // The revise card: the reviewer's note, then one editable substantiation
+  // block per line (built client-side from `cfg.lines`), then Resubmit. The
+  // resubmit itself is a POST from this page — never a GET — because mail
+  // scanners prefetch links (see `lib/projectActionPage.ts`'s module doc).
+  const reviseCard = revising
+    ? `<div class="card mt16" id="revisecard">
+    <span class="fl">A reviewer sent this back</span>
+    <div class="callout mt8"><b>What to fix:</b> ${esc(view.reviewNote ?? "Open each line and complete the details below.")}</div>
+    <p class="xs muted mt8">This isn't a rejection — nothing is lost. Fix what's noted, then send it back for review. You can also replace a receipt using "Add" above.</p>
+    <div class="col gap12 mt12" id="reviselines"></div>
+    <div class="callout err hide mt12" id="reviseerr"></div>
+    <div class="row between wrap gap12 mt16">
+      <span class="xs faint">Your answers are what the IRS (and our public ledger) require for this spend.</span>
+      <button id="resubmit" class="btn btn-primary"><svg ${ICON_ATTRS}><use href="#i-send"/></svg>Update and resubmit</button>
+    </div>
+  </div>`
+    : "";
 
   return `<!doctype html>
 <html lang="en"><head>${head(`Reimbursement ${view.reference} — ${chapterName}`)}</head>
@@ -345,12 +417,18 @@ ${SYMBOLS}
 ${pubbar(chapterName)}
 <div class="wrap-main">
   <div class="hero">
-    <span class="ic" style="background:var(--success-bg)"><svg fill="none" stroke="var(--success)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#i-check-circle"/></svg></span>
-    <h1>Request submitted</h1>
-    <p>Thanks, ${esc(firstName)}. Reference <b class="ink">#${esc(view.reference)}</b>. We'll email you at each step — reopen this link anytime to check status.</p>
+    <span class="ic"${revising ? "" : ` style="background:var(--success-bg)"`}><svg fill="none" stroke="${revising ? "var(--accent)" : "var(--success)"}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><use href="#${revising ? "i-receipt" : "i-check-circle"}"/></svg></span>
+    <h1>${revising ? "One more thing" : "Request submitted"}</h1>
+    <p>${
+      revising
+        ? `Thanks, ${esc(firstName)}. Reference <b class="ink">#${esc(view.reference)}</b> is <b class="ink">not rejected</b> — a reviewer just needs something fixed before it can be approved and paid.`
+        : `Thanks, ${esc(firstName)}. Reference <b class="ink">#${esc(view.reference)}</b>. We'll email you at each step — reopen this link anytime to check status.`
+    }</p>
   </div>
 
-  <div class="two" style="align-items:start;gap:16px">
+  ${reviseCard}
+
+  <div class="two mt16" style="align-items:start;gap:16px">
     <div class="card">
       <span class="fl">Status</span>
       <div class="timeline mt12">${timeline}</div>
@@ -391,7 +469,9 @@ function stepSub(step: string, view: ReimburseStatusView): string {
     case "submitted":
       return `${fmtWhen(view.submittedAt)} · ${view.lines.length} line item${view.lines.length === 1 ? "" : "s"} · ${receipts} receipt${receipts === 1 ? "" : "s"} attached`;
     case "under_review":
-      return "With the finance manager — checking it lands in the right budget";
+      return view.status === "changes_requested"
+        ? "Back with you — update the details below and resubmit"
+        : "With the finance manager — checking it lands in the right budget";
     case "approved":
       return view.approvedCents != null
         ? `Approved for ${money(view.approvedCents)}`
@@ -419,12 +499,157 @@ ${SYMBOLS}
 
 // ── Client scripts (vanilla JS, no template literals) ─────────────────────────
 
+/**
+ * The per-line SUBSTANTIATION editor, shared verbatim by the submission form
+ * and the status page's revise form — the two surfaces where an accountless
+ * claimant answers the §274(d) questions (what kind of expense, why it served
+ * the org's work, the travel route, who ate). Prefixed helpers (`cel`, `csel`)
+ * so it can be pasted inside either IIFE without colliding with theirs.
+ *
+ * ONE QUESTION AT A TIME: the expense type drives what's asked, so nobody sees
+ * a blank 20-field form — pick "meal" and you get the meal questions, pick
+ * "travel" and you get a route. The attendee rows are RENDERED FROM THE
+ * HEADCOUNT (and only at/below the org's names threshold), so "4 people means
+ * 4 names" is structural rather than an error message someone has to read.
+ *
+ * Deliberately NO client-side copy of the completeness rules: the shared
+ * `codingFieldProblems` (behind the submit/resubmit mutations) is the single
+ * authority, and its message — already prefixed with which line it's about —
+ * is what this page displays. A second copy here is a copy that drifts.
+ */
+const REIMBURSE_CODING_SCRIPT = `
+var C_TYPES=[['general','General'],['travel','Travel'],['meal','Meal'],['lodging','Lodging']];
+var C_AFFIL=[['team','Team member'],['volunteer','Volunteer'],['community_member','Community member'],['contractor','Contractor'],['guest','Guest'],['other','Other']];
+function cel(tag,cls){var n=document.createElement(tag);if(cls)n.className=cls;return n;}
+function clabel(text){var s=cel('span','fl');s.textContent=text;return s;}
+function chint(text){var s=cel('span','xs faint');s.textContent=text;return s;}
+function csel(pairs,value,cls){
+  var s=cel('select','forminput '+(cls||''));
+  for(var i=0;i<pairs.length;i++){
+    var o=document.createElement('option');o.value=pairs[i][0];o.textContent=pairs[i][1];
+    if(value===pairs[i][0])o.selected=true;
+    s.appendChild(o);
+  }
+  return s;
+}
+/* Build the substantiation block into 'host'. 'cfg' = {namesMax,minPurpose};
+   'init' = the line's current values (revise form) or null (fresh line).
+   Returns a read() that yields exactly the fields the server expects. */
+function buildCoding(host,cfg,init){
+  init=init||{};
+
+  var typeField=cel('div','field');
+  var type=csel(C_TYPES,init.expenseType||'general');
+  typeField.appendChild(clabel('What kind of expense?'));
+  typeField.appendChild(type);
+  typeField.appendChild(chint('This decides what the IRS requires us to record — a route for travel, who was there for a meal.'));
+
+  var purposeField=cel('div','field mt8');
+  var purpose=cel('textarea','forminput');purpose.rows=2;
+  purpose.placeholder='What was it, for which event or project, and why?';
+  purpose.value=init.businessPurpose||'';
+  purposeField.appendChild(clabel('Business purpose'));
+  purposeField.appendChild(purpose);
+  purposeField.appendChild(chint('At least '+cfg.minPurpose+' characters — "Travel to NY to film the Eden event", not "bus to NY". This sentence appears on Public Worship\\'s public ledger.'));
+
+  var travelBox=cel('div','mt8 hide');
+  var travelRow=cel('div','two');
+  var fromField=cel('div','field');var from=cel('input','forminput');
+  from.placeholder='City you left from';from.value=init.travelFrom||'';
+  fromField.appendChild(clabel('Traveled from'));fromField.appendChild(from);
+  var toField=cel('div','field');var to=cel('input','forminput');
+  to.placeholder='City you traveled to';to.value=init.travelTo||'';
+  toField.appendChild(clabel('Traveled to'));toField.appendChild(to);
+  travelRow.appendChild(fromField);travelRow.appendChild(toField);
+  travelBox.appendChild(travelRow);
+  travelBox.appendChild(chint('City level is enough — the IRS requires where the trip went.'));
+
+  var mealBox=cel('div','mt8 hide');
+  var headField=cel('div','field');
+  var head=cel('input','forminput');head.type='number';head.min='1';head.style.maxWidth='140px';
+  head.placeholder='e.g. 4';
+  head.value=init.headcount!=null?String(init.headcount):'';
+  headField.appendChild(clabel('How many people ate?'));headField.appendChild(head);
+  var namesBox=cel('div','col gap8 mt8');
+  var namesHint=chint('The IRS requires who was there and how they relate to the organization. Names stay internal — only the breakdown ("3 volunteers, 1 contractor") is ever published.');
+  var groupField=cel('div','field mt8 hide');
+  var group=cel('textarea','forminput');group.rows=2;
+  group.placeholder='e.g. volunteers writing and producing the album';
+  group.value=init.groupDescription||'';
+  groupField.appendChild(clabel('Describe the group'));
+  groupField.appendChild(group);
+  groupField.appendChild(chint('Over '+cfg.namesMax+' people, describe the group instead of listing everyone — it has to be identifiable ("volunteers writing and producing the album", not "some people").'));
+  mealBox.appendChild(headField);mealBox.appendChild(namesHint);mealBox.appendChild(namesBox);mealBox.appendChild(groupField);
+
+  /* Attendee rows are re-rendered from the headcount; whatever was already
+     typed is carried across so raising the count never wipes the names. */
+  function readNames(){
+    var out=[];
+    var rows=namesBox.querySelectorAll('.attrow');
+    for(var i=0;i<rows.length;i++){
+      out.push({name:rows[i].querySelector('input').value,affiliation:rows[i].querySelector('select').value});
+    }
+    return out;
+  }
+  function renderNames(){
+    var n=parseInt(head.value,10);
+    var namesMode=isFinite(n)&&n>=1&&n<=cfg.namesMax;
+    var existing=readNames();
+    if(existing.length===0&&init.attendees)existing=init.attendees;
+    namesBox.innerHTML='';
+    if(!namesMode){
+      namesHint.classList.add('hide');
+      groupField.classList.remove('hide');
+      return;
+    }
+    namesHint.classList.remove('hide');
+    groupField.classList.add('hide');
+    for(var i=0;i<n;i++){
+      var row=cel('div','attrow two');
+      var name=cel('input','forminput');
+      name.placeholder='Name of person '+(i+1);
+      name.value=existing[i]?existing[i].name:'';
+      var aff=csel(C_AFFIL,existing[i]?existing[i].affiliation:'team');
+      row.appendChild(name);row.appendChild(aff);
+      namesBox.appendChild(row);
+    }
+  }
+  function syncType(){
+    var t=type.value;
+    var travelish=(t==='travel'||t==='lodging');
+    travelBox.classList.toggle('hide',!travelish);
+    mealBox.classList.toggle('hide',t!=='meal');
+    if(t==='meal')renderNames();
+  }
+  type.addEventListener('change',syncType);
+  head.addEventListener('input',renderNames);
+
+  host.appendChild(typeField);host.appendChild(purposeField);
+  host.appendChild(travelBox);host.appendChild(mealBox);
+  syncType();
+
+  return function read(){
+    var t=type.value;
+    var out={expenseType:t,businessPurpose:purpose.value};
+    if(t==='travel'||t==='lodging'){out.travelFrom=from.value;out.travelTo=to.value;}
+    if(t==='meal'){
+      var n=parseInt(head.value,10);
+      out.headcount=isFinite(n)?n:undefined;
+      if(isFinite(n)&&n>=1&&n<=cfg.namesMax)out.attendees=readNames();
+      else out.groupDescription=group.value;
+    }
+    return out;
+  };
+}
+`;
+
 /** Form-state browser script: line-item grid, PRE-SUBMIT receipt upload,
  *  required per-line date, required bank destination, total, submit. */
 const REIMBURSE_FORM_SCRIPT = `
 (function(){
 "use strict";
 var R=window.__REIMB__;
+${REIMBURSE_CODING_SCRIPT}
 
 function $(id){return document.getElementById(id);}
 function el(tag,cls){var n=document.createElement(tag);if(cls)n.className=cls;return n;}
@@ -464,6 +689,11 @@ function addLine(){
   file.addEventListener('change',function(){renderReceipt(rc,file,drop);});
   rc.appendChild(file);rc.appendChild(drop);
   line.appendChild(row);line.appendChild(rc);
+  /* Substantiation — the same block the revise form uses. Its read() is kept
+     on the row so collect() can pull the answers back out. */
+  var coding=el('div','col');
+  line.appendChild(coding);
+  line.__coding=buildCoding(coding,{namesMax:R.namesMax,minPurpose:R.minPurpose},null);
   box.appendChild(line);
   recalc();
 }
@@ -516,7 +746,13 @@ function collect(){
     if(!dateVal&&!firstErr)firstErr='Every line needs the date you paid.';
     if(!file&&!firstErr)firstErr='Every line needs a receipt (photo or PDF).';
     if(!desc||amt<=0||!dateVal||!file){ok=false;return;}
-    lines.push({description:desc,amountCents:amt,transactionDate:dateToMs(dateVal),file:file});
+    /* The substantiation rides along as-is — the shared server-side rules
+       (codingFieldProblems) are the single authority on completeness, and
+       their message names the line it's about. */
+    var coding=l.__coding?l.__coding():{};
+    coding.description=desc;coding.amountCents=amt;
+    coding.transactionDate=dateToMs(dateVal);coding.file=file;
+    lines.push(coding);
   });
   if(ok&&lines.length===0){ok=false;firstErr='Add at least one line item.';}
   return {ok:ok,error:firstErr,lines:lines};
@@ -567,7 +803,9 @@ function submit(preApproval){
       requestPreApproval:!!preApproval,
       plannedPurchaseDate:planned==null?undefined:planned,
       lines:c.lines.map(function(l){
-        return {description:l.description,amountCents:l.amountCents,transactionDate:l.transactionDate,receiptStorageId:l.receiptStorageId};
+        return {description:l.description,amountCents:l.amountCents,transactionDate:l.transactionDate,receiptStorageId:l.receiptStorageId,
+          expenseType:l.expenseType,businessPurpose:l.businessPurpose,travelFrom:l.travelFrom,travelTo:l.travelTo,
+          headcount:l.headcount,attendees:l.attendees,groupDescription:l.groupDescription};
       }),
       routingNumber:routing,
       accountNumber:account,
@@ -591,12 +829,15 @@ addLine();
 })();
 `;
 
-/** Status-state browser script: attach a receipt to a line missing one. */
+/** Status-state browser script: attach a receipt to a line missing one, and —
+ *  when the request was sent back — edit each line's substantiation and
+ *  resubmit it (a POST, never a GET). */
 const REIMBURSE_STATUS_SCRIPT = `
 (function(){
 "use strict";
 var CFG=window.__RCFG__;
 var TOKEN=CFG.token;
+${REIMBURSE_CODING_SCRIPT}
 function api(path,body){
   return fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)})
     .then(function(r){return r.json().then(function(j){if(!r.ok)throw new Error(j.error||'Something went wrong');return j;});});
@@ -631,5 +872,36 @@ picker.addEventListener('change',function(){
 document.querySelectorAll('.addreceipt').forEach(function(b){
   b.addEventListener('click',function(){pendingIndex=parseInt(b.getAttribute('data-line'),10);picker.click();});
 });
+
+/* ── revise + resubmit (only rendered on a sent-back request) ── */
+if(CFG.revising){
+  var box=document.getElementById('reviselines');
+  var readers=[];
+  CFG.lines.forEach(function(line){
+    var card=cel('div','card');
+    card.style.padding='14px';
+    var head=cel('div','semi small');
+    head.textContent=line.description;
+    card.appendChild(head);
+    var host=cel('div','col mt8');
+    card.appendChild(host);
+    var read=buildCoding(host,{namesMax:CFG.namesMax,minPurpose:CFG.minPurpose},line);
+    readers.push(function(){var out=read();out.lineId=line.lineId;return out;});
+    box.appendChild(card);
+  });
+  var rbtn=document.getElementById('resubmit');
+  var rerr=document.getElementById('reviseerr');
+  rbtn.addEventListener('click',function(){
+    rerr.classList.add('hide');
+    rbtn.disabled=true;
+    api('/api/reimburse/resubmit',{token:TOKEN,lines:readers.map(function(r){return r();})})
+      .then(function(){window.location.reload();})
+      .catch(function(e){
+        rbtn.disabled=false;
+        rerr.textContent=e.message||'Could not resubmit. Please try again.';
+        rerr.classList.remove('hide');
+      });
+  });
+}
 })();
 `;

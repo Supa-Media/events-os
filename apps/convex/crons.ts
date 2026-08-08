@@ -54,12 +54,15 @@ crons.cron(
   {},
 );
 
-// Daily 10:00 UTC = 6am EDT: convert card charges still missing a receipt past
-// the org-wide no-receipt deadline (`financeSettings.noReceiptAutoConvertDays`)
-// into personal repayments. NO-OP by default (policy off until central finance
-// sets a number). Runs BEFORE the auto-lock below so a just-converted charge —
-// now a personal repayment, excluded from the missing-receipt set — no longer
-// counts toward that card's lock in the same daily pass.
+// Daily 10:00 UTC = 6am EDT: convert UNSUBSTANTIATED card charges into
+// personal repayments — two clocks, one sweep. Still missing a receipt past
+// the org-wide no-receipt deadline (`financeSettings.noReceiptAutoConvertDays`,
+// off by default until central finance sets a number), OR still UNCODED past
+// the accountable-plan deadline (`codingOverdueDays`, default 60 — the IRS
+// safe harbor, which has no off switch). Runs BEFORE the auto-lock below so a
+// just-converted charge — now a personal repayment, excluded from the
+// missing-receipt set — no longer counts toward that card's lock in the same
+// daily pass.
 crons.cron(
   "no-receipt personal-charge auto-convert",
   "0 10 * * *",
@@ -77,11 +80,13 @@ crons.cron(
   {},
 );
 
-// Daily 11:30 UTC = 7:30am EDT: advance the receipt-reminder timeline (day-1
-// flag / day-3 escalate) for card charges still missing a receipt, emailing
-// the cardholder when a charge crosses a checkpoint. Terminal day-7 handling
-// stays in the auto-lock cron above; uploading a receipt unlocks/clears the
-// timeline immediately via `attachReceipt`, well ahead of either sweep.
+// Daily 11:30 UTC = 7:30am EDT: advance the reminder timeline (day-1 flag /
+// day-3 escalate) for card charges that still owe their cardholder something
+// — a coding, a receipt, or an answer to a reviewer's send-back — emailing
+// each cardholder ONE digest ("you have N charges to code") when a charge
+// crosses a checkpoint. Terminal day-7 handling stays in the auto-lock cron
+// above; uploading a receipt unlocks/clears the timeline immediately via
+// `attachReceipt`, well ahead of either sweep.
 crons.cron(
   "card receipt reminder sweep",
   "30 11 * * *",

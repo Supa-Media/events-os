@@ -311,6 +311,21 @@ export function registerReimburseApiRoutes(http: HttpRouter): void {
     ),
   });
 
+  // Resubmit a sent-back request with revised per-line substantiation
+  // (token-scoped). A POST, never a GET: mail scanners prefetch links, and a
+  // state change on a GET would let a scanner resubmit somebody's request for
+  // them (see `lib/projectActionPage.ts`'s module doc for the same trap).
+  http.route({
+    path: "/api/reimburse/resubmit",
+    method: "POST",
+    handler: jsonPost((ctx, body) =>
+      ctx.runMutation(api.reimbursements.resubmitPublicReimbursement, {
+        token: String(body.token ?? ""),
+        lines: toRevisedLines(body.lines),
+      }),
+    ),
+  });
+
   // Claimant status view (token-scoped) → getPublicReimbursement (or 404).
   http.route({
     path: "/api/reimburse/status",
@@ -354,6 +369,11 @@ export function registerReimburseApiRoutes(http: HttpRouter): void {
  * structure — categorizing a line is a finance manager's review-time job,
  * done in their own tooling after the request lands. Null when the slug is
  * unknown.
+ *
+ * It DOES carry the org's coding policy numbers (the meal-names threshold and
+ * the business-purpose floor) — not chapter data, just the rule the server
+ * will enforce, so the form asks for names at exactly the headcount the
+ * server requires them at instead of hard-coding a copy of the threshold.
  */
 export const chapterForReimburse = query({
   args: { slug: v.string() },
@@ -363,10 +383,13 @@ export const chapterForReimburse = query({
       .withIndex("by_slug", (q) => q.eq("slug", slug))
       .unique();
     if (!chapter) return null;
+    const { namesMaxHeadcount } = await codingPolicy(ctx);
 
     return {
       slug: chapter.slug ?? slug,
       name: chapter.name,
+      namesMaxHeadcount,
+      minPurposeLength: MIN_PURPOSE_LENGTH,
     };
   },
 });

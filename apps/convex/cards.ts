@@ -4002,7 +4002,7 @@ export const autoLockOverdueCards = internalMutation({
   },
 });
 
-// ── autoConvertOverdueReceipts (no-receipt → personal repayment) ─────────────
+// ── autoConvertOverdueReceipts (unsubstantiated → personal repayment) ────────
 
 /**
  * The org-wide auto-conversion sweep the daily cron calls — the TERMINAL step

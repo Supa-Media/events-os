@@ -404,8 +404,15 @@ export function TransactionCodingModal({
                 </View>
               ) : null}
 
+              {/* THE MISSING PIECES, in place. Submit stays disabled until
+                  this list is empty — the server throws the FIRST of these
+                  same problems, so nothing gets rejected here that the form
+                  could have said out loud first. */}
               {touched && problems.length > 0 ? (
                 <View className="mt-4 gap-1.5 rounded-md border border-border bg-sunken px-3 py-2">
+                  <Text className="text-2xs font-semibold uppercase tracking-wide text-muted">
+                    Still needed before you can submit
+                  </Text>
                   {problems.map((p) => (
                     <View key={p.code} className="flex-row items-start gap-2">
                       <Icon name="info" size={13} color={colors.muted} />
@@ -422,7 +429,7 @@ export function TransactionCodingModal({
           <View className="flex-row justify-end gap-2 border-t border-border px-5 py-4">
             <Button title="Cancel" variant="secondary" onPress={onCancel} />
             <Button
-              title="Submit for review"
+              title={submitLabel}
               onPress={() => {
                 if (value != null && problems.length === 0) onConfirm(value);
               }}
