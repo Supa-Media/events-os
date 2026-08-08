@@ -588,6 +588,126 @@ describe("auto settlement + the settling-leg exclusion", () => {
 
 // ── signedBookCents (the accounts-page book value) ───────────────────────────
 
+/** Give a scope a cached bank balance, the way the engine's snapshot step does. */
+async function seedBankBalance(
+  s: ChapterSetup,
+  scope: Id<"chapters"> | typeof CENTRAL,
+  balanceCents: number,
+): Promise<void> {
+  await run(s.t, (ctx) =>
+    ctx.db.insert("increaseAccounts", {
+      chapterId: scope,
+      increaseAccountId: `acct_${String(scope).slice(0, 8)}`,
+      onboardingStatus: "active",
+      balanceCents,
+      balanceAsOf: Date.now(),
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }),
+  );
+}
+
+// ── Balance settlement — the model that replaced per-payout allocation ───────
+// Every payout lands in central's account, so central holds what the chapters
+// earned. Rather than itemise each payout back to the record that produced it,
+// the engine compares each chapter's BOOK to its BANK and moves the difference.
+
+describe("settleChapterBalances — cash follows the book", () => {
+  const DAY = "2026-08-08";
+
+  test("moves a chapter the gap between its book and its bank", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    // The chapter earned $500 and holds $100.
+    await seedDonorWithGift(s, s.chapterId, { amountCents: 50_000 });
+    await seedBankBalance(s, CENTRAL, 100_000);
+    await seedBankBalance(s, s.chapterId, 10_000);
+
+    const out = await t.mutation(
+      internal.reconciliation.settleChapterBalances,
+      { dateStr: DAY },
+    );
+    expect(out.settlementsBooked).toBe(1);
+    expect(out.movedCents).toBe(40_000);
+
+    const legs = await legsFor(s, `balsettle-${s.chapterId}-${DAY}`);
+    expect(legs).toHaveLength(2);
+    expect(legs.every((l) => l.transferOrigin === "balance_settlement")).toBe(true);
+    expect(legs.every((l) => l.amountCents === 40_000)).toBe(true);
+    expect(legs.every((l) => l.transferDirection === "central_to_chapter")).toBe(true);
+  });
+
+  test("sends only what central actually holds, and says so", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await seedDonorWithGift(s, s.chapterId, { amountCents: 50_000 });
+    await seedBankBalance(s, CENTRAL, 12_000); // central can't cover $400
+    await seedBankBalance(s, s.chapterId, 10_000);
+
+    const out = await t.mutation(
+      internal.reconciliation.settleChapterBalances,
+      { dateStr: DAY },
+    );
+    // Booking the full $400 would create a pair the ledger claims happened and
+    // the bank refuses to execute.
+    expect(out.movedCents).toBe(12_000);
+    expect(out.notes.join(" ")).toMatch(/the rest once more clears/);
+  });
+
+  test("pulls the excess back when a chapter holds more than its book", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await seedDonorWithGift(s, s.chapterId, { amountCents: 10_000 });
+    await seedBankBalance(s, CENTRAL, 100_000);
+    await seedBankBalance(s, s.chapterId, 30_000);
+
+    const out = await t.mutation(
+      internal.reconciliation.settleChapterBalances,
+      { dateStr: DAY },
+    );
+    expect(out.settlementsBooked).toBe(1);
+    const legs = await legsFor(s, `balsettle-${s.chapterId}-${DAY}`);
+    expect(legs.every((l) => l.transferDirection === "chapter_to_central")).toBe(true);
+    expect(legs[0].amountCents).toBe(20_000);
+  });
+
+  test("ignores drift too small to be worth a ledger row", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await seedDonorWithGift(s, s.chapterId, { amountCents: 10_000 });
+    await seedBankBalance(s, CENTRAL, 100_000);
+    await seedBankBalance(s, s.chapterId, 9_900); // $1 out
+
+    const out = await t.mutation(
+      internal.reconciliation.settleChapterBalances,
+      { dateStr: DAY },
+    );
+    expect(out.settlementsBooked).toBe(0);
+  });
+
+  test("is idempotent across a same-day re-run", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await seedDonorWithGift(s, s.chapterId, { amountCents: 50_000 });
+    await seedBankBalance(s, CENTRAL, 100_000);
+    await seedBankBalance(s, s.chapterId, 10_000);
+
+    await t.mutation(internal.reconciliation.settleChapterBalances, { dateStr: DAY });
+    // A manual "Run now" after the cron must not book the movement twice.
+    const second = await t.mutation(
+      internal.reconciliation.settleChapterBalances,
+      { dateStr: DAY },
+    );
+    expect(second.settlementsBooked).toBe(0);
+    expect(await legsFor(s, `balsettle-${s.chapterId}-${DAY}`)).toHaveLength(2);
+  });
+});
+
 describe("signedBookCents — every ledger shape signs correctly", () => {
   const base = {
     amountCents: 1_000,
@@ -641,6 +761,23 @@ describe("signedBookCents — every ledger shape signs correctly", () => {
         }),
       ),
     ).toBe(0);
+  });
+
+  test("a balance settlement contributes nothing, so the target can't chase itself", () => {
+    // Crediting a chapter's book for its own top-up would raise the very number
+    // the top-up aims at, and the engine would move money every morning forever.
+    for (const chapterId of ["ch_1" as Id<"chapters">, CENTRAL]) {
+      expect(
+        signedBookCents(
+          tr({
+            flow: "transfer",
+            transferOrigin: "balance_settlement",
+            transferDirection: "central_to_chapter",
+            chapterId,
+          }),
+        ),
+      ).toBe(0);
+    }
   });
 
   test("a marked bank transfer contributes NOTHING to either book", () => {
