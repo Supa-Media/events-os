@@ -643,13 +643,30 @@ describe("signedBookCents — every ledger shape signs correctly", () => {
     ).toBe(0);
   });
 
-  test("marked bank transfers keep the bank's direction; special sources sign by meaning", () => {
+  test("a marked bank transfer contributes NOTHING to either book", () => {
+    // Cash moving between accounts the org already owns is neither earning nor
+    // spending, so it changes no book's VALUE — only where the cash sits.
+    //
+    // This test used to assert the opposite (−1000 / +1000, the bank's own
+    // direction). The founder's $2,873.21 Central→New York move is what showed
+    // that model wrong: New York's Stripe payouts land in Central's account, so
+    // moving them on took $2,873.21 off Central for revenue Central never
+    // earned, and credited New York twice for revenue it had earned once. The
+    // engine already treats its own version of that delivery as valueless
+    // (`payout_allocation` legs return 0); a hand-marked one now agrees.
     expect(
       signedBookCents(tr({ flow: "transfer", preMarkFlow: "outflow" })),
-    ).toBe(-1_000);
+    ).toBe(0);
     expect(
       signedBookCents(tr({ flow: "transfer", preMarkFlow: "inflow" })),
-    ).toBe(1_000);
+    ).toBe(0);
+    // `preMarkFlow` is read BEFORE `flow`. A half-unmarked pair exists in
+    // production — one leg back to `flow:"outflow"` with `preMarkFlow` never
+    // cleared — and reading `flow` first would zero one leg while keeping the
+    // other, turning a pair that nets to nothing into a $1,000 hole.
+    expect(
+      signedBookCents(tr({ flow: "outflow", preMarkFlow: "outflow" })),
+    ).toBe(0);
     expect(
       signedBookCents(tr({ flow: "transfer", source: "repayment" })),
     ).toBe(1_000);

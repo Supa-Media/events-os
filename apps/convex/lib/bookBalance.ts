@@ -29,9 +29,10 @@
  *  - `outflow` → −. (A personal charge still counts — the money really left;
  *    its repayment credit brings it back.)
  *  - `status:"excluded"` → 0 (a duplicate / bank error is out of ALL totals).
- *  - `flow:"transfer"` legs, by what kind of leg it is:
- *      · marked bank transfer (`preMarkFlow` set) → the bank's own original
- *        direction (`finances.ts#isMarkedTransfer`'s field).
+ *  - a MARKED bank transfer (`preMarkFlow` set, whatever `flow` now reads) → 0.
+ *    Cash moving between accounts the org already owns is neither earning nor
+ *    spending, so it changes no book's VALUE — only where the cash sits.
+ *  - remaining `flow:"transfer"` legs, by what kind of leg it is:
  *      · `source:"repayment"` → + (the offsetting credit `cards.ts` posts on
  *        the chapter book when a personal charge is repaid).
  *      · `source:"reimbursement"` → − (legacy only: reimbursement expenses
@@ -58,12 +59,41 @@ export function signedBookCents(tr: Doc<"transactions">): number {
   if (tr.payoutProcessor != null || tr.stripePayoutId != null) return 0;
   if (tr.transferOrigin === "payout_allocation") return 0;
 
+  // ── A MARKED TRANSFER MOVES CASH, NOT VALUE ────────────────────────────────
+  // `preMarkFlow` is written by `finances.markAsTransfer` and nothing else, so
+  // it identifies exactly the rows a human declared to be two legs of one
+  // movement between accounts the org ALREADY owns.
+  //
+  // Book value is what a book EARNED minus what it SPENT. Moving cash from one
+  // of the org's accounts to another is neither, and charging it to a book
+  // produces a real distortion: the founder transferred $2,873.21 from Central
+  // to New York on 2026-08-07 because New York's Stripe payouts land in
+  // Central's account and New York needed to spend. New York had already been
+  // credited that revenue when the tickets sold. Signing the legs took
+  // $2,873.21 off Central — for money Central never earned — and credited New
+  // York a second time for money it had earned once.
+  //
+  // The engine already treats its own version of this movement as valueless
+  // (`transferOrigin === "payout_allocation"` returns 0 above). This is the
+  // same delivery done by hand, and it gets the same answer.
+  //
+  // NOT the same as an `auto_settlement` pair, which falls through to the
+  // direction branch below and stays signed — deliberately. That one corrects
+  // WHO BORE A COST when one book's card paid for another book's spending, so
+  // it moves real economic weight rather than just cash.
+  //
+  // CHECKED BEFORE `flow`, not after. A half-unmarked pair exists in production
+  // — the 2026-07-17 Relay→Increase move has one leg still `flow:"transfer"`
+  // and the other back to `flow:"outflow"` with `preMarkFlow` never cleared.
+  // Reading `flow` first would zero one leg and keep the other, turning a pair
+  // that nets to nothing into a $1,000 hole. `preMarkFlow` is the durable
+  // signal; it says "a human called this a transfer" whatever `flow` now reads.
+  if (tr.preMarkFlow != null) return 0;
+
   if (tr.flow === "inflow") return tr.amountCents;
   if (tr.flow === "outflow") return -tr.amountCents;
 
   // flow === "transfer" — resolve which side of the movement this leg is.
-  if (tr.preMarkFlow === "inflow") return tr.amountCents;
-  if (tr.preMarkFlow === "outflow") return -tr.amountCents;
   if (tr.source === "repayment") return tr.amountCents;
   if (tr.source === "reimbursement") return -tr.amountCents;
 
