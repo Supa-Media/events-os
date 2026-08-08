@@ -49,6 +49,9 @@ export const STATUS_BADGE: Record<
   pending_preapproval: { tone: "warn", icon: "clock" },
   preapproved: { tone: "success", icon: "check" },
   submitted: { tone: "accent", icon: "clock" },
+  // Back with the claimant for a fix — actionable, not terminal, so it reads
+  // as a nudge (warn) rather than a refusal (danger, which `rejected` owns).
+  changes_requested: { tone: "warn", icon: "corner-up-left" },
   approved: { tone: "success", icon: "check" },
   paying: { tone: "info", icon: "refresh-cw" },
   paid: { tone: "info", icon: "check-circle" },

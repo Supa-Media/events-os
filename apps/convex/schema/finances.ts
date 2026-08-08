@@ -652,6 +652,12 @@ export const reimbursementRequests = defineTable({
   preApprovedByPersonId: v.optional(v.id("people")),
   reviewedByPersonId: v.optional(v.id("people")),
   rejectedReason: v.optional(v.string()),
+  // The reviewer's latest send-back note while `status:"changes_requested"`
+  // ("receipt must show exact amount"). Required to send back, cleared on the
+  // claimant's resubmission — the round-by-round history lives in
+  // `approvals`/`financeAuditLog`, not here. Distinct from `rejectedReason`,
+  // which is terminal.
+  reviewNote: v.optional(v.string()),
 
   // Payout details captured on the form (where the money should go).
   bankAccountLast4: v.optional(v.string()),
@@ -699,6 +705,41 @@ export const reimbursementLineItems = defineTable({
   // through the submit mutations. `v.optional` only so a pre-existing legacy
   // row (created before this field existed) still validates.
   transactionDate: v.optional(v.number()),
+
+  // ── Substantiation (transaction-coding parity, phase 3) ───────────────────
+  // The SAME §274(d) elements a card charge's `transactionCodings` row
+  // carries, applied per LINE because a reimbursement routinely mixes kinds
+  // (a fare, a hotel night, and a team dinner on one request). Validated by
+  // the shared `codingFieldProblems` so the public token page, the in-app
+  // form, and the server can't drift.
+  //
+  // REQUIRED (server-enforced in `createReimbursement`) for lines created
+  // after the coding policy date; `v.optional` so pre-existing legacy rows
+  // still validate — the same posture `receiptStorageId` above already
+  // takes. There is no separate review state here: the REQUEST's own
+  // `submitted → changes_requested → approved` lifecycle is the review loop,
+  // so a line's substantiation is judged with the request it belongs to.
+  //
+  // Attendee names are internal-only, exactly as on `transactionCodings` —
+  // a public ledger renders the headcount and affiliation breakdown.
+  expenseType: v.optional(v.union(...EXPENSE_TYPES.map((t) => v.literal(t)))),
+  businessPurpose: v.optional(v.string()),
+  travelFrom: v.optional(v.string()),
+  travelTo: v.optional(v.string()),
+  headcount: v.optional(v.number()),
+  attendees: v.optional(
+    v.array(
+      v.object({
+        personId: v.optional(v.id("people")),
+        name: v.string(),
+        affiliation: v.union(
+          ...ATTENDEE_AFFILIATIONS.map((a) => v.literal(a)),
+        ),
+      }),
+    ),
+  ),
+  groupDescription: v.optional(v.string()),
+
   // Partial approval: a line can be individually approved or rejected.
   approved: v.optional(v.boolean()),
   matchedTransactionId: v.optional(v.id("transactions")),
@@ -1956,6 +1997,13 @@ export const financeSettings = defineTable({
   // `DEFAULT_MEAL_ATTENDEE_NAMES_MAX_HEADCOUNT` (15, owner decision
   // 2026-08-08).
   mealAttendeeNamesMaxHeadcount: v.optional(v.number()),
+  // Org-wide substantiation deadline: a post-policy charge still uncoded this
+  // many days after posting auto-converts to a personal repayment (the
+  // cardholder owes it back). `undefined` falls back to
+  // `DEFAULT_CODING_OVERDUE_DAYS` (60 — the IRS accountable-plan safe
+  // harbor). Enforced by the daily `cards.autoConvertOverdueReceipts` sweep,
+  // alongside the existing `noReceiptAutoConvertDays` documentation clock.
+  codingOverdueDays: v.optional(v.number()),
   // Morning reconciliation engine kill switch (accounts page, ED/FM). The
   // engine defaults to RUNNING — it books ledger transfer pairs, never real
   // bank movement, so the money-gating rule doesn't apply — but the Financial

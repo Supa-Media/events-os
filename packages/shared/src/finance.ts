@@ -581,6 +581,19 @@ export const DEFAULT_MEAL_ATTENDEE_NAMES_MAX_HEADCOUNT = 15;
  *  policy arms itself on the date with no runtime config step. */
 export const DEFAULT_CODING_REQUIRED_SINCE_MS = Date.UTC(2026, 8, 1);
 
+/** The accountable-plan substantiation deadline, in days after the charge
+ *  posts. 60 days is the IRS safe harbor for substantiating an expense
+ *  (Treas. Reg. §1.62-2(g)) — past it, spend nobody has substantiated is,
+ *  by law, taxable wages to whoever spent it. So the org's own escalation
+ *  ends one step earlier than the law does: at this mark an uncoded charge
+ *  auto-converts to a personal repayment (the cardholder owes it back),
+ *  which is the "return of excess" condition being met rather than broken.
+ *
+ *  Stored as `financeSettings.codingOverdueDays`; this is the fallback when
+ *  it's unset — deliberately NOT an "off" switch, same posture as the
+ *  receipt-exception threshold. */
+export const DEFAULT_CODING_OVERDUE_DAYS = 60;
+
 /** True iff a meal of this size must name every attendee (vs. headcount +
  *  group description). Shared by the server guard and the form. */
 export function mealNamesRequired(
@@ -931,6 +944,15 @@ export const REIMBURSEMENT_STATUSES = [
   "pending_preapproval",
   "preapproved",
   "submitted",
+  // A reviewer sent it BACK for revision rather than killing it —
+  // "receipt must show exact amount", "say which event this served". The
+  // claimant edits their lines and resubmits (→ `submitted` again).
+  // Deliberately distinct from `rejected`, which reads as final and is: a
+  // rejected request is over, while most real review outcomes are "almost —
+  // fix this one thing." Without this state the only send-back was a
+  // rejection, which taught claimants that review meant losing their money
+  // (see `docs/plans/transaction-coding.md`, phase 3).
+  "changes_requested",
   "approved",
   "paying",
   "paid",
@@ -944,6 +966,7 @@ export const REIMBURSEMENT_STATUS_LABELS: Record<ReimbursementStatus, string> = 
   pending_preapproval: "Pending pre-approval",
   preapproved: "Pre-approved",
   submitted: "Submitted",
+  changes_requested: "Changes requested",
   approved: "Approved",
   paying: "Paying",
   paid: "Paid",
