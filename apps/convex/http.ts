@@ -201,7 +201,7 @@ http.route({
 // Same-origin JSON the marketing site's "Important Links" section (apps/landing)
 // fetches at runtime to auto-list published RSVP pages — so publishing an event
 // in the OS surfaces it on publicworship.life with no rebuild, and it drops off
-// once the event is over. Read-only, no PII; a short cache keeps it fresh
+// the Eastern day after the event ends. Read-only, no PII; a short cache keeps it fresh
 // without hammering the backend on every homepage view.
 
 http.route({
