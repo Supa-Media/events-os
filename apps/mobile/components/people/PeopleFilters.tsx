@@ -1,23 +1,32 @@
 /**
- * People-CRM overhaul (2026-07-27) — the compact filter row that replaces the
- * People tab's old four-row header (title / persona segments / a stray
- * "Givers" pill / a full-width search box / 30 wrapping service chips). Three
- * anchored dropdowns (Persona / Services / More) sit next to the search box;
- * every selection also lands as a removable pill in `ActiveFilterPills`
- * below — the standard CRM "chip row + Clear all" pattern.
+ * The People tab's header controls.
  *
- * Built on the same `useAnchor` + `Popover` plumbing every other grid filter
- * in this app already uses (`FilterSelect`, the grid's `SelectCell`) — no new
- * dropdown primitive, just new CONTENT (multi-select + counts + grouping)
- * inside the existing one.
+ * History worth knowing, because it explains the shape: the 2026-07-27
+ * People-CRM overhaul set out to collapse a four-row header into "search +
+ * three dropdowns", and did — then added the persona counts back underneath
+ * as a fourth row anyway. The tab ended up with persona expressed THREE
+ * times at once (a `Persona: All` dropdown, a row of interpunct counts, and a
+ * removable chip in `ActiveFilterPills`), which is what "I really hate the UI
+ * for the people page… it's just weird" was describing.
+ *
+ * Now: persona has exactly ONE control, `PersonaRail` — a rail of the house
+ * `Pill`, the same primitive the finance/giving/campaign sub-navigation rails
+ * use, so selection reads the way selection reads everywhere else in the app.
+ * `Services` and `More` stay dropdowns because they're multi-select
+ * refinements over long lists, not a six-way choice; both still land as
+ * removable pills in `ActiveFilterPills`.
+ *
+ * The dropdowns are built on the same `useAnchor` + `Popover` plumbing every
+ * other grid filter already uses (`FilterSelect`, the grid's `SelectCell`) —
+ * no new dropdown primitive, just new CONTENT inside the existing one.
  */
 import { useMemo, useState } from "react";
-import { Pressable, Text, TextInput, View } from "react-native";
+import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
 import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import type { RosterStatus, Persona } from "@events-os/shared";
-import { Icon, Popover } from "../ui";
+import { Icon, Pill, Popover } from "../ui";
 import { useAnchor } from "../ui/useAnchor";
 import { colors } from "../../lib/theme";
 import { flattenServiceCatalog } from "../../lib/serviceCatalog";
@@ -80,61 +89,32 @@ function DropdownTrigger({
   );
 }
 
-// ── Persona dropdown — single-select over the ladder, each row showing its
-// count (the SAME counts the summary row below renders, one source of truth
-// via the `counts` prop from `people.counts`). ──────────────────────────────
-export function PersonaDropdown({
-  value,
-  counts,
-  onChange,
-}: {
-  value: PersonaFilter;
-  counts: PersonaCounts | undefined;
-  onChange: (next: PersonaFilter) => void;
-}) {
-  const { ref, anchor, visible, open, close } = useAnchor();
-  return (
-    <>
-      <DropdownTrigger
-        triggerRef={ref}
-        label={`Persona: ${PERSONA_LABEL[value]}`}
-        active={value !== "all"}
-        onPress={open}
-      />
-      <Popover visible={visible} onClose={close} anchor={anchor} width={220}>
-        {PERSONA_ORDER.map((key) => {
-          const selected = key === value;
-          return (
-            <Pressable
-              key={key}
-              onPress={() => {
-                onChange(key);
-                close();
-              }}
-              className={`flex-row items-center justify-between px-3 py-2.5 active:bg-sunken web:hover:bg-sunken ${
-                selected ? "bg-sunken" : "bg-raised"
-              }`}
-            >
-              <Text className={`text-sm ${selected ? "font-semibold text-accent" : "text-ink"}`}>
-                {PERSONA_LABEL[key]}
-              </Text>
-              <View className="flex-row items-center gap-2">
-                <Text className="text-xs text-faint">{counts ? counts[key] : "…"}</Text>
-                {selected ? <Icon name="check" size={15} color={colors.accent} /> : null}
-              </View>
-            </Pressable>
-          );
-        })}
-      </Popover>
-    </>
-  );
-}
-
-/** Read-only-but-clickable summary row (founder spec: "Persona stays as
- *  counts, but compact — it's both a filter and a summary"). Drives the SAME
- *  `persona` state as the dropdown above, so either control keeps the other
- *  in sync. */
-export function PersonaCountsRow({
+/**
+ * Persona rail — the ONE control for persona.
+ *
+ * It replaces two controls that both wrote the same `persona` state and sat
+ * one on top of the other: a `Persona: All` dropdown, and a row of
+ * interpunct-separated counts ("All 555 · Team 18 · Volunteers 3 · …"). Two
+ * controls for one concept is confusing on its own; worse, the counts row
+ * looked like a readout rather than a filter — the only mark of the active
+ * one was slightly bolder text — so the page's primary navigation axis read
+ * as data. (A selected persona ALSO appeared a third time, as a removable
+ * chip in `ActiveFilterPills`.)
+ *
+ * `Pill` is the house primitive for exactly this — its doc calls it "a
+ * rounded selectable chip used for filters and segmented choices", it carries
+ * the accent border + tint that every other selected filter in the app uses,
+ * and its `count` prop exists precisely so a filter's count can be shown
+ * de-emphasised instead of competing with the label. Same pattern as the
+ * finance/giving/campaign sub-navigation rails, so nothing new is invented
+ * here; the horizontal ScrollView mirrors `finances/_layout.tsx` so a narrow
+ * window scrolls the rail instead of wrapping it into another band of chrome.
+ *
+ * Counts are mutually exclusive and exhaustive — `people.counts` reads one
+ * `persona` field per person out of a partitioned aggregate — so the five
+ * rungs really do sum to All, and the rail can be read as a breakdown.
+ */
+export function PersonaRail({
   value,
   counts,
   onChange,
@@ -144,24 +124,21 @@ export function PersonaCountsRow({
   onChange: (next: PersonaFilter) => void;
 }) {
   return (
-    <View className="flex-row flex-wrap items-center gap-x-1">
-      {PERSONA_ORDER.map((key, i) => {
-        const active = key === value;
-        return (
-          <View key={key} className="flex-row items-center">
-            {i > 0 ? <Text className="text-sm text-faint">{"  ·  "}</Text> : null}
-            <Pressable onPress={() => onChange(key)} hitSlop={4} className="active:opacity-70">
-              <Text className={`text-sm ${active ? "font-bold text-ink" : "text-muted"}`}>
-                {PERSONA_LABEL[key]}{" "}
-                <Text className={active ? "text-accent" : "text-faint"}>
-                  {counts ? counts[key] : "…"}
-                </Text>
-              </Text>
-            </Pressable>
-          </View>
-        );
-      })}
-    </View>
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      contentContainerStyle={{ gap: 8, paddingRight: 8 }}
+    >
+      {PERSONA_ORDER.map((key) => (
+        <Pill
+          key={key}
+          label={PERSONA_LABEL[key]}
+          selected={key === value}
+          count={counts ? counts[key] : undefined}
+          onPress={() => onChange(key)}
+        />
+      ))}
+    </ScrollView>
   );
 }
 
