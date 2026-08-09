@@ -20,7 +20,12 @@ import { isChapterAdmin } from "./lib/org";
 import { isCardEligible, type Persona } from "@events-os/shared";
 import { writePersonAudit, diffFields } from "./lib/givingAudit";
 import { recordPersonEmail } from "./lib/personEmails";
-import { composeName, nameHalvesPatch, splitPersonName } from "./lib/personName";
+import {
+  composeName,
+  firstNameForDesignatedLast,
+  nameHalvesPatch,
+  splitPersonName,
+} from "./lib/personName";
 import { assertServiceIdsInChapter, expandServiceIdsWithChildren } from "./lib/serviceCatalog";
 import { resolvePersonaForRoster, resolvePersonaForPage } from "./lib/people";
 import { requireGivingView, type GivingScope } from "./lib/givingAccess";
@@ -851,7 +856,7 @@ export const update = mutation({
       }
       // Only the half that was actually SENT changes — sending one never
       // wipes the other (the People grid's cells commit one at a time).
-      const first =
+      let first =
         patch.firstName !== undefined
           ? (fields.firstName as string | undefined)?.trim() || undefined
           : person.firstName;
@@ -859,6 +864,26 @@ export const update = mutation({
         patch.lastName !== undefined
           ? (fields.lastName as string | undefined)?.trim() || undefined
           : person.lastName;
+      // Giving a surname to a person who has NO halves at all (an unsplit
+      // mononym or 3+-token name — see `splitPersonName`). Composing from a
+      // last name alone would overwrite the display name with just that
+      // surname, wiping "Mary Jo Van Der Berg" down to "Van Der Berg", so the
+      // first half is derived from the name already on the record. Only when
+      // the caller didn't speak for `firstName` itself — an explicit half,
+      // including an explicit clear, always wins — and only for a person with
+      // NO stored halves, the exact case the grid used to render as a dead
+      // dash. A record that already carries one half is left on its existing
+      // path rather than having a first name invented for it.
+      if (
+        patch.firstName === undefined &&
+        person.firstName === undefined &&
+        person.lastName === undefined &&
+        first === undefined &&
+        last &&
+        person.name
+      ) {
+        first = firstNameForDesignatedLast(person.name, last) || undefined;
+      }
       fields.firstName = first;
       fields.lastName = last;
       const composed = composeName(first, last);

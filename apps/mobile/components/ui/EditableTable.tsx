@@ -31,6 +31,7 @@ export function InlineText<T = string>({
   format,
   weight,
   maxLength,
+  autoFocus,
 }: {
   value: T;
   onCommit: (v: T) => void;
@@ -44,6 +45,14 @@ export function InlineText<T = string>({
   /** Hard cap on typed length. Pass the SAME constant the server enforces so
    *  a cell can't accept text the mutation will then reject. */
   maxLength?: number;
+  /** Focus on mount. Required by the TWO-STAGE cells (`RateCell`, `ListCell`)
+   *  that swap a Pressable out for this input on activation: without it a
+   *  mouse user just clicks a second time, but a keyboard user presses Enter,
+   *  watches the Pressable unmount, and has focus fall back to `<body>` —
+   *  ejected from the grid entirely, with no way back to the cell they opened.
+   *  Cells that render this input unconditionally must NOT pass it, or every
+   *  row would fight over the focus on mount. */
+  autoFocus?: boolean;
 }) {
   const display = () =>
     format ? format(value) : value == null ? "" : String(value);
@@ -62,6 +71,7 @@ export function InlineText<T = string>({
       keyboardType={numeric ? "numbers-and-punctuation" : "default"}
       autoCapitalize="none"
       maxLength={maxLength}
+      autoFocus={autoFocus}
       onBlur={() => onCommit(parse ? parse(text) : (text as unknown as T))}
       className={`flex-1 px-2 py-1.5 text-sm leading-snug text-ink ${
         weight === "medium" ? "font-medium" : ""

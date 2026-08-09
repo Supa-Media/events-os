@@ -101,7 +101,12 @@ const RSVP_STATUS_TONE: Record<string, "success" | "warn" | "neutral"> = {
 // client-side here: the client only has the row's own fields, not the
 // participation signals (engagements/roleAssignments/rsvps) that distinguish
 // a genuine volunteer/guest from a contact.
-type Person = Doc<"people"> & {
+// `persona` is OMITTED from the Doc before being re-added: the schema types it
+// `Persona | undefined`, so intersecting rather than overriding collapsed the
+// intended `| null` back to `Persona` and made the "persona not computed here"
+// sentinel (`openPersonFallback` below, whose query doesn't resolve the ladder)
+// unassignable to the very type it feeds.
+type Person = Omit<Doc<"people">, "persona"> & {
   imageUrl?: string | null;
   persona?: Persona | null;
 };
@@ -871,20 +876,24 @@ function PersonRow({
         ) : null}
       </View>
 
-      {/* Last name — editable on a split row; an unsplit row shows a muted
-          em-dash (hand-split it in the detail sheet's Name section, one tap
-          away, where the composed result is previewed before saving). */}
+      {/* Last name — always editable, including on a row whose name never
+          split. It used to render a dead em-dash there and defer to
+          `NameFieldsSection` in the detail sheet. That editor is real, but a
+          bare dash advertises nothing: it isn't clickable, isn't focusable,
+          and names no other place to go — so in the grid the column simply
+          looked broken. (Compare `TitleCell`, which is read-only for a good
+          reason and SAYS so: "Set on Org Chart", pressable, and it routes
+          there.) Every other cell in this row keeps its em-dash INSIDE the
+          Pressable that edits it; this one didn't. Committing a surname on an
+          unsplit row derives the first half server-side rather than dropping
+          it — see `people.update` → `firstNameForDesignatedLast`. */}
       <Cell width={COLS.last}>
-        {isSplit ? (
-          <InlineText
-            value={person.lastName ?? ""}
-            placeholder="Last"
-            weight="medium"
-            onCommit={(t) => update({ personId: id, lastName: t.trim() || null })}
-          />
-        ) : (
-          <Text className="px-1 text-sm text-faint">—</Text>
-        )}
+        <InlineText
+          value={person.lastName ?? ""}
+          placeholder="Last"
+          weight="medium"
+          onCommit={(t) => update({ personId: id, lastName: t.trim() || null })}
+        />
       </Cell>
 
       {/* Status (roster lifecycle select) */}
@@ -1176,6 +1185,7 @@ function RateCell({
       <InlineText<number | null | undefined>
         value={value}
         numeric
+        autoFocus
         placeholder="$0"
         format={(v) => (v != null ? `$${v}` : "")}
         parse={(t) => {
@@ -1307,6 +1317,7 @@ function ListCell({
       <InlineText
         value={values.join(", ")}
         placeholder={placeholder}
+        autoFocus
         onCommit={(t) => {
           onCommit(parseList(t));
           setEditing(false);
