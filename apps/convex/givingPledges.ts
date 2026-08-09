@@ -339,7 +339,10 @@ export const recomputeAllBackerCounts = internalMutation({
 
     return {
       dryRun: !write,
-      chaptersChecked: report.length,
+      // Every chapter this run asked about, including any it SKIPPED — a
+      // skipped chapter that vanished from the count would make the tool look
+      // like it had checked fewer books than it opened.
+      chaptersChecked: chapters.length,
       drifted,
       fixed,
       chapters: report,

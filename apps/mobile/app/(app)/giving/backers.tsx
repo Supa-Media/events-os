@@ -202,9 +202,14 @@ function BackersBody({
     // UNFILTERED-by-search set so the stat cards never shift with a search.
     // `paused` is deliberately excluded (setPledgeStatus's doc): a paused
     // pledge doesn't count toward the backer number.
-    const allActive = (pledges ?? []).filter(
-      (p) => p.status !== "canceled" && p.origin !== "imported" && p.status === "active",
-    );
+    // EXACTLY the server predicate (`givingPledges.recomputeChapterBackerCount`,
+    // mirrored again in `givingPlatform.giverMarks`): status `active`, nothing
+    // else. It used to also exclude `origin: "imported"`, which made this card
+    // disagree with the public give page the moment an imported donor re-signed
+    // and `setPledgeStatus` flipped their pledge to `active` — the server
+    // counted them, this screen didn't. Where the pledge came from has never
+    // been part of what a backer is; whether it is currently paying is.
+    const allActive = (pledges ?? []).filter((p) => p.status === "active");
     const backerCount = allActive.filter(
       (p) => p.amountCents >= BACKER_UNIT_CENTS,
     ).length;

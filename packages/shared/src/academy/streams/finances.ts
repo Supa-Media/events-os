@@ -17,9 +17,10 @@
  * page, with no hand-entry path at all: the manual setter was deleted after
  * a typed-in 2 outlived New York's real 0 on a public page), plus why a
  * `past_due` pledge does NOT count. The "what does the City Launch Fund pay
- * for?" question was retired from that quiz to make room — it is asked
- * verbatim in `finance-launch-grants-and-transfers`, which is where the fund
- * is actually taught — so the quiz stays at the 5-question cap
+ * for?" question was retired from that quiz to make room — the same prompt is
+ * asked in `finance-launch-grants-and-transfers` (with its own options and
+ * explanation), which is where the fund is actually taught — so the quiz stays
+ * at the 5-question cap
  * `apps/convex/tests/academy.test.ts` enforces. The
  * `finance-stewardship` quiz's "future Giving page" aside was also
  * corrected — the Giving page is shipped, not future. Every other Finances
