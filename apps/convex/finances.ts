@@ -1195,10 +1195,61 @@ export function isSpend(tr: Doc<"transactions">): boolean {
   );
 }
 
-/** True iff a spend transaction still needs a budget attached — the
- *  Reconcile "needs budget" soft-attribution signal (never a hard block). */
+/**
+ * True iff this row is a per-transaction processor or bank fee — a cost that
+ * was CHARGED, not chosen.
+ *
+ * Written by exactly two modules (`processorFees.ts` sweeping Stripe's balance
+ * transactions, `cashAppBackfill.ts` reproducing the Cash App withdrawals), and
+ * read here. A POSITIVE MARKER, never an inference: the alternative was
+ * matching on the `stripe-fees:` external-id prefix, which would silently miss
+ * Cash App's rows (a different prefix) and would break the moment a key format
+ * changed. Same rule `preMarkFlow` follows for transfers, and for the same
+ * reason.
+ *
+ * DELIBERATELY NARROW. It marks the fee taken out of an individual payment,
+ * nothing else. A monthly platform subscription, a paid Givebutter tier, an
+ * accounting service — those are real decisions somebody makes, they belong to
+ * whoever decided, and they stay budgeted. Being coded to "Bank & Fees" does
+ * not exempt anything; carrying a `feeOrigin` does.
+ */
+export function isNonDiscretionaryFee(tr: Doc<"transactions">): boolean {
+  return tr.feeOrigin != null;
+}
+
+/**
+ * True iff a spend transaction still needs a budget attached — the Reconcile
+ * "needs budget" soft-attribution signal (never a hard block).
+ *
+ * ── A FEE IS SPEND, BUT IT IS NOT A DECISION ────────────────────────────────
+ * A budget is a control on CHOICE. Processor fees aren't one: they are
+ * mechanically 2.9% + 30¢ of money the org already decided to accept, and you
+ * cannot decline the fee without declining the gift. So a fee budget can never
+ * cause anyone to spend less — it can only produce friction and false alarms.
+ * It is also an INVERTED indicator: "over budget on fees" is what a record
+ * fundraising month looks like. At $1M raised, Stripe's cut is ~$29,000 against
+ * a $300 ceiling, and every fee row sits unreconciled until somebody manually
+ * raises a number that was never a decision. (Owner, 2026-08-09.)
+ *
+ * Until now that produced 8 rows totalling $318.69 permanently reading "Needs
+ * budget", waiting on approval of two draft budgets a cron had proposed to
+ * itself.
+ *
+ * ── WHY HERE AND NOT IN `isSpend` ───────────────────────────────────────────
+ * Because a fee IS spend. The money genuinely left, and it must keep counting
+ * in book value, in category totals, in the "Spent" tile and in tag rollups —
+ * putting the exemption in `isSpend` would quietly drop $318.69 of real cost
+ * out of every one of those. The only thing that changes is whether anyone is
+ * asked to attribute it to a budget. That is exactly one question, so it is
+ * answered in exactly one predicate.
+ *
+ * This follows the grain `lib/bookBalance.ts#signedBookCents` already set:
+ * rows that aren't decisions someone made (payout legs, engine transfers) are
+ * recognised by a positive marker and treated differently, rather than being
+ * wished away.
+ */
 export function needsBudget(tr: Doc<"transactions">): boolean {
-  return isSpend(tr) && tr.budgetId == null;
+  return isSpend(tr) && tr.budgetId == null && !isNonDiscretionaryFee(tr);
 }
 
 /**

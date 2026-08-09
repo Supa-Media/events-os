@@ -660,12 +660,6 @@ export const runCashAppBackfill = internalMutation({
     // backfill would change from nothing".
     let feeDeltaCents = 0;
     for (const { cohort, row } of resolved) {
-      const budgetFields = await resolveFeeBudgetFields(
-        ctx,
-        chapter._id,
-        category ?? null,
-        new Date(row.postedAt).getUTCFullYear(),
-      );
       const note =
         `Cash App business fee on the ${cohort.ledgerDay} withdrawal to ${cohort.destination}: ` +
         `${usd(cohortGrossCents(cohort.key))} collected (${cohort.label}) less ` +
@@ -713,7 +707,9 @@ export const runCashAppBackfill = internalMutation({
           note,
           status: "categorized",
           ...(category ? { categoryId: category._id } : {}),
-          ...(budgetFields ?? {}),
+          // A rail's cut, not a decision — so it is never asked which budget it
+          // belongs to. See `finances.ts#needsBudget`.
+          feeOrigin: "cash_app_processing",
           externalId: cohort.feeExternalId,
           createdAt: Date.now(),
         });
@@ -745,38 +741,3 @@ export const runCashAppBackfill = internalMutation({
   },
 });
 
-/**
- * The budget a fee row belongs in, when one already exists and is approved.
- *
- * MATCHES, NEVER CREATES — the one deliberate simplification of
- * `processorFees.ts#resolveFeeBudgets`, which proposes a draft budget when none
- * exists. That sync runs every morning and needs somewhere to put next month's
- * fees; this runs once, over history, and manufacturing a budget for a closed
- * year would put a proposal in front of an approver for money already spent. If
- * the year's "Processor fees" budget exists and is approved these rows join it;
- * otherwise they sit in "Needs budget", which is the honest state.
- *
- * Matched by SHAPE (chapter · recurring · yearly · that year · coded to Bank &
- * Fees) rather than by label, for the same reason the Stripe sync does: a
- * treasurer's own "Card fees" budget should be used rather than bypassed.
- */
-async function resolveFeeBudgetFields(
-  ctx: MutationCtx,
-  chapterId: Id<"chapters">,
-  category: Doc<"budgetCategories"> | null,
-  year: number,
-): Promise<{ budgetId: Id<"budgets">; fundId: Id<"funds"> } | null> {
-  if (!category) return null;
-  const budgets = await ctx.db
-    .query("budgets")
-    .withIndex("by_chapter_and_type", (q) =>
-      q.eq("chapterId", chapterId).eq("type", "recurring"),
-    )
-    .take(5000);
-  const match = budgets.find(
-    (b) => b.cadence === "yearly" && b.year === year && b.categoryId === category._id,
-  );
-  if (!match) return null;
-  if (effectiveBudgetApprovalStatus(match.approvalStatus) !== "approved") return null;
-  return { budgetId: match._id, fundId: category.fundId };
-}

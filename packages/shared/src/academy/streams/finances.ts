@@ -968,7 +968,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         rows: [
           ["All", "Every charge, unfiltered"],
           ["Spend", "Every dollar that counts as actual spend — the exact rows behind the dashboard's \"Spent\" figure, so tapping it always lands here"],
-          ["Needs budget", "Categorized but not linked to a budget yet"],
+          ["Needs budget", "Categorized but not linked to a budget yet. Processor and bank fees are deliberately absent — a fee is charged, not chosen, so there is no decision for a budget to control"],
           ["Needs documentation", "No receipt, and no acknowledged reason there isn't one"],
           ["Needs coding", "Spend under the coding policy (posted Sept 1, 2026 or later) still waiting on its author — what it was for, and who was involved"],
           ["Coding review", "A submitted coding waiting on YOU to approve it or send it back with a note"],

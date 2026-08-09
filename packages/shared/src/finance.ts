@@ -930,6 +930,38 @@ export const AUTO_TRANSFER_ORIGINS = [
 ] as const;
 export type AutoTransferOrigin = (typeof AUTO_TRANSFER_ORIGINS)[number];
 
+// -- Non-discretionary fee origins -------------------------------------------
+// A per-transaction cut taken by a payment rail — CHARGED, never chosen.
+//
+// A budget is a control on choice. These aren't choices: the fee is
+// mechanically a percentage of money the org already decided to accept, and it
+// cannot be declined without declining the gift. So a `transactions` row
+// carrying one of these is never asked which budget it belongs to
+// (`finances.ts#needsBudget`). It stays spend everywhere else — the money left.
+//
+// SCOPE IS THE PER-PAYMENT CUT, and nothing wider. A monthly platform
+// subscription, a paid Givebutter tier, an accounting service: those are real
+// decisions somebody makes, and they stay budgeted even when they book to the
+// same "Bank & Fees" category. The exemption is by ORIGIN, never by category.
+export const NON_DISCRETIONARY_FEE_ORIGINS = [
+  // Stripe's cut, swept from its balance-transaction ledger by
+  // `processorFees.ts` — both the per-payment fee and the fees Stripe bills on
+  // its own account (Terminal readers, payout and account fees).
+  "stripe_processing",
+  // Cash App's 2.6% + $0.15, reconstructed per payment by `cashAppBackfill.ts`.
+  "cash_app_processing",
+] as const;
+export type NonDiscretionaryFeeOrigin =
+  (typeof NON_DISCRETIONARY_FEE_ORIGINS)[number];
+
+export const NON_DISCRETIONARY_FEE_ORIGIN_LABELS: Record<
+  NonDiscretionaryFeeOrigin,
+  string
+> = {
+  stripe_processing: "Stripe processing fees",
+  cash_app_processing: "Cash App processing fees",
+};
+
 export const AUTO_TRANSFER_ORIGIN_LABELS: Record<AutoTransferOrigin, string> = {
   payout_allocation: "Payout allocation",
   balance_settlement: "Balance settlement",

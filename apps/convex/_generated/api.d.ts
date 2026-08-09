@@ -308,6 +308,7 @@ import type * as repairSyncClearedTransferMarks from "../repairSyncClearedTransf
 import type * as responsibilities from "../responsibilities.js";
 import type * as restoreCollidedCharges from "../restoreCollidedCharges.js";
 import type * as restoreTruistDeposit from "../restoreTruistDeposit.js";
+import type * as retireFeeBudgets from "../retireFeeBudgets.js";
 import type * as reverseBadSettlement from "../reverseBadSettlement.js";
 import type * as roleAssignments from "../roleAssignments.js";
 import type * as roles from "../roles.js";
@@ -690,6 +691,7 @@ declare const fullApi: ApiFromModules<{
   responsibilities: typeof responsibilities;
   restoreCollidedCharges: typeof restoreCollidedCharges;
   restoreTruistDeposit: typeof restoreTruistDeposit;
+  retireFeeBudgets: typeof retireFeeBudgets;
   reverseBadSettlement: typeof reverseBadSettlement;
   roleAssignments: typeof roleAssignments;
   roles: typeof roles;

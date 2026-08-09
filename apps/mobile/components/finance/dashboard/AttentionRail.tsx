@@ -129,7 +129,7 @@ export function AttentionRail({
           detail={<Money cents={unattributedCents} className="text-2xs font-semibold text-ink" />}
           actionLabel={isDrilldown ? undefined : "Reconcile"}
           onPress={isDrilldown ? undefined : () => onAttentionAction("needs_budget")}
-          tooltip="This period's spend with no budget linked. Only explicit links count — there's no automatic matching."
+          tooltip="This period's spend with no budget linked, excluding processor and bank fees (a fee is charged, not chosen). Only explicit links count — there's no automatic matching."
         />
       ) : null}
 
