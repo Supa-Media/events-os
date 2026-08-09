@@ -37,14 +37,16 @@
  * exactly one row, NOTHING is written and the reason is reported. A missing
  * withdrawal means the cash side is not what the transcription assumed, and
  * adding revenue on top of an assumption that has already failed is how a
- * reconciliation gets worse instead of better.
+ * reconciliation gets worse instead of better. That gate has already earned its
+ * keep: the first production dry run refused, because the third withdrawal is on
+ * CENTRAL's book rather than New York's (see the lookup below).
  *
  * ── THE ARITHMETIC IS CHECKED, NOT ASSERTED ─────────────────────────────────
  * Each cohort's payments less its fee must equal its withdrawal, to the cent:
  *
- *     $900.00 − $29.40 = $870.60   (2025-11-04)
- *     $297.00 −  $8.62 = $288.38   (2026-01-04)
- *     $180.00 −  $5.13 = $174.87   (2026-08-07)
+ *     $900.00 − $29.40 = $870.60   posted 2025-11-06, New York
+ *     $297.00 −  $8.62 = $288.38   posted 2026-01-06, New York
+ *     $180.00 −  $5.13 = $174.87   posted 2026-08-07, Central
  *
  * `cohortReconciles` recomputes that from the transcribed rows themselves, the
  * unit suite asserts it, and this runner re-checks it against the LIVE
@@ -70,7 +72,7 @@ import { internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { ConvexError, v } from "convex/values";
-import { effectiveBudgetApprovalStatus } from "@events-os/shared";
+import { CENTRAL, effectiveBudgetApprovalStatus } from "@events-os/shared";
 import { NEW_YORK_CHAPTER_SLUG } from "./lib/seed/historical/mapping";
 import {
   findDonorInScope,
@@ -91,7 +93,9 @@ import {
   TICKET_ORDER_DAY,
   TICKET_ORDER_REF,
   TICKET_PRICE_CENTS,
+  WITHDRAWAL_MATCH_WINDOW_DAYS,
   type Cohort,
+  withdrawalWindow,
   cohortGrossCents,
   cohortFeeCents,
   cohortPaymentCount,
@@ -106,9 +110,10 @@ const CASH_APP_TYPE_NAME = "Audience Ticket (paid outside Givebutter)";
  *  fabricated contact records, which is what `attendeeNames` exists to avoid. */
 const COLLECTOR_EMAIL = "seyi@publicworship.life";
 
-/** A generous bound on one chapter's ledger — the discipline the rest of the
- *  finance layer's scans use. */
-const LEDGER_SCAN_LIMIT = 6000;
+/** Every book money can sit on: central plus the chapters. A handful today. */
+const SCOPE_SCAN_LIMIT = 200;
+/** One book's rows inside a five-day window — tens, not thousands. */
+const WINDOW_SCAN_LIMIT = 500;
 
 function usd(cents: number): string {
   return `$${(cents / 100).toFixed(2)}`;
@@ -126,6 +131,10 @@ const withdrawalReport = v.object({
   cohort: v.string(),
   amountCents: v.number(),
   postedDay: v.string(),
+  /** Which book the cash actually landed on — New York for the Relay era,
+   *  Central for the Increase era. Reported because it is the fact that made
+   *  the first version of this runner miss a withdrawal entirely. */
+  book: v.string(),
   alreadyLabelled: v.boolean(),
   labelledNow: v.boolean(),
 });
@@ -200,40 +209,74 @@ export const runCashAppBackfill = internalMutation({
     }
 
     // ── 0. The withdrawals — the gate on everything else ─────────────────────
-    // Matched on AMOUNT alone within the chapter's inflows. The three figures
-    // ($870.60 / $288.38 / $174.87) are distinctive enough that a second row at
-    // the same cent is far more likely to be a duplicate worth seeing than a
-    // coincidence worth tolerating — so anything other than exactly one row
-    // stops the cohort, and the day is reported rather than matched on (Cash
-    // App's feed dates the last sweep 2026-08-06; the ledger posts it
-    // 2026-08-07, and a date filter would have missed it).
-    const ledger = await ctx.db
-      .query("transactions")
-      .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", chapter._id))
-      .take(LEDGER_SCAN_LIMIT);
-    if (ledger.length === LEDGER_SCAN_LIMIT) {
-      problems.push(
-        `ledger scan hit its ${LEDGER_SCAN_LIMIT}-row limit — a withdrawal may be beyond it`,
-      );
-    }
+    //
+    // SEARCHED ACROSS BOOKS, NOT WITHIN NEW YORK. The revenue is New York's and
+    // every row this backfill writes is New-York-scoped — but where the CASH
+    // landed is a separate question, and the answer changed when the banking
+    // did:
+    //
+    //     $870.60  2025-11-06  New York  relay_csv
+    //     $288.38  2026-01-06  New York  relay_csv
+    //     $174.87  2026-08-07  CENTRAL   increase_ach
+    //
+    // The two older sweeps arrived through Relay while Relay was the operating
+    // bank and were imported against New York. The newest arrived in Increase,
+    // and every payout lands in central's account — that is the premise the
+    // whole balance-settlement model rests on. So Cash App withdrawals genuinely
+    // change books when the banking changes, and a scope-pinned search silently
+    // misses whichever era it is not looking at. The first version of this
+    // scanned New York only and reported the third withdrawal as missing.
+    //
+    // This is a widening of WHERE to look, not of what counts as a match.
+    // Widening the scan widens the chance of a same-amount collision, so the
+    // "exactly one, org-wide" requirement matters MORE here than it did on one
+    // book: two matches still refuses rather than picking one.
+    //
+    // Bounded by a DATE WINDOW off the Cash App feed's own date rather than an
+    // unbounded scan — banks post one to two days after initiation, so the day
+    // itself is not a reliable key while a few days around it is (see
+    // `WITHDRAWAL_MATCH_WINDOW_DAYS`).
+    const allChapters = await ctx.db.query("chapters").take(SCOPE_SCAN_LIMIT);
+    const scopes: (Id<"chapters"> | typeof CENTRAL)[] = [
+      CENTRAL,
+      ...allChapters.map((c) => c._id),
+    ];
+    const scopeName = new Map<string, string>([
+      [CENTRAL, "Central"],
+      ...allChapters.map((c) => [c._id as string, c.name] as const),
+    ]);
 
     const resolved: ResolvedWithdrawal[] = [];
     const withdrawals: {
       cohort: string;
       amountCents: number;
       postedDay: string;
+      book: string;
       alreadyLabelled: boolean;
       labelledNow: boolean;
     }[] = [];
     for (const cohort of COHORTS) {
-      const matches = ledger.filter(
-        (t) => t.flow === "inflow" && t.amountCents === cohort.withdrawalCents,
-      );
+      const { fromMs, toMs } = withdrawalWindow(cohort);
+      const matches: Doc<"transactions">[] = [];
+      for (const scope of scopes) {
+        const rows = await ctx.db
+          .query("transactions")
+          .withIndex("by_chapter_and_postedAt", (q) =>
+            q.eq("chapterId", scope).gte("postedAt", fromMs).lte("postedAt", toMs),
+          )
+          .take(WINDOW_SCAN_LIMIT);
+        matches.push(
+          ...rows.filter(
+            (t) => t.flow === "inflow" && t.amountCents === cohort.withdrawalCents,
+          ),
+        );
+      }
       if (matches.length !== 1) {
         problems.push(
           `${cohort.key}: expected exactly 1 inflow of ${usd(cohort.withdrawalCents)} ` +
-            `(the ${cohort.ledgerDay} withdrawal to ${cohort.destination}), found ` +
-            `${matches.length} — SKIPPED`,
+            `org-wide between ${cohort.initiatedDay} and ${cohort.initiatedDay} + ` +
+            `${WITHDRAWAL_MATCH_WINDOW_DAYS}d (the withdrawal to ${cohort.destination}, ` +
+            `last seen on ${cohort.landedOn}), found ${matches.length} — SKIPPED`,
         );
         continue;
       }
@@ -252,6 +295,7 @@ export const runCashAppBackfill = internalMutation({
         cohort: cohort.key,
         amountCents: row.amountCents,
         postedDay: new Date(row.postedAt).toISOString().slice(0, 10),
+        book: scopeName.get(row.chapterId) ?? String(row.chapterId),
         alreadyLabelled,
         labelledNow: !alreadyLabelled,
       });
@@ -569,6 +613,13 @@ export const runCashAppBackfill = internalMutation({
     // arithmetic is visible line by line and a reader can check any single $20
     // ticket at 67¢.
     //
+    // ON NEW YORK'S BOOK, even for the cohort whose cash landed on Central. The
+    // expense belongs where the revenue is: New York earned the $180 and New
+    // York bore the $5.13 it cost to collect it. That central holds the cash is
+    // a custody fact, and the balance-settlement model is what squares custody
+    // with ownership — booking the fee against central instead would make
+    // central look $5.13 worse off for money it never earned.
+    //
     // The LEDGER rows stay at cohort granularity — three, not forty-nine —
     // following `processorFees.ts`'s monthly precedent and for its reason: the
     // fee is a cost of the rail, not a decision anyone makes per transaction,
@@ -589,9 +640,17 @@ export const runCashAppBackfill = internalMutation({
       );
     }
 
-    const byExternalId = new Map(
-      ledger.filter((t) => t.externalId).map((t) => [t.externalId!, t]),
-    );
+    // Looked up one at a time on `by_external_id` rather than by scanning a
+    // book — three point reads, and it finds an existing fee row wherever it
+    // sits, which matters now that the withdrawals are not all on one book.
+    const priorFeeRows = new Map<string, Doc<"transactions">>();
+    for (const c of COHORTS) {
+      const prior = await ctx.db
+        .query("transactions")
+        .withIndex("by_external_id", (q) => q.eq("externalId", c.feeExternalId))
+        .first();
+      if (prior) priorFeeRows.set(c.feeExternalId, prior);
+    }
     let feeRowsWritten = 0;
     let feeCents = 0;
     // What the fee rows move book value by THIS run — which on a second run is
@@ -618,7 +677,7 @@ export const runCashAppBackfill = internalMutation({
         `to the cent, so nothing here is unexplained. Revenue is recorded gross, which is why ` +
         `this has to appear as a real expense rather than a haircut on what was given.`;
 
-      const prior = byExternalId.get(cohort.feeExternalId);
+      const prior = priorFeeRows.get(cohort.feeExternalId);
       feeCents += cohortFeeCents(cohort.key);
       if (prior) {
         if (

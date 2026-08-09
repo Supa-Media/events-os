@@ -1,5 +1,6 @@
 /// <reference types="vite/client" />
 import { describe, expect, test } from "vitest";
+import { CENTRAL } from "@events-os/shared";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
@@ -170,6 +171,8 @@ type SeedOpts = {
   estimate?: boolean;
   /** Donor names to pre-create in the chapter's scope. */
   existingDonors?: string[];
+  /** Add a second inflow at the third withdrawal's amount, on the other book. */
+  decoyWithdrawal?: boolean;
 };
 
 /**
@@ -275,20 +278,37 @@ async function seed(opts: SeedOpts = {}): Promise<Seeded> {
       });
     }
 
+    // The production shape, exactly: the two Relay-era sweeps landed on New
+    // York, the Increase-era one on CENTRAL, and only the first two are
+    // labelled. A runner that pins the scan to New York misses the third.
     for (const c of COHORTS) {
       if (!wanted.includes(c.key)) continue;
+      const onCentral = c.key === "feb_may2026";
       await ctx.db.insert("transactions", {
-        chapterId: s.chapterId,
-        source: "manual",
+        chapterId: onCentral ? CENTRAL : s.chapterId,
+        source: onCentral ? "increase_ach" : "relay_csv",
         flow: "inflow",
         amountCents: c.withdrawalCents,
         currency: "usd",
         postedAt: utcNoon(c.ledgerDay),
         description: "Cash App",
         status: "unreviewed",
-        // The production state: the first two were labelled by hand, the third
-        // never was and is counting as ordinary income.
-        ...(c.key === "feb_may2026" ? {} : { payoutProcessor: "other" as const }),
+        ...(onCentral ? {} : { payoutProcessor: "other" as const }),
+        createdAt: now,
+      });
+    }
+    if (opts.decoyWithdrawal) {
+      // A same-amount inflow on the OTHER book, inside the window. Widening the
+      // search widens the collision surface, so this must refuse — not pick one.
+      await ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "manual",
+        flow: "inflow",
+        amountCents: COHORTS[2].withdrawalCents,
+        currency: "usd",
+        postedAt: utcNoon(COHORTS[2].ledgerDay),
+        description: "Something else entirely",
+        status: "unreviewed",
         createdAt: now,
       });
     }
@@ -407,6 +427,16 @@ describe("runCashAppBackfill", () => {
     );
     expect(withdrawals).toHaveLength(COHORTS.length);
     expect(withdrawals.every((t) => t.payoutProcessor === "other")).toBe(true);
+    // Including the one on CENTRAL's book — the whole point of searching across
+    // books rather than within New York.
+    const central = withdrawals.find((t) => t.chapterId === CENTRAL)!;
+    expect(central.amountCents).toBe(COHORTS[2].withdrawalCents);
+    expect(central.payoutProcessor).toBe("other");
+    expect(res.withdrawals.find((w) => w.cohort === "feb_may2026")?.book).toBe("Central");
+    expect(res.withdrawals.find((w) => w.cohort === "oct2025")?.book).toBe("New York");
+    // The fee rows stay on New York, which earned the revenue, even for the
+    // cohort whose cash landed on Central.
+    expect(feeRows.every((t) => t.chapterId === s.chapterId)).toBe(true);
 
     // ── and the per-cohort identity, asserted against what actually landed ──
     for (const c of COHORTS) {
@@ -504,6 +534,45 @@ describe("runCashAppBackfill", () => {
     }));
     // The estimated order is untouched and no revenue was added.
     expect(state).toEqual({ gifts: 0, sales: 0, orders: [ESTIMATED_ORDER_REF] });
+  });
+
+  test("two rows at the same amount refuse rather than picking one", async () => {
+    // The cost of searching across books instead of within one. `exactly one`
+    // has to hold ORG-WIDE, or the widening would have traded a missed row for
+    // a wrong one.
+    const s = await seed({ decoyWithdrawal: true });
+    const res = await runner(s, true);
+
+    expect(res.proceeded).toBe(false);
+    expect(res.problems.join(" ")).toContain("found 2");
+    const state = await run(s.t, async (ctx) => ({
+      gifts: (await ctx.db.query("gifts").collect()).length,
+      sales: (await ctx.db.query("sales").collect()).length,
+    }));
+    expect(state).toEqual({ gifts: 0, sales: 0 });
+  });
+
+  test("a withdrawal outside the date window is not matched", async () => {
+    // The window is anchored on the Cash App feed's own date; a bank row weeks
+    // away is a different payment, and pretending otherwise is how a
+    // reconciliation matches the wrong row.
+    const s = await seed({ withdrawals: ["oct2025", "dec2025_jan2026"] });
+    await run(s.t, async (ctx) => {
+      await ctx.db.insert("transactions", {
+        chapterId: CENTRAL,
+        source: "increase_ach",
+        flow: "inflow",
+        amountCents: COHORTS[2].withdrawalCents,
+        currency: "usd",
+        postedAt: utcNoon("2026-09-20"),
+        description: "Cash App",
+        status: "unreviewed",
+        createdAt: Date.now(),
+      });
+    });
+    const res = await runner(s, true);
+    expect(res.proceeded).toBe(false);
+    expect(res.problems.join(" ")).toContain("found 0");
   });
 
   test("an estimate that isn't $780 / 39 is reported, not overwritten", async () => {
