@@ -118,6 +118,25 @@ export type PublicTerritoryData = {
 export type InterestStats = { total: number; wantInCity: number };
 
 /**
+ * What the two rails cost, handed to the page so it can do the fee arithmetic
+ * live as somebody types.
+ *
+ * Passed in rather than imported because the RATES ARE STORED — a treasurer
+ * can override them without a deploy (`processorFeeSchedule`), so the renderer
+ * has to be told rather than told-once-at-build. `null` when the schedule
+ * can't be read: the page then renders the fee surfaces hidden and gives
+ * exactly as it did before, because a fee question must never be the reason
+ * somebody can't give.
+ */
+export type GiveFeeRates = {
+  card: { percentBps: number; fixedCents: number; capCents?: number } | null;
+  ach: { percentBps: number; fixedCents: number; capCents?: number } | null;
+  /** Above this, suggest a bank transfer. NOT a break-even — see
+   *  `ACH_NUDGE_THRESHOLD_CENTS`. */
+  achThresholdCents: number;
+};
+
+/**
  * One row of the territory page's public activity wall (F6) — a recurring
  * backer or a one-time gift that opted in to "share this on the wall" (see
  * `givePageSections.ts`'s `giveFormExtrasHtml`). Fed by
@@ -489,6 +508,23 @@ function giveBoxHtml(data: PublicTerritoryData): string {
 </section>`;
 }
 
+/**
+ * The fee half of `window.__GIVE__`, shared by both pages.
+ *
+ * Emits NOTHING when the rates are unavailable, so the client's `G.cardRate`
+ * is simply undefined and every fee surface stays hidden — the page degrades
+ * to exactly what it rendered before this feature rather than to a broken
+ * form or a wrong number.
+ */
+function feeBootstrap(rates?: GiveFeeRates | null): Record<string, unknown> {
+  if (!rates) return {};
+  return {
+    ...(rates.card ? { cardRate: rates.card } : {}),
+    ...(rates.ach ? { achRate: rates.ach } : {}),
+    achThresholdCents: rates.achThresholdCents,
+  };
+}
+
 // ── /give — the map ──────────────────────────────────────────────────────────
 
 export function renderGiveMapPage(
@@ -496,6 +532,7 @@ export function renderGiveMapPage(
   interestStats: InterestStats,
   thankYou: boolean,
   siteUrl: string,
+  feeRates?: GiveFeeRates | null,
 ): string {
   const title = "See where Public Worship is growing, and start a chapter in your city.";
   const description =
@@ -550,6 +587,7 @@ export function renderGiveMapPage(
     slug: null,
     oneTimePresetsCents: ONE_TIME_PRESETS_CENTS,
     oneTimeDefaultIndex: ONE_TIME_DEFAULT_INDEX,
+    ...feeBootstrap(feeRates),
   }).replace(/</g, "\\u003c");
 
   return `<!doctype html>
@@ -626,6 +664,7 @@ export function renderGiveTerritoryPage(
   activity: TerritoryActivityEntry[],
   siteUrl: string,
   pledgeParam: string | null,
+  feeRates?: GiveFeeRates | null,
 ): string {
   const url = `${siteUrl}${givePagePath(data.slug)}`;
   const backerUnit = formatCents(BACKER_UNIT_CENTS, { showCents: false });
@@ -689,6 +728,7 @@ export function renderGiveTerritoryPage(
     oneTimePresetsCents,
     oneTimeDefaultIndex,
     backerUnitCents: BACKER_UNIT_CENTS,
+    ...feeBootstrap(feeRates),
   }).replace(/</g, "\\u003c");
 
   return `<!doctype html>

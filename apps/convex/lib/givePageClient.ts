@@ -30,9 +30,58 @@
  *                            stays fully optional. No redirect — shows an
  *                            inline thank-you on success.
  */
+/**
+ * The gross-up, ported to the browser — and PINNED to the real one.
+ *
+ * `@events-os/shared#grossUpCents` is the single source of this arithmetic and
+ * it decides what the card is actually charged. But this page has no build
+ * step, so a module cannot be imported into it, and the figure has to update
+ * live as somebody types an arbitrary amount into the custom field —
+ * precomputing the presets server-side would leave the custom field silent,
+ * which is the one place a donor is most likely to be surprised.
+ *
+ * So it is transcribed here, in its own exported constant, purely so that
+ * `givePageGrossUp.test.ts` can `eval` it and sweep it against the real
+ * implementation across every amount and both rails. If the two ever diverge
+ * the test fails; drift is not something a reviewer has to catch by eye.
+ *
+ * NOTE THE CAP CHECK COMES FIRST, exactly as it does upstream. Once the cap
+ * binds the fee is a constant, the percentage term drops out of the algebra
+ * entirely, and the answer is simply `intended + cap`. Running the closed form
+ * anyway overcharges by a cent on every gift above the cap — a cent the donor
+ * did not agree to.
+ *
+ * This is a DISPLAY figure. The server recomputes the charge from the intended
+ * amount with the shared helper and never reads a number off the request, so
+ * even a tampered copy of this function cannot change what anybody is charged.
+ */
+export const GROSS_UP_JS = `
+function feeOnCents(gross,rate){
+  if(gross<=0)return 0;
+  var raw=Math.round((gross*rate.percentBps)/10000)+rate.fixedCents;
+  return (rate.capCents!=null)?Math.min(raw,rate.capCents):raw;
+}
+function netOfFeeCents(gross,rate){return gross-feeOnCents(gross,rate);}
+function grossUpCents(intended,rate){
+  if(intended<=0)return 0;
+  var gross;
+  var capped=(rate.capCents!=null)?intended+rate.capCents:null;
+  if(capped!=null&&(Math.round((capped*rate.percentBps)/10000)+rate.fixedCents)>=rate.capCents){
+    gross=capped;
+  }else{
+    gross=Math.ceil(((intended+rate.fixedCents)*10000)/(10000-rate.percentBps));
+  }
+  while(netOfFeeCents(gross,rate)<intended)gross+=1;
+  while(gross>1&&netOfFeeCents(gross-1,rate)>=intended)gross-=1;
+  return gross;
+}
+function feeCoverageCents(intended,rate){return grossUpCents(intended,rate)-intended;}
+`;
+
 export const GIVE_CAMPAIGN_SCRIPT = `
 (function(){
 "use strict";
+${GROSS_UP_JS}
 var G=window.__GIVE__||{mode:"map",slug:null,oneTimePresetsCents:[2500,5000,10000,25000]};
 
 function $(id){return document.getElementById(id);}
@@ -75,6 +124,40 @@ function wireAmountForm(opts){
     }
     var note=$(prefix+'_note');
     if(note)note.style.display=(opts.isMonthly&&c>0&&c<opts.unitCents)?'block':'none';
+    refreshFees(c);
+  }
+  /* The fee surfaces, both driven off the SAME amount the submit button shows,
+     so the three can never disagree. Everything here degrades to hidden when
+     the rates aren't available — a fee question must never be the reason the
+     giving form looks broken. */
+  function refreshFees(c){
+    var cov=$(prefix+'_covline');
+    var box=$(prefix+'_covfees');
+    if(cov&&box&&G.cardRate&&c>0){
+      var extra=feeCoverageCents(c,G.cardRate);
+      cov.textContent=box.checked
+        ?"You'll be charged "+money(c+extra)+", and "+money(c)+" reaches us."
+        :"Adds "+money(extra)+", so the full "+money(c)+" reaches us.";
+      cov.style.display='block';
+    }else if(cov){
+      cov.style.display='none';
+    }
+    /* The ACH suggestion. NOT a break-even — ACH is cheaper at every amount;
+       the threshold is a friction judgement about when authorising a bank
+       account and waiting a few days is worth interrupting someone for. See
+       ACH_NUDGE_THRESHOLD_CENTS. */
+    var ach=$(prefix+'_achnote');
+    if(ach){
+      var show=!opts.isMonthly&&G.achThresholdCents!=null&&c>=G.achThresholdCents
+        &&G.cardRate&&G.achRate;
+      if(show){
+        var saving=feeOnCents(c,G.cardRate)-feeOnCents(c,G.achRate);
+        ach.textContent='Paying by bank transfer instead of card keeps about '
+          +money(saving)+' more of this with us. It takes 2–4 business days to clear; '
+          +'you can pick it on the next screen.';
+      }
+      ach.style.display=show?'block':'none';
+    }
   }
   function selectPreset(cents){
     selected=cents;
@@ -100,6 +183,8 @@ function wireAmountForm(opts){
       refresh();
     });
   }
+  var covBox=$(prefix+'_covfees');
+  if(covBox)covBox.addEventListener('change',refresh);
   refresh();
 
   var form=$(prefix+'_form');
@@ -130,6 +215,10 @@ function wireAmountForm(opts){
       if(publicName)payload.publicName=publicName;
       if(wallMessage)payload.message=wallMessage;
     }
+    /* A yes/no, never the amount. The server recomputes what covering costs
+       from the live schedule, so the page cannot quote one number and the card
+       be charged another. */
+    if((($(prefix+'_covfees')||{}).checked))payload.coverFees=true;
     fetch(opts.endpoint,{
       method:'POST',
       headers:{'Content-Type':'application/json'},

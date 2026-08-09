@@ -311,6 +311,39 @@ export const gifts = defineTable({
   eventId: v.optional(v.id("events")),
   donationId: v.optional(v.id("donations")), // link to the event donation row
   externalRef: v.optional(v.string()), // Givebutter txn id (import dedup key)
+  /**
+   * The EXTRA the donor paid so the processor's cut wouldn't come out of their
+   * gift — "cover the fees", ticked at checkout.
+   *
+   * THE INVARIANT, and the whole reason this is a separate field rather than
+   * being rolled into `amountCents`: `amountCents` is what the donor MEANT to
+   * give and is what every giving report counts;
+   * `amountCents + feeCoverageCents` is what the card was charged. Deliberately
+   * the same arrangement as `sales.donationCents` and
+   * `ticketOrders.donationCents` — one payment, two meanings — rather than a
+   * second pattern for the same problem.
+   *
+   * It is the right way round for the same reason it is there: it makes the
+   * DEFAULT read of a gift correct. Roll the coverage into `amountCents` and a
+   * $100 gift starts reporting as $103.30, every year-on-year giving comparison
+   * silently inflates as adoption grows, and every call site that sums the
+   * column would have to remember to subtract it — with the one that forgot
+   * double-counting. Keeping it beside means total giving is verifiable
+   * unchanged across the launch of the feature: the same donors giving the same
+   * amounts report the same numbers, and only the org's NET moves, which is the
+   * entire point of offering it.
+   *
+   * THE FEE IS NOT SPLIT AND NOT DERIVED FROM THIS. This is what the donor
+   * agreed to add, computed by `grossUpCents` from the schedule at checkout
+   * time. It is a prediction of the fee, not a measurement of it. Where Stripe
+   * states the actual fee, the actual always wins (`sales.feeCents`,
+   * `processorFeeEntries` — both documented as never-derived), and if the two
+   * differ the difference is simply the org's, in whichever direction. Nothing
+   * reconciles one against the other.
+   *
+   * Absent/0 = the donor didn't cover, which is every historical row.
+   */
+  feeCoverageCents: v.optional(v.number()),
   // F-6 P4: set when this payment is against a sponsorship agreement.
   sponsorshipId: v.optional(v.id("sponsorships")),
   note: v.optional(v.string()),

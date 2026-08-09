@@ -232,6 +232,15 @@ section{margin-bottom:32px}
 /* The card-or-bank-transfer footnote under the submit button. Centred and
    quiet — it sets an expectation on the way to Stripe, it isn't a warning. */
 .paynote{font-size:12px;line-height:1.45;color:var(--muted);margin:10px 0 0;text-align:center}
+/* The live "you'll be charged X, and Y reaches us" line under the cover-fees
+   box. Indented to sit under the hint it follows, and in the ink colour rather
+   than muted: it is a number the donor is agreeing to, not small print. */
+.covline{font-size:12.5px;line-height:1.45;color:var(--ink);margin:-8px 0 14px 24px;font-weight:600}
+/* The bank-transfer suggestion above a large gift. Same treatment as
+   .recurring-note — an inline, conditional, JS-toggled aside rather than
+   anything that looks like a warning or an interruption. */
+.achnote{background:var(--accent-soft);border:1px dashed var(--accent);border-radius:12px;
+  padding:9px 12px;font-size:12.5px;color:var(--accent-hover);line-height:1.4;margin:-2px 0 14px}
 
 /* ── one-time → City Launch Fund framing (F5, territory pre-launch) ── */
 .onetime-launch-intro{margin-bottom:14px}
