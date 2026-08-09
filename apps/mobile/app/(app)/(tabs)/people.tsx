@@ -18,6 +18,7 @@ import {
   Narrow,
   FULL_WIDTH,
   Badge,
+  Checkbox,
   TextField,
   EmptyState,
   Avatar,
@@ -41,6 +42,8 @@ import {
   type VettingStatus,
   type RosterStatus,
   responsibilityAppliesTo,
+  composeName,
+  firstNameForDesignatedLast,
   type Persona,
 } from "@events-os/shared";
 import { DutyRows } from "../../../components/work/DutyRows";
@@ -598,7 +601,7 @@ export default function PeopleScreen() {
                 style={{ width: SELECT_W }}
                 className="items-center justify-center border-r border-border/60 py-1.5"
               >
-                <RowCheckbox
+                <Checkbox
                   checked={allVisibleSelected}
                   onPress={toggleSelectAllVisible}
                   accessibilityLabel={
@@ -828,7 +831,7 @@ function PersonRow({
         style={{ width: SELECT_W }}
         className="items-center justify-center border-r border-border/60"
       >
-        <RowCheckbox
+        <Checkbox
           checked={selected}
           onPress={onToggleSelected}
           accessibilityLabel={`Select ${person.name || "this person"}`}
@@ -1364,14 +1367,33 @@ function NameFieldsSection({ person }: { person: Person }) {
   const [last, setLast] = useState(person.lastName ?? "");
   const [saving, setSaving] = useState(false);
   const dirty = first !== (person.firstName ?? "") || last !== (person.lastName ?? "");
-  const composed = [first.trim(), last.trim()].filter(Boolean).join(" ");
+
+  // A person whose name never split stores NO halves, so BOTH fields open
+  // empty even though `person.name` still holds the whole thing. Typing only a
+  // surname and saving used to send `firstName: null` — an explicit clear,
+  // which by design beats the server's own derivation — and shortened "Mary Jo
+  // Van Der Berg" to "Van Der Berg". That is the same footgun the grid's Last
+  // Name cell had; closing it there left it live one screen over.
+  //
+  // Deriving the other half here rather than sending a clear. It is the SAME
+  // rule `people.update` applies (`@events-os/shared#names`, which is why that
+  // rule lives in the shared package at all) — a second rule that disagreed
+  // with the server would be worse than the original bug, since the preview
+  // below promises exactly what will be stored.
+  const unsplit = person.firstName === undefined && person.lastName === undefined;
+  const derivedFirst =
+    unsplit && !first.trim() && last.trim()
+      ? firstNameForDesignatedLast(person.name, last.trim())
+      : "";
+  const effectiveFirst = first.trim() || derivedFirst;
+  const composed = composeName(effectiveFirst, last.trim());
 
   async function save() {
     setSaving(true);
     try {
       await update({
         personId: person._id,
-        firstName: first.trim() || null,
+        firstName: effectiveFirst || null,
         lastName: last.trim() || null,
       });
     } finally {
@@ -1395,6 +1417,14 @@ function NameFieldsSection({ person }: { person: Person }) {
       {!person.firstName && !person.lastName && !dirty ? (
         <Text className="mt-1 text-xs text-faint">
           This name couldn't be split automatically — set the halves here.
+        </Text>
+      ) : null}
+      {/* Say the derivation out loud. Leaving First visibly blank while the
+          save quietly stores a value would be its own small betrayal, even
+          though the value is the right one. */}
+      {derivedFirst ? (
+        <Text className="mt-1 text-xs text-faint">
+          First will be kept as “{derivedFirst}” — the rest of the current name.
         </Text>
       ) : null}
       {dirty ? (
@@ -2043,40 +2073,6 @@ function ContactLink({
     >
       <Icon name={icon} size={15} color={colors.muted} />
       <Text style={styles.contactLink}>{label}</Text>
-    </Pressable>
-  );
-}
-
-/** People-CRM UX multi-select checkbox — mirrors the reconcile grid's own
- *  `CheckBox` idiom (`components/finance/reconcile/ReconcileList.tsx`), the
- *  house pattern for a grid-cell checkbox: plain cross-platform primitives
- *  (`Pressable`/`View`/`Icon`), so it renders and works identically on web
- *  and native — never a raw DOM input. */
-function RowCheckbox({
-  checked,
-  onPress,
-  accessibilityLabel,
-}: {
-  checked: boolean;
-  onPress: () => void;
-  accessibilityLabel: string;
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      hitSlop={6}
-      accessibilityRole="checkbox"
-      accessibilityState={{ checked }}
-      accessibilityLabel={accessibilityLabel}
-      className="rounded p-1 active:opacity-70"
-    >
-      <View
-        className={`h-4 w-4 items-center justify-center rounded border ${
-          checked ? "border-accent bg-accent" : "border-border-strong bg-raised"
-        }`}
-      >
-        {checked ? <Icon name="check" size={12} color={colors.accentText} /> : null}
-      </View>
     </Pressable>
   );
 }

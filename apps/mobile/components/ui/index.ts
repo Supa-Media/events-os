@@ -9,6 +9,7 @@ export { Card } from "./Card";
 export { Button } from "./Button";
 export { Badge, type BadgeTone } from "./Badge";
 export { Pill } from "./Pill";
+export { Checkbox } from "./Checkbox";
 export { Avatar } from "./Avatar";
 export { CopyButton } from "./CopyButton";
 export { ReadinessBadge, ReadinessBar } from "./Readiness";

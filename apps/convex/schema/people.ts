@@ -32,7 +32,7 @@ export const people = defineTable({
   // greeting personalization ("Hi Shante"), imports that arrive pre-split
   // (Givebutter contact exports), and future sort-by-last-name. Optional:
   // migration 0043 backfills them only where the split is unambiguous
-  // (`lib/personName.ts#splitPersonName` — exactly two tokens); an ambiguous
+  // (`@events-os/shared#names#splitPersonName` — exactly two tokens); an ambiguous
   // `name` leaves them unset rather than guessing. Write paths that RENAME a
   // person must keep them consistent via `splitPersonName` (refresh on a
   // clean split, CLEAR on an ambiguous one — stale halves are worse than

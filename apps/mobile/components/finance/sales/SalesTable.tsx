@@ -43,6 +43,7 @@
  */
 import { View, Text, Pressable, ScrollView } from "react-native";
 import {
+  Checkbox,
   CopyButton,
   GridHeaderCell,
   Icon,
@@ -124,7 +125,11 @@ export function SalesTable({
               className="items-center justify-center py-2.5"
             >
               {canEdit ? (
-                <CheckBox checked={allSelected} onPress={onToggleAll} />
+                <Checkbox
+                  checked={allSelected}
+                  onPress={onToggleAll}
+                  accessibilityLabel={allSelected ? "Deselect all sales" : "Select all sales"}
+                />
               ) : null}
             </View>
             <GridHeaderCell label="Date" width={widths.date} onResizeStart={startResize("date")} />
@@ -193,7 +198,13 @@ function SaleGridRow({
       } ${isLast ? "border-b-0" : ""}`}
     >
       <View style={{ width: widths.check }} className="items-center justify-center">
-        {canEdit ? <CheckBox checked={selected} onPress={onToggle} /> : null}
+        {canEdit ? (
+          <Checkbox
+            checked={selected}
+            onPress={onToggle}
+            accessibilityLabel={`Select the sale for ${row.eventName ?? "this event"}`}
+          />
+        ) : null}
       </View>
 
       <Cell width={widths.date}>
@@ -264,26 +275,6 @@ function Cell({ width, children }: { width: number; children: React.ReactNode })
     <View style={{ width }} className="flex-row items-center border-r border-border/60">
       {children}
     </View>
-  );
-}
-
-function CheckBox({ checked, onPress }: { checked: boolean; onPress: () => void }) {
-  return (
-    <Pressable
-      onPress={onPress}
-      hitSlop={6}
-      accessibilityRole="checkbox"
-      accessibilityState={{ checked }}
-      className="rounded p-1 active:opacity-70"
-    >
-      <View
-        className={`h-4 w-4 items-center justify-center rounded border ${
-          checked ? "border-accent bg-accent" : "border-border-strong bg-raised"
-        }`}
-      >
-        {checked ? <Icon name="check" size={12} color={colors.accentText} /> : null}
-      </View>
-    </Pressable>
   );
 }
 
