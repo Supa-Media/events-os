@@ -26,6 +26,7 @@ import {
   ocrReceiptImage,
   extractReceiptFields,
   resolveOcrModel,
+  CAPTURED_STATUS,
 } from "../receiptInbox";
 import { parseEmlMessage } from "../lib/emlMessage";
 import { verifyStandardWebhookSignature } from "../lib/standardWebhook";
@@ -1430,12 +1431,13 @@ describe("classifySender", () => {
 // With no RESEND/OPENROUTER keys in the test env, the attachment + body
 // fetches degrade and the SUBJECT becomes the body text — so this exercises
 // the real pipeline: sender gate → body stored as the receipt file → parse →
-// unique match → auto-attach + reconcile.
+// match → CAPTURE the document with its suggestions (never an auto-attach —
+// owner decision, 2026-08-08).
 describe("processInboundReceipt", () => {
-  test("a roster body-only email auto-attaches, reconciles, and writes a receipt + link", async () => {
+  test("a roster body-only email is CAPTURED unlinked, attributed to the sender, with its suggestion recorded", async () => {
     const t = newT();
     const s = await setupChapter(t);
-    await seedPerson(s, { email: "jane@example.com" });
+    const jane = await seedPerson(s, { email: "jane@example.com" });
     const txn = await seedTxn(s, { amountCents: 4210, status: "categorized" });
 
     const { receiptId } = await t.mutation(internal.receiptInbox.recordInboundReceipt, {
@@ -1448,30 +1450,36 @@ describe("processInboundReceipt", () => {
     await t.action(internal.receiptInbox.processInboundReceipt, { receiptId });
 
     const row = await run(t, (ctx) => ctx.db.get(receiptId));
-    expect(row?.status).toBe("matched");
-    expect(row?.matchedTransactionId).toBe(txn);
+    // Captured, not attached: the row names no matched transaction, and its
+    // detail says who has to confirm it (see `CAPTURED_STATUS`).
+    expect(row?.status).toBe(CAPTURED_STATUS);
+    expect(row?.matchedTransactionId).toBeUndefined();
+    expect(row?.detail).toMatch(/confirm when the charge is coded/i);
     expect(row?.sourceKind).toBe("body");
     expect(row?.senderClass).toBe("roster");
     expect(row?.receiptStorageId).toBeDefined();
-    const txnRow = await run(t, (ctx) => ctx.db.get(txn));
-    expect(txnRow?.status).toBe("reconciled");
-    expect(txnRow?.receiptStorageId).toBe(row?.receiptStorageId);
 
-    // A first-class receipt document + a link were written (source auto_email).
+    // The CHARGE is untouched — nothing attached, nothing reconciled.
+    const txnRow = await run(t, (ctx) => ctx.db.get(txn));
+    expect(txnRow?.status).toBe("categorized");
+    expect(txnRow?.receiptStorageId).toBeUndefined();
+
+    // A first-class receipt document was written, UNLINKED, filed to the
+    // sender, carrying the charge as a SUGGESTION.
     const receipts = await run(t, (ctx) => ctx.db.query("receipts").take(5));
     expect(receipts.length).toBe(1);
     expect(receipts[0].source).toBe("email");
     expect(receipts[0].senderClass).toBe("roster");
-    expect(receipts[0].linkCount).toBe(1);
+    expect(receipts[0].linkCount).toBe(0);
+    expect(receipts[0].uploadedByPersonId).toBe(jane);
+    expect(receipts[0].candidateTransactionIds).toEqual([txn]);
     // A body-sourced receipt is stamped with the synthetic "email body" label
     // (there's no attachment filename to carry), and a clean extraction never
     // sets `ocrError`.
     expect(receipts[0].filename).toBe("email body");
     expect(receipts[0].ocrError).toBeUndefined();
     const links = await run(t, (ctx) => ctx.db.query("receiptLinks").take(5));
-    expect(links.length).toBe(1);
-    expect(links[0].source).toBe("auto_email");
-    expect(links[0].transactionId).toBe(txn);
+    expect(links.length).toBe(0);
   });
 
   test("a body with no readable total sets ocrError on the receipt (the '—' bug fix)", async () => {
@@ -1545,7 +1553,7 @@ describe("processInboundReceipt", () => {
   // twice — even though a fresh, otherwise-unique candidate exists for the
   // second one — must never auto-attach the second time. `fileSha256` catches
   // it regardless of amount/date parsing (see `lib/receiptLinks.ts#findDuplicateReceiptBySha256`).
-  test("a byte-identical re-send never auto-attaches, even against a fresh unique candidate", async () => {
+  test("a byte-identical re-send is flagged a duplicate and suggests nothing, even against a fresh unique candidate", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await seedPerson(s, { email: "jane@example.com" });
@@ -1559,8 +1567,10 @@ describe("processInboundReceipt", () => {
       receiptId: first.receiptId,
     });
     const firstRow = await run(t, (ctx) => ctx.db.get(first.receiptId));
-    expect(firstRow?.status).toBe("matched");
-    expect(firstRow?.matchedTransactionId).toBe(txnA);
+    // Captured with txnA suggested (never attached — see the flagship test).
+    expect(firstRow?.status).toBe(CAPTURED_STATUS);
+    expect(firstRow?.detail).toMatch(/confirm when the charge is coded/i);
+    expect(firstRow?.candidateTransactionIds).toEqual([txnA]);
 
     // A second, genuinely unreceipted charge with the same amount now exists —
     // a fresh unique candidate, IF the resend weren't a duplicate.
@@ -1585,12 +1595,13 @@ describe("processInboundReceipt", () => {
     expect(dupDoc?.fileSha256).toBeDefined();
     expect(dupDoc?.fileSha256).toBe(firstDoc?.fileSha256);
 
-    // txnB was never touched — the would-be unique match was suppressed.
+    // txnB was never touched, and the duplicate carries NO suggestions at all
+    // (the duplicate check short-circuits before the shortlist is honored).
     const txnBRow = await run(t, (ctx) => ctx.db.get(txnB));
     expect(txnBRow?.receiptStorageId).toBeUndefined();
     expect(txnBRow?.status).toBe("categorized");
     const links = await run(t, (ctx) => ctx.db.query("receiptLinks").collect());
-    expect(links).toHaveLength(1); // only the first email's link
+    expect(links).toHaveLength(0); // capture-and-suggest never links
   });
 
   // FIX 1 (merchant extraction): when neither the body parse nor OCR yields a
@@ -1724,8 +1735,8 @@ describe("processInboundReceipt", () => {
       await t.action(internal.receiptInbox.processInboundReceipt, { receiptId });
 
       const row = await run(t, (ctx) => ctx.db.get(receiptId));
-      expect(row?.status).toBe("matched");
-      expect(row?.matchedTransactionId).toBe(txn);
+      expect(row?.status).toBe(CAPTURED_STATUS);
+      expect(row?.candidateTransactionIds).toEqual([txn]);
 
       const receipts = await run(t, (ctx) => ctx.db.query("receipts").take(5));
       expect(receipts).toHaveLength(1);
@@ -1735,8 +1746,10 @@ describe("processInboundReceipt", () => {
       // forwarder's `jane@example.com`.
       expect(receipts[0].ocrMerchant).toBe("Blue Bottle Coffee");
 
+      // Suggested, not attached (capture-and-suggest).
       const txnRow = await run(t, (ctx) => ctx.db.get(txn));
-      expect(txnRow?.status).toBe("reconciled");
+      expect(txnRow?.status).toBe("categorized");
+      expect(txnRow?.receiptStorageId).toBeUndefined();
     });
 
     test("an unreadable .eml is still stored as a document rather than silently ignored", async () => {
@@ -1882,8 +1895,8 @@ describe("processInboundReceipt", () => {
 
       const row = await run(t, (ctx) => ctx.db.get(receiptId));
       expect(row?.detail ?? "").not.toContain("Pipeline error");
-      expect(row?.status).toBe("matched");
-      expect(row?.matchedTransactionId).toBe(txn);
+      expect(row?.status).toBe(CAPTURED_STATUS);
+      expect(row?.candidateTransactionIds).toEqual([txn]);
 
       // The screenshot's BYTES reached vision — the read that used to throw.
       expect(visionImageUrls).toHaveLength(1);
@@ -2202,13 +2215,15 @@ describe("processInboundReceipt", () => {
       await t.action(internal.receiptInbox.processInboundReceipt, { receiptId });
 
       const row = await run(t, (ctx) => ctx.db.get(receiptId));
-      // Recovered to the roster member → trusted → the unique match attaches.
+      // Recovered to the roster member → the receipt is filed as THEIRS, with
+      // the unique candidate as a suggestion (never an attach).
       expect(row?.senderClass).toBe("roster");
       // Both truths kept: the verbatim envelope AND who actually posted.
       expect(row?.fromEmail).toContain("receipts@publicworship.life");
       expect(row?.originalSenderEmail).toBe("charisma@example.com");
-      expect(row?.status).toBe("matched");
-      expect(row?.matchedTransactionId).toBe(txn);
+      expect(row?.status).toBe(CAPTURED_STATUS);
+      expect(row?.matchedTransactionId).toBeUndefined();
+      expect(row?.candidateTransactionIds).toEqual([txn]);
 
       const receipts = await run(t, (ctx) => ctx.db.query("receipts").take(5));
       expect(receipts).toHaveLength(1);
@@ -2445,12 +2460,17 @@ describe("processInboundReceipt", () => {
 
 // ── composeReplyDigest (what the sender actually reads) ──────────────────────
 describe("composeReplyDigest", () => {
-  test("a single receipt reads exactly as it always did (no 'digest' voice)", () => {
+  test("a single receipt reads as one sentence (no 'digest' voice) and never claims an attach", () => {
+    // `"matched"` now means "we found a charge that looks like it and
+    // suggested it" — the literal is a stored schema enum, the copy is what
+    // carries the meaning (capture-and-suggest, 2026-08-08).
     const one = composeReplyDigest([
       { outcome: "matched", amountCents: 29852, merchant: "Uber Receipts" },
     ]);
-    expect(one.subject).toBe("Receipt matched ✓");
-    expect(one.html).toContain("$298.52 from Uber Receipts");
+    expect(one.subject).toBe("Receipt filed — confirm it when you code the charge");
+    expect(one.html).toContain("$298.52");
+    expect(one.html).toContain("Uber Receipts");
+    expect(one.html).not.toContain("attached");
     expect(one.html).not.toContain("<ul");
 
     expect(composeReplyDigest([{ outcome: "no_match", amountCents: 1636 }]).subject).toBe(
@@ -2461,12 +2481,12 @@ describe("composeReplyDigest", () => {
     );
   });
 
-  test("an all-matched batch says so once, and lists each receipt", () => {
+  test("an all-suggested batch says so once, and lists each receipt", () => {
     const digest = composeReplyDigest([
       { outcome: "matched", amountCents: 1000, merchant: "Costco" },
       { outcome: "matched", amountCents: 2000, merchant: "Uber" },
     ]);
-    expect(digest.subject).toBe("2 receipts matched ✓");
+    expect(digest.subject).toBe("2 receipts filed — confirm them when you code");
     expect(digest.html).toContain("all 2 receipts");
     expect(digest.html).toContain("$10.00 from Costco");
     expect(digest.html).toContain("$20.00 from Uber");
@@ -2479,10 +2499,12 @@ describe("composeReplyDigest", () => {
       { outcome: "needs_review", amountCents: 3000 },
     ]);
     expect(digest.subject).toBe("3 receipts received");
-    expect(digest.html).toContain("1 attached to charges");
+    expect(digest.html).toContain("1 with a matching charge to confirm");
     expect(digest.html).toContain("1 with no matching charge yet");
     expect(digest.html).toContain("1 needing a bookkeeper's eye");
     expect(digest.html).toContain("nothing is lost");
+    // Never claims an attach that no longer happens.
+    expect(digest.html).not.toContain("attached to charges");
   });
 
   test("overflow past the item cap is reported, never silently dropped", () => {

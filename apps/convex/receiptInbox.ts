@@ -1,5 +1,32 @@
 /**
- * Inbound-email → OCR → reconcile pipeline (the receipt-backfill keystone).
+ * Inbound-email → OCR → SUGGEST pipeline (the receipt-CAPTURE keystone).
+ *
+ * CAPTURE-AND-SUGGEST, NOT AUTO-ATTACH (owner decision, 2026-08-08). Cardholders
+ * now code their own charges, and `lib/transactionCoding.ts#submitCoding`
+ * refuses a coding unless the charge carries a receipt or a filed exception —
+ * so the human is already looking at the charge and the receipt at the same
+ * moment. The owner's words: *"we don't even need the receipt matching pipeline
+ * as much if people are going to code things themselves, they should just
+ * upload the receipt when coding."*
+ *
+ * What that keeps and what it retires:
+ *  - The CAPTURE half stays exactly as it was, and is the reason this pipeline
+ *    still earns its keep: a card charge posts a day AFTER the swipe, so
+ *    texting a photo of a paper receipt at the counter — or forwarding an
+ *    emailed Amazon/Uber receipt — happens before a coding sheet exists for it
+ *    at all. Losing that moves capture a day later, which is when receipts die.
+ *  - The CLEVER half is gone: nothing here links a receipt to a transaction the
+ *    system GUESSED at. A receipt lands in the sender's own receipt library as
+ *    an UNLINKED `receipts` row with its OCR fields intact, and its candidate
+ *    transactions are kept as SUGGESTIONS (`receipts.candidateTransactionIds`)
+ *    for `receipts.ts#suggestedForTransaction` to rank onto the coding sheet.
+ *    A human confirms every link, via `receipts.ts#confirmSuggestedReceipt`.
+ *
+ * The sender-trust rule (`receiptSenderCanAutoAttach`) therefore stops being a
+ * permission to WRITE. It survives as (a) whether we attribute the receipt to a
+ * roster person at all — which is what puts it in THEIR library and their
+ * chapter's ledger scope — and (b) whether we reply to the sender. It never
+ * moves money now, because nothing in this file does.
  *
  * FLOW (see `http.ts` `/resend/inbound` for the entry point):
  *   1. Resend delivers a signed `email.received` webhook when a message lands
@@ -21,11 +48,13 @@
  *        a. CLASSIFIES the sender (`classifySender`). The endpoint is public and
  *           the gate is OPEN (owner decision, 2026-07-23): EVERY email is
  *           processed end-to-end regardless of sender. The classification —
- *           team / roster / internal / external — is an AUTOMATION axis, never a
- *           permission: only a `team`/`roster` sender (resolved to a `people`
- *           row) may trigger an auto-attach; an `internal`/`external` email is
- *           always routed to human review (a `From:` header is spoofable, so a
- *           stranger's mail must never move money).
+ *           team / roster / internal / external — is an ATTRIBUTION axis, never a
+ *           permission: a `team`/`roster` sender (resolved to a `people` row)
+ *           owns the receipt, so it lands in their library with their chapter's
+ *           charges to suggest against; an `internal`/`external` email resolves
+ *           to nobody, so its receipt is chapterless and routes to the
+ *           bookkeeper review queue (a `From:` header is spoofable, so a
+ *           stranger's mail must never be filed as a team member's).
  *        b. Gets the receipt content: EVERY usable image/PDF ATTACHMENT (each
  *           processed independently), else the email BODY text.
  *        c. Extracts { amountCents, date, merchant } per receipt:
@@ -34,22 +63,24 @@
  *             - IMAGE/PDF receipts go to a cheap multimodal model via OpenRouter
  *               (`ocrReceiptImage`) — the only LLM call, and only for photos.
  *        d. Matches each against the sender-chapter's UNRECEIPTED spend within a
- *           date window at the EXACT cent (`findReceiptMatches`). No chapter (an
- *           unknown sender) → no candidates; the receipt routes to review.
+ *           date window at the EXACT cent (`findReceiptMatches`) — now a
+ *           SUGGESTION list, not a decision. No chapter (an unknown sender) →
+ *           no candidates; the receipt routes to review.
  *        e. Creates ONE first-class `receipts` row PER extracted receipt (source
- *           `email`), stamped with the sender class + OCR provenance and its own
- *           match shortlist. A `team`/`roster` receipt with exactly ONE candidate
- *           auto-attaches (links + flips an already-`categorized` charge to
- *           `reconciled` + unlocks the card, all via `lib/receiptLinks.ts`).
- *           Everything else defers to a human.
+ *           `email`), UNLINKED, stamped with the sender class + OCR provenance,
+ *           the resolved sender as `uploadedByPersonId` (so it shows up in THEIR
+ *           library), and its candidate shortlist as suggestions. Nothing is
+ *           attached to a transaction here — the person coding the charge
+ *           confirms it (`receipts.ts#confirmSuggestedReceipt`).
  *        f. Replies to the sender (best-effort) — ONLY to team/roster senders.
  *
- * MONEY SAFETY: the model NEVER moves money and NEVER categorizes here — it only
- * reads a total off a receipt. The only write that touches a transaction is the
- * link layer (`lib/receiptLinks.ts`), and it only ever attaches a receipt +
- * (maybe) flips an already-categorized txn to reconciled. Ambiguity, an
- * untrusted sender, or an unreadable total always defer to a human. This mirrors
- * the AI-coding rule ("a human confirms; the model never moves money").
+ * MONEY SAFETY: this file no longer writes to a transaction AT ALL. The model
+ * never moves money and never categorizes here — it only reads a total off a
+ * receipt, and that read is displayed to a human as a suggestion. The one
+ * remaining money-adjacent write in this module is
+ * `manualMatchInboundReceipt`, which a bookkeeper drives by hand. This is
+ * stricter than the AI-coding rule it used to mirror ("a human confirms; the
+ * model never moves money") — now nothing but a human ever links at all.
  */
 import {
   query,
@@ -58,7 +89,7 @@ import {
   internalMutation,
   internalAction,
 } from "./_generated/server";
-import type { ActionCtx, QueryCtx } from "./_generated/server";
+import type { ActionCtx, MutationCtx, QueryCtx } from "./_generated/server";
 import { v, ConvexError } from "convex/values";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
@@ -100,12 +131,29 @@ import {
 /** How far apart the receipt DATE and a card charge's `postedAt` may be and
  *  still match. Card `postedAt` (settlement) commonly lags the receipt date by
  *  a few days, so the window is generous but bounded. ±14 days. */
-const MATCH_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
+export const MATCH_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 /** The date-bounded scan cap when hunting for candidate transactions — mirrors
  *  the reconcile grid's own `ROLLUP_SCAN_LIMIT` discipline (`finances.ts`). */
 const CANDIDATE_SCAN_LIMIT = ROLLUP_SCAN_LIMIT;
-/** How many candidate ids we persist onto a `needs_review` row for the UI. */
+/** How many candidate ids we persist onto a row for the UI. Since the
+ *  auto-attach retired (see the module doc), these are SUGGESTIONS a human
+ *  picks from, never a decision — so more than one is a normal, healthy
+ *  outcome rather than the "ambiguous" failure it used to be. */
 const MAX_CANDIDATES_SURFACED = 8;
+
+/**
+ * The terminal status a CAPTURED-and-SUGGESTED receipt lands on — read: "the
+ * document is filed, unlinked, with its suggestions recorded; a human attaches
+ * it when they code the charge."
+ *
+ * Deliberately NOT `needs_review`: nobody is blocked and no bookkeeper owes
+ * this row anything, so routing every healthy capture into the review queue
+ * would have made this change INCREASE the treasurer's noise while removing
+ * the auto-attach it was meant to replace — a queue that fills with successes
+ * is a queue people stop reading. The queue keeps only what a human must
+ * actually resolve (unreadable, duplicate, unknown sender, no match, error).
+ */
+export const CAPTURED_STATUS = "suggested" as const;
 /** How many attachments we ever process off one email (bounded — a receipt
  *  email carries a handful of photos, not hundreds). */
 const MAX_ATTACHMENTS = 10;
@@ -470,12 +518,14 @@ export const resolvePersonByEmail = internalQuery({
 });
 
 /**
- * Classify an inbound sender into the AUTOMATION axis + resolve their person /
+ * Classify an inbound sender into the trust axis + resolve their person /
  * chapter when known. NEVER a permission — a public endpoint's `From:` is
- * spoofable, so the class only decides whether the pipeline may AUTO-ATTACH
- * (team/roster) or must route to human review (internal/external). See
- * `RECEIPT_SENDER_CLASSES`. An unresolved sender has no chapter, so its receipts
- * get no auto-match candidates (there's nothing to match against).
+ * spoofable — and, since the auto-attach retired, never a licence to write
+ * either: the class decides ATTRIBUTION (a `team`/`roster` sender OWNS the
+ * receipt, so it lands in their library and suggests against their chapter's
+ * charges) and whether we reply. See `RECEIPT_SENDER_CLASSES`. An unresolved
+ * sender has no chapter, so its receipts get no suggestions at all (there's
+ * nothing to match against) and route to the bookkeeper queue.
  */
 export const classifySender = internalQuery({
   args: { email: v.string() },
@@ -490,7 +540,7 @@ export const classifySender = internalQuery({
     // from a donor gift, an import, or a public RSVP) is NOT a cardholder or
     // team member — treat it the same as no roster match at all, so an email
     // from a guest's/donor's address falls through to the domain check below
-    // instead of silently auto-attaching via the "roster" trust class.
+    // instead of being filed as a roster member's own receipt.
     if (person && person.isContactOnly !== true) {
       return {
         senderClass: person.isTeamMember ? "team" : "roster",
@@ -536,7 +586,10 @@ const MERCHANT_STOPWORDS = new Set([
   "inc", "llc", "corp", "co", "the", "sq", "tst", "pos", "payment", "purchase",
   "store", "of", "and", "a", "an",
 ]);
-function merchantTokens(...texts: (string | null | undefined)[]): Set<string> {
+/** Normalized, stopword-stripped tokens of a merchant-ish string. Exported so
+ *  `receipts.ts#suggestedForTransaction` scores merchant overlap with the SAME
+ *  tokenizer the matcher uses rather than a second, subtly different one. */
+export function merchantTokens(...texts: (string | null | undefined)[]): Set<string> {
   const combined = texts.filter(Boolean).join(" ");
   return new Set(
     combined
@@ -549,7 +602,9 @@ function merchantTokens(...texts: (string | null | undefined)[]): Set<string> {
 
 /**
  * Find UNRECEIPTED spend transactions in `chapterId` whose amount EXACTLY
- * matches `amountCents`. Exact-cent by design (the confident-auto-match bar).
+ * matches `amountCents`. Exact-cent by design (the bar a SUGGESTION has to
+ * clear to be worth showing a human at all — see the module doc; nothing
+ * downstream attaches on it any more).
  *
  * `receiptDate` is OPTIONAL. When present, candidates are additionally kept to
  * ±`MATCH_WINDOW_MS` of it (the window absorbs settlement lag) and ranked
@@ -559,8 +614,9 @@ function merchantTokens(...texts: (string | null | undefined)[]): Set<string> {
  * first. Inventing a date (upload/receive time) here was the bug behind "the
  * only $16.36 charge didn't auto-match": a dateless receipt was matched as if
  * dated the moment it was uploaded, so an older same-amount charge fell outside
- * ±14 days and was dropped. Uniqueness still guards auto-attach downstream, so
- * amount-alone only auto-attaches when exactly one unreceipted charge matches.
+ * ±14 days and was dropped. Uniqueness used to guard the auto-attach; now
+ * nothing attaches unattended at all, so a multi-candidate amount-alone read is
+ * simply a longer list for the human to pick from.
  *
  * Ordered best-first either way: own-card charges and merchant-token overlaps
  * rank above bare amount matches, then (date present) nearest date / (absent)
@@ -662,7 +718,7 @@ export const findReceiptMatches = internalQuery({
   handler: async (ctx, args) => matchReceiptCandidates(ctx, args),
 });
 
-// ── Commit: create receipt documents + auto-attach + write the inbound row ───
+// ── Commit: create receipt documents + record suggestions + write the row ────
 /** One extracted receipt the action hands the commit mutation: a stored file,
  *  its OCR read, and its (already-computed) match shortlist. */
 const extractedReceiptValidator = v.object({
@@ -678,18 +734,48 @@ const extractedReceiptValidator = v.object({
   candidateTransactionIds: v.array(v.id("transactions")),
 });
 
+/** The sender's FIRST name, for review-queue copy ("Filed to Jane's
+ *  receipts…") — the queue reads as a sentence about a person, not an id.
+ *  Shared with the SMS channel (`smsReceipts.ts`) so both write the same copy. A
+ *  sender who never resolved to a roster row has no name to use, and by
+ *  construction never owns a captured receipt either, so they get a neutral
+ *  stand-in. */
+export async function senderDisplayName(
+  ctx: MutationCtx,
+  personId: Id<"people"> | undefined,
+): Promise<string> {
+  if (!personId) return "the sender";
+  const person = await ctx.db.get(personId);
+  const name = person?.name?.trim();
+  return name ? name.split(/\s+/)[0] : "the sender";
+}
+
 /**
- * Create the first-class `receipts` rows for one inbound email, auto-attach the
- * ones the policy allows, and write the aggregate outcome back onto the
- * `inboundReceipts` row — all in ONE transaction.
+ * Create the first-class `receipts` rows for one inbound email — UNLINKED, with
+ * their suggestions recorded — and write the aggregate outcome back onto the
+ * `inboundReceipts` row, all in ONE transaction.
  *
- * AUTOMATION POLICY (money safety): a receipt auto-attaches ONLY when its sender
- * is `team`/`roster` (`receiptSenderCanAutoAttach`) AND it has exactly ONE
- * candidate. An `internal`/`external` sender, an ambiguous match, an unreadable
- * total, or an unknown chapter always routes to human review — never an
- * auto-attach, never a reconcile. The inbound row's status AGGREGATES: `matched`
- * only if EVERY extracted receipt auto-matched, else the most-actionable state
- * (`needs_review` > `no_match`).
+ * CAPTURE-AND-SUGGEST (owner decision, 2026-08-08 — see the module doc): this
+ * mutation used to auto-attach a trusted sender's unique candidate. It no
+ * longer links ANYTHING. Every extracted receipt is filed unlinked with:
+ *  - `uploadedByPersonId` = the resolved sender, so it lands in THEIR receipt
+ *    library and `receipts.ts#suggestedForTransaction` can offer it back to
+ *    them on the coding sheet for their own charge,
+ *  - `candidateTransactionIds` = the matcher's shortlist, now a ranked
+ *    SUGGESTION rather than a decision (more than one candidate is a normal
+ *    outcome, not the "ambiguous" failure it used to be),
+ *  - its OCR read intact — the amount/date/merchant are what make a suggestion
+ *    rankable, and what the human reads before confirming.
+ *
+ * The sender class no longer decides whether anything is written; it decides
+ * ATTRIBUTION (an unresolved sender has no person and no chapter, so there's
+ * nobody to suggest to and nothing to suggest against — that receipt is the
+ * bookkeeper's, via the review queue).
+ *
+ * The inbound row's status AGGREGATES the most actionable outcome:
+ * a reason a human must resolve (`needs_review`) > everything captured with
+ * suggestions (`CAPTURED_STATUS`) > a clean read that matched nothing
+ * (`no_match`).
  */
 export const commitInboundReceipts = internalMutation({
   args: {
@@ -706,10 +792,14 @@ export const commitInboundReceipts = internalMutation({
   returns: v.object({
     status: statusValidator,
     totalCount: v.number(),
-    matchedCount: v.number(),
+    /** How many extracted receipts were filed WITH at least one suggested
+     *  charge. Nothing is attached — see this mutation's doc. */
+    suggestedCount: v.number(),
     amountCents: v.union(v.number(), v.null()),
-    matchedTransactionId: v.union(v.id("transactions"), v.null()),
-    matchedMerchant: v.union(v.string(), v.null()),
+    /** The top suggestion for the FIRST extracted receipt (the sender-facing
+     *  reply names it: "we found a charge that looks like it"). Never a link. */
+    suggestedTransactionId: v.union(v.id("transactions"), v.null()),
+    suggestedMerchant: v.union(v.string(), v.null()),
     /** The created `receipts` rows, in the SAME order as `extracted` — so the
      *  caller can pair each one back to the read that produced it (which is
      *  how a transport failure gets an automatic re-extraction scheduled
@@ -717,15 +807,18 @@ export const commitInboundReceipts = internalMutation({
     receiptIds: v.array(v.id("receipts")),
   }),
   handler: async (ctx, args) => {
-    const canAuto = receiptSenderCanAutoAttach(args.senderClass);
+    // Trust is now an ATTRIBUTION signal only (module doc): a receipt from a
+    // resolved roster member is filed as THEIRS, which is what puts it on
+    // their coding sheet. It no longer permits any write.
+    const senderOwnsReceipt =
+      args.personId != null && receiptSenderCanAutoAttach(args.senderClass);
     const chapterKnown = args.chapterId != null;
     const receiptIds: Id<"receipts">[] = [];
 
-    let matchedCount = 0;
-    let firstMatchedTxn: Id<"transactions"> | null = null;
-    let firstMatchedMerchant: string | null = null;
-    let firstMatchedPostedAt: number | null = null;
-    let anyReconciled = false;
+    let suggestedCount = 0;
+    let firstSuggestedTxn: Id<"transactions"> | null = null;
+    let firstSuggestedMerchant: string | null = null;
+    let firstSuggestedPostedAt: number | null = null;
     const reasons = new Set<string>();
 
     for (const ex of args.extracted) {
@@ -748,6 +841,12 @@ export const commitInboundReceipts = internalMutation({
         source: "email",
         inboundReceiptId: args.receiptId,
         senderClass: args.senderClass,
+        // WHOSE receipt this is. Nothing used to set this on an email-sourced
+        // row (the pipeline attached it and moved on), which is exactly why a
+        // cardholder had no library to be offered their own receipt back from.
+        // Only a sender who RESOLVED to a roster person owns one — a spoofable
+        // `From:` must never file a document under someone else's name.
+        uploadedByPersonId: senderOwnsReceipt ? args.personId : undefined,
         filename: ex.filename,
         ocrAmountCents: ex.ocrAmountCents,
         ocrDate: ex.ocrDate,
@@ -764,8 +863,9 @@ export const commitInboundReceipts = internalMutation({
       receiptIds.push(receiptId);
 
       if (duplicateOfReceiptId) {
-        // A likely duplicate submission — never auto-attach it, regardless of
-        // how clean its OCR read or match would otherwise be. A human confirms.
+        // A likely duplicate submission — suggest nothing off it, however clean
+        // its read. A human confirms whether it's a re-send or a second
+        // legitimate copy.
         reasons.add("duplicate");
         continue;
       }
@@ -774,7 +874,8 @@ export const commitInboundReceipts = internalMutation({
         continue;
       }
       if (!chapterKnown) {
-        // No chapter to search against — a human must place it.
+        // No chapter to search against, and nobody to suggest to — a human
+        // must place it.
         reasons.add("unknown");
         continue;
       }
@@ -785,24 +886,15 @@ export const commitInboundReceipts = internalMutation({
         // the same email needs review).
         continue;
       }
-      if (cands.length === 1 && canAuto) {
-        const res = await linkReceiptToTransaction(ctx, {
-          receiptId,
-          transactionId: cands[0],
-          source: "auto_email",
-          reconcileIfCategorized: true,
-        });
-        matchedCount++;
-        if (firstMatchedTxn == null) {
-          firstMatchedTxn = cands[0];
-          const txn = await ctx.db.get(cands[0]);
-          firstMatchedMerchant = txn?.merchantName ?? txn?.description ?? null;
-          firstMatchedPostedAt = txn?.postedAt ?? null;
-        }
-        if (res.reconciled) anyReconciled = true;
-      } else {
-        // Ambiguous (>1) OR an untrusted sender not allowed to auto-attach.
-        reasons.add(cands.length > 1 ? "ambiguous" : "untrusted");
+      // Captured WITH suggestions. The shortlist is already on the receipt
+      // (`createReceipt`'s `candidateTransactionIds`); there is nothing else to
+      // write, and deliberately no link — the coding sheet asks the human.
+      suggestedCount++;
+      if (firstSuggestedTxn == null) {
+        firstSuggestedTxn = cands[0];
+        const txn = await ctx.db.get(cands[0]);
+        firstSuggestedMerchant = txn?.merchantName ?? txn?.description ?? null;
+        firstSuggestedPostedAt = txn?.postedAt ?? null;
       }
     }
 
@@ -810,40 +902,37 @@ export const commitInboundReceipts = internalMutation({
     const firstAmount = args.extracted[0]?.ocrAmountCents ?? null;
     const firstHadDate = args.extracted[0]?.ocrDate != null;
 
-    // Aggregate status: `matched` only if EVERY receipt auto-matched; else the
-    // most-actionable state (needs_review > no_match).
+    // Aggregate status, most-actionable-first: anything a human must resolve
+    // (`needs_review`) outranks a clean capture (`CAPTURED_STATUS`), which
+    // outranks a clean read that simply matched nothing (`no_match`).
     let status: (typeof INBOUND_RECEIPT_STATUSES)[number];
     let detail: string;
-    if (total > 0 && matchedCount === total) {
-      status = "matched";
-      detail =
-        total === 1 && firstMatchedTxn
-          ? `Attached to ${firstMatchedMerchant ?? "a charge"} (${
-              firstAmount != null ? fmtUsd(firstAmount) : "receipt"
-            }${firstMatchedPostedAt != null ? `, ${shortDate(firstMatchedPostedAt)}` : ""})${
-              anyReconciled ? " and reconciled" : ""
-            }.`
-          : `Attached ${matchedCount} receipt${matchedCount === 1 ? "" : "s"} to charges.`;
-    } else if (reasons.size > 0) {
+    if (reasons.size > 0) {
       status = "needs_review";
       if (reasons.has("duplicate")) {
         detail =
           "Looks like a duplicate of an already-submitted receipt — a bookkeeper should confirm.";
       } else if (reasons.has("unknown")) {
         detail = "Sender unknown — pick the transaction manually.";
-      } else if (reasons.has("untrusted")) {
-        detail = "Sender not verified — a bookkeeper must confirm the match.";
-      } else if (reasons.has("ambiguous")) {
-        detail =
-          firstAmount != null
-            ? `Multiple charges match ${fmtUsd(firstAmount)} — pick the right one.`
-            : "Multiple charges match — pick the right one.";
       } else {
         detail =
           total === 1
             ? "Could not read a total off the receipt — needs a human."
             : "One or more receipts need a human to place.";
       }
+    } else if (total > 0 && suggestedCount === total) {
+      status = CAPTURED_STATUS;
+      const who = await senderDisplayName(ctx, args.personId);
+      detail =
+        total === 1
+          ? `Filed to ${who}'s receipts${
+              firstAmount != null ? ` (${fmtUsd(firstAmount)})` : ""
+            } — suggested against ${firstSuggestedMerchant ?? "a charge"}${
+              firstSuggestedPostedAt != null
+                ? `, ${shortDate(firstSuggestedPostedAt)}`
+                : ""
+            }, to confirm when the charge is coded.`
+          : `Filed ${total} receipts to ${who}'s receipts with suggested charges, to confirm when those charges are coded.`;
     } else {
       status = "no_match";
       detail =
@@ -880,7 +969,11 @@ export const commitInboundReceipts = internalMutation({
               : {}),
           }
         : {}),
-      ...(firstMatchedTxn ? { matchedTransactionId: firstMatchedTxn } : {}),
+      // `matchedTransactionId` is deliberately NOT written: it means "this
+      // receipt is attached to that charge", and nothing here attaches
+      // anything any more. The suggestions live on `candidateTransactionIds`
+      // (both here and per-receipt); only `manualMatchInboundReceipt` — a
+      // bookkeeper acting by hand — ever stamps a matched transaction now.
       status,
       detail: appendSkippedNote(detail, args.skippedAttachmentNames ?? []),
       updatedAt: Date.now(),
@@ -889,10 +982,10 @@ export const commitInboundReceipts = internalMutation({
     return {
       status,
       totalCount: total,
-      matchedCount,
+      suggestedCount,
       amountCents: firstAmount,
-      matchedTransactionId: firstMatchedTxn,
-      matchedMerchant: firstMatchedMerchant,
+      suggestedTransactionId: firstSuggestedTxn,
+      suggestedMerchant: firstSuggestedMerchant,
       receiptIds,
     };
   },
@@ -2107,8 +2200,8 @@ interface ExtractedReceipt {
 /**
  * Store one BODY receipt — an email whose text IS the receipt — as a document
  * and parse its total with the zero-LLM heuristic. Stored as a file because an
- * email receipt saved as a document IS the receipt, so a unique match can
- * auto-attach it exactly like a photo; HTML keeps its `text/html` type so the
+ * email receipt saved as a document IS the receipt, so it can be attached to a
+ * charge exactly like a photo; HTML keeps its `text/html` type so the
  * review UI renders it. Shared by the top-level body path and the
  * forwarded-message body path so the two can't drift apart.
  */
@@ -2190,7 +2283,7 @@ async function storeBodyReceipt(
 
 /**
  * Process ONE inbound receipt: classify sender → get content → OCR each →
- * match each → create documents + auto-attach-or-queue → reply. Scheduled by the
+ * match each → file the documents (unlinked, with suggestions) → reply. Scheduled by the
  * HTTP route right after `recordInboundReceipt` returns `isNew: true`. Every
  * terminal state is written back onto the row so the review queue is truthful.
  */
@@ -2243,9 +2336,9 @@ async function runPipeline(
   // 1. Resolve + classify the sender. On GOOGLE-GROUP-relayed mail the
   //    envelope `From:` may be the list rather than the poster, so recover the
   //    real one from `X-Original-Sender` first (`resolveListSender`). The gate
-  //    is OPEN: every email is processed. The class only decides whether an
-  //    auto-attach is permitted (team/roster) or the receipt must route to
-  //    review (internal/external).
+  //    is OPEN: every email is processed. The class only decides whose receipt
+  //    this is (team/roster) or whether it must route to the bookkeeper queue
+  //    (internal/external).
   const { fromEmail: senderEmail, relayedVia } = resolveListSender(
     row.fromEmail,
     received?.headers,
@@ -2264,6 +2357,8 @@ async function runPipeline(
   const sender = await ctx.runQuery(internal.receiptInbox.classifySender, {
     email: senderEmail,
   });
+  // Trust decides ATTRIBUTION + whether we reply at all — never a write. See
+  // the module doc on capture-and-suggest.
   const isTrusted = receiptSenderCanAutoAttach(sender.senderClass);
 
   // 2. Get receipt content: EVERY usable image/PDF attachment (skipping
@@ -2326,8 +2421,8 @@ async function runPipeline(
     }
   } else {
     // No usable attachment — the email BODY is the receipt (ZERO LLM). Stored
-    // as a file too: an email receipt saved as a document IS the receipt, so a
-    // unique match can auto-attach it exactly like a photo. HTML is stored as
+    // as a file too: an email receipt saved as a document IS the receipt, so it
+    // can be attached to a charge exactly like a photo. HTML is stored as
     // text/html so the review UI renders it.
     // The HTML is what gets stored and shown; the text is what gets parsed.
     // The subject is the last-resort stand-in when the fetch gave us neither.
@@ -2402,7 +2497,8 @@ async function runPipeline(
   }
 
   // 4. Match each extracted receipt against the sender-chapter's unreceipted
-  //    spend. No chapter (unknown sender) → no candidates (nothing to match).
+  //    spend — a SUGGESTION shortlist now, never a decision (module doc). No
+  //    chapter (unknown sender) → no candidates (nothing to match).
   if (sender.chapterId) {
     for (const ex of extracted) {
       if (ex.ocrAmountCents != null) {
@@ -2423,8 +2519,8 @@ async function runPipeline(
     }
   }
 
-  // 5. Create the receipt documents, auto-attach the ones the policy allows,
-  //    and write the aggregate outcome onto the inbound row (one transaction).
+  // 5. Create the receipt documents (unlinked, with their suggestions) and
+  //    write the aggregate outcome onto the inbound row (one transaction).
   const result = await ctx.runMutation(
     internal.receiptInbox.commitInboundReceipts,
     {
@@ -2466,8 +2562,13 @@ async function runPipeline(
   //    forwarding a stack of receipts — or a backfill replaying months of
   //    them — earns one email, not one per receipt.
   if (isTrusted) {
+    // The `"matched"` outcome literal now means "we found a charge that looks
+    // like it, and suggested it" — nothing is attached (see `composeReplyDigest`
+    // and the module doc). The literal is a stored schema enum
+    // (`receiptReplyBatches.items`), so it's reused rather than renamed; the
+    // sender-facing copy is what carries the meaning.
     const outcome =
-      result.status === "matched"
+      result.suggestedCount > 0
         ? "matched"
         : result.status === "no_match"
           ? "no_match"
@@ -2477,7 +2578,7 @@ async function runPipeline(
       item: {
         outcome,
         amountCents: result.amountCents ?? undefined,
-        merchant: result.matchedMerchant ?? undefined,
+        merchant: result.suggestedMerchant ?? undefined,
       },
     });
   }
@@ -2599,6 +2700,17 @@ export const REPLY_DEBOUNCE_MS = 10 * 60 * 1000;
  *  never silently dropped. */
 const MAX_BATCH_ITEMS = 50;
 
+/**
+ * One receipt's outcome in a sender's digest.
+ *
+ * `"matched"` NO LONGER MEANS ATTACHED (capture-and-suggest, 2026-08-08 — see
+ * the module doc). It now means "we found a charge that looks like this
+ * receipt and suggested it"; the sender confirms it when they code the charge.
+ * The literal is kept because it's a stored schema enum
+ * (`receiptReplyBatches.items` in `schema/finances.ts`) — renaming it to
+ * `"suggested"` is a schema change, and the copy below is what the human
+ * actually reads.
+ */
 const replyItemValidator = v.object({
   outcome: v.union(
     v.literal("matched"),
@@ -2734,7 +2846,7 @@ function digestLine(item: ReplyItem): string {
   const from = item.merchant ? ` from ${item.merchant}` : "";
   const tail =
     item.outcome === "matched"
-      ? "attached to a card charge"
+      ? "a matching charge is waiting for you to confirm when you code it"
       : item.outcome === "no_match"
         ? "no matching charge yet — filed for a bookkeeper"
         : "needs a bookkeeper's eye";
@@ -2759,9 +2871,9 @@ export function composeReplyDigest(
     const amt = only.amountCents != null ? fmtUsd(only.amountCents) : "your receipt";
     if (only.outcome === "matched") {
       return {
-        subject: "Receipt matched ✓",
+        subject: "Receipt filed — confirm it when you code the charge",
         html: wrap(
-          `<p>We matched ${amt}${only.merchant ? ` from ${only.merchant}` : ""} to a card charge and attached your receipt. Nothing else to do.</p>`,
+          `<p>We read ${amt}${only.merchant ? ` and found a ${only.merchant} charge that looks like it` : " and found a charge that looks like it"}. Your receipt is filed and waiting — pick it when you code that charge, and we'll attach it then.</p>`,
         ),
       };
     }
@@ -2769,7 +2881,7 @@ export function composeReplyDigest(
       return {
         subject: "Receipt received — no matching charge yet",
         html: wrap(
-          `<p>Thanks — we read ${amt}, but couldn't find a card charge for it yet. We've filed it for a bookkeeper to place. If the charge posts later, they'll attach it.</p>`,
+          `<p>Thanks — we read ${amt}, but couldn't find a card charge for it yet. It's filed in your receipts either way: attach it when you code the charge, or a bookkeeper will place it.</p>`,
         ),
       };
     }
@@ -2788,13 +2900,13 @@ export function composeReplyDigest(
   const allMatched = matched === items.length && overflowCount === 0;
 
   const parts: string[] = [];
-  if (matched) parts.push(`${matched} attached to charges`);
+  if (matched) parts.push(`${matched} with a matching charge to confirm`);
   if (noMatch) parts.push(`${noMatch} with no matching charge yet`);
   if (needsReview) parts.push(`${needsReview} needing a bookkeeper's eye`);
 
   const lead = allMatched
-    ? `We matched all ${total} receipts you sent to card charges and attached them. Nothing else to do.`
-    : `We processed ${total} receipt${total === 1 ? "" : "s"} you sent: ${parts.join(", ")}. Anything unmatched is filed for a bookkeeper — nothing is lost.`;
+    ? `We filed all ${total} receipts you sent and found a matching charge for each one. Confirm them as you code those charges.`
+    : `We processed ${total} receipt${total === 1 ? "" : "s"} you sent: ${parts.join(", ")}. Everything is filed — nothing is lost.`;
   const list = items.map((i) => `<li>${digestLine(i)}</li>`).join("");
   const more = overflowCount
     ? `<p style="color:#8a7d78;font-size:13px">+${overflowCount} more not listed individually.</p>`
@@ -2802,7 +2914,7 @@ export function composeReplyDigest(
 
   return {
     subject: allMatched
-      ? `${total} receipts matched ✓`
+      ? `${total} receipts filed — confirm them when you code`
       : `${total} receipts received`,
     html: wrap(
       `<p>${lead}</p><ul style="padding-left:18px;margin:8px 0">${list}</ul>${more}`,
@@ -2890,14 +3002,17 @@ export const listInboundReceipts = query({
 
 /**
  * A bookkeeper manually attaches a `needs_review`/`no_match` inbound receipt to
- * a chosen transaction — the human resolution for everything the auto-matcher
- * declined (an ambiguous match, an untrusted sender, an unknown chapter).
+ * a chosen transaction — the bookkeeper-side resolution for a receipt no
+ * cardholder will claim (an untrusted sender, an unknown chapter, a read
+ * nothing could be made of). The CARDHOLDER-side path is
+ * `receipts.ts#confirmSuggestedReceipt`, on their own coding sheet.
  * Requires bookkeeper+ in the row's chapter, the row to still be open, a stored
  * receipt file, and the target txn to be in the same chapter. Routes through the
  * receipts layer: it reuses the `receipts` document the pipeline created (found
  * via `by_inbound`), or creates one from the inbound row when none exists (a
  * legacy row), then links it (`manual`) — so the money-adjacent effect (attach +
- * maybe-reconcile + card unlock) is identical to the auto path.
+ * maybe-reconcile + card unlock) is the same one every human-confirmed link
+ * has.
  */
 export const manualMatchInboundReceipt = mutation({
   args: {

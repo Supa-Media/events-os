@@ -4,6 +4,7 @@ import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { verifyTwilioSignature } from "../lib/twilio";
 import { resolveTwilioReceiptsWebhookUrl } from "../smsReceipts";
+import { CAPTURED_STATUS } from "../receiptInbox";
 
 /**
  * Inbound-SMS/MMS → OCR → reconcile pipeline (`smsReceipts.ts`), the Twilio
@@ -238,10 +239,10 @@ describe("classifySmsSender", () => {
 
 // ── processSmsReceipt (end-to-end, keyless) ──────────────────────────────────
 describe("processSmsReceipt", () => {
-  test("a roster body-only text auto-attaches, reconciles, and writes a receipt + link", async () => {
+  test("a roster body-only text is CAPTURED unlinked, attributed to the sender, with its suggestion recorded", async () => {
     const t = newT();
     const s = await setupChapter(t);
-    await seedPerson(s, { phone: "9175550010" });
+    const texter = await seedPerson(s, { phone: "9175550010" });
     const txn = await seedTxn(s, { amountCents: 4210, status: "categorized" });
 
     const { receiptId } = await t.mutation(internal.smsReceipts.recordSmsReceipt, {
@@ -258,26 +259,29 @@ describe("processSmsReceipt", () => {
     });
 
     const row = await run(t, (ctx) => ctx.db.get(receiptId));
-    expect(row?.status).toBe("matched");
-    expect(row?.matchedTransactionId).toBe(txn);
+    // Captured, never attached — the charge posts a day after the swipe, so
+    // the text arrives first and the human confirms it at coding time.
+    expect(row?.status).toBe(CAPTURED_STATUS);
+    expect(row?.matchedTransactionId).toBeUndefined();
+    expect(row?.detail).toMatch(/confirm when the charge is coded/i);
     expect(row?.sourceKind).toBe("body");
     expect(row?.senderClass).toBe("roster");
     expect(row?.channel).toBe("sms");
     expect(row?.receiptStorageId).toBeDefined();
 
     const txnRow = await run(t, (ctx) => ctx.db.get(txn));
-    expect(txnRow?.status).toBe("reconciled");
-    expect(txnRow?.receiptStorageId).toBe(row?.receiptStorageId);
+    expect(txnRow?.status).toBe("categorized");
+    expect(txnRow?.receiptStorageId).toBeUndefined();
 
     const receipts = await run(t, (ctx) => ctx.db.query("receipts").take(5));
     expect(receipts.length).toBe(1);
     expect(receipts[0].source).toBe("sms");
     expect(receipts[0].senderClass).toBe("roster");
-    expect(receipts[0].linkCount).toBe(1);
+    expect(receipts[0].linkCount).toBe(0);
+    expect(receipts[0].uploadedByPersonId).toBe(texter);
+    expect(receipts[0].candidateTransactionIds).toEqual([txn]);
     const links = await run(t, (ctx) => ctx.db.query("receiptLinks").take(5));
-    expect(links.length).toBe(1);
-    expect(links[0].source).toBe("auto_sms");
-    expect(links[0].transactionId).toBe(txn);
+    expect(links.length).toBe(0);
   });
 
   test("an EXTERNAL sender is processed + stored but NEVER auto-attached, even on a unique exact match", async () => {
@@ -364,8 +368,8 @@ describe("processSmsReceipt", () => {
 
     const row = await run(t, (ctx) => ctx.db.get(receiptId));
     expect(row?.sourceKind).toBe("body");
-    expect(row?.status).toBe("matched");
-    expect(row?.matchedTransactionId).toBe(txn);
+    expect(row?.status).toBe(CAPTURED_STATUS);
+    expect(row?.candidateTransactionIds).toEqual([txn]);
   });
 });
 
@@ -537,8 +541,8 @@ describe("/twilio/receipts route", () => {
       const rows = await run(t, (ctx) => ctx.db.query("inboundReceipts").collect());
       expect(rows.length).toBe(1);
       expect(rows[0].smsMessageSid).toBe("SM_route_1");
-      expect(rows[0].status).toBe("matched");
-      expect(rows[0].matchedTransactionId).toBe(txn);
+      expect(rows[0].status).toBe(CAPTURED_STATUS);
+      expect(rows[0].candidateTransactionIds).toEqual([txn]);
     } finally {
       vi.useRealTimers();
     }

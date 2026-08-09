@@ -16,6 +16,14 @@
  * Attendee names render only for callers the server projected them to
  * (`hasCodingNamesView`); everyone else sees the affiliation breakdown, which
  * is also all the public ledger will ever show.
+ *
+ * THE SAME DOCUMENTATION GATE AS THE CARDHOLDER'S SHEET. `submitCoding`
+ * refuses a coding on a charge that can't prove itself
+ * (`DOCUMENTATION_REQUIRED`), and a bookkeeper coding on someone's behalf hits
+ * it identically — so the editor launched from here carries the same
+ * `CodingDocumentation` slot (attach, confirm a suggested receipt, or file
+ * "there is no receipt"), and this panel says the requirement out loud before
+ * anybody opens the editor.
  */
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
@@ -26,11 +34,16 @@ import {
 } from "@events-os/shared";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { Badge, Button, TextField, type BadgeTone } from "../../ui";
+import { Badge, Button, Icon, TextField, type BadgeTone } from "../../ui";
+import { colors } from "../../../lib/theme";
 import {
   TransactionCodingModal,
   type CodingFormValue,
 } from "../modals/TransactionCodingModal";
+// Lives under `myTransactions/` because that's where it was first needed, but
+// it is deliberately host-agnostic — the receipt half of a coding is the same
+// three affordances wherever coding happens.
+import { CodingDocumentation } from "../myTransactions/CodingDocumentation";
 
 const STATUS_TONE: Record<string, BadgeTone> = {
   submitted: "warn",
@@ -90,7 +103,13 @@ export function TransactionCodingSection({
   // same as loading — render nothing either way (matches the exception
   // section's posture).
   if (data === undefined) return null;
-  const { coding, requiresCoding, namesMaxHeadcount, minPurposeLength } = data;
+  const {
+    coding,
+    requiresCoding,
+    hasDocumentation,
+    namesMaxHeadcount,
+    minPurposeLength,
+  } = data;
 
   async function run(fn: () => Promise<unknown>) {
     setSubmitting(true);
@@ -125,11 +144,26 @@ export function TransactionCodingSection({
       </View>
 
       {coding == null ? (
-        <Text className="text-xs text-muted">
-          {requiresCoding
-            ? "Uncoded. This charge can't be reconciled until what it was for — and who was involved — is on the record and approved."
-            : "Uncoded. Not required for this row, but any spend can carry one."}
-        </Text>
+        <View>
+          <Text className="text-xs text-muted">
+            {requiresCoding
+              ? "Uncoded. This charge can't be reconciled until what it was for — and who was involved — is on the record and approved."
+              : "Uncoded. Not required for this row, but any spend can carry one."}
+          </Text>
+          {/* SAID BEFORE THE EDITOR OPENS, not after somebody types into it.
+              The submit gate wants documentation too, and a bookkeeper coding
+              on someone's behalf is refused exactly as the cardholder is. */}
+          {!hasDocumentation ? (
+            <View className="mt-1 flex-row items-start gap-2">
+              <Icon name="alert-triangle" size={12} color={colors.warn} />
+              <Text className="flex-1 text-2xs text-muted">
+                It has no receipt and no filed exception either — a coding
+                can&apos;t be submitted without one. Both halves go in the same
+                editor.
+              </Text>
+            </View>
+          ) : null}
+        </View>
       ) : (
         <View className="rounded-lg border border-border bg-sunken px-3 py-2.5">
           <View className="mb-1 flex-row items-center gap-2">
@@ -259,6 +293,21 @@ export function TransactionCodingSection({
           amountCents={amountCents}
           namesMaxHeadcount={namesMaxHeadcount}
           minPurposeLength={minPurposeLength}
+          // The receipt requirement, and the ways out of it, inside the
+          // editor. `detail` is deliberately omitted here: this panel is
+          // handed the transaction id and nothing about its receipt, so the
+          // block says what it knows for certain (`hasDocumentation`) rather
+          // than guessing which of a receipt or an exception documents it.
+          hasDocumentation={hasDocumentation}
+          documentationSlot={
+            <CodingDocumentation
+              transactionId={transactionId}
+              amountCents={amountCents}
+              hasDocumentation={hasDocumentation}
+              runAction={(fn) => run(fn)}
+              busy={submitting}
+            />
+          }
           // A revision is a conversation: the note that sent it back belongs
           // next to the fields it's about, not one panel away behind the
           // editor that's covering it.

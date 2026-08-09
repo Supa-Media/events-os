@@ -1289,8 +1289,13 @@ export function ReceiptCell({
   amountCents,
   readOnly,
   onExceptionFiled,
+  libraryPicker,
 }: {
   hasReceipt: boolean;
+  /** Show the "attach an existing receipt" library picker? Defaults to true
+   *  (the Reconcile grid, where every caller is bookkeeper+). Pass `false` on
+   *  member-facing surfaces — the picker's queries are bookkeeper-gated. */
+  libraryPicker?: boolean;
   reminderStage: "none" | "flagged" | "escalated";
   /** Which transaction this cell's receipt(s) belong to — powers the
    *  "Attached" chip's tap-to-view (`ReceiptViewerModal`, below). Optional so
@@ -1445,8 +1450,15 @@ export function ReceiptCell({
         </Pressable>
         {/* Attach an EXISTING receipt instead of uploading a new one — opens
             the searchable library picker. Only when we know which transaction
-            (see the prop doc); hidden while an upload is in flight. */}
-        {transactionId && !busy ? (
+            (see the prop doc); hidden while an upload is in flight.
+            ALSO hidden for a cardholder (`libraryPicker={false}`): every query
+            behind `ReceiptAttachPicker` is bookkeeper+ gated, so on the member
+            coding sheet — where this cell now renders — it would open a search
+            box that is permanently empty and read as "we lost your receipts".
+            A cardholder reaches their own inbound receipts through the
+            suggestions in the coding sheet instead, which is the member-safe
+            read (`receipts.suggestedForTransaction`). */}
+        {transactionId && !busy && libraryPicker !== false ? (
           <Pressable
             onPress={() => setAttachOpen(true)}
             hitSlop={6}

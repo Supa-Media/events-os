@@ -15,6 +15,15 @@
  * (headcount, then one name row per head at/below the org threshold, or a
  * group description above it); travel/lodging ask for the route.
  *
+ * THE RECEIPT IS ONE OF THOSE REQUIREMENTS NOW (owner decision, 2026-08-08:
+ * "they should just upload the receipt when coding"). `submitCoding` refuses a
+ * coding on a charge that can't prove itself (`DOCUMENTATION_REQUIRED`), so
+ * the requirement is stated at the TOP of the editor, in the same "Still
+ * needed before you can submit" register as every field problem, and the ways
+ * out of it live in `documentationSlot` — attach, confirm a suggested receipt,
+ * or say there is no receipt — all reachable without closing this editor.
+ * Nobody may fill in three fields and only then be told no.
+ *
  * Two more things every field owes its author, because this form is the only
  * training most people will ever read (phase 2, `docs/plans/transaction-coding.md`):
  *  - WHY, in one line, at the moment the rule applies — "the IRS requires who
@@ -26,7 +35,7 @@
  *    sentence into a public record is entitled to know that before they type
  *    it, not after it's published.
  */
-import { useMemo, useState } from "react";
+import { useMemo, useState, type ReactNode } from "react";
 import { Modal, Pressable, ScrollView, Text, View } from "react-native";
 import {
   ATTENDEE_AFFILIATIONS,
@@ -59,11 +68,22 @@ export interface CodingFormValue {
   groupDescription?: string;
 }
 
+/** The receipt requirement, worded as one of the missing pieces rather than as
+ *  an error — it belongs in the same list as "say what this was for". Its code
+ *  is the server's (`submitCoding` throws exactly this one). */
+const DOCUMENTATION_PROBLEM = {
+  code: "DOCUMENTATION_REQUIRED",
+  message:
+    "Attach the receipt for this charge — or, if there is no receipt, say why right here. A coding can't be submitted without one; proving it and explaining it are the same act.",
+};
+
 export function TransactionCodingModal({
   merchantLine,
   amountCents,
   namesMaxHeadcount,
   minPurposeLength,
+  hasDocumentation,
+  documentationSlot,
   initial,
   reviewNote,
   submitLabel = "Submit for review",
@@ -76,6 +96,15 @@ export function TransactionCodingModal({
   amountCents: number;
   namesMaxHeadcount: number;
   minPurposeLength: number;
+  /** `getForTransaction().hasDocumentation` — a receipt, or a filed receipt
+   *  exception (pending counts). False disables submit and puts the reason in
+   *  the missing-pieces list, because the server would refuse anyway. */
+  hasDocumentation: boolean;
+  /** How to FIX that without leaving the editor — the host's
+   *  `CodingDocumentation` (upload, confirm a suggested receipt, or file "there
+   *  is no receipt"). A slot rather than the widget itself so this modal stays
+   *  presentational and both hosts keep their own toast/error plumbing. */
+  documentationSlot?: ReactNode;
   /** Present when revising after a send-back — the author's own prior words. */
   initial?: CodingFormValue | null;
   /** The reviewer's send-back note, when this is a revision. Shown INSIDE the
@@ -145,7 +174,7 @@ export function TransactionCodingModal({
             : {}),
         };
 
-  const problems =
+  const fieldProblems =
     value == null ? [] : codingFieldProblems(value, namesMaxHeadcount);
   // Show problems only for sections the author has actually reached — a form
   // that opens covered in red before anything was typed teaches people to
@@ -157,6 +186,13 @@ export function TransactionCodingModal({
     headcountRaw.trim().length > 0 ||
     attendees.length > 0 ||
     groupDescription.trim().length > 0;
+
+  // The missing receipt is the ONE problem shown before anything is touched:
+  // it isn't a field somebody hasn't reached yet, it's a precondition they
+  // need to know about while they still have the receipt in their hand.
+  const missingDocumentation = hasDocumentation ? [] : [DOCUMENTATION_PROBLEM];
+  const blocking = [...missingDocumentation, ...fieldProblems];
+  const shown = [...missingDocumentation, ...(touched ? fieldProblems : [])];
 
   function setRow(
     index: number,
@@ -197,6 +233,27 @@ export function TransactionCodingModal({
                     What the reviewer asked for
                   </Text>
                   <Text className="mt-0.5 text-sm text-ink">“{reviewNote}”</Text>
+                </View>
+              ) : null}
+
+              {/* THE RECEIPT, FIRST AND IN HERE. Coding used to be step one
+                  and the receipt step two, in that order, on a different
+                  screen — which is exactly how somebody ended up typing a
+                  complete substantiation record and then being refused. The
+                  proof and the words go in together, so the proof is asked for
+                  where the words are typed. */}
+              {documentationSlot ? (
+                <View
+                  className={`mb-4 rounded-lg border px-3 py-2.5 ${
+                    hasDocumentation
+                      ? "border-border bg-sunken"
+                      : "border-warn/40 bg-warn-bg"
+                  }`}
+                >
+                  <Text className="mb-1 text-2xs font-semibold uppercase tracking-wide text-muted">
+                    The receipt that proves it
+                  </Text>
+                  {documentationSlot}
                 </View>
               ) : null}
 
@@ -408,12 +465,12 @@ export function TransactionCodingModal({
                   this list is empty — the server throws the FIRST of these
                   same problems, so nothing gets rejected here that the form
                   could have said out loud first. */}
-              {touched && problems.length > 0 ? (
+              {shown.length > 0 ? (
                 <View className="mt-4 gap-1.5 rounded-md border border-border bg-sunken px-3 py-2">
                   <Text className="text-2xs font-semibold uppercase tracking-wide text-muted">
                     Still needed before you can submit
                   </Text>
-                  {problems.map((p) => (
+                  {shown.map((p) => (
                     <View key={p.code} className="flex-row items-start gap-2">
                       <Icon name="info" size={13} color={colors.muted} />
                       <Text className="flex-1 text-2xs text-muted">
@@ -431,9 +488,9 @@ export function TransactionCodingModal({
             <Button
               title={submitLabel}
               onPress={() => {
-                if (value != null && problems.length === 0) onConfirm(value);
+                if (value != null && blocking.length === 0) onConfirm(value);
               }}
-              disabled={value == null || problems.length > 0}
+              disabled={value == null || blocking.length > 0}
               loading={submitting}
             />
           </View>

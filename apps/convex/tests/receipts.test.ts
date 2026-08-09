@@ -62,6 +62,9 @@ async function seedTxn(
     hasReceipt?: boolean;
     merchantName?: string;
     flow?: "outflow" | "inflow" | "transfer";
+    /** The cardholder this charge belongs to — what makes it "their own
+     *  charge" for the suggestion gate (`lib/receiptSuggestionAccess.ts`). */
+    personId?: Id<"people">;
   } = {},
 ): Promise<Id<"transactions">> {
   return await run(s.t, async (ctx) => {
@@ -79,6 +82,7 @@ async function seedTxn(
       merchantName: opts.merchantName ?? "Office Depot",
       status: opts.status ?? "unreviewed",
       receiptStorageId: storageId,
+      ...(opts.personId ? { personId: opts.personId } : {}),
       createdAt: Date.now(),
     });
   });
@@ -1604,5 +1608,292 @@ describe("listInboundQueue — duplicate hiding", () => {
 
     const rows = await s.as.query(api.receipts.listInboundQueue, { status: "error" });
     expect(rows.map((r) => r._id)).toContain(inboundReceiptId);
+  });
+});
+
+// ── suggestedForTransaction / confirmSuggestedReceipt ────────────────────────
+/**
+ * The CAPTURE-AND-SUGGEST surface (owner decision, 2026-08-08): the inbound
+ * pipelines stopped auto-attaching, so a receipt waits unlinked in its
+ * sender's library until the person coding the charge confirms it. These two
+ * functions are the ONLY ones in `receipts.ts` a non-bookkeeper may call, so
+ * the gate (`lib/receiptSuggestionAccess.ts`) gets as much attention as the
+ * ranking.
+ */
+describe("suggestedForTransaction / confirmSuggestedReceipt", () => {
+  const DAY = 24 * 60 * 60 * 1000;
+
+  /** A person who is NOT the caller — used for "somebody else's receipt". */
+  async function seedOtherPerson(s: ChapterSetup): Promise<Id<"people">> {
+    return await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Someone Else",
+        createdAt: Date.now(),
+      }),
+    );
+  }
+
+  async function seedCapturedReceipt(
+    s: ChapterSetup,
+    opts: {
+      uploadedByPersonId?: Id<"people">;
+      inboundReceiptId?: Id<"inboundReceipts">;
+      amountCents?: number;
+      receiptDate?: number;
+      merchant?: string;
+      candidateTransactionIds?: Id<"transactions">[];
+    },
+  ): Promise<Id<"receipts">> {
+    const storageId = await storeBlobWithContent(s, `captured-${Math.random()}`);
+    return await run(s.t, (ctx) =>
+      createReceipt(ctx, {
+        chapterId: s.chapterId,
+        storageId,
+        source: "email",
+        uploadedByPersonId: opts.uploadedByPersonId,
+        inboundReceiptId: opts.inboundReceiptId,
+        ocrAmountCents: opts.amountCents,
+        ocrDate: opts.receiptDate,
+        ocrMerchant: opts.merchant,
+        candidateTransactionIds: opts.candidateTransactionIds,
+      }),
+    );
+  }
+
+  test("the cardholder — with NO finance role at all — sees their own unlinked receipts ranked against their own charge", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // The caller's own person row, deliberately ungranted: this is the whole
+    // point of the new gate (every other read here is bookkeeper+).
+    const me = await seedPerson(s);
+    const postedAt = Date.now();
+    const txn = await seedTxn(s, {
+      amountCents: 4210,
+      postedAt,
+      personId: me,
+      merchantName: "Office Depot",
+    });
+
+    // Exact amount + same day + merchant overlap.
+    const exact = await seedCapturedReceipt(s, {
+      uploadedByPersonId: me,
+      amountCents: 4210,
+      receiptDate: postedAt,
+      merchant: "Office Depot",
+    });
+    // The pipeline already put THIS charge on its shortlist when it arrived —
+    // outranks a bare exact-amount match even with a different total.
+    const shortlisted = await seedCapturedReceipt(s, {
+      uploadedByPersonId: me,
+      amountCents: 5000,
+      receiptDate: postedAt - DAY,
+      candidateTransactionIds: [txn],
+    });
+    // Unrelated amount, no shortlist, no merchant overlap → never offered.
+    await seedCapturedReceipt(s, {
+      uploadedByPersonId: me,
+      amountCents: 999,
+      receiptDate: postedAt,
+      merchant: "Some Diner",
+    });
+
+    const rows = await s.as.query(api.receipts.suggestedForTransaction, {
+      transactionId: txn,
+    });
+    expect(rows.map((r) => r.receiptId)).toEqual([shortlisted, exact]);
+
+    // Everything a human needs to decide, without opening both records.
+    const top = rows[0];
+    expect(top.match.pipelineSuggested).toBe(true);
+    expect(top.match.amountExact).toBe(false);
+    expect(top.match.amountDeltaCents).toBe(790);
+    expect(top.match.daysApart).toBe(1);
+    expect(top.url).not.toBeNull();
+    // `contentType` rides along so the viewer knows whether to render an
+    // image, a PDF, or an email body. convex-test's storage shim records no
+    // content type on the `_storage` system row, so it reads null here —
+    // exactly the "legacy row with no storage metadata" contract the library
+    // projection already documents.
+    expect(top.contentType).toBeNull();
+
+    const second = rows[1];
+    expect(second.match.amountExact).toBe(true);
+    expect(second.match.amountDeltaCents).toBe(0);
+    expect(second.match.daysApart).toBe(0);
+    expect(second.match.merchantOverlap).toBe(true);
+    expect(second.amountCents).toBe(4210);
+    expect(second.ocrAmountCents).toBe(4210);
+    expect(second.score).toBeLessThan(top.score);
+  });
+
+  test("a LEGACY captured receipt (no uploadedByPersonId) is attributed through its inbound row", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const me = await seedPerson(s);
+    const txn = await seedTxn(s, { amountCents: 4210, personId: me });
+
+    const inboundReceiptId = await run(t, (ctx) =>
+      ctx.db.insert("inboundReceipts", {
+        emailId: "legacy_1",
+        status: "needs_review",
+        fromEmail: "me@example.com",
+        receivedAt: Date.now(),
+        personId: me,
+        chapterId: s.chapterId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const legacy = await seedCapturedReceipt(s, {
+      inboundReceiptId,
+      amountCents: 4210,
+      receiptDate: Date.now(),
+    });
+
+    const rows = await s.as.query(api.receipts.suggestedForTransaction, {
+      transactionId: txn,
+    });
+    expect(rows.map((r) => r.receiptId)).toEqual([legacy]);
+  });
+
+  test("somebody else's receipt is never suggested, however well it matches", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const me = await seedPerson(s);
+    const other = await seedOtherPerson(s);
+    const postedAt = Date.now();
+    const txn = await seedTxn(s, { amountCents: 4210, postedAt, personId: me });
+    await seedCapturedReceipt(s, {
+      uploadedByPersonId: other,
+      amountCents: 4210,
+      receiptDate: postedAt,
+      merchant: "Office Depot",
+    });
+
+    const rows = await s.as.query(api.receipts.suggestedForTransaction, {
+      transactionId: txn,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  test("a member with no finance role is refused on somebody ELSE's charge", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPerson(s);
+    const other = await seedOtherPerson(s);
+    const txn = await seedTxn(s, { amountCents: 4210, personId: other });
+
+    await expect(
+      s.as.query(api.receipts.suggestedForTransaction, { transactionId: txn }),
+    ).rejects.toThrow(ConvexError);
+  });
+
+  test("a bookkeeper sees the cardholder's receipts on the cardholder's charge", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // The caller is a bookkeeper; the charge (and the receipt) are someone
+    // else's — the "coding on their behalf" case.
+    await seedBookkeeper(s);
+    const cardholder = await seedOtherPerson(s);
+    const postedAt = Date.now();
+    const txn = await seedTxn(s, { amountCents: 4210, postedAt, personId: cardholder });
+    const theirs = await seedCapturedReceipt(s, {
+      uploadedByPersonId: cardholder,
+      amountCents: 4210,
+      receiptDate: postedAt,
+    });
+
+    const rows = await s.as.query(api.receipts.suggestedForTransaction, {
+      transactionId: txn,
+    });
+    expect(rows.map((r) => r.receiptId)).toEqual([theirs]);
+  });
+
+  test("confirming a suggestion links it through the single writer (linkCount, denorm, reconcile)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const me = await seedPerson(s);
+    const postedAt = Date.now();
+    const txn = await seedTxn(s, {
+      amountCents: 4210,
+      postedAt,
+      personId: me,
+      status: "categorized",
+    });
+    const receiptId = await seedCapturedReceipt(s, {
+      uploadedByPersonId: me,
+      amountCents: 4210,
+      receiptDate: postedAt,
+    });
+
+    const result = await s.as.mutation(api.receipts.confirmSuggestedReceipt, {
+      receiptId,
+      transactionId: txn,
+    });
+    expect(result).toEqual({ linked: true, reconciled: true });
+
+    const receipt = await run(t, (ctx) => ctx.db.get(receiptId));
+    expect(receipt?.linkCount).toBe(1);
+    const txnRow = await run(t, (ctx) => ctx.db.get(txn));
+    expect(txnRow?.status).toBe("reconciled");
+    expect(txnRow?.receiptStorageId).toBe(receipt?.storageId);
+    const links = await run(t, (ctx) => ctx.db.query("receiptLinks").take(5));
+    expect(links).toHaveLength(1);
+    // A human picked it — provenance says so.
+    expect(links[0].source).toBe("manual");
+    expect(links[0].linkedByPersonId).toBe(me);
+
+    // And it drops off the suggestion list, since it's no longer unlinked.
+    const after = await s.as.query(api.receipts.suggestedForTransaction, {
+      transactionId: txn,
+    });
+    expect(after).toEqual([]);
+  });
+
+  test("a cardholder cannot staple somebody else's receipt onto their own charge", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const me = await seedPerson(s);
+    const other = await seedOtherPerson(s);
+    const txn = await seedTxn(s, { amountCents: 4210, personId: me });
+    const notMine = await seedCapturedReceipt(s, {
+      uploadedByPersonId: other,
+      amountCents: 4210,
+      receiptDate: Date.now(),
+    });
+
+    await expect(
+      s.as.mutation(api.receipts.confirmSuggestedReceipt, {
+        receiptId: notMine,
+        transactionId: txn,
+      }),
+    ).rejects.toThrow(ConvexError);
+    const links = await run(t, (ctx) => ctx.db.query("receiptLinks").take(5));
+    expect(links).toHaveLength(0);
+  });
+
+  test("an ALREADY-LINKED receipt is refused — re-using one is a bookkeeper's call", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const me = await seedPerson(s);
+    const first = await seedTxn(s, { amountCents: 4210, personId: me });
+    const second = await seedTxn(s, { amountCents: 4210, personId: me });
+    const receiptId = await seedCapturedReceipt(s, {
+      uploadedByPersonId: me,
+      amountCents: 4210,
+      receiptDate: Date.now(),
+    });
+    await s.as.mutation(api.receipts.confirmSuggestedReceipt, {
+      receiptId,
+      transactionId: first,
+    });
+
+    await expect(
+      s.as.mutation(api.receipts.confirmSuggestedReceipt, {
+        receiptId,
+        transactionId: second,
+      }),
+    ).rejects.toThrow(ConvexError);
   });
 });

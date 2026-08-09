@@ -1760,6 +1760,13 @@ export const receipts = defineTable({
   // attached yet, regardless of which chapter it came from. Replaces
   // `by_chapter_and_linkCount` for `listReceipts`' `unlinked` filter.
   .index("by_linkCount", ["linkCount"])
+  // ONE PERSON's unattached receipts — what `receipts.suggestedForTransaction`
+  // offers a cardholder while they code a charge ("is this the one?"). Since
+  // the inbound pipeline stopped auto-attaching, this is the hot read on that
+  // screen, and without the uploader in the key it degrades into scanning a
+  // bounded page of the org-wide unlinked pile and filtering in JS — fine at
+  // today's volume, wrong by construction as the library grows.
+  .index("by_uploader_and_linkCount", ["uploadedByPersonId", "linkCount"])
   // Find the receipt(s) extracted from a given inbound email (manual-match).
   .index("by_inbound", ["inboundReceiptId"])
   // Exact-duplicate detection: find every receipt sharing a stored file's

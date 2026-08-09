@@ -269,8 +269,21 @@ export const FINANCE_AUDIT_ACTION_LABELS: Record<FinanceAuditAction, string> = {
 // (`needs_review`) / a dead end (`no_match`/`ignored`/`error`).
 export const INBOUND_RECEIPT_STATUSES = [
   "pending", // received + deduped; OCR/match not run yet (scheduled)
-  "matched", // OCR'd + attached to exactly one transaction (auto)
-  "needs_review", // OCR'd but 0 or >1 candidates — a bookkeeper must pick
+  // CAPTURED, filed to the sender's own receipt library with its candidate
+  // charges kept as suggestions — the terminal state of a healthy inbound
+  // receipt since the pipeline stopped attaching on its own (owner decision,
+  // 2026-08-08: "they should just upload the receipt when coding"). NOT a
+  // bookkeeper task: nobody is blocked, and the cardholder confirms the match
+  // in one tap while coding the charge. Kept OUT of the review queue for
+  // exactly that reason — a queue that fills up with successes is a queue
+  // people stop reading.
+  "suggested",
+  "matched", // HISTORICAL — auto-attached to exactly one transaction. No code
+  // writes this any more (see `receiptInbox.ts`/`smsReceipts.ts`); kept so the
+  // rows recorded while the pipeline still stapled receipts unattended keep
+  // validating and keep saying honestly what happened to them.
+  "needs_review", // OCR'd but something a HUMAN must resolve (unreadable, a
+  // duplicate, an unknown sender) — the queue's real population now
   "no_match", // OCR'd, a clean amount read, but no unreceipted txn fits at all
   "ignored", // sender not on the roster, or nothing to OCR (no attachment/body)
   "error", // the pipeline threw (fetch/OCR/store) — retriable
