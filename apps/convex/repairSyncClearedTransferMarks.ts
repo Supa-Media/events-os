@@ -39,6 +39,11 @@
  * OWN accounts and AMAZON is a third party. The marking was the closest tool to
  * hand, not the right one.
  *
+ * This is not a guess about intent. Both `transfer_mark` entries in
+ * `financeAuditLog` carry the note the bookkeeper typed at the time, and the
+ * note is the single word "Refund". He was already saying what these rows were;
+ * the transfer marking was just the only pairing control on the screen.
+ *
  * The refund linkage is also what actually fixes the number. `isSpend` is
  * outflow-only, so no amount of coding the credit could ever reduce a category —
  * a refunded charge went on consuming its budget forever. `refundedByTransactionId`
@@ -85,10 +90,12 @@ import type { Doc, Id } from "./_generated/dataModel";
 const SCAN_LIMIT = 20000;
 
 /**
- * The four production rows, by document-id prefix. The id is the strongest pin
- * available for a fix that only ever applies to one deployment's data, and
- * every one of them is asserted against amount, flow and `preMarkFlow` before
- * anything is written.
+ * The four production rows, by document id — read back out of the
+ * `transfer_mark` entries the original markings left in `financeAuditLog`, so
+ * they are the ids of the rows a human actually marked and not a transcription.
+ * Matched with `startsWith`, which on a whole id is exact; every one is
+ * additionally asserted against amount, flow and `preMarkFlow` before anything
+ * is written.
  *
  * Overridable ONLY so the pairing and refusal logic can be exercised against a
  * seeded database at all — a test cannot choose the ids Convex assigns it.
@@ -96,13 +103,13 @@ const SCAN_LIMIT = 20000;
  */
 const PROD_ID_PREFIXES = {
   /** The reverted leg of the $1,000 internal movement. */
-  transferLeg: "w179bmq4",
+  transferLeg: "w179bmq4nv8bk5vdhrdckjb9vh8b4dcv",
   /** Its partner, which never came through this feed and stayed marked. */
-  transferPartner: "w17443p52",
+  transferPartner: "w17443p52kk7gv7h7ythfzmqex8bec6e",
   /** "Purchase from AMAZON", $26.12 out. */
-  charge: "w17d2tw6",
+  charge: "w17d2tw6f72ntbwxyjj16jx4fh8btynr",
   /** "Return from AMAZON", $26.12 in. */
-  credit: "w1796k11",
+  credit: "w1796k11dn0v4ed7217ch122g98bvtc5",
 };
 
 const idPrefixValidator = v.object({
