@@ -21,9 +21,21 @@
  *
  *     cohort gross − Cash App fee = the withdrawal already in the ledger
  *
- *     Oct 2025 PTB tickets    $900.00 − $29.40 (3.27%) = $870.60  2025-11-04
- *     Dec 2025 + Jan 2026     $297.00 −  $8.62 (2.90%) = $288.38  2026-01-04
- *     Feb + May 2026          $180.00 −  $5.13 (2.85%) = $174.87  2026-08-07
+ *     Oct 2025 PTB tickets    $900.00 − $29.40 = $870.60  posted 2025-11-06  New York
+ *     Dec 2025 + Jan 2026     $297.00 −  $8.62 = $288.38  posted 2026-01-06  New York
+ *     Feb + May 2026          $180.00 −  $5.13 = $174.87  posted 2026-08-07  CENTRAL
+ *
+ * ── THE WITHDRAWALS ARE NOT ALL ON THE SAME BOOK ────────────────────────────
+ * The revenue is New York's — New York ran the events, so the tickets, gifts,
+ * sales and the fee expense are all New-York-scoped. WHERE THE CASH LANDED is a
+ * different question, and the answer changed when the banking did: the two older
+ * sweeps arrived through Relay and were imported against New York, while the
+ * newest arrived in the Increase account, and every payout lands in CENTRAL's
+ * account — the premise the whole balance-settlement model rests on.
+ *
+ * So a scope-pinned search silently misses whichever era it is not looking at,
+ * and the runner looks for each withdrawal ACROSS BOOKS. `landedOn` below
+ * records what was observed; it is documentation, and nothing matches on it.
  *
  * That identity is asserted in `tests/cashAppBackfill.test.ts` against the rows
  * below rather than against hand-typed subtotals, so a transcription edit that
@@ -429,11 +441,18 @@ export type Cohort = {
    *  enough to identify the row on its own; the runner refuses on any other
    *  count than exactly one. */
   withdrawalCents: number;
-  /** UTC `YYYY-MM-DD` the ledger row is posted on, for the report. Cash App's
-   *  own feed shows the third one a day earlier (2026-08-06) than the ledger
-   *  (2026-08-07); the row is matched on amount, so the difference is
-   *  documentation rather than a matching risk. */
+  /** UTC `YYYY-MM-DD` Cash App's own feed shows the withdrawal on — the day it
+   *  was initiated, and the anchor for the ledger search window below. */
+  initiatedDay: string;
+  /** UTC `YYYY-MM-DD` the bank actually posted it, observed in the ledger. Two
+   *  days after initiation for the two Relay ones, one day for the Increase
+   *  one — which is why the row is searched over a WINDOW rather than a day. */
   ledgerDay: string;
+  /**
+   * Which book the cash landed on, observed — DOCUMENTATION ONLY. The lookup
+   * deliberately does not pin scope; see `WITHDRAWAL_MATCH_WINDOW_DAYS`.
+   */
+  landedOn: string;
   /** Where the money went, from the Cash App feed. */
   destination: string;
   /** `transactions.externalId` for this cohort's fee row (the idempotency key). */
@@ -453,27 +472,53 @@ export const COHORTS: Cohort[] = [
     key: "oct2025",
     label: "October 2025 Pop The Balloon tickets",
     withdrawalCents: 87060,
-    ledgerDay: "2025-11-04",
+    initiatedDay: "2025-11-04",
+    ledgerDay: "2025-11-06",
+    landedOn: "New York (Relay, relay_csv)",
     destination: "Visa Debit 9370",
-    feeExternalId: "cashapp-fees:2025-11-04",
+    feeExternalId: "cashapp-fees:2025-11-06",
   },
   {
     key: "dec2025_jan2026",
     label: "December 2025 + January 2026 gifts and sales",
     withdrawalCents: 28838,
-    ledgerDay: "2026-01-04",
+    initiatedDay: "2026-01-04",
+    ledgerDay: "2026-01-06",
+    landedOn: "New York (Relay, relay_csv)",
     destination: "Visa debit 9370",
-    feeExternalId: "cashapp-fees:2026-01-04",
+    feeExternalId: "cashapp-fees:2026-01-06",
   },
   {
     key: "feb_may2026",
     label: "February + May 2026 gifts and sales",
     withdrawalCents: 17487,
+    initiatedDay: "2026-08-06",
     ledgerDay: "2026-08-07",
+    landedOn: "Central (Increase, increase_ach)",
     destination: "Checking 3925",
     feeExternalId: "cashapp-fees:2026-08-07",
   },
 ];
+
+/**
+ * How far past the Cash App feed's own date to look for the bank row.
+ *
+ * Observed lags are +2, +2 and +1 days. Four days is comfortable headroom
+ * without being so wide that a same-amount collision becomes likely — and a
+ * collision is not tolerated anyway: the runner requires EXACTLY ONE match
+ * across the whole org and refuses otherwise.
+ */
+export const WITHDRAWAL_MATCH_WINDOW_DAYS = 4;
+
+/** The `postedAt` range to search a cohort's withdrawal in, inclusive. */
+export function withdrawalWindow(c: Cohort): { fromMs: number; toMs: number } {
+  const [y, m, d] = c.initiatedDay.split("-").map(Number);
+  const fromMs = Date.UTC(y, m - 1, d);
+  return {
+    fromMs,
+    toMs: fromMs + (WITHDRAWAL_MATCH_WINDOW_DAYS + 1) * 86_400_000 - 1,
+  };
+}
 
 /**
  * Cash App's business fee: 2.6% of the payment, plus $0.15.
