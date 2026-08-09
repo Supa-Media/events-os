@@ -239,6 +239,108 @@ describe("the async settlement events", () => {
   });
 });
 
+/**
+ * THE SEAM. `givingComms.ts` (#588) wrote the three ACH emails and deliberately
+ * did not touch this route; this route (#581) wrote the three branches and did
+ * not call them. Between those two correct decisions sat a donor who submitted
+ * a bank transfer and heard nothing, ever, at any point in its lifecycle.
+ *
+ * These assert on `_scheduled_functions` rather than on a captured Resend body
+ * because the wiring — WHICH email, for WHICH session, HOW MANY TIMES — is the
+ * thing that was missing. The words themselves are already covered by
+ * `givingComms.test.ts`, and scheduling them means the webhook never blocks on
+ * a Stripe round-trip to compose one.
+ */
+describe("the donor hears about their bank transfer", () => {
+  /** Pending scheduled jobs whose function name contains `fragment`. */
+  async function scheduled(t: TestConvex, fragment: string) {
+    const rows = await run(t, (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    return rows
+      .filter((r) => r.name.includes(fragment))
+      .map((r) => r.args[0] as { sessionId?: string });
+  }
+
+  test("a submitted debit schedules exactly one 'on its way' email", async () => {
+    const t = newT();
+    const donorId = await seedDonor(t);
+
+    await postEvent(t, "checkout.session.completed", giveSession("cs_ach", donorId, "unpaid"));
+
+    const jobs = await scheduled(t, "onAchSubmitted");
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].sessionId).toBe("cs_ach");
+  });
+
+  test("a CARD gift gets no ACH email — there is no delay to explain", async () => {
+    const t = newT();
+    const donorId = await seedDonor(t);
+
+    await postEvent(t, "checkout.session.completed", giveSession("cs_card", donorId, "paid"));
+
+    expect(await scheduled(t, "onAch")).toHaveLength(0);
+  });
+
+  test("each lifecycle stage sends once, and REDELIVERY sends nothing more", async () => {
+    const t = newT();
+    const donorId = await seedDonor(t);
+
+    // Stripe retries anything that doesn't answer 200, and replays on demand.
+    // Same event id twice is the shape of every one of those retries.
+    await postEvent(t, "checkout.session.completed", giveSession("cs_ach", donorId, "unpaid"), "evt_submitted");
+    await postEvent(t, "checkout.session.completed", giveSession("cs_ach", donorId, "unpaid"), "evt_submitted");
+    expect(await scheduled(t, "onAchSubmitted")).toHaveLength(1);
+
+    await postEvent(t, "checkout.session.async_payment_succeeded", giveSession("cs_ach", donorId, "paid"), "evt_settled");
+    await postEvent(t, "checkout.session.async_payment_succeeded", giveSession("cs_ach", donorId, "paid"), "evt_settled");
+    expect(await scheduled(t, "onAchSettled")).toHaveLength(1);
+
+    // …and the money path stayed idempotent underneath it all.
+    expect(await centralGifts(t)).toHaveLength(1);
+  });
+
+  test("a failed debit schedules the failure email, once", async () => {
+    const t = newT();
+    const donorId = await seedDonor(t);
+    const failed = {
+      id: "cs_bounce",
+      metadata: { giveDonation: "1", giveDonorId: String(donorId), giveScope: "central" },
+    };
+
+    await postEvent(t, "checkout.session.async_payment_failed", failed, "evt_failed");
+    await postEvent(t, "checkout.session.async_payment_failed", failed, "evt_failed");
+
+    const jobs = await scheduled(t, "onAchFailed");
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0].sessionId).toBe("cs_bounce");
+    // Nothing was ever booked, so nothing was reversed either.
+    expect(await centralGifts(t)).toHaveLength(0);
+  });
+
+  test("an ABANDONED checkout emails nobody — they didn't authorise anything", async () => {
+    const t = newT();
+    const donorId = await seedDonor(t);
+
+    await postEvent(t, "checkout.session.expired", giveSession("cs_gone", donorId, "unpaid"));
+
+    expect(await scheduled(t, "onAch")).toHaveLength(0);
+  });
+
+  test("the money path still runs when a redelivery skips the email", async () => {
+    // The ordering guarantee in `isFirstDelivery`: settle first, record second.
+    // A redelivery must re-run the (idempotent) settle and skip only the send.
+    const t = newT();
+    const donorId = await seedDonor(t);
+
+    await postEvent(t, "checkout.session.async_payment_succeeded", giveSession("cs_ach", donorId, "paid"), "evt_x");
+    await postEvent(t, "checkout.session.async_payment_succeeded", giveSession("cs_ach", donorId, "paid"), "evt_x");
+
+    expect(await centralGifts(t)).toHaveLength(1);
+    expect(await scheduled(t, "onAchSettled")).toHaveLength(1);
+  });
+});
+
 describe("the signature gate still governs the new events", () => {
   test("an unsigned async_payment_succeeded is rejected and records nothing", async () => {
     const t = newT();
