@@ -585,6 +585,65 @@ describe("staff takedown + restore", () => {
     expect(row!.hiddenReason).toBeNull();
     expect(row!.territorySlug).toBe("listing-city");
     expect(row!.territoryName).toBe("listing-city");
+    // Nothing taken down yet, so nothing attributed.
+    expect(row!.hiddenByName).toBeNull();
+    expect(row!.hiddenAt).toBeNull();
+  });
+
+  test("a takedown records WHO and WHEN, and the desk list shows them", async () => {
+    const s = await devDirectorSetup();
+    const chapterId = await makeTerritory(s, "attribution-city");
+    const id = await visibleEntry(s, chapterId, {
+      refKey: "give:cs_attribution",
+      displayName: "Attributed",
+    });
+
+    const before = Date.now();
+    await s.as.mutation(api.givingActivity.hideActivity, { id });
+
+    const stored = await run(s.t, (ctx) => ctx.db.get(id));
+    expect(stored?.hiddenBy).toBe(s.userId);
+    expect(stored?.hiddenAt).toBeGreaterThanOrEqual(before);
+
+    const listed = (
+      await s.as.query(api.givingActivity.listActivityAdmin, {})
+    ).find((r) => r._id === id);
+    // Resolved to something a human can read, not a raw id — the user's name
+    // when there is one, else their email (this fixture user has only an email).
+    expect(listed!.hiddenByName).toBe("leader@publicworship.life");
+    expect(listed!.hiddenAt).toBe(stored!.hiddenAt);
+
+    // Putting it back clears the whole takedown stamp — a row that is back up
+    // was not taken down by anyone.
+    await s.as.mutation(api.givingActivity.restoreActivity, { id });
+    const restored = await run(s.t, (ctx) => ctx.db.get(id));
+    expect(restored?.hiddenBy).toBeUndefined();
+    expect(restored?.hiddenAt).toBeUndefined();
+    expect(restored?.hiddenReason).toBeUndefined();
+  });
+
+  test("a payment-reversed withdrawal is attributed to nobody — the system did it, not a person", async () => {
+    const s = await devDirectorSetup();
+    const chapterId = await makeTerritory(s, "system-actor-city");
+    const id = await visibleEntry(s, chapterId, {
+      refKey: "give:cs_system_actor",
+      displayName: "Bounced",
+    });
+
+    await s.t.mutation(internal.givingActivity.withdrawActivity, {
+      refKey: "give:cs_system_actor",
+    });
+
+    const stored = await run(s.t, (ctx) => ctx.db.get(id));
+    expect(stored?.hiddenReason).toBe("payment_reversed");
+    // Claiming a person did this would be a lie.
+    expect(stored?.hiddenBy).toBeUndefined();
+    expect(stored?.hiddenAt).toBeUndefined();
+
+    const listed = (
+      await s.as.query(api.givingActivity.listActivityAdmin, {})
+    ).find((r) => r._id === id);
+    expect(listed!.hiddenByName).toBeNull();
   });
 
   test("take down → gone from the public page and marked as a staff decision; put back → live again", async () => {

@@ -22,6 +22,8 @@ import {
   ACTIVITY_STATUSES,
 } from "./schema/givingActivity";
 import { requireGivingManage, requireGivingView } from "./lib/givingAccess";
+import { requireUserId } from "./lib/context";
+import type { Id } from "./_generated/dataModel";
 
 const activityKindValidator = v.union(
   ...ACTIVITY_KINDS.map((k) => v.literal(k)),
@@ -279,6 +281,13 @@ const activityAdminRowValidator = v.object({
   // out loud which rows are on the public wall and which can be put back.
   consent: v.boolean(),
   hiddenReason: v.union(activityHiddenReasonValidator, v.null()),
+  // WHO took it down and WHEN, resolved to a display name for a dumb render.
+  // `null` when nobody did (never hidden, or the system pulled it because the
+  // payment reversed) — the screen renders "System" for a reasoned takedown
+  // with no actor, and rows hidden before these fields existed read as
+  // "Unknown".
+  hiddenByName: v.union(v.string(), v.null()),
+  hiddenAt: v.union(v.number(), v.null()),
   // Which public page this entry appears on (`/give/<slug>`) — a wall entry is
   // meaningless to a moderator without the page it's on. `null` for a chapter
   // with no territory row.
@@ -317,6 +326,15 @@ export const listActivityAdmin = query({
       );
     }
 
+    // Same one-lookup-per-distinct-id shape as the territories above: a
+    // handful of staff account for however many takedowns.
+    const nameByUser = new Map<string, string | null>();
+    for (const r of rows) {
+      if (!r.hiddenBy || nameByUser.has(r.hiddenBy)) continue;
+      const user = await ctx.db.get(r.hiddenBy);
+      nameByUser.set(r.hiddenBy, user?.name ?? user?.email ?? null);
+    }
+
     return rows.map((r) => {
       const territory = territoryByChapter.get(r.scope) ?? null;
       return {
@@ -335,6 +353,12 @@ export const listActivityAdmin = query({
         // show a row as consented when the record doesn't say so.
         consent: r.consent === true,
         hiddenReason: r.hiddenReason ?? null,
+        // A deleted/missing user still leaves the takedown attributed to
+        // "Unknown" rather than silently reading as the system.
+        hiddenByName: r.hiddenBy
+          ? (nameByUser.get(r.hiddenBy) ?? "Unknown")
+          : null,
+        hiddenAt: r.hiddenAt ?? null,
         territoryName: territory?.name ?? null,
         territorySlug: territory?.slug ?? null,
       };
@@ -356,6 +380,7 @@ export const hideActivity = mutation({
   returns: v.null(),
   handler: async (ctx, { id }) => {
     await requireGivingManage(ctx, "central");
+    const actorUserId = (await requireUserId(ctx)) as Id<"users">;
     const row = await ctx.db.get(id);
     if (!row) {
       throw new ConvexError({
@@ -364,7 +389,14 @@ export const hideActivity = mutation({
       });
     }
     if (row.status !== "hidden") {
-      await ctx.db.patch(id, { status: "hidden", hiddenReason: "staff" });
+      // Who and when, recorded on the row. A takedown changes what the public
+      // sees, so it should never be anonymous.
+      await ctx.db.patch(id, {
+        status: "hidden",
+        hiddenReason: "staff",
+        hiddenBy: actorUserId,
+        hiddenAt: Date.now(),
+      });
     }
     return null;
   },
@@ -423,7 +455,11 @@ export const restoreActivity = mutation({
       // Settled means it was on the wall before someone hid it; unsettled means
       // it was still waiting on the payment, and that's where it goes back to.
       status: row.settledAt !== undefined ? "visible" : "pending",
+      // A row that is back up was not taken down by anyone — clear the whole
+      // takedown stamp together, so "hidden" state is never half-remembered.
       hiddenReason: undefined,
+      hiddenBy: undefined,
+      hiddenAt: undefined,
     });
     return null;
   },

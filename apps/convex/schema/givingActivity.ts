@@ -133,6 +133,25 @@ export const givingActivity = defineTable({
   hiddenReason: v.optional(
     v.union(...ACTIVITY_HIDDEN_REASONS.map((r) => v.literal(r))),
   ),
+  // WHO took this entry down, and WHEN. Stamped by `hideActivity` only —
+  // `withdrawActivity` is the system reacting to a reversed payment, and
+  // attributing that to a person would be a lie, so it leaves both absent and
+  // the read renders "System".
+  //
+  // This is deliberately two fields on the row rather than a new audit table.
+  // Every audit trail in this codebase is hard-typed to one entity
+  // (`giftAudit.giftId`, `donorAudit.donorId`, `pledgeEvents.pledgeId`,
+  // `personAudit.personId`), and `financeAuditLog`'s `subjectType` is a closed
+  // finance-only union — none of them can carry a `givingActivity` id, and
+  // there is no generic writer to reuse. An action that changes what the
+  // PUBLIC sees still needs to say who did it, so the row records it itself:
+  // no new table, no new charter, nothing to keep in sync.
+  //
+  // Absent on every row hidden before these fields existed, and absent while a
+  // row is `pending`/`visible`. Cleared by `restoreActivity`, because a row
+  // that is back up was not taken down by anyone.
+  hiddenBy: v.optional(v.id("users")),
+  hiddenAt: v.optional(v.number()),
 })
   // The public wall's read: a territory's chapter, visible rows only,
   // newest first.

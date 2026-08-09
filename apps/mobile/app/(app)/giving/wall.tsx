@@ -58,9 +58,26 @@ type WallRow = {
   settledAt: number | null;
   consent: boolean;
   hiddenReason: HiddenReason | null;
+  hiddenByName: string | null;
+  hiddenAt: number | null;
   territoryName: string | null;
   territorySlug: string | null;
 };
+
+/** "Taken down by Seyi on 8/9/2026" — who changed what the public sees.
+ *  A reversed payment has no actor, so it reads as the system doing it. */
+function takedownLine(row: WallRow): string | null {
+  if (row.status !== "hidden") return null;
+  const when = row.hiddenAt
+    ? ` on ${new Date(row.hiddenAt).toLocaleDateString()}`
+    : "";
+  if (row.hiddenReason === "payment_reversed") {
+    return `Taken down automatically${when} — the payment was reversed.`;
+  }
+  if (row.hiddenByName) return `Taken down by ${row.hiddenByName}${when}.`;
+  // Hidden before we recorded who did it.
+  return `Taken down${when} — actor not recorded.`;
+}
 
 const STATUS_LABEL: Record<ActivityStatus, string> = {
   pending: "Not published",
@@ -182,11 +199,14 @@ function WallBody({ canManage }: { canManage: boolean }) {
     <Screen>
       <Narrow>
         <SectionHeader title={`Public giving wall (${liveCount} live)`} />
+        {/* Don't promise a read-only holder an action they don't have — the
+            second sentence is only true for someone who can manage. */}
         <Text className="mb-3 text-sm text-muted">
           Everything a giver agreed to show publicly on their territory&apos;s
-          /give page — display name, amount, and message. Taking an entry down
-          removes it from the public page right away and never touches the gift
-          record. You can put a takedown back.
+          /give page — display name, amount, and message.
+          {canManage
+            ? " Taking an entry down removes it from the public page right away and never touches the gift record. You can put a takedown back."
+            : " Taking an entry down is a development director's call — ask one if a giver has asked to be removed."}
         </Text>
         {rows.length === 0 ? (
           <EmptyState
@@ -242,11 +262,14 @@ function WallBody({ canManage }: { canManage: boolean }) {
                       No recorded consent — this entry can never be published.
                     </Text>
                   ) : null}
-                  {row.status === "hidden" &&
-                  row.hiddenReason === "payment_reversed" ? (
+                  {/* Who took it down and when — a takedown changes what the
+                      public sees, so it should never be anonymous. */}
+                  {takedownLine(row) ? (
                     <Text className="mt-1 text-xs text-muted">
-                      Came down because the payment was reversed — it can&apos;t
-                      be restored.
+                      {takedownLine(row)}
+                      {row.hiddenReason === "payment_reversed"
+                        ? " It can't be restored."
+                        : ""}
                     </Text>
                   ) : null}
                   <View className="mt-2 flex-row items-center justify-between">
