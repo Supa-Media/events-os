@@ -497,6 +497,72 @@ export const dismissedGiftCandidates = defineTable({
 }).index("by_transaction", ["transactionId"]);
 
 /**
+ * A Givebutter donation that has been RECLASSIFIED out of the gifts ledger —
+ * the tombstone that stops the live sync putting it back.
+ *
+ * ── THE PROBLEM THIS SOLVES ─────────────────────────────────────────────────
+ * `givebutterSync.ts#applyGivebutterDonations` decides whether a donation is
+ * already recorded by looking up its transaction id in `gifts.by_externalRef`.
+ * That works perfectly while the answer to "is this money in the books?" and
+ * "is there a gift row for it?" are the same question. They stop being the same
+ * question the moment a donation is correctly recorded as something OTHER than
+ * a gift.
+ *
+ * Pop The Balloon's Venmo collection is exactly that case: one $820 Givebutter
+ * payment that was really 41 ticket sales collected by hand and forwarded as a
+ * lump. Reclassifying it means removing the gift row — and the next sync run
+ * would then miss on `by_externalRef`, conclude the donation is new, and insert
+ * it again. The $820 would be in the books twice: once as tickets, once as a
+ * resurrected gift.
+ *
+ * That is not hypothetical. It is the same shape of bug as the 2026-07 CSV
+ * backfill collision (`gb:txn:<Reference Number>` vs the API's own 16-character
+ * id), which took a day to unpick and cost $665 of duplicate giving. A dedup
+ * key that stops matching is the failure mode this integration keeps having, so
+ * this table gives the reclassified case its OWN durable key rather than
+ * leaning on the absence of a row.
+ *
+ * ── WHY A TOMBSTONE AND NOT A NEUTRALISED GIFT ──────────────────────────────
+ * The alternative was keeping the gift row and zeroing it. `assertPositiveGiftCents`
+ * refuses zero, and rightly — but the deeper objection is that any surviving
+ * gift row keeps asserting that this donor gave this money, which is the very
+ * claim being retracted. A tombstone says the true thing: the TRANSACTION was
+ * seen and deliberately recorded elsewhere.
+ *
+ * ── HOW THE SYNC USES IT ────────────────────────────────────────────────────
+ * `applyGivebutterDonations` checks `by_externalRef` here immediately after the
+ * `gifts` dedup and before it match-or-creates a donor, so a converted donation
+ * neither inserts a gift nor manufactures a donor row. It is counted and logged
+ * as `converted`, NOT surfaced as a sync warning — unlike a legacy collision,
+ * which asks an operator to go and retire stale rows, this is a settled,
+ * permanent state and a page-level warning about it would never clear.
+ *
+ * `externalRef` is the Givebutter TRANSACTION id — the same id space
+ * `gifts.externalRef` uses on sync-written rows — and `by_externalRef` is both
+ * the sync's lookup and the writing migration's idempotency check (at most one
+ * tombstone per transaction).
+ */
+export const givebutterConvertedDonations = defineTable({
+  /** The Givebutter transaction id, as the API reports it. */
+  externalRef: v.string(),
+  /** What the donation was worth, so a suppression can be sanity-checked
+   *  against what the sync is presenting rather than trusted blindly. */
+  amountCents: v.number(),
+  /** The book the money stayed on — it never leaves, only changes layer. */
+  scope: givingScope,
+  /** The event it was attributed to, when it was. */
+  eventId: v.optional(v.id("events")),
+  /** Where the money lives NOW, in a form a human can go and look up — e.g.
+   *  `ticketOrders.externalRef=ptb:venmo:2025-11-30`. */
+  convertedTo: v.string(),
+  /** Why, in a sentence. This row is the only durable record of the judgement
+   *  once the one-time migration module is deleted. */
+  reason: v.string(),
+  convertedAt: v.number(),
+  convertedBy: v.optional(v.id("users")),
+}).index("by_externalRef", ["externalRef"]);
+
+/**
  * Per-scope denormalized aggregates for the giving dashboard — one row per
  * scope, so the dashboard reads O(1) instead of scanning `donors`/`gifts`
  * (Convex has no count operator; the guidelines forbid counting at read time).

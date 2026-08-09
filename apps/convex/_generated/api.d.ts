@@ -194,6 +194,7 @@ import type * as lib_seed_historical_mapping from "../lib/seed/historical/mappin
 import type * as lib_seed_historical_nye from "../lib/seed/historical/nye.js";
 import type * as lib_seed_historical_ptb from "../lib/seed/historical/ptb.js";
 import type * as lib_seed_historical_ptbGbTickets from "../lib/seed/historical/ptbGbTickets.js";
+import type * as lib_seed_historical_ptbVenmo2026 from "../lib/seed/historical/ptbVenmo2026.js";
 import type * as lib_seed_historical_types from "../lib/seed/historical/types.js";
 import type * as lib_seed_loveThyNeighbor from "../lib/seed/loveThyNeighbor.js";
 import type * as lib_seed_roster from "../lib/seed/roster.js";
@@ -287,6 +288,7 @@ import type * as processorFees from "../processorFees.js";
 import type * as profiles from "../profiles.js";
 import type * as projectActions from "../projectActions.js";
 import type * as projects from "../projects.js";
+import type * as ptbVenmoBackfill from "../ptbVenmoBackfill.js";
 import type * as publishability from "../publishability.js";
 import type * as receiptExceptions from "../receiptExceptions.js";
 import type * as receiptInbox from "../receiptInbox.js";
@@ -567,6 +569,7 @@ declare const fullApi: ApiFromModules<{
   "lib/seed/historical/nye": typeof lib_seed_historical_nye;
   "lib/seed/historical/ptb": typeof lib_seed_historical_ptb;
   "lib/seed/historical/ptbGbTickets": typeof lib_seed_historical_ptbGbTickets;
+  "lib/seed/historical/ptbVenmo2026": typeof lib_seed_historical_ptbVenmo2026;
   "lib/seed/historical/types": typeof lib_seed_historical_types;
   "lib/seed/loveThyNeighbor": typeof lib_seed_loveThyNeighbor;
   "lib/seed/roster": typeof lib_seed_roster;
@@ -660,6 +663,7 @@ declare const fullApi: ApiFromModules<{
   profiles: typeof profiles;
   projectActions: typeof projectActions;
   projects: typeof projects;
+  ptbVenmoBackfill: typeof ptbVenmoBackfill;
   publishability: typeof publishability;
   receiptExceptions: typeof receiptExceptions;
   receiptInbox: typeof receiptInbox;

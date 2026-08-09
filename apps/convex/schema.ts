@@ -99,6 +99,7 @@ import {
   pledges,
   pledgeEvents,
   dismissedGiftCandidates,
+  givebutterConvertedDonations,
 } from "./schema/givingPlatform";
 import { sponsorPackages, sponsorships } from "./schema/sponsorships";
 import { territories } from "./schema/territories";
@@ -388,6 +389,13 @@ const schema = defineSchema({
   // `schema/givingPlatform.ts` for the shape; `gifts.transactionId` +
   // `by_transaction` carry the confirm-side link).
   dismissedGiftCandidates,
+  // The tombstone that keeps a RECLASSIFIED Givebutter donation from being
+  // re-inserted by the next sync run. `applyGivebutterDonations` dedups on
+  // `gifts.by_externalRef`, so removing a gift makes that lookup miss and the
+  // donation lands twice; this table is the durable "seen, and deliberately
+  // recorded elsewhere" record it consults instead. See
+  // schema/givingPlatform.ts for the full reasoning.
+  givebutterConvertedDonations,
 
   // Sponsorships & partnerships (F-6, P4) — dev-director-authored sponsor
   // package tiers (`sponsorPackages`) + the agreement pipeline that tracks an

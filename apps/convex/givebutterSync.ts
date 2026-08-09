@@ -609,6 +609,12 @@ export const applyGivebutterTickets = triggerInternalMutation({
  *    this sync are mutually idempotent and never double-record the same gift.
  *    A transaction whose gift already exists is skipped; only NEW rows add to
  *    the rollup, so re-running the sync leaves totals unchanged.
+ *  - A donation that has been RECLASSIFIED out of the gifts ledger (recorded as
+ *    tickets, say) has no gift row for the lookup above to find, so it would
+ *    otherwise be re-inserted forever. `givebutterConvertedDonations` is the
+ *    durable tombstone that says "seen, and deliberately recorded elsewhere";
+ *    it is consulted before the donor is even matched, and reported as
+ *    `converted` rather than as a warning (see the guard's own comment).
  *  - Each new gift is recorded via `recordGiftForDonor` with `eventId` set and
  *    NO `donationId`, so it bumps the event's `externalGiftsCents`/
  *    `externalGiftsCount` EXACTLY once (via that helper's event-rollup branch).
@@ -630,6 +636,7 @@ export const applyGivebutterDonations = triggerInternalMutation({
     inserted: v.number(),
     skipped: v.number(),
     legacyCollisions: v.number(),
+    converted: v.number(),
   }),
   handler: async (ctx, { eventId, donations }) => {
     const page = await ctx.db
@@ -637,13 +644,19 @@ export const applyGivebutterDonations = triggerInternalMutation({
       .withIndex("by_event", (q) => q.eq("eventId", eventId))
       .unique();
     if (!page) {
-      return { inserted: 0, skipped: donations.length, legacyCollisions: 0 };
+      return {
+        inserted: 0,
+        skipped: donations.length,
+        legacyCollisions: 0,
+        converted: 0,
+      };
     }
     const scope = page.chapterId;
 
     let inserted = 0;
     let skipped = 0;
     let legacyCollisions = 0;
+    let converted = 0;
     for (const d of donations) {
       if (!Number.isInteger(d.donationCents) || d.donationCents <= 0) {
         skipped += 1;
@@ -659,6 +672,53 @@ export const applyGivebutterDonations = triggerInternalMutation({
         .first();
       if (existing) {
         skipped += 1;
+        continue;
+      }
+
+      // ── RECLASSIFIED-DONATION GUARD ──────────────────────────────────────
+      // The dedup above answers "is there a gift row for this transaction?"
+      // and treats that as "is this money in the books?". Those are the same
+      // question right up until a donation is correctly recorded as something
+      // that is NOT a gift — and then the absence of a gift row means the
+      // opposite of what the lookup assumes.
+      //
+      // Pop The Balloon's Venmo collection is that case: one $820 Givebutter
+      // payment that was really 41 ticket sales, collected by hand and
+      // forwarded as a lump. It is now a `ticketOrders` row, so `by_externalRef`
+      // above finds nothing and, without this, the next sync would insert the
+      // $820 all over again — the same money counted once as tickets and once
+      // as a resurrected gift.
+      //
+      // So the reclassification leaves a DURABLE record
+      // (`givebutterConvertedDonations`) and this consults it. Checked BEFORE
+      // `matchOrCreateDonor` deliberately: a converted donation must not even
+      // manufacture a donor row for a person who did not give.
+      //
+      // Distinct from the legacy-collision guard below in what it means and in
+      // how it is reported. A collision says "recorded under another key, go
+      // retire the stale row" and is surfaced as a sync warning. This says
+      // "recorded in another LAYER, on purpose, permanently" — there is nothing
+      // for an operator to do, so it is counted and logged and never becomes a
+      // warning that would sit on the page forever.
+      const convertedRow = await ctx.db
+        .query("givebutterConvertedDonations")
+        .withIndex("by_externalRef", (q) => q.eq("externalRef", externalRef))
+        .first();
+      if (convertedRow) {
+        // Suppressed on the TRANSACTION ID alone, whatever the amount now
+        // reads: the id is the transaction's identity, so a re-insert would be
+        // a double-count regardless. An amount that disagrees is still worth
+        // saying out loud — it means the reclassification and the live payload
+        // describe the same transaction differently, which someone should look
+        // at even though suppressing is still the right call.
+        if (convertedRow.amountCents !== d.donationCents) {
+          console.warn(
+            `[givebutter] converted donation ${externalRef} was recorded as ` +
+              `${convertedRow.amountCents}¢ but the API now reports ${d.donationCents}¢ — ` +
+              `still suppressed (${convertedRow.convertedTo}).`,
+          );
+        }
+        converted += 1;
         continue;
       }
 
@@ -717,7 +777,7 @@ export const applyGivebutterDonations = triggerInternalMutation({
       });
       inserted += 1;
     }
-    return { inserted, skipped, legacyCollisions };
+    return { inserted, skipped, legacyCollisions, converted };
   },
 });
 
@@ -1492,7 +1552,7 @@ async function syncOneCampaign(
         { eventId, donations },
       );
       console.log(
-        `[givebutter] donation apply for event ${eventId}: ${donationResult.inserted} recorded, ${donationResult.skipped} skipped, ${donationResult.legacyCollisions} legacy collisions`,
+        `[givebutter] donation apply for event ${eventId}: ${donationResult.inserted} recorded, ${donationResult.skipped} skipped, ${donationResult.legacyCollisions} legacy collisions, ${donationResult.converted} reclassified`,
       );
       if (donationResult.legacyCollisions > 0) {
         // Not an error — the money IS recorded, just under the CSV backfill's
