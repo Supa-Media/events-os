@@ -264,6 +264,25 @@ function ogHead(opts: {
    *  card). When set, the page advertises it to every OG scraper + uses a
    *  large-image Twitter card. */
   imageUrl?: string;
+  /**
+   * Emit `<meta name="robots" content="noindex">`.
+   *
+   * SHARING A LINK IS NOT THE SAME AS BEING INDEXED, and this page is the one
+   * place where the difference matters: `/give/<slug>` publishes donor display
+   * names next to dollar amounts on the "Backers & gifts" wall. Someone who
+   * ticks "Show my name and gift amount on our public giving wall" is agreeing
+   * to appear on a page they can be *shown*. They are not agreeing to be
+   * findable by name, beside what they gave, in Google forever.
+   *
+   * `noindex` is exactly that line: crawlers stay out, while the page still
+   * loads for anyone with the link and still renders its Open Graph preview
+   * card — the OG scrapers behind iMessage/WhatsApp/Slack don't consult
+   * `robots`. This is the first `noindex` + `og:*` head in the codebase; the
+   * other five (`pollPage`, `reimbursePage`, `unsubscribePage`,
+   * `projectActionPage`, `landingPage`'s ticket) are token-gated pages with no
+   * preview at all, so the combination is deliberate, not a leftover.
+   */
+  noindex?: boolean;
 }): string {
   const imageTags = opts.imageUrl
     ? `<meta property="og:image" content="${opts.imageUrl}">
@@ -274,7 +293,7 @@ function ogHead(opts: {
     : "";
   return `<meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>${esc(opts.title)}</title>
+${opts.noindex ? `<meta name="robots" content="noindex">\n` : ""}<title>${esc(opts.title)}</title>
 <meta name="description" content="${esc(opts.description)}">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Public Worship">
@@ -675,7 +694,19 @@ export function renderGiveTerritoryPage(
   return `<!doctype html>
 <html lang="en">
 <head>
-${ogHead({ title, description, url, ...(ogImageUrl ? { imageUrl: ogImageUrl } : {}) })}
+${ogHead({
+  title,
+  description,
+  url,
+  ...(ogImageUrl ? { imageUrl: ogImageUrl } : {}),
+  // A territory page carries the public giving wall — donor display names beside
+  // gift amounts — so it stays out of search indexes. See `ogHead`'s `noindex`
+  // doc for why that is not the same as un-sharing it. This is a REVERSIBLE
+  // DEFAULT: drop this line and territory pages become discoverable again.
+  // The `/give` map page deliberately does NOT set it — it lists cities, not
+  // people, and it's the page we want found.
+  noindex: true,
+})}
 <style>
 ${BASE_CSS}${GIVE_CSS}
 </style>
