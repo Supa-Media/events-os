@@ -7,9 +7,10 @@
  * read (the public giving page needs to quote a price before anyone has logged
  * in) and a guarded write.
  */
-import { mutation, query } from "./_generated/server";
+import { internalQuery, mutation, query } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import {
+  ACH_NUDGE_THRESHOLD_CENTS,
   DEFAULT_FEE_SCHEDULE,
   FEE_METHOD_LABELS,
   FEE_PROCESSOR_LABELS,
@@ -18,7 +19,7 @@ import {
   type FeeMethod,
   type FeeProcessor,
 } from "@events-os/shared";
-import { resolveFeeSchedule } from "./lib/feeSchedule";
+import { resolveFeeRate, resolveFeeSchedule } from "./lib/feeSchedule";
 import { requireFeeScheduleManage } from "./lib/feeScheduleAccess";
 import { requireUserId } from "./lib/context";
 import type { Id } from "./_generated/dataModel";
@@ -90,6 +91,46 @@ export const listFeeSchedule = query({
  * a rate the next treasurer has to take on faith, which is exactly the
  * complaint that produced `processorFeeEntries`.
  */
+const bareRate = v.object({
+  percentBps: v.number(),
+  fixedCents: v.number(),
+  capCents: v.optional(v.number()),
+});
+
+/**
+ * The two rails the public giving page reasons about, plus the nudge threshold.
+ *
+ * ONE query with two consumers, deliberately, because they must agree:
+ * `http.ts` stamps this into the page so the browser can show what covering
+ * the fees costs, and `startGiveDonationCheckout` reads the SAME thing to
+ * decide what to actually charge. Split them and the page could quote a rate
+ * the checkout no longer uses.
+ *
+ * The action must not take the amount from the request — the page sends a
+ * yes/no and the server decides the price, or a hand-crafted POST decides what
+ * we charge.
+ *
+ * COVERAGE IS QUOTED AT THE CARD RATE, not at whatever rail they end up
+ * picking: Stripe doesn't tell us the method until after the session exists.
+ * Card is the commonest and the dearer of the two, so a donor who then pays by
+ * bank has over-covered by a little in the org's favour rather than
+ * under-covered in theirs. That is the right direction to be wrong in, and the
+ * only one that can never leave a gift short of what was quoted.
+ */
+export const givePageRates = internalQuery({
+  args: {},
+  returns: v.object({
+    card: v.union(bareRate, v.null()),
+    ach: v.union(bareRate, v.null()),
+    achThresholdCents: v.number(),
+  }),
+  handler: async (ctx) => ({
+    card: await resolveFeeRate(ctx, "stripe", "card"),
+    ach: await resolveFeeRate(ctx, "stripe", "ach_debit"),
+    achThresholdCents: ACH_NUDGE_THRESHOLD_CENTS,
+  }),
+});
+
 export const setFeeRate = mutation({
   args: {
     processor: v.string(),

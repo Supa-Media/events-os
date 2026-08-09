@@ -467,6 +467,14 @@ export async function recordGiftForDonor(
     externalRef?: string;
     note?: string;
     recordedBy?: Id<"users">;
+    /**
+     * The extra the donor paid to absorb the processor's cut. Rides along on
+     * the gift row and is deliberately NOT added to `amountCents` — see
+     * `schema/givingPlatform.ts`'s `gifts.feeCoverageCents`. Every rollup below
+     * moves by `amountCents` alone, so covering fees changes what the org NETS
+     * and never what the giving reports say was given.
+     */
+    feeCoverageCents?: number;
     // P2 recurring: a gift written from a Stripe subscription billing cycle
     // carries its `pledgeId` + the `stripeInvoiceId` (the cycle idempotency key).
     pledgeId?: Id<"pledges">;
@@ -497,6 +505,7 @@ export async function recordGiftForDonor(
     ...(args.eventId ? { eventId: args.eventId } : {}),
     ...(args.donationId ? { donationId: args.donationId } : {}),
     ...(args.externalRef ? { externalRef: args.externalRef } : {}),
+    ...(args.feeCoverageCents ? { feeCoverageCents: args.feeCoverageCents } : {}),
     ...(args.note ? { note: args.note } : {}),
     ...(args.recordedBy ? { recordedBy: args.recordedBy } : {}),
     ...(args.pledgeId ? { pledgeId: args.pledgeId } : {}),

@@ -93,6 +93,11 @@ export function registerGiveApiRoutes(http: HttpRouter): void {
         ...(body.shareOnWall ? { shareOnWall: true } : {}),
         ...(publicName ? { publicName } : {}),
         ...(message ? { message } : {}),
+        // "Cover the processing fees" — a FLAG, not an amount. The extra is
+        // computed server-side from the live schedule, so what the page showed
+        // is verified rather than trusted and a hand-crafted request can't ask
+        // to be charged a number we never quoted.
+        ...(body.coverFees ? { coverFees: true } : {}),
       });
     }),
   });

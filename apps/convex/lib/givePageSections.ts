@@ -85,6 +85,33 @@ function payMethodNoteHtml(): string {
   return `<p class="paynote">You can give by card or bank transfer. Bank transfers take about 2&ndash;4 business days to clear &mdash; we'll email you either way.</p>`;
 }
 
+// ── Cover the processing fees ────────────────────────────────────────────────
+
+/**
+ * "Add the processing fee so all of it gets through."
+ *
+ * THE COPY SAYS WHAT WE RECEIVE, not how generous ticking it is. A donor
+ * deciding whether to add $3.30 to a $100 gift needs one fact — that without
+ * it the card company takes a cut and we get $96.80 — and nothing about
+ * "maximising your impact". The line under it is filled in live by the client
+ * script from the real rate, so the number they read is the number they are
+ * charged; and it stays honest when the box is UNticked too ("adds $3.30, so
+ * the full $100 reaches us") rather than only appearing once they've agreed.
+ *
+ * OFF BY DEFAULT, like the wall opt-in above it. A pre-ticked box that quietly
+ * adds money to a total is a dark pattern, and it would poison a gift.
+ *
+ * ONE-TIME ONLY, deliberately. The monthly form opens a Stripe SUBSCRIPTION
+ * through `givingPledges`, where "the fee" is a recurring charge on a schedule
+ * that can be re-priced — a different question with a different answer, and
+ * guessing at it here would ship a number nobody had checked.
+ */
+function coverFeesHtml(prefix: string): string {
+  return `<label class="sharewall"><input type="checkbox" id="${prefix}_covfees"> Cover the processing fee so my whole gift gets through</label>
+  <p class="sharewall-hint">Card processors take a cut of every gift. Tick this and it's added to your total instead of coming out of what you gave. Completely optional &mdash; your gift is welcome either way.</p>
+  <p class="covline" id="${prefix}_covline" style="display:none"></p>`;
+}
+
 // ── One-time give form ───────────────────────────────────────────────────────
 
 /** The one-time gift form's fields (amount presets + custom + name/email +
@@ -119,6 +146,8 @@ export function oneTimeGiveFormHtml(opts: {
     <span class="cur">$</span>
     <input id="gc_onetime_custom" type="text" inputmode="decimal" placeholder="Other amount">
   </div>
+  ${coverFeesHtml("gc_onetime")}
+  <div class="achnote" id="gc_onetime_achnote" style="display:none"></div>
   <div class="fld"><label for="gc_onetime_name">Your name</label><input id="gc_onetime_name" autocomplete="name" placeholder="First and last name"></div>
   <div class="fld"><label for="gc_onetime_email">Email</label><input id="gc_onetime_email" type="email" autocomplete="email" placeholder="you@example.com"></div>
   ${opts.showWallOptIn === false ? "" : giveFormExtrasHtml("gc_onetime")}

@@ -400,3 +400,78 @@ describe("give territory page (launched, under-backed — F3 sustain section)", 
     expect(html).toContain("$2,000"); // goal
   });
 });
+
+/**
+ * COVER THE FEES + the ACH nudge — the two fee surfaces on the give form.
+ *
+ * Both render EMPTY and hidden; the client script fills them from the rates
+ * stamped into `window.__GIVE__`. So what a render test can pin is the
+ * CONTRACT between the two halves: the ids the script looks for exist, the
+ * rates it needs are in the bootstrap, and — the property that actually
+ * matters — a page rendered WITHOUT rates still renders a working give form.
+ */
+describe("the fee surfaces on the give form", () => {
+  const RATES = {
+    card: { percentBps: 290, fixedCents: 30 },
+    ach: { percentBps: 80, fixedCents: 0, capCents: 500 },
+    achThresholdCents: 50_000,
+  };
+
+  test("the cover-fees box says what we RECEIVE, and is off by default", () => {
+    const html = renderGiveMapPage(TERRITORIES, STATS, false, SITE, RATES);
+    expect(html).toContain('id="gc_onetime_covfees"');
+    expect(html).toMatch(/Cover the processing fee so my whole gift gets through/);
+    expect(html).toMatch(/Card processors take a cut of every gift/);
+    expect(html).toMatch(/Completely optional/);
+    // A pre-ticked box that quietly adds money to a total is a dark pattern.
+    expect(html).not.toMatch(/id="gc_onetime_covfees"[^>]*checked/);
+  });
+
+  test("the live figure and the nudge render hidden, for the script to fill", () => {
+    const html = renderGiveMapPage(TERRITORIES, STATS, false, SITE, RATES);
+    // Empty until there is an amount to price — never a stale or placeholder
+    // number sitting in the markup where a donor could read it as their total.
+    expect(html).toContain(
+      '<p class="covline" id="gc_onetime_covline" style="display:none"></p>',
+    );
+    expect(html).toContain(
+      '<div class="achnote" id="gc_onetime_achnote" style="display:none"></div>',
+    );
+  });
+
+  test("both rates and the threshold reach the browser", () => {
+    const html = renderGiveMapPage(TERRITORIES, STATS, false, SITE, RATES);
+    expect(html).toContain('"cardRate":{"percentBps":290,"fixedCents":30}');
+    expect(html).toContain(
+      '"achRate":{"percentBps":80,"fixedCents":0,"capCents":500}',
+    );
+    expect(html).toContain('"achThresholdCents":50000');
+  });
+
+  test("WITHOUT rates the form still renders and simply shows no fee figures", () => {
+    // The degradation that matters: a fee question must never be the reason
+    // somebody cannot give.
+    const html = renderGiveMapPage(TERRITORIES, STATS, false, SITE, null);
+    expect(html).toContain("/api/give/donate");
+    expect(html).toContain('id="gc_onetime_submit"');
+    // Asserted on the BOOTSTRAP, not the page: the client script always
+    // mentions `G.cardRate` — the point is that no rate was stamped for it to
+    // read, so every fee surface stays hidden.
+    expect(html).not.toContain('"cardRate":');
+    expect(html).not.toContain('"achRate":');
+    expect(html).not.toContain('"achThresholdCents":');
+  });
+
+  test("the MONTHLY form has no cover-fees box — a subscription is a different question", () => {
+    const html = renderGiveTerritoryPage(
+      RAISING_TERRITORY,
+      STATS,
+      ACTIVITY,
+      SITE,
+      null,
+      RATES,
+    );
+    expect(html).toContain('id="gc_onetime_covfees"');
+    expect(html).not.toContain('id="gc_monthly_covfees"');
+  });
+});

@@ -253,12 +253,22 @@ http.route({
     // A central (no-slug) one-time gift returns here with `?donated=1` — show a
     // thank-you banner (the territory page handles its own thank-you states).
     const thankYou = new URL(req.url).searchParams.get("donated") === "1";
-    const [territories, interestStats] = await Promise.all([
+    const [territories, interestStats, feeRates] = await Promise.all([
       ctx.runQuery(api.territories.getPublicMapData, {}),
       ctx.runQuery(api.givingInterest.publicInterestStats, {}),
+      // Stamped into the page so the form can price "cover the fees" live as
+      // somebody types. The SAME query the checkout action reads, so the
+      // number quoted here and the number charged there cannot diverge.
+      ctx.runQuery(internal.feeSchedule.givePageRates, {}),
     ]);
     return html(
-      renderGiveMapPage(territories, interestStats, thankYou, siteUrl()),
+      renderGiveMapPage(
+        territories,
+        interestStats,
+        thankYou,
+        siteUrl(),
+        feeRates,
+      ),
     );
   }),
 });
@@ -293,10 +303,11 @@ http.route({
     }
     if (segments.length > 2) return html(renderGiveNotFound(), 404);
 
-    const [data, interestStats, activity] = await Promise.all([
+    const [data, interestStats, activity, feeRates] = await Promise.all([
       ctx.runQuery(api.territories.getPublicTerritory, { slug }),
       ctx.runQuery(api.givingInterest.publicInterestStats, {}),
       ctx.runQuery(api.givingActivity.getTerritoryActivity, { slug }),
+      ctx.runQuery(internal.feeSchedule.givePageRates, {}),
     ]);
     if (!data) return html(renderGiveNotFound(), 404);
     // A one-time gift returns with `?donated=1`; a recurring backer with
@@ -313,6 +324,7 @@ http.route({
         activity,
         siteUrl(),
         pledgeParam,
+        feeRates,
       ),
     );
   }),
@@ -443,17 +455,28 @@ async function settleCheckoutSession(
     // carries no pledgeId and is neither an order nor an event donation, so
     // without this branch it would fall through to the "unknown session"
     // error log.
+    // `giveIntendedCents` is present when the donor covered the processing
+    // fees: the charge is intended + coverage, and the GIFT is the intended
+    // half (see `gifts.feeCoverageCents`). Parsed permissively and validated
+    // inside the mutation — metadata is a string map and an unparseable value
+    // has to degrade to "the whole charge was the gift", never to a throw.
+    const intended = Number(obj.metadata.giveIntendedCents);
+    const intendedCents = Number.isFinite(intended) ? intended : undefined;
+
     await ctx.runMutation(internal.givingDonations.recordGiveDonationPaid, {
       sessionId: obj.id,
       amountTotalCents: obj.amount_total ?? 0,
       donorId: obj.metadata.giveDonorId ?? "",
       scope: obj.metadata.giveScope ?? "",
+      ...(intendedCents !== undefined ? { intendedCents } : {}),
     });
-    // Flip the giver's optional activity-wall entry visible with the SETTLED
-    // one-time amount (no-op if they didn't opt in). See givingActivity.ts.
+    // Flip the giver's optional activity-wall entry visible with the amount
+    // they GAVE, not the amount they were charged (no-op if they didn't opt
+    // in). A donor who covered fees agreed to show a $100 gift, not to
+    // announce that they also paid $3.30 to Stripe. See givingActivity.ts.
     await ctx.runMutation(internal.givingActivity.markActivityVisible, {
       refKey: `give:${obj.id}`,
-      amountCents: obj.amount_total ?? 0,
+      amountCents: intendedCents ?? obj.amount_total ?? 0,
     });
   } else if (obj.metadata?.repaymentIds) {
     // A personal-charge repayment Checkout (`stripe.ts#createRepaymentCheckout`,
