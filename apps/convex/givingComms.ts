@@ -5,11 +5,17 @@
  * different shape of promise: it is submitted, it settles about 2–4 business
  * days later, and it can still be returned after that. If we say nothing, the
  * donor's honest reading of the silence is "did that work?" — so there are
- * three moments and this file owns the words for all three:
+ * four moments and this file owns the words for all of them:
  *
  *  - `onAchSubmitted` — we have it, here's how long banks take, nothing to do.
  *  - `onAchSettled`   — it cleared.
  *  - `onAchFailed`    — it didn't, here's roughly why, here's how to retry.
+ *  - `onAchReturned`  — it cleared, and then weeks later the bank took it back.
+ *
+ * The last two are NOT the same email and must not be merged. "It didn't go
+ * through" and "you haven't been charged" are true for a debit that never
+ * cleared and false for one that did — and the returned-gift donor is holding
+ * an email from us that says it cleared.
  *
  * SEAM. The ACH payment LIFECYCLE (the `checkout.session.async_payment_*`
  * webhook branches, the `payment_status` gate, post-settlement returns) lives
@@ -76,6 +82,11 @@ export function donorFacingAchFailureReason(reason?: string): string {
     case "no_account":
     case "invalid_account_number":
     case "account_number_invalid":
+    // Stripe's DISPUTE reason for the same thing. A post-settlement bank
+    // return arrives as a dispute, not a payment failure, and it uses its own
+    // vocabulary — without these two the late-return email falls back to the
+    // generic sentence for the two most common reasons a return happens.
+    case "incorrect_account_details":
       return "The account details didn't match an open account.";
     case "debit_not_authorized":
     case "authorization_revoked":
@@ -90,6 +101,7 @@ export function donorFacingAchFailureReason(reason?: string): string {
       return "The account can't take this kind of transfer right now.";
     case "could_not_process":
     case "processing_error":
+    case "bank_cannot_process":
       return "The bank couldn't process the transfer.";
     default:
       // Includes every raw ACH return code (R01, R07, …) and anything new
@@ -408,6 +420,67 @@ export const onAchFailed = internalAction({
           ? emailParagraph(
               `We've taken your entry off the public giving wall. If you give again and ask to be shown, it'll go back up once that gift clears.`,
               { size: 13, margin: "12px 0 0" },
+            )
+          : ""
+      }`),
+    });
+    return null;
+  },
+});
+
+// ── 4. Returned after it had already cleared ─────────────────────────────────
+
+/**
+ * It cleared, we thanked them for it, and weeks later the bank took it back.
+ *
+ * THIS IS NOT `onAchFailed`, and the difference is not cosmetic. `onAchFailed`
+ * says "your gift didn't go through" and "you haven't been charged" — both of
+ * which are FALSE here. This donor's money did leave their account, we did
+ * confirm it, and they have an email from us saying so. Sending them the
+ * never-cleared wording would contradict something we already told them, which
+ * is exactly how a person concludes the org has lost track of their money.
+ *
+ * A bank can return an ACH debit for up to 60 calendar days after it settles.
+ * When that happens Stripe raises it as a dispute, the gift comes back off the
+ * books (`givingReversals.ts`), and this is what the donor hears about it.
+ *
+ * Deliberately does NOT ask for the money. A returned debit is usually a
+ * closed account, a bank's own timing, or someone who changed their mind and
+ * used the tool their bank gave them — none of which is an invoice. The retry
+ * link is an offer, not a demand, and the email says outright that nothing is
+ * owed.
+ */
+export const onAchReturned = internalAction({
+  args: { sessionId: v.string(), reason: v.optional(v.string()) },
+  returns: v.null(),
+  handler: async (ctx, { sessionId, reason }) => {
+    const give = await loadGiveSessionContext(ctx, sessionId);
+    if (!give) return null;
+
+    const retryUrl = givePageUrl(give.slug ?? undefined);
+
+    await sendEmail(ctx, {
+      to: give.email,
+      subject: `About your gift to ${give.city}`,
+      html: emailShell(`
+      ${emailHeading(`Hi ${escapeHtml(give.firstName)} —`, { size: 26 })}
+      ${emailParagraph(
+        `Your <b>${give.amount}</b> gift to <b>${escapeHtml(give.city)}</b> cleared a while back, but your bank has since returned it — so the money is back with you, and we've taken the gift off our records. ${escapeHtml(donorFacingAchFailureReason(reason))}`,
+        { margin: "0 0 20px" },
+      )}
+      ${emailParagraph(
+        `There's nothing owing and nothing you need to do. We're telling you because you got an email from us saying it had cleared, and that's no longer true.`,
+        { margin: "0 0 16px" },
+      )}
+      ${emailParagraph(`If you'd still like to give, you can here:`, {
+        margin: "0 0 16px",
+      })}
+      ${emailButton(retryUrl, "Give again")}
+      ${
+        give.showOnWall
+          ? emailParagraph(
+              `We've also taken your entry off the public giving wall.`,
+              { size: 13, margin: "24px 0 0" },
             )
           : ""
       }`),

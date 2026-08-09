@@ -604,8 +604,17 @@ http.route({
           payment_status?: string;
           // invoice.paid / invoice.payment_failed:
           amount_paid?: number;
-          // customer.subscription.updated / .deleted:
+          // customer.subscription.updated / .deleted, AND charge.dispute.*
+          // (where it is the dispute status — `warning_*` means an
+          // authorization inquiry that moves no money; see
+          // `givingReversals.ts#disputeMovesMoney`).
           status?: string;
+          // charge.dispute.created / .closed: `data.object` is the Dispute, so
+          // `id` is the `dp_…` id and these point back at the payment.
+          charge?: string | null;
+          reason?: string | null;
+          /** The disputed amount in cents. */
+          amount?: number;
           current_period_end?: number; // unix SECONDS
           items?: {
             data?: Array<{ price?: { unit_amount?: number | null } }>;
@@ -723,6 +732,42 @@ http.route({
     } else if (event.type === "customer.subscription.deleted") {
       await ctx.runMutation(internal.givingPledges.cancelPledgeSubscription, {
         subscriptionId: event.data.object.id,
+      });
+    } else if (event.type === "charge.dispute.created") {
+      // MONEY COMING BACK OUT, weeks after it went in. A bank can return a
+      // settled ACH debit for up to 60 calendar days, and Stripe raises that
+      // as a dispute — so a gift recorded in September can evaporate in
+      // November with the donor's lifetime total, the scope rollup and the
+      // launch pot all still counting it.
+      //
+      // `data.object` here is the Dispute, so its id is the `dp_…` id, and
+      // `charge`/`payment_intent` are what point back at a gift.
+      //
+      // Handed to an action because resolving a dispute to a gift needs Stripe
+      // (a `/give` gift persists no charge or PaymentIntent id — see
+      // `givingReversals.ts`). NOT gated on the event-id ledger, on purpose:
+      // the reversal is idempotent on the DISPUTE id, which also survives a
+      // replay after a failed attempt. Gating here would let one crash lose a
+      // reversal permanently.
+      const dispute = event.data.object;
+      await ctx.scheduler.runAfter(0, internal.givingReversals.onDisputeCreated, {
+        disputeId: dispute.id,
+        ...(dispute.charge ? { chargeId: dispute.charge } : {}),
+        ...(dispute.payment_intent
+          ? { paymentIntentId: dispute.payment_intent }
+          : {}),
+        ...(dispute.reason ? { reason: dispute.reason } : {}),
+        ...(dispute.status ? { status: dispute.status } : {}),
+        ...(dispute.amount !== undefined ? { amountCents: dispute.amount } : {}),
+      });
+    } else if (event.type === "charge.dispute.closed") {
+      // Won means the money came back and the reversal has to be reversed.
+      // Every other closing status either confirms the reversal (`lost`) or
+      // never moved money in the first place (the `warning_*` inquiry ones).
+      const dispute = event.data.object;
+      await ctx.scheduler.runAfter(0, internal.givingReversals.onDisputeClosed, {
+        disputeId: dispute.id,
+        ...(dispute.status ? { status: dispute.status } : {}),
       });
     } else if (event.type.startsWith("payout.")) {
       // Morning reconciliation engine fast-path: a payout event

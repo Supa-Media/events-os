@@ -95,6 +95,7 @@ import {
   donorIdentities,
   gifts,
   giftAudit,
+  giftReversals,
   donorAudit,
   givingScopeRollups,
   pledges,
@@ -376,6 +377,14 @@ const schema = defineSchema({
   // Gifts ledger: the human-edit audit breadcrumb trail (per-gift, newest-first
   // via by_gift). Written by the desk mutations, never affects a money rollup.
   giftAudit,
+  // The tombstone for a gift that was booked and then PULLED BACK OUT — an ACH
+  // debit the bank returned after it settled (up to 60 days later), or a card
+  // chargeback. Unlike giftAudit this one is written by a WEBHOOK, has no human
+  // actor, and carries a full snapshot: `removeGiftRow` is the only correct way
+  // to un-wind the rollups but it deletes, and a deleted row explains nothing.
+  // The snapshot is also the undo, for a dispute that later closes as won.
+  // See givingReversals.ts + schema/givingPlatform.ts.
+  giftReversals,
   // Giving integrity tools (owner feedback #4): the donor-record edit + person-
   // link audit trail (per-donor, newest-first via by_donor). Same narration-only
   // role as giftAudit — never touches a money rollup.

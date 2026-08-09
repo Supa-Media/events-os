@@ -71,6 +71,7 @@ import type * as givingImport from "../givingImport.js";
 import type * as givingInterest from "../givingInterest.js";
 import type * as givingPlatform from "../givingPlatform.js";
 import type * as givingPledges from "../givingPledges.js";
+import type * as givingReversals from "../givingReversals.js";
 import type * as googleChatChannels from "../googleChatChannels.js";
 import type * as guestTeams from "../guestTeams.js";
 import type * as guests from "../guests.js";
@@ -455,6 +456,7 @@ declare const fullApi: ApiFromModules<{
   givingInterest: typeof givingInterest;
   givingPlatform: typeof givingPlatform;
   givingPledges: typeof givingPledges;
+  givingReversals: typeof givingReversals;
   googleChatChannels: typeof googleChatChannels;
   guestTeams: typeof guestTeams;
   guests: typeof guests;

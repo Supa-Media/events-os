@@ -293,6 +293,60 @@ describe("givingComms ACH emails", () => {
     expect(String(sent[0].html)).toContain("complete the transfer.");
   });
 
+  /**
+   * A returned gift and a gift that never cleared are different facts, and the
+   * donor can tell. This one already has an email from us saying it cleared.
+   */
+  test("onAchReturned does not repeat the never-cleared wording", async () => {
+    const { t, sent } = await arrange(false);
+    await t.action(internal.givingComms.onAchReturned, {
+      sessionId: STRIPE_SESSION,
+      reason: "insufficient_funds",
+    });
+
+    const html = String(sent[0].html);
+    expect(String(sent[0].subject)).toContain("About your gift");
+    expect(html).toContain("cleared a while back");
+    expect(html).toContain("your bank has since returned it");
+    expect(html).toContain("nothing owing");
+    // The two sentences `onAchFailed` uses that are FALSE here — their money
+    // did leave their account, and it did go through.
+    expect(html).not.toContain("You haven't been charged");
+    expect(html).not.toContain("didn't go through");
+    // Still no raw bank codes, and still a way back.
+    expect(html).not.toContain("insufficient_funds");
+    expect(html).toContain("enough in the account");
+    expect(html).toContain("Give again");
+  });
+
+  test("onAchReturned mentions the wall only for a donor who was on it", async () => {
+    const optedOut = await arrange(false);
+    await optedOut.t.action(internal.givingComms.onAchReturned, {
+      sessionId: STRIPE_SESSION,
+    });
+    expect(String(optedOut.sent[0].html)).not.toContain("giving wall");
+
+    const optedIn = await arrange(true);
+    await optedIn.t.action(internal.givingComms.onAchReturned, {
+      sessionId: STRIPE_SESSION,
+    });
+    expect(String(optedIn.sent[0].html)).toContain(
+      "taken your entry off the public giving wall",
+    );
+  });
+
+  test("the dispute reasons Stripe uses for a bank return read as English", () => {
+    // These two arrive ONLY as dispute reasons — a payment failure never uses
+    // them — so before the late-return work they fell through to the generic
+    // sentence for the two commonest reasons a settled debit comes back.
+    expect(donorFacingAchFailureReason("incorrect_account_details")).toBe(
+      "The account details didn't match an open account.",
+    );
+    expect(donorFacingAchFailureReason("bank_cannot_process")).toBe(
+      "The bank couldn't process the transfer.",
+    );
+  });
+
   test("all three no-op quietly when the session can't be read", async () => {
     process.env.STRIPE_SECRET_KEY = "sk_test_x";
     process.env.RESEND_API_KEY = "re_test_x";

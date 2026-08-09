@@ -72,6 +72,12 @@ export const HANDLED_STRIPE_EVENTS: readonly string[] = [
   "invoice.payment_failed",
   "customer.subscription.updated",
   "customer.subscription.deleted",
+  // The ACH late return. A bank can pull a settled debit back for up to 60
+  // calendar days and Stripe reports it as a dispute — so of everything in
+  // this list, these two are the ones whose silent absence costs real money
+  // that is already on the books. See givingReversals.ts.
+  "charge.dispute.created",
+  "charge.dispute.closed",
   "payout.",
   "payout.paid",
   "financial_connections.",
