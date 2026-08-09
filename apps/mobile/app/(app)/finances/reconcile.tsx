@@ -58,9 +58,6 @@ import {
   ReconcileList,
   type PickerItem,
 } from "../../../components/finance/reconcile/ReconcileList";
-import {
-  filterReconcileRows,
-} from "../../../components/finance/reconcile/helpers";
 import { BulkBar } from "../../../components/finance/reconcile/BulkBar";
 import { BulkNoDocumentationModal } from "../../../components/finance/modals/BulkNoDocumentationModal";
 import type { ReceiptExceptionReason } from "@events-os/shared";
@@ -154,6 +151,30 @@ function periodLabel(year: number, month: number, mode: "month" | "ytd"): string
   return mode === "ytd" ? `YTD through ${name} ${year}` : `${name} ${year}`;
 }
 
+/**
+ * How many rows the grid asks for, and how much further "Load more" reaches.
+ * Matches `listReconcile`'s own default so the first request is the cheap one
+ * the server is tuned for.
+ */
+const PAGE_STEP = 100;
+
+/**
+ * `value`, but only after it has stopped changing for `ms`.
+ *
+ * Search moved SERVER-SIDE (it has to — it was searching only the rows the
+ * active filter had already left behind), so every keystroke is now a new query
+ * subscription. Debouncing keeps a typed word to one round-trip instead of one
+ * per character.
+ */
+function useDebouncedValue<T>(value: T, ms: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const t = setTimeout(() => setDebounced(value), ms);
+    return () => clearTimeout(t);
+  }, [value, ms]);
+  return debounced;
+}
+
 function ReconcileGrid() {
   // WP-dashboard-drill: optional deep-link params (e.g. from the central
   // dashboard's "Reconcile centrally →" affordance) — override the initial
@@ -218,6 +239,15 @@ function ReconcileGrid() {
   // keeps these handlers above it without a forward-reference.
   const clearSelectionRef = useRef<(() => void) | null>(null);
   const [query, setQuery] = useState("");
+  // What the SERVER searches. See `listReconcile`'s `search` arg: the query
+  // runs over the whole book and stands the State filter down for that request,
+  // which is the only way the box can find a row the current filter excludes.
+  const debouncedQuery = useDebouncedValue(query, 200);
+  // How many rows the server is currently shipping. Grows on "Load more"
+  // instead of accumulating pages on the client: the query is reactive, so a
+  // growing limit stays ONE live, consistent list, where stitched-together
+  // snapshots would let a concurrent edit make two pages disagree.
+  const [pageSize, setPageSize] = useState(PAGE_STEP);
   const [searchFocused, setSearchFocused] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [noDocOpen, setNoDocOpen] = useState(false);
@@ -358,16 +388,29 @@ function ReconcileGrid() {
   const periodArgs = hasPeriodScope
     ? { year: periodYear as number, month: periodMonth, period: periodMode }
     : {};
+  // Filters, search and paging all go to the SERVER. Built once and spread into
+  // every scope branch so no branch can drift back to shipping the whole book.
+  const listArgs = {
+    filters,
+    search: debouncedQuery.trim() || undefined,
+    limit: pageSize,
+    ...periodArgs,
+  };
   const reconcile = useQuery(
     api.finances.listReconcile,
     allBooksScope
-      ? { filters, scope: "all" as const, ...periodArgs }
+      ? { ...listArgs, scope: "all" as const }
       : centralScope
-        ? { filters, scope: "central" as const, ...periodArgs }
+        ? { ...listArgs, scope: "central" as const }
         : targetChapterId
-          ? { filters, chapterId: targetChapterId, ...periodArgs }
-          : { filters, ...periodArgs },
+          ? { ...listArgs, chapterId: targetChapterId }
+          : listArgs,
   );
+  // A new selection, a new search or a new book starts at page one — otherwise
+  // narrowing to 3 rows would keep asking the server for 400.
+  useEffect(() => {
+    setPageSize(PAGE_STEP);
+  }, [filters, debouncedQuery, scope, targetChapterId]);
   // R1b: "Mark personal" (cards.flagPersonalCharge's manager path) is a
   // manager-only action — a bookkeeper has full Reconcile access but not this.
   // `ReconcileList` ALSO widens the same button to a cardholder's OWN row
@@ -422,12 +465,20 @@ function ReconcileGrid() {
   const rows = reconcile?.rows ?? [];
   const counts = reconcile?.counts;
 
-  // Search narrows the active pill's already-loaded rows, client-side.
-  const displayed = useMemo(
-    () => filterReconcileRows(rows, query),
-    [rows, query],
-  );
-  const searching = query.trim().length > 0;
+  // The server has already applied the filter set AND the search, so the grid
+  // renders exactly what it was sent. This used to be
+  // `filterReconcileRows(rows, query)` — a client-side pass over the rows the
+  // filter had already narrowed, which is precisely what made the box unable to
+  // find anything the active State filter excluded.
+  const displayed = rows;
+  const searching = debouncedQuery.trim().length > 0;
+  // How many rows matched across the WHOLE scope, before paging — so "showing
+  // 100 of 346" is a statement about the book, not about the page.
+  const matchedCount = reconcile?.matchedCount ?? 0;
+  const hasMore = reconcile?.hasMore ?? false;
+  // The server stood the State filter down to run this search. Said out loud
+  // below: a filter that silently stops applying is the whole defect.
+  const searchIgnoredState = reconcile?.searchIgnoredState ?? false;
 
   // One option list per GROUP (see `RECONCILE_FILTER_GROUPS` in shared) — the
   // grouping is the whole point: OR within a control widens, AND across the two
@@ -881,7 +932,7 @@ function ReconcileGrid() {
               <Text className="font-display text-2xl text-ink">Reconcile</Text>
               <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
                 {searching
-                  ? `${displayed.length} of ${rows.length}`
+                  ? `${matchedCount} found`
                   : `${toClear} to clear`}
               </Text>
             </View>
@@ -1011,6 +1062,20 @@ function ReconcileGrid() {
               size={14}
             />
           </View>
+          {/* SAY IT OUT LOUD. A search covers the whole book, which means the
+              State dropdown the user can still see is not what produced these
+              rows. Leaving that unsaid is the original defect wearing different
+              clothes: the old build silently intersected the two and returned
+              nothing, and nothing on screen explained why. */}
+          {searchIgnoredState ? (
+            <View className="mb-2 flex-row items-center gap-2">
+              <Icon name="info" size={14} color={colors.muted} />
+              <Text className="text-xs text-muted">
+                Searching every state — the State filter doesn’t apply while you
+                search.
+              </Text>
+            </View>
+          ) : null}
         </Narrow>
 
         {/* Bulk action bar (multi-select). `selectedInView` is already
@@ -1095,7 +1160,11 @@ function ReconcileGrid() {
             <EmptyState
               icon="search"
               title="No matches"
-              message={`No charges in this view match “${query.trim()}”.`}
+              // "in this book", not "in this view": the search ran over the
+              // whole scope with the State filter stood down, so an empty
+              // result really does mean the book doesn't have it. The old copy
+              // said "this view" while the view was silently 14 of 346 rows.
+              message={`Nothing in this book matches “${query.trim()}”.`}
             />
           ) : (
             <EmptyState
@@ -1105,20 +1174,46 @@ function ReconcileGrid() {
             />
           )
         ) : (
-          <ReconcileList
-            rows={displayed}
-            categoryItems={categoryItems}
-            forItems={forItems}
-            selected={selected}
-            onToggle={toggle}
-            onToggleAll={toggleAll}
-            centralScope={centralScope}
-            showBook={allBooksScope || viewingForeignChapter}
-            ownChapterId={ownChapterId}
-            centralForItems={centralForItems}
-            isManager={isManager}
-            viewerPersonId={reconcile?.viewerPersonId ?? null}
-          />
+          <>
+            <ReconcileList
+              rows={displayed}
+              categoryItems={categoryItems}
+              forItems={forItems}
+              selected={selected}
+              onToggle={toggle}
+              onToggleAll={toggleAll}
+              centralScope={centralScope}
+              showBook={allBooksScope || viewingForeignChapter}
+              ownChapterId={ownChapterId}
+              centralForItems={centralForItems}
+              isManager={isManager}
+              viewerPersonId={reconcile?.viewerPersonId ?? null}
+            />
+            {/* PAGING. The server ships `limit` rows and reports how many
+                matched across the whole scope, so this footer states both —
+                "Showing 100 of 346" is a fact about the book, not about the
+                page, and the count next to the button is what pressing it
+                reaches. Absent entirely when everything already fits. */}
+            {hasMore ? (
+              <View className="items-center gap-2 py-6">
+                <Text className="text-xs text-muted">
+                  {`Showing ${displayed.length} of ${matchedCount}`}
+                </Text>
+                <Button
+                  title={`Load ${Math.min(PAGE_STEP, matchedCount - displayed.length)} more`}
+                  variant="secondary"
+                  size="sm"
+                  onPress={() => setPageSize((n) => n + PAGE_STEP)}
+                />
+              </View>
+            ) : matchedCount > PAGE_STEP ? (
+              <View className="items-center py-6">
+                <Text className="text-xs text-muted">
+                  {`All ${matchedCount} shown`}
+                </Text>
+              </View>
+            ) : null}
+          </>
         )}
       </Screen>
       <ToastView toast={toast} onDismiss={dismiss} />
