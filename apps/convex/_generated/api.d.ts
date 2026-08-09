@@ -65,6 +65,7 @@ import type * as givebutterSync from "../givebutterSync.js";
 import type * as giving from "../giving.js";
 import type * as givingActivity from "../givingActivity.js";
 import type * as givingCandidates from "../givingCandidates.js";
+import type * as givingComms from "../givingComms.js";
 import type * as givingDonations from "../givingDonations.js";
 import type * as givingImport from "../givingImport.js";
 import type * as givingInterest from "../givingInterest.js";
@@ -446,6 +447,7 @@ declare const fullApi: ApiFromModules<{
   giving: typeof giving;
   givingActivity: typeof givingActivity;
   givingCandidates: typeof givingCandidates;
+  givingComms: typeof givingComms;
   givingDonations: typeof givingDonations;
   givingImport: typeof givingImport;
   givingInterest: typeof givingInterest;
