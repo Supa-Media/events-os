@@ -2306,6 +2306,43 @@ async function runEngine(
         }
       }
 
+      // ── In-person sales, same best-effort spirit ─────────────────────────
+      // `syncStripeSales` was manual-only from the day it shipped, so the Sales
+      // tab silently froze at whatever the last hand-run imported — the owner
+      // sold PW Tees at an event and found none of them there (2026-08-09).
+      // Nothing in the product said the data was stale, which is the same shape
+      // as the fee row that sat future-dated for want of a run.
+      //
+      // Idempotent on the Stripe charge id, so a daily full sweep re-imports
+      // nothing. Runs AFTER the fee sweep and BEFORE the balance settlement for
+      // the same reason fees do: a sale is revenue, and settling cash against a
+      // book that is about to gain $150 of tee sales moves the wrong amount.
+      if (key) {
+        try {
+          const sales: {
+            created: number;
+            alreadyPresent: number;
+            unresolved: number;
+            grossCents: number;
+          } = await ctx.runAction(internal.salesSync.syncStripeSalesOps, {
+            execute: true,
+          });
+          if (sales.created > 0) {
+            notes.push(
+              `Imported ${sales.created} in-person sale(s), ${formatCents(sales.grossCents)} gross` +
+                (sales.unresolved > 0
+                  ? ` — ${sales.unresolved} banked without an item breakdown.`
+                  : "."),
+            );
+          }
+        } catch (err) {
+          console.error("[reconciliation] sales sync failed", err);
+          notes.push(
+            "In-person sales sync FAILED — the Sales tab may be stale; will retry next run.",
+          );
+        }
+      }
+
       // ── 8: bring each chapter's CASH to its BOOK ─────────────────────────
       // Deliberately the LAST step, and deliberately after BOTH the balance
       // snapshot and the fee sweep. It compares book against bank, so it needs

@@ -76,6 +76,10 @@ export const beginPayout = internalMutation({
       accountNumber: v.union(v.string(), v.null()),
       routingNumber: v.union(v.string(), v.null()),
       funding: v.union(v.literal("checking"), v.literal("savings"), v.null()),
+      /** Who is being paid. Sent to Increase as `individual_name` so the
+       *  transfer says whose reimbursement it is — see the descriptor comment
+       *  at the `/ach_transfers` call. */
+      payeeName: v.string(),
     }),
   ),
   handler: async (ctx, { reimbursementId }): Promise<BeginPayoutResult> => {
@@ -160,6 +164,7 @@ export const beginPayout = internalMutation({
         amountCents,
         reimbursementId,
         externalAccountId: reimbursement.externalAccountId ?? null,
+        payeeName: reimbursement.payeeName,
         accountNumber: null,
         routingNumber: null,
         funding: null,
@@ -354,8 +359,18 @@ export const payReimbursement = action({
           account_id: result.increaseAccountId,
           // POSITIVE cents originates a CREDIT that pushes funds to the payee.
           amount: result.amountCents,
-          // Increase requires a statement descriptor, max 10 characters.
+          // Increase requires a statement descriptor, max 10 characters — so
+          // "Reimburse" is very nearly all it will hold, and on its own it left
+          // every reimbursement in the Increase dashboard reading identically
+          // with no way to tell whose it was (owner report, 2026-08-09).
           statement_descriptor: "Reimburse",
+          // WHO it is for goes here instead. `individual_name` is the NACHA
+          // receiver name — max 22 characters, and the field Increase shows on
+          // the transfer alongside the descriptor. Our own ledger row already
+          // reads "Reimbursement to <name>" (`lib/reimbursementTxnFields.ts`);
+          // this carries the same fact into the bank's record, so the two
+          // surfaces stop disagreeing about how much they know.
+          individual_name: result.payeeName.slice(0, 22),
           ...destination,
         },
         // Idempotency-Key = reimbursementId (the schema's idempotency key).
