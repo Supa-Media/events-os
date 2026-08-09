@@ -872,7 +872,7 @@ function relayShortHash(input: string): string {
  * BYTE-IDENTICAL across two genuinely distinct charges. Without `occurrence`
  * the second one hashed to the first one's key and was counted `skipped` as a
  * re-import — money that left the bank and never reached the books. Six charges
- * were lost that way ($55.00, restored by `restoreCollidedCharges.ts`); the loss
+ * were lost that way ($55.00, put back by a 2026-08 one-off since removed); the loss
  * survived a year because a dropped row leaves nothing behind to notice.
  *
  * `occurrence` is the row's 0-based position among the rows in the SAME import

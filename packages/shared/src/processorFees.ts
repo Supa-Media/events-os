@@ -102,8 +102,8 @@ export const DEFAULT_FEE_SCHEDULE: readonly FeeRail[] = [
   // Cash App for Business. Confirmed off the owner's own payment-detail screens
   // ($50.00 → $1.45, $100.00 → $2.75) and it reproduces all three 2026
   // withdrawals to the cent — as close to reading it as a rail with no API
-  // allows. `lib/seed/historical/cashApp2026.ts` imports this rather than
-  // keeping its own copy.
+  // allows. The 2026-08 Cash App backfill (a one-off since removed) read the
+  // rate from here rather than keeping its own copy.
   { processor: "cash_app", method: "wallet", percentBps: 260, fixedCents: 15 },
 ] as const;
 

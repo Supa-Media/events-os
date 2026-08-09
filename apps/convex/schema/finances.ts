@@ -474,8 +474,8 @@ export const transactions = defineTable({
   ),
   // ── NON-DISCRETIONARY: a fee that was CHARGED, not chosen ─────────────────
   // Set only on the per-transaction processor/bank fee rollups — by
-  // `processorFees.ts` (sweeping Stripe's balance-transaction ledger) and
-  // `cashAppBackfill.ts` (reproducing the Cash App withdrawals). ABSENT on
+  // `processorFees.ts` (sweeping Stripe's balance-transaction ledger) and, on
+  // the Cash App rows, by a 2026-08 backfill since removed. ABSENT on
   // everything else, and that is the point.
   //
   // A budget is a control on CHOICE, and these are not choices: the fee is

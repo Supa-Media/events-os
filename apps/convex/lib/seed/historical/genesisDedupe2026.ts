@@ -3,8 +3,9 @@
  *
  * ── HALF OF THIS WAS WRONG. READ THIS FIRST ─────────────────────────────────
  * Of the 12 rows below, SIX were not duplicates and have been restored:
- * `genesis-bank:42` (`restoreTruistDeposit.ts`) and `:4`, `:5`, `:108`, `:117`,
- * `:139`, `:161` (`restoreCollidedCharges.ts`, $55.00). The reasoning kept
+ * `genesis-bank:42` (a $500 Truist deposit) and `:4`, `:5`, `:108`, `:117`,
+ * `:139`, `:161` (six collided charges, $55.00) — both put back by 2026-08
+ * one-offs that have since been removed. The reasoning kept
  * below is preserved as the record of what was believed at the time; it is NOT
  * a description of a correct pass, and nothing should be modelled on it.
  *
@@ -18,7 +19,8 @@
  *
  * The generality worth carrying forward: a deletion justified only by amount +
  * date needs a source outside the ledger to confirm it, and it needs to consume
- * its evidence one-to-one. See `restoreCollidedCharges.ts`, which does both.
+ * its evidence one-to-one. The restore one-off that undid the six deletions did
+ * both, and refused outright rather than half-apply.
  *
  * THE BUG. The 2026 bank import (`financeGenesisBackfill.ts`) deduped each of its 213
  * rows against the ledger AS IT STOOD AT THAT MOMENT — exact amount, same flow,

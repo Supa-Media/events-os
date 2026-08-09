@@ -948,7 +948,8 @@ export const NON_DISCRETIONARY_FEE_ORIGINS = [
   // `processorFees.ts` — both the per-payment fee and the fees Stripe bills on
   // its own account (Terminal readers, payout and account fees).
   "stripe_processing",
-  // Cash App's 2.6% + $0.15, reconstructed per payment by `cashAppBackfill.ts`.
+  // Cash App's 2.6% + $0.15, reconstructed per payment by a 2026-08 backfill
+  // (a one-off since removed).
   "cash_app_processing",
 ] as const;
 export type NonDiscretionaryFeeOrigin =

@@ -738,7 +738,7 @@ export const applyGivebutterDonations = triggerInternalMutation({
       // transaction id. Different id spaces for the same transaction, so the
       // lookup misses and the donation is recorded a SECOND time. Attaching
       // Pop The Balloon's campaign did exactly that: $665 of duplicate giving,
-      // repaired by `givebutterRepair.ts`.
+      // repaired by a 2026-08 one-off since removed.
       //
       // So: before inserting, check whether THIS donor already holds a
       // legacy-keyed gift for the same money on the same UTC day. Scoped to

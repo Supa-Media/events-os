@@ -50,7 +50,9 @@
  * `ctx.db.patch` would leave five numbers wrong. But `removeGiftRow` deletes,
  * and a deleted row explains nothing, so a `giftReversals` tombstone is written
  * FIRST, carrying a full snapshot of what was reversed and Stripe's own reason
- * for it. Same principle as `reverseBadSettlement.ts`. Both writes are in one
+ * for it. Same principle the 2026-08 settlement reversal worked on (that one-off
+ * has since been removed): a money-path mistake is EXCLUDED with its reason on
+ * it, never deleted. Both writes are in one
  * mutation, so the trail cannot exist without the reversal or vice versa.
  *
  * ── SCOPE: `/give` ONE-TIME GIFTS ───────────────────────────────────────────

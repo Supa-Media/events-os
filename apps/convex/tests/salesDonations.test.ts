@@ -127,7 +127,7 @@ async function seed(opts: SeedOpts = {}): Promise<Seeded> {
 }
 
 /** Central ED + a graded finance role — the same pair `accountBalances` and
- *  `requireFinanceRole` are gated on (mirrors ptbVenmoBackfill.test.ts). */
+ *  `requireFinanceRole` are gated on. */
 async function grantFinance(
   s: ChapterSetup,
   role: "viewer" | "bookkeeper" | "manager",
