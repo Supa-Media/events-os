@@ -226,10 +226,13 @@ describe("evidence — proof of the purchase", () => {
     // they must never touch the documentation denorm cache.
     const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
     expect(txn?.receiptStorageId).toBeUndefined();
-    // Still pending, so still chased and still undocumented.
+    // Still pending, so still chased. It counts under "Needs documentation"
+    // and NOT under "Closed without documentation": that facet is the closed
+    // tail only, and this row is open. Disjoint by construction — the same row
+    // can no longer inflate both numbers.
     const counts = (await s.as.query(api.finances.listReconcile, { filter: "all" })).counts;
     expect(counts.missing_receipt).toBe(1);
-    expect(counts.undocumented).toBe(1);
+    expect(counts.undocumented).toBe(0);
     // And nothing was written to the shared receipts library.
     expect((await run(s.t, (ctx) => ctx.db.query("receipts").collect())).length).toBe(0);
   });

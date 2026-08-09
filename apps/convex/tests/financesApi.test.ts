@@ -547,11 +547,13 @@ describe("listReconcile (server-side filters + counts + projections)", () => {
       missing_receipt: 1, // t1
       to_review: 2, // t1, t4
       reconciled: 1, // t2
-      // t1 only: t2 has a receipt, t4 is an inflow (owes nothing), t3 is
-      // excluded. Unlike `missing_receipt` this one would ALSO count a
-      // `reconciled` row with nothing attached — see the `undocumented`
-      // coverage in `receiptExceptions.test.ts`.
-      undocumented: 1, // t1
+      // "Closed without documentation" — the CLOSED tail only, and disjoint
+      // from `missing_receipt`. Zero here: t1 owes documentation but is still
+      // open (so it is `missing_receipt`'s), t2 is closed WITH a receipt, t4 is
+      // an inflow that owes nothing, t3 is excluded. A row that is reconciled
+      // with nothing attached is what lights this up — see the coverage in
+      // `receiptExceptions.test.ts`.
+      undocumented: 0,
       // Every row here is pinned pre-policy (see `insertTxn`), so the coding
       // facets stay dark — post-policy coverage lives in
       // `transactionCodings.test.ts`.
@@ -560,7 +562,19 @@ describe("listReconcile (server-side filters + counts + projections)", () => {
       personal_unpaid: 0, // none flagged personal in this fixture
       transfers: 0, // nothing marked as an internal transfer here
       payouts: 0, // nothing marked as a processor payout here
+      // The header roll-ups, complements over the OPEN set (t1, t4):
+      // t1 is unreviewed AND needs a budget AND needs documentation; t4 is
+      // unreviewed. Both therefore need attention, and nothing is merely
+      // waiting on a keystroke. t2 is closed, so it is in neither.
+      needs_attention: 2, // t1, t4
+      ready_to_close: 0,
     });
+    // The invariant the header is built on: the two roll-ups partition the open
+    // set exactly, so the chips can never add up to something other than the
+    // backlog figure they replaced.
+    expect(all.counts.needs_attention + all.counts.ready_to_close).toBe(
+      all.toClearCount,
+    );
     const allIds = all.rows.map((r) => r.id);
     expect(allIds).toEqual(expect.arrayContaining([t1, t2, t4]));
     expect(allIds).not.toContain(
