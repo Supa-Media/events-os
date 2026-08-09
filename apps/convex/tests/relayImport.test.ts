@@ -424,6 +424,131 @@ describe("importRelayTransactions", () => {
     ).rejects.toThrow(ConvexError);
   });
 
+  // ── Two identical charges on one day ───────────────────────────────────────
+  //
+  // Day + amount + merchant + card reference is not unique: a person taps the
+  // same $3.00 turnstile twice, or buys two identical permits in one sitting.
+  // The importer used to key on exactly those four values, so the second charge
+  // hashed to the first one's key and was counted `skipped` as a re-import. Six
+  // real charges ($55.00) were lost that way and only surfaced a year later when
+  // the bank balance disagreed with the books.
+  //
+  // The two properties below pull in opposite directions and that is the whole
+  // difficulty: two identical rows in ONE file are two charges, and the same two
+  // rows in a SECOND import of that file are the same two charges. Both are
+  // asserted here because satisfying either alone is easy and wrong — the
+  // failure this fixes was one of them, and duplicating the entire Relay history
+  // on the next import would be the other, and worse.
+
+  test("two genuinely distinct identical same-day charges BOTH land", async () => {
+    const s = await setupChapter(newT());
+    await asBookkeeper(s);
+    const account = await seedAccount(s);
+
+    // The real shape of the loss: two $3.00 MTA fares on 2026-02-07, same card.
+    const fare = {
+      postedAt: noonUtc(2026, 2, 7),
+      merchant: "MTA",
+      amountCents: -300,
+      reference: "Michael Reid - 5325 (Michaels Card)",
+      status: "SETTLED",
+    };
+    const rows = [fare, { ...fare }];
+
+    const res = await s.as.mutation(api.stripeFinance.importRelayTransactions, {
+      legacyAccountId: account,
+      rows,
+    });
+    expect(res.created).toBe(2);
+    expect(res.skipped).toBe(0);
+
+    const txns = await relayTxns(s);
+    expect(txns.length).toBe(2);
+    expect(txns.every((t) => t.amountCents === 300 && t.flow === "outflow")).toBe(true);
+    // Two rows, two keys — and the first keeps the un-suffixed historical form.
+    const ids = txns.map((t) => t.externalId).sort();
+    expect(new Set(ids).size).toBe(2);
+    expect(ids.filter((id) => !id?.includes("#")).length).toBe(1);
+    expect(ids.filter((id) => id?.endsWith("#1")).length).toBe(1);
+  });
+
+  test("re-importing the same file twice changes nothing", async () => {
+    const s = await setupChapter(newT());
+    await asBookkeeper(s);
+    const account = await seedAccount(s);
+
+    const fare = {
+      postedAt: noonUtc(2026, 2, 7),
+      merchant: "MTA",
+      amountCents: -300,
+      reference: "Michael Reid - 5325 (Michaels Card)",
+    };
+    // A statement with an identical PAIR and an ordinary singleton, so the
+    // occurrence counter has to reproduce its assignment across both shapes.
+    const rows = [
+      fare,
+      {
+        postedAt: noonUtc(2026, 2, 7),
+        merchant: "MTA eTix",
+        amountCents: -525,
+        reference: "Michael Reid - 5325 (Michaels Card)",
+      },
+      { ...fare },
+    ];
+
+    const first = await s.as.mutation(api.stripeFinance.importRelayTransactions, {
+      legacyAccountId: account,
+      rows,
+    });
+    expect(first.created).toBe(3);
+    const afterFirst = (await relayTxns(s))
+      .map((t) => t.externalId)
+      .sort();
+
+    const second = await s.as.mutation(api.stripeFinance.importRelayTransactions, {
+      legacyAccountId: account,
+      rows,
+    });
+    expect(second).toEqual({
+      created: 0,
+      enriched: 0,
+      skipped: 3,
+      cardsCreated: 0,
+      cardsLinked: 0,
+    });
+    // Not just the same count — the same rows, unchanged.
+    expect((await relayTxns(s)).map((t) => t.externalId).sort()).toEqual(afterFirst);
+  });
+
+  test("an already-imported row keeps its exact production key", async () => {
+    const s = await setupChapter(newT());
+    await asBookkeeper(s);
+    const account = await seedAccount(s);
+
+    // A GOLDEN VALUE, copied from the live deployment — this is the key the
+    // 2026-02-07 MTA fare actually carries in production today. It is asserted
+    // literally, not recomputed, because "the key format is unchanged for rows
+    // already imported" is the property that keeps a re-import from inserting
+    // the entire Relay history a second time, and a test that derives the
+    // expected value from the code under test cannot see that break.
+    const rows = [
+      {
+        postedAt: 1770480000000,
+        merchant: "MTA",
+        amountCents: -300,
+        reference: "Michael Reid - 5325 (Michaels Card)",
+      },
+    ];
+    await s.as.mutation(api.stripeFinance.importRelayTransactions, {
+      legacyAccountId: account,
+      rows,
+    });
+
+    const txns = await relayTxns(s);
+    expect(txns.length).toBe(1);
+    expect(txns[0].externalId).toBe("relay_csv:1770480000000:300:w857ul");
+  });
+
   test("rejects a below-bookkeeper caller", async () => {
     const s = await setupChapter(newT());
     const person = await seedCallerPerson(s);

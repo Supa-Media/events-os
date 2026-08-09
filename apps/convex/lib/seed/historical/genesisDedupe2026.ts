@@ -1,6 +1,25 @@
 /**
  * Genesis duplicate removal (2026-08-06). Private repo.
  *
+ * ── HALF OF THIS WAS WRONG. READ THIS FIRST ─────────────────────────────────
+ * Of the 12 rows below, SIX were not duplicates and have been restored:
+ * `genesis-bank:42` (`restoreTruistDeposit.ts`) and `:4`, `:5`, `:108`, `:117`,
+ * `:139`, `:161` (`restoreCollidedCharges.ts`, $55.00). The reasoning kept
+ * below is preserved as the record of what was believed at the time; it is NOT
+ * a description of a correct pass, and nothing should be modelled on it.
+ *
+ * WHERE IT WENT WRONG, in one sentence: "has a same-amount, same-flow twin
+ * within two days" is not the same claim as "is a copy of that twin", because a
+ * twin can only be spoken for ONCE. `financeGenesisBackfill.ts#claimExisting`
+ * consumes a live-feed row when a curated row matches it, precisely so two
+ * genuinely distinct same-day charges cannot both collapse onto one real row.
+ * This pass then matched several curated rows against the very twins the
+ * backfill had already consumed. It never re-derived the pairing.
+ *
+ * The generality worth carrying forward: a deletion justified only by amount +
+ * date needs a source outside the ledger to confirm it, and it needs to consume
+ * its evidence one-to-one. See `restoreCollidedCharges.ts`, which does both.
+ *
  * THE BUG. The 2026 bank import (`financeGenesisBackfill.ts`) deduped each of its 213
  * rows against the ledger AS IT STOOD AT THAT MOMENT — exact amount, same flow,
  * postedAt within ±2 days. That correctly skipped 201 rows the Relay/Stripe feed had

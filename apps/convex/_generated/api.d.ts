@@ -187,6 +187,7 @@ import type * as lib_seed_historical_genesisCleanup2026 from "../lib/seed/histor
 import type * as lib_seed_historical_genesisDedupe2026 from "../lib/seed/historical/genesisDedupe2026.js";
 import type * as lib_seed_historical_genesisInkindExpenses from "../lib/seed/historical/genesisInkindExpenses.js";
 import type * as lib_seed_historical_genesisLtn from "../lib/seed/historical/genesisLtn.js";
+import type * as lib_seed_historical_genesisRestore2026 from "../lib/seed/historical/genesisRestore2026.js";
 import type * as lib_seed_historical_givebutterRepair2026 from "../lib/seed/historical/givebutterRepair2026.js";
 import type * as lib_seed_historical_giving from "../lib/seed/historical/giving.js";
 import type * as lib_seed_historical_ltn from "../lib/seed/historical/ltn.js";
@@ -301,6 +302,7 @@ import type * as reimbursementBackfill from "../reimbursementBackfill.js";
 import type * as reimbursements from "../reimbursements.js";
 import type * as reminders from "../reminders.js";
 import type * as responsibilities from "../responsibilities.js";
+import type * as restoreCollidedCharges from "../restoreCollidedCharges.js";
 import type * as restoreTruistDeposit from "../restoreTruistDeposit.js";
 import type * as reverseBadSettlement from "../reverseBadSettlement.js";
 import type * as roleAssignments from "../roleAssignments.js";
@@ -562,6 +564,7 @@ declare const fullApi: ApiFromModules<{
   "lib/seed/historical/genesisDedupe2026": typeof lib_seed_historical_genesisDedupe2026;
   "lib/seed/historical/genesisInkindExpenses": typeof lib_seed_historical_genesisInkindExpenses;
   "lib/seed/historical/genesisLtn": typeof lib_seed_historical_genesisLtn;
+  "lib/seed/historical/genesisRestore2026": typeof lib_seed_historical_genesisRestore2026;
   "lib/seed/historical/givebutterRepair2026": typeof lib_seed_historical_givebutterRepair2026;
   "lib/seed/historical/giving": typeof lib_seed_historical_giving;
   "lib/seed/historical/ltn": typeof lib_seed_historical_ltn;
@@ -676,6 +679,7 @@ declare const fullApi: ApiFromModules<{
   reimbursements: typeof reimbursements;
   reminders: typeof reminders;
   responsibilities: typeof responsibilities;
+  restoreCollidedCharges: typeof restoreCollidedCharges;
   restoreTruistDeposit: typeof restoreTruistDeposit;
   reverseBadSettlement: typeof reverseBadSettlement;
   roleAssignments: typeof roleAssignments;
