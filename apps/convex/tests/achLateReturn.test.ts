@@ -125,6 +125,13 @@ beforeEach(() => {
   priorSecret = process.env.STRIPE_WEBHOOK_SECRET;
   process.env.STRIPE_WEBHOOK_SECRET = SECRET;
   process.env.STRIPE_SECRET_KEY = "sk_test_x";
+  // Stubbed for EVERY test, not just the ones that assert on it. The route
+  // tests below schedule `onDisputeCreated`, and a scheduled action can still
+  // be running when the test body returns — if it reaches an unstubbed
+  // `fetch` it throws into teardown, which surfaces as an unhandled rejection
+  // that fails the whole run while every test still reports green. Individual
+  // tests re-stub with the session they need.
+  installStripeFetch(SESSION);
 });
 afterEach(() => {
   globalThis.fetch = realFetch;
@@ -177,7 +184,9 @@ describe("the webhook route", () => {
 
     await postEvent(t, "charge.dispute.created", disputeEvent());
 
+    // Read the queue BEFORE draining it — what got scheduled is the assertion.
     const jobs = await scheduled(t, "onDisputeCreated");
+    await t.finishInProgressScheduledFunctions();
     expect(jobs).toHaveLength(1);
     expect(jobs[0]).toMatchObject({
       disputeId: "dp_late_return",
@@ -195,6 +204,7 @@ describe("the webhook route", () => {
     await postEvent(t, "charge.dispute.closed", disputeEvent({ status: "won" }));
 
     const jobs = await scheduled(t, "onDisputeClosed");
+    await t.finishInProgressScheduledFunctions();
     expect(jobs).toHaveLength(1);
     expect(jobs[0]).toMatchObject({ disputeId: "dp_late_return", status: "won" });
   });
