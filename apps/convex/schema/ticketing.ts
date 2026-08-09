@@ -569,12 +569,74 @@ export const sales = defineTable({
   externalRef: v.optional(v.string()),
   /** When the card was tapped, not when we imported it. */
   soldAt: v.number(),
-  /** Gross, before Stripe's cut — the customer paid this. */
+  /** Gross of the SALE, before Stripe's cut. Equal to what the customer paid on
+   *  every row that is purely a sale — which is all of them until someone splits
+   *  a bundled gift out of one, at which point the payment is
+   *  `grossCents + donationCents` and this field is the merch half alone. See
+   *  `donationCents` for why the split lands this way round. */
   grossCents: v.number(),
-  /** Stripe's fee on this charge, read from its balance transaction. Never derived. */
+  /**
+   * An outright GIFT that rode in on the same payment as the merch — the sales
+   * counterpart of `ticketOrders.donationCents`, and deliberately the same shape
+   * rather than a second pattern for the same problem.
+   *
+   * WHY THIS EXISTS. The in-person rail is a third-party Tap-to-Pay app
+   * (`com.pocketvendor.payment`) that sends Stripe one amount and nothing else, so
+   * a customer who wants a $30 tee AND to give $20 leaves behind a single $50
+   * charge. The owner, 2026-08-08: "The $50 was someone wanting to buy a shirt but
+   * also give a donation, I had no way to really do that so I just typed in 50."
+   * With nowhere to put the gift, the whole $50 booked as merch revenue — money in
+   * the right total but the wrong stream, invisible to the donor's record and to
+   * every giving report.
+   *
+   * THE INVARIANT, which is the whole point: this is NOT part of `grossCents`.
+   * `grossCents + donationCents` is what the card was charged; `grossCents` alone
+   * is what `reconciliation.ts#computeBookBalances` counts as sales revenue, and
+   * the gift half is counted exactly once more — as a real `gifts` row, through
+   * `recordGiftForDonor`. Total revenue is therefore unchanged by a split; only
+   * which stream it lands in moves. This is the same arrangement `ticketOrders`
+   * uses (`totalCents` is the ticket subtotal, the bundled donation sits beside
+   * it and settles into giving), and it is the right way round for the same
+   * reason: it makes the DEFAULT read of a sale's gross correct. Carve the gift
+   * out of `grossCents` instead and every one of the five call sites that sums
+   * this column would have to remember to subtract it, and the one that forgot
+   * would double-count the gift — precisely the class of bug this reconciliation
+   * spent three days chasing.
+   *
+   * THE FEE IS NOT SPLIT. There is one fee and it attaches to the whole payment;
+   * `feeCents` keeps all of it. Stripe stated that number for the charge and never
+   * stated a per-half breakdown, so any split of it would be derived — which
+   * `feeCents` documents itself as never being — and `gifts` has no fee field to
+   * hold the other piece anyway. It changes no total either way: fees are booked
+   * as their own monthly expense by `processorFees.ts` (swept from Stripe's own
+   * balance-transaction ledger, not from this column), and book value never nets
+   * them out of revenue.
+   *
+   * Absent/0 = an ordinary sale, which is every historical row.
+   */
+  donationCents: v.optional(v.number()),
+  /** The `gifts` row `donationCents` was written to. Present iff `donationCents`
+   *  is — it is what makes a split REVERSIBLE: undoing one has to take the gift
+   *  back out through `removeGiftRow` (donor lifetime, gift count, donor status,
+   *  scope rollups, the cross-chapter identity aggregate and the territory launch
+   *  pot all hang off that helper), and it can only do that to the exact row the
+   *  split created. Recording the id beats re-finding the gift by amount and date,
+   *  which is how a real $500 bank deposit got deleted earlier in this
+   *  reconciliation for matching a duplicate. */
+  donationGiftId: v.optional(v.id("gifts")),
+  /** Who split this payment and when — the person, not the user, because finance
+   *  actors are `people` everywhere else in this domain. A split is a human's
+   *  claim about a charge Stripe was silent on, so it carries its author. */
+  donationSplitBy: v.optional(v.id("people")),
+  donationSplitAt: v.optional(v.number()),
+  /** Stripe's fee on this charge, read from its balance transaction. Never derived.
+   *  Belongs to the WHOLE payment, including any `donationCents` half — see there. */
   feeCents: v.number(),
-  /** What was sold. Reconstructed from the amount when the payment app sent no line
-   *  items — see `lib/salesCatalog.ts` for why that's sound and where it stops. */
+  /** What was sold, for `grossCents` — NOT for the payment, when the two differ.
+   *  Σ(quantity × unitPriceCents) is either 0 (nothing resolved) or exactly
+   *  `grossCents`; a bundled `donationCents` is a gift and buys no item, so it
+   *  never appears here. Reconstructed from the amount when the payment app sent no
+   *  line items — see `lib/salesCatalog.ts` for why that's sound and where it stops. */
   items: v.array(
     v.object({
       /** Product name, or a price-point label ("$2 item") when the price is shared. */
@@ -591,12 +653,17 @@ export const sales = defineTable({
    *  "PW Tee ×2" is fact or inference needs to know which, and because a re-sync is
    *  allowed to move a row UP this ladder and never down:
    *   - `manual` — a HUMAN who was there settled it, choosing from the baskets the amount
-   *     actually makes (`sales.setSaleItems`). It tops the ladder deliberately: every rung
-   *     below is the sync's own reading of a payload, and a person deliberately correcting
-   *     one afterwards is a stronger statement than any field the processor happened to
-   *     send. Being the top rung is also what PROTECTS the correction — `outranks` already
-   *     stops a re-sync moving a row down, so a hand-set breakdown survives every future
-   *     enrichment run without the sync needing to know this rung exists.
+   *     actually makes (`sales.setSaleItems`), or naming the merch half of a payment they
+   *     split a gift out of (`salesDonations.ts#splitBundledDonation`). It tops the ladder
+   *     deliberately: every rung below is the sync's own reading of a payload, and a person
+   *     deliberately correcting one afterwards is a stronger statement than any field the
+   *     processor happened to send. Being the top rung is also what PROTECTS the correction
+   *     — `outranks` already stops a re-sync moving a row down, so a hand-set breakdown
+   *     survives every future enrichment run without the sync needing to know this rung
+   *     exists. That protection is load-bearing for a SPLIT row in particular: its
+   *     `grossCents` is only the merch half, while every rung below reads the FULL Stripe
+   *     charge, so a sync winning here would write the whole payment's basket onto it and
+   *     leave `items` and `grossCents` contradicting each other.
    *   - `stripe_line_items` — Stripe told us, exactly. The charge's
    *     `metadata.line_items` named real Stripe Price objects, and Σ(unit_amount × qty)
    *     was verified equal to the charge to the cent. Neither SKU nor price is inferred.
