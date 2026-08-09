@@ -5,16 +5,18 @@ import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { NEW_YORK_CHAPTER_SLUG } from "../lib/seed/historical/mapping";
-import { feeBudgetNotes } from "../processorFees";
+import { isSpend, needsBudget } from "../finances";
 
 /**
- * Processor fees — the monthly Stripe fee row, its evidence, and its budget.
+ * Processor fees — the monthly Stripe fee row and its evidence.
  *
  * The three things this suite exists to hold still, all of them owner
  * complaints from 2026-08-08:
  *  1. the row must never be dated in the future,
  *  2. the figure must be checkable — the stored entries have to ADD UP to it,
- *  3. it must find its way into a budget without anyone bypassing approval.
+ *  3. it must NEVER be asked which budget it belongs to — a fee is charged,
+ *     not chosen, so there is no decision for a budget to control
+ *     (owner, 2026-08-09).
  *
  * Money math is asserted in cents, never in formatted strings.
  */
@@ -104,6 +106,12 @@ function entry(
 }
 
 /** One closed month: $50.00 of fees over three ledger entries. */
+/** The fee rows this suite writes — the `stripe-fees:` externalId is the key. */
+async function feeRows(t: ReturnType<typeof newT>) {
+  const all = await run(t, (ctx) => ctx.db.query("transactions").collect());
+  return all.filter((r) => r.externalId?.startsWith("stripe-fees:"));
+}
+
 const JULY = {
   month: "2026-07",
   feeCents: 5000,
@@ -276,155 +284,109 @@ describe("upsertFeeRows — the row", () => {
 
 // ── The budget ───────────────────────────────────────────────────────────────
 
-describe("upsertFeeRows — the budget", () => {
-  test("proposes a DRAFT yearly budget and refuses to attribute to it", async () => {
+// ── The sweep ────────────────────────────────────────────────────────────────
+
+describe("upsertFeeRows — a fee is never asked which budget it belongs to", () => {
+  test("a new fee row is stamped non-discretionary, and reads as NOT needing a budget", async () => {
     const s = await seedNy();
-    const r = await s.t.mutation(internal.processorFees.upsertFeeRows, {
-      months: [JULY],
-      execute: true,
-    });
-    expect(r.budgets).toEqual([
-      { year: 2026, label: "Processor fees 2026", status: "draft", createdNow: true, attachedRows: 0 },
-    ]);
-
-    const [b] = await budgets(s);
-    expect(b).toMatchObject({
-      chapterId: s.chapterId,
-      type: "recurring",
-      cadence: "yearly",
-      year: 2026,
-      categoryId: s.categoryId,
-      fundId: s.fundId,
-      approvalStatus: "draft",
-    });
-    // Proposed at what the year has already cost, rounded up to $100.
-    expect(b.amountCents).toBe(10_000);
-    expect(b.createdBy).toBeUndefined();
-
-    // A draft is a proposal, not authority — the row stays in Needs budget.
-    expect((await feeRow(s, "2026-07"))?.budgetId).toBeUndefined();
-  });
-
-  test("attributes as soon as a human approves, and says how many rows moved", async () => {
-    const s = await seedNy();
-    await s.t.mutation(internal.processorFees.upsertFeeRows, { months: [JULY], execute: true });
-    const [b] = await budgets(s);
-    await run(s.t, (ctx) => ctx.db.patch(b._id, { approvalStatus: "approved" }));
 
     const r = await s.t.mutation(internal.processorFees.upsertFeeRows, {
       months: [JULY],
       execute: true,
     });
-    expect(r.budgets[0]).toMatchObject({ status: "approved", createdNow: false, attachedRows: 1 });
-    const row = await feeRow(s, "2026-07");
-    expect(row?.budgetId).toBe(b._id);
-    expect(row?.fundId).toBe(s.fundId);
-
-    // And the next run has nothing left to do.
-    const settled = await s.t.mutation(internal.processorFees.upsertFeeRows, {
-      months: [JULY],
-      execute: true,
-    });
-    expect(settled).toMatchObject({ unchanged: 1 });
-    expect(settled.budgets[0].attachedRows).toBe(0);
-  });
-
-  test("adopts a treasurer's own yearly Bank & Fees budget rather than making a second", async () => {
-    const s = await seedNy();
-    const mine = await run(s.t, (ctx) =>
-      ctx.db.insert("budgets", {
-        chapterId: s.chapterId,
-        amountCents: 250_00,
-        label: "Card fees",
-        type: "recurring",
-        cadence: "yearly",
-        year: 2026,
-        fundId: s.fundId,
-        categoryId: s.categoryId,
-        approvalStatus: "approved",
-        createdAt: Date.now(),
-      }),
-    );
-    const r = await s.t.mutation(internal.processorFees.upsertFeeRows, {
-      months: [JULY],
-      execute: true,
-    });
-    expect(await budgets(s)).toHaveLength(1);
-    expect(r.budgets[0]).toMatchObject({ label: "Card fees", createdNow: false, attachedRows: 1 });
-    expect((await feeRow(s, "2026-07"))?.budgetId).toBe(mine);
-  });
-
-  test("never argues with a cap a human set", async () => {
-    const s = await seedNy();
-    await s.t.mutation(internal.processorFees.upsertFeeRows, { months: [JULY], execute: true });
-    const [b] = await budgets(s);
-    await run(s.t, (ctx) => ctx.db.patch(b._id, { amountCents: 1_000_00 }));
-
-    await s.t.mutation(internal.processorFees.upsertFeeRows, {
-      months: [{ ...JULY, feeCents: 900_00 }],
-      execute: true,
-    });
-    expect((await budgets(s))[0].amountCents).toBe(1_000_00);
-  });
-
-  test("never re-points a row somebody already coded elsewhere", async () => {
-    const s = await seedNy();
-    await s.t.mutation(internal.processorFees.upsertFeeRows, { months: [JULY], execute: true });
-    const [b] = await budgets(s);
-    await run(s.t, (ctx) => ctx.db.patch(b._id, { approvalStatus: "approved" }));
-
-    const otherBudget = await run(s.t, (ctx) =>
-      ctx.db.insert("budgets", {
-        chapterId: s.chapterId,
-        amountCents: 100_00,
-        label: "Somewhere else",
-        type: "recurring",
-        cadence: "yearly",
-        year: 2026,
-        approvalStatus: "approved",
-        createdAt: Date.now(),
-      }),
-    );
-    const row = await feeRow(s, "2026-07");
-    await run(s.t, (ctx) => ctx.db.patch(row!._id, { budgetId: otherBudget }));
-
-    await s.t.mutation(internal.processorFees.upsertFeeRows, { months: [JULY], execute: true });
-    expect((await feeRow(s, "2026-07"))?.budgetId).toBe(otherBudget);
-  });
-
-  test("one budget per calendar year — a 2025 fee row can't count against 2026", async () => {
-    const s = await seedNy();
-    const june2025 = { ...JULY, month: "2025-06", postedAt: monthEnd("2025-06") };
-    const r = await s.t.mutation(internal.processorFees.upsertFeeRows, {
-      months: [june2025, JULY],
-      execute: true,
-    });
-    expect(r.budgets.map((b) => b.year)).toEqual([2025, 2026]);
-    expect(await budgets(s)).toHaveLength(2);
-  });
-
-  test("without a Bank & Fees category there is nothing to identify, so nothing is created", async () => {
-    const s = await seedNy();
-    await run(s.t, (ctx) => ctx.db.delete(s.categoryId));
-    const r = await s.t.mutation(internal.processorFees.upsertFeeRows, {
-      months: [JULY],
-      execute: true,
-    });
-    expect(r.budgets).toEqual([]);
-    expect(await budgets(s)).toHaveLength(0);
     expect(r.created).toBe(1);
+    expect(r.marked).toBe(1);
+
+    const row = (await feeRows(s.t))[0];
+    expect(row.feeOrigin).toBe("stripe_processing");
+    // Coded, and counted as spend — the money really left.
+    expect(row.categoryId).toBe(s.categoryId);
+    expect(row.flow).toBe("outflow");
+    expect(isSpend(row)).toBe(true);
+    // But never attributed, and never asked to be.
+    expect(row.budgetId).toBeUndefined();
+    expect(needsBudget(row)).toBe(false);
   });
 
-  test("a dry run proposes nothing", async () => {
+  test("a row written before the marker existed is back-filled by the next sync", async () => {
+    const s = await seedNy();
+    await s.t.mutation(internal.processorFees.upsertFeeRows, { months: [JULY], execute: true });
+
+    // Strip the marker, reproducing one of the 8 rows stuck in "Needs budget".
+    const before = (await feeRows(s.t))[0];
+    await run(s.t, (ctx) => ctx.db.patch(before._id, { feeOrigin: undefined }));
+    expect(needsBudget((await feeRows(s.t))[0])).toBe(true);
+
+    const r = await s.t.mutation(internal.processorFees.upsertFeeRows, {
+      months: [JULY],
+      execute: true,
+    });
+    expect(r.marked).toBe(1);
+    expect(r.updated).toBe(1);
+    const after = (await feeRows(s.t))[0];
+    expect(after.feeOrigin).toBe("stripe_processing");
+    expect(needsBudget(after)).toBe(false);
+    // Nothing else moved.
+    expect(after.amountCents).toBe(before.amountCents);
+    expect(after._id).toBe(before._id);
+  });
+
+  test("a settled run is unchanged — the back-fill doesn't re-fire every night", async () => {
+    const s = await seedNy();
+    await s.t.mutation(internal.processorFees.upsertFeeRows, { months: [JULY], execute: true });
+    const again = await s.t.mutation(internal.processorFees.upsertFeeRows, {
+      months: [JULY],
+      execute: true,
+    });
+    expect(again).toMatchObject({ created: 0, updated: 0, unchanged: 1, marked: 0 });
+  });
+
+  test("THE LINE: a discretionary cost in the SAME category still needs a budget", async () => {
+    const s = await seedNy();
+    await s.t.mutation(internal.processorFees.upsertFeeRows, { months: [JULY], execute: true });
+
+    // A paid platform tier — booked to Bank & Fees, exactly like the fee row,
+    // but somebody CHOSE it. The exemption is by fee origin, never by category.
+    const subscriptionId = await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 4_900,
+        postedAt: Date.UTC(2026, 6, 15, 12),
+        description: "Givebutter Plus — monthly",
+        status: "categorized",
+        categoryId: s.categoryId,
+        createdAt: Date.now(),
+      }),
+    );
+
+    const subscription = await run(s.t, (ctx) => ctx.db.get(subscriptionId));
+    expect(subscription!.feeOrigin).toBeUndefined();
+    expect(needsBudget(subscription!)).toBe(true);
+
+    const fee = (await feeRows(s.t))[0];
+    expect(fee.categoryId).toBe(subscription!.categoryId);
+    expect(needsBudget(fee)).toBe(false);
+  });
+
+  test("nothing is proposed, created or approved — no budget row is ever written", async () => {
+    const s = await seedNy();
+    await s.t.mutation(internal.processorFees.upsertFeeRows, {
+      months: [JULY, { ...JULY, month: "2025-12", postedAt: Date.UTC(2025, 11, 31, 12) }],
+      execute: true,
+    });
+    expect(await run(s.t, (ctx) => ctx.db.query("budgets").collect())).toHaveLength(0);
+  });
+
+  test("a dry run still writes nothing", async () => {
     const s = await seedNy();
     const r = await s.t.mutation(internal.processorFees.upsertFeeRows, { months: [JULY] });
     expect(r.created).toBe(1);
-    expect(await budgets(s)).toHaveLength(0);
-    expect(await feeRow(s, "2026-07")).toBeNull();
+    expect(r.marked).toBe(0);
+    expect(await feeRows(s.t)).toHaveLength(0);
   });
 });
-
-// ── The sweep ────────────────────────────────────────────────────────────────
 
 describe("runFeeSync (mocked Stripe)", () => {
   const realFetch = globalThis.fetch;
@@ -583,28 +545,3 @@ describe("feeRowDetail", () => {
 
 // ── What the morning run says ────────────────────────────────────────────────
 
-describe("feeBudgetNotes", () => {
-  test("announces a budget it just drafted", () => {
-    expect(
-      feeBudgetNotes([
-        { year: 2026, label: "Processor fees 2026", status: "draft", createdNow: true, attachedRows: 0 },
-      ])[0],
-    ).toContain('created a DRAFT "Processor fees 2026"');
-  });
-
-  test("keeps asking while it sits unapproved", () => {
-    expect(
-      feeBudgetNotes([
-        { year: 2026, label: "Processor fees 2026", status: "submitted", createdNow: false, attachedRows: 0 },
-      ])[0],
-    ).toContain("Needs budget until it's approved");
-  });
-
-  test("says nothing once everything is approved and attached", () => {
-    expect(
-      feeBudgetNotes([
-        { year: 2026, label: "Processor fees 2026", status: "approved", createdNow: false, attachedRows: 0 },
-      ]),
-    ).toEqual([]);
-  });
-});

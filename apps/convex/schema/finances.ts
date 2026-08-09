@@ -40,6 +40,7 @@ import {
   SPECIALIZED_ROLE_KINDS,
   FINANCE_AUDIT_ACTIONS,
   AUTO_TRANSFER_ORIGINS,
+  NON_DISCRETIONARY_FEE_ORIGINS,
   STRIPE_PAYOUT_PROCESS_STATES,
   RECONCILIATION_FLAG_KINDS,
   RECONCILIATION_FLAG_STATUSES,
@@ -470,6 +471,29 @@ export const transactions = defineTable({
   // `payout_allocation` (revenue doesn't pay down a card imbalance).
   transferOrigin: v.optional(
     v.union(...AUTO_TRANSFER_ORIGINS.map((o) => v.literal(o))),
+  ),
+  // ── NON-DISCRETIONARY: a fee that was CHARGED, not chosen ─────────────────
+  // Set only on the per-transaction processor/bank fee rollups — by
+  // `processorFees.ts` (sweeping Stripe's balance-transaction ledger) and
+  // `cashAppBackfill.ts` (reproducing the Cash App withdrawals). ABSENT on
+  // everything else, and that is the point.
+  //
+  // A budget is a control on CHOICE, and these are not choices: the fee is
+  // mechanically a percentage of money the org already decided to accept, and
+  // it cannot be declined without declining the gift. So a row carrying this
+  // is never asked "which budget?" (`finances.ts#needsBudget`). It still
+  // counts as spend everywhere else — the money really left.
+  //
+  // NOT a category exemption. Coding to "Bank & Fees" changes nothing; a
+  // monthly platform subscription or an accounting service is a real decision
+  // and stays budgeted even though it books to the same category. The line is
+  // drawn at the fee ORIGIN, which is why this is a field and not a name match.
+  //
+  // A positive marker rather than an inference off the `stripe-fees:`
+  // external-id prefix — that prefix would miss Cash App's rows entirely, and
+  // an id format is not a promise. Same discipline as `preMarkFlow`.
+  feeOrigin: v.optional(
+    v.union(...NON_DISCRETIONARY_FEE_ORIGINS.map((o) => v.literal(o))),
   ),
   // The Stripe payout this row was matched to by the reconciliation engine —
   // set on the central bank DEPOSIT row (`increase_ach`/`stripe_fc` inflow)

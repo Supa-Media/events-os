@@ -41,6 +41,22 @@
  * is made of. The entries are also the answer to "which of MY transactions had a fee":
  * each carries the Stripe `source` id it came off.
  *
+ * AND NEVER ATTRIBUTED TO A BUDGET. A budget is a control on CHOICE; this is not
+ * one. The fee is mechanically 2.9% + 30c of money the org already decided to
+ * accept, and it cannot be declined without declining the gift — so a fee budget
+ * could never cause anyone to spend less. It could only produce friction and
+ * false alarms, and it is an INVERTED indicator besides: "over budget on fees"
+ * is what a record fundraising month looks like. At $1M raised Stripe's cut is
+ * ~$29,000 against a $300 ceiling.
+ *
+ * This module used to propose a DRAFT yearly budget per fee year and wait for a
+ * human to approve it. Nobody ever did, correctly — there was no decision to
+ * ratify — so 8 rows totalling $318.69 sat permanently in "Needs budget". The
+ * rows now carry `feeOrigin`, which `finances.ts#needsBudget` reads, and the
+ * question is never asked. They are still coded, still reconciled, still in
+ * every spend total: a fee is real money out, it just isn't anybody's choice.
+ * (Owner, 2026-08-09.)
+ *
  * GIVEBUTTER IS NOT COVERED HERE. Its fees are deducted before the payout lands and this
  * deployment has no Givebutter API integration, so there is nothing to read. Its
  * deposits also currently exceed recorded revenue by $4,550.70 — almost certainly event
@@ -53,10 +69,6 @@ import type { ActionCtx, MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { ConvexError, v } from "convex/values";
-import {
-  effectiveBudgetApprovalStatus,
-  type BudgetApprovalStatus,
-} from "@events-os/shared";
 import { NEW_YORK_CHAPTER_SLUG } from "./lib/seed/historical/mapping";
 import { requireSuperuser } from "./lib/superuser";
 import { requireFinanceRole } from "./lib/finance";
@@ -227,123 +239,6 @@ function breakdownSentence(
   return shown.join(", ");
 }
 
-const feeBudgetStatus = v.object({
-  year: v.number(),
-  label: v.string(),
-  /** The EFFECTIVE approval status; `"none"` when no budget could be resolved. */
-  status: v.string(),
-  createdNow: v.boolean(),
-  /** Fee rows this run pointed at the budget (0 once they all already are). */
-  attachedRows: v.number(),
-});
-
-type FeeBudgetState = {
-  year: number;
-  label: string;
-  budgetId: Id<"budgets"> | null;
-  status: BudgetApprovalStatus | "none";
-  createdNow: boolean;
-  attachedRows: number;
-};
-
-/** The label the sync gives a budget it creates. Also how a human recognises it. */
-function feeBudgetLabel(year: number): string {
-  return `Processor fees ${year}`;
-}
-
-/**
- * Find — or, once, propose — the recurring budget each fee year belongs in.
- *
- * CREATED AS A DRAFT, NEVER AS AN APPROVED BUDGET. There is a way to forge one:
- * a budget row with no `approvalStatus` at all is GRANDFATHERED and reads as
- * approved (`effectiveBudgetApprovalStatus`), which is how the historical
- * event/project backfills work. Using that here would let a cron manufacture
- * spending authority at 4am, and approving a budget is the one control the
- * finance workflow has — `approveBudget` demands an approval seat, a real
- * person, and separation of duties. A sync is none of those things. So the
- * sync proposes and a human approves; until they do, the fee rows stay in
- * "Needs budget", which is the honest state ("not yet authorised"), not a bug.
- * The morning engine says so in its run notes so the ask is impossible to miss.
- *
- * MATCHED BY SHAPE, NOT BY LABEL: any chapter `recurring`/`yearly` budget for
- * that year already coded to Bank & Fees is adopted. So a treasurer who made
- * their own "Card fees" budget gets theirs used rather than a duplicate, and
- * renaming ours doesn't orphan it.
- *
- * The proposed amount is what the year has ALREADY cost, rounded up to the next
- * $100 — a floor, not a forecast, and the approver's to change. It is written
- * once at creation and never patched again: the sync must not spend the rest of
- * the year silently arguing with a cap a human set.
- */
-async function resolveFeeBudgets(
-  ctx: MutationCtx,
-  chapterId: Id<"chapters">,
-  category: Doc<"budgetCategories"> | null,
-  months: { month: string; feeCents: number }[],
-  write: boolean,
-): Promise<Map<number, FeeBudgetState>> {
-  const out = new Map<number, FeeBudgetState>();
-  // Without the category there is no way to tell this budget apart from any
-  // other yearly recurring one, so there is nothing safe to create or adopt.
-  if (!category) return out;
-
-  const feeCentsByYear = new Map<number, number>();
-  for (const mo of months) {
-    if (mo.feeCents <= 0) continue;
-    const year = Number(mo.month.slice(0, 4));
-    feeCentsByYear.set(year, (feeCentsByYear.get(year) ?? 0) + mo.feeCents);
-  }
-
-  // A generous bound on one chapter's recurring budgets (they number in the
-  // dozens) — the same discipline the rest of the finance layer's scans use.
-  const chapterBudgets = await ctx.db
-    .query("budgets")
-    .withIndex("by_chapter_and_type", (q) =>
-      q.eq("chapterId", chapterId).eq("type", "recurring"),
-    )
-    .take(5000);
-
-  for (const [year, yearCents] of feeCentsByYear) {
-    const label = feeBudgetLabel(year);
-    const match = chapterBudgets.find(
-      (b) =>
-        b.cadence === "yearly" &&
-        b.year === year &&
-        b.categoryId === category._id,
-    );
-    if (match) {
-      out.set(year, {
-        year,
-        label: match.label?.trim() || label,
-        budgetId: match._id,
-        status: effectiveBudgetApprovalStatus(match.approvalStatus),
-        createdNow: false,
-        attachedRows: 0,
-      });
-      continue;
-    }
-    if (!write) {
-      out.set(year, { year, label, budgetId: null, status: "none", createdNow: false, attachedRows: 0 });
-      continue;
-    }
-    const budgetId = await ctx.db.insert("budgets", {
-      chapterId,
-      amountCents: Math.max(10_000, Math.ceil(yearCents / 10_000) * 10_000),
-      label,
-      type: "recurring",
-      cadence: "yearly",
-      year,
-      fundId: category.fundId,
-      categoryId: category._id,
-      createdAt: Date.now(),
-      // `createdBy` is deliberately absent — no user made this.
-      approvalStatus: "draft",
-    });
-    out.set(year, { year, label, budgetId, status: "draft", createdNow: true, attachedRows: 0 });
-  }
-  return out;
-}
-
 export const upsertFeeRows = internalMutation({
   args: {
     months: v.array(
@@ -364,7 +259,7 @@ export const upsertFeeRows = internalMutation({
     updated: v.number(),
     unchanged: v.number(),
     totalFeeCents: v.number(),
-    budgets: v.array(feeBudgetStatus),
+    marked: v.number(),
   }),
   handler: async (ctx, { months, execute }) => {
     const write = execute ?? false;
@@ -387,30 +282,7 @@ export const upsertFeeRows = internalMutation({
       .take(6000);
     const byRef = new Map(existing.filter((t) => t.externalId).map((t) => [t.externalId!, t]));
 
-    // ── The budget these rows belong in ────────────────────────────────────────
-    // "What budget does bank fees go into, logically?" (owner, 2026-08-08).
-    // Not an event's and not a project's: a processing fee is a standing cost of
-    // the payment rail, incurred because the org accepts card money at all. That
-    // is the definition of a RECURRING budget, at the chapter that banks the
-    // money, under the category the row is already coded to (Bank & Fees).
-    //
-    // YEARLY cadence, one row per calendar year. A monthly cap would be a number
-    // nobody can forecast (a month with card readers in the field costs multiples
-    // of a quiet one) and would make every month a decision; the year is the
-    // period a treasurer actually reviews a rail cost over. It also matches how
-    // attribution works — `txnCountsTowardBudget` narrows a `yearly` budget to
-    // `{ year }` alone, so any month's fee row lands in its year's budget with no
-    // month plumbing. A fee row can therefore only ever attach to a budget for
-    // ITS OWN year, which is why this resolves per year rather than once.
-    const budgetsByYear = await resolveFeeBudgets(
-      ctx,
-      chapter._id,
-      category ?? null,
-      months,
-      write,
-    );
-
-    let created = 0, updated = 0, unchanged = 0, totalFeeCents = 0;
+    let created = 0, updated = 0, unchanged = 0, totalFeeCents = 0, marked = 0;
     for (const mo of months) {
       if (mo.feeCents <= 0) continue;
       totalFeeCents += mo.feeCents;
@@ -422,17 +294,6 @@ export const upsertFeeRows = internalMutation({
         `Covers both the cut taken from each payment AND the fees Stripe bills on its ` +
         `own account (Terminal readers, payout and account fees). Revenue is recorded ` +
         `gross, so this is the whole difference between what was given and what banked.`;
-      // Attach the year's budget only once it is ATTRIBUTABLE — a draft budget
-      // is a proposal, not authority, and `categorizeTransaction` would refuse
-      // the same link from a human. Never re-point a row somebody has already
-      // coded somewhere else: an automated tidy-up must not overrule a decision.
-      const feeBudget = budgetsByYear.get(Number(mo.month.slice(0, 4)));
-      const attributable =
-        feeBudget != null && feeBudget.budgetId != null && feeBudget.status === "approved";
-      const budgetFields =
-        attributable && category
-          ? { budgetId: feeBudget!.budgetId!, fundId: category.fundId }
-          : null;
 
       const prior = byRef.get(externalId);
       if (prior) {
@@ -447,23 +308,28 @@ export const upsertFeeRows = internalMutation({
         // breakdown, and a row whose amount happens not to have moved would
         // otherwise keep last release's note forever — the wrong explanation of a
         // right number is its own kind of untrustworthy.
+        //
+        // `feeOrigin` is back-filled on the same pass. Rows written before the
+        // marker existed are exactly the ones stuck in "Needs budget", so the
+        // sync that knows they are fees is the right thing to fix them — no
+        // migration, and it self-heals if one is ever missed.
         const samePostedAt = prior.postedAt === mo.postedAt;
-        const needsBudget = budgetFields != null && prior.budgetId == null;
+        const needsMark = prior.feeOrigin == null;
         if (
           prior.amountCents === mo.feeCents &&
           samePostedAt &&
           prior.note === note &&
-          !needsBudget
+          !needsMark
         ) { unchanged++; continue; }
         if (write) {
           await ctx.db.patch(prior._id, {
             amountCents: mo.feeCents,
             postedAt: mo.postedAt,
             note,
-            ...(needsBudget ? budgetFields : {}),
+            ...(needsMark ? { feeOrigin: "stripe_processing" as const } : {}),
           });
         }
-        if (needsBudget) feeBudget!.attachedRows++;
+        if (needsMark) marked++;
         updated++;
         continue;
       }
@@ -480,29 +346,16 @@ export const upsertFeeRows = internalMutation({
           note,
           status: "categorized",
           ...(category ? { categoryId: category._id } : {}),
-          ...(budgetFields ?? {}),
+          // NOT a budget. See this module's header and `finances.ts#needsBudget`.
+          feeOrigin: "stripe_processing",
           externalId,
           createdAt: Date.now(),
         });
-        if (budgetFields) feeBudget!.attachedRows++;
+        marked++;
       }
       created++;
     }
-    return {
-      created,
-      updated,
-      unchanged,
-      totalFeeCents,
-      budgets: [...budgetsByYear.values()]
-        .sort((a, b) => a.year - b.year)
-        .map((b) => ({
-          year: b.year,
-          label: b.label,
-          status: b.status,
-          createdNow: b.createdNow,
-          attachedRows: b.attachedRows,
-        })),
-    };
+    return { created, updated, unchanged, totalFeeCents, marked };
   },
 });
 
@@ -516,16 +369,9 @@ const feeReturns = v.object({
   updated: v.number(),
   unchanged: v.number(),
   totalFeeCents: v.number(),
-  budgets: v.array(feeBudgetStatus),
+  /** Fee rows this run stamped `feeOrigin` on (0 once they all carry it). */
+  marked: v.number(),
 });
-
-type FeeBudgetStatusResult = {
-  year: number;
-  label: string;
-  status: string;
-  createdNow: boolean;
-  attachedRows: number;
-};
 
 type FeeSyncResult = {
   dryRun: boolean;
@@ -537,38 +383,8 @@ type FeeSyncResult = {
   updated: number;
   unchanged: number;
   totalFeeCents: number;
-  budgets: FeeBudgetStatusResult[];
+  marked: number;
 };
-
-/**
- * What the morning engine (and the ops CLI) should SAY about the fee budgets.
- *
- * A draft budget nobody looks at solves nothing, so the run that proposes one
- * announces it, in the same notes stream the accounts page already shows every
- * morning. Silent when everything is approved and attached — a reconciliation
- * note that fires every day is a note people stop reading.
- */
-export function feeBudgetNotes(budgets: FeeBudgetStatusResult[]): string[] {
-  const notes: string[] = [];
-  for (const b of budgets) {
-    if (b.createdNow) {
-      notes.push(
-        `Processor fees need a budget: created a DRAFT "${b.label}" — approve it ` +
-          `in Budgets and the ${b.year} Stripe fee rows attribute automatically.`,
-      );
-    } else if (b.status !== "approved") {
-      notes.push(
-        `"${b.label}" is still ${b.status} — the ${b.year} Stripe fee rows stay in ` +
-          `Needs budget until it's approved.`,
-      );
-    } else if (b.attachedRows > 0) {
-      notes.push(
-        `Attributed ${b.attachedRows} Stripe fee row(s) to "${b.label}".`,
-      );
-    }
-  }
-  return notes;
-}
 
 /**
  * Shared body; each entry point below brings its own authorization.
@@ -751,7 +567,7 @@ async function runFeeSync(
     updated: number;
     unchanged: number;
     totalFeeCents: number;
-    budgets: FeeBudgetStatusResult[];
+    marked: number;
   } = await ctx.runMutation(internal.processorFees.upsertFeeRows, {
     months,
     ...(execute ? { execute: true } : {}),
@@ -768,7 +584,7 @@ async function runFeeSync(
     updated: r.updated,
     unchanged: r.unchanged,
     totalFeeCents: r.totalFeeCents,
-    budgets: r.budgets,
+    marked: r.marked,
   };
 }
 

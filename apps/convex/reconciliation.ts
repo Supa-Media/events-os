@@ -130,7 +130,6 @@ import {
   increasePost,
 } from "./lib/increaseApi";
 import { ROLLUP_SCAN_LIMIT, txnMatchesMode } from "./finances";
-import { feeBudgetNotes } from "./processorFees";
 
 const STRIPE_API = "https://api.stripe.com/v1";
 
@@ -2282,13 +2281,7 @@ async function runEngine(
           const fees: {
             created: number;
             updated: number;
-            budgets: {
-              year: number;
-              label: string;
-              status: string;
-              createdNow: boolean;
-              attachedRows: number;
-            }[];
+            marked: number;
           } = await ctx.runAction(internal.processorFees.syncStripeFeesOps, {
             execute: true,
           });
@@ -2297,7 +2290,10 @@ async function runEngine(
               `Refreshed Stripe processor fees (${fees.created} new, ${fees.updated} updated monthly row(s)).`,
             );
           }
-          notes.push(...feeBudgetNotes(fees.budgets));
+          // The old fee-budget notes are gone with the fee budgets themselves.
+          // They existed to nag a human into approving a draft budget the cron
+          // had proposed to itself — a note that fired every morning about a
+          // decision nobody should have been asked to make.
         } catch (err) {
           console.error("[reconciliation] processor fee sync failed", err);
           notes.push(
