@@ -82,49 +82,16 @@ export function shortDate(ts: number): string {
   });
 }
 
-// ── Client-side search (narrows the active pill's already-loaded rows) ────────
-/**
- * The lowercase haystack a row is searched against: merchant, description,
- * cardholder name, card last-4, and several amount spellings so typing an
- * amount works — raw cents (`1294`), the formatted string (`$12.94`), and the
- * bare decimal (`12.94`). Commas are stripped so `1294` still finds `$1,294.00`.
- *
- * BOTH merchant names are searchable, deliberately. Typing "Costco" has to
- * find a row renamed to Costco, and typing the bank's own `IC* COSTCO BY IN
- * CAR` has to keep finding it too — someone reconciling against a statement is
- * reading the provider's string, and a rename must never make a row
- * unfindable by what the statement calls it.
- */
-function rowHaystack(row: TxnRow): string {
-  const money = formatCents(row.amountCents); // e.g. "$1,294.00"
-  const parts = [
-    row.merchantNameOverride ?? "",
-    row.merchantName ?? "",
-    row.description ?? "",
-    row.cardholder?.name ?? "",
-    row.cardLast4 ?? "",
-    // Searchable in the merged all-books queue: typing "central" or a chapter
-    // name narrows to that book without leaving the merged view.
-    row.book.name,
-    String(row.amountCents), // raw cents: "129400"
-    money, // "$1,294.00"
-    money.replace(/[$,]/g, ""), // bare decimal: "1294.00"
-  ];
-  return parts.join(" ").toLowerCase();
-}
-
-/**
- * Narrow `rows` to those matching `query`, case-insensitively. The query is
- * trimmed and split on whitespace into terms; a row matches only if EVERY term
- * appears somewhere in its haystack (AND), so `seyi deli` finds Seyi's deli
- * charge. An empty query returns `rows` unchanged.
- */
-export function filterReconcileRows(rows: TxnRow[], query: string): TxnRow[] {
-  const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
-  if (terms.length === 0) return rows;
-  return rows.filter((row) => {
-    const hay = rowHaystack(row);
-    return terms.every((t) => hay.includes(t));
-  });
-}
+// ── Search ───────────────────────────────────────────────────────────────────
+// There is no client-side search here anymore. `filterReconcileRows`/`rowHaystack`
+// ran over the rows `listReconcile` had ALREADY narrowed, which quietly made
+// search a function of the active State filter — with the page's old default it
+// searched 14 of 346 transactions and returned a confident nothing for a vendor
+// that happened to be budgeted.
+//
+// The matching rule now lives in `@events-os/shared#matchesReconcileSearch` and
+// runs SERVER-side over the whole scope (`listReconcile`'s `search` arg), which
+// is the only place that can see the rows the filter excluded. Deleted rather
+// than left as a re-export: a second entry point into row matching is how the
+// two halves drift apart again.
 

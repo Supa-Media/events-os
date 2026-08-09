@@ -2164,6 +2164,9 @@ export * from "./csv";
 // ── Data export: dataset registry, job vocabulary, cell formatters ───────────
 export * from "./dataExport";
 export * from "./reconcileFilters";
+// The reconcile search rule — shared so `listReconcile` and the grid's search
+// box can never disagree on what a query matches (see the module doc).
+export * from "./reconcileSearch";
 
 // ── Guest teams: door-assigned attendee teams (palette + balancing rule) ─────
 export * from "./guestTeams";
