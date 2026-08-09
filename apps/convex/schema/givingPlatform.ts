@@ -612,9 +612,9 @@ export const givebutterConvertedDonations = defineTable({
  * the cross-chapter identity totals and the launch pot in one consistent move —
  * but it DELETES, and a deleted row explains nothing. Six months on, "this
  * donor's lifetime total went down by $500 in September" needs an answer, and
- * the answer has to outlive the row it is about. Same principle as
- * `reverseBadSettlement.ts`: the audit trail of a money-path event is worth
- * more than a tidy table.
+ * the answer has to outlive the row it is about. Same principle the 2026-08
+ * settlement reversal worked on (that one-off has since been removed): the
+ * audit trail of a money-path event is worth more than a tidy table.
  *
  * `giftAudit` could not do this job — its `actorUserId` is required and it is
  * documented as narrating HUMAN desk edits only. A bank return has no actor.
