@@ -24,6 +24,7 @@
  */
 import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
+import type { ActionCtx } from "./_generated/server";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { auth } from "./auth";
@@ -378,6 +379,161 @@ http.route({
 
 // ── Stripe webhook ───────────────────────────────────────────────────────────
 
+/** The Checkout Session fields the settle/cancel fan-outs below read. */
+type StripeCheckoutSession = {
+  id: string;
+  payment_intent?: string | null;
+  customer?: string | null;
+  subscription?: string | null;
+  metadata?: Record<string, string> | null;
+  amount_total?: number;
+  payment_status?: string;
+};
+
+/**
+ * Has the money actually ARRIVED, or has the donor merely finished the form?
+ *
+ * For a card these are the same instant, which is why this question did not
+ * exist until 2026-08: `checkout.session.completed` fired, the card had already
+ * authorised, and settling on the spot was right. ACH debit breaks that
+ * equivalence. `checkout.session.completed` fires the moment the donor submits
+ * their bank details, with `payment_status: "unpaid"`, and the funds land about
+ * four business days later — or never. Settling on completion would post a
+ * `gifts` row, email tickets, and light up the public activity wall for money
+ * that does not exist yet and may never, and nothing would ever take it back.
+ * That is precisely the class of bug the whole reconciliation effort has been
+ * cleaning up, so it does not get to walk in through the front door.
+ *
+ * ABSENT COUNTS AS SETTLED, deliberately. Every card session Stripe has ever
+ * sent this endpoint carries `payment_status: "paid"`, but a replay from an
+ * older API version, or a hand-crafted test payload, might omit the field
+ * entirely — and treating "missing" as "unpaid" would silently stop settling
+ * real card gifts, which is a worse failure than the one being fixed. An
+ * explicit value that isn't `paid`/`no_payment_required` is treated as NOT
+ * settled: an unrecognised future status is far more likely to be a new kind of
+ * pending than a new kind of paid.
+ */
+function checkoutSessionHasSettled(session: StripeCheckoutSession): boolean {
+  const status = session.payment_status;
+  if (status == null) return true;
+  return status === "paid" || status === "no_payment_required";
+}
+
+/**
+ * Turn a settled Checkout Session into whatever it was — the four-way fan-out
+ * on session metadata.
+ *
+ * ONE function, called from BOTH `checkout.session.completed` (a card, settled
+ * instantly) and `checkout.session.async_payment_succeeded` (a bank debit,
+ * settled days later). Those two events mean the identical thing — "this money
+ * is now real" — and the single most likely way to get delayed settlement wrong
+ * is to write the ACH path as a second copy that slowly drifts from the card
+ * path. Every branch below is already idempotent, which is what makes it safe
+ * to reach twice; Stripe delivers at least once.
+ */
+async function settleCheckoutSession(
+  ctx: ActionCtx,
+  obj: StripeCheckoutSession,
+): Promise<void> {
+  if (obj.metadata?.giveDonation === "1") {
+    // A one-time "give" checkout — settle it via the single gifts write
+    // path (`recordGiveDonationPaid`, idempotent on the session id). Amount
+    // is read from the session's own `amount_total`, never a client value.
+    // Handled BEFORE the pledge/order/donation fan-out: a give session
+    // carries no pledgeId and is neither an order nor an event donation, so
+    // without this branch it would fall through to the "unknown session"
+    // error log.
+    await ctx.runMutation(internal.givingDonations.recordGiveDonationPaid, {
+      sessionId: obj.id,
+      amountTotalCents: obj.amount_total ?? 0,
+      donorId: obj.metadata.giveDonorId ?? "",
+      scope: obj.metadata.giveScope ?? "",
+    });
+    // Flip the giver's optional activity-wall entry visible with the SETTLED
+    // one-time amount (no-op if they didn't opt in). See givingActivity.ts.
+    await ctx.runMutation(internal.givingActivity.markActivityVisible, {
+      refKey: `give:${obj.id}`,
+      amountCents: obj.amount_total ?? 0,
+    });
+  } else if (obj.metadata?.repaymentIds) {
+    // A personal-charge repayment Checkout (`stripe.ts#createRepaymentCheckout`,
+    // `cards.ts`'s "Stripe repayment" section) — bundled, so metadata
+    // carries a comma-joined list. Settled through the SAME idempotent
+    // core every other repayment rail uses (`cards.ts#settleRepayment`,
+    // guarded on `creditTransactionId`), so Stripe's at-least-once /
+    // possibly out-of-order redelivery can never post a second
+    // offsetting credit. Handled BEFORE the ticket/donation fan-out: a
+    // repayment session carries no pledgeId and is neither an order nor
+    // an event donation.
+    await ctx.runMutation(internal.cards.applyRepaymentPaidFromStripe, {
+      repaymentIds: obj.metadata.repaymentIds.split(",") as Id<
+        "personalRepayments"
+      >[],
+      sessionId: obj.id,
+      paymentIntentId: obj.payment_intent ?? undefined,
+      amountTotalCents: obj.amount_total ?? 0,
+    });
+  } else if (obj.metadata?.pledgeId) {
+    const pledgeId = obj.metadata.pledgeId;
+    // A BACKER (subscription) checkout — identified by our pledge id in the
+    // session metadata (a ticket/donation session carries none). Activate
+    // the pledge + link its Stripe customer/subscription. Idempotent, and a
+    // no-op if the id doesn't resolve — so it can't touch other rows.
+    await ctx.runMutation(internal.givingPledges.activatePledgeFromCheckout, {
+      pledgeId,
+      ...(obj.customer ? { stripeCustomerId: obj.customer } : {}),
+      ...(obj.subscription ? { stripeSubscriptionId: obj.subscription } : {}),
+    });
+    // Flip the backer's optional activity-wall entry visible. No amount is
+    // passed — the wall shows the recurring MONTHLY pledge amount stored at
+    // pending time (a subscription session's `amount_total` is $0/prorated).
+    await ctx.runMutation(internal.givingActivity.markActivityVisible, {
+      refKey: String(pledgeId),
+    });
+  } else {
+    const paymentIntentId = obj.payment_intent ?? undefined;
+    // One shared session id is either a ticket order OR a donation. Try the
+    // order first; only if it wasn't an order do we try the donation. Each
+    // path is idempotent (safe on webhook redelivery) and no-ops when the
+    // session isn't theirs, so neither can touch the other's rows.
+    const wasOrder = await ctx.runMutation(internal.ticketing.markSessionPaid, {
+      sessionId: obj.id,
+      paymentIntentId,
+    });
+    if (!wasOrder) {
+      const wasDonation = await ctx.runMutation(
+        internal.giving.markDonationPaid,
+        { sessionId: obj.id, paymentIntentId },
+      );
+      if (!wasDonation) {
+        console.error(`[stripe] webhook for unknown session ${obj.id}`);
+      }
+    }
+  }
+}
+
+/**
+ * Release whatever a Checkout Session was holding, without settling it.
+ *
+ * Shared by `checkout.session.expired` (the donor walked away) and
+ * `checkout.session.async_payment_failed` (the bank refused the debit). Both
+ * mean "no money is coming from this session", and both must leave the books
+ * exactly as they were. Each mutation no-ops when the session isn't its own.
+ *
+ * There is deliberately nothing to undo for a `/give` one-time gift or a
+ * pledge: neither writes a `gifts` row before settlement (see
+ * `givingDonations.ts`'s module doc — "an abandoned checkout leaves no trace"),
+ * so a failed debit has left nothing behind to reverse. That property is why
+ * gating settlement is a complete fix for the pre-settlement window.
+ */
+async function cancelCheckoutSession(
+  ctx: ActionCtx,
+  sessionId: string,
+): Promise<void> {
+  await ctx.runMutation(internal.ticketing.cancelPendingOrder, { sessionId });
+  await ctx.runMutation(internal.giving.cancelPendingDonation, { sessionId });
+}
+
 http.route({
   path: "/stripe/webhook",
   method: "POST",
@@ -409,6 +565,10 @@ http.route({
           metadata?: Record<string, string> | null;
           // checkout.session.completed (one-time give): the settled total.
           amount_total?: number;
+          // checkout.session.*: "paid" | "unpaid" | "no_payment_required".
+          // THE FIELD THAT DECIDES WHETHER THE MONEY EXISTS — see
+          // `checkoutSessionHasSettled`.
+          payment_status?: string;
           // invoice.paid / invoice.payment_failed:
           amount_paid?: number;
           // customer.subscription.updated / .deleted:
@@ -439,90 +599,36 @@ http.route({
       }
     } else if (event.type === "checkout.session.completed") {
       const obj = event.data.object;
-      if (obj.metadata?.giveDonation === "1") {
-        // A one-time "give" checkout — settle it via the single gifts write
-        // path (`recordGiveDonationPaid`, idempotent on the session id). Amount
-        // is read from the session's own `amount_total`, never a client value.
-        // Handled BEFORE the pledge/order/donation fan-out: a give session
-        // carries no pledgeId and is neither an order nor an event donation, so
-        // without this branch it would fall through to the "unknown session"
-        // error log.
-        await ctx.runMutation(internal.givingDonations.recordGiveDonationPaid, {
-          sessionId: obj.id,
-          amountTotalCents: obj.amount_total ?? 0,
-          donorId: obj.metadata.giveDonorId ?? "",
-          scope: obj.metadata.giveScope ?? "",
-        });
-        // Flip the giver's optional activity-wall entry visible with the SETTLED
-        // one-time amount (no-op if they didn't opt in). See givingActivity.ts.
-        await ctx.runMutation(internal.givingActivity.markActivityVisible, {
-          refKey: `give:${obj.id}`,
-          amountCents: obj.amount_total ?? 0,
-        });
-      } else if (obj.metadata?.repaymentIds) {
-        // A personal-charge repayment Checkout (`stripe.ts#createRepaymentCheckout`,
-        // `cards.ts`'s "Stripe repayment" section) — bundled, so metadata
-        // carries a comma-joined list. Settled through the SAME idempotent
-        // core every other repayment rail uses (`cards.ts#settleRepayment`,
-        // guarded on `creditTransactionId`), so Stripe's at-least-once /
-        // possibly out-of-order redelivery can never post a second
-        // offsetting credit. Handled BEFORE the ticket/donation fan-out: a
-        // repayment session carries no pledgeId and is neither an order nor
-        // an event donation.
-        await ctx.runMutation(internal.cards.applyRepaymentPaidFromStripe, {
-          repaymentIds: obj.metadata.repaymentIds.split(",") as Id<
-            "personalRepayments"
-          >[],
-          sessionId: obj.id,
-          paymentIntentId: obj.payment_intent ?? undefined,
-          amountTotalCents: obj.amount_total ?? 0,
-        });
-      } else if (obj.metadata?.pledgeId) {
-        const pledgeId = obj.metadata.pledgeId;
-        // A BACKER (subscription) checkout — identified by our pledge id in the
-        // session metadata (a ticket/donation session carries none). Activate
-        // the pledge + link its Stripe customer/subscription. Idempotent, and a
-        // no-op if the id doesn't resolve — so it can't touch other rows.
-        await ctx.runMutation(
-          internal.givingPledges.activatePledgeFromCheckout,
-          {
-            pledgeId,
-            ...(obj.customer ? { stripeCustomerId: obj.customer } : {}),
-            ...(obj.subscription
-              ? { stripeSubscriptionId: obj.subscription }
-              : {}),
-          },
-        );
-        // Flip the backer's optional activity-wall entry visible. No amount is
-        // passed — the wall shows the recurring MONTHLY pledge amount stored at
-        // pending time (a subscription session's `amount_total` is $0/prorated).
-        await ctx.runMutation(internal.givingActivity.markActivityVisible, {
-          refKey: String(pledgeId),
-        });
+      if (checkoutSessionHasSettled(obj)) {
+        await settleCheckoutSession(ctx, obj);
       } else {
-        const paymentIntentId = obj.payment_intent ?? undefined;
-        // One shared session id is either a ticket order OR a donation. Try the
-        // order first; only if it wasn't an order do we try the donation. Each
-        // path is idempotent (safe on webhook redelivery) and no-ops when the
-        // session isn't theirs, so neither can touch the other's rows.
-        const wasOrder = await ctx.runMutation(
-          internal.ticketing.markSessionPaid,
-          { sessionId, paymentIntentId },
+        // A DELAYED payment method — today that means ACH direct debit, which
+        // Stripe enabled on this account on 2026-08-09. The donor has finished
+        // the form and authorised the debit; the money has not moved. Record
+        // nothing: no gift, no fulfilled order, no activity-wall entry. The
+        // pending rows the prepare step wrote stay pending, and one of
+        // `async_payment_succeeded` / `async_payment_failed` resolves them in a
+        // few business days.
+        //
+        // This log is deliberately not an error — it is the correct, expected
+        // path for a bank debit, and it is the breadcrumb that says an ACH
+        // payment is in flight if one later goes missing.
+        console.log(
+          `[stripe] checkout ${sessionId} completed but unsettled ` +
+            `(payment_status=${obj.payment_status}) — waiting for async settlement`,
         );
-        if (!wasOrder) {
-          const wasDonation = await ctx.runMutation(
-            internal.giving.markDonationPaid,
-            { sessionId, paymentIntentId },
-          );
-          if (!wasDonation) {
-            console.error(`[stripe] webhook for unknown session ${sessionId}`);
-          }
-        }
       }
+    } else if (event.type === "checkout.session.async_payment_succeeded") {
+      // The bank debit cleared. THIS is when an ACH gift becomes real, and it
+      // runs the identical fan-out a card runs on completion.
+      await settleCheckoutSession(ctx, event.data.object);
+    } else if (event.type === "checkout.session.async_payment_failed") {
+      // The bank refused the debit (no funds, closed account, blocked debit).
+      // Nothing was ever recorded, so this only releases the pending rows.
+      await cancelCheckoutSession(ctx, sessionId);
     } else if (event.type === "checkout.session.expired") {
       // Same fan-out for the abandoned-checkout case — each no-ops if not theirs.
-      await ctx.runMutation(internal.ticketing.cancelPendingOrder, { sessionId });
-      await ctx.runMutation(internal.giving.cancelPendingDonation, { sessionId });
+      await cancelCheckoutSession(ctx, sessionId);
     } else if (event.type === "invoice.paid") {
       // A backer's billing cycle settled — record ONE gift for it (idempotent on
       // the invoice id) + bump the donor rollups. No-op if the subscription
