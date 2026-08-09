@@ -197,10 +197,11 @@ function SalesBody() {
 
             {data.summary.unresolvedCount > 0 ? (
               <Text className="mt-2 text-2xs text-muted">
-                The card reader we used sent Stripe an amount and no line items,
-                so where several combinations of that event&apos;s prices make the
-                same total, the item can&apos;t be pinned down. The revenue is exact
-                either way — only the breakdown is missing.
+                The older taps went through a card reader that sent Stripe an
+                amount and no line items, so where several combinations of that
+                event&apos;s prices make the same total, the item can&apos;t be pinned
+                down. The revenue is exact either way — only the breakdown is
+                missing.
               </Text>
             ) : null}
 
@@ -239,7 +240,8 @@ function SalesBody() {
               <View className="mt-5">
                 <SectionHeader title="What sold" />
                 <Text className="mb-2 text-2xs text-muted">
-                  Only the sales whose amount matches exactly one basket.
+                  Only the sales whose item Stripe named, or whose amount matches
+                  exactly one basket.
                 </Text>
                 <Card>
                   {data.byItem.map((it, i) => (

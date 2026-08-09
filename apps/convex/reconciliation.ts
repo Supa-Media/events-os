@@ -2322,6 +2322,7 @@ async function runEngine(
           const sales: {
             created: number;
             alreadyPresent: number;
+            enriched: number;
             unresolved: number;
             grossCents: number;
           } = await ctx.runAction(internal.salesSync.syncStripeSalesOps, {
@@ -2333,6 +2334,15 @@ async function runEngine(
                 (sales.unresolved > 0
                   ? ` — ${sales.unresolved} banked without an item breakdown.`
                   : "."),
+            );
+          }
+          // Reported separately from `created` BECAUSE IT MOVES NO MONEY. An
+          // enrichment patches `items`/`itemSource` on a sale already in the
+          // books, so it must never read as an import — a reader who saw these
+          // folded into the count above would think revenue had grown.
+          if (sales.enriched > 0) {
+            notes.push(
+              `Filled in the item breakdown on ${sales.enriched} sale(s) already imported — no revenue change.`,
             );
           }
         } catch (err) {

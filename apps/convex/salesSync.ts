@@ -16,11 +16,23 @@
  * couldn't obtain — inferring it from deposit residuals gave "fees minus unrecorded
  * sales", which is not a fee.
  *
- * ITEMS ARE RESOLVED OR ABSENT. `lib/salesCatalog.ts` asserts a breakdown only when
- * exactly one reading of the amount exists; anything else stores the revenue with no
- * items and `itemSource: "unresolved"`. Pop The Balloon's snack prices overlap so
- * heavily that most of it lands there, and that is the correct outcome — the money and
- * the event are certain, the SKU is not, and a fabricated SKU is worse than a blank.
+ * ITEMS ARE READ BEFORE THEY ARE DEDUCED. Stripe often knows what was sold and this
+ * sync used to ignore it: its only strategy was to decompose the AMOUNT against
+ * `lib/salesCatalog.ts`'s hand-typed per-event price list, so the 2026-08-08 tees — four
+ * of whose five charges say `1x PW Tee` outright, with a real Stripe price id in
+ * `metadata.line_items` — booked as "unresolved" purely because nobody had added a
+ * 2026-08-08 catalogue entry. `lib/salesItems.ts` now takes the charge's own evidence
+ * first (price metadata, then description) and the decomposition only speaks when the
+ * charge genuinely carries no label. Where nothing can speak the row still stores its
+ * revenue with no items and `itemSource: "unresolved"` — the money and the event are
+ * certain, the SKU is not, and a fabricated SKU is worse than a blank.
+ *
+ * A RE-RUN MAY ENRICH, NEVER RE-IMPORT. `upsertSales` still keys on `stripeChargeId` and
+ * still inserts at most one row per charge — double-counting revenue is the failure this
+ * sync must never commit. What it will now do is PATCH `items`/`itemSource` on a row
+ * whose breakdown it can improve, and only ever upward (`salesItems.ts#outranks`), so
+ * the 2026-08-08 sales already sitting in the books can gain their breakdown from a
+ * re-run without their money moving a cent.
  *
  * The action pages Stripe and hands batches to an internal mutation; Convex actions
  * can't touch the database directly. Idempotent on `stripeChargeId`, so re-running
@@ -40,6 +52,15 @@ import { ConvexError, v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import { NEW_YORK_CHAPTER_SLUG } from "./lib/seed/historical/mapping";
 import { catalogForDay, resolveCharge } from "./lib/salesCatalog";
+import {
+  itemsFromDescription,
+  itemsFromPrices,
+  outranks,
+  parseLineItemsMetadata,
+  type ItemSource,
+  type PriceRecord,
+  type SaleItem,
+} from "./lib/salesItems";
 import { requireSuperuser } from "./lib/superuser";
 
 const STRIPE_API = "https://api.stripe.com/v1";
@@ -67,6 +88,7 @@ export const upsertSales = internalMutation({
         items: v.array(saleItem),
         itemSource: v.union(
           v.literal("stripe_line_items"),
+          v.literal("charge_description"),
           v.literal("amount_decomposition"),
           v.literal("unresolved"),
         ),
@@ -77,6 +99,9 @@ export const upsertSales = internalMutation({
   returns: v.object({
     created: v.number(),
     alreadyPresent: v.number(),
+    /** Rows already imported whose breakdown this run improved. A subset of
+     *  `alreadyPresent`, and never counted as revenue — see the handler. */
+    enriched: v.number(),
     unresolved: v.number(),
     grossCents: v.number(),
     feeCents: v.number(),
@@ -95,7 +120,7 @@ export const upsertSales = internalMutation({
       .withIndex("by_chapter", (q) => q.eq("chapterId", chapter._id))
       .collect();
 
-    let created = 0, alreadyPresent = 0, unresolved = 0, grossCents = 0, feeCents = 0;
+    let created = 0, alreadyPresent = 0, enriched = 0, unresolved = 0, grossCents = 0, feeCents = 0;
     const unmatchedEvents = new Set<string>();
 
     for (const row of rows) {
@@ -103,7 +128,27 @@ export const upsertSales = internalMutation({
         .query("sales")
         .withIndex("by_charge", (q) => q.eq("stripeChargeId", row.stripeChargeId))
         .first();
-      if (existing) { alreadyPresent++; continue; }
+      if (existing) {
+        alreadyPresent++;
+        // ENRICH, NEVER RE-IMPORT. This charge already has its row, so its money is
+        // already in the books — it must not be inserted again and must not be added to
+        // this run's `grossCents`/`feeCents`, which report what a run would BRING IN.
+        // The only thing a second look can legitimately add is a better breakdown, so
+        // the patch touches `items` and `itemSource` and nothing else: not the amounts,
+        // not the fee, not `soldAt`, not the event. And only upward — `outranks` stops a
+        // transient Stripe failure from replacing a good breakdown with a blank, which
+        // would make an idempotent sync quietly lossy.
+        if (outranks(row.itemSource, existing.itemSource)) {
+          enriched++;
+          if (write) {
+            await ctx.db.patch(existing._id, {
+              items: row.items,
+              itemSource: row.itemSource,
+            });
+          }
+        }
+        continue;
+      }
 
       // Resolve the event by NAME AND DATE together. Two events are called "Eden";
       // only the one whose `eventDate` is the sale day is the right one.
@@ -142,7 +187,7 @@ export const upsertSales = internalMutation({
       created++;
     }
     return {
-      created, alreadyPresent, unresolved, grossCents, feeCents,
+      created, alreadyPresent, enriched, unresolved, grossCents, feeCents,
       unmatchedEvents: [...unmatchedEvents],
     };
   },
@@ -159,11 +204,60 @@ const syncReturns = v.object({
   cardPresent: v.number(),
   created: v.number(),
   alreadyPresent: v.number(),
+  /** Already-imported rows whose breakdown this run improved. On a dry run this is the
+   *  count a real run WOULD improve — the honest preview of a backfill that adds no
+   *  money, which is the only kind of re-run this sync performs. */
+  enriched: v.number(),
   unresolved: v.number(),
   grossCents: v.number(),
   feeCents: v.number(),
   unmatchedEvents: v.array(v.string()),
 });
+
+/**
+ * Resolve Stripe Price ids to their unit amount and product name, memoized for the run.
+ *
+ * A LOOKUP FAILURE IS NOT A RUN FAILURE. Anything other than a clean 200 caches `null`,
+ * which makes `itemsFromPrices` decline and the charge fall to a weaker rung. A Stripe
+ * blip must cost a breakdown, never a sale: the revenue is already known from the charge
+ * itself and must land in the books either way. The cache also keeps this to one request
+ * per distinct price across the whole history rather than one per charge.
+ */
+async function loadPrices(
+  key: string,
+  ids: string[],
+  cache: Map<string, PriceRecord | null>,
+): Promise<void> {
+  for (const id of ids) {
+    if (cache.has(id)) continue;
+    let record: PriceRecord | null = null;
+    try {
+      const res = await fetch(
+        `${STRIPE_API}/prices/${encodeURIComponent(id)}?expand[]=product`,
+        { headers: { Authorization: `Bearer ${key}` } },
+      );
+      if (res.ok) {
+        const p = (await res.json()) as {
+          unit_amount?: number | null;
+          currency?: string;
+          nickname?: string | null;
+          product?: { name?: string } | string | null;
+        };
+        const product = typeof p.product === "object" && p.product ? p.product : null;
+        record = {
+          unitAmountCents: typeof p.unit_amount === "number" ? p.unit_amount : null,
+          currency: typeof p.currency === "string" ? p.currency : "",
+          // The product's name is the label a human would recognise; the price's own
+          // nickname is the fallback for a price attached to an unnamed product.
+          label: (product?.name ?? p.nickname ?? "").trim(),
+        };
+      }
+    } catch {
+      record = null;
+    }
+    cache.set(id, record);
+  }
+}
 
 /** The sync itself, with no authorization of its own — each entry point below brings
  *  its own. Shared so the app-facing and ops paths can never drift apart. */
@@ -174,8 +268,11 @@ async function runSync(ctx: ActionCtx, execute: boolean | undefined) {
 
     let startingAfter: string | undefined;
     let chargesScanned = 0, cardPresent = 0;
-    let created = 0, alreadyPresent = 0, unresolved = 0, grossCents = 0, feeCents = 0;
+    let created = 0, alreadyPresent = 0, enriched = 0, unresolved = 0;
+    let grossCents = 0, feeCents = 0;
     const unmatchedEvents = new Set<string>();
+    // One Price lookup per distinct id for the whole run, not per charge.
+    const priceCache = new Map<string, PriceRecord | null>();
 
     for (;;) {
       const params = new URLSearchParams({ limit: String(PAGE) });
@@ -199,8 +296,8 @@ async function runSync(ctx: ActionCtx, execute: boolean | undefined) {
       const rows: {
         stripeChargeId: string; soldAt: number; grossCents: number; feeCents: number;
         dayISO: string; eventName: string | null;
-        items: { label: string; quantity: number; unitPriceCents: number; candidates: string[] }[];
-        itemSource: "stripe_line_items" | "amount_decomposition" | "unresolved";
+        items: SaleItem[];
+        itemSource: ItemSource;
       }[] = [];
 
       for (const c of page.data) {
@@ -214,28 +311,64 @@ async function runSync(ctx: ActionCtx, execute: boolean | undefined) {
         const dayISO = new Date(soldAt).toISOString().slice(0, 10);
         const bt = c.balance_transaction as { fee?: number } | string | null;
         const fee = typeof bt === "object" && bt ? (bt.fee ?? 0) : 0;
+        const amount = c.amount as number;
+        const currency = typeof c.currency === "string" ? c.currency : "usd";
+        const metadata = (c.metadata ?? {}) as Record<string, unknown>;
         const catalog = catalogForDay(dayISO);
-        const resolution = catalog
-          ? resolveCharge(c.amount as number, catalog.units)
-          : ({ kind: "unresolved", reason: "no_match", waysFound: 0 } as const);
+
+        // THE LADDER (see lib/salesItems.ts): what Stripe stated, then what the seller
+        // wrote down, then what the amount can be deduced to mean. Each rung only runs
+        // when the one above declined, so a charge that says what it is is never
+        // second-guessed by a price list.
+        let items: SaleItem[] = [];
+        let itemSource: ItemSource = "unresolved";
+
+        const refs = parseLineItemsMetadata(metadata.line_items);
+        if (refs) {
+          await loadPrices(key, refs.map((r) => r.priceId), priceCache);
+          const priced = itemsFromPrices(amount, currency, refs, priceCache);
+          if (priced) { items = priced; itemSource = "stripe_line_items"; }
+        }
+
+        if (itemSource === "unresolved") {
+          const described = itemsFromDescription(
+            c.description,
+            metadata.device_charge_description,
+            amount,
+          );
+          if (described) { items = described; itemSource = "charge_description"; }
+        }
+
+        if (itemSource === "unresolved" && catalog) {
+          const resolution = resolveCharge(amount, catalog.units);
+          if (resolution.kind === "resolved") {
+            items = resolution.lines.map((l) => ({
+              label: l.unit.label,
+              quantity: l.quantity,
+              unitPriceCents: l.unit.unitPriceCents,
+              candidates: l.unit.candidates,
+            }));
+            itemSource = "amount_decomposition";
+          }
+        }
 
         rows.push({
           stripeChargeId: c.id as string,
           soldAt,
-          grossCents: c.amount as number,
+          grossCents: amount,
           feeCents: fee,
           dayISO,
+          // TODO: Investigate — the EVENT is still attributed via the hand-kept
+          // catalogue, so a day nobody added an entry for lands unattributed even now
+          // that its items resolve. That is the same root cause as the item bug this
+          // change fixes, one field over: the 2026-08-08 sales carry no `eventId` for
+          // exactly this reason. Matching the sale's day against the chapter's
+          // `events.eventDate` would need no hand-maintenance at all, but it is a
+          // behaviour change to attribution rather than to the breakdown, so it is
+          // deliberately not bundled here.
           eventName: catalog?.eventName ?? null,
-          items:
-            resolution.kind === "resolved"
-              ? resolution.lines.map((l) => ({
-                  label: l.unit.label,
-                  quantity: l.quantity,
-                  unitPriceCents: l.unit.unitPriceCents,
-                  candidates: l.unit.candidates,
-                }))
-              : [],
-          itemSource: resolution.kind === "resolved" ? "amount_decomposition" : "unresolved",
+          items,
+          itemSource,
         });
         startingAfter = c.id as string;
       }
@@ -244,7 +377,7 @@ async function runSync(ctx: ActionCtx, execute: boolean | undefined) {
           rows,
           ...(execute ? { execute: true } : {}),
         });
-        created += r.created; alreadyPresent += r.alreadyPresent;
+        created += r.created; alreadyPresent += r.alreadyPresent; enriched += r.enriched;
         unresolved += r.unresolved; grossCents += r.grossCents; feeCents += r.feeCents;
         for (const e of r.unmatchedEvents) unmatchedEvents.add(e);
       }
@@ -256,7 +389,7 @@ async function runSync(ctx: ActionCtx, execute: boolean | undefined) {
 
     return {
       dryRun: !execute,
-      chargesScanned, cardPresent, created, alreadyPresent, unresolved,
+      chargesScanned, cardPresent, created, alreadyPresent, enriched, unresolved,
       grossCents, feeCents, unmatchedEvents: [...unmatchedEvents],
     };
   }
