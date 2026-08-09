@@ -288,7 +288,12 @@ describe("correcting the amount invalidates an approved exception", () => {
     // amount — which will now cross the threshold and need a second approver.
     const counts = (await s.as.query(api.finances.listReconcile, { filter: "all" })).counts;
     expect(counts.missing_receipt).toBe(1);
-    expect(counts.undocumented).toBe(1);
+    // NOT `undocumented`. That facet is now the CLOSED tail only ("Closed
+    // without documentation") — the row here is still `unreviewed`, so it is
+    // squarely the chase worklist's problem and appears there exactly once,
+    // rather than in both lists at once as it used to. The two facets are
+    // disjoint now; `isUndocumented` the predicate is unchanged.
+    expect(counts.undocumented).toBe(0);
   });
 
   test("a correction that leaves the amount alone keeps the exception", async () => {
