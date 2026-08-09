@@ -14,6 +14,7 @@ import {
   ProgressBar,
 } from "../../../../components/ui";
 import { ToastView } from "../../../../components/ui/Toast";
+import { spaceToggleProps } from "../../../../components/ui/spaceToggle";
 import { colors } from "../../../../lib/theme";
 import { SiteMapPreview } from "../../../../components/event/SiteMapPreview";
 import { useActionRunner } from "../../../../lib/useActionToast";
@@ -86,7 +87,9 @@ function CheckControl({
 }) {
   return (
     <Pressable
+      {...spaceToggleProps(onToggle)}
       accessibilityRole="checkbox"
+      aria-checked={checked}
       accessibilityState={{ checked }}
       accessibilityLabel={label}
       onPress={onToggle}

@@ -15,7 +15,7 @@ import { Modal, View, Text, Pressable, ScrollView } from "react-native";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { Icon, Badge, Button, EmptyState, type BadgeTone } from "../ui";
+import { Icon, Badge, Button, EmptyState, Radio, RadioGroup, type BadgeTone } from "../ui";
 import { colors, spacing } from "../../lib/theme";
 import { alertError } from "../../lib/errors";
 
@@ -207,15 +207,22 @@ function GroupDetail({
         <Badge label={MATCH_LABEL[group.matchKind]} tone={MATCH_TONE[group.matchKind]} />
         <Text className="text-sm text-muted">Keep one — the others merge into it.</Text>
       </View>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: spacing.sm }}>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+        <RadioGroup
+          accessibilityLabel="Which person to keep"
+          horizontal
+          className="flex-row"
+          style={{ gap: spacing.sm }}
+        >
         {group.people.map((p) => {
           const selected = survivorId === p._id;
           return (
-            <Pressable
+            <Radio
               key={p._id}
-              onPress={() => onPickSurvivor(p._id)}
-              style={{ width: 240 }}
-              className={`rounded-lg border p-3 ${
+              checked={selected}
+              onSelect={() => onPickSurvivor(p._id)}
+              accessibilityLabel={p.name || "Untitled"}
+              className={`w-[240px] rounded-lg border p-3 ${
                 selected ? "border-accent bg-brand-100" : "border-border bg-raised"
               }`}
             >
@@ -242,9 +249,10 @@ function GroupDetail({
               <Field label="Title" value={p.role} />
               <Field label="Company" value={p.company} />
               <Field label="Notes" value={p.notes} />
-            </Pressable>
+            </Radio>
           );
         })}
+        </RadioGroup>
       </ScrollView>
     </View>
   );

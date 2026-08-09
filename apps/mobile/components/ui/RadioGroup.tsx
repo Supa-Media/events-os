@@ -32,6 +32,7 @@
 import { createContext, useContext, useEffect, useRef } from "react";
 import type { ReactNode } from "react";
 import { Platform, Pressable, View } from "react-native";
+import type { ViewStyle } from "react-native";
 import { spaceToggleProps, type WebKeyHandlers } from "./spaceToggle";
 
 /** Present when a `Radio` sits inside a `RadioGroup`. Used only to warn in
@@ -48,6 +49,7 @@ export function RadioGroup({
   accessibilityLabel,
   children,
   className,
+  style,
   horizontal = false,
 }: {
   /** Names the QUESTION, not the answers — "Why is there no receipt?". A
@@ -57,6 +59,11 @@ export function RadioGroup({
   accessibilityLabel: string;
   children: ReactNode;
   className?: string;
+  /** For the one case a class can't cover: a group that IS a horizontal
+   *  `ScrollView`'s content, whose gap used to live on
+   *  `contentContainerStyle` and has to move here now that the group is the
+   *  container's single child. */
+  style?: ViewStyle;
   /** Only changes what screen readers are told about arrow-key direction;
    *  both axes always work, as ARIA's radio pattern allows. */
   horizontal?: boolean;
@@ -137,6 +144,7 @@ export function RadioGroup({
         accessibilityLabel={accessibilityLabel}
         aria-orientation={horizontal ? "horizontal" : "vertical"}
         className={className}
+        style={style}
       >
         {children}
       </View>

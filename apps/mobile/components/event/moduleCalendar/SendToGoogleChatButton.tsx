@@ -12,6 +12,7 @@ import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { Icon } from "../../ui/Icon";
 import { Popover } from "../../ui/Popover";
+import { spaceToggleProps } from "../../ui/spaceToggle";
 import type { AnchorRect } from "../../ui/useAnchor";
 import { measureAnchor } from "../../ui/ContextMenu";
 import { colors } from "../../../lib/theme";
@@ -107,9 +108,12 @@ export function SendToGoogleChatButton({
           ) : (
             <>
               <Pressable
+                {...spaceToggleProps(() => setIncludeTitle((on) => !on))}
                 onPress={() => setIncludeTitle((on) => !on)}
                 accessibilityRole="checkbox"
+                aria-checked={includeTitle}
                 accessibilityState={{ checked: includeTitle }}
+                accessibilityLabel="Include title as heading"
                 className="flex-row items-center gap-2 px-3 py-2 active:bg-sunken web:hover:bg-sunken"
               >
                 <Icon

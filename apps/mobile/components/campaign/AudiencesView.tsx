@@ -70,6 +70,7 @@ import {
   OptionTag,
   Icon,
 } from "../ui";
+import { spaceToggleProps } from "../ui/spaceToggle";
 import { ErrorBoundary } from "../ErrorBoundary";
 import { colors, spacing } from "../../lib/theme";
 import { useActionRunner } from "../../lib/useActionToast";
@@ -1069,6 +1070,13 @@ function FilterChipsBuilder({
       {expanded.has("email") && !hiddenGroups.includes("email") ? (
         <View className="mt-3 gap-2 rounded-md border border-border bg-sunken p-3">
           <Pressable
+            {...spaceToggleProps(() =>
+              patch({ verifiedEmailOnly: !filters.verifiedEmailOnly }),
+            )}
+            accessibilityRole="checkbox"
+            aria-checked={filters.verifiedEmailOnly ?? false}
+            accessibilityState={{ checked: filters.verifiedEmailOnly ?? false }}
+            accessibilityLabel="Only people with a verified email on file"
             className="flex-row items-center gap-2"
             onPress={() => patch({ verifiedEmailOnly: !filters.verifiedEmailOnly })}
           >

@@ -50,6 +50,7 @@ import {
   ToastView,
   type BadgeTone,
 } from "../../ui";
+import { spaceToggleProps } from "../../ui/spaceToggle";
 import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
 import {
@@ -435,10 +436,13 @@ export function FinishChargeSheet({
                       </View>
                     ) : (
                       <Pressable
+                        {...spaceToggleProps(() => setPersonalDraft((p) => !p))}
                         onPress={() => setPersonalDraft((p) => !p)}
                         className="flex-row items-center gap-2 active:opacity-70"
                         accessibilityRole="checkbox"
+                        aria-checked={personalDraft}
                         accessibilityState={{ checked: personalDraft }}
+                        accessibilityLabel="This was a personal charge"
                       >
                         <View
                           className={`h-5 w-5 items-center justify-center rounded border ${

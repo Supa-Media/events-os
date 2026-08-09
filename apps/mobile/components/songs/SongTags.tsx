@@ -6,6 +6,7 @@ import {
   normalizeSongTag,
 } from "@events-os/shared";
 import { TextField, Icon } from "../ui";
+import { spaceToggleProps } from "../ui/spaceToggle";
 import { colors } from "../../lib/theme";
 
 /** Unique, order-preserving merge of tag lists. */
@@ -89,8 +90,10 @@ export function TagPicker({
           return (
             <Pressable
               key={tag}
+              {...spaceToggleProps(() => toggle(tag))}
               onPress={() => toggle(tag)}
               accessibilityRole="checkbox"
+              aria-checked={on}
               accessibilityState={{ checked: on }}
               accessibilityLabel={songTagLabel(tag)}
               className="flex-row items-center gap-1 rounded-pill border px-3 py-1.5 active:opacity-80 web:hover:opacity-90"

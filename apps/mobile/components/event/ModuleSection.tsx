@@ -291,7 +291,15 @@ function ReadyToggle({
   onToggle: () => void;
 }) {
   return (
-    <Pressable onPress={onToggle} className="active:opacity-70">
+    <Pressable
+      onPress={onToggle}
+      // A status toggle, not a form field — `button` + `aria-pressed` is the
+      // honest shape, and `button` gets Space for free from react-native-web.
+      accessibilityRole="button"
+      aria-pressed={ready}
+      accessibilityLabel={ready ? "Ready" : "Mark ready"}
+      className="active:opacity-70"
+    >
       <View
         className="flex-row items-center gap-1.5 rounded-pill border px-3 py-1.5"
         style={{

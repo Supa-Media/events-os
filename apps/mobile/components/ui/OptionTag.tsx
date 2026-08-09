@@ -42,7 +42,14 @@ export function OptionTag({ label, color, onPress, onRemove, selected, size = "s
         {label}
       </Text>
       {onRemove ? (
-        <Pressable onPress={onRemove} hitSlop={isMd ? 8 : 6}>
+        <Pressable
+          onPress={onRemove}
+          accessibilityRole="button"
+          // The ✕ is an icon with no text, so without this it announced as an
+          // anonymous button — in a row of chips, "button" five times over.
+          accessibilityLabel={`Remove ${label}`}
+          hitSlop={isMd ? 8 : 6}
+        >
           <Icon name="x" size={isMd ? 14 : 11} color={c.text} />
         </Pressable>
       ) : null}
@@ -50,7 +57,15 @@ export function OptionTag({ label, color, onPress, onRemove, selected, size = "s
   );
   if (!onPress) return inner;
   return (
-    <Pressable onPress={onPress} className="self-start active:opacity-70">
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      // Omitted when the caller passes no `selected` — a tag that merely opens
+      // an editor is an action, not a toggle, and shouldn't announce a state.
+      aria-pressed={selected}
+      accessibilityLabel={label}
+      className="self-start active:opacity-70"
+    >
       {inner}
     </Pressable>
   );

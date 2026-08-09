@@ -43,6 +43,7 @@ import {
   SectionHeader,
   TextField,
 } from "../../../components/ui";
+import { spaceToggleProps } from "../../../components/ui/spaceToggle";
 import { colors } from "../../../lib/theme";
 import { useGivingScope } from "../../../lib/useGivingScope";
 
@@ -481,6 +482,11 @@ function TerritoryForm({
         </Field>
 
         <Pressable
+          {...spaceToggleProps(() => setPubliclyVisible((v) => !v))}
+          accessibilityRole="checkbox"
+          aria-checked={publiclyVisible}
+          accessibilityState={{ checked: publiclyVisible }}
+          accessibilityLabel="Visible on the public /give map"
           className="mb-3 flex-row items-center gap-2"
           onPress={() => setPubliclyVisible((v) => !v)}
         >

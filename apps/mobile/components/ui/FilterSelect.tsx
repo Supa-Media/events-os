@@ -13,6 +13,8 @@
 import { Pressable, Text, View } from "react-native";
 import { Icon } from "./Icon";
 import { Popover } from "./Popover";
+import { Radio, RadioGroup } from "./RadioGroup";
+import { spaceToggleProps } from "./spaceToggle";
 import { useAnchor } from "./useAnchor";
 import { colors } from "../../lib/theme";
 
@@ -93,12 +95,95 @@ export function FilterSelect({
       : undefined
     : current?.count;
 
+  const rows = options.map((o) => {
+    if (o.header) {
+      return (
+        <Text
+          key={o.value}
+          className="px-3 pb-1 pt-2.5 text-2xs font-bold uppercase tracking-wider text-faint"
+        >
+          {o.label}
+        </Text>
+      );
+    }
+    const selected = multi ? values.includes(o.value) : o.value === value;
+    const pick = () => {
+      if (multi) {
+        // Stay open: picking filters is usually picking SEVERAL, and
+        // reopening the menu between each one is the whole friction
+        // multi-select exists to remove.
+        onToggle?.(o.value);
+        return;
+      }
+      onChange?.(o.value);
+      close();
+    };
+    const body = (
+      <>
+        <Text
+          className={`flex-1 text-sm ${selected ? "font-semibold text-accent" : "text-ink"}`}
+          numberOfLines={1}
+        >
+          {o.label}
+        </Text>
+        {o.count != null ? (
+          <Text
+            className={`text-xs ${selected ? "font-semibold text-accent" : "text-muted"}`}
+            style={{ fontVariant: ["tabular-nums"] }}
+          >
+            {o.count}
+          </Text>
+        ) : null}
+        {selected ? (
+          <Icon name={multi ? "check-square" : "check"} size={15} color={colors.accent} />
+        ) : multi ? (
+          <Icon name="square" size={15} color={colors.faint} />
+        ) : (
+          <View style={{ width: 15 }} />
+        )}
+      </>
+    );
+    const className = `flex-row items-center justify-between gap-3 px-3 py-2.5 active:bg-sunken web:hover:bg-sunken ${
+      selected ? "bg-sunken" : "bg-raised"
+    }`;
+    const name = o.count != null ? `${o.label}, ${o.count}` : o.label;
+    return multi ? (
+      <Pressable
+        key={o.value}
+        {...spaceToggleProps(pick)}
+        onPress={pick}
+        // It draws a tick box in multi mode, and each row is an independent
+        // yes/no — so it says checkbox, and says which one is ticked. Neither
+        // was true before: the rows had no role at all.
+        accessibilityRole="checkbox"
+        aria-checked={selected}
+        accessibilityLabel={name}
+        className={className}
+      >
+        {body}
+      </Pressable>
+    ) : (
+      <Radio
+        key={o.value}
+        checked={selected}
+        onSelect={pick}
+        accessibilityLabel={name}
+        className={className}
+      >
+        {body}
+      </Radio>
+    );
+  });
+
   return (
     <>
       <Pressable
         ref={ref}
         onPress={open}
         accessibilityRole="button"
+        aria-expanded={visible}
+        aria-haspopup="true"
+        accessibilityLabel={label ? `${label}: ${triggerText}` : triggerText}
         className={`flex-row items-center gap-1.5 self-start rounded-pill border px-3 py-1.5 active:bg-sunken web:hover:bg-sunken ${
           visible ? "border-accent" : "border-border-strong"
         } bg-raised`}
@@ -136,60 +221,12 @@ export function FilterSelect({
             <Text className="text-xs text-muted">Clear {label ?? "filter"}</Text>
           </Pressable>
         ) : null}
-        {options.map((o) => {
-          if (o.header) {
-            return (
-              <Text
-                key={o.value}
-                className="px-3 pb-1 pt-2.5 text-2xs font-bold uppercase tracking-wider text-faint"
-              >
-                {o.label}
-              </Text>
-            );
-          }
-          const selected = multi ? values.includes(o.value) : o.value === value;
-          return (
-            <Pressable
-              key={o.value}
-              onPress={() => {
-                if (multi) {
-                  // Stay open: picking filters is usually picking SEVERAL, and
-                  // reopening the menu between each one is the whole friction
-                  // multi-select exists to remove.
-                  onToggle?.(o.value);
-                  return;
-                }
-                onChange?.(o.value);
-                close();
-              }}
-              className={`flex-row items-center justify-between gap-3 px-3 py-2.5 active:bg-sunken web:hover:bg-sunken ${
-                selected ? "bg-sunken" : "bg-raised"
-              }`}
-            >
-              <Text
-                className={`flex-1 text-sm ${selected ? "font-semibold text-accent" : "text-ink"}`}
-                numberOfLines={1}
-              >
-                {o.label}
-              </Text>
-              {o.count != null ? (
-                <Text
-                  className={`text-xs ${selected ? "font-semibold text-accent" : "text-muted"}`}
-                  style={{ fontVariant: ["tabular-nums"] }}
-                >
-                  {o.count}
-                </Text>
-              ) : null}
-              {selected ? (
-                <Icon name={multi ? "check-square" : "check"} size={15} color={colors.accent} />
-              ) : multi ? (
-                <Icon name="square" size={15} color={colors.faint} />
-              ) : (
-                <View style={{ width: 15 }} />
-              )}
-            </Pressable>
-          );
-        })}
+        {/* Multi-select rows are checkboxes and each is its own decision, so
+            each is its own tab stop. Single-select rows are one question with
+            one answer — a `RadioGroup`, therefore ONE tab stop with the arrow
+            keys moving inside it. The markup below is identical either way;
+            only what it announces as differs. */}
+        {multi ? rows : <RadioGroup accessibilityLabel={label ?? "Filter"}>{rows}</RadioGroup>}
       </Popover>
     </>
   );
