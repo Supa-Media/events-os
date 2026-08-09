@@ -28,14 +28,21 @@
  *           receipt, undocumented, owed back personally, or already cleared. A
  *           row can be in several of these at once.
  *
- * `missing_receipt` and `undocumented` look like duplicates and aren't. The
- * first is the CHASE worklist and stops counting a row once it's reconciled —
- * someone made a call, there's nobody left to nudge. The second ignores status
- * entirely: it's every row with neither a receipt nor an approved receipt
- * exception, including ones already closed. That's the PUBLISHING backlog, and
- * it's deliberately the harder number to please, because a public ledger can't
- * tell a quietly-closed row from a documented one. See
- * `docs/plans/receipt-exceptions.md`.
+ * `missing_receipt` and `undocumented` are two halves of one backlog, and they
+ * are DISJOINT. The first is the CHASE worklist: still open, still owes a
+ * receipt, there is someone to nudge. The second — "Closed without
+ * documentation" — is the tail nobody will ever send a receipt for, because a
+ * treasurer already marked it Reconciled with nothing behind it. The PUBLISHING
+ * backlog is the union of the two, which, being one group, is exactly what
+ * selecting both gives you. See `docs/plans/receipt-exceptions.md`.
+ *
+ * They used to OVERLAP, and that was the defect: `undocumented`'s facet ignored
+ * status, making it a strict superset (in production: overlap 42,
+ * only-undocumented 3, only-missing-receipt 0). Two menu entries with
+ * near-identical names and near-identical numbers, where picking the bigger one
+ * showed you the rows you had just looked at plus three you hadn't. The
+ * PREDICATES `needsDocumentation` and `isUndocumented` still mean what they
+ * always meant — only the facet's population and label moved.
  *
  * ## Set semantics: OR within a group, AND across groups
  *
@@ -68,10 +75,12 @@ export const RECONCILE_FILTER_KEYS = [
   "undocumented",
   "personal_unpaid",
   "reconciled",
+  "needs_attention",
+  "ready_to_close",
 ] as const;
 export type ReconcileFilterKey = (typeof RECONCILE_FILTER_KEYS)[number];
 
-export type ReconcileFilterGroupId = "kind" | "state";
+export type ReconcileFilterGroupId = "kind" | "state" | "rollup";
 
 export const RECONCILE_FILTER_GROUPS: readonly {
   id: ReconcileFilterGroupId;
@@ -102,7 +111,59 @@ export const RECONCILE_FILTER_GROUPS: readonly {
       "reconciled",
     ],
   },
+  {
+    id: "rollup",
+    title: "Work",
+    anyLabel: "Any work",
+    keys: ["needs_attention", "ready_to_close"],
+  },
 ] as const;
+
+/**
+ * The groups that get a DROPDOWN. `rollup` deliberately doesn't: its two keys
+ * are roll-ups OVER the State list, so sitting them in that same menu would put
+ * a 51 next to a 7 and a 42 that are subsets of it — the "which number is the
+ * real one" problem this area exists to end. They live in the header instead, as
+ * the tappable chips that replaced the single "127 to clear".
+ *
+ * They are still a real GROUP for set-semantics purposes, which is what makes
+ * "needs attention" AND "Spend" narrow correctly rather than being ignored.
+ */
+export const RECONCILE_DROPDOWN_GROUPS = RECONCILE_FILTER_GROUPS.filter(
+  (g) => g.id !== "rollup",
+);
+
+/**
+ * THE HEADER CHIPS, in the order they render.
+ *
+ * `toClearCount` was one number doing two jobs. In production it read 127,
+ * of which 51 rows had something genuinely outstanding and 76 were
+ * categorised, budgeted, documented and simply never closed — 60% of the
+ * backlog headline was a keystroke, not a backlog, and no filter could find
+ * them. Splitting it names both jobs and makes each one tappable, which is the
+ * rule the rest of this area already follows: the number you announce has to be
+ * a number you can get to.
+ */
+export const RECONCILE_HEADER_CHIPS = [
+  "needs_attention",
+  "ready_to_close",
+  "reconciled",
+] as const satisfies readonly ReconcileFilterKey[];
+
+/**
+ * The states that make an OPEN row "need attention" — the definition
+ * `needs_attention` is the union of and `ready_to_close` is the complement of.
+ *
+ * Exported so the server computes the roll-ups from this list rather than
+ * re-typing it: `needs_attention + ready_to_close === toClearCount` has to hold
+ * by construction, or the header can drift from the grid all over again.
+ */
+export const RECONCILE_ATTENTION_KEYS = [
+  "to_review",
+  "needs_budget",
+  "missing_receipt",
+  "personal_unpaid",
+] as const satisfies readonly ReconcileFilterKey[];
 
 /** Human labels — one source, so the menu, the trigger and any summary agree. */
 export const RECONCILE_FILTER_LABELS: Record<ReconcileFilterKey, string> = {
@@ -130,9 +191,28 @@ export const RECONCILE_FILTER_LABELS: Record<ReconcileFilterKey, string> = {
   // on a reviewer — the treasurer's inbox, not the cardholder's.
   uncoded: "Needs coding",
   coding_review: "Coding review",
-  undocumented: "Undocumented",
+  // "Closed without documentation", not "Undocumented" — and the FACET is now
+  // the difference rather than the superset (see `listReconcile`'s `flagsFor`).
+  //
+  // In production the two populations were: overlap 42, only-undocumented 3,
+  // only-missing-receipt 0. `missing_receipt` was a STRICT SUBSET of
+  // `undocumented`, so the menu offered "Needs documentation 42" beside
+  // "Undocumented 45" — near-identical labels, near-identical numbers — and
+  // picking the bigger one showed you the 42 rows you had just looked at plus 3
+  // you hadn't. A real distinction that cost a paragraph of doc comment and
+  // bought three rows, while reading as a duplicate.
+  //
+  // Making the facet the difference leaves two DISJOINT options whose labels are
+  // both literally true, and the publishing backlog is their OR — which, being
+  // one group, is exactly what multi-select already gives you.
+  undocumented: "Closed without documentation",
   personal_unpaid: "Personal (unpaid)",
   reconciled: "Reconciled",
+  // The header roll-ups. Phrased as the job rather than the state, because
+  // that's the distinction they exist to draw: one pile needs a decision, the
+  // other needs a keystroke.
+  needs_attention: "Needs attention",
+  ready_to_close: "Ready to close",
 };
 
 /** Which group a key belongs to. */
