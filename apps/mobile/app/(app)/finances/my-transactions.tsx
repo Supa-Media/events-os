@@ -146,9 +146,12 @@ export default function MyTransactionsScreen() {
         <Text className="mb-3 text-sm text-muted">
           Every charge attributed to you, and what each one still needs. Coding
           a charge means saying — in your own words — what it bought, which org
-          work it served, and who was there; that answer is yours to write, and
-          it&apos;s what keeps the money you spent from becoming taxable income
-          to you.
+          work it served, and who was there, <Text className="text-ink">and
+          attaching the receipt in the same breath</Text>: the words and the
+          proof are one record, so a coding can&apos;t be submitted without
+          both. If there is genuinely no receipt, say so right there and that
+          counts. That answer is yours to write, and it&apos;s what keeps the
+          money you spent from becoming taxable income to you.
         </Text>
 
         {transactions.length > 0 ? (

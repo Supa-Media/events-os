@@ -23,9 +23,18 @@
  *
  * MONEY SAFETY: the only transaction-status change anything here makes is the
  * SAME behavior-preserving `categorized → reconciled` flip `linkReceiptToTransaction`
- * always makes on a receipt's first landing — a human confirms every link (a
- * manual `linkReceipt` call) or the upload pipeline auto-attaches only a
- * UNIQUE, non-duplicate candidate (mirroring the email pipeline's own bar).
+ * always makes on a receipt's first landing — behind a human confirming the
+ * link (`linkReceipt` for a bookkeeper, `confirmSuggestedReceipt` for the
+ * cardholder on their own coding sheet) or the in-app upload pipeline's own
+ * UNIQUE, non-duplicate candidate bar.
+ *
+ * SUGGESTIONS (owner decision, 2026-08-08): the inbound email/SMS pipelines no
+ * longer attach anything on their own (`receiptInbox.ts`'s module doc). What
+ * they capture lands here as an unlinked, OCR'd document, and
+ * `suggestedForTransaction` + `confirmSuggestedReceipt` are how the person
+ * coding a charge sees their own receipts ranked against it and picks one.
+ * Those two are the ONLY functions in this file that a non-bookkeeper may
+ * call, and they carry their own gate (`lib/receiptSuggestionAccess.ts`).
  */
 import {
   query,
@@ -62,11 +71,14 @@ import {
   matchReceiptCandidates,
   candidateValidator,
   extractReceiptFields,
+  merchantTokens,
+  MATCH_WINDOW_MS,
   resolveOcrModel,
   resolveFallbackOcrModel,
   deriveMerchantFromEmail,
   type OcrRoutingResult,
 } from "./receiptInbox";
+import { requireReceiptSuggestions } from "./lib/receiptSuggestionAccess";
 import {
   AUTO_RETRY_FALLBACK_ATTEMPT,
   AUTO_RETRY_MAX_ATTEMPTS,
@@ -1489,6 +1501,386 @@ export const unlinkReceipt = mutation({
         field: "receipt",
         before: "Attached",
         after: "None",
+        amountCents: txn.amountCents,
+      });
+    }
+    return result;
+  },
+});
+
+// ── Suggestions: the coding sheet's "is one of these it?" ────────────────────
+/** How many of the org's UNLINKED receipts one suggestion query scans
+ *  (newest-first via `by_linkCount`) before filtering to this person's own.
+ *  Bounded, not exhaustive — same "generous but bounded" discipline as
+ *  `DUPLICATE_SCAN_LIMIT`, and a receipt older than the window is still
+ *  reachable through the library. */
+const SUGGESTION_SCAN_LIMIT = 400;
+/** How many legacy (pre-capture-and-suggest) receipts we'll chase back to
+ *  their inbound row to learn who sent them. Rows created since the pipeline
+ *  change carry `uploadedByPersonId` directly and cost nothing; this bounds
+ *  the per-row `db.get` fan-out for the ones that don't, and only ever runs on
+ *  receipts that already passed the (cheap, in-memory) plausibility filter. */
+const SUGGESTION_LEGACY_OWNER_LOOKUPS = 40;
+const DEFAULT_SUGGESTION_LIMIT = 8;
+const MAX_SUGGESTION_LIMIT = 25;
+
+/** How a suggested receipt lines up with the charge — everything a human needs
+ *  to say yes or no without opening both records side by side. */
+const suggestionMatch = v.object({
+  // The receipt's total equals the charge's, to the cent (the strongest
+  // signal, and the bar the inbound matcher itself uses).
+  amountExact: v.boolean(),
+  // Signed cents: receipt total minus charge total (both absolute values), so
+  // a partial receipt reads negative and a receipt covering more than this
+  // charge reads positive. `null` when nothing could be read off the receipt.
+  amountDeltaCents: v.union(v.number(), v.null()),
+  // Whole days between the receipt's date and the charge's `postedAt`. `null`
+  // when the receipt has no date — settlement lag means "3 days before the
+  // charge posted" is the NORMAL shape, not a discrepancy.
+  daysApart: v.union(v.number(), v.null()),
+  withinDateWindow: v.boolean(),
+  // The receipt's merchant shares a normalized token with the charge's
+  // merchant/description (`receiptInbox.ts#merchantTokens` — the same
+  // tokenizer the matcher uses). A booster, never a filter.
+  merchantOverlap: v.boolean(),
+  // THIS transaction was on the receipt's own candidate shortlist when it was
+  // captured (`receipts.candidateTransactionIds`) — i.e. the ingest pipeline
+  // already thought so at the moment the receipt arrived. Ranked first.
+  pipelineSuggested: v.boolean(),
+});
+
+const suggestedReceiptRow = v.object({
+  receiptId: v.id("receipts"),
+  // A servable URL for the stored file, and its content type so the viewer
+  // knows whether to render an image, a PDF, or an email body (see
+  // `receiptSummary.contentType`).
+  url: v.union(v.string(), v.null()),
+  contentType: v.union(v.string(), v.null()),
+  filename: v.union(v.string(), v.null()),
+  source: receiptSourceValidator,
+  // CANONICAL (human-correctable) fields — what the row actually claims.
+  amountCents: v.union(v.number(), v.null()),
+  receiptDate: v.union(v.number(), v.null()),
+  merchant: v.union(v.string(), v.null()),
+  // IMMUTABLE OCR provenance — kept alongside so the UI can show "we read
+  // $42.10" honestly even after someone corrects the canonical value.
+  ocrAmountCents: v.union(v.number(), v.null()),
+  ocrDate: v.union(v.number(), v.null()),
+  ocrMerchant: v.union(v.string(), v.null()),
+  // Why a receipt has no amount to compare (an unreadable photo still belongs
+  // in this list — it's the thing they texted from the counter).
+  ocrError: v.union(v.string(), v.null()),
+  createdAt: v.number(),
+  match: suggestionMatch,
+  // The ranking score behind the ordering (higher = better). Exposed so the UI
+  // can badge a standout ("Looks like a match") without re-deriving the rule.
+  score: v.number(),
+});
+
+/** Rank a suggestion. Additive and deliberately coarse — the human decides;
+ *  this only decides who they read first. */
+function scoreSuggestion(m: typeof suggestionMatch.type): number {
+  return (
+    (m.pipelineSuggested ? 8 : 0) +
+    (m.amountExact ? 4 : 0) +
+    (m.withinDateWindow ? 2 : 0) +
+    (m.merchantOverlap ? 1 : 0)
+  );
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Describe how one receipt lines up with one charge, plus whether it's worth
+ *  offering at all. `plausible` is deliberately generous: this is ONE person's
+ *  own small pile of unattached receipts, and the cost of showing a near-miss
+ *  is a glance, while the cost of hiding the right one is an unsubstantiated
+ *  charge. */
+function describeSuggestion(
+  receipt: Doc<"receipts">,
+  txn: Doc<"transactions">,
+): { match: typeof suggestionMatch.type; plausible: boolean } {
+  const chargeCents = Math.abs(txn.amountCents);
+  const receiptCents =
+    receipt.amountCents != null ? Math.abs(receipt.amountCents) : null;
+  const amountExact = receiptCents != null && receiptCents === chargeCents;
+  const dated = receipt.receiptDate ?? null;
+  // A receipt with no date falls back to WHEN IT ARRIVED for the window test
+  // only — never for `daysApart`, which must stay honest about what the
+  // document itself says (fabricating a date is the bug `matchReceiptCandidates`
+  // documents at length).
+  const proximityBasis = dated ?? receipt.createdAt;
+  const withinDateWindow = Math.abs(txn.postedAt - proximityBasis) <= MATCH_WINDOW_MS;
+  const receiptTokens = merchantTokens(receipt.merchant ?? receipt.ocrMerchant);
+  const merchantOverlap =
+    receiptTokens.size > 0 &&
+    [...merchantTokens(txn.merchantName, txn.description)].some((t) =>
+      receiptTokens.has(t),
+    );
+  const pipelineSuggested = (receipt.candidateTransactionIds ?? []).includes(txn._id);
+
+  const match = {
+    amountExact,
+    amountDeltaCents: receiptCents != null ? receiptCents - chargeCents : null,
+    daysApart: dated != null ? Math.round(Math.abs(txn.postedAt - dated) / DAY_MS) : null,
+    withinDateWindow,
+    merchantOverlap,
+    pipelineSuggested,
+  };
+  const plausible =
+    pipelineSuggested ||
+    amountExact ||
+    (withinDateWindow && merchantOverlap) ||
+    // Nothing readable came off it, but it landed around this charge — the
+    // "my photo didn't OCR" case, which is exactly when a human's eyes help.
+    (receiptCents == null && withinDateWindow);
+  return { match, plausible };
+}
+
+/**
+ * The unlinked receipts that might document ONE charge, best first — the query
+ * behind the coding sheet's "is one of these it?".
+ *
+ * This exists because the inbound pipeline stopped auto-attaching (owner
+ * decision, 2026-08-08 — see `receiptInbox.ts`'s module doc). A texted or
+ * emailed receipt now waits, unlinked, in its sender's own library until the
+ * person coding the charge confirms it — and that person is usually the
+ * CARDHOLDER, which every other read in this file (all `requireFinanceRole(…,
+ * "bookkeeper")`) locks out by construction. Hence its own gate:
+ * `lib/receiptSuggestionAccess.ts#requireReceiptSuggestions` — the row's own
+ * person, or bookkeeper+ — mirroring `requireSubmitCoding`'s shape so the
+ * coding sheet and its receipt picker can never disagree about who may act.
+ *
+ * WHOSE receipts: the transaction's own person's, plus the caller's own (a
+ * bookkeeper coding on someone's behalf may have just uploaded the document
+ * themselves). Not the org's whole library — a cardholder has no business
+ * browsing everyone's receipts, and bookkeepers keep `listReceipts` /
+ * `suggestMatches` / `searchUnreceiptedTransactions` for the wide view. A
+ * receipt whose sender never resolved to a roster person belongs to nobody and
+ * stays the bookkeeper review queue's job, unchanged.
+ *
+ * Bounded: one `by_linkCount` page (`SUGGESTION_SCAN_LIMIT`, newest first),
+ * filtered in memory — never a `.collect()`. Archived receipts and known
+ * duplicates are excluded (both are already "resolved" everywhere else in this
+ * file).
+ */
+export const suggestedForTransaction = query({
+  args: { transactionId: v.id("transactions"), limit: v.optional(v.number()) },
+  returns: v.array(suggestedReceiptRow),
+  handler: async (ctx, args) => {
+    const access = await requireReceiptSuggestions(ctx, args.transactionId);
+    const txn = access.txn;
+    const limit = Math.min(
+      Math.max(Math.trunc(args.limit ?? DEFAULT_SUGGESTION_LIMIT), 1),
+      MAX_SUGGESTION_LIMIT,
+    );
+
+    // Whose library this reads. Both ids are resolved SERVER-SIDE (the txn's
+    // own person; the caller's own person) — never accepted as an argument.
+    const ownerIds = new Set<string>();
+    if (txn.personId) ownerIds.add(txn.personId as string);
+    if (access.actorPersonId) ownerIds.add(access.actorPersonId as string);
+    if (ownerIds.size === 0) return [];
+
+    // READ EACH OWNER'S OWN UNLINKED RECEIPTS, not the org-wide unlinked pile.
+    //
+    // Paging `by_linkCount` and filtering ownership in JS looks equivalent and
+    // isn't: it bounds the scan by RECENCY ACROSS THE ORG, so once more than
+    // `SUGGESTION_SCAN_LIMIT` newer unlinked receipts exist anywhere, a
+    // cardholder's own matching receipt falls off the end and is silently
+    // never offered — the failure mode is an empty suggestion list on a screen
+    // whose whole job is to stop people hunting for receipts. Keying on the
+    // uploader makes the bound per-person, which is the population that was
+    // meant all along.
+    //
+    // Legacy inbound rows (captured before `uploadedByPersonId` was
+    // populated) can't be reached this way, so they keep their bounded
+    // fallback scan below — capped by `SUGGESTION_LEGACY_OWNER_LOOKUPS`, and
+    // now spent on rows that are actually candidates rather than on strangers'.
+    const perOwner = await Promise.all(
+      [...ownerIds].map((personId) =>
+        ctx.db
+          .query("receipts")
+          .withIndex("by_uploader_and_linkCount", (q) =>
+            q.eq("uploadedByPersonId", personId as Id<"people">).eq("linkCount", 0),
+          )
+          .order("desc")
+          .take(SUGGESTION_SCAN_LIMIT),
+      ),
+    );
+    const legacyUnattributed = await ctx.db
+      .query("receipts")
+      .withIndex("by_uploader_and_linkCount", (q) =>
+        q.eq("uploadedByPersonId", undefined).eq("linkCount", 0),
+      )
+      .order("desc")
+      .take(SUGGESTION_SCAN_LIMIT);
+    const seen = new Set<string>();
+    const unlinked = [...perOwner.flat(), ...legacyUnattributed].filter((r) => {
+      if (seen.has(r._id as string)) return false;
+      seen.add(r._id as string);
+      return true;
+    });
+
+    const rows: { receipt: Doc<"receipts">; match: typeof suggestionMatch.type }[] = [];
+    let legacyLookups = 0;
+    for (const r of unlinked) {
+      if (r.archived === true || r.duplicateOfReceiptId != null) continue;
+      // Plausibility FIRST (pure, in-memory), ownership second — so the
+      // ownership fan-out below only ever runs on the handful of receipts that
+      // could actually be offered.
+      const { match, plausible } = describeSuggestion(r, txn);
+      if (!plausible) continue;
+      if (!(await ownsReceipt(ctx, r, ownerIds, () => legacyLookups++ < SUGGESTION_LEGACY_OWNER_LOOKUPS))) {
+        continue;
+      }
+      rows.push({ receipt: r, match });
+    }
+
+    rows.sort((a, b) => {
+      const byScore = scoreSuggestion(b.match) - scoreSuggestion(a.match);
+      if (byScore !== 0) return byScore;
+      const aDays = a.match.daysApart ?? Number.MAX_SAFE_INTEGER;
+      const bDays = b.match.daysApart ?? Number.MAX_SAFE_INTEGER;
+      if (aDays !== bDays) return aDays - bDays;
+      return b.receipt.createdAt - a.receipt.createdAt;
+    });
+
+    const out: (typeof suggestedReceiptRow.type)[] = [];
+    for (const { receipt: r, match } of rows.slice(0, limit)) {
+      out.push({
+        receiptId: r._id,
+        url: await ctx.storage.getUrl(r.storageId),
+        contentType:
+          (await ctx.db.system.get("_storage", r.storageId))?.contentType ?? null,
+        filename: r.filename ?? null,
+        source: r.source,
+        amountCents: r.amountCents ?? null,
+        receiptDate: r.receiptDate ?? null,
+        merchant: r.merchant ?? null,
+        ocrAmountCents: r.ocrAmountCents ?? null,
+        ocrDate: r.ocrDate ?? null,
+        ocrMerchant: r.ocrMerchant ?? null,
+        ocrError: r.ocrError ?? null,
+        createdAt: r.createdAt,
+        match,
+        score: scoreSuggestion(match),
+      });
+    }
+    return out;
+  },
+});
+
+/**
+ * Whether one receipt belongs to any of `ownerIds`.
+ *
+ * Receipts captured since the pipeline change carry `uploadedByPersonId`
+ * directly (both inbound channels stamp the resolved sender, and the upload
+ * path always did). A LEGACY email/SMS receipt predates that, so its only
+ * record of who sent it is the `inboundReceipts` row it came from — chased
+ * here through `budget()`, which the caller uses to cap how many such lookups
+ * one query may do. Exhausting the budget just means an old receipt isn't
+ * offered; it stays reachable through the library.
+ */
+async function ownsReceipt(
+  ctx: QueryCtx,
+  receipt: Doc<"receipts">,
+  ownerIds: Set<string>,
+  budget: () => boolean,
+): Promise<boolean> {
+  if (receipt.uploadedByPersonId) {
+    return ownerIds.has(receipt.uploadedByPersonId as string);
+  }
+  if (!receipt.inboundReceiptId || !budget()) return false;
+  const inbound = await ctx.db.get(receipt.inboundReceiptId);
+  return inbound?.personId != null && ownerIds.has(inbound.personId as string);
+}
+
+/**
+ * Attach a suggested receipt to a charge — the MEMBER-SAFE confirm the coding
+ * sheet calls, and the only way a non-bookkeeper can create a receipt link.
+ *
+ * `linkReceipt` (above) stays bookkeeper-gated: it can attach ANY receipt to
+ * ANY transaction in scope, which is a bookkeeper's power and shouldn't be
+ * loosened just because cardholders now need one narrow slice of it. This is
+ * that slice, and it's narrow on purpose:
+ *  - the caller must pass `requireReceiptSuggestions` (own charge, or
+ *    bookkeeper+ — the same gate the suggestion list uses),
+ *  - the receipt must be one this caller could actually have been OFFERED:
+ *    unlinked, not archived, not a known duplicate, and either theirs/the
+ *    cardholder's or already on this charge's own suggestion shortlist. A
+ *    cardholder must not be able to staple a stranger's receipt to their own
+ *    charge by guessing an id — the money boundary is the same one
+ *    `requireReceiptAndTxnInChapter` defends for bookkeepers.
+ * A bookkeeper+ caller skips the ownership half (they can reach the same
+ * receipt through `linkReceipt` anyway) but not the unlinked/not-resolved half.
+ *
+ * The write itself goes through `lib/receiptLinks.ts#linkReceiptToTransaction`
+ * — the single writer — so `receipts.linkCount`, the
+ * `transactions.receiptStorageId` denorm, the receipt-reminder clear, the card
+ * unlock, and the `categorized → reconciled` flip all stay consistent with
+ * every other link. Stamped `source: "manual"`, because that is what it is: a
+ * human picked it. Audited as `receipt_attach`, exactly like `linkReceipt`.
+ */
+export const confirmSuggestedReceipt = mutation({
+  args: { receiptId: v.id("receipts"), transactionId: v.id("transactions") },
+  returns: linkResult,
+  handler: async (ctx, args) => {
+    const access = await requireReceiptSuggestions(ctx, args.transactionId);
+    const txn = access.txn;
+
+    const receipt = await ctx.db.get(args.receiptId);
+    if (!receipt) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Receipt not found." });
+    }
+    const notOffered = () =>
+      new ConvexError({
+        code: "FORBIDDEN",
+        message: "That receipt isn't one of this charge's suggestions.",
+      });
+    if (receipt.linkCount > 0 || receipt.archived === true || receipt.duplicateOfReceiptId) {
+      // Already attached elsewhere, archived, or resolved as a duplicate —
+      // re-using one of those is a bookkeeper's judgment call (`linkReceipt`),
+      // not a one-tap confirm.
+      throw notOffered();
+    }
+    if (!access.isBookkeeper) {
+      const ownerIds = new Set<string>();
+      if (txn.personId) ownerIds.add(txn.personId as string);
+      if (access.actorPersonId) ownerIds.add(access.actorPersonId as string);
+      // OWNERSHIP, FULL STOP — being on the receipt's shortlist is not a
+      // permission. The shortlist is produced by an org-wide exact-cent
+      // matcher, so someone else's charge lands on it routinely (two people
+      // buy the same $12.99 thing on the same day). Accepting it as a
+      // disjunct let a cardholder attach ANOTHER PERSON's receipt to their own
+      // charge and consume it — the receipt is single-use, so the rightful
+      // owner then can't attach it to the charge it actually belongs to, and
+      // the audit trail records the wrong person's document as proof.
+      // Bookkeepers keep the cross-owner power via `linkReceipt`, where it's
+      // a deliberate judgment call rather than a one-tap confirm.
+      let lookups = 0;
+      if (!(await ownsReceipt(ctx, receipt, ownerIds, () => lookups++ < 1))) {
+        throw notOffered();
+      }
+    }
+
+    const hadReceipt = txn.receiptStorageId != null;
+    const result = await linkReceiptToTransaction(ctx, {
+      receiptId: args.receiptId,
+      transactionId: args.transactionId,
+      source: "manual",
+      linkedByPersonId: access.actorPersonId ?? undefined,
+      reconcileIfCategorized: true,
+    });
+    if (result.linked) {
+      await logFinanceAudit(ctx, {
+        chapterId: txn.chapterId,
+        subjectType: "transaction",
+        subjectId: args.transactionId,
+        action: "receipt_attach",
+        actorPersonId: access.actorPersonId,
+        field: "receipt",
+        before: hadReceipt ? "Attached" : "None",
+        after: "Attached",
         amountCents: txn.amountCents,
       });
     }

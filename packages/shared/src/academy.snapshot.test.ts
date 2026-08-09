@@ -352,6 +352,39 @@
  * 5-question cap `apps/convex/tests/academy.test.ts` enforces and no existing
  * question here is redundant enough to swap out. No slugs, sections, or
  * courses moved; total stays 106.
+ *
+ * Documentation fuses into coding (owner decision, 2026-08-08 — "they should
+ * just upload the receipt when coding"; `docs/plans/transaction-coding.md`) is
+ * a content-only edit to six Finances sections, adding and moving none. Two
+ * shipped rules drove it: a coding no longer submits unless the charge has a
+ * receipt or a FILED (pending counts) receipt exception, and emailed/texted
+ * receipts are still captured but no longer auto-attach — they wait in the
+ * receipts library and are OFFERED as a match when the cardholder codes the
+ * charge, confirmed in a tap. `finance-card-and-receipts` gained a paragraph
+ * pointing forward to coding as the other half of the same act and a rule,
+ * "Sending it in is not attaching it"; its email tip was rewritten around
+ * capture-at-the-counter, and its weakest question (the "where do you see your
+ * own charges" navigation one, whose answer now rides in the new question's
+ * explanation) was swapped for one on an emailed receipt that hasn't been
+ * confirmed yet. `finance-receipt-exceptions` now says the gate bites at
+ * SUBMISSION as well as at reconcile, that the exception is filed from the
+ * coding sheet, and — in its try_status caption and one quiz explanation —
+ * that a pending exception unblocks submitting the coding but nothing else.
+ * `finance-coding-your-charges` replaced its "two separate obligations"
+ * paragraph with the rule that replaced it, "One act, not two errands"
+ * (deadlines unchanged: day-7 card lock on the receipt, day-60 conversion),
+ * plus a paragraph on the offered-receipt tap; its pizza-vs-dinner question
+ * (the same numbers as the `scenario` block directly above it) gave way to one
+ * on submitting a coding with no receipt. On the reviewer's side,
+ * `finance-reconcile-grid` records that every coding now arrives documented,
+ * and `finance-chasing-receipts` / `finance-receipt-escalation-queue` both
+ * teach that a full receipts library is not a documented month — the treasurer
+ * lesson swapping its who-unlocks-the-card question (answered verbatim by the
+ * `reveal` block above it) for the nine-receipts-nine-undocumented case, and
+ * the FM lesson ADDING a fourth question, its only snapshot movement
+ * (quizLength 3 → 4, bumped below). Minutes are unchanged everywhere: the
+ * lessons that grew stayed inside the word budget their own neighbours run at.
+ * No slugs, sections, or courses moved; the total is unchanged.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -1035,7 +1068,10 @@ const EXPECTED_SECTIONS: {
     slug: "finance-receipt-escalation-queue",
     title: "The receipt escalation queue",
     minutes: 3,
-    quizLength: 3,
+    // 3 → 4: the receipts-are-captured-not-filed question, added when emailed
+    // and texted receipts stopped auto-attaching (docs/plans/transaction-coding.md,
+    // owner decision 2026-08-08).
+    quizLength: 4,
     optional: false,
     capstoneKind: null,
   },

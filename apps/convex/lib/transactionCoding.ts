@@ -168,11 +168,68 @@ export async function submitCoding(
     scope: FinanceScope;
     fields: CodingWriteFields;
     namesMaxHeadcount: number;
+    /** The coding policy date, so the documentation gate below can tell a
+     *  REQUIRED coding from a voluntary one. */
+    codingRequiredSinceMs: number;
     codedByPersonId: Id<"people"> | null;
     codedByUserId: Id<"users">;
   },
 ): Promise<{ codingId: Id<"transactionCodings">; resubmission: boolean }> {
   const fields = normalizeCodingFields(args.fields, args.namesMaxHeadcount);
+
+  // A CODING CARRIES ITS OWN DOCUMENTATION (owner decision, 2026-08-08:
+  // "they should just upload the receipt when coding").
+  //
+  // Documentation and coding used to be two independent obligations that
+  // merely happened to share a sheet, which meant two nags, two backlogs and
+  // two chances to half-finish a charge. They're now one act: you cannot put
+  // "here's what this was for" on the record without also saying how it can
+  // be proved. Everything else about the two axes is unchanged — they stay
+  // separate on the row, because a receipt can be superseded or an exception
+  // withdrawn long after the coding was written, and the publishing predicate
+  // has to keep seeing that independently.
+  //
+  // A PENDING exception counts here, deliberately. The gate asks whether the
+  // AUTHOR has done their part, and filing an attestation is their part; the
+  // approver's decision is a different person's work and blocking submission
+  // on it would leave the charge stuck in the author's queue for something
+  // they cannot do. The `reconciled` gate in `finances.setTransactionStatus`
+  // is where documentation has to be actually RESOLVED (`isUndocumented`
+  // counts only approved exceptions) — so nothing publishes on the strength
+  // of an unapproved claim.
+  //
+  // SCOPED TO ROWS THAT OWE A CODING AT ALL — post-policy outflow spend, the
+  // same population `finances.requiresCoding` gates on. Unscoped, this
+  // punished the only people doing more than they had to: a voluntary coding
+  // on a donation inflow, an `excluded` duplicate, a personal charge, or a
+  // pre-policy historical row would be refused for want of documentation
+  // those rows never owed, and the only way through would have been filing a
+  // spurious receipt exception for a manager to adjudicate. A coding nobody
+  // required is strictly better than no coding; it must never be harder to
+  // give than the required one.
+  const codingRequired =
+    args.txn.postedAt >= args.codingRequiredSinceMs &&
+    args.txn.flow === "outflow" &&
+    args.txn.status !== "excluded" &&
+    args.txn.isPersonal !== true;
+  const hasReceipt = args.txn.receiptStorageId != null;
+  if (codingRequired && !hasReceipt) {
+    const exceptions = await ctx.db
+      .query("receiptExceptions")
+      .withIndex("by_transaction", (q) => q.eq("transactionId", args.txn._id))
+      .collect();
+    const standing = exceptions.some(
+      (e) => e.status === "approved" || e.status === "pending",
+    );
+    if (!standing) {
+      throw new ConvexError({
+        code: "DOCUMENTATION_REQUIRED",
+        message:
+          "Attach the receipt before submitting this coding — or, if no receipt exists, say why in the same sheet. What the money was for and how it can be proved are one record, not two errands.",
+      });
+    }
+  }
+
   // THE OTHER HALF OF THE LODGING RULE. `lib/receiptExceptions.ts` refuses a
   // `bank_record_only` exception on a charge already coded `lodging` — but
   // the two facts arrive in either order, and nothing stopped the cheaper

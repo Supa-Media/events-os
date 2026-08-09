@@ -1,7 +1,10 @@
 # Transaction coding — IRS-grade substantiation, self-serve
 
 **Status:** ratified 2026-08-08 (decisions below) — **phase 1 implemented**
-(schema, gate, facets, review loop, Reconcile editor; phases 2–4 pending)
+(schema, gate, facets, review loop, Reconcile editor; phases 2–4 pending).
+Decisions 6 and 7 (a coding carries its own documentation; receipts are
+captured but no longer auto-matched) were ratified the same day, after phase 2
+had been specced — the doc below is written to them, not amended around them.
 **Owner ask (2026-08-08):** travel line items need a from/to; meals need the
 names of everyone there (or a headcount for big groups); business purpose has
 to be real ("travel to NY to film Eden event", not "bus to NY"). Cardholders
@@ -82,6 +85,17 @@ exceptions out of `TRANSACTION_STATUSES`. A transaction is publishable when
 all three axes are green. Do **not** add new values to
 `TRANSACTION_STATUSES`.
 
+**That orthogonality is about the ROW, and it is unchanged** — including by
+decision 6 below, which fuses documentation and coding at the moment of
+*submission*. The two must stay separately evaluated on the row because they
+drift apart afterwards: a receipt can be superseded or deleted, an exception
+can be withdrawn or rejected, and either can happen long after the coding was
+written and approved. A publishing predicate that inferred "coded, therefore
+documented" would be reading a fact that was true once. So the publishability
+check still asks all three questions independently, every time. What decision 6
+changes is only that you cannot *author* one half without the other — an
+authoring gate, not a data model.
+
 ### Schema
 
 `transactionCodings` (new, `schema/finances.ts`; enums in
@@ -151,7 +165,26 @@ about spend substantiation.
 
 Lodging rule: for a coding with `expenseType: "lodging"`, receipt exceptions
 of reason `bank_record_only` are blocked (IRS: itemized receipt required at
-any amount) — enforced in `receiptExceptions.attest`, warned in the modal.
+any amount) — enforced in `receiptExceptions.attest`, warned in the modal, and
+mirrored in `submitCoding` (`LODGING_RECEIPT_REQUIRED`) so the rule doesn't
+depend on which of the two the human filed first.
+
+**The submission gate (decision 6).** `lib/transactionCoding.ts#submitCoding`
+refuses a coding on a charge with neither a receipt nor a standing receipt
+exception → `ConvexError({ code: "DOCUMENTATION_REQUIRED" })`. This is the
+authoring half of the same idea the reconcile gate enforces at the end: what
+the money was for and how it can be proved are one record, so one of them
+cannot be filed without the other. It kills the failure this scope kept
+re-creating — a charge finished halfway, sitting in two backlogs and two nag
+streams, each of which reads as somebody else's problem.
+
+**A PENDING exception counts here.** The gate's question is whether the AUTHOR
+finished their half, and filing an attestation is their half; requiring an
+approved one would block a submission on work the submitter cannot do and
+strand the charge in their queue waiting on someone else's decision. Nothing is
+weakened by this, because the `reconciled` gate is where documentation has to
+be *resolved* — `isUndocumented` counts approved exceptions only — so no row
+publishes on the strength of a claim nobody weighed.
 
 ### Access
 
@@ -180,7 +213,9 @@ Per the house rule, gated from day one via `lib/transactionCodingAccess.ts`:
    not its own nag stream. `notifyReceiptDigest`, the escalation stages
    (`receiptReminderStage`), the FM nudge, and the receipt-chase page all
    rekey on `codingState` — "you have 3 charges to code" — and a charge with
-   a receipt but no purpose is exactly as chased as one with neither.
+   a receipt but no purpose is exactly as chased as one with neither. Decision
+   6 makes that literal rather than rhetorical: the receipt is now a field the
+   coding cannot be submitted without.
    One email, one link: `appUrl("/finances/my-transactions?filter=uncoded")`.
    Cardholders are authed members, so **no new token infrastructure** in v1
    (the token page family stays reimbursement-only).
@@ -189,14 +224,19 @@ Per the house rule, gated from day one via `lib/transactionCodingAccess.ts`:
    merchant category shown as context), business purpose with per-type
    prompts ("What was it, for which event/project, and why?"), from/to for
    travel, attendee picker (people-table typeahead + free-text guests +
-   affiliation) or headcount+group for meals, receipt upload **in the same
-   sheet**, and the budget/"For" picker (reusing `forPicker`).
+   affiliation) or headcount+group for meals, the budget/"For" picker
+   (reusing `forPicker`), and the **documentation block — receipt upload,
+   already-captured receipt suggestions, and the exception flow — in the same
+   sheet**, because the submit button depends on it (the gate above).
 4. **No receipt?** The same sheet surfaces the existing exception flow
    verbatim: the five `RECEIPT_EXCEPTION_REASONS` with their hints, up to 5
    evidence photos, bank-statement option, required explanation. Nothing new
    to build — the ask ("proof you purchased the thing, up to 5 pictures,
    bank statements, why there is no receipt") *is* `receiptExceptions`; this
-   scope just puts it in the cardholder's path instead of the treasurer's.
+   scope just puts it in the cardholder's path instead of the treasurer's,
+   and decision 6 makes it the *required* other branch rather than an
+   optional one: every submitted coding leaves either a document or a named
+   person's account of why there isn't one.
 5. Submit → `codingState: "submitted"`, audit `coding_submit`.
 
 Purpose quality can't be regexed. Two layers, both human: per-type prompt
@@ -213,6 +253,49 @@ hints in the Reconcile grid — was a separate feature that never wrote into a
 `transactionCodings` row, and has since been removed outright (the owner's read
 was that the column was noise).
 
+### Receipts: captured automatically, attached deliberately (decision 7)
+
+The inbound receipt pipeline (`receiptInbox.ts` for email, `smsReceipts.ts`
+for MMS) used to do two jobs: **capture** a receipt someone forwarded or
+texted, and then **match** it to a transaction and attach it unattended. The
+first job is worth more than ever and is unchanged. The second one goes away.
+
+Capture has to stay because of when receipts exist. A card charge posts around
+a day after the swipe, so the paper slip in someone's hand at the counter, or
+the Amazon/Uber confirmation that hits their inbox at checkout, both arrive
+*before there is a coding sheet to put them on*. Telling people to wait for the
+charge to appear is telling them to lose the receipt. So the pipeline keeps
+doing exactly what it does: OCR the document, class the sender, dedupe on
+`fileSha256`, and file it in the sender's receipt library.
+
+Automatic matching goes away because of who is looking. The matcher was right
+most of the time, and its wrong answers were the expensive kind: a receipt
+silently attached to the wrong charge reads as a finished row, so nobody
+revisits it, and the error surfaces — if ever — as a reviewer or an auditor
+asking why the amounts disagree. Under this scope there is now a moment when a
+human has the charge and the receipt in front of them at the same time and is
+already being asked to explain the charge. Confirming the match there costs one
+tap and is the cheapest possible verification; guessing it a day earlier saves
+that tap and buys an unverifiable claim.
+
+So: `matchReceiptCandidates` survives as a **suggestion source**, not a writer.
+Opening the coding sheet on a charge shows the cardholder's unattached receipts
+that plausibly match it — "is this the one?" — ranked by the same amount/date/
+merchant signals the matcher already computes, with a tap to attach and the
+existing OCR pre-checks (amount mismatch, date drift, duplicate `fileSha256`)
+rendered right there on the candidate. Manual linking from the Receipts library
+stays for bookkeepers doing cleanup. What no longer exists is a write nobody
+authorised: `auto_email` and `auto_sms` stop being produced (they stay in
+`RECEIPT_LINK_SOURCES` — historic links keep their provenance, and rewriting
+history to hide how a link was made is the opposite of the point).
+
+Two consequences worth stating plainly, because they are the cost side of this
+trade. A receipt that was emailed in but never confirmed does **not** stop the
+day-7 card lock — capture is not documentation, and the lock keys on the
+charge. And the "receipts in" number and the "charges documented" number stop
+moving together, which will read as a bug to anyone who doesn't know the rule;
+that is why it is taught in three Academy lessons rather than one.
+
 ### Mistake-proofing the editor (owner call: intuitive, prevents mistakes)
 
 The send-back loop is the safety net, not the plan — the editor's job is to
@@ -227,7 +310,13 @@ make a rejectable submission hard to produce:
   answer.
 - **Submit is disabled until the required elements exist**, with the missing
   ones listed in place ("Add who was there — 4 people means 4 names"). No
-  server-side rejection for omissions the client could see.
+  server-side rejection for omissions the client could see. Documentation is
+  one of those elements now (decision 6), and its missing-element line names
+  both ways out: "Attach the receipt, or say why there isn't one."
+- **The receipt is usually already in the building.** The sheet opens with the
+  cardholder's plausible unattached receipts offered against this charge (see
+  decision 7) — one tap attaches, and the pre-checks below run on the
+  candidate before it is attached rather than after.
 - **Amount-mismatch pre-check.** Receipts already carry OCR'd amounts
   (`receipts.ocrAmountCents`). If the attached receipt's amount doesn't
   match the transaction, warn *at attach time* — "this receipt shows $42.17
@@ -250,7 +339,9 @@ Reconcile grid gains the `coding_review` facet. Reviewer opens the row, sees
 coding + receipt/exception side by side:
 
 - **Approve** → `codingState: "approved"`, audit `coding_approve`. The row
-  can now be reconciled (documentation permitting).
+  can now be reconciled (documentation permitting — a coding submitted on a
+  *pending* exception still waits on that exception's own approval, which is
+  the one case where "coded" and "documented" visibly come apart).
 - **Send back with note** → `status: "changes_requested"`, required
   `reviewNote` ("receipt must show exact amount"), email to the coder with
   the note and a deep link. Coder edits and resubmits; loop until approved.
@@ -280,8 +371,12 @@ payees) → payee edits lines → resubmits. Today's only send-back is
 ### D. The 60-day clock
 
 Reminder cadence reuses `RECEIPT_GRACE_DAYS` / escalation stages, rekeyed on
-the coding being open (a missing receipt keeps the coding open, so nothing
-is lost by dropping the receipt-specific stream). At
+the coding being open — a missing receipt keeps the coding open by
+construction now (decision 6: it cannot be submitted without one), so nothing
+at all is lost by dropping the receipt-specific stream. The day-7 card lock
+still keys on the *receipt*, not the coding, and that is deliberate: it is the
+one consequence that bites inside the week, and it must keep biting a charge
+whose receipt was emailed in but never confirmed onto it (decision 7). At
 `codingOverdueDays` (recommend 60, the safe harbor), escalate to the FM
 queue; the existing auto-convert-to-personal-repayment mechanism extends to
 chronically uncoded charges — with the email saying why in plain words:
@@ -312,7 +407,12 @@ imposes on this feature:
    publishing backlog for documents; a sibling `isUncoded` predicate becomes
    the backlog for substance. A **publishability report** per month (counts
    by axis, per chapter) is the close-gate artifact — it tells the ED
-   exactly what stands between a period and publication.
+   exactly what stands between a period and publication. **Decision 6 does not
+   collapse these into two.** The axes are evaluated on the row at publish
+   time, and a coding that was documented when it was written can stop being
+   documented afterwards — a receipt deleted, an exception withdrawn or
+   rejected. Inferring documentation from an approved coding would publish a
+   fact with a timestamp on it. Three questions, asked every time.
 3. **Sensitive categories.** Benevolence/pastoral care to individuals, and
    reimbursement payee names, publish **aggregated or anonymized** — policy
    to confirm, but the schema must not force the choice (publish rules live
@@ -361,19 +461,31 @@ it.
    Ships value immediately: the treasurer can start coding to the new
    standard.
 2. **Self-serve** — My Transactions editor on `submitOwnCharge`'s bones,
-   unified digest email, review/send-back loop.
+   unified digest email, review/send-back loop, and the documentation block
+   the submission gate depends on: receipt upload, suggested matches from the
+   cardholder's captured receipts, and the exception flow (decisions 6–7).
 3. **Reimbursement parity** — line-item fields in-app + token page,
    `changes_requested` loop.
 4. **Publish prep** — publishability report, monthly-close gate, redaction
    policy doc. (Ledger page: separate plan.)
 
+Decisions 6 and 7 land inside phase 2 rather than as a phase of their own:
+the submission gate is one guard in `submitCoding`, and retiring the auto-match
+is a deletion plus a query — but both change what the *cardholder* is asked to
+do, which is exactly what phase 2 introduces. Shipping them a phase later would
+mean teaching the receipt-and-coding split first and un-teaching it a month
+after, to the same people, during the on-ramp.
+
 Each phase updates the Academy in the same PR: `finance-card-and-receipts`
-(the coding duty joins the 7-day rule), `finance-reconcile-grid` (new
-facets + review loop), `finance-receipt-exceptions` (lodging rule),
-`finance-reimbursements-and-flags` (new required fields), and phase 2 likely
-warrants a new lesson — *"Coding your charges: what the IRS and the public
-ledger both need"* — plus quiz updates and a check of `academyPaths.ts` and
-the capstone templates.
+(the coding duty joins the 7-day rule; then decision 7's "sending it in is not
+attaching it"), `finance-reconcile-grid` (new facets + review loop),
+`finance-receipt-exceptions` (lodging rule; then the gate that now bites at
+submission and the pending-exception nuance), `finance-reimbursements-and-flags`
+(new required fields), the treasurer/FM chase lessons
+(`finance-chasing-receipts`, `finance-receipt-escalation-queue` — a full
+receipts library is not a documented month), and phase 2's new lesson
+*"Coding your charges"* — plus quiz updates and a check of `academyPaths.ts`
+and the capstone templates.
 
 ## Decisions (owner, 2026-08-08)
 
@@ -396,6 +508,30 @@ the capstone templates.
    prompts and the human reviewer are the quality mechanism. (The separate
    reviewer-side `aiSuggestion` budget/category hints never touched a coding,
    and have since been removed from the product entirely.)
+6. **A coding carries its own documentation.** `submitCoding` refuses a
+   coding on a charge with neither a receipt nor a filed receipt exception
+   (`DOCUMENTATION_REQUIRED`). Documentation and coding stop being two
+   errands with two nag streams and two half-finished backlogs; they are one
+   act, done in one sheet, in one sitting. A **pending** exception satisfies
+   the gate — it asks whether the author finished their half, and blocking on
+   an approver would strand the charge in a queue its owner cannot clear —
+   while `reconciled` still requires an **approved** one, so nothing publishes
+   on an unweighed claim. This is an authoring rule only: the three
+   publishability axes stay independently evaluated on the row (see The model
+   and the public-ledger lens).
+7. **Receipts are captured automatically and attached deliberately.** The
+   emailed/texted receipt pipeline keeps capturing — a charge posts about a
+   day after the swipe, so the receipt exists before the coding sheet does,
+   and telling people to wait is telling them to lose it. What retires is the
+   unattended MATCH: the matcher becomes a suggestion source, offering the
+   cardholder's plausible receipts against the charge they're coding ("is
+   this the one?") for a one-tap confirm. The owner's read, in his words:
+   *"we don't even need the receipt matching pipeline as much if people are
+   going to code things themselves."* The verification is cheaper and better
+   at the moment a human is looking at the charge and the receipt together;
+   a guess made a day earlier saves that tap and buys a claim nobody checked.
+   Cost, accepted: an emailed-but-unconfirmed receipt does not stop the day-7
+   card lock.
 
 ## Still open (defaults apply unless overridden — neither blocks phase 1)
 

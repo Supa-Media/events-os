@@ -61,10 +61,24 @@ async function asManager(s: ChapterSetup): Promise<Id<"people">> {
   return personId;
 }
 
+/**
+ * A charge to code. RECEIPTED BY DEFAULT, because since the receipt-at-coding
+ * change a coding can't be submitted on a charge that can't prove itself
+ * (`submitCoding`'s `DOCUMENTATION_REQUIRED` gate) — an undocumented fixture
+ * would make every unrelated test in this file a test of that one rule. Pass
+ * `documented: false` to exercise the gate itself.
+ */
 async function seedTxn(
   s: ChapterSetup,
-  opts: { postedAt?: number; receiptStorageId?: Id<"_storage"> } = {},
+  opts: {
+    postedAt?: number;
+    receiptStorageId?: Id<"_storage">;
+    documented?: boolean;
+  } = {},
 ): Promise<Id<"transactions">> {
+  const receiptStorageId =
+    opts.receiptStorageId ??
+    (opts.documented === false ? undefined : await storeBlob(s.t));
   return await run(s.t, (ctx) =>
     ctx.db.insert("transactions", {
       chapterId: s.chapterId,
@@ -74,11 +88,119 @@ async function seedTxn(
       postedAt: opts.postedAt ?? POST_POLICY,
       merchantName: "Peter Pan Bus Lines",
       status: "unreviewed",
-      receiptStorageId: opts.receiptStorageId,
+      receiptStorageId,
       createdAt: Date.now(),
     }),
   );
 }
+
+describe("a coding carries its own documentation", () => {
+  // Owner decision (2026-08-08): "they should just upload the receipt when
+  // coding." What the money was for and how it can be proved are one record,
+  // so submitting the first without the second is refused.
+  test("refuses a coding on a charge that can't prove itself", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const txnId = await seedTxn(s, { documented: false });
+
+    await expect(
+      s.as.mutation(api.transactionCodings.submit, {
+        transactionId: txnId,
+        expenseType: "general",
+        businessPurpose: GOOD_PURPOSE,
+      }),
+    ).rejects.toMatchObject({ data: { code: "DOCUMENTATION_REQUIRED" } });
+  });
+
+  test("a receipt satisfies it", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const txnId = await seedTxn(s); // receipted by default
+    await s.as.mutation(api.transactionCodings.submit, {
+      transactionId: txnId,
+      expenseType: "general",
+      businessPurpose: GOOD_PURPOSE,
+    });
+    expect((await run(s.t, (ctx) => ctx.db.get(txnId)))?.codingState).toBe(
+      "submitted",
+    );
+  });
+
+  test("a PENDING exception satisfies it — the author's part is done", async () => {
+    // Deliberate: the gate asks whether the AUTHOR finished their half.
+    // Waiting on someone else's approval would strand the charge in their
+    // queue for something they can't do. `reconciled` still demands an
+    // APPROVED exception, so nothing publishes on an unapproved claim.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const txnId = await seedTxn(s, { documented: false });
+    await s.as.mutation(api.receiptExceptions.attest, {
+      transactionId: txnId,
+      reason: "no_receipt_issued",
+      note: "Cash tip to the sound engineer at the Aug 2 outdoor service.",
+    });
+
+    await s.as.mutation(api.transactionCodings.submit, {
+      transactionId: txnId,
+      expenseType: "general",
+      businessPurpose: GOOD_PURPOSE,
+    });
+    expect((await run(s.t, (ctx) => ctx.db.get(txnId)))?.codingState).toBe(
+      "submitted",
+    );
+  });
+
+  test("a VOLUNTARY coding is never blocked by it", async () => {
+    // The gate is scoped to rows that owe a coding (post-policy outflow
+    // spend). Unscoped it punished the only people doing more than they had
+    // to: coding a pre-policy charge, an inflow, or an excluded duplicate
+    // would have been refused for want of documentation those rows never
+    // owed — and the only way through would have been filing a bogus receipt
+    // exception for a manager to adjudicate.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const prePolicy = await seedTxn(s, {
+      postedAt: PRE_POLICY,
+      documented: false,
+    });
+
+    await s.as.mutation(api.transactionCodings.submit, {
+      transactionId: prePolicy,
+      expenseType: "general",
+      businessPurpose: GOOD_PURPOSE,
+    });
+    expect((await run(s.t, (ctx) => ctx.db.get(prePolicy)))?.codingState).toBe(
+      "submitted",
+    );
+  });
+
+  test("getForTransaction reports it, so the form can say so before you type", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const bare = await seedTxn(s, { documented: false });
+    const receipted = await seedTxn(s);
+
+    expect(
+      (
+        await s.as.query(api.transactionCodings.getForTransaction, {
+          transactionId: bare,
+        })
+      ).hasDocumentation,
+    ).toBe(false);
+    expect(
+      (
+        await s.as.query(api.transactionCodings.getForTransaction, {
+          transactionId: receipted,
+        })
+      ).hasDocumentation,
+    ).toBe(true);
+  });
+});
 
 describe("submitting", () => {
   test("a submitted coding lands on the row and the denorm tracks it", async () => {

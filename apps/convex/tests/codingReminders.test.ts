@@ -712,11 +712,28 @@ describe("receiptExceptions — the lodging rule", () => {
   const EXCEPTION_NOTE =
     "The hotel folio never arrived and the front desk cannot reproduce it.";
 
+  /**
+   * A charge already CODED as `expenseType` and currently carrying no
+   * documentation — the only state in which the attest-side lodging guard is
+   * still reachable.
+   *
+   * Since receipt-at-coding, a coding can't be submitted at all without
+   * documentation, so the naive "code it, then try to except it" sequence
+   * can't happen forwards any more. What CAN happen — and what this
+   * reconstructs — is the receipt going away AFTER the coding was written: a
+   * bookkeeper unlinks a receipt attached to the wrong charge, or the row
+   * predates the rule. The guard is defence in depth for exactly those, so
+   * the fixture reproduces them rather than pretending the forward path is
+   * still open.
+   */
   async function codedCharge(
     s: ChapterSetup,
     expenseType: "lodging" | "meal",
   ): Promise<Id<"transactions">> {
-    const txnId = await seedCharge(s, { ageDays: 2 });
+    const txnId = await seedCharge(s, {
+      ageDays: 2,
+      receiptStorageId: await storeBlob(s.t),
+    });
     await s.as.mutation(api.transactionCodings.submit, {
       transactionId: txnId,
       expenseType,
@@ -729,6 +746,10 @@ describe("receiptExceptions — the lodging rule", () => {
             { name: "Cy", affiliation: "contractor" as const },
           ] }),
     });
+    // The receipt goes away after the fact (unlinked as misfiled).
+    await run(s.t, (ctx) =>
+      ctx.db.patch(txnId, { receiptStorageId: undefined }),
+    );
     return txnId;
   }
 
@@ -778,14 +799,18 @@ describe("receiptExceptions — the lodging rule", () => {
       }),
     ).rejects.toMatchObject({ data: { code: "LODGING_RECEIPT_REQUIRED" } });
 
-    // Withdrawing it is the way through — the folio either exists, or a
-    // different reason is the true one.
+    // Withdrawing it and producing the folio is the way through — which is
+    // the entire point of the rule. (Withdrawing ALONE isn't enough any more:
+    // a coding needs documentation of some kind, so the charge has to end up
+    // with the actual itemized receipt attached.)
     const filed = await run(s.t, async (ctx) =>
       (await ctx.db.query("receiptExceptions").collect())[0],
     );
     await s.as.mutation(api.receiptExceptions.withdraw, {
       exceptionId: filed._id,
     });
+    const folio = await storeBlob(s.t);
+    await run(s.t, (ctx) => ctx.db.patch(txnId, { receiptStorageId: folio }));
     await s.as.mutation(api.transactionCodings.submit, {
       transactionId: txnId,
       expenseType: "lodging",

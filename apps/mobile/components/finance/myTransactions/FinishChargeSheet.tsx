@@ -3,23 +3,26 @@
  *
  * The owner ask (2026-08-08): a cardholder who gets the "you have 3 charges to
  * code" email should be able to finish all three without leaving the screen
- * and without a finance role. So this sheet carries the whole job in the order
- * a person actually does it:
+ * and without a finance role. So this sheet carries the whole job:
  *
  *   1. What the reviewer said, if they sent it back — first, biggest, and
  *      quoted verbatim. It is the only thing on this screen that already
  *      tells them exactly what to do.
- *   2. The substantiation record (`TransactionCodingModal` — the same editor
- *      the treasurer uses in Reconcile, not a second one that could drift).
- *   3. The receipt: the same `ReceiptCell` upload affordance as everywhere
- *      else, an amount check at attach time, and — when no receipt exists —
- *      the existing `ReceiptExceptionModal`, verbatim. Nothing new to build:
- *      the ask ("proof you bought the thing, why there's no receipt") IS
- *      `receiptExceptions`; this just puts it in the cardholder's path
- *      instead of the treasurer's.
- *   4. The optional extras the member could already set (category, a note for
+ *   2. THE ONE REQUIRED ACT: the substantiation record and the receipt that
+ *      proves it. Not two steps — one. `submitCoding` now refuses a coding on
+ *      a charge that can't prove itself (`DOCUMENTATION_REQUIRED`, owner:
+ *      "they should just upload the receipt when coding"), so the two are
+ *      presented as halves of a single record, and the receipt is reachable
+ *      from inside `TransactionCodingModal` itself (`documentationSlot`) as
+ *      well as from here. The editor is the same one the treasurer uses in
+ *      Reconcile, not a second one that could drift.
+ *   3. The optional extras the member could already set (category, a note for
  *      the finance team, "this was personal") — kept, but demoted below the
  *      things the accountable plan actually requires.
+ *
+ * Everything about the receipt half — upload, confirming a receipt that was
+ * emailed in, or saying there is no receipt — lives in `CodingDocumentation`,
+ * mounted both here and inside the editor, so the two can't drift either.
  *
  * NOTHING IS PRE-FILLED (owner decision, 2026-08-08: no AI anywhere in
  * coding). Merchant, amount and date are shown as context because a person
@@ -35,7 +38,6 @@ import {
   documentationState,
   formatCents,
   type AttendeeAffiliation,
-  type ReceiptExceptionReason,
 } from "@events-os/shared";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
@@ -50,12 +52,11 @@ import {
 } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
-import { ReceiptCell } from "../reconcile/ReconcileList";
-import { ReceiptExceptionModal } from "../modals/ReceiptExceptionModal";
 import {
   TransactionCodingModal,
   type CodingFormValue,
 } from "../modals/TransactionCodingModal";
+import { CodingDocumentation } from "./CodingDocumentation";
 import { parseAmountToCents, receiptAmountMismatch } from "./receiptAmountCheck";
 import type { MyTxnRow } from "./chargeTodo";
 
@@ -72,16 +73,19 @@ function dateStr(ts: number): string {
   });
 }
 
-/** A step's heading — a number, a title, and a done/outstanding marker, so
- *  "what's left" is readable at a glance instead of inferred from which
- *  buttons happen to be enabled. */
-function StepHeader({
-  index,
+/** A requirement's heading — a title and a done/outstanding marker, so what's
+ *  left is readable at a glance instead of inferred from which buttons happen
+ *  to be enabled.
+ *
+ *  DELIBERATELY UNNUMBERED. These used to be steps 1, 2, 3, which said out
+ *  loud that the receipt was a later, separate errand — the exact reading the
+ *  server no longer allows. A dot and a check say "outstanding" and "done"
+ *  without implying an order. */
+function RequirementHeader({
   title,
   done,
   hint,
 }: {
-  index: number;
   title: string;
   done: boolean;
   hint?: string;
@@ -97,7 +101,7 @@ function StepHeader({
           {done ? (
             <Icon name="check" size={12} color={colors.success} />
           ) : (
-            <Text className="text-2xs font-bold text-muted">{index}</Text>
+            <Icon name="circle" size={10} color={colors.muted} />
           )}
         </View>
         <Text className="text-2xs font-semibold uppercase tracking-wide text-muted">
@@ -127,14 +131,10 @@ export function FinishChargeSheet({
     txn.hasReceipt ? "skip" : { transactionId },
   );
   const submitCoding = useMutation(api.transactionCodings.submit);
-  const attestException = useMutation(api.receiptExceptions.attest);
-  const attachReceipt = useMutation(api.finances.attachReceipt);
-  const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
   const submitOwnCharge = useMutation(api.finances.submitOwnCharge);
   const { run, toast, dismiss } = useActionRunner();
 
   const [editing, setEditing] = useState(false);
-  const [filing, setFiling] = useState(false);
   const [busy, setBusy] = useState(false);
   // The attach-time amount check (see `receiptAmountCheck.ts` for why the
   // human types the number instead of OCR handing it to us).
@@ -155,6 +155,14 @@ export function FinishChargeSheet({
   const documented =
     documentationState(txn.hasReceipt, txn.hasApprovedException) !==
     "undocumented";
+  // WHAT THE SUBMIT GATE ACTUALLY ASKS. `hasDocumentation` is the server's own
+  // answer and counts a PENDING exception, because the gate asks whether the
+  // AUTHOR finished their half — approving it is somebody else's work and
+  // can't be a reason their charge stays stuck in their queue. Falls back to
+  // the row's own facts until the query lands, so the first paint never
+  // wrongly says "you can't submit this".
+  const hasDocumentation =
+    data?.hasDocumentation ?? (documented || pendingException != null);
   const merchantLine = `${displayMerchantName(txn, "—")} · ${dateStr(txn.postedAt)}`;
   // A person-attributed txn only ever gets `cardId` + `cardLast4` together, so
   // this is the reliable "the cardholder can self-service this" signal
@@ -224,184 +232,173 @@ export function FinishChargeSheet({
                 </View>
               ) : null}
 
-              {/* STEP 1 — SUBSTANTIATION. */}
-              <View>
-                <StepHeader
-                  index={1}
-                  title="What it was for"
-                  done={coding != null && coding.status !== "changes_requested"}
-                  hint={
-                    data?.requiresCoding === false
-                      ? "Not required for this row, but any spend can carry one."
-                      : "The IRS calls this substantiation: what the money bought, which org work it served, and who was involved."
-                  }
-                />
-                {coding == null ? (
-                  <View className="gap-2">
-                    <Text className="text-xs text-muted">
-                      Not coded yet. This is the part only you can do — you were
-                      there.
-                    </Text>
-                    <Button
-                      title="Code this charge"
-                      size="sm"
-                      icon="edit-3"
-                      disabled={data === undefined}
-                      onPress={() => setEditing(true)}
-                    />
-                  </View>
-                ) : (
-                  <View className="rounded-lg border border-border bg-sunken px-3 py-2.5">
-                    <View className="mb-1 flex-row items-center gap-2">
-                      <Badge
-                        label={coding.statusLabel}
-                        tone={CODING_TONE[coding.status] ?? "neutral"}
-                      />
-                      <Text className="text-xs font-medium text-ink">
-                        {coding.expenseTypeLabel}
-                      </Text>
-                    </View>
-                    <Text className="text-xs text-ink">
-                      {coding.businessPurpose}
-                    </Text>
-                    {coding.travelFrom || coding.travelTo ? (
-                      <Text className="mt-1 text-2xs text-muted">
-                        Route: {coding.travelFrom ?? "—"} →{" "}
-                        {coding.travelTo ?? "—"}
-                      </Text>
-                    ) : null}
-                    {coding.headcount != null ? (
-                      <Text className="mt-1 text-2xs text-muted">
-                        {coding.headcount}{" "}
-                        {coding.headcount === 1 ? "person" : "people"}
-                        {coding.groupDescription
-                          ? ` — ${coding.groupDescription}`
-                          : ""}
-                      </Text>
-                    ) : null}
-                    {coding.attendees != null && coding.attendees.length > 0 ? (
-                      <Text className="mt-1 text-2xs text-muted">
-                        {coding.attendees
-                          .map(
-                            (a) =>
-                              `${a.name} (${ATTENDEE_AFFILIATION_LABELS[
-                                a.affiliation as AttendeeAffiliation
-                              ].toLowerCase()})`,
-                          )
-                          .join(", ")}
-                      </Text>
-                    ) : null}
-                    {coding.status !== "approved" ? (
-                      <View className="mt-2 flex-row">
-                        <Button
-                          title={
-                            coding.status === "changes_requested"
-                              ? "Edit and resubmit"
-                              : "Edit"
-                          }
-                          variant="secondary"
-                          size="sm"
-                          onPress={() => setEditing(true)}
-                        />
-                      </View>
-                    ) : null}
-                  </View>
-                )}
-              </View>
-
-              {/* STEP 2 — THE DOCUMENT. */}
-              <View>
-                <StepHeader
-                  index={2}
-                  title="Receipt"
-                  done={documented}
-                  hint="Our policy is stricter than the IRS's: no receipt, no coverage, every expense, any amount."
-                />
-                <View className="flex-row items-center gap-3">
-                  <ReceiptCell
-                    hasReceipt={txn.hasReceipt}
-                    reminderStage={txn.reminderStage}
-                    transactionId={transactionId}
-                    onUpload={async (storageId) => {
-                      await guard(
-                        () => attachReceipt({ transactionId, storageId }),
-                        "Couldn't attach receipt",
-                      );
-                    }}
-                    generateUploadUrl={generateUploadUrl}
-                  />
+              {/* THE ONE REQUIRED ACT — said as one thing, then shown as its
+                  two halves. The sheet used to number these 1 and 2, which
+                  read as "do the words now, chase the paper later"; the
+                  server stopped allowing that (see the module doc). */}
+              <View className="gap-3">
+                <View className="rounded-lg border border-border bg-sunken px-3 py-2.5">
+                  <Text className="text-xs font-semibold text-ink">
+                    Coding a charge is one act, not two errands.
+                  </Text>
+                  <Text className="mt-0.5 text-2xs text-muted">
+                    What the money was for, and the receipt that proves it, go
+                    in together — a coding can&apos;t be submitted without
+                    both. If there is genuinely no receipt, say so in the same
+                    place and that counts. This is what keeps what you spent
+                    from becoming taxable income to you.
+                  </Text>
                 </View>
 
-                {/* AMOUNT PRE-CHECK, at attach time. "Receipt must show exact
-                    amount" is the send-back this replaces — asking the
-                    question here costs one glance and saves a whole review
-                    round trip. See `receiptAmountCheck.ts` on why the number
-                    is typed rather than read from OCR. */}
-                {txn.hasReceipt ? (
-                  <View className="mt-2">
-                    <TextField
-                      label="What total does the receipt show?"
-                      hint={`Check it against the charge — ${formatCents(Math.abs(txn.amountCents))}. A receipt for a different amount is the most common reason a charge gets sent back.`}
-                      value={receiptTotal}
-                      onChangeText={setReceiptTotal}
-                      placeholder={formatCents(Math.abs(txn.amountCents))}
-                      keyboardType="decimal-pad"
-                    />
-                    {mismatch ? (
-                      <View className="mt-1.5 flex-row items-start gap-2 rounded-md border border-warn/40 bg-warn-bg px-3 py-2">
-                        <Icon
-                          name="alert-triangle"
-                          size={13}
-                          color={colors.warn}
+                <View>
+                  <RequirementHeader
+                    title="What it was for"
+                    done={coding != null && coding.status !== "changes_requested"}
+                    hint={
+                      data?.requiresCoding === false
+                        ? "Not required for this row, but any spend can carry one."
+                        : "The IRS calls this substantiation: what the money bought, which org work it served, and who was involved."
+                    }
+                  />
+                  {coding == null ? (
+                    <View className="gap-2">
+                      <Text className="text-xs text-muted">
+                        Not coded yet. This is the part only you can do — you were
+                        there. The receipt goes in with it, in the same editor.
+                      </Text>
+                      <Button
+                        title="Code this charge"
+                        size="sm"
+                        icon="edit-3"
+                        disabled={data === undefined}
+                        onPress={() => setEditing(true)}
+                      />
+                    </View>
+                  ) : (
+                    <View className="rounded-lg border border-border bg-sunken px-3 py-2.5">
+                      <View className="mb-1 flex-row items-center gap-2">
+                        <Badge
+                          label={coding.statusLabel}
+                          tone={CODING_TONE[coding.status] ?? "neutral"}
                         />
-                        <Text className="flex-1 text-2xs text-ink">
-                          {mismatch} Attach the receipt that shows the whole
-                          charge, or say in the business purpose why this one
-                          doesn&apos;t.
+                        <Text className="text-xs font-medium text-ink">
+                          {coding.expenseTypeLabel}
                         </Text>
                       </View>
-                    ) : null}
-                  </View>
-                ) : txn.hasApprovedException ? (
-                  <View className="flex-row items-start gap-2">
-                    <Icon name="check-circle" size={13} color={colors.success} />
-                    <Text className="flex-1 text-2xs text-muted">
-                      Documented by an approved exception
-                      {approvedException
-                        ? ` — ${approvedException.reasonLabel.toLowerCase()}`
-                        : ""}
-                      . Attach a receipt any time and it takes over.
-                    </Text>
-                  </View>
-                ) : pendingException != null ? (
-                  <View className="flex-row items-start gap-2">
-                    <Icon name="clock" size={13} color={colors.warn} />
-                    <Text className="flex-1 text-2xs text-muted">
-                      Exception filed ({pendingException.reasonLabel.toLowerCase()})
-                      — a Finance manager still has to approve it. Asking to be
-                      let off isn&apos;t being let off yet.
-                    </Text>
-                  </View>
-                ) : (
-                  <Pressable
-                    onPress={() => setFiling(true)}
-                    accessibilityRole="button"
-                    className="mt-1 self-start active:opacity-70"
-                  >
-                    <Text className="text-xs font-medium text-accent">
-                      There is no receipt for this
-                    </Text>
-                  </Pressable>
-                )}
+                      <Text className="text-xs text-ink">
+                        {coding.businessPurpose}
+                      </Text>
+                      {coding.travelFrom || coding.travelTo ? (
+                        <Text className="mt-1 text-2xs text-muted">
+                          Route: {coding.travelFrom ?? "—"} →{" "}
+                          {coding.travelTo ?? "—"}
+                        </Text>
+                      ) : null}
+                      {coding.headcount != null ? (
+                        <Text className="mt-1 text-2xs text-muted">
+                          {coding.headcount}{" "}
+                          {coding.headcount === 1 ? "person" : "people"}
+                          {coding.groupDescription
+                            ? ` — ${coding.groupDescription}`
+                            : ""}
+                        </Text>
+                      ) : null}
+                      {coding.attendees != null && coding.attendees.length > 0 ? (
+                        <Text className="mt-1 text-2xs text-muted">
+                          {coding.attendees
+                            .map(
+                              (a) =>
+                                `${a.name} (${ATTENDEE_AFFILIATION_LABELS[
+                                  a.affiliation as AttendeeAffiliation
+                                ].toLowerCase()})`,
+                            )
+                            .join(", ")}
+                        </Text>
+                      ) : null}
+                      {coding.status !== "approved" ? (
+                        <View className="mt-2 flex-row">
+                          <Button
+                            title={
+                              coding.status === "changes_requested"
+                                ? "Edit and resubmit"
+                                : "Edit"
+                            }
+                            variant="secondary"
+                            size="sm"
+                            onPress={() => setEditing(true)}
+                          />
+                        </View>
+                      ) : null}
+                    </View>
+                  )}
+                </View>
+
+                {/* THE OTHER HALF. Same component the editor mounts, so the
+                    upload / "is this the one?" / "there is no receipt" paths
+                    are identical whether somebody starts here or in the
+                    editor. */}
+                <View>
+                  <RequirementHeader
+                    title="The receipt that proves it"
+                    done={hasDocumentation}
+                    hint="Our policy is stricter than the IRS's: no receipt, no coverage, every expense, any amount."
+                  />
+                  <CodingDocumentation
+                    transactionId={transactionId}
+                    amountCents={txn.amountCents}
+                    hasDocumentation={hasDocumentation}
+                    detail={{
+                      hasReceipt: txn.hasReceipt,
+                      hasApprovedException: txn.hasApprovedException,
+                      approvedReasonLabel:
+                        approvedException?.reasonLabel ?? null,
+                      pendingReasonLabel: pendingException?.reasonLabel ?? null,
+                      reminderStage: txn.reminderStage,
+                    }}
+                    runAction={guard}
+                    busy={busy}
+                  />
+
+                  {/* AMOUNT PRE-CHECK, at attach time. "Receipt must show exact
+                      amount" is the send-back this replaces — asking the
+                      question here costs one glance and saves a whole review
+                      round trip. See `receiptAmountCheck.ts` on why the number
+                      is typed rather than read from OCR. */}
+                  {txn.hasReceipt ? (
+                    <View className="mt-2">
+                      <TextField
+                        label="What total does the receipt show?"
+                        hint={`Check it against the charge — ${formatCents(Math.abs(txn.amountCents))}. A receipt for a different amount is the most common reason a charge gets sent back.`}
+                        value={receiptTotal}
+                        onChangeText={setReceiptTotal}
+                        placeholder={formatCents(Math.abs(txn.amountCents))}
+                        keyboardType="decimal-pad"
+                      />
+                      {mismatch ? (
+                        <View className="mt-1.5 flex-row items-start gap-2 rounded-md border border-warn/40 bg-warn-bg px-3 py-2">
+                          <Icon
+                            name="alert-triangle"
+                            size={13}
+                            color={colors.warn}
+                          />
+                          <Text className="flex-1 text-2xs text-ink">
+                            {mismatch} Attach the receipt that shows the whole
+                            charge, or say in the business purpose why this one
+                            doesn&apos;t.
+                          </Text>
+                        </View>
+                      ) : null}
+                    </View>
+                  ) : null}
+                </View>
               </View>
 
-              {/* STEP 3 — the pre-existing member affordances, kept but
-                  demoted: none of this is required by the accountable plan,
-                  it just saves the bookkeeper a guess. */}
+              {/* THE OPTIONAL EXTRAS — the pre-existing member affordances,
+                  kept but demoted: none of this is required by the accountable
+                  plan, it just saves the bookkeeper a guess. */}
               {isCardCharge ? (
                 <View>
-                  <StepHeader
-                    index={3}
+                  <RequirementHeader
                     title="Anything else (optional)"
                     done={false}
                     hint="Helps the finance team file it. The business purpose above is the one that publishes."
@@ -515,6 +512,28 @@ export function FinishChargeSheet({
           amountCents={txn.amountCents}
           namesMaxHeadcount={data.namesMaxHeadcount}
           minPurposeLength={data.minPurposeLength}
+          // THE RECEIPT, INSIDE THE EDITOR. Submit stays disabled until this
+          // charge can prove itself, and the slot is how it gets proved
+          // without closing what's half-typed — the same component the sheet
+          // shows behind this modal, sharing nothing but the transaction, so
+          // whichever one somebody uses, the other reflects it.
+          hasDocumentation={hasDocumentation}
+          documentationSlot={
+            <CodingDocumentation
+              transactionId={transactionId}
+              amountCents={txn.amountCents}
+              hasDocumentation={hasDocumentation}
+              detail={{
+                hasReceipt: txn.hasReceipt,
+                hasApprovedException: txn.hasApprovedException,
+                approvedReasonLabel: approvedException?.reasonLabel ?? null,
+                pendingReasonLabel: pendingException?.reasonLabel ?? null,
+                reminderStage: txn.reminderStage,
+              }}
+              runAction={guard}
+              busy={busy}
+            />
+          }
           reviewNote={
             coding?.status === "changes_requested" ? coding.reviewNote : null
           }
@@ -558,33 +577,6 @@ export function FinishChargeSheet({
               await submitCoding({ transactionId, ...value });
               setEditing(false);
             }, "Couldn't submit this coding")
-          }
-        />
-      ) : null}
-
-      {filing ? (
-        <ReceiptExceptionModal
-          amountCents={txn.amountCents}
-          submitting={busy}
-          onCancel={() => setFiling(false)}
-          onConfirm={({
-            reason,
-            note,
-            evidenceStorageIds,
-          }: {
-            reason: ReceiptExceptionReason;
-            note: string;
-            evidenceStorageIds: Id<"_storage">[];
-          }) =>
-            void guard(async () => {
-              await attestException({
-                transactionId,
-                reason,
-                note,
-                ...(evidenceStorageIds.length ? { evidenceStorageIds } : {}),
-              });
-              setFiling(false);
-            }, "Couldn't file that exception")
           }
         />
       ) : null}

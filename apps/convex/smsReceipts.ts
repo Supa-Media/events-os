@@ -1,5 +1,5 @@
 /**
- * Inbound SMS/MMS → OCR → reconcile pipeline (Twilio channel) — feeds the
+ * Inbound SMS/MMS → OCR → SUGGEST pipeline (Twilio channel) — feeds the
  * SAME receipts pipeline as `receiptInbox.ts` (email), just triggered by a
  * text message instead of an email. Reuses the email pipeline's matcher
  * (`findReceiptMatches`), zero-LLM body parser (`parseReceiptFromText`), image
@@ -33,7 +33,9 @@
  *           roster / external. NO "internal" class exists for a phone number
  *           (there's no org-domain equivalent to trust) — see
  *           `RECEIPT_SENDER_CLASSES`'s doc comment in `@events-os/shared`.
- *           Only team/roster may trigger an auto-attach.
+ *           Only a team/roster number OWNS the receipt it texts in (which is
+ *           what puts it on that person's coding sheet); the class permits no
+ *           write of its own.
  *        b. Gets the receipt content: every MMS media item (each fetched with
  *           Twilio's Basic-auth scheme, mirroring `fetchAllReceiptAttachments`,
  *           then stored and routed through `extractReceiptFields` — a PDF
@@ -41,10 +43,15 @@
  *           else the SMS `Body` text (`parseReceiptFromText`, ZERO LLM — same
  *           as an email body).
  *        c. Matches each via the SAME matcher email uses
- *           (`internal.receiptInbox.findReceiptMatches`).
- *        d. Creates `receipts` rows (source `"sms"`), auto-attaching a
- *           team/roster sender's UNIQUE candidate exactly like email
+ *           (`internal.receiptInbox.findReceiptMatches`) — a SUGGESTION
+ *           shortlist, never a decision.
+ *        d. Creates `receipts` rows (source `"sms"`), UNLINKED, attributed to
+ *           the sender and carrying their suggestions — exactly like email
  *           (`commitSmsReceipt`), with the same fileSha256 duplicate guard.
+ *           NOTHING is attached to a charge here (capture-and-suggest, owner
+ *           decision 2026-08-08 — see `receiptInbox.ts`'s module doc): texting
+ *           a photo at the counter is the whole point, since the charge posts
+ *           a day later, and the human confirms the link when they code it.
  *        e. Best-effort SMS reply — ONLY to team/roster senders (never a
  *           confirm-or-deny to an unverified number).
  */
@@ -59,11 +66,7 @@ import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
 import { INBOUND_RECEIPT_STATUSES, receiptSenderCanAutoAttach } from "@events-os/shared";
 import { ROLLUP_SCAN_LIMIT } from "./finances";
-import {
-  createReceipt,
-  linkReceiptToTransaction,
-  findDuplicateReceiptBySha256,
-} from "./lib/receiptLinks";
+import { createReceipt, findDuplicateReceiptBySha256 } from "./lib/receiptLinks";
 import {
   normalizePhone,
   resolveTwilioCredentials,
@@ -71,8 +74,10 @@ import {
   type TwilioCredentials,
 } from "./lib/twilio";
 import {
+  CAPTURED_STATUS,
   parseReceiptFromText,
   resolveOcrModel,
+  senderDisplayName,
   extractReceiptFields,
 } from "./receiptInbox";
 
@@ -161,11 +166,13 @@ export const resolvePersonByPhone = internalQuery({
 });
 
 /**
- * Classify an inbound SMS sender into the team/roster/external AUTOMATION
- * axis (never a permission — a phone number is spoofable via SIM-swap/VoIP
- * just like a `From:` header is). NO `"internal"` class: a phone number has
- * no org-domain equivalent to trust on its own, so an unresolved phone is
- * always `external` — mirrors `receiptInbox.ts#classifySender` but narrower.
+ * Classify an inbound SMS sender into the team/roster/external trust axis
+ * (never a permission — a phone number is spoofable via SIM-swap/VoIP just
+ * like a `From:` header is — and, since the auto-attach retired, never a
+ * licence to write either: it decides WHOSE receipt this is). NO `"internal"`
+ * class: a phone number has no org-domain equivalent to trust on its own, so
+ * an unresolved phone is always `external` — mirrors
+ * `receiptInbox.ts#classifySender` but narrower.
  */
 export const classifySmsSender = internalQuery({
   args: { phone: v.string() },
@@ -179,8 +186,8 @@ export const classifySmsSender = internalQuery({
     // A contact-only match (person-centric audiences Phase 1 — auto-created
     // from a donor gift, an import, or a public RSVP) is NOT a cardholder or
     // team member — classify it the same as no match at all, so a text from
-    // a guest's/donor's phone number gets human review instead of silently
-    // auto-attaching via `receiptSenderCanAutoAttach`'s roster/team trust.
+    // a guest's/donor's phone number gets human review instead of being filed
+    // as a roster member's own receipt (`receiptSenderCanAutoAttach`).
     if (person && person.isContactOnly !== true) {
       return {
         senderClass: person.isTeamMember ? ("team" as const) : ("roster" as const),
@@ -263,19 +270,22 @@ function fmtUsd(cents: number): string {
 }
 
 /**
- * Create the first-class `receipts` rows for one inbound SMS, auto-attach the
- * ones the policy allows, and write the aggregate outcome back onto the
- * `inboundReceipts` row — all in ONE transaction. Mirrors
- * `receiptInbox.ts#commitInboundReceipts` field-for-field, with two
- * differences: `source: "sms"` (not `"email"`) and the auto-attach link is
- * stamped `source: "auto_sms"` (not `"auto_email"`) so provenance never lies
- * about which channel moved the money-adjacent state.
+ * Create the first-class `receipts` rows for one inbound SMS — UNLINKED, with
+ * their suggestions recorded — and write the aggregate outcome back onto the
+ * `inboundReceipts` row, all in ONE transaction. Mirrors
+ * `receiptInbox.ts#commitInboundReceipts` field-for-field, the one difference
+ * being `source: "sms"` (not `"email"`).
  *
- * AUTOMATION POLICY (money safety) — IDENTICAL to email: a receipt auto-
- * attaches ONLY when its sender is `team`/`roster` (`receiptSenderCanAutoAttach`)
- * AND it has exactly ONE candidate. An `external` sender, an ambiguous match,
- * an unreadable total, an unknown chapter, or a byte-identical resend
- * (`findDuplicateReceiptBySha256`) always routes to human review.
+ * CAPTURE-AND-SUGGEST (owner decision, 2026-08-08) — IDENTICAL to email: this
+ * used to auto-attach a trusted sender's unique candidate and stamp the link
+ * `auto_sms`. It no longer links anything, so no `receiptLinks` row is ever
+ * written with that source again; the receipt is filed to the sender
+ * (`uploadedByPersonId`) with its candidate shortlist as suggestions, and the
+ * human attaches it from the coding sheet
+ * (`receipts.ts#confirmSuggestedReceipt`). An `external` sender, an unreadable
+ * total, an unknown chapter, or a byte-identical resend
+ * (`findDuplicateReceiptBySha256`) still routes to the bookkeeper queue —
+ * there's nobody to suggest it to.
  */
 export const commitSmsReceipt = internalMutation({
   args: {
@@ -287,17 +297,22 @@ export const commitSmsReceipt = internalMutation({
   },
   returns: v.object({
     status: statusValidator,
-    matchedTransactionId: v.union(v.id("transactions"), v.null()),
-    matchedMerchant: v.union(v.string(), v.null()),
+    /** The top suggestion for the first extracted receipt — what the reply
+     *  text names. Never a link (see this mutation's doc). */
+    suggestedTransactionId: v.union(v.id("transactions"), v.null()),
+    suggestedMerchant: v.union(v.string(), v.null()),
     amountCents: v.union(v.number(), v.null()),
   }),
   handler: async (ctx, args) => {
-    const canAuto = receiptSenderCanAutoAttach(args.senderClass);
+    // Trust is an ATTRIBUTION signal only now — whose receipt this is, hence
+    // whose coding sheet it shows up on. It permits no write.
+    const senderOwnsReceipt =
+      args.personId != null && receiptSenderCanAutoAttach(args.senderClass);
     const chapterKnown = args.chapterId != null;
 
-    let matchedCount = 0;
-    let firstMatchedTxn: Id<"transactions"> | null = null;
-    let firstMatchedMerchant: string | null = null;
+    let suggestedCount = 0;
+    let firstSuggestedTxn: Id<"transactions"> | null = null;
+    let firstSuggestedMerchant: string | null = null;
     const reasons = new Set<string>();
 
     for (const ex of args.extracted) {
@@ -317,6 +332,10 @@ export const commitSmsReceipt = internalMutation({
         source: "sms",
         inboundReceiptId: args.receiptId,
         senderClass: args.senderClass,
+        // WHOSE receipt this is — the reason a cardholder is offered back the
+        // photo they texted from the counter. Only a phone that RESOLVED to a
+        // roster person owns one (a number is spoofable).
+        uploadedByPersonId: senderOwnsReceipt ? args.personId : undefined,
         ocrAmountCents: ex.ocrAmountCents,
         ocrDate: ex.ocrDate,
         ocrMerchant: ex.ocrMerchant,
@@ -343,58 +362,46 @@ export const commitSmsReceipt = internalMutation({
       }
       const cands = ex.candidateTransactionIds;
       if (cands.length === 0) continue; // clean read, nothing matched → no_match
-      if (cands.length === 1 && canAuto) {
-        const res = await linkReceiptToTransaction(ctx, {
-          receiptId,
-          transactionId: cands[0],
-          source: "auto_sms",
-          reconcileIfCategorized: true,
-        });
-        matchedCount++;
-        if (firstMatchedTxn == null) {
-          firstMatchedTxn = cands[0];
-          const txn = await ctx.db.get(cands[0]);
-          firstMatchedMerchant = txn?.merchantName ?? txn?.description ?? null;
-        }
-        void res; // linked/reconciled booleans aren't surfaced on the SMS reply
-      } else {
-        reasons.add(cands.length > 1 ? "ambiguous" : "untrusted");
+      // Captured WITH suggestions — the shortlist is already on the receipt;
+      // nothing is linked (see this mutation's doc).
+      suggestedCount++;
+      if (firstSuggestedTxn == null) {
+        firstSuggestedTxn = cands[0];
+        const txn = await ctx.db.get(cands[0]);
+        firstSuggestedMerchant = txn?.merchantName ?? txn?.description ?? null;
       }
     }
 
     const total = args.extracted.length;
     const firstAmount = args.extracted[0]?.ocrAmountCents ?? null;
 
+    // Most-actionable-first, exactly as email aggregates it.
     let status: (typeof INBOUND_RECEIPT_STATUSES)[number];
     let detail: string;
-    if (total > 0 && matchedCount === total) {
-      status = "matched";
-      detail =
-        firstMatchedTxn != null
-          ? `Attached to ${firstMatchedMerchant ?? "a charge"}${
-              firstAmount != null ? ` (${fmtUsd(firstAmount)})` : ""
-            }.`
-          : `Attached ${matchedCount} receipt${matchedCount === 1 ? "" : "s"} to charges.`;
-    } else if (reasons.size > 0) {
+    if (reasons.size > 0) {
       status = "needs_review";
       if (reasons.has("duplicate")) {
         detail =
           "Looks like a duplicate of an already-submitted receipt — a bookkeeper should confirm.";
       } else if (reasons.has("unknown")) {
         detail = "Sender unknown — pick the transaction manually.";
-      } else if (reasons.has("untrusted")) {
-        detail = "Sender not verified — a bookkeeper must confirm the match.";
-      } else if (reasons.has("ambiguous")) {
-        detail =
-          firstAmount != null
-            ? `Multiple charges match ${fmtUsd(firstAmount)} — pick the right one.`
-            : "Multiple charges match — pick the right one.";
       } else {
         detail =
           total === 1
             ? "Could not read a total off the photo — needs a human."
             : "One or more receipts need a human to place.";
       }
+    } else if (total > 0 && suggestedCount === total) {
+      status = CAPTURED_STATUS;
+      const who = await senderDisplayName(ctx, args.personId);
+      detail =
+        total === 1
+          ? `Filed to ${who}'s receipts${
+              firstAmount != null ? ` (${fmtUsd(firstAmount)})` : ""
+            } — suggested against ${
+              firstSuggestedMerchant ?? "a charge"
+            }, to confirm when the charge is coded.`
+          : `Filed ${total} receipts to ${who}'s receipts with suggested charges, to confirm when those charges are coded.`;
     } else {
       status = "no_match";
       detail =
@@ -426,7 +433,8 @@ export const commitSmsReceipt = internalMutation({
               : {}),
           }
         : {}),
-      ...(firstMatchedTxn ? { matchedTransactionId: firstMatchedTxn } : {}),
+      // No `matchedTransactionId` — nothing is attached here any more (see the
+      // doc); the suggestions live on `candidateTransactionIds`.
       status,
       detail,
       updatedAt: Date.now(),
@@ -434,8 +442,8 @@ export const commitSmsReceipt = internalMutation({
 
     return {
       status,
-      matchedTransactionId: firstMatchedTxn,
-      matchedMerchant: firstMatchedMerchant,
+      suggestedTransactionId: firstSuggestedTxn,
+      suggestedMerchant: firstSuggestedMerchant,
       amountCents: firstAmount,
     };
   },
@@ -502,7 +510,7 @@ const mediaItemValidator = v.object({
 
 /**
  * Process ONE inbound SMS/MMS: classify sender → get content → OCR each →
- * match each → create documents + auto-attach-or-queue → reply. Scheduled by
+ * match each → file the documents (unlinked, with suggestions) → reply. Scheduled by
  * the HTTP route right after `recordSmsReceipt` returns `isNew: true`. Every
  * terminal state is written back onto the row so the review queue (shared
  * with email — `receiptInbox.ts#listInboundReceipts`) is truthful.
@@ -552,8 +560,8 @@ async function runSmsPipeline(
   const phone = row.fromPhone ?? row.fromEmail;
 
   // 1. Classify the sender by phone. The gate is OPEN (mirrors email): every
-  //    text is processed end-to-end; the class only decides whether an
-  //    auto-attach is permitted.
+  //    text is processed end-to-end; the class only decides whose receipt this
+  //    is (and so whether we reply at all).
   const sender = await ctx.runQuery(internal.smsReceipts.classifySmsSender, {
     phone,
   });
@@ -610,8 +618,8 @@ async function runSmsPipeline(
 
   if (extracted.length === 0) {
     // No usable media — the text BODY is the receipt (ZERO LLM), same as the
-    // email pipeline's body path. Stored as a file so a unique match can
-    // auto-attach it exactly like a photo.
+    // email pipeline's body path. Stored as a file so it can be attached to a
+    // charge exactly like a photo.
     const text = args.body ?? "";
     if (text.trim()) {
       const storageId = await ctx.storage.store(
@@ -646,8 +654,9 @@ async function runSmsPipeline(
     return null;
   }
 
-  // 4. Match each extracted receipt — the SAME matcher email uses. No
-  //    chapter (unresolved sender) → no candidates.
+  // 4. Match each extracted receipt — the SAME matcher email uses, producing
+  //    SUGGESTIONS rather than a decision. No chapter (unresolved sender) →
+  //    no candidates.
   if (sender.chapterId) {
     for (const ex of extracted) {
       if (ex.ocrAmountCents != null) {
@@ -666,7 +675,7 @@ async function runSmsPipeline(
     }
   }
 
-  // 5. Create the receipt documents, auto-attach the ones the policy allows,
+  // 5. Create the receipt documents (unlinked, with their suggestions) and
   //    write the aggregate outcome onto the inbound row.
   const result = await ctx.runMutation(internal.smsReceipts.commitSmsReceipt, {
     receiptId,
@@ -706,7 +715,8 @@ async function replyToSmsSender(
   result: {
     status: (typeof INBOUND_RECEIPT_STATUSES)[number];
     amountCents: number | null;
-    matchedMerchant: string | null;
+    suggestedTransactionId: Id<"transactions"> | null;
+    suggestedMerchant: string | null;
   },
 ): Promise<void> {
   const creds = await resolveTwilioCredentials(ctx);
@@ -716,12 +726,18 @@ async function replyToSmsSender(
 
   const amt = result.amountCents != null ? fmtUsd(result.amountCents) : "your receipt";
   let body: string;
-  if (result.status === "matched") {
-    body = `Matched ${amt}${
-      result.matchedMerchant ? ` from ${result.matchedMerchant}` : ""
-    } to a card charge and attached your receipt. Nothing else to do.`;
+  if (result.status === CAPTURED_STATUS && result.suggestedTransactionId != null) {
+    // Captured cleanly, with at least one suggestion — the charge is waiting
+    // for them, not for a bookkeeper. Requires BOTH: keyed on the suggestion
+    // alone, an unreadable photo or a duplicate re-send would get this
+    // reassuring copy whenever the matcher happened to find a plausible
+    // charge, and its sender would never learn anything was wrong. Never says
+    // "attached": nothing is (module doc).
+    body = `Got ${amt}${
+      result.suggestedMerchant ? ` — looks like your ${result.suggestedMerchant} charge` : ""
+    }. Filed it; confirm it when you code that charge in the app.`;
   } else if (result.status === "no_match") {
-    body = `Got ${amt}, but couldn't find a card charge for it yet. Filed it for a bookkeeper to place.`;
+    body = `Got ${amt}, but couldn't find a card charge for it yet. It's filed in your receipts — attach it when the charge posts and you code it.`;
   } else {
     body = `Got your receipt${
       result.amountCents != null ? ` for ${amt}` : ""

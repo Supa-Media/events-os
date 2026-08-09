@@ -121,6 +121,46 @@
  * you see both directions" navigation question was retired — still taught by
  * the bullet right above it — for one on the send-back loop, and the
  * out-of-pocket question's answer now names per-line coding. Minutes stay 5.
+ *
+ * Documentation fuses into coding (owner decision, 2026-08-08: "we don't even
+ * need the receipt matching pipeline as much if people are going to code
+ * things themselves, they should just upload the receipt when coding"). Two
+ * shipped rules, six sections touched, none added or moved. (1) A coding no
+ * longer submits unless the charge has a receipt attached or a receipt
+ * exception FILED — a pending one counts, because the gate asks whether the
+ * AUTHOR finished their half, and waiting on an approver would strand the
+ * charge in a queue its owner can't clear; reconciling still needs the
+ * exception APPROVED, so nothing publishes on an unweighed claim. (2) Emailed
+ * and texted receipts are still captured — that half matters, since a charge
+ * posts about a day after the swipe and the receipt is in your hand at the
+ * counter — but they no longer auto-attach; they wait in the receipts library
+ * and are OFFERED as a match when the cardholder opens that charge to code it,
+ * confirmed in one tap by the one person looking at both.
+ *
+ * So `finance-card-and-receipts` gained a forward-pointer paragraph (a receipt
+ * is half of what a charge owes) and the rule "Sending it in is not attaching
+ * it", rewrote its email tip around capture-at-the-counter, and swapped its
+ * weakest question — the "where do you see your own charges" navigation one,
+ * whose answer now rides in the replacement's explanation — for one on an
+ * emailed receipt nobody has confirmed yet, which is the misread that now
+ * costs someone a card lock. `finance-receipt-exceptions` says the refusal
+ * bites at SUBMISSION as well as at reconcile, files the exception from the
+ * coding sheet, and marks the pending nuance in its try_status caption and one
+ * explanation. `finance-coding-your-charges` retired "A receipt and a coding
+ * are two separate obligations" for the rule that replaced it, "One act, not
+ * two errands" — the deadlines that paragraph hung off the split are unchanged
+ * and still taught (day-7 card lock on the receipt, day-60 conversion) — plus
+ * a paragraph on the offered-receipt tap; its pizza-vs-dinner question, the
+ * same numbers as the `scenario` block directly above it, gave way to one on
+ * coding a cash charge that will never have a receipt. `finance-reconcile-grid`
+ * tells the reviewer every coding now arrives documented (and that a pending
+ * exception still needs their decision). `finance-chasing-receipts` and
+ * `finance-receipt-escalation-queue` carry the same warning from the other
+ * side — a full receipts library is not a documented month — the treasurer
+ * lesson swapping its who-unlocks-the-card question (answered verbatim by the
+ * `reveal` block above it) for the nine-receipts/nine-undocumented case, and
+ * the FM lesson gaining a FOURTH question (3 → 4, bumped in the snapshot
+ * test). Minutes are unchanged everywhere.
  */
 
 import type {
@@ -289,6 +329,10 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         text: "Some spending genuinely never produces a receipt — a cash tip, a parking meter, a donation box. That has its own answer, and its own lesson: **you file a receipt exception**, and someone else approves it. The next lesson is all of it. What matters here is that it doesn't change the rule above — until an exception is approved, the charge is still missing its receipt and the 7-day clock keeps running.",
       },
       {
+        kind: "p",
+        text: "And a receipt is only half of what a charge owes. It proves you paid $312.40 to a bus company; it doesn't say why Public Worship should have. That half is a **coding**, and it has its own lesson shortly. What matters here is that the two aren't two errands: the app won't take a coding on a charge that has neither a receipt attached nor a filed reason there isn't one. Same sheet, same sitting.",
+      },
+      {
         kind: "try_status",
         title: "A charge waiting on a receipt",
         options: [
@@ -298,11 +342,16 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         terminal: "uploaded",
         caption:
-          "Uploading the receipt is the only move that matters — it clears the reminder and the lock, whichever stage you're at.",
+          "Getting the receipt ONTO THE CHARGE is the only move that matters — uploading it in the app, or confirming the one you emailed in. It clears the reminder and the lock, whichever stage you're at.",
       },
       {
         kind: "tip",
-        text: "**Don't have the app handy?** Forward or take a photo and email the receipt to **receipts@publicworship.life** — it lands in the same place as an in-app upload. Send it from the address the roster has for you, so we can tell whose receipt it is. Send as many as you like in one go — you'll get a single confirmation email covering all of them, not one per receipt. Forwarding *as an attachment* works too (handy when you're sending several at once): we open each attached message and read the receipt inside it. Every receipt, emailed or uploaded, lands in ONE shared library at Finances → Receipts that all bookkeepers can see — it isn't walled off per chapter, because that address is shared and a receipt often arrives before anyone knows which budget it belongs to. Each one is tagged with who sent it and which chapter they're in, so the right charge is easy to find without anything ever being hidden from you.",
+        text: "**Deal with it at the counter.** A card charge usually posts about a day after you swipe, so the moment to handle a paper receipt is while it's still in your hand — not tomorrow, when it's in a coat pocket. Photograph it and email it to **receipts@publicworship.life**, or text the photo back to a reminder; forward the Amazon or Uber confirmation the same way. Send it from the address (or number) the roster has for you so we can tell whose it is, send as many at once as you like — you'll get a single confirmation covering all of them, not one per receipt — and forwarding *as an attachment* works too: we open each attached message and read the receipt inside it. Everything that arrives lands in ONE shared library at Finances → Receipts that all bookkeepers can see, tagged with who sent it and which chapter they're in. It isn't walled off per chapter, because that address is shared and a receipt often turns up before anyone knows which budget it belongs to.",
+      },
+      {
+        kind: "rule",
+        title: "Sending it in is not attaching it",
+        text: "What emailing or texting a receipt does is **capture** it. What it deliberately does NOT do is decide which charge it belongs to. Instead the app OFFERS it to you — *is this the one?* — when you open the matching charge to code it, and one tap attaches it. Until you take that tap, the charge is still missing its receipt, and the clock in the table above is still running.\n\nWe used to let the system guess the match and attach it unattended. It was usually right, and the times it was wrong were invisible: a receipt quietly stuck to the wrong charge looks finished, which is worse than one that isn't attached at all. Now the confirmation is made by the one person looking at the charge and the receipt at the same moment — you.",
       },
     ],
     quiz: [
@@ -338,16 +387,17 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "The lock protects the close, not the cardholder's behavior for its own sake — an open loop at month-end is exactly what the Treasurer course teaches you to avoid.",
       },
       {
-        prompt: "Where do you see and manage your own card's charges?",
+        prompt:
+          "You emailed a receipt in on Monday. On Friday the charge still reads as missing its receipt. What's happening?",
         options: [
-          "My Transactions",
-          "The central dashboard",
-          "The Reconcile grid",
-          "You can't see your own charges",
+          "A bug — an emailed receipt attaches itself to the matching charge",
+          "It's in the receipts library waiting on you: the app offers it as a match when you open that charge in My Transactions, and one tap attaches it",
+          "Emailed receipts take about a week to process",
+          "That address only works for reimbursements",
         ],
-        answerIndex: 0,
+        answerIndex: 1,
         explanation:
-          "My Transactions is your mini-reconcile — attach receipts, add a category and a short note on who and why, and flag charges on your own transactions, all without needing a finance seat. What you add pre-fills the finance team's review.",
+          "Emailing CAPTURES the receipt — the half worth doing at the counter, often before the charge has even posted. It doesn't decide which charge the receipt belongs to; you do, in one tap, in My Transactions (your own mini-reconcile: receipts, coding, and flagging your own charges, no finance seat needed). Until that tap, the receipt is still missing and the 7-day clock is still running.",
       },
       {
         prompt:
@@ -392,11 +442,12 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "The answer is never a blank",
-        text: "The wrong fix is to quietly mark the charge Reconciled and move on. A published ledger can't tell that row from a properly documented one — and neither can we, six months later. So the app refuses it: **you can't reconcile a charge that has neither a receipt nor an approved exception.**\n\nThe right fix is to say, on the record, what the money was for and why no receipt exists. That's a **receipt exception**. It isn't an absence — it's a substitute document with a name attached to it.",
+        text: "The wrong fix is to quietly mark the charge Reconciled and move on. A published ledger can't tell that row from a properly documented one — and neither can we, six months later. So the app refuses it: **you can't reconcile a charge that has neither a receipt nor an approved exception.** It refuses earlier than that, too — you can't even submit the charge's coding without one or the other. Why there's no receipt is part of the record, not a follow-up to it.\n\nThe right fix is to say, on the record, what the money was for and why no receipt exists. That's a **receipt exception**. It isn't an absence — it's a substitute document with a name attached to it.",
       },
       {
         kind: "bullets",
         items: [
+          "**File it where you code the charge.** It isn't a separate screen or a separate errand: open the charge in My Transactions, and the same sheet that asks what the money was for holds the no-receipt path. One sitting, one act.",
           "**Pick the reason, don't type one.** No receipt was issued · Receipt lost · Predates the receipt policy · Vendor can't reproduce it · Bank record only. \"Missing\" and \"unattainable\" aren't different states — they're different reasons, and the ledger should say which.",
           "**Write what it was for.** This is the part that actually gets published in place of the document, under your name. \"Cash tip for the sound engineer at the Aug 2 outdoor service — $40, agreed with Kansi beforehand\" is a real record. \"n/a\" is not, and the app won't take it.",
           "**Attach proof if it exists — up to 5 files.** You often can't get the receipt but you can absolutely get *something*: photos of the flowers at the event, a bank statement line, an order confirmation email, a picture of what you bought.",
@@ -418,7 +469,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         terminal: "approved",
         caption:
-          "Only the last state counts as documentation. While it's pending you're still on the clock: the reminders keep coming and the 7-day card lock still applies — asking to be let off isn't being let off.",
+          "Only the last state counts as documentation. While it's pending you're still on the clock: the reminders keep coming and the 7-day card lock still applies — asking to be let off isn't being let off. Filing it does unblock one thing, though: you can submit the charge's coding on a pending exception, because filing is your half and deciding is somebody else's.",
       },
       {
         kind: "rule",
@@ -467,7 +518,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "Asking to be let off isn't being let off. A pending exception stops nothing — not the reminder timeline, not the card auto-lock. Only an approved one stands in for a receipt.",
+          "Asking to be let off isn't being let off. A pending exception stops nothing — not the reminder timeline, not the card auto-lock. Only an approved one stands in for a receipt. It does let you submit the charge's coding, because filing the attestation is the part that's yours; the charge still isn't closed until someone approves it.",
       },
       {
         prompt:
@@ -566,8 +617,13 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         text: "We ask for names, and then we don't print them. Ever. The public ledger shows the shape of the room — **\"meal · 5 volunteers, 3 community members, 2 contractors\"** — and the names stay inside the app.\n\nThat isn't a hedge. Volunteers, community members and guests never agreed to appear in a public financial record, and some of them are minors. Publishing our own spending is a decision we made about ourselves; it isn't a decision we get to make about the people who showed up to help us.",
       },
       {
+        kind: "rule",
+        title: "One act, not two errands",
+        text: "A charge's documentation and its coding are one record: **the app won't take a coding on a charge that has neither a receipt attached nor a filed reason there isn't one.** What the money was for and how it can be proved get answered in the same sheet, in the same sitting — no more finishing half of a charge and leaving the other half to a reminder.\n\nIf there genuinely is no receipt, you already know the honest path from the last lesson: pick a reason, explain it, attach up to five photos of proof. FILING it is enough to submit your coding — approving it is somebody else's work, and making you wait on them would strand the charge in your queue for something you can't do. Approval is still what the charge needs before it can be closed, so nothing gets published on the strength of a claim nobody weighed. (The only exception to the exception is lodging, above.)\n\nTwo deadlines still hang off that one act, and it's worth knowing which is which: a missing RECEIPT is what locks your card at day 7, and a charge nobody substantiated is what becomes money you owe back at day 60.",
+      },
+      {
         kind: "p",
-        text: "**A receipt and a coding are two separate obligations.** A charge with a perfect receipt and no coding is exactly as open as one with neither — the reminders chase the whole charge being closed out, not just the paperwork half. The two do end differently, though, and it's worth knowing which is which: a missing RECEIPT is what locks your card at day 7, while a missing CODING is what turns the charge into money you owe back at day 60. And if there genuinely is no receipt, you already know the honest path from the last lesson: pick a reason, explain it, attach up to five photos of proof. It lives in the same sheet as the coding, so you're never bounced between two screens. The only exception to the exception is lodging, above.",
+        text: "Which is less work than it sounds, because the receipt is usually already here. A card charge posts about a day after you swipe, so the moment to deal with the paper slip is at the counter — photograph it and email or text it in right then, before a coding sheet for that charge even exists. It waits in your receipts library, and when you open the charge to code it the app offers it: *is this the one?* One tap attaches it. That tap is deliberately yours rather than the system's — you're the only one looking at the charge and the receipt at the same moment, which is exactly the moment to answer the question.",
       },
       {
         kind: "rule",
@@ -592,7 +648,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           ],
           [
             "Day 7",
-            "A charge still missing its **receipt** locks your card automatically — the same 7-day rule you already know, unchanged. Coding doesn't lock the card; it has its own deadline below.",
+            "A charge still missing its **receipt** locks your card automatically — the same 7-day rule you already know, unchanged. Coding doesn't lock the card; it has its own deadline below. In practice coding early clears this row too, since a submitted coding always carries its documentation.",
           ],
           [
             "Day 60",
@@ -666,16 +722,16 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         prompt:
-          "A $38 pizza order feeds 16 volunteers. A $410 dinner is for 4 people. Which one needs every attendee named?",
+          "You're coding a $12 parking charge — cash to an attendant, no receipt, and there never will be one. Can you submit the coding?",
         options: [
-          "The $410 dinner — 4 people is under the 15-head line, so it gets names",
-          "The $38 pizza — small charges are easier to itemize",
-          "Both — any meal needs names",
-          "Neither — meals only ever need a headcount",
+          "No — nothing submits without a receipt attached",
+          "Yes — file the receipt exception in the same sheet; filing it is your half of the documentation and the coding goes through",
+          "Yes — the receipt and the coding are separate obligations, so submit now and sort the receipt out later",
+          "Only once a manager has approved the exception",
         ],
-        answerIndex: 0,
+        answerIndex: 1,
         explanation:
-          "It's a HEADCOUNT threshold, not a dollar one. 15 or fewer means names with relationships; more than 15 means the headcount plus an identifiable group (\"volunteers writing and producing the album\"). The price never moves the line.",
+          "What the money was for and how it can be proved are one record, so a coding won't submit on a charge with neither. The exception lives in the same sheet, and FILING it is enough to submit — approving it is somebody else's work, and waiting on them would strand the charge in your queue. It does still have to be approved before the charge can be closed.",
       },
       {
         prompt:
@@ -956,7 +1012,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "Reconciled means coded, too",
-        text: 'From September 1, 2026, spend needs one more thing before it can close: a CODING — the IRS-grade record of what the charge was for, written by a human, approved by a different human. "Travel to NY to film Eden event", never "bus to NY". Travel asks where from and where to; a meal asks who was there — every name and their relationship to the org up to 15 people, a headcount and an identifiable group ("volunteers writing and producing the album") above that. Names never publish: the public ledger shows "5 volunteers, 3 community members, 2 contractors", not who they were.\n\nYou\'ll find the panel on any charge\'s detail view. Approve a coding only when it would satisfy a stranger reading the public ledger; otherwise send it back with a note that says exactly what would make it approvable ("receipt must show exact amount"). Nothing is pre-filled and nothing is AI-suggested — the record is the spender\'s own testimony, which is exactly what makes it worth publishing. Charges from before the policy date don\'t owe one; that history is a separate, deliberate cleanup.',
+        text: 'From September 1, 2026, spend needs one more thing before it can close: a CODING — the IRS-grade record of what the charge was for, written by a human, approved by a different human. "Travel to NY to film Eden event", never "bus to NY". Travel asks where from and where to; a meal asks who was there — every name and their relationship to the org up to 15 people, a headcount and an identifiable group ("volunteers writing and producing the album") above that. Names never publish: the public ledger shows "5 volunteers, 3 community members, 2 contractors", not who they were.\n\nYou\'ll find the panel on any charge\'s detail view. Approve a coding only when it would satisfy a stranger reading the public ledger; otherwise send it back with a note that says exactly what would make it approvable ("receipt must show exact amount"). Nothing is pre-filled and nothing is AI-suggested — the record is the spender\'s own testimony, which is exactly what makes it worth publishing. Charges from before the policy date don\'t owe one; that history is a separate, deliberate cleanup.\n\nOne thing you can count on when a coding reaches you: it arrives documented. Nothing submits without a receipt attached or a receipt exception filed, so "coded but undocumented" is no longer a state you have to chase. Read them together — the purpose against the document — and remember that a PENDING exception was enough to submit but is not enough to reconcile; that one still needs somebody\'s decision.',
       },
       {
         kind: "try_status",
@@ -1181,6 +1237,10 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "p",
+        text: "One thing that will look like a bug the first time you meet it: a receipt that arrives by email or text does NOT attach itself to a charge anymore. It lands in the Receipts library and waits to be offered to the cardholder as a match when they open that charge to code it — so a cardholder can have a dozen receipts in the library and a dozen charges still reading undocumented, with nothing broken. You can link one by hand from Receipts when it's obvious, and sometimes you should; but the tap you're really chasing is theirs, because they're the person who knows which charge it was. That's the whole reason we stopped letting the system guess: a receipt quietly attached to the wrong charge looks finished, which is worse than one that isn't attached at all.",
+      },
+      {
+        kind: "p",
         text: "For that handful, you don't have to text them yourself anymore. Chase Receipts has a **Send reminder** button on each cardholder's group (and a **Remind all** for the whole list) — one click re-sends the same reminder email the automated timeline sends, plus a text if they have a phone on file. It's capped at once per cardholder per day, so mashing the button can't spam anyone; a nudge already sent today just reads \"Nudged today\" instead of firing again.",
       },
       {
@@ -1209,16 +1269,17 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "The day-7 auto-lock is purely about a missing receipt, not spend amount or anyone's manual action.",
       },
       {
-        prompt: "A card auto-locked for a missing receipt. Who needs to unlock it?",
+        prompt:
+          "A cardholder emailed in nine receipts this month, and nine of their charges still read undocumented. Is something broken?",
         options: [
-          "The Financial Manager, by hand",
-          "Nobody — uploading the missing receipt unlocks it automatically",
-          "The Executive Director",
-          "It stays locked until next month",
+          "Yes — emailed receipts are supposed to attach themselves to the matching charge",
+          "No — an emailed receipt lands in the library and attaches when a human confirms it against the charge, which the cardholder does while coding it",
+          "Yes — the OCR pipeline has stalled and needs a retry",
+          "No — emailed receipts always take a full month to post",
         ],
         answerIndex: 1,
         explanation:
-          "The unlock path is identical to preventing the lock in the first place: upload the receipt and it clears, no review step.",
+          "Capturing a receipt and attaching it are two different steps. Emailing gets the document into the library — the half worth doing at the counter, often before the charge has posted; attaching it is a human confirming the match. You can link one by hand from Receipts, but the cardholder's tap is the cheaper path and it's exactly what your nudge is asking for.",
       },
       {
         prompt: "What's the Treasurer's actual daily worklist for receipts?",
@@ -1738,13 +1799,18 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         rows: [
           ["Flagged (day 1–3)", "Still routine — the cardholder likely hasn't noticed yet"],
           ["Escalated (day 3+)", "Worth a nudge if it's a repeat pattern for that person"],
-          ["Locked (day 7)", "Automatic — no action needed from you; it lifts the moment a receipt lands"],
+          ["Locked (day 7)", "Automatic — no action needed from you; it lifts the moment a receipt is attached to the charge"],
         ],
       },
       {
         kind: "rule",
         title: "You watch patterns, not individual charges",
         text: "One missing receipt is normal life. The same cardholder hitting escalation every month is the thing worth a real conversation — the queue is there so you notice the pattern, not so you personally chase every stray charge.",
+      },
+      {
+        kind: "rule",
+        title: "A full receipts library is not a documented month",
+        text: "Receipts that arrive by email or text are CAPTURED, not filed. They wait in the Receipts library until a human confirms which charge each one belongs to — which the cardholder does in one tap when the app offers the match while they code the charge. So the two numbers you'd expect to move together don't: receipts in, and charges documented. The second is the one that governs the lock, this queue, and the close.\n\nWe gave up the automatic match deliberately. Guessing was right most of the time, and the times it was wrong were invisible — a receipt quietly stuck to the wrong charge reads as finished, which is worse than one that isn't attached at all. A chapter where receipts pour in and the queue keeps growing isn't a broken pipeline; it's a habit that hasn't landed yet, and that's exactly the kind of pattern this view exists to show you.",
       },
       {
         kind: "try_status",
@@ -1757,7 +1823,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         terminal: "cleared",
         caption:
-          "Notice the card never needs YOU to unlock it — a receipt landing at any stage clears the whole chain.",
+          "Notice the card never needs YOU to unlock it — a receipt attached to the charge at any stage clears the whole chain. Landing in the library isn't the same thing: that step is capture, and the attaching is still a tap someone takes.",
       },
     ],
     quiz: [
@@ -1795,7 +1861,20 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "The unlock mechanic is identical for every seat — receipt lands, lock lifts, no manual review anywhere in the chain.",
+          "The unlock mechanic is identical for every seat — receipt attached, lock lifts, no manual review anywhere in the chain.",
+      },
+      {
+        prompt:
+          "A chapter's Receipts library is filling up nicely, but its escalation queue keeps growing. What's the likely explanation?",
+        options: [
+          "The OCR pipeline is failing silently and needs a retry",
+          "Receipts are being captured but never confirmed against their charges — that tap happens when the cardholder codes the charge",
+          "The day-7 timer is misconfigured for that chapter",
+          "Emailed receipts don't count as documentation at all",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Emailed and texted receipts land in the library; nothing attaches them to a charge until a human confirms the match, which the cardholder does while coding it. Capture is the easy half and it's already happening — the pattern worth a conversation is the confirming half nobody's doing.",
       },
     ],
   },
