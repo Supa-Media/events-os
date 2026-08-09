@@ -74,9 +74,11 @@ import {
 import { MoveBookModal } from "../../../components/finance/modals/MoveBookModal";
 import {
   CENTRAL,
-  RECONCILE_FILTER_GROUPS,
+  RECONCILE_DROPDOWN_GROUPS,
+  RECONCILE_HEADER_CHIPS,
   RECONCILE_FILTER_LABELS,
   displayMerchantName,
+  formatCents,
   parseReconcileFilters,
   serializeReconcileFilters,
   type PayoutProcessor,
@@ -205,16 +207,26 @@ function ReconcileGrid() {
   // The filter SELECTION — a set, not a bucket. `?filters=a,b` is the current
   // form; `?filter=a` (singular) is still honoured for dashboard drill-throughs
   // and older shared links, including the pre-rename `uncategorized`/`ready`
-  // spellings. Nothing recognised → the long-standing `needs_budget` default,
-  // which is still the most useful landing view.
+  // spellings.
+  //
+  // NOTHING IS SELECTED ON ARRIVAL. This used to seed `["needs_budget"]`, which
+  // opened the money app on 14 of 346 rows — and of those 14, two were work: 8
+  // were machine-generated processor-fee rows blocked on one budget approval
+  // (see the banner below), 4 were already `reconciled`, and the largest dollar
+  // figure in the view was a transfer that shouldn't have counted as spend at
+  // all. Meanwhile the header announced 127, and the relationship between the
+  // two numbers was stated nowhere.
+  //
+  // The person opening this page is doing one of two things: "what happened
+  // since I last looked" (newest-first, no filter) or "where is that
+  // transaction" (search). A default filter serves neither, and it actively
+  // broke the second — search only ever saw the rows the filter had left. The
+  // daily worklist is a real third job, and it now gets a ONE-TAP affordance in
+  // the header (the chips) rather than a silent pre-selection.
   const initialFilters: ReconcileFilterKey[] = (() => {
     const fromSet = parseReconcileFilters(params.filters);
     if (fromSet.length > 0) return fromSet;
-    const fromLegacy = parseReconcileFilters(params.filter);
-    if (fromLegacy.length > 0) return fromLegacy;
-    // An explicit `?filter=all` means "no constraint" — respect it rather than
-    // overriding with the default.
-    return params.filter === "all" || params.filters === "" ? [] : ["needs_budget"];
+    return parseReconcileFilters(params.filter);
   })();
 
   const [filters, setFilters] = useState<ReconcileFilterKey[]>(initialFilters);
@@ -476,9 +488,15 @@ function ReconcileGrid() {
   // 100 of 346" is a statement about the book, not about the page.
   const matchedCount = reconcile?.matchedCount ?? 0;
   const hasMore = reconcile?.hasMore ?? false;
-  // The server stood the State filter down to run this search. Said out loud
-  // below: a filter that silently stops applying is the whole defect.
+  // The server stood the State/roll-up filters down to run this search. Said
+  // out loud below: a filter that silently stops applying is the whole defect.
   const searchIgnoredState = reconcile?.searchIgnoredState ?? false;
+  // Whether the coding policy has started — gates the two coding filter
+  // options, which can't return a row before it does. See the option build.
+  const codingArmed = reconcile?.codingArmed ?? false;
+  // The one draft budget holding back the machine-generated fee rows, or null.
+  // See the banner below.
+  const feeBudgetPrompt = reconcile?.feeBudgetPrompt ?? null;
 
   // One option list per GROUP (see `RECONCILE_FILTER_GROUPS` in shared) — the
   // grouping is the whole point: OR within a control widens, AND across the two
@@ -486,17 +504,38 @@ function ReconcileGrid() {
   // "the spend that's missing receipts". Counts come straight from the server's
   // facet counts, so every number shown is one the current selection could
   // actually produce.
+  //
+  // `RECONCILE_DROPDOWN_GROUPS`, not every group: the roll-up keys behind the
+  // header chips are a group for set-semantics purposes but must not appear in
+  // this menu, where a 51 sitting next to a 7 and a 42 that are subsets of it
+  // would recreate the "which number is the real one" problem the chips exist
+  // to end.
   const filterOptionsByGroup = useMemo(
     () =>
-      RECONCILE_FILTER_GROUPS.map((group) => ({
+      RECONCILE_DROPDOWN_GROUPS.map((group) => ({
         group,
-        options: group.keys.map((key) => ({
-          value: key,
-          label: RECONCILE_FILTER_LABELS[key],
-          count: counts ? counts[key] : undefined,
-        })),
+        options: group.keys
+          // HIDE AN OPTION THAT CANNOT RETURN A ROW. "Needs coding" and
+          // "Coding review" both read 0 because the coding policy hasn't
+          // started — zero by calendar, not by adoption
+          // (`DEFAULT_CODING_REQUIRED_SINCE_MS` is 2026-09-01, and nothing has
+          // been coded voluntarily). A menu that offers an option which cannot
+          // produce a row teaches people the list is broken, and there were two
+          // of them sitting in the middle of it. They come back on their own —
+          // either the policy date passes, or a row shows up under one of them.
+          .filter(
+            (key) =>
+              (key !== "uncoded" && key !== "coding_review") ||
+              codingArmed ||
+              (counts?.[key] ?? 0) > 0,
+          )
+          .map((key) => ({
+            value: key,
+            label: RECONCILE_FILTER_LABELS[key],
+            count: counts ? counts[key] : undefined,
+          })),
       })),
-    [counts],
+    [counts, codingArmed],
   );
 
   // Category picker items — "None" (clears) + every chapter category.
@@ -619,12 +658,13 @@ function ReconcileGrid() {
   clearSelectionRef.current = clearSelection;
 
   const loading = reconcile === undefined;
-  // "N to clear" — everything in scope not yet reconciled. Server-computed
-  // (`toClearCount`) rather than `counts.all - counts.reconciled`, because
-  // `counts` are FACET counts now: they move with the active selection, so
-  // that subtraction would mix two populations and make the backlog headline
-  // drift every time a filter changed.
-  const toClear = reconcile?.toClearCount ?? 0;
+  // The old "N to clear" headline was `toClearCount`. It is still computed
+  // server-side — it is the honest open-items figure and the thing the two
+  // roll-up chips must sum to — but it is no longer rendered on its own,
+  // because on its own it conflated 51 rows that needed a decision with 76 that
+  // needed a keystroke. The header shows both halves instead
+  // (`RECONCILE_HEADER_CHIPS`), which is a strictly more informative way to
+  // spend the same pixels.
   // Whether the chase page has anything on it — server-computed over EVERY row
   // in scope, selection included and transfer legs included. This used to read
   // `counts.missing_receipt`, which is a facet count: it narrows with the
@@ -930,11 +970,11 @@ function ReconcileGrid() {
           <View className="mb-1 flex-row items-center justify-between gap-2">
             <View className="flex-row items-baseline gap-2">
               <Text className="font-display text-2xl text-ink">Reconcile</Text>
-              <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-                {searching
-                  ? `${matchedCount} found`
-                  : `${toClear} to clear`}
-              </Text>
+              {searching ? (
+                <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+                  {`${matchedCount} found`}
+                </Text>
+              ) : null}
             </View>
             {chaseCount > 0 ? (
               <Button
@@ -946,6 +986,70 @@ function ReconcileGrid() {
               />
             ) : null}
           </View>
+
+          {/* THE HEADER CHIPS — what replaced "127 to clear".
+
+              That number was one figure doing two jobs. Of 127 open rows in
+              production, 51 had something genuinely outstanding and 76 were
+              categorised, budgeted, documented and simply never closed: 60% of
+              the backlog headline was a keystroke, not a backlog, and there was
+              no filter that found them — you could only reach them by scrolling
+              346 rows and eyeballing each one. Now each pile is named, counted,
+              and one tap away, which is the rule the rest of this area already
+              follows: the number you announce has to be a number you can get
+              to. `needs_attention + ready_to_close` equals the old total by
+              construction (see `flagsFor`), so the header can't drift from the
+              grid.
+
+              Hidden while searching — the chips are filters, and a search
+              deliberately stands the filters down. */}
+          {!searching ? (
+            <View className="mb-3 flex-row flex-wrap items-center gap-2">
+              {RECONCILE_HEADER_CHIPS.map((key) => (
+                <Pill
+                  key={key}
+                  label={`${counts?.[key] ?? 0} ${RECONCILE_FILTER_LABELS[key].toLowerCase()}`}
+                  selected={filters.includes(key)}
+                  onPress={() => toggleFilter(key)}
+                />
+              ))}
+            </View>
+          ) : null}
+
+          {/* THE FEE-BUDGET BANNER.
+
+              Eight of the ten rows in "Needs budget" were machine-generated
+              Stripe fee rows, all blocked on the same single approval. They are
+              not eight decisions; they are one, and the queue was presenting it
+              as eight. The rule that holds them back is correct and untouched
+              (a draft budget is a proposal, not authority) — this just says so
+              once, with the action attached, instead of leaving it in a log
+              nobody reads.
+
+              Conditional: `feeBudgetPrompt` is null whenever no draft fee
+              budget is waiting, and this renders nothing at all. */}
+          {feeBudgetPrompt ? (
+            <View className="mb-3 flex-row flex-wrap items-center gap-2 rounded-md border border-border-strong bg-raised px-3 py-2">
+              <Icon name="alert-circle" size={14} color={colors.muted} />
+              <Text className="flex-1 text-xs text-ink">
+                {`${feeBudgetPrompt.blockedRows} processor-fee ${
+                  feeBudgetPrompt.blockedRows === 1 ? "row is" : "rows are"
+                } waiting on the draft “${feeBudgetPrompt.label}” budget (${formatCents(
+                  feeBudgetPrompt.blockedCents,
+                )}). Approving it clears them for the year.`}
+              </Text>
+              <Button
+                title="Review budget"
+                variant="secondary"
+                size="sm"
+                onPress={() =>
+                  router.push(
+                    `/finances/budgets/${feeBudgetPrompt.budgetId}` as never,
+                  )
+                }
+              />
+            </View>
+          ) : null}
 
           {/* no-dead-numbers: the period-scope banner — only present when a
               dashboard tile's drill-through set `year`/`month`/`period` (see
@@ -1071,7 +1175,7 @@ function ReconcileGrid() {
             <View className="mb-2 flex-row items-center gap-2">
               <Icon name="info" size={14} color={colors.muted} />
               <Text className="text-xs text-muted">
-                Searching every state — the State filter doesn’t apply while you
+                Searching the whole book — state filters don’t apply while you
                 search.
               </Text>
             </View>
