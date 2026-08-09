@@ -5,6 +5,7 @@ import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { NEW_YORK_CHAPTER_SLUG } from "../lib/seed/historical/mapping";
 import {
+  ADMISSION_41_CANDIDATES,
   COLLECTOR_EMAIL,
   COLLECTOR_NAME,
   EXPECTED_ADMISSIONS,
@@ -13,10 +14,10 @@ import {
   FORWARDED_CENTS,
   GIVEBUTTER_TRANSACTION_ID,
   PTB_PAGE_SLUG,
+  RESOLVED_41ST_GUEST,
   TICKET_ATTENDEE_NAMES,
   TICKET_ORDER_REF,
   TICKET_PRICE_CENTS,
-  UNIDENTIFIED_ADMISSION_LABEL,
   VENMO_GUESTS,
   VENMO_TYPE_NAME,
   reconciles,
@@ -243,16 +244,34 @@ describe("ptbVenmo2026 — the tickets are the money", () => {
     expect(FORWARDED_CENTS % TICKET_PRICE_CENTS).toBe(0);
   });
 
-  test("the guest list names 40 of the 41, and the 41st says it is unnamed", () => {
+  test("the guest list transcribes 40, and the owner resolved the 41st", () => {
     expect(VENMO_GUESTS).toHaveLength(40);
     expect(TICKET_ATTENDEE_NAMES).toHaveLength(EXPECTED_ADMISSIONS);
     expect(TICKET_ATTENDEE_NAMES.slice(0, 40)).toEqual(
       VENMO_GUESTS.map((g) => g.name),
     );
-    expect(TICKET_ATTENDEE_NAMES[40]).toBe(UNIDENTIFIED_ADMISSION_LABEL);
-    // The one slot nobody can name is a DESCRIPTION, not a person — it must not
-    // quietly acquire a name that some source disagrees with.
-    expect(UNIDENTIFIED_ADMISSION_LABEL.toLowerCase()).toContain("unidentified");
+    expect(TICKET_ATTENDEE_NAMES[40]).toBe("Brenell Harrison");
+    expect(RESOLVED_41ST_GUEST.handle).toBe("Bre-Harrison-1");
+  });
+
+  test("the 41st stays OUT of the transcribed forty", () => {
+    // `VENMO_GUESTS` is what the guest list's Platform=Venmo column literally
+    // says; the 41st is the owner reading his own sheet and telling us which
+    // unlabelled payer belongs here. Folding her in would make the
+    // transcription's own description false and hide the single place this
+    // module rests on memory rather than a source.
+    expect(VENMO_GUESTS.map((g) => g.name)).not.toContain(RESOLVED_41ST_GUEST.name);
+    expect(RESOLVED_41ST_GUEST.note).toContain("owner-confirmed");
+  });
+
+  test("the rejected candidates and their reasons are still recorded", () => {
+    const all = ADMISSION_41_CANDIDATES.join(" ");
+    expect(all).toContain("Brenell Harrison — CHOSEN");
+    // The reason Charisma was rejected is the whole reason this needed asking:
+    // her $20 is already a live admission on the Cash App order, so naming her
+    // would have put one person in two slots on one event.
+    expect(all).toContain("ptb:cashapp:2025-10");
+    expect(all).toContain("Fancy — rejected");
   });
 
   test("every name is distinct — two near-identical spellings are two people", () => {
@@ -296,7 +315,7 @@ describe("runPtbVenmoBackfill", () => {
     expect(res.giftCents).toBe(FORWARDED_CENTS);
     expect(res.ticketCents).toBe(FORWARDED_CENTS);
     expect(res.ticketAdmissions).toBe(EXPECTED_ADMISSIONS);
-    expect(res.namedAdmissions).toBe(40);
+    expect(res.transcribedAdmissions).toBe(40);
     expect(res.bookValueDeltaCents).toBe(EXPECTED_BOOK_VALUE_DELTA_CENTS);
     expect(res.donor).toMatchObject({
       lifetimeCentsBefore: OTHER_GIFT_CENTS + FORWARDED_CENTS,
@@ -405,18 +424,32 @@ describe("runPtbVenmoBackfill", () => {
     });
   });
 
-  test("the 41st admission is raised as an open question on every run", async () => {
+  test("the 41st admission is disclosed on every run, with the alternatives", async () => {
+    // Settled, not open — but it is the only figure here that rests on someone's
+    // memory rather than on $820 ÷ $20, and a judgement nobody can see is one
+    // nobody can revisit. So it stays in front of whoever reads a run, dry or
+    // real, together with the two names it was chosen over.
     const s = await seed();
     const dry = await runner(s, false);
-    expect(dry.problems.join(" ")).toContain(UNIDENTIFIED_ADMISSION_LABEL);
-    // All three candidates are named, so the owner is choosing between them
-    // rather than being told an answer.
-    expect(dry.problems.join(" ")).toContain("Charisma Stevens");
     expect(dry.problems.join(" ")).toContain("Brenell Harrison");
+    expect(dry.problems.join(" ")).toContain("owner's decision of 2026-08-09");
+    expect(dry.problems.join(" ")).toContain("Charisma Stevens");
     expect(dry.problems.join(" ")).toContain("Fancy");
 
     const wet = await runner(s, true);
-    expect(wet.problems.join(" ")).toContain(UNIDENTIFIED_ADMISSION_LABEL);
+    expect(wet.problems.join(" ")).toContain("Brenell Harrison");
+  });
+
+  test("the durable conversion record carries the 41st-name reasoning", async () => {
+    // This module gets deleted once run; that row is permanent. Someone counting
+    // heads against the Cash App order later needs to be able to find out why 41
+    // and not 40 without a code archaeology expedition.
+    const s = await seed();
+    await runner(s, true);
+    const reason = (await state(s)).conversions[0].reason;
+    expect(reason).toContain("Brenell Harrison");
+    expect(reason).toContain("ptb:cashapp:2025-10");
+    expect(reason).toContain("Do not re-import");
   });
 
   test("re-running changes nothing", async () => {

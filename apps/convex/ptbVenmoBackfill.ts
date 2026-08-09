@@ -10,7 +10,8 @@
  *
  * The swap, in one sentence: the $820 gift comes off the giving ledger and
  * $820 of paid ticket revenue goes on, carrying the 40 named Venmo guests plus
- * one admission the guest list cannot name.
+ * one the owner identified himself (`RESOLVED_41ST_GUEST` — the guest list's
+ * Platform column catches 40 of the 41, and Brenell Harrison's was left blank).
  *
  * ── BOOK VALUE MUST NOT MOVE ────────────────────────────────────────────────
  * `reconciliation.ts#computeBookBalances` counts a scope's gifts and its PAID
@@ -66,18 +67,18 @@ import type { Id } from "./_generated/dataModel";
 import { NEW_YORK_CHAPTER_SLUG } from "./lib/seed/historical/mapping";
 import { removeGiftRow } from "./lib/givingDonors";
 import {
+  ADMISSION_41_CANDIDATES,
   COLLECTOR_EMAIL,
   COLLECTOR_NAME,
   FORWARDED_AT_MS,
   FORWARDED_CENTS,
   GIVEBUTTER_TRANSACTION_ID,
   PTB_PAGE_SLUG,
+  RESOLVED_41ST_GUEST,
   TICKET_ATTENDEE_NAMES,
   TICKET_ORDER_NAME,
   TICKET_ORDER_REF,
   TICKET_PRICE_CENTS,
-  UNIDENTIFIED_ADMISSION_CANDIDATES,
-  UNIDENTIFIED_ADMISSION_LABEL,
   VENMO_TYPE_NAME,
   ticketGrossCents,
 } from "./lib/seed/historical/ptbVenmo2026";
@@ -126,8 +127,10 @@ export const runPtbVenmoBackfill = internalMutation({
     ticketOrderCreated: v.boolean(),
     ticketCents: v.number(),
     ticketAdmissions: v.number(),
-    /** Named from the guest list; the remainder is the unidentified slot. */
-    namedAdmissions: v.number(),
+    /** How many of the 41 come from the transcribed `Platform` = Venmo rows.
+     *  The remainder is the owner-resolved 41st — so this is the count of
+     *  admissions that rest on the guest list rather than on a judgement. */
+    transcribedAdmissions: v.number(),
     /** The event page's Revenue and Given, which move by ±the same $820. */
     eventRevenueDeltaCents: v.number(),
     eventGivenDeltaCents: v.number(),
@@ -168,15 +171,18 @@ export const runPtbVenmoBackfill = internalMutation({
       });
     }
 
-    // The open question about the 41st admission is raised on EVERY run, dry or
-    // real. It is not a defect and it does not stop the money being right, but
-    // the person reading the reconciliation is the only person who can settle
-    // it, so it goes in front of them rather than into a code comment.
+    // The 41st admission is DISCLOSED on every run, dry or real — not because
+    // it is unresolved (the owner settled it on 2026-08-09) but because it is
+    // the one figure in this correction that rests on a person's memory rather
+    // than on arithmetic. Everything else is forced by $820 ÷ $20. A judgement
+    // that is invisible after it is made is one nobody can revisit, so it stays
+    // in front of whoever reads a run, with the alternatives it was chosen over.
     problems.push(
-      `the 41st admission is recorded as "${UNIDENTIFIED_ADMISSION_LABEL}" — the guest list ` +
-        `names only 40 of the 41 tickets the $820 pays for. Candidates: ` +
-        `${UNIDENTIFIED_ADMISSION_CANDIDATES.join("; ")}. Rename the last entry of the ` +
-        `order's attendeeNames once the owner says which.`,
+      `the 41st admission is recorded as "${RESOLVED_41ST_GUEST.name}" (${RESOLVED_41ST_GUEST.handle}) ` +
+        `on the owner's decision of 2026-08-09 — the guest list's Platform=Venmo filter catches only ` +
+        `40 of the 41 tickets the $820 pays for, so this one name is a judgement, not a transcription. ` +
+        `${ADMISSION_41_CANDIDATES.join("; ")}. If that is wrong, it is the last entry of the order's ` +
+        `attendeeNames.`,
     );
 
     // ── 0. Has this already run? ─────────────────────────────────────────────
@@ -210,7 +216,7 @@ export const runPtbVenmoBackfill = internalMutation({
       ticketOrderCreated: false,
       ticketCents: 0,
       ticketAdmissions: 0,
-      namedAdmissions: 0,
+      transcribedAdmissions: 0,
       eventRevenueDeltaCents: 0,
       eventGivenDeltaCents: 0,
       bookValueDeltaCents: 0,
@@ -369,12 +375,21 @@ export const runPtbVenmoBackfill = internalMutation({
         scope: chapter._id,
         eventId: page.eventId,
         convertedTo: `ticketOrders.externalRef=${TICKET_ORDER_REF}`,
+        // THE NARRATIVE OUTLIVES THIS MODULE. `ptbVenmo2026.ts` and this runner
+        // are one-time and get deleted once run; this row is permanent and is
+        // the only place the reasoning survives. So it carries not just what
+        // happened but the one judgement inside it — the 41st name — because a
+        // future reader counting heads against the Cash App order will
+        // otherwise have no way to find out why 41 rather than 40.
         reason:
           `${usd(gift.amountCents)} of Venmo ticket money for Pop The Balloon, collected by hand by ` +
           `${COLLECTOR_NAME} and forwarded to Givebutter as one payment on 2025-11-30. Recorded ` +
           `2026-08-09 as ${admissions} × ${usd(TICKET_PRICE_CENTS)} admissions instead of a personal ` +
-          `gift from her. Book value is unchanged; only the layer and the attribution moved. Do not ` +
-          `re-import this transaction as a donation.`,
+          `gift from her. Book value is unchanged; only the layer and the attribution moved. ` +
+          `40 admissions are the guest list's Platform=Venmo rows; the 41st is ` +
+          `${RESOLVED_41ST_GUEST.name} (${RESOLVED_41ST_GUEST.handle}), whose platform column was ` +
+          `blank — owner's decision, 2026-08-09, over Charisma Stevens (already a live admission on ` +
+          `ptb:cashapp:2025-10) and Fancy. Do not re-import this transaction as a donation.`,
         convertedAt: Date.now(),
         convertedBy: recordedBy,
       });
@@ -480,8 +495,8 @@ export const runPtbVenmoBackfill = internalMutation({
       ticketOrderCreated: true,
       ticketCents: grossCents,
       ticketAdmissions: admissions,
-      namedAdmissions: TICKET_ATTENDEE_NAMES.filter(
-        (n) => n !== UNIDENTIFIED_ADMISSION_LABEL,
+      transcribedAdmissions: TICKET_ATTENDEE_NAMES.filter(
+        (n) => n !== RESOLVED_41ST_GUEST.name,
       ).length,
       eventRevenueDeltaCents: grossCents,
       eventGivenDeltaCents: -gift.amountCents,

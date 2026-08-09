@@ -68,14 +68,23 @@
  * appears in the Cash App feed, the Givebutter ticket rows, or the Zelle rows.
  * Either could be the 41st; both cannot be, because 42 admissions would be $840.
  *
- * So there are three candidates for one slot and the sources disagree. The
- * money is certain, the count is certain, and the NAME is not. The slot is
- * therefore filled with a DESCRIPTION of an unidentified admission rather than
- * a person — the same choice `cashApp2026.ts` made with its `Guest of <payer>`
- * slots, and for the same reason: a blank or a description is recoverable by a
- * human who knows the answer, where a wrong name is not. The runner reports the
- * three candidates in `problems` on every run, dry or real, so it is a question
- * put to the owner rather than a decision taken quietly on her behalf.
+ * So there were three candidates for one slot and the sources disagreed. The
+ * money was certain, the count was certain, and the NAME was not — so the
+ * question went to the owner rather than being answered quietly on his behalf.
+ *
+ * HE SETTLED IT ON 2026-08-09: the 41st is BRENELL HARRISON. Her guest-list row
+ * is `Verified Payment` = Yes with the platform column left blank and the handle
+ * `Bre-Harrison-1`, which is Venmo's own username format, and she appears in no
+ * other rail — not the Cash App feed, not the Givebutter ticket rows, not Zelle.
+ * She paid, and this is the only collection her money can be in.
+ *
+ * The two rejected candidates and the reason each was rejected stay recorded
+ * (`ADMISSION_41_CANDIDATES`), and the runner still reports the choice and the
+ * alternatives on every run. This is the ONE non-arithmetic judgement in the
+ * whole correction: everything else here is forced by $820 ÷ $20, and this
+ * single name is not. It should stay visible to anyone re-reading the books, and
+ * it is written onto the durable conversion record too, so the reasoning
+ * survives this module being deleted.
  *
  * ── THE PLUS-ONE, AND WHY 41 IS STILL RIGHT ─────────────────────────────────
  * Two of the forty rows are one party: `selly` ("Is bringing a +1 (paid)") and
@@ -191,34 +200,48 @@ export const TICKET_PRICE_CENTS = 2000;
 export const EXPECTED_ADMISSIONS = FORWARDED_CENTS / TICKET_PRICE_CENTS;
 
 /**
- * The label for the one admission the guest list cannot name.
+ * The 41st admission — the one the `Platform` = Venmo filter does not catch.
  *
- * A DESCRIPTION, not a person — see the header's "41st admission" note. Phrased
- * so that anyone reading the order's attendee list on the event page knows
- * immediately that it is an open question rather than someone called Unnamed.
+ * KEPT SEPARATE FROM `VENMO_GUESTS` ON PURPOSE. That array is a TRANSCRIPTION:
+ * the rows whose platform column literally reads Venmo, and its doc says so.
+ * This is a JUDGEMENT: the owner reading his own guest list and telling us which
+ * unlabelled payer belongs in this collection. Folding her into the forty would
+ * make the transcription's own description false and would hide the one place
+ * this module relies on someone's memory rather than on a source.
  */
-export const UNIDENTIFIED_ADMISSION_LABEL = "Unidentified Venmo payer (41st admission)";
+export const RESOLVED_41ST_GUEST: VenmoGuest = {
+  name: "Brenell Harrison",
+  handle: "Bre-Harrison-1",
+  note: "Platform column blank; owner-confirmed 2026-08-09 as the 41st Venmo payer",
+};
 
-/** The three people the 41st admission could belong to, for the runner's
- *  report. Documentation of an open question — nothing matches on it. */
-export const UNIDENTIFIED_ADMISSION_CANDIDATES = [
-  "Charisma Stevens (her own row says Cashapp, and a $20 Cash App payment memo'd " +
-    "\"charisma ticket\" is already recorded on ptb:cashapp:2025-10)",
-  "Brenell Harrison (verified paid, no platform recorded, handle \"Bre-Harrison-1\")",
-  "Fancy (verified paid, no platform recorded, handle \"Fanise-Cannon\")",
+/**
+ * The three people the 41st admission could have belonged to, and what happened
+ * to each. Documentation of a settled question — nothing matches on it, and it
+ * is reported by the runner so the choice stays visible rather than becoming an
+ * unexplained name in an attendee list.
+ */
+export const ADMISSION_41_CANDIDATES = [
+  "Brenell Harrison — CHOSEN (owner, 2026-08-09): verified paid, platform column " +
+    "blank, handle \"Bre-Harrison-1\" (Venmo's own username format), and in no other rail",
+  "Charisma Stevens — rejected: her own row says Cashapp, and a $20 Cash App payment " +
+    "memo'd \"charisma ticket\" is ALREADY a live admission on ptb:cashapp:2025-10, so " +
+    "naming her here would put one person in two slots on one event",
+  "Fancy — rejected: also verified paid with no platform recorded (handle " +
+    "\"Fanise-Cannon\"), but only one slot exists and 42 admissions would be $840",
 ];
 
 /**
  * One name per admission, index-aligned to the order's 41 tickets — the slot
  * `ticketOrders.items[].attendeeNames` is defined for.
  *
- * The forty named guests in guest-list order, then the unidentified one. Built
- * from `VENMO_GUESTS` rather than typed out again so the list and the count can
- * never disagree.
+ * The forty transcribed guests in guest-list order, then the owner-resolved
+ * 41st. Built from the two sources rather than typed out again, so the list and
+ * the count can never disagree.
  */
 export const TICKET_ATTENDEE_NAMES: string[] = [
   ...VENMO_GUESTS.map((g) => g.name),
-  UNIDENTIFIED_ADMISSION_LABEL,
+  RESOLVED_41ST_GUEST.name,
 ];
 
 /**
