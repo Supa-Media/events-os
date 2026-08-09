@@ -344,3 +344,69 @@ describe("crew briefing run of show", () => {
     ]);
   });
 });
+
+// ── Public run-of-show share link ────────────────────────────────────────────
+describe("public run of show share link", () => {
+  test("publicRunOfShow returns the sanitized, offset-sorted timeline with no auth", async () => {
+    const t = newT();
+    const { as, chapterId } = await setupChapter(t);
+    const eventTypeId = (await as.mutation(api.eventTypes.create, {
+      name: "Worship Night",
+    })) as Id<"eventTypes">;
+    const eventId = (await as.mutation(api.events.createFromTemplate, {
+      eventTypeId,
+      name: "Worship Night — August",
+      eventDate: new Date(2026, 7, 1, 18, 0).getTime(),
+    })) as Id<"events">;
+
+    await run(t, async (ctx) => {
+      // Deliberately out of order, with an internal-only `role` field that
+      // must NOT leak into the public payload.
+      await ctx.db.insert("eventItems", {
+        eventId,
+        chapterId,
+        module: "run_of_show",
+        title: "Set",
+        order: 0,
+        offsetMinutes: 30,
+        fields: { duration: 45, notes: "Full band", role: "Worship Lead" },
+      });
+      await ctx.db.insert("eventItems", {
+        eventId,
+        chapterId,
+        module: "run_of_show",
+        title: "Doors",
+        order: 1,
+        offsetMinutes: -15,
+        fields: { duration: 0 },
+      });
+    });
+
+    // Called on the UNAUTHENTICATED `t`, not `as` — this must work with zero
+    // auth, the entire point of a share link.
+    const result = await t.query(api.events.publicRunOfShow, { eventId });
+    expect(result?.name).toBe("Worship Night — August");
+    expect(result?.eventDate).toBe(new Date(2026, 7, 1, 18, 0).getTime());
+    expect(result?.runOfShow).toEqual([
+      { title: "Doors", offsetMinutes: -15, durationMinutes: null, notes: null },
+      { title: "Set", offsetMinutes: 30, durationMinutes: 45, notes: "Full band" },
+    ]);
+  });
+
+  test("publicRunOfShow returns null once the event is gone", async () => {
+    const t = newT();
+    const { as } = await setupChapter(t);
+    const eventTypeId = (await as.mutation(api.eventTypes.create, {
+      name: "Worship Night",
+    })) as Id<"eventTypes">;
+    const eventId = (await as.mutation(api.events.createFromTemplate, {
+      eventTypeId,
+      name: "Worship Night — August",
+      eventDate: new Date(2026, 7, 1, 18, 0).getTime(),
+    })) as Id<"events">;
+
+    await run(t, (ctx) => ctx.db.delete(eventId));
+
+    expect(await t.query(api.events.publicRunOfShow, { eventId })).toBeNull();
+  });
+});

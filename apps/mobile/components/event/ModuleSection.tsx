@@ -1,5 +1,13 @@
 import { useState } from "react";
-import { View, Text, Pressable, useWindowDimensions } from "react-native";
+import {
+  View,
+  Text,
+  Pressable,
+  useWindowDimensions,
+  Platform,
+  Share,
+} from "react-native";
+import * as Linking from "expo-linking";
 import { useRouter } from "expo-router";
 import { useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -7,6 +15,7 @@ import type { ResolvedModule } from "@events-os/shared";
 import { Button, SectionHeader, Icon, Avatar } from "../ui";
 import type { IconName } from "../ui/Icon";
 import { colors } from "../../lib/theme";
+import { webAppUrl } from "../../lib/appUrl";
 import { EditableGrid } from "../grid/EditableGrid";
 import { ModuleCalendar } from "./moduleCalendar";
 import {
@@ -18,6 +27,43 @@ import { SiteMapSubsection } from "./SiteMapSubsection";
 import { SupplyLinkBanner } from "./supplies/SupplyLinkBanner";
 import { type ModuleOwnerInfo } from "./EventModuleRollup";
 import { GuideLink } from "./GuideLink";
+
+/** The public `/share/<eventId>/run-of-show` page's URL. Web: current
+ *  origin + the app's `/os` base path (`webAppUrl`, same as
+ *  `EventHeader.tsx`'s `shareCrew`). Native has no "current origin"
+ *  signal, so it falls back to this app's own URL scheme
+ *  (`Linking.createURL` — openable only by someone who already has the
+ *  app installed; there's no universal-link domain configured yet — see
+ *  `reimburseRequestUrl`'s identical note in
+ *  finances/reimbursements/index.tsx). */
+function runOfShowShareUrl(eventId: string): string {
+  if (Platform.OS === "web" && typeof window !== "undefined") {
+    return webAppUrl(`/share/${eventId}/run-of-show`);
+  }
+  return Linking.createURL(`/share/${eventId}/run-of-show`);
+}
+
+/** "Share" on the Run of Show module — opens the OS share sheet on
+ *  native (Messages/Mail/WhatsApp/etc. via `Share.share`), copies to the
+ *  clipboard on web (with a confirmation alert, since a silent copy gives
+ *  no feedback there). */
+async function shareRunOfShow(eventId: string): Promise<void> {
+  const url = runOfShowShareUrl(eventId);
+  if (Platform.OS === "web") {
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(url);
+      if (typeof window !== "undefined") window.alert(`Link copied\n\n${url}`);
+    } else if (typeof window !== "undefined") {
+      window.prompt("Share this run-of-show link:", url);
+    }
+    return;
+  }
+  try {
+    await Share.share({ message: url, url, title: "Run of show" });
+  } catch {
+    // User dismissed the share sheet — nothing to do.
+  }
+}
 
 /** Below this width the module header stacks its controls onto their own row. */
 const STACK_HEADER_WIDTH = 640;
@@ -72,7 +118,7 @@ export function ModuleSection({
   // toggle as a full-width segmented control underneath.
   const stackControls = width < STACK_HEADER_WIDTH || hideTitle;
   const secondaryControls =
-    hasCalendar || module.key === "supplies" ? (
+    hasCalendar || module.key === "supplies" || module.key === "run_of_show" ? (
       <View
         className={`flex-row items-center gap-2 ${stackControls ? "flex-1" : ""}`}
       >
@@ -94,6 +140,15 @@ export function ModuleSection({
             size="sm"
             variant="secondary"
             onPress={() => router.push(`/event/${eventId}/packing`)}
+          />
+        ) : null}
+        {module.key === "run_of_show" ? (
+          <Button
+            title="Share"
+            icon="share"
+            size="sm"
+            variant="secondary"
+            onPress={() => void shareRunOfShow(eventId)}
           />
         ) : null}
       </View>

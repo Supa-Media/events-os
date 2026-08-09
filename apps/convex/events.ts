@@ -1018,6 +1018,43 @@ export const crewBriefingValidator = v.object({
   }),
 });
 
+/** The public run-of-show payload: the event's name/date plus its sanitized
+ *  timeline. Shared by `buildCrewBriefing` (one section of the full
+ *  volunteer briefing) and `publicRunOfShow` (the standalone share-link
+ *  page). */
+const publicRunOfShowValidator = v.object({
+  name: v.string(),
+  eventDate: v.number(),
+  runOfShow: v.array(crewRunOfShowValidator),
+});
+
+/** The sanitized, offset-sorted run-of-show timeline for one event — no
+ *  owner, role, or money columns. Shared by `buildCrewBriefing` (as one
+ *  section of the full volunteer briefing) and `publicRunOfShow` (the
+ *  standalone share-link page), so the two can never drift. */
+async function buildPublicRunOfShow(
+  ctx: QueryCtx,
+  eventId: Id<"events">,
+): Promise<Infer<typeof crewRunOfShowValidator>[]> {
+  const runOfShowItems = await ctx.db
+    .query("eventItems")
+    .withIndex("by_event_module", (q) =>
+      q.eq("eventId", eventId).eq("module", "run_of_show"),
+    )
+    .collect();
+  return runOfShowItems
+    .map((it) => ({
+      title: it.title ?? "",
+      offsetMinutes: it.offsetMinutes ?? 0,
+      durationMinutes:
+        typeof it.fields?.duration === "number" && it.fields.duration > 0
+          ? it.fields.duration
+          : null,
+      notes: typeof it.fields?.notes === "string" ? it.fields.notes : null,
+    }))
+    .sort((a, b) => a.offsetMinutes - b.offsetMinutes);
+}
+
 /**
  * The sanitized volunteer briefing for one event: the run of show, teams,
  * their expectations, and who's on each team. Extracted so both the public
@@ -1123,23 +1160,7 @@ export async function buildCrewBriefing(
   // only (no owner, role, or money columns). Sorted by offset so the payload is
   // already in timeline order; the client derives wall-clock times from
   // `eventDate` + `offsetMinutes` exactly like the Day-of view.
-  const runOfShowItems = await ctx.db
-    .query("eventItems")
-    .withIndex("by_event_module", (q) =>
-      q.eq("eventId", eventId).eq("module", "run_of_show"),
-    )
-    .collect();
-  const runOfShow = runOfShowItems
-    .map((it) => ({
-      title: it.title ?? "",
-      offsetMinutes: it.offsetMinutes ?? 0,
-      durationMinutes:
-        typeof it.fields?.duration === "number" && it.fields.duration > 0
-          ? it.fields.duration
-          : null,
-      notes: typeof it.fields?.notes === "string" ? it.fields.notes : null,
-    }))
-    .sort((a, b) => a.offsetMinutes - b.offsetMinutes);
+  const runOfShow = await buildPublicRunOfShow(ctx, eventId);
 
   // Anything whose team isn't a known option → the unassigned bucket.
   const unassigned = {
@@ -1173,6 +1194,26 @@ export const publicCrew = query({
     const event = await ctx.db.get(eventId);
     if (!event) return null;
     return await buildCrewBriefing(ctx, event);
+  },
+});
+
+/**
+ * PUBLIC, no-auth run-of-show preview for an event — reachable by share
+ * link (`/share/<eventId>/run-of-show`). Intentionally public-by-link,
+ * same as `publicCrew`: no requireChapterId/requireUserId. Sanitized —
+ * no owner, role, or money info.
+ */
+export const publicRunOfShow = query({
+  args: { eventId: v.id("events") },
+  returns: v.union(publicRunOfShowValidator, v.null()),
+  handler: async (ctx, { eventId }) => {
+    const event = await ctx.db.get(eventId);
+    if (!event) return null;
+    return {
+      name: event.name,
+      eventDate: event.eventDate,
+      runOfShow: await buildPublicRunOfShow(ctx, eventId),
+    };
   },
 });
 
