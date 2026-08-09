@@ -167,6 +167,44 @@
  * `reveal` block above it) for the nine-receipts/nine-undocumented case, and
  * the FM lesson gaining a FOURTH question (3 → 4, bumped in the snapshot
  * test). Minutes are unchanged everywhere.
+ *
+ * Reconcile states + no default filter (2026-08-09, shipping with the filter
+ * rework in `@events-os/shared`'s `reconcileFilters.ts` and
+ * `finances.listReconcile`): a content-only edit to three Finances sections,
+ * adding and moving none. Four product changes drove it. (1) "Undocumented"
+ * is now **"Closed without documentation"** and means only the CLOSED tail —
+ * reconciled, with neither a receipt nor an approved exception. It used to
+ * ignore status, which made it a strict superset of "Needs documentation"
+ * (in production: 42 in common, 3 only-undocumented, 0 only-missing-receipt),
+ * so the menu offered two near-identical labels with two near-identical
+ * numbers and picking the bigger one showed you the rows you'd just looked at.
+ * The two are now DISJOINT and the publishing backlog is their OR, which —
+ * same filter group — is what multi-select already gives you. (2) The header's
+ * single "N to clear" became three tappable chips: Needs attention (open, with
+ * something outstanding), Ready to close (open, with nothing outstanding — one
+ * keystroke from done) and Reconciled. In production 76 of 127 open rows were
+ * Ready to close, and no filter could find them. (3) The page no longer opens
+ * on a default filter (it pre-selected Needs budget and showed 14 of 346
+ * rows), and search now covers the whole book instead of whatever the State
+ * filter left. (4) Needs budget counts open rows only; Needs coding / Coding
+ * review are hidden until the coding policy starts (2026-09-01), since before
+ * then they can only return zero.
+ *
+ * So `finance-reconcile-grid` lost the retired "All" row from its filter table
+ * and gained the "Closed without documentation" one, a paragraph on the
+ * unfiltered open + whole-book search, and the rule that carries the new daily
+ * workflow ("The header's three numbers — and the pile that was never a
+ * backlog"); its bulk-select question — the one whose real subject was now
+ * Ready to close — was rewritten around the three chips, keeping the bulk-bar
+ * teaching (including the two-legs-for-a-transfer detail) in its explanation.
+ * `finance-chasing-receipts` rewrote its two-filters paragraph around the
+ * disjoint pair and the union, and replaced the "Needs documentation: 0 but
+ * Undocumented: 14" question — which tested the retired superset relationship —
+ * with one that asks how big the publishing backlog is given both numbers, its
+ * fourth option being the old shape. `finance-receipt-exceptions`'s treasurer
+ * tip names both halves instead of the single old filter. Titles, minutes and
+ * quiz lengths are unchanged everywhere (both rewritten quizzes are at the
+ * 5-question cap, so the questions were swapped, not added).
  */
 
 import type {
@@ -484,7 +522,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "tip",
-        text: "**Treasurers:** your side of this is the decision. Read the note before approving — an exception you wave through becomes the org's public answer for that money. Rejecting is fine and often right; say what would make it approvable, and the charge goes back to owing a receipt. In Reconcile, the **Undocumented** filter is the honest backlog: every row with neither a receipt nor an approved exception, *including* ones already marked Reconciled. That's the number that has to reach zero before a period can be published.",
+        text: "**Treasurers:** your side of this is the decision. Read the note before approving — an exception you wave through becomes the org's public answer for that money. Rejecting is fine and often right; say what would make it approvable, and the charge goes back to owing a receipt. In Reconcile, the honest backlog is two filters, not one: **Needs documentation** (still open, still owing a receipt or an approved exception — somebody to nudge) and **Closed without documentation** (marked Reconciled with neither one behind it — nobody to nudge, and the pile that gets forgotten because it already looks finished). They're disjoint, they're in the same filter group, so picking both shows you the union — and that union is what has to reach zero before a period can be published.",
       },
     ],
     quiz: [
@@ -969,21 +1007,30 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         text: "Reconcile is the Treasurer's spreadsheet-style home: every chapter charge as a row, Category and Budget editable inline, receipts uploaded inline. Nothing here is guessed — a charge only counts against a budget when YOU explicitly link it. There is no automatic matching that quietly assigns spend to the nearest budget.",
       },
       {
+        kind: "p",
+        text: "Two things about how the page opens. It opens on EVERYTHING, newest first — it used to pre-select \"Needs budget\" and hand you 14 rows out of 346, which looked like a tidy book and was really a filter you didn't know was on. And the search box covers the whole book, not just whatever the filter left standing: type a merchant or a cardholder's name and the State filter steps aside for the duration (the page says so, out loud, when it does). \"Where's that Costco charge\" is a question about your book, not about the pile you happen to be standing in.",
+      },
+      {
         kind: "table",
         headers: ["Filter", "What it catches"],
         rows: [
-          ["All", "Every charge, unfiltered"],
           ["Spend", "Every dollar that counts as actual spend — the exact rows behind the dashboard's \"Spent\" figure, so tapping it always lands here"],
-          ["Needs budget", "Categorized but not linked to a budget yet. Processor and bank fees are deliberately absent — a fee is charged, not chosen, so there is no decision for a budget to control"],
-          ["Needs documentation", "No receipt, and no acknowledged reason there isn't one"],
-          ["Needs coding", "Spend under the coding policy (posted Sept 1, 2026 or later) still waiting on its author — what it was for, and who was involved"],
-          ["Coding review", "A submitted coding waiting on YOU to approve it or send it back with a note"],
+          ["Needs budget", "Open, categorized, and still not linked to a budget. A row somebody already closed isn't queue work, so it doesn't count here. Processor and bank fees are deliberately absent — a fee is charged, not chosen, so there is no decision for a budget to control"],
+          ["Needs documentation", "Still open, still owing a receipt or an acknowledged reason there isn't one — the chase worklist, the pile with a person you can nudge at the end of it"],
+          ["Closed without documentation", "Somebody marked it Reconciled with neither a receipt nor an approved exception behind it. Nobody left to nudge, and a published ledger still can't tell that row from a documented one"],
+          ["Needs coding", "Spend under the coding policy (posted Sept 1, 2026 or later) still waiting on its author — what it was for, and who was involved. It only appears once the policy starts; before then it could only ever return zero rows, and a filter that's always empty just teaches people to distrust the filters"],
+          ["Coding review", "A submitted coding waiting on YOU to approve it or send it back with a note. Same policy-start rule as above"],
           ["To review", "Still sitting at Unreviewed — nobody has touched it yet. This is the number the dashboard's \"To review\" tile shows, and tapping that tile lands you right here"],
-          ["Reconciled", "Already cleared and closed — the opposite of the \"N to clear\" count in the header"],
+          ["Reconciled", "Already cleared and closed — the third chip in the header, and where every other row is trying to get to"],
           ["Personal (unpaid)", "Flagged personal, not yet repaid — the worklist for chasing down what people owe back"],
           ["Transfers", "Money you marked as moving between your own accounts"],
           ["Payouts", "Deposits you marked as a processor settling donations to you"],
         ],
+      },
+      {
+        kind: "rule",
+        title: "The header's three numbers — and the pile that was never a backlog",
+        text: "The header used to show one number, \"127 to clear\", and it was two very different piles wearing one coat. It's now three chips, and each one is a filter you can tap.\n\n**Needs attention** — open, and something is genuinely outstanding: still unreviewed, or missing a budget, or missing documentation, or personal and unpaid. **Ready to close** — open, and none of those: categorised, budgeted, documented, and simply never closed. The only act left on those rows is pressing Mark reconciled. **Reconciled** — already cleared.\n\nThe first two are complements over the open rows, so they always add back up to what \"to clear\" used to say. That's what makes the split worth having: in a real chapter's book, 127 open rows were 51 that needed a decision and 76 that needed a keystroke. Sixty per cent of the frightening number was already done, and no filter could find it — the only way to those rows was scrolling 346 of them and eyeballing each one.\n\nSo start a session on Ready to close: tap the chip, select all, Mark reconciled. Then the headline that's left is work that's actually work.",
       },
       {
         kind: "rule",
@@ -1071,16 +1118,17 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "Every number on the dashboard opens the exact rows behind it. \"To review\" counts charges still at the Unreviewed status, so it lands on the To review filter — same word, same rows, same count. If a figure you tap ever doesn't appear on the screen it opens, that's a bug worth reporting.",
       },
       {
-        prompt: "You select 20 charges at once in Reconcile. What can you do?",
+        prompt:
+          "Reconcile's header reads: Needs attention 51 · Ready to close 76 · Reconciled 219. What are those 76, and what do you do about them?",
         options: [
-          "Nothing — only one row at a time can change",
-          "Bulk-set their Category, Budget, mark them Reconciled, or mark them as transfers/payouts",
-          "Only delete them",
-          "Export them to email",
+          "Rows still missing something — open each one and fix it",
+          "Open rows with nothing outstanding — categorised, budgeted, documented, just never closed. Tap the chip, select them all, Mark reconciled",
+          "Rows already cleared — nothing left to do with them",
+          "Rows the app will close by itself once the month ends",
         ],
         answerIndex: 1,
         explanation:
-          "Multi-select drives a bulk bar for exactly the actions that make a real month's worth of charges manageable in minutes, not hours. It's also where \"Mark as transfer\" lives, since that one needs two rows selected — both legs of the movement.",
+          "Ready to close is the complement of Needs attention over the open rows, so the two always add back up to the single \"to clear\" number they replaced — and in a real book, 76 of those 127 were a keystroke, not a backlog. Multi-select is what turns them into a minute's work: the bulk bar also sets Category and Budget, and it's where \"Mark as transfer\" lives, since that one needs two rows selected — both legs of the movement.",
       },
       {
         prompt: "You mark a charge \"Excluded\" but leave the reason field blank. What happens?",
@@ -1243,7 +1291,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "p",
-        text: "One thing that will look like a bug the first time you meet it: a receipt that arrives by email or text does NOT attach itself to a charge anymore. It lands in the Receipts library and waits to be offered to the cardholder as a match when they open that charge to code it — so a cardholder can have a dozen receipts in the library and a dozen charges still reading undocumented, with nothing broken. You can link one by hand from Receipts when it's obvious, and sometimes you should; but the tap you're really chasing is theirs, because they're the person who knows which charge it was. That's the whole reason we stopped letting the system guess: a receipt quietly attached to the wrong charge looks finished, which is worse than one that isn't attached at all.",
+        text: "One thing that will look like a bug the first time you meet it: a receipt that arrives by email or text does NOT attach itself to a charge anymore. It lands in the Receipts library and waits to be offered to the cardholder as a match when they open that charge to code it — so a cardholder can have a dozen receipts in the library and a dozen charges still sitting in Needs documentation, with nothing broken. You can link one by hand from Receipts when it's obvious, and sometimes you should; but the tap you're really chasing is theirs, because they're the person who knows which charge it was. That's the whole reason we stopped letting the system guess: a receipt quietly attached to the wrong charge looks finished, which is worse than one that isn't attached at all.",
       },
       {
         kind: "p",
@@ -1251,7 +1299,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "p",
-        text: "Two filters, and the difference matters. **Needs documentation** is this chase — it stops counting a row the moment someone reconciles it, because there's nobody left to nudge. **Undocumented** ignores status entirely: every row with neither a receipt nor an approved receipt exception, *including* ones already marked Reconciled. That second one is the publishing backlog, it's deliberately harder to please, and it's the number that has to reach zero before a period goes public. (Approving the exceptions themselves is its own lesson.)",
+        text: "Two filters, and they don't overlap — a row is in one or the other, never both. **Needs documentation** is this chase: still open, still owing a receipt or an approved exception, still someone you can nudge at the end of it. **Closed without documentation** is the tail behind it: rows somebody marked Reconciled with neither one behind them. The chase stopped there; the gap didn't.\n\nThey're split because they need different hands. The first pile you nudge. The second nobody is going to send you a receipt for — you go back and document it, or you honestly re-open it, and it's the half that gets forgotten precisely because it already looks finished. **The publishing backlog is both of them together.** They sit in the same filter group, so selecting both widens rather than narrows, and that union is the number that has to reach zero before a period goes public — a public ledger can't tell a quietly-closed row from a documented one. (Approving the exceptions themselves is its own lesson.)",
       },
       {
         kind: "reveal",
@@ -1276,7 +1324,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         prompt:
-          "A cardholder emailed in nine receipts this month, and nine of their charges still read undocumented. Is something broken?",
+          "A cardholder emailed in nine receipts this month, and nine of their charges still sit in Needs documentation. Is something broken?",
         options: [
           "Yes — emailed receipts are supposed to attach themselves to the matching charge",
           "No — an emailed receipt lands in the library and attaches when a human confirms it against the charge, which the cardholder does while coding it",
@@ -1301,16 +1349,16 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         prompt:
-          "Reconcile shows Needs documentation: 0 but Undocumented: 14. What does that mean?",
+          "Reconcile shows Needs documentation: 7 and Closed without documentation: 3. How many rows stand between you and publishing the period, and how do you see them?",
         options: [
-          "A display bug — the two pills should agree",
-          "14 rows have neither a receipt nor an approved exception, and someone reconciled them anyway — the chase stopped, the gap didn't",
-          "14 receipts are still being processed by the email pipeline",
-          "14 cardholders are over their limit",
+          "3 — the 7 are still open, so they aren't a publishing problem yet",
+          "7 — the 3 were reconciled, so somebody already settled them",
+          "10 — the two filters are disjoint, so the publishing backlog is both; pick both and they widen, because they're in the same group",
+          "7 — the 3 are inside the 7, so the bigger number is the real one",
         ],
-        answerIndex: 1,
+        answerIndex: 2,
         explanation:
-          "Needs documentation stops counting a row the moment it's reconciled — someone made a call. Undocumented ignores status entirely, which is why it's the number that has to reach zero before a period gets published: a public ledger can't tell a quietly-closed row from a documented one.",
+          "Neither pile can be published. The 7 are open and owe a receipt or an approved exception — you nudge those. The 3 were closed with nothing behind them — nobody is going to send you a receipt for those; you document them or honestly re-open them. No row is in both piles, so the backlog is the sum, and multi-select within the State group is how you look at it in one view. (The last option is the old shape: the two used to overlap almost entirely — 42 rows in common, 3 that weren't — which is exactly why they were split into halves that mean different jobs.)",
       },
       {
         prompt:
