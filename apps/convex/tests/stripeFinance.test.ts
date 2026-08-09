@@ -241,6 +241,164 @@ describe("applyFcTransactions (dedup / insert / update)", () => {
   });
 });
 
+describe("applyFcTransactions never re-derives a human-classified flow", () => {
+  /**
+   * Owner-reported, 2026-08-09: a "PUBLIC WORSHIP | Transfer" leg marked as an
+   * internal transfer on the 8th was back to `flow:"outflow"` — and counting as
+   * $1,000 of org spend — by the next morning, with NO un-mark in
+   * `financeAuditLog`. The incremental sweep keeps no cursor: it re-reads the
+   * newest ~5,000 feed rows every run and re-patched `flow` from the amount sign
+   * on each one, so a marking on a `stripe_fc` row survived at most until the
+   * next 07:00 cron.
+   *
+   * The un-marked row is also UNREPAIRABLE from the UI (`isMarkedTransfer`
+   * requires `flow === "transfer"` for Un-mark to appear; re-marking hits
+   * NOT_A_PAIR against the surviving leg), which is why this is asserted on the
+   * sync rather than left to a bookkeeper to notice and redo daily.
+   */
+  test("a row marked as an internal transfer stays marked across the next sweep", async () => {
+    const s = await setupChapter(newT());
+    const me = await seedSelfPerson(s);
+    await grantRole(s, me, "bookkeeper");
+    const accountId = await seedAccount(s, s.chapterId);
+
+    // The outflow leg arrives through the Stripe FC feed.
+    const feedRow = {
+      id: "fc_xfer_out",
+      amountCents: -100_000,
+      postedAt: 1_700_000_000_000,
+      description: "PUBLIC WORSHIP | Transfer",
+      pending: false,
+    };
+    await s.t.mutation(internal.stripeFinance.applyFcTransactions, {
+      legacyAccountId: accountId,
+      transactions: [feedRow],
+    });
+    const outLeg = (await run(s.t, (ctx) =>
+      ctx.db
+        .query("transactions")
+        .withIndex("by_external_id", (q) => q.eq("externalId", "stripe_fc:fc_xfer_out"))
+        .first(),
+    ))!;
+
+    // The other side of the same movement landed via a different feed, which is
+    // exactly why only one leg reverted in production.
+    const inLeg = await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "increase_ach",
+        flow: "inflow",
+        amountCents: 100_000,
+        currency: "usd",
+        postedAt: 1_700_000_000_000,
+        merchantName: "PUBLIC WORSHIP",
+        status: "unreviewed",
+        createdAt: Date.now(),
+      }),
+    );
+
+    await s.as.mutation(api.finances.markAsTransfer, {
+      transactionId: outLeg._id,
+      counterpartTransactionId: inLeg,
+    });
+    const groupId = (await run(s.t, (ctx) => ctx.db.get(outLeg._id)))!.transferGroupId;
+    expect(groupId).toBeDefined();
+
+    // The daily cron re-sweeps the SAME feed row, unchanged.
+    const res = await s.t.mutation(internal.stripeFinance.applyFcTransactions, {
+      legacyAccountId: accountId,
+      transactions: [feedRow],
+    });
+    expect(res).toEqual({ inserted: 0, updated: 1 });
+
+    const after = (await run(s.t, (ctx) => ctx.db.get(outLeg._id)))!;
+    expect(after.flow).toBe("transfer");
+    // `preMarkFlow` and the pair linkage have to survive too, or `unmarkTransfer`
+    // can't restore the row and the pair stops reading as one movement.
+    expect(after.preMarkFlow).toBe("outflow");
+    expect(after.transferGroupId).toBe(groupId);
+    // The leg that never came through this feed is untouched, as before.
+    expect((await run(s.t, (ctx) => ctx.db.get(inLeg)))!.flow).toBe("transfer");
+  });
+
+  test("the volatile fields still refresh on a marked row", async () => {
+    const s = await setupChapter(newT());
+    const me = await seedSelfPerson(s);
+    await grantRole(s, me, "bookkeeper");
+    const accountId = await seedAccount(s, s.chapterId);
+
+    await s.t.mutation(internal.stripeFinance.applyFcTransactions, {
+      legacyAccountId: accountId,
+      transactions: [
+        { id: "fc_xfer_p", amountCents: -25_000, postedAt: 1_700_000_000_000, description: "Transfer", pending: true },
+      ],
+    });
+    const outLeg = (await run(s.t, (ctx) =>
+      ctx.db
+        .query("transactions")
+        .withIndex("by_external_id", (q) => q.eq("externalId", "stripe_fc:fc_xfer_p"))
+        .first(),
+    ))!;
+    const inLeg = await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "increase_ach",
+        flow: "inflow",
+        amountCents: 25_000,
+        currency: "usd",
+        postedAt: 1_700_000_000_000,
+        merchantName: "Transfer",
+        status: "unreviewed",
+        createdAt: Date.now(),
+      }),
+    );
+    await s.as.mutation(api.finances.markAsTransfer, {
+      transactionId: outLeg._id,
+      counterpartTransactionId: inLeg,
+    });
+
+    // Only `flow` is withheld — the authorization posting still has to land.
+    await s.t.mutation(internal.stripeFinance.applyFcTransactions, {
+      legacyAccountId: accountId,
+      transactions: [
+        { id: "fc_xfer_p", amountCents: -25_500, postedAt: 1_700_050_000_000, description: "Transfer", pending: false },
+      ],
+    });
+    const after = (await run(s.t, (ctx) => ctx.db.get(outLeg._id)))!;
+    expect(after.flow).toBe("transfer");
+    expect(after.pending).toBe(false);
+    expect(after.amountCents).toBe(25_500);
+    expect(after.postedAt).toBe(1_700_050_000_000);
+  });
+
+  test("an ordinary unclassified row still tracks the feed's sign", async () => {
+    const s = await setupChapter(newT());
+    const accountId = await seedAccount(s, s.chapterId);
+
+    await s.t.mutation(internal.stripeFinance.applyFcTransactions, {
+      legacyAccountId: accountId,
+      transactions: [
+        { id: "fc_sign", amountCents: -1_000, postedAt: 1_700_000_000_000, description: "Cafe", pending: true },
+      ],
+    });
+    // The feed corrects the sign (a reversed authorization). Nobody has touched
+    // this row, so the feed is still the authority on its direction.
+    await s.t.mutation(internal.stripeFinance.applyFcTransactions, {
+      legacyAccountId: accountId,
+      transactions: [
+        { id: "fc_sign", amountCents: 1_000, postedAt: 1_700_000_000_000, description: "Cafe", pending: false },
+      ],
+    });
+    const row = await run(s.t, (ctx) =>
+      ctx.db
+        .query("transactions")
+        .withIndex("by_external_id", (q) => q.eq("externalId", "stripe_fc:fc_sign"))
+        .first(),
+    );
+    expect(row?.flow).toBe("inflow");
+  });
+});
+
 describe("applyFcTransactions legacy-card last4 + attribution", () => {
   test("parses cardLast4 from the description on insert", async () => {
     const s = await setupChapter(newT());
