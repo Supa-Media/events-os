@@ -377,6 +377,12 @@ export const startPledgeCheckout = action({
     body.set("success_url", `${base}${returnPath}?pledge=success`);
     body.set("cancel_url", `${base}${returnPath}?pledge=canceled`);
     body.set("metadata[pledgeId]", String(prepared.pledgeId));
+    // Whether this backer agreed to appear on the public giving wall, carried
+    // on the Stripe session so any settle-time consumer (the webhook fan-out,
+    // the ACH comms) can answer "should we mention the wall to them?" without
+    // re-reading our own tables. Always set — "0" is a recorded no, not a
+    // silence to be interpreted.
+    body.set("metadata[giveShowOnWall]", args.shareOnWall ? "1" : "0");
     // Inline recurring price — one monthly line, unit = the pledge amount.
     body.set("line_items[0][quantity]", "1");
     body.set("line_items[0][price_data][currency]", "usd");
@@ -424,6 +430,9 @@ export const startPledgeCheckout = action({
         amountCents: prepared.amountCents,
         ...(args.publicName ? { displayName: args.publicName } : {}),
         ...(args.message ? { message: args.message } : {}),
+        // The giver's explicit yes, carried through rather than inferred
+        // from the fact that we got this far.
+        consent: true,
       });
     }
 

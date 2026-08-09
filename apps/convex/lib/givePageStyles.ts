@@ -221,8 +221,14 @@ section{margin-bottom:32px}
 .role-opt input{width:14px;height:14px;accent-color:var(--accent)}
 
 /* ── share-on-wall extras (F6, shared by the monthly + one-time forms) ── */
-.sharewall{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);margin:-2px 0 14px;cursor:pointer}
-.sharewall input{width:16px;height:16px;accent-color:var(--accent)}
+/* flex-start (not center): the consent label now names both things that go
+   public, so it wraps to two lines on a phone and a centred box would float
+   away from the first line. */
+.sharewall{display:flex;align-items:flex-start;gap:8px;font-size:13px;color:var(--ink);margin:-2px 0 6px;cursor:pointer;line-height:1.4}
+.sharewall input{width:16px;height:16px;accent-color:var(--accent);flex:0 0 auto;margin-top:1px}
+/* The plain-language expansion under the consent box: what is public, what
+   never is. Muted and small — it explains the checkbox, it isn't a second ask. */
+.sharewall-hint{font-size:12px;line-height:1.45;color:var(--muted);margin:0 0 14px 24px}
 
 /* ── one-time → City Launch Fund framing (F5, territory pre-launch) ── */
 .onetime-launch-intro{margin-bottom:14px}

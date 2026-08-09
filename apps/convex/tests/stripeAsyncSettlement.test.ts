@@ -146,6 +146,7 @@ describe("checkout.session.completed — the settled gate", () => {
       kind: "gift",
       amountCents: 10_000,
       displayName: "A Neighbour",
+      consent: true,
     });
 
     await postEvent(t, "checkout.session.completed", {
