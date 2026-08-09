@@ -1,15 +1,25 @@
 /**
- * FINANCES · ACCOUNTS — the ED/FM money-audit page. It opens with the
- * RECONCILIATION VERDICT (`ReconciliationSummary.tsx`): do the books match the
- * money, and if not, by how much and where to look. Everything under it is the
- * evidence for that one figure — per-book balances (book value vs bank cash),
- * engine status + detected Stripe payouts, and the full central↔chapter
- * transfer history (manual + engine) with flag/resolve.
+ * FINANCES · ACCOUNTS — the ED/FM money-audit page. It opens with ACCOUNT
+ * BALANCES (`ReconciliationSections.tsx`) — what each book is worth beside what
+ * is actually sitting in its account — and then states the RECONCILIATION
+ * VERDICT drawn from them (`ReconciliationSummary.tsx`): do the books match the
+ * money, and if not, by how much and in which direction. Under those: engine
+ * status + detected Stripe payouts, and the full central↔chapter transfer
+ * history (manual + engine) with flag/resolve.
  *
- * That order is the 2026-08-08 fix. The page had every number and stated no
- * conclusion, so answering "are we short?" meant adding four columns in your
- * head. Opening the page also now re-reads the bank and Stripe balances, since
- * a verdict computed from a figure fetched at 5am is not a verdict.
+ * The verdict existing at all is the 2026-08-08 fix. The page had every number
+ * and stated no conclusion, so answering "are we short?" meant adding four
+ * columns in your head. Opening the page also re-reads the bank and Stripe
+ * balances, since a verdict computed from a figure fetched at 5am is not a
+ * verdict.
+ *
+ * Putting the balances back ABOVE it is the 2026-08-09 follow-up, and is not a
+ * reversal of that. The verdict led while it was a full screen of piles,
+ * subtotals and leads — a wall you had to get past to reach anything concrete.
+ * Condensed to a card (its working is folded away now), it reads as what it is:
+ * a conclusion about the table, and conclusions go after the thing they are
+ * about. It is still the second thing on the page, and it is now the only thing
+ * on the page that states an answer.
  *
  * Below it, two DISTINCT account lists, kept clearly separate:
  *
@@ -150,12 +160,13 @@ function AccountsBody() {
           <ToastView toast={toast} onDismiss={dismiss} />
         </View>
 
-        {/* The verdict FIRST, then the evidence. Whether the books match the
-            money is the question this page exists to answer, and it used to be
-            derivable only by mentally adding four columns of the table below. */}
-        <ReconciliationSummary />
-
+        {/* Balances, then the verdict drawn from them. The table is the
+            concrete thing — what each book is worth and what is sitting in its
+            account — and "does it add up?" is a conclusion about those figures,
+            so it reads better after them than before them. */}
         <BalancesSection />
+
+        <ReconciliationSummary />
 
         <ReconciliationSection />
 
