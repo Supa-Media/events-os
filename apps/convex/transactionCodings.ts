@@ -155,6 +155,11 @@ export const getForTransaction = query({
   returns: v.object({
     coding: v.union(codingRow, v.null()),
     requiresCoding: v.boolean(),
+    /** True iff this charge can prove itself — a receipt, or a filed
+     *  exception (pending counts; see `submitCoding`'s gate). Submitting a
+     *  coding is refused without it, so the form has to be able to say so
+     *  BEFORE someone types three fields they can't submit. */
+    hasDocumentation: v.boolean(),
     namesMaxHeadcount: v.number(),
     minPurposeLength: v.number(),
   }),
@@ -162,6 +167,15 @@ export const getForTransaction = query({
     const { txn } = await requireSubmitCoding(ctx, args.transactionId);
     const { sinceMs, namesMaxHeadcount } = await codingPolicy(ctx);
     const row = await codingForTransaction(ctx, args.transactionId);
+    const exceptions = await ctx.db
+      .query("receiptExceptions")
+      .withIndex("by_transaction", (q) =>
+        q.eq("transactionId", args.transactionId),
+      )
+      .collect();
+    const hasDocumentation =
+      txn.receiptStorageId != null ||
+      exceptions.some((e) => e.status === "approved" || e.status === "pending");
     const canSeeNames = row
       ? await hasCodingNamesView(ctx, args.transactionId)
       : false;
@@ -176,6 +190,7 @@ export const getForTransaction = query({
     return {
       coding: row ? await projectCoding(ctx, row, canSeeNames) : null,
       requiresCoding,
+      hasDocumentation,
       namesMaxHeadcount,
       minPurposeLength: MIN_PURPOSE_LENGTH,
     };
