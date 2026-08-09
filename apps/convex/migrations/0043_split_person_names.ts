@@ -1,13 +1,13 @@
 import type { MutationCtx } from "../_generated/server";
 import type { Migration } from "./index";
 import { internal } from "../_generated/api";
-import { splitPersonName } from "../lib/personName";
+import { splitPersonName } from "@events-os/shared";
 
 /**
  * Structured-name backfill (founder ask, 2026-07-25): stamp
  * `people.firstName`/`lastName` onto every existing row whose display `name`
  * splits UNAMBIGUOUSLY — exactly two whitespace tokens, the one rule
- * `lib/personName.ts#splitPersonName` defines (shared with every rename
+ * `@events-os/shared#names#splitPersonName` defines (shared with every rename
  * write-through and the contacts import, so the halves can never disagree
  * about what "splittable" means). Anything else — single-word names,
  * three-plus tokens ("Ama (Gina) Oppong Asante"), parentheticals — is left

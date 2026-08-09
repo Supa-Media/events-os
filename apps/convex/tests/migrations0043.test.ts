@@ -3,12 +3,12 @@ import { describe, expect, test } from "vitest";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import type { Doc, Id } from "../_generated/dataModel";
 import { runSplitPersonNamesPage } from "../migrations/0043_split_person_names";
-import { composeName, nameHalvesPatch, splitPersonName } from "../lib/personName";
+import { composeName, nameHalvesPatch, splitPersonName } from "@events-os/shared";
 
 /**
  * Migration 0043 — structured-name backfill: firstName/lastName stamped where
  * `name` splits unambiguously (exactly two tokens — the ONE rule in
- * `lib/personName.ts`), ambiguous names left unset and counted, already-split
+ * `@events-os/shared#names`), ambiguous names left unset and counted, already-split
  * rows never overwritten (a hand-corrected split must survive a re-run).
  */
 
@@ -26,7 +26,7 @@ async function seedPerson(
   );
 }
 
-describe("lib/personName — the one splitting rule", () => {
+describe("@events-os/shared#names — the one splitting rule", () => {
   test("two tokens split; everything else refuses; compose round-trips", () => {
     expect(splitPersonName("Shante Evans")).toEqual({ firstName: "Shante", lastName: "Evans" });
     expect(splitPersonName("  Bree   Hill  ")).toEqual({ firstName: "Bree", lastName: "Hill" });

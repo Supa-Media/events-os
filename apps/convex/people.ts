@@ -17,15 +17,16 @@ import {
   getChapterIdOrNull,
 } from "./lib/context";
 import { isChapterAdmin } from "./lib/org";
-import { isCardEligible, type Persona } from "@events-os/shared";
-import { writePersonAudit, diffFields } from "./lib/givingAudit";
-import { recordPersonEmail } from "./lib/personEmails";
 import {
   composeName,
   firstNameForDesignatedLast,
+  isCardEligible,
   nameHalvesPatch,
   splitPersonName,
-} from "./lib/personName";
+  type Persona,
+} from "@events-os/shared";
+import { writePersonAudit, diffFields } from "./lib/givingAudit";
+import { recordPersonEmail } from "./lib/personEmails";
 import { assertServiceIdsInChapter, expandServiceIdsWithChildren } from "./lib/serviceCatalog";
 import { resolvePersonaForRoster, resolvePersonaForPage } from "./lib/people";
 import { requireGivingView, type GivingScope } from "./lib/givingAccess";
@@ -734,7 +735,7 @@ export const create = mutation({
       chapterId: chapterId as Id<"chapters">,
       name: args.name,
       // Structured halves when the split is unambiguous — see
-      // `lib/personName.ts` (the one splitting rule migration 0043 and every
+      // `@events-os/shared#names` (the one splitting rule migration 0043 and every
       // rename write-through share).
       ...(splitPersonName(args.name) ?? {}),
       email: args.email,
@@ -892,7 +893,7 @@ export const update = mutation({
       // A rename keeps the structured halves consistent: refreshed on a clean
       // split, EXPLICITLY CLEARED (undefined) on an ambiguous one — stale
       // halves from the previous name are wrong data, not missing data. See
-      // `lib/personName.ts#nameHalvesPatch`.
+      // `@events-os/shared#names#nameHalvesPatch`.
       const halves = nameHalvesPatch(fields.name);
       fields.firstName = halves.firstName;
       fields.lastName = halves.lastName;

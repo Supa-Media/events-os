@@ -71,7 +71,7 @@ import { chapterRoster } from "./lib/org";
 import { requireGivingManage, type GivingScope } from "./lib/givingAccess";
 import { matchOrCreateDonor, recordGiftForDonor } from "./lib/givingDonors";
 import { recordPersonEmail } from "./lib/personEmails";
-import { splitPersonName } from "./lib/personName";
+import { splitPersonName } from "@events-os/shared";
 import { findDonorInScope, hasPersonIdentifier } from "./lib/givingDonors";
 import { assertServiceIdsInChapter } from "./lib/serviceCatalog";
 import {
@@ -127,7 +127,7 @@ export const canonicalImportRowValidator = v.object({
   // Structured name halves when the SOURCE already had them split (the
   // Givebutter contacts export's First/Last columns) — stored verbatim on a
   // newly-created contact instead of re-deriving them from the joined
-  // display string (which `lib/personName.ts#splitPersonName` would refuse
+  // display string (which `@events-os/shared#names#splitPersonName` would refuse
   // for any multi-token half). Contact/ticket rows only; gift/recurring rows
   // ignore them (donor rows have no structured-name model).
   firstName: v.optional(v.string()),
@@ -949,7 +949,7 @@ export async function matchOrCreatePersonContact(
   }
   // Structured name halves: the source's own split wins when it arrived
   // pre-split (Givebutter contact exports); else derive via the shared
-  // unambiguous-split rule (`lib/personName.ts`).
+  // unambiguous-split rule (`@events-os/shared#names`).
   const halves =
     args.firstName || args.lastName
       ? { firstName: args.firstName?.trim() || undefined, lastName: args.lastName?.trim() || undefined }

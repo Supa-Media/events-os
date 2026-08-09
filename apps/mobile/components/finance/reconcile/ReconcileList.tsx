@@ -82,6 +82,7 @@ import {
   Badge,
   Button,
   Icon,
+  Checkbox,
   InlineText,
   OptionTag,
   PersonPicker,
@@ -258,7 +259,13 @@ export function ReconcileList({
               style={{ width: widths.check }}
               className="items-center justify-center py-2.5"
             >
-              <CheckBox checked={allSelected} onPress={onToggleAll} />
+              <Checkbox
+                checked={allSelected}
+                onPress={onToggleAll}
+                accessibilityLabel={
+                  allSelected ? "Deselect all transactions" : "Select all transactions"
+                }
+              />
             </View>
             {showBook ? (
               <GridHeaderCell
@@ -522,7 +529,13 @@ function ReconcileRow({
         {readOnly ? (
           <Icon name="lock" size={12} color={colors.faint} />
         ) : (
-          <CheckBox checked={selected} onPress={onToggle} />
+          <Checkbox
+            checked={selected}
+            onPress={onToggle}
+            accessibilityLabel={`Select ${
+              row.merchantNameOverride ?? row.merchantName ?? "this transaction"
+            }`}
+          />
         )}
       </View>
 
@@ -1028,33 +1041,6 @@ function Cell({ width, children }: { width: number; children: React.ReactNode })
     >
       {children}
     </View>
-  );
-}
-
-// ── Checkbox ──────────────────────────────────────────────────────────────────
-function CheckBox({
-  checked,
-  onPress,
-}: {
-  checked: boolean;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      hitSlop={6}
-      accessibilityRole="checkbox"
-      accessibilityState={{ checked }}
-      className="rounded p-1 active:opacity-70"
-    >
-      <View
-        className={`h-4 w-4 items-center justify-center rounded border ${
-          checked ? "border-accent bg-accent" : "border-border-strong bg-raised"
-        }`}
-      >
-        {checked ? <Icon name="check" size={12} color={colors.accentText} /> : null}
-      </View>
-    </Pressable>
   );
 }
 

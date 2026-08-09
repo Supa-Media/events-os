@@ -222,7 +222,7 @@ export const MIGRATIONS: Migration[] = [
   wrapTargeting,
   // Structured names — stamp firstName/lastName onto every people row whose
   // display `name` splits unambiguously (exactly two tokens, the ONE rule in
-  // lib/personName.ts); ambiguous names stay unsplit and counted. `name`
+  // @events-os/shared#names); ambiguous names stay unsplit and counted. `name`
   // itself never changes. Idempotent (already-split rows skipped, so a
   // hand-corrected split is never overwritten). See 0043.
   splitPersonNames,

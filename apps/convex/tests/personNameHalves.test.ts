@@ -2,7 +2,7 @@ import { describe, expect, test } from "vitest";
 import { api } from "../_generated/api";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import type { Doc, Id } from "../_generated/dataModel";
-import { firstNameForDesignatedLast } from "../lib/personName";
+
 
 /**
  * Giving a LAST NAME to a person who has none.
@@ -37,44 +37,6 @@ async function seedPerson(
 function readPerson(s: ChapterSetup, personId: Id<"people">) {
   return run(s.t, (ctx) => ctx.db.get(personId));
 }
-
-describe("firstNameForDesignatedLast", () => {
-  test("designating an existing tail leaves the head as the first name", () => {
-    expect(firstNameForDesignatedLast("Mary Jo Van Der Berg", "Van Der Berg")).toBe("Mary Jo");
-    expect(firstNameForDesignatedLast("Ama (Gina) Oppong Asante", "Asante")).toBe(
-      "Ama (Gina) Oppong",
-    );
-  });
-
-  test("matching the tail is case-insensitive", () => {
-    expect(firstNameForDesignatedLast("Ama Oppong ASANTE", "asante")).toBe("Ama Oppong");
-  });
-
-  test("a surname the name doesn't end with is an addition, not a designation", () => {
-    expect(firstNameForDesignatedLast("Cher", "Sarkisian")).toBe("Cher");
-    expect(firstNameForDesignatedLast("Mary Jo Van Der Berg", "Smith")).toBe(
-      "Mary Jo Van Der Berg",
-    );
-  });
-
-  test("matching is token-aligned, so a surname can't eat part of a word", () => {
-    // "Vanderberg" ENDS WITH the letters "berg", but they aren't a token —
-    // treating that as a designation would leave a first name of "Vander".
-    expect(firstNameForDesignatedLast("Vanderberg", "berg")).toBe("Vanderberg");
-  });
-
-  test("a surname spanning the whole name is an addition, never an empty head", () => {
-    expect(firstNameForDesignatedLast("Asante", "Asante")).toBe("Asante");
-    expect(firstNameForDesignatedLast("Van Der Berg", "Van Der Berg")).toBe("Van Der Berg");
-  });
-
-  test("surrounding whitespace never leaks into the derived half", () => {
-    expect(firstNameForDesignatedLast("  Mary Jo Van Der Berg  ", "  Van Der Berg ")).toBe(
-      "Mary Jo",
-    );
-  });
-});
-
 describe("people.update — a last name on an unsplit person", () => {
   test("a mononym GAINS the surname and keeps its name as the first half", async () => {
     const s = await setupChapter(newT());
