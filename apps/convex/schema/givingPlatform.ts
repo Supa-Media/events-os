@@ -563,6 +563,88 @@ export const givebutterConvertedDonations = defineTable({
 }).index("by_externalRef", ["externalRef"]);
 
 /**
+ * A gift that was BOOKED and then PULLED BACK OUT — the tombstone for money
+ * that ran backwards.
+ *
+ * The case this exists for is the ACH late return. A bank debit settles, the
+ * gift is recorded, the donor is thanked, the amount is in the donor's lifetime
+ * total and the scope rollup and possibly a territory's launch pot — and then,
+ * up to 60 calendar days later, the account holder's bank takes it back.
+ * Stripe reports that as `charge.dispute.created`. Money that already posted to
+ * the books is gone, and nothing in this codebase could previously say so.
+ *
+ * ── WHY A ROW AND NOT JUST A DELETE ─────────────────────────────────────────
+ * `removeGiftRow` is the correct reversal mechanism — it is the only thing that
+ * un-winds `lifetimeCents`, `giftCount`, the donor's status, the scope rollup,
+ * the cross-chapter identity totals and the launch pot in one consistent move —
+ * but it DELETES, and a deleted row explains nothing. Six months on, "this
+ * donor's lifetime total went down by $500 in September" needs an answer, and
+ * the answer has to outlive the row it is about. Same principle as
+ * `reverseBadSettlement.ts`: the audit trail of a money-path event is worth
+ * more than a tidy table.
+ *
+ * `giftAudit` could not do this job — its `actorUserId` is required and it is
+ * documented as narrating HUMAN desk edits only. A bank return has no actor.
+ *
+ * ── IT IS ALSO THE UNDO ─────────────────────────────────────────────────────
+ * The snapshot fields are not decoration. A dispute can close as `won`, which
+ * means the money comes back, which means the reversal must itself be reversed
+ * — and by then the gift row is gone. Everything needed to re-record it is
+ * here, which is why the shape mirrors `recordGiftForDonor`'s arguments rather
+ * than being a free-text summary.
+ *
+ * ── IDEMPOTENCY LIVES HERE, NOT ON THE EVENT ID ─────────────────────────────
+ * `by_dispute` is the load-bearing guard. Keying on the Stripe *event* id would
+ * only survive a redelivery of the same event; keying on the *dispute* id
+ * survives that AND a second event about the same dispute AND a replay after a
+ * failed attempt, because the dispute is the thing that happened.
+ */
+export const GIFT_REVERSAL_STATUSES = ["reversed", "restored"] as const;
+
+export const giftReversals = defineTable({
+  // ── The snapshot: everything `recordGiftForDonor` would need to put it back.
+  donorId: v.id("donors"),
+  scope: givingScope,
+  amountCents: v.number(),
+  currency: v.string(),
+  receivedAt: v.number(),
+  method: v.union(...GIFT_METHODS.map((m) => v.literal(m))),
+  /** `give:<stripe checkout session id>` for a `/give` gift — also the
+   *  `givingActivity.by_refKey` key, so the wall entry can be found again. */
+  externalRef: v.optional(v.string()),
+  note: v.optional(v.string()),
+  /** Whether the reversed gift was counted into its territory's launch pot, so
+   *  a restore can hand `recordGiftForDonor` the same starting conditions. */
+  countedInLaunchFund: v.optional(v.boolean()),
+
+  // ── Why, straight off Stripe's Dispute object. Never paraphrased: this is
+  // the evidence, and a reason we do not recognise must still be recorded.
+  stripeDisputeId: v.string(),
+  stripeChargeId: v.optional(v.string()),
+  stripePaymentIntentId: v.optional(v.string()),
+  /** `insufficient_funds` / `incorrect_account_details` / `bank_cannot_process`
+   *  for a bank return; `debit_not_authorized` and others for a donor-initiated
+   *  dispute. Stored raw. */
+  disputeReason: v.optional(v.string()),
+  /** What Stripe says was disputed. Recorded even when it differs from the
+   *  gift — a mismatch is a fact worth keeping, not a reason to guess. */
+  disputedAmountCents: v.optional(v.number()),
+
+  status: v.union(...GIFT_REVERSAL_STATUSES.map((s) => v.literal(s))),
+  reversedAt: v.number(),
+  restoredAt: v.optional(v.number()),
+  /** The NEW gift row a restore created — the old id is gone forever. */
+  restoredGiftId: v.optional(v.id("gifts")),
+})
+  // The idempotency guard, and the "has this dispute already been handled?"
+  // lookup for both the reverse and the restore side.
+  .index("by_dispute", ["stripeDisputeId"])
+  // "Why did this donor's lifetime total drop?" — read on the donor detail.
+  .index("by_donor", ["donorId"])
+  // Book-level: what got pulled back out of this book, newest first.
+  .index("by_scope_and_reversedAt", ["scope", "reversedAt"]);
+
+/**
  * Per-scope denormalized aggregates for the giving dashboard — one row per
  * scope, so the dashboard reads O(1) instead of scanning `donors`/`gifts`
  * (Convex has no count operator; the guidelines forbid counting at read time).
