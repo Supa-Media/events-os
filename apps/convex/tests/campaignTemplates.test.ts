@@ -688,12 +688,20 @@ describe("0049_seed_builtin_campaign_templates", () => {
 describe("built-in newsletter: blocks → tiptap upgrade", () => {
   /** What a pre-upgrade deployment's built-in row looks like — written
    *  directly, standing in for what the OLD seeder body would have left
-   *  behind (or what migration 0049 wrote before this release). */
+   *  behind (or what migration 0049 wrote before this release).
+   *
+   *  STAMPED AN HOUR AGO, not now. The upgrade assertion downstream is
+   *  `updatedAt` moved, and `Date.now()` here raced the `Date.now()` the seeder
+   *  itself writes: on a fast machine both land in the same millisecond and the
+   *  test fails for a reason that has nothing to do with the upgrade. The row
+   *  this stands in for was written by a PREVIOUS deployment, so a past
+   *  timestamp is also the more truthful fixture — the race was never
+   *  meaningful, only incidental. */
   async function seedLegacyBlocksBuiltIn(
     s: ChapterSetup,
     opts: { archived?: boolean } = {},
   ): Promise<Id<"campaigns">> {
-    const now = Date.now();
+    const now = Date.now() - 60 * 60 * 1000;
     return run(s.t, (ctx) =>
       ctx.db.insert("campaigns", {
         scope: "central",
