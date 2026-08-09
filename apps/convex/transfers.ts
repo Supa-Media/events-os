@@ -484,6 +484,19 @@ export function chapterInterScopeRows(
       // that DO settle this balance (that's their whole job), and manual
       // transfers (origin absent) keep counting exactly as before.
       tr.transferOrigin !== "payout_allocation" &&
+      // `balance_settlement` is excluded for the SAME reason, and leaving it in
+      // created a feedback loop that shifted real book value every morning.
+      //
+      // Those pairs move a chapter the cash its book says it is owed; they pay
+      // down no card-spend debt. Counted as settling legs, a $2,003.95
+      // central→chapter balance settlement read as "central has already paid
+      // the chapter $2,003.95", which flipped the cross-book net — so
+      // `runAutoSettlement` booked a $2,003.95 chapter→central pair to
+      // "correct" it. A balance settlement contributes ZERO to book value by
+      // design; an auto settlement is SIGNED. So each round moved $2,003.95 of
+      // book value that no real spending justified, and the next run would
+      // have done it again in the other direction, for ever.
+      tr.transferOrigin !== "balance_settlement" &&
       matchesMode(tr.externalId ?? null, sandboxMode),
   );
   const settledCentralToChapterRows = settlingRows.filter(
