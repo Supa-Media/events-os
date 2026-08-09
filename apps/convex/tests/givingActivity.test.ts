@@ -15,7 +15,10 @@ import type { Id } from "../_generated/dataModel";
  *    territory, newest first, capped, and carries no PII (no email/donor
  *    name field — only the self-provided public fields);
  *  - the admin surfaces (`listActivityAdmin` / `hideActivity`) are gated to
- *    central `giving.view`/`giving.manage`.
+ *    central `giving.view`/`giving.manage`;
+ *  - CONSENT: no row without an explicit `consent: true`, no publish without
+ *    it, and no public read of a row that lacks it — including the rows
+ *    written before consent was recorded at all (`consent` absent ⇒ NO).
  */
 
 /** Link a `people` row to the caller's user + seat them (requires seeded
@@ -92,6 +95,7 @@ describe("recordPendingActivity", () => {
     const s = await setupChapter(t);
     await t.mutation(internal.givingActivity.recordPendingActivity, {
       refKey: "give:cs_blank",
+      consent: true,
       scope: s.chapterId,
       kind: "gift",
       amountCents: 5000,
@@ -106,6 +110,7 @@ describe("recordPendingActivity", () => {
     const longName = "y".repeat(100);
     await t.mutation(internal.givingActivity.recordPendingActivity, {
       refKey: "give:cs_1",
+      consent: true,
       scope: s.chapterId,
       kind: "gift",
       amountCents: 5000,
@@ -127,6 +132,7 @@ describe("recordPendingActivity", () => {
     const s = await setupChapter(t);
     await t.mutation(internal.givingActivity.recordPendingActivity, {
       refKey: "give:cs_dup",
+      consent: true,
       scope: s.chapterId,
       kind: "gift",
       amountCents: 5000,
@@ -134,6 +140,7 @@ describe("recordPendingActivity", () => {
     });
     await t.mutation(internal.givingActivity.recordPendingActivity, {
       refKey: "give:cs_dup",
+      consent: true,
       scope: s.chapterId,
       kind: "gift",
       amountCents: 9999,
@@ -153,6 +160,115 @@ describe("recordPendingActivity", () => {
   });
 });
 
+// ── Consent: the wall is opt-in, and "not asked" means no ────────────────────
+
+describe("wall consent", () => {
+  test("recordPendingActivity writes nothing when consent is false", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await t.mutation(internal.givingActivity.recordPendingActivity, {
+      refKey: "give:cs_no_consent",
+      consent: false,
+      scope: s.chapterId,
+      kind: "gift",
+      amountCents: 5000,
+      displayName: "Sam K.",
+      message: "Let's make this happen.",
+    });
+    expect(await activityByRefKey(t, "give:cs_no_consent")).toBeNull();
+  });
+
+  test("a stored row records the consent that created it", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await t.mutation(internal.givingActivity.recordPendingActivity, {
+      refKey: "give:cs_consented",
+      consent: true,
+      scope: s.chapterId,
+      kind: "gift",
+      amountCents: 5000,
+      displayName: "Sam K.",
+    });
+    expect((await activityByRefKey(t, "give:cs_consented"))?.consent).toBe(true);
+  });
+
+  test("markActivityVisible refuses to publish a row with no recorded consent", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // A row as it existed BEFORE consent was recorded — `consent` absent
+    // entirely. This is every pre-existing wall entry.
+    await run(t, (ctx) =>
+      ctx.db.insert("givingActivity", {
+        scope: s.chapterId,
+        kind: "gift",
+        displayName: "Legacy Giver",
+        amountCents: 5000,
+        status: "pending",
+        refKey: "give:cs_legacy",
+        createdAt: Date.now(),
+      }),
+    );
+
+    await t.mutation(internal.givingActivity.markActivityVisible, {
+      refKey: "give:cs_legacy",
+      amountCents: 5000,
+    });
+
+    const row = await activityByRefKey(t, "give:cs_legacy");
+    // Still pending, never settled — it can never reach the wall.
+    expect(row?.status).toBe("pending");
+    expect(row?.settledAt).toBeUndefined();
+  });
+
+  test("getTerritoryActivity hides a visible row that carries no consent", async () => {
+    const s = await devDirectorSetup();
+    const chapterId = await makeTerritory(s, "legacy-city");
+    await run(s.t, async (ctx) => {
+      const now = Date.now();
+      // A pre-consent row someone had already flipped visible.
+      await ctx.db.insert("givingActivity", {
+        scope: chapterId,
+        kind: "gift",
+        displayName: "Legacy Giver",
+        amountCents: 500000,
+        status: "visible",
+        refKey: "give:cs_legacy_visible",
+        createdAt: now,
+        settledAt: now,
+      });
+      // An explicitly-refused row, belt and braces.
+      await ctx.db.insert("givingActivity", {
+        scope: chapterId,
+        kind: "gift",
+        displayName: "Refused Giver",
+        amountCents: 100,
+        status: "visible",
+        refKey: "give:cs_refused_visible",
+        createdAt: now + 1,
+        settledAt: now + 1,
+        consent: false,
+      });
+      // The one that actually agreed.
+      await ctx.db.insert("givingActivity", {
+        scope: chapterId,
+        kind: "gift",
+        displayName: "Consenting Giver",
+        amountCents: 2500,
+        status: "visible",
+        refKey: "give:cs_consented_visible",
+        createdAt: now + 2,
+        settledAt: now + 2,
+        consent: true,
+      });
+    });
+
+    const rows = await s.t.query(api.givingActivity.getTerritoryActivity, {
+      slug: "legacy-city",
+    });
+    expect(rows.map((r) => r.displayName)).toEqual(["Consenting Giver"]);
+  });
+});
+
 // ── markActivityVisible ───────────────────────────────────────────────────────
 
 describe("markActivityVisible", () => {
@@ -161,6 +277,7 @@ describe("markActivityVisible", () => {
     const s = await setupChapter(t);
     await t.mutation(internal.givingActivity.recordPendingActivity, {
       refKey: "pledge_abc",
+      consent: true,
       scope: s.chapterId,
       kind: "backer",
       amountCents: 5000, // the intended amount
@@ -183,6 +300,7 @@ describe("markActivityVisible", () => {
     const s = await setupChapter(t);
     await t.mutation(internal.givingActivity.recordPendingActivity, {
       refKey: "pledge_def",
+      consent: true,
       scope: s.chapterId,
       kind: "backer",
       amountCents: 5000,
@@ -235,6 +353,7 @@ describe("getTerritoryActivity", () => {
         message: "Let's make this happen.",
         status: "visible",
         refKey: "give:cs_visible_1",
+        consent: true,
         createdAt: now,
         settledAt: now,
       });
@@ -245,6 +364,7 @@ describe("getTerritoryActivity", () => {
         amountCents: 5000,
         status: "visible",
         refKey: "pledge_visible_2",
+        consent: true,
         createdAt: now + 1,
         settledAt: now + 1,
       });
@@ -255,6 +375,7 @@ describe("getTerritoryActivity", () => {
         amountCents: 1000,
         status: "pending",
         refKey: "give:cs_pending",
+        consent: true,
         createdAt: now + 2,
       });
       await ctx.db.insert("givingActivity", {
@@ -264,6 +385,7 @@ describe("getTerritoryActivity", () => {
         amountCents: 2000,
         status: "hidden",
         refKey: "give:cs_hidden",
+        consent: true,
         createdAt: now + 3,
         settledAt: now + 3,
       });
@@ -301,6 +423,7 @@ describe("getTerritoryActivity", () => {
           amountCents: 100 * i,
           status: "visible",
           refKey: `give:cs_${i}`,
+          consent: true,
           createdAt: Date.now() + i,
           settledAt: Date.now() + i,
         });
@@ -350,6 +473,7 @@ describe("admin moderation", () => {
         message: "buy my thing",
         status: "visible",
         refKey: "give:cs_spam",
+        consent: true,
         createdAt: Date.now(),
         settledAt: Date.now(),
       }),
@@ -402,6 +526,7 @@ describe("admin moderation", () => {
         amountCents: 100,
         status: "visible",
         refKey: "give:cs_delete_me",
+        consent: true,
         createdAt: Date.now(),
         settledAt: Date.now(),
       }),

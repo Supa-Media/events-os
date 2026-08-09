@@ -58,6 +58,12 @@ function trimmedCapped(
  * `shareOnWall`). NEVER shown publicly until `markActivityVisible` flips it
  * on settle — so an abandoned checkout never reaches the wall.
  *
+ * `consent` is the giver's EXPLICIT, recorded answer to "Show my name and
+ * gift amount on our public giving wall" — required, and anything but `true`
+ * inserts nothing at all. It is stored on the row so the publish and read
+ * paths can re-check it rather than inferring consent from the mere
+ * existence of a row.
+ *
  * SKIPS entirely (inserts nothing) if neither a display name nor a message
  * is present after trimming — a giver who opted in but left both blank has
  * nothing to show, so there's no reason to carry a silent row.
@@ -74,9 +80,14 @@ export const recordPendingActivity = internalMutation({
     amountCents: v.number(),
     displayName: v.optional(v.string()),
     message: v.optional(v.string()),
+    consent: v.boolean(),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
+    // No explicit yes, no row. The wall is opt-in, and the opt-in has to be
+    // carried all the way here rather than assumed by the caller.
+    if (args.consent !== true) return null;
+
     const displayName = trimmedCapped(args.displayName, DISPLAY_NAME_MAX_LEN);
     const message = trimmedCapped(args.message, MESSAGE_MAX_LEN);
     if (!displayName && !message) return null; // nothing to show — skip
@@ -96,6 +107,7 @@ export const recordPendingActivity = internalMutation({
       status: "pending",
       refKey: args.refKey,
       createdAt: Date.now(),
+      consent: true,
     });
     return null;
   },
@@ -119,6 +131,12 @@ export const recordPendingActivity = internalMutation({
  * Idempotent: only a row still `"pending"` is flipped — a redelivered webhook
  * finds the row already `"visible"` and no-ops, so a duplicate delivery can
  * never re-stamp `settledAt` or re-apply the amount a second time.
+ *
+ * NEVER publishes a row without `consent === true`. A row whose consent is
+ * missing or false — every row written before consent was recorded, and any
+ * row a future caller creates without asking — stays `"pending"` forever
+ * rather than reaching the public wall. Missing consent is a NO, not an
+ * unknown to be resolved optimistically.
  */
 export const markActivityVisible = internalMutation({
   args: {
@@ -133,6 +151,7 @@ export const markActivityVisible = internalMutation({
       .unique();
     if (!row) return null; // no wall entry for this refKey — safe no-op
     if (row.status !== "pending") return null; // already settled/hidden — idempotent no-op
+    if (row.consent !== true) return null; // no recorded consent — never publish
 
     await ctx.db.patch(row._id, {
       status: "visible",
@@ -162,6 +181,13 @@ const territoryActivityRowValidator = v.object({
  * or email. Resolves slug → chapter the same way `resolveTerritoryForCheckout`
  * does (a hidden/unknown slug renders an empty wall, not an error — a public
  * page should never leak whether a slug exists).
+ *
+ * Re-checks `consent === true` on the way out, on purpose. `markActivityVisible`
+ * already refuses to publish without it, so this filter should never be the
+ * thing that catches a row — which is exactly why it's here. This is the last
+ * gate before a donor's name and gift amount become public, and it costs one
+ * comparison to make "we showed someone who didn't agree to be shown"
+ * impossible rather than merely unlikely.
  */
 export const getTerritoryActivity = query({
   args: { slug: v.string() },
@@ -181,13 +207,15 @@ export const getTerritoryActivity = query({
       .order("desc")
       .take(TERRITORY_ACTIVITY_LIMIT);
 
-    return rows.map((r) => ({
-      kind: r.kind,
-      displayName: r.displayName ?? null,
-      amountCents: r.amountCents,
-      message: r.message ?? null,
-      at: r.settledAt ?? r.createdAt,
-    }));
+    return rows
+      .filter((r) => r.consent === true)
+      .map((r) => ({
+        kind: r.kind,
+        displayName: r.displayName ?? null,
+        amountCents: r.amountCents,
+        message: r.message ?? null,
+        at: r.settledAt ?? r.createdAt,
+      }));
   },
 });
 

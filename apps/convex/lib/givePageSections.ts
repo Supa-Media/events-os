@@ -40,19 +40,29 @@ import type {
 
 // ── Share-on-the-wall extras (F6) ────────────────────────────────────────────
 
-/** The optional "share this on the wall" fields shared by BOTH give forms
- *  (one-time + monthly): a self-provided public display name, an optional
- *  public message (capped 280 chars client-side via `maxlength`, and again
- *  server-side), and the opt-in checkbox. `givePageClient.ts`'s
- *  `wireAmountForm` only sends `publicName`/`message`/`shareOnWall` in the
- *  POST payload when the checkbox is checked — the backend only records a
- *  public activity-wall entry (F6, `givingActivity.recordPendingActivity`)
- *  when `shareOnWall` is set, so an unchecked box means nothing public is
- *  ever stored. */
+/** The optional public-giving-wall fields shared by BOTH give forms (one-time
+ *  + monthly): the opt-in checkbox, then a self-provided public display name
+ *  and an optional public message (capped 280 chars client-side via
+ *  `maxlength`, and again server-side). `givePageClient.ts`'s `wireAmountForm`
+ *  only sends `publicName`/`message`/`shareOnWall` in the POST payload when
+ *  the checkbox is checked — the backend only records a public activity-wall
+ *  entry (F6, `givingActivity.recordPendingActivity`) when `shareOnWall` is
+ *  set, so an unchecked box means nothing public is ever stored.
+ *
+ *  DEFAULT UNCHECKED, and the label says the two things that actually become
+ *  public — the name they type here AND the amount. The old copy ("Share this
+ *  on the wall") never mentioned the amount, so a giver could tick it without
+ *  realising their gift size would be on a page anyone can load. The consent
+ *  question now comes FIRST, above the fields it governs: you agree, then you
+ *  fill in what gets shown.
+ *
+ *  What is NEVER public, and the hint says so: their real name and email. The
+ *  wall only ever renders `displayName` (see `activityWallHtml`). */
 function giveFormExtrasHtml(prefix: string): string {
-  return `<div class="fld"><label for="${prefix}_public_name">Display name (optional)</label><input id="${prefix}_public_name" placeholder="e.g. Sam K. — shown on the wall if you share"></div>
-  <div class="fld"><label for="${prefix}_message">Leave a public message (optional)</label><textarea id="${prefix}_message" rows="2" maxlength="280" placeholder="Say a word of encouragement..."></textarea></div>
-  <label class="sharewall"><input type="checkbox" id="${prefix}_share"> Share this on the wall</label>`;
+  return `<label class="sharewall"><input type="checkbox" id="${prefix}_share"> Show my name and gift amount on our public giving wall</label>
+  <p class="sharewall-hint">Off by default. The name you enter below and the amount you give appear on this page, which anyone can see. Your real name and email address never do.</p>
+  <div class="fld"><label for="${prefix}_public_name">Display name (optional)</label><input id="${prefix}_public_name" placeholder="e.g. Sam K. — shown on the wall if you share"></div>
+  <div class="fld"><label for="${prefix}_message">Leave a public message (optional)</label><textarea id="${prefix}_message" rows="2" maxlength="280" placeholder="Say a word of encouragement..."></textarea></div>`;
 }
 
 // ── One-time give form ───────────────────────────────────────────────────────
@@ -62,11 +72,20 @@ function giveFormExtrasHtml(prefix: string): string {
  *  map page, a tab panel on the territory page) suits the surrounding layout.
  *  `slug` is NOT baked in here — the client script reads it off
  *  `window.__GIVE__.slug`, which is `null` on the map page (⇒ a central gift)
- *  and the territory's slug on a territory page. */
+ *  and the territory's slug on a territory page.
+ *
+ *  `showWallOptIn` (default `true`) controls whether the public-giving-wall
+ *  consent block renders. The MAP page passes `false`: the wall is
+ *  per-territory, so a central (no-slug) gift has no wall to appear on and
+ *  `startGiveDonationCheckout` discards `shareOnWall` for it outright. Showing
+ *  the box there asked people to agree to something that then silently never
+ *  happened — harmless in that nothing was published, but it is not honest to
+ *  ask a consent question whose answer you intend to throw away. */
 export function oneTimeGiveFormHtml(opts: {
   presetsCents: readonly number[];
   defaultIndex: number;
   submitLabel: string;
+  showWallOptIn?: boolean;
 }): string {
   const amtButtons = opts.presetsCents
     .map(
@@ -82,7 +101,7 @@ export function oneTimeGiveFormHtml(opts: {
   </div>
   <div class="fld"><label for="gc_onetime_name">Your name</label><input id="gc_onetime_name" autocomplete="name" placeholder="First and last name"></div>
   <div class="fld"><label for="gc_onetime_email">Email</label><input id="gc_onetime_email" type="email" autocomplete="email" placeholder="you@example.com"></div>
-  ${giveFormExtrasHtml("gc_onetime")}
+  ${opts.showWallOptIn === false ? "" : giveFormExtrasHtml("gc_onetime")}
   <button type="submit" class="submitbtn" id="gc_onetime_submit">${esc(opts.submitLabel)}</button>
   <div class="formerr" id="gc_onetime_err"></div>
   <div class="formok" id="gc_onetime_ok"></div>

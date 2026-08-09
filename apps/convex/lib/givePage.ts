@@ -519,6 +519,9 @@ export function renderGiveMapPage(
     presetsCents: ONE_TIME_PRESETS_CENTS,
     defaultIndex: ONE_TIME_DEFAULT_INDEX,
     submitLabel: "Give now",
+    // The map page's gift is central (no slug) and the wall is per-territory,
+    // so there is no wall to opt into here — don't ask a question we discard.
+    showWallOptIn: false,
   })}
   ${transparencyNoteHtml()}
 </section>`;

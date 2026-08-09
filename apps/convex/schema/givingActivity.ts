@@ -31,9 +31,9 @@ import { v } from "convex/values";
  *     `amountCents` from the SETTLED Stripe amount, never the amount the
  *     giver typed into the checkout form.
  *  3. `givingActivity.getTerritoryActivity` (public, no auth) reads only
- *     `"visible"` rows for a territory's chapter, newest first, capped —
- *     PII-FREE: `displayName` is a self-provided public name, NEVER the
- *     giver's real name or email.
+ *     `"visible"` rows for a territory's chapter that ALSO carry
+ *     `consent === true`, newest first, capped — PII-FREE: `displayName` is
+ *     a self-provided public name, NEVER the giver's real name or email.
  *  4. `hideActivity` (central `giving.manage`) is the moderation escape
  *     hatch — no auto-profanity filter yet (tracked as a follow-up), so a
  *     human can pull a row (`"hidden"`) without deleting the underlying gift/
@@ -91,6 +91,20 @@ export const givingActivity = defineTable({
   // Stamped by `markActivityVisible` on the pending→visible flip. Absent
   // while `pending`.
   settledAt: v.optional(v.number()),
+  // EXPLICIT, RECORDED CONSENT to appear on the public wall — the giver
+  // ticked "Show my name and gift amount on our public giving wall" in the
+  // give form. Optional in the validator ONLY so rows written before this
+  // field existed still read back; it is written on every new row, and
+  // ABSENT IS TREATED AS NO everywhere it is read (`markActivityVisible`
+  // refuses to publish a row without `consent === true`, and
+  // `getTerritoryActivity` filters on it again on the way out).
+  //
+  // That "absent means no" rule IS the retroactive opt-out: rather than a
+  // one-time sweep that could miss a row created between the sweep and the
+  // deploy, every pre-consent row is permanently ineligible for the wall.
+  // The owner's instruction was "assume no for everybody before now"; this
+  // encodes it in the read path so it cannot be undone by a later backfill.
+  consent: v.optional(v.boolean()),
 })
   // The public wall's read: a territory's chapter, visible rows only,
   // newest first.

@@ -126,6 +126,16 @@ export const startGiveDonationCheckout = action({
     body.set("metadata[giveDonation]", "1");
     body.set("metadata[giveDonorId]", String(prepared.donorId));
     body.set("metadata[giveScope]", String(scope));
+    // Whether this giver agreed to appear on the public giving wall, carried
+    // on the Stripe session so any settle-time consumer (the webhook fan-out,
+    // the ACH comms) can answer "should we mention the wall to them?" without
+    // re-reading our own tables. Always set — "0" is a recorded no, not a
+    // silence to be interpreted. A "central" (no-slug) gift has no territory
+    // wall to post to, so it is a "0" regardless of what the box said.
+    body.set(
+      "metadata[giveShowOnWall]",
+      args.shareOnWall && scope !== "central" ? "1" : "0",
+    );
     // Inline one-time price — no recurring interval (unlike the pledge flow).
     body.set("line_items[0][quantity]", "1");
     body.set("line_items[0][price_data][currency]", "usd");
@@ -168,6 +178,9 @@ export const startGiveDonationCheckout = action({
         amountCents: prepared.amountCents,
         ...(args.publicName ? { displayName: args.publicName } : {}),
         ...(args.message ? { message: args.message } : {}),
+        // The giver's explicit yes, carried through rather than inferred
+        // from the fact that we got this far.
+        consent: true,
       });
     }
 
