@@ -50,6 +50,18 @@ const WEBHOOK_PATH = "/stripe/webhook";
  * An entry ending in `.` is a PREFIX branch (`event.type.startsWith(...)` in
  * `http.ts`) and is satisfied by any enabled event under it. Everything else
  * is an exact match. Keep in sync with `http.ts` — the test enforces it.
+ *
+ * The three concrete entries UNDER a prefix are deliberate. A prefix branch
+ * accepts anything in its namespace, so `payout.created` alone would satisfy
+ * `payout.` while the thing the branch actually exists for could still never
+ * fire — the same "subscribed to the wrong subset" gap as the incident, one
+ * level down. So the events the handlers genuinely depend on are named:
+ *   - `payout.paid` — http.ts's own comment: "the one that matters" for the
+ *     reconciliation fast-path (created/updated/failed only refresh status).
+ *   - `financial_connections.account.refreshed_transactions` — the event that
+ *     drives the FC transaction sync (`stripeFinance.ts`).
+ *   - `financial_connections.account.disconnected` — its own explicit branch
+ *     in `stripeFinance.ts#onFcWebhookEvent`.
  */
 export const HANDLED_STRIPE_EVENTS: readonly string[] = [
   "checkout.session.completed",
@@ -61,7 +73,10 @@ export const HANDLED_STRIPE_EVENTS: readonly string[] = [
   "customer.subscription.updated",
   "customer.subscription.deleted",
   "payout.",
+  "payout.paid",
   "financial_connections.",
+  "financial_connections.account.refreshed_transactions",
+  "financial_connections.account.disconnected",
 ];
 
 /**
@@ -102,6 +117,11 @@ export const checkCoverage = internalAction({
   args: {},
   returns: v.object({
     configured: v.boolean(),
+    // True when we could not actually ask Stripe. Without this, a failed
+    // lookup returns `missing: []`, which reads identically to a clean bill
+    // of health — the exact "silence means fine" confusion this module exists
+    // to remove.
+    checkFailed: v.boolean(),
     endpointsFound: v.number(),
     missing: v.array(v.string()),
     covered: v.array(v.string()),
@@ -112,6 +132,7 @@ export const checkCoverage = internalAction({
       // Local/dev without payments wired — not a finding.
       return {
         configured: false,
+        checkFailed: false,
         endpointsFound: 0,
         missing: [],
         covered: [],
@@ -128,6 +149,7 @@ export const checkCoverage = internalAction({
       );
       return {
         configured: true,
+        checkFailed: true,
         endpointsFound: 0,
         missing: [],
         covered: [],
@@ -169,6 +191,7 @@ export const checkCoverage = internalAction({
 
     return {
       configured: true,
+      checkFailed: false,
       endpointsFound: ours.length,
       missing,
       covered,
