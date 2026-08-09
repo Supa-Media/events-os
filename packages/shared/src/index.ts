@@ -2167,3 +2167,6 @@ export * from "./reconcileFilters";
 
 // ── Guest teams: door-assigned attendee teams (palette + balancing rule) ─────
 export * from "./guestTeams";
+
+// ── What each payment rail costs: the schedule, the gross-up, the ACH nudge ──
+export * from "./processorFees";

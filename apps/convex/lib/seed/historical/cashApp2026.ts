@@ -108,6 +108,7 @@
  * Data only — no Convex imports — so the vitest unit suite can assert the
  * arithmetic without a database. The runner is `cashAppBackfill.ts`.
  */
+import { defaultFeeRate, feeOnCents } from "@events-os/shared";
 
 /** The three sweeps, each the settlement of the payments before it. */
 export const COHORT_KEYS = ["oct2025", "dec2025_jan2026", "feb_may2026"] as const;
@@ -527,9 +528,21 @@ export function withdrawalWindow(c: Cohort): { fromMs: number; toMs: number } {
  * off two of the owner's payment-detail screens ($50.00 → $1.45, $100.00 →
  * $2.75), which have a fixed component the headline rate does not mention. See
  * this file's header for the two-equation solve.
+ *
+ * THE RATE NOW LIVES IN THE FEE SCHEDULE (`@events-os/shared`'s
+ * `DEFAULT_FEE_SCHEDULE`), which is where every other consumer reads it from —
+ * this module was the only place it was ever written down, and a rate in one
+ * file that three features need is how the same number ends up retyped
+ * differently in each.
+ *
+ * It reads the PUBLISHED default, never `processorFeeSchedule`'s stored
+ * override. This module's job is to reproduce three 2026 withdrawals to the
+ * cent; a treasurer re-pricing the rail for future giving must not retroactively
+ * change what already happened.
  */
-export const FEE_RATE = 0.026;
-export const FEE_FIXED_CENTS = 15;
+const CASH_APP_RATE = defaultFeeRate("cash_app", "wallet")!;
+export const FEE_RATE = CASH_APP_RATE.percentBps / 10_000;
+export const FEE_FIXED_CENTS = CASH_APP_RATE.fixedCents;
 
 /**
  * What Cash App took out of ONE payment.
@@ -543,10 +556,10 @@ export const FEE_FIXED_CENTS = 15;
  * Rounded per payment, which matters: 40 × round(2000 × 0.026) is 2080, while
  * round(40 × 2000 × 0.026) is also 2080 here, but the two diverge on amounts
  * that don't round cleanly. The processor charges per payment, so the rounding
- * happens per payment.
+ * happens per payment. (`feeOnCents` rounds per call for exactly this reason.)
  */
 export function paymentFeeCents(amountCents: number): number {
-  return Math.round(amountCents * FEE_RATE) + FEE_FIXED_CENTS;
+  return feeOnCents(amountCents, CASH_APP_RATE);
 }
 
 /** Every payment in a cohort, in the one shape the fee cares about. */
