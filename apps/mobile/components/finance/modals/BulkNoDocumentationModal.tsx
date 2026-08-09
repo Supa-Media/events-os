@@ -27,7 +27,7 @@ import {
   type ReceiptExceptionReason,
 } from "@events-os/shared";
 import { api } from "@events-os/convex/_generated/api";
-import { Button, Icon, TextField } from "../../ui";
+import { Button, Icon, Radio, RadioGroup, TextField } from "../../ui";
 import { colors } from "../../../lib/theme";
 
 export function BulkNoDocumentationModal({
@@ -83,15 +83,18 @@ export function BulkNoDocumentationModal({
               <Text className="mb-2 text-2xs font-semibold uppercase tracking-wide text-muted">
                 Why is there no receipt?
               </Text>
-              <View className="mb-4 gap-2">
+              <RadioGroup
+                accessibilityLabel="Why is there no receipt?"
+                className="mb-4 gap-2"
+              >
                 {RECEIPT_EXCEPTION_REASONS.map((r) => {
                   const selected = reason === r;
                   return (
-                    <Pressable
+                    <Radio
                       key={r}
-                      onPress={() => setReason(r)}
-                      accessibilityRole="radio"
-                      accessibilityState={{ selected }}
+                      checked={selected}
+                      onSelect={() => setReason(r)}
+                      accessibilityLabel={RECEIPT_EXCEPTION_REASON_LABELS[r]}
                       className={`rounded-lg border px-3 py-2.5 active:opacity-70 ${
                         selected
                           ? "border-accent bg-accent/5"
@@ -104,10 +107,10 @@ export function BulkNoDocumentationModal({
                       <Text className="mt-0.5 text-2xs text-muted">
                         {RECEIPT_EXCEPTION_REASON_HINTS[r]}
                       </Text>
-                    </Pressable>
+                    </Radio>
                   );
                 })}
-              </View>
+              </RadioGroup>
 
               <Text className="mb-2 text-2xs font-semibold uppercase tracking-wide text-muted">
                 What were they for?

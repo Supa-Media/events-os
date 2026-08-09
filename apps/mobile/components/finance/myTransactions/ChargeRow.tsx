@@ -20,7 +20,7 @@
 import { Pressable, Text, View } from "react-native";
 import { displayMerchantName } from "@events-os/shared";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { Badge, Button, Cell, Icon, Row } from "../../ui";
+import { Badge, Button, Cell, Icon, Radio, Row } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { SignedMoney } from "../dashboard/parts";
 import { ReceiptCell } from "../reconcile/ReconcileList";
@@ -132,7 +132,11 @@ export function ChargeRow({
 }
 
 /** The two-state list filter. Deliberately not a `Select`: there are two
- *  choices and one of them is what the reminder email sent you here for. */
+ *  choices and one of them is what the reminder email sent you here for.
+ *
+ *  Renders a `Radio`, so it MUST be used inside a `RadioGroup` — the pair of
+ *  chips is one question ("which charges?"), and the group is what makes it
+ *  one tab stop with arrow keys between the answers. */
 export function FilterChip({
   label,
   active,
@@ -143,10 +147,10 @@ export function FilterChip({
   onPress: () => void;
 }) {
   return (
-    <Pressable
-      onPress={onPress}
-      accessibilityRole="radio"
-      accessibilityState={{ selected: active }}
+    <Radio
+      checked={active}
+      onSelect={onPress}
+      accessibilityLabel={label}
       className={`rounded-full border px-3 py-1 active:opacity-70 ${
         active ? "border-accent bg-accent/10" : "border-border bg-sunken"
       }`}
@@ -156,6 +160,6 @@ export function FilterChip({
       >
         {label}
       </Text>
-    </Pressable>
+    </Radio>
   );
 }

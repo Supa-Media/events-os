@@ -46,6 +46,7 @@ import {
   HeaderCell,
   Icon,
   Narrow,
+  RadioGroup,
   Screen,
   Table,
   TableHeader,
@@ -156,16 +157,22 @@ export default function MyTransactionsScreen() {
 
         {transactions.length > 0 ? (
           <View className="mb-4 flex-row items-center gap-2">
-            <FilterChip
-              label={`Needs you${actionableCount > 0 ? ` (${actionableCount})` : ""}`}
-              active={filter === "uncoded"}
-              onPress={() => setFilter("uncoded")}
-            />
-            <FilterChip
-              label={`All (${rows.length})`}
-              active={filter === "all"}
-              onPress={() => setFilter("all")}
-            />
+            <RadioGroup
+              accessibilityLabel="Which charges to show"
+              horizontal
+              className="flex-row items-center gap-2"
+            >
+              <FilterChip
+                label={`Needs you${actionableCount > 0 ? ` (${actionableCount})` : ""}`}
+                active={filter === "uncoded"}
+                onPress={() => setFilter("uncoded")}
+              />
+              <FilterChip
+                label={`All (${rows.length})`}
+                active={filter === "all"}
+                onPress={() => setFilter("all")}
+              />
+            </RadioGroup>
             {actionableCount === 0 ? (
               <View className="flex-row items-center gap-1.5">
                 <Icon name="check-circle" size={13} color={colors.success} />
