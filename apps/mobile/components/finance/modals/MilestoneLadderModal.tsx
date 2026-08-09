@@ -3,8 +3,7 @@
  * (`docs/plans/giving-platform.md` §3): "at N backers, the chapter commits to
  * X." Reachable from the central finance desk (`CentralView`) for central
  * finance-manager rank; `saveMilestones` re-checks the gate server-side
- * regardless of whether the affordance is shown, mirroring
- * `BackerCountModal`.
+ * regardless of whether the affordance is shown.
  *
  * Replace-all save: this modal always sends the WHOLE edited list to
  * `saveMilestones` (never a per-row patch) — a ladder tops out at

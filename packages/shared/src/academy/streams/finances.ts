@@ -13,9 +13,15 @@
  *
  * F-6 touch-up (giving-platform PRD §8): `finance-tiers-and-skim` no longer
  * lets "backer count" stand as an unexplained given — it now teaches WHERE
- * the number comes from (derived live from active pledges on the Giving
- * page, a manual override surviving only as a Givebutter-migration
- * fallback), with a new quiz question checking that reading. The
+ * the number comes from (derived live from ACTIVE pledges on the Giving
+ * page, with no hand-entry path at all: the manual setter was deleted after
+ * a typed-in 2 outlived New York's real 0 on a public page), plus why a
+ * `past_due` pledge does NOT count. The "what does the City Launch Fund pay
+ * for?" question was retired from that quiz to make room — the same prompt is
+ * asked in `finance-launch-grants-and-transfers` (with its own options and
+ * explanation), which is where the fund is actually taught — so the quiz stays
+ * at the 5-question cap
+ * `apps/convex/tests/academy.test.ts` enforces. The
  * `finance-stewardship` quiz's "future Giving page" aside was also
  * corrected — the Giving page is shipped, not future. Every other Finances
  * teaching in this file is unchanged; see `streams/development.ts` for the
@@ -1600,7 +1606,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "tip",
-        text: "**Where the backer number itself comes from:** it's reported straight from the Giving page now, not typed in by hand. Every ACTIVE pledge at or above the $50 floor recomputes the count automatically the moment a backer subscribes, misses a payment, or cancels (see the Development stream's backer-model course for the full lifecycle). A manual override still exists, but only as a fallback during the Givebutter migration window — once a chapter's pledges are current, nobody hand-types this number again.",
+        text: "**Where the backer number itself comes from:** it's reported straight from the Giving page, and there is no way to type it in. Every ACTIVE pledge at or above the $50 floor recomputes the count automatically the moment a backer subscribes, misses a payment, is paused, or cancels (see the Development stream's backer-model course for the full lifecycle). The old hand-entry escape hatch was REMOVED — a hand-set number and a derived one quietly disagreed for three weeks on a public page, so the count now has exactly one author: the pledges themselves.",
       },
       {
         kind: "reveal",
@@ -1636,18 +1642,6 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "The skim is flat 15% for every chapter, modeled as an actual transfer, not just a number on a report.",
       },
       {
-        prompt: "What does the City Launch Fund pay for?",
-        options: [
-          "Chapter operating expenses",
-          "A new city's one-time launch cost — equipment and the training trip",
-          "Reimbursements",
-          "Backer refunds",
-        ],
-        answerIndex: 1,
-        explanation:
-          "The fund exists specifically to seed the NEXT city — every chapter's skim is an investment in the network growing.",
-      },
-      {
         prompt: "Is the monthly 15% skim transfer automated today?",
         options: [
           "Yes, it moves automatically every month with no human involved",
@@ -1663,13 +1657,26 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt: "Where does a chapter's backer count actually come from today?",
         options: [
           "The Treasurer types it in by hand every month",
-          "It's recomputed automatically from active $50+ pledges on the Giving page — a manual override only survives as a Givebutter-migration fallback",
+          "It's recomputed automatically from active $50+ pledges on the Giving page — there is no hand-entry path at all",
           "Central emails it to the chapter once a quarter",
           "It's calculated once a year during budgeting season",
         ],
         answerIndex: 1,
         explanation:
-          "The count is derived, live, from real pledge activity — the old manual-entry seam only sticks around as a fallback while chapters finish moving off Givebutter.",
+          "The count is derived, live, from real pledge activity. Nobody can set it by hand — the old manual-entry seam was removed after a typed-in number contradicted the real one on a public page.",
+      },
+      {
+        prompt:
+          "A donor's imported recurring gift sits in \"past due\" because their card couldn't be ported over. Does it count toward the chapter's backer number?",
+        options: [
+          "Yes — they committed, so they're a backer",
+          "No — the count only includes ACTIVE pledges, because it's a promise that money is arriving",
+          "Yes, but only until the end of the migration window",
+          "Only if their pledge is $100/month or more",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Past due means a payment FAILED — no money is arriving. Counting it would tell the public a city is funded when it isn't, and could unlock a tier commitment on money that isn't coming. It counts again the moment that donor re-signs and the pledge goes active.",
       },
     ],
   },

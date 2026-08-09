@@ -24,7 +24,7 @@ Seams already waiting for this build:
 
 | Seam | Where | What it says |
 |---|---|---|
-| Manual backer count | `chapters.backerCount` (`apps/convex/schema/chapters.ts`) | "MANUAL entry until the Giving page (F-6) exists to report it directly" |
+| ~~Manual backer count~~ (closed) | `chapters.backerCount` (`apps/convex/schema/chapters.ts`) | Was "MANUAL entry until the Giving page (F-6) exists to report it directly". Now DERIVED, single-writer — the manual setter is deleted |
 | Affordability model | `chapterAffordability()` (`packages/shared/src/finance.ts`) | backers × $50 → tier → floor → 15% skim → discretionary |
 | Skim + launch grants | `apps/convex/transfers.ts` | chapter→central City Launch Fund transfers, already modeled |
 | Development seats | `packages/shared/src/seats.ts` | `development_director`, `fundraising_associate`, `partnership_associate` — all `capabilities: []` today |
@@ -168,11 +168,20 @@ extract upstream then.
 ### Backer count becomes derived (retiring the manual number)
 
 `chapters.backerCount` is recomputed from active pledges (count where
-`status = "active"` and scope = chapter) on every pledge transition —
-`setBackerCount` and `BackerCountModal` retire once parity is proven (keep
-during migration as an override with an audit note, then remove). The
-affordability header, skim math, and transfer automation don't change at all;
-they just stop being fed by hand.
+`status = "active"` and scope = chapter, `amountCents >= BACKER_UNIT_CENTS`) on
+every pledge WRITE — insert, status/amount transition, donor repoint, delete.
+The affordability header, skim math, and transfer automation don't change at
+all; they just stop being fed by hand.
+
+**Done, and the coexistence plan was a mistake.** `setBackerCount` and
+`BackerCountModal` are DELETED, not retired-on-parity. Keeping a hand-set
+override alongside the derive is exactly what drifted: a 2 typed onto New York
+(2026-07-17) outlived three imported `past_due` pledges (2026-07-19) that derive
+to 0, and the import path never recomputed, so nothing ever corrected it — the
+public give page advertised a funded city for three weeks. `past_due` does NOT
+count (see the reasoning comment on the predicate in `givingPledges.ts`), and
+`givingPledges.recomputeAllBackerCounts` is the standing dry-run-first repair
+tool for any future drift.
 
 ### Givebutter migration
 
@@ -331,7 +340,8 @@ money rules (derived backer count, configurable ladder), and a new seat power
   `academyPaths.ts` already lists `comingSoon: ["Fundraising & donor ops"]`
   for `development_director` — this is that content.
 - Finance stream touch-ups: the affordability lesson's "manual backer count"
-  teaching becomes "reported by the Giving page."
+  teaching becomes "reported by the Giving page — there is no hand-entry path,"
+  plus why a `past_due` pledge doesn't count.
 - Each build phase updates the Academy in the same PR, per house rule.
 
 ## 9. Phasing

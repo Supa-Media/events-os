@@ -55,6 +55,21 @@ async function expectConvexError(p: Promise<unknown>): Promise<void> {
   await expect(p).rejects.toBeInstanceOf(ConvexError);
 }
 
+/**
+ * Park a backer count on the chapter for a LADDER test.
+ *
+ * These tests are about which tier label a given headcount resolves to, not
+ * about how the headcount is produced — and the numbers they need (25, 10, 5)
+ * would take that many seeded pledges to derive honestly. `backerCount` is
+ * derived in production (`givingPledges.recomputeChapterBackerCount` is its one
+ * writer; the old `finances.setBackerCount` mutation is gone), so the seam is a
+ * direct db patch rather than a mutation. Transition coverage lives in
+ * `backerCountDerived.test.ts`.
+ */
+async function parkBackerCount(s: ChapterSetup, backerCount: number): Promise<void> {
+  await run(s.t, (ctx) => ctx.db.patch(s.chapterId, { backerCount }));
+}
+
 const VALID_ROWS = [
   { minBackers: 20, label: "WWS", commitment: "Worship With Strangers, monthly" },
   { minBackers: 30, label: "+Eden", commitment: "Eden" },
@@ -317,7 +332,7 @@ describe("finances.chapterAffordability reflects the configured ladder", () => {
     const s = await setupChapter(t);
     const personId = await seedSelfPerson(s);
     await grantChapterManager(s, personId);
-    await s.as.mutation(api.finances.setBackerCount, { backerCount: 25 });
+    await parkBackerCount(s, 25);
 
     const result = await s.as.query(api.finances.chapterAffordability, {});
     expect(result.tierLabel).toBe(chapterAffordability(25, 1).tierLabel);
@@ -338,7 +353,7 @@ describe("finances.chapterAffordability reflects the configured ladder", () => {
         { minBackers: 15, label: "Kindle", commitment: "Monthly gathering" },
       ],
     });
-    await s.as.mutation(api.finances.setBackerCount, { backerCount: 10 });
+    await parkBackerCount(s, 10);
 
     const result = await s.as.query(api.finances.chapterAffordability, {});
     expect(result.tierLabel).toBe("Spark"); // 10 meets the 5-rung, not the 15-rung
@@ -356,7 +371,7 @@ describe("finances.chapterAffordability reflects the configured ladder", () => {
     await s.as.mutation(api.backerMilestones.saveMilestones, {
       rows: [{ minBackers: 100, label: "Big", commitment: "Only at 100" }],
     });
-    await s.as.mutation(api.finances.setBackerCount, { backerCount: 5 });
+    await parkBackerCount(s, 5);
 
     const result = await s.as.query(api.finances.chapterAffordability, {});
     expect(result.tierLabel).toBe("Pre-tier");

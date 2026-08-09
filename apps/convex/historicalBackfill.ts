@@ -94,7 +94,10 @@ import {
   classifyAttendanceRows,
   type AttendanceRow,
 } from "./eventAttendanceImport";
-import { PLEDGE_FLOOR_CENTS } from "./givingPledges";
+import {
+  PLEDGE_FLOOR_CENTS,
+  recomputeChapterBackerCount,
+} from "./givingPledges";
 import {
   NEW_YORK_CHAPTER_SLUG,
   ATTENDANCE_DATASETS,
@@ -680,6 +683,14 @@ export const runGivingBackfill = triggerInternalMutation({
       } else {
         await handleContactRow(ctx, state, row, counts);
       }
+    }
+
+    // Backfilled recurrences are INSERTED as `past_due` and never transition,
+    // so the chapter's derived backer count would otherwise never be revisited
+    // — the exact gap that let New York's hand-set 2 outlive its real 0. One
+    // recompute per page (the page is single-scoped), writes only.
+    if (state.write && counts.pledges > 0) {
+      await recomputeChapterBackerCount(ctx, state.scope);
     }
 
     const next = start + GIVING_PAGE_SIZE;

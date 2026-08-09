@@ -20,15 +20,22 @@ export const chapters = defineTable({
   // `isActive` gate is applied.
   isActive: v.optional(v.boolean()),
   createdAt: v.optional(v.number()),
-  // WP-4.3 affordability header: the chapter's backer headcount. Originally
-  // MANUAL entry (`finances.setBackerCount`); F-6 P2 makes it DERIVED —
+  // The chapter's backer headcount — DERIVED, with exactly one writer:
   // `givingPledges.recomputeChapterBackerCount` rewrites it from the count of
-  // active pledges (≥ `BACKER_UNIT_CENTS`) on every pledge transition. The
-  // manual setter stays as a cutover override and retires once Givebutter
-  // migration completes (see `finances.setBackerCount`). Absent/0 = not yet
-  // set — the affordability header shows a gentle prompt instead of a broken row.
+  // `active` pledges at/above `BACKER_UNIT_CENTS` on every pledge write
+  // (insert, status/amount transition, donor repoint, delete). Nobody sets this
+  // by hand: the old `finances.setBackerCount` was deleted after a hand-set 2
+  // on New York outlived the imported `past_due` pledges that derive to 0 (see
+  // `givingPledges.recomputeAllBackerCounts`, the standing repair tool).
+  // Absent/0 = no active backers yet, which is a truthful answer, not a gap.
   backerCount: v.optional(v.number()),
   backerCountUpdatedAt: v.optional(v.number()),
+  // LEGACY, write-only-as-`undefined`. This recorded WHO hand-set the count via
+  // the deleted manual setter; nothing writes a user id here any more, and the
+  // recompute CLEARS it so no stale "edited by" attribution survives. It stays
+  // in the schema only because live chapter docs still carry it and Convex
+  // rejects a deploy that drops a field a stored document has. Drop it in a
+  // follow-up once no chapter carries it.
   backerCountUpdatedBy: v.optional(v.id("users")),
 })
   .index("by_slug", ["slug"])

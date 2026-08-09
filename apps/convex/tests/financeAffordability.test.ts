@@ -21,8 +21,15 @@ import type { Id } from "../_generated/dataModel";
  *  - Pure math (tier boundaries, teammate scaling, negative discretionary)
  *    against `chapterAffordability`/`affordabilityTierLabel` in
  *    `@events-os/shared` — no Convex needed.
- *  - The `finances.chapterAffordability` query + `finances.setBackerCount`
- *    mutation's authz (chapter finance-manager rank to edit).
+ *  - The `finances.chapterAffordability` query: its inputs (backer count,
+ *    teammate count) and its finance-role read gate.
+ *
+ * There is no longer a mutation here to test. `finances.setBackerCount` — the
+ * hand-set backer count and the second writer that let New York drift — was
+ * deleted; `chapters.backerCount` is derived from active $50+ pledges by
+ * `givingPledges.recomputeChapterBackerCount`, and every transition is covered
+ * in `backerCountDerived.test.ts`. The query's old `canEdit` flag went with the
+ * mutation: there is no edit affordance left to gate.
  */
 
 describe("chapterAffordability (pure math, packages/shared)", () => {
@@ -159,6 +166,18 @@ async function expectConvexError(p: Promise<unknown>): Promise<void> {
   await expect(p).rejects.toBeInstanceOf(ConvexError);
 }
 
+/**
+ * Park a derived backer count on the chapter. This suite is about the
+ * affordability FORMULA reading whatever count is stored, not about how the
+ * count gets there — deriving 30 backers would mean seeding 30 active pledges.
+ * The count has exactly one production writer
+ * (`givingPledges.recomputeChapterBackerCount`), so the test seam is the db,
+ * not a mutation.
+ */
+async function parkBackerCount(s: ChapterSetup, backerCount: number): Promise<void> {
+  await run(s.t, (ctx) => ctx.db.patch(s.chapterId, { backerCount }));
+}
+
 describe("finances.chapterAffordability (query)", () => {
   test("unset backer count reads as 0, with 0 teammates on an empty roster", async () => {
     const t = newT();
@@ -170,7 +189,6 @@ describe("finances.chapterAffordability (query)", () => {
     expect(result.backerCount).toBe(0);
     // The caller themself is a team member (isTeamMember: true), so count is 1.
     expect(result.teammateCount).toBe(1);
-    expect(result.canEdit).toBe(false); // viewer, not manager
   });
 
   test("teammateCount excludes placeholders and sample persons, includes user-linked rows", async () => {
@@ -225,7 +243,7 @@ describe("finances.chapterAffordability (query)", () => {
     const s = await setupChapter(t);
     const personId = await seedSelfPerson(s);
     await grantManager(s, personId);
-    await s.as.mutation(api.finances.setBackerCount, { backerCount: 30 });
+    await parkBackerCount(s, 30);
 
     const result = await s.as.query(api.finances.chapterAffordability, {});
     const expected = chapterAffordability(30, 1); // 1 teammate: the caller
@@ -235,7 +253,6 @@ describe("finances.chapterAffordability (query)", () => {
     expect(result.floorCents).toBe(expected.floorCents);
     expect(result.skimCents).toBe(expected.skimCents);
     expect(result.discretionaryCents).toBe(expected.discretionaryCents);
-    expect(result.canEdit).toBe(true); // manager
   });
 
   test("no finance role at all fails even the viewer gate", async () => {
@@ -243,57 +260,5 @@ describe("finances.chapterAffordability (query)", () => {
     const s = await setupChapter(t);
     await seedSelfPerson(s);
     await expectConvexError(s.as.query(api.finances.chapterAffordability, {}));
-  });
-});
-
-describe("finances.setBackerCount (mutation authz)", () => {
-  test("a plain member (no finance role) is FORBIDDEN", async () => {
-    const t = newT();
-    const s = await setupChapter(t);
-    await seedSelfPerson(s);
-    await expectConvexError(
-      s.as.mutation(api.finances.setBackerCount, { backerCount: 25 }),
-    );
-  });
-
-  test("a viewer-only grant is FORBIDDEN (needs manager rank)", async () => {
-    const t = newT();
-    const s = await setupChapter(t);
-    const personId = await seedSelfPerson(s);
-    await grantViewer(s, personId);
-    await expectConvexError(
-      s.as.mutation(api.finances.setBackerCount, { backerCount: 25 }),
-    );
-  });
-
-  test("a chapter finance-manager (Treasurer/Chapter Director rank) may set it", async () => {
-    const t = newT();
-    const s = await setupChapter(t);
-    const personId = await seedSelfPerson(s);
-    await grantManager(s, personId);
-
-    const result = await s.as.mutation(api.finances.setBackerCount, {
-      backerCount: 42,
-    });
-    expect(result.backerCount).toBe(42);
-
-    const chapter = await run(s.t, (ctx) => ctx.db.get(s.chapterId));
-    expect(chapter?.backerCount).toBe(42);
-    expect(chapter?.backerCountUpdatedAt).toBeTypeOf("number");
-    expect(chapter?.backerCountUpdatedBy).toBe(s.userId);
-  });
-
-  test("rejects a negative or non-integer backer count", async () => {
-    const t = newT();
-    const s = await setupChapter(t);
-    const personId = await seedSelfPerson(s);
-    await grantManager(s, personId);
-
-    await expectConvexError(
-      s.as.mutation(api.finances.setBackerCount, { backerCount: -1 }),
-    );
-    await expectConvexError(
-      s.as.mutation(api.finances.setBackerCount, { backerCount: 2.5 }),
-    );
   });
 });
