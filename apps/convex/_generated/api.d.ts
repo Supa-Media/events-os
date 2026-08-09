@@ -175,6 +175,7 @@ import type * as lib_reimbursementTxnFields from "../lib/reimbursementTxnFields.
 import type * as lib_resend from "../lib/resend.js";
 import type * as lib_rsvpPeople from "../lib/rsvpPeople.js";
 import type * as lib_salesCatalog from "../lib/salesCatalog.js";
+import type * as lib_salesItems from "../lib/salesItems.js";
 import type * as lib_seatStructure from "../lib/seatStructure.js";
 import type * as lib_seats from "../lib/seats.js";
 import type * as lib_seed_fieldDay from "../lib/seed/fieldDay.js";
@@ -182,6 +183,7 @@ import type * as lib_seed_finance from "../lib/seed/finance.js";
 import type * as lib_seed_helpers from "../lib/seed/helpers.js";
 import type * as lib_seed_historical_cashApp2026 from "../lib/seed/historical/cashApp2026.js";
 import type * as lib_seed_historical_eden from "../lib/seed/historical/eden.js";
+import type * as lib_seed_historical_fieldDayBundled2026 from "../lib/seed/historical/fieldDayBundled2026.js";
 import type * as lib_seed_historical_fieldDayTickets from "../lib/seed/historical/fieldDayTickets.js";
 import type * as lib_seed_historical_gear2024Orders from "../lib/seed/historical/gear2024Orders.js";
 import type * as lib_seed_historical_genesis from "../lib/seed/historical/genesis.js";
@@ -559,6 +561,7 @@ declare const fullApi: ApiFromModules<{
   "lib/resend": typeof lib_resend;
   "lib/rsvpPeople": typeof lib_rsvpPeople;
   "lib/salesCatalog": typeof lib_salesCatalog;
+  "lib/salesItems": typeof lib_salesItems;
   "lib/seatStructure": typeof lib_seatStructure;
   "lib/seats": typeof lib_seats;
   "lib/seed/fieldDay": typeof lib_seed_fieldDay;
@@ -566,6 +569,7 @@ declare const fullApi: ApiFromModules<{
   "lib/seed/helpers": typeof lib_seed_helpers;
   "lib/seed/historical/cashApp2026": typeof lib_seed_historical_cashApp2026;
   "lib/seed/historical/eden": typeof lib_seed_historical_eden;
+  "lib/seed/historical/fieldDayBundled2026": typeof lib_seed_historical_fieldDayBundled2026;
   "lib/seed/historical/fieldDayTickets": typeof lib_seed_historical_fieldDayTickets;
   "lib/seed/historical/gear2024Orders": typeof lib_seed_historical_gear2024Orders;
   "lib/seed/historical/genesis": typeof lib_seed_historical_genesis;

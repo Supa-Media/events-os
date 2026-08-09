@@ -48,8 +48,7 @@ import { AddResponsibilityModal } from "../../../components/team/AddResponsibili
 import { CourseBadgeChips } from "../../../components/academy/CourseBadgeChips";
 import { DuplicatesSheet } from "../../../components/people/DuplicatesSheet";
 import {
-  PersonaDropdown,
-  PersonaCountsRow,
+  PersonaRail,
   ServicesDropdown,
   MoreFiltersDropdown,
   ActiveFilterPills,
@@ -377,14 +376,13 @@ export default function PeopleScreen() {
   // Active-filter pills (standard CRM pattern): one removable chip per
   // non-default filter, so "what's currently narrowing this list" is legible
   // at a glance instead of scattered across four controls.
+  // Persona is deliberately NOT a chip here: the rail above already shows
+  // which rung is selected, in the accent treatment every other selected
+  // filter in the app uses. A chip as well would put persona on screen twice
+  // — the duplication this redesign exists to remove. Services/status/givers
+  // DO get chips: their controls are dropdowns that show nothing about the
+  // current selection once closed.
   const filterChips: ActiveFilterChip[] = [];
-  if (persona !== "all") {
-    filterChips.push({
-      key: "persona",
-      label: persona.charAt(0).toUpperCase() + persona.slice(1),
-      onRemove: () => setPersona("all"),
-    });
-  }
   for (const sid of serviceIds) {
     filterChips.push({
       key: `service:${sid}`,
@@ -424,9 +422,30 @@ export default function PeopleScreen() {
   return (
     <Screen maxWidth={FULL_WIDTH}>
       <Narrow>
-      {/* Title row */}
+      {/* Header row 1 — what you're looking at, and what you can do to the
+          roster as a whole. The persona rail rides HERE rather than on its
+          own band: it's the page's primary navigation axis, it reads as a
+          breakdown of the title beside it, and giving it a dedicated row was
+          half of why this header ran to four stacked rows of chrome before
+          the first person appeared. */}
       <View style={styles.titleRow}>
-        <Text className="font-display text-2xl text-ink">People</Text>
+        {/* The min width is load-bearing, and it's sized to the WHOLE rail
+            (~600px at production count widths — "All 555", "Contacts 224"),
+            not to some smaller floor. The rail is the only flexible thing in
+            this row, so without one a narrow window squeezes it to a sliver
+            ("Al…") while the four fixed-width actions keep every pixel; with
+            a floor that's merely generous, mid-size windows clip it partway
+            through a pill, hard against "Import", with nothing to say it
+            scrolls. Sized to the full rail plus `flexWrap` on the row, the
+            outcome is binary and always legible: either all six rungs fit
+            beside the title (two-row header), or this group takes a line of
+            its own (three), and only a genuinely tiny window scrolls it. */}
+        <View className="min-w-[600px] flex-1 flex-row items-center gap-4">
+          <Text className="font-display text-2xl text-ink">People</Text>
+          <View className="min-w-0 flex-1">
+            <PersonaRail value={persona} counts={personaCounts} onChange={setPersona} />
+          </View>
+        </View>
         <View className="flex-row items-center gap-3">
           {/* Bulk contact onboarding lives HERE, on the People tab (founder
               call, 2026-07-25) — Giving → Import stays the home for
@@ -485,11 +504,12 @@ export default function PeopleScreen() {
         </View>
       </View>
 
-      {/* Search + filter dropdowns — ONE row (People-CRM overhaul, 2026-07-27):
-          replaces the old title-row count pill, full persona segment row,
-          stray Givers pill, full-width search box, and 30-chip service bar
-          with search + three anchored dropdowns (Persona / Services / More).
-          Selections land as removable pills below, never as more rows here. */}
+      {/* Header row 2 — refinements ON that view: free text, plus the two
+          multi-select dropdowns whose option lists are far too long to sit
+          open on the page. Persona is NOT here any more; it had a dropdown
+          on this row AND the counts row below AND a chip below that, three
+          controls for one piece of state. Selections from these two land as
+          removable pills below, because a closed dropdown shows nothing. */}
       <View className="mt-3 flex-row flex-wrap items-center gap-2">
         <View className="min-w-[220px] flex-1 flex-row items-center gap-2 rounded-md border border-border-strong bg-raised px-3 py-2">
           <Icon name="search" size={14} color={colors.faint} />
@@ -507,7 +527,6 @@ export default function PeopleScreen() {
             </Pressable>
           ) : null}
         </View>
-        <PersonaDropdown value={persona} counts={personaCounts} onChange={setPersona} />
         <ServicesDropdown selectedIds={serviceIds} onChange={setServiceIds} />
         <MoreFiltersDropdown
           status={status}
@@ -516,13 +535,6 @@ export default function PeopleScreen() {
           onChangeGiversOnly={setGiversOnly}
           showGivers={hasGiverOverlay}
         />
-      </View>
-
-      {/* Persona counts — compact, both a filter and a summary (founder
-          spec): clicking a count sets `persona`, same state the dropdown
-          above drives. */}
-      <View className="mt-2">
-        <PersonaCountsRow value={persona} counts={personaCounts} onChange={setPersona} />
       </View>
 
       {/* Active-filter pills — one removable chip per non-default filter,
@@ -2072,8 +2084,13 @@ function RowCheckbox({
 const styles = StyleSheet.create({
   titleRow: {
     flexDirection: "row",
-    alignItems: "baseline",
+    // Centre, not baseline: this row now carries the persona rail's pills
+    // alongside the title, and baseline alignment hangs them off the display
+    // font's baseline instead of sitting them level with it.
+    alignItems: "center",
     justifyContent: "space-between",
+    flexWrap: "wrap",
+    gap: spacing.md,
     marginBottom: spacing.md,
   },
   selectionBar: {
