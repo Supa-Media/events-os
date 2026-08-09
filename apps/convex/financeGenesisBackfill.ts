@@ -117,7 +117,10 @@ const DEDUP_DATE_TOLERANCE_MS = 2 * 24 * 60 * 60 * 1000;
  *  either, so nothing had to be migrated. */
 const HISTORICAL_IMPORT_BATCH = "genesis";
 
-const BANK_REF_PREFIX = "genesis-bank:";
+/** Exported because `restoreCollidedCharges.ts` has to name individual bank
+ *  rows by their key, and two hand-written copies of `"genesis-bank:"` is
+ *  exactly the kind of drift that puts a correction on the wrong row. */
+export const BANK_REF_PREFIX = "genesis-bank:";
 const LTN_REF_PREFIX = "genesis-ltn:";
 const INKIND_REF_PREFIX = "genesis-inkind-exp:";
 
@@ -248,6 +251,51 @@ async function loadExisting(
   return { externalIds, candidates };
 }
 
+/** The ledger shape one bank row becomes — everything but `chapterId`/`createdAt`. */
+export type GenesisBankFields = {
+  externalId: string;
+  flow: "inflow" | "outflow";
+  amountCents: number;
+  postedAt: number;
+  description: string;
+  note: string;
+};
+
+/**
+ * Turn one curated bank row into the exact fields the ledger stores for it, or
+ * `null` when the row is unusable (a non-integer/zero amount, an unparseable
+ * date) — the two conditions the runner counts as `invalid`.
+ *
+ * Pure, and EXPORTED rather than inlined, because a second writer now depends on
+ * producing the identical row: `restoreCollidedCharges.ts` puts back six rows
+ * this backfill wrote and a later cleanup deleted in error. A restored row that
+ * differed from its unremoved siblings — a different note format, a date parsed
+ * a second way — would read as a new manual entry rather than as the row that
+ * was always supposed to be there, and would leave the next person auditing this
+ * history unable to tell corrections apart from originals. One function, one
+ * answer, no chance of the two drifting.
+ */
+export function genesisBankFields(
+  row: GenesisBankRow,
+  index: number,
+): GenesisBankFields | null {
+  if (!Number.isInteger(row.amountCents) || row.amountCents === 0) return null;
+  let postedAt: number;
+  try {
+    postedAt = parseGenesisDate(row.date);
+  } catch {
+    return null;
+  }
+  return {
+    externalId: `${BANK_REF_PREFIX}${index}`,
+    flow: row.amountCents > 0 ? "inflow" : "outflow",
+    amountCents: Math.abs(row.amountCents),
+    postedAt,
+    description: row.description,
+    note: `${row.category}${row.method ? ` · ${row.method}` : ""} · ${row.month} (genesis import)`,
+  };
+}
+
 async function applyBankRow(
   ctx: MutationCtx,
   opts: {
@@ -260,21 +308,12 @@ async function applyBankRow(
   index: number,
   counts: DatasetCounts,
 ): Promise<void> {
-  // Validate: a non-zero integer signed amount + a parseable date.
-  if (!Number.isInteger(row.amountCents) || row.amountCents === 0) {
+  const fields = genesisBankFields(row, index);
+  if (!fields) {
     counts.invalid++;
     return;
   }
-  let postedAt: number;
-  try {
-    postedAt = parseGenesisDate(row.date);
-  } catch {
-    counts.invalid++;
-    return;
-  }
-  const flow: "inflow" | "outflow" = row.amountCents > 0 ? "inflow" : "outflow";
-  const amountCents = Math.abs(row.amountCents);
-  const externalId = `${BANK_REF_PREFIX}${index}`;
+  const { externalId, flow, amountCents, postedAt } = fields;
 
   // Self-dedup (idempotent re-run), then cross-source dedup vs. the live feed.
   if (opts.externalIds.has(externalId)) {
@@ -286,8 +325,6 @@ async function applyBankRow(
     return;
   }
 
-  const note =
-    `${row.category}${row.method ? ` · ${row.method}` : ""} · ${row.month} (genesis import)`;
   if (opts.write) {
     await ctx.db.insert("transactions", {
       chapterId: opts.chapterId,
@@ -296,8 +333,8 @@ async function applyBankRow(
       amountCents,
       currency: "usd",
       postedAt,
-      description: row.description,
-      note,
+      description: fields.description,
+      note: fields.note,
       status: "unreviewed",
       externalId,
       historicalImportBatch: HISTORICAL_IMPORT_BATCH,

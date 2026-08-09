@@ -843,21 +843,51 @@ function relayShortHash(input: string): string {
   return hash.toString(36);
 }
 
-/** The deterministic dedup key for a Relay CSV row. */
+/**
+ * The deterministic dedup key for a Relay CSV row.
+ *
+ * ── WHY THERE IS AN `occurrence` ────────────────────────────────────────────
+ * Day + amount + merchant + card reference is not unique. A person can buy two
+ * $25 NYC Parks permits in one sitting on one card, or tap through the same
+ * $3.00 subway turnstile twice in a day, and the CSV's four columns are then
+ * BYTE-IDENTICAL across two genuinely distinct charges. Without `occurrence`
+ * the second one hashed to the first one's key and was counted `skipped` as a
+ * re-import — money that left the bank and never reached the books. Six charges
+ * were lost that way ($55.00, restored by `restoreCollidedCharges.ts`); the loss
+ * survived a year because a dropped row leaves nothing behind to notice.
+ *
+ * `occurrence` is the row's 0-based position among the rows in the SAME import
+ * batch sharing all four values, so the first is `…:hash`, the second
+ * `…:hash#1`, and two identical charges get two keys.
+ *
+ * ── OCCURRENCE 0 IS BYTE-FOR-BYTE THE OLD FORMAT, ON PURPOSE ────────────────
+ * The suffix is omitted at 0 rather than always written. Every `relay_csv` row
+ * already in production was keyed by the old format, and the whole job of this
+ * key is that re-importing a statement changes nothing. If the format shifted —
+ * even to `…:hash#0` — not one existing row would match its own CSV row on the
+ * next import and the entire Relay history would insert a second time. Keeping
+ * position 0 unchanged means every already-imported row still dedups against
+ * itself, and only the copies that were never imported at all are new.
+ *
+ * (Relay's own transaction id would be a better key than any of this, and is
+ * what a rewrite should use. The CSV rows this consumes — see
+ * `relayRowValidator` — carry no id field, so it is not available today.)
+ */
 function relayExternalId(
   postedAt: number,
   absAmountCents: number,
   merchant: string,
   reference: string | undefined,
+  occurrence: number,
 ): string {
-  return (
+  const base =
     RELAY_EXTERNAL_PREFIX +
     postedAt +
     ":" +
     absAmountCents +
     ":" +
-    relayShortHash(merchant + "|" + (reference ?? ""))
-  );
+    relayShortHash(merchant + "|" + (reference ?? ""));
+  return occurrence === 0 ? base : `${base}#${occurrence}`;
 }
 
 /** Find a chapter person by (case-insensitive, trimmed) name, or null. Bounded. */
@@ -996,8 +1026,9 @@ type RelayImportCounts = Infer<typeof relayImportCounts>;
  * for ops). Money is SIGNED cents in (`amountCents < 0` = outflow) and stored as
  * non-negative cents with direction in `flow`. Per row:
  *  - build a deterministic `externalId` (`relay_csv:<postedAt>:<absCents>:<hash
- *    of merchant+reference>`) and SKIP if a txn already carries it (idempotent
- *    re-import);
+ *    of merchant+reference>`, plus `#<n>` for the n-th further row in the batch
+ *    with all four identical — see `relayExternalId`) and SKIP if a txn already
+ *    carries it (idempotent re-import);
  *  - parse the `Reference` (`parseRelayReference`) → card last-4 + cardholder
  *    name (payout-style references parse to `null` → no card);
  *  - if the last-4 OVERLAPS an already-synced `stripe_fc` charge (same abs
@@ -1029,6 +1060,22 @@ async function applyRelayImport(
   let cardsCreated = 0;
   let cardsLinked = 0;
 
+  // How many rows in THIS batch have already been seen at each (day, amount,
+  // merchant, reference) — the `occurrence` that separates two genuinely
+  // identical charges (see `relayExternalId`). Counted off the raw values
+  // rather than the hashed key so an unlucky hash collision can't merge two
+  // unrelated groups into one counter.
+  //
+  // IN MEMORY, AND THEREFORE PER CALL — which is the correct unit, and the only
+  // one available. "The same charge again" and "a second, genuinely identical
+  // charge" are indistinguishable from a row's own contents; the ONLY thing
+  // that tells them apart is whether they came from the same statement, i.e.
+  // the same call. So one statement must be imported as one call: chunking a
+  // statement across several calls would reset the counter and re-introduce
+  // exactly the false skip this fixes, at the chunk boundary. Both entrypoints
+  // take the whole `rows` array precisely so a caller has no reason to chunk.
+  const occurrences = new Map<string, number>();
+
   for (const row of rows) {
     const absAmountCents = Math.abs(Math.round(row.amountCents));
     const flow: "outflow" | "inflow" =
@@ -1036,11 +1083,19 @@ async function applyRelayImport(
     const parsed = parseRelayReference(row.reference);
     const cardLast4 = parsed?.cardLast4;
 
+    // Advanced for EVERY row, before any `continue` — a skipped or enriched row
+    // still occupies its position in the group. If it didn't, a re-import would
+    // assign different occurrences than the first import did and stop matching.
+    const groupKey = `${row.postedAt}:${absAmountCents}:${row.merchant}|${row.reference ?? ""}`;
+    const occurrence = occurrences.get(groupKey) ?? 0;
+    occurrences.set(groupKey, occurrence + 1);
+
     const externalId = relayExternalId(
       row.postedAt,
       absAmountCents,
       row.merchant,
       row.reference,
+      occurrence,
     );
     const dup = await ctx.db
       .query("transactions")

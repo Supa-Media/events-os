@@ -207,3 +207,30 @@ export type DedupePatch = {
   reason: string;
   receiptFile?: string;
 };
+
+// ── Genesis restore (2026-08-09) ─────────────────────────────────────────────
+
+/**
+ * A bank row the dedupe pass deleted in error, and the evidence that says so.
+ *
+ * Deliberately identified by POSITION in `GENESIS_BANK_ROWS` rather than by a
+ * copy of its values: the position IS the `genesis-bank:<n>` key, so restoring
+ * by index is the only way to put the row back under the id it had. `expect`
+ * then guards the position — it is asserted against the source row before
+ * anything is written, so a renumbered list refuses instead of restoring the
+ * wrong charge under the right-looking key.
+ */
+export type GenesisRestoreRow = {
+  /** Index into `GENESIS_BANK_ROWS`; also the `<n>` in `genesis-bank:<n>`. */
+  bankIndex: number;
+  /** Asserted against `GENESIS_BANK_ROWS[bankIndex]` before any write. */
+  expect: { date: string; description: string; amountCents: number };
+  /** The identical same-day charge that DID survive — the twin this one was
+   *  mistaken for. Reported so a reviewer can see the pair, never written. */
+  twinBankIndex: number;
+  /** The one live-feed row both copies collapsed onto. Required to still be
+   *  present, and to be the only row at that amount that day, before writing. */
+  collidedExternalId: string;
+  /** Why this charge is real rather than a copy, in a sentence. */
+  why: string;
+};
