@@ -56,6 +56,7 @@ import {
   budgetLines,
   transactions,
   processorFeeEntries,
+  processorFeeSchedule,
   reimbursementRequests,
   reimbursementLineItems,
   cards,
@@ -280,6 +281,10 @@ const schema = defineSchema({
   // (`processorFees.ts`) — a rollup nobody can inspect is a number taken on
   // faith. See `schema/finances.ts`'s doc on this table.
   processorFeeEntries,
+  // What each payment rail COSTS — an optional per-rail override of the rate
+  // published in `@events-os/shared#DEFAULT_FEE_SCHEDULE`, so a pricing change
+  // doesn't need a deploy. Prediction only; never used to book a fee.
+  processorFeeSchedule,
   reimbursementRequests,
   reimbursementLineItems,
   cards,

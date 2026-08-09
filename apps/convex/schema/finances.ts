@@ -684,6 +684,51 @@ export const processorFeeEntries = defineTable({
   .index("by_balance_transaction", ["balanceTransactionId"])
   .index("by_processor_and_month", ["processor", "month"]);
 
+// ── Processor fee schedule (what each rail costs) ────────────────────────────
+/** ONE row per processor × method, holding an OVERRIDE of that rail's published
+ *  rate. Read through `lib/feeSchedule.ts#resolveFeeSchedule`, never directly.
+ *
+ *  A ROW IS OPTIONAL, AND THAT IS THE DESIGN. The rates themselves live in
+ *  typed code (`@events-os/shared#DEFAULT_FEE_SCHEDULE`); a rail with no row
+ *  here uses the published rate. The table exists for one reason — Stripe or
+ *  Cash App changing their pricing should not require a deploy — and for
+ *  nothing else. So there is no seeding step to forget, no empty-table failure
+ *  mode, and the shipped default is always the fallback.
+ *
+ *  A ROW CANNOT INVENT A RAIL. `resolveFeeSchedule` iterates the code's rail
+ *  list and looks each one up; a row whose processor/method is not a rail this
+ *  codebase knows about is ignored rather than honoured. Nothing in the
+ *  database can make the giving page quote a price for something it cannot
+ *  charge.
+ *
+ *  NOT chapter-scoped and not effective-dated, deliberately. One org, one set
+ *  of merchant agreements, and a rate change is a rare event a treasurer makes
+ *  once — per-chapter overrides and rate history would be machinery with no
+ *  question behind it. If a historical rate is ever needed, the actual fee is
+ *  already recorded per payment (`processorFeeEntries`, `sales.feeCents`),
+ *  which is a better record than a schedule's history would be.
+ *
+ *  PREDICTION ONLY. Nothing here is ever used to write a fee figure into the
+ *  books — where the processor states an actual fee, the actual wins. See
+ *  `@events-os/shared/processorFees`'s module doc. */
+export const processorFeeSchedule = defineTable({
+  // Must be one of `FEE_PROCESSORS`; a free string so a rail can be retired in
+  // code without a prod row failing validation on the way out.
+  processor: v.string(),
+  // Must be one of `FEE_METHODS`, same reasoning.
+  method: v.string(),
+  // Basis points of the gross. 290 = 2.90%.
+  percentBps: v.number(),
+  fixedCents: v.number(),
+  // The most this rail charges on one payment. Absent = uncapped. Stripe's ACH
+  // debit caps at $5.00, which is the single most consequential fact about it.
+  capCents: v.optional(v.number()),
+  // Why it was changed — a rate nobody can explain is a rate nobody trusts.
+  note: v.optional(v.string()),
+  updatedBy: v.optional(v.id("users")),
+  updatedAt: v.number(),
+}).index("by_rail", ["processor", "method"]);
+
 // ── Reimbursement requests (public, token-scoped) ────────────────────────────
 /** A public reimbursement submission. Accountless: a secret `token` (the
  *  `rsvps.token` precedent) lets a claimant submit + check status without an

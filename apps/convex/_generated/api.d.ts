@@ -50,6 +50,7 @@ import type * as events from "../events.js";
 import type * as fieldDayBundledSplit from "../fieldDayBundledSplit.js";
 import type * as financeGenesisBackfill from "../financeGenesisBackfill.js";
 import type * as financeRoles from "../financeRoles.js";
+import type * as feeSchedule from "../feeSchedule.js";
 import type * as financeSettings from "../financeSettings.js";
 import type * as finances from "../finances.js";
 import type * as formSubmissions from "../formSubmissions.js";
@@ -430,6 +431,7 @@ declare const fullApi: ApiFromModules<{
   fieldDayBundledSplit: typeof fieldDayBundledSplit;
   financeGenesisBackfill: typeof financeGenesisBackfill;
   financeRoles: typeof financeRoles;
+  feeSchedule: typeof feeSchedule;
   financeSettings: typeof financeSettings;
   finances: typeof finances;
   formSubmissions: typeof formSubmissions;
