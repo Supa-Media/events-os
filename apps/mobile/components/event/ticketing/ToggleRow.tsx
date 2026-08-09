@@ -1,8 +1,12 @@
 import { Pressable, Text, View } from "react-native";
+import { SwitchTrack } from "../../ui";
+import { spaceToggleProps } from "../../ui/spaceToggle";
 
 /**
- * A labelled switch row for the page-setup toggles. The UI kit has no Switch,
- * so this is a small class-driven track + knob (web-safe, no native module).
+ * A labelled switch row for the page-setup toggles. The whole row is the
+ * switch, so it renders the UI kit's bare `SwitchTrack` rather than a nested
+ * `Switch` — a pressable inside a pressable would be a second tab stop for one
+ * control.
  */
 export function ToggleRow({
   label,
@@ -17,12 +21,18 @@ export function ToggleRow({
   onToggle: (next: boolean) => void;
   disabled?: boolean;
 }) {
+  const toggle = () => onToggle(!value);
   return (
     <Pressable
+      {...spaceToggleProps(toggle, disabled)}
       accessibilityRole="switch"
+      // `aria-checked` is the prop that survives to the DOM on web; the
+      // `accessibilityState` beside it is what native reads.
+      aria-checked={value}
       accessibilityState={{ checked: value, disabled }}
+      accessibilityLabel={label}
       disabled={disabled}
-      onPress={() => onToggle(!value)}
+      onPress={toggle}
       className={`flex-row items-center justify-between gap-3 py-2 ${
         disabled ? "opacity-50" : "active:opacity-80"
       }`}
@@ -31,17 +41,7 @@ export function ToggleRow({
         <Text className="text-base font-medium text-ink">{label}</Text>
         {hint ? <Text className="mt-0.5 text-xs text-muted">{hint}</Text> : null}
       </View>
-      <View
-        className={`h-6 w-10 justify-center rounded-pill px-0.5 ${
-          value ? "bg-accent" : "bg-border-strong"
-        }`}
-      >
-        <View
-          className={`h-5 w-5 rounded-pill bg-white ${
-            value ? "self-end" : "self-start"
-          }`}
-        />
-      </View>
+      <SwitchTrack value={value} />
     </Pressable>
   );
 }

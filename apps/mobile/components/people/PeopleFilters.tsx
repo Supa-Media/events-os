@@ -28,6 +28,7 @@ import type { Id } from "@events-os/convex/_generated/dataModel";
 import type { RosterStatus, Persona } from "@events-os/shared";
 import { Icon, Pill, Popover } from "../ui";
 import { useAnchor } from "../ui/useAnchor";
+import { spaceToggleProps } from "../ui/spaceToggle";
 import { colors } from "../../lib/theme";
 import { flattenServiceCatalog } from "../../lib/serviceCatalog";
 
@@ -306,9 +307,15 @@ export function MoreFiltersDropdown({
           <>
             <View className="mt-1 border-t border-border" />
             <Pressable
+              {...spaceToggleProps(() => onChangeGiversOnly(!giversOnly))}
               onPress={() => onChangeGiversOnly(!giversOnly)}
-              accessibilityRole="switch"
+              // It draws a tick box, not a track and knob — so it announces as
+              // the checkbox it looks like. `aria-checked` is the prop that
+              // survives to the DOM (see `ui/Checkbox`).
+              accessibilityRole="checkbox"
+              aria-checked={giversOnly}
               accessibilityState={{ checked: giversOnly }}
+              accessibilityLabel="Givers only"
               className="flex-row items-center justify-between px-3 py-2.5 active:bg-sunken web:hover:bg-sunken"
             >
               <View className="flex-row items-center gap-2">

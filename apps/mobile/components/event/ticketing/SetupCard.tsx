@@ -9,7 +9,7 @@
  */
 import type { ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
-import { Icon, type IconName } from "../../ui";
+import { Icon, Switch, type IconName } from "../../ui";
 import { colors, phaseColors } from "../../../lib/theme";
 
 export type SetupStatusTone = "done" | "opt" | "off";
@@ -33,34 +33,6 @@ function StatusChip({
         {label}
       </Text>
     </View>
-  );
-}
-
-/** The bare header switch for opt-in feature cards (tickets, giving). */
-function HeaderSwitch({
-  value,
-  onToggle,
-}: {
-  value: boolean;
-  onToggle: (next: boolean) => void;
-}) {
-  return (
-    <Pressable
-      accessibilityRole="switch"
-      accessibilityState={{ checked: value }}
-      onPress={() => onToggle(!value)}
-      className="active:opacity-80"
-    >
-      <View
-        className={`h-6 w-10 justify-center rounded-pill px-0.5 ${
-          value ? "bg-accent" : "bg-border-strong"
-        }`}
-      >
-        <View
-          className={`h-5 w-5 rounded-pill bg-white ${value ? "self-end" : "self-start"}`}
-        />
-      </View>
-    </Pressable>
   );
 }
 
@@ -99,6 +71,10 @@ export function SetupCard({
         <Pressable
           onPress={onToggleOpen}
           accessibilityRole="button"
+          // `accessibilityState` reaches the DOM as nothing on
+          // react-native-web (see `ui/Checkbox`); `aria-expanded` is the prop
+          // that survives.
+          aria-expanded={open}
           accessibilityState={{ expanded: open }}
           accessibilityLabel={title}
           className="min-w-0 flex-1 flex-row items-center gap-3 active:opacity-80"
@@ -118,9 +94,25 @@ export function SetupCard({
           <StatusChip label={status.label} tone={status.tone} />
         </Pressable>
         {toggle ? (
-          <HeaderSwitch value={toggle.value} onToggle={toggle.onToggle} />
+          // The card's title is the only thing that says WHICH feature this
+          // switch turns on, and it lives in a sibling pressable — so it has
+          // to be spelled out here or the switch announces anonymously.
+          <Switch
+            value={toggle.value}
+            onValueChange={toggle.onToggle}
+            accessibilityLabel={title}
+          />
         ) : null}
-        <Pressable onPress={onToggleOpen} hitSlop={8} className="active:opacity-70">
+        {/* A second, mouse-only affordance for the same expand target above.
+            Out of the tab order and out of the tree so the card is one stop
+            announcing once, not two identical ones. */}
+        <Pressable
+          onPress={onToggleOpen}
+          tabIndex={-1}
+          aria-hidden
+          hitSlop={8}
+          className="active:opacity-70"
+        >
           <Icon
             name={open ? "chevron-down" : "chevron-right"}
             size={15}

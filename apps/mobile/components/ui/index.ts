@@ -10,6 +10,8 @@ export { Button } from "./Button";
 export { Badge, type BadgeTone } from "./Badge";
 export { Pill } from "./Pill";
 export { Checkbox } from "./Checkbox";
+export { Switch, SwitchTrack } from "./Switch";
+export { spaceToggleProps, isSpaceKey, type WebKeyHandlers } from "./spaceToggle";
 export { Avatar } from "./Avatar";
 export { CopyButton } from "./CopyButton";
 export { ReadinessBadge, ReadinessBar } from "./Readiness";

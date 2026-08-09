@@ -33,6 +33,7 @@ import {
   Button,
   ServiceOptionsPicker,
 } from "../../../components/ui";
+import { spaceToggleProps } from "../../../components/ui/spaceToggle";
 import { colors, spacing } from "../../../lib/theme";
 import { formatDate, parseList } from "../../../lib/format";
 import { alertError } from "../../../lib/errors";
@@ -1690,10 +1691,16 @@ function PersonDetailBody({
             }
           />
           <Pressable
+            {...spaceToggleProps(() =>
+              updatePerson({ personId: person._id, isVolunteer: !isVolunteer }),
+            )}
             onPress={() =>
               updatePerson({ personId: person._id, isVolunteer: !isVolunteer })
             }
             accessibilityRole="switch"
+            // `aria-checked` is the prop that survives to the DOM on web (see
+            // `ui/Checkbox`); the `accessibilityState` is what native reads.
+            aria-checked={isVolunteer}
             accessibilityState={{ checked: isVolunteer }}
             accessibilityLabel="Marked as volunteer"
             className="mt-2 flex-row items-center justify-between rounded-lg border border-border bg-raised p-3 active:opacity-70"
@@ -1722,10 +1729,17 @@ function PersonDetailBody({
             Marketing
           </Text>
           <Pressable
+            {...spaceToggleProps(() =>
+              updatePerson({
+                personId: person._id,
+                marketingOptOut: !marketingOptOut,
+              }),
+            )}
             onPress={() =>
               updatePerson({ personId: person._id, marketingOptOut: !marketingOptOut })
             }
             accessibilityRole="switch"
+            aria-checked={!marketingOptOut}
             accessibilityState={{ checked: !marketingOptOut }}
             accessibilityLabel="Marketing emails"
             className="flex-row items-center justify-between rounded-lg border border-border bg-raised p-3 active:opacity-70"
