@@ -10,7 +10,10 @@
  *     still lives in the Spent tile's own meta line);
  *  3. a two-column grid — LEFT: the org-wide spend-by-month bar chart
  *     (clicking a bar IS the page's period filter, the SAME wiring pattern
- *     `ChapterView`/DASH-2 uses) + ONE dense budgets table (central budgets,
+ *     `ChapterView`/DASH-2 uses), the blended fee-rate monitor beneath it
+ *     (`FeeRateBars` — what the rails cost as a percentage of what went
+ *     through them; central-only, because the Stripe ledger has no chapter
+ *     dimension) + ONE dense budgets table (central budgets,
  *     then chapter rollup rows, then tag rollup rows — replacing the old
  *     CENTRAL BUDGETS / BY TAG / BY CHAPTER card sections); RIGHT: a
  *     restyled attention rail (pending approvals, org-wide unattributed,
@@ -21,6 +24,7 @@
  * Figures come from `api.finances.dashboardCentral` (the bulk of the view),
  * `api.dashboardCharts.spendByMonth({scope:"org"})` (the bar chart + KPI
  * sparkline), `api.dashboardCharts.chapterHealth` (the fleet panel),
+ * `api.dashboardCharts.feeRateByMonth` (the fee-rate monitor),
  * `api.dashboardDrill.*` (the two drilldown lists), and `api.transfers.*`
  * (inter-chapter balances) — this view stays pure presentation over those
  * contracts, plus a few CLIENT-SIDE derivations documented in
@@ -44,6 +48,7 @@ import { colors } from "../../../lib/theme";
 import { Money, Tile, TileRow, type DashPeriodMode } from "./parts";
 import { SparkLine } from "./SparkLine";
 import { MonthBars } from "./MonthBars";
+import { FeeRateBars } from "./FeeRateBars";
 import { CategoryBars } from "./CategoryBars";
 import { RailRow } from "./AttentionRail";
 import { BudgetTableGroup, type BudgetTableRow } from "./BudgetTable";
@@ -60,6 +65,7 @@ type CentralDash = FunctionReturnType<typeof api.finances.dashboardCentral>;
 type ChapterRollup = CentralDash["chapterRollup"][number];
 type MonthlySpend = FunctionReturnType<typeof api.dashboardCharts.spendByMonth>;
 type ChapterHealthRows = FunctionReturnType<typeof api.dashboardCharts.chapterHealth>;
+type FeeRateSeries = FunctionReturnType<typeof api.dashboardCharts.feeRateByMonth>;
 
 /** Below this width the two-column grid stacks to one column — same
  *  breakpoint DASH-2's `ChapterView` uses. */
@@ -69,6 +75,7 @@ export function CentralView({
   data,
   monthly,
   chapterHealth,
+  feeRate,
   year,
   month,
   period,
@@ -86,6 +93,13 @@ export function CentralView({
   /** `api.dashboardCharts.chapterHealth` — the "Chapters at a glance" fleet
    *  panel. `undefined` while loading; the panel renders nothing until then. */
   chapterHealth: ChapterHealthRows | undefined;
+  /** `api.dashboardCharts.feeRateByMonth({year})` — the blended fee-rate
+   *  monitor. `undefined` while loading, and the section renders NOTHING
+   *  until it resolves. Note the deliberate difference from `monthly` above,
+   *  which falls back to a synthetic 12-month zero-filled year: a zeroed rate
+   *  series is precisely the fabricated cliff this chart exists to avoid
+   *  drawing, so there is no honest placeholder for it. */
+  feeRate: FeeRateSeries | undefined;
   /** The dashboard's currently-selected year/(through-)month/mode. */
   year: number;
   month: number;
@@ -300,6 +314,26 @@ export function CentralView({
               onSelectMonth={handleSelectMonth}
             />
           </View>
+
+          {/* The rails' cut, directly under what was spent — same 12-slot
+              shape, same column, read as a pair. The fee ledger is
+              Stripe-account-wide with no chapter dimension, so this section
+              exists on the CENTRAL view only; a chapter perspective could
+              only ever show the org's number under a chapter's heading. */}
+          {feeRate ? (
+            <>
+              <SectionHeader title="Blended fee rate" />
+              <View className="rounded-lg border border-border bg-raised p-4 shadow-card">
+                <FeeRateBars
+                  months={feeRate.months}
+                  partialMonth={feeRate.partialMonth}
+                  yearFeeCents={feeRate.yearFeeCents}
+                  yearGrossCents={feeRate.yearGrossCents}
+                  yearEffectiveRateBps={feeRate.yearEffectiveRateBps}
+                />
+              </View>
+            </>
+          ) : null}
 
           <BudgetTableGroup
             title="Budgets"
