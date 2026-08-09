@@ -39,6 +39,7 @@ import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { formatCents } from "@events-os/shared";
 import { Avatar, Badge, Button, Icon } from "../../ui";
+import { spaceToggleProps } from "../../ui/spaceToggle";
 import { colors } from "../../../lib/theme";
 import {
   STATUS_BADGE,
@@ -637,7 +638,12 @@ function ApproveSelector({
           return (
             <Pressable
               key={line._id}
+              {...spaceToggleProps(() => toggle(line._id))}
               onPress={() => toggle(line._id)}
+              accessibilityRole="checkbox"
+              aria-checked={on}
+              accessibilityState={{ checked: on }}
+              accessibilityLabel={line.description}
               className="flex-row items-center gap-2.5 rounded-md bg-raised px-2.5 py-2 active:opacity-80"
             >
               <View

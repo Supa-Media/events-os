@@ -25,13 +25,21 @@ type Props = {
   count?: number;
 };
 
+/** The count belongs in the accessible name, but not glued to the label —
+ *  "Missing receipt, 153" reads as a filter and a number; "Missing receipt153"
+ *  is what content-derived naming would produce. */
+function accessibleName(label: string, count?: number): string {
+  return count != null ? `${label}, ${count}` : label;
+}
+
 /**
  * A rounded selectable chip used for filters and segmented choices. Hover and
  * selected states are class-driven (web-safe). When non-interactive it renders
  * a static tag.
  */
-export function Pill({ label, selected = false, onPress, size = "md", count }: Props) {
+export function Pill({ label, selected, onPress, size = "md", count }: Props) {
   const [hovered, setHovered] = useState(false);
+  const isSelected = selected ?? false;
   const sm = size === "sm";
   const pad = sm ? "px-2.5 py-1" : "px-3 py-1";
   const labelSize = sm ? "text-xs" : "text-sm";
@@ -59,7 +67,7 @@ export function Pill({ label, selected = false, onPress, size = "md", count }: P
     );
   }
 
-  const state = selected
+  const state = isSelected
     ? "border-accent bg-accent-soft"
     : hovered
       ? "border-border-strong bg-sunken"
@@ -70,11 +78,20 @@ export function Pill({ label, selected = false, onPress, size = "md", count }: P
       onPress={onPress}
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
+      // A pill was focusable but announced as nothing — no role, no state. It
+      // is a toggle button: `button` gets Space for free (react-native-web
+      // only accepts Space for button-ish roles) and `aria-pressed` is what
+      // says WHICH one is on. `aria-pressed` is omitted entirely when the
+      // caller passes no `selected`, because a pill used as a plain action
+      // isn't a toggle and shouldn't claim to be one.
+      accessibilityRole="button"
+      aria-pressed={selected}
+      accessibilityLabel={accessibleName(label, count)}
       className={`self-start rounded-pill border ${pad} ${state}`}
     >
       {body(
-        selected ? "font-semibold text-accent" : "font-medium text-muted",
-        selected ? "text-accent" : "text-faint",
+        isSelected ? "font-semibold text-accent" : "font-medium text-muted",
+        isSelected ? "text-accent" : "text-faint",
       )}
     </Pressable>
   );

@@ -16,7 +16,7 @@ import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { formatCents } from "@events-os/shared";
-import { Icon, Badge, Button, EmptyState, TextField, type BadgeTone } from "../ui";
+import { Icon, Badge, Button, EmptyState, Radio, RadioGroup, TextField, type BadgeTone } from "../ui";
 import { colors, spacing } from "../../lib/theme";
 import { alertError } from "../../lib/errors";
 
@@ -415,15 +415,22 @@ function GroupDetail({
         <Badge label={MATCH_LABEL[group.matchKind]} tone={MATCH_TONE[group.matchKind]} />
         <Text className="text-sm text-muted">Keep one — the others merge into it.</Text>
       </View>
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: spacing.sm }}>
+      <ScrollView horizontal showsHorizontalScrollIndicator={false}>
+        <RadioGroup
+          accessibilityLabel="Which donor to keep"
+          horizontal
+          className="flex-row"
+          style={{ gap: spacing.sm }}
+        >
         {group.donors.map((d) => {
           const selected = survivorId === d._id;
           return (
-            <Pressable
+            <Radio
               key={d._id}
-              onPress={() => onPickSurvivor(d._id)}
-              style={{ width: 240 }}
-              className={`rounded-lg border p-3 ${
+              checked={selected}
+              onSelect={() => onPickSurvivor(d._id)}
+              accessibilityLabel={d.name || "Untitled"}
+              className={`w-[240px] rounded-lg border p-3 ${
                 selected ? "border-accent bg-brand-100" : "border-border bg-raised"
               }`}
             >
@@ -447,9 +454,10 @@ function GroupDetail({
               <Field label="Phone" value={d.phone} />
               <Field label="Roster link" value={d.personId ? "Linked to a person" : "—"} />
               <Field label="Owner" value={d.ownerPersonId ? "Assigned" : "—"} />
-            </Pressable>
+            </Radio>
           );
         })}
+        </RadioGroup>
       </ScrollView>
     </View>
   );

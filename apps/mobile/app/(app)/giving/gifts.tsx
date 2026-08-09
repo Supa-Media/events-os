@@ -64,6 +64,8 @@ import {
   GridRow,
   Icon,
   Narrow,
+  Radio,
+  RadioGroup,
   Screen,
   Select,
   SortableHeaderCell,
@@ -1385,13 +1387,15 @@ function ReassignDonorForm({
       {donors === undefined ? (
         <ActivityIndicator color={colors.accent} />
       ) : (
-        <View className="mb-2 gap-1">
+        <RadioGroup accessibilityLabel="Merge into which donor" className="mb-2 gap-1">
           {candidates.map((d) => {
             const selected = toDonorId === d._id;
             return (
-              <Pressable
+              <Radio
                 key={d._id}
-                onPress={() => setToDonorId(d._id)}
+                checked={selected}
+                onSelect={() => setToDonorId(d._id)}
+                accessibilityLabel={d.name}
                 className={`flex-row items-center justify-between rounded-lg border p-2.5 ${
                   selected ? "border-accent bg-brand-100" : "border-border bg-raised"
                 }`}
@@ -1409,10 +1413,10 @@ function ReassignDonorForm({
                   size={16}
                   color={selected ? colors.accent : colors.faint}
                 />
-              </Pressable>
+              </Radio>
             );
           })}
-        </View>
+        </RadioGroup>
       )}
       <TextField label="Why (optional)" value={reason} onChangeText={setReason} placeholder="A note for the history…" />
       {error ? <Text className="mb-2 text-sm text-danger">{error}</Text> : null}
@@ -1494,13 +1498,15 @@ function AttachEventForm({
       {events === undefined ? (
         <ActivityIndicator color={colors.accent} />
       ) : (
-        <View className="mb-2 gap-1">
+        <RadioGroup accessibilityLabel="Attribute to which event" className="mb-2 gap-1">
           {candidates.map((e) => {
             const selected = selectedEventId === e._id;
             return (
-              <Pressable
+              <Radio
                 key={e._id}
-                onPress={() => setSelectedEventId(e._id)}
+                checked={selected}
+                onSelect={() => setSelectedEventId(e._id)}
+                accessibilityLabel={e.name}
                 className={`flex-row items-center justify-between rounded-lg border p-2.5 ${
                   selected ? "border-accent bg-brand-100" : "border-border bg-raised"
                 }`}
@@ -1518,13 +1524,13 @@ function AttachEventForm({
                   size={16}
                   color={selected ? colors.accent : colors.faint}
                 />
-              </Pressable>
+              </Radio>
             );
           })}
           {candidates.length === 0 ? (
             <Text className="text-sm text-muted">No events found.</Text>
           ) : null}
-        </View>
+        </RadioGroup>
       )}
       {error ? <Text className="mb-2 text-sm text-danger">{error}</Text> : null}
       <View className="flex-row gap-2">

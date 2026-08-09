@@ -10,6 +10,7 @@ export { Button } from "./Button";
 export { Badge, type BadgeTone } from "./Badge";
 export { Pill } from "./Pill";
 export { Checkbox } from "./Checkbox";
+export { CheckboxRow } from "./CheckboxRow";
 export { Switch, SwitchTrack } from "./Switch";
 export { RadioGroup, Radio } from "./RadioGroup";
 export { spaceToggleProps, isSpaceKey, type WebKeyHandlers } from "./spaceToggle";

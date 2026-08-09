@@ -204,7 +204,12 @@ export function ServicesDropdown({
             return (
               <Pressable
                 key={row._id}
+                {...spaceToggleProps(() => toggle(row._id))}
                 onPress={() => toggle(row._id)}
+                accessibilityRole="checkbox"
+                aria-checked={isSelected}
+                accessibilityState={{ checked: isSelected }}
+                accessibilityLabel={row.label}
                 className={`flex-row items-center justify-between px-3 py-2 active:bg-sunken web:hover:bg-sunken ${
                   row.parentId ? "pl-7" : ""
                 }`}

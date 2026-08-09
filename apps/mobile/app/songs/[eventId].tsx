@@ -4,6 +4,7 @@ import { Stack, useLocalSearchParams } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import { Icon, TextField, Button } from "../../components/ui";
+import { spaceToggleProps } from "../../components/ui/spaceToggle";
 import { colors } from "../../lib/theme";
 import { errorMessage } from "../../lib/errors";
 import type { Id } from "@events-os/convex/_generated/dataModel";
@@ -163,8 +164,10 @@ export default function PublicSongsScreen() {
                   placeholder="Optional"
                 />
                 <Pressable
+                  {...spaceToggleProps(() => setWillSing((v) => !v))}
                   onPress={() => setWillSing((v) => !v)}
                   accessibilityRole="checkbox"
+                  aria-checked={willSing}
                   accessibilityState={{ checked: willSing }}
                   accessibilityLabel="I'll help sing this one"
                   className="flex-row items-center gap-2.5 py-1 active:opacity-70"

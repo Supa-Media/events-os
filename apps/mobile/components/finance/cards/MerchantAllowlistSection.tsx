@@ -13,7 +13,7 @@ import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
-import { Button, Icon, SectionHeader, TextField, ToastView } from "../../ui";
+import { Button, CheckboxRow, Icon, SectionHeader, TextField, ToastView } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
 
@@ -108,27 +108,15 @@ function MerchantAllowlistBody() {
         declined on the spot and logged.
       </Text>
 
-      {/* Enforcement toggle — the CardControlsModal checkbox pattern. */}
-      <Pressable
+      {/* Enforcement toggle — the shared `CheckboxRow` this and the two card
+          modals used to each keep a copy of. */}
+      <CheckboxRow
+        checked={policy?.enforced ?? false}
         onPress={() => void save({ enforced: !(policy?.enforced ?? false) })}
         disabled={loading}
-        className="mb-1 flex-row items-center gap-2"
-      >
-        <View
-          className={`h-5 w-5 items-center justify-center rounded border ${
-            policy?.enforced
-              ? "border-accent bg-accent"
-              : "border-border-strong bg-raised"
-          }`}
-        >
-          {policy?.enforced ? (
-            <Icon name="check" size={13} color="#FFFFFF" />
-          ) : null}
-        </View>
-        <Text className="text-sm font-semibold text-ink">
-          Enforce the allow-list
-        </Text>
-      </Pressable>
+        label="Enforce the allow-list"
+        className="mb-1"
+      />
       <Text className="mb-3 text-xs text-muted">
         {policy?.enforced
           ? entryCount > 0

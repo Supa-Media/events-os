@@ -27,6 +27,7 @@ import { colors } from "../../lib/theme";
 import { Icon } from "../ui/Icon";
 import { OptionTag } from "../ui/OptionTag";
 import { Popover } from "../ui/Popover";
+import { spaceToggleProps } from "../ui/spaceToggle";
 import {
   ContextMenu,
   measureAnchor,
@@ -1096,8 +1097,15 @@ function PrePlanCellWrapper({
       {isPrePlan && onToggleChecked ? (
         <Pressable
           hitSlop={6}
+          {...spaceToggleProps(() => onToggleChecked(colKey))}
           onPress={() => onToggleChecked(colKey)}
-          accessibilityLabel={isChecked ? "Uncheck pre-plan cell" : "Check off pre-plan cell"}
+          // The label used to flip to carry the state ("Uncheck…"/"Check off…")
+          // because there was no role to carry it. Now the state is machine-
+          // readable and the name can just say what the control is.
+          accessibilityRole="checkbox"
+          aria-checked={isChecked}
+          accessibilityState={{ checked: isChecked }}
+          accessibilityLabel="Check off pre-plan cell"
           className="items-center justify-center px-1 active:opacity-70"
         >
           <Icon

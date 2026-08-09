@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { View, Text, Pressable } from "react-native";
 import { Icon, Button } from "../ui";
+import { spaceToggleProps } from "../ui/spaceToggle";
 import { colors } from "../../lib/theme";
 
 /**
@@ -34,8 +35,13 @@ export function TryReady({ criteria }: { criteria: string[] }) {
             onPress={() =>
               setChecked((prev) => prev.map((v, j) => (j === i ? !v : v)))
             }
+            {...spaceToggleProps(() =>
+              setChecked((prev) => prev.map((v, j) => (j === i ? !v : v))),
+            )}
             accessibilityRole="checkbox"
+            aria-checked={checked[i]}
             accessibilityState={{ checked: checked[i] }}
+            accessibilityLabel={c}
             className={`flex-row items-center gap-2.5 rounded-md border px-3 py-2 ${
               checked[i]
                 ? "border-success bg-success-bg"

@@ -12,6 +12,7 @@ import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
   Button,
+  CheckboxRow,
   DateTimeField,
   Field,
   Icon,
@@ -114,25 +115,11 @@ export function CardControlsModal({
                 hint="A monthly safety ceiling. Leave blank to remove the cap."
               />
 
-              <Pressable
+              <CheckboxRow
+                checked={limitValidity}
                 onPress={() => setLimitValidity((v) => !v)}
-                className="mb-3 flex-row items-center gap-2"
-              >
-                <View
-                  className={`h-5 w-5 items-center justify-center rounded border ${
-                    limitValidity
-                      ? "border-accent bg-accent"
-                      : "border-border-strong bg-raised"
-                  }`}
-                >
-                  {limitValidity ? (
-                    <Icon name="check" size={13} color="#FFFFFF" />
-                  ) : null}
-                </View>
-                <Text className="text-sm font-semibold text-ink">
-                  Limit when this card can be used
-                </Text>
-              </Pressable>
+                label="Limit when this card can be used"
+              />
 
               {limitValidity ? (
                 <View className="flex-row gap-3">
