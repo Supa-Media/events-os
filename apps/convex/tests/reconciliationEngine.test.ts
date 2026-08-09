@@ -689,6 +689,38 @@ describe("settleChapterBalances — cash follows the book", () => {
     expect(out.settlementsBooked).toBe(0);
   });
 
+  test("its own pairs are not read back as cross-book card spend", async () => {
+    // THE FEEDBACK LOOP THIS PINS. `chapterInterScopeRows` treats a
+    // central↔chapter transfer leg as SETTLING cross-book card debt. A balance
+    // settlement pays down no such debt — it moves a chapter the cash its book
+    // says it is owed — but until it was excluded there, a $2,003.95
+    // central→chapter settlement read as "central has already paid the chapter
+    // $2,003.95", flipped the cross-book net, and made `runAutoSettlement` book
+    // an opposing $2,003.95 chapter→central pair.
+    //
+    // That pair is SIGNED where a balance settlement contributes zero, so each
+    // round shifted real book value with no spending behind it — and the next
+    // run would have done it again the other way, for ever.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await seedDonorWithGift(s, s.chapterId, { amountCents: 50_000 });
+    await seedBankBalance(s, CENTRAL, 100_000);
+    await seedBankBalance(s, s.chapterId, 10_000);
+
+    await t.mutation(internal.reconciliation.settleChapterBalances, {
+      dateStr: DAY,
+    });
+    expect(await legsFor(s, `balsettle-${s.chapterId}-${DAY}`)).toHaveLength(2);
+
+    // With no card spend anywhere, the auto settlement must find nothing to do.
+    const auto = await t.mutation(internal.reconciliation.runAutoSettlement, {
+      dateStr: DAY,
+    });
+    expect(auto.settlementsBooked).toBe(0);
+    expect(await legsFor(s, `autosettle-${s.chapterId}-${DAY}`)).toHaveLength(0);
+  });
+
   test("is idempotent across a same-day re-run", async () => {
     const t = newT();
     const s = await setupChapter(t);
