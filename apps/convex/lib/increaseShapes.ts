@@ -102,6 +102,12 @@ export type BeginPayoutResult =
       accountNumber: string | null;
       routingNumber: string | null;
       funding: "checking" | "savings" | null;
+      /** Who is being paid, carried through so `payReimbursement` can put it on
+       *  the ACH transfer as `individual_name`. Increase caps the statement
+       *  descriptor at 10 characters, which "Reimburse" all but fills, so
+       *  without this every reimbursement reads identically in the bank's own
+       *  record with no way to tell whose it was. */
+      payeeName: string;
     };
 
 export type BeginProvisionResult =
