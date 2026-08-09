@@ -8825,7 +8825,11 @@ const financeAuditRow = v.object({
  */
 export const financeAuditTrail = query({
   args: {
-    subjectType: v.union(v.literal("transaction"), v.literal("budget")),
+    subjectType: v.union(
+      v.literal("transaction"),
+      v.literal("budget"),
+      v.literal("sale"),
+    ),
     subjectId: v.string(),
   },
   returns: v.array(financeAuditRow),
@@ -8848,7 +8852,9 @@ export const financeAuditTrail = query({
     const ownerChapterId: FinanceScope | null =
       (args.subjectType === "transaction"
         ? (await ctx.db.get(args.subjectId as Id<"transactions">))?.chapterId
-        : (await ctx.db.get(args.subjectId as Id<"budgets">))?.chapterId) ??
+        : args.subjectType === "sale"
+          ? (await ctx.db.get(args.subjectId as Id<"sales">))?.chapterId
+          : (await ctx.db.get(args.subjectId as Id<"budgets">))?.chapterId) ??
       rows[0].chapterId;
     if (ownerChapterId == null) return [];
     const scope = await requireFinanceSubjectRead(ctx, ownerChapterId, "bookkeeper");

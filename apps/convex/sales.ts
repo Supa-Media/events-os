@@ -7,7 +7,7 @@
  * real money that book value could not see while its cash sat in the bank. The
  * `sales` table (schema/ticketing.ts) and `salesSync.ts` brought it in;
  * `reconciliation.ts#accountBalances` counts it GROSS alongside the other two.
- * This module is the read surface over it.
+ * This module is the read/edit surface over it.
  *
  * ── WHY MANY OLD ROWS HAVE NO ITEMS ─────────────────────────────────────────
  * The 2025 in-person taps went through a third-party Tap-to-Pay app that sent
@@ -20,8 +20,7 @@
  * that most of it stays unresolved.
  *
  * That is the honest outcome, not a gap to paper over: the money and the event
- * are certain, the SKU is not, and a fabricated SKU is worse than a blank. The
- * UI shows `unresolved` plainly for the same reason.
+ * are certain, the SKU is not, and a fabricated SKU is worse than a blank.
  *
  * NEWER ROWS DON'T NEED THE GUESSWORK. The payment app started sending the SKU
  * with the charge (a Stripe price id in `metadata.line_items`, and a "1x PW Tee"
@@ -29,19 +28,68 @@
  * states rather than from what the amount implies — `itemSource` says which,
  * and `lib/salesItems.ts` explains the ranking.
  *
- * READ-ONLY. Sales originate at Stripe and are re-synced idempotently on the
- * charge id; there is no hand-entry path, so nothing here writes. The one
- * exception is historical: the 2026-08-09 Cash App backfill (`cashAppBackfill.ts`)
+ * ── WHY THIS MODULE STOPPED BEING READ-ONLY ─────────────────────────────────
+ * It was read-only on the reasoning that sales originate at Stripe and re-sync
+ * idempotently, so there is nothing to hand-enter. That still holds for the
+ * MONEY — gross and fee are the processor's word and no mutation here touches
+ * them. It does not hold for the two facts the card reader never recorded on
+ * the older taps: which items the amount was, and which event it happened at.
+ * A better importer has since closed part of that gap and cannot close the
+ * rest — 2025's charges say "Payment for Stripe App" and nothing more, so what
+ * they bought exists only in the memory of whoever was standing at the table.
+ * A page that shows a bookkeeper a hundred rows reading "Unresolved" with no
+ * way to settle any of them is a report, not a tool.
+ *
+ * So two writes, and only two:
+ *   - `setSaleItems` picks from the baskets the amount ACTUALLY makes (server
+ *     re-enumerates them; a caller can't assert a breakdown that doesn't add
+ *     up), recording `itemSource: "manual"` — the TOP rung of `salesItems.ts`'s
+ *     ladder, which is what stops a later enrichment run quietly reverting a
+ *     human's decision (`outranks` only ever moves a row up).
+ *   - `setSaleEvent` attributes an orphan payment to an event, or detaches one
+ *     attributed wrongly. The sync never revisits `eventId` on an existing row,
+ *     so this too survives a re-run.
+ * Both are bookkeeper+, both write `financeAuditLog`, and neither can move a
+ * cent.
+ *
+ * Historical note: the 2026-08-09 Cash App backfill (`cashAppBackfill.ts`)
  * wrote three sales that never touched a card reader, keyed on `externalRef`
- * instead. They read identically here — only `paymentRef` shows the difference.
+ * instead of a charge id. They read identically here — only `paymentRef` shows
+ * the difference.
  */
-import { query } from "./_generated/server";
-import { v } from "convex/values";
+import { mutation, query } from "./_generated/server";
+import { v, ConvexError } from "convex/values";
+import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
+import { financeRoleAtLeast } from "@events-os/shared";
 import { requireFinanceRole } from "./lib/finance";
+import { logFinanceAudit } from "./lib/financeAuditLog";
+import {
+  basketOptions,
+  catalogForDay,
+  itemsToKey,
+  type BasketOption,
+} from "./lib/salesCatalog";
 
 /** Bounded read — a chapter's sales history is small and stays small. */
 const SALES_SCAN_LIMIT = 4000;
+/** Bounded read for the event picker. A chapter runs events in the dozens. */
+const EVENT_SCAN_LIMIT = 500;
+
+/** The UTC day a sale landed on. Derived exactly as `salesSync` derives it, so
+ *  a row's catalogue here is the same catalogue it was imported against. */
+function dayISOFor(soldAt: number): string {
+  return new Date(soldAt).toISOString().slice(0, 10);
+}
+
+const saleItemValidator = v.object({
+  label: v.string(),
+  quantity: v.number(),
+  unitPriceCents: v.number(),
+  /** >1 entry when several products share this price — the sale is real,
+   *  which product it was is genuinely ambiguous. */
+  candidates: v.array(v.string()),
+});
 
 const saleRowValidator = v.object({
   saleId: v.id("sales"),
@@ -51,16 +99,7 @@ const saleRowValidator = v.object({
   netCents: v.number(),
   channel: v.string(),
   itemSource: v.string(),
-  items: v.array(
-    v.object({
-      label: v.string(),
-      quantity: v.number(),
-      unitPriceCents: v.number(),
-      /** >1 entry when several products share this price — the sale is real,
-       *  which product it was is genuinely ambiguous. */
-      candidates: v.array(v.string()),
-    }),
-  ),
+  items: v.array(saleItemValidator),
   eventId: v.union(v.id("events"), v.null()),
   eventName: v.union(v.string(), v.null()),
   /** The payment's id on whichever rail carried it — a Stripe charge id for a
@@ -68,16 +107,53 @@ const saleRowValidator = v.object({
    *  Cash App backfill). One field rather than two because a reader only ever
    *  wants "which payment was this", and the rail is legible from the string. */
   paymentRef: v.string(),
+  /**
+   * Every basket this amount could be, from the frozen catalogue for its day —
+   * the row's own picker options, shipped WITH the row rather than fetched when
+   * a cell opens. A chapter's whole sales history is a few hundred rows and the
+   * enumeration is capped at 8 solutions, so computing them all costs less than
+   * the round trip a lazy cell would need, and it lets the grid say "3 readings"
+   * on a row before anyone clicks it.
+   *
+   * Empty means nothing can be offered: either no catalogue covers the day, or
+   * no combination of that day's prices makes this amount. `hasCatalog`
+   * separates the two, because they call for different words on screen.
+   */
+  itemOptions: v.array(
+    v.object({
+      key: v.string(),
+      label: v.string(),
+      items: v.array(saleItemValidator),
+    }),
+  ),
+  /** The key of the basket currently recorded, when it is one of `itemOptions`.
+   *  `null` for an empty breakdown — and, legitimately, for one the current
+   *  catalogue no longer makes. */
+  itemsKey: v.union(v.string(), v.null()),
+  /** Whether a catalogue is defined for this sale's day at all. */
+  hasCatalog: v.boolean(),
 });
 
 /**
- * Every sale for a chapter, newest first, with its event resolved and a summary.
+ * Every sale for a chapter, newest first, with its event resolved, its picker
+ * options attached, and a chapter-wide summary.
  *
- * The summary carries `unresolvedCents` next to the total deliberately: a
- * reader's first question about a sales page whose rows mostly say "Unresolved"
- * is how much money that actually accounts for, and the answer (all of it —
- * revenue is exact, only the breakdown is missing) should not require adding up
- * the rows by hand.
+ * ── WHY THE AGGREGATES LEFT ─────────────────────────────────────────────────
+ * This used to return `byEvent` and `byItem` roll-ups, which the screen rendered
+ * as two cards above the row list. They are gone, and nothing they said is
+ * gone with them: the grid's Event and Item filters carry the same numbers as
+ * FACET COUNTS, which is strictly more useful — a count you can click narrows
+ * the table, a count in a card just sits there. That is the same move Reconcile
+ * made when its nine counted chips became one counted dropdown.
+ *
+ * `summary` stays, and stays CHAPTER-WIDE rather than following the screen's
+ * filters. A treasurer's "what did we take, what did Stripe keep, what reached
+ * the bank" is a fact about the chapter, and a headline figure that silently
+ * re-scoped itself every time someone clicked a filter would be a good way to
+ * misreport revenue. It carries `unresolvedCents` alongside for the same reason
+ * it always did: the first question a page full of "Unresolved" provokes is how
+ * much money that accounts for, and the answer — all of it, the revenue is
+ * exact and only the breakdown is missing — should not require adding up rows.
  */
 export const listSales = query({
   args: {
@@ -96,31 +172,30 @@ export const listSales = query({
       unresolvedCount: v.number(),
       unresolvedCents: v.number(),
     }),
-    /** Per-event totals, biggest first — the shape of what actually sold. */
-    byEvent: v.array(
+    /** The chapter's events, newest first — the Event cell's options. Every
+     *  event, not just the ones already carrying sales: attributing an ORPHAN
+     *  is the whole point, and an orphan by definition names none of them. */
+    events: v.array(
       v.object({
-        eventId: v.union(v.id("events"), v.null()),
-        eventName: v.string(),
-        count: v.number(),
-        grossCents: v.number(),
-        feeCents: v.number(),
+        eventId: v.id("events"),
+        name: v.string(),
+        eventDate: v.union(v.number(), v.null()),
       }),
     ),
-    /** Every identified unit across resolved sales, most revenue first. */
-    byItem: v.array(
-      v.object({
-        label: v.string(),
-        quantity: v.number(),
-        grossCents: v.number(),
-        candidates: v.array(v.string()),
-      }),
-    ),
+    /** Whether this caller may edit these rows. Today the read floor and the
+     *  write floor are the same rank, so this is always true for anyone who
+     *  gets a response at all — it exists so the grid renders from the SERVER's
+     *  answer rather than assuming, the way Reconcile's rows carry their own
+     *  `canEdit`. If sales reads ever drop to viewer (a peek), the grid goes
+     *  read-only on its own and no affordance appears that the mutation would
+     *  then refuse. */
+    canEdit: v.boolean(),
     truncated: v.boolean(),
   }),
   handler: async (ctx, { chapterId, eventId }) => {
     // Bookkeeper+ — the same floor the rest of the finance reads use. Sales are
     // revenue detail, not public event data.
-    await requireFinanceRole(ctx, chapterId, "bookkeeper");
+    const access = await requireFinanceRole(ctx, chapterId, "bookkeeper");
 
     const rows = await ctx.db
       .query("sales")
@@ -129,16 +204,27 @@ export const listSales = query({
     const truncated = rows.length === SALES_SCAN_LIMIT;
     const scoped = eventId ? rows.filter((r) => r.eventId === eventId) : rows;
 
-    // One read per distinct event rather than per sale — 178 sales across two
-    // events would otherwise be 178 gets.
-    const eventIds = [...new Set(scoped.map((r) => r.eventId).filter(Boolean))];
-    const events = await Promise.all(
-      eventIds.map((id) => ctx.db.get(id as Id<"events">)),
-    );
+    const chapterEvents = await ctx.db
+      .query("events")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .take(EVENT_SCAN_LIMIT);
     const eventName = new Map<string, string>();
-    for (const e of events) {
-      if (e) eventName.set(e._id as string, e.name);
-    }
+    for (const e of chapterEvents) eventName.set(e._id as string, e.name);
+
+    // One enumeration per distinct AMOUNT-and-DAY rather than per sale: 186
+    // sales collapse to a couple of dozen distinct pairs, and the catalogue is
+    // frozen, so the answer for $3 on 2025-12-06 is the same answer every time.
+    const optionCache = new Map<string, BasketOption[]>();
+    const optionsFor = (soldAt: number, grossCents: number) => {
+      const dayISO = dayISOFor(soldAt);
+      const cacheKey = `${dayISO}:${grossCents}`;
+      const hit = optionCache.get(cacheKey);
+      if (hit) return hit;
+      const catalog = catalogForDay(dayISO);
+      const options = catalog ? basketOptions(grossCents, catalog.units) : [];
+      optionCache.set(cacheKey, options);
+      return options;
+    };
 
     const sales = scoped
       .slice()
@@ -155,48 +241,14 @@ export const listSales = query({
         eventId: r.eventId ?? null,
         eventName: r.eventId ? (eventName.get(r.eventId) ?? null) : null,
         paymentRef: r.stripeChargeId ?? r.externalRef ?? "",
+        itemOptions: optionsFor(r.soldAt, r.grossCents),
+        itemsKey: itemsToKey(r.items),
+        hasCatalog: catalogForDay(dayISOFor(r.soldAt)) !== null,
       }));
 
     const grossCents = sales.reduce((a, s) => a + s.grossCents, 0);
     const feeCents = sales.reduce((a, s) => a + s.feeCents, 0);
     const unresolved = sales.filter((s) => s.itemSource === "unresolved");
-
-    const eventBuckets = new Map<
-      string,
-      { eventId: Id<"events"> | null; eventName: string; count: number; grossCents: number; feeCents: number }
-    >();
-    for (const s of sales) {
-      const key = s.eventId ?? "__none__";
-      const slot = eventBuckets.get(key) ?? {
-        eventId: s.eventId,
-        eventName: s.eventName ?? "Unattributed",
-        count: 0,
-        grossCents: 0,
-        feeCents: 0,
-      };
-      slot.count += 1;
-      slot.grossCents += s.grossCents;
-      slot.feeCents += s.feeCents;
-      eventBuckets.set(key, slot);
-    }
-
-    const itemBuckets = new Map<
-      string,
-      { label: string; quantity: number; grossCents: number; candidates: string[] }
-    >();
-    for (const s of sales) {
-      for (const item of s.items) {
-        const slot = itemBuckets.get(item.label) ?? {
-          label: item.label,
-          quantity: 0,
-          grossCents: 0,
-          candidates: item.candidates,
-        };
-        slot.quantity += item.quantity;
-        slot.grossCents += item.quantity * item.unitPriceCents;
-        itemBuckets.set(item.label, slot);
-      }
-    }
 
     return {
       sales,
@@ -209,9 +261,174 @@ export const listSales = query({
         unresolvedCount: unresolved.length,
         unresolvedCents: unresolved.reduce((a, s) => a + s.grossCents, 0),
       },
-      byEvent: [...eventBuckets.values()].sort((a, b) => b.grossCents - a.grossCents),
-      byItem: [...itemBuckets.values()].sort((a, b) => b.grossCents - a.grossCents),
+      events: chapterEvents
+        .slice()
+        .sort((a, b) => (b.eventDate ?? 0) - (a.eventDate ?? 0))
+        .map((e) => ({
+          eventId: e._id,
+          name: e.name,
+          eventDate: e.eventDate ?? null,
+        })),
+      canEdit: financeRoleAtLeast(access.role, "bookkeeper"),
       truncated,
     };
+  },
+});
+
+/** Load a sale and assert the caller may edit it. Bookkeeper+ is the floor used
+ *  across this whole finance surface — the same rank `listSales` reads at, and
+ *  the same one `finances.ts`'s marking mutations write at. A viewer (or a
+ *  central peek) never reaches either. */
+async function requireEditableSale(
+  ctx: MutationCtx,
+  saleId: Id<"sales">,
+): Promise<{ sale: Doc<"sales">; actorPersonId: Id<"people"> | null }> {
+  const sale = await ctx.db.get(saleId);
+  if (!sale) {
+    throw new ConvexError({ code: "NOT_FOUND", message: "That sale no longer exists." });
+  }
+  const access = await requireFinanceRole(ctx, sale.chapterId, "bookkeeper");
+  return { sale, actorPersonId: access.personId };
+}
+
+/** How a breakdown reads in the audit trail. */
+function itemsLabel(items: Doc<"sales">["items"]): string {
+  if (items.length === 0) return "Unresolved";
+  return items
+    .map((i) => (i.quantity > 1 ? `${i.quantity} × ${i.label}` : i.label))
+    .join(" + ");
+}
+
+/**
+ * Settle what a sale's amount was, from the baskets it could actually be.
+ *
+ * `basketKey` names one of the decompositions `lib/salesCatalog.ts` enumerates
+ * for this amount against its day's frozen catalogue; `null` puts the row back
+ * to `unresolved`. The server re-enumerates rather than trusting anything the
+ * client sends, which is the whole design: a bookkeeper can tell us WHICH of the
+ * readings the money admits is the true one, and cannot tell us the money bought
+ * something it could not have bought. "$5 was a popcorn, not five waters" is
+ * knowledge; "$5 was a hoodie" is a typo, and this refuses it.
+ *
+ * Clearing is deliberately available even on a row the importer resolved on its
+ * own — a single-reading decomposition is still only arithmetic, and if the
+ * person who was there says it's wrong, "Unresolved" is a better record than a
+ * confident falsehood.
+ */
+export const setSaleItems = mutation({
+  args: {
+    saleId: v.id("sales"),
+    /** A key from the row's `itemOptions`, or `null` to clear back to unresolved. */
+    basketKey: v.union(v.string(), v.null()),
+  },
+  returns: v.null(),
+  handler: async (ctx, { saleId, basketKey }) => {
+    const { sale, actorPersonId } = await requireEditableSale(ctx, saleId);
+    const before = itemsLabel(sale.items);
+
+    if (basketKey === null) {
+      if (sale.items.length === 0 && sale.itemSource === "unresolved") return null;
+      await ctx.db.patch(sale._id, { items: [], itemSource: "unresolved" });
+      await logFinanceAudit(ctx, {
+        chapterId: sale.chapterId,
+        subjectType: "sale",
+        subjectId: sale._id,
+        action: "sale_items_set",
+        actorPersonId,
+        field: "items",
+        before,
+        after: "Unresolved",
+      });
+      return null;
+    }
+
+    const catalog = catalogForDay(dayISOFor(sale.soldAt));
+    if (!catalog) {
+      throw new ConvexError({
+        code: "NO_CATALOG",
+        message:
+          "There's no price list on file for the day this sale happened, so there's nothing to choose from.",
+      });
+    }
+    const option = basketOptions(sale.grossCents, catalog.units).find(
+      (o) => o.key === basketKey,
+    );
+    if (!option) {
+      throw new ConvexError({
+        code: "NO_SUCH_BASKET",
+        message:
+          "That combination doesn't add up to what was paid. Pick one of the readings offered for this amount.",
+      });
+    }
+
+    await ctx.db.patch(sale._id, { items: option.items, itemSource: "manual" });
+    await logFinanceAudit(ctx, {
+      chapterId: sale.chapterId,
+      subjectType: "sale",
+      subjectId: sale._id,
+      action: "sale_items_set",
+      actorPersonId,
+      field: "items",
+      before,
+      after: option.label,
+    });
+    return null;
+  },
+});
+
+/**
+ * Attribute a sale to an event, or detach one attributed wrongly.
+ *
+ * The importer matches by name AND date (`salesSync`), which is right and still
+ * leaves orphans: a payment taken the morning after a two-day event, or one on a
+ * day no event was recorded, matches nothing and lands unattributed. Nobody but
+ * a person can close that gap, and until now nobody could.
+ *
+ * Chapter-locked: an event from another chapter is refused rather than silently
+ * moving a chapter's revenue into another chapter's event reporting. The sale's
+ * own `chapterId` is never touched here — which book took the money is a fact
+ * about the payment, not a judgement, and it isn't editable on this surface.
+ */
+export const setSaleEvent = mutation({
+  args: {
+    saleId: v.id("sales"),
+    /** The event this sale happened at, or `null` to leave it unattributed. */
+    eventId: v.union(v.id("events"), v.null()),
+  },
+  returns: v.null(),
+  handler: async (ctx, { saleId, eventId }) => {
+    const { sale, actorPersonId } = await requireEditableSale(ctx, saleId);
+    if ((sale.eventId ?? null) === eventId) return null;
+
+    const previous = sale.eventId ? await ctx.db.get(sale.eventId) : null;
+    let nextName = "Unattributed";
+    if (eventId !== null) {
+      const event = await ctx.db.get(eventId);
+      if (!event) {
+        throw new ConvexError({ code: "NOT_FOUND", message: "That event no longer exists." });
+      }
+      if (event.chapterId !== sale.chapterId) {
+        throw new ConvexError({
+          code: "CROSS_CHAPTER_EVENT",
+          message: "That event belongs to another chapter. A sale stays with the book that took it.",
+        });
+      }
+      nextName = event.name;
+    }
+
+    // `undefined` REMOVES the field, which is what "unattributed" means in this
+    // schema — `eventId` is optional and its absence is the orphan state.
+    await ctx.db.patch(sale._id, { eventId: eventId ?? undefined });
+    await logFinanceAudit(ctx, {
+      chapterId: sale.chapterId,
+      subjectType: "sale",
+      subjectId: sale._id,
+      action: "sale_event_set",
+      actorPersonId,
+      field: "event",
+      before: previous?.name ?? "Unattributed",
+      after: nextName,
+    });
+    return null;
   },
 });

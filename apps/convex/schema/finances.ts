@@ -1288,10 +1288,17 @@ export const reattributionAudit = defineTable({
  *  resolvable. */
 export const financeAuditLog = defineTable({
   chapterId: v.union(v.id("chapters"), v.literal("central")),
-  subjectType: v.union(v.literal("transaction"), v.literal("budget")),
-  // `Id<"transactions">` or `Id<"budgets">` stored as a plain string — a single
-  // `by_subject` index over both subject types needs one homogeneous field
-  // type (mirrors `approvals.subjectId`'s own string-not-id shape).
+  // `"sale"` joined the union when the Sales grid became editable: a sale's
+  // item breakdown and event attribution are both HUMAN judgements about
+  // history (the card reader recorded neither), so they need the same "who
+  // said this, and when" trail every other finance field change already has.
+  // Its money never moves — gross and fee stay exactly as the processor
+  // reported them — so no `amountCents`-bearing action is ever logged for one.
+  subjectType: v.union(v.literal("transaction"), v.literal("budget"), v.literal("sale")),
+  // `Id<"transactions">`, `Id<"budgets">` or `Id<"sales">` stored as a plain
+  // string — a single `by_subject` index over every subject type needs one
+  // homogeneous field type (mirrors `approvals.subjectId`'s own string-not-id
+  // shape).
   subjectId: v.string(),
   action: v.union(...FINANCE_AUDIT_ACTIONS.map((a) => v.literal(a))),
   // WHO — two identities, both stored on purpose, mirroring

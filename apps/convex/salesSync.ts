@@ -56,6 +56,7 @@ import {
   itemsFromDescription,
   itemsFromPrices,
   outranks,
+  type SyncedItemSource,
   parseLineItemsMetadata,
   type ItemSource,
   type PriceRecord,
@@ -297,7 +298,7 @@ async function runSync(ctx: ActionCtx, execute: boolean | undefined) {
         stripeChargeId: string; soldAt: number; grossCents: number; feeCents: number;
         dayISO: string; eventName: string | null;
         items: SaleItem[];
-        itemSource: ItemSource;
+        itemSource: SyncedItemSource;
       }[] = [];
 
       for (const c of page.data) {
@@ -321,7 +322,7 @@ async function runSync(ctx: ActionCtx, execute: boolean | undefined) {
         // when the one above declined, so a charge that says what it is is never
         // second-guessed by a price list.
         let items: SaleItem[] = [];
-        let itemSource: ItemSource = "unresolved";
+        let itemSource: SyncedItemSource = "unresolved";
 
         const refs = parseLineItemsMetadata(metadata.line_items);
         if (refs) {
