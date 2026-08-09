@@ -164,6 +164,36 @@ export const markActivityVisible = internalMutation({
   },
 });
 
+/**
+ * Pull a wall entry back off the wall because the payment behind it didn't
+ * happen — a bank debit that failed, or settled and was later returned.
+ * Called by `givingComms.onAchFailed`.
+ *
+ * The wall's whole spam deterrent is that an entry means a real, settled
+ * payment. A gift that was reversed makes that false, so the public echo has
+ * to go with it. Uses `"hidden"` rather than deleting: same terminal state a
+ * moderator's `hideActivity` produces, it can't be re-published by a
+ * redelivered settle webhook (`markActivityVisible` only touches `"pending"`),
+ * and the row survives for anyone asking later what happened.
+ *
+ * Idempotent and total: no row (the giver never opted in) and an
+ * already-hidden row are both no-ops. Safe to call on any refKey.
+ */
+export const withdrawActivity = internalMutation({
+  args: { refKey: v.string() },
+  returns: v.null(),
+  handler: async (ctx, { refKey }) => {
+    const row = await ctx.db
+      .query("givingActivity")
+      .withIndex("by_refKey", (q) => q.eq("refKey", refKey))
+      .unique();
+    if (!row) return null; // nothing was ever posted for this payment
+    if (row.status === "hidden") return null; // already off the wall
+    await ctx.db.patch(row._id, { status: "hidden" });
+    return null;
+  },
+});
+
 // ── Public (no auth — PII-free) ──────────────────────────────────────────────
 
 const territoryActivityRowValidator = v.object({
