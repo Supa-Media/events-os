@@ -1199,9 +1199,9 @@ export function isSpend(tr: Doc<"transactions">): boolean {
  * True iff this row is a per-transaction processor or bank fee — a cost that
  * was CHARGED, not chosen.
  *
- * Written by exactly two modules (`processorFees.ts` sweeping Stripe's balance
- * transactions, `cashAppBackfill.ts` reproducing the Cash App withdrawals), and
- * read here. A POSITIVE MARKER, never an inference: the alternative was
+ * Written by `processorFees.ts` (sweeping Stripe's balance transactions) and,
+ * on the Cash App rows, by a 2026-08 backfill since removed — and read here.
+ * A POSITIVE MARKER, never an inference: the alternative was
  * matching on the `stripe-fees:` external-id prefix, which would silently miss
  * Cash App's rows (a different prefix) and would break the moment a key format
  * changed. Same rule `preMarkFlow` follows for transfers, and for the same

@@ -52,7 +52,7 @@
  * Both are bookkeeper+, both write `financeAuditLog`, and neither can move a
  * cent.
  *
- * Historical note: the 2026-08-09 Cash App backfill (`cashAppBackfill.ts`)
+ * Historical note: the 2026-08-09 Cash App backfill (a one-off since removed)
  * wrote three sales that never touched a card reader, keyed on `externalRef`
  * instead of a charge id. They read identically here — only `paymentRef` shows
  * the difference.

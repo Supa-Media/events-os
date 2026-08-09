@@ -153,18 +153,19 @@ export type SplitArgs = {
   items?: SaleItem[];
   note?: string;
   /** Stamped as `donationSplitBy`. The public mutation passes the caller's
-   *  roster person; a one-time migration passes whoever authorised the run. */
+   *  roster person; the one-time migrations that used this seam passed whoever
+   *  authorised the run. */
   splitByPersonId?: Id<"people"> | null;
 };
 
 /**
  * The split itself, with NO authorization of its own — every caller brings its
- * own gate (`splitBundledDonation` below, `requireFinanceRole`; the one-time
- * `fieldDayBundledSplit.ts`, the deployment admin key). Extracted so those two
- * cannot drift: a historical correction that hand-rolled the same writes could
- * miss a rollup the live path maintains, and the difference would only show up
- * as a wrong donor total months later. The migration runs THIS, so the tests
- * that hold this function still hold the migration too.
+ * own gate (`splitBundledDonation` below, `requireFinanceRole`; the 2026-08
+ * Field Day correction, since removed, the deployment admin key). Extracted so
+ * the two could not drift: a historical correction that hand-rolled the same
+ * writes could miss a rollup the live path maintains, and the difference would
+ * only show up as a wrong donor total months later. The migration ran THIS, so
+ * the tests that hold this function held the migration too.
  */
 export async function applyBundledDonationSplit(
   ctx: MutationCtx,

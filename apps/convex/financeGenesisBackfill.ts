@@ -117,8 +117,8 @@ const DEDUP_DATE_TOLERANCE_MS = 2 * 24 * 60 * 60 * 1000;
  *  either, so nothing had to be migrated. */
 const HISTORICAL_IMPORT_BATCH = "genesis";
 
-/** Exported because `restoreCollidedCharges.ts` has to name individual bank
- *  rows by their key, and two hand-written copies of `"genesis-bank:"` is
+/** Exported because a 2026-08 one-off (since removed) had to name individual
+ *  bank rows by their key, and two hand-written copies of `"genesis-bank:"` is
  *  exactly the kind of drift that puts a correction on the wrong row. */
 export const BANK_REF_PREFIX = "genesis-bank:";
 const LTN_REF_PREFIX = "genesis-ltn:";
@@ -266,9 +266,9 @@ export type GenesisBankFields = {
  * `null` when the row is unusable (a non-integer/zero amount, an unparseable
  * date) — the two conditions the runner counts as `invalid`.
  *
- * Pure, and EXPORTED rather than inlined, because a second writer now depends on
- * producing the identical row: `restoreCollidedCharges.ts` puts back six rows
- * this backfill wrote and a later cleanup deleted in error. A restored row that
+ * Pure, and EXPORTED rather than inlined, because a second writer once depended
+ * on producing the identical row: a 2026-08 one-off (since removed) put back six
+ * rows this backfill wrote and a later cleanup deleted in error. A restored row that
  * differed from its unremoved siblings — a different note format, a date parsed
  * a second way — would read as a new manual entry rather than as the row that
  * was always supposed to be there, and would leave the next person auditing this

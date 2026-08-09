@@ -1514,6 +1514,147 @@ describe("applyGivebutterDonations", () => {
   });
 });
 
+// ── The reclassified-donation guard ─────────────────────────────────────────
+//
+// A donation that was correctly recorded as something OTHER than a gift (Pop
+// The Balloon's $820 Venmo collection became 41 ticket sales) has no `gifts`
+// row, so the dedup above finds nothing and the next sweep would insert it all
+// over again — the same money counted twice, forever, every 15 minutes.
+// `givebutterConvertedDonations` is the durable tombstone that stops it, and
+// the rows it protects are live production rows: the one-off that wrote them
+// has been deleted, the tombstones have not. So the guard is seeded here
+// directly, exactly as that module left it.
+
+/** The tombstone the reclassification left behind. */
+async function seedConvertedDonation(
+  s: ChapterSetup,
+  eventId: Id<"events">,
+  over: { externalRef: string; amountCents: number },
+): Promise<void> {
+  await run(s.t, (ctx) =>
+    ctx.db.insert("givebutterConvertedDonations", {
+      scope: s.chapterId,
+      eventId,
+      convertedTo: "ticketOrders.externalRef=ptb:venmo:2025-11-30",
+      reason: "Collected by hand as 41 admissions and forwarded as one payment.",
+      convertedAt: Date.now(),
+      ...over,
+    }),
+  );
+}
+
+describe("applyGivebutterDonations — a reclassified donation is never resurrected", () => {
+  const CONVERTED_REF = "gb_txn_converted";
+  const CONVERTED_CENTS = 82_000;
+
+  /** What the sync presents on every run — Givebutter's record has not changed
+   *  and never will. */
+  const forwarded = () =>
+    gbDonation({
+      externalId: CONVERTED_REF,
+      donationCents: CONVERTED_CENTS,
+      donorName: "Charisma Collector",
+      email: "charisma@x.com",
+    });
+
+  test("a converted transaction is reported as converted, and no gift is written", async () => {
+    const s = await setupChapter(newT());
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId);
+    await seedConvertedDonation(s, eventId, {
+      externalRef: CONVERTED_REF,
+      amountCents: CONVERTED_CENTS,
+    });
+
+    const res = await applyDonations(s, eventId, [forwarded()]);
+    expect(res).toMatchObject({ inserted: 0, converted: 1 });
+
+    // Not as a gift, and not on the event's Given total.
+    expect(await giftRows(s, eventId)).toHaveLength(0);
+    expect((await pageRow(s, eventId))?.externalGiftsCents ?? 0).toBe(0);
+    expect((await pageRow(s, eventId))?.externalGiftsCount ?? 0).toBe(0);
+  });
+
+  test("sweeping ten more times still does not bring it back", async () => {
+    // The cron runs every 15 minutes. A guard that holds once and not
+    // repeatedly would be no guard at all.
+    const s = await setupChapter(newT());
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId);
+    await seedConvertedDonation(s, eventId, {
+      externalRef: CONVERTED_REF,
+      amountCents: CONVERTED_CENTS,
+    });
+
+    for (let i = 0; i < 10; i++) {
+      await applyDonations(s, eventId, [forwarded()]);
+    }
+    expect(await giftRows(s, eventId)).toHaveLength(0);
+    expect((await pageRow(s, eventId))?.externalGiftsCents ?? 0).toBe(0);
+  });
+
+  test("a converted transaction never even mints a donor row", async () => {
+    // The guard sits BEFORE `matchOrCreateDonor` on purpose: a donation that
+    // was not a gift must not manufacture a giver either.
+    const s = await setupChapter(newT());
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId);
+    await seedConvertedDonation(s, eventId, {
+      externalRef: CONVERTED_REF,
+      amountCents: CONVERTED_CENTS,
+    });
+
+    await applyDonations(s, eventId, [
+      { ...forwarded(), donorName: "Someone Else", email: "else@x.com" },
+    ]);
+    expect(await run(s.t, (ctx) => ctx.db.query("donors").collect())).toHaveLength(0);
+  });
+
+  test("an amount that has since moved is still suppressed — the id is the identity", async () => {
+    const s = await setupChapter(newT());
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId);
+    await seedConvertedDonation(s, eventId, {
+      externalRef: CONVERTED_REF,
+      amountCents: CONVERTED_CENTS,
+    });
+
+    const res = await applyDonations(s, eventId, [
+      { ...forwarded(), donationCents: CONVERTED_CENTS - 1_000 },
+    ]);
+    expect(res).toMatchObject({ inserted: 0, converted: 1 });
+    expect(await giftRows(s, eventId)).toHaveLength(0);
+  });
+
+  test("an unrelated donation on the same campaign still lands normally", async () => {
+    // The guard is keyed on ONE transaction id. Suppressing anything wider
+    // would silently swallow real giving — the opposite failure, and just as
+    // expensive.
+    const s = await setupChapter(newT());
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId);
+    await seedConvertedDonation(s, eventId, {
+      externalRef: CONVERTED_REF,
+      amountCents: CONVERTED_CENTS,
+    });
+
+    const res = await applyDonations(s, eventId, [
+      forwarded(),
+      gbDonation({
+        externalId: "gb_txn_real",
+        donationCents: 2_500,
+        email: "real@x.com",
+      }),
+    ]);
+    expect(res).toMatchObject({ inserted: 1, converted: 1 });
+
+    const gifts = await giftRows(s, eventId);
+    expect(gifts).toHaveLength(1);
+    expect(gifts[0].externalRef).toBe("gb_txn_real");
+    expect((await pageRow(s, eventId))?.externalGiftsCents).toBe(2_500);
+  });
+});
+
 // Action-level: derive the donation from a transaction's `line_items` and prove
 // the ticket/donation split never overlaps, refunds contribute nothing, and a
 // full re-sync is idempotent.
