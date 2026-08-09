@@ -11,6 +11,7 @@ export { Badge, type BadgeTone } from "./Badge";
 export { Pill } from "./Pill";
 export { Checkbox } from "./Checkbox";
 export { Switch, SwitchTrack } from "./Switch";
+export { RadioGroup, Radio } from "./RadioGroup";
 export { spaceToggleProps, isSpaceKey, type WebKeyHandlers } from "./spaceToggle";
 export { Avatar } from "./Avatar";
 export { CopyButton } from "./CopyButton";
