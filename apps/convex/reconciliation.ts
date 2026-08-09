@@ -1891,11 +1891,21 @@ async function snapshotBalances(ctx: ActionCtx): Promise<void> {
         );
         const rows = (body.data ?? []) as Array<{
           amount?: number;
-          category?: string;
+          /** The kind lives on `source`, NOT at the top level — a Pending
+           *  Transaction's top level carries only `type`, `route_type` and the
+           *  money. Reading `row.category` (which is simply absent) put every
+           *  row in "other", so the itemisation existed but said nothing. */
+          source?: { category?: string };
         }>;
         for (const row of rows) {
           if (typeof row.amount !== "number") continue;
-          const category = row.category ?? "other";
+          // Real values seen in production: `card_authorization` and
+          // `ach_transfer_instruction`. That second one is the reason this
+          // rollup is worth having — an outbound ACH the org initiated is
+          // pending money that is NOT card spend, and calling the whole figure
+          // "card authorizations" (as this panel once did) sends a reader
+          // hunting for a card charge that does not exist.
+          const category = row.source?.category ?? "other";
           const entry = byCategory.get(category) ?? { amountCents: 0, count: 0 };
           entry.amountCents += row.amount;
           entry.count += 1;
