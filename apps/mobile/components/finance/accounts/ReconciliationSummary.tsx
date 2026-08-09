@@ -43,18 +43,44 @@
  * The founder again: "I need it to sync every time I open the page." Balances
  * used to move only when the morning cron ran, so this panel would confidently
  * reconcile the books against a bank figure from 5am. The mount effect calls
- * `refreshBalancesNow`, which re-reads Increase and Stripe and NOTHING else —
- * it is not the engine, it books nothing and moves no cash. The throttle that
- * stops a remount storm from hammering two vendors lives on the server, where
- * it survives remounts and knows about other viewers; see
- * `reconciliation.ts#claimBalanceSnapshot`.
+ * `refreshBalancesNow`, which re-reads the balances (Increase, Stripe,
+ * Givebutter) and asks Stripe to re-pull the Relay transaction feed — and
+ * NOTHING else. It is not the engine, it books nothing and moves no cash. Every
+ * throttle lives on the server, where it survives remounts and knows about other
+ * viewers; see `reconciliation.ts#claimBalanceSnapshot` and `#claimFcRefresh`.
+ *
+ * ── THE TWO PILES ON THEIR WAY OUT ───────────────────────────────────────────
+ * Givebutter and Relay both still hold real money and are both being deprecated
+ * ("we plan to deprecate both givebutter and relay soon but for now it still
+ * holds some of our funds" — founder, 2026-08-08). They get their own labelled
+ * group rather than sitting anonymously among the permanent accounts, because a
+ * treasurer reading this in three months needs to know these are winding down;
+ * a comment in the source is not where they will find that out.
+ *
+ * The two are NOT the same kind of number, and the panel does not pretend
+ * otherwise. Givebutter's is fetched (derived from its transaction feed, since
+ * it publishes no balance endpoint). Relay's is TYPED BY A PERSON, because Relay
+ * has no balance API at all — so that row shows who stated it, when they say it
+ * was true, and says so out loud once it is old enough to doubt. Relay's
+ * TRANSACTIONS do sync live via Stripe Financial Connections, which is a
+ * separate freshness from its balance and is reported separately for exactly
+ * that reason: a feed that synced a minute ago is no evidence at all that a
+ * balance typed three weeks ago is still right.
  */
 import { useEffect, useRef, useState } from "react";
 import { Text, View } from "react-native";
-import { useAction, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import { formatCents } from "@events-os/shared";
-import { Badge, Button, Card, SectionHeader } from "../../ui";
+import {
+  Badge,
+  Button,
+  Card,
+  SectionHeader,
+  TextField,
+  ToastView,
+} from "../../ui";
+import { useActionRunner } from "../../../lib/useActionToast";
 
 /** `Aug 8, 2:14 PM` in the org's timezone. */
 function stamp(ts: number): string {
@@ -66,6 +92,26 @@ function stamp(ts: number): string {
     minute: "2-digit",
   });
 }
+
+/** `Aug 8` — for a figure whose time of day is noise, like a stated balance. */
+function day(ts: number): string {
+  return new Date(ts).toLocaleDateString("en-US", {
+    timeZone: "America/New_York",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+/**
+ * How old a hand-entered Relay balance may get before the panel says so.
+ *
+ * A typed number does not refresh itself, and the failure mode is specific: it
+ * silently ages into fiction while sitting in a total that looks as
+ * authoritative as the machine-read figures beside it. Two weeks is roughly a
+ * statement cycle — long enough not to nag, short enough that a stale figure
+ * gets called out well before it can move the gap by a meaningful amount.
+ */
+const RELAY_STALE_AFTER_MS = 14 * 24 * 60 * 60 * 1000;
 
 function Row({
   label,
@@ -98,6 +144,128 @@ function Row({
       >
         {value}
       </Text>
+    </View>
+  );
+}
+
+/**
+ * The Relay balance, stated by a person.
+ *
+ * Every other figure in this panel is fetched; this one is typed, because Relay
+ * exposes no balance API (its TRANSACTIONS do sync live, through Stripe
+ * Financial Connections — it is only the account total that has to be read off a
+ * statement). So the row carries the things a fetched number gets for free and a
+ * typed one does not: when it was true, who said so, and a warning once it is
+ * old enough to doubt.
+ *
+ * Editing in place rather than behind a settings screen is the point — a figure
+ * the reader has just been told is three weeks old should be fixable without
+ * leaving the sentence that told them.
+ */
+function RelayBalanceEditor({
+  balanceCents,
+  asOf,
+  setByName,
+}: {
+  balanceCents: number | null;
+  asOf: number | null;
+  setByName: string | null;
+}) {
+  const setRelayBalance = useMutation(api.reconciliation.setRelayBalance);
+  const { run, toast, dismiss } = useActionRunner();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+
+  const stale = asOf != null && Date.now() - asOf > RELAY_STALE_AFTER_MS;
+
+  function open() {
+    // Seed with the current figure so "update" is an edit, not a re-type.
+    setDraft(balanceCents == null ? "" : (balanceCents / 100).toFixed(2));
+    setEditing(true);
+  }
+
+  function save() {
+    const raw = draft.trim().replace(/^\$/, "").replace(/,/g, "");
+    const dollars = Number(raw);
+    if (!raw || !Number.isFinite(dollars)) {
+      void run(
+        () =>
+          Promise.reject(
+            new Error("Enter the balance in dollars, e.g. 56.93."),
+          ),
+        { errorTitle: "That isn't a number" },
+      );
+      return;
+    }
+    // Round at the boundary, once. Float dollars in, integer cents everywhere
+    // after — the same discipline the Givebutter and Stripe amounts follow.
+    const cents = Math.round(dollars * 100);
+    void run(() => setRelayBalance({ balanceCents: cents }), {
+      errorTitle: "Couldn't record the Relay balance",
+      onSuccess: () => setEditing(false),
+    });
+  }
+
+  return (
+    <View className="py-1">
+      <View className="flex-row items-baseline gap-3">
+        <View className="min-w-0 flex-1">
+          <Text className="text-sm text-muted">In Relay</Text>
+          <Text className="text-2xs text-faint">
+            {balanceCents == null
+              ? "No balance recorded — Relay has no balance API, so this one is read off the account and typed in"
+              : `Stated${setByName ? ` by ${setByName}` : ""}${
+                  asOf ? `, true as of ${day(asOf)}` : ""
+                }`}
+          </Text>
+        </View>
+        <Text
+          className={`text-sm ${balanceCents == null ? "text-faint" : "text-ink"}`}
+          style={{ fontVariant: ["tabular-nums"] }}
+        >
+          {balanceCents == null ? "—" : formatCents(balanceCents)}
+        </Text>
+      </View>
+
+      {stale && !editing ? (
+        <Text className="mt-0.5 text-2xs text-warn">
+          This figure is over two weeks old and nothing refreshes it on its own
+          — check Relay and update it, or it will keep counting as money we can
+          point at long after it moved.
+        </Text>
+      ) : null}
+
+      {editing ? (
+        <View className="mt-2 flex-row items-end gap-2">
+          <View className="flex-1">
+            <TextField
+              label="Relay balance (dollars)"
+              keyboardType="decimal-pad"
+              value={draft}
+              onChangeText={setDraft}
+              placeholder="e.g. 56.93"
+            />
+          </View>
+          <Button title="Save" variant="primary" size="sm" onPress={save} />
+          <Button
+            title="Cancel"
+            variant="secondary"
+            size="sm"
+            onPress={() => setEditing(false)}
+          />
+        </View>
+      ) : (
+        <View className="mt-1 flex-row">
+          <Button
+            title={balanceCents == null ? "Record balance" : "Update"}
+            variant="secondary"
+            size="sm"
+            icon="edit-2"
+            onPress={open}
+          />
+        </View>
+      )}
+      <ToastView toast={toast} onDismiss={dismiss} />
     </View>
   );
 }
@@ -142,12 +310,25 @@ export function ReconciliationSummary() {
 
   const gap = summary.differenceCents;
   const cashHigh = summary.verdict === "cash_exceeds_books";
-  // "It adds up to the cent" is a claim, and a claim needs every term. If
-  // Stripe has never been read, the cash side is short by however much is
+  // "It adds up to the cent" is a claim, and a claim needs every term. If a
+  // processor has never been read, the cash side is short by however much is
   // sitting there — which could be thousands — so a zero difference is a
   // coincidence, not a reconciliation, and must not be reported as one.
   const balanced = summary.verdict === "balanced" && !summary.incomplete;
   const unknowable = summary.verdict === "balanced" && summary.incomplete;
+  const stripeMissing = summary.missingTerms.includes("stripe");
+  const givebutterMissing = summary.missingTerms.includes("givebutter");
+  // Name the vendors we haven't read, rather than saying "something's missing".
+  // Which one it is decides where the reader goes next.
+  const missingLabel = summary.missingTerms
+    .map((t) => (t === "stripe" ? "Stripe" : "Givebutter"))
+    .join(" or ");
+  // The section only earns its space where one of these piles is real: a
+  // Givebutter integration, or a Relay balance somebody has recorded. On a
+  // deployment with neither, two permanent em-dashes under a "winding down"
+  // heading is noise pretending to be information.
+  const showWindingDown =
+    summary.givebutterConfigured || summary.relayBalanceCents != null;
 
   return (
     <>
@@ -184,12 +365,12 @@ export function ReconciliationSummary() {
           <Row
             label="Still at Stripe"
             hint={
-              summary.incomplete
+              stripeMissing
                 ? "Never fetched — this total is short by whatever Stripe is holding"
                 : "Earned and counted, but not yet paid into any account"
             }
             value={
-              summary.incomplete
+              stripeMissing
                 ? "—"
                 : formatCents(
                     (summary.stripeAvailableCents ?? 0) +
@@ -197,6 +378,55 @@ export function ReconciliationSummary() {
                   )
             }
           />
+
+          {/* ── The two piles on their way out ───────────────────────────────
+              Kept together and labelled, so nobody reads them as permanent
+              fixtures of the org's money. */}
+          {showWindingDown ? (
+            <View className="mt-2 border-t border-border pt-2">
+              <Text className="mb-1 text-[11px] font-semibold uppercase tracking-wide text-faint">
+                On their way out
+              </Text>
+              <Text className="mb-1 text-2xs text-faint">
+                Givebutter and Relay are both being wound down. They&apos;re
+                listed because they still hold our money, not because
+                they&apos;re part of where it&apos;s going.
+              </Text>
+              {summary.givebutterConfigured ? (
+                <Row
+                  label="At Givebutter"
+                  hint={
+                    givebutterMissing
+                      ? "Never fetched — this total is short by whatever Givebutter is holding"
+                      : `Collected and counted, not yet paid out${
+                          summary.givebutterBalanceAsOf
+                            ? ` · read ${stamp(summary.givebutterBalanceAsOf)}`
+                            : ""
+                        }`
+                  }
+                  value={
+                    givebutterMissing
+                      ? "—"
+                      : formatCents(summary.givebutterUndepositedCents ?? 0)
+                  }
+                />
+              ) : null}
+              <RelayBalanceEditor
+                balanceCents={summary.relayBalanceCents}
+                asOf={summary.relayBalanceAsOf}
+                setByName={summary.relayBalanceSetByName}
+              />
+              {summary.relayFeedSyncedAt ? (
+                <Text className="mt-1 text-2xs text-faint">
+                  Relay transactions last landed{" "}
+                  {stamp(summary.relayFeedSyncedAt)}. That feed refreshes when
+                  this page opens; the balance above does not — they age
+                  separately.
+                </Text>
+              ) : null}
+            </View>
+          ) : null}
+
           <View className="mt-1 border-t border-border pt-1">
             <Row
               label="Total we can point at"
@@ -228,11 +458,12 @@ export function ReconciliationSummary() {
           ) : unknowable ? (
             <>
               <Text className="font-display text-base text-ink">
-                Can&apos;t say yet — we&apos;ve never read the Stripe balance.
+                Can&apos;t say yet — we&apos;ve never read the {missingLabel}{" "}
+                balance.
               </Text>
               <Text className="mt-0.5 text-sm text-muted">
-                The two sides happen to match, but whatever Stripe is holding is
-                missing from the money side, so that isn&apos;t a
+                The two sides happen to match, but whatever {missingLabel} is
+                holding is missing from the money side, so that isn&apos;t a
                 reconciliation. Press Refresh, or wait for the morning run.
               </Text>
             </>
@@ -299,6 +530,20 @@ export function ReconciliationSummary() {
                 {summary.booksWithoutBankBalance.join(", ")} — that account is
                 missing from the money side entirely, which is not the same as it
                 holding nothing.
+              </Text>
+            ) : null}
+            {/* We can PROVE Relay exists — its transactions are syncing — and
+                nobody has said what it holds. That is a real hole in the money
+                side, and the only one the arithmetic deliberately can't flag
+                for itself (an unrecorded balance is indistinguishable from no
+                account at all), so it is named here instead. */}
+            {summary.relayBalanceCents == null &&
+            summary.relayFeedSyncedAt != null ? (
+              <Text className="text-2xs text-warn">
+                • Relay&apos;s balance has never been recorded, and its
+                transactions are still syncing — so the account is real and
+                whatever is in it is missing from the money side. Record it
+                above.
               </Text>
             ) : null}
             {summary.unattributedBankCents !== 0 ? (

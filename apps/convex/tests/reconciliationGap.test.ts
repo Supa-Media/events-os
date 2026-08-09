@@ -27,6 +27,18 @@ import { reconcileOrgMoney } from "../lib/reconciliationGap";
  * half of "stop telling the treasurer something is wrong when it isn't".
  */
 
+/**
+ * The two winding-down piles, absent. Spread into a case that isn't about them
+ * so each test still states every term it depends on, without restating the two
+ * it doesn't. `givebutterConfigured: false` is the "this org has no Givebutter"
+ * shape — the one where a null balance is a COMPLETE answer rather than a gap.
+ */
+const NO_LEGACY_PILES = {
+  givebutterUndepositedCents: null,
+  givebutterConfigured: false,
+  relayBalanceCents: null,
+} as const;
+
 async function seedSelfPerson(s: ChapterSetup): Promise<Id<"people">> {
   return run(s.t, (ctx) =>
     ctx.db.insert("people", {
@@ -130,6 +142,7 @@ describe("reconcileOrgMoney — the arithmetic", () => {
       bankPendingCents: 10_000,
       stripeAvailableCents: 0,
       stripePendingCents: 0,
+      ...NO_LEGACY_PILES,
     });
     expect(r.locatedCents).toBe(100_000);
     expect(r.differenceCents).toBe(0);
@@ -146,6 +159,7 @@ describe("reconcileOrgMoney — the arithmetic", () => {
       bankPendingCents: 0,
       stripeAvailableCents: 5_000,
       stripePendingCents: 25_000,
+      ...NO_LEGACY_PILES,
     });
     expect(r.locatedCents).toBe(100_000);
     expect(r.verdict).toBe("balanced");
@@ -158,6 +172,7 @@ describe("reconcileOrgMoney — the arithmetic", () => {
       bankPendingCents: 0,
       stripeAvailableCents: 0,
       stripePendingCents: 0,
+      ...NO_LEGACY_PILES,
     });
     expect(short.differenceCents).toBe(-5_000);
     expect(short.verdict).toBe("books_exceed_cash");
@@ -168,6 +183,7 @@ describe("reconcileOrgMoney — the arithmetic", () => {
       bankPendingCents: 0,
       stripeAvailableCents: 0,
       stripePendingCents: 0,
+      ...NO_LEGACY_PILES,
     });
     expect(over.differenceCents).toBe(5_000);
     expect(over.verdict).toBe("cash_exceeds_books");
@@ -180,6 +196,7 @@ describe("reconcileOrgMoney — the arithmetic", () => {
       bankPendingCents: 0,
       stripeAvailableCents: 0,
       stripePendingCents: 0,
+      ...NO_LEGACY_PILES,
     });
     expect(r.verdict).toBe("books_exceed_cash");
     expect(r.differenceCents).toBe(-1);
@@ -196,6 +213,7 @@ describe("reconcileOrgMoney — the arithmetic", () => {
       bankPendingCents: 0,
       stripeAvailableCents: null,
       stripePendingCents: null,
+      ...NO_LEGACY_PILES,
     });
     expect(r.incomplete).toBe(true);
     expect(r.stripeTotalCents).toBeNull();
@@ -207,11 +225,149 @@ describe("reconcileOrgMoney — the arithmetic", () => {
       bankPendingCents: 0,
       stripeAvailableCents: 0,
       stripePendingCents: null,
+      ...NO_LEGACY_PILES,
     });
     // A zero Stripe balance IS a fetched fact. Only "neither half has ever
     // landed" counts as unknown.
     expect(known.incomplete).toBe(false);
     expect(known.stripeTotalCents).toBe(0);
+  });
+
+  // ── The two winding-down piles: Givebutter and Relay ──────────────────────
+
+  test("Givebutter's undeposited balance is CASH, not a second helping of revenue", () => {
+    // THE double-count test, and the reason it matters: the Givebutter sync
+    // writes each ticket and gift into `ticketOrders`/`gifts` the moment it
+    // happens, so that money is ALREADY inside book value days before Givebutter
+    // remits it. It is missing from the CASH side, not from the books.
+    //
+    // These are the real production figures from 2026-08-08: $75.00 outstanding
+    // at Givebutter, being three $25 tickets on the synced "Public Worship Field
+    // Day" campaign, every one of which was present as a `paid` ticketOrders row.
+    // Book value counts paid ticket orders, so with the cash located the two
+    // sides land exactly level.
+    const r = reconcileOrgMoney({
+      bookValueCents: 7_500,
+      bankAvailableCents: 0,
+      bankPendingCents: 0,
+      stripeAvailableCents: 0,
+      stripePendingCents: 0,
+      givebutterUndepositedCents: 7_500,
+      givebutterConfigured: true,
+      relayBalanceCents: null,
+    });
+    expect(r.locatedCents).toBe(7_500);
+    expect(r.differenceCents).toBe(0);
+    expect(r.verdict).toBe("balanced");
+    expect(r.incomplete).toBe(false);
+
+    // And the failure this pins down. Had the term been applied to the BOOKS
+    // side instead — the plausible-looking mistake, since the money is "already
+    // counted" — the same inputs would report the org holding $75 it does not
+    // have, and the panel would send a treasurer hunting for unrecorded income
+    // that never existed.
+    const ifItHadGoneOnTheBooksSide = reconcileOrgMoney({
+      bookValueCents: 7_500 + 7_500,
+      bankAvailableCents: 0,
+      bankPendingCents: 0,
+      stripeAvailableCents: 0,
+      stripePendingCents: 0,
+      ...NO_LEGACY_PILES,
+    });
+    expect(ifItHadGoneOnTheBooksSide.differenceCents).toBe(-15_000);
+    expect(r.differenceCents).not.toBe(
+      ifItHadGoneOnTheBooksSide.differenceCents,
+    );
+  });
+
+  test("a CONFIGURED Givebutter that has never been read is a knowledge gap", () => {
+    const r = reconcileOrgMoney({
+      bookValueCents: 100_000,
+      bankAvailableCents: 100_000,
+      bankPendingCents: 0,
+      stripeAvailableCents: 0,
+      stripePendingCents: 0,
+      givebutterUndepositedCents: null,
+      givebutterConfigured: true,
+      relayBalanceCents: null,
+    });
+    // The sides happen to match, but Givebutter could be holding anything, so
+    // this must not be presented as a reconciliation.
+    expect(r.verdict).toBe("balanced");
+    expect(r.missingTerms).toEqual(["givebutter"]);
+    expect(r.incomplete).toBe(true);
+  });
+
+  test("an UNCONFIGURED Givebutter is not missing — there is nothing to miss", () => {
+    // The regression this exists to prevent: treating "no balance" as "unread"
+    // would permanently mark every deployment that never used Givebutter as
+    // unreconcilable, and the panel would never again be able to say "it adds
+    // up" for anyone.
+    const r = reconcileOrgMoney({
+      bookValueCents: 100_000,
+      bankAvailableCents: 100_000,
+      bankPendingCents: 0,
+      stripeAvailableCents: 0,
+      stripePendingCents: 0,
+      givebutterUndepositedCents: null,
+      givebutterConfigured: false,
+      relayBalanceCents: null,
+    });
+    expect(r.missingTerms).toEqual([]);
+    expect(r.incomplete).toBe(false);
+  });
+
+  test("a recorded Relay balance is money we can point at", () => {
+    // $56.93, the figure the founder read off Relay on 2026-08-08. Hand-entered,
+    // but once entered it is a pile like any other and belongs in the total.
+    const r = reconcileOrgMoney({
+      bookValueCents: 5_693,
+      bankAvailableCents: 0,
+      bankPendingCents: 0,
+      stripeAvailableCents: 0,
+      stripePendingCents: 0,
+      givebutterUndepositedCents: null,
+      givebutterConfigured: false,
+      relayBalanceCents: 5_693,
+    });
+    expect(r.locatedCents).toBe(5_693);
+    expect(r.verdict).toBe("balanced");
+  });
+
+  test("an unrecorded Relay balance never blocks the verdict", () => {
+    // Unlike a processor, "nobody typed a number" and "this org has no Relay"
+    // are indistinguishable states, so this term must not be able to declare the
+    // reconciliation incomplete. The panel names the absence in its leads
+    // instead — visible without being load-bearing.
+    const r = reconcileOrgMoney({
+      bookValueCents: 100_000,
+      bankAvailableCents: 100_000,
+      bankPendingCents: 0,
+      stripeAvailableCents: 0,
+      stripePendingCents: 0,
+      givebutterUndepositedCents: null,
+      givebutterConfigured: false,
+      relayBalanceCents: null,
+    });
+    expect(r.missingTerms).toEqual([]);
+    expect(r.incomplete).toBe(false);
+    expect(r.locatedCents).toBe(100_000);
+  });
+
+  test("both winding-down piles add on top of the bank and Stripe, not instead", () => {
+    // Guards the plain arithmetic slip of overwriting a term rather than summing
+    // it — every pile is a separate real place money sits.
+    const r = reconcileOrgMoney({
+      bookValueCents: 0,
+      bankAvailableCents: 1_000,
+      bankPendingCents: 200,
+      stripeAvailableCents: 30,
+      stripePendingCents: 4,
+      givebutterUndepositedCents: 7_500,
+      givebutterConfigured: true,
+      relayBalanceCents: 5_693,
+    });
+    expect(r.locatedCents).toBe(1_000 + 200 + 30 + 4 + 7_500 + 5_693);
   });
 });
 

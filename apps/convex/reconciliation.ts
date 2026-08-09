@@ -111,7 +111,12 @@ import {
 } from "./transfers";
 import { readSandbox } from "./financeSettings";
 import { requireUserId } from "./lib/context";
-import { getChapterAccountForMode, type FinanceScope } from "./lib/finance";
+import {
+  getChapterAccountForMode,
+  requireCentralEdOrFm,
+  type FinanceScope,
+} from "./lib/finance";
+import { fetchGivebutterUndepositedCents } from "./givebutterSync";
 import {
   hasReconciliationAudit,
   requireReconciliationAudit,
@@ -1346,6 +1351,48 @@ export const claimBalanceSnapshot = internalMutation({
   },
 });
 
+/**
+ * How often opening the accounts page may ask Stripe to re-pull the Financial
+ * Connections transaction feed — the live feed for the Relay bank account.
+ *
+ * MUCH slower than the 60-second balance window on purpose. A balance read is
+ * one cheap GET per vendor and its answer is instant, so re-reading it on demand
+ * is reasonable. An FC refresh is a heavyweight operation Stripe rate-limits on
+ * its own budget, and it is ASYNCHRONOUS — it POSTs a request, Stripe pulls the
+ * history in the background, and the rows land seconds to minutes later via a
+ * webhook or the bounded fallback re-syncs. Asking twice in quick succession
+ * cannot make them arrive sooner; it only spends rate limit.
+ *
+ * Which is also why `force` does NOT skip this one. "I pressed Refresh" is a
+ * good reason to re-read a number that will be current the moment it returns; it
+ * is not a reason to re-issue a request whose result is already in flight.
+ */
+const FC_REFRESH_INTERVAL_MS = 15 * 60 * 1000;
+
+/**
+ * Decide — transactionally, for the same reasons as `claimBalanceSnapshot` —
+ * whether this page open gets to kick off an FC transaction refresh.
+ *
+ * Stamps optimistically (before the refresh is known to have succeeded) so a
+ * vendor outage can't turn every subsequent page open into another attempt. The
+ * scheduled cron sweep is the backstop that recovers a missed window.
+ */
+export const claimFcRefresh = internalMutation({
+  args: {},
+  returns: v.object({ proceed: v.boolean() }),
+  handler: async (ctx) => {
+    const now = Date.now();
+    const row = await ctx.db.query("financeSettings").first();
+    if (!row) return { proceed: true };
+    const last = row.fcRefreshAt;
+    if (last != null && now - last < FC_REFRESH_INTERVAL_MS) {
+      return { proceed: false };
+    }
+    await ctx.db.patch(row._id, { fcRefreshAt: now, updatedAt: now });
+    return { proceed: true };
+  },
+});
+
 /** Release the lock and stamp "we last looked at" — the page's "as of". */
 export const finishBalanceSnapshot = internalMutation({
   args: {},
@@ -1384,6 +1431,114 @@ export const saveStripeBalance = internalMutation({
     };
     if (row) await ctx.db.patch(row._id, patch);
     else await ctx.db.insert("financeSettings", { sandboxMode: false, ...patch });
+    return null;
+  },
+});
+
+/**
+ * Org-level Givebutter balance snapshot. Same shape and spirit as
+ * `saveStripeBalance` — one Givebutter account, so not per-book, and display /
+ * reconciliation only. The figure is DERIVED rather than read; see
+ * `givebutterSync.ts#fetchGivebutterUndepositedCents`.
+ */
+export const saveGivebutterBalance = internalMutation({
+  args: { undepositedCents: v.number() },
+  returns: v.null(),
+  handler: async (ctx, { undepositedCents }) => {
+    const row = await ctx.db.query("financeSettings").first();
+    const patch = {
+      givebutterUndepositedCents: undepositedCents,
+      givebutterBalanceAsOf: Date.now(),
+      updatedAt: Date.now(),
+    };
+    if (row) await ctx.db.patch(row._id, patch);
+    else
+      await ctx.db.insert("financeSettings", { sandboxMode: false, ...patch });
+    return null;
+  },
+});
+
+/**
+ * Record what the Relay account holds — the one balance on this page a human
+ * types rather than a machine fetches.
+ *
+ * Relay has no integration to read (it reaches this codebase only as a
+ * `relay_csv` import source and a `legacy` card label), and it still holds real
+ * money while the org migrates off it. The alternatives were to leave a genuine
+ * pile out of a panel whose whole job is to locate every pile, or to call it
+ * zero. Both are worse than a stated figure with a name and a date on it, which
+ * is what this writes.
+ *
+ * `asOf` is when the person says the figure was TRUE, not when they typed it —
+ * they may be reading yesterday's statement — and it defaults to now when
+ * omitted. It is stored separately from the singleton's `updatedAt` because that
+ * field moves whenever any unrelated finance policy is edited, which would make
+ * a months-old Relay figure look freshly confirmed.
+ *
+ * Passing `null` CLEARS the figure (back to "never recorded") rather than
+ * setting zero — the right move once Relay is finally drained and closed, and
+ * distinct from asserting it holds nothing.
+ *
+ * Gated on a central ED/FM, the same gate as every other org-wide finance lever;
+ * this is deployment-wide money, not a chapter's.
+ */
+export const setRelayBalance = mutation({
+  args: {
+    balanceCents: v.union(v.number(), v.null()),
+    asOf: v.optional(v.number()),
+  },
+  returns: v.null(),
+  handler: async (ctx, { balanceCents, asOf }) => {
+    await requireCentralEdOrFm(ctx);
+    const setBy = (await requireUserId(ctx)) as Id<"users">;
+    const now = Date.now();
+
+    if (balanceCents !== null) {
+      if (!Number.isInteger(balanceCents)) {
+        throw new ConvexError({
+          code: "INVALID_ARGUMENT",
+          message: "The Relay balance must be a whole number of cents.",
+        });
+      }
+      // A negative bank balance is a real thing (an overdrawn account), so it is
+      // allowed. A figure dated in the FUTURE is not — it would sort as the
+      // freshest number on the page forever and never go stale.
+      if (asOf != null && asOf > now) {
+        throw new ConvexError({
+          code: "INVALID_ARGUMENT",
+          message: "The Relay balance can't be dated in the future.",
+        });
+      }
+    }
+
+    const patch =
+      balanceCents === null
+        ? {
+            relayBalanceCents: undefined,
+            relayBalanceAsOf: undefined,
+            relayBalanceSetBy: undefined,
+          }
+        : {
+            relayBalanceCents: balanceCents,
+            relayBalanceAsOf: asOf ?? now,
+            relayBalanceSetBy: setBy,
+          };
+
+    const row = await ctx.db.query("financeSettings").first();
+    if (row) {
+      await ctx.db.patch(row._id, {
+        ...patch,
+        updatedBy: setBy,
+        updatedAt: now,
+      });
+    } else {
+      await ctx.db.insert("financeSettings", {
+        sandboxMode: false,
+        ...patch,
+        updatedBy: setBy,
+        updatedAt: now,
+      });
+    }
     return null;
   },
 });
@@ -1781,6 +1936,28 @@ async function snapshotBalances(ctx: ActionCtx): Promise<void> {
     } catch (err) {
       console.error("[reconciliation] Stripe balance snapshot failed", err);
     }
+  }
+
+  // Givebutter's balance, same best-effort spirit again. The second processor
+  // holds real money the accounts page could not see, for the identical reason
+  // Stripe's did: revenue is counted at the ticket/gift days before Givebutter
+  // remits it.
+  //
+  // Unlike the other two this one is DERIVED from the transaction feed rather
+  // than read from a balance endpoint (Givebutter publishes none), so it costs a
+  // handful of paged calls instead of one — see
+  // `givebutterSync.ts#fetchGivebutterUndepositedCents`. It stays inside the
+  // same throttle as everything else here, and it self-selects: no API key
+  // configured returns null and writes nothing at all.
+  try {
+    const undepositedCents = await fetchGivebutterUndepositedCents(ctx);
+    if (undepositedCents != null) {
+      await ctx.runMutation(internal.reconciliation.saveGivebutterBalance, {
+        undepositedCents,
+      });
+    }
+  } catch (err) {
+    console.error("[reconciliation] Givebutter balance snapshot failed", err);
   }
 
   // Stamped LAST and unconditionally: this is "when we last went and looked",
@@ -2194,7 +2371,66 @@ export const runReconciliationNow = action({
 });
 
 /**
- * Re-read the bank and Stripe balances — and NOTHING else.
+ * Ask Stripe to re-pull the Financial Connections transaction feeds — the live
+ * feed for the org's Relay bank account.
+ *
+ * The founder, 2026-08-08: "there is also transactions from relay that either
+ * havent been synced or is still pending, we need to make sure relay is synced
+ * when we open the page." A balance refresh alone could not answer that: FC rows
+ * arrive on Stripe's schedule, so the reconcile queue could be missing days of
+ * Relay activity while the page confidently reported a gap caused by exactly
+ * those missing rows.
+ *
+ * FIRE-AND-FORGET, THREE WAYS, and each one matters:
+ *
+ *  · It SCHEDULES rather than awaits. `refreshAllActiveFcAccounts` only asks
+ *    Stripe to start fetching; the rows land later via the FC webhook or the
+ *    bounded fallback re-syncs in `stripeFinance.ts`. Blocking the page on it
+ *    would buy a slower render and not one extra row.
+ *  · It CANNOT fail the caller. Everything is inside a catch that logs, so a
+ *    Stripe outage leaves the balances that did refresh intact and the panel
+ *    renders exactly as before. Looking at the books must never break the page.
+ *  · It is IDEMPOTENT downstream. FC rows dedup on
+ *    `transactions.externalId` (`"stripe_fc:"+<id>`), so overlapping with the
+ *    webhook, the nightly `syncAllAccounts` cron, or another viewer's page open
+ *    can never double-record a transaction. Re-syncing is also how a PENDING row
+ *    becomes posted, which is the other half of what was asked for.
+ *
+ * SCOPE — every ACTIVE legacy account, not a Relay-specific lookup. Today those
+ * are the same thing (production holds exactly one active `legacyAccounts` row:
+ * Relay Financial, ••4207), and "any connected legacy bank should be current
+ * when I open the reconciliation page" is the rule that stays right if a second
+ * one is ever connected. Bounded by the same `ACCOUNT_SCAN_LIMIT` sweep the ops
+ * escape hatch uses, so the cost cannot run away with the account list.
+ */
+async function refreshLegacyTransactionFeeds(ctx: ActionCtx): Promise<void> {
+  try {
+    const { proceed }: { proceed: boolean } = await ctx.runMutation(
+      internal.reconciliation.claimFcRefresh,
+      {},
+    );
+    if (!proceed) return;
+    await ctx.scheduler.runAfter(
+      0,
+      internal.stripeFinance.refreshAllActiveFcAccounts,
+      {},
+    );
+  } catch (err) {
+    // Never rethrow: the balance refresh this rides along with must still run.
+    console.error(
+      "[reconciliation] could not start the legacy (Relay) feed refresh",
+      err,
+    );
+  }
+}
+
+/**
+ * Bring the page's inputs up to date — READ-ONLY, and nothing beyond that.
+ *
+ * Two jobs, on two separate throttles:
+ *   1. Re-read every balance (Increase per account, Stripe, Givebutter).
+ *   2. Ask Stripe to re-pull the Financial Connections transaction feeds — the
+ *      live Relay feed. See `refreshLegacyTransactionFeeds`.
  *
  * The accounts page calls this when it opens. The founder, 2026-08-08: "I need
  * it to sync every time I open the page." Before this the only thing that ever
@@ -2205,8 +2441,14 @@ export const runReconciliationNow = action({
  * against their books, and — when real cash movement is on — executes real
  * bank transfers. Wiring any of that to a page load would mean the act of
  * LOOKING at the books could change them, and a burst of tab-switching could
- * move money. This action reads two vendors and updates cached display figures;
- * that is the entire blast radius.
+ * move money.
+ *
+ * The FC refresh is the one thing here that WRITES rows rather than updating a
+ * cached figure, so it is worth being precise about why that is still read-only
+ * in the sense that matters: it imports the bank's own record of what already
+ * happened, into `status:"unreviewed"`, deduped on `externalId`. It records no
+ * decision, moves no money, and books nothing — it is the same import the
+ * nightly cron performs, just triggered by someone opening the page.
  *
  * Throttled server-side (see `claimBalanceSnapshot`) rather than in the
  * component, because the thing being protected is a rate limit at Increase and
@@ -2224,6 +2466,14 @@ export const refreshBalancesNow = action({
   returns: v.object({ refreshed: v.boolean() }),
   handler: async (ctx, { force }) => {
     await ctx.runQuery(internal.reconciliation.assertAuditAccess, {});
+
+    // The Relay transaction feed, on its own much slower clock. Claimed BEFORE
+    // the balance throttle's early return on purpose: the two protect different
+    // vendors on different budgets, and a page opened inside the 60-second
+    // balance window should still be allowed to start an FC pull that is
+    // fifteen minutes overdue.
+    await refreshLegacyTransactionFeeds(ctx);
+
     const { proceed }: { proceed: boolean } = await ctx.runMutation(
       internal.reconciliation.claimBalanceSnapshot,
       { force: force ?? false },
@@ -2850,6 +3100,22 @@ export const reconciliationSummary = query({
     bankPendingCents: v.number(),
     stripeAvailableCents: v.union(v.number(), v.null()),
     stripePendingCents: v.union(v.number(), v.null()),
+    /** Givebutter's derived undeposited balance; null = never snapshotted. */
+    givebutterUndepositedCents: v.union(v.number(), v.null()),
+    givebutterBalanceAsOf: v.union(v.number(), v.null()),
+    /** True when a Givebutter key is configured — i.e. a null balance above is
+     *  a gap in what we know rather than "this org has no Givebutter". */
+    givebutterConfigured: v.boolean(),
+    /** The hand-entered Relay balance; null = nobody has ever recorded one. */
+    relayBalanceCents: v.union(v.number(), v.null()),
+    /** When the person said that figure was TRUE (not when they typed it). */
+    relayBalanceAsOf: v.union(v.number(), v.null()),
+    /** Who recorded it, for the audit trail the panel shows. */
+    relayBalanceSetByName: v.union(v.string(), v.null()),
+    /** When Relay's TRANSACTION feed (Stripe FC) last synced. A different fact
+     *  from `relayBalanceAsOf` and it goes stale on its own clock — a fresh feed
+     *  is not evidence for an old balance. */
+    relayFeedSyncedAt: v.union(v.number(), v.null()),
     locatedCents: v.number(),
     differenceCents: v.number(),
     verdict: v.union(
@@ -2857,7 +3123,9 @@ export const reconciliationSummary = query({
       v.literal("cash_exceeds_books"),
       v.literal("books_exceed_cash"),
     ),
-    /** Stripe has never been snapshotted, so the cash side is knowably short. */
+    /** Expected machine-fetched piles we have never read, by name. */
+    missingTerms: v.array(v.union(v.literal("stripe"), v.literal("givebutter"))),
+    /** `missingTerms` is non-empty — the cash side is knowably short. */
     incomplete: v.boolean(),
     /** In-kind revenue inside book value — no cash exists for it, by design. */
     inKindRevenueCents: v.number(),
@@ -2927,6 +3195,21 @@ export const reconciliationSummary = query({
 
     const stripeAvailableCents = settings?.stripeAvailableCents ?? null;
     const stripePendingCents = settings?.stripePendingCents ?? null;
+    const givebutterUndepositedCents =
+      settings?.givebutterUndepositedCents ?? null;
+    const relayBalanceCents = settings?.relayBalanceCents ?? null;
+
+    // Whether Givebutter is configured AT ALL, which is what separates "we
+    // haven't read the balance yet" from "this org doesn't use Givebutter".
+    // Reading the settings row directly rather than through
+    // `integrationSettings.readGivebutterApiKey` is the documented discipline
+    // for a caller that only needs to know a key EXISTS — the raw secret never
+    // leaves that module, and it must not start leaking into a query's return
+    // value just to compute a boolean.
+    const integrations = await ctx.db.query("integrationSettings").first();
+    const givebutterConfigured =
+      (integrations?.givebutterApiKey ?? "").length > 0 ||
+      (process.env.GIVEBUTTER_API_KEY ?? "").length > 0;
 
     const gap = reconcileOrgMoney({
       bookValueCents,
@@ -2934,7 +3217,42 @@ export const reconciliationSummary = query({
       bankPendingCents,
       stripeAvailableCents,
       stripePendingCents,
+      givebutterUndepositedCents,
+      givebutterConfigured,
+      relayBalanceCents,
     });
+
+    // Who last stated the Relay figure. `people` is where display names live;
+    // the stored id is a `users` id, so this is the same user→person hop the
+    // rest of the finance UI makes. A name we can't resolve degrades to null
+    // rather than an id nobody can read.
+    const relayBalanceSetByName = settings?.relayBalanceSetBy
+      ? ((
+          await ctx.db
+            .query("people")
+            .withIndex("by_user", (q) =>
+              q.eq("userId", settings.relayBalanceSetBy),
+            )
+            .first()
+        )?.name ?? null)
+      : null;
+
+    // When Relay's transaction feed last landed. Newest across active legacy
+    // accounts — today that is exactly one (Relay Financial).
+    const legacyAccounts = await ctx.db
+      .query("legacyAccounts")
+      .take(ROLLUP_SCAN_LIMIT);
+    let relayFeedSyncedAt: number | null = null;
+    for (const account of legacyAccounts) {
+      if (account.status !== "active") continue;
+      if (
+        account.lastSyncedAt != null &&
+        (relayFeedSyncedAt == null || account.lastSyncedAt > relayFeedSyncedAt)
+      ) {
+        relayFeedSyncedAt = account.lastSyncedAt;
+      }
+    }
+
 
     // The completed-snapshot stamp is the honest "as of" when we have one: it
     // says when we last went and LOOKED, including the runs where a vendor was
@@ -2961,9 +3279,17 @@ export const reconciliationSummary = query({
       bankPendingCents,
       stripeAvailableCents,
       stripePendingCents,
+      givebutterUndepositedCents,
+      givebutterBalanceAsOf: settings?.givebutterBalanceAsOf ?? null,
+      givebutterConfigured,
+      relayBalanceCents,
+      relayBalanceAsOf: settings?.relayBalanceAsOf ?? null,
+      relayBalanceSetByName,
+      relayFeedSyncedAt,
       locatedCents: gap.locatedCents,
       differenceCents: gap.differenceCents,
       verdict: gap.verdict,
+      missingTerms: gap.missingTerms,
       incomplete: gap.incomplete,
       inKindRevenueCents,
       balancesAsOf: snapshotAt ?? balancesAsOf,

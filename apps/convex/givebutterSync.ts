@@ -791,6 +791,15 @@ interface GivebutterTransactionRaw {
   phone?: string | null;
   created_at?: string | null;
   transacted_at?: string | null;
+  // ── The two fields the undeposited-balance derivation stands on ────────────
+  // `payout_id` is the Givebutter payout this transaction was settled in, or
+  // null while it is still awaiting one. `payout` is what Givebutter will
+  // actually REMIT for it (decimal dollars, net of their fee) — as opposed to
+  // `amount`, which is what the giver paid. See
+  // `fetchGivebutterUndepositedCents`.
+  payout_id?: number | string | null;
+  payout?: number | string | null;
+  amount?: number | string | null;
 }
 
 interface GivebutterTransactionsPage {
@@ -1106,6 +1115,95 @@ async function resolveGivebutterApiKey(ctx: ActionCtx): Promise<string | null> {
     {},
   );
   return stored ?? process.env.GIVEBUTTER_API_KEY ?? null;
+}
+
+// ── Undeposited balance (the reconciliation panel's "At Givebutter" pile) ────
+
+/**
+ * How much money Givebutter is holding for us right now, in integer cents.
+ * Returns null when no API key is configured (the caller leaves the cached
+ * figure alone) and throws on a fetch/parse failure (the caller logs it — a
+ * processor being unreachable is not a reason to fail a reconciliation run).
+ *
+ * ── WHY THIS IS DERIVED AND NOT READ ─────────────────────────────────────────
+ * Givebutter publishes no balance endpoint. Probed live against the production
+ * key on 2026-08-08: `/v1/balance`, `/v1/balances`, `/v1/wallet` and
+ * `/v1/accounts` all 404; `/v1/account` returns the org profile (name, logo,
+ * socials) and no money at all; `/v1/funds` returns an empty array. So the
+ * figure has to be built from the two endpoints that DO exist.
+ *
+ * ── THE DERIVATION, AND WHY IT IS THE WHOLE BALANCE ──────────────────────────
+ * Every transaction carries a `payout_id`, set when Givebutter settles it. So
+ * the money Givebutter still holds is exactly the succeeded transactions that
+ * have not been assigned to a payout yet.
+ *
+ * The obvious hole in that — money assigned to a payout that is still IN FLIGHT,
+ * which would belong to neither side — was checked and is empty: all 15 payouts
+ * on `/v1/payouts` were `paid`, $12,940.45 in total, with nothing pending or in
+ * transit. If Givebutter ever does hold an unpaid payout, this figure will
+ * understate by it. That is the known limit of the derivation, and it is stated
+ * here rather than guessed at.
+ *
+ * ── EVIDENCE IT IS RIGHT ─────────────────────────────────────────────────────
+ * On 2026-08-08 this returned exactly $75.00, which is the figure the founder
+ * independently read off the Givebutter dashboard. It was three $25 tickets
+ * across two transactions (2026-08-07 and 2026-08-08) plus five $0.00 rows left
+ * over from 2025.
+ *
+ * ── `payout` AND NOT `amount` ────────────────────────────────────────────────
+ * `payout` is what Givebutter will send us; `amount` is what the giver paid, and
+ * the difference is Givebutter's fee, which never becomes ours. The cash side of
+ * a reconciliation is money we can actually point at, so it takes the remittable
+ * figure. `lib/reconciliationGap.ts` explains what that implies for the gap (in
+ * short: Givebutter's fees are not booked as an expense anywhere, so they show
+ * up in the gap — deliberately, as the real finding they are).
+ *
+ * ── STATUS FILTER ────────────────────────────────────────────────────────────
+ * `succeeded` only, by exact match rather than "not refunded": a `pending` or
+ * `failed` transaction is not money Givebutter is holding FOR US, and the point
+ * of this number is what they will remit. `isRefundedTransaction` is not enough
+ * on its own here — it would let a pending charge through.
+ */
+export async function fetchGivebutterUndepositedCents(
+  ctx: ActionCtx,
+): Promise<number | null> {
+  const key = await resolveGivebutterApiKey(ctx);
+  if (!key) return null;
+
+  let url: string | null = `${GIVEBUTTER_API_BASE}/transactions`;
+  let dollars = 0;
+  let page = 0;
+  for (; page < GIVEBUTTER_MAX_PAGES && url; page++) {
+    const res = await gbGet(key, url);
+    if (!res.ok) {
+      throw new Error(
+        `Givebutter transactions ${res.status}${await gbErrorDetail(res)}`,
+      );
+    }
+    const body = (await res.json()) as GivebutterTransactionsPage;
+    for (const txn of body.data ?? []) {
+      if ((txn.status ?? "").toLowerCase() !== "succeeded") continue;
+      if (txn.payout_id !== null && txn.payout_id !== undefined) continue;
+      const raw = txn.payout ?? 0;
+      const amount = typeof raw === "number" ? raw : Number(raw);
+      if (Number.isFinite(amount)) dollars += amount;
+    }
+    url = nextPageUrl(body.links?.next);
+  }
+  // A truncated sweep is a WRONG balance, not a slightly-short one, so it is
+  // refused rather than written. The transaction feed is newest-first and
+  // undeposited rows cluster at the new end, so a capped sweep would usually
+  // look right — which is exactly what makes shipping it dangerous. At
+  // GIVEBUTTER_MAX_PAGES × 20/page this is thousands of transactions against an
+  // account that had 267 in its lifetime and is being wound down, so the cap
+  // should never be reached; if it is, something has changed and the honest
+  // response is to keep showing the last known figure with its ageing "as of".
+  if (url) {
+    throw new Error(
+      `Givebutter returned more than ${GIVEBUTTER_MAX_PAGES} pages of transactions; refusing to report a partial balance`,
+    );
+  }
+  return Math.round(dollars * 100);
 }
 
 /** Parse a Givebutter ISO timestamp to ms, or null when absent/unparseable. */

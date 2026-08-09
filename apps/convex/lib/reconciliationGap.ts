@@ -61,6 +61,54 @@
  *     still sitting at the processor is already IN book value and is not yet in
  *     any bank account. Without this line it looks like it evaporated.
  *
+ *   · AT GIVEBUTTER — the same argument as Stripe, for the second processor.
+ *     Givebutter exposes NO balance endpoint (`/v1/balance`, `/v1/balances`,
+ *     `/v1/wallet`, `/v1/accounts` all 404; `/v1/account` is org profile only;
+ *     `/v1/funds` is empty), so the figure is DERIVED — see
+ *     `givebutterSync.ts#fetchGivebutterUndepositedCents` for the derivation and
+ *     the evidence it is sound.
+ *
+ *     It belongs on the CASH side, not as an adjustment to the books, for
+ *     exactly Stripe's reason: the Givebutter sync writes each ticket and gift
+ *     into `ticketOrders`/`gifts` when it happens, so the money is ALREADY in
+ *     book value days before Givebutter remits it. Verified against production
+ *     rather than assumed — the whole $75.00 outstanding on 2026-08-08 was three
+ *     $25 tickets on the synced "Public Worship Field Day" campaign, and all
+ *     three were present as `paid` `ticketOrders` rows (`gb:ticket:89134632A0027`,
+ *     `gb:ticket:73325936A0026`, `gb:ticket:84796026A0025`). Book value counts
+ *     paid ticket orders (`lib/bookBalance.ts`), so the revenue was counted and
+ *     the cash was nowhere. Adding it to the books instead would have counted it
+ *     twice; `tests/reconciliationGap.test.ts` pins the direction.
+ *
+ *   · AT RELAY — the org's pre-Increase bank account. Unlike every other term
+ *     here this one is HAND-ENTERED, and the reason is narrower than it looks:
+ *     Relay's TRANSACTIONS do sync (live, through Stripe Financial Connections,
+ *     landing as `source:"stripe_fc"` rows — plus the historical `relay_csv`
+ *     import for the years before that). What Relay has no API for is its
+ *     BALANCE. Stripe FC hands us the feed, not the account total.
+ *
+ *     So the choice was to omit a real pile of money from a panel whose entire
+ *     job is to locate every pile, or to silently call it zero. Both are worse
+ *     than a number a named human typed on a stated date, so the figure carries
+ *     `relayBalanceAsOf` and `relayBalanceSetBy` and the panel shows its age.
+ *     See `reconciliation.ts#setRelayBalance`.
+ *
+ *     Because the feed and the balance now come from different places and go
+ *     stale independently, the panel reports BOTH ages: a Relay balance typed
+ *     three weeks ago is not made current by a transaction sync that ran a
+ *     minute ago, and reading one as evidence for the other is the specific
+ *     mistake this arrangement invites.
+ *
+ * ── BOTH GIVEBUTTER AND RELAY ARE BEING WOUND DOWN ───────────────────────────
+ * The founder, 2026-08-08: "we plan to deprecate both givebutter and relay soon
+ * but for now it still holds some of our funds." They are here because the money
+ * is here, not because they are part of the target architecture. When the last
+ * dollar leaves both, these two terms and their `financeSettings` fields should
+ * be DELETED rather than left reading zero — a term that is permanently zero
+ * teaches the reader it is safe to ignore, which is the opposite of what a
+ * reconciliation panel is for. The deprecation is stated in the panel itself,
+ * not only here, so the person reading the number knows it is temporary.
+ *
  * ── WHAT IS DELIBERATELY *NOT* ADJUSTED FOR ──────────────────────────────────
  *
  * IN-KIND GIFTS. Someone buying $500 of gear for the org is $500 of revenue and
@@ -76,9 +124,22 @@
  * behind an adjustment would be the one thing worse than not answering the
  * question at all.
  *
- * PROCESSOR FEES need no term here. Revenue is gross, payouts are net, and the
- * difference is booked as a real monthly expense row by `processorFees.ts` —
- * so it is already inside "what the ledger says went out".
+ * PROCESSOR FEES need no term here — for STRIPE. Revenue is gross, payouts are
+ * net, and the difference is booked as a real monthly expense row by
+ * `processorFees.ts`, so it is already inside "what the ledger says went out".
+ *
+ * GIVEBUTTER'S FEES ARE NOT BOOKED, and that is left visible on purpose.
+ * `processorFees.ts` covers Stripe only (it says so, and why). Meanwhile the
+ * Givebutter term below counts what Givebutter will actually REMIT (its `payout`
+ * field, net of fee) rather than the gross the giver paid — because the pile of
+ * money we can point at is the pile they will send, not the pile before their
+ * cut. So on a transaction whose fee the giver did NOT cover, book value holds
+ * the gross and this term holds the net, and the unbooked fee lands in the gap.
+ * That is a REAL finding — an expense the org incurred and never recorded — and
+ * the fix is to book Givebutter fees, not to quietly count the gross here and
+ * make the gap look clean while the expense stays missing. (It happens to be
+ * invisible today: every outstanding Givebutter transaction on 2026-08-08 had
+ * its fee covered by the giver, so `payout` equalled `amount` to the cent.)
  *
  * ── THE SIGN CONVENTION ──────────────────────────────────────────────────────
  * `differenceCents = located − books`, and the SIGN is the diagnosis, so it is
@@ -111,7 +172,30 @@ export type ReconciliationInput = {
   stripeAvailableCents: number | null;
   /** Stripe's `pending` balance; null until the first snapshot lands. */
   stripePendingCents: number | null;
+  /**
+   * Givebutter's derived undeposited balance; null until the first snapshot
+   * lands (or forever, on a deployment with no Givebutter).
+   */
+  givebutterUndepositedCents: number | null;
+  /**
+   * True when a Givebutter API key is configured, i.e. we EXPECT to be able to
+   * read that balance and a null is a GAP IN OUR KNOWLEDGE. False means this
+   * org simply doesn't use Givebutter, and a null is the correct and complete
+   * answer — the distinction exists so a deployment that never touched
+   * Givebutter isn't permanently told its reconciliation is incomplete.
+   */
+  givebutterConfigured: boolean;
+  /**
+   * The hand-entered Relay balance; null until someone records one. Counted
+   * when present, and NEVER treated as a missing term when absent — see the
+   * note on `missingTerms`.
+   */
+  relayBalanceCents: number | null;
 };
+
+/** A machine-fetched pile whose absence means we haven't looked, not that it's
+ *  empty. Named so the UI can say WHICH one it's missing. */
+export type ReconciliationTerm = "stripe" | "givebutter";
 
 export type ReconciliationVerdict =
   /** Books and cash agree to the cent. */
@@ -130,12 +214,25 @@ export type ReconciliationResult = {
   /** Stripe's two balances added, or null when no snapshot has ever landed. */
   stripeTotalCents: number | null;
   /**
-   * True when a term the total depends on has never been fetched, so the
-   * "located" side is knowably incomplete and the gap must not be presented as
-   * a finding. Only Stripe can be missing here — a bank balance that has never
-   * synced reads as 0 and is reported separately, by book name, because a
-   * missing account is a different problem from a missing processor.
+   * Every EXPECTED machine-fetched term that has never been read, so the
+   * "located" side is knowably short and the gap must not be presented as a
+   * finding. Named rather than counted so the panel can tell the reader which
+   * vendor to go look at instead of a generic "something is missing".
+   *
+   * A bank balance that has never synced is NOT here — it reads as 0 and is
+   * reported separately, by book name, because a missing account is a different
+   * problem from a missing processor.
+   *
+   * NEITHER IS AN UNRECORDED RELAY BALANCE, deliberately. Relay is hand-entered,
+   * so "nobody has typed a number" and "this org has no Relay money" are the
+   * same state and we cannot tell them apart. Blocking the verdict on it would
+   * permanently mark every deployment that never used Relay as unreconcilable;
+   * silently counting zero would hide real money. The panel takes the third
+   * option and NAMES the absence in its leads without touching the verdict.
    */
+  missingTerms: ReconciliationTerm[];
+  /** `missingTerms.length > 0` — kept as a boolean because most callers only
+   *  need "can this be presented as a reconciliation at all?". */
   incomplete: boolean;
 };
 
@@ -148,6 +245,9 @@ export function reconcileOrgMoney(
     bankPendingCents,
     stripeAvailableCents,
     stripePendingCents,
+    givebutterUndepositedCents,
+    givebutterConfigured,
+    relayBalanceCents,
   } = input;
 
   // Null means "never fetched", which is NOT the same as zero and must not be
@@ -160,9 +260,24 @@ export function reconcileOrgMoney(
       ? null
       : (stripeAvailableCents ?? 0) + (stripePendingCents ?? 0);
 
+  // Same null-is-not-zero rule as Stripe, for the same reason. A null here is
+  // "we never asked", and coercing it to 0 would report whatever Givebutter is
+  // holding as a shortfall with the same confidence as a real one.
   const locatedCents =
-    bankAvailableCents + bankPendingCents + (stripeTotalCents ?? 0);
+    bankAvailableCents +
+    bankPendingCents +
+    (stripeTotalCents ?? 0) +
+    (givebutterUndepositedCents ?? 0) +
+    (relayBalanceCents ?? 0);
   const differenceCents = locatedCents - bookValueCents;
+
+  const missingTerms: ReconciliationTerm[] = [];
+  if (stripeTotalCents == null) missingTerms.push("stripe");
+  // Only a CONFIGURED Givebutter can be missing. Without a key there is no
+  // balance to fetch and never will be, so nothing is absent.
+  if (givebutterConfigured && givebutterUndepositedCents == null) {
+    missingTerms.push("givebutter");
+  }
 
   return {
     locatedCents,
@@ -174,6 +289,7 @@ export function reconcileOrgMoney(
           ? "cash_exceeds_books"
           : "books_exceed_cash",
     stripeTotalCents,
-    incomplete: stripeTotalCents == null,
+    missingTerms,
+    incomplete: missingTerms.length > 0,
   };
 }
