@@ -60,17 +60,15 @@
 
 import { MAX_UNITS_PER_CHARGE } from "./salesCatalog";
 
-/** One line of a sale, in the shape the `sales` table stores. */
-export type SaleItem = {
-  label: string;
-  quantity: number;
-  unitPriceCents: number;
-  /** Every product this line could be. One entry means it is not a guess. */
-  candidates: string[];
-};
+/** One line of a sale, in the shape the `sales` table stores. Defined alongside the
+ *  catalogue that produces it (imports already run this direction), so the grid's
+ *  basket picker and this ladder can't drift on what a line looks like. */
+import type { SaleItem } from "./salesCatalog";
+export type { SaleItem };
 
 /** How a row's breakdown was arrived at, best evidence first. Mirrors the schema union. */
 export type ItemSource =
+  | "manual"
   | "stripe_line_items"
   | "charge_description"
   | "amount_decomposition"
@@ -81,13 +79,32 @@ export type ItemSource =
  * imported: a re-run may only ever move a sale UP this ladder. Without a rank, a Stripe
  * hiccup (price lookup fails → falls to `unresolved`) would overwrite a good breakdown
  * with a blank, and an idempotent sync would have become lossy.
+ *
+ * `manual` sits ABOVE every machine rung, including Stripe's own line items. Each rung
+ * below is the sync reading a payload; `manual` is a bookkeeper who was at the table
+ * deliberately overruling that reading, from the closed set of baskets the amount
+ * actually makes (`sales.setSaleItems` — they can say which reading is true, never that
+ * the money bought something it couldn't have). Ranking it top is also what PROTECTS the
+ * correction: the existing upward-only rule then stops any future enrichment run from
+ * quietly reverting a human decision, without the sync needing to know this rung exists.
  */
 const ITEM_SOURCE_RANK: Record<ItemSource, number> = {
   unresolved: 0,
   amount_decomposition: 1,
   charge_description: 2,
   stripe_line_items: 3,
+  manual: 4,
 };
+
+/**
+ * What the IMPORTER is allowed to conclude — every rung except `manual`.
+ *
+ * A sync reads a payload; it never remembers a table. Spelling that out as a
+ * type rather than a comment means `upsertSales` cannot emit `manual` even by
+ * accident, so the one rung that protects a human's correction can only ever be
+ * written by the mutation a human actually called.
+ */
+export type SyncedItemSource = Exclude<ItemSource, "manual">;
 
 /** True when `next` is better evidence than `current` — never merely different. */
 export function outranks(next: ItemSource, current: ItemSource): boolean {

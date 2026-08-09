@@ -2,6 +2,8 @@ import { describe, expect, test } from "vitest";
 import {
   EVENT_CATALOGS,
   allDecompositions,
+  basketOptions,
+  itemsToKey,
   resolveCharge,
   catalogForDay,
 } from "../lib/salesCatalog";
@@ -92,6 +94,55 @@ describe("catalogForDay", () => {
     expect(catalogForDay("2025-12-07")?.eventName).toBe("Pop The Balloon");
     expect(catalogForDay("2026-05-31")?.eventName).toBe("Eden");
     expect(catalogForDay("2026-08-07")).toBeNull();
+  });
+});
+
+describe("basketOptions", () => {
+  /**
+   * The offering side. `resolveCharge` refuses to pick between readings, which
+   * is right for a machine; these turn that same enumeration into something a
+   * person who was at the table can choose from without being able to invent an
+   * option that isn't there.
+   */
+  test("offers every reading of an ambiguous amount, each with a stable key", () => {
+    const options = basketOptions(300, ptb);
+    expect(options.length).toBe(3);
+    expect(options.map((o) => o.label).sort()).toEqual([
+      "$2 item + Water",
+      "$3 item",
+      "3 × Water",
+    ]);
+    // Keys are unique, so a picker can never collide two readings into one.
+    expect(new Set(options.map((o) => o.key)).size).toBe(3);
+  });
+
+  test("a stored breakdown keys back to the option it came from", () => {
+    // The round trip the grid depends on to show a check mark against what's
+    // already recorded — and the mutation depends on to look a pick up.
+    for (const option of basketOptions(300, ptb)) {
+      expect(itemsToKey(option.items)).toBe(option.key);
+    }
+  });
+
+  test("offers nothing where there is nothing to offer", () => {
+    // Nothing in the Eden catalogue makes $45 — and no amount of human memory
+    // should be allowed to invent a basket for it.
+    expect(basketOptions(4500, eden)).toEqual([]);
+    expect(itemsToKey([])).toBeNull();
+  });
+
+  test("quantity reads naturally — '2 × PW Tee', never '1 × PW Tee'", () => {
+    expect(basketOptions(6000, eden)[0].label).toBe("2 × PW Tee");
+    expect(basketOptions(3000, eden)[0].label).toBe("PW Tee");
+  });
+
+  test("the two hoodie price points stay distinguishable in a key", () => {
+    // Both catalogue units are labelled "Made To Worship Hoodie"; only the price
+    // tells them apart, which is why the key leads with it.
+    const [hoodie25, hoodie50] = [2500, 5000].map(
+      (cents) => basketOptions(cents, [ptb.find((u) => u.unitPriceCents === cents)!])[0],
+    );
+    expect(hoodie25.key).not.toBe(hoodie50.key);
   });
 });
 

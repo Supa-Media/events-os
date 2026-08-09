@@ -24,7 +24,7 @@ import type { Id } from "../_generated/dataModel";
 import type { FinanceAuditAction } from "@events-os/shared";
 import type { FinanceScope } from "./finance";
 
-export type FinanceAuditSubjectType = "transaction" | "budget";
+export type FinanceAuditSubjectType = "transaction" | "budget" | "sale";
 
 export interface FinanceAuditEntry {
   chapterId: FinanceScope;

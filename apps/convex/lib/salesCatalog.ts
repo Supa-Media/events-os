@@ -133,3 +133,94 @@ export function resolveCharge(amountCents: number, units: CatalogUnit[]): Resolu
 export function catalogForDay(dayISO: string): EventCatalog | null {
   return EVENT_CATALOGS.find((c) => c.days.includes(dayISO)) ?? null;
 }
+
+// ── Offering the readings to a human ─────────────────────────────────────────
+/**
+ * Everything above refuses to guess between several readings. That refusal is
+ * right for a machine and wrong for the person who was standing at the table:
+ * they may well remember that the $5 was a popcorn and not five waters. What
+ * follows turns the enumeration this module already does into something a
+ * bookkeeper can PICK from, without ever letting them record a basket the money
+ * doesn't make.
+ *
+ * The unit of exchange is a KEY, not an index and not the items themselves. An
+ * index is meaningless the moment the catalogue changes underneath it, and
+ * accepting the items outright would let a caller assert a breakdown that
+ * doesn't add up to the amount that actually cleared — which is precisely the
+ * fabrication `resolveCharge` exists to prevent. The server re-enumerates the
+ * same decompositions and looks the key up, so the only baskets that can ever be
+ * written are ones the amount genuinely makes.
+ */
+
+/** One item line as the `sales` table stores it. */
+export type SaleItem = {
+  label: string;
+  quantity: number;
+  unitPriceCents: number;
+  candidates: string[];
+};
+
+/** A basket the caller can choose, keyed and labelled for a picker. */
+export type BasketOption = {
+  key: string;
+  /** "2 × PW Tee", "Popcorn + Water" — how the basket reads in a cell. */
+  label: string;
+  items: SaleItem[];
+};
+
+/**
+ * A canonical, order-independent identifier for one basket. Prices lead the key
+ * because two catalogue units legitimately share a label (the hoodie is listed
+ * at both $25 and $50), so the label alone would collide.
+ */
+export function basketKey(lines: DecomposedLine[]): string {
+  return lines
+    .map((l) => `${l.unit.unitPriceCents}:${l.unit.label}:${l.quantity}`)
+    .sort()
+    .join("+");
+}
+
+/** How a basket reads to a person. Quantity is elided at 1 — "Water", not "1 × Water". */
+export function basketLabel(lines: DecomposedLine[]): string {
+  return lines
+    .map((l) => (l.quantity > 1 ? `${l.quantity} × ${l.unit.label}` : l.unit.label))
+    .join(" + ");
+}
+
+/** The stored-item shape for a basket. */
+export function linesToItems(lines: DecomposedLine[]): SaleItem[] {
+  return lines.map((l) => ({
+    label: l.unit.label,
+    quantity: l.quantity,
+    unitPriceCents: l.unit.unitPriceCents,
+    candidates: l.unit.candidates,
+  }));
+}
+
+/**
+ * Every basket `amountCents` could be, ready to offer. One option means the
+ * amount was never ambiguous in the first place; several is the interesting
+ * case; none means this amount matches nothing in the catalogue and no amount of
+ * human memory should be allowed to invent one here.
+ */
+export function basketOptions(
+  amountCents: number,
+  units: CatalogUnit[],
+): BasketOption[] {
+  return allDecompositions(amountCents, units).map((lines) => ({
+    key: basketKey(lines),
+    label: basketLabel(lines),
+    items: linesToItems(lines),
+  }));
+}
+
+/** The key of an already-stored breakdown, so a picker can show what's selected.
+ *  `null` for an empty breakdown — and, legitimately, for one that no longer
+ *  corresponds to any basket the current catalogue makes. */
+export function itemsToKey(items: SaleItem[]): string | null {
+  if (items.length === 0) return null;
+  return items
+    .map((i) => `${i.unitPriceCents}:${i.label}:${i.quantity}`)
+    .sort()
+    .join("+");
+}

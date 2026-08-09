@@ -587,9 +587,16 @@ export const sales = defineTable({
     }),
   ),
   /** How the item breakdown was arrived at — a trust label, not a provenance note. The
-   *  four values are RANKED (see `lib/salesItems.ts`), because a reader deciding whether
+   *  five values are RANKED (see `lib/salesItems.ts`), because a reader deciding whether
    *  "PW Tee ×2" is fact or inference needs to know which, and because a re-sync is
    *  allowed to move a row UP this ladder and never down:
+   *   - `manual` — a HUMAN who was there settled it, choosing from the baskets the amount
+   *     actually makes (`sales.setSaleItems`). It tops the ladder deliberately: every rung
+   *     below is the sync's own reading of a payload, and a person deliberately correcting
+   *     one afterwards is a stronger statement than any field the processor happened to
+   *     send. Being the top rung is also what PROTECTS the correction — `outranks` already
+   *     stops a re-sync moving a row down, so a hand-set breakdown survives every future
+   *     enrichment run without the sync needing to know this rung exists.
    *   - `stripe_line_items` — Stripe told us, exactly. The charge's
    *     `metadata.line_items` named real Stripe Price objects, and Σ(unit_amount × qty)
    *     was verified equal to the charge to the cent. Neither SKU nor price is inferred.
@@ -602,6 +609,7 @@ export const sales = defineTable({
    *   - `unresolved` — nothing above could speak; `items` is empty and a human must
    *     look. The revenue still counts in full; only the breakdown is missing. */
   itemSource: v.union(
+    v.literal("manual"),
     v.literal("stripe_line_items"),
     v.literal("charge_description"),
     v.literal("amount_decomposition"),

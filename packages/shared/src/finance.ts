@@ -236,6 +236,13 @@ export const FINANCE_AUDIT_ACTIONS = [
   "coding_submit", // transactionCodings.submit — initial submission AND each resubmission after a send-back (the revision history)
   "coding_decide", // transactionCodings.approve / requestChanges
   "merchant_rename", // finances.renameMerchant / clearMerchantRename (display name only — the provider's own string is never touched)
+  // SALES (subjectType "sale"). A sale's money is never editable — gross and fee
+  // come from the processor and stay there. What a human can settle is the two
+  // things the card reader never told us: WHICH ITEMS the amount was, and WHICH
+  // EVENT it happened at. Both are judgement calls made from memory, so both are
+  // exactly the kind of thing a trail has to be able to attribute later.
+  "sale_items_set", // sales.setSaleItems — a basket picked (or cleared back to unresolved)
+  "sale_event_set", // sales.setSaleEvent — an orphan sale attributed to an event (or detached)
 ] as const;
 export type FinanceAuditAction = (typeof FINANCE_AUDIT_ACTIONS)[number];
 
@@ -259,6 +266,8 @@ export const FINANCE_AUDIT_ACTION_LABELS: Record<FinanceAuditAction, string> = {
   coding_submit: "Coding submitted",
   coding_decide: "Coding decided",
   merchant_rename: "Merchant renamed",
+  sale_items_set: "Sale items set",
+  sale_event_set: "Sale event set",
 };
 
 // ── Inbound email receipts (backfill pipeline) ───────────────────────────────

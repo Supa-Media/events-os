@@ -320,6 +320,7 @@ describe("outranks — a re-sync may only ever improve a row", () => {
     "amount_decomposition",
     "charge_description",
     "stripe_line_items",
+    "manual",
   ];
 
   test("every source outranks everything below it and nothing above", () => {
@@ -338,5 +339,20 @@ describe("outranks — a re-sync may only ever improve a row", () => {
     }
     expect(outranks("amount_decomposition", "stripe_line_items")).toBe(false);
     expect(outranks("charge_description", "stripe_line_items")).toBe(false);
+  });
+
+  test("a bookkeeper's own correction survives every future enrichment run", () => {
+    // `sales.setSaleItems` writes `manual`, and this is the only thing standing
+    // between a hand-settled row and the next nightly sync quietly overwriting
+    // it with whatever the payload happens to say. Stripe's own line items are
+    // the strongest MACHINE evidence and still don't outrank a person who was at
+    // the table and said otherwise.
+    for (const source of ladder) {
+      if (source === "manual") continue;
+      expect(outranks(source, "manual")).toBe(false);
+    }
+    expect(outranks("stripe_line_items", "manual")).toBe(false);
+    // …and it is genuinely the top rung, not merely tied.
+    expect(outranks("manual", "stripe_line_items")).toBe(true);
   });
 });
