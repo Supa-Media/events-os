@@ -12,8 +12,8 @@
  *    a `processState` that now only records allocation-era history.
  *
  * The org-wide "do these numbers agree?" verdict is NOT here — it lives in
- * `ReconciliationSummary.tsx`, above all three, because it is the conclusion
- * and these are its evidence.
+ * `ReconciliationSummary.tsx`, immediately BELOW `BalancesSection`, because it
+ * is a conclusion about that table and these are its evidence.
  *  - `TransferHistorySection` — every central↔chapter transfer pair (manual
  *    AND engine, origin-badged) for the Financial Manager to audit, with
  *    flag/resolve. The fix for a wrong entry is an offsetting transfer
@@ -79,7 +79,7 @@ export function BalancesSection() {
           A single row is not meant to balance
         </Text>{" "}
         — payouts land in central, so central holds what the chapters earned
-        until the engine moves it. The org-wide check is above. Pending is
+        until the engine moves it. The org-wide check is just below. Pending is
         everything the bank has set aside but not posted: card spend awaiting
         settlement, transfers on their way out, holds on money coming in. None
         of it has reached Reconcile or book value, and the Bank figure has
