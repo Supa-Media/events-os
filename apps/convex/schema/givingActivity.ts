@@ -37,7 +37,9 @@ import { v } from "convex/values";
  *  4. `hideActivity` (central `giving.manage`) is the moderation escape
  *     hatch — no auto-profanity filter yet (tracked as a follow-up), so a
  *     human can pull a row (`"hidden"`) without deleting the underlying gift/
- *     pledge history.
+ *     pledge history. `restoreActivity` (same gate) is its undo, so a staff
+ *     member handling a donor's "please take me down" email can act in
+ *     seconds without fearing an irreversible click.
  *
  * `scope` is always a real `chapters` id (never `"central"` — the wall is
  * per-territory, so a central/general gift with no chapter has nowhere to
@@ -61,6 +63,25 @@ export type ActivityKind = (typeof ACTIVITY_KINDS)[number];
  */
 export const ACTIVITY_STATUSES = ["pending", "visible", "hidden"] as const;
 export type ActivityStatus = (typeof ACTIVITY_STATUSES)[number];
+
+/**
+ * WHY a row is `"hidden"`. Both reasons land on the same status, but only one
+ * of them is safe to undo:
+ *  - `staff` — a person pulled it (`hideActivity`), usually because the donor
+ *    asked. The payment behind it is still real, so putting it back is just
+ *    reversing a human decision. ONLY this reason is restorable.
+ *  - `payment_reversed` — the money went away (`withdrawActivity`, an ACH
+ *    debit that failed or was returned). The wall's whole spam deterrent is
+ *    that an entry means a real settled payment; restoring one of these would
+ *    republish a gift that no longer exists, so `restoreActivity` refuses.
+ *
+ * ABSENT means "hidden before this field existed" and is treated as NOT
+ * restorable — the same conservative posture `consent` takes. A staff member
+ * can always hide such a row again (that's idempotent); what they can't do is
+ * put something back on the public wall when we can't say why it came down.
+ */
+export const ACTIVITY_HIDDEN_REASONS = ["staff", "payment_reversed"] as const;
+export type ActivityHiddenReason = (typeof ACTIVITY_HIDDEN_REASONS)[number];
 
 export const givingActivity = defineTable({
   // The territory's chapter — always a real chapter (a prospect territory's
@@ -105,6 +126,13 @@ export const givingActivity = defineTable({
   // The owner's instruction was "assume no for everybody before now"; this
   // encodes it in the read path so it cannot be undone by a later backfill.
   consent: v.optional(v.boolean()),
+  // Why this row is `"hidden"` — see `ACTIVITY_HIDDEN_REASONS`. Written by
+  // whichever path hid it; meaningless (and absent) on a `pending`/`visible`
+  // row. Optional in the validator because rows hidden before this field
+  // existed carry no reason, and an absent reason is NOT restorable.
+  hiddenReason: v.optional(
+    v.union(...ACTIVITY_HIDDEN_REASONS.map((r) => v.literal(r))),
+  ),
 })
   // The public wall's read: a territory's chapter, visible rows only,
   // newest first.

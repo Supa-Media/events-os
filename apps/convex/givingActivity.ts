@@ -10,12 +10,17 @@
  *    `/stripe/webhook` fan-out (`http.ts`) on settle, alongside
  *    `recordGiveDonationPaid` / `recordPledgeInvoice`.
  *  - `getTerritoryActivity` (PUBLIC query, no auth) — the wall itself, PII-free.
- *  - `listActivityAdmin` / `hideActivity` (central `giving.view`/`giving.manage`)
- *    — OS moderation.
+ *  - `listActivityAdmin` / `hideActivity` / `restoreActivity` (central
+ *    `giving.view`/`giving.manage`) — OS moderation, surfaced at
+ *    `/giving/wall` in the app so a takedown never requires a developer.
  */
 import { ConvexError, v } from "convex/values";
 import { internalMutation, mutation, query } from "./_generated/server";
-import { ACTIVITY_KINDS, ACTIVITY_STATUSES } from "./schema/givingActivity";
+import {
+  ACTIVITY_HIDDEN_REASONS,
+  ACTIVITY_KINDS,
+  ACTIVITY_STATUSES,
+} from "./schema/givingActivity";
 import { requireGivingManage, requireGivingView } from "./lib/givingAccess";
 
 const activityKindValidator = v.union(
@@ -23,6 +28,9 @@ const activityKindValidator = v.union(
 );
 const activityStatusValidator = v.union(
   ...ACTIVITY_STATUSES.map((s) => v.literal(s)),
+);
+const activityHiddenReasonValidator = v.union(
+  ...ACTIVITY_HIDDEN_REASONS.map((r) => v.literal(r)),
 );
 
 /** A public display name is a short handle ("Sam K."), not a full legal
@@ -189,7 +197,12 @@ export const withdrawActivity = internalMutation({
       .unique();
     if (!row) return null; // nothing was ever posted for this payment
     if (row.status === "hidden") return null; // already off the wall
-    await ctx.db.patch(row._id, { status: "hidden" });
+    // Stamp WHY, so the staff Wall screen's Restore can refuse this one: the
+    // money is gone, and putting the entry back would be a lie.
+    await ctx.db.patch(row._id, {
+      status: "hidden",
+      hiddenReason: "payment_reversed",
+    });
     return null;
   },
 });
@@ -262,6 +275,15 @@ const activityAdminRowValidator = v.object({
   refKey: v.string(),
   createdAt: v.number(),
   settledAt: v.union(v.number(), v.null()),
+  // The recorded consent + why the row came down, so the staff screen can say
+  // out loud which rows are on the public wall and which can be put back.
+  consent: v.boolean(),
+  hiddenReason: v.union(activityHiddenReasonValidator, v.null()),
+  // Which public page this entry appears on (`/give/<slug>`) — a wall entry is
+  // meaningless to a moderator without the page it's on. `null` for a chapter
+  // with no territory row.
+  territoryName: v.union(v.string(), v.null()),
+  territorySlug: v.union(v.string(), v.null()),
 });
 
 /** Every wall entry (any status), newest first — the OS moderation list.
@@ -276,24 +298,59 @@ export const listActivityAdmin = query({
       .query("givingActivity")
       .order("desc")
       .take(ACTIVITY_ADMIN_LIST_LIMIT);
-    return rows.map((r) => ({
-      _id: r._id,
-      scope: r.scope,
-      kind: r.kind,
-      displayName: r.displayName ?? null,
-      amountCents: r.amountCents,
-      message: r.message ?? null,
-      status: r.status,
-      refKey: r.refKey,
-      createdAt: r.createdAt,
-      settledAt: r.settledAt ?? null,
-    }));
+
+    // One lookup per distinct chapter, not per row — the wall spans a handful
+    // of territories however many entries it holds.
+    const territoryByChapter = new Map<
+      string,
+      { name: string; slug: string } | null
+    >();
+    for (const r of rows) {
+      if (territoryByChapter.has(r.scope)) continue;
+      const territory = await ctx.db
+        .query("territories")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", r.scope))
+        .first();
+      territoryByChapter.set(
+        r.scope,
+        territory ? { name: territory.name, slug: territory.slug } : null,
+      );
+    }
+
+    return rows.map((r) => {
+      const territory = territoryByChapter.get(r.scope) ?? null;
+      return {
+        _id: r._id,
+        scope: r.scope,
+        kind: r.kind,
+        displayName: r.displayName ?? null,
+        amountCents: r.amountCents,
+        message: r.message ?? null,
+        status: r.status,
+        refKey: r.refKey,
+        createdAt: r.createdAt,
+        settledAt: r.settledAt ?? null,
+        // Absent consent reads as `false` — the same "absent is a NO" rule the
+        // publish and public-read paths apply, so the staff screen can never
+        // show a row as consented when the record doesn't say so.
+        consent: r.consent === true,
+        hiddenReason: r.hiddenReason ?? null,
+        territoryName: territory?.name ?? null,
+        territorySlug: territory?.slug ?? null,
+      };
+    });
   },
 });
 
 /** Moderate a wall entry off the public wall (central `giving.manage`) — sets
- *  `status: "hidden"`. Does NOT touch the underlying gift/pledge history,
- *  only its public echo. Idempotent: hiding an already-hidden row is a no-op. */
+ *  `status: "hidden"` and stamps `hiddenReason: "staff"`, which is what makes
+ *  it restorable. Does NOT touch the underlying gift/pledge history, only its
+ *  public echo. Idempotent: hiding an already-hidden row is a no-op.
+ *
+ *  This is the function the "Take down" button on the staff Wall screen calls.
+ *  Before that screen existed, the only takedown was a developer running this
+ *  by hand — which is not an answer you can give a donor who emails asking to
+ *  come off the wall. */
 export const hideActivity = mutation({
   args: { id: v.id("givingActivity") },
   returns: v.null(),
@@ -307,8 +364,67 @@ export const hideActivity = mutation({
       });
     }
     if (row.status !== "hidden") {
-      await ctx.db.patch(id, { status: "hidden" });
+      await ctx.db.patch(id, { status: "hidden", hiddenReason: "staff" });
     }
+    return null;
+  },
+});
+
+/**
+ * Undo a STAFF takedown (central `giving.manage`) — the reason the Take down
+ * button is safe to press. Returns the row to where it was before someone hid
+ * it: `"visible"` if the payment had already settled, `"pending"` if it hadn't
+ * (a never-settled row must not be published by an undo).
+ *
+ * Refuses, loudly rather than silently, when putting the row back would be
+ * wrong:
+ *  - not `"hidden"` — nothing to undo.
+ *  - `hiddenReason !== "staff"` — a `payment_reversed` row is off the wall
+ *    because the money is gone, and an absent reason means we can't say why it
+ *    came down. Neither is a human decision this can reverse.
+ *  - `consent !== true` — the same last gate `getTerritoryActivity` applies.
+ *    Restore is a publish path, so it re-checks consent instead of trusting
+ *    that the row was fine when it went up. A restore must never be the way a
+ *    non-consented row reaches the public wall.
+ */
+export const restoreActivity = mutation({
+  args: { id: v.id("givingActivity") },
+  returns: v.null(),
+  handler: async (ctx, { id }) => {
+    await requireGivingManage(ctx, "central");
+    const row = await ctx.db.get(id);
+    if (!row) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Activity entry not found.",
+      });
+    }
+    if (row.status !== "hidden") {
+      throw new ConvexError({
+        code: "INVALID_STATE",
+        message: "That entry isn't hidden, so there's nothing to restore.",
+      });
+    }
+    if (row.hiddenReason !== "staff") {
+      throw new ConvexError({
+        code: "INVALID_STATE",
+        message:
+          "This entry came off the wall because its payment was reversed, not because someone took it down. It can't be restored.",
+      });
+    }
+    if (row.consent !== true) {
+      throw new ConvexError({
+        code: "INVALID_STATE",
+        message:
+          "This entry has no recorded consent to appear on the public wall, so it can't be put back.",
+      });
+    }
+    await ctx.db.patch(id, {
+      // Settled means it was on the wall before someone hid it; unsettled means
+      // it was still waiting on the payment, and that's where it goes back to.
+      status: row.settledAt !== undefined ? "visible" : "pending",
+      hiddenReason: undefined,
+    });
     return null;
   },
 });

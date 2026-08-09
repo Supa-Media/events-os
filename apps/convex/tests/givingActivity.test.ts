@@ -537,3 +537,185 @@ describe("admin moderation", () => {
     ).rejects.toBeInstanceOf(ConvexError);
   });
 });
+
+// ── The staff takedown path (/giving/wall) ────────────────────────────────────
+
+/**
+ * The desk-side takedown a donor's "please take me off the wall" email
+ * depends on. Until this shipped the only takedown was a developer running
+ * `hideActivity` by hand, so these cover the whole round trip a staff member
+ * can now perform: see the entry, remove it, and put it back if they were
+ * wrong — plus every case where putting it back would be wrong.
+ */
+describe("staff takedown + restore", () => {
+  /** A settled, consented, publicly-visible wall entry. */
+  async function visibleEntry(
+    s: ChapterSetup,
+    chapterId: Id<"chapters">,
+    opts: { refKey: string; displayName: string; consent?: boolean },
+  ): Promise<Id<"givingActivity">> {
+    return run(s.t, (ctx) =>
+      ctx.db.insert("givingActivity", {
+        scope: chapterId,
+        kind: "gift",
+        displayName: opts.displayName,
+        amountCents: 5000,
+        status: "visible",
+        refKey: opts.refKey,
+        ...(opts.consent === false ? {} : { consent: true }),
+        createdAt: Date.now(),
+        settledAt: Date.now(),
+      }),
+    );
+  }
+
+  test("the desk list carries what a moderator needs: consent, why it came down, and which page it's on", async () => {
+    const s = await devDirectorSetup();
+    const chapterId = await makeTerritory(s, "listing-city");
+    const id = await visibleEntry(s, chapterId, {
+      refKey: "give:cs_listing",
+      displayName: "Sam K.",
+    });
+
+    const row = (
+      await s.as.query(api.givingActivity.listActivityAdmin, {})
+    ).find((r) => r._id === id);
+    expect(row).toBeDefined();
+    expect(row!.consent).toBe(true);
+    expect(row!.hiddenReason).toBeNull();
+    expect(row!.territorySlug).toBe("listing-city");
+    expect(row!.territoryName).toBe("listing-city");
+  });
+
+  test("take down → gone from the public page and marked as a staff decision; put back → live again", async () => {
+    const s = await devDirectorSetup();
+    const chapterId = await makeTerritory(s, "takedown-city");
+    const id = await visibleEntry(s, chapterId, {
+      refKey: "give:cs_takedown",
+      displayName: "Regretful Donor",
+    });
+
+    const onWall = async () =>
+      (
+        await s.t.query(api.givingActivity.getTerritoryActivity, {
+          slug: "takedown-city",
+        })
+      ).some((r) => r.displayName === "Regretful Donor");
+
+    expect(await onWall()).toBe(true);
+
+    await s.as.mutation(api.givingActivity.hideActivity, { id });
+    expect(await onWall()).toBe(false);
+    // `"staff"` is what makes it restorable — a takedown nobody can undo is a
+    // button staff are afraid to press.
+    expect((await run(s.t, (ctx) => ctx.db.get(id)))?.hiddenReason).toBe(
+      "staff",
+    );
+
+    await s.as.mutation(api.givingActivity.restoreActivity, { id });
+    expect(await onWall()).toBe(true);
+    const restored = await run(s.t, (ctx) => ctx.db.get(id));
+    expect(restored?.status).toBe("visible");
+    expect(restored?.hiddenReason).toBeUndefined();
+  });
+
+  test("CONSENT STILL RULES AFTER A REMOVAL: a row without recorded consent can never be restored onto the wall", async () => {
+    const s = await devDirectorSetup();
+    const chapterId = await makeTerritory(s, "consentless-city");
+    // A pre-consent row (the field is absent entirely), taken down by staff.
+    const id = await visibleEntry(s, chapterId, {
+      refKey: "give:cs_no_consent",
+      displayName: "Never Asked",
+      consent: false,
+    });
+    await s.as.mutation(api.givingActivity.hideActivity, { id });
+
+    await expect(
+      s.as.mutation(api.givingActivity.restoreActivity, { id }),
+    ).rejects.toBeInstanceOf(ConvexError);
+    expect((await run(s.t, (ctx) => ctx.db.get(id)))?.status).toBe("hidden");
+
+    // And even if something else put it back to `visible`, the public read
+    // gate still refuses it — restore is not the only thing standing between
+    // a non-consented row and the wall.
+    await run(s.t, (ctx) => ctx.db.patch(id, { status: "visible" }));
+    expect(
+      await s.t.query(api.givingActivity.getTerritoryActivity, {
+        slug: "consentless-city",
+      }),
+    ).toEqual([]);
+  });
+
+  test("an entry pulled because its payment reversed is NOT restorable", async () => {
+    const s = await devDirectorSetup();
+    const chapterId = await makeTerritory(s, "reversed-city");
+    const id = await visibleEntry(s, chapterId, {
+      refKey: "give:cs_reversed",
+      displayName: "Bounced Debit",
+    });
+
+    await s.t.mutation(internal.givingActivity.withdrawActivity, {
+      refKey: "give:cs_reversed",
+    });
+    expect((await run(s.t, (ctx) => ctx.db.get(id)))?.hiddenReason).toBe(
+      "payment_reversed",
+    );
+
+    await expect(
+      s.as.mutation(api.givingActivity.restoreActivity, { id }),
+    ).rejects.toBeInstanceOf(ConvexError);
+    expect((await run(s.t, (ctx) => ctx.db.get(id)))?.status).toBe("hidden");
+  });
+
+  test("restoring a never-settled entry returns it to pending, not to the public wall", async () => {
+    const s = await devDirectorSetup();
+    const chapterId = await makeTerritory(s, "pending-city");
+    const id = await run(s.t, (ctx) =>
+      ctx.db.insert("givingActivity", {
+        scope: chapterId,
+        kind: "gift",
+        displayName: "Not Settled Yet",
+        amountCents: 5000,
+        status: "pending",
+        refKey: "give:cs_pending",
+        consent: true,
+        createdAt: Date.now(),
+      }),
+    );
+
+    await s.as.mutation(api.givingActivity.hideActivity, { id });
+    await s.as.mutation(api.givingActivity.restoreActivity, { id });
+    expect((await run(s.t, (ctx) => ctx.db.get(id)))?.status).toBe("pending");
+    expect(
+      await s.t.query(api.givingActivity.getTerritoryActivity, {
+        slug: "pending-city",
+      }),
+    ).toEqual([]);
+  });
+
+  test("restoreActivity is central `giving.manage` only, and refuses an entry that isn't hidden", async () => {
+    const s = await devDirectorSetup();
+    const chapterId = await makeTerritory(s, "restore-gate-city");
+    const id = await visibleEntry(s, chapterId, {
+      refKey: "give:cs_restore_gate",
+      displayName: "Live Entry",
+    });
+
+    // Not hidden — nothing to undo.
+    await expect(
+      s.as.mutation(api.givingActivity.restoreActivity, { id }),
+    ).rejects.toBeInstanceOf(ConvexError);
+
+    await s.as.mutation(api.givingActivity.hideActivity, { id });
+
+    const t2 = newT();
+    await run(t2, (ctx) => runSeedSeatDefs(ctx));
+    const chapterOnly = await setupChapter(t2, { chapterName: "Elsewhere" });
+    await seatCaller(chapterOnly, "chapter_director", chapterOnly.chapterId);
+    await expect(
+      chapterOnly.as.mutation(api.givingActivity.restoreActivity, { id }),
+    ).rejects.toBeInstanceOf(ConvexError);
+    // Still hidden — the rejected caller changed nothing.
+    expect((await run(s.t, (ctx) => ctx.db.get(id)))?.status).toBe("hidden");
+  });
+});

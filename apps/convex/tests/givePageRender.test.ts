@@ -223,6 +223,12 @@ describe("give map page", () => {
     expect(html).toContain('id="gi_phone"');
     expect(html).toContain('id="gi_social"');
   });
+
+  // The map lists cities, not people — it carries no giving wall, so it stays
+  // discoverable. Only the territory pages are noindexed.
+  test("stays indexable", () => {
+    expect(html).not.toContain('name="robots"');
+  });
 });
 
 describe("give territory page (raising, pre-launch)", () => {
@@ -258,6 +264,30 @@ describe("give territory page (raising, pre-launch)", () => {
     );
     expect(withImg).toContain('property="og:image"');
     expect(withImg).toContain("/give/columbus-oh/og");
+    expect(withImg).toContain("summary_large_image");
+  });
+
+  // The wall publishes donor display names next to dollar amounts. Consenting
+  // to appear on a page you can be shown is not consenting to be findable by
+  // name in Google — hence noindex, and hence the preview card surviving it.
+  test("stays out of search indexes", () => {
+    expect(html).toContain('name="robots" content="noindex"');
+  });
+
+  test("noindex does NOT cost the page its share preview", () => {
+    const withImg = renderGiveTerritoryPage(
+      { ...RAISING_TERRITORY, hasOgImage: true },
+      STATS,
+      ACTIVITY,
+      SITE,
+      null,
+    );
+    expect(withImg).toContain('name="robots" content="noindex"');
+    // Everything a link unfurl needs, still there beside the robots tag.
+    expect(withImg).toContain('property="og:title"');
+    expect(withImg).toContain('property="og:description"');
+    expect(withImg).toContain('property="og:url"');
+    expect(withImg).toContain('property="og:image"');
     expect(withImg).toContain("summary_large_image");
   });
 
