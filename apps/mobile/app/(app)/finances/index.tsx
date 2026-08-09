@@ -512,12 +512,16 @@ function CentralSection({
   const rawMonthly = useQuery(api.dashboardCharts.spendByMonth, { scope: "org", year: ym.year });
   // DASH-3: the "Chapters at a glance" fleet panel.
   const rawChapterHealth = useQuery(api.dashboardCharts.chapterHealth, {});
+  // The blended fee-rate monitor. Central-only: the Stripe ledger it reads is
+  // account-wide with no chapter dimension (hence no `ChapterSection` twin).
+  const rawFeeRate = useQuery(api.dashboardCharts.feeRateByMonth, { year: ym.year });
   // Bar-click teardown fix: hold each query's last resolved result across a
   // period change (see `usePreviousDefined`'s own doc) — the central desk
   // has no chapterId to reset on, so these never clear once first loaded.
   const { data, loading } = usePreviousDefined(rawData);
   const { data: monthly } = usePreviousDefined(rawMonthly);
   const { data: chapterHealth } = usePreviousDefined(rawChapterHealth);
+  const { data: feeRate } = usePreviousDefined(rawFeeRate);
   if (data === undefined) return <LoadingBlock />;
   // The "By chapter" rollup leads with the Central row (chapterId === CENTRAL);
   // the transfer picker only wants the real chapters.
@@ -534,6 +538,7 @@ function CentralSection({
         data={data}
         monthly={monthly}
         chapterHealth={chapterHealth}
+        feeRate={feeRate}
         year={ym.year}
         month={ym.month}
         period={period}

@@ -24,6 +24,16 @@
  * `ROLLUP_SCAN_LIMIT`) instead of re-deriving semantics; where a formula has
  * to be copied wholesale, the comment says so.
  *
+ * `feeRateByMonth` (the blended effective-rate monitor) is the one query here
+ * that reads NEITHER `transactions` NOR `budgets` — it reads the processor's
+ * own ledger evidence (`processorFeeEntries`), so none of the `*Local`
+ * duplicates above apply to it and it needs no parity test against a dashboard
+ * banner. It lives in this file anyway because it is a dashboard CHART and
+ * this is where the client looks for one (`api.dashboardCharts.*`); the
+ * alternative home, `processorFees.ts`, would have kept the fee-ledger reads
+ * together but split the chart queries across two namespaces for a UI that
+ * consumes them side by side.
+ *
  * `chapterHealth`'s per-row PARTITION (chapter-owned spend excluding
  * central-linked vs. central-owned-plus-chapter-linked-to-central — see
  * `isCentralLinked` in that query) is applied identically to BOTH the row's
@@ -40,6 +50,7 @@ import { Doc, Id } from "./_generated/dataModel";
 import {
   CENTRAL,
   easternParts,
+  effectiveRateBps,
   quarterOfMonth,
   chapterAffordability as chapterAffordabilityCalc,
   financeRoleAtLeast,
@@ -887,5 +898,159 @@ export const budgetTransactions = query({
     }
 
     return { rows, totalCount };
+  },
+});
+
+// ── (d) feeRateByMonth — the blended effective-rate monitor ──────────────────
+
+const feeRateMonthRow = v.object({
+  month: v.number(),
+  /** Every fee Stripe charged in this month, from its own ledger. */
+  feeCents: v.number(),
+  /** What was actually processed through the rails in this month. */
+  grossCents: v.number(),
+  /** `feeCents / grossCents` in basis points — `null` on zero volume. */
+  effectiveRateBps: v.union(v.number(), v.null()),
+});
+
+/**
+ * The blended effective fee rate, month by month — what the rails actually
+ * cost as a fraction of what went through them.
+ *
+ * ── WHY A RATE AND NOT A TOTAL ──────────────────────────────────────────────
+ * This replaces the fee BUDGET alarm that #587 deleted, and it is deliberately
+ * a different KIND of signal rather than a gentler version of the same one. A
+ * fee TOTAL only ever grows with revenue, so "fees are up 40%" describes a
+ * record month as readily as a problem — and reacting to it is exactly how a
+ * fee budget ends up capping a great fundraising quarter (the inverted
+ * indicator `processorFees.ts`'s header describes). A blended RATE moving from
+ * 2.7% to 3.4% has a CAUSE somebody can act on: volume routed onto an
+ * expensive rail, a plan tier that stopped making sense, wire fees an ACH
+ * would have avoided. That is the whole argument for this chart existing.
+ *
+ * ── NULL IS NOT ZERO, AND THIS IS THE POINT ─────────────────────────────────
+ * A month that processed nothing has NO rate — not a zero one. `grossCents`
+ * of 0 returns `effectiveRateBps: null` (via the shared `effectiveRateBps`,
+ * which is where that rule is defined and tested), and the client draws a GAP.
+ * Charting it as 0% would draw a cliff from 3% to nothing and back that never
+ * happened, and the first thing anyone would do about it is go looking for the
+ * month somebody "fixed" the fees.
+ *
+ * ── READ, NEVER DERIVED ─────────────────────────────────────────────────────
+ * Both figures come off `processorFeeEntries`, which is Stripe's own
+ * balance-transaction ledger stored row by row. Nothing here consults
+ * `DEFAULT_FEE_SCHEDULE` or any other published rate: the schedule PREDICTS
+ * what a payment should cost, and predicting the numerator of a monitor whose
+ * job is to notice when reality diverges from the prediction would make it
+ * incapable of ever firing. See `@events-os/shared/processorFees`'s module doc.
+ *
+ * ── WHAT GOES IN THE DENOMINATOR ────────────────────────────────────────────
+ * An entry's `grossCents` is the ledger row's own signed `amount`: POSITIVE
+ * for a payment (the sale the fee was taken out of) and NEGATIVE for a
+ * standalone fee row, where the amount IS the fee (Terminal reader fees,
+ * payout fees, account fees). Only positive amounts are processed volume, so
+ * only they are summed. Every entry's `feeCents` counts toward the numerator
+ * regardless — which is what makes a month of card readers in the field show
+ * up here as a rate that ROSE: the fees went up and the volume did not. Adding
+ * the negative amounts into the denominator instead would shrink it and
+ * overstate the rate twice over for the same dollars.
+ *
+ * ── BUCKETED BY STRIPE'S OWN MONTH, NOT EASTERN ─────────────────────────────
+ * Unlike every other chart in this file (which buckets by `easternParts`),
+ * this one groups by the stored `month` string — the UTC `YYYY-MM` that
+ * `runFeeSync` assigns, and the same key the monthly fee TRANSACTION is booked
+ * under (`stripe-fees:YYYY-MM`). Re-bucketing to Eastern would make a bar
+ * disagree with the fee row it is explaining for any charge in the first few
+ * hours of a month — the PR #231 rule (a drill-down must agree with the number
+ * it drills into) applied to a chart and its ledger row. `partialMonth` is
+ * derived from UTC for the same reason, so the "still running" bar is always
+ * the bar the next sync will add to.
+ *
+ * ── NO SANDBOX SPLIT ────────────────────────────────────────────────────────
+ * `processorFeeEntries` carries no environment marker (`readSandbox` /
+ * `txnMatchesMode` have nothing to filter on) because the sweep reads whichever
+ * Stripe account `STRIPE_SECRET_KEY` points at — the mode distinction is made
+ * one level up, by the key. So this query deliberately does not call
+ * `readSandbox`, rather than calling it and having it do nothing.
+ *
+ * Gate: `requireFinanceCentral`, same as `chapterHealth`. The ledger is
+ * account-wide with no chapter dimension at all, so there is no honest way to
+ * show a chapter-scoped viewer "their" share of it.
+ */
+export const feeRateByMonth = query({
+  args: { year: v.number() },
+  returns: v.object({
+    // Always 12 entries, index 0 = January — the same fixed-length shape
+    // `spendByMonth` returns, so a client can index by month without a lookup.
+    months: v.array(feeRateMonthRow),
+    // The month still accruing, when `year` is the current year — the client
+    // draws that bar hollow (it is a partial month's rate, not a settled one).
+    partialMonth: v.union(v.number(), v.null()),
+    // The YEAR's blended rate: total fees over total volume. NOT the mean of
+    // the monthly rates — that would weight a $200 January the same as a
+    // $200,000 December and produce a headline no month actually experienced.
+    yearFeeCents: v.number(),
+    yearGrossCents: v.number(),
+    yearEffectiveRateBps: v.union(v.number(), v.null()),
+  }),
+  handler: async (ctx, args) => {
+    const home = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireFinanceCentral(ctx, home);
+
+    // One indexed range over the year's `YYYY-MM` keys. Month strings sort
+    // lexicographically within a year, so `2026-01`..`2026-12` is a contiguous
+    // range on `by_processor_and_month` — twelve separate point reads would
+    // cost twelve round trips to say the same thing.
+    const entries = await ctx.db
+      .query("processorFeeEntries")
+      .withIndex("by_processor_and_month", (q) =>
+        q
+          .eq("processor", "stripe")
+          .gte("month", `${args.year}-01`)
+          .lte("month", `${args.year}-12`),
+      )
+      .take(ROLLUP_SCAN_LIMIT);
+    if (entries.length === ROLLUP_SCAN_LIMIT) {
+      // Same non-silent truncation warning as `loadYearTxnsLocal`. Truncation
+      // here understates BOTH sides of the ratio, so the rate stays roughly
+      // right while the cents underneath it quietly don't — which is precisely
+      // the kind of half-wrong number worth shouting about.
+      console.warn(
+        `[dashboardCharts] feeRateByMonth hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}) for ${args.year}; result truncated.`,
+      );
+    }
+
+    const feeByMonth = new Array(12).fill(0) as number[];
+    const grossByMonth = new Array(12).fill(0) as number[];
+    for (const e of entries) {
+      // `2026-03` → 3. The index range already guarantees the year, so only
+      // the month part is read back out.
+      const month = Number(e.month.slice(5, 7));
+      if (!Number.isInteger(month) || month < 1 || month > 12) continue;
+      feeByMonth[month - 1] += e.feeCents;
+      if (e.grossCents > 0) grossByMonth[month - 1] += e.grossCents;
+    }
+
+    const nowMonthKey = new Date().toISOString().slice(0, 7);
+    const partialMonth =
+      nowMonthKey.startsWith(`${args.year}-`) ? Number(nowMonthKey.slice(5, 7)) : null;
+
+    const months = feeByMonth.map((feeCents, i) => ({
+      month: i + 1,
+      feeCents,
+      grossCents: grossByMonth[i],
+      effectiveRateBps: effectiveRateBps(feeCents, grossByMonth[i]),
+    }));
+
+    const yearFeeCents = feeByMonth.reduce((s, c) => s + c, 0);
+    const yearGrossCents = grossByMonth.reduce((s, c) => s + c, 0);
+
+    return {
+      months,
+      partialMonth,
+      yearFeeCents,
+      yearGrossCents,
+      yearEffectiveRateBps: effectiveRateBps(yearFeeCents, yearGrossCents),
+    };
   },
 });
