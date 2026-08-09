@@ -1868,10 +1868,20 @@ async function snapshotBalances(ctx: ActionCtx): Promise<void> {
       for (let page = 0; page < PENDING_TXN_PAGES; page++) {
         const params = new URLSearchParams();
         params.set("account_id", account.increaseAccountId);
-        // Increase's dotted-array filter style. `complete` pending transactions
-        // have already become real transactions and are no longer held against
-        // the available balance, so including them would overstate the total.
-        params.append("status.in[]", "pending");
+        // `status.in`, NOT `status.in[]`. Increase encodes a nested parameter by
+        // joining the path with a dot and rejects the bracket form outright:
+        // "Nested parameters should be encoded in the query string by joining
+        // them with the '.' character". The bracket version 400s on every call,
+        // and because this whole block is best-effort the failure only ever
+        // reached a log line — the itemisation silently returned nothing from
+        // the day it shipped. Verified against the live API: the dotted form
+        // returns the three rows totalling $184.08 that the cached balance
+        // already implied.
+        //
+        // `complete` pending transactions have already become real transactions
+        // and are no longer held against the available balance, so including
+        // them would overstate the total.
+        params.set("status.in", "pending");
         params.set("limit", "100");
         if (cursor) params.set("cursor", cursor);
         const body = await increaseGet(
