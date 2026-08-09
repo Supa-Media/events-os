@@ -535,17 +535,38 @@ export const blastRecipients = defineTable({
  * attendance and ticket reporting: 178 popcorn purchases would read as 178 more people
  * at Field Day. Ticket counts stay ticket counts.
  *
- * ONE ROW PER STRIPE CHARGE, with its decomposed items inline. A single tap often
+ * ONE ROW PER PAYMENT, with its decomposed items inline. A single tap often
  * covered several products (someone bought popcorn and a water and the operator typed
- * $6), so `items` is a list — but the charge is the atom, because the charge is what
- * the money and the fee actually attach to.
+ * $6), so `items` is a list — but the payment is the atom, because the payment is what
+ * the money and the fee actually attach to. Most payments are Stripe charges
+ * (`stripeChargeId`); the ones that came through another rail carry `externalRef`.
  */
 export const sales = defineTable({
   chapterId: v.id("chapters"),
   /** The event this sale happened at. Absent if it couldn't be attributed by date. */
   eventId: v.optional(v.id("events")),
-  /** Stripe charge id — the idempotency key. One sale row per charge, forever. */
-  stripeChargeId: v.string(),
+  /** Stripe charge id — the idempotency key for a sale Stripe processed. One
+   *  sale row per charge, forever. ABSENT on a sale that never touched Stripe;
+   *  such a row carries `externalRef` instead. Exactly one of the two is always
+   *  set, and each has its own index, so "have I already imported this payment?"
+   *  is a single lookup on whichever rail carried it.
+   *
+   *  Optional since the 2026-08-09 Cash App backfill. A year of in-person money
+   *  came through Cash App, which issues no charge id and has no API here, and
+   *  the alternatives were both worse: putting a made-up `ch_…` string in a field
+   *  named after Stripe would make the ledger lie about its own provenance, and
+   *  leaving merch money out of `sales` would push it into `ticketOrders` (which
+   *  would inflate attendance — see this table's header) or into `transactions`
+   *  as plain income (which contradicts the revenue model: revenue is gifts,
+   *  tickets and sales, and the ledger is spend). `ticketOrders` already solves
+   *  exactly this with an optional `stripeCheckoutSessionId` beside an optional
+   *  `externalRef`; this mirrors it. */
+  stripeChargeId: v.optional(v.string()),
+  /** The payment's own id on a NON-Stripe rail — the idempotency key for a sale
+   *  that arrived some other way. Namespaced by rail
+   *  (`cashapp:sale:<day>:<payer>`), because the string has to stay unique
+   *  across every rail that ever lands here. */
+  externalRef: v.optional(v.string()),
   /** When the card was tapped, not when we imported it. */
   soldAt: v.number(),
   /** Gross, before Stripe's cut — the customer paid this. */
@@ -580,5 +601,6 @@ export const sales = defineTable({
   createdAt: v.number(),
 })
   .index("by_charge", ["stripeChargeId"])
+  .index("by_external_ref", ["externalRef"])
   .index("by_chapter_and_soldAt", ["chapterId", "soldAt"])
   .index("by_event", ["eventId"]);

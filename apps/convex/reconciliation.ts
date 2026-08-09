@@ -3824,7 +3824,9 @@ export const bookValueLines = query({
             s.items.length > 0
               ? s.items.map((i) => `${i.quantity}× ${i.label}`).join(" + ")
               : "Unresolved item",
-          detail: s.stripeChargeId,
+          // Whichever rail carried the payment — a Stripe charge id, or the
+          // namespaced `externalRef` a non-Stripe sale is keyed on.
+          detail: s.stripeChargeId ?? s.externalRef ?? "",
           linkedToBankRow: false,
         });
       }

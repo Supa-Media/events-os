@@ -24,7 +24,10 @@
  * UI shows `unresolved` plainly for the same reason.
  *
  * READ-ONLY. Sales originate at Stripe and are re-synced idempotently on the
- * charge id; there is no hand-entry path, so nothing here writes.
+ * charge id; there is no hand-entry path, so nothing here writes. The one
+ * exception is historical: the 2026-08-09 Cash App backfill (`cashAppBackfill.ts`)
+ * wrote three sales that never touched a card reader, keyed on `externalRef`
+ * instead. They read identically here — only `paymentRef` shows the difference.
  */
 import { query } from "./_generated/server";
 import { v } from "convex/values";
@@ -54,7 +57,11 @@ const saleRowValidator = v.object({
   ),
   eventId: v.union(v.id("events"), v.null()),
   eventName: v.union(v.string(), v.null()),
-  stripeChargeId: v.string(),
+  /** The payment's id on whichever rail carried it — a Stripe charge id for a
+   *  card tap, the namespaced `externalRef` for anything else (the 2026-08-09
+   *  Cash App backfill). One field rather than two because a reader only ever
+   *  wants "which payment was this", and the rail is legible from the string. */
+  paymentRef: v.string(),
 });
 
 /**
@@ -141,7 +148,7 @@ export const listSales = query({
         items: r.items,
         eventId: r.eventId ?? null,
         eventName: r.eventId ? (eventName.get(r.eventId) ?? null) : null,
-        stripeChargeId: r.stripeChargeId,
+        paymentRef: r.stripeChargeId ?? r.externalRef ?? "",
       }));
 
     const grossCents = sales.reduce((a, s) => a + s.grossCents, 0);
