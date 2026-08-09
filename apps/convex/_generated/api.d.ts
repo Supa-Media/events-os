@@ -302,6 +302,7 @@ import type * as reconciliation from "../reconciliation.js";
 import type * as reimbursementBackfill from "../reimbursementBackfill.js";
 import type * as reimbursements from "../reimbursements.js";
 import type * as reminders from "../reminders.js";
+import type * as repairSyncClearedTransferMarks from "../repairSyncClearedTransferMarks.js";
 import type * as responsibilities from "../responsibilities.js";
 import type * as restoreCollidedCharges from "../restoreCollidedCharges.js";
 import type * as restoreTruistDeposit from "../restoreTruistDeposit.js";
@@ -681,6 +682,7 @@ declare const fullApi: ApiFromModules<{
   reimbursementBackfill: typeof reimbursementBackfill;
   reimbursements: typeof reimbursements;
   reminders: typeof reminders;
+  repairSyncClearedTransferMarks: typeof repairSyncClearedTransferMarks;
   responsibilities: typeof responsibilities;
   restoreCollidedCharges: typeof restoreCollidedCharges;
   restoreTruistDeposit: typeof restoreTruistDeposit;

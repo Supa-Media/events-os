@@ -696,12 +696,31 @@ export const applyFcTransactions = internalMutation({
         // status, and never insert a second row.
         const patch: Partial<Doc<"transactions">> = {
           amountCents,
-          flow,
           postedAt: row.postedAt,
           pending: row.pending,
           // Don't clobber a hand-edited merchant name; only fill it when empty.
           merchantName: existing.merchantName ?? row.description,
         };
+        // `flow` STOPS being the feed's to decide once a human has reclassified
+        // the row. `finances.markAsTransfer` writes `flow:"transfer"` and stashes
+        // the ingested direction in `preMarkFlow`; re-deriving `flow` from the
+        // amount sign here silently un-marked those rows on the very next sweep
+        // (the 07:00 cron plus every refresh webhook), with no `financeAuditLog`
+        // entry to explain it — putting $1,000 of internal transfer back into org
+        // spend. Worse, the pair could not be repaired from the UI afterwards:
+        // `isMarkedTransfer` requires `flow === "transfer"`, so Un-mark is never
+        // offered on the leg that reverted, and re-marking it fails NOT_A_PAIR
+        // because the surviving leg is no longer the opposing direction.
+        //
+        // NOTE: there is a broader argument that `flow` should never be patched
+        // on an EXISTING row at all — a posted bank line's direction doesn't
+        // change, and a sign flip arrives as its own feed row, so the only thing
+        // this key can do is overwrite. Deliberately NOT taken here: that is a
+        // change to what the sync is for and deserves its own decision. This fix
+        // is scoped to the case that lost data.
+        const humanClassified =
+          existing.preMarkFlow != null || existing.flow === "transfer";
+        if (!humanClassified) patch.flow = flow;
         // Backfill the parsed last-4 when the row lacks it (older synced rows).
         if (existing.cardLast4 == null && cardLast4) patch.cardLast4 = cardLast4;
         // Attribute to the legacy card only when a human hasn't already
