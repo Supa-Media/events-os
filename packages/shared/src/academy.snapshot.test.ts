@@ -385,6 +385,26 @@
  * (quizLength 3 → 4, bumped below). Minutes are unchanged everywhere: the
  * lessons that grew stayed inside the word budget their own neighbours run at.
  * No slugs, sections, or courses moved; the total is unchanged.
+ *
+ * Reconcile states + no default filter (2026-08-09) is a content-only edit to
+ * three Finances sections, adding and moving none. The "Undocumented" filter
+ * became "Closed without documentation" and narrowed to the CLOSED tail, so it
+ * and "Needs documentation" are now disjoint halves of the publishing backlog
+ * rather than a filter and its near-identical superset; the header's single
+ * "N to clear" became three tappable chips (Needs attention / Ready to close /
+ * Reconciled); the page stopped opening on a default filter and search stopped
+ * being limited by the State filter. `finance-reconcile-grid` dropped the
+ * retired "All" row from its filter table, gained the "Closed without
+ * documentation" row plus a paragraph and a rule on the new header workflow,
+ * and rewrote its bulk-select question around Ready to close (the bulk-bar
+ * teaching moved into that question's explanation).
+ * `finance-chasing-receipts` rewrote its two-filters paragraph and replaced the
+ * "Needs documentation: 0 but Undocumented: 14" question, which tested the
+ * retired superset relationship. `finance-receipt-exceptions`'s treasurer tip
+ * now names both halves. Both rewritten quizzes were already at the
+ * 5-question cap, so questions were SWAPPED, not added — titles, minutes and
+ * quiz lengths are unchanged everywhere, nothing in the tables below moved,
+ * and the total is unchanged.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
