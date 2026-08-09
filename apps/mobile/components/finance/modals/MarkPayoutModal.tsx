@@ -25,7 +25,7 @@ import {
   PAYOUT_PROCESSOR_LABELS,
   type PayoutProcessor,
 } from "@events-os/shared";
-import { Button, Icon } from "../../ui";
+import { Button, Icon, Radio, RadioGroup } from "../../ui";
 import { colors } from "../../../lib/theme";
 
 /** The "whose money is this?" choice: keep = label only (money stays on the
@@ -91,15 +91,19 @@ export function MarkPayoutModal({
               <Text className="text-[11px] font-semibold uppercase tracking-wide text-faint">
                 Where from
               </Text>
-              <View className="flex-row flex-wrap gap-2">
+              <RadioGroup
+                accessibilityLabel="Where from"
+                horizontal
+                className="flex-row flex-wrap gap-2"
+              >
                 {PAYOUT_PROCESSORS.map((p) => {
                   const active = p === processor;
                   return (
-                    <Pressable
+                    <Radio
                       key={p}
-                      onPress={() => setProcessor(p)}
-                      accessibilityRole="radio"
-                      accessibilityState={{ selected: active }}
+                      checked={active}
+                      onSelect={() => setProcessor(p)}
+                      accessibilityLabel={PAYOUT_PROCESSOR_LABELS[p]}
                       className={`rounded-full border px-3 py-1.5 active:opacity-70 ${
                         active
                           ? "border-accent bg-accent-soft"
@@ -111,10 +115,10 @@ export function MarkPayoutModal({
                       >
                         {PAYOUT_PROCESSOR_LABELS[p]}
                       </Text>
-                    </Pressable>
+                    </Radio>
                   );
                 })}
-              </View>
+              </RadioGroup>
             </View>
 
             <View className="gap-1.5">
@@ -127,7 +131,11 @@ export function MarkPayoutModal({
                 shows on the Accounts page, badged and flaggable. Changing it
                 later takes an offsetting transfer.
               </Text>
-              <View className="flex-row flex-wrap gap-2">
+              <RadioGroup
+                accessibilityLabel="Whose money is this?"
+                horizontal
+                className="flex-row flex-wrap gap-2"
+              >
                 {(
                   [
                     { key: "keep", label: "Leave where it landed", choice: { kind: "keep" } as PayoutAllocationChoice },
@@ -145,11 +153,11 @@ export function MarkPayoutModal({
                       : opt.choice.kind === "scope" &&
                         opt.choice.scope === allocation.scope;
                   return (
-                    <Pressable
+                    <Radio
                       key={opt.key}
-                      onPress={() => setAllocation(opt.choice)}
-                      accessibilityRole="radio"
-                      accessibilityState={{ selected: active }}
+                      checked={active}
+                      onSelect={() => setAllocation(opt.choice)}
+                      accessibilityLabel={opt.label}
                       className={`rounded-full border px-3 py-1.5 active:opacity-70 ${
                         active
                           ? "border-accent bg-accent-soft"
@@ -161,10 +169,10 @@ export function MarkPayoutModal({
                       >
                         {opt.label}
                       </Text>
-                    </Pressable>
+                    </Radio>
                   );
                 })}
-              </View>
+              </RadioGroup>
             </View>
           </View>
 

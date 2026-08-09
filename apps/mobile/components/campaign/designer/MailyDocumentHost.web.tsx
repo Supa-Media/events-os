@@ -98,7 +98,7 @@ import { fetchCampaignPreview } from "../../../lib/emailPreview";
 import EmailHtmlPreview from "../../email/EmailHtmlPreview";
 import { ImageUploadButton, ReadOnlyProvider } from "./DesignerControls";
 import { ImageLibraryPicker, useImageLibraryRegistration } from "./ImageLibraryPicker";
-import { Icon, type IconName } from "../../ui";
+import { Icon, Radio, RadioGroup, type IconName } from "../../ui";
 // Explicit `.web` suffix (not a bare specifier): `MailyImagePickerModal` has
 // no native counterpart at all (no bridge file to fall back to) — a bare
 // import resolves fine under Metro's platform-extension lookup but not under
@@ -949,18 +949,18 @@ function ButtonAlignmentControl({
   onChange: (alignment: ButtonAlignment) => void;
 }) {
   return (
-    <View
+    <RadioGroup
+      accessibilityLabel="Button alignment"
+      horizontal
       className="flex-row overflow-hidden rounded-md border border-border-strong"
-      accessibilityRole="radiogroup"
     >
       {BUTTON_ALIGNMENTS.map((alignment) => {
         const active = value === alignment;
         return (
-          <Pressable
+          <Radio
             key={alignment}
-            onPress={() => onChange(alignment)}
-            accessibilityRole="radio"
-            accessibilityState={{ selected: active }}
+            checked={active}
+            onSelect={() => onChange(alignment)}
             accessibilityLabel={BUTTON_ALIGNMENT_LABEL[alignment]}
             className={`h-[30px] w-[30px] items-center justify-center ${
               active ? "bg-accent" : "bg-raised hover:bg-sunken"
@@ -971,10 +971,10 @@ function ButtonAlignmentControl({
               size={14}
               color={active ? "#FFFFFF" : colors.muted}
             />
-          </Pressable>
+          </Radio>
         );
       })}
-    </View>
+    </RadioGroup>
   );
 }
 

@@ -48,7 +48,7 @@ import {
   type AttendeeAffiliation,
   type ExpenseType,
 } from "@events-os/shared";
-import { Button, Icon, TextField } from "../../ui";
+import { Button, Icon, Radio, RadioGroup, TextField } from "../../ui";
 import { colors } from "../../../lib/theme";
 
 const TYPE_HINTS: Record<ExpenseType, string> = {
@@ -265,15 +265,18 @@ export function TransactionCodingModal({
                 meals carry extra elements the IRS names specifically. It
                 isn&apos;t a category, and nothing picks it for you.
               </Text>
-              <View className="mb-4 gap-2">
+              <RadioGroup
+                accessibilityLabel="What kind of expense?"
+                className="mb-4 gap-2"
+              >
                 {EXPENSE_TYPES.map((t) => {
                   const selected = expenseType === t;
                   return (
-                    <Pressable
+                    <Radio
                       key={t}
-                      onPress={() => setExpenseType(t)}
-                      accessibilityRole="radio"
-                      accessibilityState={{ selected }}
+                      checked={selected}
+                      onSelect={() => setExpenseType(t)}
+                      accessibilityLabel={EXPENSE_TYPE_LABELS[t]}
                       className={`rounded-lg border px-3 py-2.5 active:opacity-70 ${
                         selected
                           ? "border-accent bg-accent/5"
@@ -286,10 +289,10 @@ export function TransactionCodingModal({
                       <Text className="mt-0.5 text-2xs text-muted">
                         {TYPE_HINTS[t]}
                       </Text>
-                    </Pressable>
+                    </Radio>
                   );
                 })}
-              </View>
+              </RadioGroup>
 
               {expenseType != null ? (
                 <>
@@ -407,15 +410,19 @@ export function TransactionCodingModal({
                               onChangeText={(name) => setRow(i, { name })}
                               placeholder={`Person ${i + 1}`}
                             />
-                            <View className="mt-1.5 flex-row flex-wrap gap-1.5">
+                            <RadioGroup
+                              accessibilityLabel={`Affiliation for person ${i + 1}`}
+                              horizontal
+                              className="mt-1.5 flex-row flex-wrap gap-1.5"
+                            >
                               {ATTENDEE_AFFILIATIONS.map((a) => {
                                 const selected = row.affiliation === a;
                                 return (
-                                  <Pressable
+                                  <Radio
                                     key={a}
-                                    onPress={() => setRow(i, { affiliation: a })}
-                                    accessibilityRole="radio"
-                                    accessibilityState={{ selected }}
+                                    checked={selected}
+                                    onSelect={() => setRow(i, { affiliation: a })}
+                                    accessibilityLabel={ATTENDEE_AFFILIATION_LABELS[a]}
                                     className={`rounded-full border px-2 py-0.5 active:opacity-70 ${
                                       selected
                                         ? "border-accent bg-accent/10"
@@ -427,10 +434,10 @@ export function TransactionCodingModal({
                                     >
                                       {ATTENDEE_AFFILIATION_LABELS[a]}
                                     </Text>
-                                  </Pressable>
+                                  </Radio>
                                 );
                               })}
-                            </View>
+                            </RadioGroup>
                           </View>
                         ))}
                       </View>

@@ -12,6 +12,8 @@ import {
   Badge,
   Icon,
   EmptyState,
+  Radio,
+  RadioGroup,
   ToastView,
 } from "../../../components/ui";
 import { ArticleBlocks } from "../../../components/academy/ArticleBlocks";
@@ -337,7 +339,10 @@ function Quiz({
                   {qi + 1}. {q.prompt}
                 </Text>
               </View>
-              <View className="mt-3 gap-1.5">
+              <RadioGroup
+                accessibilityLabel={`${qi + 1}. ${q.prompt}`}
+                className="mt-3 gap-1.5"
+              >
                 {/* Options render in a shuffled DISPLAY order; `oi` remains the
                     ORIGINAL index used for selection, submit, and grading. */}
                 {shuffledOptionOrder(q.options.length, shuffleSeed + qi).map(
@@ -348,14 +353,14 @@ function Quiz({
                   const showWrong =
                     graded != null && selected && !graded.correct;
                   return (
-                    <Pressable
+                    <Radio
                       key={oi}
                       disabled={submitting || graded != null}
-                      onPress={() =>
+                      checked={selected}
+                      onSelect={() =>
                         setAnswers((prev) => ({ ...prev, [qi]: oi }))
                       }
-                      accessibilityRole="radio"
-                      accessibilityState={{ selected }}
+                      accessibilityLabel={opt}
                       className={`flex-row items-center gap-2.5 rounded-md border px-3 py-2 ${
                         showCorrect
                           ? "border-success bg-success-bg"
@@ -390,11 +395,11 @@ function Quiz({
                       >
                         {opt}
                       </Text>
-                    </Pressable>
+                    </Radio>
                   );
                   },
                 )}
-              </View>
+              </RadioGroup>
               {graded ? (
                 <View className="mt-3 rounded-md bg-sunken px-3 py-2.5">
                   <Text className="text-sm leading-5 text-muted">
