@@ -586,13 +586,24 @@ export const sales = defineTable({
       candidates: v.array(v.string()),
     }),
   ),
-  /** How the item breakdown was arrived at:
-   *   - `stripe_line_items` — Stripe told us, exactly.
-   *   - `amount_decomposition` — reconstructed from the amount against the catalogue.
-   *   - `unresolved` — the amount matched nothing; `items` is empty and a human must
-   *     look. The revenue still counts; only the breakdown is missing. */
+  /** How the item breakdown was arrived at — a trust label, not a provenance note. The
+   *  four values are RANKED (see `lib/salesItems.ts`), because a reader deciding whether
+   *  "PW Tee ×2" is fact or inference needs to know which, and because a re-sync is
+   *  allowed to move a row UP this ladder and never down:
+   *   - `stripe_line_items` — Stripe told us, exactly. The charge's
+   *     `metadata.line_items` named real Stripe Price objects, and Σ(unit_amount × qty)
+   *     was verified equal to the charge to the cent. Neither SKU nor price is inferred.
+   *   - `charge_description` — the point of sale wrote down what it rang up
+   *     ("1x PW Tee"). A statement by the seller rather than a deduction, so it holds on
+   *     days no catalogue covers; the unit price is derived by division, which is why it
+   *     ranks below the above.
+   *   - `amount_decomposition` — INFERRED from the amount against the hand-kept
+   *     per-event price list, and only when exactly one basket makes the total.
+   *   - `unresolved` — nothing above could speak; `items` is empty and a human must
+   *     look. The revenue still counts in full; only the breakdown is missing. */
   itemSource: v.union(
     v.literal("stripe_line_items"),
+    v.literal("charge_description"),
     v.literal("amount_decomposition"),
     v.literal("unresolved"),
   ),

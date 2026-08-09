@@ -9,19 +9,25 @@
  * `reconciliation.ts#accountBalances` counts it GROSS alongside the other two.
  * This module is the read surface over it.
  *
- * ── WHY MOST ROWS HAVE NO ITEMS ─────────────────────────────────────────────
- * The in-person taps went through a third-party Tap-to-Pay app that sent Stripe
- * an AMOUNT and nothing else — 177 of 178 charges carry no line item and no
- * price id, even though the product catalogue existed in Stripe. So the amount
- * is the only surviving evidence of what was sold, and `lib/salesCatalog.ts`
- * only asserts a breakdown when exactly ONE combination of that event's prices
- * makes the total. Eden sold only $30 tees, so its charges read cleanly; Pop
- * The Balloon's $1/$2/$3/$5 snack prices overlap so heavily that most of it
- * stays unresolved.
+ * ── WHY MANY OLD ROWS HAVE NO ITEMS ─────────────────────────────────────────
+ * The 2025 in-person taps went through a third-party Tap-to-Pay app that sent
+ * Stripe an AMOUNT and nothing else — 142 of the 2025 charges carry no line item
+ * and no price id, even though the product catalogue existed in Stripe. For
+ * those the amount is the only surviving evidence of what was sold, and
+ * `lib/salesCatalog.ts` only asserts a breakdown when exactly ONE combination of
+ * that event's prices makes the total. Eden sold only $30 tees, so its charges
+ * read cleanly; Pop The Balloon's $1/$2/$3/$5 snack prices overlap so heavily
+ * that most of it stays unresolved.
  *
  * That is the honest outcome, not a gap to paper over: the money and the event
  * are certain, the SKU is not, and a fabricated SKU is worse than a blank. The
  * UI shows `unresolved` plainly for the same reason.
+ *
+ * NEWER ROWS DON'T NEED THE GUESSWORK. The payment app started sending the SKU
+ * with the charge (a Stripe price id in `metadata.line_items`, and a "1x PW Tee"
+ * description), so from 2026-05-31 those charges resolve from what Stripe
+ * states rather than from what the amount implies — `itemSource` says which,
+ * and `lib/salesItems.ts` explains the ranking.
  *
  * READ-ONLY. Sales originate at Stripe and are re-synced idempotently on the
  * charge id; there is no hand-entry path, so nothing here writes. The one
