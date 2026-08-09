@@ -203,4 +203,19 @@ crons.cron(
   {},
 );
 
+// Daily 08:00 UTC: does Stripe still SEND us the events `http.ts` handles?
+// A handler branch for an event nobody subscribed to fails silently — it
+// raises nothing, logs nothing, and passes every test, because the tests call
+// the handler directly. Production ran for a stretch with only the two
+// `checkout.session.*` events enabled while six other branches sat dead (the
+// 2026-08-09 audit; loss was $0 only because the recurring-giving path had
+// never been used). This logs LOUDLY when a handled event has no enabled
+// endpoint behind it. Read-only, and a no-op when STRIPE_SECRET_KEY is unset.
+crons.cron(
+  "stripe webhook coverage check",
+  "0 8 * * *",
+  internal.stripeWebhookCoverage.checkCoverage,
+  {},
+);
+
 export default crons;

@@ -370,6 +370,7 @@ import type * as sponsorships from "../sponsorships.js";
 import type * as storage from "../storage.js";
 import type * as stripe from "../stripe.js";
 import type * as stripeFinance from "../stripeFinance.js";
+import type * as stripeWebhookCoverage from "../stripeWebhookCoverage.js";
 import type * as templatePeople from "../templatePeople.js";
 import type * as templateSync from "../templateSync.js";
 import type * as templates from "../templates.js";
@@ -753,6 +754,7 @@ declare const fullApi: ApiFromModules<{
   storage: typeof storage;
   stripe: typeof stripe;
   stripeFinance: typeof stripeFinance;
+  stripeWebhookCoverage: typeof stripeWebhookCoverage;
   templatePeople: typeof templatePeople;
   templateSync: typeof templateSync;
   templates: typeof templates;
