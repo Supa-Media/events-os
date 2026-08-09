@@ -2096,6 +2096,39 @@ export const financeSettings = defineTable({
   stripeAvailableCents: v.optional(v.number()),
   stripePendingCents: v.optional(v.number()),
   stripeBalanceAsOf: v.optional(v.number()),
+  // ── The two winding-down piles (see `lib/reconciliationGap.ts`) ─────────────
+  // Givebutter and Relay are both slated for deprecation ("we plan to deprecate
+  // both givebutter and relay soon but for now it still holds some of our
+  // funds" — founder, 2026-08-08). They are modelled here because the money is
+  // real today; when both are drained these five fields should be DELETED, not
+  // left reading zero.
+  //
+  // GIVEBUTTER — refreshed by the same snapshot step as the Stripe balance
+  // above. DERIVED, not read: Givebutter publishes no balance endpoint, so this
+  // is the sum of succeeded transactions not yet assigned to a payout (see
+  // `givebutterSync.ts#fetchGivebutterUndepositedCents` for the derivation and
+  // its evidence). Display/reconciliation only, never summed into any ledger.
+  // `undefined` = never snapshotted, which is NOT zero.
+  givebutterUndepositedCents: v.optional(v.number()),
+  givebutterBalanceAsOf: v.optional(v.number()),
+  // RELAY — HAND-ENTERED, and the only balance in this schema that is. Note the
+  // narrow reason: Relay's TRANSACTIONS sync live through Stripe Financial
+  // Connections (`source:"stripe_fc"`), and `relay_csv` covers the history
+  // before that — it is only the account BALANCE that no API exposes. So the
+  // choice was a stated number or a missing pile. A number a named person typed
+  // on a stated date is auditable; a silent zero is not.
+  // `relayBalanceAsOf` is when THEY said it was true (which is why it is stored
+  // separately from the singleton's `updatedAt` — that moves for unrelated
+  // policy edits and would make the figure look fresher than it is), and
+  // `relayBalanceSetBy` is who said it. See `reconciliation.ts#setRelayBalance`.
+  relayBalanceCents: v.optional(v.number()),
+  relayBalanceAsOf: v.optional(v.number()),
+  relayBalanceSetBy: v.optional(v.id("users")),
+  // When a page open last asked Stripe to re-pull the Financial Connections
+  // transaction feed (the live Relay feed). Its own clock, deliberately much
+  // slower than `balanceSnapshotAt` above — see
+  // `reconciliation.ts#claimFcRefresh` for why the two throttles are separate.
+  fcRefreshAt: v.optional(v.number()),
   // ── Balance-snapshot throttle (see `reconciliation.ts#refreshBalancesNow`) ──
   // The accounts page refreshes balances when it OPENS, because figures hours
   // old can't answer "do the books match the bank right now". That means a page
