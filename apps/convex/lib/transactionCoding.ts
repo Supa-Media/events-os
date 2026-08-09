@@ -168,6 +168,9 @@ export async function submitCoding(
     scope: FinanceScope;
     fields: CodingWriteFields;
     namesMaxHeadcount: number;
+    /** The coding policy date, so the documentation gate below can tell a
+     *  REQUIRED coding from a voluntary one. */
+    codingRequiredSinceMs: number;
     codedByPersonId: Id<"people"> | null;
     codedByUserId: Id<"users">;
   },
@@ -194,8 +197,23 @@ export async function submitCoding(
   // is where documentation has to be actually RESOLVED (`isUndocumented`
   // counts only approved exceptions) — so nothing publishes on the strength
   // of an unapproved claim.
+  //
+  // SCOPED TO ROWS THAT OWE A CODING AT ALL — post-policy outflow spend, the
+  // same population `finances.requiresCoding` gates on. Unscoped, this
+  // punished the only people doing more than they had to: a voluntary coding
+  // on a donation inflow, an `excluded` duplicate, a personal charge, or a
+  // pre-policy historical row would be refused for want of documentation
+  // those rows never owed, and the only way through would have been filing a
+  // spurious receipt exception for a manager to adjudicate. A coding nobody
+  // required is strictly better than no coding; it must never be harder to
+  // give than the required one.
+  const codingRequired =
+    args.txn.postedAt >= args.codingRequiredSinceMs &&
+    args.txn.flow === "outflow" &&
+    args.txn.status !== "excluded" &&
+    args.txn.isPersonal !== true;
   const hasReceipt = args.txn.receiptStorageId != null;
-  if (!hasReceipt) {
+  if (codingRequired && !hasReceipt) {
     const exceptions = await ctx.db
       .query("receiptExceptions")
       .withIndex("by_transaction", (q) => q.eq("transactionId", args.txn._id))

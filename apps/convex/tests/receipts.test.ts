@@ -1873,6 +1873,37 @@ describe("suggestedForTransaction / confirmSuggestedReceipt", () => {
     expect(links).toHaveLength(0);
   });
 
+  test("…even when the matcher put their charge on that receipt's shortlist", async () => {
+    // The shortlist is an org-wide exact-cent match, so a stranger's charge
+    // lands on it routinely (two people buy the same $42.10 thing the same
+    // day). Treating it as a permission let a cardholder consume someone
+    // else's receipt: it's single-use, so the rightful owner could no longer
+    // attach it to the charge it actually documents, and the audit trail
+    // recorded the wrong person's document as proof.
+    const t = newT();
+    const s = await setupChapter(t);
+    const me = await seedPerson(s);
+    const other = await seedOtherPerson(s);
+    const myTxn = await seedTxn(s, { amountCents: 4210, personId: me });
+    const theirReceipt = await seedCapturedReceipt(s, {
+      uploadedByPersonId: other,
+      amountCents: 4210,
+      receiptDate: Date.now(),
+      // The matcher shortlisted MY charge on THEIR receipt.
+      candidateTransactionIds: [myTxn],
+    });
+
+    await expect(
+      s.as.mutation(api.receipts.confirmSuggestedReceipt, {
+        receiptId: theirReceipt,
+        transactionId: myTxn,
+      }),
+    ).rejects.toThrow(ConvexError);
+    expect(
+      await run(t, (ctx) => ctx.db.query("receiptLinks").take(5)),
+    ).toHaveLength(0);
+  });
+
   test("an ALREADY-LINKED receipt is refused — re-using one is a bookkeeper's call", async () => {
     const t = newT();
     const s = await setupChapter(t);

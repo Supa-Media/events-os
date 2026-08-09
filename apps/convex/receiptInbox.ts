@@ -2567,8 +2567,14 @@ async function runPipeline(
     // and the module doc). The literal is a stored schema enum
     // (`receiptReplyBatches.items`), so it's reused rather than renamed; the
     // sender-facing copy is what carries the meaning.
+    // STATUS FIRST, suggestions second. Keyed on the suggestion alone, a
+    // receipt that a human must actually resolve — an unreadable photo, a
+    // byte-identical re-send — still got the reassuring "filed it, confirm it
+    // when you code that charge" copy the moment the matcher happened to find
+    // a plausible charge, and its sender was never told anything was wrong.
+    // Only a clean capture may claim to have been filed with a suggestion.
     const outcome =
-      result.suggestedCount > 0
+      result.status === CAPTURED_STATUS && result.suggestedCount > 0
         ? "matched"
         : result.status === "no_match"
           ? "no_match"

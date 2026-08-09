@@ -224,7 +224,7 @@ export const submit = mutation({
       args.transactionId,
     );
     const userId = (await requireUserId(ctx)) as Id<"users">;
-    const { namesMaxHeadcount } = await codingPolicy(ctx);
+    const { namesMaxHeadcount, sinceMs } = await codingPolicy(ctx);
     const existing = await codingForTransaction(ctx, args.transactionId);
     const { codingId, resubmission } = await submitCoding(ctx, {
       txn,
@@ -242,6 +242,7 @@ export const submit = mutation({
           : {}),
       },
       namesMaxHeadcount,
+      codingRequiredSinceMs: sinceMs,
       codedByPersonId: actorPersonId,
       codedByUserId: userId,
     });

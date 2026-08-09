@@ -1681,11 +1681,45 @@ export const suggestedForTransaction = query({
     if (access.actorPersonId) ownerIds.add(access.actorPersonId as string);
     if (ownerIds.size === 0) return [];
 
-    const unlinked = await ctx.db
+    // READ EACH OWNER'S OWN UNLINKED RECEIPTS, not the org-wide unlinked pile.
+    //
+    // Paging `by_linkCount` and filtering ownership in JS looks equivalent and
+    // isn't: it bounds the scan by RECENCY ACROSS THE ORG, so once more than
+    // `SUGGESTION_SCAN_LIMIT` newer unlinked receipts exist anywhere, a
+    // cardholder's own matching receipt falls off the end and is silently
+    // never offered — the failure mode is an empty suggestion list on a screen
+    // whose whole job is to stop people hunting for receipts. Keying on the
+    // uploader makes the bound per-person, which is the population that was
+    // meant all along.
+    //
+    // Legacy inbound rows (captured before `uploadedByPersonId` was
+    // populated) can't be reached this way, so they keep their bounded
+    // fallback scan below — capped by `SUGGESTION_LEGACY_OWNER_LOOKUPS`, and
+    // now spent on rows that are actually candidates rather than on strangers'.
+    const perOwner = await Promise.all(
+      [...ownerIds].map((personId) =>
+        ctx.db
+          .query("receipts")
+          .withIndex("by_uploader_and_linkCount", (q) =>
+            q.eq("uploadedByPersonId", personId as Id<"people">).eq("linkCount", 0),
+          )
+          .order("desc")
+          .take(SUGGESTION_SCAN_LIMIT),
+      ),
+    );
+    const legacyUnattributed = await ctx.db
       .query("receipts")
-      .withIndex("by_linkCount", (q) => q.eq("linkCount", 0))
+      .withIndex("by_uploader_and_linkCount", (q) =>
+        q.eq("uploadedByPersonId", undefined).eq("linkCount", 0),
+      )
       .order("desc")
       .take(SUGGESTION_SCAN_LIMIT);
+    const seen = new Set<string>();
+    const unlinked = [...perOwner.flat(), ...legacyUnattributed].filter((r) => {
+      if (seen.has(r._id as string)) return false;
+      seen.add(r._id as string);
+      return true;
+    });
 
     const rows: { receipt: Doc<"receipts">; match: typeof suggestionMatch.type }[] = [];
     let legacyLookups = 0;
@@ -1813,12 +1847,18 @@ export const confirmSuggestedReceipt = mutation({
       const ownerIds = new Set<string>();
       if (txn.personId) ownerIds.add(txn.personId as string);
       if (access.actorPersonId) ownerIds.add(access.actorPersonId as string);
-      const onShortlist = (receipt.candidateTransactionIds ?? []).includes(txn._id);
+      // OWNERSHIP, FULL STOP — being on the receipt's shortlist is not a
+      // permission. The shortlist is produced by an org-wide exact-cent
+      // matcher, so someone else's charge lands on it routinely (two people
+      // buy the same $12.99 thing on the same day). Accepting it as a
+      // disjunct let a cardholder attach ANOTHER PERSON's receipt to their own
+      // charge and consume it — the receipt is single-use, so the rightful
+      // owner then can't attach it to the charge it actually belongs to, and
+      // the audit trail records the wrong person's document as proof.
+      // Bookkeepers keep the cross-owner power via `linkReceipt`, where it's
+      // a deliberate judgment call rather than a one-tap confirm.
       let lookups = 0;
-      if (
-        !onShortlist &&
-        !(await ownsReceipt(ctx, receipt, ownerIds, () => lookups++ < 1))
-      ) {
+      if (!(await ownsReceipt(ctx, receipt, ownerIds, () => lookups++ < 1))) {
         throw notOffered();
       }
     }

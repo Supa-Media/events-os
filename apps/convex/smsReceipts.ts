@@ -726,12 +726,13 @@ async function replyToSmsSender(
 
   const amt = result.amountCents != null ? fmtUsd(result.amountCents) : "your receipt";
   let body: string;
-  if (result.suggestedTransactionId != null) {
-    // Captured with at least one suggestion — the charge is waiting for them,
-    // not for a bookkeeper. Keyed on the suggested TRANSACTION, never on the
-    // status: `CAPTURED_STATUS` is `needs_review` until the shared tuple grows
-    // a `suggested` member, and a genuinely-unreadable photo lands there too.
-    // Never says "attached": nothing is (module doc).
+  if (result.status === CAPTURED_STATUS && result.suggestedTransactionId != null) {
+    // Captured cleanly, with at least one suggestion — the charge is waiting
+    // for them, not for a bookkeeper. Requires BOTH: keyed on the suggestion
+    // alone, an unreadable photo or a duplicate re-send would get this
+    // reassuring copy whenever the matcher happened to find a plausible
+    // charge, and its sender would never learn anything was wrong. Never says
+    // "attached": nothing is (module doc).
     body = `Got ${amt}${
       result.suggestedMerchant ? ` — looks like your ${result.suggestedMerchant} charge` : ""
     }. Filed it; confirm it when you code that charge in the app.`;

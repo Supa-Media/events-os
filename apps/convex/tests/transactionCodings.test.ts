@@ -153,6 +153,31 @@ describe("a coding carries its own documentation", () => {
     );
   });
 
+  test("a VOLUNTARY coding is never blocked by it", async () => {
+    // The gate is scoped to rows that owe a coding (post-policy outflow
+    // spend). Unscoped it punished the only people doing more than they had
+    // to: coding a pre-policy charge, an inflow, or an excluded duplicate
+    // would have been refused for want of documentation those rows never
+    // owed — and the only way through would have been filing a bogus receipt
+    // exception for a manager to adjudicate.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const prePolicy = await seedTxn(s, {
+      postedAt: PRE_POLICY,
+      documented: false,
+    });
+
+    await s.as.mutation(api.transactionCodings.submit, {
+      transactionId: prePolicy,
+      expenseType: "general",
+      businessPurpose: GOOD_PURPOSE,
+    });
+    expect((await run(s.t, (ctx) => ctx.db.get(prePolicy)))?.codingState).toBe(
+      "submitted",
+    );
+  });
+
   test("getForTransaction reports it, so the form can say so before you type", async () => {
     const t = newT();
     const s = await setupChapter(t);
