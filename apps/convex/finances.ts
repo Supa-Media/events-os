@@ -131,6 +131,9 @@ import {
   TRANSACTION_CODING_STATUSES,
   countsTowardFacet,
   matchesReconcileFilters,
+  reconcileFilterGroupOf,
+  reconcileSearchTerms,
+  matchesReconcileSearch,
   RECEIPT_EXCEPTION_REASON_LABELS,
   isReconstructedHistory,
   MAX_MERCHANT_NAME_LENGTH,
@@ -2575,27 +2578,46 @@ function makeCardholderResolver(ctx: QueryCtx) {
   const getPerson = nameCache(ctx, "people");
   const getCard = nameCache(ctx, "cards");
   const imageUrlCache = new Map<Id<"_storage">, string | null>();
-  return async (
-    tr: Doc<"transactions">,
-  ): Promise<{ personId: Id<"people">; name: string; imageUrl: string | null } | null> => {
+  const personFor = async (tr: Doc<"transactions">): Promise<Doc<"people"> | null> => {
     let personId = tr.personId ?? null;
     if (!personId && tr.cardId) {
       const card = await getCard(tr.cardId);
       personId = card?.cardholderPersonId ?? null;
     }
     if (!personId) return null;
-    const person = await getPerson(personId);
-    if (!person) return null;
-    let imageUrl: string | null = null;
-    if (person.image) {
-      if (imageUrlCache.has(person.image)) {
-        imageUrl = imageUrlCache.get(person.image)!;
-      } else {
-        imageUrl = await ctx.storage.getUrl(person.image);
-        imageUrlCache.set(person.image, imageUrl);
+    return await getPerson(personId);
+  };
+  return {
+    /** The full display shape, including a signed avatar URL. */
+    resolve: async (
+      tr: Doc<"transactions">,
+    ): Promise<{
+      personId: Id<"people">;
+      name: string;
+      imageUrl: string | null;
+    } | null> => {
+      const person = await personFor(tr);
+      if (!person) return null;
+      let imageUrl: string | null = null;
+      if (person.image) {
+        if (imageUrlCache.has(person.image)) {
+          imageUrl = imageUrlCache.get(person.image)!;
+        } else {
+          imageUrl = await ctx.storage.getUrl(person.image);
+          imageUrlCache.set(person.image, imageUrl);
+        }
       }
-    }
-    return { personId, name: person.name, imageUrl };
+      return { personId: person._id, name: person.name, imageUrl };
+    },
+    /**
+     * Just the name — no `storage.getUrl`. `listReconcile`'s server-side search
+     * has to match a cardholder's name across EVERY row in scope, not just the
+     * page it ships, and minting a signed avatar URL for each of those is pure
+     * waste. Shares the person/card caches with `resolve`, so a row that later
+     * lands on the page costs no second read.
+     */
+    resolveName: async (tr: Doc<"transactions">): Promise<string | null> =>
+      (await personFor(tr))?.name ?? null,
   };
 }
 
@@ -8011,6 +8033,19 @@ export const listTransactions = query({
  * (every existing caller — the plain Reconcile tab, "Needs budget" links —
  * is unaffected).
  */
+/**
+ * How many reconcile rows one page ships when the caller doesn't say. The scan
+ * behind it is unchanged and still covers the whole scope — this bounds only
+ * the per-row ENRICHMENT (documentation state, cardholder, budget owner) and
+ * the payload, which is where the query's cost actually scales.
+ *
+ * 100 is chosen to be comfortably more than a screen at any zoom, so the first
+ * paint needs no "Load more", while keeping the expensive tail off the wire.
+ */
+export const DEFAULT_RECONCILE_PAGE_SIZE = 100;
+/** Hard ceiling on `limit`, so a caller can't ask for the old unbounded behavior. */
+export const MAX_RECONCILE_PAGE_SIZE = 500;
+
 export const listReconcile = query({
   args: {
     // LEGACY single filter — one mutually-exclusive bucket. Superseded by
@@ -8051,10 +8086,45 @@ export const listReconcile = query({
     year: v.optional(v.number()),
     month: v.optional(v.number()),
     period: v.optional(v.union(v.literal("month"), v.literal("ytd"))),
+    // FREE-TEXT SEARCH, run SERVER-SIDE over the whole scope. This used to be
+    // `filterReconcileRows` on the client, over the rows the server had already
+    // narrowed — which made search a function of the active State filter. With
+    // the page's default selection that meant the box searched 14 of 346
+    // transactions and returned a confident, silent nothing for a vendor
+    // sitting in another state.
+    //
+    // So a query does two things here that a filter doesn't: it DROPS the State
+    // group for this request, and it un-hides the hidden transfer legs (see
+    // `isHiddenTransferLeg`). Kind is still honoured — "payouts, and among them
+    // the Givebutter one" is a coherent sentence, where "Olive Garden, but only
+    // if it needs a budget" is not. The response reports `searchIgnoredState`
+    // so the grid can SAY the State filter is standing down, rather than
+    // silently disagreeing with the dropdown the user can still see.
+    //
+    // Counts are deliberately NOT narrowed by the search — see `counts` below.
+    search: v.optional(v.string()),
+    // PAGE SIZE for `rows`. The scan and the counts still cover the whole
+    // scope (they must — see `counts`), but only this many rows are ENRICHED
+    // and shipped. Before this existed the query returned every matching row,
+    // each one paying a `documentation` resolution, a cardholder resolution and
+    // a budget-owner resolution: fine behind a filter that left 14 rows, and
+    // 346 rows' worth of sequential database round-trips the moment the filter
+    // came off. Clamped server-side to `MAX_RECONCILE_PAGE_SIZE`.
+    limit: v.optional(v.number()),
   },
   returns: v.object({
     rows: v.array(reconcileRow),
     counts: reconcileCounts,
+    // How many rows the selection (+ search) matched across the WHOLE scope,
+    // before paging. `rows.length` is min(this, limit), so the grid can say
+    // "showing 100 of 346" honestly and know whether to offer "Load more".
+    matchedCount: v.number(),
+    // Whether `matchedCount` exceeds what `rows` carries.
+    hasMore: v.boolean(),
+    // True when a non-empty `search` caused the State group to be dropped for
+    // this request. The grid shows this; a filter that silently stops applying
+    // is the defect this whole change exists to remove.
+    searchIgnoredState: v.boolean(),
     // Rows in scope still awaiting a treasurer — the header's backlog figure.
     // Separate from `counts` because those are facet counts now (see the
     // handler); this one deliberately ignores the active selection.
@@ -8111,11 +8181,31 @@ export const listReconcile = query({
       transfers: 0,
       payouts: 0,
     };
+    // The search terms, parsed once. `[]` means "not searching" — every rule
+    // below is a no-op in that case, so an unsearched request behaves exactly
+    // as it did before this argument existed.
+    const searchTerms = reconcileSearchTerms(args.search);
+    const searching = searchTerms.length > 0;
+    // A search DROPS the State group (see the `search` arg's doc). Kind is kept.
+    const selectionFilters = searching
+      ? activeFilters.filter((k) => reconcileFilterGroupOf(k) !== "state")
+      : activeFilters;
+    const searchIgnoredState = searching && selectionFilters.length !== activeFilters.length;
+    const pageSize = Math.max(
+      1,
+      Math.min(
+        Math.floor(args.limit ?? DEFAULT_RECONCILE_PAGE_SIZE),
+        MAX_RECONCILE_PAGE_SIZE,
+      ),
+    );
     const homeChapterId = await readChapterId(ctx);
     if (!homeChapterId)
       return {
         rows: [],
         counts: zero,
+        matchedCount: 0,
+        hasMore: false,
+        searchIgnoredState: false,
         toClearCount: 0,
         chaseCount: 0,
         viewerPersonId: null,
@@ -8317,6 +8407,35 @@ export const listReconcile = query({
       tr.flow === "transfer";
     const transfersRequested = activeFilters.includes("transfers");
 
+    // Cardholder resolution, built HERE rather than beside the row projection
+    // because a search has to match a cardholder's NAME across every row in
+    // scope, not just the page that ships. `resolveName` skips the signed
+    // avatar URL and shares its people/cards caches with `resolve` below, so a
+    // row that later lands on the page costs no second read.
+    const cardholders = makeCardholderResolver(ctx);
+    /**
+     * Does this row match the free-text query? Always true when not searching,
+     * so the non-search path does no extra work at all (and resolves no names).
+     * The matching rule itself is `@events-os/shared#matchesReconcileSearch` —
+     * the same function the grid's own tests pin — so what a query finds can't
+     * drift between the two halves.
+     */
+    const matchesSearch = async (tr: Doc<"transactions">): Promise<boolean> => {
+      if (!searching) return true;
+      return matchesReconcileSearch(
+        {
+          merchantNameOverride: tr.merchantNameOverride ?? null,
+          merchantName: tr.merchantName ?? null,
+          description: tr.description ?? null,
+          cardholderName: await cardholders.resolveName(tr),
+          cardLast4: tr.cardLast4 ?? null,
+          bookName: bookMeta.get(tr.chapterId)?.name ?? null,
+          amountCents: tr.amountCents,
+        },
+        searchTerms,
+      );
+    };
+
     // `counts.all` is the DEFAULT queue's size, not the raw scan's — counting
     // rows the grid refuses to show would put a total in the header that no
     // amount of scrolling reaches. It's accumulated in the loop rather than
@@ -8355,23 +8474,46 @@ export const listReconcile = query({
         // a hidden row still OWES is unaffected and is counted by `chaseCount`
         // above, which is what the chase page and its button read.
         if (countsTowardFacet(flags, activeFilters, "transfers")) counts.transfers += 1;
-        if (transfersRequested && matchesReconcileFilters(flags, activeFilters)) {
+        // A SEARCH un-hides these. The hiding rule exists because a transfer
+        // leg is not queue work, which is an argument about browsing — it is
+        // not an argument for making a $1,000 movement unfindable by name when
+        // someone is looking for exactly it. Picking Transfers still un-hides
+        // them the ordinary way.
+        if (
+          (transfersRequested || searching) &&
+          matchesReconcileFilters(flags, selectionFilters) &&
+          (await matchesSearch(tr))
+        ) {
           selected.push(tr);
         }
         continue;
       }
       counts.all += 1;
       if (!flags.reconciled) toClearCount += 1;
-      if (matchesReconcileFilters(flags, activeFilters)) selected.push(tr);
+      if (
+        matchesReconcileFilters(flags, selectionFilters) &&
+        (await matchesSearch(tr))
+      ) {
+        selected.push(tr);
+      }
+      // FACET COUNTS IGNORE THE SEARCH, deliberately, and are still computed
+      // over the WHOLE scope — never over the page. They describe the book, and
+      // they are what the State dropdown advertises; recomputing them per
+      // keystroke would make every number in that dropdown flicker while the
+      // grid it is supposed to describe has stopped obeying it anyway (a search
+      // drops the State group). The grid says so explicitly instead, via
+      // `searchIgnoredState`.
       for (const key of RECONCILE_FILTER_KEYS) {
         if (countsTowardFacet(flags, activeFilters, key)) counts[key] += 1;
       }
     }
+    // PAGE the rows. `selected` is the full match set across the scope — that's
+    // what `matchedCount` reports and what "Load more" walks — but only
+    // `pageSize` of them get enriched and serialized below.
+    const matchedCount = selected.length;
+    const page = selected.slice(0, pageSize);
+    const hasMore = matchedCount > page.length;
 
-    // Resolve the cardholder only for the rows we actually return (bounded
-    // `storage.getUrl` calls), caching people / cards / image urls across rows
-    // (`makeCardholderResolver` — shared with the `receiptChase` view).
-    const resolveCardholder = makeCardholderResolver(ctx);
     // The linked personal repayment's live status (`repaymentId` →
     // `personalRepayments.status`) — the grid's Personal badge reads "Repaid"
     // once it settles. Every returned row is a member of `all`
@@ -8439,9 +8581,14 @@ export const listReconcile = query({
       };
     };
 
-    const rows: (typeof reconcileRow.type)[] = [];
-    for (const tr of selected) {
-      rows.push({
+    // Projected for the PAGE only, and CONCURRENTLY. Each row costs up to three
+    // dependent reads (documentation state, cardholder, budget owner); walking
+    // them in a sequential `for` loop made the query's latency the SUM of every
+    // row's reads rather than roughly the slowest one. The read-through caches
+    // above are plain Maps, so concurrent misses can duplicate a read — which
+    // is harmless (same id, same answer) and much cheaper than serializing.
+    const rows: (typeof reconcileRow.type)[] = await Promise.all(
+      page.map(async (tr) => ({
         ...toTxnSummary(tr),
         correctable: isTransactionCorrectable(tr),
         isReconstructed: isReconstructedHistory({
@@ -8449,12 +8596,12 @@ export const listReconcile = query({
           historicalImportBatch: tr.historicalImportBatch ?? null,
         }),
         documentation: await resolveDocumentation(tr),
-        cardholder: await resolveCardholder(tr),
+        cardholder: await cardholders.resolve(tr),
         book: bookOf(tr),
         chargedTo: await resolveChargedTo(tr),
         repaymentStatus: await resolveRepaymentStatus(tr),
-      });
-    }
+      })),
+    );
     // Resolved off the caller's HOME chapter (not `scope`, which can be a
     // central/peeked chapter the caller may not have a roster row in) — the
     // grid compares this against each row's `cardholder.personId` to decide
@@ -8469,6 +8616,9 @@ export const listReconcile = query({
     return {
       rows,
       counts,
+      matchedCount,
+      hasMore,
+      searchIgnoredState,
       toClearCount,
       chaseCount,
       viewerPersonId: viewer?._id ?? null,
@@ -8641,7 +8791,7 @@ export const receiptChase = query({
           needsDocumentation(tr) || chargeOutstanding(tr, codingSinceMs) != null,
       );
 
-    const resolveCardholder = makeCardholderResolver(ctx);
+    const resolveCardholder = makeCardholderResolver(ctx).resolve;
     const byHolder = new Map<string, typeof chaseGroup.type>();
     for (const tr of owing) {
       const holder = await resolveCardholder(tr);

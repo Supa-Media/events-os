@@ -242,13 +242,29 @@ describe("genesis backfill runner", () => {
     expect(givebutter).toBeDefined();
 
     // The reconcile grid (what a bookkeeper actually sees) surfaces them all.
-    const reconcile = await s.as.query(api.finances.listReconcile, {
+    //
+    // `rows` is a PAGE now (`listReconcile`'s `limit` — the grid stopped
+    // shipping the whole book on mount). The "all 253 are here" claim therefore
+    // lives in the scope-wide numbers, which is exactly where it should live:
+    // `counts.all` and `matchedCount` are computed over the full scan and are
+    // deliberately NOT page counts.
+    const firstPage = await s.as.query(api.finances.listReconcile, {
       filter: "all",
     });
-    expect(reconcile.counts.all).toBe(253);
-    expect(reconcile.rows.length).toBe(253);
+    expect(firstPage.counts.all).toBe(253);
+    expect(firstPage.matchedCount).toBe(253);
+    expect(firstPage.rows.length).toBe(100); // the default page
+    expect(firstPage.hasMore).toBe(true);
+
+    // Asked for explicitly, every row is still reachable.
+    const everything = await s.as.query(api.finances.listReconcile, {
+      filter: "all",
+      limit: 500,
+    });
+    expect(everything.rows.length).toBe(253);
+    expect(everything.hasMore).toBe(false);
     // Every genesis row is unreviewed → the whole set shows under "To review".
-    expect(reconcile.counts.to_review).toBe(253);
+    expect(everything.counts.to_review).toBe(253);
   });
 
   test("LTN payments land as manual outflows carrying the paid-personally note", async () => {
