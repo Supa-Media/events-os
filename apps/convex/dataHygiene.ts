@@ -14,8 +14,11 @@
  *    survivor's rollups from its actual gifts, and applies the paired
  *    `applyScopeDelta`s so the scope rollup nets EXACTLY (donorCount −1; the
  *    status buckets shift; scope lifetime/giftCount are unchanged because gifts
- *    only move donors, they aren't added or removed). Launch-pot flags on gifts
- *    (`countedInLaunchFund`) are donor-independent and left untouched.
+ *    only move donors, they aren't added or removed). It also re-derives the
+ *    backer count of every scope whose pledges moved — the derive is the ONLY
+ *    writer of `chapters.backerCount`, so every pledge write recomputes.
+ *    Launch-pot flags on gifts (`countedInLaunchFund`) are donor-independent
+ *    and left untouched.
  *
  * ── FULL `v.id("people")` RE-POINT INVENTORY (source: grep of `schema/`) ──────
  * Handled by `repointPersonRefs` below. "idx" = a person-column index drained to
@@ -93,6 +96,7 @@ import {
   linkDonorToPerson,
 } from "./lib/givingDonors";
 import { recordPersonEmail, repointPersonEmails } from "./lib/personEmails";
+import { recomputeChapterBackerCount } from "./givingPledges";
 
 // ── Bounds ───────────────────────────────────────────────────────────────────
 /** Rows read per indexed-drain page. Patched rows leave the person index, so
@@ -741,26 +745,36 @@ export const mergePeople = mutation({
 // MERGE DONORS
 // ═══════════════════════════════════════════════════════════════════════════
 
-/** Drain a donor-column index (`gifts`/`pledges`/`sponsorships` by_donor). */
+/**
+ * Drain a donor-column index (`gifts`/`pledges`/`sponsorships` by_donor).
+ * Returns the distinct `scope`s of the rows it re-pointed, so a pledge drain
+ * can tell the caller which chapters' derived backer counts to recompute.
+ */
 async function repointDonorDrain(
   ctx: MutationCtx,
   counts: Counts,
   table: "gifts" | "pledges" | "sponsorships",
   dup: Id<"donors">,
   surv: Id<"donors">,
-): Promise<void> {
+): Promise<Set<GivingScope>> {
   let n = 0;
+  const scopes = new Set<GivingScope>();
   for (let page = 0; page < MAX_DRAIN_PAGES; page++) {
     const rows = await ctx.db
       .query(table)
       .withIndex("by_donor", (q) => q.eq("donorId", dup))
       .take(DRAIN_PAGE);
     if (rows.length === 0) break;
-    for (const r of rows) await ctx.db.patch(r._id, { donorId: surv });
+    for (const r of rows) {
+      // `sponsorships` carries no `scope` column — only gifts/pledges do.
+      if ("scope" in r) scopes.add(r.scope as GivingScope);
+      await ctx.db.patch(r._id, { donorId: surv });
+    }
     n += rows.length;
     if (rows.length < DRAIN_PAGE) break;
   }
   bump(counts, table, n);
+  return scopes;
 }
 
 export const mergeDonors = mutation({
@@ -795,8 +809,23 @@ export const mergeDonors = mutation({
     //    NOT touched — only `donorId` moves.
     const repointed: Counts = {};
     await repointDonorDrain(ctx, repointed, "gifts", duplicateId, survivorId);
-    await repointDonorDrain(ctx, repointed, "pledges", duplicateId, survivorId);
+    const pledgeScopes = await repointDonorDrain(
+      ctx,
+      repointed,
+      "pledges",
+      duplicateId,
+      survivorId,
+    );
     await repointDonorDrain(ctx, repointed, "sponsorships", duplicateId, survivorId);
+
+    // A repoint is a pledge WRITE, so the derived backer count of every scope
+    // whose pledges moved gets re-derived. In practice both donors share this
+    // merge's scope and the count doesn't move — but "the derive is the only
+    // writer" only holds if EVERY pledge write recomputes, and a rule with an
+    // exception is the rule that let New York drift.
+    for (const scope of pledgeScopes) {
+      await recomputeChapterBackerCount(ctx, scope);
+    }
 
     // 2) RECOMPUTE the survivor's rollups from its ACTUAL gifts (now including
     //    the duplicate's), fully drained via pagination.

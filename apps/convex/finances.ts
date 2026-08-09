@@ -3358,10 +3358,15 @@ export const dashboardChapter = query({
 
 /**
  * WP-4.3 "can we afford this?" — the chapter dashboard's affordability header.
- * Backers (manual entry, §0.1) → monthly revenue → tier → operating floor →
- * central skim → discretionary. All arithmetic lives in
- * `chapterAffordability` (`@events-os/shared`) — this query only resolves the
- * two inputs (backer count, teammate count) and the caller's edit capability.
+ * Backers → monthly revenue → tier → operating floor → central skim →
+ * discretionary. All arithmetic lives in `chapterAffordability`
+ * (`@events-os/shared`) — this query only resolves the two inputs (backer
+ * count, teammate count).
+ *
+ * The backer count is READ-ONLY here and everywhere else: it is derived from
+ * active $50+ pledges by `givingPledges.recomputeChapterBackerCount`. There is
+ * no edit affordance to gate any more, which is why this no longer returns a
+ * `canEdit` flag.
  *
  * Supports the same central drill-down as `dashboardChapter` (viewing a
  * DIFFERENT chapter's header, read-only) so the two stay consistent on the
@@ -3389,11 +3394,6 @@ export const chapterAffordability = query({
     floorCents: v.number(),
     skimCents: v.number(),
     discretionaryCents: v.number(),
-    // True iff the caller may edit THIS chapter's backer count (chapter
-    // finance-manager rank at the chapter being viewed — false during
-    // central drill-down, mirroring every other write action `ChapterView`
-    // hides in that state).
-    canEdit: v.boolean(),
   }),
   handler: async (ctx, args) => {
     const ownChapterId = await readChapterId(ctx);
@@ -3405,7 +3405,6 @@ export const chapterAffordability = query({
       });
     }
 
-    let access;
     if (args.chapterId != null && args.chapterId !== ownChapterId) {
       // Drilling into a different chapter than the caller's own needs central
       // reach, checked through the caller's OWN chapter — mirrors
@@ -3416,9 +3415,9 @@ export const chapterAffordability = query({
           message: "You don't belong to a chapter yet.",
         });
       }
-      access = await requireFinanceCentral(ctx, ownChapterId);
+      await requireFinanceCentral(ctx, ownChapterId);
     } else {
-      access = await requireFinanceRole(ctx, chapterId, "viewer");
+      await requireFinanceRole(ctx, chapterId, "viewer");
     }
 
     const chapter = await ctx.db.get(chapterId);
@@ -3451,51 +3450,22 @@ export const chapterAffordability = query({
         : undefined;
 
     const computed = chapterAffordabilityCalc(backerCount, teammateCount, tiers);
-    const canEdit = chapterId === ownChapterId && access.isManager;
 
-    return { backerCount, teammateCount, ...computed, canEdit };
+    return { backerCount, teammateCount, ...computed };
   },
 });
 
-/**
- * Set the chapter's manual backer count (WP-4.3). Chapter finance-manager
- * rank only (Chapter Director/Treasurer — the seats the PRD names for this;
- * `requireFinanceManager` is the graded ladder's manager gate, which the
- * `finance_manager`-title bridge and superusers already satisfy). Always the
- * CALLER's own chapter (`requireChapterId`) — there is no chapterId arg,
- * mirroring every other write in this file (a central drill-down viewer never
- * gets a write path here; the UI hides the edit affordance via `canEdit`).
- *
- * MIGRATION NOTE (F-6 P2): `chapters.backerCount` is now DERIVED from active
- * pledges by `givingPledges.recomputeChapterBackerCount` on every pledge
- * transition. This manual override is kept as an escape hatch during the
- * Givebutter cutover (imported recurrences aren't yet re-signed on our rails,
- * so the derived number is intentionally low until they are). Once cutover
- * completes (PRD Appendix C#4), this mutation + its `BackerCountModal` retire —
- * any pledge write would otherwise clobber a hand-set number on the next
- * recompute, so the two must not be used in parallel long-term.
- */
-export const setBackerCount = mutation({
-  args: { backerCount: v.number() },
-  returns: v.object({ backerCount: v.number() }),
-  handler: async (ctx, { backerCount }) => {
-    if (!Number.isInteger(backerCount) || backerCount < 0) {
-      throw new ConvexError({
-        code: "INVALID_BACKER_COUNT",
-        message: "Backer count must be a non-negative whole number.",
-      });
-    }
-    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    await requireFinanceManager(ctx, chapterId);
-    const updatedBy = (await requireUserId(ctx)) as Id<"users">;
-    await ctx.db.patch(chapterId, {
-      backerCount,
-      backerCountUpdatedAt: Date.now(),
-      backerCountUpdatedBy: updatedBy,
-    });
-    return { backerCount };
-  },
-});
+// `setBackerCount` (the hand-written backer count, WP-4.3) is GONE. It was a
+// second writer of `chapters.backerCount` alongside the derive in
+// `givingPledges.recomputeChapterBackerCount`, and its own doc comment admitted
+// the two "must not be used in parallel long-term". They were: a hand-set 2 on
+// New York (2026-07-17) outlived three imported `past_due` pledges (2026-07-19)
+// that derive to 0, and the public give page told readers a city was funded on
+// money that had already failed to arrive. Its only UI, `BackerCountModal`, was
+// orphaned when the affordability header was removed, so the manual path had no
+// user — only a drift source. The count is derived, full stop;
+// `givingPledges.recomputeAllBackerCounts` is the repair tool if it ever drifts
+// again.
 
 /**
  * The org-wide roll-up (prototype shape, central finance only): global tiles, a

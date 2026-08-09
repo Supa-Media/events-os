@@ -79,7 +79,10 @@ import {
   GIFT_METHODS,
   donorAddressValidator,
 } from "./schema/givingPlatform";
-import { PLEDGE_FLOOR_CENTS } from "./givingPledges";
+import {
+  PLEDGE_FLOOR_CENTS,
+  recomputeChapterBackerCount,
+} from "./givingPledges";
 
 // ── Constants ──────────────────────────────────────────────────────────────
 
@@ -1232,6 +1235,14 @@ async function importCanonicalBatch(
     } else {
       await commitTicketRow(ctx, scope, row, counters);
     }
+  }
+
+  // An imported recurrence is INSERTED, never transitioned, so nothing else in
+  // this file would ever move the chapter's derived backer count — which is how
+  // New York's hand-set 2 survived three `past_due` imports. Recompute ONCE per
+  // batch (a batch is single-scoped), not per row.
+  if (counters.pledges > 0) {
+    await recomputeChapterBackerCount(ctx, scope);
   }
 
   const remaining = rows.slice(IMPORT_BATCH_SIZE);

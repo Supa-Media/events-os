@@ -20,10 +20,10 @@
  *   Each handler no-ops if the object isn't a pledge's (the established "safe
  *   fan-out" pattern), so it can't touch a ticket/donation session.
  *
- * `chapters.backerCount` is DERIVED here: recomputed from active pledges on
- * every status/amount transition (`recomputeChapterBackerCount`). Money is
- * always integer cents; `transactions` stays the only actuals ledger (PRD §7).
- * See docs/plans/giving-platform.md §2.
+ * `chapters.backerCount` is DERIVED here, and ONLY here: recomputed from active
+ * pledges on every pledge write — status, amount, insert, repoint, delete
+ * (`recomputeChapterBackerCount`). Money is always integer cents; `transactions`
+ * stays the only actuals ledger (PRD §7). See docs/plans/giving-platform.md §2.
  */
 import {
   action,
@@ -133,16 +133,15 @@ function assertPledgeFloor(amountCents: number): void {
 // ── Derived backer count ──────────────────────────────────────────────────────
 
 /**
- * Recompute + persist a chapter's derived `backerCount` (PRD §2's "retiring the
- * manual number"): the count of `active` pledges scoped to the chapter whose
- * `amountCents >= BACKER_UNIT_CENTS`. Called on EVERY pledge status/amount
- * transition so the affordability header, skim math, and transfer automation
- * read a truthful, live number without any code change on their side.
+ * Recompute + persist a chapter's derived `backerCount`: the count of `active`
+ * pledges scoped to the chapter whose `amountCents >= BACKER_UNIT_CENTS`. This
+ * is the ONLY writer of `chapters.backerCount` — the hand-set
+ * `finances.setBackerCount` was deleted (see `recomputeAllBackerCounts` below
+ * for what its last write cost us). Call it from EVERY path that inserts,
+ * transitions, repoints, or deletes a pledge, so the affordability header, skim
+ * math, and transfer automation read a truthful, live number.
  *
  * `central` has no `chapters.backerCount` to derive, so it's a no-op there.
- * NOTE: `finances.setBackerCount` stays the MANUAL override during the
- * Givebutter migration — it and this derived path coexist until cutover
- * completes, then the manual path retires (see that mutation's doc comment).
  */
 export async function recomputeChapterBackerCount(
   ctx: MutationCtx,
@@ -155,14 +154,40 @@ export async function recomputeChapterBackerCount(
       q.eq("scope", scope).eq("status", "active"),
     )
     .take(BACKER_RECOUNT_LIMIT);
-  // Owner-tunable default (PRD Appendix C#2): a pledge below BACKER_UNIT_CENTS
-  // ($50/mo) makes the person a DONOR but NOT a BACKER — only pledges at/above
-  // the unit count toward the affordability tiers. Flip this predicate if the
-  // owner decides partial pledges count.
+  // ── WHY `active` ONLY, AND WHY `past_due` DOES NOT COUNT ───────────────────
+  // A backer count is a PROMISE OF RECURRING MONEY ARRIVING, not a headcount of
+  // people who once said yes. Two user-facing surfaces make that promise out
+  // loud, and both would lie if this predicate were any looser:
+  //
+  //  - The public give page prints "{backerCount} of {targetBackers} backers"
+  //    under "Monthly backers funding the team that will launch this chapter"
+  //    (`lib/givePage.ts`), and invites the reader to "Become a backer at
+  //    $50/mo". That sentence claims a chapter is funded.
+  //  - The milestone ladder prints "{N} more backers guarantee {commitment}"
+  //    (`lib/givePage.ts`) — crossing a rung UNLOCKS a commitment the org then
+  //    owes a city.
+  //
+  // A `past_due` pledge is a subscription whose payment FAILED. No money is
+  // arriving. Counting it would let a chapter unlock a guaranteed commitment on
+  // money that isn't coming, and would tell the public a city is funded when it
+  // is not. Same logic excludes `incomplete` (checkout never finished),
+  // `canceled` (over), and `paused` (a deliberate hold — see `setPledgeStatus`).
+  //
+  // The amount floor is the same promise in dollars: below BACKER_UNIT_CENTS
+  // ($50/mo) the giver is a real, valued DONOR but not a BACKER, because the
+  // affordability tiers price a backer at exactly one unit (PRD Appendix C#2).
+  //
+  // Consequence, stated plainly: an imported Givebutter recurrence lands
+  // `past_due` (its card can't be ported) and contributes ZERO until that donor
+  // re-signs on our Stripe rails. New York's honest number is 0, not 2.
   const count = active.filter((p) => p.amountCents >= BACKER_UNIT_CENTS).length;
   await ctx.db.patch(scope, {
     backerCount: Math.max(0, count),
     backerCountUpdatedAt: Date.now(),
+    // Legacy attribution from the deleted manual setter. A recompute is the
+    // only authority now, so any surviving "edited by" stamp is a lie about who
+    // owns this number — clear it whenever we rewrite the count.
+    backerCountUpdatedBy: undefined,
   });
 }
 
@@ -180,6 +205,148 @@ async function recomputePledgeCounters(
 ): Promise<void> {
   await recomputeChapterBackerCount(ctx, pledge.scope);
 }
+
+/** A generous bound on the chapter walk in `recomputeAllBackerCounts` — the
+ *  fleet is four cities plus shadow chapters, so this can only ever fire if
+ *  something has gone very wrong upstream. */
+const CHAPTER_SCAN_LIMIT = 1000;
+
+/**
+ * Re-derive `chapters.backerCount` for EVERY chapter, and report/fix drift.
+ *
+ * ── WHAT DRIFTED, AND WHY ───────────────────────────────────────────────────
+ * New York's stored count read 2 while its derived count was 0. Two independent
+ * faults produced that, and it took both:
+ *
+ *  1. A SECOND WRITER. `finances.setBackerCount` let a human hand-write the
+ *     number; someone wrote 2 on 2026-07-17 (the chapter doc still carried the
+ *     `backerCountUpdatedBy` stamp). Its own doc comment admitted the two
+ *     writers "must not be used in parallel long-term". They were.
+ *  2. NO RECOMPUTE ON INSERT. New York's only pledges — 3 Givebutter
+ *     recurrences imported 2026-07-19 as `past_due` — were INSERTED, never
+ *     transitioned. `recomputeChapterBackerCount` fired only on status/amount
+ *     transitions, so it had never once run for New York, and the hand-set 2
+ *     simply sat there for three weeks telling the public a city was 10% funded
+ *     on money that had already failed to arrive.
+ *
+ * The manual setter is gone and every insert/repoint/delete path now recomputes,
+ * so nothing can drift this way again. This tool exists for what ALREADY did.
+ *
+ * ── THIS IS NOT A THROWAWAY ─────────────────────────────────────────────────
+ * Unlike `reverseBadSettlement.ts` (a one-off keyed to specific rows, deleted
+ * once run), this is a STANDING repair tool: it names no chapter, no date, and
+ * no amount — it just asks every chapter whether its stored number still equals
+ * its derived one. Keep it. It is the answer to "is the backer count honest?",
+ * and there was no way to ask that question before.
+ *
+ * ── DISCIPLINE (house one-off shape) ────────────────────────────────────────
+ * `execute` omitted/false is a DRY RUN: zero writes, and it reports exactly what
+ * a real run would do. Preconditions SKIP rather than write a number we don't
+ * trust — a chapter with more active pledges than `BACKER_RECOUNT_LIMIT` would
+ * derive a TRUNCATED count, which is worse than the stale one, so it is reported
+ * and left alone. Idempotent: a second run reports `drifted: 0`.
+ */
+export const recomputeAllBackerCounts = internalMutation({
+  args: { execute: v.optional(v.boolean()) },
+  returns: v.object({
+    dryRun: v.boolean(),
+    chaptersChecked: v.number(),
+    drifted: v.number(),
+    fixed: v.number(),
+    chapters: v.array(
+      v.object({
+        chapter: v.string(),
+        stored: v.number(),
+        derived: v.number(),
+        willFix: v.boolean(),
+      }),
+    ),
+    problems: v.array(v.string()),
+  }),
+  handler: async (ctx, { execute }) => {
+    const write = execute ?? false;
+    const problems: string[] = [];
+    const report: {
+      chapter: string;
+      stored: number;
+      derived: number;
+      willFix: boolean;
+    }[] = [];
+
+    // Deliberately NOT `listActiveChapters`: a prospect territory's shadow
+    // chapter is inactive by design and is exactly where a public "N of M
+    // backers" promise gets rendered, so it must be repaired too. This is a
+    // repair tool, not a fleet surface — the `isActive` gate doesn't apply.
+    const chapters = await ctx.db.query("chapters").take(CHAPTER_SCAN_LIMIT);
+    if (chapters.length === CHAPTER_SCAN_LIMIT) {
+      problems.push(
+        `hit the ${CHAPTER_SCAN_LIMIT}-chapter scan cap — later chapters were NOT checked`,
+      );
+    }
+
+    // `central` is a real pledge scope but carries no `chapters` row and no
+    // backer count, so there is nothing to derive there. Say so out loud rather
+    // than silently ignoring pledges the operator can see in the table.
+    const centralPledge = await ctx.db
+      .query("pledges")
+      .withIndex("by_scope_and_status", (q) => q.eq("scope", "central"))
+      .first();
+    if (centralPledge) {
+      problems.push(
+        "scope 'central' holds pledges but carries no backerCount — SKIPPED",
+      );
+    }
+
+    let drifted = 0;
+    let fixed = 0;
+    for (const chapter of chapters) {
+      const stored = chapter.backerCount ?? 0;
+      // One more than the bound the live recompute uses: if we get that many
+      // back, the live recompute would truncate and this number is a guess.
+      const active = await ctx.db
+        .query("pledges")
+        .withIndex("by_scope_and_status", (q) =>
+          q.eq("scope", chapter._id).eq("status", "active"),
+        )
+        .take(BACKER_RECOUNT_LIMIT + 1);
+      if (active.length > BACKER_RECOUNT_LIMIT) {
+        problems.push(
+          `${chapter.name}: more than ${BACKER_RECOUNT_LIMIT} active pledges — a derived count would be truncated — SKIPPED`,
+        );
+        continue;
+      }
+      const derived = active.filter(
+        (p) => p.amountCents >= BACKER_UNIT_CENTS,
+      ).length;
+      const isDrifted = derived !== stored;
+      if (isDrifted) drifted += 1;
+      report.push({
+        chapter: chapter.name,
+        stored,
+        derived,
+        willFix: isDrifted,
+      });
+      if (isDrifted && write) {
+        await ctx.db.patch(chapter._id, {
+          backerCount: derived,
+          backerCountUpdatedAt: Date.now(),
+          // The hand-set attribution goes with the hand-set number.
+          backerCountUpdatedBy: undefined,
+        });
+        fixed += 1;
+      }
+    }
+
+    return {
+      dryRun: !write,
+      chaptersChecked: report.length,
+      drifted,
+      fixed,
+      chapters: report,
+      problems,
+    };
+  },
+});
 
 /** Resolve a pledge by its Stripe subscription id (webhook object → pledge). */
 async function pledgeBySubscription(
@@ -292,6 +459,12 @@ export const preparePledge = triggerInternalMutation({
       email,
       source,
     });
+    // No `recomputeChapterBackerCount` here, deliberately: an `incomplete`
+    // pledge is a checkout that hasn't finished, and the derive counts `active`
+    // only — so this insert cannot move the number. The very next event
+    // (`activatePledgeFromCheckout`) recomputes. Contrast the IMPORT paths,
+    // which insert `past_due` rows that likewise can't count but land in
+    // chapters whose stored number may already be wrong, and so must recompute.
     const pledgeId = await ctx.db.insert("pledges", {
       donorId,
       scope,

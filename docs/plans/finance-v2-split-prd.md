@@ -373,7 +373,9 @@ tier system. Owned by the Development side, separate surface from finance.
 4. **Backer platform will be built internally** — the future Giving page IS the platform
    (Stripe-based; $50 backer floor with above-and-beyond giving; plus a church-backer class
    at ~$200–300/mo tied to a regional church list for evangelism follow-up). Separate PRD
-   when ready; finance's WP-4.3 uses a manual backer count until then.
+   when ready; finance's WP-4.3 used a manual backer count until then. **Shipped, and the
+   manual count is gone** — `chapters.backerCount` is derived from active $50+ pledges by
+   `givingPledges.recomputeChapterBackerCount`, its only writer.
 5. **WP-0.1 (explicit-only attribution): CONFIRMED** — derived budget matching dies entirely;
    explicit `budgetId` links only + loud "Unattributed" bucket.
 6. **WP-U — "one home per dollar": `budgetId` subsumes the event/project link. CONFIRMED
