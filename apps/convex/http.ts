@@ -534,6 +534,39 @@ async function cancelCheckoutSession(
   await ctx.runMutation(internal.giving.cancelPendingDonation, { sessionId });
 }
 
+/**
+ * Is this the FIRST time Stripe has handed us this event?
+ *
+ * Stripe delivers at least once, and it retries anything that doesn't answer
+ * 200 — so every branch below can run twice. The money paths tolerate that by
+ * construction: each one is idempotent on a session/invoice/payout id, so a
+ * second pass writes nothing new. **An email is not idempotent.** Sending
+ * "your gift cleared" twice is not a rounding error the donor forgives; it
+ * reads as either a double charge or a system that doesn't know what it did.
+ *
+ * So the donor comms — and only the donor comms — are gated on the shared
+ * dedup ledger (`webhooks.ts#recordWebhookEvent`, the same one the payout and
+ * Financial Connections branches use), keyed on Stripe's own event id.
+ *
+ * ORDER MATTERS, and it is deliberately "money first, then record, then
+ * email": if the settle/cancel work throws, nothing has been recorded, so
+ * Stripe's retry re-runs the money path (harmless, it's idempotent) AND still
+ * gets to send the email. Recording first would trade a lost email for
+ * nothing. The reverse risk — a crash between recording and sending — costs
+ * one email and never money, which is the correct side to fail on.
+ */
+async function isFirstDelivery(
+  ctx: ActionCtx,
+  event: { id: string; type: string },
+): Promise<boolean> {
+  const { isNew } = await ctx.runMutation(internal.webhooks.recordWebhookEvent, {
+    provider: "stripe",
+    eventId: event.id,
+    summary: event.type,
+  });
+  return isNew;
+}
+
 http.route({
   path: "/stripe/webhook",
   method: "POST",
@@ -617,15 +650,40 @@ http.route({
           `[stripe] checkout ${sessionId} completed but unsettled ` +
             `(payment_status=${obj.payment_status}) — waiting for async settlement`,
         );
+        // …and TELL THEM. From the donor's side this is the moment they
+        // finished giving; from ours it's the moment we decided to record
+        // nothing for days. Silence across that gap reads as "did that
+        // work?", which is exactly the anxiety `onAchSubmitted` exists to
+        // answer. Scheduled rather than awaited: composing the email costs a
+        // round-trip to Stripe, and a webhook receiver's job is to answer 200
+        // quickly. It no-ops for anything that isn't a `/give` donation.
+        if (await isFirstDelivery(ctx, event)) {
+          await ctx.scheduler.runAfter(0, internal.givingComms.onAchSubmitted, {
+            sessionId,
+          });
+        }
       }
     } else if (event.type === "checkout.session.async_payment_succeeded") {
       // The bank debit cleared. THIS is when an ACH gift becomes real, and it
       // runs the identical fan-out a card runs on completion.
       await settleCheckoutSession(ctx, event.data.object);
+      if (await isFirstDelivery(ctx, event)) {
+        await ctx.scheduler.runAfter(0, internal.givingComms.onAchSettled, {
+          sessionId,
+        });
+      }
     } else if (event.type === "checkout.session.async_payment_failed") {
       // The bank refused the debit (no funds, closed account, blocked debit).
       // Nothing was ever recorded, so this only releases the pending rows.
       await cancelCheckoutSession(ctx, sessionId);
+      // The donor was told days ago that this was on its way, so they are
+      // owed the other half of that sentence — plus a link to try again.
+      // `onAchFailed` also pulls any activity-wall entry down.
+      if (await isFirstDelivery(ctx, event)) {
+        await ctx.scheduler.runAfter(0, internal.givingComms.onAchFailed, {
+          sessionId,
+        });
+      }
     } else if (event.type === "checkout.session.expired") {
       // Same fan-out for the abandoned-checkout case — each no-ops if not theirs.
       await cancelCheckoutSession(ctx, sessionId);

@@ -225,6 +225,74 @@ describe("givingComms ACH emails", () => {
     );
   });
 
+  /**
+   * The webhook that fires on a bank refusal (`async_payment_failed`) carries
+   * the Session, and a Session doesn't say why. Without the expansion below,
+   * every real ACH failure email fell through to the generic sentence and the
+   * whole reason table above was unreachable in production.
+   */
+  test("onAchFailed asks Stripe WHY when the caller didn't say", async () => {
+    process.env.STRIPE_SECRET_KEY = "sk_test_x";
+    process.env.RESEND_API_KEY = "re_test_x";
+    const t = newT();
+    const s = await setupChapter(t);
+    const donorId = await makeDonor(t, s.chapterId);
+    const metadata = {
+      giveDonation: "1",
+      giveDonorId: String(donorId),
+      giveScope: String(s.chapterId),
+    };
+    const sent: Array<Record<string, unknown>> = [];
+    globalThis.fetch = (async (
+      url: string,
+      init?: { body?: string },
+    ): Promise<unknown> => {
+      if (String(url).includes("api.resend.com")) {
+        sent.push(init?.body ? JSON.parse(init.body) : {});
+        return okResendResponse();
+      }
+      // Only the expanded read carries the PaymentIntent; the plain read is
+      // the one `loadGiveSessionContext` makes.
+      const expanded = String(url).includes("expand");
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          id: STRIPE_SESSION,
+          amount_total: 5000,
+          customer_email: "sam@example.com",
+          metadata,
+          ...(expanded
+            ? {
+                payment_intent: {
+                  last_payment_error: { code: "insufficient_funds" },
+                },
+              }
+            : {}),
+        }),
+        text: async () => "{}",
+      };
+    }) as unknown as typeof fetch;
+
+    await t.action(internal.givingComms.onAchFailed, {
+      sessionId: STRIPE_SESSION,
+    });
+
+    const html = String(sent[0].html);
+    expect(html).toContain("enough in the account");
+    expect(html).not.toContain("insufficient_funds");
+  });
+
+  test("onAchFailed still sends the generic sentence when Stripe won't say", async () => {
+    // `installFetch`'s session carries no `payment_intent` at all — the
+    // lookup must degrade to the generic line, never to no email.
+    const { t, sent } = await arrange(false);
+    await t.action(internal.givingComms.onAchFailed, {
+      sessionId: STRIPE_SESSION,
+    });
+    expect(String(sent[0].html)).toContain("complete the transfer.");
+  });
+
   test("all three no-op quietly when the session can't be read", async () => {
     process.env.STRIPE_SECRET_KEY = "sk_test_x";
     process.env.RESEND_API_KEY = "re_test_x";

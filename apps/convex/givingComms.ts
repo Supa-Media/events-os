@@ -234,6 +234,44 @@ async function loadGiveSessionContext(
   };
 }
 
+/**
+ * Ask Stripe why the bank refused the debit.
+ *
+ * `checkout.session.async_payment_failed` carries the Session, and a Session
+ * says only that the payment failed — the reason lives one level down, on the
+ * PaymentIntent's `last_payment_error`. Without this lookup every ACH failure
+ * email says the same generic sentence, and the whole reason table in
+ * `donorFacingAchFailureReason` is unreachable code that looks alive.
+ *
+ * Best-effort by design: `undefined` on any problem, which lands the caller on
+ * exactly that generic sentence. Nothing here is allowed to be the reason a
+ * donor hears nothing at all. Separate from `loadGiveSessionContext` so the
+ * submitted/settled paths — which have no failure to explain — don't pay for
+ * an expansion they never read.
+ */
+async function fetchAchFailureCode(
+  sessionId: string,
+): Promise<string | undefined> {
+  const secretKey = process.env.STRIPE_SECRET_KEY;
+  if (!secretKey) return undefined;
+  const response = await fetch(
+    `${STRIPE_API}/checkout/sessions/${encodeURIComponent(sessionId)}` +
+      `?expand[]=payment_intent`,
+    { headers: { Authorization: `Bearer ${secretKey}` } },
+  );
+  if (!response.ok) return undefined;
+  const session = (await response.json()) as {
+    payment_intent?:
+      | string
+      | null
+      | { last_payment_error?: { code?: string | null } | null };
+  };
+  const intent = session.payment_intent;
+  // Unexpanded (a bare `pi_…` string) or absent — nothing to read.
+  if (!intent || typeof intent === "string") return undefined;
+  return intent.last_payment_error?.code ?? undefined;
+}
+
 // ── 1. Submitted ─────────────────────────────────────────────────────────────
 
 /**
@@ -343,6 +381,9 @@ export const onAchFailed = internalAction({
       refKey: give.refKey,
     });
 
+    // A caller that already knows why (the dispute path passes Stripe's
+    // dispute reason) wins; otherwise go and find out.
+    const failureCode = reason ?? (await fetchAchFailureCode(sessionId));
     const retryUrl = givePageUrl(give.slug ?? undefined);
 
     await sendEmail(ctx, {
@@ -351,7 +392,7 @@ export const onAchFailed = internalAction({
       html: emailShell(`
       ${emailHeading(`Hi ${escapeHtml(give.firstName)} —`, { size: 26 })}
       ${emailParagraph(
-        `Your <b>${give.amount}</b> gift to <b>${escapeHtml(give.city)}</b> didn't go through. ${escapeHtml(donorFacingAchFailureReason(reason))} This is usually a small mismatch or a timing thing, and it's easy to sort out.`,
+        `Your <b>${give.amount}</b> gift to <b>${escapeHtml(give.city)}</b> didn't go through. ${escapeHtml(donorFacingAchFailureReason(failureCode))} This is usually a small mismatch or a timing thing, and it's easy to sort out.`,
         { margin: "0 0 20px" },
       )}
       ${emailParagraph(`If you'd still like to give, you can try again here:`, {
