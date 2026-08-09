@@ -65,6 +65,26 @@ function giveFormExtrasHtml(prefix: string): string {
   <div class="fld"><label for="${prefix}_message">Leave a public message (optional)</label><textarea id="${prefix}_message" rows="2" maxlength="280" placeholder="Say a word of encouragement..."></textarea></div>`;
 }
 
+// ── Payment-method expectation (ACH) ─────────────────────────────────────────
+
+/**
+ * The one thing a giver needs to know before they land on Stripe Checkout and
+ * see "US bank account" sitting next to "Card": a bank transfer is not
+ * instant.
+ *
+ * ACH takes about 2–4 business days to clear and can fail after the fact, so
+ * someone who picks it and then sees nothing happen has every reason to think
+ * the gift didn't work. Two sentences here save that confusion; the full
+ * story arrives by email (`givingComms.ts`) at each step.
+ *
+ * Deliberately placed under the submit button rather than as a banner — the
+ * actual choice happens on Stripe's page, and this is the last thing they read
+ * before going there. Kept to one line: it is a footnote, not a warning.
+ */
+function payMethodNoteHtml(): string {
+  return `<p class="paynote">You can give by card or bank transfer. Bank transfers take about 2&ndash;4 business days to clear &mdash; we'll email you either way.</p>`;
+}
+
 // ── One-time give form ───────────────────────────────────────────────────────
 
 /** The one-time gift form's fields (amount presets + custom + name/email +
@@ -103,6 +123,7 @@ export function oneTimeGiveFormHtml(opts: {
   <div class="fld"><label for="gc_onetime_email">Email</label><input id="gc_onetime_email" type="email" autocomplete="email" placeholder="you@example.com"></div>
   ${opts.showWallOptIn === false ? "" : giveFormExtrasHtml("gc_onetime")}
   <button type="submit" class="submitbtn" id="gc_onetime_submit">${esc(opts.submitLabel)}</button>
+  ${payMethodNoteHtml()}
   <div class="formerr" id="gc_onetime_err"></div>
   <div class="formok" id="gc_onetime_ok"></div>
 </form>`;
@@ -132,6 +153,7 @@ export function monthlyGiveFormHtml(presetsCents: readonly number[]): string {
   <div class="fld"><label for="gc_monthly_email">Email</label><input id="gc_monthly_email" type="email" autocomplete="email" placeholder="you@example.com"></div>
   ${giveFormExtrasHtml("gc_monthly")}
   <button type="submit" class="submitbtn" id="gc_monthly_submit">Back this territory</button>
+  ${payMethodNoteHtml()}
   <div class="formerr" id="gc_monthly_err"></div>
   <div class="formok" id="gc_monthly_ok"></div>
 </form>`;

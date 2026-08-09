@@ -229,6 +229,9 @@ section{margin-bottom:32px}
 /* The plain-language expansion under the consent box: what is public, what
    never is. Muted and small — it explains the checkbox, it isn't a second ask. */
 .sharewall-hint{font-size:12px;line-height:1.45;color:var(--muted);margin:0 0 14px 24px}
+/* The card-or-bank-transfer footnote under the submit button. Centred and
+   quiet — it sets an expectation on the way to Stripe, it isn't a warning. */
+.paynote{font-size:12px;line-height:1.45;color:var(--muted);margin:10px 0 0;text-align:center}
 
 /* ── one-time → City Launch Fund framing (F5, territory pre-launch) ── */
 .onetime-launch-intro{margin-bottom:14px}
