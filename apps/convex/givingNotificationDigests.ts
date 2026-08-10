@@ -31,8 +31,22 @@
  * permanent, silent data loss for every rule after the first failure. Each
  * rule now gets its own `try`, so one bad rule costs exactly itself.
  *
+ * ── A PERIOD IS THE MONEY THAT ARRIVED IN IT ───────────────────────────────
+ * The window ranges on `gifts.receivedAt`, not on `createdAt`. It used to be
+ * the other way round, and that is how a weekly digest came to tell a
+ * development team `$9,224.03 from 44 gifts this week` about a week in which
+ * $261.00 arrived — 35 of those gifts had been received between Nov 2025 and
+ * Mar 2026 and merely written to the ledger that Friday by a historical import.
+ *
+ * The trade this makes is real and is stated where the code makes it: a gift
+ * backdated into a period whose digest has already gone out is in no digest at
+ * all. See `collectWindowGifts` for what that does to the cut/resume machinery
+ * (short version: still never twice, and rows can now fall out of the chain),
+ * and `lib/givingNotificationRules.ts` for why the ledger, not the digest, is
+ * where giving history is read.
+ *
  * ── THE WINDOW IS FILTERED BEFORE IT IS CAPPED ─────────────────────────────
- * `collectWindowGifts` streams the `by_created` range and applies
+ * `collectWindowGifts` streams the `by_received` range and applies
  * `ruleMatchesGift` as it goes, so the cap bounds MATCHED gifts, not scanned
  * rows. Capping first was a money bug and a wedge at once: a 5,000-row import
  * made a digest mail a total 60% short, stamp the watermark, and lose the
@@ -132,24 +146,46 @@ type WindowResult = {
   /** The read stopped early — totals are a FLOOR and the window was cut. */
   truncated: boolean;
   /** Where the window actually closed. Equals the requested `until` on a
-   *  complete read; the last-read gift's `createdAt` on a cut one. */
+   *  complete read; the last-read gift's `receivedAt` on a cut one. */
   until: number;
 };
 
 /**
- * The gifts in `(since, until]` that `rule` matches, on `createdAt` — when the
- * ledger LEARNED of the gift, not when the money changed hands. `receivedAt`
- * is freely backdatable, so a window on it would silently drop a gift entered
- * after its own period closed; `createdAt` only moves forward, which makes the
- * range a partition.
+ * The gifts in `(since, until]` that `rule` matches, on `receivedAt` — when the
+ * MONEY ARRIVED. That is what a period means; see the module doc for the
+ * $9,224.03-for-a-$261.00-week this replaced.
+ *
+ * ── THE CUT, ON A KEY THAT IS NOT MONOTONIC ────────────────────────────────
+ * The cut/resume design was written when the window ranged on `createdAt`, a
+ * key that only ever grows, and moving it to a backdatable one is the riskiest
+ * part of that change. What survives and what doesn't, precisely:
+ *
+ *  • STILL EXACT WITHIN A READ. The index is totally ordered on `receivedAt`,
+ *    so a cut at instant B followed by a window opening strictly after B covers
+ *    the range once and only once. Draining the whole millisecond still does
+ *    the work it always did — several gifts can share a `receivedAt` (an import
+ *    of a batch dated one day, a Stripe payout minute), and cutting mid-instant
+ *    would skip the stragglers.
+ *  • STILL NEVER TWICE. Windows partition the `receivedAt` axis: each opens
+ *    where the last closed. No gift can be reported by two digests, cut or not,
+ *    which is the property that made the watermark worth keeping.
+ *  • WHAT IS LOST: a row can now be INSERTED BEHIND the watermark. Under
+ *    `createdAt` that was impossible — new rows only ever appeared ahead of it.
+ *    Under `receivedAt` any backdated write (an import, Sunday's cash keyed on
+ *    Monday) lands in a stretch already reported, and no window reaches back.
+ *    Such a gift is in NO digest. That is the accepted product decision — the
+ *    digest is this week's money, the ledger is the history — and it is a
+ *    property of the field, not a defect in the cut: no ordering of the read
+ *    can report a row that did not exist when the read happened.
+ *
+ * MID-DRAIN, the same asymmetry has a sharper edge worth knowing: while a large
+ * week drains hourly, the watermark sits INSIDE the period, so a late entry
+ * dated earlier in that same period is skipped even though the period's digest
+ * has not finished. Nothing is double-reported and nothing is wedged; the drain
+ * still terminates. It is the same accepted loss, arriving sooner.
  *
  * FILTERS AS IT STREAMS, so both caps bound something meaningful: matches, and
- * rows read. When either is hit the read keeps going to the end of the current
- * MILLISECOND before stopping — several gifts can share a `createdAt` during
- * an import, and cutting mid-millisecond would either skip them (the next
- * window opens strictly after the watermark) or re-report them (if the
- * watermark were nudged back). Draining the instant is the only cut that does
- * neither.
+ * rows read.
  */
 export async function collectWindowGifts(
   ctx: Pick<MutationCtx, "db">,
@@ -166,16 +202,16 @@ export async function collectWindowGifts(
     rule.scope === "all"
       ? ctx.db
           .query("gifts")
-          .withIndex("by_created", (q) =>
-            q.gt("createdAt", since).lte("createdAt", until),
+          .withIndex("by_received", (q) =>
+            q.gt("receivedAt", since).lte("receivedAt", until),
           )
       : ctx.db
           .query("gifts")
-          .withIndex("by_scope_and_created", (q) =>
+          .withIndex("by_scope_and_received", (q) =>
             q
               .eq("scope", rule.scope as Doc<"gifts">["scope"])
-              .gt("createdAt", since)
-              .lte("createdAt", until),
+              .gt("receivedAt", since)
+              .lte("receivedAt", until),
           );
 
   const gifts: Doc<"gifts">[] = [];
@@ -190,10 +226,11 @@ export async function collectWindowGifts(
 
   for await (const gift of stream) {
     // Past a cap: keep taking rows that share the boundary instant, then stop.
-    // Several gifts can share a `createdAt` during an import, and the next
-    // window opens strictly AFTER the watermark — cutting mid-instant would
-    // skip them, and nudging the watermark back would re-report them.
-    if (capped && gift.createdAt !== boundaryTs) {
+    // Several gifts can share a `receivedAt` — a batch imported under one date,
+    // a payout minute — and the next window opens strictly AFTER the watermark,
+    // so cutting mid-instant would skip them and nudging the watermark back
+    // would re-report them.
+    if (capped && gift.receivedAt !== boundaryTs) {
       stoppedEarly = true;
       break;
     }
@@ -203,7 +240,7 @@ export async function collectWindowGifts(
 
     if (!capped && (gifts.length >= caps.maxMatches || scanned >= caps.maxScan)) {
       capped = true;
-      boundaryTs = gift.createdAt;
+      boundaryTs = gift.receivedAt;
     }
   }
 
@@ -348,9 +385,14 @@ async function buildDigestPayload(
     return null;
   }
 
-  // Newest first — a digest is read top-down and the freshest gift is the
-  // one most likely to still be worth a phone call today.
-  const gifts = [...window.gifts].sort((a, b) => b.createdAt - a.createdAt);
+  // Newest first, by WHEN THE MONEY ARRIVED — the same date the window selects
+  // on and the same one each row prints, so the list can't be read in one order
+  // and dated in another. A digest is read top-down and the freshest gift is
+  // the one most likely to still be worth a phone call today. Ties break on
+  // `createdAt`, which keeps a batch dated to one day in a stable order.
+  const gifts = [...window.gifts].sort(
+    (a, b) => b.receivedAt - a.receivedAt || b.createdAt - a.createdAt,
+  );
 
   const chapterNames = new Map<string, string>();
   const byScope = new Map<string, DigestBreakdownRow>();

@@ -29,18 +29,33 @@
  * how a window that has to move for correctness starts silencing a rule that
  * has to keep firing.
  *
- * ── WHY THE WINDOW IS ON `createdAt`, NOT `receivedAt` ─────────────────────
- * `gifts.receivedAt` is when the money changed hands and is freely
- * backdatable (a CSV import of 2019 giving, a desk entry for a check that
- * arrived last week). A window on it would silently drop any gift entered
- * after its own period closed. `createdAt` is when the ledger learned of the
- * gift; it only moves forward, so a `createdAt` range can't lose a gift to a
- * backdated entry the way a `receivedAt` range can, and NOTHING IS EVER MISSED.
- * (Nothing is double-reported either, in steady state — but a window
- * deliberately reaches back a full period even when the watermark is newer, so
- * a young or freshly-resumed rule overlaps the previous digest on purpose. See
- * `digestWindowStart`.) The email still SHOWS `receivedAt` as the gift's date,
- * because that is the true answer to "when was this given".
+ * ── THE WINDOW IS ON `receivedAt` — WHEN THE MONEY ARRIVED ─────────────────
+ * "Giving this week" means money that came in this week. Every window bound,
+ * and therefore every figure a digest reports, is `gifts.receivedAt`.
+ *
+ * It used to be `createdAt` — when the LEDGER learned of the gift — and that is
+ * the worst bug this feature has had. On 2026-08-07 a Givebutter historical
+ * import wrote 35 gifts received between Nov 2025 and Mar 2026, and the
+ * following weekly digest told the development team `$9,224.03 from 44 gifts
+ * this week` about a week in which $261.00 arrived: 35× the truth, itemized
+ * under dates like `Nov 4, 2025`, including a $5,000.00 wire from March. A
+ * digest that reports the wrong number by a factor of 35 whenever anyone
+ * imports anything is not a digest.
+ *
+ * THE COST, NAMED RATHER THAN HIDDEN. `receivedAt` is freely backdatable, so a
+ * gift entered for a period whose digest has already gone out is behind the
+ * watermark and no later window reaches back for it: it is never in any digest.
+ * That is a deliberate product decision, not an oversight — the digest answers
+ * "what came in this week", and giving HISTORY is what the giving ledger in the
+ * app is for. (A late desk entry is still announced the moment it is keyed, by
+ * an `immediate` rule, which says in as many words that a BACKDATED gift was
+ * recorded — see `isBackdatedGift`. Bulk imports deliberately suppress that,
+ * because 5,000 emails is not a notification.)
+ *
+ * WHAT THAT COSTS THE MACHINERY, in one line, because it is the part that is
+ * easy to get wrong: windows still PARTITION the `receivedAt` axis, so nothing
+ * is ever reported twice — a row can only fall out of the chain, never into it
+ * twice. See `collectWindowGifts` for the cut/resume argument in full.
  */
 import type { Doc, Id } from "../_generated/dataModel";
 
@@ -318,7 +333,13 @@ export function cadencePeriodMs(cadence: string): number {
 }
 
 /**
- * The exclusive lower bound of the gifts this digest covers, on `createdAt`.
+ * The exclusive lower bound of the gifts this digest covers, on `receivedAt` —
+ * the instant the period opens.
+ *
+ * WHICH FIELD it bounds is the module doc's business; WHERE the boundary falls
+ * is this function's, and the two are independent. Everything below is
+ * unchanged by the move off `createdAt`: the three cases are about what
+ * `lastSentAt` MEANS, not about what it measures.
  *
  * Three cases, because `lastSentAt` does not mean the same thing in all three.
  * The whole difficulty here is that one timestamp is used both as a REPORT
@@ -421,14 +442,19 @@ export function digestWindowStart(
 /**
  * How far behind `now` a digest window closes.
  *
- * `gifts.createdAt` is the WRITE TRANSACTION'S START time, not its commit
- * time, so a gift whose mutation began before a digest ran but committed after
- * it would land behind the watermark and never be reported. Convex's OCC makes
- * that nearly unreachable (the digest's range read overlaps the gift write and
- * forces a retry), but "nearly" is doing real work in a sentence about money.
- * Closing the window a minute early costs a daily digest nothing and removes
- * the race outright: any transaction in flight for under a minute is inside
- * the NEXT window rather than lost between two.
+ * A gift is DATED before it is WRITTEN — `receivedAt` is stamped when the money
+ * moved and the row lands some milliseconds (a Stripe webhook: some seconds)
+ * later. Close the window at `now` and any gift in that gap is dated behind a
+ * watermark that has already passed it, which on a `receivedAt` window means it
+ * is never reported by anything. Closing a minute early costs a daily digest
+ * nothing and puts every such gift in the NEXT window instead of nowhere.
+ *
+ * This mattered less when the window was on `createdAt` — there it only closed
+ * an OCC race on the write transaction's start time — and it matters more now,
+ * because the gap it covers is ordinary latency rather than a near-unreachable
+ * interleaving. It is the one protection the `receivedAt` window keeps against
+ * the routine case of a gift written just after the run that would have
+ * reported it.
  */
 export const DIGEST_LAG_MS = 60 * 1000;
 
