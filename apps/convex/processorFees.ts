@@ -57,12 +57,25 @@
  * every spend total: a fee is real money out, it just isn't anybody's choice.
  * (Owner, 2026-08-09.)
  *
- * GIVEBUTTER IS NOT COVERED HERE. Its fees are deducted before the payout lands and this
- * deployment has no Givebutter API integration, so there is nothing to read. Its
- * deposits also currently exceed recorded revenue by $4,550.70 — almost certainly event
- * ticket sales collected through Givebutter that were never recorded — and until that is
- * resolved, any Givebutter "fee" derived from the gap would be measuring the wrong thing.
- * Stripe first, deliberately.
+ * GIVEBUTTER IS COVERED TOO, since 2026-08-10. It did not used to be, and the reason
+ * given here was wrong on the facts: this deployment DOES have a Givebutter API
+ * integration (`givebutterSync.ts` pages `api.givebutter.com/v1`, and the key lives in
+ * `integrationSettings.givebutterApiKey`), and every transaction it returns carries both
+ * `amount` and `payout`. Their difference is Givebutter's stated cut, so there was
+ * something to read all along.
+ *
+ * The other half of the old reasoning was sound, and is now DISCHARGED rather than
+ * ignored. Givebutter's deposits did exceed recorded revenue — by $4,550.70 when that
+ * note was written, by $150.00 once the Cash App and Venmo work landed — so a fee
+ * inferred from the gap really would have been measuring unrecorded sales. The 2026-08-10
+ * reconciliation named the last of it: three Worship Beyond The Walls student
+ * registrations that succeeded and were never recorded. With that resolved, Givebutter
+ * ties exactly — Σ`amount` $13,044.75 − $29.30 of fee = $13,015.45, which is the
+ * $12,940.45 paid out plus the $75.00 still held.
+ *
+ * And the fee is still not derived from that gap. `fetchGivebutterFeeEntries` reads
+ * `amount` and `payout` off the SAME transaction, so our books are not an input to it —
+ * see its header, which is explicit about why that subtraction is not the forbidden one.
  */
 import { action, internalAction, internalMutation, query } from "./_generated/server";
 import type { ActionCtx, MutationCtx } from "./_generated/server";
@@ -72,11 +85,31 @@ import { ConvexError, v } from "convex/values";
 import { NEW_YORK_CHAPTER_SLUG } from "./lib/seed/historical/mapping";
 import { requireSuperuser } from "./lib/superuser";
 import { requireFinanceRole } from "./lib/finance";
+import { fetchGivebutterFeeEntries } from "./givebutterSync";
 
 const STRIPE_API = "https://api.stripe.com/v1";
 const PAGE = 100;
-/** `externalId` prefix — the idempotency key is this plus `YYYY-MM`. */
-const FEE_REF_PREFIX = "stripe-fees:";
+
+/** The rails whose fees are swept. Both write one ledger row per month. */
+const FEE_RAIL = {
+  stripe: {
+    /** `externalId` prefix — the idempotency key is this plus `YYYY-MM`. */
+    refPrefix: "stripe-fees:",
+    merchantName: "Stripe",
+    feeOrigin: "stripe_processing",
+    /** Row description, before ` — YYYY-MM`. */
+    description: "Stripe processing fees",
+  },
+  givebutter: {
+    refPrefix: "givebutter-fees:",
+    merchantName: "Givebutter",
+    feeOrigin: "givebutter_processing",
+    description: "Givebutter processing fees",
+  },
+} as const;
+
+type FeeRail = keyof typeof FEE_RAIL;
+const feeRailArg = v.union(v.literal("stripe"), v.literal("givebutter"));
 
 /**
  * A month's fee-bearing ledger entries, in the shape both the entry writer and
@@ -147,18 +180,21 @@ function usd(cents: number): string {
  */
 export const upsertFeeEntries = internalMutation({
   args: {
+    processor: feeRailArg,
     month: v.string(),
     entries: v.array(feeEntry),
     execute: v.optional(v.boolean()),
   },
   returns: v.object({ inserted: v.number(), updated: v.number(), removed: v.number() }),
-  handler: async (ctx, { month, entries, execute }) => {
+  handler: async (ctx, { processor, month, entries, execute }) => {
     if (!execute) return { inserted: 0, updated: 0, removed: 0 };
 
+    // Scoped to ONE rail as well as one month, so Givebutter's replace pass
+    // never sees Stripe's entries as orphans and deletes them.
     const stored = await ctx.db
       .query("processorFeeEntries")
       .withIndex("by_processor_and_month", (q) =>
-        q.eq("processor", "stripe").eq("month", month),
+        q.eq("processor", processor).eq("month", month),
       )
       .collect();
     const byId = new Map(stored.map((e) => [e.balanceTransactionId, e]));
@@ -169,7 +205,7 @@ export const upsertFeeEntries = internalMutation({
       const prior = byId.get(e.balanceTransactionId);
       if (!prior) {
         await ctx.db.insert("processorFeeEntries", {
-          processor: "stripe",
+          processor,
           month,
           balanceTransactionId: e.balanceTransactionId,
           type: e.type,
@@ -184,10 +220,10 @@ export const upsertFeeEntries = internalMutation({
         continue;
       }
       byId.delete(e.balanceTransactionId);
-      // Stripe's ledger is append-only, so a re-read normally matches exactly
-      // and this whole loop writes nothing. Patch anyway rather than assume —
-      // the one thing worse than a fee number nobody can check is a fee number
-      // whose evidence silently disagrees with it.
+      // Both rails' ledgers are effectively append-only, so a re-read normally
+      // matches exactly and this whole loop writes nothing. Patch anyway rather
+      // than assume — the one thing worse than a fee number nobody can check is
+      // a fee number whose evidence silently disagrees with it.
       if (
         prior.feeCents !== e.feeCents ||
         prior.grossCents !== e.grossCents ||
@@ -241,12 +277,14 @@ function breakdownSentence(
 
 export const upsertFeeRows = internalMutation({
   args: {
+    processor: feeRailArg,
     months: v.array(
       v.object({
         month: v.string(), // YYYY-MM
         feeCents: v.number(),
         entryCount: v.number(),
-        /** Per Stripe balance-transaction type, for the note's breakdown. */
+        /** Per fee type, for the note's breakdown. Stripe's balance-transaction
+         *  types; Givebutter has one kind and sends a single row. */
         byType: v.array(feeTypeRow),
         /** Last day of the month, UTC noon — fees are a period cost, not a moment. */
         postedAt: v.number(),
@@ -261,8 +299,9 @@ export const upsertFeeRows = internalMutation({
     totalFeeCents: v.number(),
     marked: v.number(),
   }),
-  handler: async (ctx, { months, execute }) => {
+  handler: async (ctx, { processor, months, execute }) => {
     const write = execute ?? false;
+    const rail = FEE_RAIL[processor as FeeRail];
     const chapter = await ctx.db
       .query("chapters")
       .withIndex("by_slug", (q) => q.eq("slug", NEW_YORK_CHAPTER_SLUG))
@@ -286,14 +325,22 @@ export const upsertFeeRows = internalMutation({
     for (const mo of months) {
       if (mo.feeCents <= 0) continue;
       totalFeeCents += mo.feeCents;
-      const externalId = `${FEE_REF_PREFIX}${mo.month}`;
+      const externalId = `${rail.refPrefix}${mo.month}`;
       const note =
-        `Stripe fees for ${mo.month} — ${usd(mo.feeCents)} across ${mo.entryCount} ` +
-        `ledger entries: ${breakdownSentence(mo.byType)}. Every entry is kept, so this ` +
-        `total can be checked line by line against Stripe (open the transaction). ` +
-        `Covers both the cut taken from each payment AND the fees Stripe bills on its ` +
-        `own account (Terminal readers, payout and account fees). Revenue is recorded ` +
-        `gross, so this is the whole difference between what was given and what banked.`;
+        processor === "stripe"
+          ? `Stripe fees for ${mo.month} — ${usd(mo.feeCents)} across ${mo.entryCount} ` +
+            `ledger entries: ${breakdownSentence(mo.byType)}. Every entry is kept, so this ` +
+            `total can be checked line by line against Stripe (open the transaction). ` +
+            `Covers both the cut taken from each payment AND the fees Stripe bills on its ` +
+            `own account (Terminal readers, payout and account fees). Revenue is recorded ` +
+            `gross, so this is the whole difference between what was given and what banked.`
+          : `Givebutter fees for ${mo.month} — ${usd(mo.feeCents)} across ${mo.entryCount} ` +
+            `${mo.entryCount === 1 ? "transaction" : "transactions"}. Each is Givebutter's ` +
+            `own \`amount\` less its own \`payout\` for that transaction, kept as evidence ` +
+            `so the total can be checked line by line (open the transaction). Only ` +
+            `transactions whose giver did NOT cover the fee appear here — where they did, ` +
+            `Givebutter remits the full amount and there is no expense. Revenue is recorded ` +
+            `gross, so this is the whole difference between what was given and what banked.`;
 
       const prior = byRef.get(externalId);
       if (prior) {
@@ -326,7 +373,7 @@ export const upsertFeeRows = internalMutation({
             amountCents: mo.feeCents,
             postedAt: mo.postedAt,
             note,
-            ...(needsMark ? { feeOrigin: "stripe_processing" as const } : {}),
+            ...(needsMark ? { feeOrigin: rail.feeOrigin } : {}),
           });
         }
         if (needsMark) marked++;
@@ -341,13 +388,13 @@ export const upsertFeeRows = internalMutation({
           amountCents: mo.feeCents,
           currency: "usd",
           postedAt: mo.postedAt,
-          description: `Stripe processing fees — ${mo.month}`,
-          merchantName: "Stripe",
+          description: `${rail.description} — ${mo.month}`,
+          merchantName: rail.merchantName,
           note,
           status: "categorized",
           ...(category ? { categoryId: category._id } : {}),
           // NOT a budget. See this module's header and `finances.ts#needsBudget`.
-          feeOrigin: "stripe_processing",
+          feeOrigin: rail.feeOrigin,
           externalId,
           createdAt: Date.now(),
         });
@@ -533,6 +580,7 @@ async function runFeeSync(
   let entriesRecorded = 0;
   for (const [month, slot] of sorted) {
     await ctx.runMutation(internal.processorFees.upsertFeeEntries, {
+      processor: "stripe",
       month,
       entries: slot.entries,
       ...(execute ? { execute: true } : {}),
@@ -569,6 +617,7 @@ async function runFeeSync(
     totalFeeCents: number;
     marked: number;
   } = await ctx.runMutation(internal.processorFees.upsertFeeRows, {
+    processor: "stripe",
     months,
     ...(execute ? { execute: true } : {}),
   });
@@ -578,6 +627,117 @@ async function runFeeSync(
     byType: [...byType.entries()]
       .map(([type, v2]) => ({ type, ...v2 }))
       .sort((a, b) => b.feeCents - a.feeCents),
+    monthsWithFees: months.length,
+    entriesRecorded,
+    created: r.created,
+    updated: r.updated,
+    unchanged: r.unchanged,
+    totalFeeCents: r.totalFeeCents,
+    marked: r.marked,
+  };
+}
+
+/**
+ * The Givebutter half, same contract and same two writers as `runFeeSync`.
+ *
+ * Structurally simpler because Givebutter has ONE kind of fee. Stripe bills on
+ * its own account as well as per payment, which is why that sweep needs an
+ * allowlist of ledger types; Givebutter's cut only ever appears as the gap
+ * between one transaction's `amount` and its own `payout`, so every entry is the
+ * same shape and `byType` carries a single row. `feeTypeLabel` leaves the
+ * unmapped `givebutter` string alone, which reads correctly in the note.
+ *
+ * A DEPLOYMENT WITH NO GIVEBUTTER IS A NO-OP, NOT A FAILURE. No key configured
+ * returns zeroes rather than throwing, so the morning engine can call this
+ * unconditionally — same treatment `fetchGivebutterUndepositedCents` already
+ * gets from the balance snapshot.
+ */
+async function runGivebutterFeeSync(
+  ctx: ActionCtx,
+  execute: boolean | undefined,
+): Promise<FeeSyncResult> {
+  const entries = await fetchGivebutterFeeEntries(ctx);
+  if (entries === null) {
+    console.log("[processorFees] no Givebutter key configured; fee sweep skipped");
+    return {
+      dryRun: !execute,
+      chargesScanned: 0,
+      byType: [],
+      monthsWithFees: 0,
+      entriesRecorded: 0,
+      created: 0,
+      updated: 0,
+      unchanged: 0,
+      totalFeeCents: 0,
+      marked: 0,
+    };
+  }
+
+  const byMonth = new Map<string, { feeCents: number; entries: typeof entries }>();
+  for (const e of entries) {
+    const slot = byMonth.get(e.month) ?? { feeCents: 0, entries: [] };
+    slot.feeCents += e.feeCents;
+    slot.entries.push(e);
+    byMonth.set(e.month, slot);
+  }
+  const sorted = [...byMonth.entries()].sort(([a], [b]) => a.localeCompare(b));
+
+  // Evidence first, then the row — see `runFeeSync` for why that order matters.
+  let entriesRecorded = 0;
+  for (const [month, slot] of sorted) {
+    await ctx.runMutation(internal.processorFees.upsertFeeEntries, {
+      processor: "givebutter",
+      month,
+      entries: slot.entries.map((e) => ({
+        balanceTransactionId: e.transactionId,
+        type: "givebutter",
+        feeCents: e.feeCents,
+        grossCents: e.grossCents,
+        occurredAt: e.occurredAt,
+        ...(e.description ? { description: e.description } : {}),
+      })),
+      ...(execute ? { execute: true } : {}),
+    });
+    entriesRecorded += slot.entries.length;
+  }
+
+  const months = sorted.map(([month, slot]) => {
+    const [y, mo] = month.split("-").map(Number);
+    const monthEnd = Date.UTC(y, mo, 0, 12);
+    return {
+      month,
+      feeCents: slot.feeCents,
+      entryCount: slot.entries.length,
+      byType: [
+        { type: "givebutter", feeCents: slot.feeCents, count: slot.entries.length },
+      ],
+      // Same rule as Stripe: a closed month books at its end, the month still
+      // running books today so the row never sits in the future.
+      postedAt: Math.min(monthEnd, Date.now()),
+    };
+  });
+
+  const r: {
+    created: number;
+    updated: number;
+    unchanged: number;
+    totalFeeCents: number;
+    marked: number;
+  } = await ctx.runMutation(internal.processorFees.upsertFeeRows, {
+    processor: "givebutter",
+    months,
+    ...(execute ? { execute: true } : {}),
+  });
+  return {
+    dryRun: !execute,
+    chargesScanned: entries.length,
+    byType: [
+      {
+        type: "givebutter",
+        feeCents: entries.reduce((s, e) => s + e.feeCents, 0),
+        count: entries.length,
+      },
+    ],
     monthsWithFees: months.length,
     entriesRecorded,
     created: r.created,
@@ -604,6 +764,24 @@ export const syncStripeFeesOps = internalAction({
   args: { execute: v.optional(v.boolean()) },
   returns: feeReturns,
   handler: async (ctx, { execute }): Promise<FeeSyncResult> => runFeeSync(ctx, execute),
+});
+
+/** App-facing Givebutter sweep. Same gate as its Stripe sibling. */
+export const syncGivebutterFees = action({
+  args: { execute: v.optional(v.boolean()) },
+  returns: feeReturns,
+  handler: async (ctx, { execute }): Promise<FeeSyncResult> => {
+    await requireSuperuser(ctx);
+    return runGivebutterFeeSync(ctx, execute);
+  },
+});
+
+/** Ops/engine entry point for the Givebutter sweep. */
+export const syncGivebutterFeesOps = internalAction({
+  args: { execute: v.optional(v.boolean()) },
+  returns: feeReturns,
+  handler: async (ctx, { execute }): Promise<FeeSyncResult> =>
+    runGivebutterFeeSync(ctx, execute),
 });
 
 /**
@@ -663,13 +841,21 @@ export const feeRowDetail = query({
   ),
   handler: async (ctx, { transactionId }) => {
     const txn = await ctx.db.get(transactionId);
-    if (!txn?.externalId?.startsWith(FEE_REF_PREFIX)) return null;
+    // Which rail's row this is, from its own `externalId` prefix. Resolved
+    // rather than assumed: both rails write monthly rows into the same table,
+    // and reading Givebutter's row against Stripe's entries would report a
+    // total that disagrees with the row it is supposed to be evidence for.
+    const railEntry = (
+      Object.entries(FEE_RAIL) as [FeeRail, (typeof FEE_RAIL)[FeeRail]][]
+    ).find(([, r]) => txn?.externalId?.startsWith(r.refPrefix));
+    if (!railEntry || !txn?.externalId) return null;
+    const [processor, rail] = railEntry;
     // Fee rows are always booked to a real chapter; a central row could not be
     // one, and `requireFinanceRole` has no chapter to check against.
     if (txn.chapterId === "central") return null;
     await requireFinanceRole(ctx, txn.chapterId, "viewer");
 
-    const month = txn.externalId.slice(FEE_REF_PREFIX.length);
+    const month = txn.externalId.slice(rail.refPrefix.length);
     // Deliberately unbounded: `totalCents` is summed here to be COMPARED with
     // the row, and a `take()` would silently make it disagree. A month runs to
     // the low hundreds of entries; if one ever grew past Convex's read limit
@@ -678,7 +864,7 @@ export const feeRowDetail = query({
     const stored = await ctx.db
       .query("processorFeeEntries")
       .withIndex("by_processor_and_month", (q) =>
-        q.eq("processor", "stripe").eq("month", month),
+        q.eq("processor", processor).eq("month", month),
       )
       .collect();
 

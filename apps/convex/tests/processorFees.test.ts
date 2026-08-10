@@ -6,6 +6,7 @@ import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { NEW_YORK_CHAPTER_SLUG } from "../lib/seed/historical/mapping";
 import { isSpend, needsBudget } from "../finances";
+import { normalizeGivebutterFee } from "../givebutterSync";
 
 /**
  * Processor fees — the monthly Stripe fee row and its evidence.
@@ -151,6 +152,7 @@ describe("upsertFeeEntries", () => {
   test("a dry run writes nothing", async () => {
     const s = await seedNy();
     const r = await s.t.mutation(internal.processorFees.upsertFeeEntries, {
+      processor: "stripe",
       month: "2026-07",
       entries: JULY_ENTRIES,
     });
@@ -162,6 +164,7 @@ describe("upsertFeeEntries", () => {
   test("inserts once, then re-reads are no-ops", async () => {
     const s = await seedNy();
     const first = await s.t.mutation(internal.processorFees.upsertFeeEntries, {
+      processor: "stripe",
       month: "2026-07",
       entries: JULY_ENTRIES,
       execute: true,
@@ -169,6 +172,7 @@ describe("upsertFeeEntries", () => {
     expect(first).toEqual({ inserted: 3, updated: 0, removed: 0 });
 
     const second = await s.t.mutation(internal.processorFees.upsertFeeEntries, {
+      processor: "stripe",
       month: "2026-07",
       entries: JULY_ENTRIES,
       execute: true,
@@ -187,12 +191,14 @@ describe("upsertFeeEntries", () => {
   test("a month is REPLACED, so an entry the sweep no longer sees is dropped", async () => {
     const s = await seedNy();
     await s.t.mutation(internal.processorFees.upsertFeeEntries, {
+      processor: "stripe",
       month: "2026-07",
       entries: JULY_ENTRIES,
       execute: true,
     });
     // The sweep now reports only two of the three, and one has a corrected fee.
     const r = await s.t.mutation(internal.processorFees.upsertFeeEntries, {
+      processor: "stripe",
       month: "2026-07",
       entries: [
         entry("txn_a", "charge", 1600, { grossCents: 50000, sourceId: "ch_a" }),
@@ -209,11 +215,13 @@ describe("upsertFeeEntries", () => {
   test("months don't leak into each other", async () => {
     const s = await seedNy();
     await s.t.mutation(internal.processorFees.upsertFeeEntries, {
+      processor: "stripe",
       month: "2026-06",
       entries: [entry("txn_june", "charge", 900)],
       execute: true,
     });
     await s.t.mutation(internal.processorFees.upsertFeeEntries, {
+      processor: "stripe",
       month: "2026-07",
       entries: JULY_ENTRIES,
       execute: true,
@@ -230,6 +238,7 @@ describe("upsertFeeRows — the row", () => {
   test("books one row whose note carries the per-type breakdown", async () => {
     const s = await seedNy();
     const r = await s.t.mutation(internal.processorFees.upsertFeeRows, {
+      processor: "stripe",
       months: [JULY],
       execute: true,
     });
@@ -249,8 +258,9 @@ describe("upsertFeeRows — the row", () => {
 
   test("a re-run with the same sweep changes nothing", async () => {
     const s = await seedNy();
-    await s.t.mutation(internal.processorFees.upsertFeeRows, { months: [JULY], execute: true });
+    await s.t.mutation(internal.processorFees.upsertFeeRows, { processor: "stripe", months: [JULY], execute: true });
     const again = await s.t.mutation(internal.processorFees.upsertFeeRows, {
+      processor: "stripe",
       months: [JULY],
       execute: true,
     });
@@ -259,11 +269,12 @@ describe("upsertFeeRows — the row", () => {
 
   test("a row written before the breakdown existed has its note refreshed", async () => {
     const s = await seedNy();
-    await s.t.mutation(internal.processorFees.upsertFeeRows, { months: [JULY], execute: true });
+    await s.t.mutation(internal.processorFees.upsertFeeRows, { processor: "stripe", months: [JULY], execute: true });
     const row = await feeRow(s, "2026-07");
     await run(s.t, (ctx) => ctx.db.patch(row!._id, { note: "Stripe fees for 2026-07, across 3 balance-transaction entries." }));
 
     const r = await s.t.mutation(internal.processorFees.upsertFeeRows, {
+      processor: "stripe",
       months: [JULY],
       execute: true,
     });
@@ -274,6 +285,7 @@ describe("upsertFeeRows — the row", () => {
   test("a month with no fees books nothing", async () => {
     const s = await seedNy();
     const r = await s.t.mutation(internal.processorFees.upsertFeeRows, {
+      processor: "stripe",
       months: [{ ...JULY, feeCents: 0, entryCount: 0, byType: [] }],
       execute: true,
     });
@@ -291,6 +303,7 @@ describe("upsertFeeRows — a fee is never asked which budget it belongs to", ()
     const s = await seedNy();
 
     const r = await s.t.mutation(internal.processorFees.upsertFeeRows, {
+      processor: "stripe",
       months: [JULY],
       execute: true,
     });
@@ -310,7 +323,7 @@ describe("upsertFeeRows — a fee is never asked which budget it belongs to", ()
 
   test("a row written before the marker existed is back-filled by the next sync", async () => {
     const s = await seedNy();
-    await s.t.mutation(internal.processorFees.upsertFeeRows, { months: [JULY], execute: true });
+    await s.t.mutation(internal.processorFees.upsertFeeRows, { processor: "stripe", months: [JULY], execute: true });
 
     // Strip the marker, reproducing one of the 8 rows stuck in "Needs budget".
     const before = (await feeRows(s.t))[0];
@@ -318,6 +331,7 @@ describe("upsertFeeRows — a fee is never asked which budget it belongs to", ()
     expect(needsBudget((await feeRows(s.t))[0])).toBe(true);
 
     const r = await s.t.mutation(internal.processorFees.upsertFeeRows, {
+      processor: "stripe",
       months: [JULY],
       execute: true,
     });
@@ -333,8 +347,9 @@ describe("upsertFeeRows — a fee is never asked which budget it belongs to", ()
 
   test("a settled run is unchanged — the back-fill doesn't re-fire every night", async () => {
     const s = await seedNy();
-    await s.t.mutation(internal.processorFees.upsertFeeRows, { months: [JULY], execute: true });
+    await s.t.mutation(internal.processorFees.upsertFeeRows, { processor: "stripe", months: [JULY], execute: true });
     const again = await s.t.mutation(internal.processorFees.upsertFeeRows, {
+      processor: "stripe",
       months: [JULY],
       execute: true,
     });
@@ -343,7 +358,7 @@ describe("upsertFeeRows — a fee is never asked which budget it belongs to", ()
 
   test("THE LINE: a discretionary cost in the SAME category still needs a budget", async () => {
     const s = await seedNy();
-    await s.t.mutation(internal.processorFees.upsertFeeRows, { months: [JULY], execute: true });
+    await s.t.mutation(internal.processorFees.upsertFeeRows, { processor: "stripe", months: [JULY], execute: true });
 
     // A paid platform tier — booked to Bank & Fees, exactly like the fee row,
     // but somebody CHOSE it. The exemption is by fee origin, never by category.
@@ -373,6 +388,7 @@ describe("upsertFeeRows — a fee is never asked which budget it belongs to", ()
   test("nothing is proposed, created or approved — no budget row is ever written", async () => {
     const s = await seedNy();
     await s.t.mutation(internal.processorFees.upsertFeeRows, {
+      processor: "stripe",
       months: [JULY, { ...JULY, month: "2025-12", postedAt: Date.UTC(2025, 11, 31, 12) }],
       execute: true,
     });
@@ -381,7 +397,7 @@ describe("upsertFeeRows — a fee is never asked which budget it belongs to", ()
 
   test("a dry run still writes nothing", async () => {
     const s = await seedNy();
-    const r = await s.t.mutation(internal.processorFees.upsertFeeRows, { months: [JULY] });
+    const r = await s.t.mutation(internal.processorFees.upsertFeeRows, { processor: "stripe", months: [JULY] });
     expect(r.created).toBe(1);
     expect(r.marked).toBe(0);
     expect(await feeRows(s.t)).toHaveLength(0);
@@ -505,11 +521,12 @@ describe("feeRowDetail", () => {
     const s = await seedNy();
     await grantFinance(s, "viewer");
     await s.t.mutation(internal.processorFees.upsertFeeEntries, {
+      processor: "stripe",
       month: "2026-07",
       entries: JULY_ENTRIES,
       execute: true,
     });
-    await s.t.mutation(internal.processorFees.upsertFeeRows, { months: [JULY], execute: true });
+    await s.t.mutation(internal.processorFees.upsertFeeRows, { processor: "stripe", months: [JULY], execute: true });
 
     const row = await feeRow(s, "2026-07");
     const detail = await s.as.query(api.processorFees.feeRowDetail, {
@@ -535,7 +552,7 @@ describe("feeRowDetail", () => {
 
   test("a caller with no finance access is refused", async () => {
     const s = await seedNy();
-    await s.t.mutation(internal.processorFees.upsertFeeRows, { months: [JULY], execute: true });
+    await s.t.mutation(internal.processorFees.upsertFeeRows, { processor: "stripe", months: [JULY], execute: true });
     const row = await feeRow(s, "2026-07");
     await expect(
       s.t.query(api.processorFees.feeRowDetail, { transactionId: row!._id }),
@@ -545,3 +562,206 @@ describe("feeRowDetail", () => {
 
 // ── What the morning run says ────────────────────────────────────────────────
 
+
+// ── Givebutter's fee (2026-08-10) ────────────────────────────────────────────
+//
+// Booked from `amount - payout`, both Givebutter's own per-transaction figures.
+// The module header forbids inferring a fee by subtracting OUR revenue from
+// THEIR deposits; these hold the line that this is the other subtraction, and
+// that the two rails never contaminate each other's evidence.
+
+describe("normalizeGivebutterFee", () => {
+  const base = {
+    id: 4030672614,
+    status: "succeeded",
+    transacted_at: "2026-01-26T15:04:05Z",
+  };
+
+  test("the giver covering the fee books nothing", () => {
+    // 262 of this deployment's 263 succeeded transactions look like this.
+    expect(
+      normalizeGivebutterFee({ ...base, amount: 50, payout: 50 }),
+    ).toBeNull();
+  });
+
+  test("the one uncovered fee is the $29.30 on a $1,000 gift", () => {
+    // Payout RX3CUU, 2025-06-05 — the whole of this deployment's Givebutter
+    // fee expense, and the reason the reconciliation gap read $29.30 short.
+    const e = normalizeGivebutterFee({
+      ...base,
+      amount: 1000,
+      payout: 970.7,
+      transacted_at: "2025-06-05T12:00:00Z",
+    });
+    expect(e?.feeCents).toBe(2930);
+    expect(e?.grossCents).toBe(100000);
+    expect(e?.month).toBe("2025-06");
+  });
+
+  test("cents are differenced as integers, not floats", () => {
+    // 1000 - 970.7 === 29.299999999999955 in float. Rounding each side to
+    // cents FIRST is what keeps that out of the ledger.
+    const e = normalizeGivebutterFee({ ...base, amount: 1000, payout: 970.7 });
+    expect(Number.isInteger(e?.feeCents)).toBe(true);
+    expect(e?.feeCents).toBe(2930);
+  });
+
+  test("decimal-string amounts parse the same as numbers", () => {
+    const e = normalizeGivebutterFee({
+      ...base,
+      amount: "100.00",
+      payout: "97.10",
+    });
+    expect(e?.feeCents).toBe(290);
+  });
+
+  test("a non-succeeded transaction books nothing", () => {
+    // A refund had its fee returned; a pending charge has not settled. Neither
+    // is a cost the org has borne. Same status rule the balance sweep uses.
+    for (const status of ["refunded", "pending", "failed"]) {
+      expect(
+        normalizeGivebutterFee({ ...base, status, amount: 100, payout: 97 }),
+      ).toBeNull();
+    }
+  });
+
+  test("a negative difference never becomes a credit", () => {
+    // Givebutter remitting MORE than the giver paid is not a thing we book as
+    // negative spend; it would be a finding, not an expense.
+    expect(
+      normalizeGivebutterFee({ ...base, amount: 50, payout: 55 }),
+    ).toBeNull();
+  });
+
+  test("a fee with no readable date is skipped, not filed under today", () => {
+    expect(
+      normalizeGivebutterFee({
+        id: 1,
+        status: "succeeded",
+        amount: 100,
+        payout: 97,
+      }),
+    ).toBeNull();
+  });
+
+  test("the id is gb-prefixed so it cannot collide with a Stripe txn id", () => {
+    const e = normalizeGivebutterFee({ ...base, amount: 100, payout: 97 });
+    expect(e?.transactionId).toBe("gb:4030672614");
+  });
+
+  test("the giver's name rides along as the entry's description", () => {
+    const e = normalizeGivebutterFee({
+      ...base,
+      amount: 100,
+      payout: 97,
+      first_name: "Jocelyn",
+      last_name: "Naranjo",
+    });
+    expect(e?.description).toBe("Jocelyn Naranjo");
+  });
+});
+
+describe("Givebutter fee rows", () => {
+  const GB_JUNE = {
+    month: "2025-06",
+    feeCents: 2930,
+    entryCount: 1,
+    byType: [{ type: "givebutter", feeCents: 2930, count: 1 }],
+    postedAt: monthEnd("2025-06"),
+  };
+
+  test("books its own row, named and marked for its own rail", async () => {
+    const s = await seedNy();
+    await s.t.mutation(internal.processorFees.upsertFeeRows, {
+      processor: "givebutter",
+      months: [GB_JUNE],
+      execute: true,
+    });
+    const row = await run(s.t, async (ctx) =>
+      (await ctx.db.query("transactions").collect()).find((r) =>
+        r.externalId?.startsWith("givebutter-fees:"),
+      ),
+    );
+    expect(row?.amountCents).toBe(2930);
+    expect(row?.merchantName).toBe("Givebutter");
+    expect(row?.description).toBe("Givebutter processing fees — 2025-06");
+    expect(row?.flow).toBe("outflow");
+    // A fee is charged, not chosen — same rule as Stripe's row.
+    expect(row?.feeOrigin).toBe("givebutter_processing");
+    expect(needsBudget(row!)).toBe(false);
+    expect(isSpend(row!)).toBe(true);
+  });
+
+  test("the note says why most transactions contribute nothing", async () => {
+    const s = await seedNy();
+    await s.t.mutation(internal.processorFees.upsertFeeRows, {
+      processor: "givebutter",
+      months: [GB_JUNE],
+      execute: true,
+    });
+    const row = await run(s.t, async (ctx) =>
+      (await ctx.db.query("transactions").collect()).find((r) =>
+        r.externalId?.startsWith("givebutter-fees:"),
+      ),
+    );
+    expect(row?.note).toContain("did NOT cover the fee");
+  });
+
+  test("the two rails write separate rows for the same month", async () => {
+    const s = await seedNy();
+    const month = "2026-07";
+    await s.t.mutation(internal.processorFees.upsertFeeRows, {
+      processor: "stripe",
+      months: [JULY],
+      execute: true,
+    });
+    await s.t.mutation(internal.processorFees.upsertFeeRows, {
+      processor: "givebutter",
+      months: [{ ...GB_JUNE, month, postedAt: monthEnd(month) }],
+      execute: true,
+    });
+    const rows = await run(s.t, async (ctx) =>
+      (await ctx.db.query("transactions").collect()).filter((r) =>
+        r.externalId?.includes("-fees:"),
+      ),
+    );
+    expect(rows.map((r) => r.externalId).sort()).toEqual([
+      "givebutter-fees:2026-07",
+      "stripe-fees:2026-07",
+    ]);
+  });
+
+  test("a Givebutter sweep never deletes Stripe's evidence for that month", async () => {
+    // `upsertFeeEntries` replaces a month wholesale. Scoped to one rail, or the
+    // second sweep of the morning would wipe the first one's entries and leave
+    // a row whose own evidence adds up to nothing.
+    const s = await seedNy();
+    await s.t.mutation(internal.processorFees.upsertFeeEntries, {
+      processor: "stripe",
+      month: "2026-07",
+      entries: JULY_ENTRIES,
+      execute: true,
+    });
+    await s.t.mutation(internal.processorFees.upsertFeeEntries, {
+      processor: "givebutter",
+      month: "2026-07",
+      entries: [
+        {
+          balanceTransactionId: "gb:99",
+          type: "givebutter",
+          feeCents: 2930,
+          grossCents: 100000,
+          occurredAt: Date.UTC(2026, 6, 15, 12),
+        },
+      ],
+      execute: true,
+    });
+    const stored = await run(s.t, async (ctx) =>
+      ctx.db.query("processorFeeEntries").collect(),
+    );
+    expect(stored.filter((e) => e.processor === "stripe")).toHaveLength(
+      JULY_ENTRIES.length,
+    );
+    expect(stored.filter((e) => e.processor === "givebutter")).toHaveLength(1);
+  });
+});

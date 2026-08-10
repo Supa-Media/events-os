@@ -2302,6 +2302,35 @@ async function runEngine(
         }
       }
 
+      // ── 7b: Givebutter's fee, same step and same reasoning ────────────────
+      // OUTSIDE the `if (key)` above deliberately — that gate is Stripe's key,
+      // and Givebutter resolves its own (returning a no-op when there isn't
+      // one). Gating a Givebutter read on a Stripe secret is the kind of
+      // coupling that goes unnoticed until one of them is rotated.
+      //
+      // Runs even though Givebutter is being wound down: it holds money and
+      // takes a cut for as long as it does, and a fee that stops being booked
+      // is indistinguishable from a fee that was never charged.
+      try {
+        const gbFees: {
+          created: number;
+          updated: number;
+          totalFeeCents: number;
+        } = await ctx.runAction(internal.processorFees.syncGivebutterFeesOps, {
+          execute: true,
+        });
+        if (gbFees.created > 0 || gbFees.updated > 0) {
+          notes.push(
+            `Refreshed Givebutter processor fees (${gbFees.created} new, ${gbFees.updated} updated monthly row(s)).`,
+          );
+        }
+      } catch (err) {
+        console.error("[reconciliation] Givebutter fee sync failed", err);
+        notes.push(
+          "Givebutter processor fee sync FAILED — fee rows may be stale; will retry next run.",
+        );
+      }
+
       // ── In-person sales, same best-effort spirit ─────────────────────────
       // `syncStripeSales` was manual-only from the day it shipped, so the Sales
       // tab silently froze at whatever the last hand-run imported — the owner

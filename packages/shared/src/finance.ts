@@ -1130,6 +1130,10 @@ export const NON_DISCRETIONARY_FEE_ORIGINS = [
   // Cash App's 2.6% + $0.15, reconstructed per payment by a 2026-08 backfill
   // (a one-off since removed).
   "cash_app_processing",
+  // Givebutter's cut, swept from `amount - payout` per transaction by
+  // `processorFees.ts`. Only ever non-zero where the giver did NOT cover the
+  // fee — on this deployment that is one transaction in 263.
+  "givebutter_processing",
 ] as const;
 export type NonDiscretionaryFeeOrigin =
   (typeof NON_DISCRETIONARY_FEE_ORIGINS)[number];
@@ -1140,6 +1144,7 @@ export const NON_DISCRETIONARY_FEE_ORIGIN_LABELS: Record<
 > = {
   stripe_processing: "Stripe processing fees",
   cash_app_processing: "Cash App processing fees",
+  givebutter_processing: "Givebutter processing fees",
 };
 
 export const AUTO_TRANSFER_ORIGIN_LABELS: Record<AutoTransferOrigin, string> = {

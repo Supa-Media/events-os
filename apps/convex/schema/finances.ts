@@ -684,12 +684,16 @@ export const transactions = defineTable({
  *  RECORDABLE (it contributes nothing to the fee — see `FEE_ONLY_TYPES` — but
  *  its existence is exactly what someone would want to see). */
 export const processorFeeEntries = defineTable({
-  // "stripe" today. Givebutter deliberately isn't covered — see processorFees.ts.
-  processor: v.literal("stripe"),
+  // Which rail's ledger this entry was read off. Both are STATED figures from
+  // the processor, never derived from our own deposits — see processorFees.ts.
+  processor: v.union(v.literal("stripe"), v.literal("givebutter")),
   // YYYY-MM — the bucket, and the suffix of the parent row's `externalId`.
   month: v.string(),
-  // Stripe's balance-transaction id (`txn_...`). The dedup key: an entry is
-  // written once and re-found by this on every later sweep.
+  // The processor's own id for the ledger entry this fee came off, and the
+  // dedup key: an entry is written once and re-found by this on every later
+  // sweep. Stripe's balance-transaction id (`txn_...`), or for Givebutter the
+  // transaction id prefixed `gb:` (their ids are bare integers, so the prefix
+  // keeps the two rails from ever colliding in this column).
   balanceTransactionId: v.string(),
   type: v.string(),
   // This entry's contribution to the month's total. Always positive.
