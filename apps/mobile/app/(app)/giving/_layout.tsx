@@ -23,7 +23,12 @@ import { Pill } from "../../../components/ui";
  * `apps/convex/schema/givingInterest.ts`). Wall (`wall.tsx`) is the moderation
  * desk for the PUBLIC giving wall on `/give/<slug>` — the takedown path a donor
  * asking to be removed depends on, which until now only a developer could run
- * (`apps/convex/givingActivity.ts`). The tabs render only for a caller who
+ * (`apps/convex/givingActivity.ts`). Notifications (`notifications.tsx`) is the
+ * standing-instruction desk for "email these people when money comes in"
+ * (`apps/convex/givingNotifications.ts`) — read/write for a manage holder,
+ * read-only for anyone who can only view the books a rule watches; it has no
+ * "record a gift" affordance on purpose, because gifts come from the ledger.
+ * The tabs render only for a caller who
  * can see the desk (`myGivingAccess.canView`) — the same `nav.giving` gate
  * the AppShell nav entry uses; each screen keeps its own backend
  * `requireGivingView`/`requireGivingManage` gate. (Sponsorships, Territories,
@@ -42,6 +47,7 @@ const TABS: { label: string; path: string }[] = [
   { label: "Import", path: "/giving/import" },
   { label: "Interest", path: "/giving/interest" },
   { label: "Wall", path: "/giving/wall" },
+  { label: "Notifications", path: "/giving/notifications" },
 ];
 
 /** Active when the pathname is the tab's route (exact for the index, prefix for

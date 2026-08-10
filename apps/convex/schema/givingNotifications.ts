@@ -86,6 +86,26 @@ export const givingNotificationRules = defineTable({
    */
   lastSentAt: v.optional(v.number()),
   /**
+   * The instant an email from this rule was last actually DELIVERED to at
+   * least one recipient. Absent until one has been.
+   *
+   * A fact about EMAIL — the third question this row has to answer, and the
+   * one a human reading the desk actually asks ("has this thing ever gone
+   * out?"). It exists because `lastSentAt` could not answer it without lying:
+   * that field is a WATERMARK, and `setRuleActive` and a cadence change both
+   * stamp it to `now` deliberately, so that resuming a rule reports from there
+   * rather than replaying the backlog. Correct for the window; catastrophic as
+   * a claim, because it made a rule that had never sent a single email display
+   * "Last sent" with today's date the moment somebody paused and resumed it.
+   *
+   * This is the same split `lastRunDayKey` already made out of the same field,
+   * for the same reason: one timestamp cannot be both a bookkeeping mark and an
+   * assertion about the world. Only a `sendEmailReporting` that returned true
+   * moves this one — a Resend outage, a missing key, or a released digest
+   * leaves it exactly where it was.
+   */
+  lastDeliveredAt: v.optional(v.number()),
+  /**
    * The local day-key (`YYYY-MM-DD`, `America/New_York`) of the last run that
    * CONSIDERED this rule, sent or not.
    *

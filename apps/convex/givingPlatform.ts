@@ -42,6 +42,7 @@ import { requireUserId } from "./lib/context";
 import { listActiveChapters } from "./lib/chapters";
 import { giftMethodLabel } from "./lib/giftLabels";
 import {
+  canManageGivingScope,
   requireGivingView,
   requireGivingManage,
   resolveGivingAccess,
@@ -919,10 +920,28 @@ export const givingScopeOptions = query({
       [];
 
     if (centralView) {
-      options.push({ scope: "central", label: "Central", canManage: centralManage });
+      // `canManageGivingScope`, NOT a flat `centralManage`. Central VIEW is
+      // what puts a caller down this branch, and central view does not imply
+      // central manage — so stamping every option from `centralManage` erased
+      // any chapter-scope `giving.manage` a central viewer also held. That
+      // caller got Edit and the pause switch on a row (`listRules` asks the
+      // real predicate) while the same screen refused to offer them the book to
+      // create one in. Permission was withheld rather than granted, so nothing
+      // unsafe was reachable — but one screen contradicting itself about who
+      // you are is how people stop believing any of it. Both paths ask the same
+      // question now.
+      options.push({
+        scope: "central",
+        label: "Central",
+        canManage: canManageGivingScope(access, "central"),
+      });
       const chapters = await listActiveChapters(ctx);
       for (const c of chapters) {
-        options.push({ scope: c._id, label: c.name, canManage: centralManage });
+        options.push({
+          scope: c._id,
+          label: c.name,
+          canManage: canManageGivingScope(access, c._id),
+        });
       }
       return {
         canSeeAllScopes: true,

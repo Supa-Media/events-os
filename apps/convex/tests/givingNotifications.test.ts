@@ -2088,3 +2088,326 @@ describe("digests", () => {
     }
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════════
+// `lastDeliveredAt` — has this rule ever actually mailed anybody?
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * The desk needs to answer "has this ever gone out?" and `lastSentAt` cannot:
+ * it is a WATERMARK, and both `setRuleActive` and a cadence change stamp it to
+ * `now` on purpose. These pin the split — the watermark keeps doing its job,
+ * and only a delivered email moves `lastDeliveredAt`.
+ */
+describe("a rule only claims to have sent when it has", () => {
+  test("a delivered immediate email stamps the delivery, not the watermark", async () => {
+    const s = await devDirectorSetup();
+    let ruleId!: Id<"givingNotificationRules">;
+    await atClock(s.t, SETUP_AT, async () => {
+      ruleId = await saveRule(s.as);
+    });
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await addGift(s.as, { amountCents: 50_000 });
+      });
+      expect(cap.sent).toHaveLength(1);
+      const row = await run(s.t, (ctx) => ctx.db.get(ruleId));
+      expect(row?.lastDeliveredAt).toBe(MON_8AM_ET);
+      // An immediate rule has no window, so nothing should have touched it.
+      expect(row?.lastSentAt).toBeUndefined();
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("pausing and resuming a rule that has never sent does NOT make it claim it has", async () => {
+    // THE BUG THIS FIELD EXISTS FOR. Reactivation stamps `lastSentAt = now` so
+    // the rule reports from here rather than replaying its dormancy — correct,
+    // and it used to render on the desk as "Last sent <today>" for a rule that
+    // had mailed precisely nobody.
+    const s = await devDirectorSetup();
+    const ruleId = await saveRule(s.as, { cadence: "weekly" });
+
+    await s.as.mutation(api.givingNotifications.setRuleActive, {
+      ruleId,
+      isActive: false,
+    });
+    await s.as.mutation(api.givingNotifications.setRuleActive, {
+      ruleId,
+      isActive: true,
+    });
+
+    const row = await run(s.t, (ctx) => ctx.db.get(ruleId));
+    expect(row?.isActive).toBe(true);
+    expect(row?.lastSentAt).toEqual(expect.any(Number)); // the watermark moved…
+    expect(row?.lastDeliveredAt).toBeUndefined(); // …and it still hasn't sent.
+
+    const [listed] = await s.as.query(api.givingNotifications.listRules, {});
+    expect(listed.lastDeliveredAt).toBeUndefined();
+    expect(listed.lastSentAt).toEqual(expect.any(Number));
+  });
+
+  test("a cadence change moves the watermark and leaves the delivery mark alone", async () => {
+    const s = await devDirectorSetup();
+    let ruleId!: Id<"givingNotificationRules">;
+    await atClock(s.t, SETUP_AT, async () => {
+      ruleId = await saveRule(s.as, { cadence: "daily", sendHourLocal: 8 });
+    });
+    await s.as.mutation(api.givingNotifications.saveRule, {
+      ruleId,
+      name: "Every gift",
+      recipients: ["dev@publicworship.life"],
+      cadence: "weekly",
+      scope: "all",
+      sendHourLocal: 8,
+      sendWeekday: 1,
+    } as never);
+    const row = await run(s.t, (ctx) => ctx.db.get(ruleId));
+    expect(row?.lastSentAt).toEqual(expect.any(Number));
+    expect(row?.lastDeliveredAt).toBeUndefined();
+  });
+
+  test("a Resend outage sends nothing, so it stamps nothing", async () => {
+    const s = await devDirectorSetup();
+    let ruleId!: Id<"givingNotificationRules">;
+    await atClock(s.t, SETUP_AT, async () => {
+      ruleId = await saveRule(s.as);
+    });
+    const realFetch = globalThis.fetch;
+    const prevKey = process.env.RESEND_API_KEY;
+    process.env.RESEND_API_KEY = "resend_test_key";
+    globalThis.fetch = (async () => {
+      throw new Error("Resend is down");
+    }) as unknown as typeof fetch;
+    try {
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await addGift(s.as, { amountCents: 50_000 });
+      });
+      const row = await run(s.t, (ctx) => ctx.db.get(ruleId));
+      expect(row?.lastDeliveredAt).toBeUndefined();
+    } finally {
+      globalThis.fetch = realFetch;
+      if (prevKey === undefined) delete process.env.RESEND_API_KEY;
+      else process.env.RESEND_API_KEY = prevKey;
+    }
+  });
+
+  test("a rule below the floor mails nobody, so it stamps nothing", async () => {
+    const s = await devDirectorSetup();
+    let ruleId!: Id<"givingNotificationRules">;
+    await atClock(s.t, SETUP_AT, async () => {
+      ruleId = await saveRule(s.as, { minAmountCents: 50_000 });
+    });
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await addGift(s.as, { amountCents: 49_999 });
+      });
+      expect(cap.sent).toHaveLength(0);
+      const row = await run(s.t, (ctx) => ctx.db.get(ruleId));
+      expect(row?.lastDeliveredAt).toBeUndefined();
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("a delivered digest stamps both — the window it reported AND the fact it mailed", async () => {
+    const s = await devDirectorSetup();
+    let ruleId!: Id<"givingNotificationRules">;
+    await atClock(s.t, SETUP_AT, async () => {
+      ruleId = await saveRule(s.as, {
+        name: "Weekly roundup",
+        cadence: "weekly",
+        sendHourLocal: 8,
+        sendWeekday: 1,
+      });
+    });
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      expect(cap.sent).toHaveLength(1);
+      const row = await run(s.t, (ctx) => ctx.db.get(ruleId));
+      expect(row?.lastSentAt).toBe(MON_8AM_ET - 60_000); // the window
+      expect(row?.lastDeliveredAt).toBe(MON_8AM_ET); // the email
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("a digest that reached nobody releases its window and stamps no delivery", async () => {
+    const s = await devDirectorSetup();
+    await atClock(s.t, SETUP_AT, async () => {
+      await saveRule(s.as, {
+        cadence: "weekly",
+        sendHourLocal: 8,
+        sendWeekday: 1,
+      });
+    });
+    const realFetch = globalThis.fetch;
+    const prevKey = process.env.RESEND_API_KEY;
+    process.env.RESEND_API_KEY = "resend_test_key";
+    globalThis.fetch = (async () => {
+      throw new Error("Resend is down");
+    }) as unknown as typeof fetch;
+    try {
+      await atClock(s.t, MON_8AM_ET, async () => {
+        const out = await s.t.action(
+          internal.givingNotificationDigests.sendGivingDigests,
+          {},
+        );
+        expect(out).toMatchObject({ digestsSent: 0, failedRules: 1 });
+      });
+      const [listed] = await s.as.query(api.givingNotifications.listRules, {});
+      // The window went back (so the next run re-reads it) and nothing claims
+      // an email went out.
+      expect(listed.lastSentAt).toBeUndefined();
+      expect(listed.lastDeliveredAt).toBeUndefined();
+    } finally {
+      globalThis.fetch = realFetch;
+      if (prevKey === undefined) delete process.env.RESEND_API_KEY;
+      else process.env.RESEND_API_KEY = prevKey;
+    }
+  });
+
+  test("two rules sharing one recipient both record that they delivered", async () => {
+    const s = await devDirectorSetup();
+    let everyGift!: Id<"givingNotificationRules">;
+    let bigGifts!: Id<"givingNotificationRules">;
+    await atClock(s.t, SETUP_AT, async () => {
+      everyGift = await saveRule(s.as, {
+        name: "Every gift",
+        recipients: ["dev@publicworship.life"],
+      });
+      bigGifts = await saveRule(s.as, {
+        name: "Big gifts",
+        minAmountCents: 50_000,
+        recipients: ["dev@publicworship.life"],
+      });
+    });
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await addGift(s.as, { amountCents: 50_000 });
+      });
+      // ONE email, naming both rules — and both rules know they sent it.
+      expect(cap.sent).toHaveLength(1);
+      const a = await run(s.t, (ctx) => ctx.db.get(everyGift));
+      const b = await run(s.t, (ctx) => ctx.db.get(bigGifts));
+      expect(a?.lastDeliveredAt).toBe(MON_8AM_ET);
+      expect(b?.lastDeliveredAt).toBe(MON_8AM_ET);
+    } finally {
+      cap.restore();
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// One screen, one answer about who you are
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * The Notifications screen reads `listRules` (for the per-row edit affordances)
+ * and `givingPlatform.givingScopeOptions` (for the book picker on the create
+ * form). They must agree about what the caller may manage, or the screen offers
+ * Edit on a row while refusing to offer the book to create one in. This test
+ * lives here rather than in `givingPlatform.test.ts` because the disagreement
+ * is only visible when both are asked at once, which is what this screen does.
+ */
+describe("listRules and givingScopeOptions agree about manage rights", () => {
+  /** Central `giving.view` (and nothing more at central) PLUS chapter-scope
+   *  `giving.manage` — the seat shape the two queries used to disagree about. */
+  async function seatCentralViewerWithChapterManage(
+    s: ChapterSetup,
+    chapterId: Id<"chapters">,
+  ): Promise<ChapterSetup["as"]> {
+    const userId = await run(s.t, async (ctx) => {
+      const userId = await ctx.db.insert("users", {
+        email: "mixed@publicworship.life",
+      });
+      const personId = await ctx.db.insert("people", {
+        chapterId,
+        name: "Central Viewer, Chapter Manager",
+        userId,
+        createdAt: Date.now(),
+      });
+      const now = Date.now();
+      const centralSeat = await ctx.db.insert("seatDefs", {
+        slug: "test_central_giving_viewer",
+        title: "Central Giving Viewer (test)",
+        chart: "central",
+        parentSlug: "executive_director",
+        maxHolders: 1,
+        duties: [],
+        capabilities: ["giving.view", "nav.giving"],
+        sortOrder: 9998,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const chapterSeat = await ctx.db.insert("seatDefs", {
+        slug: "test_chapter_giving_manager_mixed",
+        title: "Chapter Giving Manager (test)",
+        chart: "chapter",
+        parentSlug: "chapter_director",
+        maxHolders: 1,
+        duties: [],
+        capabilities: ["giving.manage", "giving.view", "nav.giving"],
+        sortOrder: 9999,
+        createdAt: now,
+        updatedAt: now,
+      });
+      await ctx.db.insert("seatAssignments", {
+        seatDefId: centralSeat,
+        scope: "central",
+        personId,
+        createdAt: now,
+      });
+      await ctx.db.insert("seatAssignments", {
+        seatDefId: chapterSeat,
+        scope: chapterId,
+        personId,
+        createdAt: now,
+      });
+      return userId;
+    });
+    return s.t.withIdentity({ subject: `${userId}|session`, issuer: "test" });
+  }
+
+  test("a central VIEWER who manages one chapter can both edit and create there", async () => {
+    const s = await devDirectorSetup();
+    const mixed = await seatCentralViewerWithChapterManage(s, s.chapterId);
+    await saveRule(s.as, { name: "Chapter rule", scope: s.chapterId });
+    await saveRule(s.as, { name: "Central rule", scope: "central" });
+
+    const rules = await mixed.query(api.givingNotifications.listRules, {});
+    const byName = new Map(rules.map((r) => [r.name, r]));
+    expect(byName.get("Chapter rule")?.canManage).toBe(true);
+    expect(byName.get("Central rule")?.canManage).toBe(false);
+
+    const opts = await mixed.query(api.givingPlatform.givingScopeOptions, {});
+    const byScope = new Map(opts.options.map((o) => [o.scope as string, o]));
+    // The half that used to be wrong: central view sent this caller down the
+    // central branch, which stamped every option from central MANAGE — so the
+    // chapter they genuinely manage came back unmanageable and the screen
+    // offered them no book to create a rule in.
+    expect(byScope.get(s.chapterId)?.canManage).toBe(true);
+    expect(byScope.get("central")?.canManage).toBe(false);
+    expect(opts.canManageCentral).toBe(false);
+
+    // The invariant, stated directly: for every book this caller can see, the
+    // two queries say the same thing.
+    for (const rule of rules) {
+      const option = byScope.get(rule.scope as string);
+      if (option) expect(option.canManage).toBe(rule.canManage);
+    }
+  });
+
+  test("a central MANAGER still manages every book", async () => {
+    const s = await devDirectorSetup();
+    const opts = await s.as.query(api.givingPlatform.givingScopeOptions, {});
+    expect(opts.canManageCentral).toBe(true);
+    expect(opts.options.every((o) => o.canManage)).toBe(true);
+  });
+});

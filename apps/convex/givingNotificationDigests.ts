@@ -502,6 +502,24 @@ export const sendGivingDigests = internalAction({
 
         digestsSent++;
         emailsSent += delivered;
+        // Only now, and only because somebody was actually reached. The marks
+        // `claimDigest` moved are decided before the mail is attempted and are
+        // put back by `releaseDigest` when it fails; this one can only be
+        // written after the fact, and is never rolled back. Wrapped, because a
+        // digest that went out and failed to record that it went out is a
+        // cosmetic problem and must not be counted as a failed rule.
+        try {
+          await ctx.runMutation(
+            internal.givingNotifications.markRulesDelivered,
+            { ruleIds: [ruleId], at: Date.now() },
+          );
+        } catch (err) {
+          console.error(
+            `[givingNotifications] digest for rule ${ruleId} was delivered, ` +
+              "but couldn't stamp lastDeliveredAt",
+            err,
+          );
+        }
       } catch (err) {
         // LOUD, and names the rule — a lost digest that nothing in the logs
         // ties back to a rule is the failure mode this catch exists to avoid.
