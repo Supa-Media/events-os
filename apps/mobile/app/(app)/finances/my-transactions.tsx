@@ -222,12 +222,13 @@ export default function MyTransactionsScreen() {
                 todo={r.todo}
                 last={i === visible.length - 1}
                 onOpen={() => setOpenId(r.txn.id)}
-                onUpload={async (storageId) => {
+                onUpload={async (storageId, filename) => {
                   await run(
                     () =>
                       attachReceipt({
                         transactionId: r.txn.id as Id<"transactions">,
                         storageId,
+                        ...(filename ? { filename } : {}),
                       }),
                     { errorTitle: "Couldn't attach receipt" },
                   );

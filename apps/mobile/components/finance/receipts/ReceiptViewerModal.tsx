@@ -4,13 +4,13 @@
  * Shows every receipt linked to ONE transaction (`api.receipts.listForTransaction`
  * — a txn can carry more than one, split-bill/shared-card cases), with:
  *
- *  - an image preview (contain, fixed-aspect box) for an image file, falling
- *    back to a document icon + "Open" (`Linking.openURL`) the moment the
- *    `<Image>` itself fails to decode — the receipt row carries no stored
- *    content-type to branch on ahead of time (see `schema/finances.ts`'s
- *    `receipts` table), so "did this render as a photo" is the only signal
- *    available client-side. Mirrors `reimbursements/RequestCard.tsx`'s own
- *    `Linking.openURL(receiptUrl)` precedent for a non-previewable file.
+ *  - a preview that OPENS IN PLACE (`FileViewer`) — zoomable and pannable for
+ *    a photo, paged for a multi-page PDF, and identical for both. It used to
+ *    be an `<Image>` whose press called `Linking.openURL`, i.e. a new browser
+ *    tab for every file including a plain photo, and a broken-image box first
+ *    for anything that wasn't one. The row DOES carry a stored content type
+ *    (`receipts.ts#receiptSummary`) — this file simply never read it; that
+ *    stale claim is what the four rival PDF detectors were built around.
  *  - the CANONICAL amount/date/merchant, with an "OCR read" subtext line only
  *    when the immutable `ocr*` provenance actually disagrees with it (a human
  *    correction, or nothing to compare — never shown for agreement).
@@ -31,17 +31,7 @@
  * ever renders a dead disabled button.
  */
 import { useState } from "react";
-import {
-  Alert,
-  Image,
-  Linking,
-  Modal,
-  Platform,
-  Pressable,
-  ScrollView,
-  Text,
-  View,
-} from "react-native";
+import { Alert, Modal, Platform, Pressable, ScrollView, Text, View } from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
@@ -49,16 +39,17 @@ import type { Id } from "@events-os/convex/_generated/dataModel";
 // expo-image-picker is Expo Go-safe (classified `core`); only used on native.
 import * as ImagePicker from "expo-image-picker";
 import { formatCents, type ReceiptSenderClass, type ReceiptSource } from "@events-os/shared";
-import { Badge, type BadgeTone, Button, Icon, ToastView } from "../../ui";
+import { Badge, type BadgeTone, Button, FileThumbnail, FileViewer, Icon, ToastView } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
 import { shortDate } from "../reconcile/helpers";
 import { ReceiptAttachPicker } from "./ReceiptAttachPicker";
-// Web-only pdfjs rasterization (native = passthrough stub): a scanned PDF is
-// rendered to page images before upload so the server's image-OCR path reads it.
-import { expandScannedPdfs } from "../../../lib/receiptPdfRasterize";
 
 const TABULAR = { fontVariant: ["tabular-nums" as const] };
+
+/** One file the human picked, on the way to storage. `filename` is `null` only
+ *  when there genuinely isn't one (a native camera-roll pick). */
+type Picked = { blob: Blob; contentType: string; filename: string | null };
 
 type ReceiptRow = FunctionReturnType<typeof api.receipts.listForTransaction>[number];
 
@@ -113,7 +104,7 @@ export function ReceiptViewerModal({
   // web-input / expo-image-picker split, then hands the resulting file to the
   // receipts pipeline (`submitUploadedReceipts`) rather than a bare attach —
   // a mass-upload-shaped receipt gets OCR'd/dup-checked like every other one. ──
-  function pickWeb(onPicked: (blob: Blob, contentType: string) => void) {
+  function pickWeb(onPicked: (picked: Picked) => void) {
     if (typeof document === "undefined") return;
     const input = document.createElement("input");
     input.type = "file";
@@ -121,20 +112,21 @@ export function ReceiptViewerModal({
     input.onchange = () => {
       const file = input.files?.[0];
       if (!file) return;
-      // A scanned PDF is rendered to page images first (a single receipt is
-      // page 1); a digital PDF or an image passes through unchanged. This flow
-      // attaches ONE receipt, so we take the first result.
-      void expandScannedPdfs([
-        { blob: file as Blob, contentType: file.type || "application/octet-stream", name: file.name },
-      ]).then((expanded) => {
-        const first = expanded[0];
-        if (first) onPicked(first.blob, first.contentType);
+      // ONE PICKED FILE = ONE RECEIPT — upload exactly what was picked. This
+      // used to rasterize a scanned PDF client-side and then take
+      // `expanded[0]`, which silently threw away pages 2..N of a multi-page
+      // receipt. Rasterization is the server's job now (see `UploadZone`'s
+      // module doc for the full reasoning).
+      onPicked({
+        blob: file as Blob,
+        contentType: file.type || "application/octet-stream",
+        filename: file.name || null,
       });
     };
     input.click();
   }
 
-  async function pickNative(onPicked: (blob: Blob, contentType: string) => void) {
+  async function pickNative(onPicked: (picked: Picked) => void) {
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       quality: 0.9,
@@ -143,19 +135,23 @@ export function ReceiptViewerModal({
     const asset = result.assets[0];
     const resp = await fetch(asset.uri);
     const blob = await resp.blob();
-    onPicked(blob, asset.mimeType || blob.type || "image/jpeg");
+    onPicked({
+      blob,
+      contentType: asset.mimeType || blob.type || "image/jpeg",
+      filename: asset.fileName ?? null,
+    });
   }
 
-  function pickFile(onPicked: (blob: Blob, contentType: string) => void) {
+  function pickFile(onPicked: (picked: Picked) => void) {
     if (Platform.OS === "web") pickWeb(onPicked);
     else void pickNative(onPicked);
   }
 
-  async function uploadReceipt(
-    blob: Blob,
-    contentType: string,
-    filename?: string,
-  ): Promise<Id<"receipts"> | undefined> {
+  async function uploadReceipt({
+    blob,
+    contentType,
+    filename,
+  }: Picked): Promise<Id<"receipts"> | undefined> {
     return run(
       async () => {
         const uploadUrl = await generateUploadUrl();
@@ -167,7 +163,10 @@ export function ReceiptViewerModal({
         const { storageId } = (await res.json()) as { storageId: Id<"_storage"> };
         const [outcome] = await submitUploadedReceipts({
           storageIds: [storageId],
-          filenames: [filename ?? null],
+          // The picked file's real name. Both callers used to omit it, so this
+          // always sent `[null]` — every receipt uploaded from this modal
+          // landed nameless.
+          filenames: [filename],
         });
         return outcome.receiptId;
       },
@@ -176,9 +175,9 @@ export function ReceiptViewerModal({
   }
 
   function handleUploadNew() {
-    pickFile(async (blob, contentType) => {
+    pickFile(async (picked) => {
       setUploadingNew(true);
-      const receiptId = await uploadReceipt(blob, contentType);
+      const receiptId = await uploadReceipt(picked);
       if (receiptId) {
         await run(() => linkReceipt({ receiptId, transactionId }), {
           errorTitle: "Couldn't attach receipt",
@@ -189,9 +188,9 @@ export function ReceiptViewerModal({
   }
 
   function handleReplace(oldReceiptId: Id<"receipts">) {
-    pickFile(async (blob, contentType) => {
+    pickFile(async (picked) => {
       setReplacingId(oldReceiptId);
-      const newReceiptId = await uploadReceipt(blob, contentType);
+      const newReceiptId = await uploadReceipt(picked);
       if (newReceiptId) {
         const linked = await run(() => linkReceipt({ receiptId: newReceiptId, transactionId }), {
           errorTitle: "Couldn't attach the replacement",
@@ -338,7 +337,7 @@ function ReceiptDetail({
 
   return (
     <View className="gap-3">
-      <ReceiptPreview url={r.url} />
+      <ReceiptPreview url={r.url} contentType={r.contentType} filename={r.filename} />
 
       <View className="gap-1">
         <View className="flex-row items-start justify-between gap-2">
@@ -407,13 +406,27 @@ function ReceiptDetail({
   );
 }
 
-/** Image preview, contain, fixed-aspect box — falls back to a document icon +
- *  "Open" the moment the `<Image>` itself fails to decode (no stored
- *  content-type to branch on ahead of time; see module doc). Tapping either
- *  state opens the file via `Linking.openURL` — there's no in-app lightbox
- *  (see mobile-recon notes), so "open" is the only way to see it full-size. */
-function ReceiptPreview({ url }: { url: string | null }) {
-  const [failed, setFailed] = useState(false);
+/**
+ * The receipt's preview, and the thing a reviewer actually presses.
+ *
+ * This used to be an `<Image>` in a `Pressable` whose press called
+ * `Linking.openURL` — a NEW BROWSER TAB, for every file, including a plain
+ * photo. That is the "having to open up in another site" complaint, and it is
+ * why reviewing a screen of charges meant a screen of orphaned tabs. It now
+ * opens `FileViewer` in place: same modal stack, zoomable, and paged for a
+ * multi-page PDF. `FileThumbnail` draws the preview itself (a PDF shows its
+ * first page and, in doing so, pre-renders what the viewer will open).
+ */
+function ReceiptPreview({
+  url,
+  contentType,
+  filename,
+}: {
+  url: string | null;
+  contentType: string | null;
+  filename: string | null;
+}) {
+  const [open, setOpen] = useState(false);
 
   if (!url) {
     return (
@@ -427,31 +440,33 @@ function ReceiptPreview({ url }: { url: string | null }) {
     );
   }
 
-  if (failed) {
-    return (
+  return (
+    <>
       <Pressable
-        onPress={() => void Linking.openURL(url)}
-        className="w-full flex-row items-center justify-center gap-2 rounded-md border border-border bg-sunken active:opacity-80"
+        onPress={() => setOpen(true)}
+        accessibilityRole="button"
+        accessibilityLabel={`View ${filename ?? "receipt"}`}
+        className="w-full overflow-hidden rounded-md border border-border bg-sunken active:opacity-90"
         style={{ aspectRatio: 4 / 3 }}
       >
-        <Icon name="file-text" size={22} color={colors.muted} />
-        <Text className="text-sm font-semibold text-accent">Open</Text>
+        <FileThumbnail
+          uri={url}
+          contentType={contentType}
+          filename={filename}
+          resizeMode="contain"
+        />
+        <View className="absolute bottom-1.5 right-1.5 rounded-md bg-ink/60 px-1.5 py-0.5">
+          <Icon name="maximize-2" size={12} color={colors.raised} />
+        </View>
       </Pressable>
-    );
-  }
-
-  return (
-    <Pressable
-      onPress={() => void Linking.openURL(url)}
-      className="w-full overflow-hidden rounded-md border border-border bg-sunken active:opacity-90"
-      style={{ aspectRatio: 4 / 3 }}
-    >
-      <Image
-        source={{ uri: url }}
-        style={{ width: "100%", height: "100%" }}
-        resizeMode="contain"
-        onError={() => setFailed(true)}
+      <FileViewer
+        uri={url}
+        visible={open}
+        onClose={() => setOpen(false)}
+        contentType={contentType}
+        filename={filename}
+        caption={filename ?? undefined}
       />
-    </Pressable>
+    </>
   );
 }

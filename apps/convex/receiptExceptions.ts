@@ -68,9 +68,23 @@ const exceptionRow = v.object({
   note: v.string(),
   status: statusValidator,
   // Evidence of the purchase — photos of what was bought, a statement line, a
-  // confirmation email. Resolved to signed urls for display; a file whose url
-  // can't be resolved is dropped rather than rendered as a broken thumbnail.
-  evidenceUrls: v.array(v.string()),
+  // confirmation email. Resolved to urls for display; a file whose url can't
+  // be resolved is dropped rather than rendered as a broken thumbnail.
+  //
+  // The CONTENT TYPE rides along because the viewer needs it. This used to be
+  // a bare `string[]`, and the UI guessed the file kind with
+  // `url.toLowerCase().includes(".pdf")` — which can NEVER be true, because a
+  // Convex storage url is `/api/storage/<uuid>` with no extension anywhere in
+  // it. Every PDF filed as evidence therefore rendered as a blank box, 100% of
+  // the time. Evidence carries no filename (it is stored as bare `_storage`
+  // ids, not `receipts` rows), so the content type is the only signal there
+  // is — and it has to come from the server.
+  evidence: v.array(
+    v.object({
+      url: v.string(),
+      contentType: v.union(v.string(), v.null()),
+    }),
+  ),
   attestedByName: v.union(v.string(), v.null()),
   attestedAt: v.number(),
   decidedByName: v.union(v.string(), v.null()),
@@ -97,11 +111,16 @@ async function projectException(
     reasonLabel: RECEIPT_EXCEPTION_REASON_LABELS[row.reason],
     note: row.note,
     status: row.status,
-    evidenceUrls: (
+    evidence: (
       await Promise.all(
-        (row.evidenceStorageIds ?? []).map((id) => ctx.storage.getUrl(id)),
+        (row.evidenceStorageIds ?? []).map(async (id) => {
+          const url = await ctx.storage.getUrl(id);
+          if (url == null) return null;
+          const meta = await ctx.db.system.get("_storage", id);
+          return { url, contentType: meta?.contentType ?? null };
+        }),
       )
-    ).filter((url): url is string => url != null),
+    ).filter((e): e is { url: string; contentType: string | null } => e != null),
     attestedByName: await name(row.attestedByPersonId),
     attestedAt: row.attestedAt,
     decidedByName: await name(row.decidedByPersonId),

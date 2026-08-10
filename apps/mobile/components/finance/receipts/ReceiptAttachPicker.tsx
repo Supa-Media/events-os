@@ -22,12 +22,12 @@
  * max page size so a search reaches the whole backlog, not just page one.
  */
 import { useMemo, useState } from "react";
-import { ActivityIndicator, Image, Modal, Pressable, ScrollView, Text, View } from "react-native";
+import { ActivityIndicator, Modal, Pressable, ScrollView, Text, View } from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { formatCents } from "@events-os/shared";
-import { Icon, TextField, ToastView } from "../../ui";
+import { FileThumbnail, Icon, TextField, ToastView } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
 import { shortDate } from "../reconcile/helpers";
@@ -115,7 +115,7 @@ export function ReceiptAttachPicker({
                     disabled={linkingId != null}
                     className="flex-row items-center gap-3 rounded-md border border-border bg-sunken px-3 py-2 active:opacity-70 web:hover:opacity-90"
                   >
-                    <Thumb url={r.url} />
+                    <Thumb url={r.url} contentType={r.contentType} filename={r.filename} />
                     <View className="flex-1">
                       <Text className="text-sm font-semibold text-ink" numberOfLines={1}>
                         {r.merchant ?? "Unknown merchant"}
@@ -160,22 +160,22 @@ export function ReceiptAttachPicker({
   );
 }
 
-/** Small 48px thumbnail — same fail-to-icon fallback idea as the viewer's own
- *  `ReceiptPreview`, sized for a list row rather than a full preview. */
-function Thumb({ url }: { url: string | null }) {
-  const [failed, setFailed] = useState(false);
+/** Small 48px thumbnail. A PDF shows its first page here rather than a
+ *  generic file icon — this picker is "which of these is the right receipt?",
+ *  and every PDF looking identical made that unanswerable without opening
+ *  each one. See `FileThumbnail`. */
+function Thumb({
+  url,
+  contentType,
+  filename,
+}: {
+  url: string | null;
+  contentType: string | null;
+  filename: string | null;
+}) {
   return (
     <View className="h-12 w-12 items-center justify-center overflow-hidden rounded-md border border-border bg-raised">
-      {url && !failed ? (
-        <Image
-          source={{ uri: url }}
-          style={{ width: "100%", height: "100%" }}
-          resizeMode="cover"
-          onError={() => setFailed(true)}
-        />
-      ) : (
-        <Icon name="file" size={16} color={colors.faint} />
-      )}
+      <FileThumbnail uri={url} contentType={contentType} filename={filename} />
     </View>
   );
 }

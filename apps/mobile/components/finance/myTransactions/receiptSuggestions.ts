@@ -157,11 +157,8 @@ export function suggestionWarning(
   return receiptAmountMismatch(s.amountCents, chargeCents);
 }
 
-/** PDFs (and emailed HTML bodies) can't be thumbnailed by `<Image>`; show a
- *  document icon instead of a broken box. Content type when we have it, the
- *  filename/URL as a fallback for a row that carries neither. */
-export function looksLikeDocument(s: SuggestedReceipt): boolean {
-  if (s.contentType) return !s.contentType.startsWith("image/");
-  const name = `${s.filename ?? ""} ${s.url ?? ""}`.toLowerCase();
-  return name.includes(".pdf");
-}
+// `looksLikeDocument` lived here — a THIRD private copy of "is this an image?".
+// It is now `receiptFileKind`/`receiptRendersAsImage` in `@events-os/shared`,
+// which every surface shares. Its own bug, for the record: with no content
+// type it fell back to `.pdf` ANYWHERE in `filename + url`, so "my.pdf.jpg"
+// read as a document and a genuine PDF with neither signal read as an image.

@@ -2270,3 +2270,6 @@ export * from "./guestTeams";
 
 // ── What each payment rail costs: the schedule, the gross-up, the ACH nudge ──
 export * from "./processorFees";
+
+// ── Receipt files: the ONE "is this an image / a PDF / a document?" rule ────
+export * from "./receiptFile";

@@ -4,13 +4,11 @@
  * `api.receipts.getReceipt`. House modal shape (mirrors
  * `TransactionDocumentationModal`/`TransactionDetailModal`).
  *
- *  - Image preview, or — for a PDF (inferred from the filename extension;
- *    the backend never surfaces a content-type) — an INLINE preview on web
- *    (an `<iframe>`, same RN-web-renders-raw-HTML pattern as
- *    `crew/BriefingView.tsx`'s video embed) since there's no RN PDF
- *    renderer; native keeps the "Open file" (`Linking.openURL`) fallback.
- *    A non-PDF file that fails to decode as an image also falls back to
- *    "Open file".
+ *  - ONE preview box for every kind of file (`FileThumbnail`), opening the
+ *    ONE viewer (`FileViewer`) on press — zoomable, and paged for a
+ *    multi-page PDF. This panel used to hold two of the four rival PDF
+ *    detectors plus its own inline `<iframe>`, which gave a PDF the browser's
+ *    controls and a photo the app's; they are the same thing now.
  *  - Editable CANONICAL fields (amount/date/merchant/note) via
  *    `updateReceiptFields` — the immutable OCR read renders as read-only
  *    subtext underneath, never editable.
@@ -34,11 +32,20 @@
  *    impossible.
  */
 import { useEffect, useState } from "react";
-import { Image, Linking, Modal, Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { Linking, Modal, Pressable, ScrollView, Text, View } from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { Badge, Button, Field, Icon, ImageLightbox, ProgressBar, TextField } from "../../ui";
+import {
+  Badge,
+  Button,
+  Field,
+  FileThumbnail,
+  FileViewer,
+  Icon,
+  ProgressBar,
+  TextField,
+} from "../../ui";
 import { colors } from "../../../lib/theme";
 import { formatDate } from "../../../lib/format";
 import { confirmAction } from "../../event/ticketing/helpers";
@@ -48,8 +55,6 @@ import { isReceiptExtractionActive, receiptExtractionFraction } from "@events-os
 import {
   extractionProgressLabel,
   formatCents,
-  isPdfReceipt,
-  isDocumentReceipt,
   parseDollarsToCents,
   senderClassLabel,
   senderClassTone,
@@ -106,8 +111,7 @@ export function ReceiptDetailModal({
   // the first seed, `.receiptId` tags which receipt it came from.
   const [lastSeeded, setLastSeeded] = useState<ReceiptFormSnapshot | null>(null);
   const [saving, setSaving] = useState(false);
-  const [imgFailed, setImgFailed] = useState(false);
-  const [lightboxOpen, setLightboxOpen] = useState(false);
+  const [viewerOpen, setViewerOpen] = useState(false);
   const [showCalendar, setShowCalendar] = useState(false);
   const [retrying, setRetrying] = useState(false);
   const [showModelInput, setShowModelInput] = useState(false);
@@ -155,10 +159,6 @@ export function ReceiptDetailModal({
       setDate(server.date);
       setMerchant(server.merchant);
       setNote(server.note);
-      // Only reset the broken-image flag on an actual receipt SWITCH — a
-      // same-receipt reseed (e.g. a retry landing) shouldn't re-show an
-      // image that already failed to load.
-      if (!lastSeeded || lastSeeded.receiptId !== server.receiptId) setImgFailed(false);
       setLastSeeded(server);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -166,17 +166,12 @@ export function ReceiptDetailModal({
 
   const amountCents = amountText.trim() === "" ? null : parseDollarsToCents(amountText);
   const amountInvalid = amountText.trim() !== "" && amountCents == null;
-  // No content-type from the backend — infer PDF from the filename extension
-  // (fix 5: inline PDF preview). Shared with `LibrarySection`/`ImageLightbox`
-  // via `helpers.ts#isPdfReceipt` — ONE definition, not re-inlined here.
-  const isPdf = isPdfReceipt(receipt?.filename);
-  // An emailed receipt's `text/html` body is a DOCUMENT, not a photo. RN
-  // `<Image>` can't decode it, so it takes the same inline-iframe (web) /
-  // open-externally (native) treatment a PDF does — that's what makes a
-  // forwarded merchant receipt render as the branded receipt it is instead of
-  // a blank tile or a wall of text (see `isDocumentReceipt`).
-  const isDoc = !isPdf && isDocumentReceipt(receipt?.contentType);
-  const framed = isPdf || isDoc;
+  // NOTHING here branches on the file kind any more. The preview is a
+  // `FileThumbnail` and pressing it opens `FileViewer`, both of which work it
+  // out themselves from the stored content type (`receiptFileKind`). This
+  // file used to hold TWO of the four rival detectors, and an inline
+  // `<iframe>` that gave PDFs a completely different set of controls from the
+  // photo sitting next to them in the same list.
 
   async function save() {
     if (amountInvalid) return;
@@ -346,65 +341,29 @@ export function ReceiptDetailModal({
               </Text>
             ) : (
               <>
-                {/* File preview: a PDF (by filename) or an EMAIL BODY (by
-                    stored content type) gets an INLINE preview on web; native
-                    has neither an RN PDF nor an HTML renderer here, so both
-                    keep the "Open file" fallback. Anything else renders as an
-                    image, falling back to "Open file" if it fails to decode. */}
-                <View
-                  className={`mb-4 w-full items-center justify-center overflow-hidden rounded-lg border border-border bg-sunken ${
-                    framed && Platform.OS === "web" ? "h-96" : "h-48"
-                  }`}
+                {/* File preview — one box for every kind of file. A photo
+                    shows the photo, a PDF shows its first page, an emailed
+                    body and anything unreadable show a LABELLED tile (never a
+                    blank). Pressing it opens the full viewer. */}
+                <Pressable
+                  onPress={() => receipt.url && setViewerOpen(true)}
+                  disabled={!receipt.url}
+                  accessibilityRole="button"
+                  accessibilityLabel="View receipt larger"
+                  className="mb-4 h-64 w-full items-center justify-center overflow-hidden rounded-lg border border-border bg-sunken active:opacity-90"
                 >
-                  {receipt.url && framed && Platform.OS === "web" ? (
-                    // RN-web renders this iframe directly in the DOM (same
-                    // pattern as `crew/BriefingView.tsx`'s video embed).
-                    <iframe
-                      src={receipt.url}
-                      title={receipt.filename ?? (isPdf ? "Receipt PDF" : "Emailed receipt")}
-                      style={{ width: "100%", height: "100%", border: "0" }}
-                    />
-                  ) : receipt.url && framed ? (
-                    <Pressable
-                      onPress={() => receipt.url && Linking.openURL(receipt.url)}
-                      className="items-center gap-2 px-6 py-4"
-                    >
-                      <Icon name="file-text" size={24} color={colors.faint} />
-                      <Text className="text-sm font-semibold text-accent">
-                        {isPdf ? "Open PDF" : "Open receipt"}
-                      </Text>
-                    </Pressable>
-                  ) : receipt.url && !imgFailed ? (
-                    // Tap the thumbnail to open it in the fullscreen spotlight
-                    // (item 2: "clicking the image should open it larger").
-                    <Pressable
-                      onPress={() => setLightboxOpen(true)}
-                      accessibilityLabel="View receipt larger"
-                      className="h-full w-full active:opacity-90"
-                    >
-                      <Image
-                        source={{ uri: receipt.url }}
-                        style={{ width: "100%", height: "100%" }}
-                        resizeMode="contain"
-                        onError={() => setImgFailed(true)}
-                      />
-                      <View className="absolute bottom-1.5 right-1.5 rounded-md bg-ink/60 px-1.5 py-0.5">
-                        <Icon name="maximize-2" size={12} color={colors.raised} />
-                      </View>
-                    </Pressable>
-                  ) : (
-                    <Pressable
-                      onPress={() => receipt.url && Linking.openURL(receipt.url)}
-                      disabled={!receipt.url}
-                      className="items-center gap-2 px-6 py-4"
-                    >
-                      <Icon name="file-text" size={24} color={colors.faint} />
-                      <Text className="text-sm font-semibold text-accent">
-                        {receipt.url ? "Open file" : "No file"}
-                      </Text>
-                    </Pressable>
-                  )}
-                </View>
+                  <FileThumbnail
+                    uri={receipt.url}
+                    contentType={receipt.contentType}
+                    filename={receipt.filename}
+                    resizeMode="contain"
+                  />
+                  {receipt.url ? (
+                    <View className="absolute bottom-1.5 right-1.5 rounded-md bg-ink/60 px-1.5 py-0.5">
+                      <Icon name="maximize-2" size={12} color={colors.raised} />
+                    </View>
+                  ) : null}
+                </Pressable>
 
                 <View className="mb-1 flex-row flex-wrap items-center gap-1.5">
                   <Badge label={senderClassLabel(receipt.senderClass)} tone={senderClassTone(receipt.senderClass)} />
@@ -865,12 +824,14 @@ export function ReceiptDetailModal({
         </Pressable>
       </Pressable>
     </Modal>
-    {receipt?.url && !framed ? (
-      <ImageLightbox
+    {receipt?.url ? (
+      <FileViewer
         uri={receipt.url}
-        visible={lightboxOpen}
-        onClose={() => setLightboxOpen(false)}
+        visible={viewerOpen}
+        onClose={() => setViewerOpen(false)}
         caption={receipt.filename ?? undefined}
+        contentType={receipt.contentType}
+        filename={receipt.filename}
       />
     ) : null}
     </>

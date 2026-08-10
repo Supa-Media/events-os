@@ -21,12 +21,20 @@
  * offering to file another would be offering a no-op.
  */
 import { useState } from "react";
-import { Image, Pressable, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import { formatCents, type ReceiptExceptionReason } from "@events-os/shared";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { Badge, Button, Icon, ImageLightbox, TextField, type BadgeTone } from "../../ui";
+import {
+  Badge,
+  Button,
+  FileThumbnail,
+  FileViewer,
+  Icon,
+  TextField,
+  type BadgeTone,
+} from "../../ui";
 import { colors } from "../../../lib/theme";
 import { ReceiptExceptionModal } from "../modals/ReceiptExceptionModal";
 
@@ -75,9 +83,14 @@ export function ReceiptExceptionSection({
   const [rejectingId, setRejectingId] =
     useState<Id<"receiptExceptions"> | null>(null);
   const [rejectNote, setRejectNote] = useState("");
-  // The evidence file currently open full-size. `ImageLightbox` shows ONE uri,
-  // so this holds the url rather than a list + index.
-  const [lightboxUrl, setLightboxUrl] = useState<string | null>(null);
+  // The evidence file currently open full-size. The viewer shows ONE file, so
+  // this holds that file rather than a list + index. It carries the CONTENT
+  // TYPE now: the kind used to be sniffed from the url, which never worked
+  // (see the `evidence` field's doc in `receiptExceptions.ts`).
+  const [viewing, setViewing] = useState<{
+    url: string;
+    contentType: string | null;
+  } | null>(null);
 
   // `listForTransaction` throws FORBIDDEN for a caller who may not even file
   // here; `useQuery` surfaces that as undefined, same as "still loading". Both
@@ -162,29 +175,27 @@ export function ReceiptExceptionSection({
                 “{row.decisionNote}”
               </Text>
             ) : null}
-            {row.evidenceUrls.length > 0 ? (
+            {row.evidence.length > 0 ? (
               <View className="mt-2">
                 <View className="mb-1 flex-row items-center gap-1.5">
                   <Icon name="paperclip" size={11} color={colors.muted} />
                   <Text className="text-2xs text-muted">
-                    Proof of purchase ({row.evidenceUrls.length}) — evidence,
+                    Proof of purchase ({row.evidence.length}) — evidence,
                     not a receipt
                   </Text>
                 </View>
                 <View className="flex-row flex-wrap gap-2">
-                  {row.evidenceUrls.map((url, i) => (
+                  {row.evidence.map((file, i) => (
                     <Pressable
-                      key={url}
-                      onPress={() => setLightboxUrl(url)}
+                      key={file.url}
+                      onPress={() => setViewing(file)}
                       accessibilityRole="imagebutton"
                       accessibilityLabel={`Evidence ${i + 1}`}
                       className="active:opacity-70"
                     >
-                      <Image
-                        source={{ uri: url }}
-                        className="h-14 w-14 rounded-md border border-border"
-                        resizeMode="cover"
-                      />
+                      <View className="h-14 w-14 overflow-hidden rounded-md border border-border bg-sunken">
+                        <FileThumbnail uri={file.url} contentType={file.contentType} />
+                      </View>
                     </Pressable>
                   ))}
                 </View>
@@ -306,13 +317,13 @@ export function ReceiptExceptionSection({
         />
       ) : null}
 
-      {lightboxUrl ? (
-        <ImageLightbox
-          uri={lightboxUrl}
+      {viewing ? (
+        <FileViewer
+          uri={viewing.url}
           visible
           caption="Evidence of purchase — not a receipt"
-          isPdf={lightboxUrl.toLowerCase().includes(".pdf")}
-          onClose={() => setLightboxUrl(null)}
+          contentType={viewing.contentType}
+          onClose={() => setViewing(null)}
         />
       ) : null}
 

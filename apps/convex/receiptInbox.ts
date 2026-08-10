@@ -102,6 +102,7 @@ import {
   FINANCE_ROLE_LABELS,
   OLLAMA_DEFAULT_OCR_MODEL,
   OLLAMA_FALLBACK_OCR_MODEL,
+  isPdfReceiptFile,
   type ReceiptSenderClass,
 } from "@events-os/shared";
 import {
@@ -1331,15 +1332,16 @@ export function parseInlineForwardEnvelope(raw: string): ForwardedEnvelope | nul
  *  zero-LLM, so distinct from an actual vision-model slug. */
 export const PDF_TEXT_LAYER_PROVENANCE = "pdf-text-layer";
 
-/** True iff `contentType`/`filename` name a PDF. Checked both ways: Resend's
- *  `content_type` is usually reliable, but a mislabelled attachment's `.pdf`
- *  extension is a fallback signal (mirrors `isReceiptFile`'s own belt-and-
- *  suspenders check). */
+/** True iff `contentType`/`filename` name a PDF.
+ *
+ *  This WAS a fifth, server-local copy of the "is it a PDF" rule; it is now
+ *  the shared `isPdfReceiptFile` (`@events-os/shared`), which every viewer
+ *  and every ingest path answers with — see that module's doc for the four
+ *  divergent client-side copies it replaced and the bugs each shipped. Kept
+ *  as a named re-export so this file's three call sites (and their tests)
+ *  keep reading as the routing question they are. */
 export function isPdfContentType(contentType: string, filename?: string): boolean {
-  return (
-    contentType.toLowerCase() === "application/pdf" ||
-    /\.pdf$/i.test((filename ?? "").toLowerCase())
-  );
+  return isPdfReceiptFile({ contentType, filename });
 }
 
 /**
@@ -1421,7 +1423,15 @@ export function isLikelyInlineAsset(a: {
   filename: string;
   size?: number;
 }): boolean {
-  if (isPdfContentType(a.contentType, a.filename)) return false;
+  // Deliberately BROADER than `isPdfContentType`, and deliberately not the
+  // shared `receiptFileKind`. That answers "what IS this, so I can render it",
+  // where an informative content type has to win — `image/png` named
+  // "receipt.pdf" is a PNG and must be drawn as one. THIS answers a different
+  // question: "could this conceivably be a PDF receipt I'd be destroying by
+  // dropping it?" Getting that one wrong loses a receipt permanently, so any
+  // hint of PDF-ness — either signal, independently — buys an attachment its
+  // way past this filter.
+  if (isPdfContentType(a.contentType) || /\.pdf$/i.test(a.filename)) return false;
   // A forwarded message is never an inline asset either — it's the envelope
   // around the real receipt (see `isEmailMessageAttachment`).
   if (isEmailMessageAttachment(a.contentType, a.filename)) return false;

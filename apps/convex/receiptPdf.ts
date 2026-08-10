@@ -49,11 +49,12 @@ import { encode as encodePng } from "fast-png";
 import type { PDFiumLibrary } from "@hyzyla/pdfium";
 import type { Id } from "./_generated/dataModel";
 
-/** Preferred render scale for a rasterized scanned-PDF page — matches the
- *  client rasterizer's own `RENDER_SCALE`
- *  (`apps/mobile/lib/receiptPdfRasterize.web.ts`) so a server-rendered page
- *  and a client-rendered one read at the same effective resolution for the
- *  vision model. A CEILING, not a constant: see `scannedPageRenderScale`. */
+/** Preferred render scale for a rasterized scanned-PDF page — enough
+ *  resolution that small print survives for the vision model. This is now the
+ *  ONLY rasterizer: the client-side pdfjs one that used to mirror this
+ *  constant is gone, along with the N-rows-per-PDF upload it produced (see
+ *  `receiptsTab/UploadZone.tsx`'s module doc). A CEILING, not a constant: see
+ *  `scannedPageRenderScale`. */
 const RENDER_SCALE = 2;
 
 /** Longest output dimension a rendered page may have, in pixels. Plenty for

@@ -34,7 +34,7 @@
  * and its absence just makes the sentence more general, never wrong.
  */
 import { useMemo, useState } from "react";
-import { Image, Linking, Pressable, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import {
   useMutation,
   useQueries,
@@ -43,7 +43,7 @@ import {
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import type { ReceiptExceptionReason } from "@events-os/shared";
-import { Button, Icon } from "../../ui";
+import { Button, FileThumbnail, FileViewer, Icon } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { ReceiptCell } from "../reconcile/ReconcileList";
 import { ReceiptExceptionModal } from "../modals/ReceiptExceptionModal";
@@ -51,7 +51,6 @@ import {
   CONFIRM_SUGGESTION_MUTATION,
   SUGGESTED_RECEIPTS_QUERY,
   adaptReceiptSuggestions,
-  looksLikeDocument,
   suggestionMeta,
   suggestionTitle,
   suggestionWarning,
@@ -137,9 +136,14 @@ export function CodingDocumentation({
               reminderStage={detail.reminderStage ?? "none"}
               transactionId={transactionId}
               libraryPicker={false}
-              onUpload={async (storageId: Id<"_storage">) => {
+              onUpload={async (storageId: Id<"_storage">, filename: string | null) => {
                 await runAction(
-                  () => attachReceipt({ transactionId, storageId }),
+                  () =>
+                    attachReceipt({
+                      transactionId,
+                      storageId,
+                      ...(filename ? { filename } : {}),
+                    }),
                   "Couldn't attach receipt",
                 );
               }}
@@ -203,9 +207,14 @@ export function CodingDocumentation({
           reminderStage={detail?.reminderStage ?? "none"}
           transactionId={transactionId}
               libraryPicker={false}
-          onUpload={async (storageId: Id<"_storage">) => {
+          onUpload={async (storageId: Id<"_storage">, filename: string | null) => {
             await runAction(
-              () => attachReceipt({ transactionId, storageId }),
+              () =>
+                attachReceipt({
+                  transactionId,
+                  storageId,
+                  ...(filename ? { filename } : {}),
+                }),
               "Couldn't attach receipt",
             );
           }}
@@ -294,8 +303,9 @@ function SuggestionRow({
     <View className="rounded-lg border border-border bg-raised px-2.5 py-2">
       <View className="flex-row items-center gap-2.5">
         <Thumb
-          url={looksLikeDocument(suggestion) ? null : suggestion.url}
-          onOpen={suggestion.url}
+          url={suggestion.url}
+          contentType={suggestion.contentType}
+          filename={suggestion.filename}
         />
         <View className="flex-1">
           <Text className="text-sm font-semibold text-ink" numberOfLines={1}>
@@ -323,39 +333,44 @@ function SuggestionRow({
   );
 }
 
-/** 48px thumbnail with a fail-to-icon fallback — the same idea (and size) as
- *  `ReceiptAttachPicker`'s own `Thumb`, which is not exported. Tapping it
- *  opens the file, so "is this the one?" can be answered by LOOKING when the
- *  merchant line isn't enough. */
-function Thumb({ url, onOpen }: { url: string | null; onOpen: string | null }) {
-  const [failed, setFailed] = useState(false);
-  const body =
-    url && !failed ? (
-      <Image
-        source={{ uri: url }}
-        style={{ width: "100%", height: "100%" }}
-        resizeMode="cover"
-        onError={() => setFailed(true)}
-      />
-    ) : (
-      <Icon name="file" size={16} color={colors.faint} />
-    );
+/** 48px thumbnail — the same component every other receipt list uses, so a
+ *  PDF suggestion shows its first page instead of a generic file icon.
+ *  Pressing it opens the full viewer IN PLACE (it used to `Linking.openURL`
+ *  into a new browser tab), so "is this the one?" can be answered by looking
+ *  without leaving the charge you're coding. */
+function Thumb({
+  url,
+  contentType,
+  filename,
+}: {
+  url: string | null;
+  contentType: string | null;
+  filename: string | null;
+}) {
+  const [open, setOpen] = useState(false);
   const box = (
     <View className="h-12 w-12 items-center justify-center overflow-hidden rounded-md border border-border bg-sunken">
-      {body}
+      <FileThumbnail uri={url} contentType={contentType} filename={filename} />
     </View>
   );
-  if (!onOpen) return box;
+  if (!url) return box;
   return (
-    <Pressable
-      // `Linking.openURL` is the precedent for opening a receipt file outside
-      // the app (`ReceiptViewerModal`'s own non-previewable fallback).
-      onPress={() => void Linking.openURL(onOpen)}
-      accessibilityRole="button"
-      accessibilityLabel="Open this receipt"
-      className="active:opacity-70"
-    >
-      {box}
-    </Pressable>
+    <>
+      <Pressable
+        onPress={() => setOpen(true)}
+        accessibilityRole="button"
+        accessibilityLabel="Open this receipt"
+      >
+        {box}
+      </Pressable>
+      <FileViewer
+        uri={url}
+        visible={open}
+        onClose={() => setOpen(false)}
+        contentType={contentType}
+        filename={filename}
+        caption={filename ?? undefined}
+      />
+    </>
   );
 }

@@ -207,7 +207,12 @@ describe("evidence — proof of the purchase", () => {
     const [row] = await s.as.query(api.receiptExceptions.listForTransaction, {
       transactionId: txnId,
     });
-    expect(row.evidenceUrls).toHaveLength(3);
+    expect(row.evidence).toHaveLength(3);
+    // The CONTENT TYPE comes back with each file. Without it the viewer had
+    // to sniff the url for ".pdf", which a Convex storage url never contains
+    // — so every PDF filed as evidence rendered blank (see the `evidence`
+    // field's doc in `receiptExceptions.ts`).
+    expect(row.evidence.every((e) => "contentType" in e)).toBe(true);
   });
 
   test("evidence is NEVER counted as a receipt — the row still owes documentation", async () => {

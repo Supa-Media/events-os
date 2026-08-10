@@ -287,7 +287,80 @@ describe("finances.attachReceipt", () => {
     expect(links.length).toBe(1);
     expect(links[0].source).toBe("upload");
   });
+
+  test("records the picked file's NAME on the receipt row", async () => {
+    // This is the busiest upload path in the app (every "Attached" chip's own
+    // uploader) and it recorded no filename at all, while every other ingest
+    // path did — so a PDF attached from a transaction had nothing but its
+    // stored content type to identify it, and the row read as an opaque id in
+    // the library.
+    const t = newT();
+    const s = await setupChapter(t);
+    await seatBookkeeper(t, s);
+    const txn = await seedTxn(s, { status: "categorized" });
+
+    await s.as.mutation(api.finances.attachReceipt, {
+      transactionId: txn,
+      storageId: await storeBlob(t),
+      filename: "Feb-invoice.pdf",
+    });
+
+    const [receipt] = await run(t, (ctx) => ctx.db.query("receipts").take(5));
+    expect(receipt.filename).toBe("Feb-invoice.pdf");
+  });
+
+  test("omits the field entirely for a caller that sends no name (or a blank one)", async () => {
+    // An older client, or a native camera-roll pick that genuinely has no
+    // name. `filename` must stay ABSENT rather than becoming "" — every
+    // reader treats absence as "unknown", and an empty string would read as a
+    // real (empty) name.
+    const t = newT();
+    const s = await setupChapter(t);
+    await seatBookkeeper(t, s);
+    const a = await seedTxn(s, { status: "categorized" });
+    const b = await seedTxn(s, { status: "categorized" });
+
+    await s.as.mutation(api.finances.attachReceipt, {
+      transactionId: a,
+      storageId: await storeBlob(t),
+    });
+    await s.as.mutation(api.finances.attachReceipt, {
+      transactionId: b,
+      storageId: await storeBlob(t),
+      filename: "   ",
+    });
+
+    const receipts = await run(t, (ctx) => ctx.db.query("receipts").take(5));
+    expect(receipts).toHaveLength(2);
+    for (const r of receipts) expect(r.filename).toBeUndefined();
+  });
 });
+
+/** Give the acting user a roster person + a bookkeeper seat — what
+ *  `attachReceipt` needs from any caller who isn't the transaction's owner. */
+async function seatBookkeeper(
+  t: ReturnType<typeof newT>,
+  s: Awaited<ReturnType<typeof setupChapter>>,
+) {
+  const person = await run(t, (ctx) =>
+    ctx.db.insert("people", {
+      chapterId: s.chapterId,
+      name: "Book Keeper",
+      userId: s.userId,
+      createdAt: Date.now(),
+    }),
+  );
+  await run(t, (ctx) =>
+    ctx.db.insert("financeRoles", {
+      chapterId: s.chapterId,
+      personId: person,
+      role: "bookkeeper",
+      scope: "chapter",
+      createdAt: Date.now(),
+    }),
+  );
+  return person;
+}
 
 // ── migration 0035 (backfill from the legacy denorm cache) ───────────────────
 describe("backfillReceiptDocuments", () => {
