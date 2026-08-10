@@ -57,7 +57,12 @@ import {
 import { codingReviewReach } from "./lib/transactionCodingAccess";
 import { isUncodedCharge } from "./lib/codingReminders";
 import { listActiveChapters } from "./lib/chapters";
-import { getChapterIdOrNull } from "./lib/context";
+import { getChapterIdOrNull, requireChapterId } from "./lib/context";
+import {
+  assertBudgetAttributable,
+  isAttributableBudget,
+} from "./finances";
+import { gatherForPickerCandidates } from "./lib/forPickerCandidates";
 import { viewerPerson } from "./lib/org";
 
 /** Generous bounds for the Coding tab's scans — a chapter's open coding work
@@ -271,6 +276,22 @@ export const submit = mutation({
     headcount: v.optional(v.number()),
     attendees: v.optional(v.array(attendeeValidator)),
     groupDescription: v.optional(v.string()),
+    /**
+     * WHICH BUDGET THIS CAME OUT OF — set by the person coding it (owner,
+     * 2026-08-09: "when coding, I hope people can select budgets for things").
+     *
+     * Lands on `transactions.budgetId`, the same column the Reconcile "For"
+     * picker writes, through the SAME three guards `categorizeTransaction`
+     * applies — the book rule and the approved-budget rule are properties of
+     * the attribution, not of who happens to be doing it, so they are
+     * re-asserted here rather than assumed.
+     *
+     * `undefined` leaves it alone. This deliberately does NOT clear: a
+     * cardholder resubmitting a coding shouldn't be able to silently detach a
+     * budget a bookkeeper attached, and "none" is already the state of a
+     * charge nobody has attributed.
+     */
+    budgetId: v.optional(v.id("budgets")),
   },
   returns: v.id("transactionCodings"),
   handler: async (ctx, args) => {
@@ -278,6 +299,15 @@ export const submit = mutation({
       ctx,
       args.transactionId,
     );
+    if (args.budgetId) {
+      // THE SAME gate `finances.categorizeTransaction` runs before writing the
+      // same field — shared, not copied, so a cardholder may attribute their
+      // own charge but never to a book they can't reach or a budget nobody
+      // approved.
+      const homeChapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+      await assertBudgetAttributable(ctx, scope, homeChapterId, args.budgetId);
+      await ctx.db.patch(args.transactionId, { budgetId: args.budgetId });
+    }
     const userId = (await requireUserId(ctx)) as Id<"users">;
     const { namesMaxHeadcount, sinceMs } = await codingPolicy(ctx);
     const existing = await codingForTransaction(ctx, args.transactionId);
@@ -448,6 +478,82 @@ export const requestChanges = mutation({
       transactionId: args.transactionId,
     });
     return null;
+  },
+});
+
+/**
+ * Every budget this charge could legitimately land in, grouped, for the
+ * cardholder coding it.
+ *
+ * Owner, 2026-08-09: *"When coding, I hope people can select budgets for
+ * things… You should just show them all the budgets."* Until now nobody could
+ * — `submitOwnCharge` is deliberately narrow (category and note only) and
+ * `categorizeTransaction` is bookkeeper-gated, so the budget on a cardholder's
+ * charge could only ever be set later, by somebody who wasn't there.
+ *
+ * DELIBERATELY NOT FINANCE-ROLE GATED, the same posture as
+ * `finances.myChargeCategories` and `budgetsGlance`: a cardholder with no
+ * finance seat has to be able to answer "which budget was this?" about their
+ * own spending, and membership is the only gate that makes sense for it. It
+ * returns names and ids — no amounts, no spend-to-date, nothing about how full
+ * a budget is. That stays on the Budgets tab.
+ *
+ * SHOW THEM ALL, don't guess. The list is every attributable (approved) budget
+ * reachable from the caller's chapter plus central — the same set the
+ * Reconcile "For" picker offers, built from the same
+ * `gatherForPickerCandidates` scan so the two can't drift. Nothing is
+ * pre-selected and nothing is ranked by merchant or text: per decision 5 no
+ * part of coding infers an answer, and a pre-selection that quietly sticks is
+ * exactly the rubber stamp that decision exists to prevent. The guidance is
+ * copy next to the choices, not a filter over them.
+ */
+export const budgetOptions = query({
+  args: {},
+  returns: v.object({
+    events: v.array(v.object({ budgetId: v.id("budgets"), label: v.string() })),
+    projects: v.array(
+      v.object({ budgetId: v.id("budgets"), label: v.string() }),
+    ),
+    recurring: v.array(
+      v.object({
+        budgetId: v.id("budgets"),
+        label: v.string(),
+        level: v.union(v.literal("chapter"), v.literal("central")),
+      }),
+    ),
+  }),
+  handler: async (ctx) => {
+    const empty = { events: [], projects: [], recurring: [] };
+    const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
+    if (!chapterId) return empty;
+    const { candidates } = await gatherForPickerCandidates(
+      ctx,
+      chapterId,
+      CODING_SCAN_LIMIT,
+    );
+    return {
+      events: candidates.flatMap((c) =>
+        c.refKind === "event" && isAttributableBudget(c.budget)
+          ? [{ budgetId: c.budget._id, label: c.label }]
+          : [],
+      ),
+      projects: candidates.flatMap((c) =>
+        c.refKind === "project" && isAttributableBudget(c.budget)
+          ? [{ budgetId: c.budget._id, label: c.label }]
+          : [],
+      ),
+      recurring: candidates.flatMap((c) =>
+        c.refKind === "recurring" && isAttributableBudget(c.budget)
+          ? [
+              {
+                budgetId: c.budget._id,
+                label: c.label,
+                level: c.level as "chapter" | "central",
+              },
+            ]
+          : [],
+      ),
+    };
   },
 });
 

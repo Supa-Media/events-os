@@ -36,6 +36,8 @@
  *    it, not after it's published.
  */
 import { useMemo, useState, type ReactNode } from "react";
+import { useQuery } from "convex/react";
+import { api } from "@events-os/convex/_generated/api";
 import { Modal, Pressable, ScrollView, Text, View } from "react-native";
 import {
   ATTENDEE_AFFILIATIONS,
@@ -48,7 +50,7 @@ import {
   type AttendeeAffiliation,
   type ExpenseType,
 } from "@events-os/shared";
-import { Button, Icon, Radio, RadioGroup, TextField } from "../../ui";
+import { Button, Icon, Radio, RadioGroup, Select, TextField } from "../../ui";
 import { colors } from "../../../lib/theme";
 
 const TYPE_HINTS: Record<ExpenseType, string> = {
@@ -66,7 +68,34 @@ export interface CodingFormValue {
   headcount?: number;
   attendees?: { name: string; affiliation: AttendeeAffiliation }[];
   groupDescription?: string;
+  /** Which budget this came out of — the person coding it says so. Omitted
+   *  when they leave it alone; the submit mutation never CLEARS an existing
+   *  attribution from here. */
+  budgetId?: string;
 }
+
+/**
+ * WHICH BUDGET — the guidance, in the owner's own mapping (2026-08-09), as
+ * plain hints beside the choices rather than a wall of policy.
+ *
+ * *"…things that relate to team meetings and stuff like that, that's operating
+ * budgets. But if something's associated with an event, that should go into
+ * the event budget. If something's equipment, not really associated with any
+ * event but just general equipment, then that can go in our annual equipment
+ * and upgrades budget."*
+ *
+ * Note what this is NOT: it doesn't filter the list, rank it, or pre-select
+ * anything. Every budget the charge could legitimately land in is offered
+ * (owner: "you should just show them all the budgets"), and per decision 5
+ * nothing in coding infers an answer from the merchant or the text — a
+ * pre-selection that quietly sticks is the rubber stamp that decision exists
+ * to prevent. A hint is fine; a default is not.
+ */
+const BUDGET_GUIDANCE = [
+  "Bought for a specific event? That event's budget.",
+  "Team meeting, subscription, or general running cost? Operating.",
+  "Equipment that isn't tied to one event? The annual equipment budget.",
+];
 
 /** The receipt requirement, worded as one of the missing pieces rather than as
  *  an error — it belongs in the same list as "say what this was for". Its code
@@ -173,6 +202,7 @@ export function TransactionCodingModal({
   hasDocumentation,
   documentationSlot,
   initial,
+  initialBudgetId,
   reviewNote,
   personalCharge,
   submitLabel = "Submit for review",
@@ -196,6 +226,9 @@ export function TransactionCodingModal({
   documentationSlot?: ReactNode;
   /** Present when revising after a send-back — the author's own prior words. */
   initial?: CodingFormValue | null;
+  /** The budget the charge is already attributed to, if any — so re-opening
+   *  the editor shows the current answer instead of an empty picker. */
+  initialBudgetId?: string | null;
   /** The reviewer's send-back note, when this is a revision. Shown INSIDE the
    *  editor: "what would make this approvable" is useless one screen away from
    *  the fields it's about. */
@@ -248,6 +281,7 @@ export function TransactionCodingModal({
   const [attendees, setAttendees] = useState<
     { name: string; affiliation: AttendeeAffiliation }[]
   >(initial?.attendees ?? []);
+  const [budgetId, setBudgetId] = useState<string>(initialBudgetId ?? "");
   const [groupDescription, setGroupDescription] = useState(
     initial?.groupDescription ?? "",
   );
@@ -270,6 +304,42 @@ export function TransactionCodingModal({
     );
   }, [namesMode, headcount, namesMaxHeadcount, attendees]);
 
+  // Every budget this charge could land in. Member-visible by design — a
+  // cardholder with no finance seat still has to be able to say which budget
+  // their own spending came out of.
+  const budgetOptions = useQuery(api.transactionCodings.budgetOptions, {});
+  const budgetItems = useMemo(() => {
+    const o = budgetOptions;
+    if (!o) return [];
+    const chapterRecurring = o.recurring.filter((r) => r.level === "chapter");
+    const centralRecurring = o.recurring.filter((r) => r.level === "central");
+    return [
+      { value: "", label: "Not sure yet" },
+      ...(o.events.length
+        ? [{ value: "__g_events", label: "Events", header: true }]
+        : []),
+      ...o.events.map((e) => ({ value: e.budgetId as string, label: e.label })),
+      ...(o.projects.length
+        ? [{ value: "__g_projects", label: "Projects", header: true }]
+        : []),
+      ...o.projects.map((p) => ({ value: p.budgetId as string, label: p.label })),
+      ...(chapterRecurring.length
+        ? [{ value: "__g_op", label: "Operating · Chapter", header: true }]
+        : []),
+      ...chapterRecurring.map((r) => ({
+        value: r.budgetId as string,
+        label: r.label,
+      })),
+      ...(centralRecurring.length
+        ? [{ value: "__g_central", label: "Operating · Central", header: true }]
+        : []),
+      ...centralRecurring.map((r) => ({
+        value: r.budgetId as string,
+        label: r.label,
+      })),
+    ];
+  }, [budgetOptions]);
+
   const value: CodingFormValue | null =
     expenseType == null
       ? null
@@ -288,6 +358,7 @@ export function TransactionCodingModal({
           ...(namesMode === false && groupDescription.trim()
             ? { groupDescription }
             : {}),
+          ...(budgetId ? { budgetId } : {}),
         };
 
   const fieldProblems =
@@ -480,6 +551,44 @@ export function TransactionCodingModal({
                       sentence gets written. See the `personalCharge` prop. */}
                   {personalCharge ? (
                     <PersonalChargeEscape {...personalCharge} />
+                  ) : null}
+
+                  {/* WHICH BUDGET. Owner, 2026-08-09: "when coding, I hope
+                      people can select budgets for things… you should just
+                      show them all the budgets." Until this, nobody coding a
+                      charge could say — the budget got set later, by somebody
+                      who wasn't there.
+
+                      Every attributable budget is offered, unranked and
+                      unfiltered, with the mapping as hints beneath. Nothing is
+                      pre-selected: per decision 5 no part of coding infers an
+                      answer, and a default that quietly sticks is exactly the
+                      rubber stamp that rule exists to prevent. "Not sure yet"
+                      is a real option — a wrong budget is worse than an
+                      unattributed one, and the row stays in Needs budget where
+                      a bookkeeper will see it. */}
+                  {budgetItems.length > 1 ? (
+                    <View className="mt-4">
+                      <Select
+                        label="Which budget did this come out of?"
+                        value={budgetId || ""}
+                        options={budgetItems}
+                        onChange={setBudgetId}
+                        placeholder="Not sure yet"
+                        searchable
+                      />
+                      <View className="mt-1.5 gap-0.5">
+                        {BUDGET_GUIDANCE.map((line) => (
+                          <Text key={line} className="text-2xs text-muted">
+                            {line}
+                          </Text>
+                        ))}
+                        <Text className="text-2xs text-muted">
+                          Not sure? Leave it — the finance team will set it, and
+                          a guess is worse than a blank.
+                        </Text>
+                      </View>
+                    </View>
                   ) : null}
                 </>
               ) : null}

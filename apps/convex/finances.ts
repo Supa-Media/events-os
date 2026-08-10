@@ -1182,6 +1182,42 @@ async function requireBudgetForCentralTxn(
   return budget;
 }
 
+/**
+ * MAY THIS BUDGET TAKE THIS CHARGE? The whole gate, in one call — the book
+ * rule then the approval rule.
+ *
+ * Extracted so the two write paths cannot drift: `categorizeTransaction` (the
+ * Reconcile "For" picker, bookkeeper+) and `transactionCodings.submit` (the
+ * cardholder attributing their OWN charge while coding it — owner,
+ * 2026-08-09). Which budget may take a charge is a property of the ATTRIBUTION
+ * — the book it belongs to, and whether the budget has cleared review — not of
+ * who is doing it, so both callers ask the same question the same way.
+ *
+ * `scope` is the transaction's own book; `homeChapterId` is the caller's,
+ * which only matters on the central branch (fronting another book's spend is
+ * the cross-book power).
+ */
+export async function assertBudgetAttributable(
+  ctx: MutationCtx,
+  scope: FinanceScope,
+  homeChapterId: Id<"chapters">,
+  budgetId: Id<"budgets">,
+): Promise<void> {
+  if (scope === CENTRAL) {
+    // A central-owned txn: its own book's budget, OR — cross-book — a
+    // chapter's, when central fronted that chapter's spend.
+    await requireBudgetForCentralTxn(ctx, homeChapterId, budgetId);
+  } else {
+    // A chapter txn: its own chapter's budget or a central one — the
+    // long-standing chapter-fronts-central case.
+    await requireInCallerChapter(ctx, scope, "budgets", budgetId, "Budget", {
+      allowCentral: true,
+    });
+  }
+  // WP-wave4 (item 5): only an APPROVED budget can take a charge.
+  await assertBudgetApprovedForAttribution(ctx, budgetId);
+}
+
 /** True iff a transaction contributes to category / budget / actual SPEND.
  *  Exported for `transfers.ts#interScopeBalances` (WP-4.5), which reuses this
  *  exact gate when summing cross-scope-attributed spend. */
@@ -9393,21 +9429,7 @@ export const categorizeTransaction = mutation({
       });
     }
     if (args.budgetId) {
-      if (scope === CENTRAL) {
-        // A central-owned txn: its own book's budget, OR — cross-book — a
-        // chapter's, when central fronted that chapter's spend. See
-        // `requireBudgetForCentralTxn`.
-        await requireBudgetForCentralTxn(ctx, homeChapterId, args.budgetId);
-      } else {
-        // A chapter txn: its own chapter's budget or a central one
-        // (`allowCentral`) — the long-standing chapter-fronts-central case.
-        await requireInCallerChapter(ctx, scope, "budgets", args.budgetId, "Budget", {
-          allowCentral: true,
-        });
-      }
-      // WP-wave4 (item 5): only an APPROVED budget can take a charge — the
-      // "For" picker's own target gate.
-      await assertBudgetApprovedForAttribution(ctx, args.budgetId);
+      await assertBudgetAttributable(ctx, scope, homeChapterId, args.budgetId);
     }
     const patch = cleanPatch({
       fundId: args.fundId,

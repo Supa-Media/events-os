@@ -606,9 +606,18 @@ export function FinishChargeSheet({
           }
           submitting={busy}
           onCancel={() => setEditing(false)}
-          onConfirm={(value: CodingFormValue) =>
+          onConfirm={({ budgetId, ...value }: CodingFormValue) =>
             void guard(async () => {
-              await submitCoding({ transactionId, ...value });
+              await submitCoding({
+                transactionId,
+                ...value,
+                // The picker deals in plain strings; the mutation validates
+                // the id for real (book rule + approved-budget rule), so this
+                // cast is the only thing standing between them.
+                ...(budgetId
+                  ? { budgetId: budgetId as Id<"budgets"> }
+                  : {}),
+              });
               setEditing(false);
             }, "Couldn't submit this coding")
           }
