@@ -1094,6 +1094,28 @@ export const increaseAccounts = defineTable({
   // Always ≥ 0: positive Pending Transactions (an unsettled card refund) do not
   // raise the available balance, so available can never exceed current.
   pendingCents: v.optional(v.number()),
+  // The slice of `pendingCents` the reconcile LEDGER HAS ALREADY BOOKED, and
+  // which therefore must NOT be added back onto the cash side. Resolved during
+  // the snapshot by matching each pending item's `source.<category>.transfer_id`
+  // against the same keys `increaseLedger.ts` uses to answer this question for
+  // POSTED transactions: a `payouts.increaseTransferId` whose payout has reached
+  // `paid`, or a `transactions.externalId` (a morning-engine account-transfer
+  // leg, stamped when the transfer is created).
+  //
+  // THE CATEGORY IS NOT THE ANSWER — the transfer id is. The app originates
+  // exactly two kinds of outbound transfer (`/ach_transfers`, `/account_transfers`);
+  // a wire, a check or an RTP transfer can only have been started by a human in
+  // the Increase dashboard, and those reach the ledger at SETTLEMENT. Excluding
+  // them by category would manufacture a `books_exceed_cash` gap for the whole
+  // pending window — days, or weeks for an uncashed check.
+  //
+  // ABSENT MEANS "NEVER MEASURED FOR THIS TOTAL", NOT "ZERO". It is written in
+  // the SAME mutation as `pendingCents` and CLEARED whenever that mutation
+  // cannot measure it, so the two can never describe different reads. A reader
+  // that finds it absent must fall back to adding the whole total back (see
+  // `lib/reconciliationGap.ts#addableBankPendingCents` for why that direction is
+  // the honest one).
+  pendingAlreadyBookedCents: v.optional(v.number()),
   // What that pending total is actually MADE OF, by Increase Pending
   // Transaction category — read from `GET /pending_transactions` during the
   // snapshot and rolled up so the per-book drill-down can itemise it.
@@ -1107,15 +1129,20 @@ export const increaseAccounts = defineTable({
   //
   // `amountCents` is the SIGNED sum Increase reports for that category (debits
   // are negative), so the categories sum to −`pendingCents` when nothing is
-  // positive. Absent until the first snapshot that reaches the endpoint; a
-  // failed fetch leaves the previous rollup rather than blanking it, so
-  // `pendingBreakdownAsOf` says how old it is.
+  // positive. `alreadyBookedCents` is the non-negative part of that category the
+  // ledger has already booked — the per-category share of
+  // `pendingAlreadyBookedCents`, carried so the drill-down can mark WHICH rows
+  // were excluded rather than just how much. Absent until the first snapshot
+  // that reaches the endpoint, and cleared alongside `pendingAlreadyBookedCents`
+  // when a snapshot cannot read it: a rollup that describes a different total
+  // than the one beside it is worse than no rollup at all.
   pendingBreakdown: v.optional(
     v.array(
       v.object({
         category: v.string(),
         amountCents: v.number(),
         count: v.number(),
+        alreadyBookedCents: v.optional(v.number()),
       }),
     ),
   ),

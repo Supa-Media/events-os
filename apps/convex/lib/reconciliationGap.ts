@@ -38,14 +38,14 @@
  *   · BANK AVAILABLE — Increase's `available_balance` per account. This is
  *     what `increaseAccounts.balanceCents` caches.
  *
- *   · HELD AGAINST PENDING — Increase's `current_balance − available_balance`.
- *     It belongs on the CASH side, added back, and getting this backwards is
- *     the single easiest way to write a wrong gap.
+ *   · HELD AGAINST PENDING — Increase's `current_balance − available_balance`,
+ *     but ONLY the part of it the ledger has not already booked. It belongs on
+ *     the CASH side, added back, and getting this backwards is the single
+ *     easiest way to write a wrong gap.
  *
- *     A pending item (a card authorization, an outbound transfer in flight, a
- *     hold on an inbound ACH debit) has been deducted from `available_balance`
- *     ALREADY but has not posted, so it has not reached the reconcile ledger
- *     and book value has NOT deducted it. Comparing book value against
+ *     A card authorization has been deducted from `available_balance` ALREADY
+ *     but has not posted, so it has not reached the reconcile ledger and book
+ *     value has NOT deducted it. Comparing book value against
  *     `available_balance` alone therefore charges the org for that money twice
  *     over — once on the cash side, never on the books side — and reports a
  *     shortfall that is purely an artifact of the two figures being on
@@ -55,6 +55,20 @@
  *     the pending item yet. (Subtracting it from BOTH sides is the same
  *     equation and gives the same difference — this way round just keeps every
  *     displayed line a real, findable pile of money.)
+ *
+ *     THAT REASONING DOES NOT HOLD FOR EVERY PENDING ITEM, and this line used
+ *     to add back all of them. Once a reimbursement payout reaches `paid`, the
+ *     ledger carries its expense (`increasePayoutMachine.ts#postReimbursementSpend`)
+ *     while Increase still holds the ACH instruction in pending until it
+ *     settles. For that overlap, book value has ALREADY dropped — so adding the
+ *     instruction back to the cash side counts it once on each side, in
+ *     opposite directions, and opens a gap the width of the transfer.
+ *
+ *     That is not hypothetical: on 2026-08-10 New York's $183.54 of pending was
+ *     $138.55 of card authorizations and one $44.99 `ach_transfer_instruction` —
+ *     Sayo Olujide's bus-ticket reimbursement, sent 2026-08-09 and booked the
+ *     same day. The panel reported $44.99 of "unaccounted for" money that was
+ *     nothing but this. See `addableBankPendingCents`.
  *
  *   · AT STRIPE — Stripe's `available` + `pending` balance. Revenue is counted
  *     at the gift/ticket/sale, which happens days before the payout, so money
@@ -181,6 +195,57 @@
  * move is snapshot STALENESS, and the honest fix for that is the "as of"
  * timestamp and the refresh the page now performs — not a fudge factor.
  */
+
+/**
+ * Split one account's pending total into the part that is still ours to count
+ * on the cash side and the part the books have already spent.
+ *
+ * ── WHY THIS IS A LOOKUP AND NOT A CALCULATION ──────────────────────────────
+ * There is nothing to decide here. Both numbers are measured together during the
+ * snapshot (`reconciliation.ts#snapshotBalances`) and written by ONE mutation,
+ * so they always describe the same read of the same account and cannot drift
+ * apart. This function only has to spend them safely.
+ *
+ * The measurement matches each pending item's `source.<category>.transfer_id`
+ * against `payouts.increaseTransferId` (payout `paid`) or `transactions.externalId`.
+ * THE CATEGORY IS NOT THE ANSWER: an earlier cut of this excluded four outbound
+ * categories outright, on the theory that an outbound transfer is booked when
+ * it is sent. Three of the four are never booked at send time — the app has no
+ * `/wire_transfers`, `/check_transfers` or `/real_time_payments_transfers` call
+ * at all, so those can only come from a human in the Increase dashboard and
+ * reach the ledger at SETTLEMENT. Refusing them would have opened a
+ * `books_exceed_cash` gap the size of a mailed check for as long as it stayed
+ * uncashed.
+ *
+ * ── WHY ABSENT ADDS THE WHOLE TOTAL BACK ────────────────────────────────────
+ * `pendingAlreadyBookedCents` is absent when no snapshot has ever measured it,
+ * or when the one that wrote this `pendingCents` could not reach
+ * `/pending_transactions` (it is cleared, never left stale). Absent therefore
+ * means "unknown", and the two available answers are both wrong in some case —
+ * so pick the one that fails safely.
+ *
+ * Adding it all back overstates cash by any in-flight booked transfer, which
+ * shows up as `cash_exceeds_books`: an unexplained surplus that invites someone
+ * to look. Subtracting an unmeasured figure would invent a number and report
+ * `books_exceed_cash` — money apparently missing — on no evidence. An audit
+ * panel may overstate what it can point at; it must never accuse the org of a
+ * shortfall it made up. So absent adds it all back, and the drill-down says the
+ * split has not been read yet rather than implying a zero.
+ */
+export function addableBankPendingCents(account: {
+  pendingCents?: number | null;
+  pendingAlreadyBookedCents?: number | null;
+}): { addableCents: number; alreadyBookedCents: number } {
+  // `pendingCents` is `current − available` clamped at the writer, but a legacy
+  // row predating that clamp must not turn into a negative pile of cash.
+  const pendingCents = Math.max(0, account.pendingCents ?? 0);
+  const measured = account.pendingAlreadyBookedCents;
+  if (measured == null) return { addableCents: pendingCents, alreadyBookedCents: 0 };
+  // Can't be booked for more than the bank is holding, and can't be negative:
+  // the displayed lines have to stay real piles of money.
+  const alreadyBookedCents = Math.min(Math.max(0, measured), pendingCents);
+  return { addableCents: pendingCents - alreadyBookedCents, alreadyBookedCents };
+}
 
 /** Everything the gap is computed from. All fields are integer cents. */
 export type ReconciliationInput = {

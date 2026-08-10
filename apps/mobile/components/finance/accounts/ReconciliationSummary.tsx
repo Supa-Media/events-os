@@ -659,7 +659,20 @@ function ReconciliationWorking({ summary }: { summary: Summary }) {
         />
         <Row
           label="Set aside, not yet posted"
-          hint="Card spend, outbound transfers and holds the bank has taken off the available balance but hasn't posted — the ledger hasn't seen them either, so it still counts as ours"
+          hint={
+            // Named the outbound transfer as an example of money "the ledger
+            // hasn't seen" until 2026-08-10, which was backwards for the one
+            // kind of transfer this app books before it settles: a reimbursement
+            // ACH, whose expense row is written when the payout reaches `paid`
+            // while Increase still holds the instruction pending. Those are
+            // excluded now — matched by transfer id, never by category — and the
+            // hint names the amount whenever there is one, because a total
+            // smaller than the bank's own pending figure has to explain itself.
+            // The accounts table and its drill-down show the same split.
+            summary.bankPendingBookedCents > 0
+              ? `Card spend and holds the bank has taken off the available balance but hasn't posted — the ledger hasn't seen them either, so they still count as ours. Excludes ${formatCents(summary.bankPendingBookedCents)} of transfers already sent, which the ledger has already counted as spend.`
+              : "Card spend and holds the bank has taken off the available balance but hasn't posted — the ledger hasn't seen them either, so it still counts as ours"
+          }
           value={formatCents(summary.bankPendingCents)}
         />
         <Row
