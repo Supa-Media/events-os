@@ -1037,7 +1037,13 @@ describe("the substantiation reaches the surfaces that need it", () => {
     const stale = await run(s.t, async () =>
       s.t.query(internal.reimbursements.listStaleReimbursements, {
         chapterId: s.chapterId,
-        now: Date.now(),
+        // +1ms because the staleness test is EXCLUSIVE (`submittedAt < now -
+        // olderThanMs`). On a fast machine the whole setup above can land in
+        // the same millisecond as this `Date.now()`, making `submittedAt ===
+        // now`, which is not "older than" — and the row silently drops out of
+        // the sweep. Nudging `now` forward keeps the intent ("everything is
+        // old enough") true regardless of how fast the setup ran.
+        now: Date.now() + 1,
         // Sent-back requests join the sweep on the SAME staleness window as
         // everything else (0 here = "everything is old enough").
         olderThanMs: 0,
