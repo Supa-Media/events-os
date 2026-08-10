@@ -77,49 +77,50 @@
  *     once. But it moves NO money: `personId` is optional by design and an
  *     unlinked registration is a complete row. Never block the books on it.
  *
- * ── WHY ALL SIX ARE ALREADY ON THE ROSTER (AND HOW TO CHECK IN ONE QUERY) ───
- * Worth understanding, because two plausible-sounding explanations are both
- * wrong, and this comment has been wrong twice already.
+ * ── WHY ALL SIX ARE ALREADY ON THE ROSTER ───────────────────────────────────
+ * OBSERVED, not inferred — read from a 2026-08-10 production snapshot by
+ * querying `personEmails.source` / `verified` / `addedAt` for the six
+ * addresses. Recorded here because two earlier readings of this were wrong, and
+ * because it explains why the roster is better populated than the seed
+ * fixtures suggest. TWO paths, not one:
  *
- * WHAT IS SETTLED, from the committed code:
- *   · NONE of the six Givebutter transaction ids below appears in ANY seed
- *     fixture. Grep them; `lib/seed/historical/` has none of them.
- *   · The three name-only RSVP fixtures (`ltn.ts`, `nye.ts`, `eden.ts`) carry
- *     ZERO emails between them — 349 + 191 + 595 rows, not one `email:` field.
- *     `linkRsvpToPersonCore` refuses to insert a person without an identifier
- *     and skips `recordPersonEmail` without an email, so those rows CANNOT have
- *     created a `personEmails` row. At most they name-matched onto a person
- *     some other path had already created.
- *   · So the roster rows were NOT created by these registrations, and not by
- *     the historical backfill. They were created by something keyed on the
- *     PERSON rather than on this money.
+ *   · FOUR arrived by CONTACTS IMPORT — `source:"manual"`, `verified:false`,
+ *     all four stamped to the SAME SECOND (2026-07-27 12:13:49 ET). That is the
+ *     `matchOrCreatePersonContact` signature exactly (`peopleImport.ts:166` →
+ *     `givingImport.ts`, which writes `people.email` and a
+ *     `personEmails{source:"manual", verified:false}` row in one call): a
+ *     Givebutter CONTACTS export pasted through People → Import. A contacts
+ *     export is INDIFFERENT to whether the money stuck, which is the only kind
+ *     of source that could reach a refunded scholarship — and one of these four
+ *     is exactly that, invisible to every revenue-shaped import because the
+ *     sync drops refunds via `isRefundedTransaction`.
  *
- * THE LEADING EXPLANATION, and it is an inference, not a reading:
- * the Givebutter CONTACTS export (~251 rows) pasted through People → Import
- * around 2026-07-25 (`peopleImport.ts:166` → `givingImport.ts`'s
- * `matchOrCreatePersonContact`, which writes `people.email` AND a
- * `personEmails{source:"manual", verified:false}` row in the same call). A
- * contacts export lists everyone who ever transacted on the platform and is
- * INDIFFERENT to whether the money stuck — which is the only kind of source
- * that reaches all six.
+ *   · TWO arrived by the ROSTER path — `source:"roster"`, `verified:true`,
+ *     2026-07-18 22:24:05 ET. These are the two who already appear in
+ *     `lib/seed/historical/giving.ts`, and their rows are explained by
+ *     UNRELATED EARLIER TRANSACTIONS (one of them by a $25.00 gift in December
+ *     2025). Nothing about Worship Beyond The Walls put them there.
  *
- * The strongest evidence for it: one of the six is a REFUNDED scholarship. That
- * person is invisible to every revenue-shaped import — the sync drops refunds
- * via `isRefundedTransaction`, and no gift or ticket row was ever curated for
- * them — yet they have both rows. Only a contacts-style import explains that.
+ * Whole table for scale: roster 216, manual 197, rsvp 162, donor 21, pw 23
+ * (619 `personEmails` across 589 `people`).
  *
- * HOW TO SETTLE IT, one query, no guessing: read `personEmails.source` and
- * `addedAt` for the six addresses.
- *   · `manual` + `verified:false` + `addedAt` ≈ 2026-07-25 → the contacts
- *     import above. Expected.
- *   · `rsvp` + `verified:true` → they bought a ticket to some other Public
- *     Worship event and the Givebutter ticket sync created them
- *     (`givebutterSync.ts:458` → `linkRsvpToPerson`).
- *   · `donor` → they gave separately at some point (`linkDonorToPerson`).
- *   · `roster`/`pw` → a human added or edited them.
- * `SOURCE_RANK` in `lib/personEmails.ts` is upgrade-only, so the value you read
- * is the STRONGEST claim ever made about that address, not necessarily the
- * first — worth knowing before drawing a conclusion from it.
+ * WHY THE `manual` ROWS ARE TRUSTWORTHY EVIDENCE, which is the subtle part:
+ * `SOURCE_RANK` in `lib/personEmails.ts` is UPGRADE-ONLY, so the value you read
+ * is the STRONGEST claim ever made about an address, never necessarily the
+ * first. Those four still reading `manual` / `verified:false` therefore means
+ * nothing has upgraded them since — the contacts import remains the ONLY claim
+ * ever made about those addresses. Had any of them later bought a ticket or
+ * given, the row would read `rsvp` or `donor` instead. The weak source is the
+ * proof, not a caveat on it.
+ *
+ * NOTE FOR ANYONE RE-DERIVING THIS: neither the RSVP fixtures nor the giving
+ * backfill explains all six, and reading either alone produces a confident
+ * wrong answer (both were tried). The RSVP fixtures (`ltn.ts`, `nye.ts`,
+ * `eden.ts`) carry ZERO emails across 1,135 rows, and `linkRsvpToPersonCore`
+ * skips `recordPersonEmail` without one — so those rows cannot have created a
+ * `personEmails` row at all. And none of the six transaction ids below appears
+ * in any fixture. The roster rows were created by something keyed on the
+ * PERSON, never by this money.
  *
  * NONE OF THIS GATES THE RUN. It is context for whoever reads
  * `rosterMatches: 6` and wonders where they came from. See the tiers above for
