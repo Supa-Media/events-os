@@ -4018,11 +4018,21 @@ export const autoLockOverdueCards = internalMutation({
  *  2. NOT CODED — the 60-day ACCOUNTABLE-PLAN clock (`codingOverdueDays`,
  *     default `DEFAULT_CODING_OVERDUE_DAYS`), running on any charge the coding
  *     policy covers that is still `isUncodedCharge` that long after posting.
- *     This one has no "off" value, exactly like the policy date itself: it is
- *     the IRS's safe harbor, not a preference. Treas. Reg. §1.62-2 is blunt —
- *     spending the org can't substantiate in a reasonable period is WAGES to
+ *     This one has no "off" value, exactly like the policy dates themselves: it
+ *     is the IRS's safe harbor, not a preference. Treas. Reg. §1.62-2 is blunt
+ *     — spending the org can't substantiate in a reasonable period is WAGES to
  *     the person who spent it. Billing it back is the kinder ending, and the
  *     escalation email says so in plain words.
+ *
+ *     TWO GATES, NOT ONE. Converting also requires `postedAt >=
+ *     codingConversionSinceMs` — the CONSEQUENCE date, deliberately later than
+ *     the REQUIREMENT date the rest of the coding surfaces read. A charge can
+ *     owe a coding (chased, facet-counted, blocked from `reconciled`) for
+ *     months without ever being billable, and that asymmetry is the point:
+ *     asking for an account of the money is fair immediately, billing someone
+ *     for spending that predates the ask is not. See
+ *     `DEFAULT_CODING_CONVERSION_SINCE_MS`. Under the defaults the earliest a
+ *     charge can convert on this clock is 2026-10-31 (2026-09-01 + 60 days).
  *
  * A charge overdue on BOTH is reported as the receipt case: that clock is
  * usually the shorter one and it's the one the cardholder has already been
@@ -4045,7 +4055,7 @@ export const autoConvertOverdueReceipts = internalMutation({
     // `null` = the no-receipt clock is OFF (the default). The coding clock
     // below still runs — it's the accountable-plan deadline, not a setting.
     const receiptCutoff = days == null ? null : now - days * DAY_MS;
-    const { sinceMs } = await codingPolicy(ctx);
+    const { sinceMs, conversionSinceMs } = await codingPolicy(ctx);
     const codingCutoff = now - (await codingOverdueMs(ctx));
     const cards = await ctx.db.query("cards").take(AUTOLOCK_LIMIT);
 
@@ -4072,6 +4082,15 @@ export const autoConvertOverdueReceipts = internalMutation({
         } else if (
           tr.chapterId === card.chapterId &&
           tr.postedAt < codingCutoff &&
+          // BOTH coding gates, tested independently. `isUncodedCharge(tr,
+          // sinceMs)` asks whether this charge OWES a coding; the line below
+          // asks whether it is old enough in POLICY terms to be billed back for
+          // not having one. They were one constant, which meant arming the
+          // requirement also armed the billing — see
+          // `DEFAULT_CODING_CONVERSION_SINCE_MS`. Do not collapse them again:
+          // a charge that owes a coding but posted before the conversion date
+          // stays chased forever and converted never, which is the intent.
+          tr.postedAt >= conversionSinceMs &&
           isUncodedCharge(tr, sinceMs)
         ) {
           candidates.push({ tr, card, cause: "uncoded" });

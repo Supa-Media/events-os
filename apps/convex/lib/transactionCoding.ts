@@ -24,6 +24,7 @@ import type { Doc, Id } from "../_generated/dataModel";
 import { ConvexError } from "convex/values";
 import {
   codingFieldProblems,
+  DEFAULT_CODING_CONVERSION_SINCE_MS,
   DEFAULT_CODING_REQUIRED_SINCE_MS,
   DEFAULT_MEAL_ATTENDEE_NAMES_MAX_HEADCOUNT,
   MAX_PURPOSE_LENGTH,
@@ -33,16 +34,30 @@ import {
 import type { FinanceScope } from "./finance";
 
 /** The org's coding policy, falling back to the shared owner-decided defaults
- *  (2026-09-01 policy date, names threshold 15). Deliberately has no "off"
- *  value — the policy arms itself on the date; moving it is a deliberate
- *  central-finance act on `financeSettings`. */
+ *  (2026-08-08 requirement date, 2026-09-01 conversion date, names threshold
+ *  15). Deliberately has no "off" value — the policy arms itself on the dates;
+ *  moving either is a deliberate central-finance act on `financeSettings`.
+ *
+ *  TWO DATES, READ TOGETHER, USED SEPARATELY. `sinceMs` says a charge owes a
+ *  coding; `conversionSinceMs` says a charge that owes one may be BILLED BACK
+ *  for it. Every chase surface (facets, digest, reconcile gate) reads only
+ *  `sinceMs`. The single sweep that takes money — `cards
+ *  .autoConvertOverdueReceipts` — must satisfy both. Returning them from one
+ *  place, rather than letting the sweep read its own setting, is what keeps a
+ *  future reader from re-collapsing them by reaching for the nearer constant. */
 export async function codingPolicy(
   ctx: QueryCtx,
-): Promise<{ sinceMs: number; namesMaxHeadcount: number }> {
+): Promise<{
+  sinceMs: number;
+  conversionSinceMs: number;
+  namesMaxHeadcount: number;
+}> {
   const settings = await ctx.db.query("financeSettings").first();
   return {
     sinceMs:
       settings?.codingRequiredSinceMs ?? DEFAULT_CODING_REQUIRED_SINCE_MS,
+    conversionSinceMs:
+      settings?.codingConversionSinceMs ?? DEFAULT_CODING_CONVERSION_SINCE_MS,
     namesMaxHeadcount:
       settings?.mealAttendeeNamesMaxHeadcount ??
       DEFAULT_MEAL_ATTENDEE_NAMES_MAX_HEADCOUNT,

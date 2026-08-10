@@ -1,7 +1,14 @@
 /// <reference types="vite/client" />
 import { describe, expect, test } from "vitest";
 import { ConvexError } from "convex/values";
-import { newT, run, setupChapter, storeBlob, type ChapterSetup } from "./setup.helpers";
+import {
+  disarmCodingPolicy,
+  newT,
+  run,
+  setupChapter,
+  storeBlob,
+  type ChapterSetup,
+} from "./setup.helpers";
 import { api } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 
@@ -151,6 +158,13 @@ describe("finances.receiptChase", () => {
   test("only genuinely receipt-owing SPEND charges appear", async () => {
     const t = newT();
     const s = await setupChapter(t);
+    // `receiptChase` returns the UNION of "owes a document" and "owes a
+    // coding". This test is about the first predicate only — that's what its
+    // fixtures are built to distinguish — so the coding half is disarmed here.
+    // Without it the receipted-but-uncoded row below joins the list on the
+    // coding side and this stops testing what it names. The coding half has
+    // its own coverage in `codingReminders.test.ts`.
+    await disarmCodingPolicy(t);
     const me = await seedPerson(s, { name: "FM", userId: s.userId });
     await grantRole(s, me, "manager");
     const alice = await seedPerson(s, { name: "Alice" });
