@@ -1022,9 +1022,7 @@ const EXPECTED_SECTIONS: {
     slug: "finance-reconcile-grid",
     title: "Running Reconcile",
     minutes: 4,
-    // 6 since 2026-08-09: the four approval seats and their reach became a
-    // rule a reviewer can get wrong, so the lesson tests it.
-    quizLength: 6,
+    quizLength: 5,
     optional: false,
     capstoneKind: null,
   },
@@ -1066,7 +1064,9 @@ const EXPECTED_SECTIONS: {
     slug: "finance-approving-budgets",
     title: "Approving budgets",
     minutes: 3,
-    quizLength: 3,
+    // 4 since 2026-08-09: the four approval seats now approve CODINGS too,
+    // with different reach per seat, and that's the part people get wrong.
+    quizLength: 4,
     optional: false,
     capstoneKind: null,
   },

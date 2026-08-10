@@ -1082,19 +1082,6 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     ],
     quiz: [
       {
-        prompt:
-          "You're the Treasurer for New York. A coding on a CENTRAL charge, and another on Chicago's charge, are both sitting in review. Which can you approve?",
-        options: [
-          "Both — a Treasurer is a finance manager, and managers approve codings",
-          "Neither — a Treasurer approves codings for their own chapter only",
-          "The central one, since central outranks a chapter",
-          "Chicago's, since it's a chapter like yours",
-        ],
-        answerIndex: 1,
-        explanation:
-          "Reach is per seat. The Treasurer and the Chapter Director approve their OWN chapter's codings; the Financial Manager and the Executive Director approve any chapter's and central's. Neither of those two rows is yours — and even inside your own chapter you can never approve a coding you wrote.",
-      },
-      {
         prompt: "How does a charge get counted against a budget?",
         options: [
           "The system matches it automatically by category",
@@ -1573,6 +1560,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "**How it works:** whoever plans a budget taps **Submit for approval** right on its card. It then shows **Awaiting approval** to anyone who can act on it — AND emails them, so the approver doesn't have to be watching the app. Tap **Approve** or **Request changes** (with a reason) straight from that same card, and the submitter gets an email back either way, note included on a Request changes.",
           "**Who approves what:** a chapter budget is approved by you (the Chapter Director); your Treasurer can also approve one if you were the one who submitted it — separation of duties always picks whoever ISN'T the requester, even a dual-hat holder acting on their own submission.",
           "**Central budgets are the mirror image:** approved by the Executive Director, or the Financial Manager if the ED submitted it.",
+          "**Codings are approved by the same four seats, with different reach.** You and your Treasurer approve codings for YOUR OWN chapter; the Financial Manager and the Executive Director approve any chapter's, and central's. The work sits on the **Coding** tab. Same separation of duties, and it binds both ways — you can't approve a coding you wrote, and you can't send your own back either.",
           "**Over the approved cap:** spending past what a budget allows raises a loud warning right on the card — it doesn't block the card yet.",
         ],
       },
@@ -1589,6 +1577,19 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
     ],
     quiz: [
+      {
+        prompt:
+          "You're the Treasurer for New York. A coding on a CENTRAL charge, and another on Chicago's charge, are both sitting in review. Which can you approve?",
+        options: [
+          "Both — a Treasurer is a finance manager, and managers approve codings",
+          "Neither — a Treasurer approves codings for their own chapter only",
+          "The central one, since central outranks a chapter",
+          "Chicago's, since it's a chapter like yours",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Reach is per seat. The Treasurer and the Chapter Director approve their OWN chapter's codings; the Financial Manager and the Executive Director approve any chapter's and central's. Neither of those rows is yours — and even inside your own chapter you could never approve a coding you wrote.",
+      },
       {
         prompt: "Within a chapter's 85%, who approves how the money gets spent?",
         options: [
