@@ -1,7 +1,12 @@
 # Transaction coding — IRS-grade substantiation, self-serve
 
-**Status:** ratified 2026-08-08 (decisions below) — **phase 1 implemented**
-(schema, gate, facets, review loop, Reconcile editor; phases 2–4 pending).
+**Status:** ratified 2026-08-08 (decisions below); amended 2026-08-09
+(decision 8 — the requirement and the consequence are two dates). Phases 1–3
+are largely implemented; **the reviewer's route into a coding shipped
+2026-08-09** (the Reconcile row's comment icon). Still missing: a Coding tab
+that gathers a cardholder's charges-to-code and a manager's review queue in
+one place, per-chapter scoping and roll-up for central oversight, and any
+notification telling a reviewer that codings are waiting.
 Decisions 6 and 7 (a coding carries its own documentation; receipts are
 captured but no longer auto-matched) were ratified the same day, after phase 2
 had been specced — the doc below is written to them, not amended around them.
@@ -141,10 +146,10 @@ without joins.
   an instant 100% backlog and the feature dies on arrival. Historical
   cleanup is a separate, deliberate effort (the `historicalImportBatch` /
   reconstructed-history story already covers how honest that has to be).
-  **Decided: 2026-09-01.** The feature itself ships as soon as it's built —
-  August is the voluntary on-ramp: the editor, reminders, and review loop
-  all run, but the reconcile gate and auto-convert only bite charges posted
-  on/after the policy date.
+  **Decided 2026-09-01; amended 2026-08-09 to 2026-08-08 — see decision 8.**
+- `codingConversionSinceMs?` — the CONSEQUENCE date, split out of the setting
+  above on 2026-08-09 (decision 8). **Decided: 2026-09-01.** Auto-conversion
+  to a personal repayment requires BOTH this and the requirement date.
 - `mealAttendeeNamesMaxHeadcount?` (**decided: 15**).
 - `codingOverdueDays?` — joins the receipt clock for the 60-day story.
 
@@ -336,7 +341,12 @@ make a rejectable submission hard to produce:
 ### B. Review
 
 Reconcile grid gains the `coding_review` facet. Reviewer opens the row, sees
-coding + receipt/exception side by side:
+coding + receipt/exception side by side — **shipped 2026-08-09** as the row's
+comment icon (`TransactionDocumentationModal`): the freeform note and the
+coding in one panel, with Approve / Send back inline. The facet had shipped
+without it, so for a while `coding_review` was a filter that led nowhere and a
+coding could only be read from the dashboard drill-down. The icon also says
+whether anything is behind it, which it previously did not:
 
 - **Approve** → `codingState: "approved"`, audit `coding_approve`. The row
   can now be reconciled (documentation permitting — a coding submitted on a
@@ -496,6 +506,9 @@ and the capstone templates.
    Build and launch the tooling now; the gate and auto-convert apply to
    charges posted on/after the policy date. August = voluntary on-ramp and
    the window to train (Academy lesson ships with phase 1).
+   **SUPERSEDED by decision 8** — this is what was built, and it turned out
+   to conflate two things the owner had always meant to separate. Kept here
+   rather than rewritten, because the amendment only makes sense against it.
 3. **Auto-convert to personal repayment: yes** for post-policy-date charges
    still unsubstantiated at the deadline, with the plain-words
    taxable-income explanation in the escalation emails.
@@ -532,6 +545,57 @@ and the capstone templates.
    a guess made a day earlier saves that tap and buys a claim nobody checked.
    Cost, accepted: an emailed-but-unconfirmed receipt does not stop the day-7
    card lock.
+8. **The requirement and the consequence are two dates** (owner, 2026-08-09,
+   amending decision 2): *"I told the agent that implemented it to make it
+   live now, but only implement the non-coded results in personal payments
+   after Sept 1st."*
+
+   Decision 2 shipped as ONE constant gating both halves, so neither could
+   be turned on alone — and because the single date sat in the future, the
+   net effect in production was that **nothing was required and nothing
+   converted**, while the org believed coding was live. Six codings were
+   written voluntarily in that window; the policy never asked for one.
+
+   | setting | default | gates |
+   | --- | --- | --- |
+   | `codingRequiredSinceMs` | 2026-08-08 (ratification day) | a charge OWES a coding: `uncoded`/`coding_review` facets, the cardholder digest, the `CODING_REQUIRED` reconcile gate |
+   | `codingConversionSinceMs` | 2026-09-01 (decision 2's date, preserved) | a charge that owes one may be BILLED BACK: `cards.autoConvertOverdueReceipts` |
+
+   `autoConvertOverdueReceipts` tests both, independently. A charge can owe a
+   coding for months — chased, counted, blocked from `reconciled` — and never
+   convert. Asking someone to account for money they spent is fair
+   immediately; billing them for spending that predates the ask is not.
+
+   Grandfathering is unchanged, and is why the requirement arms at the
+   ratification date rather than at zero: pre-2026-08-08 spend never lights
+   up. "Live now" means from now on, not retroactively.
+
+   Under the defaults the earliest any cardholder can be auto-billed on the
+   coding clock is **2026-10-31** (2026-09-01 + the 60-day
+   `codingOverdueDays` safe harbor).
+
+## Known hole: a name can publish through the purpose sentence
+
+Raised 2026-08-09, **owner's decision, not fixed in code.**
+
+Decision 4 protects attendee NAMES absolutely — the ledger prints the
+affiliation breakdown, never a name, because some attendees are minors and
+none consented to appearing in a public financial record. That rule governs
+the structured `attendees` array, and the projection honours it
+(`hasCodingNamesView`).
+
+It does not govern free text. `businessPurpose` is labelled *"This sentence
+publishes"* and is printed word for word — and the first real codings written
+in production name people in it ("Travel with Michael Reid from all team
+meeting in Manhattan…"). So the same name is redacted two fields below and
+published here.
+
+Nothing is redacted or blocked automatically: silently rewriting somebody's
+own testimony is worse than the hole, and a regex that guesses at names would
+be both wrong and a form of the AI-in-coding this scope already refused
+(decision 5). The options are a human review step before publication, an
+explicit instruction at the field, or accepting it. **It has to be settled
+before the ledger ships.**
 
 ## Still open (defaults apply unless overridden — neither blocks phase 1)
 
